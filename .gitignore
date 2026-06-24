@@ -1,0 +1,79 @@
+# Sensitive output — never commit these
+findings/
+recon/
+reports/
+evidence/*
+# Whitelist Cadence trigger validation labs (test infrastructure, not per-target evidence)
+!evidence/cadence-labs/
+evidence/cadence-labs/__pycache__/
+targets/
+config.json
+*.burp
+*.json.bak
+
+# API keys and tokens
+.env
+.private/
+secrets.txt
+api_keys.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Logs
+*.log
+*.txt.bak
+
+# Tool output
+*.out
+nmap-output/
+.ace-tool/
+.worktrees/
+hunt-memory/
+output/
+results/
+autopilot_results/
+proxy_test_results/
+
+# Local Claude/Codex/Trellis runtime overlays (not project source)
+.claude/agents/
+.claude/commands/
+.claude/hooks/
+.claude/skills/
+.claude/settings.json
+.claude/settings.local.json
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock
+.codex/
+.agents/
+.trellis/
+.playwright-mcp/
+.playwright-cli/
+.playwright/
+state/
+
+# Local session drafts
+fenxi.md
+Claudeopus4.7提示词
+weak.md
+
+# Runtime memory/state with target-specific evidence
+memory/*.jsonl
+memory/goals/active.json
+memory/goals/targets/
+memory/goals/sessions/
+
+# Local cleanup archives; may contain real target lists or campaign scripts
+archive/root-clutter/
+archive/campaign-scripts/
