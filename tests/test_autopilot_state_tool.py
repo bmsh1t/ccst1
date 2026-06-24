@@ -149,6 +149,45 @@ class TestAutopilotState:
         assert state["recommended_targets"]
         assert state["recommended_targets"][0]["tripped"] is True
 
+    def test_all_hosts_tripped_pivots_to_cached_evidence_work(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [Next.js,Cloudflare] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/graphql\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+
+        memory_dir = tmp_path / "hunt-memory"
+        (memory_dir / "targets").mkdir(parents=True)
+        record_request(
+            memory_dir=memory_dir,
+            target="target.com",
+            url="https://api.target.com/graphql",
+            method="GET",
+            response_status=403,
+            breaker_threshold=1,
+            breaker_cooldown=30,
+            now_ts=time.time(),
+        )
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
+        output = format_autopilot_state(state)
+
+        assert state["next_action"] == "guard_safe_pivot"
+        assert state["guard_status"]["ready_hosts"] == 0
+        assert state["next_tool_hint"] == "context_pack"
+        assert "cached recon/browser/JS/source evidence" in output
+        assert "residential" not in output.lower()
+
     def test_prioritizes_pending_structured_finding_validation(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"

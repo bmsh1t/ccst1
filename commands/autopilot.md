@@ -78,6 +78,11 @@ Stop conditions:
 - Required auth/session/material is missing and cannot be derived safely.
 - A Candidate needs operator-provided credentials, business context, or manual
   validation.
+- If every tracked live host is cooling down or locked by request guard, do not
+  stop as "done" and do not recommend IP rotation, WAF evasion, or social
+  engineering. Automatically pivot to cached recon/browser/JS/source evidence,
+  `/context-pack`, `/checkpoint`, coverage updates, and target-memory write-back
+  until a safe live path exists.
 - `--normal` has completed a related batch and checkpoint explains remaining
   gaps.
 - `--deep` has completed the Deep Exhaustion Checklist.
@@ -452,7 +457,11 @@ Environment auth also supports `BBHUNT_AUTH_HEADER`; auth propagates into Python
 - Payment, billing, refund, credit, wallet, coupon, cart, checkout, and fund-transfer surfaces are valid high-value lanes; avoid only real money movement or irreversible lifecycle changes unless explicitly intended.
 - Order/fulfillment/delivery/shipment/booking lifecycle write actions are Leads only; do not click, replay, race, or call them from `/autopilot`.
 - Mutation/state-changing operations require explicit current-turn operator intent.
-- Request guard, rate limits, and cooldowns are advisory telemetry.
+- Request guard, rate limits, and cooldowns are advisory telemetry. When all
+  tracked hosts are tripped, `/autopilot` must switch to `guard_safe_pivot`:
+  cached evidence analysis, JS/source review, context packing, checkpointing,
+  and coverage accounting. It must not suggest residential IP rotation, WAF
+  evasion, or social engineering as default next steps.
 
 ## Finish Output
 

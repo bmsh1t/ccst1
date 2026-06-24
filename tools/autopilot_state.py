@@ -193,6 +193,16 @@ def _pick_next_action(
     return "refresh_recon"
 
 
+def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
+    """Return whether live probing should pause and cached-evidence work should continue."""
+    if next_action in {"run_recon", "validate_finding", "report_finding"}:
+        return False
+    tracked = int(guard_status.get("tracked_hosts", 0) or 0)
+    tripped = int(guard_status.get("tripped_hosts", 0) or 0)
+    ready = int(guard_status.get("ready_hosts", 0) or 0)
+    return tracked > 0 and tripped > 0 and ready == 0
+
+
 def _describe_next_step(state: dict) -> str:
     """Render a human-friendly next-step hint from the computed state."""
     action = state.get("next_action", "")
@@ -223,6 +233,12 @@ def _describe_next_step(state: dict) -> str:
     if action == "resume_untested":
         focus = ", ".join(resume_targets[:2]) if resume_targets else "cached untested endpoints"
         return f"resume the cached untested surface first: {focus}."
+    if action == "guard_safe_pivot":
+        return (
+            "all tracked live hosts are cooling down or locked; continue automatically "
+            "with cached recon/browser/JS/source evidence, context-pack, checkpoint, and "
+            "coverage updates. Do not use IP rotation, WAF evasion, or social engineering."
+        )
     if action == "hunt_p1":
         if recommended_targets:
             first_item = recommended_targets[0]
@@ -259,8 +275,9 @@ def _build_guard_hint(guard_status: dict, recommended_targets: list[dict]) -> st
                 f"{ready_target.get('host', '')} via {ready_target.get('url', '')}"
             )
         return (
-            f"all tracked hot hosts are cooling down: {cooling}; pivot to quieter surface, "
-            f"repo/source artifacts, or recon refresh until cooldown clears"
+            f"all tracked hot hosts are cooling down: {cooling}; do not rotate IPs, "
+            f"evade detection, or use social engineering. Pivot to cached recon/browser/JS/source "
+            f"artifacts, context-pack, checkpoint, and coverage updates until cooldown clears"
         )
 
     if ready_target and int(guard_status.get("tracked_hosts", 0) or 0) > 0:
@@ -539,6 +556,30 @@ def _build_enrichment_hints(
     )
 
     hints = []
+    if next_action == "guard_safe_pivot":
+        if repo_source_available and not source_intel_ready:
+            hints.append({
+                "tool": "run_source_intel",
+                "reason": "live hosts are cooling down; source artifacts can still produce offline hypotheses",
+            })
+        if not js_intel_ready and _has_js_read_signal(recon_dir, surface_context):
+            hints.append({
+                "tool": "run_js_read",
+                "reason": "live hosts are cooling down; cached JS can still produce endpoint and parameter leads",
+            })
+        hints.extend([
+            {
+                "tool": "context_pack",
+                "reason": "select the safest cached-evidence route while live requests are paused",
+            },
+            {
+                "tool": "checkpoint",
+                "reason": "record the live lockout as blocked and preserve concrete next actions",
+            },
+        ])
+        next_tool_hint = hints[0]["tool"] if hints else ""
+        return next_tool_hint, hints
+
     if not browser_ready and _has_browser_probe_signal(surface_context, ranked):
         hints.append({
             "tool": "run_browser_probe",
@@ -654,9 +695,12 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     )
     guard_state = {
         "tracked_hosts": guard_status.get("tracked_hosts", 0),
+        "ready_hosts": guard_status.get("ready_hosts", 0),
         "tripped_hosts": tripped_hosts,
         "settings": guard_status.get("settings", {}),
     }
+    if has_recon and _should_guard_safe_pivot(next_action, guard_status):
+        next_action = "guard_safe_pivot"
     pivot_hint = _build_pivot_hint(
         tripped_hosts=tripped_hosts,
         recent_guard_advisories=recent_guard_advisories,
