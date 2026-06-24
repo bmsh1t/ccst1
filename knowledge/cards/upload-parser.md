@@ -1,0 +1,55 @@
+# 上传 / 导入 / 解析器链
+
+## 适用场景
+
+- 目标支持文件上传、导入、转换、预览、解析、压缩包处理、图片处理、PDF/HTML 渲染
+- 文件内容、文件名、metadata、MIME 或外部引用参与后端处理
+- 上传后文件可被其他用户、管理员、异步任务或转换器访问
+
+## 触发信号
+
+- 参数或路径出现 upload、import、convert、preview、avatar、attachment、document、export
+- 响应中出现 processor、converter、thumbnail、ocr、metadata、scan、virus、render
+- 支持 SVG、PDF、DOCX、XLSX、ZIP、图片、HTML、Markdown、CSV 等复杂格式
+- 上传后有下载、预览、分享、管理员审核或异步处理链路
+
+## 发散问题
+
+- 服务端信任扩展名、MIME、magic bytes 还是实际内容？
+- 文件名、路径、metadata、EXIF、压缩包条目是否参与后端逻辑？
+- 上传后的文件是否在不同权限上下文中被读取或渲染？
+- 转换器是否会访问外部 URL 或本地文件？
+- 上传、预览、下载、分享是否使用同一鉴权边界？
+
+## 推荐动作
+
+- 先确认上传后处理链：存储、扫描、转换、预览、下载、分享。
+- 用最小无害样本验证解析路径，不上传炸弹、超大文件或资源耗尽样本。
+- 对下载/预览权限做 role diff。
+- 对 URL fetch、XXE、SSRF、路径穿越等二阶方向，只在证据命中时按 `rules/playbook-router.md` 路由。
+
+## 关联 Skills
+
+- `web2-recon`
+- `web2-vuln-classes`
+- `security-arsenal`
+- `triage-validation`
+
+## 停止条件
+
+- 无法控制文件内容、文件名或 metadata
+- 上传后不可触发任何处理链
+- 继续验证需要破坏性文件、资源耗尽或真实用户影响
+- 服务端稳定隔离上传、预览和下载权限
+
+## 检查要求
+
+- 禁止压缩炸弹、超大文件、解析器资源耗尽测试。
+- 禁止上传会影响真实用户或管理员的恶意内容。
+- Candidate 前必须证明处理链、权限边界和实际影响。
+
+## 可晋升经验
+
+- 某类文件格式在目标技术栈中反复触发高价值处理链
+- 某类上传后预览/下载权限反复和上传权限不一致
+- 某类解析器方向多次因红线只能记录为 Lead
