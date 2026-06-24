@@ -421,6 +421,12 @@ search/filter/sort/order, export/report, tenant/org/user IDs
 GraphQL resolver args, mobile-only API params, log-backed second-order inputs
 ```
 
+When the obvious parameters are quiet, load
+`knowledge/cards/sqli-hidden-surfaces.md` and check the less-visible inputs:
+proxy/client IP headers, path segments, and parameters borrowed from sibling
+endpoints. Treat those as hypothesis seeds; only promote them after stable
+baseline-vs-perturbation evidence.
+
 ### Type Classification
 Classify the injection shape before escalating payloads:
 

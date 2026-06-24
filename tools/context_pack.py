@@ -49,6 +49,9 @@ KNOWN_SKILL_OR_FOCUS = {
     "auth",
     "authz",
     "graphql",
+    "sqli",
+    "sql-injection",
+    "hidden-param",
     "ssrf",
     "url-fetch",
     "webhook",
@@ -68,6 +71,7 @@ CARD_PATHS = {
     "auth-access": "knowledge/cards/auth-access.md",
     "ssrf-url-fetch": "knowledge/cards/ssrf-url-fetch.md",
     "graphql": "knowledge/cards/graphql.md",
+    "sqli-hidden-surfaces": "knowledge/cards/sqli-hidden-surfaces.md",
     "upload-parser": "knowledge/cards/upload-parser.md",
     "race-conditions": "knowledge/cards/race-conditions.md",
     "coverage-prompts": "knowledge/cards/coverage-prompts.md",
@@ -78,6 +82,13 @@ TOKEN_TO_CARDS = (
     (
         re.compile(r"\b(graphql|gql|mutation|subscription|introspection|global[_-]?id)\b", re.I),
         ("graphql",),
+    ),
+    (
+        re.compile(
+            r"\b(sqli|sql[-_ ]?injection|hidden[-_ ]?param|x[-_ ]?forwarded[-_ ]?for|x[-_ ]?real[-_ ]?ip|path[-_ ]?segment)\b",
+            re.I,
+        ),
+        ("sqli-hidden-surfaces",),
     ),
     (
         re.compile(r"\b(upload|import|parser|parse|preview|convert|csv|pdf|xlsx|avatar|attachment)\b", re.I),
@@ -510,7 +521,7 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
     if re.search(r"\b(dead[-_ ]?end|stuck|no progress|plateau)\b", blob_l):
         return "bb-methodology", "目标记忆显示方向可能卡住，先用方法论 Skill 重定向。"
     if ranked.get("p1") or ranked.get("p2") or re.search(
-        r"\b(idor|auth|graphql|ssrf|upload|race|webhook|api|tenant|org|admin)\b",
+        r"\b(idor|auth|graphql|sqli|sql[-_ ]?injection|ssrf|upload|race|webhook|api|tenant|org|admin)\b",
         blob_l,
     ):
         return "web2-vuln-classes", "已有可测试的 Web/API surface 或漏洞类别信号。"
@@ -522,6 +533,8 @@ def _cards_from_focus(focus: str) -> list[str]:
     cards: list[str] = []
     if "graphql" in focus_l:
         cards.append("graphql")
+    if "sqli" in focus_l or "sql-injection" in focus_l or "hidden-param" in focus_l:
+        cards.append("sqli-hidden-surfaces")
     if "api-idor" in focus_l or "idor" in focus_l:
         cards.extend(["api-idor", "auth-access"])
     if "auth" in focus_l:
@@ -570,6 +583,12 @@ def _select_cards(
         priority.append("api-idor")
     if "auth" in focus_l:
         priority.append("auth-access")
+    if (
+        "sqli" in focus_l
+        or "sql-injection" in focus_l
+        or re.search(r"\b(sqli|sql[-_ ]?injection|x[-_ ]?forwarded[-_ ]?for|x[-_ ]?real[-_ ]?ip|hidden[-_ ]?param|path[-_ ]?segment)\b", blob, re.I)
+    ):
+        priority.append("sqli-hidden-surfaces")
     if not priority and re.search(r"\b(graphql|gql|mutation|subscription|introspection|global[_-]?id)\b", blob, re.I):
         priority.append("graphql")
     cards = _dedupe(priority + cards)
@@ -775,6 +794,11 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "GraphQL mutation / global ID / node 查询是否复用 REST 的对象权限缺口。",
         ])
+    if CARD_PATHS["sqli-hidden-surfaces"] in cards:
+        seeds.extend([
+            "SQLi 不只看显式 query/body 参数；检查 header、path segment、跨接口隐藏参数是否进入查询、日志或风控链路。",
+            "从 A 接口提取参数集喂给同业务 B 接口，每次只扰动一个参数，比较稳定的状态码、长度、错误、排序或布尔差异。",
+        ])
     if CARD_PATHS["ssrf-url-fetch"] in cards:
         seeds.extend([
             "URL fetch、webhook、import callback 是否存在 server-side fetch，可先用 allowlisted harmless URL 建模。",
@@ -816,6 +840,8 @@ def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> li
         angles.append("从 REST IDOR 横向扩展到导出、报表、批量查询、成员管理和 invite 流程。")
     if CARD_PATHS["graphql"] in cards:
         angles.append("GraphQL 无结果时检查同业务的 REST sibling endpoint、global ID 解码和前端缓存。")
+    if CARD_PATHS["sqli-hidden-surfaces"] in cards:
+        angles.append("常规参数无 SQLi 信号时，转向 Header、路径段和 JS/source-derived sibling endpoint 的隐藏参数验证。")
     if CARD_PATHS["upload-parser"] in cards:
         angles.append("上传链路无结果时转向 import URL、预览 worker、异步转换状态和权限绑定。")
     if CARD_PATHS["race-conditions"] in cards:
@@ -973,6 +999,8 @@ def _ledger_vuln_classes(cards: list[str], blob: str) -> list[str]:
         classes.append("Authz")
     if CARD_PATHS["graphql"] in cards or re.search(r"\b(graphql|mutation|subscription)\b", blob, re.I):
         classes.append("GraphQL")
+    if CARD_PATHS["sqli-hidden-surfaces"] in cards or re.search(r"\b(sqli|sql[-_ ]?injection|hidden[-_ ]?param)\b", blob, re.I):
+        classes.append("SQLi")
     if re.search(r"\b(csrf|xsrf|same[-_ ]?site|origin|referer)\b", blob, re.I):
         classes.append("CSRF")
     return _dedupe(classes)[:3] or ["IDOR", "Authz"]

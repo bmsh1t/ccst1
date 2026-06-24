@@ -18,6 +18,7 @@
 | `knowledge/cards/api-idor.md` | API 对象级越权和多租户访问控制 | `web2-vuln-classes`, `bb-methodology`, `triage-validation` |
 | `knowledge/cards/ssrf-url-fetch.md` | URL fetch、webhook、导入转换类 SSRF 思路 | `web2-vuln-classes`, `security-arsenal`, `triage-validation` |
 | `knowledge/cards/graphql.md` | GraphQL、subscription、global ID 的权限边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
+| `knowledge/cards/sqli-hidden-surfaces.md` | Header、路径段、跨接口隐藏参数等 SQLi 非显式输入面 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/upload-parser.md` | 上传、导入、转换、解析器链路 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/race-conditions.md` | 并发状态差异和 race 风险的低风险建模 | `bb-methodology`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/coverage-prompts.md` | 覆盖基线漏测提醒 | `bb-methodology`, `web2-recon`, `web2-vuln-classes` |

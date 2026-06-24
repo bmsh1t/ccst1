@@ -23,6 +23,7 @@ rules/context-loading.md
 /context-pack target.com
 /context-pack target.com api-idor
 /context-pack target.com graphql
+/context-pack target.com sqli
 /context-pack --target target.com --focus upload
 /context-pack --target target.com --focus race
 ```
@@ -148,6 +149,7 @@ CONTEXT PACK
 | `auth` | `skills/web2-vuln-classes/SKILL.md` | `auth-access`, `api-idor` |
 | `ssrf` / `url-fetch` | `skills/web2-vuln-classes/SKILL.md` | `ssrf-url-fetch` |
 | `graphql` | `skills/web2-vuln-classes/SKILL.md` | `graphql` |
+| `sqli` / `hidden-param` | `skills/web2-vuln-classes/SKILL.md` | `sqli-hidden-surfaces` |
 | `upload` | `skills/web2-vuln-classes/SKILL.md` | `upload-parser` |
 | `race` | `skills/web2-vuln-classes/SKILL.md` | `race-conditions`，并在 Required checks 保留 `rules/red-lines.md` |
 | candidate / validation | `skills/triage-validation/SKILL.md` | 相关漏洞卡 + `dead-ends` |
