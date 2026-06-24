@@ -67,3 +67,18 @@ def test_missing_parameter_discovery_is_part_of_skill_flow():
     assert "Do not bulk-enumerate real users" in web2
     assert "### Missing Parameter Signal" in bug_bounty
     assert "context-pack missing-param" in methodology
+
+
+def test_path_pattern_management_exposure_is_part_of_skill_flow():
+    runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+    recon = (REPO_ROOT / "skills" / "web2-recon" / "SKILL.md").read_text(encoding="utf-8")
+    web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
+    bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
+    methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "knowledge/cards/path-pattern-management-exposure.md" in runtime
+    assert "### Pattern-Based Directory Fuzzing" in recon
+    assert "### Management Exposure Lane" in web2
+    assert "Do not import keys into cloud panels" in web2
+    assert "### Path Pattern / Management Exposure" in bug_bounty
+    assert "context-pack path-pattern" in methodology

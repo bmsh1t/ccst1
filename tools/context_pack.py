@@ -56,6 +56,13 @@ KNOWN_SKILL_OR_FOCUS = {
     "parameter-null",
     "param-discovery",
     "api-docs",
+    "path-pattern",
+    "management-exposure",
+    "admin-panel",
+    "monitoring-console",
+    "druid",
+    "actuator",
+    "secret-leak",
     "graphql",
     "sqli",
     "sql-injection",
@@ -79,6 +86,7 @@ CARD_PATHS = {
     "auth-access": "knowledge/cards/auth-access.md",
     "auth-hidden-switches": "knowledge/cards/auth-hidden-switches.md",
     "missing-parameter-discovery": "knowledge/cards/missing-parameter-discovery.md",
+    "path-pattern-management-exposure": "knowledge/cards/path-pattern-management-exposure.md",
     "ssrf-url-fetch": "knowledge/cards/ssrf-url-fetch.md",
     "graphql": "knowledge/cards/graphql.md",
     "sqli-hidden-surfaces": "knowledge/cards/sqli-hidden-surfaces.md",
@@ -95,6 +103,13 @@ TOKEN_TO_CARDS = (
             re.I,
         ),
         ("missing-parameter-discovery",),
+    ),
+    (
+        re.compile(
+            r"\b(path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|dirsearch|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|druid|weburi|actuator|spring[-_ ]?boot[-_ ]?admin|grafana|kibana|nacos|consul|jenkins|accesskey|secretkey|secret[-_ ]?leak)\b",
+            re.I,
+        ),
+        ("path-pattern-management-exposure",),
     ),
     (
         re.compile(r"\b(graphql|gql|mutation|subscription|introspection|global[_-]?id)\b", re.I),
@@ -545,7 +560,7 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
     if re.search(r"\b(dead[-_ ]?end|stuck|no progress|plateau)\b", blob_l):
         return "bb-methodology", "目标记忆显示方向可能卡住，先用方法论 Skill 重定向。"
     if ranked.get("p1") or ranked.get("p2") or re.search(
-        r"\b(idor|auth|graphql|sqli|sql[-_ ]?injection|ssrf|upload|race|webhook|api|tenant|org|admin|missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|param[-_ ]?discovery|arjun|api[-_ ]?docs|swagger|openapi)\b",
+        r"\b(idor|auth|graphql|sqli|sql[-_ ]?injection|ssrf|upload|race|webhook|api|tenant|org|admin|missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|param[-_ ]?discovery|arjun|api[-_ ]?docs|swagger|openapi|path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|dirsearch|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|druid|weburi|actuator|accesskey|secretkey|secret[-_ ]?leak)\b",
         blob_l,
     ):
         return "web2-vuln-classes", "已有可测试的 Web/API surface 或漏洞类别信号。"
@@ -565,6 +580,16 @@ def _cards_from_focus(focus: str) -> list[str]:
         or "arjun" in focus_l
     ):
         cards.append("missing-parameter-discovery")
+    if (
+        "path-pattern" in focus_l
+        or "management-exposure" in focus_l
+        or "admin-panel" in focus_l
+        or "monitoring-console" in focus_l
+        or "druid" in focus_l
+        or "actuator" in focus_l
+        or "secret-leak" in focus_l
+    ):
+        cards.append("path-pattern-management-exposure")
     if "sqli" in focus_l or "sql-injection" in focus_l or "hidden-param" in focus_l:
         cards.append("sqli-hidden-surfaces")
     if "api-idor" in focus_l or "idor" in focus_l:
@@ -625,6 +650,21 @@ def _select_cards(
         )
     ):
         priority.append("missing-parameter-discovery")
+    if (
+        "path-pattern" in focus_l
+        or "management-exposure" in focus_l
+        or "admin-panel" in focus_l
+        or "monitoring-console" in focus_l
+        or "druid" in focus_l
+        or "actuator" in focus_l
+        or "secret-leak" in focus_l
+        or re.search(
+            r"\b(path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|dirsearch|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|druid|weburi|actuator|spring[-_ ]?boot[-_ ]?admin|grafana|kibana|nacos|consul|jenkins|accesskey|secretkey|secret[-_ ]?leak)\b",
+            blob,
+            re.I,
+        )
+    ):
+        priority.append("path-pattern-management-exposure")
     if "graphql" in focus_l:
         priority.append("graphql")
     if (
@@ -861,6 +901,11 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "`parameter is null` / `missing parameter` 只是入口信号；先从 JS/source/API docs/浏览器 XHR 构造目标特定参数词表，再低频验证响应形态差异。",
             "隐藏参数命中后只做最小影响验证：状态码、长度、字段集合、空/非空结构和自有/测试对象差异；不批量枚举真实 PII、密码、地址或 token。",
         ])
+    if CARD_PATHS["path-pattern-management-exposure"] in cards:
+        seeds.extend([
+            "目录 fuzz 先从目标已有路径命名规律生成有界词表，再验证兄弟目录和管理/监控面；不要直接扩大到无边界通用字典。",
+            "Druid/Actuator/Admin/监控面优先做只读识别和访问记录提取；疑似 access key/secret 只记录最小证据与验证计划，不接管云资源或读取真实数据。",
+        ])
     if CARD_PATHS["graphql"] in cards:
         seeds.extend([
             "GraphQL mutation / global ID / node 查询是否复用 REST 的对象权限缺口。",
@@ -913,6 +958,8 @@ def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> li
         angles.append("登录绕过无信号时，回到 JS/source/browser 找 sibling 登录端点、旧认证源和隐藏模式参数。")
     if CARD_PATHS["missing-parameter-discovery"] in cards:
         angles.append("缺参信号无结果时，回到 JS 词表、API docs schema、sibling endpoint 参数和浏览器 XHR，而不是扩大通用字典喷洒。")
+    if CARD_PATHS["path-pattern-management-exposure"] in cards:
+        angles.append("管理面没有直接漏洞时，提取只读 weburi/访问记录/配置字段反哺二次 recon，并把 secret 候选降级为最小验证线索。")
     if CARD_PATHS["graphql"] in cards:
         angles.append("GraphQL 无结果时检查同业务的 REST sibling endpoint、global ID 解码和前端缓存。")
     if CARD_PATHS["sqli-hidden-surfaces"] in cards:
@@ -1076,6 +1123,8 @@ def _ledger_vuln_classes(cards: list[str], blob: str) -> list[str]:
         classes.append("Authz")
     if CARD_PATHS["missing-parameter-discovery"] in cards or re.search(r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|param[-_ ]?discovery|arjun)\b", blob, re.I):
         classes.extend(["IDOR", "Authz"])
+    if CARD_PATHS["path-pattern-management-exposure"] in cards or re.search(r"\b(druid|actuator|admin[-_ ]?panel|management[-_ ]?console|monitoring[-_ ]?console|accesskey|secretkey|secret[-_ ]?leak)\b", blob, re.I):
+        classes.extend(["Authz", "Path"])
     if CARD_PATHS["graphql"] in cards or re.search(r"\b(graphql|mutation|subscription)\b", blob, re.I):
         classes.append("GraphQL")
     if CARD_PATHS["sqli-hidden-surfaces"] in cards or re.search(r"\b(sqli|sql[-_ ]?injection|hidden[-_ ]?param)\b", blob, re.I):

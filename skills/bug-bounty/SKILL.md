@@ -318,6 +318,20 @@ baseline error -> target-specific JS/API-doc/source wordlist -> low-rate param d
 Stop if the next step would require bulk enumeration of real users, PII,
 passwords, addresses, tokens, orders, or destructive/state-changing actions.
 
+### Path Pattern / Management Exposure
+
+When a target has patterned directories or exposed Druid/Actuator/Admin/monitor
+surfaces, load `knowledge/cards/path-pattern-management-exposure.md`.
+
+```text
+observed path pattern -> bounded target wordlist -> management baseline
+-> read-only weburi/config extraction -> secondary recon or secret Candidate
+```
+
+Do not convert this into password brute force, cloud-console import, server
+takeover, or real infrastructure enumeration. Secret-like fields require
+minimal evidence and a validation plan, not resource control.
+
 ## AI-Assisted Tools
 - **strix** (usestrix.com) -- open-source AI scanner for automated initial sweep
 

@@ -25,6 +25,7 @@ Root cause, pattern, bypass table, chaining opportunity, real paid examples.
    - API 越权 / 多租户：`knowledge/cards/api-idor.md`
    - 认证 / 角色 / 组织边界：`knowledge/cards/auth-access.md`
    - 缺参信号 / 隐藏参数发现：`knowledge/cards/missing-parameter-discovery.md`
+   - 目录命名规律 / 管理面暴露：`knowledge/cards/path-pattern-management-exposure.md`
    - URL fetch / webhook / import：`knowledge/cards/ssrf-url-fetch.md`
    - GraphQL / subscription / global ID：`knowledge/cards/graphql.md`
    - 上传 / 导入 / 解析器链：`knowledge/cards/upload-parser.md`
@@ -118,6 +119,7 @@ browser request -> raw API request without frontend state
 | WAF block page but backend behavior differs | WAF/backend mismatch; record baseline first | recon has wafw00f/unwaf signals; no dedicated mismatch tool |
 | Very long parameter or many params changes behavior | Inspection depth / parser limit mismatch | manual reasoning |
 | `missing parameter` / `parameter is null` | Missing Parameter Signal Lane, hidden param discovery | target-specific wordlist + low-rate Arjun-style grouping |
+| Druid/Actuator/Admin/monitor exposed | Management Exposure Lane, secret/config triage | read-only review + minimal secret validation plan |
 
 Rules:
 
@@ -150,6 +152,29 @@ Boundaries:
   or other sensitive data after a parameter hits.
 - Candidate requires replayable baseline-vs-candidate evidence and a clear
   authorization/object-selection or business-impact hypothesis.
+
+### Management Exposure Lane
+
+When pattern-based directory fuzzing finds Druid, Actuator, admin/monitoring
+consoles, weburi/access logs, config JSON, or access-key-like fields, load
+`knowledge/cards/path-pattern-management-exposure.md`.
+
+Flow:
+
+```text
+path pattern evidence -> bounded target wordlist -> management surface baseline
+-> read-only weburi/config extraction -> secondary recon dictionary or secret Candidate
+```
+
+Boundaries:
+
+- Do not turn an exposed login page into password brute force.
+- Default-credential checks must be tiny, justified by the product context, and
+  stopped before lockout/rate-limit risk.
+- Do not import keys into cloud panels, enumerate real infrastructure, read
+  customer data, or take over servers to prove impact.
+- Candidate requires sensitive config/secret exposure, unauthenticated access,
+  broken authz, or a replayable minimal validation path.
 
 ### Step 6: Prioritize by API Type
 

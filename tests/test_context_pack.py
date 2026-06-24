@@ -95,6 +95,21 @@ def test_missing_parameter_focus_routes_to_discovery_card(tmp_path):
     assert any("批量枚举真实 PII" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_path_pattern_focus_routes_to_management_exposure_card(tmp_path):
+    _seed_recon(tmp_path, "target.com", [
+        "https://www.target.com/wq1/login.html",
+        "https://www.target.com/ax1/druid/login.html",
+        "https://www.target.com/ax1/druid/weburi.json",
+    ])
+
+    pack = build_context_pack(tmp_path, target="target.com", focus="path-pattern management-exposure")
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"][0] == "knowledge/cards/path-pattern-management-exposure.md"
+    assert any("目录 fuzz" in seed or "Druid/Actuator" in seed for seed in pack["hypothesis_seeds"])
+    assert any("不接管云资源" in seed for seed in pack["hypothesis_seeds"])
+
+
 def test_context_pack_surfaces_actor_matrix_gaps(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/accounts/42/export?account_id=42",

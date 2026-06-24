@@ -183,6 +183,7 @@ Google Dorks -> JS file download -> Hidden param discovery -> API mapping
 | Live subdomains with tech stack | Phase 2 (Mapping) |
 | Known software (WordPress, Jira) | Check CVEs + defaults immediately |
 | Cloud resources (S3, Firebase) | Test permissions (read/write/list) |
+| Path naming pattern or management console | Load `knowledge/cards/path-pattern-management-exposure.md`, generate bounded target wordlist, then do read-only management exposure triage |
 | Nothing after 5 min on a host | Skip, try next host (5-minute rule) |
 
 **Command**: `/recon target.com`
@@ -222,6 +223,8 @@ What input are you testing?
 |   -> SQLi, NoSQLi probing
 +-- Missing/Null parameter signal
 |   -> Load knowledge/cards/missing-parameter-discovery.md; build JS/API-doc target wordlist; verify low-risk response-shape diff
++-- Path pattern / management console
+|   -> Load knowledge/cards/path-pattern-management-exposure.md; bounded directory words; read-only weburi/config/secret triage
 +-- SQLi obvious params quiet but API/header/path/sibling endpoints exist
 |   -> Load knowledge/cards/sqli-hidden-surfaces.md, then test header/path/hidden-param lanes
 +-- URL input / webhook / PDF gen
@@ -373,6 +376,7 @@ Every 20 minutes ask yourself: **"Am I making progress?"**
 | Mapping: JS code | Download -> `jsluice` -> VS Code/Cursor grep | Extract -> static analysis -> AI-assisted taint analysis |
 | Mapping: Dorks | Manual Google Dorks | Custom per-target queries find what automation misses |
 | Discovery: Fuzz | `ffuf -ac` + `cewl` custom wordlist | Auto-calibrate filtering + target-specific words beat generic lists |
+| Discovery: Path pattern | `context-pack path-pattern` + bounded target wordlist | Reuse target naming conventions and management-surface records instead of generic spray |
 | Discovery: XSS | `kxss` -> `dalfox` | Filter (which params reflect?) -> scan (only reflective params) |
 | Discovery: SQLi | `ghauri` | Modern blind SQLi on ID-like parameters |
 | Discovery: Hidden SQLi surface | `context-pack sqli` + manual replay | Header/path/sibling hidden params before heavier tools |

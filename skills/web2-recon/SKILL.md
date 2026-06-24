@@ -16,6 +16,7 @@ Full asset discovery from nothing to a prioritized URL list ready for hunting.
 3. 需要补漏时读取 `knowledge/index.md` 和相关知识卡：
    - API / 身份边界：`knowledge/cards/api-idor.md`, `knowledge/cards/auth-access.md`
    - 缺参信号 / 隐藏参数发现：`knowledge/cards/missing-parameter-discovery.md`
+   - 目录命名规律 / 管理面暴露：`knowledge/cards/path-pattern-management-exposure.md`
    - URL fetch / webhook / import：`knowledge/cards/ssrf-url-fetch.md`
    - GraphQL / subscription：`knowledge/cards/graphql.md`
    - 上传 / 导入 / 转换：`knowledge/cards/upload-parser.md`
@@ -275,6 +276,23 @@ ffuf -request /tmp/req.txt \
      -ac \
      -t 10
 ```
+
+### Pattern-Based Directory Fuzzing
+
+当目标路径、子系统或目录名出现 `wq1`、`ax1`、`app01`、`admin-v2`
+这类可归纳模式时，加载 `knowledge/cards/path-pattern-management-exposure.md`。
+
+Recon 阶段只生成有界目标词表和只读线索：
+
+```text
+1. 提取已有路径分段、短码模式、JS/历史 URL/访问记录里的词。
+2. 限制长度、字符集、数量和速率，优先验证目标风格的兄弟目录。
+3. 命中 Druid/Actuator/Admin/监控面时，只记录标题、认证状态、只读 JSON 和版本线索。
+4. 从 weburi/访问记录/配置字段提取二次 recon 字典，不访问状态改变路径。
+```
+
+不要把管理面登录页转成默认口令爆破；疑似 access key/secret 只进入最小证据
+和验证计划，不导入云管平台、不接管资源。
 
 ---
 
