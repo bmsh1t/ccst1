@@ -1,0 +1,159 @@
+"""Regression tests for minimal browser evidence capture."""
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import browser_evidence
+
+
+def test_capture_browser_evidence_writes_summary_and_last_pointer(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        calls.append(cmd)
+        stdout = ""
+        if "requests" in cmd:
+            stdout = json.dumps(
+                {
+                    "requests": [
+                        {
+                            "url": "https://target.local/api/me?account_id=123",
+                            "method": "GET",
+                            "resourceType": "xhr",
+                        },
+                        {
+                            "request": {
+                                "url": "https://target.local/graphql",
+                                "method": "POST",
+                                "postData": {"text": '{"query":"mutation Invite($user_id:ID!){invite(user_id:$user_id){id}}"}'},
+                            },
+                            "type": "fetch",
+                        },
+                        "https://target.local/static/app.js",
+                    ]
+                }
+            )
+        elif "console" in cmd:
+            stdout = json.dumps([{"type": "log", "text": "ready"}])
+        elif "cookie-list" in cmd:
+            stdout = json.dumps([{"name": "sid", "value": "redacted"}])
+        elif "localstorage-list" in cmd:
+            stdout = json.dumps({"theme": "dark"})
+        elif "sessionstorage-list" in cmd:
+            stdout = json.dumps({"step": "1"})
+        elif "snapshot" in cmd:
+            stdout = "Page URL: https://target.local/app\nSnapshot: ok\n"
+        elif "state-save" in cmd:
+            Path(cmd[-1]).write_text(json.dumps({"cookies": []}), encoding="utf-8")
+        elif "screenshot" in cmd:
+            filename_arg = next(item for item in cmd if item.startswith("--filename="))
+            Path(filename_arg.split("=", 1)[1]).write_bytes(b"fake-png")
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
+
+    summary = browser_evidence.capture_browser_evidence(
+        "target.local",
+        "https://target.local/app",
+        label="unit",
+        evidence_root=tmp_path / "evidence",
+    )
+
+    summary_path = Path(summary["summary_path"])
+    pointer_path = tmp_path / "evidence" / "target.local" / "browser" / "last-capture.json"
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+
+    assert summary_path.is_file()
+    assert pointer_path.is_file()
+    assert saved_summary["counts"]["requests"] == 3
+    assert saved_summary["counts"]["console"] == 1
+    assert saved_summary["counts"]["browser_xhr_endpoints"] == 2
+    assert saved_summary["counts"]["browser_api_endpoints"] == 2
+    assert saved_summary["counts"]["browser_params"] == 3
+    assert saved_summary["artifacts"]["snapshot_txt"].endswith("snapshot.txt")
+    assert saved_summary["capture_screenshot"] is False
+    assert "screenshot_png" not in saved_summary["artifacts"]
+    assert saved_summary["browser_surface"]["counts"]["xhr_endpoints"] == 2
+    assert pointer["summary_path"] == str(summary_path)
+    assert pointer["request_count"] == 3
+    assert pointer["browser_api_count"] == 2
+
+    recon_browser = tmp_path / "recon" / "target.local" / "browser"
+    assert (recon_browser / "xhr_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
+        "https://target.local/api/me?account_id=123",
+        "https://target.local/graphql",
+    ]
+    assert (recon_browser / "api_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
+        "https://target.local/api/me?account_id=123",
+        "https://target.local/graphql",
+    ]
+    assert (recon_browser / "browser_params.txt").read_text(encoding="utf-8").splitlines() == [
+        "https://target.local/api/me?account_id=123 :: account_id",
+        "https://target.local/graphql :: user_id",
+        "https://target.local/graphql :: query",
+    ]
+    assert json.loads((recon_browser / "forms.json").read_text(encoding="utf-8"))["status"] == "placeholder"
+
+    command_args = [cmd[2:] for cmd in calls]
+    assert ["goto", "https://target.local/app"] in command_args
+    assert ["--raw", "snapshot"] in command_args
+    assert ["--raw", "requests"] in command_args
+    assert ["--raw", "console"] in command_args
+    assert any(args[0] == "state-save" and args[1].endswith("state.json") for args in command_args)
+    assert not any(
+        args[0] == "screenshot" and args[1].startswith("--filename=") and args[1].endswith("screenshot.png")
+        for args in command_args
+    )
+
+
+def test_capture_browser_evidence_can_capture_screenshot_when_requested(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        calls.append(cmd)
+        if "state-save" in cmd:
+            Path(cmd[-1]).write_text(json.dumps({"cookies": []}), encoding="utf-8")
+        if "screenshot" in cmd:
+            filename_arg = next(item for item in cmd if item.startswith("--filename="))
+            Path(filename_arg.split("=", 1)[1]).write_bytes(b"fake-png")
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
+
+    summary = browser_evidence.capture_browser_evidence(
+        "target.local",
+        "https://target.local/app",
+        label="unit",
+        evidence_root=tmp_path / "evidence",
+        capture_screenshot=True,
+    )
+
+    command_args = [cmd[2:] for cmd in calls]
+    assert summary["capture_screenshot"] is True
+    assert summary["artifacts"]["screenshot_png"].endswith("screenshot.png")
+    assert any(
+        args[0] == "screenshot" and args[1].startswith("--filename=") and args[1].endswith("screenshot.png")
+        for args in command_args
+    )
+
+
+def test_load_last_browser_evidence_returns_compact_linkage(monkeypatch, tmp_path):
+    monkeypatch.setattr(browser_evidence.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="[]", stderr=""))
+
+    summary = browser_evidence.capture_browser_evidence(
+        "target.local",
+        "https://target.local/",
+        label="last",
+        evidence_root=tmp_path / "evidence",
+    )
+
+    linkage = browser_evidence.load_last_browser_evidence(
+        "target.local",
+        evidence_root=tmp_path / "evidence",
+    )
+
+    assert linkage["dir"] == summary["evidence_dir"]
+    assert linkage["summary_path"] == summary["summary_path"]
+    assert linkage["url"] == "https://target.local/"
