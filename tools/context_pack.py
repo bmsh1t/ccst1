@@ -52,6 +52,10 @@ KNOWN_SKILL_OR_FOCUS = {
     "hidden-login",
     "login-bypass",
     "ato",
+    "missing-param",
+    "parameter-null",
+    "param-discovery",
+    "api-docs",
     "graphql",
     "sqli",
     "sql-injection",
@@ -74,6 +78,7 @@ CARD_PATHS = {
     "api-idor": "knowledge/cards/api-idor.md",
     "auth-access": "knowledge/cards/auth-access.md",
     "auth-hidden-switches": "knowledge/cards/auth-hidden-switches.md",
+    "missing-parameter-discovery": "knowledge/cards/missing-parameter-discovery.md",
     "ssrf-url-fetch": "knowledge/cards/ssrf-url-fetch.md",
     "graphql": "knowledge/cards/graphql.md",
     "sqli-hidden-surfaces": "knowledge/cards/sqli-hidden-surfaces.md",
@@ -84,6 +89,13 @@ CARD_PATHS = {
 }
 
 TOKEN_TO_CARDS = (
+    (
+        re.compile(
+            r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|required[-_ ]?param(?:eter)?|param[-_ ]?discovery|arjun|api[-_ ]?docs|v3/api-docs|swagger|openapi)\b",
+            re.I,
+        ),
+        ("missing-parameter-discovery",),
+    ),
     (
         re.compile(r"\b(graphql|gql|mutation|subscription|introspection|global[_-]?id)\b", re.I),
         ("graphql",),
@@ -533,7 +545,7 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
     if re.search(r"\b(dead[-_ ]?end|stuck|no progress|plateau)\b", blob_l):
         return "bb-methodology", "目标记忆显示方向可能卡住，先用方法论 Skill 重定向。"
     if ranked.get("p1") or ranked.get("p2") or re.search(
-        r"\b(idor|auth|graphql|sqli|sql[-_ ]?injection|ssrf|upload|race|webhook|api|tenant|org|admin)\b",
+        r"\b(idor|auth|graphql|sqli|sql[-_ ]?injection|ssrf|upload|race|webhook|api|tenant|org|admin|missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|param[-_ ]?discovery|arjun|api[-_ ]?docs|swagger|openapi)\b",
         blob_l,
     ):
         return "web2-vuln-classes", "已有可测试的 Web/API surface 或漏洞类别信号。"
@@ -545,6 +557,14 @@ def _cards_from_focus(focus: str) -> list[str]:
     cards: list[str] = []
     if "graphql" in focus_l:
         cards.append("graphql")
+    if (
+        "missing-param" in focus_l
+        or "parameter-null" in focus_l
+        or "param-discovery" in focus_l
+        or "api-docs" in focus_l
+        or "arjun" in focus_l
+    ):
+        cards.append("missing-parameter-discovery")
     if "sqli" in focus_l or "sql-injection" in focus_l or "hidden-param" in focus_l:
         cards.append("sqli-hidden-surfaces")
     if "api-idor" in focus_l or "idor" in focus_l:
@@ -592,6 +612,19 @@ def _select_cards(
         cards.append("coverage-prompts")
     focus_l = focus.lower()
     priority: list[str] = []
+    if (
+        "missing-param" in focus_l
+        or "parameter-null" in focus_l
+        or "param-discovery" in focus_l
+        or "api-docs" in focus_l
+        or "arjun" in focus_l
+        or re.search(
+            r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|required[-_ ]?param(?:eter)?|param[-_ ]?discovery|arjun|api[-_ ]?docs|v3/api-docs|swagger|openapi)\b",
+            blob,
+            re.I,
+        )
+    ):
+        priority.append("missing-parameter-discovery")
     if "graphql" in focus_l:
         priority.append("graphql")
     if (
@@ -823,6 +856,11 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "登录接口是否存在 UI 未传但后端读取的隐藏认证参数，能切换 SSO/LDAP/SOAP/test/mock/skip 等认证分支。",
             "只用自有或测试账号做 baseline 与单变量隐藏参数差异，不做密码爆破、OTP 爆破或真实用户登录尝试。",
         ])
+    if CARD_PATHS["missing-parameter-discovery"] in cards:
+        seeds.extend([
+            "`parameter is null` / `missing parameter` 只是入口信号；先从 JS/source/API docs/浏览器 XHR 构造目标特定参数词表，再低频验证响应形态差异。",
+            "隐藏参数命中后只做最小影响验证：状态码、长度、字段集合、空/非空结构和自有/测试对象差异；不批量枚举真实 PII、密码、地址或 token。",
+        ])
     if CARD_PATHS["graphql"] in cards:
         seeds.extend([
             "GraphQL mutation / global ID / node 查询是否复用 REST 的对象权限缺口。",
@@ -873,6 +911,8 @@ def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> li
         angles.append("从 REST IDOR 横向扩展到导出、报表、批量查询、成员管理和 invite 流程。")
     if CARD_PATHS["auth-hidden-switches"] in cards:
         angles.append("登录绕过无信号时，回到 JS/source/browser 找 sibling 登录端点、旧认证源和隐藏模式参数。")
+    if CARD_PATHS["missing-parameter-discovery"] in cards:
+        angles.append("缺参信号无结果时，回到 JS 词表、API docs schema、sibling endpoint 参数和浏览器 XHR，而不是扩大通用字典喷洒。")
     if CARD_PATHS["graphql"] in cards:
         angles.append("GraphQL 无结果时检查同业务的 REST sibling endpoint、global ID 解码和前端缓存。")
     if CARD_PATHS["sqli-hidden-surfaces"] in cards:
@@ -1034,6 +1074,8 @@ def _ledger_vuln_classes(cards: list[str], blob: str) -> list[str]:
         classes.append("Authz")
     if CARD_PATHS["auth-hidden-switches"] in cards or re.search(r"\b(login[-_ ]?bypass|account[-_ ]?takeover|ato|hidden[-_ ]?login)\b", blob, re.I):
         classes.append("Authz")
+    if CARD_PATHS["missing-parameter-discovery"] in cards or re.search(r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|param[-_ ]?discovery|arjun)\b", blob, re.I):
+        classes.extend(["IDOR", "Authz"])
     if CARD_PATHS["graphql"] in cards or re.search(r"\b(graphql|mutation|subscription)\b", blob, re.I):
         classes.append("GraphQL")
     if CARD_PATHS["sqli-hidden-surfaces"] in cards or re.search(r"\b(sqli|sql[-_ ]?injection|hidden[-_ ]?param)\b", blob, re.I):

@@ -23,6 +23,7 @@ rules/context-loading.md
 /context-pack target.com
 /context-pack target.com api-idor
 /context-pack target.com auth-hidden
+/context-pack target.com missing-param
 /context-pack target.com graphql
 /context-pack target.com sqli
 /context-pack --target target.com --focus upload
@@ -149,6 +150,7 @@ CONTEXT PACK
 | `api-idor` | `skills/web2-vuln-classes/SKILL.md` | `api-idor`, `auth-access` |
 | `auth` | `skills/web2-vuln-classes/SKILL.md` | `auth-access`, `api-idor` |
 | `auth-hidden` / `login-bypass` | `skills/web2-vuln-classes/SKILL.md` | `auth-hidden-switches`, `auth-access` |
+| `missing-param` / `parameter-null` | `skills/web2-vuln-classes/SKILL.md` | `missing-parameter-discovery` |
 | `ssrf` / `url-fetch` | `skills/web2-vuln-classes/SKILL.md` | `ssrf-url-fetch` |
 | `graphql` | `skills/web2-vuln-classes/SKILL.md` | `graphql` |
 | `sqli` / `hidden-param` | `skills/web2-vuln-classes/SKILL.md` | `sqli-hidden-surfaces` |

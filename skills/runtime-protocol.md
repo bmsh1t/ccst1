@@ -67,6 +67,7 @@ knowledge/index.md
 - API / 多租户 / 对象 ID：`knowledge/cards/api-idor.md`
 - 认证 / 角色 / 组织边界：`knowledge/cards/auth-access.md`
 - 隐藏认证参数 / 登录分支开关：`knowledge/cards/auth-hidden-switches.md`
+- 缺参信号 / 隐藏参数发现：`knowledge/cards/missing-parameter-discovery.md`
 - URL fetch / webhook / import：`knowledge/cards/ssrf-url-fetch.md`
 - GraphQL / subscription / global ID：`knowledge/cards/graphql.md`
 - SQLi 非显式输入面：`knowledge/cards/sqli-hidden-surfaces.md`

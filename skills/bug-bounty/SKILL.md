@@ -304,6 +304,20 @@ ffuf -w subs.txt -u https://FUZZ.target.com -ac
 # -o results.json      Save output
 ```
 
+### Missing Parameter Signal
+
+When an endpoint returns `missing parameter`, `parameter is null`, or
+`required parameter`, load `knowledge/cards/missing-parameter-discovery.md`
+instead of treating the error as a finding.
+
+```text
+baseline error -> target-specific JS/API-doc/source wordlist -> low-rate param discovery
+-> response-shape diff -> minimal own/test-object validation
+```
+
+Stop if the next step would require bulk enumeration of real users, PII,
+passwords, addresses, tokens, orders, or destructive/state-changing actions.
+
 ## AI-Assisted Tools
 - **strix** (usestrix.com) -- open-source AI scanner for automated initial sweep
 

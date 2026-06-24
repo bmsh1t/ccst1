@@ -24,6 +24,7 @@ Root cause, pattern, bypass table, chaining opportunity, real paid examples.
 3. 知识库调用表：
    - API 越权 / 多租户：`knowledge/cards/api-idor.md`
    - 认证 / 角色 / 组织边界：`knowledge/cards/auth-access.md`
+   - 缺参信号 / 隐藏参数发现：`knowledge/cards/missing-parameter-discovery.md`
    - URL fetch / webhook / import：`knowledge/cards/ssrf-url-fetch.md`
    - GraphQL / subscription / global ID：`knowledge/cards/graphql.md`
    - 上传 / 导入 / 解析器链：`knowledge/cards/upload-parser.md`
@@ -116,6 +117,7 @@ browser request -> raw API request without frontend state
 | `Origin: null` or simple-request difference | CORS triage | `vuln_scanner.sh` / `zero_day_fuzzer.py` partial |
 | WAF block page but backend behavior differs | WAF/backend mismatch; record baseline first | recon has wafw00f/unwaf signals; no dedicated mismatch tool |
 | Very long parameter or many params changes behavior | Inspection depth / parser limit mismatch | manual reasoning |
+| `missing parameter` / `parameter is null` | Missing Parameter Signal Lane, hidden param discovery | target-specific wordlist + low-rate Arjun-style grouping |
 
 Rules:
 
@@ -126,6 +128,28 @@ Rules:
 4. Do not invoke state-changing writes just to prove a bypass.
 5. Escalate into the matching section/tool; do not start broad payload spraying.
 ```
+
+### Missing Parameter Signal Lane
+
+When an endpoint is reachable but returns `missing parameter`,
+`parameter is null`, `required parameter`, or API-doc-derived empty parameter
+errors, load `knowledge/cards/missing-parameter-discovery.md`.
+
+Flow:
+
+```text
+baseline缺参响应 -> JS/source/API docs/browser XHR 目标词表 -> 低频候选参数收敛
+-> 单参数响应形态差异 -> 自有/测试对象最小影响验证 -> Signal/Candidate/Dead end
+```
+
+Boundaries:
+
+- Do not promote the error string itself to Candidate.
+- Do not use generic large dictionaries before target-specific words.
+- Do not bulk-enumerate real users, PII, passwords, addresses, tokens, orders,
+  or other sensitive data after a parameter hits.
+- Candidate requires replayable baseline-vs-candidate evidence and a clear
+  authorization/object-selection or business-impact hypothesis.
 
 ### Step 6: Prioritize by API Type
 

@@ -15,6 +15,7 @@ Full asset discovery from nothing to a prioritized URL list ready for hunting.
 2. Recon 结果用于形成 surface、lead 和 next action，不直接宣称漏洞成立。
 3. 需要补漏时读取 `knowledge/index.md` 和相关知识卡：
    - API / 身份边界：`knowledge/cards/api-idor.md`, `knowledge/cards/auth-access.md`
+   - 缺参信号 / 隐藏参数发现：`knowledge/cards/missing-parameter-discovery.md`
    - URL fetch / webhook / import：`knowledge/cards/ssrf-url-fetch.md`
    - GraphQL / subscription：`knowledge/cards/graphql.md`
    - 上传 / 导入 / 转换：`knowledge/cards/upload-parser.md`
@@ -224,6 +225,24 @@ python3 ~/tools/LinkFinder/linkfinder.py -i "https://target.com" -d -o cli
 
 deactivate
 ```
+
+### Missing Parameter Signal / Target-Specific Params
+
+当 SPA 路由、JS endpoint、API docs 或 Spring Boot 风格路径返回
+`missing parameter`、`parameter is null`、`required parameter` 等缺参信号时，
+加载 `knowledge/cards/missing-parameter-discovery.md`。
+
+Recon 阶段只产出候选材料，不把缺参错误当漏洞：
+
+```text
+1. 记录 baseline：URL、方法、认证状态、状态码、长度和缺参错误体。
+2. 从 JS/source/API docs/browser XHR/sibling endpoint 提取目标词表。
+3. 将词表写为 lead/next action，交给 web2-vuln-classes 低频验证。
+4. 若需要 Arjun 类工具，只用目标词表和限速策略，避免通用大字典喷洒。
+```
+
+如果响应疑似进入真实用户数据面，停止在最小证据和 Candidate 线索，不做批量
+枚举、导出或保存敏感数据。
 
 ---
 

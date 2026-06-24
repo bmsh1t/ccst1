@@ -78,6 +78,23 @@ def test_auth_hidden_focus_routes_to_hidden_switch_card(tmp_path):
     assert any("隐藏认证参数" in seed or "自有或测试账号" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_missing_parameter_focus_routes_to_discovery_card(tmp_path):
+    _seed_recon(tmp_path, "target.com", [
+        "https://api.target.com/orgapi/selectuser",
+        "https://api.target.com/orgapi/..;/v3/api-docs",
+    ])
+
+    pack = build_context_pack(tmp_path, target="target.com", focus="missing-param parameter-null")
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"][0] == "knowledge/cards/missing-parameter-discovery.md"
+    assert any(
+        "parameter is null" in seed or "目标特定参数词表" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
+    assert any("批量枚举真实 PII" in seed for seed in pack["hypothesis_seeds"])
+
+
 def test_context_pack_surfaces_actor_matrix_gaps(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/accounts/42/export?account_id=42",

@@ -17,6 +17,7 @@
 | `knowledge/cards/auth-access.md` | 认证、会话、角色、组织边界的发散问题 | `bb-methodology`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/auth-hidden-switches.md` | 登录隐藏参数、认证分支开关和低风险 ATO 验证思路 | `web2-vuln-classes`, `bb-methodology`, `triage-validation` |
 | `knowledge/cards/api-idor.md` | API 对象级越权和多租户访问控制 | `web2-vuln-classes`, `bb-methodology`, `triage-validation` |
+| `knowledge/cards/missing-parameter-discovery.md` | `parameter is null` / 缺参响应驱动的隐藏参数发现与低风险验证 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/ssrf-url-fetch.md` | URL fetch、webhook、导入转换类 SSRF 思路 | `web2-vuln-classes`, `security-arsenal`, `triage-validation` |
 | `knowledge/cards/graphql.md` | GraphQL、subscription、global ID 的权限边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/sqli-hidden-surfaces.md` | Header、路径段、跨接口隐藏参数等 SQLi 非显式输入面 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |

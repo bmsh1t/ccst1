@@ -52,3 +52,18 @@ def test_hidden_auth_switches_are_part_of_skill_flow():
     assert "Do not default to password brute force" in web2
     assert "### Path 8: Hidden Auth Switches" in bug_bounty
     assert "context-pack auth-hidden" in methodology
+
+
+def test_missing_parameter_discovery_is_part_of_skill_flow():
+    runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+    recon = (REPO_ROOT / "skills" / "web2-recon" / "SKILL.md").read_text(encoding="utf-8")
+    web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
+    bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
+    methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "knowledge/cards/missing-parameter-discovery.md" in runtime
+    assert "### Missing Parameter Signal / Target-Specific Params" in recon
+    assert "### Missing Parameter Signal Lane" in web2
+    assert "Do not bulk-enumerate real users" in web2
+    assert "### Missing Parameter Signal" in bug_bounty
+    assert "context-pack missing-param" in methodology
