@@ -1,0 +1,240 @@
+---
+description: Validate a report candidate — runs the 7-Question Gate + 4-gate checklist. Rejects weak candidates before report writing. Prevents N/A submissions that hurt validity ratio. Usage: /validate
+---
+
+# /validate
+
+Run full validation on the current finding before writing a report.
+
+## Use When
+
+- A Lead/Signal has become a real Candidate
+- You are preparing to write or queue a report
+- You need a strict PASS / KILL / DOWNGRADE decision instead of more exploration
+
+## Do Not Use When
+
+- You are still broad-hunting and only have weak hypotheses
+- You need recon, ranking, or enrichment rather than report gating
+- The only evidence is code reading or intuition without a replayable request
+
+## Inputs
+
+- Candidate endpoint, vuln class, impact claim, and reproduction details
+- Exact request/response or browser/OOB evidence when available
+- `findings/<target>/findings.json` and `--finding-id` linkage when present
+- Current target/runtime context from repo-local config and disk artifacts
+
+## Outputs
+
+- Validation decision and reasoning
+- `validation-summary.json`
+- Updated finding linkage/status when launched from `findings.json`
+- Updated runtime state so `/pickup` / `/surface` / autopilot know validation progress
+
+## Artifacts Written
+
+- `findings/<target>/validation-summary.json` or equivalent report-local summary
+- `findings/last-validate.json`
+- `findings/<target>/findings.json` status updates when applicable
+- `state/<target>/session.json`
+
+## Resume Source
+
+- Structured finding linkage from `findings/<target>/findings.json`
+- Latest validation summary if this finding was already partially validated
+- PASS cases hand off to `/report`; non-PASS cases hand off back to hunt with a
+  concrete next evidence step
+
+Use `/validate` when a Lead or Signal has become a Candidate, or when preparing
+`/report`. It is a strict pre-report/pre-submit gate, not a hunt-phase
+kill-switch for raw leads, anomalies, hypotheses, or chain seeds.
+
+## Target-Driven Validation
+
+Validation uses the supplied target as the active target record. External
+bounty metadata is optional context, not an execution gate. For local / CTF /
+lab targets, use challenge/lab rules and observed behavior, keep validation
+moving when `scope_snapshot.json` is absent, and treat write-up quality fields
+as report controls rather than execution blockers.
+
+If `config.json` sets `ctf_mode: true`, keep Gate 2 fully relaxed and do not
+reintroduce external scope/program confirmation for this run.
+
+## What This Does
+
+1. Runs the 7-Question Gate (one wrong answer = reject the report path)
+2. Checks against the always-rejected list
+3. Runs 4 pre-submission gates
+4. Calculates and records validation context where applicable
+5. Outputs: PASS (write the report), KILL (do not report), or DOWNGRADE (impact not strong enough)
+
+## Usage
+
+```
+/validate
+```
+
+## Claude Code CLI Browser-State Priority
+
+During validation, prove that a real user can reproduce the behavior in the
+current state:
+
+- Browser-dependent findings should use `playwright-cli` first to reproduce the flow, observe state changes, and capture evidence.
+- Exact non-browser requests can use `curl` / `urllib` / local helpers for lightweight replay.
+- Burp/Caido history is auxiliary replay and comparison context; missing Burp/Caido should not block validation.
+
+Reproducibility and evidence quality matter here; external policy text and
+metadata still remain optional report-writing context, not execution blockers.
+
+When a scanner finding index exists, use the finding id from
+`findings/<target>/findings.json` to prefill the interactive validation context:
+
+```bash
+python3 tools/validate.py --findings-dir findings/target.com --finding-id sqli_abc123
+```
+
+For a quick candidate list, read `findings/<target>/findings.json` directly or
+rebuild it with:
+
+```bash
+python3 tools/finding_index.py findings/target.com
+```
+
+When validation finishes, `validation-summary.json` keeps the linkage back to
+the scanner candidate when available:
+
+- `finding_id`
+- `finding_source_file`
+- `finding_summary`
+
+This lets `/report`, `/remember --from-validate`, and later review steps trace
+the validated issue back to the original scanner evidence without reparsing the
+raw finding files.
+
+The matching item in `findings.json` is also updated with `validation_status`
+and `validation_summary` when validation was launched with `--finding-id`.
+Subsequent `/surface` or direct `findings.json` review shows the
+validation/report status for each structured candidate.
+
+Describe the finding when prompted. Include:
+- The endpoint
+- The bug class
+- What the PoC shows
+- The target program
+- The exact request/response evidence if available
+
+If you already ran `/validate` and it passed, `/report` can use the latest validation summary as report context.
+
+## The 7-Question Gate
+
+Answer each. ONE wrong answer = STOP the report path.
+
+### Q1: Can I demonstrate this step-by-step RIGHT NOW?
+
+Write this out:
+```
+1. Setup:   I need [own account / another user's ID / no account]
+2. Request: [exact HTTP method, URL, headers, body]
+3. Result:  Response shows [exact data / action completed]
+4. Impact:  Real consequence is [account takeover / PII exposed / money stolen]
+5. Effort:  Preconditions are [auth/no-auth/role/object ID], with [single request / multi-step flow]
+```
+
+If step 2 is "I need to look at the code more" → do not report it yet.
+
+### Q2: Is the impact clearly demonstrated?
+
+Use observed exploitability, reproduced behavior, and practical impact. Public
+accepted-impact lists are optional context, not a validation gate.
+
+### Q3: Is the vulnerable asset tied to the supplied target context?
+
+Use the provided target, IP, CIDR, primary-domain batch list, or exact URL as the working
+target context. External policy notes are optional context, not validation
+gates.
+
+### Q4: Does it need admin or privileged access that an attacker can't get?
+
+"Admin can do X" → DO NOT REPORT.
+"Regular user can do X that only admin should" → valid.
+
+### Q5: Is this known or documented behavior?
+
+Search disclosed reports + changelog + API docs.
+
+### Q6: Can you prove impact beyond "technically possible"?
+
+- XSS → actual cookie value in exfil request, not just alert()
+- SSRF → response body from internal service, not just DNS callback
+- IDOR → actual other-user's private data in response, not just 200 status
+
+### Q7: Is this on the never-submit list?
+
+```
+Missing headers, GraphQL introspection alone, clickjacking without PoC,
+self-XSS, open redirect alone, SSRF DNS-only, logout CSRF, banner disclosure,
+rate limit on non-critical forms, missing cookie flags alone...
+```
+
+If yes → do not report it unless you have a proven chain.
+
+## Check: Conditionally Valid?
+
+If it's on the never-submit list, can you chain it?
+
+| You Have | Chain Available? |
+|---|---|
+| Open redirect | + OAuth code theft → ATO? |
+| SSRF DNS-only | + internal service data? |
+| Clickjacking | + sensitive action + PoC? |
+| CORS wildcard | + credentialed data exfil? |
+| Prompt injection | + IDOR → other user's data? |
+
+If no chain → do not report it. If chain confirmed → report the proven chain.
+
+## 4 Gates — All Must Pass
+
+**Gate 0 (30 sec):**
+```
+[ ] Confirmed with real HTTP requests (not just code reading)
+[ ] Tied to the supplied target context
+[ ] Reproducible from scratch
+[ ] Evidence captured
+```
+
+**Gate 1 — Impact (2 min):**
+```
+[ ] Can answer "What does attacker walk away with?"
+[ ] More than "sees non-sensitive data"
+[ ] Real victim exists
+[ ] No unlikely preconditions
+```
+
+**Gate 2 — Dedup (5 min):**
+```
+[ ] Searched HackerOne Hacktivity for endpoint + bug class
+[ ] Searched GitHub issues
+[ ] Read 5 most recent disclosed reports
+[ ] Not in changelog as known issue
+```
+
+**Gate 3 — Report quality (10 min):**
+```
+[ ] Title formula: [Class] in [Endpoint] allows [actor] to [impact]
+[ ] Steps have exact HTTP request
+[ ] Evidence shows actual impact
+[ ] CVSS calculated
+```
+
+## Output
+
+**PASS:** "All 7 questions pass. All 4 gates pass. Proceed to /report."
+
+**KILL:** "Q[N] fails because [reason]. Do not report this candidate. Reason: [explanation]. Move on or demote with the next evidence action."
+
+**DOWNGRADE:** "Q6 only shows technical possibility. Downgrade from High to Medium. Requires showing actual data exfil in PoC."
+
+<!-- Adversarial self-review (`--self-review` on `agent.py`, B12c) is a
+     local-Ollama runtime extension; see `agent.py` + `tools/self_review.py`
+     + `tools/red_team_worker.py` for the runtime contract. -->
