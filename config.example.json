@@ -1,0 +1,28 @@
+{
+  "ctf_mode": false,
+  "chaos_api_key": "YOUR_PROJECTDISCOVERY_CHAOS_API_KEY",
+  "h1_api_token": "YOUR_HACKERONE_API_TOKEN",
+  "output_dir": "./findings",
+  "recon_dir": "./recon",
+  "reports_dir": "./reports",
+  "nuclei_severity": ["critical", "high", "medium"],
+  "katana_depth": 3,
+  "ffuf_threads": 40,
+  "interactsh_server": "oast.pro",
+
+  "_brain_comment": "可用 BRAIN_PROVIDER 强制指定 LLM provider；未指定时按已配置的 API key 自动探测。",
+  "_brain_providers": {
+    "ollama": "OLLAMA_HOST=http://localhost:11434，本地免费",
+    "groq": "GROQ_API_KEY=...，Groq OpenAI-compatible API",
+    "deepseek": "DEEPSEEK_API_KEY=...，DeepSeek chat/reasoner",
+    "cerebras": "CEREBRAS_API_KEY=...，Cerebras 快速推理",
+    "gemini": "GEMINI_API_KEY=...，Google Gemini OpenAI-compatible endpoint",
+    "kimi": "MOONSHOT_API_KEY=...，Kimi / Moonshot",
+    "mistral": "MISTRAL_API_KEY=...，Mistral / Codestral",
+    "together": "TOGETHER_API_KEY=...，Together AI 云端模型",
+    "perplexity": "PERPLEXITY_API_KEY=...，Perplexity sonar",
+    "claude": "ANTHROPIC_API_KEY=...，Claude",
+    "openai": "OPENAI_API_KEY=...，OpenAI",
+    "grok": "XAI_API_KEY=...，xAI Grok"
+  }
+}
