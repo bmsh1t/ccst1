@@ -427,6 +427,24 @@ proxy/client IP headers, path segments, and parameters borrowed from sibling
 endpoints. Treat those as hypothesis seeds; only promote them after stable
 baseline-vs-perturbation evidence.
 
+### SQLi Lane Flow
+
+执行 SQLi lane 时按以下顺序推进，不要只跑显式 query/body 参数后就结束：
+
+```text
+1. 显式输入面：query、body、JSON、cookie、search/filter/sort/order。
+2. 隐藏输入面：加载 knowledge/cards/sqli-hidden-surfaces.md。
+3. Header lane：只读请求中检查代理/IP/UA/Referer 等可能进入日志、风控或审计 SQL 的 header。
+4. Path lane：逐段检查 path segment，不只测 URL 尾部参数。
+5. Hidden-param lane：从 A 接口提取参数集，喂给同业务 sibling endpoint B，每次只扰动一个参数。
+6. 确认：baseline -> syntax perturbation -> boolean diff -> error/DBMS fingerprint；time/OOB 仅在必要时低频使用。
+7. 写回：把 tested-clean、blocked、dead-end、Candidate 或 Validated Finding 写入 Evidence Ledger / target memory。
+```
+
+任何隐藏输入面信号都必须回到证据闭环：可 replay 请求、稳定对照差异、
+影响说明和停止条件。不要把单次 500、WAF 拦截、路由 404 或不稳定延迟当成
+Candidate。
+
 ### Type Classification
 Classify the injection shape before escalating payloads:
 

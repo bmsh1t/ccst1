@@ -68,6 +68,7 @@ knowledge/index.md
 - 认证 / 角色 / 组织边界：`knowledge/cards/auth-access.md`
 - URL fetch / webhook / import：`knowledge/cards/ssrf-url-fetch.md`
 - GraphQL / subscription / global ID：`knowledge/cards/graphql.md`
+- SQLi 非显式输入面：`knowledge/cards/sqli-hidden-surfaces.md`
 - 上传 / 导入 / 解析器链：`knowledge/cards/upload-parser.md`
 - Race / 并发状态差异：`knowledge/cards/race-conditions.md`
 - 覆盖缺口：`knowledge/cards/coverage-prompts.md`

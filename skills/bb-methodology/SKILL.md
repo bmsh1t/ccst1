@@ -219,6 +219,8 @@ What input are you testing?
 |   -> IDOR checklist
 +-- Search/filter/sort field
 |   -> SQLi, NoSQLi probing
++-- SQLi obvious params quiet but API/header/path/sibling endpoints exist
+|   -> Load knowledge/cards/sqli-hidden-surfaces.md, then test header/path/hidden-param lanes
 +-- URL input / webhook / PDF gen
 |   -> SSRF checklist
 +-- Text field reflected in page
@@ -368,6 +370,7 @@ Every 20 minutes ask yourself: **"Am I making progress?"**
 | Discovery: Fuzz | `ffuf -ac` + `cewl` custom wordlist | Auto-calibrate filtering + target-specific words beat generic lists |
 | Discovery: XSS | `kxss` -> `dalfox` | Filter (which params reflect?) -> scan (only reflective params) |
 | Discovery: SQLi | `ghauri` | Modern blind SQLi on ID-like parameters |
+| Discovery: Hidden SQLi surface | `context-pack sqli` + manual replay | Header/path/sibling hidden params before heavier tools |
 | Discovery: SSRF | `interactsh-client` | Self-hosted OOB listener for blind SSRF/XXE/RCE |
 | Discovery: WAF | `wafw00f` | Identify WAF vendor and baseline filtering behavior |
 | Exploit: 403 | `byp4xx` or `nomore403` | 20+ bypass techniques automated |

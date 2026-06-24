@@ -23,3 +23,18 @@ def test_triage_validation_keeps_seven_question_gate_shape():
     assert "7-Question Gate" in text
     assert "### Q7b: Verify the identity boundary" in text
     assert "### Q8:" not in text
+
+
+def test_hidden_sqli_surfaces_are_part_of_skill_flow():
+    runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+    web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
+    bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
+    methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "knowledge/cards/sqli-hidden-surfaces.md" in runtime
+    assert "### SQLi Lane Flow" in web2
+    assert "Header lane" in web2
+    assert "Path lane" in web2
+    assert "Hidden-param lane" in web2
+    assert "knowledge/cards/sqli-hidden-surfaces.md" in bug_bounty
+    assert "Hidden SQLi surface" in methodology

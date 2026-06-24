@@ -720,6 +720,18 @@ location.href = userInput
 
 ## SQL Injection
 
+### Skill Flow
+
+常规参数没有信号时，不要直接结束 SQLi lane。切到
+`knowledge/cards/sqli-hidden-surfaces.md`，按以下顺序补隐藏输入面：
+
+```text
+explicit params -> header inputs -> path segments -> sibling hidden params -> stable confirmation
+```
+
+只在出现稳定 baseline-vs-perturbation 差异后进入工具化验证；单次报错、
+WAF/路由差异或不稳定延迟只记录为 Signal / Dead End。
+
 ### Detection
 ```bash
 # Single quote test
