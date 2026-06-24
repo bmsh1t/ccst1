@@ -348,6 +348,58 @@ def _next_proposals(
     return _dedupe(proposals)[:5]
 
 
+def _classify_next_action(text: str) -> tuple[str, int, str]:
+    """把 checkpoint 的自然语言建议归类成 Claude 可消费的执行队列。"""
+    value = str(text or "").strip()
+    lowered = value.lower()
+    if "run /validate" in lowered:
+        return "validation", 100, "/validate"
+    if "draft report" in lowered:
+        return "report", 95, "/report"
+    if "review context contradiction" in lowered:
+        return "context-review", 90, "/context-pack"
+    if "run /recon" in lowered:
+        return "recon", 85, "/recon"
+    if "actor matrix gap" in lowered:
+        return "actor-gap", 80, "focused replay + tools/evidence_ledger.py record"
+    if "high-value matrix gap" in lowered:
+        return "coverage-gap", 75, "focused low-risk probe + evidence ledger"
+    if "run enrichment run_browser_probe" in lowered:
+        return "browser-enrichment", 70, "browser/playwright probe, then /surface"
+    if "run enrichment run_source_intel" in lowered:
+        return "source-enrichment", 70, "python3 tools/source_intel.py"
+    if "run enrichment run_js_read" in lowered:
+        return "js-enrichment", 70, "python3 tools/js_reader.py"
+    if "continue top ranked surface" in lowered:
+        return "ranked-surface", 60, "focused hunt on ranked P1/P2 surface"
+    return "next-action", 50, "execute the smallest safe evidence-producing step"
+
+
+def _build_next_action_queue(next_items: list[str]) -> list[dict]:
+    queue: list[dict] = []
+    for idx, item in enumerate(next_items, 1):
+        action_type, priority, command_hint = _classify_next_action(item)
+        redline_required = any(
+            token in item.lower()
+            for token in ("red-line", "state", "mutation", "unsafe", "role", "actor")
+        )
+        queue.append({
+            "id": f"A{idx}",
+            "priority": priority,
+            "type": action_type,
+            "status": "ready",
+            "action": item,
+            "command_hint": command_hint,
+            "redline_required": redline_required,
+            "stop_condition": (
+                "record tested_clean, blocked, dead-end, candidate, or validated finding "
+                "before moving to the next queued action"
+            ),
+        })
+    queue.sort(key=lambda item: (-int(item["priority"]), str(item["id"])))
+    return queue
+
+
 def _dead_end_proposals(state: dict, coverage_gaps: list[dict]) -> list[str]:
     if state.get("has_recon") and not coverage_gaps:
         stats = _surface_stats(state)
@@ -530,6 +582,7 @@ def build_checkpoint(
     decision = _decide(state, gaps, actor_gaps)
     lead = _lead_proposals(state, context)
     next_items = _next_proposals(state, gaps, resolved_target, context, evidence_summary)
+    next_action_queue = _build_next_action_queue(next_items)
     dead_ends = _dead_end_proposals(state, gaps)
     handoff = _handoff_summary(
         target=resolved_target,
@@ -581,6 +634,8 @@ def build_checkpoint(
             "dead_end": dead_ends,
             "handoff": handoff,
         },
+        "next_action_queue": next_action_queue,
+        "recommended_executable_action": next_action_queue[0] if next_action_queue else {},
         "commands": _write_back_commands(resolved_target, lead, next_items, dead_ends, handoff),
         "retrospect": f"/retrospect {resolved_target}",
         "apply_status": "not applied; rerun with --apply-target-memory to write target memory",
@@ -621,6 +676,25 @@ def _fmt_nested(items: list[str]) -> list[str]:
     if not items:
         return ["    - none"]
     return [f"    - {item}" for item in items]
+
+
+def _fmt_action_queue(items: list[dict]) -> list[str]:
+    if not items:
+        return ["  - none"]
+    lines: list[str] = []
+    for item in items[:5]:
+        redline = " red-line-first" if item.get("redline_required") else ""
+        lines.append(
+            "  - {id} [{type} p{priority}{redline}] {action} | hint: {hint}".format(
+                id=item.get("id", ""),
+                type=item.get("type", ""),
+                priority=item.get("priority", ""),
+                redline=redline,
+                action=item.get("action", ""),
+                hint=item.get("command_hint", ""),
+            )
+        )
+    return lines
 
 
 def format_checkpoint(checkpoint: dict) -> str:
@@ -667,6 +741,10 @@ def format_checkpoint(checkpoint: dict) -> str:
         ]),
         "  - record commands:",
         *_fmt_nested(evidence.get("record_commands", [])[:3]),
+        "- Next action queue:",
+        *_fmt_action_queue(checkpoint.get("next_action_queue", [])),
+        "- Recommended executable action:",
+        f"  - {((checkpoint.get('recommended_executable_action') or {}).get('action') or 'none')}",
         "- Target write-back:",
         "  - lead:",
         *_fmt_nested(write_back.get("lead", [])),

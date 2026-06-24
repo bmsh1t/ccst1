@@ -1187,6 +1187,21 @@ def test_autopilot_command_md_uses_checkpoint_tool_for_writeback():
     assert "apply target memory only when the operator wants automatic write-back" in text
 
 
+def test_autopilot_command_md_requires_next_action_queue_consumption():
+    """Autopilot should consume checkpoint/memory queues instead of stopping at suggestions."""
+    from pathlib import Path
+
+    md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
+    text = md.read_text(encoding="utf-8")
+
+    assert "## Next Action Consumption Loop" in text
+    assert "recommended_executable_action" in text
+    assert "next_action_queue" in text
+    assert "Memory action queue" in text
+    assert "If coverage is near 0%" in text
+    assert "do not end with only" in text
+
+
 def test_autopilot_command_md_finish_is_invariant_check_not_checklist():
     """Phase 2 PR-7: '## Finish Pre-checklist' (7 mandatory checkboxes
     that gated finish behind a tool run set) is replaced with

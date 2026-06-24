@@ -92,6 +92,9 @@ class TestAutopilotState:
         assert "Hypothesis: org_id may be user-controlled" in output
         assert "/api/org/{id}/users" in output
         assert "run role_diff with two owned accounts" in output
+        assert state["memory_action_queue"]
+        assert state["memory_action_queue"][0]["command_hint"] == "role/object diff with low-risk replay"
+        assert "Memory action queue:" in output
         assert "continue org API role diff" in output
 
     def test_host_list_relative_target_reuses_saved_memory_and_guard_state(self, tmp_path, monkeypatch):

@@ -66,6 +66,8 @@ def test_checkpoint_prioritizes_pending_validation(tmp_path):
     assert checkpoint["decision"] == "validate"
     assert checkpoint["structured_findings"]["pending_validation"] == 1
     assert any("F-1" in item for item in checkpoint["target_write_back"]["next"])
+    assert checkpoint["recommended_executable_action"]["type"] == "validation"
+    assert checkpoint["recommended_executable_action"]["command_hint"] == "/validate"
 
 
 def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
@@ -81,6 +83,9 @@ def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
         "Cover high-value matrix gap" in item
         for item in checkpoint["target_write_back"]["next"]
     )
+    assert checkpoint["next_action_queue"]
+    assert any(item["type"] == "coverage-gap" for item in checkpoint["next_action_queue"])
+    assert checkpoint["recommended_executable_action"]["status"] == "ready"
     assert (tmp_path / "evidence" / "target.com" / "coverage_matrix.json").is_file()
 
 
@@ -108,8 +113,11 @@ def test_checkpoint_surfaces_actor_matrix_gaps(tmp_path):
         "Cover actor matrix gap" in item
         for item in checkpoint["target_write_back"]["next"]
     )
+    assert any(item["type"] == "actor-gap" for item in checkpoint["next_action_queue"])
     assert "Evidence ledger:" in output
     assert "actor matrix gaps:" in output
+    assert "Next action queue:" in output
+    assert "Recommended executable action:" in output
 
 
 def test_checkpoint_surfaces_context_contradictions(tmp_path):

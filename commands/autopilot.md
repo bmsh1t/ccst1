@@ -47,6 +47,52 @@ Automatic behavior:
    handoff notes through target memory. Use `/retrospect` at finish to decide
    whether experience should be promoted to knowledge, Skills, or Rules.
 
+## Next Action Consumption Loop
+
+`/autopilot` must consume queued next actions before finishing. A checkpoint or
+surface summary that contains `Next Actions`, `next_action_queue`, target-memory
+next actions, high-value coverage gaps, or actor-matrix gaps is not a final
+answer by itself.
+
+Startup sequence:
+
+```bash
+python3 tools/context_pack.py --target target.com
+python3 tools/autopilot_state.py --target target.com
+python3 tools/checkpoint.py --target target.com --json
+```
+
+Then choose the first safe item from `recommended_executable_action`,
+`next_action_queue`, or `Memory action queue` and execute the smallest
+evidence-producing step. After the step:
+
+1. Record the result as tested-clean, blocked, dead-end, Candidate, or
+   Validated Finding.
+2. Rebuild or inspect coverage when the action touched a high-value endpoint.
+3. Rerun checkpoint and consume the next queued action unless a stop condition
+   is met.
+
+Stop conditions:
+
+- A red-line rule blocks the next action and no lower-risk evidence path exists.
+- Required auth/session/material is missing and cannot be derived safely.
+- A Candidate needs operator-provided credentials, business context, or manual
+  validation.
+- `--normal` has completed a related batch and checkpoint explains remaining
+  gaps.
+- `--deep` has completed the Deep Exhaustion Checklist.
+- The operator stops the run.
+
+Exit discipline:
+
+- If coverage is near 0% or high-value gaps remain, do not end with only
+  "saved to target memory" or "continue later". Continue consuming the queue or
+  state the concrete blocker.
+- Do not pad progress with repeated scans. A consumed action must add, confirm,
+  disprove, block, or record target evidence.
+- Apply target memory only when the operator wants automatic write-back:
+  `python3 tools/checkpoint.py --target target.com --apply-target-memory`.
+
 `python3 tools/context_pack.py --target <target>` is the Claude CLI context
 navigator for this startup sequence. Run it before broad reading so the session
 loads one main Skill, 1-2 knowledge cards, red-line checks, coverage checks, and

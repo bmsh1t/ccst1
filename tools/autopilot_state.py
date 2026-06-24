@@ -559,6 +559,48 @@ def _build_enrichment_hints(
     return next_tool_hint, hints
 
 
+def _memory_action_hint(text: str) -> str:
+    lowered = str(text or "").lower()
+    if "/validate" in lowered or "validate" in lowered:
+        return "/validate"
+    if "/report" in lowered or "report" in lowered:
+        return "/report"
+    if "/recon" in lowered or "recon" in lowered:
+        return "/recon"
+    if "browser" in lowered or "xhr" in lowered:
+        return "browser/playwright probe, then /surface"
+    if "postman" in lowered or "leak" in lowered:
+        return "review leak artifact, record evidence, then /surface"
+    if "oauth" in lowered or "redirect_uri" in lowered:
+        return "focused OAuth replay with red-line check"
+    if "idor" in lowered or "auth" in lowered or "role" in lowered:
+        return "role/object diff with low-risk replay"
+    return "execute smallest safe evidence-producing step"
+
+
+def _build_memory_action_queue(target_goal_memory: dict) -> list[dict]:
+    target_memory = target_goal_memory.get("target") or {}
+    entries = target_memory.get("next_actions") or []
+    if not isinstance(entries, list):
+        return []
+
+    queue: list[dict] = []
+    for idx, item in enumerate(entries[-5:], 1):
+        if isinstance(item, dict):
+            text = str(item.get("text", "") or "").strip()
+        else:
+            text = str(item or "").strip()
+        if not text:
+            continue
+        queue.append({
+            "id": f"M{idx}",
+            "source": "target_memory",
+            "action": text,
+            "command_hint": _memory_action_hint(text),
+        })
+    return queue
+
+
 def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = None) -> dict:
     """Build a practical autopilot bootstrap state for a target."""
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
@@ -628,6 +670,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         repo_source_available=repo_source_available,
         next_action=next_action,
     )
+    memory_action_queue = _build_memory_action_queue(target_goal_memory)
 
     return {
         "target": target,
@@ -651,6 +694,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "next_action": next_action,
         "next_tool_hint": next_tool_hint,
         "enrichment_hints": enrichment_hints,
+        "memory_action_queue": memory_action_queue,
         "resume_targets": resume_targets,
         "recommended_targets": recommended_targets,
         "recent_guard_advisories": recent_guard_advisories[:3],
@@ -723,6 +767,14 @@ def format_autopilot_state(state: dict) -> str:
             lines.append("Repo source: available — use read_repo_source_summary")
         if active_goal_memory or target_memory:
             lines.extend(_format_target_goal_memory_lines(active_goal_memory, target_memory))
+        memory_action_queue = state.get("memory_action_queue") or []
+        if memory_action_queue:
+            lines.append("Memory action queue:")
+            for item in memory_action_queue[:5]:
+                lines.append(
+                    f"- {item.get('id', '-')}: {item.get('action', '')} "
+                    f"| hint: {item.get('command_hint', '')}"
+                )
         lines.append(f"Next: {_describe_next_step(state)}")
         guard_hint = str(state.get("guard_hint", "") or "").strip()
         if guard_hint:
@@ -778,6 +830,14 @@ def format_autopilot_state(state: dict) -> str:
                 lines.append(f"- {tool}: {reason}")
             elif tool:
                 lines.append(f"- {tool}")
+    memory_action_queue = state.get("memory_action_queue") or []
+    if memory_action_queue:
+        lines.append("Memory action queue:")
+        for item in memory_action_queue[:5]:
+            lines.append(
+                f"- {item.get('id', '-')}: {item.get('action', '')} "
+                f"| hint: {item.get('command_hint', '')}"
+            )
 
     guard_status = state.get("guard_status", {})
     lines.append(
