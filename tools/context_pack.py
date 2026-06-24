@@ -47,7 +47,11 @@ KNOWN_SKILL_OR_FOCUS = {
     "idor",
     "api-idor",
     "auth",
+    "auth-hidden",
     "authz",
+    "hidden-login",
+    "login-bypass",
+    "ato",
     "graphql",
     "sqli",
     "sql-injection",
@@ -69,6 +73,7 @@ KNOWN_SKILL_OR_FOCUS = {
 CARD_PATHS = {
     "api-idor": "knowledge/cards/api-idor.md",
     "auth-access": "knowledge/cards/auth-access.md",
+    "auth-hidden-switches": "knowledge/cards/auth-hidden-switches.md",
     "ssrf-url-fetch": "knowledge/cards/ssrf-url-fetch.md",
     "graphql": "knowledge/cards/graphql.md",
     "sqli-hidden-surfaces": "knowledge/cards/sqli-hidden-surfaces.md",
@@ -105,6 +110,13 @@ TOKEN_TO_CARDS = (
     (
         re.compile(r"\b(auth|authz|rbac|role|session|sso|oauth|oidc|admin|member|workspace)\b", re.I),
         ("auth-access", "api-idor"),
+    ),
+    (
+        re.compile(
+            r"\b(auth[-_ ]?hidden|hidden[-_ ]?login|login[-_ ]?bypass|account[-_ ]?takeover|ato|username[-_ ]?enum|soap|ldap)\b",
+            re.I,
+        ),
+        ("auth-hidden-switches", "auth-access"),
     ),
     (
         re.compile(r"\b(idor|tenant|org|organization|account|user_id|account_id|org_id|tenant_id|order_id|invoice|export|download|report|object)\b", re.I),
@@ -537,6 +549,13 @@ def _cards_from_focus(focus: str) -> list[str]:
         cards.append("sqli-hidden-surfaces")
     if "api-idor" in focus_l or "idor" in focus_l:
         cards.extend(["api-idor", "auth-access"])
+    if (
+        "auth-hidden" in focus_l
+        or "hidden-login" in focus_l
+        or "login-bypass" in focus_l
+        or "ato" in focus_l
+    ):
+        cards.extend(["auth-hidden-switches", "auth-access"])
     if "auth" in focus_l:
         cards.extend(["auth-access", "api-idor"])
     if "ssrf" in focus_l or "url-fetch" in focus_l or "webhook" in focus_l:
@@ -581,6 +600,15 @@ def _select_cards(
         or re.search(r"\b(idor|tenant|org|account|user_id|account_id|org_id|tenant_id|order_id|invoice_id|object_id)\b", blob, re.I)
     ):
         priority.append("api-idor")
+    if (
+        "auth-hidden" in focus_l
+        or "hidden-login" in focus_l
+        or "login-bypass" in focus_l
+        or "ato" in focus_l
+        or re.search(r"\b(hidden[-_ ]?login|login[-_ ]?bypass|account[-_ ]?takeover|username[-_ ]?enum|soap|ldap)\b", blob, re.I)
+    ):
+        priority.append("auth-hidden-switches")
+        priority.append("auth-access")
     if "auth" in focus_l:
         priority.append("auth-access")
     if (
@@ -790,6 +818,11 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "同一 endpoint 在匿名、普通用户、低权限成员、管理员之间是否只有 UI 差异而缺少服务端差异。",
         ])
+    if CARD_PATHS["auth-hidden-switches"] in cards:
+        seeds.extend([
+            "登录接口是否存在 UI 未传但后端读取的隐藏认证参数，能切换 SSO/LDAP/SOAP/test/mock/skip 等认证分支。",
+            "只用自有或测试账号做 baseline 与单变量隐藏参数差异，不做密码爆破、OTP 爆破或真实用户登录尝试。",
+        ])
     if CARD_PATHS["graphql"] in cards:
         seeds.extend([
             "GraphQL mutation / global ID / node 查询是否复用 REST 的对象权限缺口。",
@@ -838,6 +871,8 @@ def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> li
         angles.append("把 JS-reader endpoint 与 source-intel route/hypothesis 交叉，优先验证两者重合的权限边界。")
     if CARD_PATHS["api-idor"] in cards:
         angles.append("从 REST IDOR 横向扩展到导出、报表、批量查询、成员管理和 invite 流程。")
+    if CARD_PATHS["auth-hidden-switches"] in cards:
+        angles.append("登录绕过无信号时，回到 JS/source/browser 找 sibling 登录端点、旧认证源和隐藏模式参数。")
     if CARD_PATHS["graphql"] in cards:
         angles.append("GraphQL 无结果时检查同业务的 REST sibling endpoint、global ID 解码和前端缓存。")
     if CARD_PATHS["sqli-hidden-surfaces"] in cards:
@@ -996,6 +1031,8 @@ def _ledger_vuln_classes(cards: list[str], blob: str) -> list[str]:
     if CARD_PATHS["api-idor"] in cards or re.search(r"\b(idor|account_id|tenant_id|org_id|user_id|order_id)\b", blob, re.I):
         classes.append("IDOR")
     if CARD_PATHS["auth-access"] in cards or re.search(r"\b(authz|rbac|role|admin|permission)\b", blob, re.I):
+        classes.append("Authz")
+    if CARD_PATHS["auth-hidden-switches"] in cards or re.search(r"\b(login[-_ ]?bypass|account[-_ ]?takeover|ato|hidden[-_ ]?login)\b", blob, re.I):
         classes.append("Authz")
     if CARD_PATHS["graphql"] in cards or re.search(r"\b(graphql|mutation|subscription)\b", blob, re.I):
         classes.append("GraphQL")

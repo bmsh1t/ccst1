@@ -65,6 +65,19 @@ def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
     assert "AI override" in output
 
 
+def test_auth_hidden_focus_routes_to_hidden_switch_card(tmp_path):
+    _seed_recon(tmp_path, "target.com", [
+        "https://manage.target.com/api/login",
+    ])
+
+    pack = build_context_pack(tmp_path, target="target.com", focus="auth-hidden login-bypass")
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"][0] == "knowledge/cards/auth-hidden-switches.md"
+    assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
+    assert any("隐藏认证参数" in seed or "自有或测试账号" in seed for seed in pack["hypothesis_seeds"])
+
+
 def test_context_pack_surfaces_actor_matrix_gaps(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/accounts/42/export?account_id=42",

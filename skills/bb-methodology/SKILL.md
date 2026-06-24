@@ -230,7 +230,7 @@ What input are you testing?
 +-- Quota / checkout / OTP / workflow state
 |   -> Business logic, race conditions
 +-- Login / 2FA / password reset
-|   -> Auth bypass
+|   -> Auth bypass; if hidden provider/username-enum signals exist, load knowledge/cards/auth-hidden-switches.md
 +-- Profile update API
 |   -> Mass Assignment
 +-- Template / wiki editor
@@ -365,6 +365,7 @@ Every 20 minutes ask yourself: **"Am I making progress?"**
 | Recon: Ports | `naabu` (wide) -> `rustscan` (deep) | Fast top-1000 sweep -> full 65535 on interesting targets |
 | Recon: Scan | `nuclei -tags cve` -> `nuclei -tags takeover` | Known CVEs first -> then takeover (act immediately) |
 | Mapping: Params | `arjun` + `paramspider` + ParamMiner | Brute-force hidden params + mine archives + cache headers |
+| Mapping: Hidden auth params | `context-pack auth-hidden` + browser/source review | Find login branch switches without credential brute force |
 | Mapping: JS code | Download -> `jsluice` -> VS Code/Cursor grep | Extract -> static analysis -> AI-assisted taint analysis |
 | Mapping: Dorks | Manual Google Dorks | Custom per-target queries find what automation misses |
 | Discovery: Fuzz | `ffuf -ac` + `cewl` custom wordlist | Auto-calibrate filtering + target-specific words beat generic lists |

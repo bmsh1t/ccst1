@@ -1280,6 +1280,18 @@ Can you link an OAuth account from a different email to an existing account?
 ### Path 7: Session Fixation
 GET /login -> note Set-Cookie session=XYZ -> Log in -> does session ID change? If not = fixation.
 
+### Path 8: Hidden Auth Switches
+Load `knowledge/cards/auth-hidden-switches.md` when login/admin/data-platform
+surfaces show username enumeration, hidden provider fields, SOAP/LDAP/SSO hints,
+or JS/source/browser evidence of non-UI login parameters.
+
+```text
+owned/test account baseline -> add one hidden auth parameter -> compare session/token/role
+```
+
+Do not turn this into default password brute force or real-user login attempts.
+Candidate requires replayable auth-state change evidence, not just error text.
+
 ## Cloud / Infra Misconfigs
 
 ### S3 / GCS / Azure Blob

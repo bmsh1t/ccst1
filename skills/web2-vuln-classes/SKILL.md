@@ -837,6 +837,28 @@ PUT /api/user/email
 - Medium: requires phishing + user interaction
 - Low: requires attacker to be MitM
 
+### Hidden Auth Switch Lane
+
+When a login/admin/data-platform surface has username enumeration, unusual
+auth-provider hints, legacy/SOAP/LDAP/SSO wording, or JS/source/browser evidence
+of hidden login parameters, load `knowledge/cards/auth-hidden-switches.md`.
+
+Flow:
+
+```text
+owned/test account baseline -> one hidden auth parameter -> response/session diff
+-> repeat with control username -> record Signal/Candidate/dead-end
+```
+
+Boundaries:
+
+- Do not default to password brute force, OTP brute force, CAPTCHA bypass, or
+  real-user login attempts.
+- Candidate requires a replayable request and an authentication-state change,
+  not just username enumeration or different error text.
+- If a response exposes credentials, tokens, or another user's session, stop at
+  minimal evidence and validate/report without expanding impact.
+
 ---
 
 ## 14. SSTI — SERVER-SIDE TEMPLATE INJECTION

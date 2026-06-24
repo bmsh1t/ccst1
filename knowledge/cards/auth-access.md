@@ -21,6 +21,7 @@
 - 邀请链接、重置链接、邮箱验证链接是否绑定目标账号和组织？
 - SSO / OAuth / SAML 流程是否存在账号绑定、state、redirect 或 email normalization 差异？
 - 403 接口是否存在方法、路径规范化、header 或后端路由差异？
+- 登录接口是否存在 UI 未传但后端读取的隐藏认证参数或认证源切换开关？如果有，转读 `knowledge/cards/auth-hidden-switches.md`。
 
 ## 推荐动作
 
