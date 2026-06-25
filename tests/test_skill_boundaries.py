@@ -55,9 +55,9 @@ def test_hidden_auth_switches_are_part_of_skill_flow():
     assert "knowledge/cards/auth-hidden-switches.md" in runtime
     assert "### Hidden Auth Switch Lane" in web2
     assert "owned/test account baseline" in web2
-    assert "Do not default to password brute force" in web2
+    assert "Do not silently fall into password brute force" in web2
     assert "skills/credential-attack/" in web2
-    assert "manual `/spray`" in web2
+    assert "controlled `/spray`" in web2
     assert "### Path 8: Hidden Auth Switches" in bug_bounty
     assert "context-pack auth-hidden" in methodology
 
@@ -98,8 +98,21 @@ def test_controlled_credential_testing_is_not_an_absolute_red_line():
 
     assert "受控口令测试不是红线" in red_lines
     assert "口令爆破、默认凭据检查、password spray 本身不是绝对红线" in red_lines
-    assert "手动流程" in red_lines
+    assert "`/autopilot`" in red_lines
+    assert "可以在证据驱动下选择该 lane" in red_lines
     assert "弱口令爆破不是绝对红线" in router
+
+
+def test_autopilot_can_select_controlled_credential_lane():
+    autopilot = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    spray = (REPO_ROOT / "commands" / "spray.md").read_text(encoding="utf-8")
+    tool_index = (REPO_ROOT / "docs" / "tool-index.md").read_text(encoding="utf-8")
+
+    assert "## Credential Lane" in autopilot
+    assert "`/autopilot` may select" in autopilot
+    assert "Password brute force, default credential checks, and password spray are not" in autopilot
+    assert "Controlled credential spray" in spray
+    assert "Credential breakthrough lane selected" in tool_index
 
 
 def test_article_derived_cards_are_native_recall_cards():

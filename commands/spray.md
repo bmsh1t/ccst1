@@ -1,10 +1,13 @@
 ---
-description: Manual password spray runner with hard operational guards — typed-hostname confirmation, lockout warning, audit log. Modes: http-form (custom login page), oauth (password grant), o365 + okta (via TREVORspray). Default delay 30min/round + 60s jitter. Usage /spray <url> --mode <mode> --users <file> --passes <file>
+description: Controlled password spray runner with hard operational guards — typed-hostname confirmation, lockout warning, audit log. Modes: http-form (custom login page), oauth (password grant), o365 + okta (via TREVORspray). Default delay 30min/round + 60s jitter. Usage /spray <url> --mode <mode> --users <file> --passes <file>
 ---
 
 # /spray
 
-Manual credential spray against an authentication endpoint. This is intentionally not part of /autopilot; read the guards section before using.
+Controlled credential spray against an authentication endpoint. `/autopilot`
+may select this lane when credential access is a reasonable breakthrough path,
+but the guardrails here still apply: concrete target, dry-run/pre-flight,
+rate/lockout review, audit log, and stop-on-hit discipline.
 
 ## Modes
 
@@ -115,7 +118,10 @@ Type 'yes' to proceed (anything else aborts): _
 
 ## Skipping confirmations
 
-`--i-understand` skips both prompts. Use it only after a clean dry-run and when you intentionally accept the lockout/rate-limit risk. The flag is a deliberate friction point.
+`--i-understand` skips both prompts. Use it only after a clean dry-run and when
+the active run has already selected the controlled credential lane, confirmed
+the exact target host, and intentionally accepts the lockout/rate-limit risk.
+The flag is a deliberate friction point.
 
 ## Audit log format
 

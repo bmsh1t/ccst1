@@ -30,7 +30,8 @@ Excluded from default routing: `ctf-crypto/`, `ctf-forensics/`,
 `ctf-writeup/`, `solve-challenge/`, XSS-heavy client-side payload references,
 DoS/ReDoS, and pure CTF flag-path material. Weak-password brute force is not
 an absolute red line, but it is excluded from this default reference router;
-use `skills/credential-attack/` or manual `/spray` when explicitly chosen.
+use `skills/credential-attack/` or controlled `/spray` when the operator or
+`/autopilot` selects the credential lane under `rules/red-lines.md`.
 
 ## Methodology / playbooks
 

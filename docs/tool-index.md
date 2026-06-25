@@ -108,7 +108,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/wordlist_engine.sh` | Manual credential-prep wordlist needed | cewler + hashcat rules into `recon/<target>/wordlists/` |
 | `tools/osint_employees.sh` | Identity surface / username candidates needed | theHarvester + username-anarchy into `recon/<target>/osint/` |
 | `tools/breach_checker.py` | Rank prepared password candidates | HIBP k-anonymity counts; sends SHA-1 prefixes only |
-| `tools/spray_orchestrator.sh` ⚠️ manual-only | Explicit manual live spray requested | typed-hostname + lockout pre-flight; not used by `/autopilot` |
+| `tools/spray_orchestrator.sh` ⚠️ controlled | Credential lane selected after prep | typed-hostname + lockout pre-flight; audit JSONL; stop-on-hit |
 
 ## 6. OAST / async (Blind vulnerabilities)
 
@@ -164,7 +164,7 @@ identity, and cloud signals without re-enumerating everything.
 | Switching back to old target | `resume.py` |
 | Want to remember a pattern | `remember.py` |
 | Login surface + need credential prep | `/wordlist-gen`, `/osint-employees`, `/breach-check` |
-| Manual live spray explicitly requested | `/spray` / `spray_orchestrator.sh` only after prep + dry-run |
+| Credential breakthrough lane selected | `/spray` / `spray_orchestrator.sh` after prep + dry-run |
 
 ---
 

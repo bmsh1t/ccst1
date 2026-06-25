@@ -1,5 +1,5 @@
 ---
-description: Generate a company-specific credential-prep wordlist for manual review or explicitly triggered spray workflows. Crawls the target website with cewler, dedups + length-filters, then applies hashcat rules to produce a ranked candidate list. Output -> recon/<target>/wordlists/. Usage /wordlist-gen <target> [--depth N] [--mode minimal|balanced|aggressive]
+description: Generate a company-specific credential-prep wordlist for review or explicitly triggered controlled spray workflows. Crawls the target website with cewler, dedups + length-filters, then applies hashcat rules to produce a ranked candidate list. Output -> recon/<target>/wordlists/. Usage /wordlist-gen <target> [--depth N] [--mode minimal|balanced|aggressive]
 ---
 
 # /wordlist-gen
@@ -28,7 +28,7 @@ Generate a company-specific password wordlist by crawling the target website and
 
 | Mode | Rule file | Rules | Use case |
 |---|---|---|---|
-| `minimal` | `top10_2025.rule` | ~10 | Cautious manual/spray prep — minimum noise per base word |
+| `minimal` | `top10_2025.rule` | ~10 | Cautious controlled spray prep — minimum noise per base word |
 | `balanced` *(default)* | `best66.rule` | ~66 | Standard prep — best signal/cost ratio |
 | `aggressive` | `OneRuleToRuleThemAll.rule` | 52,014 | **Offline cracking only** — too many candidates for spray |
 
@@ -61,7 +61,7 @@ absurdist2025    Absurdist        ABSURDIST        absurdistabsurdist
 
 ## Why this beats generic wordlists
 
-Generic password lists are noisy and easy to detect; target-specific vocabulary produces better candidates for manual review or carefully controlled testing. Company-specific wordlists succeed because employees pick passwords from their own world: product names, office cities, internal project codes, founder surnames. cewler harvests exactly those terms from the public website.
+Generic password lists are noisy and easy to detect; target-specific vocabulary produces better candidates for review or carefully controlled testing. Company-specific wordlists succeed because employees pick passwords from their own world: product names, office cities, internal project codes, founder surnames. cewler harvests exactly those terms from the public website.
 
 ## Dependencies
 
@@ -73,7 +73,7 @@ The script checks for `cewler` and `hashcat` and exits with a helpful hint if mi
 
 - **No HIBP filtering** — PR #4 will add `tools/breach_checker.py` to rank by leak prevalence.
 - **No OSINT input** — PR #3 will feed employee names, birthdays, and project codes via pydictor.
-- **No spray execution** — this command only prepares wordlists. `/spray` remains a separate manual command with pre-flight confirmation.
+- **No spray execution** — this command only prepares wordlists. `/spray` remains a separate controlled command with pre-flight confirmation.
 
 ## Underlying tool
 

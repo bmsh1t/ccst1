@@ -103,8 +103,8 @@ def log_authorization_posture(target: str) -> None:
         (
             "Authorization posture: treating the supplied target set as this run's "
             f"active authorized test scope ({target}); no repeated authorization prompts. "
-            "Pause only for ambiguous targets, unavailable credentials, report submission, "
-            "or explicit unsafe/state-changing actions."
+            "Pause only for ambiguous targets, credentials that cannot be derived through the controlled Credential Lane, "
+            "report submission, or explicit unsafe/state-changing actions."
         ),
     )
 

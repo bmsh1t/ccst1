@@ -119,9 +119,10 @@ primary-domain batch list as this run's active authorized test scope. Do not
 pause to re-ask for authorization, ownership proof, or public-program
 confirmation before routine recon, scanning, or evidence-driven hunting.
 
-Pause only for ambiguous target identity, unavailable credentials needed for the
-next step, report submission, a new out-of-surface target, or explicit
-unsafe/state-changing actions.
+Pause only for ambiguous target identity, unavailable credentials that cannot
+be derived through login-flow construction, existing artifacts, or the
+controlled Credential Lane, report submission, a new out-of-surface target, or
+explicit unsafe/state-changing actions.
 
 ## Safety Rails
 
@@ -132,7 +133,7 @@ unsafe/state-changing actions.
 5. **Local/CTF/lab compatibility**: treat localhost/private IP/CIDR/list targets as fully valid and keep external scope metadata non-applicable; list targets are primary-domain batches.
 6. **No inherited temporary skips**: skipped modules, focus lanes, excluded vulnerability classes, and `scanner_skip` are per-current-target and per-current-invocation only. A fresh target starts with only the scanner's built-in XSS lane skip; use `full=true` / `--scanner-full` when the current run must include XSS. Only the current user turn can exclude a lane.
 7. **Do not suppress order/payment lanes by keyword**: order, fulfillment, delivery, shipment, booking, payment, wallet, cart, and checkout surfaces are valid high-value lanes. Only irreversible lifecycle writes (cancel/fulfill/repush), real money movement, persistent mutation, or bulk external sends require current-turn intent.
-8. **Red lines**: never run DDoS/high-pressure traffic, destructive behavior, data modification/deletion/corruption, irreversible business actions, or target-breaking tests. If a useful lane would cross this line, record it as a manual-review Lead instead of executing it.
+8. **Red lines**: never run DDoS/high-pressure traffic, destructive behavior, data modification/deletion/corruption, irreversible business actions, or target-breaking tests. Controlled credential testing is not a red line when `rules/red-lines.md` preconditions are satisfied. If a useful lane would cross a real red line, record it as a manual-review Lead instead of executing it.
 
 ## First Three Moves
 
@@ -259,8 +260,9 @@ Use `run_vuln_scan` when the target needs broad active coverage.
 Checkpoint mode changes when you pause, not whether you act. In all modes,
 autonomously choose the next best A/B/C branch from ranked evidence. Do not ask
 the operator to pick the next branch unless the action needs report submission
-approval, a new out-of-surface host, unavailable credentials, or unsafe methods
-that need a deliberate operator decision.
+approval, a new out-of-surface host, credentials that cannot be derived through
+the controlled Credential Lane, or unsafe methods that need a deliberate
+operator decision.
 
 ### `--paranoid`
 

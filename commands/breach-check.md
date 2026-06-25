@@ -58,7 +58,7 @@ For each password in the wordlist:
 /osint-employees target.com        -> usernames.txt + personal-passwords.txt
 /breach-check ranked.txt           -> ranked-ranked.txt (HIBP-enriched, sorted by breach count)
                                        └─ filter --max-count 1000000 to drop boring generic
-manual /spray <login> --users users.txt --passes ranked-ranked.txt
+controlled /spray <login> --users users.txt --passes ranked-ranked.txt
 ```
 
 ## Output

@@ -201,7 +201,7 @@ fi
 echo ""
 echo "  Next steps:"
 echo "    - Manually review $NAMES — drop obvious false positives"
-echo "    - Combine with /wordlist-gen and /breach-check output before manual /spray:"
+echo "    - Combine with /wordlist-gen and /breach-check output before controlled /spray:"
 echo "        cat $USERNAMES > users.txt"
 echo "        cat recon/${TARGET}/wordlists/ranked.txt $PERSONAL_PW > passes.txt"
 echo "============================================="

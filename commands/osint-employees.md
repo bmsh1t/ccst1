@@ -55,8 +55,8 @@ For mature targets the default sources may return very few emails — that is st
 
 - **No LinkedIn auth scraping** — LinkedInDumper was intentionally excluded from PR #1 (requires LinkedIn account, OPSEC cost).
 - **No paid OSINT** — DeHashed, IntelX, Shodan, Censys all skipped (no API key required by default).
-- **No spray execution** — this command only prepares OSINT artifacts. `/spray` remains a separate manual command with pre-flight confirmation.
-- **No automated combining** — `usernames.txt` and `wordlists/ranked.txt` are kept separate; you manually combine before spray.
+- **No spray execution** — this command only prepares OSINT artifacts. `/spray` remains a separate controlled command with pre-flight confirmation.
+- **No automatic live attempt** — `usernames.txt` and `wordlists/ranked.txt` are kept separate until operator or `/autopilot` selects the credential lane.
 
 ## Dependencies
 

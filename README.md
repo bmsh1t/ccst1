@@ -339,7 +339,7 @@ Specialized agents, each tuned for its role:
 | **validator** | 7-Question Gate + 4-gate finding validation | Prefer Sonnet → current session fallback |
 | **chain-builder** | Systematic A-B-C exploit chaining | Prefer Sonnet → current session fallback |
 | **disclosed-researcher** | Disclosed-report pattern research and hypothesis seeds | Prefer Sonnet -> current session fallback |
-| **credential-hunter** | Credential-prep stages; stops before manual spray | Prefer Sonnet -> current session fallback |
+| **credential-hunter** | Credential-prep stages; prepares controlled spray decisions | Prefer Sonnet -> current session fallback |
 | **web3-auditor** | 10-class contract audit + Foundry PoC stubs | Prefer Sonnet -> current session fallback |
 | **token-auditor** | Meme/token contract and launch-risk review | Prefer Sonnet -> current session fallback |
 

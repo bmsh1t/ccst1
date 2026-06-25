@@ -51,9 +51,10 @@ ctf-web/client-side*.md
 XSS 大 payload、DoS/ReDoS、纯 CTF flag 路径
 ```
 
-弱口令爆破不是绝对红线，但不走本 Web playbook router 的默认利用路径；需要时
-转 `skills/credential-attack/` 或手动 `/spray`，按 `rules/red-lines.md`
-的受控口令测试边界执行。
+弱口令爆破不是绝对红线，但不走本 Web playbook router 的 payload 利用路径；
+当登录面是合理突破口或其他高价值 lane 缺乏进展时，转
+`skills/credential-attack/` / `/spray` 受控口令流程，并按
+`rules/red-lines.md` 的自主选择条件、限速、审计和停止条件执行。
 
 ## Signal → Reference → Tool
 

@@ -75,7 +75,9 @@ evidence-producing step. After the step:
 Stop conditions:
 
 - A red-line rule blocks the next action and no lower-risk evidence path exists.
-- Required auth/session/material is missing and cannot be derived safely.
+- Required auth/session/material is missing and cannot be derived safely through
+  login-flow construction, existing artifacts, or the controlled Credential
+  Lane.
 - A Candidate needs operator-provided credentials, business context, or manual
   validation.
 - If every tracked live host is cooling down or locked by request guard, do not
@@ -114,9 +116,9 @@ primary-domain batch list as this run's active authorized test scope. Do not
 pause to re-ask for authorization, ownership proof, or public-program
 confirmation before routine recon, scanning, or evidence-driven hunting.
 
-Pause only for ambiguous target identity, unavailable credentials needed for the
-next step, report submission, a new out-of-surface target, or explicit
-unsafe/state-changing actions.
+Pause only for ambiguous target identity, unavailable credentials that cannot
+be derived through the controlled Credential Lane, report submission, a new
+out-of-surface target, or explicit unsafe/state-changing actions.
 
 ## Run This First
 
@@ -198,6 +200,9 @@ After batch recon, read `recon/<list-stem>/{batch_summary.md,ai_handoff.md,surfa
    - browser SPA/login/XHR → browser/playwright capture, then rerun `/surface`.
    - exposure/API leak/cloud identity → read `recon/<target>/exposure/...` before broad scanning.
 5. **HUNT** — scanner for breadth or exact local probe for one hypothesis; prefer role/object/method/version/body diffs. After any scanner run, rerun `/surface target.com` before deciding the target is exhausted.
+   If the target exposes a credible login surface and normal high-value lanes
+   have stalled, evaluate the Credential Lane below before stopping only because
+   no authenticated session exists.
 6. **VALIDATE** — Signal → Candidate → Validated Finding only with exact replay, A/B role diff, impact proof, evidence.
 7. **REPORT** — draft only validated findings; never auto-submit.
 8. **CHECKPOINT** — run `python3 tools/checkpoint.py --target target.com`
@@ -279,6 +284,9 @@ In deep mode:
   chain it into stronger impact: data exposure, cross-tenant access,
   account/session compromise, privileged workflow reachability, or meaningful
   internal pivot.
+- When login is the only realistic path to account/session compromise, RCE,
+  privileged workflow reachability, or deeper authenticated surface, evaluate
+  controlled credential testing instead of marking auth as a blocker.
 - Prefer evidence-driven depth over random tool spray, but do not be timid. Use
   `run_vuln_scan full=true`, `run_zero_day_fuzzer deep=true`,
   `run_js_analysis`, `run_secret_hunt`, equivalent helpers, or small custom
@@ -302,6 +310,26 @@ In deep mode:
 Deep mode still preserves live-action boundaries: payment/funds/order lifecycle
 writes, unsafe methods, report submission, and state-changing mutations require
 explicit current-turn operator intent.
+
+## Credential Lane
+
+Credential testing is not a red line when it is bounded and evidence-driven.
+`/autopilot` may select `/wordlist-gen -> /breach-check -> /osint-employees ->
+/spray` when all of these are true:
+
+- Login endpoint, target host, success/failure signal, username source, and
+  password source are concrete.
+- Other high-value lanes are blocked, tested-clean, or lower value for the
+  current target state.
+- The password set is target-derived, ranked, and bounded; never use a broad
+  generic dump as the live attempt list.
+- A dry-run/pre-flight is possible and the live run has delay, jitter, lockout
+  expectation, audit log, and stop-on-hit discipline.
+- On first valid credential, stop spraying and pivot to minimal authenticated
+  validation through `/hunt`, `/surface`, or exact replay.
+
+If any precondition is missing, write a target-memory next action instead of
+silently dropping the lane or launching guesses.
 
 ## Tool Failure Discipline
 
@@ -454,6 +482,10 @@ Environment auth also supports `BBHUNT_AUTH_HEADER`; auth propagates into Python
 
 - Reports are never auto-submitted.
 - Standard/quick scanner skips XSS by default; live script/HTML injection is current-turn opt-in.
+- Password brute force, default credential checks, and password spray are not
+  absolute red lines. They are controlled high-risk actions; `/autopilot` may
+  choose them under the Credential Lane rules, with rate/lockout controls,
+  audit logging, bounded inputs, and stop-on-hit.
 - Payment, billing, refund, credit, wallet, coupon, cart, checkout, and fund-transfer surfaces are valid high-value lanes; avoid only real money movement or irreversible lifecycle changes unless explicitly intended.
 - Order/fulfillment/delivery/shipment/booking lifecycle write actions are Leads only; do not click, replay, race, or call them from `/autopilot`.
 - Mutation/state-changing operations require explicit current-turn operator intent.

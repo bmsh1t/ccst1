@@ -3151,7 +3151,7 @@ def _build_agent_system(
         )
     mode_block += (
         "- Authorization posture: the supplied target set is this run's active authorized test scope. Do not ask for repeated authorization, ownership proof, or public-program confirmation before routine recon, scanning, or evidence-driven hunting.\n"
-        "- Pause only for ambiguous target identity, unavailable credentials needed for the next step, report submission, a new out-of-surface target, or explicit unsafe/state-changing actions.\n"
+        "- Pause only for ambiguous target identity, unavailable credentials that cannot be derived through the controlled Credential Lane, report submission, a new out-of-surface target, or explicit unsafe/state-changing actions.\n"
         "- Treat the provided targets as the active execution target set for this run.\n"
         "- Read local repo config early; if it marks the run as CTF/lab or sandbox mode, treat that as authoritative for this session and do not ask for external authorization before loading the config.\n"
         "- Treat recon-discovered subdomains, live hosts, URLs, JS files, parameters, and exposure candidates under the supplied targets as part of the working target set.\n"

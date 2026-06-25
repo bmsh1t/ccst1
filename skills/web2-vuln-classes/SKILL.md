@@ -170,8 +170,9 @@ pattern evidence -> bounded target wordlist -> read-only surface baseline
 Boundaries:
 
 - Do not let this lane automatically turn an exposed login page into password
-  brute force. Record it as a credential-testing lead and switch to
-  `skills/credential-attack/` or manual `/spray` when explicitly chosen.
+  brute force. Treat it as a credential-testing lead and switch to
+  `skills/credential-attack/` or controlled `/spray` only when the operator or
+  `/autopilot` selects the credential lane under `rules/red-lines.md`.
 - Default-credential checks must be tiny, justified by the product context, and
   stopped before lockout/rate-limit risk; broader guessing belongs in the
   controlled credential workflow, not this lane.
@@ -907,10 +908,11 @@ owned/test account baseline -> one hidden auth parameter -> response/session dif
 
 Boundaries:
 
-- Do not default to password brute force, OTP brute force, CAPTCHA bypass, or
-  real-user login attempts from this lane. Password brute force is not an
-  absolute red line, but it must be routed to `skills/credential-attack/` or
-  manual `/spray` with lockout/rate controls when explicitly chosen.
+- Do not silently fall into password brute force, OTP brute force, CAPTCHA
+  bypass, or real-user login attempts from this lane. Password brute force is
+  not an absolute red line, but it must be routed to `skills/credential-attack/`
+  or controlled `/spray` with lockout/rate controls when the operator or
+  `/autopilot` selects that lane.
 - Candidate requires a replayable request and an authentication-state change,
   not just username enumeration or different error text.
 - If a response exposes credentials, tokens, or another user's session, stop at

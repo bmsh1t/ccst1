@@ -76,7 +76,7 @@ government-like, or internet-facing.
 | `skills/meme-coin-audit/` | Meme coin rug pull detection, token authority checks, bonding curve exploits, LP attacks |
 | `skills/report-writing/` | H1/Bugcrowd/Intigriti/Immunefi report templates, CVSS 4.0, human tone |
 | `skills/triage-validation/` | 7-Question Gate, 4 gates, never-submit list, conditionally valid table |
-| `skills/credential-attack/` | Credential-prep + manual spray methodology; `/autopilot` never triggers live spray |
+| `skills/credential-attack/` | Credential-prep + controlled spray methodology; `/autopilot` may select it when evidence and red-line conditions fit |
 
 ### Commands (core slash commands)
 
@@ -108,7 +108,7 @@ government-like, or internet-facing.
 | `/wordlist-gen` | `/wordlist-gen target.com [--mode minimal|balanced|aggressive]` — target-specific credential-prep wordlist |
 | `/osint-employees` | `/osint-employees target.com [--with-linkedin]` — employee/email/username OSINT artifacts |
 | `/breach-check` | `/breach-check wordlist.txt [--limit N --shuffle]` — HIBP k-anonymity ranking |
-| `/spray` | `/spray <login-url> --mode <mode> --users users.txt --passes passes.txt` — manual-only live spray with pre-flight guards |
+| `/spray` | `/spray <login-url> --mode <mode> --users users.txt --passes passes.txt` — controlled live spray with pre-flight guards |
 
 > Legacy CVE/report entrypoints remain available as compatibility paths, but `/intel` and `/report` are the primary workflows.
 
@@ -160,7 +160,7 @@ LOAD -> RANK -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDIDATES -> RE
 - `recon-ranker` — attack surface ranking from recon output + memory
 - `js-reader` — LLM-derived attack-surface hypotheses from cached JS materials
 - `token-auditor` — fast meme coin/token rug pull and security analysis
-- `credential-hunter` — runs credential-prep stages and stops before manual `/spray`
+- `credential-hunter` — runs credential-prep stages and prepares controlled `/spray` decisions
 
 ### Rules (always active)
 

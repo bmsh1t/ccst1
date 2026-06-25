@@ -331,11 +331,12 @@ observed naming pattern -> bounded target wordlist -> read-only surface baseline
 -> structured record/config extraction -> secondary recon or secret Candidate
 ```
 
-Do not convert this lane automatically into password brute force, cloud-console
-import, server takeover, or real infrastructure enumeration. Password testing is
-allowed as a separate controlled `/spray` / `credential-attack` workflow when
-explicitly chosen. Secret-like fields require minimal evidence and a validation
-plan, not resource control.
+Do not convert this lane directly into password brute force, cloud-console
+import, server takeover, or real infrastructure enumeration. Password testing
+is allowed as a separate controlled `/spray` / `credential-attack` workflow
+when the operator or `/autopilot` selects the credential lane under
+`rules/red-lines.md`. Secret-like fields require minimal evidence and a
+validation plan, not resource control.
 
 ## AI-Assisted Tools
 - **strix** (usestrix.com) -- open-source AI scanner for automated initial sweep
@@ -1329,7 +1330,8 @@ owned/test account baseline -> add one hidden auth parameter -> compare session/
 
 Do not turn this lane into default password brute force or real-user login
 attempts. Password testing is a separate controlled `/spray` /
-`credential-attack` workflow when explicitly chosen.
+`credential-attack` workflow when the operator or `/autopilot` selects the
+credential lane under `rules/red-lines.md`.
 Candidate requires replayable auth-state change evidence, not just error text.
 
 ## Cloud / Infra Misconfigs

@@ -1,6 +1,6 @@
 ---
 name: credential-attack
-description: Credential-prep and manual spray methodology — wordlist-gen + breach-check + osint-employees + manually triggered spray, mode selection (http-form / oauth / o365 / okta), rate-limit + lockout tactics, success detection, and authenticated /hunt follow-up. Use when assessing identity attack surface, preparing candidate wordlists/usernames, or recovering from common pitfalls.
+description: Credential-prep and controlled spray methodology — wordlist-gen + breach-check + osint-employees + evidence-selected spray, mode selection (http-form / oauth / o365 / okta), rate-limit + lockout tactics, success detection, and authenticated /hunt follow-up. Use when assessing identity attack surface, preparing candidate wordlists/usernames, or recovering from common pitfalls.
 ---
 
 # CREDENTIAL ATTACK PIPELINE
@@ -15,18 +15,21 @@ This skill covers WHEN to use credential prep, HOW to chain the commands, and th
 
 ## WHEN TO RUN CREDENTIAL ATTACK
 
-Credential attack is a **parallel branch** to `/hunt`, not a replacement. Both come after `/recon`:
+Credential attack is a **parallel branch** to `/hunt`, not a replacement. Both
+come after `/recon`. `/autopilot` may choose this branch when login is a
+credible breakthrough path and higher-signal web lanes are blocked or exhausted.
 
 ```
 /recon ──┬──▶ /hunt (web vuln scan)         ──┐
          │                                     ├──▶ /validate ──▶ /report
-         └──▶ /wordlist-gen → /breach-check → /osint-employees → manual /spray  ──┘
+         └──▶ /wordlist-gen → /breach-check → /osint-employees → controlled /spray ─┘
 ```
 
 **Run credential prep when:**
 - Target has a discoverable login endpoint (web form / O365 / Okta / OAuth)
 - You want identity-surface leads, candidate usernames, or target-specific password candidates
-- You can review outputs before any live authentication attempt
+- The current lane lacks a better breakthrough and you can review or
+  machine-check prep outputs before any live authentication attempt
 
 **Skip live spray when:**
 - You do not have a concrete login endpoint and success/fail signal
@@ -227,10 +230,11 @@ follow-up. Do not keep spraying just to collect more accounts.
 
 Before running `/spray` against ANY target, verify:
 
-1. **Live spray is manual-only in this project.** `/autopilot` must not trigger
-   it. Use `/wordlist-gen`, `/breach-check`, and `/osint-employees` for prep;
-   run `/spray` only as an explicit manual command with a concrete login URL,
-   usernames file, password file, and success/failure signal.
+1. **Live spray is a controlled high-risk lane, not a red line.** `/autopilot`
+   may select it when `rules/red-lines.md` conditions are satisfied: concrete
+   login URL, username source, bounded password file, success/failure signal,
+   dry-run, rate/lockout plan, audit log, and stop condition. Do not launch it
+   just because a login page exists.
 
 2. **The bundled breach check uses HIBP k-anonymity only.** It sends SHA-1 prefixes, never full passwords. Do not import plaintext breach corpora into this workflow.
 
@@ -296,7 +300,8 @@ During spray:
 - [ ] If status codes get weird (all 503, all 200), assume detection and abort
 
 After spray:
-- [ ] If hit: STOP, document the find, do NOT log in further
+- [ ] If hit: STOP spraying, document the find, then continue only with
+      minimal in-scope authenticated validation needed to prove impact
 - [ ] If no hit after N rounds: archive audit log, move on
 - [ ] If lockouts likely happened: notify program with audit log timestamps
 
@@ -368,7 +373,8 @@ When our default tool fails or you want to swap, here's the practical ladder. To
 ### Legal red lines (non-negotiable)
 
 1. **Do not use plaintext breach corpora for login attempts.** HIBP hash-prefix enrichment is the intended leak-prevalence signal.
-2. **Stop on first valid creds** — don't keep grinding for multiple hits; that's testing, not lulz.
+2. **Stop on first valid creds** — don't keep grinding for multiple hits; the
+   value is the authenticated follow-up chain, not collecting accounts.
 3. **Notify the program if lockouts happened** — proactive disclosure with audit timestamps.
 
 ---
