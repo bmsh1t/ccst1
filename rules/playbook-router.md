@@ -48,8 +48,12 @@ ctf-reverse/
 ctf-writeup/
 solve-challenge/
 ctf-web/client-side*.md
-XSS 大 payload、DoS/ReDoS、弱口令爆破、纯 CTF flag 路径
+XSS 大 payload、DoS/ReDoS、纯 CTF flag 路径
 ```
+
+弱口令爆破不是绝对红线，但不走本 Web playbook router 的默认利用路径；需要时
+转 `skills/credential-attack/` 或手动 `/spray`，按 `rules/red-lines.md`
+的受控口令测试边界执行。
 
 ## Signal → Reference → Tool
 

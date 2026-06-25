@@ -28,7 +28,9 @@ attention chain.
 Excluded from default routing: `ctf-crypto/`, `ctf-forensics/`,
 `ctf-malware/`, `ctf-misc/`, `ctf-osint/`, `ctf-pwn/`, `ctf-reverse/`,
 `ctf-writeup/`, `solve-challenge/`, XSS-heavy client-side payload references,
-DoS/ReDoS, weak-password brute force, and pure CTF flag-path material.
+DoS/ReDoS, and pure CTF flag-path material. Weak-password brute force is not
+an absolute red line, but it is excluded from this default reference router;
+use `skills/credential-attack/` or manual `/spray` when explicitly chosen.
 
 ## Methodology / playbooks
 

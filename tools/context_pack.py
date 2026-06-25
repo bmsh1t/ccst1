@@ -894,7 +894,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
     if CARD_PATHS["auth-hidden-switches"] in cards:
         seeds.extend([
             "登录接口是否存在 UI 未传但后端读取的隐藏认证参数，能切换 SSO/LDAP/SOAP/test/mock/skip 等认证分支。",
-            "只用自有或测试账号做 baseline 与单变量隐藏参数差异，不做密码爆破、OTP 爆破或真实用户登录尝试。",
+            "本 lane 只做自有/测试账号 baseline 与单变量隐藏参数差异；若转入口令爆破/密码喷洒，记录为 next action 并切到手动 /spray 或 credential-attack 受控流程。",
         ])
     if CARD_PATHS["missing-parameter-discovery"] in cards:
         seeds.extend([

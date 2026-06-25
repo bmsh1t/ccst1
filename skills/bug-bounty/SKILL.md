@@ -328,9 +328,11 @@ observed path pattern -> bounded target wordlist -> management baseline
 -> read-only weburi/config extraction -> secondary recon or secret Candidate
 ```
 
-Do not convert this into password brute force, cloud-console import, server
-takeover, or real infrastructure enumeration. Secret-like fields require
-minimal evidence and a validation plan, not resource control.
+Do not convert this lane automatically into password brute force, cloud-console
+import, server takeover, or real infrastructure enumeration. Password testing is
+allowed as a separate controlled `/spray` / `credential-attack` workflow when
+explicitly chosen. Secret-like fields require minimal evidence and a validation
+plan, not resource control.
 
 ## AI-Assisted Tools
 - **strix** (usestrix.com) -- open-source AI scanner for automated initial sweep
@@ -1317,7 +1319,9 @@ or JS/source/browser evidence of non-UI login parameters.
 owned/test account baseline -> add one hidden auth parameter -> compare session/token/role
 ```
 
-Do not turn this into default password brute force or real-user login attempts.
+Do not turn this lane into default password brute force or real-user login
+attempts. Password testing is a separate controlled `/spray` /
+`credential-attack` workflow when explicitly chosen.
 Candidate requires replayable auth-state change evidence, not just error text.
 
 ## Cloud / Infra Misconfigs

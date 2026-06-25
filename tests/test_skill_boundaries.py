@@ -50,6 +50,8 @@ def test_hidden_auth_switches_are_part_of_skill_flow():
     assert "### Hidden Auth Switch Lane" in web2
     assert "owned/test account baseline" in web2
     assert "Do not default to password brute force" in web2
+    assert "skills/credential-attack/" in web2
+    assert "manual `/spray`" in web2
     assert "### Path 8: Hidden Auth Switches" in bug_bounty
     assert "context-pack auth-hidden" in methodology
 
@@ -82,3 +84,13 @@ def test_path_pattern_management_exposure_is_part_of_skill_flow():
     assert "Do not import keys into cloud panels" in web2
     assert "### Path Pattern / Management Exposure" in bug_bounty
     assert "context-pack path-pattern" in methodology
+
+
+def test_controlled_credential_testing_is_not_an_absolute_red_line():
+    red_lines = (REPO_ROOT / "rules" / "red-lines.md").read_text(encoding="utf-8")
+    router = (REPO_ROOT / "rules" / "playbook-router.md").read_text(encoding="utf-8")
+
+    assert "受控口令测试不是红线" in red_lines
+    assert "口令爆破、默认凭据检查、password spray 本身不是绝对红线" in red_lines
+    assert "手动流程" in red_lines
+    assert "弱口令爆破不是绝对红线" in router
