@@ -19,6 +19,17 @@
 - 响应形态验证：命中候选后比较 status、length、字段集合、错误码、空/非空结构、排序/分页/过滤变化，而不是直接认定漏洞。
 - 最小影响停点：如果隐藏参数进入对象选择、授权边界或敏感数据面，停止在字段级/结构级最小证据，转 Candidate/blocked。
 
+## 候选形态示例
+
+这些只是联想种子，不是固定字典；只有缺参错误、schema、JS/source、
+浏览器流量、历史请求或业务语义支持时才优先尝试。
+
+- 身份/对象：`userId`、`accountId`、`orgId`、`tenantId`、`memberId`、`projectId`、`orderId`、`reportId`。
+- 范围/角色：`scope`、`role`、`permission`、`owner`、`group`、`department`、`region`、`channel`。
+- 筛选/状态：`status`、`type`、`category`、`source`、`keyword`、`dateRange`、`startTime`、`endTime`。
+- 调试/内部：`debug`、`preview`、`internal`、`includeDeleted`、`includeHidden`、`isAdmin`、`mode`。
+- 分页/排序：`page`、`size`、`limit`、`offset`、`sort`、`order`、`fields`、`include`。
+
 ## 默认不执行的动作
 
 - 不把具体参数名、接口名、路径绕法或框架字典作为固定流程。

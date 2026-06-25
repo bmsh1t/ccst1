@@ -19,6 +19,17 @@
 - 二阶建模：如果输入先进入日志、审计、风控、统计或报表，再在后台查询中触发差异，必须记录 store step 和 trigger step。
 - 工具化门槛：只有出现稳定 baseline-vs-perturbation 差异后，才考虑交给 sqlmap/ghauri/人工 payload 矩阵做低风险确认。
 
+## 候选形态示例
+
+这些只是联想种子，不是固定字典；只有目标材料、请求语义、JS/source、
+历史请求、相邻接口或稳定差异支持时才优先尝试。
+
+- 请求元数据：`X-Forwarded-For`、`X-Real-IP`、`Forwarded`、`User-Agent`、`Referer`、`Accept-Language`、追踪 ID、客户端版本字段。
+- 路由片段：`/user/{slug}`、`/tenant/{id}`、`/report/{type}`、`/search/{keyword}`、CMS slug、分类名、地区码、版本号。
+- sibling 参数复用：把 A 接口里的 `sort`、`order`、`status`、`type`、`orgId`、`tenantId`、`scope` 少量喂给同业务 B 接口。
+- 二阶链路：登录日志、访问审计、风控黑白名单、统计报表、搜索索引、导入预览、上传 metadata。
+- 低风险扰动形态：单引号、双单引号、括号、布尔等价扰动或编码等价扰动；必须单变量对照，不能高频 time-based。
+
 ## 默认不执行的动作
 
 - 不把具体 header、路径格式、参数名、payload 或工具选择写成必选流程。

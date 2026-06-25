@@ -19,6 +19,17 @@
 - 真实记录反哺字典：从访问记录、接口统计、日志、配置、sitemap、source map、bundle manifest、错误报告等真实记录中提取路径和参数，再做二次目录/API 发现。
 - Secret-like 字段降级处理：`accesskey` 等字段只进入最小证据、归属判断和验证计划，不直接扩大到资源接管。
 
+## 候选形态示例
+
+这些只是联想种子，不是固定字典；只有目标路径、静态资源、JS/source、
+结构化记录、标题、状态码或命名规律支持时才优先尝试。
+
+- 环境/版本：`dev`、`test`、`stg`、`uat`、`prod`、`v1`、`v2`、`old`、`new`、`legacy`。
+- 后台/内部：`admin`、`manage`、`console`、`internal`、`ops`、`operator`、`portal`、`dashboard`。
+- 监控/任务：`metrics`、`health`、`logs`、`trace`、`job`、`task`、`scheduler`、`datasource`、`connection`、`monitor`。
+- 兄弟命名：`app01/app02`、`api1/api2`、`data/manage-data`、`web/web-admin`、短码 + 数字或环境后缀。
+- 结构化源：`manifest.json`、`routes.json`、`asset-manifest.json`、`sitemap.xml`、统计 JSON、访问记录、导出 JSON、raw log。
+
 ## 默认不执行的动作
 
 - 不把具体账号口令、Burp Battering ram、云管平台导入、服务器接管、支付集群接管写成默认流程。

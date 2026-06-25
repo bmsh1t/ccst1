@@ -37,6 +37,7 @@ def test_hidden_sqli_surfaces_are_part_of_skill_flow():
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
     bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
     methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
+    card = (REPO_ROOT / "knowledge" / "cards" / "sqli-hidden-surfaces.md").read_text(encoding="utf-8")
 
     assert "knowledge/cards/sqli-hidden-surfaces.md" in runtime
     assert "### SQLi Lane Flow" in web2
@@ -44,6 +45,10 @@ def test_hidden_sqli_surfaces_are_part_of_skill_flow():
     assert "not a fixed checklist" in web2
     assert "knowledge/cards/sqli-hidden-surfaces.md" in bug_bounty
     assert "Hidden SQLi surface" in methodology
+    assert "## 候选形态示例" in card
+    assert "X-Forwarded-For" in card
+    assert "sibling 参数复用" in card
+    assert "不是固定字典" in card
 
 
 def test_hidden_auth_switches_are_part_of_skill_flow():
@@ -75,6 +80,7 @@ def test_missing_parameter_discovery_is_part_of_skill_flow():
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
     bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
     methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
+    card = (REPO_ROOT / "knowledge" / "cards" / "missing-parameter-discovery.md").read_text(encoding="utf-8")
 
     assert "knowledge/cards/missing-parameter-discovery.md" in runtime
     assert "### Missing Parameter Signal / Target-Specific Params" in recon
@@ -82,6 +88,10 @@ def test_missing_parameter_discovery_is_part_of_skill_flow():
     assert "Do not bulk-enumerate real users" in web2
     assert "### Missing Parameter Signal" in bug_bounty
     assert "context-pack missing-param" in methodology
+    assert "## 候选形态示例" in card
+    assert "tenantId" in card
+    assert "includeDeleted" in card
+    assert "不是固定字典" in card
 
 
 def test_path_pattern_management_exposure_is_part_of_skill_flow():
@@ -90,6 +100,7 @@ def test_path_pattern_management_exposure_is_part_of_skill_flow():
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
     bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
     methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
+    card = (REPO_ROOT / "knowledge" / "cards" / "path-pattern-management-exposure.md").read_text(encoding="utf-8")
 
     assert "knowledge/cards/path-pattern-management-exposure.md" in runtime
     assert "### Pattern-Based Directory Fuzzing" in recon
@@ -97,6 +108,10 @@ def test_path_pattern_management_exposure_is_part_of_skill_flow():
     assert "Do not import keys into cloud panels" in web2
     assert "### Path Pattern / Management Exposure" in bug_bounty
     assert "context-pack path-pattern" in methodology
+    assert "## 候选形态示例" in card
+    assert "manifest.json" in card
+    assert "data/manage-data" in card
+    assert "不是固定字典" in card
 
 
 def test_controlled_credential_testing_is_not_an_absolute_red_line():
