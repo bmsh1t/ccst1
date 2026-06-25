@@ -226,7 +226,7 @@ What input are you testing?
 +-- Path pattern / management console
 |   -> Load knowledge/cards/path-pattern-management-exposure.md; bounded target words; read-only structured-record/config/secret triage
 +-- SQLi obvious params quiet but API/header/path/sibling endpoints exist
-|   -> Load knowledge/cards/sqli-hidden-surfaces.md, then test header/path/hidden-param lanes
+|   -> Load knowledge/cards/sqli-hidden-surfaces.md, then enumerate target-relevant non-obvious input surfaces
 +-- URL input / webhook / PDF gen
 |   -> SSRF checklist
 +-- Text field reflected in page
@@ -236,7 +236,7 @@ What input are you testing?
 +-- Quota / checkout / OTP / workflow state
 |   -> Business logic, race conditions
 +-- Login / 2FA / password reset
-|   -> Auth bypass; if hidden provider/username-enum signals exist, load knowledge/cards/auth-hidden-switches.md
+|   -> Auth bypass; if hidden auth selector or username-enum signals exist, load knowledge/cards/auth-hidden-switches.md
 +-- Profile update API
 |   -> Mass Assignment
 +-- Template / wiki editor

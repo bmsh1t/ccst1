@@ -118,7 +118,7 @@ browser request -> raw API request without frontend state
 | `Origin: null` or simple-request difference | CORS triage | `vuln_scanner.sh` / `zero_day_fuzzer.py` partial |
 | WAF block page but backend behavior differs | WAF/backend mismatch; record baseline first | recon has wafw00f/unwaf signals; no dedicated mismatch tool |
 | Very long parameter or many params changes behavior | Inspection depth / parser limit mismatch | manual reasoning |
-| `missing parameter` / `parameter is null` | Missing Parameter Signal Lane, hidden param discovery | target-specific wordlist + low-rate Arjun-style grouping |
+| `missing parameter` / `parameter is null` | Missing Parameter Signal Lane, hidden param discovery | target-specific wordlist + low-rate response-diff grouping |
 | Management/log/config/monitor/record surface exposed | Management Exposure Lane, secret/config triage | read-only review + minimal secret validation plan |
 
 Rules:
@@ -469,27 +469,28 @@ Look beyond `?id=`. SQLi often appears wherever backend code builds a query
 from request-controlled values:
 
 ```text
-GET/POST params, JSON body, Cookie, User-Agent, Referer
-search/filter/sort/order, export/report, tenant/org/user IDs
-GraphQL resolver args, mobile-only API params, log-backed second-order inputs
+GET/POST params, JSON body, cookies/session metadata, request headers/client hints
+path/routing variables, search/filter/sort/order, export/report, tenant/org/user IDs
+GraphQL resolver args, mobile-only API params, stored/log-backed second-order inputs
 ```
 
 When the obvious parameters are quiet, load
 `knowledge/cards/sqli-hidden-surfaces.md` and check the less-visible inputs:
-proxy/client IP headers, path segments, and parameters borrowed from sibling
-endpoints. Treat those as hypothesis seeds; only promote them after stable
-baseline-vs-perturbation evidence.
+request metadata, path/routing variables, cookies, stored/log-backed inputs, and
+parameters borrowed from sibling endpoints. Treat examples as hypothesis seeds,
+not a fixed checklist; only promote them after stable baseline-vs-perturbation
+evidence.
 
 ### SQLi Lane Flow
 
-执行 SQLi lane 时按以下顺序推进，不要只跑显式 query/body 参数后就结束：
+执行 SQLi lane 时按以下证据链推进，不要只跑显式 query/body 参数后就结束：
 
 ```text
 1. 显式输入面：query、body、JSON、cookie、search/filter/sort/order。
-2. 隐藏输入面：加载 knowledge/cards/sqli-hidden-surfaces.md。
-3. Header lane：只读请求中检查代理/IP/UA/Referer 等可能进入日志、风控或审计 SQL 的 header。
-4. Path lane：逐段检查 path segment，不只测 URL 尾部参数。
-5. Hidden-param lane：从 A 接口提取参数集，喂给同业务 sibling endpoint B，每次只扰动一个参数。
+2. 非显式输入面：加载 knowledge/cards/sqli-hidden-surfaces.md，按目标架构枚举请求可控、存储后再用、或服务端转换后的输入。
+3. 示例输入面按证据选择，不是固定顺序：request-metadata/header、path/routing segment、sibling hidden 参数、cookie/session metadata、stored/log-backed second-order inputs。
+4. 每次只改变一个输入点；确认差异不是 WAF、路由、缓存或随机错误。
+5. 对二阶链路记录 store step 和 trigger step。
 6. 确认：baseline -> syntax perturbation -> boolean diff -> error/DBMS fingerprint；time/OOB 仅在必要时低频使用。
 7. 写回：把 tested-clean、blocked、dead-end、Candidate 或 Validated Finding 写入 Evidence Ledger / target memory。
 ```
@@ -893,8 +894,9 @@ PUT /api/user/email
 ### Hidden Auth Switch Lane
 
 When a login/admin/data-platform surface has username enumeration, unusual
-auth-provider hints, legacy/SOAP/LDAP/SSO wording, or JS/source/browser evidence
-of hidden login parameters, load `knowledge/cards/auth-hidden-switches.md`.
+auth-state differences, hidden mode/provider/source/channel fields, legacy or
+mobile endpoint hints, or JS/source/browser evidence of non-UI login parameters,
+load `knowledge/cards/auth-hidden-switches.md`.
 
 Flow:
 

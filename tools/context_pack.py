@@ -60,8 +60,9 @@ KNOWN_SKILL_OR_FOCUS = {
     "management-exposure",
     "admin-panel",
     "monitoring-console",
-    "druid",
-    "actuator",
+    "structured-record",
+    "raw-log",
+    "config-exposure",
     "secret-leak",
     "graphql",
     "sqli",
@@ -99,14 +100,14 @@ CARD_PATHS = {
 TOKEN_TO_CARDS = (
     (
         re.compile(
-            r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|required[-_ ]?param(?:eter)?|param[-_ ]?discovery|arjun|api[-_ ]?docs|v3/api-docs|swagger|openapi)\b",
+            r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|required[-_ ]?param(?:eter)?|schema[-_ ]?error|validator[-_ ]?error|binder[-_ ]?error|param[-_ ]?discovery|api[-_ ]?docs|swagger|openapi)\b",
             re.I,
         ),
         ("missing-parameter-discovery",),
     ),
     (
         re.compile(
-            r"\b(path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|dirsearch|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|druid|weburi|actuator|spring[-_ ]?boot[-_ ]?admin|grafana|kibana|nacos|consul|jenkins|accesskey|secretkey|secret[-_ ]?leak)\b",
+            r"\b(path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|target[-_ ]?wordlist|sibling[-_ ]?path|structured[-_ ]?record|raw[-_ ]?log|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|metrics|health|config[-_ ]?(?:exposure|page|endpoint|dump|leak)|configuration|stats|trace|datasource|accesskey|secretkey|secret[-_ ]?leak)\b",
             re.I,
         ),
         ("path-pattern-management-exposure",),
@@ -560,7 +561,7 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
     if re.search(r"\b(dead[-_ ]?end|stuck|no progress|plateau)\b", blob_l):
         return "bb-methodology", "目标记忆显示方向可能卡住，先用方法论 Skill 重定向。"
     if ranked.get("p1") or ranked.get("p2") or re.search(
-        r"\b(idor|auth|graphql|sqli|sql[-_ ]?injection|ssrf|upload|race|webhook|api|tenant|org|admin|missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|param[-_ ]?discovery|arjun|api[-_ ]?docs|swagger|openapi|path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|dirsearch|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|druid|weburi|actuator|accesskey|secretkey|secret[-_ ]?leak)\b",
+        r"\b(idor|auth|graphql|sqli|sql[-_ ]?injection|ssrf|upload|race|webhook|api|tenant|org|admin|missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|schema[-_ ]?error|validator[-_ ]?error|param[-_ ]?discovery|api[-_ ]?docs|swagger|openapi|path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|target[-_ ]?wordlist|structured[-_ ]?record|raw[-_ ]?log|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|metrics|health|config[-_ ]?(?:exposure|page|endpoint|dump|leak)|configuration|stats|trace|datasource|accesskey|secretkey|secret[-_ ]?leak)\b",
         blob_l,
     ):
         return "web2-vuln-classes", "已有可测试的 Web/API surface 或漏洞类别信号。"
@@ -577,7 +578,6 @@ def _cards_from_focus(focus: str) -> list[str]:
         or "parameter-null" in focus_l
         or "param-discovery" in focus_l
         or "api-docs" in focus_l
-        or "arjun" in focus_l
     ):
         cards.append("missing-parameter-discovery")
     if (
@@ -585,8 +585,9 @@ def _cards_from_focus(focus: str) -> list[str]:
         or "management-exposure" in focus_l
         or "admin-panel" in focus_l
         or "monitoring-console" in focus_l
-        or "druid" in focus_l
-        or "actuator" in focus_l
+        or "structured-record" in focus_l
+        or "raw-log" in focus_l
+        or "config-exposure" in focus_l
         or "secret-leak" in focus_l
     ):
         cards.append("path-pattern-management-exposure")
@@ -642,9 +643,8 @@ def _select_cards(
         or "parameter-null" in focus_l
         or "param-discovery" in focus_l
         or "api-docs" in focus_l
-        or "arjun" in focus_l
         or re.search(
-            r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|required[-_ ]?param(?:eter)?|param[-_ ]?discovery|arjun|api[-_ ]?docs|v3/api-docs|swagger|openapi)\b",
+            r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|required[-_ ]?param(?:eter)?|schema[-_ ]?error|validator[-_ ]?error|binder[-_ ]?error|param[-_ ]?discovery|api[-_ ]?docs|swagger|openapi)\b",
             blob,
             re.I,
         )
@@ -655,11 +655,12 @@ def _select_cards(
         or "management-exposure" in focus_l
         or "admin-panel" in focus_l
         or "monitoring-console" in focus_l
-        or "druid" in focus_l
-        or "actuator" in focus_l
+        or "structured-record" in focus_l
+        or "raw-log" in focus_l
+        or "config-exposure" in focus_l
         or "secret-leak" in focus_l
         or re.search(
-            r"\b(path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|dirsearch|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|druid|weburi|actuator|spring[-_ ]?boot[-_ ]?admin|grafana|kibana|nacos|consul|jenkins|accesskey|secretkey|secret[-_ ]?leak)\b",
+            r"\b(path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|target[-_ ]?wordlist|sibling[-_ ]?path|structured[-_ ]?record|raw[-_ ]?log|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|metrics|health|config[-_ ]?(?:exposure|page|endpoint|dump|leak)|configuration|stats|trace|datasource|accesskey|secretkey|secret[-_ ]?leak)\b",
             blob,
             re.I,
         )
@@ -678,7 +679,7 @@ def _select_cards(
         or "hidden-login" in focus_l
         or "login-bypass" in focus_l
         or "ato" in focus_l
-        or re.search(r"\b(hidden[-_ ]?login|login[-_ ]?bypass|account[-_ ]?takeover|username[-_ ]?enum|soap|ldap)\b", blob, re.I)
+        or re.search(r"\b(hidden[-_ ]?login|login[-_ ]?bypass|account[-_ ]?takeover|username[-_ ]?enum|auth[-_ ]?selector|auth[-_ ]?switch|hidden[-_ ]?provider|hidden[-_ ]?source|hidden[-_ ]?channel)\b", blob, re.I)
     ):
         priority.append("auth-hidden-switches")
         priority.append("auth-access")
@@ -687,7 +688,7 @@ def _select_cards(
     if (
         "sqli" in focus_l
         or "sql-injection" in focus_l
-        or re.search(r"\b(sqli|sql[-_ ]?injection|x[-_ ]?forwarded[-_ ]?for|x[-_ ]?real[-_ ]?ip|hidden[-_ ]?param|path[-_ ]?segment)\b", blob, re.I)
+        or re.search(r"\b(sqli|sql[-_ ]?injection|request[-_ ]?metadata|routing[-_ ]?segment|hidden[-_ ]?param|path[-_ ]?segment|second[-_ ]?order|log[-_ ]?backed)\b", blob, re.I)
     ):
         priority.append("sqli-hidden-surfaces")
     if not priority and re.search(r"\b(graphql|gql|mutation|subscription|introspection|global[_-]?id)\b", blob, re.I):
@@ -893,7 +894,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         ])
     if CARD_PATHS["auth-hidden-switches"] in cards:
         seeds.extend([
-            "登录接口是否存在 UI 未传但后端读取的隐藏认证参数，能切换 SSO/LDAP/SOAP/test/mock/skip 等认证分支。",
+            "登录接口是否存在 UI 未传但后端读取的隐藏认证参数、模式、来源、渠道、provider 或 feature flag，能切换认证分支。",
             "本 lane 只做自有/测试账号 baseline 与单变量隐藏参数差异；若转入口令爆破/密码喷洒，记录为 next action 并切到手动 /spray 或 credential-attack 受控流程。",
         ])
     if CARD_PATHS["missing-parameter-discovery"] in cards:
@@ -912,8 +913,8 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         ])
     if CARD_PATHS["sqli-hidden-surfaces"] in cards:
         seeds.extend([
-            "SQLi 不只看显式 query/body 参数；检查 header、path segment、跨接口隐藏参数是否进入查询、日志或风控链路。",
-            "从 A 接口提取参数集喂给同业务 B 接口，每次只扰动一个参数，比较稳定的状态码、长度、错误、排序或布尔差异。",
+            "SQLi 不只看显式 query/body 参数；按证据检查请求元数据、路由片段、cookie/session、跨接口隐藏参数或二阶输入是否进入查询、日志、审计或风控链路。",
+            "从目标材料提取高信号输入面，每次只扰动一个输入点，比较稳定的状态码、长度、错误、排序、字段集合或布尔差异。",
         ])
     if CARD_PATHS["ssrf-url-fetch"] in cards:
         seeds.extend([
@@ -955,7 +956,7 @@ def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> li
     if CARD_PATHS["api-idor"] in cards:
         angles.append("从 REST IDOR 横向扩展到导出、报表、批量查询、成员管理和 invite 流程。")
     if CARD_PATHS["auth-hidden-switches"] in cards:
-        angles.append("登录绕过无信号时，回到 JS/source/browser 找 sibling 登录端点、旧认证源和隐藏模式参数。")
+        angles.append("登录绕过无信号时，回到 JS/source/browser 找 sibling 登录端点、旧入口、移动端入口和隐藏认证分支选择器。")
     if CARD_PATHS["missing-parameter-discovery"] in cards:
         angles.append("缺参/校验信号无结果时，回到 JS/source/schema/浏览器 XHR/历史请求/表单/GraphQL/sibling endpoint/路径分段，而不是扩大通用字典喷洒。")
     if CARD_PATHS["path-pattern-management-exposure"] in cards:
@@ -963,7 +964,7 @@ def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> li
     if CARD_PATHS["graphql"] in cards:
         angles.append("GraphQL 无结果时检查同业务的 REST sibling endpoint、global ID 解码和前端缓存。")
     if CARD_PATHS["sqli-hidden-surfaces"] in cards:
-        angles.append("常规参数无 SQLi 信号时，转向 Header、路径段和 JS/source-derived sibling endpoint 的隐藏参数验证。")
+        angles.append("常规参数无 SQLi 信号时，转向目标相关的非显式输入面：请求元数据、路径/路由变量、cookie/session、JS/source-derived sibling 参数或二阶链路。")
     if CARD_PATHS["upload-parser"] in cards:
         angles.append("上传链路无结果时转向 import URL、预览 worker、异步转换状态和权限绑定。")
     if CARD_PATHS["race-conditions"] in cards:
@@ -1119,11 +1120,11 @@ def _ledger_vuln_classes(cards: list[str], blob: str) -> list[str]:
         classes.append("IDOR")
     if CARD_PATHS["auth-access"] in cards or re.search(r"\b(authz|rbac|role|admin|permission)\b", blob, re.I):
         classes.append("Authz")
-    if CARD_PATHS["auth-hidden-switches"] in cards or re.search(r"\b(login[-_ ]?bypass|account[-_ ]?takeover|ato|hidden[-_ ]?login)\b", blob, re.I):
+    if CARD_PATHS["auth-hidden-switches"] in cards or re.search(r"\b(login[-_ ]?bypass|account[-_ ]?takeover|ato|hidden[-_ ]?login|auth[-_ ]?selector|auth[-_ ]?switch)\b", blob, re.I):
         classes.append("Authz")
-    if CARD_PATHS["missing-parameter-discovery"] in cards or re.search(r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|param[-_ ]?discovery|arjun)\b", blob, re.I):
+    if CARD_PATHS["missing-parameter-discovery"] in cards or re.search(r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|required[-_ ]?param(?:eter)?|schema[-_ ]?error|validator[-_ ]?error|binder[-_ ]?error|param[-_ ]?discovery)\b", blob, re.I):
         classes.extend(["IDOR", "Authz"])
-    if CARD_PATHS["path-pattern-management-exposure"] in cards or re.search(r"\b(druid|actuator|admin[-_ ]?panel|management[-_ ]?console|monitoring[-_ ]?console|accesskey|secretkey|secret[-_ ]?leak)\b", blob, re.I):
+    if CARD_PATHS["path-pattern-management-exposure"] in cards or re.search(r"\b(path[-_ ]?pattern|admin[-_ ]?panel|management[-_ ]?console|monitoring[-_ ]?console|metrics|health|config[-_ ]?(?:exposure|page|endpoint|dump|leak)|configuration|stats|log|trace|datasource|accesskey|secretkey|secret[-_ ]?leak)\b", blob, re.I):
         classes.extend(["Authz", "Path"])
     if CARD_PATHS["graphql"] in cards or re.search(r"\b(graphql|mutation|subscription)\b", blob, re.I):
         classes.append("GraphQL")

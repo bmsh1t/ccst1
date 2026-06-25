@@ -33,9 +33,8 @@ def test_hidden_sqli_surfaces_are_part_of_skill_flow():
 
     assert "knowledge/cards/sqli-hidden-surfaces.md" in runtime
     assert "### SQLi Lane Flow" in web2
-    assert "Header lane" in web2
-    assert "Path lane" in web2
-    assert "Hidden-param lane" in web2
+    assert "示例输入面按证据选择，不是固定顺序" in web2
+    assert "not a fixed checklist" in web2
     assert "knowledge/cards/sqli-hidden-surfaces.md" in bug_bounty
     assert "Hidden SQLi surface" in methodology
 

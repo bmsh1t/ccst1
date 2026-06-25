@@ -756,11 +756,15 @@ location.href = userInput
 ### Skill Flow
 
 常规参数没有信号时，不要直接结束 SQLi lane。切到
-`knowledge/cards/sqli-hidden-surfaces.md`，按以下顺序补隐藏输入面：
+`knowledge/cards/sqli-hidden-surfaces.md`，按证据补充非显式输入面：
 
 ```text
-explicit params -> header inputs -> path segments -> sibling hidden params -> stable confirmation
+explicit params -> target-relevant non-obvious inputs -> stable confirmation
 ```
+
+非显式输入面的示例包括 request metadata/header、path/routing segment、
+cookie/session metadata、JS/source-derived sibling 参数、stored/log-backed
+二阶输入。按证据选择，不把这些示例当成固定清单。
 
 只在出现稳定 baseline-vs-perturbation 差异后进入工具化验证；单次报错、
 WAF/路由差异或不稳定延迟只记录为 Signal / Dead End。
@@ -1315,8 +1319,9 @@ GET /login -> note Set-Cookie session=XYZ -> Log in -> does session ID change? I
 
 ### Path 8: Hidden Auth Switches
 Load `knowledge/cards/auth-hidden-switches.md` when login/admin/data-platform
-surfaces show username enumeration, hidden provider fields, SOAP/LDAP/SSO hints,
-or JS/source/browser evidence of non-UI login parameters.
+surfaces show username enumeration, hidden mode/provider/source/channel fields,
+legacy/mobile endpoint hints, or JS/source/browser evidence of non-UI login
+parameters.
 
 ```text
 owned/test account baseline -> add one hidden auth parameter -> compare session/token/role

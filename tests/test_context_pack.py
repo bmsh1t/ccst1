@@ -155,7 +155,7 @@ def test_sqli_focus_routes_to_hidden_surface_card(tmp_path):
 
     assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
     assert pack["knowledge_cards"][0] == "knowledge/cards/sqli-hidden-surfaces.md"
-    assert any("Header" in seed or "隐藏参数" in seed for seed in pack["hypothesis_seeds"])
+    assert any("请求元数据" in seed or "二阶输入" in seed for seed in pack["hypothesis_seeds"])
 
 
 def test_upload_import_focus_routes_to_upload_parser(tmp_path):
