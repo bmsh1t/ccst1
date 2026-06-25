@@ -481,6 +481,11 @@ parameters borrowed from sibling endpoints. Treat examples as hypothesis seeds,
 not a fixed checklist; only promote them after stable baseline-vs-perturbation
 evidence.
 
+Knowledge card role: `sqli-hidden-surfaces.md` is a recall/association layer for
+this SQLi lane. It should make the agent remember transferable techniques and
+reshape hypotheses from current evidence; it does not replace this Skill's
+execution order or validation gate.
+
 ### SQLi Lane Flow
 
 执行 SQLi lane 时按以下证据链推进，不要只跑显式 query/body 参数后就结束：
