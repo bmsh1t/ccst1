@@ -80,8 +80,8 @@ def test_auth_hidden_focus_routes_to_hidden_switch_card(tmp_path):
 
 def test_missing_parameter_focus_routes_to_discovery_card(tmp_path):
     _seed_recon(tmp_path, "target.com", [
-        "https://api.target.com/orgapi/selectuser",
-        "https://api.target.com/orgapi/..;/v3/api-docs",
+        "https://api.target.com/search/records",
+        "https://api.target.com/forms/query?filter=",
     ])
 
     pack = build_context_pack(tmp_path, target="target.com", focus="missing-param parameter-null")

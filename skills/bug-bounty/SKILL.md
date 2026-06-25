@@ -306,12 +306,14 @@ ffuf -w subs.txt -u https://FUZZ.target.com -ac
 
 ### Missing Parameter Signal
 
-When an endpoint returns `missing parameter`, `parameter is null`, or
-`required parameter`, load `knowledge/cards/missing-parameter-discovery.md`
-instead of treating the error as a finding.
+When an endpoint returns `missing parameter`, `parameter is null`,
+`required parameter`, type mismatch, schema mismatch, validator/binder errors,
+or similar parameter-validation output, load
+`knowledge/cards/missing-parameter-discovery.md` instead of treating the error
+as a finding.
 
 ```text
-baseline error -> target-specific JS/API-doc/source wordlist -> low-rate param discovery
+baseline error -> target-specific material wordlist -> low-rate param discovery
 -> response-shape diff -> minimal own/test-object validation
 ```
 

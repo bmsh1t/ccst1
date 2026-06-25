@@ -229,17 +229,18 @@ deactivate
 
 ### Missing Parameter Signal / Target-Specific Params
 
-当 SPA 路由、JS endpoint、API docs 或 Spring Boot 风格路径返回
-`missing parameter`、`parameter is null`、`required parameter` 等缺参信号时，
+当任意页面、接口、历史记录、source、schema、浏览器流量或静态资源显示
+`missing parameter`、`parameter is null`、`required parameter`、类型错误、
+schema mismatch 等缺参/校验信号时，
 加载 `knowledge/cards/missing-parameter-discovery.md`。
 
 Recon 阶段只产出候选材料，不把缺参错误当漏洞：
 
 ```text
 1. 记录 baseline：URL、方法、认证状态、状态码、长度和缺参错误体。
-2. 从 JS/source/API docs/browser XHR/sibling endpoint 提取目标词表。
+2. 从 JS/source/schema/API docs/browser XHR/history/form/GraphQL/sibling endpoint/路径分段提取目标词表。
 3. 将词表写为 lead/next action，交给 web2-vuln-classes 低频验证。
-4. 若需要 Arjun 类工具，只用目标词表和限速策略，避免通用大字典喷洒。
+4. 若需要参数发现工具，只用目标词表和限速策略，避免通用大字典喷洒。
 ```
 
 如果响应疑似进入真实用户数据面，停止在最小证据和 Candidate 线索，不做批量

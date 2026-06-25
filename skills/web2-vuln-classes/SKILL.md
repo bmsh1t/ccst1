@@ -134,13 +134,14 @@ Rules:
 ### Missing Parameter Signal Lane
 
 When an endpoint is reachable but returns `missing parameter`,
-`parameter is null`, `required parameter`, or API-doc-derived empty parameter
-errors, load `knowledge/cards/missing-parameter-discovery.md`.
+`parameter is null`, `required parameter`, type mismatch, schema mismatch,
+validator/binder errors, or similar parameter-validation errors, load
+`knowledge/cards/missing-parameter-discovery.md`.
 
 Flow:
 
 ```text
-baseline缺参响应 -> JS/source/API docs/browser XHR 目标词表 -> 低频候选参数收敛
+baseline缺参/校验响应 -> 目标材料词表 -> 低频候选参数收敛
 -> 单参数响应形态差异 -> 自有/测试对象最小影响验证 -> Signal/Candidate/Dead end
 ```
 

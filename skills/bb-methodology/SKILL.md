@@ -205,7 +205,7 @@ Google Dorks -> JS file download -> Hidden param discovery -> API mapping
 | JS files with interesting code | Taint analysis (Sink -> Source) |
 | OAuth/SAML authentication | OAuth/SAML checklist |
 | API with ID parameters | Phase 3, target IDOR |
-| API returns `missing parameter` / `parameter is null` | Load `knowledge/cards/missing-parameter-discovery.md`, build target-specific param words, then verify low-risk response shape |
+| API returns missing/null/type/schema/validator parameter error | Load `knowledge/cards/missing-parameter-discovery.md`, build target-specific param words, then verify low-risk response shape |
 | Complex business logic workflow | Phase 3, target BizLogic |
 | postMessage listeners | DOM analysis, postMessage-tracker |
 
@@ -222,7 +222,7 @@ What input are you testing?
 +-- Search/filter/sort field
 |   -> SQLi, NoSQLi probing
 +-- Missing/Null parameter signal
-|   -> Load knowledge/cards/missing-parameter-discovery.md; build JS/API-doc target wordlist; verify low-risk response-shape diff
+|   -> Load knowledge/cards/missing-parameter-discovery.md; build target-material wordlist; verify low-risk response-shape diff
 +-- Path pattern / management console
 |   -> Load knowledge/cards/path-pattern-management-exposure.md; bounded target words; read-only structured-record/config/secret triage
 +-- SQLi obvious params quiet but API/header/path/sibling endpoints exist
@@ -370,8 +370,8 @@ Every 20 minutes ask yourself: **"Am I making progress?"**
 | Recon: JS | `jsluice` + `mantra` + `trufflehog --only-verified` | Extract URLs/secrets -> find API keys -> verify keys actually work |
 | Recon: Ports | `naabu` (wide) -> `rustscan` (deep) | Fast top-1000 sweep -> full 65535 on interesting targets |
 | Recon: Scan | `nuclei -tags cve` -> `nuclei -tags takeover` | Known CVEs first -> then takeover (act immediately) |
-| Mapping: Params | `arjun` + `paramspider` + ParamMiner | Brute-force hidden params + mine archives + cache headers |
-| Mapping: Missing params | `context-pack missing-param` + JS/API docs words + low-rate Arjun-style grouping | Turn missing/null parameter signals into target-specific hidden parameter candidates |
+| Mapping: Params | `arjun` + `paramspider` + ParamMiner | Discover hidden params + mine archives + cache headers |
+| Mapping: Missing params | `context-pack missing-param` + target-material words + low-rate diff/grouping | Turn missing/null/schema/validator signals into target-specific hidden parameter candidates |
 | Mapping: Hidden auth params | `context-pack auth-hidden` + browser/source review | Find login branch switches without credential brute force |
 | Mapping: JS code | Download -> `jsluice` -> VS Code/Cursor grep | Extract -> static analysis -> AI-assisted taint analysis |
 | Mapping: Dorks | Manual Google Dorks | Custom per-target queries find what automation misses |

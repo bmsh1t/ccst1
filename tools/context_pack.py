@@ -898,7 +898,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         ])
     if CARD_PATHS["missing-parameter-discovery"] in cards:
         seeds.extend([
-            "`parameter is null` / `missing parameter` 只是入口信号；先从 JS/source/API docs/浏览器 XHR 构造目标特定参数词表，再低频验证响应形态差异。",
+            "`parameter is null` / `missing parameter` / schema 或 validator 错误只是入口信号；先从目标自身材料构造目标特定参数词表，再低频验证响应形态差异。",
             "隐藏参数命中后只做最小影响验证：状态码、长度、字段集合、空/非空结构和自有/测试对象差异；不批量枚举真实 PII、密码、地址或 token。",
         ])
     if CARD_PATHS["path-pattern-management-exposure"] in cards:
@@ -957,7 +957,7 @@ def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> li
     if CARD_PATHS["auth-hidden-switches"] in cards:
         angles.append("登录绕过无信号时，回到 JS/source/browser 找 sibling 登录端点、旧认证源和隐藏模式参数。")
     if CARD_PATHS["missing-parameter-discovery"] in cards:
-        angles.append("缺参信号无结果时，回到 JS 词表、API docs schema、sibling endpoint 参数和浏览器 XHR，而不是扩大通用字典喷洒。")
+        angles.append("缺参/校验信号无结果时，回到 JS/source/schema/浏览器 XHR/历史请求/表单/GraphQL/sibling endpoint/路径分段，而不是扩大通用字典喷洒。")
     if CARD_PATHS["path-pattern-management-exposure"] in cards:
         angles.append("命名规律没有直接结果时，提取只读结构化记录、访问记录、统计接口、配置字段和 raw log 反哺二次 recon，并把 secret 候选降级为最小验证线索。")
     if CARD_PATHS["graphql"] in cards:
