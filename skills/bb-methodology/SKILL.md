@@ -183,7 +183,7 @@ Google Dorks -> JS file download -> Hidden param discovery -> API mapping
 | Live subdomains with tech stack | Phase 2 (Mapping) |
 | Known software (WordPress, Jira) | Check CVEs + defaults immediately |
 | Cloud resources (S3, Firebase) | Test permissions (read/write/list) |
-| Path naming pattern or management console | Load `knowledge/cards/path-pattern-management-exposure.md`, generate bounded target wordlist, then do read-only management exposure triage |
+| Path/API/file/param naming pattern or read-only record surface | Load `knowledge/cards/path-pattern-management-exposure.md`, generate bounded target wordlist, then do structured-record/config/secret triage |
 | Nothing after 5 min on a host | Skip, try next host (5-minute rule) |
 
 **Command**: `/recon target.com`
@@ -224,7 +224,7 @@ What input are you testing?
 +-- Missing/Null parameter signal
 |   -> Load knowledge/cards/missing-parameter-discovery.md; build JS/API-doc target wordlist; verify low-risk response-shape diff
 +-- Path pattern / management console
-|   -> Load knowledge/cards/path-pattern-management-exposure.md; bounded directory words; read-only weburi/config/secret triage
+|   -> Load knowledge/cards/path-pattern-management-exposure.md; bounded target words; read-only structured-record/config/secret triage
 +-- SQLi obvious params quiet but API/header/path/sibling endpoints exist
 |   -> Load knowledge/cards/sqli-hidden-surfaces.md, then test header/path/hidden-param lanes
 +-- URL input / webhook / PDF gen

@@ -119,7 +119,7 @@ browser request -> raw API request without frontend state
 | WAF block page but backend behavior differs | WAF/backend mismatch; record baseline first | recon has wafw00f/unwaf signals; no dedicated mismatch tool |
 | Very long parameter or many params changes behavior | Inspection depth / parser limit mismatch | manual reasoning |
 | `missing parameter` / `parameter is null` | Missing Parameter Signal Lane, hidden param discovery | target-specific wordlist + low-rate Arjun-style grouping |
-| Druid/Actuator/Admin/monitor exposed | Management Exposure Lane, secret/config triage | read-only review + minimal secret validation plan |
+| Management/log/config/monitor/record surface exposed | Management Exposure Lane, secret/config triage | read-only review + minimal secret validation plan |
 
 Rules:
 
@@ -155,15 +155,15 @@ Boundaries:
 
 ### Management Exposure Lane
 
-When pattern-based directory fuzzing finds Druid, Actuator, admin/monitoring
-consoles, weburi/access logs, config JSON, or access-key-like fields, load
+When pattern-based discovery finds management, monitoring, logging, stats,
+config, health, task, record surfaces, structured data, or access-key-like fields, load
 `knowledge/cards/path-pattern-management-exposure.md`.
 
 Flow:
 
 ```text
-path pattern evidence -> bounded target wordlist -> management surface baseline
--> read-only weburi/config extraction -> secondary recon dictionary or secret Candidate
+pattern evidence -> bounded target wordlist -> read-only surface baseline
+-> structured record/config extraction -> secondary recon dictionary or secret Candidate
 ```
 
 Boundaries:

@@ -903,8 +903,8 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         ])
     if CARD_PATHS["path-pattern-management-exposure"] in cards:
         seeds.extend([
-            "目录 fuzz 先从目标已有路径命名规律生成有界词表，再验证兄弟目录和管理/监控面；不要直接扩大到无边界通用字典。",
-            "Druid/Actuator/Admin/监控面优先做只读识别和访问记录提取；疑似 access key/secret 只记录最小证据与验证计划，不接管云资源或读取真实数据。",
+            "发现类 fuzz 先从目标已有路径、文件名、API 前缀、参数名、子域、静态资源等命名规律生成有界词表，再验证兄弟 surface；不要直接扩大到无边界通用字典。",
+            "管理/监控/日志/统计/配置/记录类 surface 优先做只读识别和结构化记录提取；疑似 access key/secret 只记录最小证据与验证计划，不接管云资源或读取真实数据。",
         ])
     if CARD_PATHS["graphql"] in cards:
         seeds.extend([
@@ -959,7 +959,7 @@ def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> li
     if CARD_PATHS["missing-parameter-discovery"] in cards:
         angles.append("缺参信号无结果时，回到 JS 词表、API docs schema、sibling endpoint 参数和浏览器 XHR，而不是扩大通用字典喷洒。")
     if CARD_PATHS["path-pattern-management-exposure"] in cards:
-        angles.append("管理面没有直接漏洞时，提取只读 weburi/访问记录/配置字段反哺二次 recon，并把 secret 候选降级为最小验证线索。")
+        angles.append("命名规律没有直接结果时，提取只读结构化记录、访问记录、统计接口、配置字段和 raw log 反哺二次 recon，并把 secret 候选降级为最小验证线索。")
     if CARD_PATHS["graphql"] in cards:
         angles.append("GraphQL 无结果时检查同业务的 REST sibling endpoint、global ID 解码和前端缓存。")
     if CARD_PATHS["sqli-hidden-surfaces"] in cards:

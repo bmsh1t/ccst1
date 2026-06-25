@@ -279,16 +279,16 @@ ffuf -request /tmp/req.txt \
 
 ### Pattern-Based Directory Fuzzing
 
-当目标路径、子系统或目录名出现 `wq1`、`ax1`、`app01`、`admin-v2`
-这类可归纳模式时，加载 `knowledge/cards/path-pattern-management-exposure.md`。
+当目标路径、目录名、文件名、API 前缀、参数名、子域、静态资源或业务短码
+出现可归纳命名规律时，加载 `knowledge/cards/path-pattern-management-exposure.md`。
 
 Recon 阶段只生成有界目标词表和只读线索：
 
 ```text
-1. 提取已有路径分段、短码模式、JS/历史 URL/访问记录里的词。
+1. 提取已有路径分段、文件名、API 前缀、参数名、短码模式、JS/历史 URL/结构化记录里的词。
 2. 限制长度、字符集、数量和速率，优先验证目标风格的兄弟目录。
-3. 命中 Druid/Actuator/Admin/监控面时，只记录标题、认证状态、只读 JSON 和版本线索。
-4. 从 weburi/访问记录/配置字段提取二次 recon 字典，不访问状态改变路径。
+3. 命中管理/监控/日志/统计/配置入口时，只记录标题、认证状态、只读结构化数据和版本线索。
+4. 从访问记录、统计接口、配置字段、raw log、JSON/API/导出源提取二次 recon 字典，不访问状态改变路径。
 ```
 
 不要把管理面登录页由 recon/autopilot 自动转成口令爆破；口令测试作为

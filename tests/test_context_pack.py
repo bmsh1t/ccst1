@@ -97,16 +97,16 @@ def test_missing_parameter_focus_routes_to_discovery_card(tmp_path):
 
 def test_path_pattern_focus_routes_to_management_exposure_card(tmp_path):
     _seed_recon(tmp_path, "target.com", [
-        "https://www.target.com/wq1/login.html",
-        "https://www.target.com/ax1/druid/login.html",
-        "https://www.target.com/ax1/druid/weburi.json",
+        "https://www.target.com/app01/login.html",
+        "https://www.target.com/app02/stats/records.json",
+        "https://www.target.com/static/asset-manifest.json",
     ])
 
     pack = build_context_pack(tmp_path, target="target.com", focus="path-pattern management-exposure")
 
     assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
     assert pack["knowledge_cards"][0] == "knowledge/cards/path-pattern-management-exposure.md"
-    assert any("目录 fuzz" in seed or "Druid/Actuator" in seed for seed in pack["hypothesis_seeds"])
+    assert any("发现类 fuzz" in seed or "管理/监控/日志/统计/配置/记录" in seed for seed in pack["hypothesis_seeds"])
     assert any("不接管云资源" in seed for seed in pack["hypothesis_seeds"])
 
 

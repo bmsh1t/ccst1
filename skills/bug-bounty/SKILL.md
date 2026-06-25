@@ -320,12 +320,13 @@ passwords, addresses, tokens, orders, or destructive/state-changing actions.
 
 ### Path Pattern / Management Exposure
 
-When a target has patterned directories or exposed Druid/Actuator/Admin/monitor
-surfaces, load `knowledge/cards/path-pattern-management-exposure.md`.
+When a target has patterned paths, filenames, API prefixes, parameters,
+subdomains, static assets, or exposed management/log/config/monitor surfaces,
+load `knowledge/cards/path-pattern-management-exposure.md`.
 
 ```text
-observed path pattern -> bounded target wordlist -> management baseline
--> read-only weburi/config extraction -> secondary recon or secret Candidate
+observed naming pattern -> bounded target wordlist -> read-only surface baseline
+-> structured record/config extraction -> secondary recon or secret Candidate
 ```
 
 Do not convert this lane automatically into password brute force, cloud-console
