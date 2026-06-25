@@ -895,6 +895,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
     if CARD_PATHS["auth-hidden-switches"] in cards:
         seeds.extend([
             "登录接口是否存在 UI 未传但后端读取的隐藏认证参数、模式、来源、渠道、provider 或 feature flag，能切换认证分支。",
+            "留意管理员预留特权参数或内部账号分支，例如 isAdmin/admin/source/provider/soap 这类目标相关 selector；它们是联想种子，不是固定字典。",
             "本 lane 先做自有/测试账号 baseline 与单变量隐藏参数差异；若登录成为主要突破口，按 red-lines 的自主选择条件切到 /spray 或 credential-attack 受控流程。",
         ])
     if CARD_PATHS["missing-parameter-discovery"] in cards:

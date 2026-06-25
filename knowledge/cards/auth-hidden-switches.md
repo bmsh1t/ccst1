@@ -19,6 +19,17 @@
 - 状态证据优先：只有 Set-Cookie、token、角色、用户 ID、登录后页面、权限差异或服务端身份变化，才进入 Candidate；错误文案差异只是 Signal。
 - 分流边界：当方向变成弱口令、默认凭据、password spray、OTP 或验证码测试时，退出本 lane，转受控凭据流程。
 
+## 候选形态示例
+
+这些只是联想种子，不是固定字典；只有目标材料、错误信息、JS/source、
+历史请求、相邻接口或登录语义支持时才优先尝试。
+
+- 布尔/开关值：`true`、`false`、`1`、`0`、`yes`、`no`。
+- 角色/特权字段：`isAdmin`、`admin`、`superAdmin`、`privileged`、`role`、`permission`。
+- 认证源/模式字段：`authType`、`loginType`、`source`、`provider`、`channel`、`mode`、`soap`。
+- 内部/预留账号语义：`cadmin`、`sysadmin`、`operator`、`test`、`debug`、`internal` 只能作为目标相关账号线索，不能无边界批量尝试。
+- 组合形态：`isAdmin=true`、`admin=1`、`soap=true`、`source=mobile`、`provider=local`，需要单变量对照和认证状态证据。
+
 ## 默认不执行的动作
 
 - 不把具体字段名、认证源、管理子域命名或绕过值固定为必选清单。
@@ -43,6 +54,7 @@
 ## 发散问题
 
 - 是否存在隐藏参数切换认证后端、认证源、模式、渠道、旧入口、测试分支、内部校验或 feature flag？
+- 是否存在管理员预留的特权参数、内部账号分支、兼容认证源或调试登录路径？
 - 服务端是否只校验用户名存在，然后由隐藏布尔参数跳过密码校验？
 - UI 没有传的字段，后端是否仍然读取并影响认证流程？
 - 相邻子域、旧版本 API、移动端 API 是否使用同一登录处理器但参数约束更弱？

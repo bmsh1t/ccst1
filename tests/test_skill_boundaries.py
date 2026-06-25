@@ -51,6 +51,8 @@ def test_hidden_auth_switches_are_part_of_skill_flow():
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
     bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
     methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
+    card = (REPO_ROOT / "knowledge" / "cards" / "auth-hidden-switches.md").read_text(encoding="utf-8")
+    context_pack = (REPO_ROOT / "tools" / "context_pack.py").read_text(encoding="utf-8")
 
     assert "knowledge/cards/auth-hidden-switches.md" in runtime
     assert "### Hidden Auth Switch Lane" in web2
@@ -60,6 +62,11 @@ def test_hidden_auth_switches_are_part_of_skill_flow():
     assert "controlled `/spray`" in web2
     assert "### Path 8: Hidden Auth Switches" in bug_bounty
     assert "context-pack auth-hidden" in methodology
+    assert "## 候选形态示例" in card
+    assert "soap=true" in card
+    assert "isAdmin=true" in card
+    assert "不是固定字典" in card
+    assert "管理员预留特权参数" in context_pack
 
 
 def test_missing_parameter_discovery_is_part_of_skill_flow():
