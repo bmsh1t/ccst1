@@ -5,6 +5,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+ARTICLE_DERIVED_CARDS = [
+    "knowledge/cards/auth-hidden-switches.md",
+    "knowledge/cards/missing-parameter-discovery.md",
+    "knowledge/cards/path-pattern-management-exposure.md",
+    "knowledge/cards/sqli-hidden-surfaces.md",
+]
+
 
 def test_bug_bounty_skill_routes_methodology_instead_of_duplicating_it():
     bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
@@ -93,3 +100,17 @@ def test_controlled_credential_testing_is_not_an_absolute_red_line():
     assert "口令爆破、默认凭据检查、password spray 本身不是绝对红线" in red_lines
     assert "手动流程" in red_lines
     assert "弱口令爆破不是绝对红线" in router
+
+
+def test_article_derived_cards_are_native_recall_cards():
+    banned_terms = ["本文", "原文", "这篇", "只吸收", "不吸收", "Knowledge card role", "recall/association"]
+
+    for rel_path in ARTICLE_DERIVED_CARDS:
+        text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+
+        assert "## 能力定位" in text
+        assert "候选假设" in text
+        assert "发散问题" in text
+        assert "最小验证提示" in text
+        for term in banned_terms:
+            assert term not in text
