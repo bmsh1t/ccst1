@@ -1,0 +1,80 @@
+---
+id: web-llm-tool-chains
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - triage-validation
+trigger_tags:
+  - web-llm
+  - prompt-injection
+  - rag
+  - tool-call
+risk: medium
+maturity: draft
+load_priority: medium
+deep_refs: []
+---
+
+# Web LLM / Prompt Injection / Tool Chains
+
+## Quick Recall
+
+- Web LLM 漏洞核心是模型是否能越过权限边界读取数据、调用工具、改变状态或泄露系统/业务上下文。
+- 先枚举模型输入源、RAG 数据源、可调用工具、身份绑定和输出通道，再测试 prompt injection。
+- 工具枚举本身是关键 baseline：要求模型列出 function/tool 名称、参数和能力，再用日志或响应确认真实 tool_call。
+- 直接让模型“说出系统提示”通常只是 Lead；高价值在工具调用、跨用户数据、越权业务动作和间接注入。
+- 间接 prompt 注入要证明攻击者可控内容进入模型上下文并影响后续受害者动作。
+
+## 能力定位
+
+本卡给 `web2-vuln-classes` 补充 LLM/RAG/agent 工具链的攻击面建模和最小验证。
+
+## 触发信号
+
+- Chatbot、AI assistant、RAG search、文档问答、邮件/工单总结、agent tool、function calling。
+- 模型能访问账号数据、订单、文档、URL、代码仓库、浏览器内容或内部 API。
+- 输出显示引用来源、工具调用结果、权限错误或系统提示片段。
+
+## 思路分支
+
+- Direct prompt injection：当前用户输入影响模型行为。
+- Indirect prompt injection：网页/文档/邮件/评论等攻击者内容影响其他用户/agent。
+- Tool abuse：模型调用搜索、邮件、订单、账号、文件、HTTP fetch 等工具。
+- Excessive agency：模型可直接调用高风险工具，例如 debug SQL、账号删除、邮件发送、订单修改，而缺少权限/确认门。
+- Data boundary：跨用户、跨组织、未授权文档或隐藏上下文泄露。
+
+## 技巧家族 / Payload 家族
+
+- Instruction conflict：角色/优先级/格式约束绕过，只作为能力探测。
+- Retrieval poisoning：在可控文档中嵌入指令，观察 RAG 引用和行为改变。
+- Tool-call probe：低影响查询、只读工具、测试对象状态，证明工具边界。
+- Tool-call evidence：backend logs 中出现 `tool_calls`、函数名、参数和工具返回值，优先于只看聊天文本。
+
+## 补充 Checklist
+
+- 是否知道模型代表谁执行：匿名、当前用户、服务账号还是管理员？
+- 是否区分模型幻觉和真实工具/数据访问？
+- 是否记录输入源、检索证据、工具调用和最终影响？
+- 是否先枚举工具清单，再选择一个训练/测试对象做最小影响验证？
+- 状态改变是否只在训练/测试资源上验证？
+
+## 最小验证
+
+- 建立正常问答或工具调用 baseline。
+- 单变量加入直接/间接 prompt，比较引用、工具调用、输出和权限差异。
+- Candidate 前需要真实数据/工具边界证据，而不是单纯“模型听话”。
+
+## 常见误判 / 死路
+
+- 模型复述用户提供的 secret 不算泄露。
+- “忽略以上指令”成功改变语气通常低价值。
+- 幻觉出的工具结果不是漏洞，必须有后端证据。
+
+## 关联 Skills
+
+- `web2-vuln-classes`
+- `triage-validation`
+
+## 晋升到 Skill / Queue 的条件
+
+- 有输入源、模型上下文、工具/数据边界和可复现影响时写入 action queue，类型 `web-llm-tool-chains`。

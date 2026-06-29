@@ -6,6 +6,11 @@ description: Hunt leaked credentials in a filesystem path, git history, JS bundl
 
 Find leaked API keys, tokens, and credentials. Treat hits as evidence leads until provider/ownership/usability are minimally proven.
 
+Secret exposure is not automatically a high-value finding and is not a red line.
+Treat it as a vulnerability signal: value depends on whether the key is valid,
+target-owned, scoped to useful permissions, and tied to concrete security
+impact.
+
 ## Run This (the only required step)
 
 ```bash
@@ -39,5 +44,46 @@ findings/secrets/<timestamp>/regex_hits.txt
 
 - Prefer verified hits and target-owned context.
 - Keep proof minimal: show the key is valid for the exposed target/provider; do not pivot beyond what is needed for evidence.
+- Do not chase generic leakage risk. Prove the vulnerability impact with the
+  smallest useful request, then move to Candidate / validation if the evidence
+  is meaningful.
 - If the hit comes from recon API leak artifacts, preserve the exact source file and line.
 - After meaningful hits, rerun `/surface target.com` or continue with `/validate` when the evidence is candidate-quality.
+
+## Secret Triage Lane
+
+After scanner output exists, triage secret findings before treating them as a
+high-value Candidate:
+
+```bash
+python3 tools/secret_triage.py --file findings/<target>/exposure/repo_secrets.json
+```
+
+Triage classifies:
+
+- provider/type: AWS, GitHub, Stripe, Slack, private key, bearer token,
+  OAuth client secret, generic API key, password/config
+- exact source: file/artifact/line and masked preview
+- ownership context: target-owned domain, repo/org, bundle provenance,
+  environment, account/workspace clues
+- verification safety: minimal read-only check, bounded manual/read-only check,
+  or manual review
+- candidate status: `context-needed`, `needs-safe-verification`, or
+  `candidate-ready`
+
+Promotion rule:
+
+- `context-needed` → stay as Signal; identify provider/owner/source first.
+- `needs-safe-verification` → run only the smallest safe identity/scope check,
+  or record why verification is blocked.
+- `candidate-ready` → move to `/validate` with source, ownership, validity,
+  scope, and impact path.
+
+Examples of safe verification intent:
+
+- GitHub token → identity/scope/org check, no repo writes.
+- AWS key → identity check when paired credentials exist, no resource changes.
+- Stripe key → account/key metadata only, no charge/refund/customer changes.
+- Slack token → auth identity/scope check, no message/channel/member changes.
+- Private key/password → map purpose and ownership; do not automatically log in
+  to infrastructure without a bounded reason.

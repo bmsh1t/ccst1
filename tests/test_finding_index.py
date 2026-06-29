@@ -223,11 +223,11 @@ def test_validate_prefill_loads_finding_candidate(tmp_path):
 
     prefill = validate.load_finding_prefill(str(findings_dir), "mfa_abc123")
 
-    assert prefill == {
-        "target": "example.com",
-        "vuln_type": "MFA",
-        "endpoint": "https://example.com/mfa/verify",
-        "finding_id": "mfa_abc123",
-        "source_file": "mfa/findings.txt",
-        "summary": "[MFA-NO-RATE-LIMIT] https://example.com/mfa/verify",
-    }
+    assert prefill["target"] == "example.com"
+    assert prefill["vuln_type"] == "MFA"
+    assert prefill["endpoint"] == "https://example.com/mfa/verify"
+    assert prefill["finding_id"] == "mfa_abc123"
+    assert prefill["source_file"] == "mfa/findings.txt"
+    assert prefill["summary"] == "[MFA-NO-RATE-LIMIT] https://example.com/mfa/verify"
+    assert prefill["rubric"]["rubric_id"] == "authz"
+    assert prefill["rubric"]["status"] in {"needs-evidence", "candidate-ready", "signal-only"}

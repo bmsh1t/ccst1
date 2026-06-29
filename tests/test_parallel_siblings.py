@@ -9,6 +9,7 @@ the network during CI.
 from __future__ import annotations
 
 import http.server
+import errno
 import json
 import os
 import socket
@@ -56,7 +57,13 @@ def stub_server():
         "/api/v1/exports/123": (200, b'{"id":123,"file":"e.csv"}', "application/json"),
         "/api/v1/missing/123": (404, b"nope", "text/plain"),
     }
-    with socketserver.TCPServer(("127.0.0.1", 0), handler) as srv:
+    try:
+        srv = socketserver.TCPServer(("127.0.0.1", 0), handler)
+    except PermissionError as exc:
+        if exc.errno == errno.EPERM:
+            pytest.skip("sandbox forbids creating a local listening socket")
+        raise
+    with srv:
         host, port = srv.server_address
         thread = threading.Thread(target=srv.serve_forever, daemon=True)
         thread.start()

@@ -141,9 +141,14 @@ knowledge/card-template.md
 ```text
 Evidence pattern:
 Why it matters:
+Thought branches:
+Technique / payload / bypass family:
+Checklist gap:
 Next action:
 Stop condition:
 Validation requirement:
+False positives / dead ends:
+Promote to Skill / Queue when:
 ```
 
 ### Skills 层

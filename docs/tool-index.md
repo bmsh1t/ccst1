@@ -70,6 +70,8 @@ identity, and cloud signals without re-enumerating everything.
 |---|---|---|
 | `tools/vuln_scanner.sh` | Recon done, want broad active coverage | Multi-lane scanner; unsafe methods become manual-review unless `ALLOW_UNSAFE_HTTP_TESTS=1` |
 | `tools/bypass_403.sh` | 403/401 on interesting endpoint | byp4xx + 20 built-in header/method/encoding bypass tricks |
+| `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
+| `tools/smuggling_executor.py` | Smuggling/cache candidate execution plan | `--summary` / `--variant 0.CL`; sender + evidence classes |
 | `tools/role_diff.py` | Multiple session files available | **Multi-role endpoint diff — IDOR gold standard** (R2 new) |
 | `tools/h1_idor_scanner.py` ⚠️ underused | Two user accounts captured | Cross-user IDOR scanner — direct ID swap |
 | `tools/h1_mutation_idor.py` ⚠️ manual-only | Explicit operator opt-in | GraphQL mutation battery; never auto-route from Claude prompts |
@@ -122,6 +124,8 @@ identity, and cloud signals without re-enumerating everything.
 |---|---|---|
 | `tools/hunt.py` | Master hunt entrypoint (CLI) | Orchestrator — wraps recon/scan/agent/report flows |
 | `tools/autopilot_state.py` | Reading current autopilot state | Combine resume + surface context into one state view |
+| `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
+| `tools/coverage_matrix.py` | Checking high-value untested cells | Endpoint × vuln-class matrix; semantically ranks gaps from path/param signals |
 | `tools/resume.py` | Continuing previous target work | `/pickup` backend — summarize prior session+untested endpoints |
 | `tools/remember.py` | Logging finding to hunt memory | `/remember` backend — write to journal/pattern DB |
 | `tools/validate.py` | Pre-report validation gate | 7-Question Gate + 4 gates — runs `/validate` |
@@ -141,6 +145,8 @@ identity, and cloud signals without re-enumerating everything.
 
 | Claude observes | First-pick tool |
 |---|---|
+| Concrete signal plus unresolved next verification question | smallest safe lookup/replay/diff/enrichment/probe, then checkpoint state |
+| Concrete CMS/plugin/theme/library version observed | `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, `/scan-cves` |
 | 401/403 on interesting endpoint | `bypass_403.sh` |
 | Multiple session files in `.private/` | `role_diff.py` |
 | Two account creds + numeric IDs | `role_diff.py`, then `h1_idor_scanner.py` |

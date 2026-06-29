@@ -64,6 +64,31 @@ def test_recon_engine_supports_assetfinder_and_puredns():
     assert "DNSX_" not in text
 
 
+def test_recon_engine_preserves_host_port_lab_url_seed():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'TARGET_HAS_EXPLICIT_PORT="false"' in text
+    assert 'TARGET_HTTP_SEED="http://$TARGET"' in text
+    assert 'printf \'%s\\n\' "$TARGET_HTTP_SEED" > "$RECON_DIR/live/seed_urls.txt"' in text
+    assert "seed_http_code=" in text
+    assert "curl --noproxy '*' -sS -o /dev/null -w '%{http_code}'" in text
+    assert '[ "$seed_http_code" = "401" ] || [ "$seed_http_code" = "403" ]' in text
+    assert '[ -s "$RECON_DIR/live/urls.txt" ] && cat "$RECON_DIR/live/urls.txt"' in text
+    assert '[ -s "$RECON_DIR/live/seed_urls.txt" ] && cat "$RECON_DIR/live/seed_urls.txt"' in text
+
+
+def test_recon_engine_js_secret_regex_handles_camelcase_and_spacing():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert "apiKey" in text
+    assert "secretKey" in text
+    assert "[:space:]" in text
+    assert "sk_test" not in text  # 不为单一厂商/样例硬编码
+    assert "potential_secrets.txt" in text
+
+
 def test_recon_engine_supports_primary_domain_batch_and_domain_waymore():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
@@ -107,7 +132,7 @@ def test_recon_engine_adds_project_aligned_exposure_candidate_correlation():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
 
-    assert 'mkdir -p "$RECON_DIR"/{subdomains,live,ports,urls,js,dirs,params,exposure}' in text
+    assert 'mkdir -p "$RECON_DIR"/{subdomains,live,ports,urls,js,dirs,params,exposure,logs}' in text
     assert 'log_info "Phase 6.6: Exposure Candidate Correlation"' in text
     assert 'API_DOC_CANDIDATES="$RECON_DIR/exposure/api_doc_candidates.txt"' in text
     assert 'API_LEAK_CANDIDATES="$RECON_DIR/exposure/api_leak_candidates.txt"' in text

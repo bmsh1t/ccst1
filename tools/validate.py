@@ -43,6 +43,11 @@ try:
 except ImportError:  # pragma: no cover - package import path
     from tools.runtime_config import load_runtime_config
 
+try:
+    from evidence_rubric import evaluate_candidate_evidence, first_missing_action
+except ImportError:  # pragma: no cover - package import path
+    from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -1070,6 +1075,18 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
     if scanner_confidence and scanner_confidence != "unknown":
         summary["scanner_confidence"] = scanner_confidence
 
+    evidence_rubric = info.get("evidence_rubric")
+    if isinstance(evidence_rubric, dict) and evidence_rubric:
+        summary["evidence_rubric"] = {
+            "rubric_id": evidence_rubric.get("rubric_id", ""),
+            "status": evidence_rubric.get("status", ""),
+            "ready": bool(evidence_rubric.get("ready", False)),
+            "score": int(evidence_rubric.get("score", 0) or 0),
+            "missing_labels": list(evidence_rubric.get("missing_labels", []) or [])[:4],
+            "next_actions": list(evidence_rubric.get("next_actions", []) or [])[:4],
+            "summary": evidence_rubric.get("summary", ""),
+        }
+
     return summary
 
 
@@ -1210,6 +1227,7 @@ def load_finding_prefill(findings_dir: str, finding_id: str) -> dict:
     finding = find_finding(findings_dir, finding_id)
     if not finding:
         return {}
+    rubric = evaluate_candidate_evidence(finding)
 
     return {
         "target": payload.get("target") or Path(findings_dir).name,
@@ -1218,6 +1236,7 @@ def load_finding_prefill(findings_dir: str, finding_id: str) -> dict:
         "finding_id": finding.get("id") or finding_id,
         "source_file": finding.get("source_file") or "",
         "summary": finding.get("summary") or finding.get("raw") or "",
+        "rubric": rubric,
     }
 
 
@@ -1298,6 +1317,19 @@ def main():
             print(f"  Source artifact: {finding_prefill['source_file']}")
         if finding_prefill.get("summary"):
             print(f"  Summary: {finding_prefill['summary'][:180]}")
+        rubric = finding_prefill.get("rubric") or {}
+        if rubric:
+            status = rubric.get("status", "")
+            score = rubric.get("score", 0)
+            print(f"  Evidence rubric: {status} ({score}/100) — {rubric.get('title', '')}")
+            missing = rubric.get("missing_labels") or []
+            if missing:
+                print(f"  Missing evidence: {', '.join(str(item) for item in missing[:4])}")
+                action = first_missing_action(rubric)
+                if action:
+                    print(f"  Suggested next evidence step: {action}")
+            else:
+                print("  Missing evidence: none detected by rubric")
 
     target_prompt = "Target / program / lab name"
     scanner_summary = load_json_file(args.scanner_summary)
@@ -1390,6 +1422,7 @@ def main():
             "finding_id": finding_prefill.get("finding_id", ""),
             "finding_source_file": finding_prefill.get("source_file", ""),
             "finding_summary": finding_prefill.get("summary", ""),
+            "evidence_rubric": finding_prefill.get("rubric", {}),
         })
 
     skeleton = generate_report_skeleton(info)

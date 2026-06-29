@@ -53,6 +53,9 @@ def test_summarize_structured_findings_picks_next_validation_and_report(tmp_path
     assert summary["next_validation"]["id"] == "high_pending"
     assert summary["next_report"]["id"] == "report_me"
     assert summary["next_validation"]["findings_dir"] == str(findings_dir)
+    assert summary["evidence_gap_count"] >= 1
+    assert summary["next_validation"]["rubric_status"] in {"needs-evidence", "signal-only", "candidate-ready"}
+    assert "rubric" in summary["next_validation"]
 
 
 def test_format_structured_findings_lines_renders_expected_labels():
@@ -62,12 +65,17 @@ def test_format_structured_findings_lines_renders_expected_labels():
             "pending_validation": 1,
             "validated_pending_report": 1,
             "reported": 0,
+            "evidence_gap_count": 1,
             "next_validation": {
                 "id": "sqli_pending",
                 "severity": "high",
                 "confidence": "confirmed",
                 "type": "sqli",
                 "url": "https://api.target.com/search?q=1",
+                "rubric": {
+                    "status": "needs-evidence",
+                    "missing_labels": ["baseline/perturbation pair"],
+                },
             },
             "next_report": {
                 "id": "mfa_report",
@@ -84,7 +92,7 @@ def test_format_structured_findings_lines_renders_expected_labels():
 
     assert lines == [
         "  Structured Findings:",
-        "  total=2, pending_validation=1, validated_pending_report=1, reported=0",
-        "  Next validate: sqli_pending [high/confirmed] sqli https://api.target.com/search?q=1",
+        "  total=2, pending_validation=1, validated_pending_report=1, reported=0, evidence_gaps=1",
+        "  Next validate: sqli_pending [high/confirmed] sqli https://api.target.com/search?q=1 rubric=needs-evidence missing=baseline/perturbation pair",
         "  Next report: mfa_report [medium/high] mfa https://api.target.com/mfa",
     ]

@@ -66,13 +66,71 @@ def test_checkpoint_prioritizes_pending_validation(tmp_path):
     assert checkpoint["decision"] == "validate"
     assert checkpoint["structured_findings"]["pending_validation"] == 1
     assert any("F-1" in item for item in checkpoint["target_write_back"]["next"])
-    assert checkpoint["recommended_executable_action"]["type"] == "validation"
-    assert checkpoint["recommended_executable_action"]["command_hint"] == "/validate"
+    assert checkpoint["recommended_executable_action"]["type"] == "candidate-evidence-gap"
+    assert checkpoint["recommended_executable_action"]["command_hint"] == "fill missing rubric evidence, then /validate"
+    assert any(
+        item["type"] == "validation"
+        for item in checkpoint["next_action_queue"]
+    )
+
+
+def test_checkpoint_queues_candidate_evidence_gap_before_validate(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps({
+            "findings": [
+                {
+                    "id": "SQLI-1",
+                    "type": "sqli",
+                    "severity": "high",
+                    "confidence": "medium",
+                    "url": "https://api.target.com/search?q=1",
+                    "summary": "possible SQL injection",
+                    "validation_status": "unvalidated",
+                    "report_status": "not_generated",
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert any(
+        "Candidate evidence gap for finding SQLI-1" in item
+        for item in checkpoint["target_write_back"]["next"]
+    )
+    assert checkpoint["recommended_executable_action"]["type"] == "candidate-evidence-gap"
+
+
+def test_checkpoint_queues_secret_verification_lane_from_repo_source_summary(tmp_path):
+    exposure_dir = tmp_path / "findings" / "target.com" / "exposure"
+    exposure_dir.mkdir(parents=True)
+    (exposure_dir / "repo_source_meta.json").write_text(
+        json.dumps({"status": "ok", "source_kind": "local", "clone_performed": False}),
+        encoding="utf-8",
+    )
+    (exposure_dir / "repo_summary.md").write_text(
+        "# Repository Source Hunt Summary\n\n- Secret findings: 2\n- CI findings: 0\n",
+        encoding="utf-8",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert any(
+        "Secret verification lane" in item
+        for item in checkpoint["target_write_back"]["next"]
+    )
+    assert any(
+        item["type"] == "secret-verification"
+        for item in checkpoint["next_action_queue"]
+    )
 
 
 def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
     _seed_recon(tmp_path, "target.com", [
-        "https://api.target.com/api/v1/admin/users",
+        "https://api.target.com/api/v1/admin/users?isAdmin=true&userId=1001",
     ])
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
@@ -86,6 +144,11 @@ def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
     assert checkpoint["next_action_queue"]
     assert any(item["type"] == "coverage-gap" for item in checkpoint["next_action_queue"])
     assert checkpoint["recommended_executable_action"]["status"] == "ready"
+    assert checkpoint["coverage"]["high_value_gaps"][0]["vuln_class"] == "Authz"
+    coverage_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "coverage-gap")
+    assert coverage_action["metadata"]["endpoint"] == "/api/v1/admin/users"
+    assert coverage_action["metadata"]["vuln_class"] == "Authz"
+    assert coverage_action["metadata"]["relevance_score"] > 0
     assert (tmp_path / "evidence" / "target.com" / "coverage_matrix.json").is_file()
 
 
@@ -118,6 +181,58 @@ def test_checkpoint_surfaces_actor_matrix_gaps(tmp_path):
     assert "actor matrix gaps:" in output
     assert "Next action queue:" in output
     assert "Recommended executable action:" in output
+
+
+def test_checkpoint_queues_cross_evidence_convergence(tmp_path):
+    _seed_recon(tmp_path, "target.com", [
+        "https://api.target.com/api/admin/export?order_id=42",
+    ])
+    recon_dir = tmp_path / "recon" / "target.com"
+    browser_dir = recon_dir / "browser"
+    js_intel_dir = tmp_path / "findings" / "target.com" / "js_intel"
+    source_intel_dir = tmp_path / "findings" / "target.com" / "source_intel"
+    browser_dir.mkdir(parents=True)
+    js_intel_dir.mkdir(parents=True)
+    source_intel_dir.mkdir(parents=True)
+
+    converged_url = "https://api.target.com/api/admin/export?order_id=42"
+    (browser_dir / "xhr_endpoints.txt").write_text(converged_url + "\n", encoding="utf-8")
+    (browser_dir / "api_endpoints.txt").write_text(converged_url + "\n", encoding="utf-8")
+    (js_intel_dir / "hypotheses.json").write_text(
+        json.dumps({
+            "endpoints": [
+                {"method": "POST", "path": "/api/admin/export?order_id=42", "auth_required": "true"}
+            ],
+            "attack_surface_leads": [],
+            "graphql_operations": [],
+        }),
+        encoding="utf-8",
+    )
+    (source_intel_dir / "routes.json").write_text(
+        json.dumps({"routes": [{"route": "/api/admin/export?order_id=42", "method": "POST"}]}),
+        encoding="utf-8",
+    )
+    (source_intel_dir / "hypotheses.jsonl").write_text(
+        json.dumps({
+            "type": "idor",
+            "candidate": "/api/admin/export?order_id=42",
+            "reason": "admin export route uses order_id",
+            "source": "routes/export.py",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert any(
+        "Cross-evidence high-value surface" in item
+        for item in checkpoint["target_write_back"]["next"]
+    )
+    assert any(item["type"] == "evidence-convergence" for item in checkpoint["next_action_queue"])
+    assert any(
+        item["command_hint"] == "focused replay with browser/JS/source evidence"
+        for item in checkpoint["next_action_queue"]
+    )
 
 
 def test_checkpoint_surfaces_context_contradictions(tmp_path):

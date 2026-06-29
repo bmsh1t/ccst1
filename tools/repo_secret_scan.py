@@ -9,6 +9,10 @@ import tempfile
 from pathlib import Path
 
 from repo_scan_models import RepoFinding
+try:
+    from secret_triage import compact_secret_triage, triage_secret_finding
+except ImportError:  # pragma: no cover - package import path
+    from tools.secret_triage import compact_secret_triage, triage_secret_finding
 
 SKIP_DIRS = {".git", ".hg", ".svn", "node_modules", "dist", "build", "__pycache__", ".venv"}
 MAX_TEXT_FILE_BYTES = 1024 * 1024
@@ -61,7 +65,16 @@ def _mask_secret(value: str) -> str:
     return f"{compact[:4]}...{compact[-4:]}"
 
 
+def _with_secret_triage(**kwargs) -> dict:
+    if kwargs.get("category") == "secret":
+        metadata = dict(kwargs.get("metadata") or {})
+        metadata.setdefault("secret_triage", compact_secret_triage(triage_secret_finding(kwargs)))
+        kwargs["metadata"] = metadata
+    return kwargs
+
+
 def _append_finding(findings: list[RepoFinding], **kwargs) -> None:
+    kwargs = _with_secret_triage(**kwargs)
     findings.append(RepoFinding(**kwargs))
 
 
@@ -171,7 +184,7 @@ def _run_gitleaks(repo_path: str) -> list[RepoFinding]:
     for item in payload:
         secret = str(item.get("Secret") or "")
         findings.append(
-            RepoFinding(
+            RepoFinding(**_with_secret_triage(
                 rule_id=str(item.get("RuleID") or "gitleaks"),
                 category="secret",
                 severity="high",
@@ -184,7 +197,7 @@ def _run_gitleaks(repo_path: str) -> list[RepoFinding]:
                 secret_preview=_mask_secret(secret),
                 evidence_snippet=str(item.get("Match") or secret)[:200],
                 remediation="Review the finding, remove the secret from source control, and rotate it",
-            )
+            ))
         )
     return findings
 

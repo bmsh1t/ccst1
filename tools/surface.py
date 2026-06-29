@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     from runtime_state import inspect_recon_artifacts, load_runtime_state
     from target_paths import canonical_target_value, target_storage_key
 try:
+    from tools.high_value_signals import classify_high_value_signal, summarize_high_value_signal
     from tools.surface_js_intel import (
         build_js_lead_hints,
         build_js_intel_urls,
@@ -40,6 +41,7 @@ try:
     )
     from tools.surface_weights import value_weight, weight_label
 except ImportError:  # pragma: no cover - top-level tools/ import
+    from high_value_signals import classify_high_value_signal, summarize_high_value_signal
     from surface_js_intel import (
         build_js_lead_hints,
         build_js_intel_urls,
@@ -387,6 +389,61 @@ def _sort_workflow_leads(leads: list[dict]) -> list[dict]:
     ]
 
 
+def _build_evidence_convergence_leads(
+    *,
+    browser_urls: set[str],
+    js_intel_urls: dict[str, list[dict]],
+    source_intel_urls: dict[str, list[dict]],
+) -> list[dict]:
+    """把 browser / JS / source 的交叉命中转成可执行 workflow lead。"""
+    leads: list[dict] = []
+    all_urls = _dedupe_keep_order(
+        list(browser_urls) + list(js_intel_urls.keys()) + list(source_intel_urls.keys())
+    )
+    for url in all_urls:
+        sources = []
+        if url in browser_urls:
+            sources.append("browser")
+        if js_intel_urls.get(url):
+            sources.append("js")
+        if source_intel_urls.get(url):
+            sources.append("source")
+        if len(sources) < 2:
+            continue
+
+        source_types = _dedupe_keep_order([
+            str(item.get("type", "")).lower()
+            for item in source_intel_urls.get(url, [])[:3]
+            if item.get("type")
+        ])
+        js_methods = _dedupe_keep_order([
+            str(item.get("method", "")).upper()
+            for item in js_intel_urls.get(url, [])[:3]
+            if item.get("method")
+        ])
+        action_bits = []
+        if source_types:
+            action_bits.append("source hypotheses: " + ", ".join(source_types[:3]))
+        if js_methods:
+            action_bits.append("JS methods: " + ", ".join(js_methods[:3]))
+        leads.append({
+            "source": "evidence_convergence",
+            "title": url,
+            "category": "+".join(sources),
+            "priority": "critical" if len(sources) >= 3 else "high",
+            "next_action": (
+                "replay the browser-observed endpoint with JS/source-informed "
+                "parameters and compare authz, object, role, and workflow behavior"
+            ),
+            "rationale": (
+                " / ".join(sources)
+                + " evidence converges on the same endpoint; this is stronger than any single source."
+            ),
+            "evidence": "; ".join(action_bits) or ", ".join(sources),
+        })
+    return leads[:5]
+
+
 # Payload markers that indicate a URL is a historical attack probe
 # (waymore/gau replay of prior attacker attempts) rather than a real
 # endpoint. We filter these out before ranking — they pollute P1
@@ -555,6 +612,7 @@ INTEL_KEYWORDS = {
 SCORE_SOURCE_LABELS = {
     "attack_value": "attack",
     "browser": "browser",
+    "evidence_convergence": "converged",
     "recon": "recon",
     "memory": "memory",
     "scanner": "scanner",
@@ -1031,6 +1089,11 @@ def rank_surface(context: dict) -> dict:
     lead_items = _sort_workflow_leads(
         _build_exposure_lead_hints(context.get("recon_artifacts") or {}, context["target"])
         + _build_target_memory_lead_hints(target_goal_memory)
+        + _build_evidence_convergence_leads(
+            browser_urls=browser_urls,
+            js_intel_urls=js_intel_urls,
+            source_intel_urls=source_intel_urls,
+        )
         + build_js_lead_hints(js_intel)
         + build_source_lead_hints(context.get("source_intel") or {})
         + list(context.get("manual_review_leads") or [])
@@ -1056,6 +1119,20 @@ def rank_surface(context: dict) -> dict:
         reasons = []
         reason_label, suggested = _candidate_reason(path, query_keys)
         reasons.append(reason_label)
+        high_value_signal = classify_high_value_signal(
+            path=path,
+            query_keys=query_keys,
+            evidence=raw_url,
+        )
+        if high_value_signal.score:
+            score += _add_score_breakdown(
+                score_breakdown,
+                "attack_value",
+                summarize_high_value_signal(high_value_signal),
+                high_value_signal.score,
+                ", ".join(high_value_signal.reasons[:3]),
+            )
+            reasons.append("high-value signal: " + "+".join(high_value_signal.classes[:3]))
 
         if raw_url in browser_urls:
             score += _add_score_breakdown(
@@ -1140,6 +1217,28 @@ def rank_surface(context: dict) -> dict:
             )
             reasons.append("source-intel hypothesis: " + ", ".join(source_types[:3]) + f" (+{source_bonus})")
             suggested = _source_intel_suggestion(matching_source_intel_hypotheses, suggested)
+
+        convergence_sources = []
+        if raw_url in browser_urls:
+            convergence_sources.append("browser")
+        if matching_js_intel_endpoints:
+            convergence_sources.append("js")
+        if matching_source_intel_hypotheses:
+            convergence_sources.append("source")
+        if len(convergence_sources) >= 2:
+            convergence_bonus = 10 if len(convergence_sources) >= 3 else 6
+            score += _add_score_breakdown(
+                score_breakdown,
+                "evidence_convergence",
+                "Cross-evidence endpoint convergence",
+                convergence_bonus,
+                "+".join(convergence_sources),
+            )
+            reasons.append("cross-evidence convergence: " + "+".join(convergence_sources))
+            suggested = (
+                "replay browser-observed flow with JS/source-informed parameters, "
+                "then compare authz, object, role, and workflow behavior"
+            )
         if raw_url in context["api_urls"] or "/api/" in path.lower():
             score += _add_score_breakdown(
                 score_breakdown,
@@ -1332,6 +1431,8 @@ def rank_surface(context: dict) -> dict:
                 }
                 for item in matching_source_intel_hypotheses[:5]
             ]
+        if len(convergence_sources) >= 2:
+            entry["evidence_convergence"] = convergence_sources
         if scanner_findings:
             entry["scanner_findings"] = [
                 {
@@ -1549,6 +1650,8 @@ def format_surface_output(ranked: dict, target: str) -> str:
                 lines.append("   Source: js-reader hypotheses")
             if item.get("source_intel_observed"):
                 lines.append("   Source: source-intel hypotheses")
+            if item.get("evidence_convergence"):
+                lines.append("   Source: cross-evidence convergence (" + "+".join(item["evidence_convergence"]) + ")")
             if item.get("target_memory_hits"):
                 lines.append("   Source: target memory")
             if item.get("target_memory_dead_ends"):
@@ -1569,6 +1672,8 @@ def format_surface_output(ranked: dict, target: str) -> str:
                 lines.append("   Source: js-reader hypotheses")
             if item.get("source_intel_observed"):
                 lines.append("   Source: source-intel hypotheses")
+            if item.get("evidence_convergence"):
+                lines.append("   Source: cross-evidence convergence (" + "+".join(item["evidence_convergence"]) + ")")
             if item.get("target_memory_hits"):
                 lines.append("   Source: target memory")
             if item.get("target_memory_dead_ends"):

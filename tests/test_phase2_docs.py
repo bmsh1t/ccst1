@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-import re
 
 import pytest
 
@@ -167,22 +166,29 @@ def test_claude_settings_keep_trellis_hooks_and_memory_gc_stop_hook():
     assert any("tools.memory_gc --rotate" in command for command in stop_commands)
 
 
-def test_claude_code_prompt_files_are_english_only():
+def test_claude_code_prompt_files_are_utf8_and_not_corrupted():
+    """Prompt files may be Chinese or English.
+
+    Current project AGENTS.md explicitly allows Chinese comments/docs, so the
+    useful invariant is not "English only"; it is that Claude-facing prompt
+    files remain UTF-8 readable and do not contain replacement-character
+    corruption from bad merges or encoding mistakes.
+    """
     prompt_files = [REPO_ROOT / "CLAUDE.md", REPO_ROOT / "SKILL.md"]
     for prompt_dir in ("commands", "agents", "skills", "rules"):
         prompt_files.extend((REPO_ROOT / prompt_dir).rglob("*.md"))
 
     offenders = []
-    han_pattern = re.compile(r"[\u4e00-\u9fff]")
     for path in prompt_files:
         text = path.read_text(encoding="utf-8")
-        if han_pattern.search(text):
+        if "\ufffd" in text:
             offenders.append(str(path.relative_to(REPO_ROOT)))
 
     assert offenders == []
 
 
-def test_execution_flow_files_are_english_only():
+def test_execution_flow_files_are_utf8_and_not_corrupted():
+    """Execution-flow files may contain Chinese under current project rules."""
     flow_files = [REPO_ROOT / "README.md", REPO_ROOT / "agent.py", REPO_ROOT / "install.sh"]
     for flow_dir in ("tools", "scripts", "hooks", "mcp", ".claude"):
         root = REPO_ROOT / flow_dir
@@ -193,10 +199,9 @@ def test_execution_flow_files_are_english_only():
             )
 
     offenders = []
-    han_pattern = re.compile(r"[\u4e00-\u9fff]")
     for path in flow_files:
         text = path.read_text(encoding="utf-8", errors="replace")
-        if han_pattern.search(text):
+        if "\ufffd" in text:
             offenders.append(str(path.relative_to(REPO_ROOT)))
 
     assert offenders == []

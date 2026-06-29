@@ -20,6 +20,7 @@ from coverage_matrix import (
     _canonicalize_endpoint,
     _compute_summary,
     _empty_matrix,
+    class_relevance,
     find_high_value_gaps,
     load_matrix,
     mark_cell,
@@ -295,6 +296,50 @@ class TestFindGaps:
     def test_empty_matrix_yields_empty_gaps(self, tmp_path):
         gaps = find_high_value_gaps("ghost.com", repo_root=tmp_path, min_weight=3.0)
         assert gaps == []
+
+    def test_semantic_ranking_prioritizes_authz_over_generic_idor(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://api.target.com/api/admin/users?isAdmin=true&userId=1001",
+        ])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        endpoint_gaps = [g for g in gaps if g["endpoint"] == "/api/admin/users"]
+
+        assert endpoint_gaps
+        assert endpoint_gaps[0]["vuln_class"] == "Authz"
+        assert endpoint_gaps[0]["relevance_score"] > 0
+        ep = load_matrix("x.com", repo_root=tmp_path)["endpoints"][0]
+        assert set(ep["observed_params"]) == {"isAdmin", "userId"}
+
+    @pytest.mark.parametrize(
+        ("url", "expected_class"),
+        [
+            ("https://api.target.com/api/v1/fetch?url=http://127.0.0.1/", "SSRF"),
+            ("https://api.target.com/download?file=readme.txt", "Path"),
+            ("https://api.target.com/api/render?template=invoice", "RCE"),
+            ("https://api.target.com/api/search?q=test&sort=created_at", "SQLi"),
+        ],
+    )
+    def test_semantic_ranking_maps_common_high_value_surfaces(self, tmp_path, url, expected_class):
+        _seed_recon(tmp_path, "x.com", [url])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+
+        endpoint = _canonicalize_endpoint(url)
+        gaps = [
+            g for g in find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=1.0)
+            if g["endpoint"] == endpoint
+        ]
+
+        assert gaps
+        assert gaps[0]["vuln_class"] == expected_class
+
+    def test_class_relevance_is_soft_signal_not_na(self):
+        rel = class_relevance("/plain/path", "RCE", [])
+        assert rel["relevance_score"] == 0
+        assert rel["relevance_reason"] == ""
 
 
 class TestMarkCell:

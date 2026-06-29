@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,13 +22,13 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.autopilot_state import build_autopilot_state
     from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import VULN_CLASSES, rebuild_matrix, save_matrix
+    from tools.coverage_matrix import high_value_gaps_from_matrix, rebuild_matrix, save_matrix
     from tools.evidence_ledger import build_summary as build_evidence_summary
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_state import build_autopilot_state  # type: ignore
     from context_pack import build_context_pack  # type: ignore
-    from coverage_matrix import VULN_CLASSES, rebuild_matrix, save_matrix  # type: ignore
+    from coverage_matrix import high_value_gaps_from_matrix, rebuild_matrix, save_matrix  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
@@ -82,28 +83,7 @@ def _json_list(items: object) -> list[dict]:
 
 
 def _matrix_gaps(matrix: dict, min_weight: float = 3.0) -> list[dict]:
-    gaps: list[dict] = []
-    for endpoint in matrix.get("endpoints", []):
-        if not isinstance(endpoint, dict):
-            continue
-        try:
-            weight = float(endpoint.get("weight", 1.0) or 1.0)
-        except (TypeError, ValueError):
-            weight = 1.0
-        if weight < min_weight:
-            continue
-        cells = endpoint.get("cells") or {}
-        if not isinstance(cells, dict):
-            continue
-        for vuln_class in VULN_CLASSES:
-            cell = cells.get(vuln_class) or {}
-            if isinstance(cell, dict) and cell.get("status") == "untested":
-                gaps.append({
-                    "endpoint": endpoint.get("endpoint", ""),
-                    "vuln_class": vuln_class,
-                    "weight": weight,
-                })
-    return gaps
+    return high_value_gaps_from_matrix(matrix, min_weight=min_weight)
 
 
 def _matrix_summary(matrix: dict, gaps: list[dict]) -> dict:
@@ -289,9 +269,28 @@ def _next_proposals(
     next_validation = findings.get("next_validation") or {}
     next_report = findings.get("next_report") or {}
     if next_validation:
+        rubric = next_validation.get("rubric") if isinstance(next_validation.get("rubric"), dict) else {}
+        if rubric and not rubric.get("ready", False):
+            missing = ", ".join(str(item) for item in (rubric.get("missing_labels") or [])[:3])
+            evidence_step = ""
+            for action in rubric.get("next_actions") or []:
+                evidence_step = str(action or "").strip()
+                if evidence_step:
+                    break
+            proposals.append(
+                "Candidate evidence gap for finding {id} on {url}: rubric={status}, "
+                "missing={missing}. Next evidence step: {step}. Then rerun /validate "
+                "when the smallest replayable impact proof is captured.".format(
+                    id=next_validation.get("id", "-"),
+                    url=next_validation.get("url", ""),
+                    status=rubric.get("status", "needs-evidence"),
+                    missing=missing or "candidate evidence",
+                    step=evidence_step or "fill the missing candidate evidence item",
+                )
+            )
         proposals.append(
             "Run /validate for finding {id} on {url}; verify replay, A/B diff, "
-            "impact, and red-line safety before report.".format(
+            "impact, evidence rubric, and red-line safety before report.".format(
                 id=next_validation.get("id", "-"),
                 url=next_validation.get("url", ""),
             )
@@ -312,14 +311,52 @@ def _next_proposals(
             f"Run enrichment {next_tool_hint}: {str(hint.get('reason') or '').strip()}"
         )
 
+    repo_source_summary = state.get("repo_source_summary") or {}
+    secret_findings = int(repo_source_summary.get("secret_findings", 0) or 0)
+    if secret_findings > 0:
+        proposals.append(
+            "Secret verification lane: repo/source artifacts contain {count} secret "
+            "finding(s). Triage provider/type/source ownership, then run only the "
+            "minimal safe identity/scope check or record a verification blocker; "
+            "promote to Candidate only with validity/usability and impact path.".format(
+                count=secret_findings,
+            )
+        )
+
+    surface = state.get("surface") or {}
+    for lead in _json_list(surface.get("workflow_leads"))[:5]:
+        if str(lead.get("source") or "") != "evidence_convergence":
+            continue
+        title = str(lead.get("title") or "").strip()
+        next_action = str(lead.get("next_action") or "").strip()
+        evidence = str(lead.get("evidence") or lead.get("category") or "").strip()
+        if title:
+            proposals.append(
+                "Cross-evidence high-value surface {title}: {evidence}. "
+                "Next action: {next_action}. Stop condition: record tested, "
+                "blocked, dead-end, signal, or candidate after focused replay.".format(
+                    title=title,
+                    evidence=evidence[:180],
+                    next_action=next_action[:180] or "focused replay with source/JS/browser evidence",
+                )
+            )
+
     for gap in coverage_gaps[:2]:
+        relevance = ""
+        if int(gap.get("relevance_score", 0) or 0) > 0:
+            reason = str(gap.get("relevance_reason") or "").strip()
+            relevance = ", relevance={score}{reason}".format(
+                score=gap.get("relevance_score", 0),
+                reason=f": {reason}" if reason else "",
+            )
         proposals.append(
             "Cover high-value matrix gap: {endpoint} x {vuln_class} "
-            "(weight={weight}). If red-line risk appears, mark blocked and use "
+            "(weight={weight}{relevance}). If red-line risk appears, mark blocked and use "
             "low-risk evidence instead.".format(
                 endpoint=gap.get("endpoint", ""),
                 vuln_class=gap.get("vuln_class", ""),
                 weight=gap.get("weight", ""),
+                relevance=relevance,
             )
         )
     record_commands = evidence_summary.get("record_commands") or []
@@ -352,6 +389,8 @@ def _classify_next_action(text: str) -> tuple[str, int, str]:
     """把 checkpoint 的自然语言建议归类成 Claude 可消费的执行队列。"""
     value = str(text or "").strip()
     lowered = value.lower()
+    if "candidate evidence gap" in lowered:
+        return "candidate-evidence-gap", 105, "fill missing rubric evidence, then /validate"
     if "run /validate" in lowered:
         return "validation", 100, "/validate"
     if "draft report" in lowered:
@@ -364,6 +403,10 @@ def _classify_next_action(text: str) -> tuple[str, int, str]:
         return "actor-gap", 80, "focused replay + tools/evidence_ledger.py record"
     if "high-value matrix gap" in lowered:
         return "coverage-gap", 75, "focused low-risk probe + evidence ledger"
+    if "cross-evidence high-value surface" in lowered:
+        return "evidence-convergence", 82, "focused replay with browser/JS/source evidence"
+    if "secret verification lane" in lowered:
+        return "secret-verification", 86, "python3 tools/secret_triage.py --file findings/<target>/exposure/repo_secrets.json"
     if "run enrichment run_browser_probe" in lowered:
         return "browser-enrichment", 70, "browser/playwright probe, then /surface"
     if "run enrichment run_source_intel" in lowered:
@@ -375,15 +418,61 @@ def _classify_next_action(text: str) -> tuple[str, int, str]:
     return "next-action", 50, "execute the smallest safe evidence-producing step"
 
 
+def _extract_action_metadata(text: str) -> dict:
+    """从 checkpoint 的动作文本中提取可机器消费的轻量字段。
+
+    target_write_back 仍保持人类可读文本；action queue 额外保存这些字段，
+    让后续执行/resolve 不必重新从自然语言猜 endpoint 和漏洞类型。
+    """
+    value = str(text or "").strip()
+    metadata: dict = {}
+
+    match = re.search(
+        r"Cover high-value matrix gap:\s+(?P<endpoint>\S+)\s+x\s+"
+        r"(?P<vuln>[A-Za-z0-9_-]+)\s+\(weight=(?P<weight>[^,\)]+)"
+        r"(?:,\s*relevance=(?P<score>\d+)(?::\s*(?P<reason>[^\)]+))?)?\)",
+        value,
+    )
+    if match:
+        metadata.update({
+            "endpoint": match.group("endpoint"),
+            "vuln_class": match.group("vuln"),
+            "weight": match.group("weight"),
+        })
+        if match.group("score"):
+            metadata["relevance_score"] = int(match.group("score"))
+        if match.group("reason"):
+            metadata["relevance_reason"] = match.group("reason").strip()
+        return metadata
+
+    match = re.search(
+        r"Cover actor matrix gap:\s+(?P<endpoint>\S+)\s+x\s+"
+        r"(?P<vuln>[A-Za-z0-9_-]+)\s+with\s+"
+        r"(?P<actor>[^/]+)/(?P<object_scope>[^/]+)/(?P<variant>\S+)",
+        value,
+    )
+    if match:
+        metadata.update({
+            "endpoint": match.group("endpoint"),
+            "vuln_class": match.group("vuln"),
+            "actor": match.group("actor"),
+            "object_scope": match.group("object_scope"),
+            "variant": match.group("variant"),
+        })
+
+    return metadata
+
+
 def _build_next_action_queue(next_items: list[str]) -> list[dict]:
     queue: list[dict] = []
     for idx, item in enumerate(next_items, 1):
         action_type, priority, command_hint = _classify_next_action(item)
+        metadata = _extract_action_metadata(item)
         redline_required = any(
             token in item.lower()
             for token in ("red-line", "state", "mutation", "unsafe", "role", "actor")
         )
-        queue.append({
+        row = {
             "id": f"A{idx}",
             "priority": priority,
             "type": action_type,
@@ -392,10 +481,13 @@ def _build_next_action_queue(next_items: list[str]) -> list[dict]:
             "command_hint": command_hint,
             "redline_required": redline_required,
             "stop_condition": (
-                "record tested_clean, blocked, dead-end, candidate, or validated finding "
+                "record tested, blocked, dead-end, candidate, or validated finding "
                 "before moving to the next queued action"
             ),
-        })
+        }
+        if metadata:
+            row["metadata"] = metadata
+        queue.append(row)
     queue.sort(key=lambda item: (-int(item["priority"]), str(item["id"])))
     return queue
 

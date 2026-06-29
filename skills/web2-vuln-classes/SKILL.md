@@ -23,12 +23,30 @@ Root cause, pattern, bypass table, chaining opportunity, real paid examples.
 2. 根据漏洞类别选择当前测试路径，再按需调用知识库；不要默认全量读取 payload 或参考资料。
 3. 知识库调用表：
    - API 越权 / 多租户：`knowledge/cards/api-idor.md`
+   - API testing / docs/schema / parser/auth matrix：`knowledge/cards/api-testing-workflow.md`
+   - 业务逻辑 / 状态机 / 客户端信任：`knowledge/cards/business-logic-state-machines.md`
    - 认证 / 角色 / 组织边界：`knowledge/cards/auth-access.md`
+   - JWT / OAuth / SAML / SSO token 边界：`knowledge/cards/auth-sso-token-edge-cases.md`
+   - 密码重置 / 用户名枚举 / MFA / 凭证流程：`knowledge/cards/auth-credential-recovery-flows.md`
    - 缺参信号 / 隐藏参数发现：`knowledge/cards/missing-parameter-discovery.md`
    - 目录命名规律 / 管理面暴露：`knowledge/cards/path-pattern-management-exposure.md`
    - URL fetch / webhook / import：`knowledge/cards/ssrf-url-fetch.md`
    - GraphQL / subscription / global ID：`knowledge/cards/graphql.md`
+   - SQLi 非显式输入面：`knowledge/cards/sqli-hidden-surfaces.md`
+   - NoSQL / 查询 operator 注入：`knowledge/cards/nosql-query-injection.md`
+   - XXE / XML parser：`knowledge/cards/xxe-xml-parser.md`
+   - 路径遍历 / LFI / 文件读取：`knowledge/cards/path-traversal-file-read.md`
    - 上传 / 导入 / 解析器链：`knowledge/cards/upload-parser.md`
+   - 上传执行 / 受控 RCE：`knowledge/cards/upload-to-execution.md`, `knowledge/cards/controlled-rce-impact.md`
+   - SSTI / 服务端模板注入：`knowledge/cards/server-side-template-injection.md`, `knowledge/cards/controlled-rce-impact.md`
+   - 反序列化 / Signed Object：`knowledge/cards/insecure-deserialization.md`, `knowledge/cards/controlled-rce-impact.md`
+   - XSS / reflected / stored / DOM context：`knowledge/cards/xss-client-injection.md`
+   - CORS / CSRF / Clickjacking / DOM / postMessage：`knowledge/cards/browser-client-boundaries.md`
+   - Host header / Request smuggling / Cache poisoning/deception：`knowledge/cards/proxy-cache-boundaries.md`
+   - WebSocket / realtime API：`knowledge/cards/websocket-realtime-api.md`
+   - 信息泄露 / source map / config：`knowledge/cards/information-disclosure-source-config.md`
+   - Web LLM / prompt injection / tool call：`knowledge/cards/web-llm-tool-chains.md`
+   - Node / prototype pollution / VM sink：`knowledge/cards/node-prototype-pollution.md`
    - Race / 并发状态差异：`knowledge/cards/race-conditions.md`
 4. 任何可能造成 DDoS、高压流量或破坏性状态改变的动作，先按 `rules/red-lines.md` 降级为只读、dry-run、源码分析或 Lead。
 5. 结束前按 `rules/coverage-gate.md` 输出覆盖状态；Candidate 必须进入 `triage-validation` / `/validate`。
@@ -38,6 +56,71 @@ Root cause, pattern, bypass table, chaining opportunity, real paid examples.
 > login usually need at least one authenticated session. For IDOR/BOLA and
 > privilege escalation, load two identities and diff the same request. See
 > `docs/auth-sessions.md`.
+
+---
+
+## CTF-Web Inspired Pattern Router
+
+Use `/root/tool/ccst/ctf-skills/ctf-web/SKILL.md` as a deep-water routing
+reference, not as a CTF executor. The useful part is the decision shape:
+boundary -> baseline -> hidden surface -> bug family -> primitive -> connector
+-> impact. Do not import flag hunting, admin-bot assumptions, DoS/ReDoS,
+persistent shell, or broad payload spraying into real targets.
+
+### Boundary-First Pass
+
+Before picking payloads, answer these:
+
+```text
+1. Boundary: browser-only, backend-only, mixed app, auth flow, proxy/parser, worker/job?
+2. Baseline: what does one normal request/response look like for this feature?
+3. Hidden surface: what do JS/source/routes/headers/methods/content-types reveal?
+4. Bug family: injection, authz, parser mismatch, upload, token/SSO, state machine, cache/client?
+5. Primitive: can I prove one leak, one bypass, one callback, one marker, or one role diff?
+6. Connector: what adjacent gadget turns that primitive into account, data, authz, or controlled RCE impact?
+```
+
+### Pattern Map
+
+| Evidence signal | Route |
+|---|---|
+| SQL/NoSQL signal but visible params are quiet | Load `knowledge/cards/sqli-hidden-surfaces.md`; inspect header/path/cookie/stored/metadata/sibling inputs. |
+| API docs/schema/XHR/mobile surface appears broad or inconsistent | Load `knowledge/cards/api-testing-workflow.md`; build endpoint+method+auth+object+parser matrix before selecting a vuln lane. |
+| Cart/checkout/coupon/workflow/state machine/client-side control signal appears | Load `knowledge/cards/business-logic-state-machines.md`; map baseline state transitions before mutating one business variable. |
+| Reflected/stored/client XSS signal appears | Load `knowledge/cards/xss-client-injection.md`; identify output context and prove browser execution before impact claims. |
+| Password reset, username enumeration, MFA/OTP, remember-me, lockout or credential-testing signal appears | Load `knowledge/cards/auth-credential-recovery-flows.md`; model token/account/session binding and controlled testing boundaries. |
+| URL fetch, webhook, import URL, PDF/image converter, redirect parser | Start `ssrf-url-fetch`; only after server-side fetch proof, add `ssrf-internal-impact`. |
+| Upload/import/archive/PDF/image/metadata participates in backend logic | Start `upload-parser`; if storage+access+execution primitive appears, add `upload-to-execution` and `controlled-rce-impact`. |
+| JWT/JWE/JWKS/OAuth/OIDC/SAML/SSO/account linking | Load `auth-sso-token-edge-cases`; compare legal flow baseline, token/callback binding, issuer/key source, and account mapping. |
+| Node/Express/Next/qs/lodash/flat/template/VM evidence | Load `node-prototype-pollution`; prove merge/path-set source and observable sink before any execution claim. |
+| Parser/proxy/WAF mismatch: encoded slash, method override, Host/XFH, content-type diff, duplicate params | Route into parser/bypass lane and `rules/playbook-router.md`; change one boundary at a time. |
+| Low-impact redirect, self-XSS, cookie/header injection, CORS/cache oddity | Do not report alone; search for connector gadgets: OAuth redirect, CSRF, account-linking, cache poisoning, role/object diff. |
+| Source/config/secret/file read signal | Treat as a chain seed: find session signing, token forging, internal endpoint, dependency CVE, or controlled execution path. |
+
+### Chain Shapes
+
+Prefer chain reasoning when a single primitive is low value:
+
+```text
+hidden route -> auth bypass -> internal file/config -> token/session impact
+traversal/upload -> source/config leak -> signing secret or dependency path -> controlled impact
+SSRF -> internal status/API/metadata -> credential/control-plane hypothesis -> minimal proof
+SQLi/NoSQLi -> auth/session/data primitive -> second-stage template/upload/authz abuse
+token/SSO binding bug -> wrong identity/session/tenant -> account or organization impact
+prototype pollution -> marker primitive -> auth/template/VM sink -> controlled RCE only if sink is real
+```
+
+Output each chain seed as:
+
+```text
+Evidence:
+Primitive:
+Connector:
+Impact hypothesis:
+Next action:
+Stop condition:
+Related card/reference:
+```
 
 ---
 
@@ -280,6 +363,28 @@ if (user.role === 'admin') showAdminButton();
 ### Real Paid Examples
 - **HackerOne TrustHub**: `POST /graphql` with `TrustHubQuery` — no auth, regular user reads all vendors (CVSS 8.7 High)
 - **Vienna Chatbot**: WebSocket `get_history` accepts arbitrary UUID — no ownership check (P2)
+
+### Access-Control Boundary Matrix
+
+When a route is blocked by UI, 401/403, proxy, or admin middleware, load
+`knowledge/cards/auth-access.md` and compare one boundary at a time:
+
+```text
+same session + same operation -> method diff -> path/header rewrite -> raw replay
+```
+
+- Method-based: compare the admin/browser method against GET/POST/PUT/PATCH and
+  `X-HTTP-Method-Override`; move parameters between query/body only one at a time.
+- URL-based: compare direct `/admin` or sensitive path denial against
+  `X-Original-URL` / `X-Rewrite-URL`; if the backend splits path and query, keep
+  operation params on the outer URL while the header carries the internal path.
+- Referer-based: browsers may forbid setting `Referer` from `fetch`; use Burp,
+  curl, or Playwright request/raw replay with the low-privileged session before
+  calling the lane clean.
+
+Candidate requires the low-privileged or anonymous actor to read data or complete
+an operation that should require a higher privilege. Different error pages,
+router 404s, or WAF blocks stay as Signals/Dead ends.
 
 ---
 
@@ -842,6 +947,7 @@ curl -s -I -H "Origin: https://evil.com" https://target.com/api/user/me
 | `Access-Control-Allow-Origin: *` without credentials | Usually low unless paired with token-in-response data |
 | `Origin: null` accepted | Check sandboxed/file/mobile WebView flows |
 | Prefix/suffix allowlist | Try parser mismatch such as subdomain, case, trailing dot |
+| Trusted insecure origin accepted | Need a JS/control gadget on that origin, such as reflected XSS, subdomain takeover, or downgrade page, then prove credentialed read |
 | `*.target.com` trusted | Chain with subdomain takeover or trusted-subdomain XSS |
 | Simple request accepted | Preflight absence may matter for state-changing endpoints; record risk before invoking writes |
 

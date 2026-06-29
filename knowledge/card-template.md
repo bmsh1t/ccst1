@@ -1,47 +1,120 @@
-# 知识卡模板
+# 知识卡模板 v2
 
 复制本模板创建新的知识卡。文件名使用小写短横线，例如 `oauth-sso.md`。
 
+知识库是经验压缩库，不只是联想种子。知识卡可以沉淀思路、技巧家族、
+payload 家族、WAF/解析绕过、补充 checklist、最小验证、误判/死路和可复用
+经验，但不能接管 Skill 的流程决策。
+
+新卡优先使用 v2 结构：front matter metadata + Quick Recall + 正文结构 +
+深度附录引用。旧卡可以逐步迁移，不需要一次性重写。
+
 ```md
+---
+id: short-card-id
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+trigger_tags:
+  - example-tag
+risk: low
+maturity: draft
+load_priority: medium
+deep_refs:
+  - knowledge/payloads/example.md
+---
+
 # 知识卡标题
 
-## 适用场景
+## Quick Recall
 
-- 什么时候应该想到这张卡
+- 10-20 行内说清本卡最重要的触发信号、核心思路、最小验证和停止条件。
+- Quick Recall 用于 context-pack / Skill 快速回忆；不要放大段 payload。
+
+## 能力定位
+
+- 本卡解决什么问题，给哪个 Skill 补充什么能力。
+- 说明它是供料层：提供思路、知识、技巧和补漏点，不替代 Skill 指挥。
 
 ## 触发信号
 
-- URL、参数、响应、源码、JS、浏览器状态、错误信息等具体证据
+- URL、参数、响应、源码、JS、浏览器状态、错误信息、版本、组件、业务流程等具体证据。
+- 哪些信号说明应该读取本卡。
 
-## 发散问题
+## 思路分支
 
-- 让 Claude 多问几个有价值的问题
+- 从哪些角度展开攻击面或验证路径。
+- 如何从当前证据横向扩展、纵向深入、链到更高影响。
 
-## 推荐动作
+## 技巧家族 / Payload 家族
 
-- 最小、可验证、低副作用的下一步
+- 可复用的技巧类别、payload 形态、编码/解析差异、WAF 绕过思路、协议/框架特性等。
+- 示例必须是启发式候选，不是固定字典或穷尽清单。
+- 大型 payload、绕过矩阵、工具参数和长案例放到 `knowledge/payloads/` 或其他深度附录，本节只写路由和代表形态。
+
+## 补充 Checklist
+
+- 当前 Skill 容易漏掉的输入面、边界、角色、状态、组件、二阶链路或证据点。
+- Checklist 只用于防漏，不决定固定执行顺序。
+
+## 最小验证
+
+- 低风险、可复现、单变量、可记录证据的验证方式。
+- 需要哪些 baseline、对照组、角色/对象/状态差异或可达性证据。
+
+## 常见误判 / 死路
+
+- 哪些信号容易误判。
+- 什么情况下应该降级为 Signal、dead-end、blocked 或转其他 Skill。
 
 ## 关联 Skills
 
 - `skill-name`
 
-## 停止条件
+## 晋升到 Skill / Queue 的条件
 
-- 什么情况下放弃该方向，避免无效消耗
-
-## 检查要求
-
-- 验证标准、证据要求、禁止只凭猜测升级
+- 什么时候只是知识启发。
+- 什么时候应交给当前 Skill 决策。
+- 什么时候应写入 `tools/action_queue.py` 成为可执行 action。
 
 ## 可晋升经验
 
-- 哪些目标层经验可以沉淀回本卡
+- 哪些目标层经验可以沉淀回本卡。
 ```
+
+## Metadata 字段
+
+| 字段 | 含义 |
+|---|---|
+| `id` | 与文件名一致的稳定 ID |
+| `type` | `technique-card` / `payload-pack` / `checklist-card` / `dead-end-card` / `product-card` / `workflow-card` |
+| `related_skills` | 推荐读取本卡的 Skills |
+| `trigger_tags` | context-pack / Skill 路由可使用的证据标签 |
+| `risk` | `low` / `medium` / `high`，指验证动作风险，不是漏洞严重性 |
+| `maturity` | `draft` / `tested` / `proven` |
+| `load_priority` | `low` / `medium` / `high` |
+| `deep_refs` | payload、bypass、长案例或外部参考附录路径；可以指向本地 `ctf-web` 原文，但只能按需读取 |
+| `updated` | 可选，最后人工维护日期 |
+
+## 知识类型
+
+- `technique-card`：技巧、手法、测试思路。
+- `payload-pack`：payload 家族和变体，通常放在 `knowledge/payloads/`。
+- `checklist-card`：补漏项和覆盖提醒。
+- `dead-end-card`：误判、低价值方向和停止条件。
+- `product-card`：特定组件、框架、产品或版本族经验。
+- `workflow-card`：流程组织、验证顺序、复盘和协作经验。
 
 ## 编写规则
 
-- 写思路，不写大段 payload。
+- 写思路、技巧家族、payload 家族和验证模型，不写无上下文的大段 payload dump。
 - 写触发信号，不写空泛教程。
-- 写停止条件，避免知识库只会扩散不会收敛。
-- 写检查要求，确保输出能回到验证 gate。
+- 写补充 checklist，但不要把 checklist 写成固定流程或固定顺序。
+- 写最小验证和停止/降级条件，避免知识库只会扩散不会收敛。
+- 写常见误判，确保输出能回到验证 gate。
+- 示例可以具体，例如参数名、header、payload 形态、绕过类别；但必须说明它们是候选形态，不是固定字典。
+- front matter 和 Quick Recall 要保持短小，便于 context-pack 快速加载。
+- 深度 payload / bypass / 长案例使用 `deep_refs` 按需加载，避免污染常规上下文。
+- `ctf-web` 这类深度参考只作为技巧来源：吸收思路、变形和验证模型，不照搬
+  拿 flag、DoS/ReDoS、持久 shell、批量读取或纯 CTF 终局流程。
 - 不保存真实凭证、个人数据、客户数据或未经脱敏的响应正文。

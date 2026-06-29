@@ -45,7 +45,7 @@ Success signal: `findings/<target>/summary.json`, `findings/<target>/findings.js
 2. ROUTE     Select the main Skill using skills/runtime-protocol.md
 3. RANK      Pick the highest-value P1 workflow: account, admin, API, export, upload, webhook, GraphQL, invite, report/download
 4. KNOWLEDGE Load only 1-2 relevant cards from knowledge/index.md when a lane needs deeper thinking
-5. CHECK     Apply rules/red-lines.md before high-volume or state-changing actions
+5. CHECK     Apply rules/red-lines.md before high-volume traffic, destructive changes to real data, active stored XSS payloads, or race-style load
 6. ATTACK    Reduce one hypothesis to exact requests: auth, role, object, method, version, body diff
 7. CHAIN     Check siblings, roles, versions, and side effects when a signal appears
 8. RECORD    Preserve leads/signals/candidates with exact next evidence actions in target memory

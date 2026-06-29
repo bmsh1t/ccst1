@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "fofamap": {
+      "command": "python3",
+      "args": [
+        "/absolute/path/to/FofaMap/mcp_server.py"
+      ],
+      "env": {
+        "SHODAN_API_KEY": "${SHODAN_API_KEY}"
+      }
+    }
+  }
+}

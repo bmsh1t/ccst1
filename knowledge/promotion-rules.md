@@ -32,9 +32,14 @@
 ```text
 Evidence pattern: 触发它的证据形态
 Why it matters: 为什么值得测
+Thought branches: 可以如何扩展思路
+Technique / payload / bypass family: 可复用技巧或 payload/bypass 家族
+Checklist gap: 容易漏掉的检查点
 Next action: 最小验证动作
 Stop condition: 何时停止
 Validation requirement: 进入 Candidate 前需要什么证据
+False positives / dead ends: 常见误判或死路
+Promote to Skill / Queue when: 什么时候交给 Skill 或 action queue
 ```
 
 ## 从目标层晋升

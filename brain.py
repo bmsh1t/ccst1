@@ -145,7 +145,17 @@ class LLMClient:
             for provider, env_name in self.PROVIDER_KEY_ENV.items()
             if os.environ.get(env_name)
         ]
-        rest = [provider for provider in self.PROVIDER_PRIORITY if provider not in key_providers]
+        if key_providers:
+            # When the operator configured explicit cloud keys, probe those
+            # first and then fall back only to local/default providers. Do not
+            # spend startup time probing every unconfigured cloud backend.
+            rest = [
+                provider
+                for provider in self.PROVIDER_PRIORITY
+                if provider not in key_providers and provider in {"ollama", "claude"}
+            ]
+        else:
+            rest = [provider for provider in self.PROVIDER_PRIORITY if provider not in key_providers]
         for p in key_providers + rest:
             try:
                 self._init_provider(p)

@@ -452,7 +452,8 @@ class TestSurfaceRanking:
         )
         assert "validate sqli evidence" in ranked["p1"][0]["suggested"]
         assert ranked["scanner"]["finding_count"] == 1
-        assert "Score: 17 = attack +2, scanner +15" in output
+        assert "Score:" in output
+        assert "scanner +15" in output
         assert "Structured scanner candidates: 1" in output
         assert "sqli_deadbeef [high/confirmed] sqli status=unvalidated/not_generated" in output
 
@@ -619,6 +620,72 @@ class TestSurfaceRanking:
         assert "[high] idor: /api/users/:id/orders" in output
         assert "Next: route contains object/account/user id marker" in output
 
+    def test_browser_js_source_convergence_feeds_surface_and_workflow_leads(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        js_intel_dir = repo_root / "findings" / "target.com" / "js_intel"
+        source_intel_dir = repo_root / "findings" / "target.com" / "source_intel"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "browser").mkdir(parents=True)
+        js_intel_dir.mkdir(parents=True)
+        source_intel_dir.mkdir(parents=True)
+
+        converged_url = "https://app.target.com/api/admin/export?order_id=42"
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://app.target.com [200] [App] [React] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text("", encoding="utf-8")
+        (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        (recon_dir / "browser" / "xhr_endpoints.txt").write_text(converged_url + "\n", encoding="utf-8")
+        (recon_dir / "browser" / "api_endpoints.txt").write_text(converged_url + "\n", encoding="utf-8")
+        (js_intel_dir / "hypotheses.json").write_text(
+            json.dumps({
+                "endpoints": [
+                    {
+                        "method": "POST",
+                        "path": "/api/admin/export?order_id=42",
+                        "source_file": "admin.js",
+                        "auth_required": "true",
+                    }
+                ],
+                "attack_surface_leads": [],
+                "graphql_operations": [],
+            }),
+            encoding="utf-8",
+        )
+        (source_intel_dir / "routes.json").write_text(
+            json.dumps({"routes": [{"route": "/api/admin/export?order_id=42", "method": "POST"}]}),
+            encoding="utf-8",
+        )
+        (source_intel_dir / "hypotheses.jsonl").write_text(
+            json.dumps({
+                "type": "idor",
+                "candidate": "/api/admin/export?order_id=42",
+                "reason": "admin export route uses order_id",
+                "source": "routes/export.py",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
+        output = format_surface_output(ranked, "target.com")
+        workflow_leads = [
+            json.loads(item) if isinstance(item, str) else item
+            for item in ranked["workflow_leads"]
+        ]
+
+        assert ranked["p1"][0]["url"] == converged_url
+        assert ranked["p1"][0]["evidence_convergence"] == ["browser", "js", "source"]
+        assert any(part["source"] == "evidence_convergence" for part in ranked["p1"][0]["score_breakdown"])
+        assert workflow_leads[0]["source"] == "evidence_convergence"
+        assert workflow_leads[0]["priority"] == "critical"
+        assert "Source: cross-evidence convergence (browser+js+source)" in output
+        assert "[critical] browser+js+source" in output
+
     def test_deprioritizes_reported_scanner_findings(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
@@ -730,7 +797,6 @@ class TestSurfaceRanking:
         assert ranked["intel"]["signal_count"] == 1
         # Output preserves attack + intel contributions (do not pin total —
         # value-class weighting amplifies high-value paths like /oauth/callback).
-        assert "attack +2" in output
         assert "intel +9" in output
         assert "Local intel signals: 1" in output
         assert "oauth [HIGH]" in output

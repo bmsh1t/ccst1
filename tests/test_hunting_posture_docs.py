@@ -49,3 +49,39 @@ def test_bb_methodology_references_high_intensity_hunting_posture():
     assert "不来自高压流量、凑步骤或破坏性利用" in text
     assert "高价值漏洞族覆盖模型" in text
     assert "不固定偏向某几个漏洞类别" in text
+
+
+def test_runtime_protocol_preserves_discovery_driven_exploration():
+    text = _read("skills/runtime-protocol.md")
+
+    assert "Discovery / Exploitation / Validation modes" in text
+    assert "Evidence-driven depth does not mean evidence-only testing" in text
+    assert "Discovery-driven discovery" in text
+    assert "actively generate new evidence" in text
+    assert "AI override" in text
+    assert "red-line status" in text
+
+
+def test_autopilot_docs_keep_discovery_as_first_class_mode():
+    command = _read("commands/autopilot.md")
+    agent = _read("agents/autopilot.md")
+
+    for text in (command, agent):
+        assert "Discovery / Exploitation / Validation Modes" in text
+        assert "Evidence-driven depth does not mean evidence-only testing" in text
+        assert "actively generate new evidence" in text
+        assert "browser-observed APIs" in text
+        assert "JS/source-derived routes" in text
+        assert "component/CVE intelligence" in text
+        assert "AI override" in text
+        assert "not hard rails" in text
+
+
+def test_coverage_gate_treats_underexplored_unknown_as_gap():
+    text = _read("rules/coverage-gate.md")
+
+    assert "## Discovery Gap" in text
+    assert "`unknown` is not a final completion state" in text
+    assert "surface is underexplored" in text
+    assert "actively generate new evidence" in text
+    assert "不能把它写成 `tested`" in text

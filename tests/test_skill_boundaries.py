@@ -74,6 +74,58 @@ def test_hidden_auth_switches_are_part_of_skill_flow():
     assert "管理员预留特权参数" in context_pack
 
 
+def test_access_control_boundary_matrix_is_part_of_skill_flow():
+    web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
+    card = (REPO_ROOT / "knowledge" / "cards" / "auth-access.md").read_text(encoding="utf-8")
+    context_pack = (REPO_ROOT / "tools" / "context_pack.py").read_text(encoding="utf-8")
+
+    assert "### Access-Control Boundary Matrix" in web2
+    assert "method diff -> path/header rewrite -> raw replay" in web2
+    assert "X-Original-URL" in web2
+    assert "Referer" in web2
+    assert "Playwright request/raw replay" in web2
+    assert "URL-based access 最小验证" in card
+    assert "Referer-based access 最小验证" in card
+    assert "raw replay" in card
+    assert "浏览器 fetch 不能设置受限头时不要据此停止" in context_pack
+
+
+def test_ctf_web_skill_is_used_as_pattern_router_not_executor():
+    runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+    web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
+    methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "## 2.2 Web 深水区启发式路由" in runtime
+    assert "boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -> impact" in runtime
+    assert "不照搬 CTF 的 flag 路径" in runtime
+
+    assert "## CTF-Web Inspired Pattern Router" in web2
+    assert "/root/tool/ccst/ctf-skills/ctf-web/SKILL.md" in web2
+    assert "boundary -> baseline -> hidden surface -> bug family -> primitive -> connector" in web2
+    assert "Source/config/secret/file read signal" in web2
+    assert "Do not import flag hunting" in web2
+
+    assert "### CTF-Web Pivot Prompts" in methodology
+    assert "Primitive:" in web2
+    assert "Connector:" in web2
+    assert "Do not copy flag" in methodology
+
+
+def test_layer_placement_standard_keeps_skills_small_and_project_aligned():
+    runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+
+    assert "## 2.3 层级归属标准" in runtime
+    assert "符合当前项目架构" in runtime
+    assert "Skill 不是越大越好" in runtime
+    assert "会改变执行路线、判断顺序、阶段切换、升级/停止条件" in runtime
+    assert "技巧、payload、bypass、案例、经验、发散思路、补充 checklist" in runtime
+    assert "`deep_refs`" in runtime
+    assert "Tools / action queue" in runtime
+    assert "Rules / checks" in runtime
+    assert "不确定归属时，先放知识库或 `deep_refs`" in runtime
+    assert "不为“让 Skill 知道更多”扩写 Skill" in runtime
+
+
 def test_missing_parameter_discovery_is_part_of_skill_flow():
     runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     recon = (REPO_ROOT / "skills" / "web2-recon" / "SKILL.md").read_text(encoding="utf-8")

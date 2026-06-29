@@ -46,6 +46,38 @@ Run full validation on the current finding before writing a report.
 - PASS cases hand off to `/report`; non-PASS cases hand off back to hunt with a
   concrete next evidence step
 
+## Candidate Evidence Rubric
+
+`/validate` now reads the candidate evidence rubric when launched from
+`findings.json`. The rubric is a soft evidence upgrade gate: it does not block
+Claude from exploring, but it tells the agent what proof is still missing before
+the issue should be treated as report-ready.
+
+Core rubric families:
+
+- **Authz / IDOR / business logic** — actor/role/object diff, exact request,
+  observable response/action delta, concrete business impact.
+- **SQLi / NoSQLi** — baseline vs single-variable perturbation, stable
+  differential signal, reproducibility, bounded read-only impact proof.
+- **SSRF** — controlled callback or server-side fetch proof, server-side
+  context, safe internal/metadata/target-owned impact path, exact request.
+- **RCE / SSTI / command injection / deserialization** — inert marker or safe
+  calculation, execution/evaluation context, exact trigger request, bounded
+  non-destructive impact proof.
+- **Upload / parser / file-flow** — upload accepted, storage/parser/render path,
+  impact transition, harmless bounded artifact.
+- **Secret / key exposure** — type/source/line, ownership context,
+  validity/usability or safe-verification blocker, concrete impact path.
+- **XXE / LFI / traversal** — controlled read-only proof, baseline diff,
+  target-owned boundary/impact, exact request.
+- **Known software / CVE** — exact component/version, advisory affected range,
+  reachable feature/precondition, safe applicability PoC.
+
+When the rubric says `needs-evidence` or `signal-only`, continue with the
+smallest suggested evidence step instead of writing a report. When it says
+`candidate-ready`, still run the normal 4 validation gates and CVSS/report
+quality checks.
+
 Use `/validate` when a Lead or Signal has become a Candidate, or when preparing
 `/report`. It is a strict pre-report/pre-submit gate, not a hunt-phase
 kill-switch for raw leads, anomalies, hypotheses, or chain seeds.

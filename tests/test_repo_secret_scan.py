@@ -18,6 +18,9 @@ def test_scan_repo_secrets_finds_high_signal_material(tmp_path):
     assert "config-env-file" in rule_ids
     assert "aws-access-key" in rule_ids
     assert "private-key-rsa" in rule_ids
+    aws = next(finding for finding in findings if finding.rule_id == "aws-access-key")
+    assert aws.metadata["secret_triage"]["type"] == "aws-access-key"
+    assert aws.metadata["secret_triage"]["candidate_status"] == "needs-safe-verification"
 
 
 def test_scan_repo_secrets_requires_name_and_value_for_low_confidence_hits(tmp_path):
@@ -62,3 +65,4 @@ def test_scan_repo_secrets_merges_gitleaks_findings(monkeypatch, tmp_path):
     assert findings[0].rule_id == "generic-api-key"
     assert findings[0].file_path == "config/prod.env"
     assert findings[0].line_number == 12
+    assert findings[0].metadata["secret_triage"]["type"] == "github-token"

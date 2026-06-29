@@ -738,6 +738,17 @@ then
     TARGET_KIND="cidr"
 fi
 
+TARGET_HAS_EXPLICIT_PORT="false"
+TARGET_HTTP_SEED=""
+if [[ "$TARGET" != *"://"* ]] && [[ "$(printf '%s' "$TARGET" | awk -F: '{print NF-1}')" = "1" ]]; then
+    TARGET_HOST_PART="${TARGET%:*}"
+    TARGET_PORT_PART="${TARGET##*:}"
+    if [[ -n "$TARGET_HOST_PART" ]] && [[ "$TARGET_PORT_PART" =~ ^[0-9]+$ ]] && [ "$TARGET_PORT_PART" -ge 1 ] && [ "$TARGET_PORT_PART" -le 65535 ]; then
+        TARGET_HAS_EXPLICIT_PORT="true"
+        TARGET_HTTP_SEED="http://$TARGET"
+    fi
+fi
+
 RECON_TARGET_KEY="${TARGET//\//_}"
 RECON_DIR="$BASE_DIR/recon/$RECON_TARGET_KEY"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -780,12 +791,49 @@ touch "$RECON_DIR/subdomains/all.txt" \
       "$RECON_DIR/exposure/external_service_hosts.txt"
 
 # Clear regenerated summary files so reruns cannot inherit stale counters.
+: > "$RECON_DIR/live/httpx_full.txt"
+: > "$RECON_DIR/live/urls.txt"
+: > "$RECON_DIR/live/seed_urls.txt"
 : > "$RECON_DIR/live/wafw00f_hits.txt"
 : > "$RECON_DIR/live/unwaf_bypass_ips.txt"
 : > "$RECON_DIR/live/origin_candidates.txt"
+: > "$RECON_DIR/live/status_200.txt"
+: > "$RECON_DIR/live/status_3xx.txt"
+: > "$RECON_DIR/live/status_401.txt"
+: > "$RECON_DIR/live/status_403.txt"
 : > "$RECON_DIR/ports/open_ports.txt"
 : > "$RECON_DIR/ports/open_ports_naabu.txt"
 : > "$RECON_DIR/ports/open_ports_all.txt"
+: > "$RECON_DIR/urls/gau.txt"
+: > "$RECON_DIR/urls/wayback.txt"
+: > "$RECON_DIR/urls/waymore.txt"
+: > "$RECON_DIR/urls/katana.txt"
+: > "$RECON_DIR/urls/katana_targets.txt"
+: > "$RECON_DIR/urls/all.txt"
+: > "$RECON_DIR/urls/all_filtered.txt"
+: > "$RECON_DIR/urls/with_params.txt"
+: > "$RECON_DIR/urls/with_params_filtered.txt"
+: > "$RECON_DIR/urls/js_files.txt"
+: > "$RECON_DIR/urls/js_files_filtered.txt"
+: > "$RECON_DIR/urls/api_endpoints.txt"
+: > "$RECON_DIR/urls/api_endpoints_filtered.txt"
+: > "$RECON_DIR/urls/sensitive_paths.txt"
+: > "$RECON_DIR/urls/sensitive_paths_filtered.txt"
+: > "$RECON_DIR/js/endpoints.txt"
+: > "$RECON_DIR/js/potential_secrets.txt"
+: > "$RECON_DIR/js/linkfinder_endpoints.txt"
+
+ensure_explicit_port_seed_live() {
+    if [ ! -s "$RECON_DIR/live/urls.txt" ] && [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ] && [ -n "$TARGET_HTTP_SEED" ]; then
+        local seed_http_code
+        seed_http_code="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' "${BB_AUTH_ARGS[@]}" --max-time 5 "$TARGET_HTTP_SEED" 2>/dev/null || true)"
+        if [[ "$seed_http_code" =~ ^(2|3)[0-9][0-9]$ ]] || [ "$seed_http_code" = "401" ] || [ "$seed_http_code" = "403" ]; then
+            printf '%s\n' "$TARGET_HTTP_SEED" > "$RECON_DIR/live/urls.txt"
+            printf '%s\n' "$TARGET_HTTP_SEED" > "$RECON_DIR/live/seed_urls.txt"
+            printf '%s [%s] [seed]\n' "$TARGET_HTTP_SEED" "$seed_http_code" > "$RECON_DIR/live/httpx_full.txt"
+        fi
+    fi
+}
 
 echo "============================================="
 echo "  Recon Engine — $TARGET"
@@ -964,6 +1012,12 @@ elif [ -n "$HTTPX_BIN" ]; then
     # Extract just the URLs for other tools
     awk '{print $1}' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/urls.txt" 2>/dev/null || true
 
+    # Local lab host:port targets can be reachable even when a particular
+    # httpx binary/proxy combination emits no rows. Preserve one explicit
+    # URL seed so `/autopilot 127.0.0.1:PORT` does not start from a false
+    # "no live hosts" state.
+    ensure_explicit_port_seed_live
+
     LIVE_COUNT=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null || echo 0)
     log_done "Live hosts: $LIVE_COUNT"
 
@@ -980,6 +1034,8 @@ elif [ -n "$HTTPX_BIN" ]; then
 else
     log_warn "ProjectDiscovery httpx not installed — skipping"
 fi
+
+ensure_explicit_port_seed_live
 
 LIVE_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
 RESOLVED_TOTAL=$(wc -l < "$DISCOVERY_HOSTS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
@@ -1373,6 +1429,8 @@ fi
 # derived files from previous runs (with_params/js/api/_filtered) must not feed
 # back into the raw URL corpus.
 {
+    [ -s "$RECON_DIR/live/urls.txt" ] && cat "$RECON_DIR/live/urls.txt"
+    [ -s "$RECON_DIR/live/seed_urls.txt" ] && cat "$RECON_DIR/live/seed_urls.txt"
     for url_source in gau wayback waymore katana; do
         [ -s "$RECON_DIR/urls/${url_source}.txt" ] && cat "$RECON_DIR/urls/${url_source}.txt"
     done
@@ -1511,7 +1569,7 @@ if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
         # Extract potential secrets from JS
         head -50 "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
             curl -s "${BB_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
-                grep -oiE '(api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key)["\s]*[:=]["\s]*[a-zA-Z0-9_\-]{8,}' \
+                grep -oiE '([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)["'\''[:space:]]*[:=]["'\''[:space:]]*["'\'' ]?([A-Za-z0-9_./+=:-]{8,})' \
                 >> "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null || true
         done
         if [ -s "$RECON_DIR/js/potential_secrets.txt" ]; then

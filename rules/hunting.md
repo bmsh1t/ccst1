@@ -37,6 +37,9 @@ Core discipline:
 
 - Do not stop just because broad automation found nothing. Scanner silence is
   often the beginning of manual workflow, role, object, and state analysis.
+- Evidence-driven depth does not mean evidence-only testing. When strong
+  signals are absent, switch to Discovery mode and actively generate new
+  evidence from browser/API/JS/source/recon/parameter/path/workflow context.
 - Define the current target boundary first, then map attack surface, rank it,
   run focused validation, and write back what changed.
 - Map broadly before deep-diving, but do not use "more recon" to avoid testing
@@ -327,10 +330,13 @@ exploration leads that still have a clear next evidence step.
 
 ## 17. CREDENTIAL LEAKS NEED EXPLOITATION PROOF
 
-Finding an API key = Informational.
-Proving what the key accesses (S3 read, database, admin panel) = Medium/High.
+Finding an API key = Signal, not a report by itself.
+Proving a target-owned key is valid and creates real security impact can become
+Medium/High, depending on scope and permissions.
 
-Always call the API as the leaked key. Enumerate permissions.
+Do minimal validity/scope proof, then decide whether it is a Candidate. Do not
+treat "leakage risk" as the objective; hunt for a concrete vulnerability and
+impact path.
 
 ## 18. MOBILE = DIFFERENT ATTACK SURFACE
 

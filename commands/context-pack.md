@@ -164,7 +164,7 @@ CONTEXT PACK
 
 - 一轮任务只选一个主 Skill。
 - 一次最多选 1-2 张知识卡。
-- 高风险动作必须加入 `rules/red-lines.md`。
+- 可能改变、破坏或污染真实状态的动作必须加入 `rules/red-lines.md`。
 - 结束前必须加入 `rules/coverage-gate.md`。
 - 上下文包不是结论；它只是执行前的加载计划。
 - browser 证据默认只读 `recon/<target>/browser/` 的 XHR/API/params/form/page-JS 小索引；

@@ -206,6 +206,9 @@ Google Dorks -> JS file download -> Hidden param discovery -> API mapping
 | OAuth/SAML authentication | OAuth/SAML checklist |
 | API with ID parameters | Phase 3, target IDOR |
 | API returns missing/null/type/schema/validator parameter error | Load `knowledge/cards/missing-parameter-discovery.md`, build target-specific param words, then verify low-risk response shape |
+| JWT/JWE/JWKS/OAuth/OIDC/SAML/token/account-linking edge | Load `knowledge/cards/auth-sso-token-edge-cases.md`, capture legal-flow baseline, then test binding differences |
+| Node/Express/Next/prototype/VM/template evidence | Load `knowledge/cards/node-prototype-pollution.md`, prove source+sink before exploit claims |
+| Parser/proxy mismatch, encoded path, method/content-type diff | Route to `rules/playbook-router.md`; change one boundary at a time |
 | Complex business logic workflow | Phase 3, target BizLogic |
 | postMessage listeners | DOM analysis, postMessage-tracker |
 
@@ -229,10 +232,14 @@ What input are you testing?
 |   -> Load knowledge/cards/sqli-hidden-surfaces.md, then enumerate target-relevant non-obvious input surfaces
 +-- URL input / webhook / PDF gen
 |   -> SSRF checklist
++-- JWT / OAuth / SAML / SSO callback / account linking
+|   -> Load knowledge/cards/auth-sso-token-edge-cases.md; compare legal-flow baseline, token/callback binding, issuer/key source, identity mapping
 +-- Text field reflected in page
 |   -> XSS (DOM or reflected)
 +-- File upload
-|   -> SVG XSS, web shell, path traversal
+|   -> Upload/parser lane; if storage+access+execution primitive appears, load upload-to-execution and controlled-rce-impact
++-- Node / Express / prototype / template / VM sink
+|   -> Load knowledge/cards/node-prototype-pollution.md; prove merge/path-set source and observable sink
 +-- Quota / checkout / OTP / workflow state
 |   -> Business logic, race conditions
 +-- Login / 2FA / password reset
@@ -266,6 +273,25 @@ callbacks. Full 4-command workflow lives in `commands/hunt.md` →
 | Blocked by WAF/CSP/403 | Bypass techniques, then retry |
 | Known software vuln (CVE) | 1-day speed workflow |
 | Nothing after 20 min on this endpoint | Rotate (20-minute rule) |
+
+### CTF-Web Pivot Prompts
+
+When testing stalls, borrow the decision shape from
+`/root/tool/ccst/ctf-skills/ctf-web/SKILL.md` without importing CTF-only
+assumptions. Ask:
+
+```text
+1. Boundary: browser, backend, auth flow, proxy/parser, worker, cache, or storage?
+2. Baseline: what is one normal request/response for the workflow?
+3. Hidden surface: what did JS/source/routes/headers/methods/content-types reveal?
+4. Primitive: can I prove one role diff, marker, callback, file/config read, or token/session mismatch?
+5. Connector: what turns that primitive into data, account, authz, or controlled RCE impact?
+6. Stop: what evidence would make this a dead end?
+```
+
+Use this to generate new leads, not to force a payload path. Do not copy flag
+paths, admin-bot assumptions, DoS/ReDoS, persistent shell, or broad payload
+spraying into live targets.
 
 ### Phase 4: PROVE & ESCALATE
 

@@ -8,6 +8,7 @@ evidence/*
 evidence/cadence-labs/__pycache__/
 targets/
 config.json
+!mcp/fofamap-client/config.json
 *.burp
 *.json.bak
 

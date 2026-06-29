@@ -79,10 +79,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
@@ -182,6 +183,56 @@ STATUS_VALUES = ("tested_clean", "tested_finding", "untested", "n_a")
 
 DEFAULT_MIN_WEIGHT = 3.0
 
+# 用于 gaps 排序的漏洞类型基础优先级。它不是覆盖范围过滤器，只在
+# endpoint/参数没有明显语义命中时做轻量 tie-break，避免默认永远从
+# VULN_CLASSES 的第一个 IDOR 开始。
+CLASS_IMPACT_PRIORITY = {
+    "RCE": 90,
+    "SQLi": 82,
+    "SSRF": 80,
+    "Authz": 76,
+    "IDOR": 72,
+    "Path": 70,
+    "XXE": 68,
+    "Upload": 64,
+    "GraphQL": 62,
+    "OAuth": 60,
+    "JWT": 58,
+    "Webhook": 55,
+    "Race": 52,
+    "XSS": 45,
+    "CSRF": 40,
+}
+
+
+# endpoint/参数语义到漏洞类型的软关联。这里的职责是“排序和提示更准”，
+# 不是把某类漏洞排除掉；未命中的 cell 仍然保留在矩阵里。
+#
+# 规则保持短而通用：只使用路径段和参数名，不沉淀特定目标 payload。
+_RELEVANCE_RULES: tuple[tuple[str, int, re.Pattern, str], ...] = (
+    ("Authz", 8, re.compile(r"\b(isadmin|is_admin|isstaff|is_staff|issuperuser|is_superuser|role|roles|permission|permissions|privilege|privileges|scope|scopes|acl|policy|owner|superadmin)\b", re.I), "privilege/role parameter"),
+    ("Authz", 5, re.compile(r"/(?:admin|staff|internal|backoffice|console|manage|management)(?:/|$|\b)", re.I), "admin/internal path"),
+    ("IDOR", 6, re.compile(r"\b(userid|user_id|accountid|account_id|orgid|org_id|organizationid|organization_id|tenantid|tenant_id|workspaceid|workspace_id|customerid|customer_id|memberid|member_id|orderid|order_id|invoiceid|invoice_id|objectid|object_id|ownerid|owner_id)\b", re.I), "object/tenant identifier parameter"),
+    ("IDOR", 3, re.compile(r"\b(id|uid|uuid|guid|account|accounts|tenant|tenants|org|organization|workspace|customer|customers|order|orders|invoice|invoices|user|users|member|members|profile|profiles)\b", re.I), "object reference path/parameter"),
+    ("SSRF", 8, re.compile(r"\b(url|uri|callback|callbackurl|callback_url|webhook|fetch|proxy|target|host|hostname|domain|remote|endpoint|imageurl|image_url|avatarurl|avatar_url|feed|oembed|importurl|import_url|sourceurl|source_url)\b", re.I), "server-side fetch candidate parameter"),
+    ("SSRF", 5, re.compile(r"/(?:fetch|proxy|webhook|callback|oembed|import|integrations?)(?:/|$|\b)", re.I), "server-side fetch/webhook path"),
+    ("Path", 8, re.compile(r"\b(file|filepath|file_path|filename|file_name|path|dir|directory|download|export|include|include_path|template|theme|locale|doc|document|attachment|archive)\b", re.I), "file/path selector"),
+    ("Path", 6, re.compile(r"/(?:download|export|file|files|attachment|attachments|include|static|assets|preview)(?:/|$|\b)", re.I), "file download/read path"),
+    ("RCE", 9, re.compile(r"\b(cmd|command|exec|execute|shell|process|template|render|ssti|deserialize|deserialise|unserialize|pickle|yaml|script|workflow|job)\b", re.I), "code/template/deserialization execution candidate"),
+    ("RCE", 6, re.compile(r"/(?:render|template|preview|execute|exec|job|jobs|worker|debug)(?:/|$|\b)", re.I), "render/execution path"),
+    ("SQLi", 7, re.compile(r"\b(q|query|search|filter|filters|sort|order|orderby|order_by|where|select|keyword|term|report|lookup|condition)\b", re.I), "query/filter/search parameter"),
+    ("SQLi", 3, re.compile(r"\b(id|uid|uuid|name|email|username)\b", re.I), "database-backed lookup parameter"),
+    ("XXE", 8, re.compile(r"\b(xml|soap|wsdl|saml|xinclude|xxe|doctype|docx|xlsx|svg|rss|feed)\b", re.I), "XML/parser surface"),
+    ("Upload", 8, re.compile(r"\b(upload|import|file|filename|attachment|avatar|media|document|csv|xlsx|zip|archive)\b", re.I), "upload/import file surface"),
+    ("GraphQL", 9, re.compile(r"\b(graphql|gql|query|mutation|operationname|operation_name|variables)\b|/graphql(?:/|$|\b)", re.I), "GraphQL operation surface"),
+    ("OAuth", 8, re.compile(r"\b(oauth|oidc|saml|sso|redirecturi|redirect_uri|clientid|client_id|state|nonce|pkce|scope|callback)\b", re.I), "OAuth/OIDC/SAML flow surface"),
+    ("JWT", 7, re.compile(r"\b(jwt|token|access_token|refresh_token|id_token|kid|jwks|jwk|jws|bearer|authorization)\b", re.I), "token/JWT surface"),
+    ("Webhook", 8, re.compile(r"\b(webhook|hook|callback|signature|hmac|event|secret)\b|/(?:webhook|hook|callback)(?:/|$|\b)", re.I), "webhook/signature surface"),
+    ("Race", 7, re.compile(r"\b(checkout|payment|pay|refund|redeem|coupon|transfer|withdraw|balance|cart|order|payout|subscription|confirm|approve)\b", re.I), "state-transition/concurrency surface"),
+    ("XSS", 5, re.compile(r"\b(html|content|message|comment|title|name|callback|redirect|return|next|search|q)\b", re.I), "reflection/DOM input surface"),
+    ("CSRF", 5, re.compile(r"\b(csrf|xsrf|state|token|update|change|invite|delete|remove|submit)\b", re.I), "session state-change surface"),
+)
+
 
 def _matrix_path(repo_root: Path, target: str) -> Path:
     return repo_root / "evidence" / target / "coverage_matrix.json"
@@ -273,6 +324,169 @@ def _canonicalize_endpoint(url: str) -> str:
     return path.split("?", 1)[0].split("#", 1)[0]
 
 
+def _split_path_query(url: str) -> tuple[str, str]:
+    """Return (path, query) for full or relative URLs.
+
+    `_canonicalize_endpoint` intentionally drops query strings so rows
+    dedupe correctly. For ranking, however, parameter names are valuable
+    signals (e.g. `isAdmin`, `url`, `file`, `template`), so rebuild keeps
+    a small param-name summary per canonical endpoint.
+    """
+    if not url:
+        return "", ""
+    raw = url.strip()
+    if "://" in raw:
+        try:
+            parsed = urlparse(raw)
+        except ValueError:
+            return "", ""
+        return parsed.path or "/", parsed.query or ""
+    raw = raw.split("#", 1)[0]
+    if "?" not in raw:
+        return raw, ""
+    path, query = raw.split("?", 1)
+    return path or "/", query
+
+
+def _path_with_query(url: str) -> str:
+    """Return relative path plus query, suitable for value/semantic scoring."""
+    path, query = _split_path_query(url)
+    if not path:
+        return ""
+    return f"{path}?{query}" if query else path
+
+
+def _param_names_from_url(url: str) -> set[str]:
+    """Extract query parameter names without storing parameter values."""
+    _path, query = _split_path_query(url)
+    if not query:
+        return set()
+    out: set[str] = set()
+    try:
+        pairs = parse_qsl(query, keep_blank_values=True)
+    except ValueError:
+        pairs = []
+    for key, _value in pairs:
+        key = str(key or "").strip()
+        if key:
+            out.add(key[:80])
+    # parse_qsl may ignore malformed fragments; keep a conservative fallback.
+    for chunk in query.split("&"):
+        key = chunk.split("=", 1)[0].strip()
+        if key:
+            out.add(key[:80])
+    return out
+
+
+def _normalise_signal(value: str) -> str:
+    return re.sub(r"[^a-z0-9_/-]+", " ", str(value or "").lower())
+
+
+def class_relevance(endpoint: str, vuln_class: str, observed_params: object | None = None) -> dict:
+    """Score how naturally a vuln class fits an endpoint.
+
+    This is a soft prioritisation helper for `find-gaps` and checkpoint
+    queues. A score of 0 does NOT mean N/A; it only means “no obvious
+    semantic hint, still untested”.
+    """
+    params: list[str] = []
+    if isinstance(observed_params, list):
+        params = [str(item) for item in observed_params if str(item or "").strip()]
+    elif isinstance(observed_params, (set, tuple)):
+        params = [str(item) for item in observed_params if str(item or "").strip()]
+
+    blob = _normalise_signal(" ".join([endpoint, *params]))
+    score = 0
+    reasons: list[str] = []
+    for klass, points, pattern, reason in _RELEVANCE_RULES:
+        if klass != vuln_class:
+            continue
+        if pattern.search(blob):
+            score += points
+            if reason not in reasons:
+                reasons.append(reason)
+
+    return {
+        "relevance_score": min(score, 20),
+        "relevance_reason": "; ".join(reasons[:3]),
+    }
+
+
+def _semantic_weight_floor(endpoint: str, observed_params: object | None = None) -> float:
+    """Promote obviously high-risk semantic surfaces into high-value gaps.
+
+    Without this, `/api/fetch?url=...` or `/search?q=...` may sit at a
+    generic path weight and never reach the default high-value threshold.
+    The floor is intentionally modest and only affects prioritisation.
+    """
+    max_relevance = 0
+    for vuln_class in VULN_CLASSES:
+        rel = class_relevance(endpoint, vuln_class, observed_params)
+        max_relevance = max(max_relevance, int(rel.get("relevance_score", 0) or 0))
+    if max_relevance >= 7:
+        return DEFAULT_MIN_WEIGHT
+    if max_relevance >= 5:
+        return 2.0
+    return 0.0
+
+
+def _gap_sort_key(gap: dict) -> tuple:
+    """Sort high-value gaps by semantic fit, endpoint value, and impact."""
+    vuln_class = str(gap.get("vuln_class") or "")
+    try:
+        weight = float(gap.get("weight", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        weight = 1.0
+    try:
+        relevance = int(gap.get("relevance_score", 0) or 0)
+    except (TypeError, ValueError):
+        relevance = 0
+    impact = int(CLASS_IMPACT_PRIORITY.get(vuln_class, 0) or 0)
+    class_index = VULN_CLASSES.index(vuln_class) if vuln_class in VULN_CLASSES else len(VULN_CLASSES)
+
+    # 先把“路径/参数明显暗示的漏洞类型”排到泛化 cell 前面；同为语义命中时，
+    # 再结合 endpoint 价值、命中强度和漏洞影响排序。
+    semantic_bucket = 1 if relevance > 0 else 0
+    effective = (weight * 5.0) + (relevance * 3.0) + (impact / 10.0)
+    return (
+        -semantic_bucket,
+        -effective,
+        -relevance,
+        -weight,
+        -impact,
+        str(gap.get("endpoint") or ""),
+        class_index,
+    )
+
+
+def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WEIGHT) -> list[dict]:
+    """Return sorted untested high-value cells from an in-memory matrix."""
+    gaps: list[dict] = []
+    for ep in matrix.get("endpoints", []):
+        if not isinstance(ep, dict):
+            continue
+        try:
+            weight = float(ep.get("weight", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            weight = 1.0
+        if weight < min_weight:
+            continue
+        endpoint = str(ep.get("endpoint") or "")
+        observed_params = ep.get("observed_params") or []
+        for vc, cell in (ep.get("cells") or {}).items():
+            if not isinstance(cell, dict) or cell.get("status") != "untested":
+                continue
+            gap = {
+                "endpoint": endpoint,
+                "vuln_class": vc,
+                "weight": weight,
+            }
+            gap.update(class_relevance(endpoint, vc, observed_params))
+            gaps.append(gap)
+    gaps.sort(key=_gap_sort_key)
+    return gaps
+
+
 def _empty_cells() -> dict[str, dict]:
     return {vc: {"status": "untested"} for vc in VULN_CLASSES}
 
@@ -285,6 +499,8 @@ def _ensure_endpoint(matrix: dict, endpoint: str, weight: float) -> dict:
     new_ep = {
         "endpoint": endpoint,
         "weight": weight,
+        "observed_params": [],
+        "source_count": 0,
         "cells": _empty_cells(),
     }
     matrix.setdefault("endpoints", []).append(new_ep)
@@ -347,24 +563,54 @@ def rebuild_matrix(
         except OSError:
             urls = []
 
-    # Build endpoint set with weights
-    seen: dict[str, float] = {}
+    # Build endpoint set with weights and lightweight param-name signals.
+    # The canonical matrix key remains path-only, but the sorting layer can
+    # now distinguish `/api/admin/users?isAdmin=true` from a generic users
+    # endpoint and avoid always proposing IDOR first.
+    seen: dict[str, dict] = {}
     for raw in urls:
         path = _canonicalize_endpoint(raw)
         if not path:
             continue
-        weight = value_weight(path)
+        params = _param_names_from_url(raw)
+        path_query = _path_with_query(raw) or path
+        weight = max(value_weight(path), value_weight(path_query))
+        meta = seen.setdefault(path, {
+            "weight": 0.0,
+            "params": set(),
+            "source_count": 0,
+        })
+        meta["weight"] = max(float(meta.get("weight", 0.0) or 0.0), weight)
+        meta["params"].update(params)
+        meta["source_count"] = int(meta.get("source_count", 0) or 0) + 1
+
+    # Apply a small semantic weight floor after all params for an endpoint
+    # have been merged. This lets high-risk query surfaces participate in
+    # the high-value queue even when their path alone is generic.
+    filtered_seen: dict[str, dict] = {}
+    for endpoint, meta in seen.items():
+        params = sorted(meta.get("params") or [])
+        weight = max(
+            float(meta.get("weight", 1.0) or 1.0),
+            _semantic_weight_floor(endpoint, params),
+        )
         if weight < min_weight_to_include:
             continue
-        if path not in seen or weight > seen[path]:
-            seen[path] = weight
+        filtered_seen[endpoint] = {
+            "weight": weight,
+            "params": params,
+            "source_count": int(meta.get("source_count", 0) or 0),
+        }
 
     # Merge: keep existing cells, add new endpoints with untested cells
     new_endpoints: list[dict] = []
-    for endpoint, weight in seen.items():
+    for endpoint, meta in filtered_seen.items():
+        weight = float(meta.get("weight", 1.0) or 1.0)
         if endpoint in existing:
             ep = existing[endpoint]
             ep["weight"] = max(float(ep.get("weight", weight) or weight), weight)
+            ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(meta.get("params") or []))
+            ep["source_count"] = max(int(ep.get("source_count", 0) or 0), int(meta.get("source_count", 0) or 0))
             cells = ep.get("cells") or {}
             for vc in VULN_CLASSES:
                 cells.setdefault(vc, {"status": "untested"})
@@ -374,6 +620,8 @@ def rebuild_matrix(
             new_endpoints.append({
                 "endpoint": endpoint,
                 "weight": weight,
+                "observed_params": list(meta.get("params") or []),
+                "source_count": int(meta.get("source_count", 0) or 0),
                 "cells": _empty_cells(),
             })
 
@@ -385,13 +633,20 @@ def rebuild_matrix(
             if isinstance(findings, dict):
                 findings = findings.get("findings", [])
             for finding in findings or []:
-                ep_path = _canonicalize_endpoint(str(finding.get("endpoint") or finding.get("url") or ""))
+                raw_endpoint = str(finding.get("endpoint") or finding.get("url") or "")
+                ep_path = _canonicalize_endpoint(raw_endpoint)
+                params = sorted(_param_names_from_url(raw_endpoint))
                 vc = str(finding.get("vuln_class") or finding.get("class") or "").strip()
                 if not ep_path or vc not in VULN_CLASSES:
                     continue
                 # ensure endpoint exists in matrix even if recon missed it
                 for ep in new_endpoints:
                     if ep["endpoint"] == ep_path:
+                        ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(params))
+                        ep["weight"] = max(
+                            float(ep.get("weight", value_weight(ep_path)) or value_weight(ep_path)),
+                            _semantic_weight_floor(ep_path, ep.get("observed_params") or []),
+                        )
                         ep["cells"][vc] = {
                             "status": "tested_finding",
                             "evidence_ref": f"findings/{target}/findings.json#{finding.get('id', '')}",
@@ -400,7 +655,9 @@ def rebuild_matrix(
                 else:
                     ep = {
                         "endpoint": ep_path,
-                        "weight": value_weight(ep_path),
+                        "weight": max(value_weight(ep_path), _semantic_weight_floor(ep_path, params)),
+                        "observed_params": params,
+                        "source_count": 0,
                         "cells": _empty_cells(),
                     }
                     ep["cells"][vc] = {
@@ -475,6 +732,8 @@ def _apply_scanner_pass(
             new_ep = {
                 "endpoint": endpoint,
                 "weight": value_weight(endpoint),
+                "observed_params": [],
+                "source_count": 0,
                 "cells": _empty_cells(),
             }
             endpoints.append(new_ep)
@@ -505,19 +764,7 @@ def find_high_value_gaps(
 ) -> list[dict]:
     """Return (endpoint, vuln_class) cells with status=untested AND weight >= min_weight."""
     matrix = load_matrix(target, repo_root)
-    gaps: list[dict] = []
-    for ep in matrix.get("endpoints", []):
-        weight = float(ep.get("weight", 1.0) or 1.0)
-        if weight < min_weight:
-            continue
-        for vc, cell in (ep.get("cells") or {}).items():
-            if cell.get("status") == "untested":
-                gaps.append({
-                    "endpoint": ep.get("endpoint", ""),
-                    "vuln_class": vc,
-                    "weight": weight,
-                })
-    return gaps
+    return high_value_gaps_from_matrix(matrix, min_weight=min_weight)
 
 
 def mark_cell(
