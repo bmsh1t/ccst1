@@ -50,6 +50,15 @@ DEFAULT_STOP_CONDITION = (
     "record tested, dead-end, blocked, lead, signal, candidate, or validated "
     "before moving to the next queued action"
 )
+COVERAGE_STATUS_BY_ACTION_STATUS = {
+    "tested": "tested_clean",
+    "dead-end": "tested_clean",
+    "blocked": "n_a",
+    "n/a": "n_a",
+    "candidate": "tested_finding",
+    "validated": "tested_finding",
+    "reported": "tested_finding",
+}
 
 
 def now_utc() -> str:
@@ -185,6 +194,66 @@ def _normalize_status(status: str) -> str:
     if value not in ALLOWED_STATUSES:
         raise ValueError(f"invalid status: {status!r}")
     return value
+
+
+def _sync_coverage_matrix_for_action(
+    repo_root: Path | str,
+    target: str,
+    action: dict,
+    normalized_status: str,
+) -> dict:
+    """把 coverage-gap 队列动作的最终状态回写到 coverage matrix。
+
+    action_queue 的状态比 coverage_matrix 更细：dead-end/blocked/candidate
+    是执行层语义；矩阵只有 tested_clean/tested_finding/n_a/untested。
+    因此这里做保守映射，避免同一个已处理 gap 在 checkpoint 中反复出现。
+    """
+    if str(action.get("type") or "") != "coverage-gap":
+        return {}
+    coverage_status = COVERAGE_STATUS_BY_ACTION_STATUS.get(normalized_status)
+    if not coverage_status:
+        return {
+            "status": "skipped",
+            "reason": f"action status {normalized_status!r} does not close a coverage cell",
+        }
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    endpoint = str(metadata.get("endpoint") or "").strip()
+    vuln_class = str(metadata.get("vuln_class") or "").strip()
+    if not endpoint or not vuln_class:
+        return {
+            "status": "skipped",
+            "reason": "coverage-gap action is missing endpoint/vuln_class metadata",
+        }
+
+    try:
+        from tools.coverage_matrix import mark_cell
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from coverage_matrix import mark_cell  # type: ignore
+
+    reason_source = (
+        action.get("result")
+        or action.get("notes")
+        or action.get("evidence")
+        or action.get("action")
+        or ""
+    )
+    reason = _compact_text(f"{normalized_status}: {reason_source}", 500)
+    cell = mark_cell(
+        target,
+        endpoint,
+        vuln_class,
+        coverage_status,
+        reason=reason,
+        repo_root=repo_root,
+        write_finding=False,
+    )
+    return {
+        "status": "updated",
+        "endpoint": endpoint,
+        "vuln_class": vuln_class,
+        "coverage_status": coverage_status,
+        "cell": cell,
+    }
 
 
 def _redline_required(text: str) -> bool:
@@ -413,9 +482,10 @@ def resolve_action(
         item["notes"] = _compact_text(notes or item.get("notes", ""), 1000)
         if normalized in {"running", "tested", "dead-end", "blocked", "lead", "signal", "candidate", "validated"}:
             item["attempts"] = int(item.get("attempts", 0) or 0) + 1
+        coverage_update = _sync_coverage_matrix_for_action(repo_root, target, item, normalized)
         queue["actions"].sort(key=_action_sort_key)
         path = save_queue(repo_root, target, queue)
-        return {
+        response = {
             "path": str(path),
             "id": action_id,
             "previous_status": previous,
@@ -423,6 +493,9 @@ def resolve_action(
             "next": select_next_action(queue),
             "summary": summarize_queue(queue),
         }
+        if coverage_update:
+            response["coverage_update"] = coverage_update
+        return response
     raise KeyError(f"action not found: {action_id}")
 
 

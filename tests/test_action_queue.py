@@ -14,6 +14,7 @@ from action_queue import (
     select_next_action,
     summarize_queue,
 )
+from coverage_matrix import load_matrix
 
 
 def _checkpoint() -> dict:
@@ -146,6 +147,50 @@ def test_resolve_accepts_coverage_status_aliases(tmp_path):
 
     assert resolved["status"] == "tested"
     assert resolved["summary"]["by_status"]["tested"] == 1
+
+
+def test_resolve_coverage_gap_updates_coverage_matrix(tmp_path):
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
+    queue = load_queue(tmp_path, "target.com")
+    coverage = next(item for item in queue["actions"] if item["type"] == "coverage-gap")
+
+    resolved = resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=coverage["id"],
+        status="tested_clean",
+        result="Low-risk replay showed no role/object difference.",
+    )
+
+    matrix = load_matrix("target.com", repo_root=tmp_path)
+    endpoint = next(item for item in matrix["endpoints"] if item["endpoint"] == "/api/admin/users")
+    cell = endpoint["cells"]["Authz"]
+
+    assert resolved["coverage_update"]["status"] == "updated"
+    assert resolved["coverage_update"]["coverage_status"] == "tested_clean"
+    assert cell["status"] == "tested_clean"
+    assert "Low-risk replay" in cell["reason"]
+
+
+def test_resolve_coverage_gap_candidate_marks_tested_finding(tmp_path):
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
+    queue = load_queue(tmp_path, "target.com")
+    coverage = next(item for item in queue["actions"] if item["type"] == "coverage-gap")
+
+    resolved = resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=coverage["id"],
+        status="tested_finding",
+        result="Low-role replay returned another tenant's admin user metadata.",
+    )
+
+    matrix = load_matrix("target.com", repo_root=tmp_path)
+    endpoint = next(item for item in matrix["endpoints"] if item["endpoint"] == "/api/admin/users")
+
+    assert resolved["status"] == "candidate"
+    assert resolved["coverage_update"]["coverage_status"] == "tested_finding"
+    assert endpoint["cells"]["Authz"]["status"] == "tested_finding"
 
 
 def test_resolve_cli_accepts_evidence_alias(tmp_path):
