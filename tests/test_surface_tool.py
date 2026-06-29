@@ -6,7 +6,7 @@ from memory.pattern_db import PatternDB
 from memory.schemas import make_pattern_entry
 from memory.target_profile import make_target_profile, save_target_profile
 from runtime_state import update_runtime_state
-from surface import format_surface_output, load_surface_context, rank_surface
+from surface import format_surface_output, load_surface_context, rank_surface, unsafe_skipped_id
 
 
 class TestSurfaceContext:
@@ -391,6 +391,40 @@ class TestSurfaceRanking:
         assert "[high] unsafe-skipped: Unsafe/state-changing scanner probes were skipped" in output
         assert "findings/target.com/manual_review/unsafe_skipped.txt" in output
         assert "ALLOW_UNSAFE_HTTP_TESTS=1" in output
+
+    def test_resolved_unsafe_skipped_artifact_is_hidden_from_workflow_leads(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        findings_dir = repo_root / "findings" / "target.com" / "manual_review"
+        state_dir = repo_root / "state" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        findings_dir.mkdir(parents=True)
+        state_dir.mkdir(parents=True)
+
+        line = "2026-06-07T00:00:00Z\tmethod=PUT\tlabel=HTTP method tampering probes\turl=https://api.target.com/profile\treason=requires opt-in"
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [FastAPI] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/profile\n",
+            encoding="utf-8",
+        )
+        (findings_dir / "unsafe_skipped.txt").write_text(line + "\n", encoding="utf-8")
+        (state_dir / "unsafe_skipped_reviews.json").write_text(
+            json.dumps({"resolved": {unsafe_skipped_id(line): {"status": "blocked"}}}),
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
+        workflow_leads = [
+            json.loads(item) if isinstance(item, str) else item
+            for item in ranked["workflow_leads"]
+        ]
+
+        assert not any(item.get("category") == "unsafe-skipped" for item in workflow_leads)
 
     def test_reranks_structured_scanner_findings_into_p1(self, tmp_path):
         repo_root = tmp_path

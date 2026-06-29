@@ -193,6 +193,42 @@ def test_resolve_coverage_gap_candidate_marks_tested_finding(tmp_path):
     assert endpoint["cells"]["Authz"]["status"] == "tested_finding"
 
 
+def test_resolve_unsafe_skipped_review_persists_resolution(tmp_path):
+    checkpoint = {
+        "next_action_queue": [
+            {
+                "id": "A1",
+                "priority": 88,
+                "type": "unsafe-skipped-review",
+                "status": "ready",
+                "action": "Review unsafe-skipped scanner lane abcdef1234567890: 1 unresolved skipped probe line(s). Artifact=findings/target.com/manual_review/unsafe_skipped.txt. Decide tested, blocked, dead-end, n/a, or candidate; only rerun with ALLOW_UNSAFE_HTTP_TESTS=1 after explicit operator opt-in.",
+                "command_hint": "review unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate",
+                "redline_required": True,
+                "metadata": {
+                    "unsafe_skipped_id": "abcdef1234567890",
+                    "artifact": "findings/target.com/manual_review/unsafe_skipped.txt",
+                },
+            }
+        ]
+    }
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
+
+    resolved = resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id="AQ-0001",
+        status="blocked",
+        result="Requires explicit operator opt-in for state-changing scanner probes.",
+    )
+
+    review_path = tmp_path / "state" / "target.com" / "unsafe_skipped_reviews.json"
+    payload = json.loads(review_path.read_text(encoding="utf-8"))
+
+    assert resolved["unsafe_review_update"]["status"] == "updated"
+    assert payload["resolved"]["abcdef1234567890"]["status"] == "blocked"
+    assert "operator opt-in" in payload["resolved"]["abcdef1234567890"]["result"]
+
+
 def test_resolve_cli_accepts_evidence_alias(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
     next_action = select_next_action(load_queue(tmp_path, "target.com"))

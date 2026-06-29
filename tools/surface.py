@@ -4,6 +4,7 @@ surface.py — rank cached recon output using hunt memory context.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -83,6 +84,20 @@ def _read_json_object(path: Path) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def unsafe_skipped_id(line: str) -> str:
+    """Return a stable compact id for one unsafe-skipped scanner line."""
+    return hashlib.sha256(str(line or "").strip().encode("utf-8")).hexdigest()[:16]
+
+
+def _load_resolved_unsafe_skipped(repo_root: Path, storage_key: str) -> set[str]:
+    review_path = repo_root / "state" / storage_key / "unsafe_skipped_reviews.json"
+    payload = _read_json_object(review_path)
+    resolved = payload.get("resolved") or {}
+    if not isinstance(resolved, dict):
+        return set()
+    return {str(key) for key in resolved if str(key).strip()}
 
 
 def _count_recon_artifact(recon_artifacts: dict, key: str) -> int:
@@ -211,13 +226,22 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
     lines = _read_lines(unsafe_path)
     if not lines:
         return []
+    repo_root = findings_dir.parent.parent
+    resolved_ids = _load_resolved_unsafe_skipped(repo_root, storage_key)
+    unresolved = [line for line in lines if unsafe_skipped_id(line) not in resolved_ids]
+    if not unresolved:
+        return []
     unsafe_display_path = f"findings/{storage_key}/manual_review/unsafe_skipped.txt"
+    first_id = unsafe_skipped_id(unresolved[0])
 
     return [{
         "source": "scanner_manual_review",
         "title": "Unsafe/state-changing scanner probes were skipped",
         "category": "unsafe-skipped",
         "priority": "high",
+        "unsafe_skipped_id": first_id,
+        "unsafe_skipped_ids": [unsafe_skipped_id(line) for line in unresolved[:20]],
+        "artifact": unsafe_display_path,
         "next_action": (
             f"review {unsafe_display_path} and only rerun with ALLOW_UNSAFE_HTTP_TESTS=1 "
             "when the operator explicitly opts in for those probes"
@@ -226,7 +250,7 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
             "Skipped lanes may include PUT/DELETE/PATCH method tampering, upload canary POST, "
             "MFA/OTP POST, or forged SAML POST. Treat them as Leads, not tested-clean results."
         ),
-        "evidence": f"{len(lines)} skipped probe line(s)",
+        "evidence": f"{len(unresolved)} unresolved skipped probe line(s)",
     }]
 
 

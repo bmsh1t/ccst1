@@ -59,6 +59,7 @@ COVERAGE_STATUS_BY_ACTION_STATUS = {
     "validated": "tested_finding",
     "reported": "tested_finding",
 }
+UNSAFE_REVIEW_FINAL_STATUSES = {"tested", "dead-end", "blocked", "n/a", "candidate", "validated", "reported"}
 
 
 def now_utc() -> str:
@@ -253,6 +254,65 @@ def _sync_coverage_matrix_for_action(
         "vuln_class": vuln_class,
         "coverage_status": coverage_status,
         "cell": cell,
+    }
+
+
+def _unsafe_review_path(repo_root: Path | str, target: str) -> Path:
+    repo = Path(repo_root)
+    resolved = canonical_target_value(target)
+    return repo / "state" / target_storage_key(resolved) / "unsafe_skipped_reviews.json"
+
+
+def _sync_unsafe_skipped_review_for_action(
+    repo_root: Path | str,
+    target: str,
+    action: dict,
+    normalized_status: str,
+) -> dict:
+    """Persist resolution for unsafe-skipped scanner manual-review leads."""
+    if str(action.get("type") or "") != "unsafe-skipped-review":
+        return {}
+    if normalized_status not in UNSAFE_REVIEW_FINAL_STATUSES:
+        return {
+            "status": "skipped",
+            "reason": f"action status {normalized_status!r} does not resolve unsafe-skipped review",
+        }
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    unsafe_id = str(metadata.get("unsafe_skipped_id") or "").strip()
+    artifact = str(metadata.get("artifact") or "").strip()
+    if not unsafe_id:
+        return {
+            "status": "skipped",
+            "reason": "unsafe-skipped action is missing unsafe_skipped_id metadata",
+        }
+
+    path = _unsafe_review_path(repo_root, target)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    resolved = payload.setdefault("resolved", {})
+    if not isinstance(resolved, dict):
+        resolved = {}
+        payload["resolved"] = resolved
+    resolved[unsafe_id] = {
+        "status": normalized_status,
+        "artifact": artifact,
+        "result": _compact_text(action.get("result") or "", 1000),
+        "notes": _compact_text(action.get("notes") or "", 1000),
+        "resolved_at": now_utc(),
+    }
+    payload["schema_version"] = SCHEMA_VERSION
+    payload["target"] = canonical_target_value(target)
+    payload["updated_at"] = now_utc()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {
+        "status": "updated",
+        "unsafe_skipped_id": unsafe_id,
+        "path": str(path),
     }
 
 
@@ -483,6 +543,7 @@ def resolve_action(
         if normalized in {"running", "tested", "dead-end", "blocked", "lead", "signal", "candidate", "validated"}:
             item["attempts"] = int(item.get("attempts", 0) or 0) + 1
         coverage_update = _sync_coverage_matrix_for_action(repo_root, target, item, normalized)
+        unsafe_review_update = _sync_unsafe_skipped_review_for_action(repo_root, target, item, normalized)
         queue["actions"].sort(key=_action_sort_key)
         path = save_queue(repo_root, target, queue)
         response = {
@@ -495,6 +556,8 @@ def resolve_action(
         }
         if coverage_update:
             response["coverage_update"] = coverage_update
+        if unsafe_review_update:
+            response["unsafe_review_update"] = unsafe_review_update
         return response
     raise KeyError(f"action not found: {action_id}")
 

@@ -140,6 +140,26 @@ def _unsafe_leads(state: dict) -> list[dict]:
     ]
 
 
+def _unsafe_skipped_proposals(state: dict) -> list[str]:
+    proposals: list[str] = []
+    for lead in _unsafe_leads(state)[:3]:
+        artifact = str(lead.get("artifact") or "").strip()
+        unsafe_id = str(lead.get("unsafe_skipped_id") or "").strip()
+        evidence = str(lead.get("evidence") or "").strip()
+        if not artifact and not unsafe_id:
+            continue
+        proposals.append(
+            "Review unsafe-skipped scanner lane {unsafe_id}: {evidence}. "
+            "Artifact={artifact}. Decide tested, blocked, dead-end, n/a, or candidate; "
+            "only rerun with ALLOW_UNSAFE_HTTP_TESTS=1 after explicit operator opt-in.".format(
+                unsafe_id=unsafe_id or "-",
+                evidence=evidence or "unsafe scanner probe was skipped",
+                artifact=artifact or "findings/<target>/manual_review/unsafe_skipped.txt",
+            )
+        )
+    return proposals
+
+
 def _evidence_focus_endpoints(state: dict, coverage_gaps: list[dict]) -> list[str]:
     surface = state.get("surface") or {}
     endpoints: list[str] = []
@@ -311,6 +331,8 @@ def _next_proposals(
             f"Run enrichment {next_tool_hint}: {str(hint.get('reason') or '').strip()}"
         )
 
+    proposals.extend(_unsafe_skipped_proposals(state))
+
     repo_source_summary = state.get("repo_source_summary") or {}
     secret_findings = int(repo_source_summary.get("secret_findings", 0) or 0)
     if secret_findings > 0:
@@ -401,6 +423,8 @@ def _classify_next_action(text: str) -> tuple[str, int, str]:
         return "recon", 85, "/recon"
     if "actor matrix gap" in lowered:
         return "actor-gap", 80, "focused replay + tools/evidence_ledger.py record"
+    if "unsafe-skipped scanner lane" in lowered:
+        return "unsafe-skipped-review", 88, "review unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate"
     if "high-value matrix gap" in lowered:
         return "coverage-gap", 75, "focused low-risk probe + evidence ledger"
     if "cross-evidence high-value surface" in lowered:
@@ -458,6 +482,19 @@ def _extract_action_metadata(text: str) -> dict:
             "actor": match.group("actor"),
             "object_scope": match.group("object_scope"),
             "variant": match.group("variant"),
+        })
+
+    match = re.search(
+        r"Review unsafe-skipped scanner lane\s+(?P<unsafe_id>[a-f0-9]{8,64}|-)"
+        r".*?Artifact=(?P<artifact>\S*unsafe_skipped\.txt)",
+        value,
+        re.I,
+    )
+    if match:
+        unsafe_id = match.group("unsafe_id")
+        metadata.update({
+            "unsafe_skipped_id": "" if unsafe_id == "-" else unsafe_id,
+            "artifact": match.group("artifact"),
         })
 
     return metadata

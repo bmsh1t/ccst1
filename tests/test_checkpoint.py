@@ -128,6 +128,27 @@ def test_checkpoint_queues_secret_verification_lane_from_repo_source_summary(tmp
     )
 
 
+def test_checkpoint_queues_unsafe_skipped_review_from_manual_review_artifact(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/profile"])
+    manual_dir = tmp_path / "findings" / "target.com" / "manual_review"
+    manual_dir.mkdir(parents=True)
+    (manual_dir / "unsafe_skipped.txt").write_text(
+        "2026-06-07T00:00:00Z\tmethod=PUT\tlabel=HTTP method tampering probes\turl=https://api.target.com/profile\treason=requires opt-in\n",
+        encoding="utf-8",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert any(
+        "Review unsafe-skipped scanner lane" in item
+        for item in checkpoint["target_write_back"]["next"]
+    )
+    review_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "unsafe-skipped-review")
+    assert review_action["redline_required"] is True
+    assert review_action["metadata"]["unsafe_skipped_id"]
+    assert review_action["metadata"]["artifact"] == "findings/target.com/manual_review/unsafe_skipped.txt"
+
+
 def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/v1/admin/users?isAdmin=true&userId=1001",
