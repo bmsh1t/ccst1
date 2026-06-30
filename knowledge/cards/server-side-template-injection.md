@@ -47,6 +47,7 @@ deep_refs:
 - Reflected SSTI：输入立即进入服务端模板渲染。
 - Stored SSTI：输入先保存，再由后台、邮件、预览、导出或异步 worker 渲染。
 - Blind SSTI：不回显结果，但错误、延迟、OAST 或二阶页面出现差异。
+- Code-context SSTI：输入落在已有字符串、标签、语句块或表达式上下文里，先闭合当前上下文再放入最小 marker。
 - Sandbox escape：先识别引擎和上下文对象，再判断是否存在安全绕过。
 - Chain：模板求值 -> file-read / config key / controlled command -> 业务影响证明。
 
@@ -56,6 +57,7 @@ deep_refs:
 - Fingerprint probe：不同引擎的分隔符、运算符、过滤器、对象访问语法差异，例如 `{{...}}`、`${...}`、`<%= ... %>` 都只是候选形态。
 - Context probe：读取无敏感上下文变量、模板路径、引擎版本或安全模式状态。
 - Execution probe：只有 primitive 和 sink 明确后，按 `command-execution-probes` 做受控证明。
+- 这些 probe shapes 用于单变量 fingerprint，不是固定字典；命中后先收敛到对应引擎和渲染上下文，避免跨引擎 payload spray。
 
 ## 补充 Checklist
 

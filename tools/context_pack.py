@@ -257,6 +257,31 @@ API_PARSER_DIFF_RE = re.compile(
     re.I,
 )
 
+BROWSER_CLIENT_BOUNDARY_RE = re.compile(
+    r"\b("
+    r"cors|csrf|xsrf|same[-_ ]?site|origin|referer|clickjacking|"
+    r"frame[-_ ]?ancestors|x[-_ ]?frame[-_ ]?options|dom[-_ ]?xss|dom[-_ ]?based|"
+    r"postmessage|message[-_ ]?event|hashchange|window\.name|open[-_ ]?redirect|"
+    r"client[-_ ]?side[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|"
+    r"access[-_ ]?control[-_ ]?allow[-_ ]?(?:origin|credentials)|"
+    r"credentialed[-_ ]?read|trusted[-_ ]?origin|null[-_ ]?origin"
+    r")\b",
+    re.I,
+)
+
+WEBSOCKET_REALTIME_RE = re.compile(
+    r"\b(websocket|web[-_ ]?socket|socket\.io|stomp|graphql[-_ ]?subscription|"
+    r"cswsh|cross[-_ ]?site[-_ ]?websocket[-_ ]?hijacking)\b",
+    re.I,
+)
+
+RACE_CONDITION_RE = re.compile(r"\b(race|concurrent|parallel)\b", re.I)
+COMMAND_INJECTION_RE = re.compile(
+    r"\b(?:os[-_ ]?command[-_ ]?injection|operating[-_ ]?system[-_ ]?command[-_ ]?injection|"
+    r"command[-_ ]?injection|cmdi|shell[-_ ]?injection)\b",
+    re.I,
+)
+
 CARD_PATHS = {
     "api-idor": "knowledge/cards/api-idor.md",
     "auth-access": "knowledge/cards/auth-access.md",
@@ -964,10 +989,56 @@ def _has_api_parameter_handling_signal(text: str) -> bool:
     )
 
 
+def _has_browser_client_boundary_signal(text: str) -> bool:
+    """识别 CORS/CSRF/Clickjacking/DOM 等浏览器边界信号，避免 ACA* 被当成 Authz。"""
+
+    if not text:
+        return False
+    if re.search(r"\b(?:method|referer|url)[-_ ]?based[-_ ]?access[-_ ]?control\b", text, re.I):
+        return False
+    return bool(BROWSER_CLIENT_BOUNDARY_RE.search(text))
+
+
+def _has_websocket_realtime_signal(text: str) -> bool:
+    """识别 WebSocket/CSWSH 信号，避免 authz/origin 背景词抢占实时 API 路由。"""
+
+    return bool(text and WEBSOCKET_REALTIME_RE.search(text))
+
+
+def _has_ssrf_context_signal(text: str) -> bool:
+    """识别 SSRF/服务端取 URL 语境；open redirect 在该语境下是 SSRF 连接器。"""
+
+    if not text:
+        return False
+    return bool(
+        _has_ssrf_internal_signal(text)
+        or SSRF_FETCH_CONTEXT_RE.search(text)
+        or re.search(
+            r"\b(ssrf|server[-_ ]?side[-_ ]?(?:fetch|request)|url[-_ ]?fetch|webhook|callback|oembed|stock[-_ ]?check(?:er)?)\b",
+            text,
+            re.I,
+        )
+    )
+
+
+def _has_race_condition_signal(text: str) -> bool:
+    """识别真正的竞态信号，避免 stack trace 里的连续子串触发 race。"""
+
+    return bool(text and RACE_CONDITION_RE.search(text))
+
+
 def _cards_from_focus(focus: str) -> list[str]:
     focus_l = focus.lower()
     cards: list[str] = []
-    if "race" in focus_l:
+    browser_boundary_signal = _has_browser_client_boundary_signal(focus)
+    websocket_realtime_signal = _has_websocket_realtime_signal(focus)
+    ssrf_context_signal = _has_ssrf_context_signal(focus)
+    browser_boundary_focus = browser_boundary_signal and not ssrf_context_signal
+    if browser_boundary_focus and not websocket_realtime_signal:
+        cards.append("browser-client-boundaries")
+    if websocket_realtime_signal:
+        cards.append("websocket-realtime-api")
+    if _has_race_condition_signal(focus):
         cards.append("race-conditions")
     if (
         re.search(r"\bapi[-_ ]?testing\b", focus_l)
@@ -1061,7 +1132,7 @@ def _cards_from_focus(focus: str) -> list[str]:
         or "url-based-access" in focus_l
         or "role-bypass" in focus_l
         or "admin-roles" in focus_l
-    ):
+    ) and not browser_boundary_focus and not websocket_realtime_signal:
         cards.extend(["auth-access", "api-idor"])
     if (
         "auth-hidden" in focus_l
@@ -1085,7 +1156,7 @@ def _cards_from_focus(focus: str) -> list[str]:
         or "account-linking" in focus_l
     ):
         cards.extend(["auth-sso-token-edge-cases", "auth-access"])
-    if "auth" in focus_l:
+    if re.search(r"\bauth(?:entication|z)?\b", focus_l) and not browser_boundary_focus and not websocket_realtime_signal:
         cards.extend(["auth-access", "api-idor"])
     if _has_ssrf_internal_signal(focus):
         cards.extend(["ssrf-internal-impact", "ssrf-url-fetch"])
@@ -1109,11 +1180,7 @@ def _cards_from_focus(focus: str) -> list[str]:
         )
     ):
         cards.append("upload-parser")
-    if (
-        re.search(r"\brce\b", focus_l)
-        or "command-injection" in focus_l
-        or "shell-primitive" in focus_l
-    ):
+    if re.search(r"\brce\b", focus_l) or COMMAND_INJECTION_RE.search(focus) or "shell-primitive" in focus_l:
         cards.append("controlled-rce-impact")
     if "ssti" in focus_l or "template-injection" in focus_l or "erb" in focus_l or "ruby-template" in focus_l:
         cards.extend(["server-side-template-injection", "controlled-rce-impact"])
@@ -1188,11 +1255,7 @@ def _cards_from_focus(focus: str) -> list[str]:
         cards.append("web-llm-tool-chains")
     if "essential-skills" in focus_l:
         cards.append("coverage-prompts")
-    if (
-        re.search(r"\brce\b", focus_l)
-        or "command-injection" in focus_l
-        or "shell-primitive" in focus_l
-    ):
+    if re.search(r"\brce\b", focus_l) or COMMAND_INJECTION_RE.search(focus) or "shell-primitive" in focus_l:
         cards.append("controlled-rce-impact")
     if (
         re.search(r"\b(?:node\.js|nodejs)\b", focus_l)
@@ -1234,6 +1297,10 @@ def _select_cards(
     focus_l = focus.lower()
     priority: list[str] = []
     api_business_logic_signal = _has_api_business_logic_signal(f"{focus}\n{blob}")
+    browser_boundary_signal = _has_browser_client_boundary_signal(f"{focus}\n{blob}")
+    websocket_realtime_signal = _has_websocket_realtime_signal(f"{focus}\n{blob}")
+    ssrf_context_signal = _has_ssrf_context_signal(f"{focus}\n{blob}")
+    browser_boundary_focus = browser_boundary_signal and not ssrf_context_signal
     if (
         re.search(r"\bapi[-_ ]?testing\b", focus_l)
         or re.search(r"\bapi[-_ ]?test\b", focus_l)
@@ -1317,7 +1384,7 @@ def _select_cards(
         blob,
         re.I,
     )
-    if access_control_signal:
+    if access_control_signal and not browser_boundary_focus and not websocket_realtime_signal:
         priority.append("auth-access")
     if (
         "path-pattern" in focus_l
@@ -1346,10 +1413,16 @@ def _select_cards(
         or "url-based-access" in focus_l
         or "role-bypass" in focus_l
         or "admin-roles" in focus_l
-        or access_control_signal
+        or (access_control_signal and not browser_boundary_focus and not websocket_realtime_signal)
         or re.search(r"\b(idor|tenant|org|accounts|user_id|account_id|org_id|tenant_id|order_id|invoice_id|object_id)\b", blob, re.I)
     ):
-        if access_control_signal or "access-control" in focus_l or "method-based-access" in focus_l or "referer-based-access" in focus_l or "url-based-access" in focus_l:
+        if (
+            access_control_signal
+            or "access-control" in focus_l
+            or "method-based-access" in focus_l
+            or "referer-based-access" in focus_l
+            or "url-based-access" in focus_l
+        ) and not browser_boundary_focus and not websocket_realtime_signal:
             priority.append("auth-access")
         priority.append("api-idor")
     if (
@@ -1382,7 +1455,7 @@ def _select_cards(
     ):
         priority.append("auth-sso-token-edge-cases")
         priority.append("auth-access")
-    if "auth" in focus_l:
+    if re.search(r"\bauth(?:entication|z)?\b", focus_l) and not browser_boundary_focus and not websocket_realtime_signal:
         priority.append("auth-access")
     if (
         sqli_signal
@@ -1446,7 +1519,7 @@ def _select_cards(
         or "client-side-redirect" in focus_l
         or "cookie-manipulation" in focus_l
         or "dom-clobbering" in focus_l
-        or re.search(r"\b(cors|csrf|xsrf|same[-_ ]?site|origin|referer|clickjacking|frame[-_ ]?ancestors|x[-_ ]?frame[-_ ]?options|dom[-_ ]?xss|dom[-_ ]?based|postmessage|message[-_ ]?event|hashchange|window\.name|open[-_ ]?redirect|client[-_ ]?side[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering)\b", blob, re.I)
+        or (browser_boundary_focus and not websocket_realtime_signal)
     ):
         priority.append("browser-client-boundaries")
     if (
@@ -1482,7 +1555,7 @@ def _select_cards(
         "websocket" in focus_l
         or "web-socket" in focus_l
         or "cswsh" in focus_l
-        or re.search(r"\b(websocket|web[-_ ]?socket|socket\.io|stomp|graphql[-_ ]?subscription|cswsh|cross[-_ ]?site[-_ ]?websocket[-_ ]?hijacking)\b", blob, re.I)
+        or websocket_realtime_signal
     ):
         priority.append("websocket-realtime-api")
     if (
@@ -1787,11 +1860,13 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         ])
     if CARD_PATHS["ssrf-url-fetch"] in cards:
         seeds.extend([
-            "URL fetch、webhook、import callback 是否存在 server-side fetch，可先用 allowlisted harmless URL 建模。",
+            "URL fetch、webhook、import callback、stock checker、预览/导入等是否存在 server-side fetch；先用合法 allowlisted URL 建 baseline，再比较响应体、状态码、错误和来源差异。",
         ])
     if CARD_PATHS["ssrf-internal-impact"] in cards:
         seeds.extend([
             "SSRF 内部影响只在已证明 server-side fetch 后展开；优先单个明确内部目标的状态级证据，不做内网扫描。",
+            "当 SSRF 受 allowlist/local-only 限制时，open redirect / redirect connector 属于 SSRF 链路而不是浏览器跳转结论：先证明本地允许 URL 会被服务端 fetch，再证明 30x 后由服务端访问单个内部目标。",
+            "内部 admin/metadata/control-plane 只做最小路径和单账号/单对象影响证明；parser discrepancy、userinfo、fragment、编码和重定向差异是候选形态，不是固定字典。",
         ])
     if CARD_PATHS["upload-parser"] in cards:
         seeds.extend([
@@ -1805,9 +1880,18 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "RCE/命令执行/SSTI/反序列化先证明 primitive，再证明执行身份和影响边界；默认不写文件、不持久化、不批量读取。",
         ])
+        if COMMAND_INJECTION_RE.search(blob):
+            seeds.extend([
+                "OS command injection 先建合法 baseline，再只改一个输入点做 single separator probe；visible output 要看响应体/状态码/长度/错误的稳定 diff，并区分协议失败、WAF/代理错误和服务端执行信号。",
+                "命令注入候选形态不是固定字典：分隔符、低影响身份/系统 probe（如当前用户、id、系统类型）只在明确 sink 上按一个变量一次使用，命中即停并回到证据链。",
+                "Blind 命令注入按短延迟 timing、output redirection、OAST 三类分型验证；timing 要设置低延迟上限和重复次数；output redirection 先从正常静态资源/上传/附件路径找 writable + readable read-back 位置；写文件/回连只在训练或明确授权环境 gated 执行，并记录 token、时间、来源和清理状态。",
+            ])
     if CARD_PATHS["server-side-template-injection"] in cards:
         seeds.extend([
             "SSTI 先做模板求值 primitive 和模板引擎指纹：算术/字符串/上下文变量/错误差异；命中后再转 controlled-rce-impact 做受控影响证明。",
+            "SSTI 要先定位 render/trigger 位置：reflected 参数、stored 内容、邮件/通知/报表/PDF/预览/后台审核可能分离；记录输入步、触发步和渲染证据。",
+            "模板 probe 是候选形态不是固定字典：按引擎分隔符、运算符、过滤器、错误类型和上下文变量做单变量 fingerprint，区分前端模板、Markdown 和服务端渲染。",
+            "Code-context、sandbox、user-supplied object 场景先闭合当前字符串/标签/模板块并证明上下文对象边界；文件操作或命令执行只在 controlled-rce gate 后做最小影响验证。",
         ])
     if CARD_PATHS["insecure-deserialization"] in cards:
         seeds.extend([

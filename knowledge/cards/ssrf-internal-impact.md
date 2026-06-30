@@ -50,6 +50,7 @@ deep_refs:
 - External callback proof：证明请求由目标服务端发起。
 - Internal reachability proof：证明单个明确内部 host/port/path 可达。
 - Parser discrepancy proof：证明 allowlist/filter 与实际 fetcher 解析不一致。
+- Redirect connector proof：当入口只允许本地或白名单 URL 时，先证明允许 URL 的 30x/open redirect 被服务端 fetcher 跟随，再把内部目标限制到单个路径。
 - Metadata risk proof：证明 metadata 服务或云控制面可触达，但默认不读取凭证。
 - Chain proof：SSRF -> internal admin/API/read primitive -> controlled RCE/secret risk/业务影响。
 
@@ -59,6 +60,7 @@ deep_refs:
 - URL parser 差异：校验器与 fetcher 对 scheme、userinfo、fragment、反斜杠、双 `@`、换行等解析不同。
 - 协议和端口差异：HTTP/HTTPS、gopher-like、file-like、custom fetcher 行为，只在证据命中时考虑。
 - 状态级内部证明：health/status/version/banner 级证据，不默认读取敏感内容。
+- Open redirect 在 SSRF 语境中是连接器：需要证明“允许 URL -> 30x -> 单个内部目标”由服务端完成，而不是用户浏览器跳转。
 
 ## 补充 Checklist
 

@@ -304,6 +304,30 @@ def test_rce_focus_routes_to_controlled_impact_card(tmp_path):
     assert any("RCE/命令执行" in seed or "先证明 primitive" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_os_command_injection_focus_surfaces_output_channel_baseline(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="OS command injection simple product stock checker raw output blind timing output redirection OAST",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"][0] == "knowledge/cards/controlled-rce-impact.md"
+    assert any(
+        "baseline" in seed and "single separator" in seed and "visible output" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
+    assert any("候选形态" in seed and "不是固定字典" in seed for seed in pack["hypothesis_seeds"])
+    assert any(
+        "Blind" in seed
+        and "timing" in seed
+        and "output redirection" in seed
+        and "read-back" in seed
+        and "OAST" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
+
+
 def test_node_prototype_focus_routes_to_node_card(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/profile/preferences",
@@ -488,7 +512,11 @@ def test_explicit_path_traversal_focus_without_recon_routes_to_file_read_card(tm
 
 
 def test_explicit_ssti_focus_without_recon_routes_to_template_card(tmp_path):
-    pack = build_context_pack(tmp_path, target="target.com", focus="ssti template-injection")
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="ssti template-injection reflected message ERB code context sandbox user-supplied object",
+    )
 
     assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
     assert pack["knowledge_cards"] == [
@@ -496,6 +524,9 @@ def test_explicit_ssti_focus_without_recon_routes_to_template_card(tmp_path):
         "knowledge/cards/controlled-rce-impact.md",
     ]
     assert any("模板求值 primitive" in seed or "受控影响证明" in seed for seed in pack["hypothesis_seeds"])
+    assert any("render/trigger" in seed and "输入步" in seed and "触发步" in seed for seed in pack["hypothesis_seeds"])
+    assert any("候选形态" in seed and "不是固定字典" in seed and "fingerprint" in seed for seed in pack["hypothesis_seeds"])
+    assert any("Code-context" in seed and "sandbox" in seed and "controlled-rce gate" in seed for seed in pack["hypothesis_seeds"])
 
 
 def test_explicit_template_engine_focus_routes_to_ssti_card(tmp_path):
@@ -531,6 +562,19 @@ def test_explicit_browser_boundary_focus_without_recon_routes_to_client_card(tmp
     assert any("frame-buster" in seed and "sandbox" in seed for seed in pack["hypothesis_seeds"])
     assert any("iframe offset" in seed and "DOM XSS" in seed for seed in pack["hypothesis_seeds"])
     assert any("state transition" in seed and "每一步坐标" in seed for seed in pack["hypothesis_seeds"])
+
+
+def test_cors_origin_credentials_focus_does_not_route_to_auth_access(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="CORS trusted origin null origin credentialed read Access-Control-Allow-Credentials",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == ["knowledge/cards/browser-client-boundaries.md"]
+    assert "knowledge/cards/auth-access.md" not in pack["knowledge_cards"]
+    assert "knowledge/cards/api-idor.md" not in pack["knowledge_cards"]
 
 
 def test_explicit_dom_navigation_focus_routes_to_browser_boundary_card(tmp_path):
@@ -589,12 +633,37 @@ def test_explicit_websocket_focus_without_recon_routes_to_realtime_card(tmp_path
     assert any("raw frame" in seed and "CSWSH exfil" in seed and "X-Forwarded-For" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_websocket_cswsh_authz_origin_focus_does_not_route_to_idor(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="WebSockets cross-site websocket hijacking CSWSH origin message schema authz",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == ["knowledge/cards/websocket-realtime-api.md"]
+    assert "knowledge/cards/auth-access.md" not in pack["knowledge_cards"]
+    assert "knowledge/cards/api-idor.md" not in pack["knowledge_cards"]
+
+
 def test_explicit_information_disclosure_focus_without_recon_routes_to_info_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="information-disclosure source-map debug")
 
     assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
     assert pack["knowledge_cards"] == ["knowledge/cards/information-disclosure-source-config.md"]
     assert any("信息泄露" in seed or "source map" in seed for seed in pack["hypothesis_seeds"])
+
+
+def test_information_disclosure_stack_trace_focus_does_not_route_to_race(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="Information disclosure source map backup file debug stack trace config leak",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == ["knowledge/cards/information-disclosure-source-config.md"]
+    assert "knowledge/cards/race-conditions.md" not in pack["knowledge_cards"]
 
 
 def test_explicit_xss_focus_without_recon_routes_to_xss_card(tmp_path):

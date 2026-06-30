@@ -70,6 +70,14 @@ Controlled Exploitation / Impact Proof。它给 `web2-vuln-classes` 和
 - 上传执行 probe：临时 marker、只读回显、测试目录内一次性执行，不默认持久 webshell。
 - Shell primitive：webshell / reverse shell 只作为受控深度附录，默认不执行。
 
+## OS command injection 分型
+
+- Visible output：先保存合法 baseline，再只改一个输入点做 single separator probe；观察响应体、状态码、长度、错误和排序是否出现稳定差异。
+- 低影响 probe shapes 是候选形态，不是固定字典：分隔符、当前用户、`id`、系统类型、短 token 回显等只在明确 sink 上单变量使用，命中即停。
+- Blind timing：只使用短延迟和有限重复次数；网络失败、HTTP/2 错误、504、WAF cooldown 不能单独当作执行证据。
+- Output redirection：先从正常业务静态资源、上传、附件或预览 read-back 路径确认 writable + readable 交集；只在训练资源或当前轮明确授权时写入可读测试路径；必须记录路径、读取证据和清理结果。
+- OAST：只使用一次性 token，记录 token、时间、来源 IP/参数；callback 只证明外连或执行线索，仍需排除 SSRF、预取和扫描器误判。
+
 ## 补充 Checklist
 
 - 是否已经有 baseline 和单变量执行差异？
