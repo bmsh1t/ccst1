@@ -1876,6 +1876,12 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "上传执行链先证明存储/访问/解析器路径和一次性无害执行差异；webshell 只作为明确授权后的深度证明，不是默认动作。",
         ])
+    if CARD_PATHS["insecure-deserialization"] in cards:
+        seeds.extend([
+            "Serialized session/remember-me/state blob 先保存合法 baseline，记录 cookie/header/field 名、HttpOnly/SameSite、编码层（base64/gzip/url-safe 等）、对象/类名/字段图，再做单字节 tamper 看完整性 gate。",
+            "Unsigned serialized object 如果接受篡改，优先只在自有/测试账号上验证低影响 state 字段：role/admin/tenant/feature/price/quantity 等；跨账号 replay、旧 token 和用户绑定要单独对照。",
+            "可解码不等于漏洞；必须证明服务端接受修改后的对象、解析错误差异或 OAST/type-error sink。签名/加密 tamper 被拒绝时先收敛到完整性结论，不直接上 gadget 或会话伪造。",
+        ])
     if CARD_PATHS["controlled-rce-impact"] in cards:
         seeds.extend([
             "RCE/命令执行/SSTI/反序列化先证明 primitive，再证明执行身份和影响边界；默认不写文件、不持久化、不批量读取。",
@@ -1892,10 +1898,6 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "SSTI 要先定位 render/trigger 位置：reflected 参数、stored 内容、邮件/通知/报表/PDF/预览/后台审核可能分离；记录输入步、触发步和渲染证据。",
             "模板 probe 是候选形态不是固定字典：按引擎分隔符、运算符、过滤器、错误类型和上下文变量做单变量 fingerprint，区分前端模板、Markdown 和服务端渲染。",
             "Code-context、sandbox、user-supplied object 场景先闭合当前字符串/标签/模板块并证明上下文对象边界；文件操作或命令执行只在 controlled-rce gate 后做最小影响验证。",
-        ])
-    if CARD_PATHS["insecure-deserialization"] in cards:
-        seeds.extend([
-            "反序列化先识别 blob 格式、签名/加密完整性和解析错误；URLDNS/OAST 或类型错误只证明 sink，命令 gadget 和会话伪造必须另做最小影响验证。",
         ])
     if CARD_PATHS["browser-client-boundaries"] in cards:
         seeds.extend([

@@ -544,7 +544,22 @@ def test_explicit_deserialization_focus_without_recon_routes_to_deser_card(tmp_p
         "knowledge/cards/insecure-deserialization.md",
         "knowledge/cards/controlled-rce-impact.md",
     ]
-    assert any("URLDNS/OAST" in seed or "签名/加密完整性" in seed for seed in pack["hypothesis_seeds"])
+    assert any("Serialized session" in seed or "完整性 gate" in seed for seed in pack["hypothesis_seeds"])
+
+
+def test_serialized_session_cookie_deserialization_prioritizes_integrity_and_state_tamper(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="insecure deserialization serialized session cookie base64 object admin role privilege escalation",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"][0] == "knowledge/cards/insecure-deserialization.md"
+    assert "Serialized session" in pack["hypothesis_seeds"][0]
+    assert "完整性 gate" in pack["hypothesis_seeds"][0]
+    assert any("role/admin/tenant/feature" in seed and "自有/测试账号" in seed for seed in pack["hypothesis_seeds"])
+    assert any("可解码不等于漏洞" in seed and "gadget" in seed for seed in pack["hypothesis_seeds"])
 
 
 def test_explicit_browser_boundary_focus_without_recon_routes_to_client_card(tmp_path):

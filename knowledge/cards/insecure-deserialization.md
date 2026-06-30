@@ -54,6 +54,7 @@ deep_refs:
 - 完整性形态：签名/MAC、加密、时间戳、nonce、用户绑定、key rotation、算法降级。
 - 低风险 sink probe：类型破坏、类名错误、URLDNS/OAST、无副作用 callback。
 - 业务 tamper：布尔/枚举/ID/金额/角色字段只在自有或测试对象上验证。
+- Session/remember-me/state 对象：先记录 cookie/header/field 名、HttpOnly/SameSite、编码层和字段图；只改一个低影响字段，证明服务端接受后再评估权限或业务影响。
 
 ## 补充 Checklist
 
