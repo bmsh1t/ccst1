@@ -1885,7 +1885,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "上传执行链先证明存储/访问/解析器路径和一次性无害执行差异；webshell 只作为明确授权后的深度证明，不是默认动作。",
             "上传执行验证要拆成存储路径 proof、访问/read-back proof、处理器/解释器 proof、执行身份 proof；每步保存原始 upload 请求、上传响应、read-back 请求和响应。",
-            "扩展名/MIME/magic bytes/polyglot/.htaccess/web.config 等只是候选形态，不是固定字典；每次只改一个维度并记录服务器选择静态下载、解析、预览还是执行。",
+            "扩展名、multipart part Content-Type、magic bytes、polyglot、.htaccess/web.config 等只是候选形态，不是固定字典；每次只改一个维度并记录服务器信任声明 MIME、检查内容、静态下载、解析、预览还是执行。",
             "需要脚本执行时优先一次性短输出或 OAST token；持久 webshell、写业务目录、读真实数据和批量枚举必须 gated，并有清理路径和停止条件。",
         ])
     if CARD_PATHS["insecure-deserialization"] in cards:

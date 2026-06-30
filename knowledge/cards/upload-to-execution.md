@@ -60,7 +60,7 @@ deep_refs:
 ## 候选形态 / Probe 家族
 
 - 以下形态是按证据选择的候选形态，不是固定字典；每次只改一个维度，命中或明确无差异即停止。
-- 扩展/MIME/magic bytes 差异：双扩展、大小写、后缀解析、Content-Type 与实际内容不一致。
+- 扩展/声明 MIME/magic bytes 差异：双扩展、大小写、后缀解析、multipart part `Content-Type` 与实际内容不一致。
 - Polyglot：合法图片/ZIP/PDF/SVG/HTML 与服务端解析差异。
 - Server config 邻近风险：`.htaccess`、`web.config`、模板/主题/插件目录。
 - Metadata 触发：EXIF、XMP、文件名、压缩包条目、Office XML 外部引用。

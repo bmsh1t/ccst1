@@ -299,6 +299,7 @@ def test_upload_execution_focus_routes_to_deep_card(tmp_path):
     assert any("存储路径 proof" in seed and "read-back proof" in seed for seed in pack["hypothesis_seeds"])
     assert any("原始 upload 请求" in seed and "read-back 请求" in seed for seed in pack["hypothesis_seeds"])
     assert any("候选形态" in seed and "不是固定字典" in seed for seed in pack["hypothesis_seeds"])
+    assert any("multipart part Content-Type" in seed and "声明 MIME" in seed for seed in pack["hypothesis_seeds"])
 
 
 def test_rce_focus_routes_to_controlled_impact_card(tmp_path):
