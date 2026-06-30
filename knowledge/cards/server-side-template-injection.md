@@ -11,6 +11,9 @@ trigger_tags:
   - twig
   - erb
   - freemarker
+  - tornado-template
+  - mako-template
+  - handlebars-template
 risk: high
 maturity: draft
 load_priority: medium
@@ -28,7 +31,7 @@ deep_refs:
 - 入口常在邮件模板、预览、报表、CMS 富文本、错误页、通知、PDF/HTML 转换、主题/页面配置。
 - 算术 marker、字符串拼接、模板错误、上下文变量和引擎指纹是早期信号，不等于 RCE。
 - 命中模板求值后，再读取 `controlled-rce-impact` 做最小影响证明；不默认 reverse shell、webshell 或持久化。
-- 示例表达式只作为候选形态，不是固定字典；Jinja/Twig/Freemarker/Velocity/Smarty/ERB 等引擎语法和 sandbox 差异很大。
+- 示例表达式只作为候选形态，不是固定字典；Jinja/Twig/Freemarker/Velocity/Smarty/ERB/Tornado/Mako/Handlebars 等引擎语法和 sandbox 差异很大。
 
 ## 能力定位
 
@@ -38,7 +41,7 @@ deep_refs:
 ## 触发信号
 
 - 用户输入被保存后出现在邮件、通知、PDF、HTML 预览、报表、后台审核或错误页面。
-- 响应出现模板引擎错误、变量未定义、sandbox、render、template、Jinja/Twig/Freemarker/Velocity/Smarty/ERB 等线索。
+- 响应出现模板引擎错误、变量未定义、sandbox、render、template、Jinja/Twig/Freemarker/Velocity/Smarty/ERB/Tornado/Mako/Handlebars 等线索。
 - `{{...}}`、`${...}`、`<%=...%>` 等表达式产生可复现差异。
 - 源码/JS/source-intel 显示 render template、mail merge、CMS block、theme render 或 document generator。
 
@@ -55,7 +58,7 @@ deep_refs:
 ## 技巧家族 / Payload 家族
 
 - Primitive probe：算术、字符串拼接、变量解析、注释闭合、模板错误触发。
-- Fingerprint probe：不同引擎的分隔符、运算符、过滤器、对象访问语法差异，例如 `{{...}}`、`${...}`、`<%= ... %>` 都只是候选形态。
+- Fingerprint probe：不同引擎的分隔符、运算符、过滤器、对象访问语法差异；示例表达式只是候选形态，不是固定字典。
 - Context probe：读取无敏感上下文变量、模板路径、引擎版本或安全模式状态。
 - Execution probe：只有 primitive 和 sink 明确后，按 `command-execution-probes` 做受控证明。
 - 这些 probe shapes 用于单变量 fingerprint，不是固定字典；命中后先收敛到对应引擎和渲染上下文，避免跨引擎 payload spray。

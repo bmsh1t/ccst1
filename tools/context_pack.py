@@ -107,8 +107,14 @@ KNOWN_SKILL_OR_FOCUS = {
     "race",
     "ssti",
     "template-injection",
+    "template-engine",
+    "render-template",
+    "code-context",
     "erb",
     "ruby-template",
+    "tornado-template",
+    "mako-template",
+    "handlebars-template",
     "deserialization",
     "deserialize",
     "signed-object",
@@ -166,7 +172,7 @@ WEB2_VULN_FOCUS_RE = re.compile(
     r"path[-_ ]?traversal|directory[-_ ]?traversal|lfi|local[-_ ]?file[-_ ]?inclusion|file[-_ ]?read|"
     r"ssrf|ssrf[-_ ]?internal|url[-_ ]?fetch|server[-_ ]?side[-_ ]?(?:fetch|request)|webhook|callback|oembed|"
     r"upload|upload[-_ ]?execution|web[-_ ]?shell|import|parser|"
-    r"race|rce|command[-_ ]?injection|ssti|template[-_ ]?injection|erb|ruby[-_ ]?template|deserialization|deserialize|signed[-_ ]?object|viewstate|"
+    r"race|rce|command[-_ ]?injection|ssti|template[-_ ]?injection|template[-_ ]?engine|render[-_ ]?template|erb|ruby[-_ ]?template|tornado[-_ ]?template|mako[-_ ]?template|handlebars[-_ ]?template|mustache[-_ ]?template|nunjucks[-_ ]?template|liquid[-_ ]?template|pug[-_ ]?template|jade[-_ ]?template|ejs[-_ ]?template|deserialization|deserialize|signed[-_ ]?object|viewstate|"
     r"host[-_ ]?header|proxy[-_ ]?trust|request[-_ ]?smuggling|http[-_ ]?smuggling|cache[-_ ]?poisoning|cache[-_ ]?deception|"
     r"cors|csrf|xsrf|xss|reflected[-_ ]?xss|stored[-_ ]?xss|client[-_ ]?xss|csp|content[-_ ]?security[-_ ]?policy|sandbox[-_ ]?escape|dangling[-_ ]?markup|open[-_ ]?redirect|client[-_ ]?side[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|clickjacking|dom[-_ ]?xss|dom|websocket|cswsh|"
     r"information[-_ ]?disclosure|info[-_ ]?disclosure|web[-_ ]?llm|llm|essential[-_ ]?skills|"
@@ -176,6 +182,17 @@ WEB2_VULN_FOCUS_RE = re.compile(
     r")\b",
     re.I,
 )
+
+SSTI_DIRECT_RE = re.compile(
+    r"\b(ssti|server[-_ ]?side[-_ ]?template[-_ ]?injection|template[-_ ]?injection|jinja|twig|freemarker|velocity|smarty|erb|ruby[-_ ]?template)\b",
+    re.I,
+)
+SSTI_CONTEXT_ENGINE_RE = re.compile(
+    r"\b(?:tornado|mako|handlebars|mustache|nunjucks|liquid|pug|jade|ejs)\b.{0,80}\b(?:template|render|expression|helper|sandbox|code[-_ ]?context)\b"
+    r"|\b(?:template|render|expression|helper|sandbox|code[-_ ]?context)\b.{0,80}\b(?:tornado|mako|handlebars|mustache|nunjucks|liquid|pug|jade|ejs)\b",
+    re.I,
+)
+SSTI_TOKEN_RE = re.compile(f"{SSTI_DIRECT_RE.pattern}|{SSTI_CONTEXT_ENGINE_RE.pattern}", re.I)
 
 SSRF_FETCH_CONTEXT_RE = re.compile(
     r"\b("
@@ -399,10 +416,7 @@ TOKEN_TO_CARDS = (
         ),
         ("path-traversal-file-read",),
     ),
-    (
-        re.compile(r"\b(ssti|server[-_ ]?side[-_ ]?template[-_ ]?injection|template[-_ ]?injection|jinja|twig|freemarker|velocity|smarty|erb|ruby[-_ ]?template)\b", re.I),
-        ("server-side-template-injection", "controlled-rce-impact"),
-    ),
+    (SSTI_TOKEN_RE, ("server-side-template-injection", "controlled-rce-impact")),
     (
         re.compile(
             r"\b(deserialization|deserialize|serialized|signed[-_ ]?object|rememberme|remember[-_ ]?me|viewstate|ysoserial|pickle|java[-_ ]?serialized|php[-_ ]?serialize)\b",
@@ -506,7 +520,7 @@ TOKEN_TO_CARDS = (
     ),
     (
         re.compile(
-            r"\b(node\.js|nodejs|express|next\.js|nestjs|koa|hapi|fastify|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|lodash|qs|flat|deep[-_ ]?extend|dot[-_ ]?prop|set[-_ ]?value|vm2?|happy[-_ ]?dom|jsdom|pug|jade|ejs|handlebars)\b",
+            r"\b(node\.js|nodejs|express|next\.js|nestjs|koa|hapi|fastify|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|lodash|qs|flat|deep[-_ ]?extend|dot[-_ ]?prop|set[-_ ]?value|vm2?|happy[-_ ]?dom|jsdom)\b",
             re.I,
         ),
         ("node-prototype-pollution",),
@@ -1182,7 +1196,7 @@ def _cards_from_focus(focus: str) -> list[str]:
         cards.append("upload-parser")
     if re.search(r"\brce\b", focus_l) or COMMAND_INJECTION_RE.search(focus) or "shell-primitive" in focus_l:
         cards.append("controlled-rce-impact")
-    if "ssti" in focus_l or "template-injection" in focus_l or "erb" in focus_l or "ruby-template" in focus_l:
+    if SSTI_TOKEN_RE.search(focus):
         cards.extend(["server-side-template-injection", "controlled-rce-impact"])
     if (
         "deserialization" in focus_l
@@ -1490,13 +1504,7 @@ def _select_cards(
         priority.append("ssrf-url-fetch")
     elif SSRF_FETCH_CONTEXT_RE.search(ssrf_blob):
         priority.append("ssrf-url-fetch")
-    if (
-        "ssti" in focus_l
-        or "template-injection" in focus_l
-        or "erb" in focus_l
-        or "ruby-template" in focus_l
-        or re.search(r"\b(ssti|server[-_ ]?side[-_ ]?template[-_ ]?injection|template[-_ ]?injection|jinja|twig|freemarker|velocity|smarty|erb|ruby[-_ ]?template)\b", blob, re.I)
-    ):
+    if SSTI_TOKEN_RE.search(blob):
         priority.append("server-side-template-injection")
         priority.append("controlled-rce-impact")
     if (
@@ -1580,7 +1588,7 @@ def _select_cards(
         or "constructor.prototype" in focus_l
         or re.search(r"\bvm2?\b", focus_l)
         or re.search(
-            r"\b(node\.js|nodejs|express|next\.js|nestjs|koa|hapi|fastify|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|lodash|qs|flat|deep[-_ ]?extend|dot[-_ ]?prop|set[-_ ]?value|vm2?|happy[-_ ]?dom|jsdom|pug|jade|ejs|handlebars)\b",
+            r"\b(node\.js|nodejs|express|next\.js|nestjs|koa|hapi|fastify|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|lodash|qs|flat|deep[-_ ]?extend|dot[-_ ]?prop|set[-_ ]?value|vm2?|happy[-_ ]?dom|jsdom)\b",
             blob,
             re.I,
         )
@@ -1900,7 +1908,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "SSTI 先做模板求值 primitive 和模板引擎指纹：算术/字符串/上下文变量/错误差异；命中后再转 controlled-rce-impact 做受控影响证明。",
             "SSTI 要先定位 render/trigger 位置：reflected 参数、stored 内容、邮件/通知/报表/PDF/预览/后台审核可能分离；记录输入步、触发步和渲染证据。",
-            "模板 probe 是候选形态不是固定字典：按引擎分隔符、运算符、过滤器、错误类型和上下文变量做单变量 fingerprint，区分前端模板、Markdown 和服务端渲染。",
+            "模板 probe 是候选形态不是固定字典：按引擎分隔符、运算符、过滤器、错误类型和上下文变量做单变量 fingerprint；Tornado/Mako/Handlebars/Mustache/Nunjucks/Pug/EJS 等引擎名只有与 template/render/code-context/helper/sandbox 线索同现时才进入 SSTI，避免前端模板名或 Node 运行时名误路由。",
             "Code-context SSTI 先证明当前表达式/字符串/模板块可闭合：baseline -> 无害表达式 -> trigger render；设置点和触发点分离时保存原始设置请求、触发请求和响应；sandbox/user-supplied object 只证明对象边界，文件或命令执行进 controlled-rce gate。",
         ])
     if CARD_PATHS["browser-client-boundaries"] in cards:

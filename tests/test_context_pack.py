@@ -546,6 +546,23 @@ def test_explicit_template_engine_focus_routes_to_ssti_card(tmp_path):
     assert pack["knowledge_cards"][0] == "knowledge/cards/server-side-template-injection.md"
 
 
+def test_template_engine_context_focus_routes_to_ssti_not_node_runtime(tmp_path):
+    focuses = [
+        "Tornado template preferred name code context user supplied object documentation",
+        "Mako template expression code context render trigger",
+        "Handlebars template server side render helper sandbox",
+    ]
+
+    for focus in focuses:
+        pack = build_context_pack(tmp_path, target="target.com", focus=focus)
+
+        assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+        assert pack["knowledge_cards"][0] == "knowledge/cards/server-side-template-injection.md"
+        assert "knowledge/cards/controlled-rce-impact.md" in pack["knowledge_cards"]
+        assert "knowledge/cards/node-prototype-pollution.md" not in pack["knowledge_cards"]
+        assert any("引擎名" in seed and "template/render/code-context" in seed for seed in pack["hypothesis_seeds"])
+
+
 def test_explicit_deserialization_focus_without_recon_routes_to_deser_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="deserialization signed-object viewstate")
 
