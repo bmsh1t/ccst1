@@ -1888,6 +1888,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
     if CARD_PATHS["controlled-rce-impact"] in cards:
         seeds.extend([
             "RCE/命令执行/SSTI/反序列化先证明 primitive，再证明执行身份和影响边界；默认不写文件、不持久化、不批量读取。",
+            "RCE/模板执行的 500/超时本身不是成功证据；只有原始响应包含命令 stderr/返回码、或后续状态差异证明侧效应已经发生时，才可作为执行证据，并要配 baseline、replay 和清理说明。",
         ])
         if COMMAND_INJECTION_RE.search(blob):
             seeds.extend([
@@ -1900,7 +1901,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "SSTI 先做模板求值 primitive 和模板引擎指纹：算术/字符串/上下文变量/错误差异；命中后再转 controlled-rce-impact 做受控影响证明。",
             "SSTI 要先定位 render/trigger 位置：reflected 参数、stored 内容、邮件/通知/报表/PDF/预览/后台审核可能分离；记录输入步、触发步和渲染证据。",
             "模板 probe 是候选形态不是固定字典：按引擎分隔符、运算符、过滤器、错误类型和上下文变量做单变量 fingerprint，区分前端模板、Markdown 和服务端渲染。",
-            "Code-context、sandbox、user-supplied object 场景先闭合当前字符串/标签/模板块并证明上下文对象边界；文件操作或命令执行只在 controlled-rce gate 后做最小影响验证。",
+            "Code-context SSTI 先证明当前表达式/字符串/模板块可闭合：baseline -> 无害表达式 -> trigger render；设置点和触发点分离时保存原始设置请求、触发请求和响应；sandbox/user-supplied object 只证明对象边界，文件或命令执行进 controlled-rce gate。",
         ])
     if CARD_PATHS["browser-client-boundaries"] in cards:
         seeds.extend([

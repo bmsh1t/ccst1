@@ -534,7 +534,9 @@ def test_explicit_ssti_focus_without_recon_routes_to_template_card(tmp_path):
     assert any("模板求值 primitive" in seed or "受控影响证明" in seed for seed in pack["hypothesis_seeds"])
     assert any("render/trigger" in seed and "输入步" in seed and "触发步" in seed for seed in pack["hypothesis_seeds"])
     assert any("候选形态" in seed and "不是固定字典" in seed and "fingerprint" in seed for seed in pack["hypothesis_seeds"])
-    assert any("Code-context" in seed and "sandbox" in seed and "controlled-rce gate" in seed for seed in pack["hypothesis_seeds"])
+    assert any("Code-context SSTI" in seed and "baseline -> 无害表达式 -> trigger render" in seed for seed in pack["hypothesis_seeds"])
+    assert any("原始设置请求" in seed and "触发请求" in seed and "controlled-rce gate" in seed for seed in pack["hypothesis_seeds"])
+    assert any("500/超时本身不是成功证据" in seed and "侧效应" in seed for seed in pack["hypothesis_seeds"])
 
 
 def test_explicit_template_engine_focus_routes_to_ssti_card(tmp_path):

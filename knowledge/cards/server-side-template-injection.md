@@ -47,7 +47,8 @@ deep_refs:
 - Reflected SSTI：输入立即进入服务端模板渲染。
 - Stored SSTI：输入先保存，再由后台、邮件、预览、导出或异步 worker 渲染。
 - Blind SSTI：不回显结果，但错误、延迟、OAST 或二阶页面出现差异。
-- Code-context SSTI：输入落在已有字符串、标签、语句块或表达式上下文里，先闭合当前上下文再放入最小 marker。
+- Code-context SSTI：输入落在已有字符串、标签、语句块或表达式上下文里，按
+  `baseline -> 无害表达式 -> trigger render` 证明当前上下文可闭合；设置点和渲染点可能分离。
 - Sandbox escape：先识别引擎和上下文对象，再判断是否存在安全绕过。
 - Chain：模板求值 -> file-read / config key / controlled command -> 业务影响证明。
 
@@ -71,6 +72,7 @@ deep_refs:
 
 - 建立正常输入 baseline。
 - 单变量插入短 marker，比较渲染结果、错误类型、响应长度或二阶页面变化。
+- Stored/code-context 场景保存原始设置请求、触发请求和响应；未保存 raw evidence 只算 lead。
 - 命中后优先证明引擎指纹和上下文边界；需要命令执行时转 `controlled-rce-impact`。
 - Candidate 前需要 replay、baseline、trigger 位置、引擎证据和影响说明。
 

@@ -99,7 +99,7 @@ Controlled Exploitation / Impact Proof。它给 `web2-vuln-classes` 和
 
 - 模板算术成立不等于 RCE；可能只是表达式求值。
 - OAST callback 不等于命令执行；可能是 SSRF、预取、扫描器或解析器外连。
-- 500/超时不等于执行成功；必须有控制请求和稳定差异。
+- 500/超时不等于执行成功；但原始响应包含命令 stderr/返回码，或后续状态差异证明侧效应已发生时，可以作为执行证据，必须同时保留 baseline、replay、清理说明。
 - 读取 `/etc/passwd`、环境变量或配置文件可能跨越敏感数据边界；没有必要时不作为默认验证。
 - shell 连接失败不代表 primitive 不存在；先回到无副作用 probe 和日志/OAST 证据。
 
