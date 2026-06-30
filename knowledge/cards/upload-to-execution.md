@@ -33,6 +33,7 @@ deep_refs:
 - 默认先证明处理链和路径控制，不默认上传持久 webshell。
 - webshell / script execution 属于高风险受控影响证明，需要当前轮明确授权、测试资源和清理计划。
 - 最小证据优先：上传路径、访问路径、解析器行为、权限边界、一次性 marker 或无害执行差异。
+- 未保存原始 upload/read-back 请求与响应时，只能作为 lead，不能升级为稳定能力或结论。
 - 深挖时读取 `deep_refs` 中的 `ctf-web` 上传/解析器案例，只抽取 polyglot、
   MIME/扩展/metadata/解析链思路，不把 webshell 上传变成默认动作。
 
@@ -56,8 +57,9 @@ deep_refs:
 - 执行 proof：在明确授权下用一次性、可清理、无持久化方式证明服务器端执行。
 - Chain proof：上传 -> 解析器 SSRF/XXE/LFI/SSTI -> controlled RCE 或内部影响。
 
-## 技巧家族 / Payload 家族
+## 候选形态 / Probe 家族
 
+- 以下形态是按证据选择的候选形态，不是固定字典；每次只改一个维度，命中或明确无差异即停止。
 - 扩展/MIME/magic bytes 差异：双扩展、大小写、后缀解析、Content-Type 与实际内容不一致。
 - Polyglot：合法图片/ZIP/PDF/SVG/HTML 与服务端解析差异。
 - Server config 邻近风险：`.htaccess`、`web.config`、模板/主题/插件目录。
@@ -77,7 +79,7 @@ deep_refs:
 - 先上传无害 marker 文件，确认存储、访问、权限和清理链路。
 - 对解析器方向，使用最小无害样本证明解析行为，不使用压缩炸弹、超大文件或资源耗尽样本。
 - 对执行方向，优先证明一次性短输出或 OAST token，不持久化 webshell。
-- 如果创建测试文件，记录路径、请求、时间、清理方式和清理结果。
+- 如果创建测试文件，记录路径、请求、时间、清理方式和清理结果，并保存原始上传请求/响应与 read-back 请求/响应。
 
 ## 常见误判 / 死路
 

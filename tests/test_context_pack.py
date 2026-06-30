@@ -286,11 +286,19 @@ def test_upload_execution_focus_routes_to_deep_card(tmp_path):
         "https://api.target.com/api/upload/avatar",
     ])
 
-    pack = build_context_pack(tmp_path, target="target.com", focus="upload-execution webshell")
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="file upload web shell avatar content-type bypass executable extension server path",
+    )
 
     assert pack["knowledge_cards"][0] == "knowledge/cards/upload-to-execution.md"
     assert "knowledge/cards/upload-to-execution.md" in pack["knowledge_cards"]
-    assert any("上传执行链" in seed or "webshell" in seed for seed in pack["hypothesis_seeds"])
+    assert "knowledge/cards/controlled-rce-impact.md" in pack["knowledge_cards"]
+    assert "knowledge/cards/upload-parser.md" not in pack["knowledge_cards"]
+    assert any("存储路径 proof" in seed and "read-back proof" in seed for seed in pack["hypothesis_seeds"])
+    assert any("原始 upload 请求" in seed and "read-back 请求" in seed for seed in pack["hypothesis_seeds"])
+    assert any("候选形态" in seed and "不是固定字典" in seed for seed in pack["hypothesis_seeds"])
 
 
 def test_rce_focus_routes_to_controlled_impact_card(tmp_path):

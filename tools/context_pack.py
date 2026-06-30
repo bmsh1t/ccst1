@@ -165,7 +165,7 @@ WEB2_VULN_FOCUS_RE = re.compile(
     r"xxe|xml[-_ ]?parser|xinclude|"
     r"path[-_ ]?traversal|directory[-_ ]?traversal|lfi|local[-_ ]?file[-_ ]?inclusion|file[-_ ]?read|"
     r"ssrf|ssrf[-_ ]?internal|url[-_ ]?fetch|server[-_ ]?side[-_ ]?(?:fetch|request)|webhook|callback|oembed|"
-    r"upload|upload[-_ ]?execution|webshell|import|parser|"
+    r"upload|upload[-_ ]?execution|web[-_ ]?shell|import|parser|"
     r"race|rce|command[-_ ]?injection|ssti|template[-_ ]?injection|erb|ruby[-_ ]?template|deserialization|deserialize|signed[-_ ]?object|viewstate|"
     r"host[-_ ]?header|proxy[-_ ]?trust|request[-_ ]?smuggling|http[-_ ]?smuggling|cache[-_ ]?poisoning|cache[-_ ]?deception|"
     r"cors|csrf|xsrf|xss|reflected[-_ ]?xss|stored[-_ ]?xss|client[-_ ]?xss|csp|content[-_ ]?security[-_ ]?policy|sandbox[-_ ]?escape|dangling[-_ ]?markup|open[-_ ]?redirect|client[-_ ]?side[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|clickjacking|dom[-_ ]?xss|dom|websocket|cswsh|"
@@ -464,7 +464,7 @@ TOKEN_TO_CARDS = (
         ("controlled-rce-impact",),
     ),
     (
-        re.compile(r"\b(upload[-_ ]?execution|webshell|script[-_ ]?execution|polyglot)\b", re.I),
+        re.compile(r"\b(upload[-_ ]?execution|web[-_ ]?shell|script[-_ ]?execution|polyglot)\b", re.I),
         ("upload-to-execution", "controlled-rce-impact"),
     ),
     (
@@ -1167,7 +1167,7 @@ def _cards_from_focus(focus: str) -> list[str]:
         or re.search(r"\bserver[-_ ]?side[-_ ]?(?:fetch|request)\b", focus_l)
     ):
         cards.append("ssrf-url-fetch")
-    if "upload-execution" in focus_l or "webshell" in focus_l or "script-execution" in focus_l:
+    if "upload-execution" in focus_l or re.search(r"\bweb[-_ ]?shell\b", focus_l) or "script-execution" in focus_l:
         cards.extend(["upload-to-execution", "controlled-rce-impact"])
     elif (
         "upload" in focus_l
@@ -1875,6 +1875,9 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
     if CARD_PATHS["upload-to-execution"] in cards:
         seeds.extend([
             "上传执行链先证明存储/访问/解析器路径和一次性无害执行差异；webshell 只作为明确授权后的深度证明，不是默认动作。",
+            "上传执行验证要拆成存储路径 proof、访问/read-back proof、处理器/解释器 proof、执行身份 proof；每步保存原始 upload 请求、上传响应、read-back 请求和响应。",
+            "扩展名/MIME/magic bytes/polyglot/.htaccess/web.config 等只是候选形态，不是固定字典；每次只改一个维度并记录服务器选择静态下载、解析、预览还是执行。",
+            "需要脚本执行时优先一次性短输出或 OAST token；持久 webshell、写业务目录、读真实数据和批量枚举必须 gated，并有清理路径和停止条件。",
         ])
     if CARD_PATHS["insecure-deserialization"] in cards:
         seeds.extend([
@@ -2214,7 +2217,7 @@ def _ledger_vuln_classes(cards: list[str], blob: str) -> list[str]:
         classes.append("Path")
     if CARD_PATHS["ssrf-url-fetch"] in cards or CARD_PATHS["ssrf-internal-impact"] in cards or re.search(r"\b(ssrf|url[-_ ]?fetch|metadata)\b", blob, re.I):
         classes.append("SSRF")
-    if CARD_PATHS["upload-parser"] in cards or CARD_PATHS["upload-to-execution"] in cards or re.search(r"\b(upload|file[-_ ]?parser|webshell)\b", blob, re.I):
+    if CARD_PATHS["upload-parser"] in cards or CARD_PATHS["upload-to-execution"] in cards or re.search(r"\b(upload|file[-_ ]?parser|web[-_ ]?shell)\b", blob, re.I):
         classes.append("Upload")
     if CARD_PATHS["controlled-rce-impact"] in cards or re.search(r"\b(rce|command[-_ ]?injection|ssti|deserialization)\b", blob, re.I):
         classes.append("RCE")
