@@ -1892,6 +1892,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "Serialized session/remember-me/state blob 先保存合法 baseline，记录 cookie/header/field 名、HttpOnly/SameSite、编码层（base64/gzip/url-safe 等）、对象/类名/字段图，再做单字节 tamper 看完整性 gate。",
             "Unsigned serialized object 如果接受篡改，优先只在自有/测试账号上验证低影响 state 字段：role/admin/tenant/feature/price/quantity 等；跨账号 replay、旧 token 和用户绑定要单独对照。",
             "可解码不等于漏洞；必须证明服务端接受修改后的对象、解析错误差异或 OAST/type-error sink。签名/加密 tamper 被拒绝时先收敛到完整性结论，不直接上 gadget 或会话伪造。",
+            "数据类型篡改和应用功能 gadget 分开验证：boolean/string/integer/null 变化只看服务端类型语义差异；delete/read/write 等二阶功能要证明对象字段如何流入既有业务动作，先停在测试资源和原始请求/响应证据。",
         ])
     if CARD_PATHS["controlled-rce-impact"] in cards:
         seeds.extend([

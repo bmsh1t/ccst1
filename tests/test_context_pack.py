@@ -589,6 +589,19 @@ def test_serialized_session_cookie_deserialization_prioritizes_integrity_and_sta
     assert any("可解码不等于漏洞" in seed and "gadget" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_deserialization_type_and_application_gadget_focus_keeps_minimal_evidence_gate(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="deserialization serialized data types boolean string integer application functionality gadget delete file avatar object",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"][0] == "knowledge/cards/insecure-deserialization.md"
+    assert any("boolean/string/integer/null" in seed and "类型语义差异" in seed for seed in pack["hypothesis_seeds"])
+    assert any("应用功能 gadget" in seed and "测试资源" in seed and "原始请求/响应证据" in seed for seed in pack["hypothesis_seeds"])
+
+
 def test_explicit_browser_boundary_focus_without_recon_routes_to_client_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="cors csrf clickjacking dom-xss postmessage")
 

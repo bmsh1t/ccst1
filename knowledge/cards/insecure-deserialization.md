@@ -45,7 +45,9 @@ deep_refs:
 - Format recognition：base64、gzip、URL-safe、hex、签名分段、加密外壳。
 - Integrity test：单字节 tamper、重放、过期、跨账号复制、签名错误差异。
 - State tamper：对象字段可改时，优先测试 role、tenant、feature flag、price/quantity 等业务状态边界。
+- Type semantics：boolean/string/integer/null、数组/对象边界和 loose comparison 差异只证明类型语义，不直接等同于权限绕过。
 - Sink proof：类型错误、OAST callback、URLDNS、反序列化日志，证明服务端真的反序列化。
+- Application-functionality gadget：对象字段被既有 delete/read/write/export/import 功能消费时，只在测试资源上证明二阶动作链。
 - RCE chain：只有 sink、框架、gadget、低风险 probe 都明确时，转受控影响证明。
 
 ## 技巧家族 / Payload 家族
@@ -54,6 +56,7 @@ deep_refs:
 - 完整性形态：签名/MAC、加密、时间戳、nonce、用户绑定、key rotation、算法降级。
 - 低风险 sink probe：类型破坏、类名错误、URLDNS/OAST、无副作用 callback。
 - 业务 tamper：布尔/枚举/ID/金额/角色字段只在自有或测试对象上验证。
+- 应用功能 gadget：路径、文件名、对象 ID、模板名等字段必须证明流入既有业务动作；不默认读取真实文件或删除真实数据。
 - Session/remember-me/state 对象：先记录 cookie/header/field 名、HttpOnly/SameSite、编码层和字段图；只改一个低影响字段，证明服务端接受后再评估权限或业务影响。
 
 ## 补充 Checklist
