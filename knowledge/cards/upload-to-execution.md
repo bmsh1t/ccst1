@@ -51,7 +51,7 @@ deep_refs:
 
 ## 思路分支
 
-- 存储路径 proof：证明攻击者可控文件进入服务端可预测位置。
+- 存储路径 proof：证明攻击者可控文件进入服务端可预测位置，并区分默认上传目录与 filename/path 影响后的目标目录。
 - 访问路径 proof：证明上传文件可被直接访问、预览、下载、分享或后台读取。
 - 解析器 proof：证明服务端处理文件内容、metadata、外部引用、压缩包条目或模板语法。
 - 执行 proof：在明确授权下用一次性、可清理、无持久化方式证明服务器端执行。
@@ -61,6 +61,7 @@ deep_refs:
 
 - 以下形态是按证据选择的候选形态，不是固定字典；每次只改一个维度，命中或明确无差异即停止。
 - 扩展/声明 MIME/magic bytes 差异：双扩展、大小写、后缀解析、multipart part `Content-Type` 与实际内容不一致。
+- 文件名/目录选择差异：路径分隔符、编码 parent segment、后端 normalize 行为只作为候选形态；必须同时验证原上传目录和目标目录的 read-back 差异。
 - Polyglot：合法图片/ZIP/PDF/SVG/HTML 与服务端解析差异。
 - Server config 邻近风险：`.htaccess`、`web.config`、模板/主题/插件目录。
 - Metadata 触发：EXIF、XMP、文件名、压缩包条目、Office XML 外部引用。
@@ -77,6 +78,7 @@ deep_refs:
 ## 最小验证
 
 - 先上传无害 marker 文件，确认存储、访问、权限和清理链路。
+- 若验证 filename 影响存储目录，先对默认上传目录 read-back 建 baseline，再对目标目录 read-back；上传响应“成功”本身不是目录选择证据。
 - 对解析器方向，使用最小无害样本证明解析行为，不使用压缩炸弹、超大文件或资源耗尽样本。
 - 对执行方向，优先证明一次性短输出或 OAST token，不持久化 webshell。
 - 如果创建测试文件，记录路径、请求、时间、清理方式和清理结果，并保存原始上传请求/响应与 read-back 请求/响应。
