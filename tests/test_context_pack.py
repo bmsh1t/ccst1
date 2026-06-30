@@ -91,6 +91,18 @@ def test_auth_sso_focus_routes_to_token_edge_card(tmp_path):
     assert any("state/nonce/PKCE" in seed or "account-linking" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_jwt_unverified_signature_focus_surfaces_claim_tamper_baseline(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="JWT authentication bypass unverified signature session token payload sub role admin",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"][0] == "knowledge/cards/auth-sso-token-edge-cases.md"
+    assert any("claim-only tamper" in seed and "无效签名" in seed for seed in pack["hypothesis_seeds"])
+
+
 def test_access_control_method_focus_routes_to_auth_access_card(tmp_path):
     pack = build_context_pack(
         tmp_path,
@@ -175,6 +187,17 @@ def test_graphql_focus_routes_to_graphql_card(tmp_path):
     assert pack["knowledge_cards"][0] == "knowledge/cards/graphql.md"
 
 
+def test_graphql_node_global_id_does_not_route_to_node_runtime_card(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="GraphQL private posts node global ID introspection query fields",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == ["knowledge/cards/graphql.md"]
+
+
 def test_sqli_focus_routes_to_hidden_surface_card(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/search?q=case",
@@ -186,6 +209,65 @@ def test_sqli_focus_routes_to_hidden_surface_card(tmp_path):
     assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
     assert pack["knowledge_cards"][0] == "knowledge/cards/sqli-hidden-surfaces.md"
     assert any("请求元数据" in seed or "二阶输入" in seed for seed in pack["hypothesis_seeds"])
+
+
+def test_query_semantics_sqli_focus_keeps_visible_input_baseline(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="SQL injection WHERE clause product category filter search sort pagination report export tenant scope hidden products",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"][0] == "knowledge/cards/sqli-hidden-surfaces.md"
+    assert any("显式查询语义输入" in seed and "分页" in seed and "租户" in seed for seed in pack["hypothesis_seeds"])
+
+
+def test_api_price_mutation_focus_pairs_api_with_business_logic(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="API testing unused endpoint product price PATCH method matrix buy checkout item",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == [
+        "knowledge/cards/api-testing-workflow.md",
+        "knowledge/cards/business-logic-state-machines.md",
+    ]
+    assert any("业务逻辑" in seed or "状态机" in seed for seed in pack["hypothesis_seeds"])
+
+
+def test_api_parameter_pollution_focus_routes_to_api_workflow(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="API server-side parameter pollution HPP duplicate query parameter backend request reset password field truncation",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == [
+        "knowledge/cards/api-testing-workflow.md",
+        "knowledge/cards/missing-parameter-discovery.md",
+    ]
+    assert "knowledge/cards/upload-parser.md" not in pack["knowledge_cards"]
+    assert any("API 参数污染/HPP" in seed and "duplicate query/body" in seed for seed in pack["hypothesis_seeds"])
+
+
+def test_api_mass_assignment_focus_pairs_api_and_business_logic(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="API mass assignment over-posting PATCH user profile role isAdmin plan status verified approved",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == [
+        "knowledge/cards/api-testing-workflow.md",
+        "knowledge/cards/business-logic-state-machines.md",
+    ]
+    assert "knowledge/cards/upload-parser.md" not in pack["knowledge_cards"]
+    assert any("mass assignment" in seed and "role/isAdmin/plan/status/verified/approved" in seed for seed in pack["hypothesis_seeds"])
 
 
 def test_upload_import_focus_routes_to_upload_parser(tmp_path):
@@ -289,6 +371,30 @@ def test_ssrf_internal_focus_routes_to_internal_impact_card(tmp_path):
     assert any("SSRF 内部影响" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_ssrf_localhost_admin_focus_routes_to_internal_impact(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="SSRF stock check server-side fetch URL localhost admin internal system",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"][0] == "knowledge/cards/ssrf-internal-impact.md"
+    assert "knowledge/cards/ssrf-url-fetch.md" in pack["knowledge_cards"]
+    assert any("SSRF 内部影响" in seed for seed in pack["hypothesis_seeds"])
+
+
+def test_internal_admin_without_fetch_context_does_not_load_ssrf_internal(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="internal admin panel access control management exposure",
+    )
+
+    assert "knowledge/cards/ssrf-internal-impact.md" not in pack["knowledge_cards"]
+    assert pack["knowledge_cards"][0] == "knowledge/cards/auth-access.md"
+
+
 def test_race_payment_focus_keeps_red_lines_loaded(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/checkout/payment",
@@ -299,6 +405,12 @@ def test_race_payment_focus_keeps_red_lines_loaded(tmp_path):
     assert "knowledge/cards/race-conditions.md" in pack["knowledge_cards"]
     assert "rules/red-lines.md" in pack["required_checks"]
     assert any("高并发" in seed or "真实资金" in seed for seed in pack["hypothesis_seeds"])
+    assert any(
+        "合法单次 baseline" in seed
+        and "协议能力探测" in seed
+        and "最小同步触发" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
 
 
 def test_candidate_finding_routes_to_triage_validation(tmp_path):
@@ -346,6 +458,17 @@ def test_explicit_nosql_focus_without_recon_routes_to_nosql_card(tmp_path):
     assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
     assert pack["knowledge_cards"] == ["knowledge/cards/nosql-query-injection.md"]
     assert any("NoSQL" in seed or "operator" in seed for seed in pack["hypothesis_seeds"])
+
+
+def test_nosql_expression_focus_does_not_match_express_node(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="NoSQL MongoDB category filter string expression syntax error boolean pair",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == ["knowledge/cards/nosql-query-injection.md"]
 
 
 def test_explicit_xxe_focus_without_recon_routes_to_xml_parser_card(tmp_path):
@@ -546,6 +669,19 @@ def test_explicit_web_llm_focus_without_recon_routes_to_llm_card(tmp_path):
     assert any("Web LLM" in seed or "工具" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_unprotected_admin_access_control_prioritizes_auth_access(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="Unprotected admin functionality unprotected admin panel delete user administrator-panel access control",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"][0] == "knowledge/cards/auth-access.md"
+    assert "knowledge/cards/path-pattern-management-exposure.md" in pack["knowledge_cards"]
+    assert any("权限" in seed or "角色" in seed for seed in pack["hypothesis_seeds"])
+
+
 def test_explicit_ssrf_internal_focus_without_recon_routes_to_vuln_skill(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="ssrf-internal metadata")
 
@@ -711,3 +847,12 @@ def test_js_and_source_intel_are_loaded_as_context_pack_evidence(tmp_path):
     assert any("Source-intel hypothesis [idor]" in item for item in pack["evidence_anchors"])
     assert any("JS-reader" in item and "交叉验证" in item for item in pack["hypothesis_seeds"])
     assert any("knowledge/cards/api-idor.md" == item for item in pack["knowledge_cards"])
+
+
+def test_explicit_cache_focus_without_host_header_routes_to_proxy_card(tmp_path):
+    pack = build_context_pack(tmp_path, target="target.com", focus="web-cache-poisoning cache-deception")
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == ["knowledge/cards/proxy-cache-boundaries.md"]
+    assert any("cache key" in seed or "poisoning" in seed for seed in pack["hypothesis_seeds"])
+    assert any("victim request shape" in seed and "Vary/User-Agent/Accept" in seed for seed in pack["hypothesis_seeds"])

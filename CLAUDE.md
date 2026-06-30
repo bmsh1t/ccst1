@@ -131,6 +131,9 @@ government-like, or internet-facing.
 - `docs/tool-index.md` is the CLI quick-reference for every `tools/*` script
   with "When to use" hints and a Quick-pick-by-symptom table; consult it before
   reaching for a non-default tool.
+- `templates/phased-surface-validation-plan.md` 是分阶段攻击面验证计划模板；当目标脚本、
+  unsafe-skipped、checkpoint 或高风险验证需要沉淀时，只把目标事实写入目标作用域，
+  把抽象流程写入通用层，避免目标专属内容污染全局工具。
 
 ### Operational Summary
 

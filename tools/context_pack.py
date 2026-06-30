@@ -161,18 +161,99 @@ WEB2_VULN_FOCUS_RE = re.compile(
     r"api[-_ ]?idor|idor|authz?|access[-_ ]?control|method[-_ ]?based[-_ ]?access|referer[-_ ]?based[-_ ]?access|url[-_ ]?based[-_ ]?access|role[-_ ]?bypass|auth[-_ ]?hidden|hidden[-_ ]?login|login[-_ ]?bypass|ato|"
     r"jwt|jwe|jwks?|jku|kid|oauth|oidc|saml|sso|pkce|token[-_ ]?binding|account[-_ ]?linking|"
     r"graphql|sqli|sql[-_ ]?injection|hidden[-_ ]?param|nosql|no[-_ ]?sql[-_ ]?injection|"
+    r"server[-_ ]?side[-_ ]?param(?:eter)?[-_ ]?pollution|http[-_ ]?param(?:eter)?[-_ ]?pollution|param(?:eter)?[-_ ]?pollution|hpp|mass[-_ ]?assignment|over[-_ ]?posting|overposting|"
     r"xxe|xml[-_ ]?parser|xinclude|"
     r"path[-_ ]?traversal|directory[-_ ]?traversal|lfi|local[-_ ]?file[-_ ]?inclusion|file[-_ ]?read|"
-    r"ssrf|ssrf[-_ ]?internal|url[-_ ]?fetch|webhook|callback|oembed|"
+    r"ssrf|ssrf[-_ ]?internal|url[-_ ]?fetch|server[-_ ]?side[-_ ]?(?:fetch|request)|webhook|callback|oembed|"
     r"upload|upload[-_ ]?execution|webshell|import|parser|"
     r"race|rce|command[-_ ]?injection|ssti|template[-_ ]?injection|erb|ruby[-_ ]?template|deserialization|deserialize|signed[-_ ]?object|viewstate|"
     r"host[-_ ]?header|proxy[-_ ]?trust|request[-_ ]?smuggling|http[-_ ]?smuggling|cache[-_ ]?poisoning|cache[-_ ]?deception|"
     r"cors|csrf|xsrf|xss|reflected[-_ ]?xss|stored[-_ ]?xss|client[-_ ]?xss|csp|content[-_ ]?security[-_ ]?policy|sandbox[-_ ]?escape|dangling[-_ ]?markup|open[-_ ]?redirect|client[-_ ]?side[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|clickjacking|dom[-_ ]?xss|dom|websocket|cswsh|"
     r"information[-_ ]?disclosure|info[-_ ]?disclosure|web[-_ ]?llm|llm|essential[-_ ]?skills|"
-    r"node(?:\.js)?|express|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|"
+    r"node\.js|nodejs|express|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|"
     r"missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|param[-_ ]?discovery|"
     r"path[-_ ]?pattern|management[-_ ]?exposure|admin[-_ ]?panel"
     r")\b",
+    re.I,
+)
+
+SSRF_FETCH_CONTEXT_RE = re.compile(
+    r"\b("
+    r"ssrf|server[-_ ]?side[-_ ]?(?:fetch|request)|url[-_ ]?fetch|fetch_url|remote_url|"
+    r"webhook|callback|oembed|url[-_ ]?parser|url[-_ ]?param(?:eter)?|stock[-_ ]?api|stockapi"
+    r")\b",
+    re.I,
+)
+
+SSRF_INTERNAL_TARGET_RE = re.compile(
+    r"\b("
+    r"ssrf[-_ ]?internal|localhost|loopback|127(?:\.\d{1,3}){3}|0\.0\.0\.0|"
+    r"169\.254\.169\.254|metadata(?:[-_ ]?service)?|metadata\.google\.internal|"
+    r"internal[-_ ]?(?:service|system|host|network|admin|api|endpoint|interface)|"
+    r"intranet|admin[-_ ]?interface|admin[-_ ]?console|management[-_ ]?interface|"
+    r"private[-_ ]?ip|link[-_ ]?local|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+    r"172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}"
+    r")\b|(?<!\w)::1(?!\w)",
+    re.I,
+)
+
+SSRF_EXPLICIT_INTERNAL_RE = re.compile(
+    r"\b(ssrf[-_ ]?internal|internal[-_ ]?service|metadata[-_ ]?service|url[-_ ]?parser|"
+    r"169\.254\.169\.254|metadata\.google\.internal)\b",
+    re.I,
+)
+
+API_BUSINESS_CONTEXT_RE = re.compile(
+    r"\b(api|endpoint|rest|xhr|openapi|swagger)\b",
+    re.I,
+)
+
+BUSINESS_STATE_TARGET_RE = re.compile(
+    r"\b(price|pricing|cart|checkout|order|purchase|buy|payment|billing|coupon|"
+    r"wallet|quantity|stock|discount|refund|place[-_ ]?order)\b",
+    re.I,
+)
+
+BUSINESS_STATE_MUTATION_RE = re.compile(
+    r"\b(post|put|patch|delete|method[-_ ]?matrix|method[-_ ]?override|mutation|"
+    r"write|update|modify|buy|purchase|checkout|place[-_ ]?order)\b",
+    re.I,
+)
+
+BUSINESS_STATE_EXPLICIT_RE = re.compile(
+    r"\b(price[-_ ]?tamper|price[-_ ]?(?:override|change|update|patch|edit|manipulation)|"
+    r"pricing[-_ ]?api|mass[-_ ]?assignment|client[-_ ]?side[-_ ]?controls|"
+    r"business[-_ ]?logic|state[-_ ]?machine|workflow[-_ ]?validation)\b",
+    re.I,
+)
+
+API_PARAMETER_POLLUTION_RE = re.compile(
+    r"\b("
+    r"server[-_ ]?side[-_ ]?param(?:eter)?[-_ ]?pollution|"
+    r"http[-_ ]?param(?:eter)?[-_ ]?pollution|"
+    r"param(?:eter)?[-_ ]?pollution|hpp|"
+    r"duplicate[-_ ]?(?:query|param(?:eter)?|body|key)|"
+    r"(?:query|body|json)[-_ ]?duplicate|"
+    r"backend[-_ ]?(?:request|url)[-_ ]?(?:construction|build(?:ing)?|concat(?:enation)?|truncation)|"
+    r"query[-_ ]?string[-_ ]?injection|fragment[-_ ]?truncation"
+    r")\b",
+    re.I,
+)
+
+API_MASS_ASSIGNMENT_RE = re.compile(
+    r"\b(mass[-_ ]?assignment|over[-_ ]?posting|overposting)\b",
+    re.I,
+)
+
+API_PARAMETER_FIELD_RE = re.compile(
+    r"\b(isadmin|is_admin|role|roles|plan|status|verified|approved|approval|limit|quota|"
+    r"scope|scopes|permission|permissions|feature|features|internal|admin)\b",
+    re.I,
+)
+
+API_PARSER_DIFF_RE = re.compile(
+    r"\b(content[-_ ]?type|media[-_ ]?type|parser|parse|method[-_ ]?override|"
+    r"x[-_ ]?http[-_ ]?method[-_ ]?override)\b",
     re.I,
 )
 
@@ -245,6 +326,14 @@ TOKEN_TO_CARDS = (
             re.I,
         ),
         ("missing-parameter-discovery",),
+    ),
+    (
+        API_PARAMETER_POLLUTION_RE,
+        ("api-testing-workflow", "missing-parameter-discovery"),
+    ),
+    (
+        API_MASS_ASSIGNMENT_RE,
+        ("api-testing-workflow", "business-logic-state-machines"),
     ),
     (
         re.compile(
@@ -354,11 +443,14 @@ TOKEN_TO_CARDS = (
         ("upload-to-execution", "controlled-rce-impact"),
     ),
     (
-        re.compile(r"\b(upload|import|parser|parse|preview|convert|csv|pdf|xlsx|avatar|attachment)\b", re.I),
+        re.compile(r"\b(upload|import|file[-_ ]?parser|parse[-_ ]?file|preview|convert|csv|pdf|xlsx|avatar|attachment)\b", re.I),
         ("upload-parser",),
     ),
     (
-        re.compile(r"\b(ssrf[-_ ]?internal|internal[-_ ]?service|metadata|metadata[-_ ]?service|url[-_ ]?parser)\b", re.I),
+        re.compile(
+            r"\b(ssrf[-_ ]?internal|internal[-_ ]?service|metadata[-_ ]?service|metadata\.google\.internal|url[-_ ]?parser|169\.254\.169\.254)\b",
+            re.I,
+        ),
         ("ssrf-internal-impact", "ssrf-url-fetch"),
     ),
     (
@@ -389,7 +481,7 @@ TOKEN_TO_CARDS = (
     ),
     (
         re.compile(
-            r"\b(node(?:\.js)?|express|next\.js|nestjs|koa|hapi|fastify|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|lodash|qs|flat|deep[-_ ]?extend|dot[-_ ]?prop|set[-_ ]?value|vm2?|happy[-_ ]?dom|jsdom|pug|jade|ejs|handlebars)\b",
+            r"\b(node\.js|nodejs|express|next\.js|nestjs|koa|hapi|fastify|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|lodash|qs|flat|deep[-_ ]?extend|dot[-_ ]?prop|set[-_ ]?value|vm2?|happy[-_ ]?dom|jsdom|pug|jade|ejs|handlebars)\b",
             re.I,
         ),
         ("node-prototype-pollution",),
@@ -822,11 +914,54 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
     if re.search(r"\b(dead[-_ ]?end|stuck|no progress|plateau)\b", blob_l):
         return "bb-methodology", "目标记忆显示方向可能卡住，先用方法论 Skill 重定向。"
     if ranked.get("p1") or ranked.get("p2") or re.search(
-        r"\b(idor|auth|graphql|sqli|sql[-_ ]?injection|ssrf|upload|race|webhook|api|tenant|org|admin|missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|schema[-_ ]?error|validator[-_ ]?error|param[-_ ]?discovery|api[-_ ]?docs|swagger|openapi|path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|target[-_ ]?wordlist|structured[-_ ]?record|raw[-_ ]?log|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|metrics|health|config[-_ ]?(?:exposure|page|endpoint|dump|leak)|configuration|stats|trace|datasource|accesskey|secretkey|secret[-_ ]?leak)\b",
+        r"\b(idor|auth|graphql|sqli|sql[-_ ]?injection|ssrf|server[-_ ]?side[-_ ]?(?:fetch|request)|upload|race|webhook|api|tenant|org|admin|missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|schema[-_ ]?error|validator[-_ ]?error|param[-_ ]?discovery|param(?:eter)?[-_ ]?pollution|hpp|mass[-_ ]?assignment|over[-_ ]?posting|overposting|api[-_ ]?docs|swagger|openapi|path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|target[-_ ]?wordlist|structured[-_ ]?record|raw[-_ ]?log|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|metrics|health|config[-_ ]?(?:exposure|page|endpoint|dump|leak)|configuration|stats|trace|datasource|accesskey|secretkey|secret[-_ ]?leak)\b",
         blob_l,
     ):
         return "web2-vuln-classes", "已有可测试的 Web/API surface 或漏洞类别信号。"
     return "bb-methodology", "缺少明确类别信号，先做阶段判断和路线收敛。"
+
+
+def _has_ssrf_internal_signal(text: str) -> bool:
+    """识别“服务端取 URL + 内部目标”组合，避免把普通 internal/admin 误路由成 SSRF。"""
+
+    if not text:
+        return False
+    if SSRF_EXPLICIT_INTERNAL_RE.search(text):
+        return True
+    return bool(SSRF_FETCH_CONTEXT_RE.search(text) and SSRF_INTERNAL_TARGET_RE.search(text))
+
+
+def _has_api_business_logic_signal(text: str) -> bool:
+    """识别 API 写操作触及价格/订单等业务状态的场景，避免默认只落到 IDOR。"""
+
+    if not text:
+        return False
+    if BUSINESS_STATE_EXPLICIT_RE.search(text):
+        return True
+    return bool(
+        API_BUSINESS_CONTEXT_RE.search(text)
+        and BUSINESS_STATE_TARGET_RE.search(text)
+        and BUSINESS_STATE_MUTATION_RE.search(text)
+    )
+
+
+def _has_api_parameter_handling_signal(text: str) -> bool:
+    """识别 API 参数绑定/解析差异，优先加载 API 工作流而不是误入上传 parser。"""
+
+    if not text:
+        return False
+    return bool(
+        API_PARAMETER_POLLUTION_RE.search(text)
+        or API_MASS_ASSIGNMENT_RE.search(text)
+        or (
+            API_BUSINESS_CONTEXT_RE.search(text)
+            and API_PARSER_DIFF_RE.search(text)
+            and (
+                API_PARAMETER_FIELD_RE.search(text)
+                or re.search(r"\b(param(?:eter)?|query|body|json|field|schema)\b", text, re.I)
+            )
+        )
+    )
 
 
 def _cards_from_focus(focus: str) -> list[str]:
@@ -840,8 +975,14 @@ def _cards_from_focus(focus: str) -> list[str]:
         or re.search(r"\brest[-_ ]?api\b", focus_l)
         or re.search(r"\bsoap[-_ ]?api\b", focus_l)
         or re.search(r"\bmobile[-_ ]?api\b", focus_l)
+        or _has_api_parameter_handling_signal(focus)
     ):
-        cards.extend(["api-testing-workflow", "api-idor"])
+        cards.append("api-testing-workflow")
+        if _has_api_business_logic_signal(focus):
+            cards.append("business-logic-state-machines")
+        if API_PARAMETER_POLLUTION_RE.search(focus):
+            cards.append("missing-parameter-discovery")
+        cards.append("api-idor")
     if (
         re.search(r"\bbusiness[-_ ]?logic\b", focus_l)
         or re.search(r"\blogic[-_ ]?flaws?\b", focus_l)
@@ -849,6 +990,8 @@ def _cards_from_focus(focus: str) -> list[str]:
         or "workflow-validation" in focus_l
         or "client-side-controls" in focus_l
         or "price-tamper" in focus_l
+        or _has_api_business_logic_signal(focus)
+        or API_MASS_ASSIGNMENT_RE.search(focus)
     ):
         cards.append("business-logic-state-machines")
     if (
@@ -873,6 +1016,7 @@ def _cards_from_focus(focus: str) -> list[str]:
         or "parameter-null" in focus_l
         or "param-discovery" in focus_l
         or "api-docs" in focus_l
+        or API_PARAMETER_POLLUTION_RE.search(focus)
     ):
         cards.append("missing-parameter-discovery")
     if (
@@ -886,6 +1030,8 @@ def _cards_from_focus(focus: str) -> list[str]:
         or "secret-leak" in focus_l
     ):
         cards.append("path-pattern-management-exposure")
+        if "admin-panel" in focus_l:
+            cards.append("auth-access")
     if "sqli" in focus_l or "sql-injection" in focus_l or "hidden-param" in focus_l:
         cards.append("sqli-hidden-surfaces")
     if "nosql" in focus_l or "no-sql" in focus_l or "operator-injection" in focus_l:
@@ -941,14 +1087,14 @@ def _cards_from_focus(focus: str) -> list[str]:
         cards.extend(["auth-sso-token-edge-cases", "auth-access"])
     if "auth" in focus_l:
         cards.extend(["auth-access", "api-idor"])
-    if (
-        "ssrf-internal" in focus_l
-        or "internal-service" in focus_l
-        or "metadata" in focus_l
-        or "url-parser" in focus_l
-    ):
+    if _has_ssrf_internal_signal(focus):
         cards.extend(["ssrf-internal-impact", "ssrf-url-fetch"])
-    elif "ssrf" in focus_l or "url-fetch" in focus_l or "webhook" in focus_l:
+    elif (
+        "ssrf" in focus_l
+        or "url-fetch" in focus_l
+        or "webhook" in focus_l
+        or re.search(r"\bserver[-_ ]?side[-_ ]?(?:fetch|request)\b", focus_l)
+    ):
         cards.append("ssrf-url-fetch")
     if "upload-execution" in focus_l or "webshell" in focus_l or "script-execution" in focus_l:
         cards.extend(["upload-to-execution", "controlled-rce-impact"])
@@ -957,6 +1103,7 @@ def _cards_from_focus(focus: str) -> list[str]:
         or "import" in focus_l
         or (
             "parser" in focus_l
+            and not _has_api_parameter_handling_signal(focus)
             and "xml-parser" not in focus_l
             and "xxe" not in focus_l
         )
@@ -1048,13 +1195,13 @@ def _cards_from_focus(focus: str) -> list[str]:
     ):
         cards.append("controlled-rce-impact")
     if (
-        "node" in focus_l
-        or "express" in focus_l
+        re.search(r"\b(?:node\.js|nodejs)\b", focus_l)
+        or re.search(r"\bexpress\b", focus_l)
         or "prototype-pollution" in focus_l
         or "proto-pollution" in focus_l
         or "__proto__" in focus_l
         or "constructor.prototype" in focus_l
-        or "vm" in focus_l
+        or re.search(r"\bvm2?\b", focus_l)
     ):
         cards.append("node-prototype-pollution")
     return _dedupe(cards)
@@ -1086,6 +1233,7 @@ def _select_cards(
         cards.append("coverage-prompts")
     focus_l = focus.lower()
     priority: list[str] = []
+    api_business_logic_signal = _has_api_business_logic_signal(f"{focus}\n{blob}")
     if (
         re.search(r"\bapi[-_ ]?testing\b", focus_l)
         or re.search(r"\bapi[-_ ]?test\b", focus_l)
@@ -1093,8 +1241,13 @@ def _select_cards(
         or re.search(r"\bsoap[-_ ]?api\b", focus_l)
         or re.search(r"\bmobile[-_ ]?api\b", focus_l)
         or re.search(r"\b(api[-_ ]?testing|api[-_ ]?test|rest[-_ ]?api|soap[-_ ]?api|mobile[-_ ]?api|openapi|swagger)\b", blob, re.I)
+        or _has_api_parameter_handling_signal(blob)
     ):
         priority.append("api-testing-workflow")
+        if api_business_logic_signal:
+            priority.append("business-logic-state-machines")
+        if API_PARAMETER_POLLUTION_RE.search(blob):
+            priority.append("missing-parameter-discovery")
         priority.append("api-idor")
     if (
         re.search(r"\bbusiness[-_ ]?logic\b", focus_l)
@@ -1103,6 +1256,8 @@ def _select_cards(
         or "workflow-validation" in focus_l
         or "client-side-controls" in focus_l
         or "price-tamper" in focus_l
+        or api_business_logic_signal
+        or API_MASS_ASSIGNMENT_RE.search(blob)
         or re.search(
             r"\b(business[-_ ]?logic|logic[-_ ]?flaws?|state[-_ ]?machine|workflow[-_ ]?validation|client[-_ ]?side[-_ ]?controls|price[-_ ]?tamper|coupon|cart|checkout|exceptional[-_ ]?input|dual[-_ ]?use[-_ ]?endpoint)\b",
             blob,
@@ -1136,6 +1291,7 @@ def _select_cards(
         or "parameter-null" in focus_l
         or "param-discovery" in focus_l
         or "api-docs" in focus_l
+        or API_PARAMETER_POLLUTION_RE.search(blob)
         or re.search(
             r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|required[-_ ]?param(?:eter)?|schema[-_ ]?error|validator[-_ ]?error|binder[-_ ]?error|param[-_ ]?discovery|api[-_ ]?docs|swagger|openapi)\b",
             blob,
@@ -1143,6 +1299,26 @@ def _select_cards(
         )
     ):
         priority.append("missing-parameter-discovery")
+    sqli_signal = (
+        "sqli" in focus_l
+        or "sql-injection" in focus_l
+        or re.search(
+            r"\b(sqli|sql[-_ ]?injection|request[-_ ]?metadata|routing[-_ ]?segment|hidden[-_ ]?param|path[-_ ]?segment|second[-_ ]?order|log[-_ ]?backed)\b",
+            blob,
+            re.I,
+        )
+    )
+    if sqli_signal:
+        priority.append("sqli-hidden-surfaces")
+    access_control_signal = re.search(
+        r"\b(access[-_ ]?control|unprotected[-_ ]?admin|admin[-_ ]?panel|administrator[-_ ]?panel|"
+        r"method[-_ ]?based[-_ ]?access|referer[-_ ]?based[-_ ]?access|url[-_ ]?based[-_ ]?access|"
+        r"role[-_ ]?bypass|admin[-_ ]?roles?)\b",
+        blob,
+        re.I,
+    )
+    if access_control_signal:
+        priority.append("auth-access")
     if (
         "path-pattern" in focus_l
         or "management-exposure" in focus_l
@@ -1170,9 +1346,10 @@ def _select_cards(
         or "url-based-access" in focus_l
         or "role-bypass" in focus_l
         or "admin-roles" in focus_l
+        or access_control_signal
         or re.search(r"\b(idor|tenant|org|accounts|user_id|account_id|org_id|tenant_id|order_id|invoice_id|object_id)\b", blob, re.I)
     ):
-        if "access-control" in focus_l or "method-based-access" in focus_l or "referer-based-access" in focus_l or "url-based-access" in focus_l:
+        if access_control_signal or "access-control" in focus_l or "method-based-access" in focus_l or "referer-based-access" in focus_l or "url-based-access" in focus_l:
             priority.append("auth-access")
         priority.append("api-idor")
     if (
@@ -1208,9 +1385,7 @@ def _select_cards(
     if "auth" in focus_l:
         priority.append("auth-access")
     if (
-        "sqli" in focus_l
-        or "sql-injection" in focus_l
-        or re.search(r"\b(sqli|sql[-_ ]?injection|request[-_ ]?metadata|routing[-_ ]?segment|hidden[-_ ]?param|path[-_ ]?segment|second[-_ ]?order|log[-_ ]?backed)\b", blob, re.I)
+        sqli_signal
     ):
         priority.append("sqli-hidden-surfaces")
     if (
@@ -1236,6 +1411,12 @@ def _select_cards(
         or re.search(r"\b(path[-_ ]?traversal|directory[-_ ]?traversal|lfi|local[-_ ]?file[-_ ]?inclusion|file[-_ ]?read|file[-_ ]?download|php://filter|web-inf|etc/passwd)\b", blob, re.I)
     ):
         priority.append("path-traversal-file-read")
+    ssrf_blob = f"{focus}\n{blob}"
+    if _has_ssrf_internal_signal(ssrf_blob):
+        priority.append("ssrf-internal-impact")
+        priority.append("ssrf-url-fetch")
+    elif SSRF_FETCH_CONTEXT_RE.search(ssrf_blob):
+        priority.append("ssrf-url-fetch")
     if (
         "ssti" in focus_l
         or "template-injection" in focus_l
@@ -1318,15 +1499,15 @@ def _select_cards(
     ):
         priority.append("web-llm-tool-chains")
     if (
-        "node" in focus_l
-        or "express" in focus_l
+        re.search(r"\b(?:node\.js|nodejs)\b", focus_l)
+        or re.search(r"\bexpress\b", focus_l)
         or "prototype-pollution" in focus_l
         or "proto-pollution" in focus_l
         or "__proto__" in focus_l
         or "constructor.prototype" in focus_l
-        or "vm" in focus_l
+        or re.search(r"\bvm2?\b", focus_l)
         or re.search(
-            r"\b(node(?:\.js)?|express|next\.js|nestjs|koa|hapi|fastify|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|lodash|qs|flat|deep[-_ ]?extend|dot[-_ ]?prop|set[-_ ]?value|vm2?|happy[-_ ]?dom|jsdom|pug|jade|ejs|handlebars)\b",
+            r"\b(node\.js|nodejs|express|next\.js|nestjs|koa|hapi|fastify|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|lodash|qs|flat|deep[-_ ]?extend|dot[-_ ]?prop|set[-_ ]?value|vm2?|happy[-_ ]?dom|jsdom|pug|jade|ejs|handlebars)\b",
             blob,
             re.I,
         )
@@ -1550,6 +1731,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
     if CARD_PATHS["auth-sso-token-edge-cases"] in cards:
         seeds.extend([
             "JWT/OAuth/SAML/SSO 先保存合法流程 baseline，再做 decode、metadata、callback、state/nonce/PKCE、issuer/key source 和账号绑定的单变量差异。",
+            "JWT 签名验证 baseline 要先做 claim-only tamper：只改 sub/role/org 等单个 claim，保留无效签名或 none/alg 差异，观察服务端身份/权限是否实际改变。",
             "token/SSO 候选必须证明服务端身份、角色、租户、session 或 account-linking 边界影响；公开 metadata、可 decode token 或报错差异只算 Lead。",
         ])
     if CARD_PATHS["auth-credential-recovery-flows"] in cards:
@@ -1561,6 +1743,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "API testing 先把 docs/schema、JS/source、浏览器 XHR、mobile/旧版本和实际请求合并成 endpoint+method+auth matrix；不要只扫 `/api/` 路径。",
             "重点补 object/authz、隐藏/特权参数、mass assignment、content-type/parser、method override、HPP、版本差异和注入 sink；示例参数是候选形态，不是固定字典。",
+            "API 参数污染/HPP 先比较 duplicate query/body、JSON 重复 key、分隔符/fragment 截断、后端 URL 构造、content-type parser 和 method override 差异；mass assignment 优先从 schema/JS/XHR 派生 role/isAdmin/plan/status/verified/approved 等高价值字段。",
         ])
     if CARD_PATHS["business-logic-state-machines"] in cards:
         seeds.extend([
@@ -1583,6 +1766,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         ])
     if CARD_PATHS["sqli-hidden-surfaces"] in cards:
         seeds.extend([
+            "显式查询语义输入是 SQLi 第一顺位 baseline：搜索、筛选、分类、排序、分页、报表、导出、对象选择、租户/范围限定等参数或路径段都应先做只读成对扰动。",
             "SQLi 不只看显式 query/body 参数；按证据检查请求元数据、路由片段、cookie/session、跨接口隐藏参数或二阶输入是否进入查询、日志、审计或风控链路。",
             "从目标材料提取高信号输入面，每次只扰动一个输入点，比较稳定的状态码、长度、错误、排序、字段集合或布尔差异。",
         ])
@@ -1692,6 +1876,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
     if CARD_PATHS["race-conditions"] in cards:
         seeds.extend([
             "并发风险先做低频状态模型和幂等性推理，不做高并发或真实资金/库存状态改变。",
+            "Race 验证顺序是合法单次 baseline、单次 replay 幂等检查、状态窗口/锁粒度推理、协议能力探测（如 HTTP/2 multiplex 或 last-byte 同步）和最小同步触发；只有训练/自有可回滚资源才进入低请求数并发验证。",
         ])
     if CARD_PATHS["coverage-prompts"] in cards:
         seeds.append("把 P1/P2 surface 映射到 authz、IDOR、SSRF、Upload、GraphQL、Race 等高价值 lane，找未测组合。")

@@ -95,7 +95,7 @@ When ready for breadth:
 python3 tools/hunt.py --target target.com --scan-only
 ```
 
-After `run_vuln_scan` or any broad scan, read the surface summary again and review `unsafe-skipped` / `unsafe_skipped.txt`. Entries skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` are not tested-clean; checkpoint instead of finishing when high-value unsafe-skipped leads remain.
+After `run_vuln_scan` or any broad scan, read the surface summary again and review `unsafe-skipped` / `unsafe_skipped.txt`. Entries skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` are not tested-clean; checkpoint instead of finishing when high-value unsafe-skipped leads remain. For target-specific ad-hoc scripts or high-risk follow-up plans, use `templates/phased-surface-validation-plan.md`: concrete facts stay target-scoped; only abstract gates become global.
 
 For focused high-value targets:
 
