@@ -58,6 +58,7 @@ deep_refs:
 
 - 重定向链、DNS 重绑定、IPv6/IPv4 映射、整数/八进制/短写 IP、尾随点、大小写和编码差异。
 - URL parser 差异：校验器与 fetcher 对 scheme、userinfo、fragment、反斜杠、双 `@`、换行等解析不同。
+- Filter/fetcher 解码边界：先保留 blocked baseline，再按 loopback/别名 host、单编码 path、双编码 path 分步对照；这些是候选形态，不是固定字典。
 - 协议和端口差异：HTTP/HTTPS、gopher-like、file-like、custom fetcher 行为，只在证据命中时考虑。
 - 状态级内部证明：health/status/version/banner 级证据，不默认读取敏感内容。
 - Open redirect 在 SSRF 语境中是连接器：需要证明“允许 URL -> 30x -> 单个内部目标”由服务端完成，而不是用户浏览器跳转。
@@ -75,6 +76,7 @@ deep_refs:
 - 使用一次性 OAST token 证明服务端请求来源。
 - 对内部路径只测试单个高信号、低副作用 endpoint，例如 health/version/status。
 - 对 metadata 风险只证明可达性或安全控制缺失，不默认拉取凭证材料。
+- 过滤绕过只比较 400/403/404/200/3xx 等状态级差异；内部状态改变必须只作用于测试资源，并用后续只读请求确认结果。
 - 如果响应有回显，只截取最小非敏感证据。
 - 如果只能 blind，记录时间差、错误差、回调差，不扩大枚举。
 

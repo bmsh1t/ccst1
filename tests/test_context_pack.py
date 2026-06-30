@@ -416,6 +416,21 @@ def test_ssrf_localhost_admin_focus_routes_to_internal_impact(tmp_path):
     assert any("SSRF 内部影响" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_ssrf_blacklist_filter_focus_surfaces_parser_boundary_seed(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="SSRF blacklist input filter stockApi localhost loopback path encoding double encoding admin status change",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"][0] == "knowledge/cards/ssrf-internal-impact.md"
+    assert "knowledge/cards/ssrf-url-fetch.md" in pack["knowledge_cards"]
+    assert any("blocked baseline" in seed and "loopback/别名 host" in seed for seed in pack["hypothesis_seeds"])
+    assert any("单/双编码 path" in seed and "原始请求/响应" in seed for seed in pack["hypothesis_seeds"])
+    assert any("测试资源" in seed and "单目标最小证明" in seed for seed in pack["hypothesis_seeds"])
+
+
 def test_internal_admin_without_fetch_context_does_not_load_ssrf_internal(tmp_path):
     pack = build_context_pack(
         tmp_path,

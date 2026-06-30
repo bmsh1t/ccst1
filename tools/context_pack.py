@@ -1875,6 +1875,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "SSRF 内部影响只在已证明 server-side fetch 后展开；优先单个明确内部目标的状态级证据，不做内网扫描。",
             "当 SSRF 受 allowlist/local-only 限制时，open redirect / redirect connector 属于 SSRF 链路而不是浏览器跳转结论：先证明本地允许 URL 会被服务端 fetch，再证明 30x 后由服务端访问单个内部目标。",
             "内部 admin/metadata/control-plane 只做最小路径和单账号/单对象影响证明；parser discrepancy、userinfo、fragment、编码和重定向差异是候选形态，不是固定字典。",
+            "Blacklist/allowlist SSRF 过滤绕过按 blocked baseline -> loopback/别名 host -> 单/双编码 path -> 状态确认分步验证；3xx/404/400 差异要保存原始请求/响应，内部动作只在测试资源上做单目标最小证明。",
         ])
     if CARD_PATHS["upload-parser"] in cards:
         seeds.extend([
