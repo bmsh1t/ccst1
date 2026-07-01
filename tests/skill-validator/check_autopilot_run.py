@@ -64,6 +64,13 @@ HIGH_RISK_RE = re.compile(
     re.IGNORECASE,
 )
 
+CHECK_WEIGHTS = {
+    "context_pack": 30,
+    "executable_action": 25,
+    "evidence_path": 25,
+    "queue_resolution_and_stop": 20,
+}
+
 
 def _read_json(path: Path) -> Any:
     try:
@@ -334,6 +341,57 @@ def _check_queue_resolution_and_stop(queue: dict) -> dict:
     }
 
 
+def _score_context_pack(check: dict) -> int:
+    """Context routing has three independently useful breadcrumbs."""
+    missing = set(check.get("missing") or [])
+    score = 30
+    if "context_pack_used" in missing:
+        score -= 10
+    if "selected_skill" in missing:
+        score -= 10
+    if "knowledge_cards_or_reference_hints" in missing:
+        score -= 10
+    return max(score, 0)
+
+
+def _score_queue_resolution(check: dict) -> int:
+    """Queue quality has two halves: resolved item and high-risk stop condition."""
+    missing = set(check.get("missing") or [])
+    score = 20
+    if "final_status" in missing:
+        score -= 10
+    if "custom_stop_condition_for_high_risk" in missing:
+        score -= 10
+    return max(score, 0)
+
+
+def _score_checks(checks: dict[str, dict]) -> tuple[int, int]:
+    """Convert structural checks into a deterministic quality score."""
+    total = sum(CHECK_WEIGHTS.values())
+    score = 0
+    for name, check in checks.items():
+        max_score = CHECK_WEIGHTS.get(name, 0)
+        if name == "context_pack":
+            item_score = _score_context_pack(check)
+        elif name == "queue_resolution_and_stop":
+            item_score = _score_queue_resolution(check)
+        else:
+            item_score = max_score if check.get("passed") else 0
+        check["score"] = item_score
+        check["max_score"] = max_score
+        score += item_score
+    return score, total
+
+
+def _grade_run(score: int, passed: bool) -> str:
+    """Name the run quality without masking hard-contract failures."""
+    if passed and score >= 90:
+        return "pass"
+    if score >= 70:
+        return "needs_review"
+    return "fail"
+
+
 def check_run(repo_root: Path | str, target: str) -> dict:
     repo = Path(repo_root).resolve()
     resolved_target = canonical_target_value(target)
@@ -345,10 +403,15 @@ def check_run(repo_root: Path | str, target: str) -> dict:
         "evidence_path": _check_evidence_path(repo, target_key),
         "queue_resolution_and_stop": _check_queue_resolution_and_stop(queue),
     }
+    score, max_score = _score_checks(checks)
+    passed = all(item["passed"] for item in checks.values())
     return {
         "target": resolved_target,
         "target_key": target_key,
-        "passed": all(item["passed"] for item in checks.values()),
+        "passed": passed,
+        "score": score,
+        "max_score": max_score,
+        "grade": _grade_run(score, passed),
         "checks": checks,
     }
 
@@ -359,9 +422,12 @@ def format_report(result: dict) -> str:
         f"target: {result.get('target', '')}",
         f"target_key: {result.get('target_key', '')}",
     ]
+    lines.append(f"score: {result.get('score', 0)}/{result.get('max_score', 100)}")
+    lines.append(f"grade: {result.get('grade', 'fail')}")
     for name, check in result.get("checks", {}).items():
         status = "PASS" if check.get("passed") else "FAIL"
-        lines.append(f"[{status}] {name}: {check.get('evidence', '')}")
+        score = f"{check.get('score', 0)}/{check.get('max_score', 0)}"
+        lines.append(f"[{status}] {name} ({score}): {check.get('evidence', '')}")
         missing = check.get("missing") or []
         if missing:
             lines.append(f"       missing: {', '.join(missing)}")

@@ -77,7 +77,11 @@ def test_passing_fixture_satisfies_autopilot_run_contract(tmp_path):
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
     assert result["passed"] is True
+    assert result["score"] == 100
+    assert result["max_score"] == 100
+    assert result["grade"] == "pass"
     assert all(check["passed"] for check in result["checks"].values())
+    assert all(check["score"] == check["max_score"] for check in result["checks"].values())
 
 
 def test_cli_returns_zero_for_passing_run(tmp_path, capsys):
@@ -92,6 +96,8 @@ def test_cli_returns_zero_for_passing_run(tmp_path, capsys):
     output = capsys.readouterr().out
 
     assert exit_code == 0
+    assert "score: 100/100" in output
+    assert "grade: pass" in output
     assert "RESULT: PASS" in output
 
 
@@ -102,7 +108,10 @@ def test_missing_context_pack_artifact_fails_context_check(tmp_path):
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
     assert result["passed"] is False
+    assert result["score"] == 70
+    assert result["grade"] == "needs_review"
     assert result["checks"]["context_pack"]["passed"] is False
+    assert result["checks"]["context_pack"]["score"] == 0
     assert "selected_skill" in result["checks"]["context_pack"]["missing"]
 
 
@@ -117,7 +126,10 @@ def test_natural_language_only_action_fails_executable_check(tmp_path):
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
     assert result["passed"] is False
+    assert result["score"] == 75
+    assert result["grade"] == "needs_review"
     assert result["checks"]["executable_action"]["passed"] is False
+    assert result["checks"]["executable_action"]["score"] == 0
     assert result["checks"]["executable_action"]["missing"] == ["script_or_command_action"]
 
 
@@ -131,7 +143,10 @@ def test_missing_raw_evidence_fails_evidence_check(tmp_path):
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
     assert result["passed"] is False
+    assert result["score"] == 75
+    assert result["grade"] == "needs_review"
     assert result["checks"]["evidence_path"]["passed"] is False
+    assert result["checks"]["evidence_path"]["score"] == 0
     assert result["checks"]["evidence_path"]["missing"] == ["evidence_ref_or_raw_endpoint"]
 
 
@@ -145,7 +160,10 @@ def test_active_only_queue_fails_resolution_check(tmp_path):
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
     assert result["passed"] is False
+    assert result["score"] == 90
+    assert result["grade"] == "needs_review"
     assert result["checks"]["queue_resolution_and_stop"]["passed"] is False
+    assert result["checks"]["queue_resolution_and_stop"]["score"] == 10
     assert "final_status" in result["checks"]["queue_resolution_and_stop"]["missing"]
 
 
@@ -159,5 +177,27 @@ def test_high_risk_default_stop_condition_fails_stop_check(tmp_path):
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
     assert result["passed"] is False
+    assert result["score"] == 90
+    assert result["grade"] == "needs_review"
     assert result["checks"]["queue_resolution_and_stop"]["passed"] is False
+    assert result["checks"]["queue_resolution_and_stop"]["score"] == 10
     assert "custom_stop_condition_for_high_risk" in result["checks"]["queue_resolution_and_stop"]["missing"]
+
+
+def test_cli_json_includes_scores(tmp_path, capsys):
+    _write_passing_run(tmp_path)
+
+    exit_code = check_autopilot_run.main([
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        "demo.test",
+        "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["score"] == 100
+    assert payload["max_score"] == 100
+    assert payload["grade"] == "pass"
+    assert payload["checks"]["context_pack"]["score"] == 30
