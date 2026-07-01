@@ -43,7 +43,11 @@ print_banner "403 / 401 Bypass Probe" "${URL:-$LIST}" \
     "Built-in|header · method · path · encoding tricks" \
     "Report|matched response codes per technique"
 
-if _have byp4xx; then
+if [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" != "1" ]; then
+  log "unsafe/state-changing probes disabled; set ALLOW_UNSAFE_HTTP_TESTS=1 to include POST/PUT/PATCH/TRACE"
+fi
+
+if _have byp4xx && [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" = "1" ]; then
   log "byp4xx bypass matrix..."
   if [ -n "$URL" ]; then
     byp4xx -u "$URL" 2>/dev/null > "$OUT_DIR/byp4xx.txt" || true
@@ -225,6 +229,14 @@ _probe_one() {
     method=$(echo "$combo" | cut -d'|' -f1)
     url=$(echo "$combo" | cut -d'|' -f2)
     hdr=$(echo "$combo" | cut -d'|' -f3)
+    case "$method" in
+      POST|PUT|PATCH|TRACE)
+        if [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" != "1" ]; then
+          printf '%s|%s|%s|unsafe-disabled|0|{"verdict":"manual_review","reason":"requires ALLOW_UNSAFE_HTTP_TESTS=1"}\n' "$method" "$url" "$hdr" >> "$OUT_DIR/bypass_manual_review.txt"
+          continue
+        fi
+        ;;
+    esac
     local _tmpbody _tmphdr
     _tmpbody=$(mktemp)
     _tmphdr=$(mktemp)
@@ -388,4 +400,5 @@ log "Output written to: $OUT_DIR"
 [ -f "$OUT_DIR/bypass_hits.txt" ]     && ok  "bypass_hits.txt:     $(wc -l < "$OUT_DIR/bypass_hits.txt") confirmed bypass(es)"
 [ -f "$OUT_DIR/bypass_uncertain.txt" ] && log "bypass_uncertain.txt: $(wc -l < "$OUT_DIR/bypass_uncertain.txt") needs review (200 body may still be block page)"
 [ -f "$OUT_DIR/bypass_blocked.txt" ]  && log "Confirmed blocked: $(wc -l < "$OUT_DIR/bypass_blocked.txt") probe(s) → $OUT_DIR/bypass_blocked.txt"
+[ -f "$OUT_DIR/bypass_manual_review.txt" ] && log "Manual review: $(wc -l < "$OUT_DIR/bypass_manual_review.txt") unsafe probe(s) skipped → $OUT_DIR/bypass_manual_review.txt"
 [ -f "$OUT_DIR/waf_fingerprint.txt" ] && log "waf_fingerprint.txt:  $(cat "$OUT_DIR/waf_fingerprint.txt")"
