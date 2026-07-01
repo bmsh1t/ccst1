@@ -569,6 +569,22 @@ def test_xxe_error_reflection_focus_keeps_parser_evidence_gate(tmp_path):
     )
 
 
+def test_xxe_metadata_ssrf_focus_routes_to_parser_and_internal_impact(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="XXE XML parser SSRF metadata IAM role credentials external entity reflected business field",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == [
+        "knowledge/cards/xxe-xml-parser.md",
+        "knowledge/cards/ssrf-internal-impact.md",
+    ]
+    assert any("错误响应本身不是 XXE 证据" in seed for seed in pack["hypothesis_seeds"])
+    assert any("SSRF 内部影响" in seed and "不做内网扫描" in seed for seed in pack["hypothesis_seeds"])
+
+
 def test_explicit_path_traversal_focus_without_recon_routes_to_file_read_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="path-traversal lfi file-read")
 
