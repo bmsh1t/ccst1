@@ -1839,7 +1839,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         ])
     if CARD_PATHS["auth-sso-token-edge-cases"] in cards:
         seeds.extend([
-            "JWT/OAuth/SAML/SSO 先保存合法流程 baseline，再做 decode、metadata、callback、state/nonce/PKCE、issuer/key source 和账号绑定的单变量差异。",
+            "JWT/OAuth/SAML/SSO 先保存合法流程 baseline，再做 decode、metadata、callback、state/nonce/PKCE、issuer/key source 和账号绑定的单变量差异；JWT key-source 探针要和 claim-only tamper 分离，分别验证 JWK/JKU/KID/alg confusion 是否改变服务端身份/权限。",
             "JWT 签名验证 baseline 要先做 claim-only tamper：只改 sub/role/org 等单个 claim，保留无效签名或 none/alg 差异，观察服务端身份/权限是否实际改变。",
             "token/SSO 候选必须证明服务端身份、角色、租户、session 或 account-linking 边界影响；公开 metadata、可 decode token 或报错差异只算 Lead。",
         ])

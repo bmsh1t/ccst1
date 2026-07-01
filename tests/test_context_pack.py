@@ -101,6 +101,7 @@ def test_jwt_unverified_signature_focus_surfaces_claim_tamper_baseline(tmp_path)
     assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
     assert pack["knowledge_cards"][0] == "knowledge/cards/auth-sso-token-edge-cases.md"
     assert any("claim-only tamper" in seed and "无效签名" in seed for seed in pack["hypothesis_seeds"])
+    assert any("key-source" in seed and "JWK/JKU/KID/alg confusion" in seed for seed in pack["hypothesis_seeds"])
 
 
 def test_access_control_method_focus_routes_to_auth_access_card(tmp_path):

@@ -71,8 +71,8 @@ deep_refs:
 ## 技巧家族 / Payload 家族
 
 - JWT/JWE 形态识别：3 段 token、5 段 JWE、header/claim decode、issuer/JWKS metadata 读取。
-- Key source 差异：`kid` 选择、JWKS 路由、JWK/JKU header、issuer allowlist、key cache。
-- Algorithm / verification 差异：算法白名单、none/HS/RS 混用、decode-only、aud/iss/exp/nbf 校验缺失。
+- Key source 差异：`kid` 选择、JWKS 路由、JWK/JKU header、issuer allowlist、key cache；必须和 claim-only tamper 分离，单独证明服务端是否真的采用了 header-controlled key source。
+- Algorithm / verification 差异：算法白名单、none/HS/RS 混用、decode-only、aud/iss/exp/nbf 校验缺失；alg confusion 要固定 claim 与 key source，只改变算法/签名材料并观察身份差异。
 - Claim tamper 差异：保持原 header/signature 或使用无效签名，只改 `sub`/role/org 等 claim；
   如果服务端身份随 claim 改变，说明存在 decode-only 或 verification bypass 线索。
 - OAuth/OIDC 差异：redirect_uri 规范化、state/nonce 绑定、PKCE enforcement、code reuse、
@@ -97,7 +97,7 @@ deep_refs:
 - 先做只读 decode 和 metadata 读取，不修改真实账号状态。
 - 用自有/测试账号记录 A/B baseline：普通登录、SSO 登录、refresh、登出、角色变化前后。
 - 每次只改变一个 token/header/callback 参数，比较状态码、Set-Cookie、token、身份、角色、
-  org/tenant 和后端权限差异。
+  org/tenant 和后端权限差异；JWK/JKU/KID/alg confusion 先保存 claim-only invalid-signature 对照，再做 key-source/algorithm 单变量请求。
 - JWT verification 检查先用 claim-only tamper 建立信号：改 `sub` 或 role 后访问只读身份页/
   admin 页面，确认服务端实际身份变化；不要把“token 可编辑”当成结论。
 - 对 redirect/state/nonce/PKCE，用自有账号或本地 callback 证明绑定缺失，不诱导真实用户。
