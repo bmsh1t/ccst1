@@ -585,6 +585,18 @@ def test_xxe_metadata_ssrf_focus_routes_to_parser_and_internal_impact(tmp_path):
     assert any("SSRF 内部影响" in seed and "不做内网扫描" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_xinclude_form_parameter_focus_mentions_assembled_xml_path(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="XInclude form parameter assembled into server-side XML productId stock checker namespace file read",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == ["knowledge/cards/xxe-xml-parser.md"]
+    assert any("form/JSON" in seed and "组装进 XML" in seed and "XInclude" in seed for seed in pack["hypothesis_seeds"])
+
+
 def test_explicit_path_traversal_focus_without_recon_routes_to_file_read_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="path-traversal lfi file-read")
 

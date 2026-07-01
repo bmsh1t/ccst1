@@ -1858,7 +1858,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         ])
     if CARD_PATHS["xxe-xml-parser"] in cards:
         seeds.extend([
-            "XXE 先确认真实 XML 解析面：SOAP/XML API、SAML、SVG、Office 文档、RSS/Atom、导入/转换器和 content-type 兼容路径可能使用不同 parser。",
+            "XXE 先确认真实 XML 解析面：SOAP/XML API、SAML、SVG、Office 文档、RSS/Atom、导入/转换器和 content-type 兼容路径可能使用不同 parser；即使外层是 form/JSON 参数，也可能被后端组装进 XML 后触发 XInclude。",
             "验证顺序优先 harmless entity / OAST callback / XInclude 差异，再按证据判断 file-read 或 SSRF 影响；不默认批量读取敏感文件。",
             "错误响应本身不是 XXE 证据；只有业务字段或错误消息反射无害 entity、外部 entity 内容，或 OAST 记录到唯一 token 时，才把 parser 行为升级为影响线索。",
         ])

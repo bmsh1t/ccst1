@@ -23,6 +23,7 @@ deep_refs:
 
 - XXE 的关键不是“有 XML 字符串”，而是后端 parser 会处理 DTD、外部实体、XInclude 或外部资源引用。
 - 入口不只 SOAP/XML API，也包括 SAML、SVG、DOCX/XLSX/PPTX、RSS/Atom、PDF/Office 转换、移动端 XML 和导入/预览 worker。
+- 外层是 form/JSON 参数时也不能排除 XML parser；参数可能被服务端组装进 XML 文档，再触发 XInclude 或实体解析。
 - 先建立合法 XML baseline，再单变量验证 entity、DOCTYPE、XInclude、content-type 和 parser 差异。
 - 有回显时比较 entity 展开结果；无回显时用一次性 OAST callback 证明服务端解析器行为。
 - 400/错误响应不是失败或成功的直接结论；只有错误消息或业务字段反射 entity 展开结果时，才能作为 parser 行为证据。
@@ -47,6 +48,7 @@ deep_refs:
 - Error-reflected XXE：数值、ID、库存、搜索等业务字段被 parser 消费，entity 展开后进入校验错误或异常消息。
 - Blind XXE：无回显但解析器对 OAST 域名发起 DNS/HTTP 请求。
 - XInclude：DTD 被禁用但 `xi:include` 仍被处理。
+- Assembled XML：外层 form/JSON/路径参数进入后端 XML 模板，无法控制 DOCTYPE 时仍可验证 XInclude。
 - Parser confusion：JSON/XML/form 的 content-type、SOAPAction、namespace 或编码差异触发不同 parser。
 - File-read chain：证明单个文件可达后，链到源码、配置、路由或 token/signing secret 假设。
 - SSRF chain：证明 XML parser 可请求外部 URL 后，再判断是否能访问单个明确内部 health/status 目标。
@@ -54,7 +56,7 @@ deep_refs:
 ## 技巧家族 / Payload 家族
 
 - DTD/entity 形态：内联实体、外部 SYSTEM 实体、参数实体、错误回显实体。
-- XInclude 形态：在支持 namespace 的字段中尝试包含本地或远程资源。
+- XInclude 形态：在支持 namespace 的字段中尝试包含本地或远程资源；只作为候选形态，需先证明该字段进入服务端 XML 组装链。
 - Archive/XML 形态：在 SVG、DOCX、XLSX、PPTX、RSS/Atom 内嵌外部引用或实体。
 - Content-type 差异：同一 endpoint 对 JSON、XML、form-urlencoded 的解析和鉴权顺序差异。
 - OAST 形态：一次性 token 域名，记录来源 IP、时间、路径和 User-Agent。
