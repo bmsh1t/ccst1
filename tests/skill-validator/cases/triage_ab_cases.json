@@ -1,0 +1,123 @@
+{
+  "meta": {
+    "purpose": "Real LLM A/B: does reading triage-validation/SKILL.md improve verdict + severity accuracy vs an unaided security-savvy baseline?",
+    "verdict_values": ["REPORT", "DO_NOT_REPORT", "CHAIN_REQUIRED"],
+    "severity_values": ["Critical", "High", "Medium", "Low", "None"],
+    "ground_truth_source": "skills/triage-validation/SKILL.md NEVER SUBMIT list + CONDITIONALLY VALID table + Q7 precedence + CVSS quick reference",
+    "scoring": "verdict exact match = 1pt; severity exact match = 1pt; per case max 2pt"
+  },
+  "cases": [
+    {
+      "id": "T01",
+      "title": "Open redirect standalone",
+      "scenario": "GET /redirect?url=https://evil.com returns 302 Location: https://evil.com. No OAuth flow, no token in redirect, no sensitive navigation demonstrated. Just an open redirect on a marketing page.",
+      "verdict": "DO_NOT_REPORT",
+      "severity": "None",
+      "rationale": "Open redirect alone is on NEVER SUBMIT; no chain, no concrete next hop demonstrated."
+    },
+    {
+      "id": "T02",
+      "title": "Open redirect chained into OAuth code theft (proven end-to-end)",
+      "scenario": "The /redirect?url= endpoint is reachable as the OAuth redirect_uri. PoC shows the authorization code is delivered to attacker.com and exchanged for a victim access token, yielding full account takeover. Full chain reproduced with raw requests.",
+      "verdict": "REPORT",
+      "severity": "Critical",
+      "rationale": "Open redirect + OAuth redirect_uri code theft, chain proven end to end = ATO Critical (REPORT, not CHAIN_REQUIRED)."
+    },
+    {
+      "id": "T03",
+      "title": "Open redirect, OAuth reachable, chain NOT yet built",
+      "scenario": "Open redirect confirmed. The same host also runs an OAuth flow and the redirect_uri validation looks loose, but the tester has NOT yet demonstrated code/token theft. There is a concrete next hop to try.",
+      "verdict": "CHAIN_REQUIRED",
+      "severity": "None",
+      "rationale": "Chain-eligible, concrete next hop exists but unbuilt = CHAIN_REQUIRED (not DO_NOT_REPORT, not REPORT)."
+    },
+    {
+      "id": "T04",
+      "title": "Self-XSS only",
+      "scenario": "User can inject <script> into their own profile bio, which executes only in their own session. No way shown to deliver it to another user.",
+      "verdict": "DO_NOT_REPORT",
+      "severity": "None",
+      "rationale": "Self-XSS alone is on NEVER SUBMIT; no victim-delivery chain."
+    },
+    {
+      "id": "T05",
+      "title": "SSRF DNS-only callback",
+      "scenario": "A URL parameter triggers a DNS lookup to attacker-controlled Burp Collaborator, but no HTTP response body is returned, no internal service reached, no data read back.",
+      "verdict": "DO_NOT_REPORT",
+      "severity": "None",
+      "rationale": "SSRF DNS callback only, no internal access/data = NEVER SUBMIT standalone."
+    },
+    {
+      "id": "T06",
+      "title": "SSRF reaching cloud metadata with credential read-back",
+      "scenario": "The fetch parameter reaches http://169.254.169.254/latest/meta-data/iam/security-credentials/ and the response body containing temporary IAM credentials is reflected back to the attacker. Reproduced with raw request/response.",
+      "verdict": "REPORT",
+      "severity": "Critical",
+      "rationale": "SSRF to cloud metadata with data returned; CVSS ~9.1 Critical."
+    },
+    {
+      "id": "T07",
+      "title": "CORS wildcard reflection without credentials",
+      "scenario": "Server reflects arbitrary Origin into Access-Control-Allow-Origin, but Access-Control-Allow-Credentials is false and the endpoint returns only public, non-sensitive data.",
+      "verdict": "DO_NOT_REPORT",
+      "severity": "None",
+      "rationale": "CORS wildcard without credential exfil PoC = NEVER SUBMIT."
+    },
+    {
+      "id": "T08",
+      "title": "CORS misconfig with credentialed PII exfiltration (proven)",
+      "scenario": "Server reflects attacker Origin AND sets Access-Control-Allow-Credentials: true on /api/me. PoC page hosted on attacker.com reads the victim's full profile (email, address, phone) cross-origin with cookies. Demonstrated end to end.",
+      "verdict": "REPORT",
+      "severity": "High",
+      "rationale": "CORS + credentialed sensitive response exfil, proven = High."
+    },
+    {
+      "id": "T09",
+      "title": "Missing security headers",
+      "scenario": "Scanner reports the site is missing Content-Security-Policy and HSTS headers. No exploit demonstrated.",
+      "verdict": "DO_NOT_REPORT",
+      "severity": "None",
+      "rationale": "Missing CSP/HSTS on NEVER SUBMIT; not chain-eligible."
+    },
+    {
+      "id": "T10",
+      "title": "IDOR reading other users' PII",
+      "scenario": "GET /api/orders/{id} lets an authenticated free user increment id to read any other user's order details: name, shipping address, items. Two accounts used to prove cross-user read. No write.",
+      "verdict": "REPORT",
+      "severity": "Medium",
+      "rationale": "IDOR read PII, auth required, any user; CVSS 6.5 Medium."
+    },
+    {
+      "id": "T11",
+      "title": "IDOR allowing write/delete on other users' objects",
+      "scenario": "DELETE /api/documents/{id} succeeds against documents owned by other users; attacker (free account) can delete any user's documents. Proven with two accounts.",
+      "verdict": "REPORT",
+      "severity": "High",
+      "rationale": "IDOR write/delete any user; CVSS 7.5 High."
+    },
+    {
+      "id": "T12",
+      "title": "Authentication bypass to admin panel",
+      "scenario": "Setting a cookie role=admin (no server-side verification) grants full access to /admin including user management and config. No login as admin required. Reproduced from a fresh unauthenticated session.",
+      "verdict": "REPORT",
+      "severity": "Critical",
+      "rationale": "Auth bypass to admin; CVSS 9.8 Critical."
+    },
+    {
+      "id": "T13",
+      "title": "Host header injection + password reset poisoning (proven)",
+      "scenario": "Changing the Host header on POST /forgot-password causes the reset email link sent to the victim to point at attacker-controlled host, leaking the victim's reset token when they click. Demonstrated with a real reset email capture.",
+      "verdict": "REPORT",
+      "severity": "High",
+      "rationale": "Host header injection + reset poisoning chain proven = High."
+    },
+    {
+      "id": "T14",
+      "title": "GraphQL introspection enabled, nothing else shown",
+      "scenario": "Introspection query returns the full schema. No field-level auth bypass, no IDOR on node(), no sensitive mutation demonstrated.",
+      "verdict": "DO_NOT_REPORT",
+      "severity": "None",
+      "rationale": "GraphQL introspection alone on NEVER SUBMIT; no demonstrated bypass."
+    }
+  ]
+}
