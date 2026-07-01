@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from context_pack import build_context_pack, format_context_pack
+from context_pack import SKILL_PATHS, build_context_pack, format_context_pack
 from evidence_ledger import record_entry
 
 
@@ -49,6 +49,12 @@ def _seed_target_memory(repo_root: Path, target: str, payload: dict) -> None:
 
 def _hint_paths(pack: dict) -> list[str]:
     return [item["path"] for item in pack.get("reference_hints", [])]
+
+
+def test_context_pack_never_defaults_to_security_arsenal_skill():
+    """Arsenal stays an on-demand reference layer, not a default selected Skill."""
+    assert "security-arsenal" not in SKILL_PATHS
+    assert all("skills/security-arsenal/SKILL.md" != path for path in SKILL_PATHS.values())
 
 
 def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
