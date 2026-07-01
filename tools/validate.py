@@ -1160,6 +1160,136 @@ def mark_finding_validated(findings_dir: str, finding_id: str, summary: dict, su
     )
 
 
+def _validation_summary_path(report_path: str | Path) -> Path:
+    return Path(report_path).parent / "validation-summary.json"
+
+
+def _validation_endpoint_markers(endpoint: str) -> list[str]:
+    """Return full/path endpoint markers suitable for action_queue matching."""
+    raw = str(endpoint or "").strip()
+    markers = [raw] if raw else []
+    if raw.startswith(("http://", "https://")):
+        parsed = urlparse(raw)
+        path_query = parsed.path or "/"
+        if parsed.query:
+            path_query = f"{path_query}?{parsed.query}"
+        markers.append(path_query)
+        markers.append(parsed.path or "/")
+    return [item for item in markers if item]
+
+
+def _validation_action_matches(action: dict, summary: dict) -> bool:
+    """Return whether an action_queue item represents this validation result."""
+    finding_id = str(summary.get("finding_id") or "").strip()
+    endpoint_markers = _validation_endpoint_markers(str(summary.get("endpoint") or ""))
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    action_type = str(action.get("type") or "").lower()
+    haystack = " ".join(
+        str(value or "")
+        for value in (
+            action.get("id"),
+            action.get("source_id"),
+            action.get("evidence"),
+            action.get("next_question"),
+            action.get("action"),
+            action.get("command_hint"),
+            metadata.get("finding_id"),
+            metadata.get("endpoint"),
+        )
+    )
+    if finding_id and finding_id in haystack:
+        return True
+    if action_type in {"validation", "candidate-evidence-gap"}:
+        for marker in endpoint_markers:
+            if marker and marker in haystack:
+                return True
+    return False
+
+
+def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = None) -> dict:
+    """Best-effort write-back from /validate into evidence ledger and action queue.
+
+    The function is intentionally conservative: failures are returned in the
+    result payload instead of blocking report generation.
+    """
+    repo = Path(repo_root) if repo_root is not None else BASE_DIR
+    target = str(summary.get("target") or "").strip()
+    endpoint = str(summary.get("endpoint") or "").strip()
+    if not target or not endpoint:
+        return {"status": "skipped", "reason": "missing target or endpoint"}
+
+    summary_path = _validation_summary_path(summary.get("report_path") or "")
+    ledger_update: dict = {}
+    queue_update: dict = {}
+
+    try:
+        try:
+            from evidence_ledger import record_entry
+        except ImportError:  # pragma: no cover - package import path
+            from tools.evidence_ledger import record_entry
+
+        ledger_entry = record_entry(
+            repo,
+            target=target,
+            endpoint=endpoint,
+            method="GET",
+            vuln_class=str(summary.get("vuln_class") or "validation"),
+            workflow="validate",
+            actor="owner",
+            object_scope="unknown",
+            variant="baseline",
+            source="validate",
+            result="tested_finding" if summary.get("all_gates_passed") else "candidate",
+            evidence_ref=str(summary_path),
+            notes=f"/validate {summary.get('result', '')}: {summary.get('submission_notes_path', '')}",
+        )
+        ledger_update = {
+            "status": "updated",
+            "path": str(repo / "memory" / "evidence" / ledger_entry.get("target_key", "") / "ledger.jsonl"),
+            "result": ledger_entry.get("result", ""),
+        }
+    except Exception as exc:  # pragma: no cover - defensive best-effort path
+        ledger_update = {"status": "error", "error": str(exc)}
+
+    try:
+        try:
+            from action_queue import ACTIVE_STATUSES, load_queue, resolve_action
+        except ImportError:  # pragma: no cover - package import path
+            from tools.action_queue import ACTIVE_STATUSES, load_queue, resolve_action
+
+        queue = load_queue(repo, target)
+        matched = None
+        for action in queue.get("actions", []):
+            if not isinstance(action, dict):
+                continue
+            if str(action.get("status") or "queued") not in ACTIVE_STATUSES:
+                continue
+            if _validation_action_matches(action, summary):
+                matched = action
+                break
+
+        if matched:
+            resolved = resolve_action(
+                repo,
+                target=target,
+                action_id=str(matched.get("id") or ""),
+                status="validated" if summary.get("all_gates_passed") else "candidate",
+                result=f"validation-summary={summary_path}",
+                notes=f"submission-notes={summary.get('submission_notes_path', '')}",
+            )
+            queue_update = {
+                "status": "updated",
+                "id": resolved.get("id", ""),
+                "action_status": resolved.get("status", ""),
+            }
+        else:
+            queue_update = {"status": "skipped", "reason": "no matching active validation action"}
+    except Exception as exc:  # pragma: no cover - defensive best-effort path
+        queue_update = {"status": "error", "error": str(exc)}
+
+    return {"status": "updated", "ledger": ledger_update, "action_queue": queue_update}
+
+
 def _map_validate_result_to_calibration_outcome(result: str) -> str | None:
     """(P5-W1 R5) Map /validate result string to a calibration outcome label.
 
@@ -1489,6 +1619,10 @@ def main():
 
     summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
     write_validation_summary(summary, output_path)
+    validation_sync = sync_validation_artifacts(summary)
+    if validation_sync.get("status") == "updated":
+        summary["validation_sync"] = validation_sync
+        write_validation_summary(summary, output_path)
     if finding_prefill:
         mark_finding_validated(
             args.findings_dir,

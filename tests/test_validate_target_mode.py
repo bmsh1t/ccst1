@@ -230,6 +230,83 @@ def test_validate_browser_evidence_resolver_captures_explicit_url(monkeypatch):
     assert linkage["request_count"] == 1
 
 
+
+def test_sync_validation_artifacts_records_ledger_and_resolves_queue(tmp_path):
+    from action_queue import add_manual_action, load_queue
+    from evidence_ledger import load_entries
+
+    add_manual_action(
+        tmp_path,
+        target="target.com",
+        action_type="validation",
+        evidence="Validate finding sqli_deadbeef before report.",
+        next_question="Does the candidate pass validation gates?",
+        action="python3 tools/validate.py --findings-dir findings/target.com --finding-id sqli_deadbeef",
+        command_hint="python3 tools/validate.py --findings-dir findings/target.com --finding-id sqli_deadbeef",
+        evidence_type="candidate-validation",
+        stop_condition="Stop after validation-summary.json and submission-notes.md are written.",
+    )
+    report_path = tmp_path / "findings" / "target.com-sqli" / "hackerone-report.md"
+    report_path.parent.mkdir(parents=True)
+    summary = {
+        "target": "target.com",
+        "endpoint": "https://target.com/item?id=1",
+        "vuln_class": "sqli",
+        "result": "confirmed",
+        "all_gates_passed": True,
+        "finding_id": "sqli_deadbeef",
+        "report_path": str(report_path),
+        "submission_notes_path": str(report_path.parent / "submission-notes.md"),
+    }
+
+    sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+
+    entries = load_entries(tmp_path, "target.com")
+    queue = load_queue(tmp_path, "target.com")
+    action = queue["actions"][0]
+
+    assert sync["ledger"]["status"] == "updated"
+    assert sync["action_queue"]["status"] == "updated"
+    assert entries[-1]["source"] == "validate"
+    assert entries[-1]["result"] == "tested_finding"
+    assert entries[-1]["evidence_ref"].endswith("validation-summary.json")
+    assert action["status"] == "validated"
+    assert "validation-summary=" in action["result"]
+    assert "submission-notes=" in action["notes"]
+
+
+def test_sync_validation_artifacts_partial_keeps_queue_candidate(tmp_path):
+    from action_queue import add_manual_action, load_queue
+    from evidence_ledger import load_entries
+
+    add_manual_action(
+        tmp_path,
+        target="target.com",
+        action_type="candidate-evidence-gap",
+        evidence="Endpoint /item?id=1 needs validation.",
+        next_question="Is the candidate strong enough?",
+        action="Run /validate for /item?id=1.",
+        evidence_type="candidate-validation",
+    )
+    report_path = tmp_path / "findings" / "target.com-sqli" / "hackerone-report.md"
+    summary = {
+        "target": "target.com",
+        "endpoint": "https://target.com/item?id=1",
+        "vuln_class": "sqli",
+        "result": "partial",
+        "all_gates_passed": False,
+        "report_path": str(report_path),
+    }
+
+    sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+
+    entries = load_entries(tmp_path, "target.com")
+    action = load_queue(tmp_path, "target.com")["actions"][0]
+
+    assert sync["action_queue"]["action_status"] == "candidate"
+    assert entries[-1]["result"] == "candidate"
+    assert action["status"] == "candidate"
+
 def test_mark_finding_validated_updates_finding_index(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)
