@@ -1,5 +1,19 @@
 # External Reference Library
 
+## Local on-demand references
+
+These files are part of this skill and should be loaded only when the active
+evidence needs them. They keep detailed tables out of broad coordinator skills.
+
+| Local file | Use it for |
+|---|---|
+| `references/bypass-patterns.md` | SSRF URL/IP parser bypasses, open redirect parser tricks, upload validation bypasses, magic bytes, SQLi/WAF normalization shapes |
+| `references/sink-and-grep-patterns.md` | DOM sources/sinks and language-specific grep patterns for source or bundle review |
+| `references/recon-tool-usage.md` | Recon pipeline, ffuf, Semgrep, cloud/storage discovery, API endpoint discovery, scope retrieval command shapes |
+| `references/payload-families.md` | SSTI, command injection, XXE, and request-smuggling probe families with evidence gates and stop conditions |
+
+---
+
 When the in-tool methodology runs short, these upstream collections are the
 ones to mirror or grep next. They are pulled from the project owner's
 GitHub stars list — high-signal repos curated by working bounty hunters.

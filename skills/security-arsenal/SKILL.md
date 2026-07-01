@@ -1,6 +1,6 @@
 ---
 name: security-arsenal
-description: Security payloads, bypass tables, wordlists, gf pattern names, always-rejected bug list, and conditionally-valid-with-chain table. Use when you need specific payloads for XSS/SSRF/SQLi/XXE/NoSQLi/command injection/SSTI/IDOR/path-traversal/HTTP smuggling/WebSocket/MFA bypass, bypass techniques, or to check if a finding is submittable. Also use when asked about what NOT to submit.
+description: Payload and bypass reference for XSS, SSRF, SQLi, XXE, NoSQLi, command injection, SSTI, IDOR, path traversal, HTTP smuggling, WebSocket, MFA, and SAML workflows. Use after a vuln lane is selected and the task needs concrete probe shapes, parser bypass patterns, sink or grep names, wordlists, always-rejected checks, conditionally-valid chain checks, evidence gates, or stop conditions.
 ---
 
 > **Payload usage boundary for Claude CLI**: payloads are a reference arsenal,
@@ -12,7 +12,27 @@ description: Security payloads, bypass tables, wordlists, gf pattern names, alwa
 
 # SECURITY ARSENAL
 
-Payloads, bypass tables, wordlists, and submission rules.
+Payloads, bypass tables, wordlists, and submission rules. Treat every item as
+conditional reference material, not a default execution queue.
+
+---
+
+## Progressive Reference Loading
+
+Keep this SKILL.md as the quick arsenal entrypoint. Load references only when
+the current evidence needs the detail:
+
+| Need | Read |
+|---|---|
+| Parser confusion or bypass shapes for SSRF, open redirect, upload, SQLi/WAF | `references/bypass-patterns.md` |
+| DOM sinks, client-side sources, language grep patterns | `references/sink-and-grep-patterns.md` |
+| Recon commands, ffuf, Semgrep, endpoint discovery, scope retrieval | `references/recon-tool-usage.md` |
+| SSTI, command injection, XXE, request-smuggling payload families | `references/payload-families.md` |
+
+Use the smallest probe that matches the trigger condition. Preserve baseline and
+changed raw request/response evidence, then stop when the next step would create
+real side effects, high traffic, or destructive behavior without current-turn
+authorization.
 
 ---
 
