@@ -30,7 +30,7 @@ deep_refs:
 - 多层 cache 要区分外层 key 和内层 fragment key；外层 query-keyed 不代表内层也 keyed，随机 query 可能只是绕过外层 cache 的探针。
 - Cache deception 要验证动态私有路由在静态后缀路径下是否被缓存，例如 `/my-account/anything.js` 返回账号页并出现 `x-cache: hit`。
 - Web cache deception 不等于 poisoning：目标是诱导 victim 把自己的私有动态响应存进共享 cache，再由攻击者无凭据读取同一 cache key。
-- Smuggling-to-cache poisoning 要把“队列污染”转成“cache key 下的错误响应”：例如内层请求触发 host-controlled redirect，下一条 cacheable JS 请求收到 302 并被缓存。
+- Smuggling-to-cache poisoning 要把“队列污染”转成“cache key 下的错误响应”：内层请求触发 host-controlled redirect，下一条未被正常响应预热的 cacheable JS 请求收到 302 并被缓存。
 - Smuggling-to-cache deception 可以让 victim 的认证私有页响应错配到静态资源 key；核心是 incomplete-header absorber 继承 victim Cookie，而不是普通路径后缀诱导。
 - Request smuggling 要有稳定 timing/desync/queue 证据；只在训练或明确授权环境做低频探测。
 - CL.TE/TE.CL 命中时常见证据是 timeout 后的队列污染，例如后续请求变成 `GPOST` / malformed method。
@@ -170,7 +170,7 @@ deep_refs:
 - WCD normalization 链按 `origin view 与 cache view 分别建模 -> encoded delimiter/dot-segment probe -> miss/hit -> victim delivery -> no-cookie read` 验证。
 - Smuggling 类按 `baseline -> 单变量 CL/TE 差异 -> 攻击连接 -> 新连接 probe -> malformed method 或 differential 404/queue 证据 -> 前端控制绕过/影响验证 -> 停止条件` 验证，只做低频安全探测。
 - Smuggling-to-XSS 链按 `desync 证据 -> 反射 sink baseline -> 内层请求构造 -> absorber/长度复算 -> 低频重复投递 -> victim 浏览器执行证据` 验证；训练环境可用 lab solved/alert 作为结果信号。
-- Smuggling-to-cache 链按 `desync 证据 -> host-controlled redirect connector -> exploit server JS -> inner absorber/长度复算 -> cacheable JS key miss -> cached 302 hit -> victim 浏览器执行` 验证。
+- Smuggling-to-cache 链按 `desync 证据 -> host-controlled redirect connector -> exploit server JS -> 未预热 cacheable JS key miss -> inner absorber/长度复算 -> cached 302 hit -> victim 浏览器执行` 验证；若最终 key 已是正常 `X-Cache: hit/Age`，换未使用资源路径或等待 TTL。
 - Smuggling-to-WCD 链按 `私有页无 anti-cache baseline -> incomplete-header inner request -> victim static resource request -> resource key hit 私有页 -> no-cookie read secret -> 提交/最小影响证明` 验证。
 - H2 response-queue 链按 `raw H2 forbidden header 保真 -> 404 sentinel -> 队列错位 -> 捕获目标 302 session -> 带 Cookie 访问管理面 -> 最小影响动作` 验证。
 - H2.CL resource-delivery 链按 `raw H2 CL/DATA mismatch -> SMUGGLED/404 证据 -> Host-controlled /resources redirect -> exploit server JS -> victim resource log -> browser execution/lab solved` 验证。
@@ -196,7 +196,7 @@ deep_refs:
 - Smuggled request 里加了内部 Host 仍失败时，常见原因是下一条请求的 Host/header 被拼进同一 header 区；需要用 body absorber 隔离。
 - TE.CL payload 返回 400 时先复算 chunk size 与 CRLF 边界，不要立刻判定无漏洞。
 - 攻击者自己的响应包含 XSS payload 不等于投递成功；request smuggling 的 victim delivery 可能是异步和间歇的，需要有界低频重试和 victim 侧证据。
-- Smuggling cache poisoning 如果省略内层 `Content-Length`/body absorber，后续资源请求可能无法正确映射成可缓存的 302；反复刷新 JS key 还可能把正常响应重新写回 cache。
+- Smuggling cache poisoning 如果省略内层 `Content-Length`/body absorber，后续资源请求可能无法正确映射成可缓存的 302；提前用浏览器或 baseline 请求刷新最终 JS key，可能把正常响应预热成 `hit` 并掩盖 302 错配证据。
 - Smuggling cache deception 如果把内层 headers 完整结束，通常只能得到无 Cookie 的 `/my-account` 跳转；如果在队列未被 victim 消费前自己抓静态资源，可能把匿名登录跳转或自己的内容写进 cache。
 - H2.TE 如果一直只有正常 200，先本地解码 HEADERS 帧确认 `transfer-encoding` 是否真的发送；不要把客户端过滤误判为目标不可利用。
 - Response queue 已污染时，后续 admin 请求也可能先吃到自己的 404；带有效 session 访问管理面需要重复几次或先用普通请求重置后端连接。
