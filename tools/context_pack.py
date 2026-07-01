@@ -333,6 +333,13 @@ CARD_PATHS = {
     "dead-ends": "knowledge/cards/dead-ends.md",
 }
 
+REFERENCE_PATHS = {
+    "bypass-patterns": "skills/security-arsenal/references/bypass-patterns.md",
+    "payload-families": "skills/security-arsenal/references/payload-families.md",
+    "sink-and-grep-patterns": "skills/security-arsenal/references/sink-and-grep-patterns.md",
+    "recon-tool-usage": "skills/security-arsenal/references/recon-tool-usage.md",
+}
+
 TOKEN_TO_CARDS = (
     (
         re.compile(
@@ -2352,6 +2359,97 @@ def _ledger_source_summary(summary: dict) -> dict:
     }
 
 
+def _reference_hints(cards: list[str], blob: str, focus: str, skill: str) -> list[dict]:
+    """按当前证据给 `/autopilot` 提供按需 reference 提示，不默认加载大字典。"""
+
+    evidence = f"{focus}\n{blob}"
+    hints: list[dict] = []
+
+    def add(key: str, when: str) -> None:
+        path = REFERENCE_PATHS[key]
+        if any(item["path"] == path for item in hints):
+            return
+        hints.append({"path": path, "when": when})
+
+    bypass_signal = bool(
+        re.search(
+            r"\b(?:bypass|blacklist|allowlist|whitelist|filter|parser|parse|normalization|"
+            r"canonicali[sz]ation|waf|magic[-_ ]?bytes?|polyglot|content[-_ ]?type|"
+            r"double[-_ ]?encod(?:e|ing)|redirect[-_ ]?chain)\b",
+            evidence,
+            re.I,
+        )
+        and (
+            CARD_PATHS["ssrf-url-fetch"] in cards
+            or CARD_PATHS["ssrf-internal-impact"] in cards
+            or CARD_PATHS["upload-parser"] in cards
+            or CARD_PATHS["upload-to-execution"] in cards
+            or CARD_PATHS["sqli-hidden-surfaces"] in cards
+            or re.search(r"\b(open[-_ ]?redirect|sql(?:i|[-_ ]?injection)|ssrf|upload|file[-_ ]?upload)\b", evidence, re.I)
+        )
+    )
+    if bypass_signal:
+        add(
+            "bypass-patterns",
+            "Parser or validation bypass is evidenced for SSRF/open-redirect/upload/SQLi; load only for concrete bypass shape selection.",
+        )
+
+    payload_signal = bool(
+        CARD_PATHS["server-side-template-injection"] in cards
+        or CARD_PATHS["xxe-xml-parser"] in cards
+        or CARD_PATHS["proxy-cache-boundaries"] in cards
+        or COMMAND_INJECTION_RE.search(evidence)
+        or re.search(
+            r"\b(ssti|template[-_ ]?injection|command[-_ ]?injection|cmdi|xxe|"
+            r"request[-_ ]?smuggling|http[-_ ]?smuggling|cl\.te|te\.cl|h2\.(?:cl|te))\b",
+            evidence,
+            re.I,
+        )
+    )
+    if payload_signal:
+        add(
+            "payload-families",
+            "SSTI/command/XXE/smuggling primitive needs concrete probe family detail after baseline evidence.",
+        )
+
+    sink_grep_signal = bool(
+        re.search(
+            r"\b(source[-_ ]?review|source[-_ ]?audit|code[-_ ]?review|grep|sink|"
+            r"source[-_ ]?to[-_ ]?sink|innerhtml|document\.write|postmessage|"
+            r"dom[-_ ]?xss|client[-_ ]?xss)\b",
+            evidence,
+            re.I,
+        )
+        and (
+            CARD_PATHS["xss-client-injection"] in cards
+            or CARD_PATHS["browser-client-boundaries"] in cards
+            or re.search(r"\b(dom|xss|javascript|typescript|python|php|ruby|rust|golang|go)\b", evidence, re.I)
+        )
+    )
+    if sink_grep_signal:
+        add(
+            "sink-and-grep-patterns",
+            "Source or bundle review needs concrete DOM sinks, client sources, or language grep patterns.",
+        )
+
+    recon_tool_signal = bool(
+        skill == "web2-recon"
+        or re.search(
+            r"\b(recon|ffuf|semgrep|endpoint[-_ ]?discovery|api[-_ ]?endpoint[-_ ]?discovery|"
+            r"scope[-_ ]?retrieval|subdomain|httpx|nuclei|katana|waybackurls|gau)\b",
+            evidence,
+            re.I,
+        )
+    )
+    if recon_tool_signal:
+        add(
+            "recon-tool-usage",
+            "Recon, ffuf, Semgrep, endpoint discovery, or scope command detail is needed for an executable action.",
+        )
+
+    return hints
+
+
 def build_context_pack(
     repo_root: Path | str = BASE_DIR,
     *,
@@ -2400,6 +2498,7 @@ def build_context_pack(
         "why_this_skill": why_skill,
         "must_read": must_read,
         "knowledge_cards": cards,
+        "reference_hints": _reference_hints(cards, blob, focus, skill),
         "required_checks": checks,
         "evidence_anchors": _build_evidence_anchors(ranked, goal_memory, gaps, findings, local_intel)
         + _ledger_anchors(evidence_summary),
@@ -2456,6 +2555,14 @@ def format_context_pack(pack: dict) -> str:
         *_format_list(pack["must_read"]),
         "- Knowledge cards:",
         *_format_list(pack["knowledge_cards"]),
+        "- Reference hints:",
+        *_format_list([
+            "{path} — {when}".format(
+                path=item.get("path", ""),
+                when=item.get("when", ""),
+            )
+            for item in pack.get("reference_hints", [])
+        ]),
         "- Required checks:",
         *_format_list(pack["required_checks"]),
         "- Evidence anchors:",

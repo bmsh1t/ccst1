@@ -43,7 +43,7 @@ python3 tools/action_queue.py next --target target.com
 
 - Target memory: active leads, next actions, dead ends, and handoffs influence the next lane.
 - Skills: route through `skills/runtime-protocol.md`; load only the Skill that matches the current evidence shape.
-- Use context-pack first. Knowledge: load `knowledge/index.md` plus only the 1-2 knowledge cards that match the evidence shape; cards expand hypotheses, not fixed execution order.
+- Use context-pack first. Knowledge: load `knowledge/index.md` plus only matching cards; follow `reference_hints` only when evidence needs on-demand references, not fixed execution order.
 - Checks: `rules/red-lines.md` and `rules/coverage-gate.md` are canonical. Red-line checks are narrow safety checks, not broad permission gates.
 - Write-back: use checkpoint target-memory write-back proposals after meaningful progress; apply target memory only when the operator wants automatic write-back. Use `/retrospect` to promote reusable experience.
 

@@ -47,6 +47,10 @@ def _seed_target_memory(repo_root: Path, target: str, payload: dict) -> None:
     (target_dir / f"{target}.json").write_text(json.dumps(merged), encoding="utf-8")
 
 
+def _hint_paths(pack: dict) -> list[str]:
+    return [item["path"] for item in pack.get("reference_hints", [])]
+
+
 def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/org/123/users?user_id=456",
@@ -63,6 +67,27 @@ def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
     assert any("P1/P2" in item for item in pack["evidence_anchors"])
     assert "AI override" in output
+
+
+def test_reference_hints_are_added_only_for_evidence_specific_details(tmp_path):
+    ssti_pack = build_context_pack(tmp_path, target="target.com", focus="ssti template injection")
+    ssrf_pack = build_context_pack(tmp_path, target="target.com", focus="ssrf blacklist filter url parser bypass")
+    dom_pack = build_context_pack(tmp_path, target="target.com", focus="dom xss source sink grep")
+    recon_pack = build_context_pack(tmp_path, target="target.com", focus="recon ffuf semgrep endpoint discovery")
+
+    assert "skills/security-arsenal/references/payload-families.md" in _hint_paths(ssti_pack)
+    assert "skills/security-arsenal/references/bypass-patterns.md" in _hint_paths(ssrf_pack)
+    assert "skills/security-arsenal/references/sink-and-grep-patterns.md" in _hint_paths(dom_pack)
+    assert "skills/security-arsenal/references/recon-tool-usage.md" in _hint_paths(recon_pack)
+    assert "Reference hints:" in format_context_pack(ssti_pack)
+
+
+def test_reference_hints_do_not_add_noise_for_unrelated_focus(tmp_path):
+    api_pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
+    validation_pack = build_context_pack(tmp_path, target="target.com", focus="candidate validation")
+
+    assert api_pack["reference_hints"] == []
+    assert validation_pack["reference_hints"] == []
 
 
 def test_auth_hidden_focus_routes_to_hidden_switch_card(tmp_path):

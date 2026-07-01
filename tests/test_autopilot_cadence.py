@@ -33,6 +33,7 @@ def test_autopilot_references_canonical_runtime_layers():
     combined = f"{command}\n{agent}"
 
     for marker in (
+        "tools/context_pack.py",
         "skills/runtime-protocol.md",
         "rules/red-lines.md",
         "rules/coverage-gate.md",
@@ -44,6 +45,25 @@ def test_autopilot_references_canonical_runtime_layers():
         "tools/evidence_ledger.py",
     ):
         assert marker in combined, f"missing canonical reference: {marker}"
+
+
+def test_autopilot_uses_context_pack_reference_hints_without_embedding_tables():
+    command = _read(COMMAND)
+    agent = _read(AGENT)
+    combined = f"{command}\n{agent}"
+
+    assert "reference_hints" in combined
+    assert "on-demand references" in combined
+
+    embedded_table_markers = (
+        "SSRF IP Bypass Table",
+        "Open Redirect Bypass Table",
+        "File Upload Bypass Table",
+        "Modern SQLi WAF Bypass",
+        "XSS Sinks (grep for these)",
+    )
+    for marker in embedded_table_markers:
+        assert marker not in combined
 
 
 def test_autopilot_keeps_decision_loop_without_legacy_cadence_bulk():

@@ -70,7 +70,7 @@ python3 tools/action_queue.py next --target <target>
 ```
 
 - Skills route through `skills/runtime-protocol.md`.
-- Knowledge cards come from `knowledge/index.md`; load only matching cards.
+- Knowledge cards come from `knowledge/index.md`; load only matching cards and `reference_hints` from context-pack when evidence needs on-demand references.
 - Red-line and coverage semantics live in `rules/red-lines.md`, `rules/coverage-gate.md`, and `rules/hunting.md`.
 - Red-line checks are narrow safety checks, not broad permission gates.
 - Resolve queue items with `tools/action_queue.py resolve` after the smallest safe evidence-producing step.
