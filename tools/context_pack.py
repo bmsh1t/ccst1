@@ -1880,7 +1880,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         ])
     if CARD_PATHS["upload-parser"] in cards:
         seeds.extend([
-            "上传、导入、预览、转换是否形成解析器链路，优先验证元数据/预览差异而非破坏性 payload。",
+            "上传、导入、预览、转换是否形成解析器链路，优先验证元数据/预览差异而非破坏性 payload；SVG/Office/XML 类二阶解析要保存上传请求、处理响应和转换/read-back 结果。",
         ])
     if CARD_PATHS["upload-to-execution"] in cards:
         seeds.extend([

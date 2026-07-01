@@ -40,6 +40,7 @@ deep_refs:
 - 请求或响应出现 XML、SOAPAction、SAMLResponse、NameID、SVG、Office 文档、RSS/Atom、import/preview/convert。
 - JSON API 对 `Content-Type: application/xml` 或 XML body 有不同错误、状态码、长度或 parser 报错。
 - 上传/导入/转换器会解析 SVG、DOCX、XLSX、PPTX、PDF 内嵌 XML 或外部引用。
+- SVG/Office/image 上传链可能在上传响应后异步或同步转换；成功证据通常来自转换产物、预览图、avatar/read-back 或 OCR/可见文本，而不只是上传响应。
 - 错误里出现 SAX、DocumentBuilder、libxml、lxml、dom4j、xerces、XMLReader、XInclude 等线索。
 
 ## 思路分支
@@ -74,6 +75,7 @@ deep_refs:
 - 记录合法 XML 请求/响应 baseline。
 - 单次替换为无害 entity 或 OAST entity，比较状态码、长度、错误、回显或 callback；若错误消息反射 marker，保存原始请求/响应作为 parser 行为证据。
 - 对 XInclude、SVG、Office 文档等二阶 parser，记录 store step 和 trigger step。
+- 对 SVG/avatar/预览转换链，保存上传请求/响应、转换后资源 read-back、渲染截图或 OCR 文本；上传成功本身不是 XML parser 证据。
 - Candidate 前至少需要：可 replay 请求、解析器行为证据、影响路径和红线说明。
 
 ## 常见误判 / 死路

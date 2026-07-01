@@ -281,6 +281,24 @@ def test_upload_import_focus_routes_to_upload_parser(tmp_path):
     assert any("解析器" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_svg_upload_xxe_focus_keeps_conversion_readback_evidence(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="SVG image upload avatar XML parser XXE external entity server image conversion read-back",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == [
+        "knowledge/cards/xxe-xml-parser.md",
+        "knowledge/cards/upload-parser.md",
+    ]
+    assert any(
+        "SVG/Office/XML" in seed and "转换/read-back" in seed and "上传请求" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
+
+
 def test_upload_execution_focus_routes_to_deep_card(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/upload/avatar",
