@@ -1084,3 +1084,22 @@ def test_explicit_cache_focus_without_host_header_routes_to_proxy_card(tmp_path)
     assert pack["knowledge_cards"] == ["knowledge/cards/proxy-cache-boundaries.md"]
     assert any("cache key" in seed or "poisoning" in seed for seed in pack["hypothesis_seeds"])
     assert any("victim request shape" in seed and "Vary/User-Agent/Accept" in seed for seed in pack["hypothesis_seeds"])
+
+def test_request_smuggling_capture_focus_ignores_csrf_cookie_evidence_noise(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="request smuggling capture other users requests CL.TE comment storage CSRF Cookie line Content-Length victim request",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == ["knowledge/cards/proxy-cache-boundaries.md"]
+    assert "knowledge/cards/browser-client-boundaries.md" not in pack["knowledge_cards"]
+    assert "knowledge/cards/web-llm-tool-chains.md" not in pack["knowledge_cards"]
+    assert any(
+        "capture-other-users" in seed
+        and "会话/CSRF" in seed
+        and "reset/重试" in seed
+        and "完整 Cookie line" in seed
+        for seed in pack["hypothesis_seeds"]
+    )

@@ -1003,6 +1003,22 @@ def _has_api_parameter_handling_signal(text: str) -> bool:
     )
 
 
+def _has_proxy_cache_boundary_signal(text: str) -> bool:
+    """识别代理/cache/request smuggling 语境，避免 CSRF/Cookie 等证据词抢路由。"""
+
+    return bool(
+        text
+        and re.search(
+            r"\b(host[-_ ]?header|x[-_ ]?forwarded[-_ ]?host|forwarded|proxy[-_ ]?trust|"
+            r"request[-_ ]?smuggling|http[-_ ]?smuggling|transfer[-_ ]?encoding|content[-_ ]?length|"
+            r"cl\.te|te\.cl|te\.te|h2\.(?:te|cl)|cache[-_ ]?poisoning|cache[-_ ]?deception|"
+            r"web[-_ ]?cache[-_ ]?(?:poisoning|deception)|unkeyed|x[-_ ]?cache|age|vary|cdn)\b",
+            text,
+            re.I,
+        )
+    )
+
+
 def _has_browser_client_boundary_signal(text: str) -> bool:
     """识别 CORS/CSRF/Clickjacking/DOM 等浏览器边界信号，避免 ACA* 被当成 Authz。"""
 
@@ -1010,6 +1026,19 @@ def _has_browser_client_boundary_signal(text: str) -> bool:
         return False
     if re.search(r"\b(?:method|referer|url)[-_ ]?based[-_ ]?access[-_ ]?control\b", text, re.I):
         return False
+    if _has_proxy_cache_boundary_signal(text):
+        # smuggling/cache 链里常出现 CSRF、Cookie、Origin、victim request 等证据词；
+        # 这些是影响验证条件，不应把主 lane 从 proxy-cache 抢到 browser-boundary。
+        browser_only = re.search(
+            r"\b(cors|xsrf|same[-_ ]?site|clickjacking|frame[-_ ]?ancestors|"
+            r"x[-_ ]?frame[-_ ]?options|dom[-_ ]?xss|dom[-_ ]?based|postmessage|message[-_ ]?event|"
+            r"hashchange|window\.name|open[-_ ]?redirect|client[-_ ]?side[-_ ]?redirect|"
+            r"cookie[-_ ]?manipulation|dom[-_ ]?clobbering|access[-_ ]?control[-_ ]?allow[-_ ]?(?:origin|credentials)|"
+            r"credentialed[-_ ]?read|trusted[-_ ]?origin|null[-_ ]?origin)\b",
+            text,
+            re.I,
+        )
+        return bool(browser_only)
     return bool(BROWSER_CLIENT_BOUNDARY_RE.search(text))
 
 
@@ -1208,17 +1237,20 @@ def _cards_from_focus(focus: str) -> list[str]:
     ):
         cards.extend(["insecure-deserialization", "controlled-rce-impact"])
     if (
-        "cors" in focus_l
-        or "csrf" in focus_l
-        or "xsrf" in focus_l
-        or "clickjacking" in focus_l
-        or "dom" in focus_l
-        or "dom-xss" in focus_l
-        or "postmessage" in focus_l
-        or "open-redirect" in focus_l
-        or "client-side-redirect" in focus_l
-        or "cookie-manipulation" in focus_l
-        or "dom-clobbering" in focus_l
+        (
+            "cors" in focus_l
+            or "csrf" in focus_l
+            or "xsrf" in focus_l
+            or "clickjacking" in focus_l
+            or "dom" in focus_l
+            or "dom-xss" in focus_l
+            or "postmessage" in focus_l
+            or "open-redirect" in focus_l
+            or "client-side-redirect" in focus_l
+            or "cookie-manipulation" in focus_l
+            or "dom-clobbering" in focus_l
+        )
+        and not _has_proxy_cache_boundary_signal(focus)
     ):
         cards.append("browser-client-boundaries")
     if (
@@ -1239,16 +1271,7 @@ def _cards_from_focus(focus: str) -> list[str]:
         or "frame-ancestors" in focus_l
     ):
         cards.append("browser-client-boundaries")
-    if (
-        "host-header" in focus_l
-        or "proxy-trust" in focus_l
-        or "request-smuggling" in focus_l
-        or "http-smuggling" in focus_l
-        or "cache-poisoning" in focus_l
-        or "web-cache-poisoning" in focus_l
-        or "cache-deception" in focus_l
-        or "web-cache-deception" in focus_l
-    ):
+    if _has_proxy_cache_boundary_signal(focus):
         cards.append("proxy-cache-boundaries")
     if "websocket" in focus_l or "web-socket" in focus_l or "cswsh" in focus_l:
         cards.append("websocket-realtime-api")
@@ -1260,11 +1283,11 @@ def _cards_from_focus(focus: str) -> list[str]:
     ):
         cards.append("information-disclosure-source-config")
     if (
-        "web-llm" in focus_l
-        or "llm" in focus_l
-        or "prompt-injection" in focus_l
-        or "rag" in focus_l
-        or "agent-tool" in focus_l
+        re.search(r"\bweb[-_ ]?llm\b", focus_l)
+        or re.search(r"\bllm\b", focus_l)
+        or re.search(r"\bprompt[-_ ]?injection\b", focus_l)
+        or re.search(r"\brag\b", focus_l)
+        or re.search(r"\bagent[-_ ]?tool\b", focus_l)
     ):
         cards.append("web-llm-tool-chains")
     if "essential-skills" in focus_l:
@@ -1296,6 +1319,8 @@ def _select_cards(
     cards: list[str] = list(focus_cards)
     for pattern, names in TOKEN_TO_CARDS:
         if pattern.search(blob):
+            if names == ("browser-client-boundaries",) and _has_proxy_cache_boundary_signal(blob):
+                continue
             cards.extend(names)
     target_memory = goal_memory.get("target") or {}
     if len(target_memory.get("dead_ends") or []) >= 2:
@@ -1517,17 +1542,20 @@ def _select_cards(
         priority.append("insecure-deserialization")
         priority.append("controlled-rce-impact")
     if (
-        "cors" in focus_l
-        or "csrf" in focus_l
-        or "xsrf" in focus_l
-        or "clickjacking" in focus_l
-        or "dom" in focus_l
-        or "postmessage" in focus_l
-        or "open-redirect" in focus_l
-        or "client-side-redirect" in focus_l
-        or "cookie-manipulation" in focus_l
-        or "dom-clobbering" in focus_l
-        or (browser_boundary_focus and not websocket_realtime_signal)
+        (
+            "cors" in focus_l
+            or "csrf" in focus_l
+            or "xsrf" in focus_l
+            or "clickjacking" in focus_l
+            or "dom" in focus_l
+            or "postmessage" in focus_l
+            or "open-redirect" in focus_l
+            or "client-side-redirect" in focus_l
+            or "cookie-manipulation" in focus_l
+            or "dom-clobbering" in focus_l
+            or (browser_boundary_focus and not websocket_realtime_signal)
+        )
+        and not _has_proxy_cache_boundary_signal(f"{focus}\n{blob}")
     ):
         priority.append("browser-client-boundaries")
     if (
@@ -1950,7 +1978,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "Host/proxy/cache/smuggling 先分层建模：前端代理、后端应用、cache key、路由重写、连接复用和 backend connection pool；每次只改一个 header 或传输边界，request smuggling 要区分 CL.TE、TE.CL、TE.TE/TE obfuscation，并用新连接 GET/POST probe 验证 `GGET`/`GPOST` 或 differential 404 队列污染；H2.TE 要确认客户端真的发送了 `transfer-encoding` forbidden header，高级 H2 库可能静默过滤；H2.CL 要确认 `content-length: 0` 与 DATA mismatch 被保留，并用 SMUGGLED/404 或 host-controlled redirect 证明队列影响；H2 CRLF header injection 要区分 `\\r\\nTransfer-Encoding: chunked` 注入真实 header 和 `\\r\\n\\r\\nGET /x HTTP/1.1` 直接 request splitting，并用 404 sentinel 证明第二条请求进入后端队列；绕过 front-end controls 时检查内部 Host（如 localhost）、header conflict/body absorber 和原始字节长度；确认 desync 后继续评估 smuggled reflected XSS、请求捕获、cache/redirect 连接器或内部动作等 victim-facing 影响。",
             "Cache/Host 候选要证明未入 key 的输入影响可缓存响应或安全链接；按 cache-buster oracle -> no-header hit -> victim request shape hit -> victim path delivery 验证，注意 Vary/User-Agent/Accept/browser navigation 分桶。",
-            "Web cache poisoning 常见链路包括 unkeyed header resource import、unkeyed cookie JS context、multiple-header redirect、targeted unknown header、unkeyed query/parameter、parameter cloaking、fat GET、URL normalization、multi-entry poisoning、cache key injection 和 internal fragment cache；smuggling-to-cache poisoning 重点找 host-controlled redirect connector、cacheable JS key、inner Content-Length/body absorber，并证明 `miss -> 302 Location -> hit`；H2.CL resource delivery 要让 exploit server path/query 对齐 redirect 后路径，并卡在 victim JS import 前；Web cache deception 覆盖 path mapping、delimiter、origin/cache normalization、exact-match file rule，smuggling-to-WCD 重点看 incomplete-header inner request 是否继承 victim Cookie；response queue poisoning 用 404 sentinel、目标用户节奏和 `Set-Cookie`/302 线索识别捕获响应；capture-other-users 类要对 HTML/URL 编码后的 request 做 decode，避免 Cookie 被 Content-Length 截断，并优先复用完整 Cookie line；smuggling 候选要有稳定 timing/desync/queue/malformed method 证据，不做高频扰动。",
+            "Web cache poisoning 常见链路包括 unkeyed header resource import、unkeyed cookie JS context、multiple-header redirect、targeted unknown header、unkeyed query/parameter、parameter cloaking、fat GET、URL normalization、multi-entry poisoning、cache key injection 和 internal fragment cache；smuggling-to-cache poisoning 重点找 host-controlled redirect connector、cacheable JS key、inner Content-Length/body absorber，并证明 `miss -> 302 Location -> hit`；H2.CL resource delivery 要让 exploit server path/query 对齐 redirect 后路径，并卡在 victim JS import 前；Web cache deception 覆盖 path mapping、delimiter、origin/cache normalization、exact-match file rule，smuggling-to-WCD 重点看 incomplete-header inner request 是否继承 victim Cookie；response queue poisoning 用 404 sentinel、目标用户节奏和 `Set-Cookie`/302 线索识别捕获响应；capture-other-users 类要让内层存储请求带齐攻击者会话/CSRF/Content-Type/Content-Length，poll 读回遇到空响应先按后端连接池状态 reset/重试；对 HTML/URL 编码后的 request 做 decode，避免 Cookie 被 Content-Length 截断，并优先复用完整 Cookie line；smuggling 候选要有稳定 timing/desync/queue/malformed method 证据，不做高频扰动。",
             "复杂 cache 链要分别证明每个条目：状态/语言/redirect 连接器、最终资源或 DOM sink、clean hit、victim navigation/resource request；`Set-Cookie` 不可缓存时回看 cacheable redirect/rewrite/normalized path；WCD 泄露 CSRF token 时可在训练环境链到自动提交表单证明影响。",
             "Cache key injection 先用 key oracle 读 URL、Vary、Origin/header 分量和 excluded 参数；再找 harmful response 与 victim key collision，HTTP/2/header injection 只作为目标支持时的候选形态。",
             "多层 cache 要区分外层页面 cache 与 internal fragment cache（内层 fragment cache）：随机 query 可绕过外层，去掉 XFH/Host 后片段仍污染才说明内层 key 缺陷。",

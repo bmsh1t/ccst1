@@ -118,7 +118,7 @@ deep_refs:
 - H2.CL JS delivery 形态：先确认 `/resources` 这类路径会 302 到 `/resources/` 且 Host 可控，再让 exploit server 在 `/resources` 和 `/resources/` 返回 JavaScript；日志出现 Victim `GET /resources/` 只是命中信号，最终要看浏览器执行。
 - H2 CRLF-to-TE 形态：HTTP/2 header value 内嵌 `\r\nTransfer-Encoding: chunked`，body 使用 `0\r\n\r\n` 结束 chunked，再放入 smuggled request；需要低层客户端允许 CRLF header value。
 - H2 request-splitting 形态：HTTP/2 header value 内嵌 `\r\n\r\nGET /x HTTP/1.1\r\nHost: target`，外层 path 也用 `/x` 作为 404 sentinel；不需要 body，也不依赖 `Transfer-Encoding`。
-- Search-history capture 形态：内层 POST 写入自有 session 的搜索历史，`Content-Length` 要足够覆盖 victim 请求头中的完整 Cookie；提取时先 HTML unescape 再 URL decode，最后优先复用完整 Cookie line。
+- Search-history / comment capture 形态：内层 POST 写入自有 session 可读的历史、评论、日志或同类存储面；若表单需要会话/CSRF，内层请求要带攻击者自己的 Cookie、CSRF、Content-Type 和足够覆盖 victim 请求头的 `Content-Length`；提取时先 HTML unescape 再 URL decode，最后优先复用完整 Cookie line。
 
 ## 补充 Checklist
 
@@ -153,7 +153,7 @@ deep_refs:
 - 资源投递类是否确认 exploit server path/query 与 redirect 后路径一致，并且 victim 请求发生在 JS import 时序上？
 - H2 CRLF 注入是否确认 downgraded 后端能看到新 header，而不是只在 H2 层发送了包含换行的普通字符串？
 - H2 request splitting 是否区分了“注入新 header”和“拆出新请求”：需要两个 CRLF 边界，并用 `/x` 404 sentinel 证明第二条请求进入后端队列。
-- 捕获请求类是否处理了 HTML/URL 编码、截断的 Cookie、完整 Cookie line 复用，以及只带 `session` 不足以复现的情况？
+- 捕获请求类是否处理了内层存储请求的攻击者会话/CSRF、HTML/URL 编码、截断的 Cookie、完整 Cookie line 复用，以及只带单个 cookie 不足以复现的情况？
 - 手写 CL/chunk 长度时，是否按原始字节复算；TE.CL 是否排除了 chunk terminator 的 CRLF？
 
 ## 最小验证
@@ -174,7 +174,7 @@ deep_refs:
 - Smuggling-to-WCD 链按 `私有页无 anti-cache baseline -> incomplete-header inner request -> victim static resource request -> resource key hit 私有页 -> no-cookie read secret -> 提交/最小影响证明` 验证。
 - H2 response-queue 链按 `raw H2 forbidden header 保真 -> 404 sentinel -> 队列错位 -> 捕获目标 302 session -> 带 Cookie 访问管理面 -> 最小影响动作` 验证。
 - H2.CL resource-delivery 链按 `raw H2 CL/DATA mismatch -> SMUGGLED/404 证据 -> Host-controlled /resources redirect -> exploit server JS -> victim resource log -> browser execution/lab solved` 验证。
-- H2 CRLF capture 链按 `CRLF header value 保真 -> injected TE 404 证据 -> smuggled POST 写入自有历史 -> victim request capture -> decode 完整 Cookie -> 复用 Cookie 访问账号` 验证。
+- H1/H2 capture 链按 `desync/CRLF 保真 -> smuggled POST 写入自有可读存储面（带攻击者会话/CSRF）-> victim request capture -> decode 完整 Cookie line -> 复用 Cookie 访问账号或最小影响页面` 验证。
 - H2 request-splitting queue 链按 `CRLF request split 保真 -> /x 404 sentinel -> 捕获 admin 302 session -> 带 Cookie 访问 /admin -> 最小影响动作` 验证。
 
 ## 常见误判 / 死路
@@ -201,7 +201,7 @@ deep_refs:
 - H2.TE 如果一直只有正常 200，先本地解码 HEADERS 帧确认 `transfer-encoding` 是否真的发送；不要把客户端过滤误判为目标不可利用。
 - Response queue 已污染时，后续 admin 请求也可能先吃到自己的 404；带有效 session 访问管理面需要重复几次或先用普通请求重置后端连接。
 - H2.CL 中看到 victim 访问 exploit server 不等于一定执行；如果不是在浏览器导入脚本资源前污染连接，浏览器可能只是加载了 payload 但不作为 JS 执行。
-- 捕获到 `session=` 片段不等于可用会话；如果被 `Content-Length` 截断或只复制单个 cookie，访问可能不生效，需要调长度并保留同一 Cookie 行里的配套字段。
+- 捕获到单个 cookie 片段不等于可用会话；如果被 `Content-Length` 截断、大小写不一致或只复制一个 cookie，访问可能不生效，需要调长度、HTML/URL decode，并保留同一 Cookie 行里的配套字段。
 - H2 request splitting 如果只注入了单个 CRLF，通常只是 header injection，不会拆出第二条请求；如果拿到 admin session 后 `/admin` 先返回自己的 404，继续重试或按目标连接 reset 规则刷新队列。
 
 ## 关联 Skills
