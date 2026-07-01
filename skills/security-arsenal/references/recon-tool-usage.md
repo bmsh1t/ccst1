@@ -75,6 +75,19 @@ done
 
 Do not import keys into cloud panels or take resource control. Use minimal read-only verification and write the validation plan before escalation.
 
+## Subdomain Takeover Fingerprints
+
+Use as read-only leads. Do not claim or modify provider resources unless the current target scope explicitly authorizes takeover proof.
+
+| Signal | Evidence gate |
+|---|---|
+| Dangling CNAME | DNS record points to unclaimed provider hostname |
+| Provider error page | Raw response contains provider-specific unclaimed-site message |
+| Storage endpoint | Bucket/container name is target-derived and readable or explicitly missing |
+| SaaS custom domain | Provider dashboard/error confirms unbound custom hostname |
+
+Stop condition: provider ambiguity, out-of-scope host, or proof requires account creation/resource claim.
+
 ## API Endpoint Discovery
 
 ```bash
@@ -94,6 +107,20 @@ curl -s "https://hackerone.com/graphql" \
   | jq '.data.team.policy_scopes.edges[].node'
 
 ```
+
+## SAML Tooling Notes
+
+SAML tools are replay helpers, not proof by themselves.
+
+```bash
+# Decode captured SAMLResponse for local inspection.
+python3 - <<'PY'
+import base64, sys, urllib.parse
+print(base64.b64decode(urllib.parse.unquote(sys.stdin.read().strip())))
+PY
+```
+
+For XML Signature Wrapping or assertion mutation, preserve decoded XML, modified XML, encoded replay request, and final session/account response. Prefer dedicated Burp extensions or local scripts only after the SSO flow is captured and replayable.
 
 ## Quick Lead Checklist
 

@@ -81,3 +81,33 @@ Use only after stable SQLi-like baseline-vs-perturbation evidence exists. These 
 | Whitespace variants | comments, tabs, newlines | Parser and WAF split differently |
 
 Evidence gate: one stable baseline, one benign syntax perturbation, one normalizer-differential response, and a clear stop condition for noisy timing or WAF-only deltas.
+
+## Path Traversal / File Selector Normalization Shapes
+
+Use after a normal file selector, download, include, template, theme, locale, archive, or document preview path is identified.
+
+| Shape | Use when | Stop condition |
+|---|---|---|
+| Dot segment | Parser may normalize `../` after validation | Same error as baseline and no path delta |
+| Encoded segment | Decode order differs across proxy/router/app | Decoder rejects consistently |
+| Double encoding | Frontend decodes once, backend decodes twice | No backend-specific delta |
+| Mixed slash | Windows/Unix separator handling differs | Same normalized path |
+| Suffix bypass | Backend appends fixed extension | No read-back or file selection delta |
+| Archive traversal | Extractor writes or reads nested path | Would overwrite or access real sensitive files |
+
+Evidence gate: normal file baseline, one traversal variant, raw response difference, and bounded read target. Do not bulk-read secrets.
+
+## Host Header / Proxy Trust Shapes
+
+Use after Host/X-Forwarded/Forwarded headers influence routing, redirects, links, reset URLs, cache keys, or upstream selection.
+
+| Shape | Observation to seek |
+|---|---|
+| `Host` swap | Absolute URL, redirect, password reset, or backend route changes |
+| `X-Forwarded-Host` | App trusts forwarded host over canonical host |
+| `Forwarded` header | Proxy/app parses standardized host/proto/user boundary |
+| `X-Original-URL` / `X-Rewrite-URL` | Frontend and backend route disagree |
+| Scheme confusion | `X-Forwarded-Proto` changes secure-cookie or redirect behavior |
+| Port confusion | Host allowlist treats host:port differently than backend |
+
+Evidence gate: raw replay showing downstream consumer impact. Reflection alone is not enough.

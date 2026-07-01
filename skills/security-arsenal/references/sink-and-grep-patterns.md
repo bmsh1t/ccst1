@@ -84,6 +84,21 @@ grep -rn "unsafe {" --include="*.rs" . -B5 | grep "read\|recv\|parse\|decode"
 grep -rn "as u8\|as u16\|as u32\|as usize" --include="*.rs" . | grep -v "checked\|saturating\|wrapping"
 ```
 
+## Server-Side RCE / Deserialization Sink Signals
+
+Use these only for authorized source review. A match is a lead until reachable dataflow and runtime evidence exist.
+
+| Family | Candidate sink |
+|---|---|
+| Command execution | `exec`, `spawn`, `system`, `popen`, shell wrappers, template helpers |
+| Template trust override | raw HTML/template-safe wrappers, dynamic template names, custom filters |
+| Deserialization | pickle, YAML unsafe load, Java/.NET/PHP/Ruby object loaders, ViewState handlers |
+| File include/read | dynamic include/require, theme/locale/template path joins, archive extraction |
+| SSRF/fetch | server-side HTTP clients receiving user-controlled URL or webhook target |
+| XML parser | external entity enabled parser, SAML/XML/SVG/Office conversion path |
+
+Dataflow gate: controlled input -> transform/parser -> sink -> observable output/timing/state. If the next step is high-impact, switch to an explicit script/action with raw evidence capture.
+
 ## Review Rule
 
 Treat every match as a lead. Promote only after controlled input, reachable execution path, and raw evidence establish impact. If the next action is high-volume fuzzing or state change, switch to the relevant project script and `rules/red-lines.md` first.

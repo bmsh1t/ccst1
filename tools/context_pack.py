@@ -1077,6 +1077,20 @@ def _has_race_condition_signal(text: str) -> bool:
     return bool(text and RACE_CONDITION_RE.search(text))
 
 
+def _has_upload_execution_signal(text: str) -> bool:
+    """识别上传执行链，避免含 parser 字样的执行面被降级成纯解析器面。"""
+
+    return bool(
+        text
+        and re.search(r"\b(?:(?:unsafe[-_ ]?)?upload|file[-_ ]?upload|uploaded[-_ ]?file)\b", text, re.I)
+        and re.search(
+            r"\b(execution|execute|executed|rce|remote[-_ ]?code[-_ ]?execution|web[-_ ]?shell|script[-_ ]?execution|interpreter|handler)\b",
+            text,
+            re.I,
+        )
+    )
+
+
 def _cards_from_focus(focus: str) -> list[str]:
     focus_l = focus.lower()
     cards: list[str] = []
@@ -1153,7 +1167,7 @@ def _cards_from_focus(focus: str) -> list[str]:
         cards.append("path-pattern-management-exposure")
         if "admin-panel" in focus_l:
             cards.append("auth-access")
-    if "sqli" in focus_l or "sql-injection" in focus_l or "hidden-param" in focus_l:
+    if re.search(r"\b(sqli|sql[-_ ]?injection|hidden[-_ ]?param(?:eter)?)\b", focus_l):
         cards.append("sqli-hidden-surfaces")
     if "nosql" in focus_l or "no-sql" in focus_l or "operator-injection" in focus_l:
         cards.append("nosql-query-injection")
@@ -1217,7 +1231,12 @@ def _cards_from_focus(focus: str) -> list[str]:
         or re.search(r"\bserver[-_ ]?side[-_ ]?(?:fetch|request)\b", focus_l)
     ):
         cards.append("ssrf-url-fetch")
-    if "upload-execution" in focus_l or re.search(r"\bweb[-_ ]?shell\b", focus_l) or "script-execution" in focus_l:
+    if (
+        "upload-execution" in focus_l
+        or _has_upload_execution_signal(focus)
+        or re.search(r"\bweb[-_ ]?shell\b", focus_l)
+        or "script-execution" in focus_l
+    ):
         cards.extend(["upload-to-execution", "controlled-rce-impact"])
     elif (
         "upload" in focus_l

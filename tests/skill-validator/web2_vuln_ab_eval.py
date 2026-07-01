@@ -260,9 +260,9 @@ def format_markdown(result: dict) -> str:
         "## Interpretation",
         "",
         "- If baseline and enhanced both pass a signal, that signal already lives in compact cards/references.",
-        "- If only enhanced passes, the current large Skill still carries incremental value for that lane.",
-        "- If enhanced still misses a signal, the gap should be fixed in cards/seeds/tests before any slimming.",
-        "- A future live LLM A/B can reuse the same case file; this report is the deterministic pre-cut baseline.",
+        "- If only enhanced passes, the compact Skill still carries a decision-layer signal that has not been duplicated into references.",
+        "- If enhanced misses a signal or a route/card gap appears, fix cards/seeds/routes before claiming the slim is safe.",
+        "- A future live LLM A/B can reuse the same case file; this report is the deterministic post-slim regression baseline.",
         "",
     ])
     return "\n".join(lines)

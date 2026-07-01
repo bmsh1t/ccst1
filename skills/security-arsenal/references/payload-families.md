@@ -49,6 +49,72 @@ Evidence gate: harmless evaluation -> engine identification -> controlled comman
 
 Stop if timing is noisy, endpoint is state-changing, or OOB would touch third-party infrastructure without approval.
 
+## SQLi Confirmation Families
+
+Use after a stable query-like input is identified. Start with baseline confirmation before DBMS-specific probes.
+
+| Family | Signal | Stop condition |
+|---|---|---|
+| Error/type perturbation | Quote, numeric/string coercion, or malformed operator changes only the target field/query response | Errors are generic, unstable, or WAF-only |
+| Boolean pair | Two equivalent-looking predicates produce true/false response differences | No stable length/status/field/sort delta |
+| Sort/order delta | `ORDER BY` or sort direction changes result ordering | Sort is client-side or cached |
+| Time confirmation | Bounded delay after boolean/error signal | Timing jitter hides the delta |
+| Second-order | Store harmless marker, trigger downstream report/log/search path | No store+trigger path or real-user data required |
+
+DBMS fingerprint is a helper, not a goal. Prefer response shape, error family, and feature syntax only after baseline/perturbation is stable.
+
+## GraphQL Query Families
+
+Use when GraphQL schema, node/global ID, mutation, or subscription behavior is evidenced.
+
+| Family | Use when | Evidence gate |
+|---|---|---|
+| Introspection | Schema discovery is enabled | Treat as informational unless it exposes protected operations used in a chain |
+| Node/global ID | REST object auth differs from `node(id:)` or relay IDs | Same object read/action differs across two owned identities |
+| Field-level auth matrix | Type has public and private sibling fields | Protected field or mutation bypasses role/object boundary |
+| Batching | Rate limit or auth check may apply per request, not per operation | Same request body with multiple operations changes enforcement |
+| Subscription | Realtime events expose object/tenant state | Subscription leaks events across owned accounts/roles |
+
+## SAML / XML SSO Families
+
+Use only after a real SAML/OIDC/SSO flow is captured and replayable.
+
+| Family | Signal | Evidence gate |
+|---|---|---|
+| XML Signature Wrapping | Signed assertion and unsigned attacker-controlled assertion coexist | Service consumes unsigned attacker-controlled identity while signature still validates |
+| Comment injection | NameID or attribute parser splits on XML comments | Account binding changes to attacker-controlled identity |
+| Signature stripping | Service accepts unsigned assertion | Authenticated session established without valid signature |
+| XXE in assertion | XML parser resolves external entity | Controlled callback or harmless entity read-back |
+| RelayState confusion | Callback state binds to wrong session/account | Code/session lands in attacker-controlled flow |
+
+Keep raw SAMLRequest/SAMLResponse, decoded XML, replay request, and final session/account evidence.
+
+## Deserialization / Signed Object Families
+
+Use after a cookie, hidden field, ViewState, remember-me token, or API blob looks serialized.
+
+| Family | First check | Evidence gate |
+|---|---|---|
+| Encoding map | Base64/url-safe/gzip/json/php/java/.NET marker | Stable decode/parse path |
+| Integrity boundary | Single-byte tamper | Accepted vs rejected boundary proves signing/encryption behavior |
+| State tamper | Low-impact owned-account field change | Server accepts changed role/tenant/feature/price state |
+| Gadget reachability | Known class/function path in authorized lab/source-reviewed app | Controlled RCE or safe side effect with cleanup path |
+
+Format recognition alone is not a finding. Integrity signature and state tamper come before gadget depth.
+
+## CRLF / Response Splitting Families
+
+Use when header/body construction reflects user input into response metadata.
+
+| Family | Observation |
+|---|---|
+| Encoded newline | Response header boundary changes after one encoded CR/LF candidate |
+| Header injection | New harmless header appears in raw response |
+| Redirect splitting | `Location` or cache-related header changes downstream behavior |
+| Cache connector | Injected header/body becomes cache key or cached response signal |
+
+Evidence gate: raw response with header boundary proof and a connector such as cache, redirect, or cookie behavior.
+
 ## XXE Probe Families
 
 Use when XML/SVG/Office/PDF conversion or parser behavior is evidenced.
