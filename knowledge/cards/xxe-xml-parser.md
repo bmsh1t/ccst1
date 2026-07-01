@@ -25,6 +25,7 @@ deep_refs:
 - 入口不只 SOAP/XML API，也包括 SAML、SVG、DOCX/XLSX/PPTX、RSS/Atom、PDF/Office 转换、移动端 XML 和导入/预览 worker。
 - 先建立合法 XML baseline，再单变量验证 entity、DOCTYPE、XInclude、content-type 和 parser 差异。
 - 有回显时比较 entity 展开结果；无回显时用一次性 OAST callback 证明服务端解析器行为。
+- 400/错误响应不是失败或成功的直接结论；只有错误消息或业务字段反射 entity 展开结果时，才能作为 parser 行为证据。
 - file-read、SSRF、metadata、SAML auth impact 是影响方向，不是默认读取/扫描动作。
 - 示例 payload 只作为候选形态，不是固定字典；具体语法取决于 XML 上下文、命名空间和 parser。
 
@@ -43,6 +44,7 @@ deep_refs:
 ## 思路分支
 
 - Classic XXE：外部实体被展开并回显或进入错误。
+- Error-reflected XXE：数值、ID、库存、搜索等业务字段被 parser 消费，entity 展开后进入校验错误或异常消息。
 - Blind XXE：无回显但解析器对 OAST 域名发起 DNS/HTTP 请求。
 - XInclude：DTD 被禁用但 `xi:include` 仍被处理。
 - Parser confusion：JSON/XML/form 的 content-type、SOAPAction、namespace 或编码差异触发不同 parser。
@@ -68,13 +70,14 @@ deep_refs:
 ## 最小验证
 
 - 记录合法 XML 请求/响应 baseline。
-- 单次替换为无害 entity 或 OAST entity，比较状态码、长度、错误、回显或 callback。
+- 单次替换为无害 entity 或 OAST entity，比较状态码、长度、错误、回显或 callback；若错误消息反射 marker，保存原始请求/响应作为 parser 行为证据。
 - 对 XInclude、SVG、Office 文档等二阶 parser，记录 store step 和 trigger step。
 - Candidate 前至少需要：可 replay 请求、解析器行为证据、影响路径和红线说明。
 
 ## 常见误判 / 死路
 
 - XML parse error 不等于 XXE；可能只是格式错误。
+- 含业务字段值的错误消息可以是证据，但必须和无害 entity baseline 对照，证明是服务端展开而不是客户端替换或普通格式错误。
 - OAST callback 不等于可读文件；可能只能证明外连或预取。
 - WAF/代理返回的 XML 错误不代表应用 parser 可控。
 - 只在本地客户端展开实体不算服务端漏洞。

@@ -552,6 +552,23 @@ def test_explicit_xxe_focus_without_recon_routes_to_xml_parser_card(tmp_path):
     assert any("XML 解析面" in seed or "OAST callback" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_xxe_error_reflection_focus_keeps_parser_evidence_gate(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="XXE XML parser business field unexpected value reflected error external entity content-type application/xml",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == ["knowledge/cards/xxe-xml-parser.md"]
+    assert any(
+        "错误响应本身不是 XXE 证据" in seed
+        and "反射无害 entity" in seed
+        and "OAST" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
+
+
 def test_explicit_path_traversal_focus_without_recon_routes_to_file_read_card(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="path-traversal lfi file-read")
 
