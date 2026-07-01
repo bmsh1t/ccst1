@@ -60,9 +60,11 @@ def test_write_validation_summary_updates_last_validate(tmp_path, monkeypatch):
     validate.write_validation_summary(summary, report_path)
 
     report_summary = report_path.parent / "validation-summary.json"
+    submission_notes = report_path.parent / "submission-notes.md"
     last_validate = tmp_path / "findings" / "last-validate.json"
 
     assert report_summary.exists()
+    assert submission_notes.exists()
     assert last_validate.exists()
 
     saved = json.loads(report_summary.read_text(encoding="utf-8"))
@@ -71,10 +73,38 @@ def test_write_validation_summary_updates_last_validate(tmp_path, monkeypatch):
     assert saved["vuln_class"] == "idor"
     assert saved["severity"] == "high"
     assert saved["result"] == "confirmed"
+    assert saved["submission_notes_path"] == str(submission_notes)
+
+    notes = submission_notes.read_text(encoding="utf-8")
+    assert "Validation summary: `validation-summary.json`" in notes
+    assert "Raw HTTP request" in notes
+    assert "Four validation gates: `PASS`" in notes
 
     last_saved = json.loads(last_validate.read_text(encoding="utf-8"))
     assert last_saved["report_path"] == str(report_path)
+    assert last_saved["submission_notes_path"] == str(submission_notes)
 
+
+
+def test_submission_notes_include_scanner_and_evidence_handoff(tmp_path):
+    report_path = tmp_path / "findings" / "target-program-ssrf" / "hackerone-report.md"
+    summary = {
+        "result": "partial",
+        "severity": "medium",
+        "cvss_score": 6.9,
+        "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N",
+        "all_gates_passed": False,
+        "report_path": str(report_path),
+        "scanner_summary_path": "findings/target/scanner-summary.json",
+        "browser_evidence": {"summary_path": "evidence/target/browser/summary.json"},
+    }
+
+    notes_path = validate.write_submission_notes(summary, report_path)
+
+    notes = notes_path.read_text(encoding="utf-8")
+    assert "Scanner handoff reviewed: `findings/target/scanner-summary.json`" in notes
+    assert "Evidence artifact path is attached: `evidence/target/browser/summary.json`" in notes
+    assert "Four validation gates: `NEEDS REVIEW`" in notes
 
 def test_validation_summary_preserves_finding_linkage(tmp_path):
     report_path = tmp_path / "findings" / "target-program-sqli" / "hackerone-report.md"

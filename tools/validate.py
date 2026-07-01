@@ -1090,11 +1090,55 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
     return summary
 
 
+def build_submission_notes(summary: dict) -> str:
+    """Build a compact human checklist for final bounty submission review."""
+    gates = "PASS" if summary.get("all_gates_passed") else "NEEDS REVIEW"
+    evidence = summary.get("browser_evidence") or {}
+    evidence_path = evidence.get("summary_path") or evidence.get("dir") or "[attach raw request/response evidence]"
+    scanner_path = summary.get("scanner_summary_path") or "[optional scanner summary path]"
+
+    return f"""# Submission Notes
+
+## Machine-readable handoff
+
+- Validation summary: `validation-summary.json`
+- Report draft: `{summary.get('report_path', '')}`
+- Result: `{summary.get('result', '')}`
+- Severity: `{summary.get('severity', '')}`
+- CVSS: `{summary.get('cvss_score', '')}` `{summary.get('cvss_vector', '')}`
+
+## Evidence checklist
+
+- [ ] Raw HTTP request is pasted into the report PoC section.
+- [ ] Raw HTTP response proving impact is pasted into the report PoC section.
+- [ ] Evidence artifact path is attached: `{evidence_path}`
+- [ ] Scanner handoff reviewed: `{scanner_path}`
+- [ ] Four validation gates: `{gates}`
+
+## Submission checklist
+
+- [ ] Remove placeholders and generic examples from the report.
+- [ ] Confirm endpoint, account roles, and impact are target-specific but contain no secrets.
+- [ ] Confirm no destructive/state-changing proof is required beyond documented validation.
+- [ ] Confirm duplicate/program-policy notes have been reviewed.
+"""
+
+
+def write_submission_notes(summary: dict, report_path: str | Path) -> Path:
+    """Write per-report submission notes for human final review."""
+    notes_path = Path(report_path).parent / "submission-notes.md"
+    notes_path.parent.mkdir(parents=True, exist_ok=True)
+    notes_path.write_text(build_submission_notes(summary), encoding="utf-8")
+    return notes_path
+
+
 def write_validation_summary(summary: dict, report_path: str | Path) -> None:
     """Persist per-report summary and repo-global last-validate pointer."""
     report_path = Path(report_path)
     report_summary_path = report_path.parent / "validation-summary.json"
     report_summary_path.parent.mkdir(parents=True, exist_ok=True)
+    submission_notes_path = write_submission_notes(summary, report_path)
+    summary["submission_notes_path"] = str(submission_notes_path)
     report_summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     last_validate_path = BASE_DIR / "findings" / "last-validate.json"
