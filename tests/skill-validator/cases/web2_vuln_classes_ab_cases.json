@@ -1,0 +1,300 @@
+{
+  "meta": {
+    "purpose": "Deterministic A/B for web2-vuln-classes: compare context_pack cards/references alone against cards/references plus skills/web2-vuln-classes/SKILL.md.",
+    "arms": {
+      "baseline": "context_pack selected knowledge cards, reference_hints, required checks, and hypothesis_seeds only",
+      "enhanced": "baseline plus skills/web2-vuln-classes/SKILL.md"
+    },
+    "scoring": "route checks use context_pack output; signal checks search for concrete evidence-gate, stop-condition, script-action, and chain-connector terms in each arm's loaded material.",
+    "note": "This is local and reproducible. It is a precursor to live LLM A/B, not a claim that a model will answer the same way."
+  },
+  "cases": [
+    {
+      "id": "W01",
+      "lane": "ssrf",
+      "focus": "SSRF URL fetch webhook import URL parser bypass internal metadata read-back",
+      "expected_skill": "web2-vuln-classes",
+      "expected_cards": [
+        "knowledge/cards/ssrf-internal-impact.md",
+        "knowledge/cards/ssrf-url-fetch.md"
+      ],
+      "forbidden_cards": [],
+      "signal_checks": [
+        {
+          "id": "server_side_fetch_gate",
+          "terms": ["server-side fetch"],
+          "why": "Must prove fetch is server-side before internal impact claims."
+        },
+        {
+          "id": "metadata_chain",
+          "terms": ["metadata", "credential"],
+          "why": "SSRF value depends on a concrete internal/cloud impact chain."
+        },
+        {
+          "id": "dns_only_not_enough",
+          "terms": ["dns", "insufficient"],
+          "why": "DNS-only callback should not become a finished finding."
+        }
+      ]
+    },
+    {
+      "id": "W02",
+      "lane": "ssti_command_rce",
+      "focus": "SSTI template injection command injection output channel blind timing controlled RCE",
+      "expected_skill": "web2-vuln-classes",
+      "expected_cards": [
+        "knowledge/cards/server-side-template-injection.md",
+        "knowledge/cards/controlled-rce-impact.md"
+      ],
+      "forbidden_cards": [],
+      "signal_checks": [
+        {
+          "id": "engine_context_first",
+          "terms": ["engine", "context"],
+          "why": "Template bugs need engine/context classification before deep payloads."
+        },
+        {
+          "id": "controlled_rce_gate",
+          "terms": ["controlled", "rce"],
+          "why": "RCE proof must stay controlled and impact-bounded."
+        },
+        {
+          "id": "output_or_timing_channel",
+          "terms": ["output", "timing"],
+          "why": "Command/RCE validation needs an observable channel."
+        }
+      ]
+    },
+    {
+      "id": "W03",
+      "lane": "upload_execution",
+      "focus": "unsafe upload extension content type magic bytes parser storage execution controlled RCE",
+      "expected_skill": "web2-vuln-classes",
+      "expected_cards": [
+        "knowledge/cards/upload-to-execution.md",
+        "knowledge/cards/controlled-rce-impact.md"
+      ],
+      "forbidden_cards": [
+        "knowledge/cards/upload-parser.md"
+      ],
+      "signal_checks": [
+        {
+          "id": "storage_access_execution",
+          "terms": ["storage", "access", "execution"],
+          "why": "Upload execution needs storage, reachability, and execution proof."
+        },
+        {
+          "id": "parser_component_attention",
+          "terms": ["parser", "component"],
+          "why": "Parser/component boundary matters more than filename tricks alone."
+        },
+        {
+          "id": "safe_verification",
+          "terms": ["safe", "verification"],
+          "why": "Execution checks must be low-impact and cleanly bounded."
+        }
+      ]
+    },
+    {
+      "id": "W04",
+      "lane": "deserialization",
+      "focus": "deserialization signed object serialized session cookie viewstate gadget state tamper controlled RCE",
+      "expected_skill": "web2-vuln-classes",
+      "expected_cards": [
+        "knowledge/cards/insecure-deserialization.md",
+        "knowledge/cards/controlled-rce-impact.md"
+      ],
+      "forbidden_cards": [],
+      "signal_checks": [
+        {
+          "id": "integrity_boundary",
+          "terms": ["integrity", "signature"],
+          "why": "Signed object testing must separate integrity bypass from gadget impact."
+        },
+        {
+          "id": "state_tamper_before_rce",
+          "terms": ["state", "tamper"],
+          "why": "State tamper is the safer first proof before execution."
+        },
+        {
+          "id": "gadget_chain",
+          "terms": ["gadget", "chain"],
+          "why": "RCE requires a real gadget/connector, not serialization format alone."
+        }
+      ]
+    },
+    {
+      "id": "W05",
+      "lane": "sql_nosql_hidden_surface",
+      "focus": "SQL injection NoSQL operator injection hidden parameter header cookie sort pagination query syntax error boolean pair",
+      "expected_skill": "web2-vuln-classes",
+      "expected_cards": [
+        "knowledge/cards/sqli-hidden-surfaces.md",
+        "knowledge/cards/nosql-query-injection.md"
+      ],
+      "forbidden_cards": [],
+      "signal_checks": [
+        {
+          "id": "hidden_surface",
+          "terms": ["hidden", "surface"],
+          "why": "Injection lane should include non-visible/header/path/cookie inputs."
+        },
+        {
+          "id": "type_classification",
+          "terms": ["type", "classification"],
+          "why": "Parser/type behavior guides low-noise injection probes."
+        },
+        {
+          "id": "baseline_confirmation",
+          "terms": ["baseline", "confirmation"],
+          "why": "A baseline/perturbation pair is required before impact claims."
+        }
+      ]
+    },
+    {
+      "id": "W06",
+      "lane": "graphql_api_auth_matrix",
+      "focus": "GraphQL node global ID introspection mutation field level auth matrix private posts",
+      "expected_skill": "web2-vuln-classes",
+      "expected_cards": [
+        "knowledge/cards/graphql.md"
+      ],
+      "forbidden_cards": [
+        "knowledge/cards/node-prototype-pollution.md"
+      ],
+      "signal_checks": [
+        {
+          "id": "introspection_not_enough",
+          "terms": ["introspection", "informational"],
+          "why": "Schema discovery alone must not be treated as a report."
+        },
+        {
+          "id": "field_level_auth_matrix",
+          "terms": ["field-level", "auth", "matrix"],
+          "why": "GraphQL impact needs field/mutation authorization comparison."
+        },
+        {
+          "id": "node_global_id",
+          "terms": ["node", "global id"],
+          "why": "Global ID/node() is a common object-auth pivot without Node.js noise."
+        }
+      ]
+    },
+    {
+      "id": "W07",
+      "lane": "jwt_oauth_sso",
+      "focus": "JWT OAuth OIDC SAML SSO JWK JKU KID algorithm confusion redirect uri account linking token binding",
+      "expected_skill": "web2-vuln-classes",
+      "expected_cards": [
+        "knowledge/cards/auth-sso-token-edge-cases.md",
+        "knowledge/cards/auth-access.md"
+      ],
+      "forbidden_cards": [],
+      "signal_checks": [
+        {
+          "id": "key_source_boundary",
+          "terms": ["key", "source"],
+          "why": "JWT/OIDC attacks hinge on issuer/key-source trust boundaries."
+        },
+        {
+          "id": "state_or_binding",
+          "terms": ["state", "binding"],
+          "why": "OAuth/account linking requires callback/token/session binding checks."
+        },
+        {
+          "id": "account_linking",
+          "terms": ["account", "linking"],
+          "why": "SSO value often comes from wrong-account mapping, not token parsing alone."
+        }
+      ]
+    },
+    {
+      "id": "W08",
+      "lane": "smuggling_cache_proxy",
+      "focus": "HTTP request smuggling CL TE host header proxy trust cache poisoning cache deception unkeyed header victim request shape",
+      "expected_skill": "web2-vuln-classes",
+      "expected_cards": [
+        "knowledge/cards/proxy-cache-boundaries.md"
+      ],
+      "forbidden_cards": [
+        "knowledge/cards/browser-client-boundaries.md"
+      ],
+      "signal_checks": [
+        {
+          "id": "cl_te_boundary",
+          "terms": ["content-length", "transfer-encoding"],
+          "why": "Smuggling evidence is byte/proxy boundary specific."
+        },
+        {
+          "id": "cache_key_workflow",
+          "terms": ["cache", "key", "workflow"],
+          "why": "Cache impact needs cache-key and victim-request reasoning."
+        },
+        {
+          "id": "private_response_deception",
+          "terms": ["private", "response"],
+          "why": "Web cache deception needs private response caching evidence."
+        }
+      ]
+    },
+    {
+      "id": "W09",
+      "lane": "race_business_logic",
+      "focus": "race condition payment coupon checkout OTP parallel replay state transition lockout limit stop condition",
+      "expected_skill": "web2-vuln-classes",
+      "expected_cards": [
+        "knowledge/cards/race-conditions.md",
+        "knowledge/cards/auth-credential-recovery-flows.md"
+      ],
+      "forbidden_cards": [],
+      "signal_checks": [
+        {
+          "id": "toctou_state_transition",
+          "terms": ["toctou"],
+          "why": "Race bugs need state-transition framing."
+        },
+        {
+          "id": "parallel_replay",
+          "terms": ["parallel"],
+          "why": "Race proof requires coordinated duplicate attempts."
+        },
+        {
+          "id": "rate_limit_stop",
+          "terms": ["rate", "limit"],
+          "why": "Credential/OTP race lanes require lockout/rate-limit stop conditions."
+        }
+      ]
+    },
+    {
+      "id": "W10",
+      "lane": "browser_realtime_boundary",
+      "focus": "CORS CSRF clickjacking postMessage DOM XSS WebSocket CSWSH Origin credentialed read realtime message schema",
+      "expected_skill": "web2-vuln-classes",
+      "expected_cards": [
+        "knowledge/cards/browser-client-boundaries.md",
+        "knowledge/cards/websocket-realtime-api.md"
+      ],
+      "forbidden_cards": [
+        "knowledge/cards/auth-access.md",
+        "knowledge/cards/api-idor.md"
+      ],
+      "signal_checks": [
+        {
+          "id": "origin_credentials",
+          "terms": ["origin", "credentials"],
+          "why": "Browser boundary impact needs origin plus credentialed response behavior."
+        },
+        {
+          "id": "message_schema",
+          "terms": ["message", "schema"],
+          "why": "Realtime/API bugs need message-shape authorization checks."
+        },
+        {
+          "id": "stop_conditions",
+          "terms": ["stop", "conditions"],
+          "why": "Client/realtime lanes need explicit stopping rules."
+        }
+      ]
+    }
+  ]
+}
