@@ -133,6 +133,28 @@ def test_manual_action_add_and_resolve_to_candidate(tmp_path):
     assert saved["actions"][0]["status"] == "candidate"
 
 
+def test_manual_action_cli_accepts_stop_condition_for_high_risk_lane(tmp_path):
+    code = main([
+        "--repo-root", str(tmp_path),
+        "add",
+        "--target", "api.target.com",
+        "--type", "ssrf-parser-boundary",
+        "--evidence", "URL fetch path accepts user-controlled callback URL.",
+        "--next-question", "Does parser normalization change internal host handling?",
+        "--action", "python3 tools/context_pack.py --target api.target.com --focus ssrf",
+        "--command-hint", "python3 tools/context_pack.py --target api.target.com --focus ssrf",
+        "--stop-condition", "Stop after a read-only parser-boundary probe is recorded as tested, blocked, dead-end, signal, or candidate.",
+        "--json",
+    ])
+
+    assert code == 0
+    queue = load_queue(tmp_path, "api.target.com")
+    action = queue["actions"][0]
+    assert action["type"] == "ssrf-parser-boundary"
+    assert action["stop_condition"].startswith("Stop after a read-only parser-boundary probe")
+    assert action["stop_condition"] != "record tested, dead-end, blocked, lead, signal, candidate, or validated before moving to the next queued action"
+
+
 def test_resolve_accepts_coverage_status_aliases(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
     next_action = select_next_action(load_queue(tmp_path, "target.com"))

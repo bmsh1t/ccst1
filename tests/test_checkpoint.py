@@ -37,6 +37,13 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     assert checkpoint["decision"] == "refresh-recon"
     assert checkpoint["target"] == "target.com"
     assert any("/recon target.com" in item for item in checkpoint["target_write_back"]["next"])
+    assert checkpoint["recommended_executable_action"]["type"] == "recon"
+    assert (
+        checkpoint["recommended_executable_action"]["command_hint"]
+        == 'python3 tools/hunt.py --target "target.com" --recon-only && '
+        'python3 tools/surface.py --target "target.com" && '
+        'python3 tools/checkpoint.py --target "target.com"'
+    )
     assert "CHECKPOINT DECISION" in output
     assert "Apply status: not applied" in output
 
@@ -283,6 +290,8 @@ def test_checkpoint_surfaces_context_contradictions(tmp_path):
         "Review context contradiction" in item
         for item in checkpoint["target_write_back"]["next"]
     )
+    context_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "context-review")
+    assert context_action["command_hint"] == 'python3 tools/context_pack.py --target "target.com"'
     assert "Contradictions:" in output
 
 

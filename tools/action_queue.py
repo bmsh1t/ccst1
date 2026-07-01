@@ -464,6 +464,7 @@ def add_manual_action(
     command_hint: str = "",
     evidence_type: str = "manual",
     safety: str = "non_destructive",
+    stop_condition: str = DEFAULT_STOP_CONDITION,
 ) -> dict:
     queue = load_queue(repo_root, target)
     built = build_action(
@@ -477,6 +478,7 @@ def add_manual_action(
         evidence_type=evidence_type,
         source="manual",
         safety=safety,
+        stop_condition=stop_condition,
     )
     stats = upsert_actions(queue, [built])
     path = save_queue(repo_root, target, queue)
@@ -644,6 +646,11 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--priority", type=int, default=50)
     add.add_argument("--command-hint", default="")
     add.add_argument("--safety", default="non_destructive")
+    add.add_argument(
+        "--stop-condition",
+        default=DEFAULT_STOP_CONDITION,
+        help="Explicit condition for when this action is tested, blocked, dead-end, signal, candidate, or validated.",
+    )
     add.add_argument("--json", action="store_true")
 
     next_cmd = sub.add_parser("next", help="Print the highest-priority active action.")
@@ -697,6 +704,7 @@ def main(argv: list[str] | None = None) -> int:
                 priority=args.priority,
                 command_hint=args.command_hint,
                 safety=args.safety,
+                stop_condition=args.stop_condition,
             )
             _print(result if args.json else format_summary(result["queue"]), as_json=args.json)
             return 0

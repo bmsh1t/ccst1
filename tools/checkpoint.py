@@ -407,7 +407,7 @@ def _next_proposals(
     return _dedupe(proposals)[:5]
 
 
-def _classify_next_action(text: str) -> tuple[str, int, str]:
+def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
     """把 checkpoint 的自然语言建议归类成 Claude 可消费的执行队列。"""
     value = str(text or "").strip()
     lowered = value.lower()
@@ -418,9 +418,17 @@ def _classify_next_action(text: str) -> tuple[str, int, str]:
     if "draft report" in lowered:
         return "report", 95, "/report"
     if "review context contradiction" in lowered:
-        return "context-review", 90, "/context-pack"
+        quoted_target = _quote(target) if target else "target.com"
+        return "context-review", 90, f"python3 tools/context_pack.py --target {quoted_target}"
     if "run /recon" in lowered:
-        return "recon", 85, "/recon"
+        quoted_target = _quote(target) if target else "target.com"
+        return (
+            "recon",
+            85,
+            "python3 tools/hunt.py --target {target} --recon-only && "
+            "python3 tools/surface.py --target {target} && "
+            "python3 tools/checkpoint.py --target {target}".format(target=quoted_target),
+        )
     if "actor matrix gap" in lowered:
         return "actor-gap", 80, "focused replay + tools/evidence_ledger.py record"
     if "unsafe-skipped scanner lane" in lowered:
@@ -500,10 +508,10 @@ def _extract_action_metadata(text: str) -> dict:
     return metadata
 
 
-def _build_next_action_queue(next_items: list[str]) -> list[dict]:
+def _build_next_action_queue(next_items: list[str], target: str = "") -> list[dict]:
     queue: list[dict] = []
     for idx, item in enumerate(next_items, 1):
-        action_type, priority, command_hint = _classify_next_action(item)
+        action_type, priority, command_hint = _classify_next_action(item, target)
         metadata = _extract_action_metadata(item)
         redline_required = any(
             token in item.lower()
@@ -711,7 +719,7 @@ def build_checkpoint(
     decision = _decide(state, gaps, actor_gaps)
     lead = _lead_proposals(state, context)
     next_items = _next_proposals(state, gaps, resolved_target, context, evidence_summary)
-    next_action_queue = _build_next_action_queue(next_items)
+    next_action_queue = _build_next_action_queue(next_items, resolved_target)
     dead_ends = _dead_end_proposals(state, gaps)
     handoff = _handoff_summary(
         target=resolved_target,
