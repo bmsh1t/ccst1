@@ -130,7 +130,20 @@ Search:
 
 ### Q7: Is this a known-invalid bug class?
 
-Check the NEVER SUBMIT list below. If it's on this list without a chain → **DO NOT REPORT.**
+Check the NEVER SUBMIT list below, then route with this precedence:
+
+1. On NEVER SUBMIT **and** it also appears in the CONDITIONALLY VALID chain
+   table, **and** the candidate already demonstrates the full chain end to end
+   → **REPORT** at the chained severity.
+2. On NEVER SUBMIT **and** chain-eligible, chain **not yet built** but a
+   concrete next hop exists (e.g., open redirect + an OAuth `redirect_uri` to
+   test) → **CHAIN_REQUIRED**, not DO_NOT_REPORT. Build and prove the chain first.
+3. On NEVER SUBMIT, not chain-eligible, or no concrete next hop
+   → **DO NOT REPORT.**
+
+"Standalone / alone" in the NEVER SUBMIT list means the primitive **by itself**
+is not reportable — it does not forbid the chained finding. Chain eligibility is
+defined by the CONDITIONALLY VALID table below.
 
 ---
 
@@ -196,6 +209,11 @@ Run in sequence. ALL 4 must PASS.
 
 Submitting these destroys your validity ratio.
 
+> **Routing note:** Items below marked "alone / standalone / without ..." are
+> chain-eligible — see the CONDITIONALLY VALID table. Apply Q7 precedence: a
+> demonstrated chain → REPORT; a concrete-but-unbuilt chain → CHAIN_REQUIRED;
+> only a bare primitive with no next hop → DO NOT REPORT.
+
 ```
 Missing CSP / HSTS / security headers
 Missing SPF / DKIM / DMARC
@@ -228,6 +246,10 @@ Pre-account takeover (usually — very specific conditions required)
 ## CONDITIONALLY VALID — CHAIN REQUIRED
 
 Build the chain first, prove it works end to end, THEN report.
+
+> If the candidate **already** proves the chain end to end, it is no longer
+> "chain required" — verdict is **REPORT** at the Valid Result severity. Use
+> **CHAIN_REQUIRED** only when the connecting hop still needs to be built.
 
 | Standalone Finding | Chain Required | Valid Result |
 |---|---|---|

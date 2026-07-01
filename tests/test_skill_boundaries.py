@@ -32,6 +32,22 @@ def test_triage_validation_keeps_seven_question_gate_shape():
     assert "### Q8:" not in text
 
 
+def test_triage_validation_routes_chain_eligible_never_submit_items_by_precedence():
+    text = (REPO_ROOT / "skills" / "triage-validation" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "route with this precedence" in text
+    assert "candidate already demonstrates the full chain end to end" in text
+    assert "→ **REPORT** at the chained severity" in text
+    assert "concrete next hop exists" in text
+    assert "→ **CHAIN_REQUIRED**, not DO_NOT_REPORT" in text
+    assert '"Standalone / alone" in the NEVER SUBMIT list' in text
+    assert "it does not forbid the chained finding" in text
+    assert "demonstrated chain → REPORT" in text
+    assert "concrete-but-unbuilt chain → CHAIN_REQUIRED" in text
+    assert "bare primitive with no next hop" in text
+    assert "DO_NOT_REPORT" in text
+
+
 def test_hidden_sqli_surfaces_are_part_of_skill_flow():
     runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
