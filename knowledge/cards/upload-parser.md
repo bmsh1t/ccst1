@@ -12,6 +12,7 @@
 - 响应中出现 processor、converter、thumbnail、ocr、metadata、scan、virus、render
 - 支持 SVG、PDF、DOCX、XLSX、ZIP、图片、HTML、Markdown、CSV 等复杂格式
 - 上传后有下载、预览、分享、管理员审核或异步处理链路
+- 文件名或 metadata 被拼进存储路径；引用解析正则的 file 段未做规范化，可出现 parent segment、覆盖或软链穿透风险
 
 ## 发散问题
 

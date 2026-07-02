@@ -22,6 +22,8 @@
 - 邀请链接、重置链接、邮箱验证链接是否绑定目标账号和组织？
 - SSO / OAuth / SAML 流程是否存在账号绑定、state、redirect 或 email normalization 差异？
 - 403 接口是否存在方法、路径规范化、header 或后端路由差异？
+- 同一能力是否有多个入口（UI、API、GraphQL、移动端、旧版端点、批量接口）？各入口守卫是否一致？
+- MFA、OTP、找回等认证因子是否绑定服务端会话身份，还是信任客户端传入的 user_id 或参数？
 - Method-based access：管理员用 `POST /admin-roles`，普通用户是否能用 `GET /admin-roles?username=...&action=upgrade`、`X-HTTP-Method-Override` 或 body/query 迁移绕过？
 - URL-based access：`/admin` 被拦，后端是否接受 `X-Original-URL`、`X-Rewrite-URL`、encoded slash、路径大小写、尾随点/分号或反向代理重写路径？
 - Referer-based access：后端是否只检查 `Referer` 来判断请求来自管理页或同站页面？
