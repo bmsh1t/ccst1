@@ -15,7 +15,10 @@ Skill 与检查层决定。
 | `skills/security-arsenal/REFERENCES.md` | 外部参考库索引 | 当前项目内置方法论不够，需要外部 playbook、writeup、工具目录时 |
 | `skills/security-arsenal/METHODOLOGY_CHEATSHEET.md` | 压缩方法论速查 | 需要快速补充某类漏洞的测试步骤时 |
 
-## 本地知识卡
+## 核心决策知识卡
+
+核心卡是默认决策层：用于当前 Skill 的主要 route、证据门、停止条件和覆盖提醒。
+每次 context-pack 仍只选择 1-2 张，避免把知识库平铺进上下文。
 
 | 知识卡 | 作用 | 推荐关联 Skill |
 |---|---|---|
@@ -51,7 +54,13 @@ Skill 与检查层决定。
 | `knowledge/cards/coverage-prompts.md` | 覆盖基线漏测提醒 | `bb-methodology`, `web2-recon`, `web2-vuln-classes` |
 | `knowledge/cards/dead-ends.md` | 常见低价值方向和停止条件 | `bb-methodology`, `triage-validation` |
 
-## 蒸馏知识卡（从 8528 份披露报告蒸馏，`/distill`）
+## 蒸馏 Router 知识卡（从 8528 份披露报告蒸馏，`/distill`）
+
+蒸馏卡不是默认方法论正文，而是低优先级 router / recall 层：
+`trigger signal -> distilled card -> source_report_ids -> on-demand case lookup`。
+只有当前 focus 或证据强命中触发信号时才读取；确认需要真实攻击链形状、报告写作先例或
+相似案例时，再按卡片 footer 的 `source_report_ids` 查询本地 gitignored 案例库。
+不要默认拉取报告全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。
 
 | 知识卡 | 作用 | 推荐关联 Skill |
 |---|---|---|
@@ -122,9 +131,10 @@ payload 家族和链式验证模型，不照搬拿 flag、DoS/ReDoS、持久 web
 
 1. 先读取 `memory/goals/active.json`，确认当前目标、阶段和假设。
 2. 根据阶段选择 Skill。
-3. 根据证据从本索引选 1-2 张知识卡。
-4. 如果证据命中 `rules/playbook-router.md`，优先按 router 读取更深参考。
-5. 知识卡产出的新思路、技巧或补漏项必须交还给当前 Skill 决策，并回到
+3. 根据证据从本索引选 1-2 张知识卡：核心卡优先，蒸馏卡只在明确 trigger signal 命中时作为 router / recall 补充。
+4. 如果蒸馏卡 footer 有 `source_report_ids`，只有在需要真实案例链路或报告写作先例时才查询本地案例库。
+5. 如果证据命中 `rules/playbook-router.md`，优先按 router 读取更深参考。
+6. 知识卡产出的新思路、技巧或补漏项必须交还给当前 Skill 决策，并回到
    目标层或 action queue 记录为 lead / next action / dead end / queued action。
 
 ## 输出要求
