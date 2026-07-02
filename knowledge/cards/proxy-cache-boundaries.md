@@ -118,7 +118,7 @@ deep_refs:
 - H2.CL JS delivery 形态：先确认 `/resources` 这类路径会 302 到 `/resources/` 且 Host 可控，再让 exploit server 在 `/resources` 和 `/resources/` 返回 JavaScript；日志出现 Victim `GET /resources/` 只是命中信号，最终要看浏览器执行。
 - H2 CRLF-to-TE 形态：HTTP/2 header value 内嵌 `\r\nTransfer-Encoding: chunked`，body 使用 `0\r\n\r\n` 结束 chunked，再放入 smuggled request；需要低层客户端允许 CRLF header value。
 - H2 request-splitting 形态：HTTP/2 header value 内嵌 `\r\n\r\nGET /x HTTP/1.1\r\nHost: target`，外层 path 也用 `/x` 作为 404 sentinel；不需要 body，也不依赖 `Transfer-Encoding`。
-- Search-history / comment capture 形态：内层 POST 写入自有 session 可读的历史、评论、日志或同类存储面；若表单需要会话/CSRF，内层请求要带攻击者自己的 Cookie、CSRF、Content-Type 和足够覆盖 victim 请求头的 `Content-Length`；提取时先 HTML unescape 再 URL decode，最后优先复用完整 Cookie line。
+- Search-history capture / comment capture 形态：内层 POST 写入自有 session 可读的历史、评论、日志或同类存储面；若表单需要会话/CSRF，内层请求要带攻击者自己的 Cookie、CSRF、Content-Type 和足够覆盖 victim 请求头的 `Content-Length`；提取时先 HTML unescape 再 URL decode，最后优先复用完整 Cookie line。
 
 ## 补充 Checklist
 
