@@ -39,6 +39,7 @@ venv/
 # Tool output
 *.out
 nmap-output/
+distill/
 .ace-tool/
 .worktrees/
 hunt-memory/

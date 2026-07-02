@@ -51,6 +51,33 @@ Skill 与检查层决定。
 | `knowledge/cards/coverage-prompts.md` | 覆盖基线漏测提醒 | `bb-methodology`, `web2-recon`, `web2-vuln-classes` |
 | `knowledge/cards/dead-ends.md` | 常见低价值方向和停止条件 | `bb-methodology`, `triage-validation` |
 
+## 蒸馏知识卡（从 8528 份披露报告蒸馏，`/distill`）
+
+| 知识卡 | 作用 | 推荐关联 Skill |
+|---|---|---|
+| `knowledge/cards/signature-scope-mismatch.md` | 验签字节与消费字节不一致、密钥未绑定身份（XSW/JWT/JWKS） | `web2-vuln-classes`, `triage-validation` |
+| `knowledge/cards/oauth-sso-trust.md` | OAuth/SSO 邮箱信任、audience/redirect 混淆致接管 | `web2-vuln-classes`, `triage-validation` |
+| `knowledge/cards/view-differential.md` | 校验视图 vs 执行视图的规范化/编码/截断差 | `web2-vuln-classes`, `security-arsenal` |
+| `knowledge/cards/request-smuggling.md` | HTTP 请求走私/降级/伪首部注入（含非 URL 字段 CRLF） | `web2-vuln-classes`, `security-arsenal` |
+| `knowledge/cards/path-allowlist-normalization.md` | 路径/白名单归一化绕过、弱字符串匹配安全判定 | `web2-vuln-classes`, `security-arsenal` |
+| `knowledge/cards/sanitizer-parser-xss.md` | 净化器与浏览器解析差、二次解码/二级渲染 XSS | `web2-vuln-classes`, `security-arsenal` |
+| `knowledge/cards/csp-bypass-exfil.md` | CSP 绕过与无脚本数据外带 | `web2-vuln-classes`, `security-arsenal` |
+| `knowledge/cards/connection-string-injection.md` | 连接串/驱动/协议处理器参数注入致文件读与 RCE | `web2-vuln-classes`, `security-arsenal` |
+| `knowledge/cards/runtime-primitive-override.md` | 同 realm 覆盖原语/内建方法击穿安全控制 | `web2-vuln-classes`, `mobile-pentest` |
+| `knowledge/cards/import-migration-trust.md` | 导入/恢复/迁移类功能坍塌信任边界 | `web2-vuln-classes`, `bb-methodology` |
+| `knowledge/cards/stale-derived-authz.md` | 授权/凭证派生态未随源变更失效 | `bb-methodology`, `web2-vuln-classes` |
+| `knowledge/cards/connection-reuse-key.md` | 连接/缓存复用键遗漏安全维度致降级 | `web2-vuln-classes`, `web2-recon` |
+| `knowledge/cards/redirect-header-leak.md` | 跨源重定向敏感头剥离不完整致凭据外泄 | `web2-vuln-classes`, `web2-recon` |
+| `knowledge/cards/xs-leak-oracle.md` | XS-Leak / 可观测差异侧信道 oracle | `web2-vuln-classes`, `triage-validation` |
+| `knowledge/cards/cli-argument-injection.md` | CLI 包装器参数/flag 注入与终端转义注入 | `web2-vuln-classes`, `cicd-security` |
+| `knowledge/cards/sqli-non-parameterizable.md` | SQLi 非参数化位置（标识符/占位符名/事务） | `web2-vuln-classes`, `security-arsenal` |
+| `knowledge/cards/type-confusion-controlflow.md` | 参数类型/形状混淆翻转框架控制流、保留键击穿 | `web2-vuln-classes`, `triage-validation` |
+| `knowledge/cards/llm-invisible-unicode.md` | AI/LLM 不可见 Unicode-tag 隐形提示注入 | `web2-vuln-classes`, `bb-methodology` |
+| `knowledge/cards/second-order-sink.md` | 二阶/延迟 sink 注入（异步模板/SSTI/反序列化） | `web2-vuln-classes`, `bb-methodology` |
+| `knowledge/cards/payment-logic-bypass.md` | 支付/计费业务逻辑绕过（取整/收款方/网关态） | `web2-vuln-classes`, `bb-methodology` |
+| `knowledge/cards/postmessage-trust.md` | postMessage origin 校验与内容信任缺陷 | `web2-vuln-classes`, `security-arsenal` |
+| `knowledge/cards/render-pipeline-ssrf.md` | 渲染/转换/导出管线作为 SSRF/RCE 攻击面 | `web2-vuln-classes`, `security-arsenal` |
+
 ## 深度附录 / Payload Packs
 
 默认不要读取深度附录。只有具体知识卡的 `deep_refs` 命中，且当前 Skill 已经有

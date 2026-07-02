@@ -1137,3 +1137,34 @@ def test_request_smuggling_capture_focus_ignores_csrf_cookie_evidence_noise(tmp_
         and "完整 Cookie line" in seed
         for seed in pack["hypothesis_seeds"]
     )
+
+
+def test_distilled_knowledge_cards_route_from_explicit_focus_without_recon(tmp_path):
+    cases = [
+        ("signature scope mismatch saml jwt jku kid duplicate assertion", "knowledge/cards/signature-scope-mismatch.md"),
+        ("oauth sso trust email redirect_uri account takeover", "knowledge/cards/oauth-sso-trust.md"),
+        ("view differential validation view consumption view canonicalization gap", "knowledge/cards/view-differential.md"),
+        ("request smuggling h2 crlf te header injection response queue", "knowledge/cards/request-smuggling.md"),
+        ("path allowlist normalization weak string prefix bypass", "knowledge/cards/path-allowlist-normalization.md"),
+        ("sanitizer parser xss dompurify mutation-xss second decode", "knowledge/cards/sanitizer-parser-xss.md"),
+        ("csp bypass exfil script-src report-uri connect-src", "knowledge/cards/csp-bypass-exfil.md"),
+        ("connection string injection jdbc dsn driver option", "knowledge/cards/connection-string-injection.md"),
+        ("runtime primitive override monkey patch same realm stringify", "knowledge/cards/runtime-primitive-override.md"),
+        ("import migration trust restore backup import tenant import", "knowledge/cards/import-migration-trust.md"),
+        ("stale derived authz revoked permission cache role cache", "knowledge/cards/stale-derived-authz.md"),
+        ("connection reuse key backend connection pool tenant key", "knowledge/cards/connection-reuse-key.md"),
+        ("redirect header leak authorization header cross-origin redirect", "knowledge/cards/redirect-header-leak.md"),
+        ("xs-leak oracle timing image size resource timing", "knowledge/cards/xs-leak-oracle.md"),
+        ("cli argument injection flag injection shell wrapper", "knowledge/cards/cli-argument-injection.md"),
+        ("sqli non-parameterizable order by column name identifier", "knowledge/cards/sqli-non-parameterizable.md"),
+        ("type confusion controlflow string boolean array object", "knowledge/cards/type-confusion-controlflow.md"),
+        ("llm invisible unicode tag prompt injection rag", "knowledge/cards/llm-invisible-unicode.md"),
+        ("second-order sink delayed sink stored render", "knowledge/cards/second-order-sink.md"),
+        ("payment logic rounding gateway recipient refund", "knowledge/cards/payment-logic-bypass.md"),
+        ("postmessage trust message event origin targetOrigin", "knowledge/cards/postmessage-trust.md"),
+        ("render pipeline ssrf pdf render screenshot service wkhtmltopdf", "knowledge/cards/render-pipeline-ssrf.md"),
+    ]
+
+    for focus, expected_card in cases:
+        pack = build_context_pack(tmp_path, target="target.com", focus=focus)
+        assert pack["knowledge_cards"][0] == expected_card

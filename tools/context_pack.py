@@ -175,7 +175,7 @@ WEB2_VULN_FOCUS_RE = re.compile(
     r"race|rce|command[-_ ]?injection|ssti|template[-_ ]?injection|template[-_ ]?engine|render[-_ ]?template|erb|ruby[-_ ]?template|tornado[-_ ]?template|mako[-_ ]?template|handlebars[-_ ]?template|mustache[-_ ]?template|nunjucks[-_ ]?template|liquid[-_ ]?template|pug[-_ ]?template|jade[-_ ]?template|ejs[-_ ]?template|deserialization|deserialize|signed[-_ ]?object|viewstate|"
     r"host[-_ ]?header|proxy[-_ ]?trust|request[-_ ]?smuggling|http[-_ ]?smuggling|cache[-_ ]?poisoning|cache[-_ ]?deception|"
     r"cors|csrf|xsrf|xss|reflected[-_ ]?xss|stored[-_ ]?xss|client[-_ ]?xss|csp|content[-_ ]?security[-_ ]?policy|sandbox[-_ ]?escape|dangling[-_ ]?markup|open[-_ ]?redirect|client[-_ ]?side[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|clickjacking|dom[-_ ]?xss|dom|websocket|cswsh|"
-    r"information[-_ ]?disclosure|info[-_ ]?disclosure|web[-_ ]?llm|llm|essential[-_ ]?skills|"
+    r"signature[-_ ]?scope|view[-_ ]?differential|allowlist|whitelist|sanitizer|connection[-_ ]?string|runtime[-_ ]?primitive|stale[-_ ]?authz|connection[-_ ]?reuse|redirect[-_ ]?header|xs[-_ ]?leak|cli[-_ ]?argument|non[-_ ]?parameterizable|type[-_ ]?confusion|second[-_ ]?order|payment[-_ ]?logic|postmessage|render[-_ ]?pipeline|information[-_ ]?disclosure|info[-_ ]?disclosure|web[-_ ]?llm|llm|essential[-_ ]?skills|"
     r"node\.js|nodejs|express|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|"
     r"missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|param[-_ ]?discovery|"
     r"path[-_ ]?pattern|management[-_ ]?exposure|admin[-_ ]?panel"
@@ -328,6 +328,28 @@ CARD_PATHS = {
     "upload-to-execution": "knowledge/cards/upload-to-execution.md",
     "controlled-rce-impact": "knowledge/cards/controlled-rce-impact.md",
     "node-prototype-pollution": "knowledge/cards/node-prototype-pollution.md",
+    "signature-scope-mismatch": "knowledge/cards/signature-scope-mismatch.md",
+    "oauth-sso-trust": "knowledge/cards/oauth-sso-trust.md",
+    "view-differential": "knowledge/cards/view-differential.md",
+    "request-smuggling": "knowledge/cards/request-smuggling.md",
+    "path-allowlist-normalization": "knowledge/cards/path-allowlist-normalization.md",
+    "sanitizer-parser-xss": "knowledge/cards/sanitizer-parser-xss.md",
+    "csp-bypass-exfil": "knowledge/cards/csp-bypass-exfil.md",
+    "connection-string-injection": "knowledge/cards/connection-string-injection.md",
+    "runtime-primitive-override": "knowledge/cards/runtime-primitive-override.md",
+    "import-migration-trust": "knowledge/cards/import-migration-trust.md",
+    "stale-derived-authz": "knowledge/cards/stale-derived-authz.md",
+    "connection-reuse-key": "knowledge/cards/connection-reuse-key.md",
+    "redirect-header-leak": "knowledge/cards/redirect-header-leak.md",
+    "xs-leak-oracle": "knowledge/cards/xs-leak-oracle.md",
+    "cli-argument-injection": "knowledge/cards/cli-argument-injection.md",
+    "sqli-non-parameterizable": "knowledge/cards/sqli-non-parameterizable.md",
+    "type-confusion-controlflow": "knowledge/cards/type-confusion-controlflow.md",
+    "llm-invisible-unicode": "knowledge/cards/llm-invisible-unicode.md",
+    "second-order-sink": "knowledge/cards/second-order-sink.md",
+    "payment-logic-bypass": "knowledge/cards/payment-logic-bypass.md",
+    "postmessage-trust": "knowledge/cards/postmessage-trust.md",
+    "render-pipeline-ssrf": "knowledge/cards/render-pipeline-ssrf.md",
     "race-conditions": "knowledge/cards/race-conditions.md",
     "coverage-prompts": "knowledge/cards/coverage-prompts.md",
     "dead-ends": "knowledge/cards/dead-ends.md",
@@ -339,6 +361,31 @@ REFERENCE_PATHS = {
     "sink-and-grep-patterns": "skills/security-arsenal/references/sink-and-grep-patterns.md",
     "recon-tool-usage": "skills/security-arsenal/references/recon-tool-usage.md",
 }
+
+DISTILLED_TOKEN_TO_CARDS = (
+    (re.compile(r"\b(signature[-_ ]?scope[-_ ]?mismatch|signed bytes|consumption object|xsw|duplicate assertion)\b", re.I), ("signature-scope-mismatch",)),
+    (re.compile(r"\b(oauth[-_ ]?sso[-_ ]?trust|email trust|audience confusion|redirect_uri trust)\b", re.I), ("oauth-sso-trust",)),
+    (re.compile(r"\b(view[-_ ]?differential|validation view|consumption view|verified view|executed view|canonicalization gap)\b", re.I), ("view-differential",)),
+    (re.compile(r"\b(h2 crlf|h2 request[-_ ]?splitting|pseudo-header injection|response queue poisoning|non[-_ ]?url crlf)\b", re.I), ("request-smuggling",)),
+    (re.compile(r"\b(allowlist|whitelist|path normalization|prefix check|starts?with|weak string|dot[-_ ]?segment|url normalization)\b", re.I), ("path-allowlist-normalization",)),
+    (re.compile(r"\b(sanitizer|dompurify|mxss|mutation[-_ ]?xss|parser[-_ ]?xss|html parser|second decode)\b", re.I), ("sanitizer-parser-xss",)),
+    (re.compile(r"\b(csp bypass|bypass exfil|no[-_ ]?script exfil|script-src exfil|report-uri exfil)\b", re.I), ("csp-bypass-exfil",)),
+    (re.compile(r"\b(connection string|dsn|jdbc|mongodb uri|database uri|driver option|protocol handler)\b", re.I), ("connection-string-injection",)),
+    (re.compile(r"\b(runtime primitive|primitive override|monkey[-_ ]?patch|same realm|override fetch|override json|stringify override)\b", re.I), ("runtime-primitive-override",)),
+    (re.compile(r"\b(import migration|migration trust|restore trust|backup import|bulk import|tenant import)\b", re.I), ("import-migration-trust",)),
+    (re.compile(r"\b(stale[-_ ]?derived[-_ ]?authz|derived authz|revoked permission cache|deprovision|role cache|credential derivative)\b", re.I), ("stale-derived-authz",)),
+    (re.compile(r"\b(connection reuse|reuse key|pool key|tenant key|keep-alive boundary|backend connection reuse)\b", re.I), ("connection-reuse-key",)),
+    (re.compile(r"\b(redirect header|header leak|authorization header leak|sensitive header redirect|cross-origin redirect header|header stripping)\b", re.I), ("redirect-header-leak",)),
+    (re.compile(r"\b(xs[-_ ]?leak|cross[-_ ]?site leak|timing oracle|image size oracle|resource timing oracle|window length oracle)\b", re.I), ("xs-leak-oracle",)),
+    (re.compile(r"\b(cli argument|argument injection|flag injection|option injection|terminal escape|shell wrapper)\b", re.I), ("cli-argument-injection",)),
+    (re.compile(r"\b(non[-_ ]?parameterizable|order by identifier|group by identifier|column name injection|table name injection|placeholder name)\b", re.I), ("sqli-non-parameterizable",)),
+    (re.compile(r"\b(type confusion|shape confusion|string boolean|array object|duplicate json|control[-_ ]?flow|reserved key)\b", re.I), ("type-confusion-controlflow",)),
+    (re.compile(r"\b(invisible unicode|unicode tag|tag characters|hidden unicode prompt)\b", re.I), ("llm-invisible-unicode",)),
+    (re.compile(r"\b(second[-_ ]?order|delayed sink|async sink|stored render|later processing|deferred template)\b", re.I), ("second-order-sink",)),
+    (re.compile(r"\b(payment logic|rounding bypass|gateway state|recipient mismatch|refund logic|billing logic|price mismatch)\b", re.I), ("payment-logic-bypass",)),
+    (re.compile(r"\b(postmessage trust|message event origin|targetorigin trust|window\.name trust|origin trust)\b", re.I), ("postmessage-trust",)),
+    (re.compile(r"\b(render pipeline|pdf render|screenshot service|server-side browser|wkhtmltopdf|chromium export|html to pdf|docx render)\b", re.I), ("render-pipeline-ssrf",)),
+)
 
 TOKEN_TO_CARDS = (
     (
@@ -1094,6 +1141,9 @@ def _has_upload_execution_signal(text: str) -> bool:
 def _cards_from_focus(focus: str) -> list[str]:
     focus_l = focus.lower()
     cards: list[str] = []
+    for pattern, names in DISTILLED_TOKEN_TO_CARDS:
+        if pattern.search(focus):
+            cards.extend(names)
     browser_boundary_signal = _has_browser_client_boundary_signal(focus)
     websocket_realtime_signal = _has_websocket_realtime_signal(focus)
     ssrf_context_signal = _has_ssrf_context_signal(focus)
@@ -1343,6 +1393,9 @@ def _select_cards(
 ) -> list[str]:
     focus_cards = _cards_from_focus(focus)
     cards: list[str] = list(focus_cards)
+    for pattern, names in DISTILLED_TOKEN_TO_CARDS:
+        if pattern.search(blob):
+            cards.extend(names)
     for pattern, names in TOKEN_TO_CARDS:
         if pattern.search(blob):
             if names == ("browser-client-boundaries",) and _has_proxy_cache_boundary_signal(blob):
@@ -1366,6 +1419,9 @@ def _select_cards(
     websocket_realtime_signal = _has_websocket_realtime_signal(f"{focus}\n{blob}")
     ssrf_context_signal = _has_ssrf_context_signal(f"{focus}\n{blob}")
     browser_boundary_focus = browser_boundary_signal and not ssrf_context_signal
+    for pattern, names in DISTILLED_TOKEN_TO_CARDS:
+        if pattern.search(focus):
+            priority.extend(names)
     if (
         re.search(r"\bapi[-_ ]?testing\b", focus_l)
         or re.search(r"\bapi[-_ ]?test\b", focus_l)
