@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from context_pack import build_context_pack
+
 
 DISTILLED_ROUTER_CARDS = [
     "cli-argument-injection.md",
@@ -32,6 +34,31 @@ FOLDED_DISTILLED_CARDS = [
     "ssrf-url-fetch.md",
     "upload-parser.md",
 ]
+
+DISTILLED_ROUTER_TRIGGER_CASES = {
+    "signature-scope-mismatch.md": "signature scope mismatch signed bytes consumption object xsw duplicate assertion",
+    "oauth-sso-trust.md": "oauth sso trust email trust audience confusion redirect_uri trust",
+    "view-differential.md": "view differential validation view consumption view canonicalization gap",
+    "request-smuggling.md": "h2 crlf pseudo-header injection response queue poisoning non-url crlf",
+    "path-allowlist-normalization.md": "path allowlist normalization prefix check startswith weak string dot-segment",
+    "sanitizer-parser-xss.md": "sanitizer dompurify mxss mutation xss parser xss second decode",
+    "csp-bypass-exfil.md": "csp bypass no-script exfil script-src exfil",
+    "connection-string-injection.md": "connection string jdbc mongodb uri driver option protocol handler",
+    "runtime-primitive-override.md": "runtime primitive primitive override monkey patch same realm override fetch",
+    "import-migration-trust.md": "import migration restore trust backup import tenant import",
+    "stale-derived-authz.md": "stale derived authz revoked permission cache deprovision role cache",
+    "connection-reuse-key.md": "connection reuse pool key tenant key keep-alive boundary",
+    "redirect-header-leak.md": "redirect header authorization header leak sensitive header redirect",
+    "xs-leak-oracle.md": "xs-leak timing oracle image size oracle resource timing oracle",
+    "cli-argument-injection.md": "cli argument injection flag injection option injection terminal escape",
+    "sqli-non-parameterizable.md": "non-parameterizable order by identifier column name injection placeholder name",
+    "type-confusion-controlflow.md": "type confusion string boolean array object duplicate json reserved key",
+    "llm-invisible-unicode.md": "invisible unicode unicode tag hidden unicode prompt",
+    "second-order-sink.md": "second-order delayed sink async sink stored render deferred template",
+    "payment-logic-bypass.md": "payment logic rounding bypass gateway state recipient mismatch refund logic",
+    "postmessage-trust.md": "postmessage trust message event origin targetorigin trust window.name trust",
+    "render-pipeline-ssrf.md": "render pipeline pdf render screenshot service server-side browser wkhtmltopdf html to pdf",
+}
 
 
 def _repo_root() -> Path:
@@ -66,3 +93,10 @@ def test_context_loading_prefers_evidence_and_case_pointers_over_methodology_pro
     assert "方法论 prose 不应默认进入上下文" in rules
     assert "真实案例指针" in rules
     assert "蒸馏知识卡默认作为 router / recall 层" in rules
+
+
+def test_distilled_router_cards_are_discoverable_by_context_pack(tmp_path):
+    for card_name, focus in DISTILLED_ROUTER_TRIGGER_CASES.items():
+        pack = build_context_pack(tmp_path, target="target.test", focus=focus)
+
+        assert f"knowledge/cards/{card_name}" in pack["knowledge_cards"]
