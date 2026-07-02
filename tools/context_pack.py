@@ -1422,6 +1422,8 @@ def _select_cards(
     for pattern, names in DISTILLED_TOKEN_TO_CARDS:
         if pattern.search(focus):
             priority.extend(names)
+        elif pattern.search(blob):
+            priority.extend(names)
     if (
         re.search(r"\bapi[-_ ]?testing\b", focus_l)
         or re.search(r"\bapi[-_ ]?test\b", focus_l)
