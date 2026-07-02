@@ -26,7 +26,7 @@ the current evidence needs the detail:
 |---|---|
 | Parser confusion or bypass shapes for SSRF, open redirect, upload, SQLi/WAF | `references/bypass-patterns.md` |
 | DOM sinks, client-side sources, language grep patterns | `references/sink-and-grep-patterns.md` |
-| Recon commands, ffuf, Semgrep, endpoint discovery, scope retrieval | `references/recon-tool-usage.md` |
+| Recon commands, ffuf, Semgrep, endpoint discovery, target metadata retrieval | `references/recon-tool-usage.md` |
 | SSTI, command injection, XXE, request-smuggling payload families | `references/payload-families.md` |
 
 Use the smallest probe that matches the trigger condition. Preserve baseline and

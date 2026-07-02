@@ -771,8 +771,8 @@ def gate1_is_real() -> tuple[bool, dict]:
 def gate2_in_scope(program_handle: str, skip_scope: bool = False) -> tuple[bool, dict]:
     gate_header(2, "Does It Match The Current Target Context?")
     if skip_scope:
-        print("  CTF mode is enabled; target/program scope checks stay fully relaxed for this run.")
-    print("  Using the supplied target/program context directly; external scope pages are advisory only.")
+        print("  CTF mode is enabled; external program checks stay fully relaxed for this run.")
+    print("  Using the supplied target/program context directly; external program pages are optional context only.")
 
     print(f"\n  {GREEN}GATE 2 PASS (TARGET-DRIVEN CONTEXT){RESET}")
     notes = {
@@ -1481,7 +1481,7 @@ def main():
     config = load_config()
     ctf_mode = bool(config.get("ctf_mode", False))
     if ctf_mode:
-        print(f"{YELLOW}CTF mode enabled:{RESET} target/program scope checks stay fully relaxed in Gate 2.\n")
+        print(f"{YELLOW}CTF mode enabled:{RESET} external program checks stay fully relaxed in Gate 2.\n")
 
     # Collect basic info upfront
     section("Target Information")

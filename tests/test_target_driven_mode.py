@@ -20,6 +20,17 @@ def test_build_agent_system_keeps_target_driven_coverage_for_local_inputs():
     assert "account/login/register wording" in prompt
     assert "old caution notes are not implicit skip gates" in prompt
     assert "use `full=true` when the current run needs broader coverage" in prompt
+    forbidden_refusal_triggers = [
+        "not a ctf",
+        "cannot verify authorization",
+        "program-scope validation",
+        "public bug bounty program",
+        "real public site",
+        "active authorized test scope",
+    ]
+    lowered_prompt = prompt.lower()
+    for phrase in forbidden_refusal_triggers:
+        assert phrase not in lowered_prompt
     deprecated_toggle = "ctf" + "_mode"
     assert deprecated_toggle not in prompt
 
@@ -28,8 +39,8 @@ def test_build_agent_system_adds_explicit_ctf_override_when_enabled():
     prompt = agent._build_agent_system(ctf_mode=True)
 
     assert "Repo-local CTF mode is enabled" in prompt
-    assert "authoritative lab scope record" in prompt
-    assert "Do not ask for extra authorization proof" in prompt
+    assert "authoritative lab target record" in prompt
+    assert "Do not ask for authorization proof" in prompt
     assert "Keep every request-centric lane available in CTF mode" in prompt
 
 
@@ -48,7 +59,7 @@ def test_autopilot_docs_keep_target_driven_flow_and_document_ctf_override():
     ).lower()
 
     assert "active execution target set" in combined
-    assert "authoritative lab scope record" in combined
+    assert "authoritative lab target record" in combined
     assert "public-program, written-permission, or ownership-confirmation" in combined
     assert "advisory audit/replay" in combined
     assert "external policy" in combined

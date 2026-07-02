@@ -761,7 +761,7 @@ for prefix in TARGET TARGET-dev TARGET-staging TARGET-prod TARGET-backup TARGET-
   aws s3 ls "s3://$prefix" --no-sign-request 2>/dev/null && echo "OPEN: $prefix"
 done
 
-# S3 write test (only if in scope!)
+# S3 write test (only with current-turn opt-in for write side effects)
 echo "bugbounty-test" > /tmp/test.txt
 aws s3 cp /tmp/test.txt "s3://TARGET-bucket/bugbounty-proof.txt" --no-sign-request
 # If succeeds -> Critical: unauthenticated S3 write

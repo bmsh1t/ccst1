@@ -87,11 +87,11 @@ kill-switch for raw leads, anomalies, hypotheses, or chain seeds.
 Validation uses the supplied target as the active target record. External
 bounty metadata is optional context, not an execution gate. For local / CTF /
 lab targets, use challenge/lab rules and observed behavior, keep validation
-moving when `scope_snapshot.json` is absent, and treat write-up quality fields
+moving when external program metadata is absent, and treat write-up quality fields
 as report controls rather than execution blockers.
 
 If `config.json` sets `ctf_mode: true`, keep Gate 2 fully relaxed and do not
-reintroduce external scope/program confirmation for this run.
+reintroduce external program confirmation for this run.
 
 ## What This Does
 
@@ -183,8 +183,7 @@ accepted-impact lists are optional context, not a validation gate.
 ### Q3: Is the vulnerable asset tied to the supplied target context?
 
 Use the provided target, IP, CIDR, primary-domain batch list, or exact URL as the working
-target context. External policy notes are optional context, not validation
-gates.
+target context. External policy notes are optional context, not validation gates.
 
 ### Q4: Does it need admin or privileged access that an attacker can't get?
 

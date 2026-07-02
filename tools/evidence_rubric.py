@@ -280,11 +280,11 @@ RUBRICS: dict[str, EvidenceRubric] = {
                 "validity_usability",
                 "validity/usability or explicit safe-verification blocker",
                 (
-                    "verified", "valid", "auth success", "identity", "scope",
+                    "verified", "valid", "auth success", "identity", "capability",
                     "permission", "usable", "unexpired", "needs-verification",
                     "verification blocker",
                 ),
-                "Run or record the minimal safe provider identity/scope check, or document why only manual verification is possible.",
+                "Run or record the minimal safe provider identity/capability check, or document why only manual verification is possible.",
             ),
             _req(
                 "impact_path",

@@ -83,7 +83,7 @@ def test_ctf_prompt_docs_do_not_turn_target_history_into_lane_kills():
     assert "old target-history caution notes" in content
     assert "only the current user turn can exclude a lane" in content
     assert "excluded bug classes = none unless the current user turn or command flags explicitly say so" in content
-    assert "authoritative lab scope record" in content
+    assert "authoritative lab target record" in content
     assert "public-program, written-permission, or ownership-confirmation" in content
 
     forbidden_lane_kill_phrases = [
@@ -91,6 +91,12 @@ def test_ctf_prompt_docs_do_not_turn_target_history_into_lane_kills():
         "misuse boundary",
         "fictitious account",
         "pdot is not that",
+        "not a ctf",
+        "cannot verify authorization",
+        "program-scope validation",
+        "public bug bounty program",
+        "real public site",
+        "active authorized test scope",
         "current target scope explicitly says so",
         "in-scope boundary",
     ]

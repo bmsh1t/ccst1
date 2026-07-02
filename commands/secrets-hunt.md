@@ -74,16 +74,16 @@ Triage classifies:
 Promotion rule:
 
 - `context-needed` → stay as Signal; identify provider/owner/source first.
-- `needs-safe-verification` → run only the smallest safe identity/scope check,
+- `needs-safe-verification` → run only the smallest safe identity/capability check,
   or record why verification is blocked.
 - `candidate-ready` → move to `/validate` with source, ownership, validity,
-  scope, and impact path.
+  usable permissions, and impact path.
 
 Examples of safe verification intent:
 
-- GitHub token → identity/scope/org check, no repo writes.
+- GitHub token → identity/org/capability check, no repo writes.
 - AWS key → identity check when paired credentials exist, no resource changes.
 - Stripe key → account/key metadata only, no charge/refund/customer changes.
-- Slack token → auth identity/scope check, no message/channel/member changes.
+- Slack token → auth identity/capability check, no message/channel/member changes.
 - Private key/password → map purpose and ownership; do not automatically log in
   to infrastructure without a bounded reason.

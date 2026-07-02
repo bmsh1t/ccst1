@@ -66,7 +66,7 @@ files, parameters, and exposure candidates under that supplied target set stay
 associated with the run. Run the normal recon pipeline directly: Chaos API,
  subfinder, assetfinder, puredns, httpx, katana, gau, waymore, bounded
  directory/parameter fuzzing, JS/config exposure discovery, API leak detection, lightweight identity/cloud
- intel, and scanner discovery where available. Treat external program scope,
+ intel, and scanner discovery where available. Treat external program pages,
  policy text, and ownership notes as optional context only.
 
 ## Instructions

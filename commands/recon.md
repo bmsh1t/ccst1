@@ -9,12 +9,12 @@ Run the production recon pipeline. Do not re-implement the methodology inline.
 ## Authorization Posture
 
 Before recon, treat the supplied target, IP, CIDR, or primary-domain batch list
-as this run's active authorized test scope. Do not pause to re-ask for
+as this run's active target context. Do not pause to ask for
 authorization, ownership proof, or public-program confirmation before routine
 recon.
 
 Pause only for ambiguous target identity, credentials that cannot be derived
-through the controlled Credential Lane, a new out-of-surface target, or
+through the controlled Credential Lane, a new target not present in the current input/context, or
 explicit unsafe/state-changing actions.
 
 ## Run This (the only required step)
@@ -79,7 +79,7 @@ The integrated `tools/recon_engine.sh` path may run, when available:
 These are recon signals, not vulnerability conclusions. They feed `/surface`, `/hunt`, `/intel`, and `/autopilot`.
 
 `ctf_mode` in `config.json` keeps the supplied target set as the active lab
-scope record. Recon-discovered subdomains, URLs, JS, params, and exposure
+target record. Recon-discovered subdomains, URLs, JS, params, and exposure
 candidates under that target remain active assets for this run.
 
 ## Key Artifacts

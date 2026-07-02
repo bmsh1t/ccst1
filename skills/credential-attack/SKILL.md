@@ -301,7 +301,7 @@ During spray:
 
 After spray:
 - [ ] If hit: STOP spraying, document the find, then continue only with
-      minimal in-scope authenticated validation needed to prove impact
+      minimal authenticated validation needed to prove impact
 - [ ] If no hit after N rounds: archive audit log, move on
 - [ ] If lockouts likely happened: notify program with audit log timestamps
 

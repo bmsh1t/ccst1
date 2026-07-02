@@ -351,12 +351,10 @@ CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H (Critical, 10.0)
 
 ---
 
-## 11. SCOPE NOTES
+## 11. TARGET NOTES
 
-- Most bug bounty programs scope **public** repos only — confirm before touching private org repos.
-- Self-hosted runner attacks require a successful workflow run, which means opening a real PR — confirm the program allows this.
+- Self-hosted runner attacks require a successful workflow run, which means opening a real PR; do not trigger that side effect unless the current user turn explicitly opts in.
 - Never trigger a workflow that could affect production infrastructure without explicit written permission.
-- Always check `SECURITY.md` or the program policy for CI/CD-specific scope language.
 
 ---
 

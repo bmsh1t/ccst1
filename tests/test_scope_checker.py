@@ -175,7 +175,7 @@ class TestFilterFile:
         assert in_count == 2
         assert out_count == 1
 
-        # File should now contain only in-scope URLs
+        # File should now contain only target-matched URLs
         lines = url_file.read_text().strip().split("\n")
         assert len(lines) == 2
 
@@ -191,7 +191,7 @@ class TestFilterFile:
 
         # Original unchanged
         assert len(input_file.read_text().strip().split("\n")) == 2
-        # Output has only in-scope
+        # Output has only target-matched entries
         assert len(output_file.read_text().strip().split("\n")) == 1
 
     def test_filter_empty_file(self, tmp_path, scope_domains, scope_excluded):

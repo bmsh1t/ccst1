@@ -9,7 +9,7 @@ evidence needs them. They keep detailed tables out of broad coordinator skills.
 |---|---|
 | `references/bypass-patterns.md` | SSRF URL/IP parser bypasses, open redirect parser tricks, upload validation bypasses, magic bytes, SQLi/WAF normalization shapes |
 | `references/sink-and-grep-patterns.md` | DOM sources/sinks and language-specific grep patterns for source or bundle review |
-| `references/recon-tool-usage.md` | Recon pipeline, ffuf, Semgrep, cloud/storage discovery, API endpoint discovery, scope retrieval command shapes |
+| `references/recon-tool-usage.md` | Recon pipeline, ffuf, Semgrep, cloud/storage discovery, API endpoint discovery, target metadata retrieval command shapes |
 | `references/payload-families.md` | SSTI, command injection, XXE, and request-smuggling probe families with evidence gates and stop conditions |
 
 ---
@@ -68,7 +68,7 @@ use `skills/credential-attack/` or controlled `/spray` when the operator or
 | `devanshbatham/Awesome-Bugbounty-Writeups` | Categorised writeups by vuln class |
 | `ngalongc/bug-bounty-reference` | Same idea, older but exhaustive |
 | `B3nac/Android-Reports-and-Resources` | Big list of Android H1 disclosures |
-| `arkadiyt/bounty-targets-data` | Hourly dump of every public scope (H1/Bugcrowd/Intigriti/YWH/Immunefi) |
+| `arkadiyt/bounty-targets-data` | Hourly dump of public target metadata (H1/Bugcrowd/Intigriti/YWH/Immunefi) |
 
 ## Tool catalogues
 

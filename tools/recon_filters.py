@@ -83,7 +83,7 @@ def filter_external_urls(urls, target_domain):
         target_domain: Target domain (e.g., 'example.com')
 
     Returns:
-        List of in-scope URLs
+        List of target-matched URLs
     """
     filtered = []
     for url in urls:

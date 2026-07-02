@@ -339,7 +339,7 @@ def _next_proposals(
         proposals.append(
             "Secret verification lane: repo/source artifacts contain {count} secret "
             "finding(s). Triage provider/type/source ownership, then run only the "
-            "minimal safe identity/scope check or record a verification blocker; "
+            "minimal safe identity/capability check or record a verification blocker; "
             "promote to Candidate only with validity/usability and impact path.".format(
                 count=secret_findings,
             )

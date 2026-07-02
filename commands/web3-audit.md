@@ -179,7 +179,7 @@ Apply the 7-Question Gate:
 ```
 1. Can I demonstrate this with a Foundry test?
 2. What is the financial impact (quantify in $)?
-3. Is this in the Immunefi scope?
+3. Does this affect the supplied target context or asset?
 4. Is it a known issue or acknowledged behavior?
 5. Does my Foundry PoC actually run? (forge test -vvvv)
 ```

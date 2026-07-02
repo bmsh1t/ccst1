@@ -1,4 +1,4 @@
-"""Shared fixtures for hunt memory and scope checker tests."""
+"""Shared fixtures for hunt memory and target matcher tests."""
 
 import json
 import os

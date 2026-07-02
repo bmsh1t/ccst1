@@ -382,12 +382,12 @@ def preflight_request(
 
     if checker is None:
         scope_check = "skip"
-        advisories.append("scope telemetry unavailable")
+        advisories.append("target-match telemetry unavailable")
     elif checker.is_in_scope(normalized_url):
         scope_check = "pass"
     else:
         scope_check = "fail"
-        advisories.append("scope advisory: target is outside the configured scope snapshot")
+        advisories.append("target-match advisory: URL is outside the configured target-note snapshot")
 
     if vuln_class and checker is not None and not checker.is_vuln_class_allowed(vuln_class):
         advisories.append(f"excluded vuln class advisory: {vuln_class}")
@@ -617,7 +617,7 @@ def format_guard_output(payload: dict, command: str) -> str:
     return (
         f"RECORDED {payload['method']} {payload['url']}\n"
         f"Action: {payload['action']}\n"
-        f"Scope: {payload['scope_check']}"
+        f"Target-match telemetry: {payload['scope_check']}"
     )
 
 
@@ -676,7 +676,7 @@ def main() -> None:
         "--scope-check",
         default="",
         choices=["", "pass", "fail", "skip"],
-        help="Optional explicit scope check result",
+        help="Optional explicit target-match telemetry result",
     )
     record_parser.add_argument("--breaker-threshold", type=int, default=None, help="Override breaker failure threshold")
     record_parser.add_argument("--breaker-cooldown", type=float, default=None, help="Override breaker cooldown seconds")

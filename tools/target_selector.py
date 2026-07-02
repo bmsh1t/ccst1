@@ -200,7 +200,7 @@ def score_program(prog):
 
 
 def extract_scope_domains(prog):
-    """Extract in-scope domains for scanning."""
+    """Extract target domains for scanning."""
     domains = []
     for asset in prog.get("assets", []):
         if isinstance(asset, dict):

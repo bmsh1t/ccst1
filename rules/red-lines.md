@@ -99,7 +99,7 @@ Secret / API key 不是红线：
 - 发现疑似 secret、记录来源、判断归属、做最小可用性证明，不是红线。
 - 泄露密钥本身也不自动等于高价值漏洞；是否值得报告由漏洞验证和实际影响决定。
 - 对 secret 的处理属于漏洞 triage / validation，不属于红线风险评估。
-- 默认只做漏洞证明所需的最小验证：provider、ownership、usability、scope。
+- 默认只做漏洞证明所需的最小验证：provider、ownership、usability、permissions。
 - 不要为了“证明泄露风险”而停；如果能证明真实漏洞影响，就按 Candidate /
   validation 路线推进。
 

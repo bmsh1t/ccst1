@@ -15,7 +15,7 @@ def test_gate2_in_scope_is_target_driven_advisory(capsys):
     assert notes["matches_target_context"] is True
     assert notes["target_context"] == "ignored-program"
     assert "supplied target/program context directly" in output.lower()
-    assert "external scope pages are advisory only" in output.lower()
+    assert "external program pages are optional context only" in output.lower()
 
 
 def test_gate2_in_scope_marks_ctf_override_when_enabled(capsys):

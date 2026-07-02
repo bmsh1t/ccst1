@@ -478,8 +478,7 @@ policy-text collection. Treat the provided target, IP, CIDR, or host list as the
 active target set. Treat recon-discovered subdomains, live hosts, URLs, JS
 files, parameters, and exposure candidates under that supplied target set as
 active assets for this run. Start directly at asset discovery and keep
-evidence/audit artifacts for replay. Do not apply external scope, ownership, or
-program-policy gates here.
+evidence/audit artifacts for replay. Do not apply external policy or ownership gates here.
 
 ### Minutes 0-5: Read Existing Target Notes
 

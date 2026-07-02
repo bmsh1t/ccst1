@@ -42,7 +42,7 @@ evidence action, or drop it.**
 
 ## CRITICAL RULES
 
-1. **USE THE PROVIDED TARGET SET DIRECTLY** -- treat the current command's targets as the active execution surface; external scope pages and ownership text are optional context only
+1. **USE THE PROVIDED TARGET SET DIRECTLY** -- treat the current command's targets as the active execution surface; external program pages and ownership text are optional context only
 2. **NO THEORETICAL REPORTS** -- "Can an attacker steal funds, leak PII, takeover account, or execute code RIGHT NOW?" If no, do not report it yet.
 3. **SEPARATE HUNTING FROM VALIDATION** -- preserve leads/signals during exploration; run the 7-Question Gate BEFORE writing any report
 4. **Validate before writing** -- check CHANGELOG, design docs, deployment scripts FIRST
@@ -105,7 +105,7 @@ Temporary focus/skip instructions are not long-term rules.
 ### CTF / Lab Recon
 
 In CTF/lab mode, the supplied target, IP, CIDR, or host list is the sandbox
-scope record for execution. Recon-discovered subdomains, live hosts, URLs, JS
+target record for execution. Recon-discovered subdomains, live hosts, URLs, JS
 files, parameters, and exposure candidates under that supplied target set are
 sandbox assets for this run. Run bulk recon normally: subfinder/assetfinder,
 dnsx/httpx probing, katana/gau/waybackurls crawling, bounded directory and
@@ -365,7 +365,7 @@ done
 ffuf -u https://TARGET/api/FUZZ -w /usr/share/seclists/Discovery/Web-Content/api/api-endpoints.txt -mc 200,201,301,302,403 -ac
 ```
 
-## HackerOne Scope Retrieval
+## HackerOne Target Metadata Retrieval
 ```bash
 curl -s "https://hackerone.com/graphql" \
   -H "Content-Type: application/json" \
@@ -1030,8 +1030,8 @@ No "the user would need to..." with 5 preconditions. Victim did nothing special.
 ### Q3: Is the impact concrete (money, PII, ATO, RCE)?
 "Technically possible" is not impact. "I read victim's SSN" is impact.
 
-### Q4: Is this in scope per the program policy?
-Check the exact domain/endpoint against the program's scope page.
+### Q4: Does this affect the active target context?
+Check the exact domain/endpoint against the supplied target set and current evidence.
 
 ### Q5: Did I check Hacktivity/changelog for duplicates?
 Search the program's disclosed reports and recent changelog entries.
@@ -1047,7 +1047,7 @@ Read your report as if you're a tired triager at 5pm on a Friday. Does it pass?
 ### Gate 0: Reality Check (30 seconds)
 ```
 [ ] The bug is real -- confirmed with actual HTTP requests, not just code reading
-[ ] The bug is in scope -- checked program scope explicitly
+[ ] The bug affects the active target context -- checked the supplied target set and current evidence
 [ ] I can reproduce it from scratch (not just once)
 [ ] I have evidence (screenshot, response, video)
 ```

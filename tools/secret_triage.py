@@ -25,7 +25,7 @@ TYPE_HINTS: list[tuple[str, tuple[str, ...], str, str]] = [
         "github-token",
         ("github-token", "ghp_", "github_pat_", "GITHUB_TOKEN"),
         "GitHub",
-        "Run a minimal token identity/scope check only if safe, then map repo/org ownership and accessible scope without changing repo state.",
+        "Run a minimal token identity/capability check only if safe, then map repo/org ownership and accessible permissions without changing repo state.",
     ),
     (
         "stripe-key",
@@ -49,7 +49,7 @@ TYPE_HINTS: list[tuple[str, tuple[str, ...], str, str]] = [
         "bearer-token",
         ("bearer-token", "Bearer "),
         "Bearer token",
-        "Identify the API/provider from surrounding URL/client code, then attempt only a minimal identity/scope endpoint if safe.",
+        "Identify the API/provider from surrounding URL/client code, then attempt only a minimal identity/capability endpoint if safe.",
     ),
     (
         "oauth-client-secret",
@@ -182,7 +182,7 @@ def triage_secret_finding(finding: Any) -> dict[str, Any]:
     elif not has_validity:
         next_action = classified["validation_hint"]
     else:
-        next_action = "Document provider identity, scope, target ownership, and impact path; then move to /validate if evidence is reproducible."
+        next_action = "Document provider identity, usable permissions, target ownership, and impact path; then move to /validate if evidence is reproducible."
 
     return {
         "type": classified["type"],

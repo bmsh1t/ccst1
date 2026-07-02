@@ -1,6 +1,6 @@
 # Recon and Tool Usage Reference
 
-Load this file when the task needs concrete command shapes for recon, endpoint discovery, static audit, or ffuf. Keep execution bounded by scope, rate limits, and current-turn authorization. Save raw outputs when they become evidence.
+Load this file when the task needs concrete command shapes for recon, endpoint discovery, static audit, or ffuf. Keep execution bounded by the supplied target set, rate limits, red-lines, and current-turn opt-in for side effects. Save raw outputs when they become evidence.
 
 ## Tool Roles
 
@@ -29,7 +29,7 @@ gau TARGET | anew /tmp/urls.txt
 nuclei -l /tmp/live.txt -severity critical,high,medium -silent -o /tmp/nuclei.txt
 ```
 
-Stop condition: no in-scope live surfaces, repeated 401/403/404 with no route delta, or any next step requiring real-user enumeration without authorization.
+Stop condition: no live surfaces under the supplied target set, repeated 401/403/404 with no route delta, or any next step requiring real-user enumeration without current-turn opt-in.
 
 ## FFUF Usage
 
@@ -86,7 +86,7 @@ Use as read-only leads. Do not claim or modify provider resources unless the cur
 | Storage endpoint | Bucket/container name is target-derived and readable or explicitly missing |
 | SaaS custom domain | Provider dashboard/error confirms unbound custom hostname |
 
-Stop condition: provider ambiguity, out-of-scope host, or proof requires account creation/resource claim.
+Stop condition: provider ambiguity, unrelated host, or proof requires account creation/resource claim.
 
 ## API Endpoint Discovery
 
@@ -96,9 +96,9 @@ ffuf -u https://target.example/api/FUZZ -w /usr/share/seclists/Discovery/Web-Con
 
 When an endpoint returns missing/required parameter, route to `knowledge/cards/missing-parameter-discovery.md` instead of treating the error itself as a finding.
 
-## Scope Retrieval
+## Target Metadata Retrieval
 
-Use official platform APIs or scope exports only as scope context. The current command target set remains the active execution surface unless the user changes it.
+Use official platform APIs or target exports only as target metadata context. The current command target set remains the active execution surface unless the user changes it.
 
 ```bash
 curl -s "https://hackerone.com/graphql" \

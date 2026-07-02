@@ -16,7 +16,7 @@ For smart-contract hunting and review workflows on Immunefi, Code4rena, Sherlock
 | Custom math (AMM/vault/lending) | +1 | Read scope contracts |
 | Recent code changes (git log) | +1 | `git log --oneline -20` |
 | Prior audits available to read | +1 | Program page / GitHub |
-| In-scope includes SC + web/app | +1 | Program scope section |
+| Supplied target context includes SC + web/app | +1 | Target notes / program metadata |
 | Few prior reports | +1 | Check program stats |
 | Protocol type you know well | +1 | Your specialization |
 | Source code is public/readable | +1 | GitHub / Etherscan |

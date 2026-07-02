@@ -102,7 +102,7 @@ def log_authorization_posture(target: str) -> None:
         "info",
         (
             "Authorization posture: treating the supplied target set as this run's "
-            f"active authorized test scope ({target}); no repeated authorization prompts. "
+            f"active target context ({target}); no authorization prompts. "
             "Pause only for ambiguous targets, credentials that cannot be derived through the controlled Credential Lane, "
             "report submission, or explicit unsafe/state-changing actions."
         ),
@@ -2065,7 +2065,7 @@ def hunt_target(
     }
 
     if ctf_mode:
-        log("warn", "CTF mode enabled — treating the provided target as lab/practice scope with full coverage.")
+        log("warn", "CTF mode enabled — treating the provided target as lab/practice context with full coverage.")
     log_authorization_posture(canonical_target)
 
     if target_info["kind"] == "list" and scan_only:
@@ -2270,7 +2270,7 @@ Examples:
         if args.deep:
             log("info", "Autopilot deep mode: enabled")
     if ctf_mode:
-        log("warn", "CTF mode enabled — scope/program checks stay fully relaxed for this workspace.")
+        log("warn", "CTF mode enabled — external program checks stay advisory for this workspace.")
 
     # Status check
     if args.status:

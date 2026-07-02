@@ -175,7 +175,7 @@ login routes, `isAdmin=true`-style selectors, and source/channel/provider fields
 First action: owned/test account baseline across visible flow and hidden selector.
 Do not silently fall into password brute force. If credential testing is selected,
 route to `skills/credential-attack/` or a controlled `/spray` run with lockout,
-rate, and scope limits.
+rate limits and stop conditions.
 
 ## Chain Shapes
 
@@ -188,7 +188,7 @@ rate, and scope limits.
 | XSS | Session action, CSRF gap, token read, admin path | Account/data action impact |
 | Request smuggling | Cache poisoning, request capture, auth bypass | Victim request or response boundary proof |
 | Info disclosure | Source/config/route/secret | Follow-on auth, storage, or code path impact |
-| Race primitive | Quota/payment/OTP/state transition | Double spend/bypass in controlled test scope |
+| Race primitive | Quota/payment/OTP/state transition | Double spend/bypass in controlled target/test resource |
 
 ## Lane Cards
 
@@ -278,7 +278,7 @@ chain path, and reference routing.
 ### 11. LLM / AI Features
 - Trigger: chatbot, prompt injection, indirect prompt, RAG, agent tool, markdown exfil, tool call.
 - First safe action: map tool permissions, data boundary, and user/session separation.
-- Evidence gate: prompt path causes unauthorized tool/data/action in controlled scope.
+- Evidence gate: prompt path causes unauthorized tool/data/action in controlled target/test resource.
 - Stop condition: model says forbidden or outputs text only without data/action boundary.
 - Chain path: indirect prompt -> data exfil/tool misuse/account action.
 - Read if needed: `knowledge/cards/web-llm-tool-chains.md`.
@@ -311,7 +311,7 @@ chain path, and reference routing.
 - Trigger: dangling CNAME, storage bucket, Firebase/open rules, exposed admin/metrics/config.
 - First safe action: read-only fingerprint and provider-specific proof without takeover.
 - Evidence gate: provider confirms claimable resource or readable storage/config boundary.
-- Stop condition: ambiguous fingerprint, no in-scope ownership, takeover/write needed.
+- Stop condition: ambiguous fingerprint, no target ownership/claimability evidence, takeover/write needed.
 - Chain path: takeover/config -> app data/source/secret/auth boundary.
 - Read if needed: `recon-tool-usage.md`.
 
@@ -319,7 +319,7 @@ chain path, and reference routing.
 - Trigger: Content-Length, Transfer-Encoding, H2 downgrade, host header, proxy trust, cache poisoning/deception.
 - First safe action: scripted baseline for frontend/backend framing or cache key workflow.
 - Evidence gate: raw desync/request-capture/cache-key/private response evidence.
-- Stop condition: timing-only, prod-wide poison, or victim impact without controlled scope.
+- Stop condition: timing-only, prod-wide poison, or victim impact without controlled target/test resource.
 - Chain path: smuggling -> request capture/cache poison/auth bypass; deception -> private response leak.
 - Read if needed: `payload-families.md` for smuggling families; `bypass-patterns.md` for proxy/cache normalization.
 
@@ -350,7 +350,7 @@ chain path, and reference routing.
 ### 20. Deserialization / Signed Objects
 - Trigger: serialized cookie, ViewState, remember-me, signed object, gadget, pickle, PHP serialize.
 - First safe action: decode/encoding map and single-byte tamper to test integrity signature boundary.
-- Evidence gate: state tamper accepted or gadget chain reachable in controlled scope.
+- Evidence gate: state tamper accepted or gadget chain reachable in controlled target/test resource.
 - Stop condition: signature/encryption rejects tamper, format only, no reachable sink.
 - Chain path: state tamper -> privilege; gadget -> controlled RCE.
 - Read if needed: `payload-families.md` and `sink-and-grep-patterns.md`.

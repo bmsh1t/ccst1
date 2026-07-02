@@ -26,7 +26,7 @@ Result: the broad coordinator no longer loads 1663 lines by default. It now load
 | `skills/security-arsenal/SKILL.md` | Arsenal entrypoint: concrete probe shapes, parser bypass categories, sink/grep names, wordlists, reject/chain tables, evidence gates and stop conditions. |
 | `skills/security-arsenal/references/bypass-patterns.md` | SSRF URL/IP parser bypasses, open redirect parser tricks, upload validation bypasses, magic bytes, SQLi/WAF normalization shapes. |
 | `skills/security-arsenal/references/sink-and-grep-patterns.md` | DOM sources/sinks and language-specific grep patterns for source or bundle review. |
-| `skills/security-arsenal/references/recon-tool-usage.md` | Recon pipeline, ffuf, Semgrep, cloud/storage discovery, API endpoint discovery, scope retrieval command shapes. |
+| `skills/security-arsenal/references/recon-tool-usage.md` | Recon pipeline, ffuf, Semgrep, cloud/storage discovery, API endpoint discovery, target metadata retrieval command shapes. |
 | `skills/security-arsenal/references/payload-families.md` | SSTI, command injection, XXE, and request-smuggling probe families with evidence gates and stop conditions. |
 | Knowledge cards / context pack | Route gaps, decision trees, seeds, de-noising tests, evidence gates that should generalize beyond one lab or source. |
 

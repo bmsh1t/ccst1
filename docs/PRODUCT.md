@@ -594,7 +594,7 @@ Token / Meme coin 风险扫描：
 | `tools/source_intel.py` | 从源码、JS 和 recon 产物提取路由、GraphQL 和业务逻辑假设 |
 | `tools/js_reader.py` | 为 `js-reader` agent 准备 cached JS 物料 |
 | `tools/request_guard.py` | 请求前置检查、限速、断路器和审计 |
-| `tools/scope_checker.py` | 确定性 scope 检查 |
+| `tools/scope_checker.py` | 确定性目标集匹配 |
 | `tools/surface.py` | 攻击面排序，支持 scanner / intel / js_intel / browser / memory 确定性加权和可解释评分明细 |
 | `tools/resume.py` | 历史目标续接摘要 |
 | `tools/remember.py` | 发现与模式记忆写入 |
@@ -768,7 +768,7 @@ hunt-memory/
 
 - 已披露报告搜索
 - 项目公开统计
-- 项目公开 policy 和 scope 信息
+- 项目公开 policy 和目标元信息
 
 ---
 

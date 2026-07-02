@@ -19,7 +19,7 @@ def test_secret_triage_classifies_github_token_and_missing_context():
     assert triage["provider"] == "GitHub"
     assert triage["candidate_status"] == "needs-safe-verification"
     assert "target ownership/context" in triage["missing"]
-    assert "minimal token identity/scope check" in triage["next_action"]
+    assert "minimal token identity/capability check" in triage["next_action"]
 
 
 def test_secret_triage_promotes_verified_target_owned_key():

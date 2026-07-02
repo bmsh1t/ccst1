@@ -22,7 +22,7 @@ def _save_profile(tmp_hunt_dir, target="target.com", scope_snapshot=None):
 
 class TestRequestGuardPreflight:
 
-    def test_marks_out_of_scope_as_advisory(self, tmp_hunt_dir):
+    def test_marks_non_matching_target_as_advisory(self, tmp_hunt_dir):
         _save_profile(tmp_hunt_dir)
 
         result = preflight_request(
@@ -38,7 +38,7 @@ class TestRequestGuardPreflight:
         assert result["allowed"] is True
         assert result["action"] == "allow_advisory"
         assert result["scope_check"] == "fail"
-        assert "scope advisory" in result["reason"].lower()
+        assert "target-match advisory" in result["reason"].lower()
 
         entries = AuditLog(tmp_hunt_dir / "audit.jsonl").read_all()
         assert entries == []

@@ -1610,7 +1610,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
         # Options instead of a single prescriptive next step.
         lines.append("Options:")
         lines.append(f"- run /recon {target} (if target may have undiscovered surface)")
-        lines.append("- switch to source-intel if a public repo URL is in scope")
+        lines.append("- switch to source-intel if a public repo URL is relevant to the target")
         lines.append(f"- abandon {target} (if confirmed unproductive)")
         return "\n".join(lines)
 
@@ -1882,7 +1882,7 @@ def _surface_options(ranked: dict, target: str) -> list[str]:
         options.append(f"rerun /recon {target} to refresh stale artifacts ({', '.join(missing[:2])})")
     # Always offer at least one orthogonal exit so the agent isn't locked in.
     if len(options) < 2:
-        options.append(f"switch to source-intel if {target} has a public repo URL in scope")
+        options.append(f"switch to source-intel if {target} has a relevant public repo URL")
     return options
 
 

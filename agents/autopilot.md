@@ -97,9 +97,9 @@ AI override is part of the operating model: skip a default lane, combine knowled
 
 Use the provided target set as the active execution target set. `ctf_mode: true` in `config.json` means full local/lab coverage. External program/scope text is optional context, not an execution gate.
 
-Pause only for ambiguous target identity, unavailable credentials that cannot be derived through the controlled Credential Lane, report submission, a new out-of-surface target, or explicit unsafe/state-changing actions.
+Pause only for ambiguous target identity, unavailable credentials that cannot be derived through the controlled Credential Lane, report submission, a new target not present in the current input/context, or explicit unsafe/state-changing actions.
 
-CTF/lab mode treats supplied target set plus repo config as the authoritative lab scope record.
+CTF/lab mode treats supplied target set plus repo config as the authoritative lab target record.
 
 ## Tool Routing
 
