@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import json
+
 from context_pack import build_context_pack
 
 
@@ -100,3 +102,22 @@ def test_distilled_router_cards_are_discoverable_by_context_pack(tmp_path):
         pack = build_context_pack(tmp_path, target="target.test", focus=focus)
 
         assert f"knowledge/cards/{card_name}" in pack["knowledge_cards"]
+
+
+def test_distilled_router_cards_are_discoverable_from_real_evidence_indexes(tmp_path):
+    target_key = "target.test"
+    source_dir = tmp_path / "findings" / target_key / "source_intel"
+    source_dir.mkdir(parents=True)
+    (source_dir / "hypotheses.jsonl").write_text(
+        json.dumps({
+            "type": "authz",
+            "candidate": "stale derived authz after deprovision",
+            "reason": "source evidence shows a revoked permission cache can keep role cache entries usable",
+        }, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    pack = build_context_pack(tmp_path, target="target.test")
+
+    assert "knowledge/cards/stale-derived-authz.md" in pack["knowledge_cards"]
+    assert "findings/target.test/source_intel/hypotheses.jsonl" in pack["must_read"]
