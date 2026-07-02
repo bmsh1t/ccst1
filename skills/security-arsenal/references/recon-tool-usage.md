@@ -77,7 +77,7 @@ Do not import keys into cloud panels or take resource control. Use minimal read-
 
 ## Subdomain Takeover Fingerprints
 
-Use as read-only leads. Do not claim or modify provider resources unless the current target scope explicitly authorizes takeover proof.
+Use as read-only leads. Do not claim or modify provider resources unless the current user turn explicitly opts into takeover proof for the current target set.
 
 | Signal | Evidence gate |
 |---|---|

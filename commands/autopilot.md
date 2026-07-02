@@ -239,7 +239,7 @@ A failed tool is not a failed hypothesis: classify the failure, retry once when 
 
 ## Agent Handoff Contract
 
-When spawning a specialist Task/agent, pass a compact packet: target identifier, in-scope boundary, known facts, single objective, do-not-repeat list, expected output. If any field is missing, complete local context first.
+When spawning a specialist Task/agent, pass a compact packet: target identifier, target boundary, known facts, single objective, do-not-repeat list, expected output. If any field is missing, complete local context first.
 
 ## Tool Index
 

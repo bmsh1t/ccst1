@@ -175,7 +175,7 @@ Canonical source: `rules/red-lines.md`.
 
 ## Specialist Handoff Contract
 
-When delegating, include target identifier, in-scope boundary, top confirmed facts, single objective, duplicate work to avoid, expected output. Do not delegate vague "continue" tasks.
+When delegating, include target identifier, target boundary, top confirmed facts, single objective, duplicate work to avoid, expected output. Do not delegate vague "continue" tasks.
 
 ## Session Summary
 

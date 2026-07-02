@@ -164,7 +164,7 @@ New target default:
 ```text
 scanner default skip = xss
 scanner_full = explicit opt-in for XSS
-excluded bug classes = none unless current target scope explicitly says so
+excluded bug classes = none unless the current user turn or command flags explicitly say so
 ```
 
 Do not add skips for the current target because of an old target, old CLI
