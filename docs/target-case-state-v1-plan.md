@@ -702,6 +702,36 @@ validation_runner.py idor-actor-pair --from-case-state resolves owner/peer
 multi-header sessions and preserves the complete actor context for replay
 ```
 
+### Phase G：Private Marker Advisory v1
+
+状态：已实施。
+
+范围：
+
+```text
+tools/target_case_state.py
+tests/test_target_case_state.py
+tests/test_checkpoint.py
+commands/validate.md
+```
+
+成功标准：
+
+```text
+缺 private marker 不再阻止 ready owner/peer/object replay；
+它作为 optional_evidence_gaps 暴露给 AI，validation_runner 仍只会把
+marker-backed 或 exact non-trivial owner-body-match 结果升级为 finding
+```
+
+已验证：
+
+```text
+owner session + peer session + object endpoint ready, private_marker missing
+-> next_action=run_validation_runner
+-> optional_evidence_gaps=["owner private marker"]
+-> required_evidence mentions owner private marker or exact owner-body match
+```
+
 ## 12. 测试规划
 
 新增：
@@ -720,7 +750,7 @@ tests/test_target_case_state.py
 6. add backlog
 7. next 返回最高优先级 backlog
 8. 缺 session 时 next 给 blocked reason
-9. 缺 object private marker 时返回 `candidate_ready=false`
+9. 缺 object private marker 时仍可 replay，但返回 `optional_evidence_gaps`
 10. complete-backlog 写回状态
 11. next 解释 `why_now`、`downgrade_rule`、`chain_extensions_if_blocked`
 12. 已测过的 actor/object/lane 组合降权

@@ -118,7 +118,11 @@ Use the result as a priority hint, not a hard gate:
   `validation_runner.py ... --from-case-state` replay and use the raw evidence
   as `/validate` input.
 - `enrich_case_state` / `case-state-enrichment` -> collect the missing actor,
-  session, object endpoint, or private marker before claiming candidate-ready.
+  session, or object endpoint; add a private marker when available.
+- A missing private marker is an evidence-quality gap, not always an execution
+  blocker: if owner/peer sessions and object endpoint are ready, run the
+  case-state replay and let `validation_runner.py` promote only marker-backed
+  or exact non-trivial owner-body-match results.
 - Empty/stale/irrelevant case state -> continue manual/browser/source/JS
   validation and optionally create a new backlog if it improves repeatability.
 - Stronger new evidence -> override the old backlog explicitly and write the

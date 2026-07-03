@@ -417,6 +417,7 @@ def _readiness(
     item: dict[str, Any],
 ) -> tuple[int, list[str], dict[str, Any]]:
     missing: list[str] = []
+    optional_gaps: list[str] = []
     details: dict[str, Any] = {}
     obj = state.get("objects", {}).get(item.get("object_ref") or "", {})
     endpoint = item.get("endpoint") or obj.get("endpoint")
@@ -436,7 +437,7 @@ def _readiness(
         elif not peer_session:
             missing.append("peer session")
         if not obj.get("private_marker"):
-            missing.append("owner private marker")
+            optional_gaps.append("owner private marker")
         details.update({
             "endpoint": endpoint,
             "object": obj,
@@ -446,8 +447,9 @@ def _readiness(
             "peer_session_id": peer_session_id,
             "owner_session": owner_session,
             "peer_session": peer_session,
+            "optional_evidence_gaps": optional_gaps,
         })
-        return max(0, 60 - 15 * len(missing)), missing, details
+        return max(0, 60 - 15 * len(missing) - 5 * len(optional_gaps)), missing, details
     if not endpoint:
         missing.append("endpoint")
     details["endpoint"] = endpoint
@@ -493,6 +495,8 @@ def _chain_context(state: dict[str, Any], item: dict[str, Any], details: dict[st
         context.append("object endpoint is known")
     if obj.get("private_marker"):
         context.append("object has private marker")
+    elif item.get("runner") == "idor-actor-pair":
+        context.append("private marker missing; runner will fall back to exact owner-body match and may downgrade to candidate")
     if details.get("owner_session"):
         context.append("owner session is available")
     if details.get("peer_session"):
@@ -589,8 +593,9 @@ def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
         "required_evidence": item.get("required_evidence") or [
             "owner session",
             "peer session",
-            "owner private marker",
+            "owner private marker or exact owner-body match",
         ],
+        "optional_evidence_gaps": details.get("optional_evidence_gaps", []),
         "missing_evidence": missing,
         "command": command,
         "redacted_command": redacted_command,

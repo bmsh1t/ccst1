@@ -207,7 +207,7 @@ def test_next_blocks_when_peer_session_missing(tmp_path):
     assert next_item["command"] == ""
 
 
-def test_next_marks_missing_private_marker_not_ready(tmp_path):
+def test_next_allows_replay_without_private_marker_as_optional_gap(tmp_path):
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
     target_case_state.add_actor(tmp_path, TARGET, actor="user_b", role="user")
     target_case_state.add_session(tmp_path, TARGET, session="sess_a", actor="user_a", kind="bearer", header_value="Bearer a")
@@ -232,8 +232,12 @@ def test_next_marks_missing_private_marker_not_ready(tmp_path):
 
     next_item = target_case_state.next_action(tmp_path, TARGET)
 
-    assert next_item["ready"] is False
-    assert "owner private marker" in next_item["missing_evidence"]
+    assert next_item["next_action"] == "run_validation_runner"
+    assert next_item["ready"] is True
+    assert next_item["missing_evidence"] == []
+    assert next_item["optional_evidence_gaps"] == ["owner private marker"]
+    assert any("exact owner-body match" in item for item in next_item["required_evidence"])
+    assert "validation_runner.py" in next_item["command"]
 
 
 def test_complete_backlog_writes_result_and_evidence_ref(tmp_path):

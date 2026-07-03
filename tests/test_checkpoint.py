@@ -321,7 +321,6 @@ def test_checkpoint_surfaces_case_state_enrichment_when_evidence_missing(tmp_pat
     assert checkpoint["recommended_executable_action"]["metadata"]["backlog_id"] == "val_001"
     assert checkpoint["recommended_executable_action"]["metadata"]["missing_evidence"] == [
         "peer session",
-        "owner private marker",
     ]
     assert "replay_draft" not in checkpoint["recommended_executable_action"]["metadata"]
     assert checkpoint["recommended_executable_action"]["command_hint"] == "enrich actor/session/object/private-marker evidence in case_state"
