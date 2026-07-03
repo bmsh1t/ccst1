@@ -33,6 +33,7 @@ python3 tools/context_pack.py --target <target>
 python3 tools/context_pack.py --target target.com
 python3 tools/autopilot_state.py --target target.com
 python3 tools/target_case_state.py summary --target target.com --json
+python3 tools/case_state_seed.py --target target.com --json
 python3 tools/checkpoint.py --target target.com --json
 python3 tools/action_queue.py ingest-checkpoint --target target.com
 python3 tools/action_queue.py next --target target.com
@@ -50,6 +51,7 @@ python3 tools/action_queue.py next --target target.com
 When checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer that actor/session/object action before generic coverage gaps because it preserves continuity across context windows.
 This is a priority rule, not a restriction: empty, stale, or incomplete case state must not block discovery, recon, browser/source enrichment, ranked-surface hunting, or AI-generated chain pivots.
 Use `tools/target_case_state.py next --target <target>` to inspect the backlog; run the exact `--from-case-state` replay when ready, collect missing evidence when not ready, or extend/supersede it with `add-actor` / `add-session` / `add-object` / `add-hypothesis` / `add-backlog`.
+If cached artifacts show object IDs but case state is empty, run `tools/case_state_seed.py --target <target> --json` and review the suggested seed commands.
 Case state is runtime memory, not a scope gate, permission gate, fixed bug-class selector, or reason to ignore non-IDOR lanes; state the AI override reason when fresher evidence should take priority.
 
 ## Actionable Evidence Continuation Contract
@@ -146,6 +148,7 @@ python3 tools/coverage_matrix.py rebuild --target target.com
 python3 tools/coverage_matrix.py find-gaps --target target.com
 python3 tools/evidence_ledger.py summary --target target.com
 python3 tools/target_case_state.py summary --target target.com --json
+python3 tools/case_state_seed.py --target target.com --json
 python3 tools/checkpoint.py --target target.com
 python3 tools/action_queue.py ingest-checkpoint --target target.com
 python3 tools/action_queue.py summary --target target.com

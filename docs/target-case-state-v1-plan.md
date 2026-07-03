@@ -639,6 +639,37 @@ commands/validate.md 将 case_state 放入证据执行平面
 rules/hunting.md 明确 case_state 是连续验证记忆，不是 scope/permission/bug-class gate
 ```
 
+### Phase E：Auto-Seeding v1
+
+状态：已实施。
+
+范围：
+
+```text
+tools/case_state_seed.py
+tests/test_case_state_seed.py
+tools/checkpoint.py
+tests/test_checkpoint.py
+docs/tool-index.md
+```
+
+成功标准：
+
+```text
+cached browser/recon/JS/source artifacts with object-shaped endpoints produce
+suggested add-actor/add-object/add-backlog commands without auto-writing state
+```
+
+已验证：
+
+```text
+/rest/order-history/123 -> order_123 object candidate
+?order_id=42 -> order_42 object candidate
+JS/source-intel route and hypothesis artifacts feed object extraction
+existing objects/backlogs are not duplicated
+checkpoint emits case-state seed opportunity when no active backlog exists
+```
+
 ## 12. 测试规划
 
 新增：

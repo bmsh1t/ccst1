@@ -26,6 +26,7 @@ try:
     from tools.coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary
+    from tools.case_state_seed import build_case_state_seed
     from tools.target_case_state import summary as build_case_state_summary
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -34,6 +35,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary  # type: ignore
+    from case_state_seed import build_case_state_seed  # type: ignore
     from target_case_state import summary as build_case_state_summary  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
@@ -317,6 +319,43 @@ def _case_state_proposal(case_state: dict) -> str:
     if chain_extensions:
         parts.append(f"Chain extensions if blocked: {chain_extensions}.")
     return " ".join(parts).strip()
+
+
+def _case_state_seed_summary(repo_root: Path | str, target: str) -> dict:
+    """Load suggestion-only case_state seed opportunities."""
+    try:
+        payload = build_case_state_seed(repo_root, target, limit=3)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _case_state_seed_proposal(seed: dict) -> str:
+    if str(seed.get("status") or "") != "suggestions":
+        return ""
+    objects = seed.get("suggested_objects") if isinstance(seed.get("suggested_objects"), list) else []
+    backlog = seed.get("suggested_backlog") if isinstance(seed.get("suggested_backlog"), list) else []
+    if not objects and not backlog:
+        return ""
+    first_object = objects[0] if objects and isinstance(objects[0], dict) else {}
+    first_backlog = backlog[0] if backlog and isinstance(backlog[0], dict) else {}
+    target = str(seed.get("target") or "").strip()
+    command = f"python3 tools/case_state_seed.py --target {_quote(target)} --json" if target else "python3 tools/case_state_seed.py --target <target> --json"
+    missing = ", ".join(str(item) for item in (first_backlog.get("missing") or [])[:4])
+    return (
+        "Case-state seed opportunity: Found object candidate {object_ref} "
+        "type={object_type} endpoint={endpoint}. Runner: {runner}. "
+        "Missing evidence: {missing}. Next: {command}. "
+        "Review suggested add-actor/add-object/add-backlog commands; do not treat "
+        "seed suggestions as validated findings."
+    ).format(
+        object_ref=first_object.get("object_ref", "-"),
+        object_type=first_object.get("type", "-"),
+        endpoint=first_object.get("endpoint", "-"),
+        runner=first_backlog.get("runner", "idor-actor-pair"),
+        missing=missing or "review required",
+        command=command,
+    )
 
 
 def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case_state: dict | None = None) -> str:
@@ -764,6 +803,9 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         return "case-state-enrichment", 108, "enrich actor/session/object/private-marker evidence in case_state"
     if "case-state backlog creation" in lowered:
         return "case-state-backlog-create", 103, "promote the active hypothesis into validation backlog"
+    if "case-state seed opportunity" in lowered:
+        seed_match = re.search(r"Next:\s+(?P<cmd>python3\s+tools/case_state_seed\.py\s+.*?)(?:\.\s+Review|$)", value, re.I)
+        return "case-state-seed", 83, seed_match.group("cmd").strip() if seed_match else "python3 tools/case_state_seed.py --target <target> --json"
     if "candidate evidence gap" in lowered:
         return "candidate-evidence-gap", 105, "fill missing rubric evidence, then /validate"
     if "run /validate" in lowered:
@@ -857,6 +899,30 @@ def _extract_action_metadata(text: str) -> dict:
                     metadata[key] = [part.strip() for part in raw.split(",") if part.strip()]
                 else:
                     metadata[key] = raw
+        return metadata
+
+    seed_match = re.search(
+        r"Case-state seed opportunity:\s+Found object candidate\s+(?P<object_ref>\S+)\s+"
+        r"type=(?P<object_type>\S+)\s+endpoint=(?P<endpoint>\S+)\.\s+"
+        r"Runner:\s+(?P<runner>\S+)\.\s+Missing evidence:\s+(?P<missing>.*?)(?:\.\s+Next:|$)",
+        value,
+        re.I,
+    )
+    if seed_match:
+        metadata.update({
+            "object_ref": seed_match.group("object_ref"),
+            "object_type": seed_match.group("object_type"),
+            "endpoint": seed_match.group("endpoint"),
+            "runner": seed_match.group("runner"),
+            "missing_evidence": [
+                part.strip()
+                for part in seed_match.group("missing").split(",")
+                if part.strip() and part.strip() != "review required"
+            ],
+        })
+        command_match = re.search(r"Next:\s+(?P<cmd>python3\s+tools/case_state_seed\.py\s+.*?)(?:\.\s+Review|$)", value, re.I)
+        if command_match:
+            metadata["seed_command"] = command_match.group("cmd").strip()
         return metadata
 
     validation_match = re.search(
@@ -1149,12 +1215,16 @@ def build_checkpoint(
     actor_gaps = _actor_gaps(evidence_summary)
     case_state = _case_state_summary(repo, resolved_target)
     case_state_proposal = _case_state_proposal(case_state)
+    case_state_seed = _case_state_seed_summary(repo, resolved_target) if not case_state_proposal else {}
+    case_state_seed_proposal = _case_state_seed_proposal(case_state_seed)
 
     decision = _decide(state, gaps, actor_gaps, case_state)
     lead = _lead_proposals(state, context)
     next_items = _next_proposals(state, gaps, matrix, resolved_target, context, evidence_summary)
     if case_state_proposal:
         next_items = [case_state_proposal, *next_items]
+    elif case_state_seed_proposal:
+        next_items = [case_state_seed_proposal, *next_items]
     next_action_queue = _build_next_action_queue(next_items, resolved_target)
     dead_ends = _dead_end_proposals(state, gaps)
     handoff = _handoff_summary(
@@ -1193,6 +1263,11 @@ def build_checkpoint(
             "objects": case_state.get("objects", 0),
             "pending_validation_backlog": case_state.get("pending_validation_backlog", 0),
             "top_next_action": _case_state_top_next(case_state),
+        },
+        "case_state_seed": {
+            "status": case_state_seed.get("status", ""),
+            "suggested_objects": (case_state_seed.get("suggested_objects") or [])[:3],
+            "suggested_backlog": (case_state_seed.get("suggested_backlog") or [])[:3],
         },
         "evidence_ledger": {
             "path": evidence_summary.get("path", ""),

@@ -45,6 +45,9 @@ Core discipline:
 - Use Target Case State when actor/session/object/private-marker continuity
   matters; it is working memory for multi-step validation, not a scope gate or
   bug-class selector.
+- If cached browser/recon/JS/source artifacts already expose object-shaped
+  endpoints, use `tools/case_state_seed.py` to draft case-state commands instead
+  of making Claude remember the object graph in prose.
 - Map broadly before deep-diving, but do not use "more recon" to avoid testing
   a high-signal surface already in front of you.
 - Route from current evidence. Do not force a vulnerability class, old target
@@ -121,6 +124,9 @@ Completeness discipline:
 - If case state is missing or stale, do not stop; continue discovery through
   surface/browser/JS/source/recon evidence and create or enrich case state only
   when it improves the next replay.
+- If object IDs are visible but case state is empty, run
+  `python3 tools/case_state_seed.py --target <target> --json` and review the
+  generated add-actor/add-object/add-backlog drafts.
 - If a candidate appears, move to validation. Do not call it a finding until
   validation gates pass.
 - If no candidate appears, report the state precisely as lead, signal,

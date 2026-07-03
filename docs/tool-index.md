@@ -126,6 +126,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/autopilot_state.py` | Reading current autopilot state | Combine resume + surface context into one state view |
 | `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
 | `tools/target_case_state.py` | Multi-actor/object validation needs durable target state | Actor/session/object registry + validation backlog next action |
+| `tools/case_state_seed.py` | Browser/recon/JS/source artifacts reveal object IDs but case state is empty | Suggest add-actor/add-object/add-backlog commands; no auto-write |
 | `tools/coverage_matrix.py` | Checking high-value untested cells | Endpoint × vuln-class matrix; semantically ranks gaps from path/param signals |
 | `tools/resume.py` | Continuing previous target work | `/pickup` backend — summarize prior session+untested endpoints |
 | `tools/remember.py` | Logging finding to hunt memory | `/remember` backend — write to journal/pattern DB |
@@ -148,6 +149,7 @@ identity, and cloud signals without re-enumerating everything.
 |---|---|
 | Concrete signal plus unresolved next verification question | smallest safe lookup/replay/diff/enrichment/probe, then checkpoint state |
 | Need to remember user_a/user_b sessions, owned objects, private markers, or IDOR backlog | `target_case_state.py summary/next` |
+| `/orders/123`, `/invoices/42`, `/addresses/7`, `account_id`, `tenantId` appears in cached artifacts | `case_state_seed.py --target <target> --json`, then review suggested commands |
 | Concrete CMS/plugin/theme/library version observed | `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, `/scan-cves` |
 | 401/403 on interesting endpoint | `bypass_403.sh` |
 | Multiple session files in `.private/` | `role_diff.py` |

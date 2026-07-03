@@ -327,6 +327,27 @@ def test_checkpoint_surfaces_case_state_enrichment_when_evidence_missing(tmp_pat
     assert checkpoint["recommended_executable_action"]["command_hint"] == "enrich actor/session/object/private-marker evidence in case_state"
 
 
+def test_checkpoint_surfaces_case_state_seed_opportunity_from_object_endpoint(tmp_path):
+    _seed_recon(tmp_path, "target.com", [
+        "https://api.target.com/rest/order-history/123",
+    ])
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert checkpoint["case_state_seed"]["status"] == "suggestions"
+    assert checkpoint["case_state_seed"]["suggested_objects"][0]["object_ref"] == "order_123"
+    assert checkpoint["target_write_back"]["next"][0].startswith("Case-state seed opportunity:")
+    assert checkpoint["recommended_executable_action"]["type"] == "case-state-seed"
+    assert checkpoint["recommended_executable_action"]["metadata"]["object_ref"] == "order_123"
+    assert checkpoint["recommended_executable_action"]["metadata"]["runner"] == "idor-actor-pair"
+    assert checkpoint["recommended_executable_action"]["metadata"]["missing_evidence"] == [
+        "owner session",
+        "peer session",
+        "owner private marker",
+    ]
+    assert "tools/case_state_seed.py" in checkpoint["recommended_executable_action"]["command_hint"]
+
+
 def test_checkpoint_queues_cross_evidence_convergence(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/admin/export?order_id=42",

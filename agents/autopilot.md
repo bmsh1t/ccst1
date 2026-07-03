@@ -62,6 +62,7 @@ Minimum startup:
 python3 tools/context_pack.py --target <target>
 python3 tools/autopilot_state.py --target <target>
 python3 tools/target_case_state.py summary --target <target> --json
+python3 tools/case_state_seed.py --target <target> --json
 python3 tools/surface.py --target <target>
 python3 tools/coverage_matrix.py rebuild --target <target>
 python3 tools/coverage_matrix.py find-gaps --target <target>
@@ -72,6 +73,7 @@ python3 tools/action_queue.py next --target <target>
 
 - Skills route through `skills/runtime-protocol.md`.
 - Target case state stores actors, sessions, objects, private markers, hypotheses, and validation backlog under `state/<target_key>/case_state.json`.
+- `case_state_seed.py` suggests add-actor/add-object/add-backlog commands from cached object-like endpoints; it does not auto-write.
 - Knowledge cards come from `knowledge/index.md`; load only matching cards and `reference_hints` from context-pack when evidence needs on-demand references.
 - Red-line and coverage semantics live in `rules/red-lines.md`, `rules/coverage-gate.md`, and `rules/hunting.md`.
 - Red-line checks are narrow safety checks, not broad permission gates. HTTP method alone is not a red line; block or downgrade only the concrete destructive, irreversible, high-pressure, persistent-payload, or real-business side effect.
@@ -79,22 +81,15 @@ python3 tools/action_queue.py next --target <target>
 
 ## Case-State First, Not Case-State Only
 
-If checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer
-that action before generic coverage gaps because it preserves actor/session/
-object continuity across context windows. This is not a hard rail: empty,
-missing, stale, or irrelevant case state must never block discovery, browser/JS/
-source enrichment, ranked-surface hunting, or AI-generated chain pivots.
+If checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer that action before generic coverage gaps because it preserves actor/session/object continuity across context windows. This is not a hard rail: empty, missing, stale, or irrelevant case state must never block discovery, browser/JS/source enrichment, ranked-surface hunting, or AI-generated chain pivots.
 
 Use case state as working memory:
 
-- Ready backlog -> run the `validation_runner.py ... --from-case-state` replay
-  or resolve it with evidence.
-- Missing evidence -> collect the named actor/session/object/private marker,
-  then rerun checkpoint.
-- New workflow/object/role signal -> extend case state with `add-actor`,
-  `add-session`, `add-object`, `add-hypothesis`, or `add-backlog`.
-- Stronger fresh signal -> state the AI override reason and pursue it; do not
-  force old backlog items.
+- Ready backlog -> run the `validation_runner.py ... --from-case-state` replay or resolve it with evidence.
+- Missing evidence -> collect the named actor/session/object/private marker, then rerun checkpoint.
+- Empty case state + object IDs in cached artifacts -> run `case_state_seed.py --target <target> --json` and review suggested commands.
+- New workflow/object/role signal -> extend case state with `add-actor`, `add-session`, `add-object`, `add-hypothesis`, or `add-backlog`.
+- Stronger fresh signal -> state the AI override reason and pursue it; do not force old backlog items.
 - Case state is not a scope gate, permission gate, bug-class selector, or IDOR-only workflow.
 
 ## Actionable Evidence Continuation
