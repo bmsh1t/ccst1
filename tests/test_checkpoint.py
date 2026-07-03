@@ -326,6 +326,42 @@ def test_checkpoint_surfaces_case_state_enrichment_when_evidence_missing(tmp_pat
     assert checkpoint["recommended_executable_action"]["command_hint"] == "enrich actor/session/object/private-marker evidence in case_state"
 
 
+def test_checkpoint_surfaces_optional_case_state_marker_gap_without_blocking_replay(tmp_path):
+    _seed_recon(tmp_path, "target.com", [
+        "https://api.target.com/rest/order-history/123",
+    ])
+    add_actor(tmp_path, "target.com", actor="user_a", role="user", label="owner")
+    add_actor(tmp_path, "target.com", actor="user_b", role="user", label="peer")
+    add_session(tmp_path, "target.com", session="sess_owner", actor="user_a", kind="bearer", header_value="Bearer owner-token")
+    add_session(tmp_path, "target.com", session="sess_peer", actor="user_b", kind="bearer", header_value="Bearer peer-token")
+    add_object(
+        tmp_path,
+        "target.com",
+        object_ref="order_123",
+        object_type="order",
+        object_id="123",
+        owner_actor="user_a",
+        endpoint="https://api.target.com/rest/order-history/123",
+    )
+    add_backlog(
+        tmp_path,
+        "target.com",
+        runner="idor-actor-pair",
+        owner_actor="user_a",
+        peer_actor="user_b",
+        object_ref="order_123",
+        priority="high",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert checkpoint["target_write_back"]["next"][0].startswith("Case-state validation backlog val_001:")
+    assert "Optional evidence gaps: owner private marker." in checkpoint["target_write_back"]["next"][0]
+    assert checkpoint["recommended_executable_action"]["type"] == "case-state-validation"
+    assert checkpoint["recommended_executable_action"]["metadata"]["optional_evidence_gaps"] == ["owner private marker"]
+    assert checkpoint["recommended_executable_action"]["metadata"].get("missing_evidence", []) == []
+
+
 def test_checkpoint_surfaces_case_state_seed_opportunity_from_object_endpoint(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/rest/order-history/123",

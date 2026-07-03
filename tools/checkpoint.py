@@ -305,6 +305,9 @@ def _case_state_proposal(case_state: dict) -> str:
     missing = _list_clause(top.get("missing_evidence"))
     if missing:
         parts.append(f"Missing evidence: {missing}.")
+    optional = _list_clause(top.get("optional_evidence_gaps"))
+    if optional:
+        parts.append(f"Optional evidence gaps: {optional}.")
 
     downgrade_rule = str(top.get("downgrade_rule") or "").strip()
     if downgrade_rule:
@@ -888,14 +891,15 @@ def _extract_action_metadata(text: str) -> dict:
 
         for key, pattern in (
             ("replay_draft", r"Exact replay draft:\s+(?P<value>.*?)(?:\.\s+(?:Required evidence|Missing evidence|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
-            ("required_evidence", r"Required evidence:\s+(?P<value>.*?)(?:\.\s+(?:Missing evidence|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
-            ("missing_evidence", r"Missing evidence:\s+(?P<value>.*?)(?:\.\s+(?:Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
+            ("required_evidence", r"Required evidence:\s+(?P<value>.*?)(?:\.\s+(?:Missing evidence|Optional evidence gaps|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
+            ("missing_evidence", r"Missing evidence:\s+(?P<value>.*?)(?:\.\s+(?:Optional evidence gaps|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
+            ("optional_evidence_gaps", r"Optional evidence gaps:\s+(?P<value>.*?)(?:\.\s+(?:Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
             ("chain_extensions_if_blocked", r"Chain extensions if blocked:\s+(?P<value>.*?)(?:\.$|$)"),
         ):
             match = re.search(pattern, value, re.I)
             if match:
                 raw = match.group("value").strip()
-                if key in {"required_evidence", "missing_evidence", "chain_extensions_if_blocked"}:
+                if key in {"required_evidence", "missing_evidence", "optional_evidence_gaps", "chain_extensions_if_blocked"}:
                     metadata[key] = [part.strip() for part in raw.split(",") if part.strip()]
                 else:
                     metadata[key] = raw
