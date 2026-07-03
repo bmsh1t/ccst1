@@ -329,31 +329,109 @@ CARD_PATHS = {
     "controlled-rce-impact": "knowledge/cards/controlled-rce-impact.md",
     "node-prototype-pollution": "knowledge/cards/node-prototype-pollution.md",
     "signature-scope-mismatch": "knowledge/cards/signature-scope-mismatch.md",
-    "oauth-sso-trust": "knowledge/cards/oauth-sso-trust.md",
     "view-differential": "knowledge/cards/view-differential.md",
-    "request-smuggling": "knowledge/cards/request-smuggling.md",
     "path-allowlist-normalization": "knowledge/cards/path-allowlist-normalization.md",
-    "sanitizer-parser-xss": "knowledge/cards/sanitizer-parser-xss.md",
-    "csp-bypass-exfil": "knowledge/cards/csp-bypass-exfil.md",
     "connection-string-injection": "knowledge/cards/connection-string-injection.md",
-    "runtime-primitive-override": "knowledge/cards/runtime-primitive-override.md",
     "import-migration-trust": "knowledge/cards/import-migration-trust.md",
     "stale-derived-authz": "knowledge/cards/stale-derived-authz.md",
     "connection-reuse-key": "knowledge/cards/connection-reuse-key.md",
     "redirect-header-leak": "knowledge/cards/redirect-header-leak.md",
     "xs-leak-oracle": "knowledge/cards/xs-leak-oracle.md",
     "cli-argument-injection": "knowledge/cards/cli-argument-injection.md",
-    "sqli-non-parameterizable": "knowledge/cards/sqli-non-parameterizable.md",
     "type-confusion-controlflow": "knowledge/cards/type-confusion-controlflow.md",
-    "llm-invisible-unicode": "knowledge/cards/llm-invisible-unicode.md",
     "second-order-sink": "knowledge/cards/second-order-sink.md",
-    "payment-logic-bypass": "knowledge/cards/payment-logic-bypass.md",
-    "postmessage-trust": "knowledge/cards/postmessage-trust.md",
     "render-pipeline-ssrf": "knowledge/cards/render-pipeline-ssrf.md",
     "race-conditions": "knowledge/cards/race-conditions.md",
     "coverage-prompts": "knowledge/cards/coverage-prompts.md",
     "dead-ends": "knowledge/cards/dead-ends.md",
 }
+
+CAPABILITY_REGISTRY_PATH = "knowledge/capabilities.yaml"
+
+
+def _load_capability_registry(repo_root: Path | str = BASE_DIR) -> dict[str, dict[str, str]]:
+    """读取知识能力注册表的受控 YAML 子集。
+
+    这里不引入 PyYAML；registry 当前只使用简单 scalar 字段和 list 字段。
+    context-pack 只需要 card file -> layer/load/purpose 这些轻量元信息。
+    """
+    repo = Path(repo_root)
+    path = repo / CAPABILITY_REGISTRY_PATH
+    if not path.is_file():
+        path = BASE_DIR / CAPABILITY_REGISTRY_PATH
+    if not path.is_file():
+        return {}
+
+    items: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    in_capabilities = False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line == "capabilities:":
+            in_capabilities = True
+            continue
+        if not in_capabilities:
+            continue
+        if line.startswith("  - id: "):
+            if current:
+                items.append(current)
+            current = {"id": line.split(":", 1)[1].strip().strip('"')}
+            continue
+        if current is not None and line.startswith("    ") and ":" in line and not line.lstrip().startswith("- "):
+            key, value = line.strip().split(":", 1)
+            current[key] = value.strip().strip('"')
+    if current:
+        items.append(current)
+
+    return {
+        item["file"]: item
+        for item in items
+        if item.get("kind") == "card" and item.get("file")
+    }
+
+
+def _card_capability(path: str, repo_root: Path | str = BASE_DIR) -> dict[str, str]:
+    registry = _load_capability_registry(repo_root)
+    item = registry.get(path, {})
+    return {
+        "file": path,
+        "id": item.get("id") or Path(path).stem,
+        "layer": item.get("layer") or "unregistered",
+        "load": item.get("load") or "unknown",
+        "purpose": item.get("purpose") or "unknown",
+    }
+
+
+def _card_capabilities(paths: list[str], repo_root: Path | str = BASE_DIR) -> list[dict[str, str]]:
+    return [_card_capability(path, repo_root) for path in paths]
+
+
+def _budget_knowledge_cards(
+    paths: list[str],
+    repo_root: Path | str = BASE_DIR,
+    *,
+    max_cards: int = 2,
+    max_case_router: int = 1,
+) -> tuple[list[str], list[str]]:
+    """按 registry 做保守预算。
+
+    只限制 case-router 涌入：core/core、core/reference 等既有组合不变。
+    被挤出的卡进入 deferred，供 AI 明确需要时回捞，而不是 silent drop。
+    """
+    selected: list[str] = []
+    deferred: list[str] = []
+    case_router_count = 0
+    for path in _dedupe(paths):
+        meta = _card_capability(path, repo_root)
+        if meta["layer"] == "case-router" and case_router_count >= max_case_router:
+            deferred.append(path)
+            continue
+        if len(selected) < max_cards:
+            selected.append(path)
+            if meta["layer"] == "case-router":
+                case_router_count += 1
+        else:
+            deferred.append(path)
+    return selected, deferred
 
 REFERENCE_PATHS = {
     "bypass-patterns": "skills/security-arsenal/references/bypass-patterns.md",
@@ -364,26 +442,26 @@ REFERENCE_PATHS = {
 
 DISTILLED_TOKEN_TO_CARDS = (
     (re.compile(r"\b(signature[-_ ]?scope[-_ ]?mismatch|signed bytes|consumption object|xsw|duplicate assertion)\b", re.I), ("signature-scope-mismatch",)),
-    (re.compile(r"\b(oauth[-_ ]?sso[-_ ]?trust|email trust|audience confusion|redirect_uri trust)\b", re.I), ("oauth-sso-trust",)),
+    (re.compile(r"\b(oauth[-_ ]?sso[-_ ]?trust|email trust|audience confusion|redirect_uri trust)\b", re.I), ("auth-sso-token-edge-cases",)),
     (re.compile(r"\b(view[-_ ]?differential|validation view|consumption view|verified view|executed view|canonicalization gap)\b", re.I), ("view-differential",)),
-    (re.compile(r"\b(h2 crlf|h2 request[-_ ]?splitting|pseudo-header injection|response queue poisoning|non[-_ ]?url crlf)\b", re.I), ("request-smuggling",)),
+    (re.compile(r"\b(h2 crlf|h2 request[-_ ]?splitting|pseudo-header injection|response queue poisoning|non[-_ ]?url crlf)\b", re.I), ("proxy-cache-boundaries",)),
     (re.compile(r"\b(allowlist|whitelist|path normalization|prefix check|starts?with|weak string|dot[-_ ]?segment|url normalization)\b", re.I), ("path-allowlist-normalization",)),
-    (re.compile(r"\b(sanitizer|dompurify|mxss|mutation[-_ ]?xss|parser[-_ ]?xss|html parser|second decode)\b", re.I), ("sanitizer-parser-xss",)),
-    (re.compile(r"\b(csp bypass|bypass exfil|no[-_ ]?script exfil|script-src exfil|report-uri exfil)\b", re.I), ("csp-bypass-exfil",)),
+    (re.compile(r"\b(sanitizer|dompurify|mxss|mutation[-_ ]?xss|parser[-_ ]?xss|html parser|second decode)\b", re.I), ("xss-client-injection",)),
+    (re.compile(r"\b(csp bypass|bypass exfil|no[-_ ]?script exfil|script-src exfil|report-uri exfil)\b", re.I), ("xss-client-injection",)),
     (re.compile(r"\b(connection string|dsn|jdbc|mongodb uri|database uri|driver option|protocol handler)\b", re.I), ("connection-string-injection",)),
-    (re.compile(r"\b(runtime primitive|primitive override|monkey[-_ ]?patch|same realm|override fetch|override json|stringify override)\b", re.I), ("runtime-primitive-override",)),
+    (re.compile(r"\b(runtime primitive|primitive override|monkey[-_ ]?patch|same realm|override fetch|override json|stringify override)\b", re.I), ("node-prototype-pollution",)),
     (re.compile(r"\b(import migration|migration trust|restore trust|backup import|bulk import|tenant import)\b", re.I), ("import-migration-trust",)),
     (re.compile(r"\b(stale[-_ ]?derived[-_ ]?authz|derived authz|revoked permission cache|deprovision|role cache|credential derivative)\b", re.I), ("stale-derived-authz",)),
     (re.compile(r"\b(connection reuse|reuse key|pool key|tenant key|keep-alive boundary|backend connection reuse)\b", re.I), ("connection-reuse-key",)),
     (re.compile(r"\b(redirect header|header leak|authorization header leak|sensitive header redirect|cross-origin redirect header|header stripping)\b", re.I), ("redirect-header-leak",)),
     (re.compile(r"\b(xs[-_ ]?leak|cross[-_ ]?site leak|timing oracle|image size oracle|resource timing oracle|window length oracle)\b", re.I), ("xs-leak-oracle",)),
     (re.compile(r"\b(cli argument|argument injection|flag injection|option injection|terminal escape|shell wrapper)\b", re.I), ("cli-argument-injection",)),
-    (re.compile(r"\b(non[-_ ]?parameterizable|order by identifier|group by identifier|column name injection|table name injection|placeholder name)\b", re.I), ("sqli-non-parameterizable",)),
+    (re.compile(r"\b(non[-_ ]?parameterizable|order by identifier|group by identifier|column name injection|table name injection|placeholder name)\b", re.I), ("sqli-hidden-surfaces",)),
     (re.compile(r"\b(type confusion|shape confusion|string boolean|array object|duplicate json|control[-_ ]?flow|reserved key)\b", re.I), ("type-confusion-controlflow",)),
-    (re.compile(r"\b(invisible unicode|unicode tag|tag characters|hidden unicode prompt)\b", re.I), ("llm-invisible-unicode",)),
+    (re.compile(r"\b(invisible unicode|unicode tag|tag characters|hidden unicode prompt)\b", re.I), ("web-llm-tool-chains",)),
     (re.compile(r"\b(second[-_ ]?order|delayed sink|async sink|stored render|later processing|deferred template)\b", re.I), ("second-order-sink",)),
-    (re.compile(r"\b(payment logic|rounding bypass|gateway state|recipient mismatch|refund logic|billing logic|price mismatch)\b", re.I), ("payment-logic-bypass",)),
-    (re.compile(r"\b(postmessage trust|message event origin|targetorigin trust|window\.name trust|origin trust)\b", re.I), ("postmessage-trust",)),
+    (re.compile(r"\b(payment logic|rounding bypass|gateway state|recipient mismatch|refund logic|billing logic|price mismatch)\b", re.I), ("business-logic-state-machines",)),
+    (re.compile(r"\b(postmessage trust|message event origin|targetorigin trust|window\.name trust|origin trust)\b", re.I), ("browser-client-boundaries",)),
     (re.compile(r"\b(render pipeline|pdf render|screenshot service|server-side browser|wkhtmltopdf|chromium export|html to pdf|docx render)\b", re.I), ("render-pipeline-ssrf",)),
 )
 
@@ -1383,14 +1461,15 @@ def _cards_from_focus(focus: str) -> list[str]:
     return _dedupe(cards)
 
 
-def _select_cards(
+def _select_cards_and_deferred(
     blob: str,
     skill: str,
     ranked: dict,
     gaps: list[dict],
     goal_memory: dict,
     focus: str,
-) -> list[str]:
+    repo_root: Path | str = BASE_DIR,
+) -> tuple[list[str], list[str]]:
     focus_cards = _cards_from_focus(focus)
     cards: list[str] = list(focus_cards)
     for pattern, names in DISTILLED_TOKEN_TO_CARDS:
@@ -1716,7 +1795,21 @@ def _select_cards(
             cards = cards[:2]
         else:
             cards = _dedupe((cards[:1] if cards else []) + ["coverage-prompts"])
-    return [CARD_PATHS[name] for name in _dedupe(cards)[:2]]
+    candidate_paths = [CARD_PATHS[name] for name in _dedupe(cards) if name in CARD_PATHS]
+    return _budget_knowledge_cards(candidate_paths, repo_root)
+
+
+def _select_cards(
+    blob: str,
+    skill: str,
+    ranked: dict,
+    gaps: list[dict],
+    goal_memory: dict,
+    focus: str,
+    repo_root: Path | str = BASE_DIR,
+) -> list[str]:
+    selected, _ = _select_cards_and_deferred(blob, skill, ranked, gaps, goal_memory, focus, repo_root)
+    return selected
 
 
 def _required_checks(skill: str, blob: str) -> list[str]:
@@ -2544,7 +2637,7 @@ def build_context_pack(
     local_intel = _load_local_intel(repo, target_key)
     blob = _text_blob(focus, goal_memory, ranked, gaps, findings, local_intel)
     skill, why_skill = _select_skill(focus, blob, ranked, findings, goal_memory)
-    cards = _select_cards(blob, skill, ranked, gaps, goal_memory, focus)
+    cards, deferred_cards = _select_cards_and_deferred(blob, skill, ranked, gaps, goal_memory, focus, repo)
     checks = _required_checks(skill, blob)
     evidence_summary = build_evidence_summary(
         repo,
@@ -2575,6 +2668,9 @@ def build_context_pack(
         "why_this_skill": why_skill,
         "must_read": must_read,
         "knowledge_cards": cards,
+        "knowledge_card_capabilities": _card_capabilities(cards, repo),
+        "deferred_knowledge_cards": deferred_cards,
+        "deferred_knowledge_card_capabilities": _card_capabilities(deferred_cards, repo),
         "reference_hints": _reference_hints(cards, blob, focus, skill),
         "required_checks": checks,
         "evidence_anchors": _build_evidence_anchors(ranked, goal_memory, gaps, findings, local_intel)
@@ -2632,6 +2728,18 @@ def format_context_pack(pack: dict) -> str:
         *_format_list(pack["must_read"]),
         "- Knowledge cards:",
         *_format_list(pack["knowledge_cards"]),
+        "- Knowledge card capabilities:",
+        *_format_list([
+            "{file} — layer={layer}, load={load}, purpose={purpose}".format(
+                file=item.get("file", ""),
+                layer=item.get("layer", ""),
+                load=item.get("load", ""),
+                purpose=item.get("purpose", ""),
+            )
+            for item in pack.get("knowledge_card_capabilities", [])
+        ]),
+        "- Deferred knowledge cards:",
+        *_format_list(pack.get("deferred_knowledge_cards", [])),
         "- Reference hints:",
         *_format_list([
             "{path} — {when}".format(

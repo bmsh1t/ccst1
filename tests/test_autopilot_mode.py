@@ -280,6 +280,37 @@ def test_build_agent_bootstrap_context_parses_stringified_workflow_leads(monkeyp
     assert "Next: check extension/content-type validation" in output
 
 
+def test_build_agent_bootstrap_context_marks_demoted_leads_as_reversible(monkeypatch):
+    from tools import autopilot_state as autopilot_state_tool
+
+    fake_state = {
+        "next_action": "hunt_p1",
+        "guard_hint": "",
+        "guard_status": {"tripped_hosts": []},
+        "resume_targets": [],
+        "resume_summary": {"latest_session_summary": {}},
+        "recommended_targets": [],
+        "surface": {
+            "workflow_leads": [
+                {
+                    "priority": "medium",
+                    "category": "public-metadata",
+                    "title": "Standard public metadata endpoints were demoted from exposure findings",
+                    "next_action": "review only when field content looks unusual",
+                    "rationale": "Known metadata schema matched without separate high-value body evidence.",
+                }
+            ]
+        },
+    }
+
+    monkeypatch.setattr(autopilot_state_tool, "build_autopilot_state", lambda *args, **kwargs: fake_state)
+
+    output = agent._build_agent_bootstrap_context("target.com", repo_root="/tmp/repo", memory_dir="/tmp/memory")
+
+    assert "Secondary sweep rule:" in output
+    assert "re-promote only with concrete secret, chain, or pivot evidence" in output
+
+
 def test_active_bootstrap_context_only_applies_on_first_step(tmp_path):
     memory = agent.HuntMemory(str(tmp_path / "agent-session.json"))
     memory.bootstrap_context = "resume target: /graphql"
@@ -332,6 +363,29 @@ def test_bootstrap_tool_hint_falls_back_to_surface_summary_for_workflow_leads(tm
     assert hint == {
         "tool": "read_surface_summary",
         "reason": "workflow leads are available; read the ranked surface summary before picking the first focused lane",
+    }
+
+
+def test_bootstrap_tool_hint_prioritizes_secondary_sweep_for_demoted_leads(tmp_path):
+    memory = agent.HuntMemory(str(tmp_path / "agent-session.json"))
+    memory.bootstrap_state = {
+        "surface": {
+            "workflow_leads": [
+                {
+                    "priority": "medium",
+                    "category": "out-of-target-intel",
+                    "title": "External URLs were demoted from target-owned scanner findings",
+                    "next_action": "review the raw artifact for third-party secret or chain signals",
+                }
+            ]
+        }
+    }
+
+    hint = agent._bootstrap_tool_hint(memory)
+
+    assert hint == {
+        "tool": "read_surface_summary",
+        "reason": "demoted manual-review leads are available; do one secondary sweep before declaring them noise",
     }
 
 
@@ -420,6 +474,7 @@ def test_build_agent_system_guides_workflow_leads_without_getting_stuck():
     prompt = agent._build_agent_system(autopilot_mode="paranoid")
 
     assert "If ranked workflow leads already exist" in prompt
+    assert "Demoted/manual-review leads are not final rejections" in prompt
     assert "Do not get trapped in enrichment-only loops" in prompt
 
 
@@ -1286,6 +1341,8 @@ def test_autopilot_command_md_has_post_hunt_unsafe_review_gate():
     assert "action-gated scanner leads" in text
     assert "unsafe_skipped.txt" in text
     assert "ALLOW_UNSAFE_HTTP_TESTS=1" in text
+    assert "out_of_target_urls.txt" in text
+    assert "standard_public_metadata.txt" in text
     assert "checkpoint instead of finishing" in text
 
 
@@ -1328,6 +1385,8 @@ def test_autopilot_agent_md_has_post_hunt_unsafe_review_gate():
     assert "action-gated scanner leads" in text
     assert "unsafe_skipped.txt" in text
     assert "ALLOW_UNSAFE_HTTP_TESTS=1" in text
+    assert "out_of_target_urls.txt" in text
+    assert "standard_public_metadata.txt" in text
     assert "not tested-clean" in text
 
 

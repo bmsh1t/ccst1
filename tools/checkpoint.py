@@ -188,6 +188,45 @@ def _unsafe_skipped_proposals(state: dict) -> list[str]:
     return proposals
 
 
+SECONDARY_SWEEP_CATEGORIES = {"out-of-target-intel", "public-metadata"}
+
+
+def _secondary_sweep_leads(state: dict) -> list[dict]:
+    surface = state.get("surface") or {}
+    leads = _json_list(surface.get("workflow_leads"))
+    return [
+        item for item in leads
+        if str(item.get("category") or "").lower() in SECONDARY_SWEEP_CATEGORIES
+    ]
+
+
+def _secondary_sweep_proposals(state: dict) -> list[str]:
+    proposals: list[str] = []
+    for lead in _secondary_sweep_leads(state)[:3]:
+        category = str(lead.get("category") or "").strip() or "secondary-sweep"
+        title = str(lead.get("title") or "").strip()
+        artifact = str(lead.get("artifact") or "").strip() or "findings/<target>/manual_review/<artifact>.txt"
+        next_action = str(lead.get("next_action") or "").strip()
+        rationale = str(lead.get("rationale") or "").strip()
+        evidence = str(lead.get("evidence") or "").strip()
+        if not title:
+            continue
+        proposals.append(
+            "Secondary-sweep lead [{category}]: {title}. "
+            "Artifact={artifact}. Why it matters: {rationale}. "
+            "Next action: {next_action}. "
+            "Stop condition: either promote to candidate/chain-intel with concrete evidence, "
+            "or keep demoted with a written reason after reviewing the raw artifact.".format(
+                category=category,
+                title=title[:180],
+                artifact=artifact,
+                rationale=(rationale or evidence or category)[:220],
+                next_action=(next_action or "inspect the raw manual_review artifact for chain, secret, or pivot signals")[:220],
+            )
+        )
+    return proposals
+
+
 def _evidence_focus_endpoints(state: dict, coverage_gaps: list[dict]) -> list[str]:
     surface = state.get("surface") or {}
     endpoints: list[str] = []
@@ -387,6 +426,8 @@ def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case
     stats = _surface_stats(state)
     if stats["p1"] or stats["p2"] or state.get("recommended_targets"):
         return "hunt"
+    if _secondary_sweep_leads(state):
+        return "continue"
     return "handoff"
 
 
@@ -705,6 +746,7 @@ def _next_proposals(
         )
 
     proposals.extend(_unsafe_skipped_proposals(state))
+    proposals.extend(_secondary_sweep_proposals(state))
     covered_findings = _tested_finding_endpoints(matrix)
 
     repo_source_summary = state.get("repo_source_summary") or {}
@@ -831,6 +873,8 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         return "actor-gap", 80, "focused replay + tools/evidence_ledger.py record"
     if "action-gated scanner lane" in lowered or "unsafe-skipped scanner lane" in lowered:
         return "action-gated-review", 88, "review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate"
+    if "secondary-sweep lead" in lowered:
+        return "secondary-sweep", 72, "review demoted raw artifact; re-promote only with concrete secret/chain evidence"
     if "high-value matrix gap" in lowered:
         return "coverage-gap", 75, "focused low-risk probe + evidence ledger"
     if "cross-evidence high-value surface" in lowered:
@@ -981,6 +1025,18 @@ def _extract_action_metadata(text: str) -> dict:
         metadata.update({
             "unsafe_skipped_id": "" if unsafe_id == "-" else unsafe_id,
             "artifact": match.group("artifact"),
+        })
+
+    match = re.search(
+        r"Secondary-sweep lead\s+\[(?P<category>[^\]]+)\]:\s+(?P<title>.*?)[.]\s+Artifact=(?P<artifact>\S+)",
+        value,
+        re.I,
+    )
+    if match:
+        metadata.update({
+            "lead_category": match.group("category").strip(),
+            "lead_title": match.group("title").strip(),
+            "artifact": match.group("artifact").strip().rstrip("."),
         })
 
     match = re.match(

@@ -30,6 +30,82 @@ log_done()  { echo -e "    ${GREEN}[✓]${NC} $1"; }
 log_vuln()  { echo -e "    ${RED}[VULN]${NC} $1"; }
 log_crit()  { echo -e "    ${RED}[CRITICAL]${NC} $1"; }
 
+build_live_scope_args() {
+    local input_file="$1"
+    python3 - "$input_file" <<'PY'
+from urllib.parse import urlparse
+import sys
+
+seen = set()
+with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
+    for raw in handle:
+        url = raw.strip()
+        if not url:
+            continue
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        host = (parsed.hostname or "").strip().lower()
+        if host and host not in seen:
+            seen.add(host)
+            print("--domain")
+            print(host)
+PY
+}
+
+filter_target_urls_copy() {
+    local input_file="$1"
+    local output_file="$2"
+    local dropped_file="${3:-}"
+    local lane_label="${4:-target-filter}"
+    if [ ! -s "$input_file" ] 2>/dev/null; then
+        : > "$output_file"
+        return 0
+    fi
+    if [ "${#LIVE_SCOPE_ARGS[@]}" -eq 0 ]; then
+        cp "$input_file" "$output_file"
+        return 0
+    fi
+    python3 - "$LIVE_URLS" "$input_file" "$output_file" "$dropped_file" "$lane_label" <<'PY'
+from urllib.parse import urlparse
+import sys
+
+live_urls_path, input_path, output_path, dropped_path, lane_label = sys.argv[1:6]
+
+hosts = set()
+with open(live_urls_path, encoding="utf-8", errors="replace") as handle:
+    for raw in handle:
+        value = raw.strip()
+        if not value:
+            continue
+        parsed = urlparse(value if "://" in value else f"https://{value}")
+        host = (parsed.hostname or "").strip().lower()
+        if host:
+            hosts.add(host)
+
+matched: list[str] = []
+dropped: list[str] = []
+with open(input_path, encoding="utf-8", errors="replace") as handle:
+    for raw in handle:
+        line = raw.strip()
+        if not line:
+            continue
+        parsed = urlparse(line if "://" in line else f"https://{line}")
+        host = (parsed.hostname or "").strip().lower()
+        if host and host in hosts:
+            matched.append(line)
+        else:
+            dropped.append(line)
+
+with open(output_path, "w", encoding="utf-8") as handle:
+    for line in matched:
+        handle.write(line + "\n")
+
+if dropped_path and dropped:
+    with open(dropped_path, "a", encoding="utf-8") as handle:
+        for line in dropped:
+            handle.write(f"[OUT-OF-TARGET:{lane_label}] {line}\n")
+PY
+}
+
 timeout_bin() {
     if command -v timeout >/dev/null 2>&1; then
         printf '%s\n' timeout
@@ -216,6 +292,8 @@ PY
 
 mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,metasploit,manual_review,.tmp}
 : > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
+: > "$FINDINGS_DIR/manual_review/out_of_target_urls.txt"
+: > "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
 
 echo "============================================="
 echo "  Vulnerability Scanner — $TARGET"
@@ -708,6 +786,7 @@ fi
 
 LIVE_COUNT=$(wc -l < "$LIVE_URLS" 2>/dev/null || echo 0)
 log_info "Scanning $LIVE_COUNT live hosts"
+mapfile -t LIVE_SCOPE_ARGS < <(build_live_scope_args "$LIVE_URLS")
 
 ORDERED_SCAN="$FINDINGS_DIR/ordered_scan_targets.txt"
 : > "$ORDERED_SCAN"
@@ -732,6 +811,8 @@ fi
 # ============================================================
 mkdir -p "$FINDINGS_DIR/.tmp"
 SPA_FP="$FINDINGS_DIR/.tmp/spa_fingerprints.json"
+API_ENDPOINTS_FILTERED="$FINDINGS_DIR/.tmp/api_endpoints.target.txt"
+SENSITIVE_PATHS_FILTERED="$FINDINGS_DIR/.tmp/sensitive_paths.target.txt"
 if command -v python3 &>/dev/null; then
     log_step "Computing SPA-fallback fingerprints..."
     (cd "$BASE_DIR" 2>/dev/null && python3 -m tools.noise_filter fingerprint \
@@ -752,6 +833,9 @@ if command -v python3 &>/dev/null; then
 else
     [ -s "$PARAM_URLS_RAW" ] && cp "$PARAM_URLS_RAW" "$PARAM_URLS" || : > "$PARAM_URLS"
 fi
+
+filter_target_urls_copy "$RECON_DIR/urls/api_endpoints.txt" "$API_ENDPOINTS_FILTERED" "$FINDINGS_DIR/manual_review/out_of_target_urls.txt" "api_endpoints"
+filter_target_urls_copy "$RECON_DIR/urls/sensitive_paths.txt" "$SENSITIVE_PATHS_FILTERED" "$FINDINGS_DIR/manual_review/out_of_target_urls.txt" "sensitive_paths"
 # Always keep PARAM_URLS readable downstream even if filter produced empty file.
 [ -f "$PARAM_URLS" ] || cp "$PARAM_URLS_RAW" "$PARAM_URLS" 2>/dev/null || : > "$PARAM_URLS"
 
@@ -1118,14 +1202,20 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
 fi
 
 # Manual check: sensitive paths from recon
-if [ -s "$RECON_DIR/urls/sensitive_paths.txt" ]; then
+if [ -s "$SENSITIVE_PATHS_FILTERED" ]; then
     log_step "Verifying sensitive paths from recon..."
+    : > "$FINDINGS_DIR/exposure/verified_sensitive.txt"
     while IFS= read -r url; do
         STATUS=$(curl -s "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
+        BODY=$(curl -s "${BB_AUTH_ARGS[@]}" --max-time 5 "$url" 2>/dev/null || true)
         if [ "$STATUS" = "200" ]; then
+            if printf '%s' "$BODY" | python3 "$BASE_DIR/tools/public_exposure_signals.py" --url "$url" --status "$STATUS" --standard-public-metadata >/dev/null 2>&1; then
+                echo "[STANDARD-PUBLIC-METADATA] $STATUS $url" >> "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
+                continue
+            fi
             echo "$STATUS $url" >> "$FINDINGS_DIR/exposure/verified_sensitive.txt"
         fi
-    done < <(head -50 "$RECON_DIR/urls/sensitive_paths.txt")
+    done < <(head -50 "$SENSITIVE_PATHS_FILTERED")
 
     VERIFIED=$(count_findings "$FINDINGS_DIR/exposure/verified_sensitive.txt")
     [ "$VERIFIED" -gt 0 ] && log_vuln "Verified sensitive paths: $VERIFIED" || log_done "Sensitive paths: clean"
@@ -1242,23 +1332,27 @@ mkdir -p "$FINDINGS_DIR/auth_bypass"
 # 8a: Check for IDOR-prone parameters in collected URLs
 if ! skip_has idor && [ -s "$PARAM_URLS" ]; then
     log_step "Flagging IDOR-prone parameters..."
+    : > "$FINDINGS_DIR/idor/idor_candidates.txt"
     grep -iE '[?&](id|user_id|uid|account|profile|order|order_id|invoice|doc|file_id|report|ticket|msg|message_id|comment_id|item|product_id|cart|session|ref|record)=' \
         "$PARAM_URLS" > "$FINDINGS_DIR/idor/idor_candidates.txt" 2>/dev/null || true
+    filter_target_urls_copy "$FINDINGS_DIR/idor/idor_candidates.txt" "$FINDINGS_DIR/idor/idor_candidates.filtered.txt" "$FINDINGS_DIR/manual_review/out_of_target_urls.txt" "idor_candidates"
+    mv "$FINDINGS_DIR/idor/idor_candidates.filtered.txt" "$FINDINGS_DIR/idor/idor_candidates.txt"
     IDOR_COUNT=$(count_findings "$FINDINGS_DIR/idor/idor_candidates.txt")
     [ "$IDOR_COUNT" -gt 0 ] && log_warn "IDOR candidate URLs: $IDOR_COUNT (manual testing required)" || log_done "IDOR params: none found"
 fi
 
 # 8b: Check for numeric/sequential IDs in API endpoints
-if ! skip_has idor && [ -s "$RECON_DIR/urls/api_endpoints.txt" ]; then
+if ! skip_has idor && [ -s "$API_ENDPOINTS_FILTERED" ]; then
     log_step "Checking API endpoints for sequential IDs..."
-    grep -E '/[0-9]{1,8}(/|$|\?)' "$RECON_DIR/urls/api_endpoints.txt" \
+    : > "$FINDINGS_DIR/idor/api_sequential_ids.txt"
+    grep -E '/[0-9]{1,8}(/|$|\?)' "$API_ENDPOINTS_FILTERED" \
         > "$FINDINGS_DIR/idor/api_sequential_ids.txt" 2>/dev/null || true
     SEQ_COUNT=$(count_findings "$FINDINGS_DIR/idor/api_sequential_ids.txt")
     [ "$SEQ_COUNT" -gt 0 ] && log_warn "API endpoints with sequential IDs: $SEQ_COUNT" || log_done "Sequential IDs: none"
 fi
 
 # 8c: Auth bypass checks — test unauthenticated access to API endpoints
-if ! skip_has auth_bypass && [ -s "$RECON_DIR/urls/api_endpoints.txt" ]; then
+if ! skip_has auth_bypass && [ -s "$API_ENDPOINTS_FILTERED" ]; then
     log_step "Testing API endpoints for unauthenticated access..."
     : > "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"
     while IFS= read -r api_url; do
@@ -1271,7 +1365,7 @@ if ! skip_has auth_bypass && [ -s "$RECON_DIR/urls/api_endpoints.txt" ]; then
                 echo "$STATUS $BODY_SIZE $api_url" >> "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"
             fi
         fi
-    done < <(head -30 "$RECON_DIR/urls/api_endpoints.txt")
+    done < <(head -30 "$API_ENDPOINTS_FILTERED")
     UNAUTH_COUNT=$(count_findings "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt")
     [ "$UNAUTH_COUNT" -gt 0 ] && log_vuln "Unauthenticated API access: $UNAUTH_COUNT" || log_done "Auth bypass: clean"
 fi
@@ -1347,6 +1441,12 @@ fi
 
 if [ ! -s "$FINDINGS_DIR/manual_review/unsafe_skipped.txt" ]; then
     rm -f "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
+fi
+if [ ! -s "$FINDINGS_DIR/manual_review/out_of_target_urls.txt" ]; then
+    rm -f "$FINDINGS_DIR/manual_review/out_of_target_urls.txt"
+fi
+if [ ! -s "$FINDINGS_DIR/manual_review/standard_public_metadata.txt" ]; then
+    rm -f "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
 fi
 
 # ============================================================

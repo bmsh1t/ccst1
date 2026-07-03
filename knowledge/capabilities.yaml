@@ -1,0 +1,605 @@
+# Knowledge capability registry
+# 这是知识/判断/路由/动作/执行/证据的总控索引；正文仍在 cards / payloads / playbooks / tools 中。
+schema_version: 1
+contracts:
+  max_core_cards: 20
+  default_cards_max: 8
+  card_layers:
+    - core
+    - reference
+    - case-router
+    - payload-pack
+    - playbook
+  load_modes:
+    - default
+    - signal-or-default
+    - signal-only
+    - on-demand
+    - gated
+capabilities:
+  - id: api-idor
+    kind: card
+    file: knowledge/cards/api-idor.md
+    layer: core
+    load: signal-or-default
+    purpose: validate
+    case_router: folded-source-report-footer
+    triggers:
+      - idor
+      - object-id
+      - tenant
+      - actor-diff
+  - id: api-testing-workflow
+    kind: card
+    file: knowledge/cards/api-testing-workflow.md
+    layer: core
+    load: signal-or-default
+    purpose: route
+    triggers:
+      - api-docs
+      - xhr
+      - schema
+      - mobile-api
+  - id: auth-access
+    kind: card
+    file: knowledge/cards/auth-access.md
+    layer: core
+    load: signal-or-default
+    purpose: validate
+    case_router: folded-source-report-footer
+    triggers:
+      - authz
+      - role
+      - org-boundary
+      - session
+  - id: auth-sso-token-edge-cases
+    kind: card
+    file: knowledge/cards/auth-sso-token-edge-cases.md
+    layer: core
+    load: signal-or-default
+    purpose: bypass
+    triggers:
+      - jwt
+      - jwe
+      - jwks
+      - oauth
+      - saml
+      - oidc
+      - email-trust
+      - audience
+      - redirect-uri
+  - id: browser-client-boundaries
+    kind: card
+    file: knowledge/cards/browser-client-boundaries.md
+    layer: core
+    load: signal-or-default
+    purpose: validate
+    triggers:
+      - cors
+      - csrf
+      - clickjacking
+      - dom
+      - browser-boundary
+      - postmessage
+      - window.name
+  - id: business-logic-state-machines
+    kind: card
+    file: knowledge/cards/business-logic-state-machines.md
+    layer: core
+    load: signal-or-default
+    purpose: chain
+    triggers:
+      - state-machine
+      - workflow
+      - business-logic
+      - client-trust
+      - payment
+      - rounding
+      - gateway-state
+  - id: controlled-rce-impact
+    kind: card
+    file: knowledge/cards/controlled-rce-impact.md
+    layer: core
+    load: signal-or-default
+    purpose: validation
+    triggers:
+      - rce
+      - command-execution
+      - impact-proof
+      - controlled-proof
+  - id: graphql
+    kind: card
+    file: knowledge/cards/graphql.md
+    layer: core
+    load: signal-or-default
+    purpose: validate
+    triggers:
+      - graphql
+      - node-id
+      - introspection
+      - subscription
+  - id: information-disclosure-source-config
+    kind: card
+    file: knowledge/cards/information-disclosure-source-config.md
+    layer: core
+    load: signal-or-default
+    purpose: chain
+    triggers:
+      - source-map
+      - debug
+      - backup
+      - config-leak
+      - metadata
+  - id: insecure-deserialization
+    kind: card
+    file: knowledge/cards/insecure-deserialization.md
+    layer: core
+    load: signal-or-default
+    purpose: bypass
+    triggers:
+      - deserialization
+      - signed-object
+      - viewstate
+      - remember-me
+  - id: nosql-query-injection
+    kind: card
+    file: knowledge/cards/nosql-query-injection.md
+    layer: core
+    load: signal-or-default
+    purpose: bypass
+    triggers:
+      - nosql
+      - mongodb
+      - operator-injection
+      - json-parser
+  - id: path-traversal-file-read
+    kind: card
+    file: knowledge/cards/path-traversal-file-read.md
+    layer: core
+    load: signal-or-default
+    purpose: validate
+    triggers:
+      - path-traversal
+      - lfi
+      - file-read
+      - download
+  - id: proxy-cache-boundaries
+    kind: card
+    file: knowledge/cards/proxy-cache-boundaries.md
+    layer: core
+    load: signal-or-default
+    purpose: chain
+    triggers:
+      - host-header
+      - proxy
+      - cache-poisoning
+      - cache-deception
+      - smuggling
+  - id: server-side-template-injection
+    kind: card
+    file: knowledge/cards/server-side-template-injection.md
+    layer: core
+    load: signal-or-default
+    purpose: validate
+    triggers:
+      - ssti
+      - template-engine
+      - render
+  - id: sqli-hidden-surfaces
+    kind: card
+    file: knowledge/cards/sqli-hidden-surfaces.md
+    layer: core
+    load: signal-or-default
+    purpose: validate
+    triggers:
+      - sqli
+      - sort
+      - filter
+      - metadata
+      - second-order
+      - non-parameterizable
+      - order-by
+      - identifier
+  - id: ssrf-internal-impact
+    kind: card
+    file: knowledge/cards/ssrf-internal-impact.md
+    layer: core
+    load: signal-or-default
+    purpose: validation
+    triggers:
+      - ssrf
+      - metadata
+      - internal-admin
+      - cloud-metadata
+  - id: ssrf-url-fetch
+    kind: card
+    file: knowledge/cards/ssrf-url-fetch.md
+    layer: core
+    load: signal-or-default
+    purpose: route
+    case_router: folded-source-report-footer
+    triggers:
+      - url-fetch
+      - webhook
+      - import-url
+      - server-side-fetch
+  - id: upload-parser
+    kind: card
+    file: knowledge/cards/upload-parser.md
+    layer: core
+    load: signal-or-default
+    purpose: route
+    case_router: folded-source-report-footer
+    triggers:
+      - upload
+      - import
+      - parser
+      - converter
+  - id: upload-to-execution
+    kind: card
+    file: knowledge/cards/upload-to-execution.md
+    layer: core
+    load: signal-or-default
+    purpose: chain
+    triggers:
+      - upload-execution
+      - webshell
+      - extension
+      - content-type
+  - id: xxe-xml-parser
+    kind: card
+    file: knowledge/cards/xxe-xml-parser.md
+    layer: core
+    load: signal-or-default
+    purpose: validate
+    triggers:
+      - xxe
+      - xml
+      - soap
+      - saml
+      - svg
+      - office
+  - id: auth-credential-recovery-flows
+    kind: card
+    file: knowledge/cards/auth-credential-recovery-flows.md
+    layer: reference
+    load: signal-only
+    purpose: validation
+    triggers:
+      - password-reset
+      - account-recovery
+      - mfa
+      - otp
+      - remember-me
+  - id: auth-hidden-switches
+    kind: card
+    file: knowledge/cards/auth-hidden-switches.md
+    layer: reference
+    load: signal-only
+    purpose: bypass
+    triggers:
+      - hidden-auth-param
+      - login-branch
+      - auth-state-machine
+  - id: coverage-prompts
+    kind: card
+    file: knowledge/cards/coverage-prompts.md
+    layer: reference
+    load: signal-only
+    purpose: route
+    triggers:
+      - coverage
+      - missed-lane
+      - checklist-gap
+  - id: dead-ends
+    kind: card
+    file: knowledge/cards/dead-ends.md
+    layer: reference
+    load: signal-only
+    purpose: anti-pattern
+    triggers:
+      - dead-end
+      - low-value
+      - stop-condition
+  - id: missing-parameter-discovery
+    kind: card
+    file: knowledge/cards/missing-parameter-discovery.md
+    layer: reference
+    load: signal-only
+    purpose: route
+    triggers:
+      - missing-parameter
+      - null-response
+      - hidden-param
+  - id: node-prototype-pollution
+    kind: card
+    file: knowledge/cards/node-prototype-pollution.md
+    layer: reference
+    load: signal-only
+    purpose: chain
+    triggers:
+      - prototype-pollution
+      - node
+      - vm-sink
+      - template-sink
+      - same-realm
+      - monkey-patch
+  - id: path-pattern-management-exposure
+    kind: card
+    file: knowledge/cards/path-pattern-management-exposure.md
+    layer: reference
+    load: signal-only
+    purpose: route
+    triggers:
+      - management-path
+      - admin-path
+      - monitoring
+      - naming-pattern
+  - id: race-conditions
+    kind: card
+    file: knowledge/cards/race-conditions.md
+    layer: reference
+    load: signal-only
+    purpose: validation
+    triggers:
+      - race
+      - concurrency
+      - state-diff
+      - low-frequency
+  - id: web-llm-tool-chains
+    kind: card
+    file: knowledge/cards/web-llm-tool-chains.md
+    layer: reference
+    load: signal-only
+    purpose: chain
+    triggers:
+      - web-llm
+      - rag
+      - tool-call
+      - prompt-injection
+      - invisible-unicode
+      - unicode-tag
+  - id: websocket-realtime-api
+    kind: card
+    file: knowledge/cards/websocket-realtime-api.md
+    layer: reference
+    load: signal-only
+    purpose: validate
+    triggers:
+      - websocket
+      - cswsh
+      - realtime
+      - message-authz
+  - id: xss-client-injection
+    kind: card
+    file: knowledge/cards/xss-client-injection.md
+    layer: reference
+    load: signal-only
+    purpose: validate
+    triggers:
+      - xss
+      - dom-xss
+      - stored-xss
+      - reflected-xss
+      - csp
+      - sanitizer
+      - parser-differential
+      - mxss
+  - id: cli-argument-injection
+    kind: card
+    file: knowledge/cards/cli-argument-injection.md
+    layer: case-router
+    load: on-demand
+    purpose: bypass
+    triggers:
+      - cli-wrapper
+      - flag-injection
+      - terminal-escape
+  - id: connection-reuse-key
+    kind: card
+    file: knowledge/cards/connection-reuse-key.md
+    layer: case-router
+    load: on-demand
+    purpose: connector
+    triggers:
+      - connection-reuse
+      - pool-key
+      - tenant-key
+      - keep-alive
+  - id: connection-string-injection
+    kind: card
+    file: knowledge/cards/connection-string-injection.md
+    layer: case-router
+    load: on-demand
+    purpose: bypass
+    triggers:
+      - connection-string
+      - jdbc
+      - driver-option
+      - protocol-handler
+  - id: import-migration-trust
+    kind: card
+    file: knowledge/cards/import-migration-trust.md
+    layer: case-router
+    load: on-demand
+    purpose: connector
+    triggers:
+      - import
+      - migration
+      - restore
+      - trust-boundary
+  - id: path-allowlist-normalization
+    kind: card
+    file: knowledge/cards/path-allowlist-normalization.md
+    layer: case-router
+    load: on-demand
+    purpose: bypass
+    triggers:
+      - allowlist
+      - normalization
+      - startswith
+      - dot-segment
+  - id: redirect-header-leak
+    kind: card
+    file: knowledge/cards/redirect-header-leak.md
+    layer: case-router
+    load: on-demand
+    purpose: connector
+    triggers:
+      - redirect
+      - authorization-header
+      - sensitive-header
+      - cross-origin
+  - id: render-pipeline-ssrf
+    kind: card
+    file: knowledge/cards/render-pipeline-ssrf.md
+    layer: case-router
+    load: on-demand
+    purpose: connector
+    triggers:
+      - render-pipeline
+      - pdf
+      - screenshot
+      - wkhtmltopdf
+      - ssrf
+  - id: second-order-sink
+    kind: card
+    file: knowledge/cards/second-order-sink.md
+    layer: case-router
+    load: on-demand
+    purpose: connector
+    triggers:
+      - second-order
+      - delayed-sink
+      - async-sink
+      - stored-render
+  - id: signature-scope-mismatch
+    kind: card
+    file: knowledge/cards/signature-scope-mismatch.md
+    layer: case-router
+    load: on-demand
+    purpose: bypass
+    triggers:
+      - signature-scope
+      - signed-bytes
+      - xsw
+      - jwks
+      - binding
+  - id: stale-derived-authz
+    kind: card
+    file: knowledge/cards/stale-derived-authz.md
+    layer: case-router
+    load: on-demand
+    purpose: connector
+    triggers:
+      - stale-authz
+      - role-cache
+      - revoked-permission
+      - deprovision
+  - id: type-confusion-controlflow
+    kind: card
+    file: knowledge/cards/type-confusion-controlflow.md
+    layer: case-router
+    load: on-demand
+    purpose: bypass
+    triggers:
+      - type-confusion
+      - json-shape
+      - reserved-key
+      - control-flow
+  - id: view-differential
+    kind: card
+    file: knowledge/cards/view-differential.md
+    layer: case-router
+    load: on-demand
+    purpose: bypass
+    triggers:
+      - view-differential
+      - validation-view
+      - consumption-view
+      - canonicalization
+  - id: xs-leak-oracle
+    kind: card
+    file: knowledge/cards/xs-leak-oracle.md
+    layer: case-router
+    load: on-demand
+    purpose: bypass
+    triggers:
+      - xs-leak
+      - oracle
+      - timing
+      - resource-size
+  - id: external-url-secondary-sweep
+    kind: workflow
+    layer: reference
+    load: on-demand
+    purpose: chain-intel
+    triggers:
+      - out-of-target-url
+      - github-url
+      - registry-url
+      - signed-url
+      - api-key-in-url
+    routes:
+      - tools/surface.py
+      - tools/checkpoint.py
+      - agent.py
+  - id: standard-public-metadata-secondary-sweep
+    kind: workflow
+    layer: reference
+    load: on-demand
+    purpose: false-positive-control
+    triggers:
+      - openid-configuration
+      - jwks
+      - csaf-provider-metadata
+      - security.txt
+    routes:
+      - tools/public_exposure_signals.py
+      - tools/surface.py
+      - tools/checkpoint.py
+  - id: sqli-low-risk-probes
+    kind: payload-pack
+    file: knowledge/payloads/sqli-low-risk-probes.md
+    layer: payload-pack
+    load: gated
+    purpose: low-risk-probe
+    triggers:
+      - sqli
+      - baseline-diff
+      - query-semantics
+      - low-risk-validation
+  - id: command-execution-probes
+    kind: payload-pack
+    file: knowledge/payloads/command-execution-probes.md
+    layer: payload-pack
+    load: gated
+    purpose: low-risk-probe
+    triggers:
+      - rce
+      - command-injection
+      - primitive-proof
+      - controlled-command-output
+  - id: controlled-shell-primitives
+    kind: payload-pack
+    file: knowledge/payloads/controlled-shell-primitives.md
+    layer: payload-pack
+    load: gated
+    purpose: impact-proof
+    triggers:
+      - shell-primitive
+      - webshell
+      - reverse-shell
+      - explicit-operator-approval
+  - id: controlled-rce-validation
+    kind: playbook
+    file: knowledge/playbooks/controlled-rce-validation.md
+    layer: playbook
+    load: gated
+    purpose: impact-proof
+    triggers:
+      - rce
+      - upload-to-execution
+      - ssrf-to-rce
+      - deserialization-rce
+      - ssti-rce

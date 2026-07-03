@@ -11,6 +11,9 @@ trigger_tags:
   - state-machine
   - workflow-validation
   - client-side-controls
+  - payment
+  - rounding
+  - gateway-state
 risk: medium
 maturity: draft
 load_priority: high
@@ -24,6 +27,7 @@ deep_refs: []
 - 业务逻辑漏洞不是 payload 优先；先还原正常业务状态机，再找服务端没有重新校验的前置条件、顺序、金额、身份、数量和一次性约束。
 - 高价值入口包括 cart/checkout/price/coupon/order、注册/登录/找回、邀请/审批/成员、订阅/配额、邮箱/组织归属和双用途 endpoint。
 - 客户端字段不可信：隐藏字段、价格、数量、折扣、角色、邮箱、流程 step、redirect、feature flag、plan、scope 都要看服务端是否重算。
+- 支付/计费链优先盯三点：取整方向与精度、收款方/受益人是否服务端锁定、网关状态未确认时是否提前发放权益。
 - 示例字段如 `price=1`、`quantity=-1`、`coupon=ONCE`、`role=admin`、`email=...@trusted.tld` 是候选形态，不是固定字典。
 - Candidate 需要证明业务状态被错误推进、限制被绕过、服务端接受不该接受的状态，或低权限用户获得高价值能力。
 - 真实高影响状态默认先用 dry-run、预览、自有测试资源、可回滚对象或训练资源；不为了验证而直接造成真实扣款、发货、删除或外部副作用。
@@ -99,3 +103,8 @@ deep_refs: []
 - 某类业务流程反复信任客户端价格、数量、状态或流程 step。
 - 某类邮箱/域名/组织解析差异能稳定绕过权限或注册控制。
 - 某类 token、coupon、邀请或订单状态可跨账号、跨时间或跨流程复用。
+
+## 源报告（on-demand）
+
+- source_report_ids: `1446090`, `219215`, `592803`, `486629`, `808975`
+- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

@@ -75,6 +75,35 @@ def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
     assert "AI override" in output
 
 
+def test_context_pack_exposes_registry_metadata_for_selected_cards(tmp_path):
+    pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
+    caps = {item["file"]: item for item in pack["knowledge_card_capabilities"]}
+
+    assert caps["knowledge/cards/api-idor.md"]["layer"] == "core"
+    assert caps["knowledge/cards/api-idor.md"]["load"] == "signal-or-default"
+    assert caps["knowledge/cards/api-idor.md"]["purpose"] == "validate"
+    assert "Knowledge card capabilities:" in format_context_pack(pack)
+
+
+def test_context_pack_defers_extra_case_router_cards_instead_of_dropping(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="signature scope mismatch connection string jdbc driver option",
+    )
+    selected_layers = [item["layer"] for item in pack["knowledge_card_capabilities"]]
+    deferred_layers = [item["layer"] for item in pack["deferred_knowledge_card_capabilities"]]
+
+    assert selected_layers.count("case-router") == 1
+    assert "case-router" in deferred_layers
+    assert "knowledge/cards/signature-scope-mismatch.md" in (
+        pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+    )
+    assert "knowledge/cards/connection-string-injection.md" in (
+        pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+    )
+
+
 def test_reference_hints_are_added_only_for_evidence_specific_details(tmp_path):
     ssti_pack = build_context_pack(tmp_path, target="target.com", focus="ssti template injection")
     ssrf_pack = build_context_pack(tmp_path, target="target.com", focus="ssrf blacklist filter url parser bypass")
@@ -1142,26 +1171,26 @@ def test_request_smuggling_capture_focus_ignores_csrf_cookie_evidence_noise(tmp_
 def test_distilled_knowledge_cards_route_from_explicit_focus_without_recon(tmp_path):
     cases = [
         ("signature scope mismatch saml jwt jku kid duplicate assertion", "knowledge/cards/signature-scope-mismatch.md"),
-        ("oauth sso trust email redirect_uri account takeover", "knowledge/cards/oauth-sso-trust.md"),
+        ("oauth sso trust email redirect_uri account takeover", "knowledge/cards/auth-sso-token-edge-cases.md"),
         ("view differential validation view consumption view canonicalization gap", "knowledge/cards/view-differential.md"),
-        ("request smuggling h2 crlf te header injection response queue", "knowledge/cards/request-smuggling.md"),
+        ("request smuggling h2 crlf te header injection response queue", "knowledge/cards/proxy-cache-boundaries.md"),
         ("path allowlist normalization weak string prefix bypass", "knowledge/cards/path-allowlist-normalization.md"),
-        ("sanitizer parser xss dompurify mutation-xss second decode", "knowledge/cards/sanitizer-parser-xss.md"),
-        ("csp bypass exfil script-src report-uri connect-src", "knowledge/cards/csp-bypass-exfil.md"),
+        ("sanitizer parser xss dompurify mutation-xss second decode", "knowledge/cards/xss-client-injection.md"),
+        ("csp bypass exfil script-src report-uri connect-src", "knowledge/cards/xss-client-injection.md"),
         ("connection string injection jdbc dsn driver option", "knowledge/cards/connection-string-injection.md"),
-        ("runtime primitive override monkey patch same realm stringify", "knowledge/cards/runtime-primitive-override.md"),
+        ("runtime primitive override monkey patch same realm stringify", "knowledge/cards/node-prototype-pollution.md"),
         ("import migration trust restore backup import tenant import", "knowledge/cards/import-migration-trust.md"),
         ("stale derived authz revoked permission cache role cache", "knowledge/cards/stale-derived-authz.md"),
         ("connection reuse key backend connection pool tenant key", "knowledge/cards/connection-reuse-key.md"),
         ("redirect header leak authorization header cross-origin redirect", "knowledge/cards/redirect-header-leak.md"),
         ("xs-leak oracle timing image size resource timing", "knowledge/cards/xs-leak-oracle.md"),
         ("cli argument injection flag injection shell wrapper", "knowledge/cards/cli-argument-injection.md"),
-        ("sqli non-parameterizable order by column name identifier", "knowledge/cards/sqli-non-parameterizable.md"),
+        ("sqli non-parameterizable order by column name identifier", "knowledge/cards/sqli-hidden-surfaces.md"),
         ("type confusion controlflow string boolean array object", "knowledge/cards/type-confusion-controlflow.md"),
-        ("llm invisible unicode tag prompt injection rag", "knowledge/cards/llm-invisible-unicode.md"),
+        ("llm invisible unicode tag prompt injection rag", "knowledge/cards/web-llm-tool-chains.md"),
         ("second-order sink delayed sink stored render", "knowledge/cards/second-order-sink.md"),
-        ("payment logic rounding gateway recipient refund", "knowledge/cards/payment-logic-bypass.md"),
-        ("postmessage trust message event origin targetOrigin", "knowledge/cards/postmessage-trust.md"),
+        ("payment logic rounding gateway recipient refund", "knowledge/cards/business-logic-state-machines.md"),
+        ("postmessage trust message event origin targetOrigin", "knowledge/cards/browser-client-boundaries.md"),
         ("render pipeline ssrf pdf render screenshot service wkhtmltopdf", "knowledge/cards/render-pipeline-ssrf.md"),
     ]
 

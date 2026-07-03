@@ -7,6 +7,35 @@ payload 家族、bypass 思维、补充 checklist、反例、误判/死路和思
 它不负责指挥流程。具体执行顺序、工具选择、验证深度和写回位置仍由当前
 Skill 与检查层决定。
 
+## Capability Registry（新增经验先登记）
+
+`knowledge/capabilities.yaml` 是知识库治理总控，不是正文知识。
+以后新增经验、技巧、bypass、判断门、路由触发或稳定执行能力时，先登记 capability，
+再决定落到哪个具体层：
+
+| 能力类型 | 落位 |
+|---|---|
+| 技巧 / bypass / 经验 | `knowledge/cards/` 或 references |
+| 判断标准 | `tools/evidence_rubric.py` |
+| 路由触发 | `tools/context_pack.py` |
+| 下一步动作 | `tools/checkpoint.py` |
+| 稳定执行 | `tools/validation_runner.py` |
+| 结果证据 | `tools/evidence_ledger.py` |
+| 目标状态 | `tools/target_case_state.py` |
+| 跨步骤流程 | Skill / command 文案 |
+
+加载预算默认按 registry 分层执行：
+
+```text
+最多 1 张 core card
++ 最多 1 张 reference card
++ 最多 1 个 case-router / source report pointer
++ 最多 1 个 payload pack 或 playbook（仅验证阶段 gated）
+```
+
+降级不是删除：`case-router`、`out-of-target-intel`、`public-metadata` 等低优先级线索
+保留 raw artifact 和回捞路径，只是不污染主 finding 队列。
+
 ## 核心路由
 
 | 文件 | 作用 | 何时读取 |
@@ -65,27 +94,36 @@ Skill 与检查层决定。
 | 知识卡 | 作用 | 推荐关联 Skill |
 |---|---|---|
 | `knowledge/cards/signature-scope-mismatch.md` | 验签字节与消费字节不一致、密钥未绑定身份（XSW/JWT/JWKS） | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/oauth-sso-trust.md` | OAuth/SSO 邮箱信任、audience/redirect 混淆致接管 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/view-differential.md` | 校验视图 vs 执行视图的规范化/编码/截断差 | `web2-vuln-classes`, `security-arsenal` |
-| `knowledge/cards/request-smuggling.md` | HTTP 请求走私/降级/伪首部注入（含非 URL 字段 CRLF） | `web2-vuln-classes`, `security-arsenal` |
 | `knowledge/cards/path-allowlist-normalization.md` | 路径/白名单归一化绕过、弱字符串匹配安全判定 | `web2-vuln-classes`, `security-arsenal` |
-| `knowledge/cards/sanitizer-parser-xss.md` | 净化器与浏览器解析差、二次解码/二级渲染 XSS | `web2-vuln-classes`, `security-arsenal` |
-| `knowledge/cards/csp-bypass-exfil.md` | CSP 绕过与无脚本数据外带 | `web2-vuln-classes`, `security-arsenal` |
 | `knowledge/cards/connection-string-injection.md` | 连接串/驱动/协议处理器参数注入致文件读与 RCE | `web2-vuln-classes`, `security-arsenal` |
-| `knowledge/cards/runtime-primitive-override.md` | 同 realm 覆盖原语/内建方法击穿安全控制 | `web2-vuln-classes`, `mobile-pentest` |
 | `knowledge/cards/import-migration-trust.md` | 导入/恢复/迁移类功能坍塌信任边界 | `web2-vuln-classes`, `bb-methodology` |
 | `knowledge/cards/stale-derived-authz.md` | 授权/凭证派生态未随源变更失效 | `bb-methodology`, `web2-vuln-classes` |
 | `knowledge/cards/connection-reuse-key.md` | 连接/缓存复用键遗漏安全维度致降级 | `web2-vuln-classes`, `web2-recon` |
 | `knowledge/cards/redirect-header-leak.md` | 跨源重定向敏感头剥离不完整致凭据外泄 | `web2-vuln-classes`, `web2-recon` |
 | `knowledge/cards/xs-leak-oracle.md` | XS-Leak / 可观测差异侧信道 oracle | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/cli-argument-injection.md` | CLI 包装器参数/flag 注入与终端转义注入 | `web2-vuln-classes`, `cicd-security` |
-| `knowledge/cards/sqli-non-parameterizable.md` | SQLi 非参数化位置（标识符/占位符名/事务） | `web2-vuln-classes`, `security-arsenal` |
 | `knowledge/cards/type-confusion-controlflow.md` | 参数类型/形状混淆翻转框架控制流、保留键击穿 | `web2-vuln-classes`, `triage-validation` |
-| `knowledge/cards/llm-invisible-unicode.md` | AI/LLM 不可见 Unicode-tag 隐形提示注入 | `web2-vuln-classes`, `bb-methodology` |
 | `knowledge/cards/second-order-sink.md` | 二阶/延迟 sink 注入（异步模板/SSTI/反序列化） | `web2-vuln-classes`, `bb-methodology` |
-| `knowledge/cards/payment-logic-bypass.md` | 支付/计费业务逻辑绕过（取整/收款方/网关态） | `web2-vuln-classes`, `bb-methodology` |
-| `knowledge/cards/postmessage-trust.md` | postMessage origin 校验与内容信任缺陷 | `web2-vuln-classes`, `security-arsenal` |
 | `knowledge/cards/render-pipeline-ssrf.md` | 渲染/转换/导出管线作为 SSRF/RCE 攻击面 | `web2-vuln-classes`, `security-arsenal` |
+
+## 已折叠吸收 / 归档的蒸馏笔记
+
+以下蒸馏笔记已不再作为 active router card 加载：
+
+- 已折叠吸收到主卡：
+  - `oauth-sso-trust` -> `knowledge/cards/auth-sso-token-edge-cases.md`
+  - `payment-logic-bypass` -> `knowledge/cards/business-logic-state-machines.md`
+  - `postmessage-trust` -> `knowledge/cards/browser-client-boundaries.md`
+  - `request-smuggling` -> `knowledge/cards/proxy-cache-boundaries.md`
+  - `csp-bypass-exfil` -> `knowledge/cards/xss-client-injection.md`
+  - `sanitizer-parser-xss` -> `knowledge/cards/xss-client-injection.md`
+  - `sqli-non-parameterizable` -> `knowledge/cards/sqli-hidden-surfaces.md`
+- 已降级为 archive note：
+  - `llm-invisible-unicode` -> `knowledge/cards/web-llm-tool-chains.md`
+  - `runtime-primitive-override` -> `knowledge/cards/node-prototype-pollution.md`
+
+原始蒸馏笔记保留在 `knowledge/archive/distilled/`，用于复核和追溯，不参与默认路由。
 
 ## 深度附录 / Payload Packs
 

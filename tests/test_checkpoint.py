@@ -157,6 +157,27 @@ def test_checkpoint_queues_unsafe_skipped_review_from_manual_review_artifact(tmp
     assert review_action["metadata"]["artifact"] == "findings/target.com/manual_review/unsafe_skipped.txt"
 
 
+def test_checkpoint_queues_secondary_sweep_for_demoted_manual_review_leads(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/profile"])
+    manual_dir = tmp_path / "findings" / "target.com" / "manual_review"
+    manual_dir.mkdir(parents=True)
+    (manual_dir / "out_of_target_urls.txt").write_text(
+        "[OUT-OF-TARGET:idor_candidates] https://cdn.example.net/file?id=1\n",
+        encoding="utf-8",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert any(
+        "Secondary-sweep lead [out-of-target-intel]" in item
+        for item in checkpoint["target_write_back"]["next"]
+    )
+    action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "secondary-sweep")
+    assert action["command_hint"] == "review demoted raw artifact; re-promote only with concrete secret/chain evidence"
+    assert action["metadata"]["lead_category"] == "out-of-target-intel"
+    assert action["metadata"]["artifact"] == "findings/target.com/manual_review/out_of_target_urls.txt"
+
+
 def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/v1/admin/users?isAdmin=true&userId=1001",

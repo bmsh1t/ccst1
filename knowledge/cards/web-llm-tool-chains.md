@@ -9,6 +9,8 @@ trigger_tags:
   - prompt-injection
   - rag
   - tool-call
+  - invisible-unicode
+  - unicode-tag
 risk: medium
 maturity: draft
 load_priority: medium
@@ -24,6 +26,7 @@ deep_refs: []
 - 工具枚举本身是关键 baseline：要求模型列出 function/tool 名称、参数和能力，再用日志或响应确认真实 tool_call。
 - 直接让模型“说出系统提示”通常只是 Lead；高价值在工具调用、跨用户数据、越权业务动作和间接注入。
 - 间接 prompt 注入要证明攻击者可控内容进入模型上下文并影响后续受害者动作。
+- 文本过滤如果只看“人眼可见字符串”，要额外检查 Unicode tag、零宽和不可见控制字符；模型按码点消费时，可能出现人看到的与模型看到的不一致。
 
 ## 能力定位
 
@@ -78,3 +81,8 @@ deep_refs: []
 ## 晋升到 Skill / Queue 的条件
 
 - 有输入源、模型上下文、工具/数据边界和可复现影响时写入 action queue，类型 `web-llm-tool-chains`。
+
+## 源报告（on-demand）
+
+- source_report_ids: `2372363`
+- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

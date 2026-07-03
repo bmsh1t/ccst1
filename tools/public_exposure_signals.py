@@ -59,6 +59,27 @@ MNEMONIC_CUE_RE = re.compile(
     r"(?i)(wallet|mnemonic|seed(?:[-_ ]?phrase)?|recovery(?:[-_ ]?phrase)?|secret(?:[-_ ]?phrase)?)"
     r"[^\n]{0,120}['\"]([a-z]{3,12}(?: [a-z]{3,12}){11,23})['\"]"
 )
+SECURITY_TXT_FIELD_RE = re.compile(
+    r"(?im)^(contact|expires|encryption|acknowledgments|preferred-languages|policy|hiring|canonical):"
+)
+STANDARD_PUBLIC_METADATA_PATHS = {
+    "oidc-discovery": re.compile(r"/\.well-known/openid-configuration/?$", re.I),
+    "jwks": re.compile(r"(?:/\.well-known)?/jwks(?:\.json)?/?$", re.I),
+    "csaf-provider-metadata": re.compile(r"/\.well-known/csaf/provider-metadata\.json/?$", re.I),
+    "security-txt": re.compile(r"/\.well-known/security\.txt/?$", re.I),
+}
+STANDARD_PUBLIC_METADATA_KEYS = {
+    "oidc-discovery": {"issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"},
+    "jwks": {"keys"},
+    "csaf-provider-metadata": {
+        "canonical_url",
+        "distributions",
+        "metadata_version",
+        "public_openpgp_keys",
+        "publisher",
+        "role",
+    },
+}
 
 
 def _safe_json_loads(body: str) -> Any | None:
@@ -94,6 +115,12 @@ def _flatten_json_string_values(value: Any) -> list[str]:
     elif isinstance(value, str):
         items.append(value)
     return items
+
+
+def _top_level_json_keys(value: Any) -> set[str]:
+    if not isinstance(value, dict):
+        return set()
+    return {str(key) for key in value.keys()}
 
 
 def _has_strong_secret_value(*texts: str) -> bool:
@@ -170,14 +197,57 @@ def public_exposure_candidate_ready(status: int, marker_sources: dict[str, list[
     return False
 
 
+def standard_public_metadata_kind(url: str, body: str) -> str | None:
+    """识别“预期公开”的标准 metadata 端点，避免当成高价值暴露。"""
+    url_text = str(url or "")
+    body_text = str(body or "")
+    payload = _safe_json_loads(body_text)
+    top_level_keys = _top_level_json_keys(payload)
+
+    if STANDARD_PUBLIC_METADATA_PATHS["oidc-discovery"].search(url_text):
+        required = STANDARD_PUBLIC_METADATA_KEYS["oidc-discovery"]
+        if required.issubset(top_level_keys):
+            return "oidc-discovery"
+
+    if STANDARD_PUBLIC_METADATA_PATHS["jwks"].search(url_text):
+        if isinstance(payload, dict) and "keys" in payload and isinstance(payload.get("keys"), list):
+            return "jwks"
+
+    if STANDARD_PUBLIC_METADATA_PATHS["csaf-provider-metadata"].search(url_text):
+        required = STANDARD_PUBLIC_METADATA_KEYS["csaf-provider-metadata"]
+        if required.issubset(top_level_keys):
+            return "csaf-provider-metadata"
+
+    if STANDARD_PUBLIC_METADATA_PATHS["security-txt"].search(url_text):
+        if len(SECURITY_TXT_FIELD_RE.findall(body_text)) >= 2:
+            return "security-txt"
+
+    return None
+
+
+def looks_like_standard_public_metadata(url: str, body: str, *, status: int = 200) -> bool:
+    """仅在“像标准公开 metadata 且没有高价值 body 证据”时返回 True。"""
+    if int(status or 0) != 200:
+        return False
+    kind = standard_public_metadata_kind(url, body)
+    if not kind:
+        return False
+    marker_sources = public_exposure_marker_sources(url, body)
+    return not public_exposure_candidate_ready(int(status or 0), marker_sources)
+
+
 def classify_public_response(url: str, body: str, *, status: int = 200) -> dict[str, Any]:
     marker_sources = public_exposure_marker_sources(url, body)
     markers = sorted(set(marker_sources["url"]) | set(marker_sources["body"]))
+    metadata_kind = standard_public_metadata_kind(url, body)
     return {
         "status": int(status or 0),
         "markers": markers,
         "marker_sources": marker_sources,
         "candidate_ready": public_exposure_candidate_ready(int(status or 0), marker_sources),
+        "standard_public_metadata": bool(metadata_kind)
+        and not public_exposure_candidate_ready(int(status or 0), marker_sources),
+        "standard_public_metadata_kind": metadata_kind,
     }
 
 
@@ -191,6 +261,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="只根据 candidate_ready 返回退出码；ready=0，不 ready=1。",
     )
+    parser.add_argument(
+        "--standard-public-metadata",
+        action="store_true",
+        help="只根据标准公开 metadata 返回退出码；是 metadata=0，否则=1。",
+    )
     parser.add_argument("--json", action="store_true", help="输出 JSON 结果。")
     args = parser.parse_args(argv)
 
@@ -202,6 +277,8 @@ def main(argv: list[str] | None = None) -> int:
     payload = classify_public_response(args.url, body, status=args.status)
     if args.json or not args.authz_candidate:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if args.standard_public_metadata:
+        return 0 if payload["standard_public_metadata"] else 1
     return 0 if payload["candidate_ready"] else 1
 
 

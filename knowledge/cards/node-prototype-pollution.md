@@ -12,6 +12,8 @@ trigger_tags:
   - template-sink
   - vm
   - express
+  - same-realm
+  - monkey-patch
 risk: medium-to-high
 maturity: draft
 load_priority: medium
@@ -33,6 +35,7 @@ deep_refs:
 - 最小验证优先使用唯一 inert marker 和响应差异，避免污染全局状态、角色字段或持久配置。
 - 有污染 primitive 不等于 RCE；必须找到可触达 gadget / sink，例如权限字段、模板选项、
   parser setting、render config、VM eval 开关。
+- JS runtime 边界也别只盯 `__proto__`：如果校验逻辑和攻击者代码共处同一 realm，可变原语/内建方法被 monkeypatch 后，也可能把“安全检查”直接翻成无效。
 - 深挖时读取 `deep_refs` 中的 Node/prototype 深度参考，提取污染路径、gadget 思路和 sink
   建模，不照搬 RCE payload 或持久状态污染流程。
 
@@ -127,3 +130,8 @@ prototype pollution / VM sink 方向，不替代 RCE 受控影响证明。
 - 某类 Node 框架或包组合稳定出现污染 source 和 gadget。
 - 某类 JSON schema / config API 容易暴露 merge/path-set 行为。
 - 某类无 sink 的污染 primitive 多次低价值，应沉淀为 dead-end 条件。
+
+## 源报告（on-demand）
+
+- source_report_ids: `276031`, `2208860`, `188086`, `470519`, `470547`, `861744`, `187542`, `1668723`
+- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

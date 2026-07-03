@@ -426,6 +426,45 @@ class TestSurfaceRanking:
 
         assert not any(item.get("category") in {"unsafe-skipped", "action-gated"} for item in workflow_leads)
 
+    def test_demoted_manual_review_artifacts_become_soft_workflow_leads(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        findings_dir = repo_root / "findings" / "target.com" / "manual_review"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        findings_dir.mkdir(parents=True)
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [FastAPI] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/profile\n",
+            encoding="utf-8",
+        )
+        (findings_dir / "out_of_target_urls.txt").write_text(
+            "[OUT-OF-TARGET:idor_candidates] https://cdn.example.net/file?id=1\n",
+            encoding="utf-8",
+        )
+        (findings_dir / "standard_public_metadata.txt").write_text(
+            "[STANDARD-PUBLIC-METADATA] 200 https://api.target.com/.well-known/openid-configuration\n",
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
+        output = format_surface_output(ranked, "target.com")
+        workflow_leads = [
+            json.loads(item) if isinstance(item, str) else item
+            for item in ranked["workflow_leads"]
+        ]
+
+        categories = [item["category"] for item in workflow_leads]
+        assert "out-of-target-intel" in categories
+        assert "public-metadata" in categories
+        assert "findings/target.com/manual_review/out_of_target_urls.txt" in output
+        assert "findings/target.com/manual_review/standard_public_metadata.txt" in output
+
     def test_reranks_structured_scanner_findings_into_p1(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"

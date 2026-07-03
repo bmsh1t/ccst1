@@ -14,6 +14,9 @@ trigger_tags:
   - saml
   - sso
   - token-binding
+  - email-trust
+  - audience
+  - redirect-uri
 risk: medium
 maturity: draft
 load_priority: medium
@@ -33,6 +36,8 @@ deep_refs:
   流程 baseline，再做单变量差异。
 - 重点证明服务端是否信任了攻击者可控 claim、key source、redirect/state、email
   或 account-linking 输入。
+- OAuth/SSO 里最容易被低估的不是 token 语法，而是信任传递：邮箱归属、预注册
+  半账户、cross-client `aud` 和 callback 锚定错误，经常直接落到账户接管。
 - 不把公开 client_id、OAuth client_secret、用户名枚举、缺少 PKCE 文案直接升级
   为 Candidate；必须证明账号、会话、租户或权限边界影响。
 - 深挖时读取 `deep_refs` 中的 auth 深度参考，提取 token/SSO 边界差异和验证模型，
@@ -133,3 +138,8 @@ deep_refs:
 - 某类 IdP / SSO / JWT 库在目标里反复出现同类绑定缺陷。
 - 某类 callback / redirect / token refresh baseline 能稳定暴露高价值 auth 边界。
 - 某类 public client / metadata / error 差异多次低价值，应沉淀为 dead-end 条件。
+
+## 源报告（on-demand）
+
+- source_report_ids: `671406`, `1074047`, `101962`, `1889161`, `151058`, `892904`, `1923672`, `1567186`
+- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

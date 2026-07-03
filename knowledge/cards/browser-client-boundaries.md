@@ -35,6 +35,7 @@ deep_refs:
 - DOM/XSS 要证明 source 到 sink，而不是只看 URL 里有字符串。
 - DOM payload 必须匹配 sink 上下文；例如 `document.write` 写入属性时，需要先闭合属性再构造可执行节点。
 - DOM open redirect/cookie/clobbering 也要证明 source-to-sink；例如 URL 中未编码 `url=https://...` 被脚本正则取出后写入 `location.href`。
+- `postMessage` 不只是普通 DOM source：必须同时证明 sender origin 可控、listener 校验过弱，以及 message 数据真的流进敏感 sink 或高价值动作。
 
 ## 能力定位
 
@@ -167,3 +168,8 @@ deep_refs:
 ## 晋升到 Skill / Queue 的条件
 
 - 有真实浏览器证据、跨边界影响和最小 replay 时写入 action queue，类型 `browser-client-boundaries`。
+
+## 源报告（on-demand）
+
+- source_report_ids: `129873`, `398054`, `499030`, `603764`, `389108`, `423218`, `662083`, `868615`
+- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

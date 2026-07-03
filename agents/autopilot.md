@@ -131,7 +131,7 @@ Choose tools from evidence shape:
 - JS bundles: `python3 tools/js_reader.py --target <target>` plus semantic JS review.
 - Known component/version: `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, vendor advisories, NVD/GHSA/WPScan-style sources, nuclei template names.
 - Broad coverage: scanner tools after ranking or when the user asks for scanner coverage.
-- After `run_vuln_scan`, call `read_surface_summary` / `/surface` again and inspect action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact; this means side-effectful scanner templates were skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` was set, so they are not tested-clean. It does not restrict safe observed-method replay.
+- After `run_vuln_scan`, call `read_surface_summary` / `/surface` again and inspect action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact; this means side-effectful scanner templates were skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` was set, so they are not tested-clean. It does not restrict safe observed-method replay. Also perform one secondary sweep on demoted manual-review leads such as `out_of_target_urls.txt` and `standard_public_metadata.txt`; they are reversible chain/secret intel, not final rejects.
 - Exact requests: curl/local helpers when browser state is not needed.
 - Byte-exact proxy/cache/smuggling/desync: inspect `tools/smuggling_executor.py` and `tools/sender_semantics.py`; browser/urllib evidence is not enough to prove absence.
 

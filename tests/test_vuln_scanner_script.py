@@ -106,6 +106,31 @@ def test_vuln_scanner_auth_bypass_lane_uses_public_exposure_classifier():
     assert ': > "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"' in text
 
 
+def test_vuln_scanner_sensitive_path_lane_clears_output_and_skips_standard_public_metadata():
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert ': > "$FINDINGS_DIR/exposure/verified_sensitive.txt"' in text
+    assert '--standard-public-metadata' in text
+    assert 'manual_review/standard_public_metadata.txt' in text
+    assert '[STANDARD-PUBLIC-METADATA]' in text
+
+
+def test_vuln_scanner_filters_recon_url_artifacts_to_live_target_hosts():
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'build_live_scope_args()' in text
+    assert 'hosts.add(host)' in text
+    assert 'api_endpoints.target.txt' in text
+    assert 'sensitive_paths.target.txt' in text
+    assert 'idor_candidates.filtered.txt' in text
+    assert ': > "$FINDINGS_DIR/idor/idor_candidates.txt"' in text
+    assert ': > "$FINDINGS_DIR/idor/api_sequential_ids.txt"' in text
+    assert 'manual_review/out_of_target_urls.txt' in text
+    assert '[OUT-OF-TARGET:' in text
+
+
 def test_vuln_scanner_has_upstream_v5_scan_surface():
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     text = script.read_text(encoding="utf-8")

@@ -13,6 +13,9 @@ trigger_tags:
   - path-segment
   - sibling-params
   - second-order
+  - non-parameterizable
+  - order-by
+  - identifier
 risk: low-to-medium
 maturity: proven
 load_priority: high
@@ -32,6 +35,7 @@ deep_refs:
 - 路径示例是候选形态，不是固定字典：`/tenant/{id}`、`/report/{type}`、`/search/{keyword}`、slug、分类、地区码。
 - sibling 参数迁移：从 A 接口提取 `sort`、`order`、`status`、`type`、`orgId`、`tenantId` 等少量高信号字段，喂给同业务 B 接口。
 - Parser/encoding 差异：XML entity、URL/Unicode 编码、大小写、分隔符或 content-type 转换可能绕过前置过滤，解码后才进入后端 SQL 查询。
+- SQLi 也别只盯值位：`ORDER BY`、列名/表名、占位符名、事务控制和跨表字段这类非参数化位置，经常是“看起来参数化了但实际没保护到”的盲区。
 - 验证顺序：baseline -> 单变量扰动 -> 稳定差异 -> 最小证据 -> 必要时再工具化确认。
 - 只把可复现的状态码、长度、错误类型、排序、布尔响应、字段集合或 DBMS 指纹差异作为信号。
 - 单次 500、WAF/路由差异、缓存 miss 或不可复现异常不能升级为 Candidate。
@@ -158,3 +162,8 @@ deep_refs:
 - 某类请求元数据在特定框架、网关或业务系统中反复进入 SQL 查询。
 - 某类 path/routing segment 命名与数据库资源查询强相关。
 - 某类参数集可以跨 sibling endpoint 复用并触发隐藏后端分支。
+
+## 源报告（on-demand）
+
+- source_report_ids: `1663299`, `31756`, `983710`
+- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

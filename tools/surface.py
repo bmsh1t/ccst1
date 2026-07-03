@@ -222,37 +222,80 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
 
 def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> list[dict]:
     """Convert scanner manual-review artifacts into soft workflow leads."""
+    leads: list[dict] = []
+
     unsafe_path = findings_dir / "manual_review" / "unsafe_skipped.txt"
     lines = _read_lines(unsafe_path)
-    if not lines:
-        return []
-    repo_root = findings_dir.parent.parent
-    resolved_ids = _load_resolved_unsafe_skipped(repo_root, storage_key)
-    unresolved = [line for line in lines if unsafe_skipped_id(line) not in resolved_ids]
-    if not unresolved:
-        return []
-    unsafe_display_path = f"findings/{storage_key}/manual_review/unsafe_skipped.txt"
-    first_id = unsafe_skipped_id(unresolved[0])
+    if lines:
+        repo_root = findings_dir.parent.parent
+        resolved_ids = _load_resolved_unsafe_skipped(repo_root, storage_key)
+        unresolved = [line for line in lines if unsafe_skipped_id(line) not in resolved_ids]
+        if unresolved:
+            unsafe_display_path = f"findings/{storage_key}/manual_review/unsafe_skipped.txt"
+            first_id = unsafe_skipped_id(unresolved[0])
+            leads.append({
+                "source": "scanner_manual_review",
+                "title": "Side-effect-capable scanner probes were skipped",
+                "category": "action-gated",
+                "priority": "high",
+                "unsafe_skipped_id": first_id,
+                "unsafe_skipped_ids": [unsafe_skipped_id(line) for line in unresolved[:20]],
+                "artifact": unsafe_display_path,
+                "next_action": (
+                    f"review {unsafe_display_path} and only rerun with ALLOW_UNSAFE_HTTP_TESTS=1 "
+                    "when the operator explicitly opts in for those broad scanner probes; "
+                    "do not treat this as a ban on safe observed-method replay"
+                ),
+                "rationale": (
+                    "Skipped lanes may include PUT/DELETE/PATCH method tampering, upload canary POST, "
+                    "MFA/OTP POST, or forged SAML POST. Treat them as Leads, not tested-clean results."
+                ),
+                "evidence": f"{len(unresolved)} unresolved skipped probe line(s)",
+            })
 
-    return [{
-        "source": "scanner_manual_review",
-        "title": "Side-effect-capable scanner probes were skipped",
-        "category": "action-gated",
-        "priority": "high",
-        "unsafe_skipped_id": first_id,
-        "unsafe_skipped_ids": [unsafe_skipped_id(line) for line in unresolved[:20]],
-        "artifact": unsafe_display_path,
-        "next_action": (
-            f"review {unsafe_display_path} and only rerun with ALLOW_UNSAFE_HTTP_TESTS=1 "
-            "when the operator explicitly opts in for those broad scanner probes; "
-            "do not treat this as a ban on safe observed-method replay"
-        ),
-        "rationale": (
-            "Skipped lanes may include PUT/DELETE/PATCH method tampering, upload canary POST, "
-            "MFA/OTP POST, or forged SAML POST. Treat them as Leads, not tested-clean results."
-        ),
-        "evidence": f"{len(unresolved)} unresolved skipped probe line(s)",
-    }]
+    out_of_target_path = findings_dir / "manual_review" / "out_of_target_urls.txt"
+    out_of_target = _read_lines(out_of_target_path)
+    if out_of_target:
+        display_path = f"findings/{storage_key}/manual_review/out_of_target_urls.txt"
+        leads.append({
+            "source": "scanner_manual_review",
+            "title": "External URLs were demoted from target-owned scanner findings",
+            "category": "out-of-target-intel",
+            "priority": "medium",
+            "artifact": display_path,
+            "next_action": (
+                f"review {display_path}; keep them as third-party / supply-chain / integration intel, "
+                "not as direct target-owned findings"
+            ),
+            "rationale": (
+                "These URLs were observed in recon artifacts but do not belong to the currently scanned live host set. "
+                "They can still be useful as chain context or dependency hints."
+            ),
+            "evidence": f"{len(out_of_target)} demoted external URL line(s)",
+        })
+
+    public_metadata_path = findings_dir / "manual_review" / "standard_public_metadata.txt"
+    public_metadata = _read_lines(public_metadata_path)
+    if public_metadata:
+        display_path = f"findings/{storage_key}/manual_review/standard_public_metadata.txt"
+        leads.append({
+            "source": "scanner_manual_review",
+            "title": "Standard public metadata endpoints were demoted from exposure findings",
+            "category": "public-metadata",
+            "priority": "low",
+            "artifact": display_path,
+            "next_action": (
+                f"review {display_path} only when you suspect unusual field content or a chain pivot; "
+                "default posture is informative, not reportable"
+            ),
+            "rationale": (
+                "These endpoints matched known public metadata schemas (for example OIDC discovery, JWKS, CSAF, security.txt) "
+                "without separate high-value body evidence."
+            ),
+            "evidence": f"{len(public_metadata)} demoted metadata line(s)",
+        })
+
+    return leads
 
 
 def _load_target_goal_memory(repo_root: Path, target: str) -> dict:

@@ -3309,7 +3309,7 @@ CORE RULES:
 9. If Java/Tomcat/JBoss/Spring is detected → run_rce_scan + run_post_param_discovery.
 10. If login/register/dashboard/app/portal, SPA/XHR/GraphQL, or account-gated surface is present → prefer MCP-first browser-state work (chrome-devtools MCP live network, playwright MCP automation/snapshots, import via tools/browser_mcp_import.py); use run_browser_probe as the playwright-cli fallback, then read_browser_surface/read_surface_summary before reducing the surface to curl-only tests.
 11. If cached JS, browser, or repo-source artifacts exist → prefer run_source_intel first, then run_js_read/read_js_intel before repeating broad scanners. Use run_js_analysis as a deeper legacy follow-up when you specifically need direct JS-body extraction or secret-heavy review. If secrets/tokens/config leaks are plausible, add run_secret_hunt.
-12. If ranked workflow leads already exist → read_surface_summary and spend at least one focused step on the best lead before defaulting back to another broad scanner pass.
+12. If ranked workflow leads already exist → read_surface_summary and spend at least one focused step on the best lead before defaulting back to another broad scanner pass. Demoted/manual-review leads are not final rejections; treat them as reversible secondary-sweep candidates when they may hide secret, supply-chain, or chain-pivot evidence.
 13. Do not get trapped in enrichment-only loops: after one or two focused lead-driven attempts, either promote/demote the lead with evidence and widen back into the next best active lane.
 14. If API endpoints or numeric-object URLs exist → run_api_fuzz. If authenticated surfaces exist → run_cors_check.
 15. If parameterized URLs found → run_param_discovery and run_sqlmap_targeted. Use run_sqlmap_on_file for specific raw requests. For POST JSON endpoints discovered via browser_probe or js_read (REST APIs, GraphQL, login/auth/import/mutation paths), prefer run_json_inject_probe — it is surgical (≈30s for 50 endpoints), AI-callable, and tests 8 payload classes (sqli auth-bypass/error/time, ssti, cmd-injection, open-redirect, path-traversal, xss) with 3-stage detection.
@@ -3782,6 +3782,21 @@ def _bootstrap_tool_hint(memory: HuntMemory) -> dict[str, str]:
         workflow_leads = surface_state.get("workflow_leads", []) or []
         completed = set(getattr(memory, "completed_steps", []) or [])
         if workflow_leads and "read_surface_summary" in TOOL_NAMES and "read_surface_summary" not in completed:
+            demoted_categories = {"out-of-target-intel", "public-metadata"}
+            parsed_leads = []
+            for raw_item in workflow_leads:
+                if isinstance(raw_item, dict):
+                    parsed_leads.append(raw_item)
+                elif isinstance(raw_item, str):
+                    try:
+                        parsed_leads.append(json.loads(raw_item))
+                    except json.JSONDecodeError:
+                        pass
+            if any(str(item.get("category", "") or "").strip() in demoted_categories for item in parsed_leads):
+                return {
+                    "tool": "read_surface_summary",
+                    "reason": "demoted manual-review leads are available; do one secondary sweep before declaring them noise",
+                }
             return {
                 "tool": "read_surface_summary",
                 "reason": "workflow leads are available; read the ranked surface summary before picking the first focused lane",
@@ -3885,6 +3900,7 @@ def _build_agent_bootstrap_context(
     surface_state = state.get("surface") or {}
     workflow_leads = surface_state.get("workflow_leads", []) or []
     if workflow_leads:
+        has_demoted_leads = False
         lines.append("Top workflow leads:")
         for raw_item in workflow_leads[:3]:
             item = {}
@@ -3899,6 +3915,8 @@ def _build_agent_bootstrap_context(
                 continue
             priority = str(item.get("priority", "medium") or "medium").strip()
             category = str(item.get("category", "other") or "other").strip()
+            if category in {"out-of-target-intel", "public-metadata"}:
+                has_demoted_leads = True
             title = str(item.get("title", "") or "").strip()
             next_action = str(item.get("next_action", "") or "").strip()
             rationale = str(item.get("rationale", "") or "").strip()
@@ -3908,6 +3926,10 @@ def _build_agent_bootstrap_context(
                 lines.append(f"  Next: {next_action}")
             if rationale:
                 lines.append(f"  Why: {rationale[:160]}")
+        if has_demoted_leads:
+            lines.append(
+                "Secondary sweep rule: demoted/manual-review leads are reversible; inspect the raw artifact and re-promote only with concrete secret, chain, or pivot evidence."
+            )
 
     pivot_hint = str(state.get("pivot_hint", "") or "").strip()
     if pivot_hint:

@@ -9,6 +9,9 @@ trigger_tags:
   - reflected-xss
   - stored-xss
   - client-xss
+  - csp
+  - sanitizer
+  - mxss
 risk: medium
 maturity: draft
 load_priority: medium
@@ -26,6 +29,7 @@ deep_refs:
 - Payload 示例是候选形态，不是固定字典；上下文不同，闭合方式不同。
 - Candidate 必须有真实浏览器执行证据、可复现 URL/请求和影响解释。
 - CSP 不是简单“有就挡住”；要读完整 header，寻找 directive 注入、`script-src-elem` 覆盖、nonce/hash、允许脚本源、JSONP/CDN gadget、`base-uri` 和 `object-src` 缺口。
+- CSP 绕过不一定靠直接脚本执行；要额外看 nonce 复用、响应类型覆盖和无脚本外带通道（CSS/表单/资源加载）。
 - 真实目标上不默认主动测试会污染他人可见内容的 stored XSS；训练/测试资源、自己可控内容或当前轮明确授权时可以验证。
 
 ## 能力定位
@@ -46,6 +50,7 @@ deep_refs:
 - DOM：先用浏览器 DevTools/Playwright 证明 source 到 sink，再调整 payload，不把普通 DOM 反射当执行。
 - CSP/sanitizer：先看哪些标签、属性、协议、事件、模板语法被保留，再选择最小可执行形态。
 - CSP bypass：检查 header 中是否有用户可控片段；例如 `report-uri /csp-report?token=<user>` 允许注入 `;script-src-elem 'unsafe-inline'`，在 Chrome 中放行 inline `<script>`。
+- Sanitizer/parser differential：净化发生在解码前、渲染时再解码，或旁路预览/二级渲染未复用主净化器时，要把“净化视图”和“浏览器最终解析视图”拆开验证。
 - Chain：低价值 self-XSS 或后台-only XSS 只有能链到 CSRF、OAuth、admin review、cache poisoning、account linking 或敏感 token 才值得升级。
 
 ## 技巧家族 / Payload 家族
@@ -99,3 +104,8 @@ deep_refs:
 - 某类框架、sanitizer、Markdown 或 template 组合反复出现可迁移 bypass。
 - 某类低价值 XSS 能稳定链到高价值 connector。
 - 某类 context break 或 CSP 绕过在多个目标中可复用。
+
+## 源报告（on-demand）
+
+- source_report_ids: `893305`, `2279346`, `1436142`, `386334`, `199779`, `1115139`, `777241`, `1087122`, `633231`, `1125425`, `662287`, `1731349`, `1212067`, `1198517`, `824689`, `1665658`
+- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。
