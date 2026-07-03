@@ -68,14 +68,43 @@ def test_recon_engine_preserves_host_port_lab_url_seed():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
 
+    assert 'if [[ "$TARGET" == *"://"* ]]; then' in text
+    assert 'TARGET_KIND="url"' in text
     assert 'TARGET_HAS_EXPLICIT_PORT="false"' in text
+    assert 'TARGET_HTTP_SEED="$TARGET"' in text
     assert 'TARGET_HTTP_SEED="http://$TARGET"' in text
+    assert 'TARGET_EXPLICIT_PORT="$TARGET_PORT_PART"' in text
+    assert 'log_ok "URL target prepared for probing: 1 URL"' in text
+    assert '[ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]' in text
+    assert 'Skipping broad naabu scan for exact URL/explicit-port target' in text
+    assert 'Skipping broad nmap scan for exact URL/explicit-port target' in text
+    assert 'open_ports_explicit.txt' in text
+    assert '[ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]' in text
+    assert '[ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]' in text
+    assert '[ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]' in text
+    assert '[ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]' in text
     assert 'printf \'%s\\n\' "$TARGET_HTTP_SEED" > "$RECON_DIR/live/seed_urls.txt"' in text
     assert "seed_http_code=" in text
     assert "curl --noproxy '*' -sS -o /dev/null -w '%{http_code}'" in text
     assert '[ "$seed_http_code" = "401" ] || [ "$seed_http_code" = "403" ]' in text
     assert '[ -s "$RECON_DIR/live/urls.txt" ] && cat "$RECON_DIR/live/urls.txt"' in text
     assert '[ -s "$RECON_DIR/live/seed_urls.txt" ] && cat "$RECON_DIR/live/seed_urls.txt"' in text
+
+
+def test_recon_engine_filters_spa_fallback_directory_fuzz_noise():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert "detect_spa_fallback_size()" in text
+    assert "/__bbhunt_missing_${RANDOM}_${RANDOM}" in text
+    assert 'code_a=$(curl -sS -L "${BB_AUTH_ARGS[@]}" --max-time 8' in text
+    assert '[ "$code_a" = "200" ] && [ "$code_b" = "200" ]' in text
+    assert '[ "$size_a" -gt 0 ] && [ "$size_a" = "$size_b" ]' in text
+    assert 'SPA_FALLBACK_LOG="$RECON_DIR/dirs/spa_fallback.txt"' in text
+    assert 'SPA_FALLBACK_SIZE="$(detect_spa_fallback_size "$url" || true)"' in text
+    assert 'FFUF_FILTER_ARGS=(-fs "$SPA_FALLBACK_SIZE")' in text
+    assert '"${FFUF_FILTER_ARGS[@]}" \\' in text
+    assert "SPA fallback detected for $url" in text
 
 
 def test_recon_engine_js_secret_regex_handles_camelcase_and_spacing():

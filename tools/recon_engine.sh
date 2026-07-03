@@ -701,7 +701,9 @@ if [ -f "$TARGET" ] && [ -r "$TARGET" ]; then
 fi
 
 TARGET_KIND="domain"
-if python3 - "$TARGET" <<'PY' >/dev/null 2>&1
+if [[ "$TARGET" == *"://"* ]]; then
+    TARGET_KIND="url"
+elif python3 - "$TARGET" <<'PY' >/dev/null 2>&1
 import ipaddress
 import sys
 ipaddress.ip_address(sys.argv[1])
@@ -740,12 +742,32 @@ fi
 
 TARGET_HAS_EXPLICIT_PORT="false"
 TARGET_HTTP_SEED=""
-if [[ "$TARGET" != *"://"* ]] && [[ "$(printf '%s' "$TARGET" | awk -F: '{print NF-1}')" = "1" ]]; then
+TARGET_EXPLICIT_PORT=""
+if [[ "$TARGET" == *"://"* ]]; then
+    TARGET_HTTP_SEED="$TARGET"
+    TARGET_EXPLICIT_PORT="$(python3 - "$TARGET" <<'PY' 2>/dev/null || true
+from urllib.parse import urlparse
+import sys
+
+parsed = urlparse(sys.argv[1])
+try:
+    port = parsed.port
+except ValueError:
+    port = None
+if parsed.hostname and port is not None:
+    print(port)
+PY
+)"
+    if [ -n "$TARGET_EXPLICIT_PORT" ]; then
+        TARGET_HAS_EXPLICIT_PORT="true"
+    fi
+elif [[ "$(printf '%s' "$TARGET" | awk -F: '{print NF-1}')" = "1" ]]; then
     TARGET_HOST_PART="${TARGET%:*}"
     TARGET_PORT_PART="${TARGET##*:}"
     if [[ -n "$TARGET_HOST_PART" ]] && [[ "$TARGET_PORT_PART" =~ ^[0-9]+$ ]] && [ "$TARGET_PORT_PART" -ge 1 ] && [ "$TARGET_PORT_PART" -le 65535 ]; then
         TARGET_HAS_EXPLICIT_PORT="true"
         TARGET_HTTP_SEED="http://$TARGET"
+        TARGET_EXPLICIT_PORT="$TARGET_PORT_PART"
     fi
 fi
 
@@ -916,6 +938,10 @@ except: pass
     cat "$RECON_DIR/subdomains/"*.txt 2>/dev/null | sort -u > "$RECON_DIR/subdomains/all.txt" || true
     TOTAL_SUBS=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)
     log_ok "Total unique subdomains: $TOTAL_SUBS"
+elif [ "$TARGET_KIND" = "url" ]; then
+    printf '%s\n' "$TARGET" > "$DISCOVERY_HOSTS_FILE"
+    HTTPX_INPUT_FILE="$DISCOVERY_HOSTS_FILE"
+    log_ok "URL target prepared for probing: 1 URL"
 elif [ "$TARGET_KIND" = "ip" ]; then
     printf '%s\n' "$TARGET" > "$DISCOVERY_HOSTS_FILE"
     HTTPX_INPUT_FILE="$DISCOVERY_HOSTS_FILE"
@@ -1261,7 +1287,12 @@ emit_claude_hint_actions \
 echo ""
 log_info "Phase 3: Port Scanning"
 
-if command -v naabu &>/dev/null; then
+if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
+    log_warn "Skipping broad naabu scan for exact URL/explicit-port target"
+    if [ -n "$TARGET_EXPLICIT_PORT" ]; then
+        printf '%s/open\n' "$TARGET_EXPLICIT_PORT" > "$RECON_DIR/ports/open_ports_explicit.txt"
+    fi
+elif command -v naabu &>/dev/null; then
     NAABU_TARGETS_FILE="$RECON_DIR/ports/naabu_targets.txt"
     NAABU_OUTPUT_FILE="$RECON_DIR/ports/naabu.txt"
     NAABU_MAX_TARGETS=$([ "$QUICK_MODE" = "--quick" ] && echo 20 || echo 100)
@@ -1320,7 +1351,9 @@ else
     log_warn "naabu not installed — skipping"
 fi
 
-if command -v nmap &>/dev/null; then
+if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
+    log_warn "Skipping broad nmap scan for exact URL/explicit-port target"
+elif command -v nmap &>/dev/null; then
     if [ "$TARGET_KIND" = "domain" ]; then
         log_step "Running nmap (top 1000 ports) on $TARGET..."
         nmap -sV --top-ports 1000 -T4 --open "$TARGET" \
@@ -1352,7 +1385,7 @@ else
     log_warn "nmap not installed — skipping"
 fi
 
-cat "$RECON_DIR/ports/open_ports.txt" "$RECON_DIR/ports/open_ports_naabu.txt" 2>/dev/null \
+cat "$RECON_DIR/ports/open_ports.txt" "$RECON_DIR/ports/open_ports_naabu.txt" "$RECON_DIR/ports/open_ports_explicit.txt" 2>/dev/null \
     | awk 'NF' | sort -u > "$RECON_DIR/ports/open_ports_all.txt" || true
 PORTS_OPEN=$(wc -l < "$RECON_DIR/ports/open_ports_all.txt" 2>/dev/null | tr -d ' ' || echo 0)
 emit_claude_hint \
@@ -1372,7 +1405,7 @@ log_info "Phase 4: URL Collection"
 # Archive sources are domain-keyed; for IP/CIDR targets they either error
 # out or hang on external lookups. Skip gracefully to keep IP/local-lab runs
 # fast and offline.
-if [ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ]; then
+if [ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]; then
     log_warn "Skipping gau/wayback for $TARGET_KIND target — historical URL archives are domain-keyed"
 elif command -v gau &>/dev/null; then
     log_step "Running gau (historical URLs)..."
@@ -1400,7 +1433,7 @@ if [ -n "$WAYMORE_INPUT" ] && command -v waymore &>/dev/null; then
         -lcc 1 \
         2>/dev/null || true
     log_done "waymore: $(wc -l < "$RECON_DIR/urls/waymore.txt" 2>/dev/null || echo 0) URLs"
-elif [ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ]; then
+elif [ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]; then
     log_warn "Skipping waymore for $TARGET_KIND target — historical URL collection expects a domain"
 elif [ -n "$WAYMORE_INPUT" ]; then
     log_warn "waymore not installed — skipping historical URL collection"
@@ -1625,6 +1658,28 @@ log_info "Phase 6: Directory Fuzzing"
 WORDLIST_DIR="$BASE_DIR/wordlists"
 LEGACY_WORDLIST_DIR="$BASE_DIR/tools/wordlists"
 
+detect_spa_fallback_size() {
+    local base_url="$1"
+    local rand_a rand_b tmp_a tmp_b code_a code_b size_a size_b
+
+    rand_a="/__bbhunt_missing_${RANDOM}_${RANDOM}"
+    rand_b="/__bbhunt_missing_${RANDOM}_${RANDOM}"
+    tmp_a="$(mktemp)"
+    tmp_b="$(mktemp)"
+
+    code_a=$(curl -sS -L "${BB_AUTH_ARGS[@]}" --max-time 8 -o "$tmp_a" -w '%{http_code}' "${base_url%/}${rand_a}" 2>/dev/null || true)
+    code_b=$(curl -sS -L "${BB_AUTH_ARGS[@]}" --max-time 8 -o "$tmp_b" -w '%{http_code}' "${base_url%/}${rand_b}" 2>/dev/null || true)
+    size_a=$(wc -c < "$tmp_a" 2>/dev/null | tr -d ' ' || echo 0)
+    size_b=$(wc -c < "$tmp_b" 2>/dev/null | tr -d ' ' || echo 0)
+    rm -f "$tmp_a" "$tmp_b"
+
+    if [ "$code_a" = "200" ] && [ "$code_b" = "200" ] && [ "$size_a" -gt 0 ] && [ "$size_a" = "$size_b" ]; then
+        printf '%s\n' "$size_a"
+        return 0
+    fi
+    return 1
+}
+
 if command -v ffuf &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     # Select wordlist
     WORDLIST=""
@@ -1644,13 +1699,23 @@ if command -v ffuf &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
         # Fuzz top 5 live hosts
         FUZZ_COUNT=0
         MAX_FUZZ=$([ "$QUICK_MODE" = "--quick" ] && echo 2 || echo 5)
+        SPA_FALLBACK_LOG="$RECON_DIR/dirs/spa_fallback.txt"
+        : > "$SPA_FALLBACK_LOG"
 
         while IFS= read -r url && [ "$FUZZ_COUNT" -lt "$MAX_FUZZ" ]; do
             domain=$(echo "$url" | sed 's|https\?://||;s|[/:].*||')
+            SPA_FALLBACK_SIZE="$(detect_spa_fallback_size "$url" || true)"
+            FFUF_FILTER_ARGS=()
+            if [ -n "$SPA_FALLBACK_SIZE" ]; then
+                FFUF_FILTER_ARGS=(-fs "$SPA_FALLBACK_SIZE")
+                printf '%s\t%s\n' "$url" "$SPA_FALLBACK_SIZE" >> "$SPA_FALLBACK_LOG"
+                log_warn "SPA fallback detected for $url (unknown paths return 200 size=$SPA_FALLBACK_SIZE); ffuf will filter that size"
+            fi
             log_step "Fuzzing: $url"
             ffuf -u "${url}/FUZZ" \
                 -w "$WORDLIST" \
                 -mc 200,301,302,403,405 \
+                "${FFUF_FILTER_ARGS[@]}" \
                 -t "$THREADS" \
                 -rate "$RATE_LIMIT" \
                 -sf \
