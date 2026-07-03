@@ -188,6 +188,61 @@ def test_sqli_result_diff_ordinary_search_delta_is_not_finding(monkeypatch, tmp_
     assert summary["candidate_ready"] is False
 
 
+def test_marker_replay_creates_bundle_and_ledger(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body="rendered value: CCST_MARKER_42"),
+    )
+
+    summary = validation_runner.run_marker_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/render?name={{safe_calc}}",
+        expect_marker="CCST_MARKER_42",
+        finding_id="RCE-MARKER-1",
+        vuln_class="SSTI",
+        repeat=2,
+        browser_observed=True,
+    )
+
+    key = _target_key("https://target.test")
+    bundle = tmp_path / "evidence" / key / "validation" / "RCE-MARKER-1"
+    ledger = tmp_path / "memory" / "evidence" / key / "ledger.jsonl"
+    assert summary["lane"] == "marker_replay"
+    assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+    assert all(run["marker_found"] for run in summary["runs"])
+    assert (bundle / "1.request.txt").is_file()
+    assert (bundle / "2.response.txt").is_file()
+    assert (bundle / "summary.json").is_file()
+    entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
+    assert entry["vuln_class"] == "RCE"
+    assert entry["result"] == "tested_finding"
+    assert entry["browser_observed"] is True
+
+
+def test_marker_replay_without_marker_is_clean(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body="ordinary render output"),
+    )
+
+    summary = validation_runner.run_marker_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/render?name=test",
+        expect_marker="CCST_MARKER_42",
+        finding_id="RCE-MARKER-CLEAN",
+        vuln_class="RCE",
+    )
+
+    assert summary["result"] == "tested_clean"
+    assert summary["candidate_ready"] is False
+    assert summary["runs"][0]["marker_found"] is False
+
+
 def test_idor_skeleton_writes_required_actor_pair_artifacts(tmp_path):
     summary = validation_runner.run_idor_skeleton(
         repo_root=tmp_path,

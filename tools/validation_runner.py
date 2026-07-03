@@ -5,6 +5,7 @@ Validation Runner v1 intentionally stays small:
 
 - authz-public-exposure: one anonymous/read-only request, sensitive exposure check.
 - sqli-result-diff: baseline vs single-variable perturbation, structural diff.
+- marker-replay: exact request replay plus inert marker evidence check.
 - idor-skeleton: create a two-actor evidence bundle skeleton without guessing sessions.
 
 AI 仍负责选择 hypothesis、解释业务影响、决定是否升级/降级；本工具只负责稳定
@@ -223,6 +224,7 @@ def _record_ledger_if_needed(
     notes: str,
     browser_observed: bool,
     redline_checked: bool,
+    state_changing: bool | None = None,
 ) -> dict[str, Any] | None:
     if no_ledger:
         return None
@@ -239,7 +241,7 @@ def _record_ledger_if_needed(
         result=result,
         browser_observed=browser_observed,
         replayed=True,
-        state_changing=method.upper() not in SAFE_METHODS,
+        state_changing=bool(state_changing) if state_changing is not None else method.upper() not in SAFE_METHODS,
         redline_checked=redline_checked,
         evidence_ref=evidence_ref,
         notes=notes,
@@ -486,6 +488,128 @@ def run_sqli_result_diff(
     return summary
 
 
+def run_marker_replay(
+    *,
+    repo_root: Path,
+    target: str,
+    url: str,
+    expect_marker: str,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    body: str = "",
+    timeout: int = 10,
+    finding_id: str = "",
+    repeat: int = 1,
+    vuln_class: str = "RCE",
+    no_ledger: bool = False,
+    browser_observed: bool = False,
+    state_changing: bool = False,
+    redline_checked: bool = True,
+) -> dict[str, Any]:
+    """Replay an exact request and require an inert marker in every response.
+
+    This lane deliberately does not generate payloads. Claude/operator chooses
+    the hypothesis and exact safe marker request; the runner only handles stable
+    replay, evidence artifacts, rubric, and ledger output.
+    """
+    marker = str(expect_marker or "")
+    if not marker:
+        raise ValueError("expect_marker is required")
+    finding_id = finding_id or _default_finding_id("marker-replay", url)
+    bundle = _bundle_dir(repo_root, target, finding_id)
+    repeat = max(1, int(repeat or 1))
+    method_u = method.upper()
+    runs: list[dict[str, Any]] = []
+
+    for idx in range(1, repeat + 1):
+        response = request_once(url=url, method=method_u, headers=headers, body=body, timeout=timeout)
+        prefix = "" if repeat == 1 else f"{idx}."
+        request_path = bundle / f"{prefix}request.txt"
+        response_path = bundle / f"{prefix}response.txt"
+        _write_text(request_path, response["request_text"])
+        _write_text(response_path, response["response_text"])
+        marker_found = marker in response["body"]
+        runs.append({
+            "iteration": idx,
+            "url": url,
+            "method": method_u,
+            "status": response["status"],
+            "marker_found": marker_found,
+            "artifacts": {
+                "request": _rel(request_path, repo_root),
+                "response": _rel(response_path, repo_root),
+            },
+            "snapshot": snapshot_response(response["status"], response["headers"], response["body"]),
+        })
+
+    candidate_ready = all(bool(run["marker_found"]) for run in runs)
+    result = "tested_finding" if candidate_ready else "tested_clean"
+    finding = {
+        "type": vuln_class,
+        "url": url,
+        "summary": (
+            f"exact marker replay for {vuln_class}; marker_present={candidate_ready}; "
+            f"repeat={repeat}; method={method_u}"
+        ),
+        "raw": (
+            "rce-poc controlled marker exact request safe proof repeated"
+            if candidate_ready
+            else "exact marker replay did not show expected inert marker"
+        ),
+        "confidence": "confirmed" if candidate_ready else "medium",
+    }
+    rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding, vuln_type=vuln_class))
+    summary_path = bundle / "summary.json"
+    evidence_ref = _rel(summary_path, repo_root)
+    notes = (
+        f"Validation runner marker-replay for {vuln_class}: "
+        f"marker_present={candidate_ready}, repeat={repeat}, method={method_u}."
+    )
+    ledger = _record_ledger_if_needed(
+        repo_root=repo_root,
+        no_ledger=no_ledger,
+        target=target,
+        endpoint=url,
+        method=method_u,
+        vuln_class=vuln_class,
+        actor="anonymous",
+        object_scope="none",
+        variant="replay",
+        result=result,
+        source="validation-runner:marker-replay",
+        evidence_ref=evidence_ref,
+        notes=notes,
+        browser_observed=browser_observed,
+        redline_checked=redline_checked,
+        state_changing=state_changing,
+    )
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "lane": "marker_replay",
+        "target": canonical_target_value(target),
+        "finding_id": finding_id,
+        "url": url,
+        "method": method_u,
+        "vuln_class": vuln_class,
+        "generated_at": now_utc(),
+        "result": result,
+        "candidate_ready": candidate_ready,
+        "expect_marker": marker,
+        "repeat": repeat,
+        "runs": runs,
+        "evidence_rubric": rubric,
+        "ledger_record": ledger,
+        "ai_next": {
+            "hypothesis": "exact request causes server-side evaluation/execution observable through an inert marker",
+            "next_action": "If marker is stable, use /validate to assess execution context and bounded impact; if absent, refine the hypothesis or downgrade.",
+            "stop_condition": "Expected inert marker is absent, unstable across repeats, or only appears in client-side/static reflection without execution context.",
+        },
+    }
+    summary["summary_path"] = _rel(summary_path, repo_root)
+    _write_json(summary_path, summary)
+    return summary
+
+
 def run_idor_skeleton(
     *,
     repo_root: Path,
@@ -561,6 +685,21 @@ def build_parser() -> argparse.ArgumentParser:
     sqli.add_argument("--browser-observed", action="store_true")
     sqli.add_argument("--no-ledger", action="store_true")
 
+    marker = sub.add_parser("marker-replay", help="Replay exact request and check for an inert marker")
+    add_common(marker)
+    marker.add_argument("--url", required=True)
+    marker.add_argument("--expect-marker", required=True)
+    marker.add_argument("--method", default="GET")
+    marker.add_argument("--header", action="append", default=[])
+    marker.add_argument("--body", default="")
+    marker.add_argument("--timeout", type=int, default=10)
+    marker.add_argument("--repeat", type=int, default=1)
+    marker.add_argument("--vuln-class", default="RCE")
+    marker.add_argument("--browser-observed", action="store_true")
+    marker.add_argument("--state-changing", action="store_true")
+    marker.add_argument("--redline-checked", action="store_true", default=True)
+    marker.add_argument("--no-ledger", action="store_true")
+
     idor = sub.add_parser("idor-skeleton", help="Create a two-actor IDOR validation skeleton")
     add_common(idor)
     idor.add_argument("--endpoint", required=True)
@@ -598,6 +737,24 @@ def main(argv: list[str] | None = None) -> int:
             repeat=args.repeat,
             no_ledger=args.no_ledger,
             browser_observed=args.browser_observed,
+        )
+    elif args.lane == "marker-replay":
+        summary = run_marker_replay(
+            repo_root=repo_root,
+            target=args.target,
+            url=args.url,
+            expect_marker=args.expect_marker,
+            method=args.method,
+            headers=parse_headers(args.header),
+            body=args.body,
+            timeout=args.timeout,
+            finding_id=args.finding_id,
+            repeat=args.repeat,
+            vuln_class=args.vuln_class,
+            no_ledger=args.no_ledger,
+            browser_observed=args.browser_observed,
+            state_changing=args.state_changing,
+            redline_checked=args.redline_checked,
         )
     elif args.lane == "idor-skeleton":
         summary = run_idor_skeleton(

@@ -106,6 +106,16 @@ python3 tools/validation_runner.py sqli-result-diff \
   --repeat 2 \
   --browser-observed
 
+# RCE/SSTI/template/command-injection style safe proof:
+# replay the exact operator-provided request and require an inert marker
+python3 tools/validation_runner.py marker-replay \
+  --target <target> \
+  --url '<exact-url>' \
+  --expect-marker '<inert-marker>' \
+  --vuln-class RCE \
+  --repeat 2 \
+  --browser-observed
+
 # IDOR/Authz: generate the two-actor bundle; fill with owner/peer evidence
 python3 tools/validation_runner.py idor-skeleton \
   --target <target> \
