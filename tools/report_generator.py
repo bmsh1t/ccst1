@@ -18,12 +18,75 @@ from datetime import datetime
 from pathlib import Path
 
 try:
+    from action_queue import ACTIVE_STATUSES, load_queue, resolve_action
     from finding_index import load_finding_index, update_finding_status
 except ImportError:  # pragma: no cover - package import path
+    from tools.action_queue import ACTIVE_STATUSES, load_queue, resolve_action
     from tools.finding_index import load_finding_index, update_finding_status
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
+
+
+def _report_action_matches(action, finding, report_file):
+    """Return whether an active queue item represents this generated report."""
+    finding_id = str(finding.get("id") or "").strip()
+    url = str(finding.get("url") or "").strip()
+    report_file = str(report_file or "").strip()
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    haystack = " ".join(
+        str(value or "")
+        for value in (
+            action.get("id"),
+            action.get("source_id"),
+            action.get("type"),
+            action.get("evidence"),
+            action.get("next_question"),
+            action.get("action"),
+            action.get("command_hint"),
+            metadata.get("finding_id"),
+            metadata.get("url"),
+            metadata.get("report_file"),
+        )
+    )
+    if finding_id and finding_id in haystack:
+        return True
+    if str(action.get("type") or "").lower() == "report":
+        return bool((url and url in haystack) or (report_file and report_file in haystack))
+    return False
+
+
+def sync_report_action_queue(target_name, finding, report_file):
+    """Best-effort close report queue items after a report draft is generated."""
+    try:
+        repo_root = Path(BASE_DIR)
+        queue = load_queue(repo_root, str(target_name or ""))
+        matched = None
+        for action in queue.get("actions", []):
+            if not isinstance(action, dict):
+                continue
+            if str(action.get("status") or "queued") not in ACTIVE_STATUSES:
+                continue
+            if _report_action_matches(action, finding, report_file):
+                matched = action
+                break
+        if not matched:
+            return {"status": "skipped", "reason": "no matching active report action"}
+        resolved = resolve_action(
+            repo_root,
+            target=str(target_name or ""),
+            action_id=str(matched.get("id") or ""),
+            status="reported",
+            result=f"report_file={report_file}",
+            notes=f"finding_id={finding.get('id', '')}",
+        )
+        return {
+            "status": "updated",
+            "id": resolved.get("id", ""),
+            "action_status": resolved.get("status", ""),
+        }
+    except Exception as exc:  # pragma: no cover - queue sync must not block reports
+        return {"status": "error", "error": str(exc)}
 
 # Severity mappings
 SEVERITY_MAP = {
@@ -669,6 +732,7 @@ def process_findings_dir(findings_dir):
                     report_file=report_file,
                     report_id=report_id,
                 )
+            queue_sync = sync_report_action_queue(target_name, finding, report_file)
 
             total_reports += 1
             report_index.append({
@@ -681,6 +745,7 @@ def process_findings_dir(findings_dir):
                 "type": vuln_type,
                 "source_file": finding.get("source_file", ""),
                 "confidence": finding.get("confidence", ""),
+                "queue_sync": queue_sync,
             })
 
         return write_report_index(report_dir, target_name, total_reports, report_index)

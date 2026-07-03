@@ -157,6 +157,162 @@ def test_authz_public_exposure_mnemonic_like_secret_promotes(monkeypatch, tmp_pa
     assert summary["evidence_rubric"]["status"] == "candidate-ready"
 
 
+def test_authz_public_exposure_cli_syncs_finding_and_action_queue(monkeypatch, tmp_path, capsys):
+    target = "https://target.test"
+    url = "https://target.test/rest/admin/application-configuration"
+    key = _target_key(target)
+    findings_dir = tmp_path / "findings" / key
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "target": target,
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "AUTHZ-SYNC",
+                        "type": "auth_bypass",
+                        "severity": "high",
+                        "confidence": "medium",
+                        "url": url,
+                        "validation_status": "unvalidated",
+                        "report_status": "not_generated",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    queue_dir = tmp_path / "state" / key
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": target,
+                "actions": [
+                    {
+                        "id": "AQ-0001",
+                        "status": "queued",
+                        "type": "validation",
+                        "priority": 100,
+                        "evidence": f"Run /validate for finding AUTHZ-SYNC on {url}",
+                        "next_question": "Execute this validation.",
+                        "action": f"Validate AUTHZ-SYNC at {url}",
+                        "command_hint": "/validate",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_request_once(**kwargs):
+        body = json.dumps(
+            {
+                "config": {
+                    "application": {"name": "Shop"},
+                    "googleOauth": {"clientId": "client.apps.example"},
+                }
+            }
+        )
+        return _fake_response(kwargs["url"], body=body)
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    rc = validation_runner.main(
+        [
+            "authz-public-exposure",
+            "--repo-root",
+            str(tmp_path),
+            "--target",
+            target,
+            "--url",
+            url,
+            "--finding-id",
+            "AUTHZ-SYNC",
+            "--browser-observed",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+    findings = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert summary["result"] == "tested_finding"
+    assert summary["sync"]["finding"]["status"] == "updated"
+    assert summary["sync"]["action_queue"]["status"] == "updated"
+    finding = findings["findings"][0]
+    assert finding["validation_status"] == "validated"
+    assert finding["confidence"] == "confirmed"
+    assert finding["validation_summary"].endswith("summary.json")
+    assert finding["vuln_class"] == "Authz"
+    assert queue["actions"][0]["status"] == "validated"
+
+
+def test_authz_public_exposure_cli_syncs_ranked_surface_action(monkeypatch, tmp_path, capsys):
+    target = "https://target.test"
+    url = "https://target.test/rest/admin/application-version"
+    key = _target_key(target)
+    queue_dir = tmp_path / "state" / key
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": target,
+                "actions": [
+                    {
+                        "id": "AQ-0002",
+                        "status": "queued",
+                        "type": "ranked-surface",
+                        "priority": 60,
+                        "evidence": f"Continue top ranked surface {url}",
+                        "next_question": "Replay the ranked surface.",
+                        "action": f"Replay {url} and classify it.",
+                        "command_hint": "focused hunt on ranked P1/P2 surface",
+                        "metadata": {"url": url, "endpoint": "/rest/admin/application-version"},
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body='{"version":"1.2.3"}'),
+    )
+
+    rc = validation_runner.main(
+        [
+            "authz-public-exposure",
+            "--repo-root",
+            str(tmp_path),
+            "--target",
+            target,
+            "--url",
+            url,
+            "--finding-id",
+            "RANKED-VERSION",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+    queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert summary["result"] == "tested_clean"
+    assert summary["sync"]["finding"]["status"] == "skipped"
+    assert summary["sync"]["action_queue"]["status"] == "updated"
+    assert queue["actions"][0]["status"] == "tested"
+
+
 def test_authz_public_exposure_does_not_promote_path_only_admin_marker(monkeypatch, tmp_path):
     monkeypatch.setattr(
         validation_runner,

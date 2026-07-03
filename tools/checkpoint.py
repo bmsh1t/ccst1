@@ -21,6 +21,12 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.action_queue import (
+        FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
+        _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
+        _dedupe_key as action_queue_dedupe_key,
+        load_queue as load_action_queue,
+    )
     from tools.autopilot_state import build_autopilot_state
     from tools.context_pack import build_context_pack
     from tools.coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix
@@ -30,6 +36,12 @@ try:
     from tools.target_case_state import summary as build_case_state_summary
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from action_queue import (  # type: ignore
+        FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
+        _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
+        _dedupe_key as action_queue_dedupe_key,
+        load_queue as load_action_queue,
+    )
     from autopilot_state import build_autopilot_state  # type: ignore
     from context_pack import build_context_pack  # type: ignore
     from coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix  # type: ignore
@@ -91,6 +103,26 @@ def _json_list(items: object) -> list[dict]:
 
 def _matrix_gaps(matrix: dict, min_weight: float = 3.0) -> list[dict]:
     return high_value_gaps_from_matrix(matrix, min_weight=min_weight)
+
+
+def _actionable_coverage_gaps(coverage_gaps: list[dict]) -> list[dict]:
+    """Return coverage gaps with concrete semantic fit for immediate action.
+
+    The coverage matrix intentionally tracks broad high-impact cells, but the
+    action queue should not be driven by generic "endpoint × vuln class" pairs
+    with no path/parameter/source/browser signal.  Keep those gaps visible in
+    coverage statistics; only promote semantically relevant cells into the
+    next-action loop.
+    """
+    actionable: list[dict] = []
+    for gap in coverage_gaps:
+        try:
+            relevance = int(gap.get("relevance_score", 0) or 0)
+        except (TypeError, ValueError):
+            relevance = 0
+        if relevance > 0:
+            actionable.append(gap)
+    return actionable
 
 
 def _coverage_gap_validation_path(gap: dict) -> str:
@@ -417,7 +449,7 @@ def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case
         return "refresh-recon"
     if _unsafe_leads(state):
         return "checkpoint"
-    if coverage_gaps:
+    if _actionable_coverage_gaps(coverage_gaps):
         return "continue"
     if actor_gaps:
         return "continue"
@@ -779,7 +811,7 @@ def _next_proposals(
                 )
             )
 
-    for gap in coverage_gaps[:2]:
+    for gap in _actionable_coverage_gaps(coverage_gaps)[:2]:
         relevance = ""
         if int(gap.get("relevance_score", 0) or 0) > 0:
             reason = str(gap.get("relevance_reason") or "").strip()
@@ -1095,6 +1127,35 @@ def _build_next_action_queue(next_items: list[str], target: str = "") -> list[di
     return queue
 
 
+def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[dict]) -> list[dict]:
+    """Remove checkpoint actions already closed in persistent action_queue state."""
+    try:
+        existing = load_action_queue(repo_root, target)
+    except Exception:  # pragma: no cover - checkpoint should stay best-effort
+        return items
+
+    final_keys = {
+        str(action.get("dedupe_key") or action_queue_dedupe_key(action))
+        for action in existing.get("actions", [])
+        if isinstance(action, dict)
+        and str(action.get("status") or "") in ACTION_QUEUE_FINAL_STATUSES
+    }
+    if not final_keys:
+        return items
+
+    filtered: list[dict] = []
+    for item in items:
+        try:
+            queue_shape = action_queue_checkpoint_item_to_action(target, item)
+            key = str(queue_shape.get("dedupe_key") or action_queue_dedupe_key(queue_shape))
+        except Exception:  # pragma: no cover - keep item if matching fails
+            filtered.append(item)
+            continue
+        if key not in final_keys:
+            filtered.append(item)
+    return filtered
+
+
 def _dead_end_proposals(state: dict, coverage_gaps: list[dict]) -> list[str]:
     if state.get("has_recon") and not coverage_gaps:
         stats = _surface_stats(state)
@@ -1285,7 +1346,13 @@ def build_checkpoint(
         next_items = [case_state_proposal, *next_items]
     elif case_state_seed_proposal:
         next_items = [case_state_seed_proposal, *next_items]
-    next_action_queue = _build_next_action_queue(next_items, resolved_target)
+    next_action_queue = _filter_final_action_queue_items(
+        repo,
+        resolved_target,
+        _build_next_action_queue(next_items, resolved_target),
+    )
+    if decision in {"continue", "hunt", "enrich", "checkpoint"} and not next_action_queue:
+        decision = "handoff"
     dead_ends = _dead_end_proposals(state, gaps)
     handoff = _handoff_summary(
         target=resolved_target,

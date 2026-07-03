@@ -5,7 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from checkpoint import _build_next_action_queue, _next_proposals, apply_target_memory, build_checkpoint, format_checkpoint
+from action_queue import _checkpoint_item_to_action, _dedupe_key, save_queue
+from checkpoint import (
+    _build_next_action_queue,
+    _filter_final_action_queue_items,
+    _next_proposals,
+    apply_target_memory,
+    build_checkpoint,
+    format_checkpoint,
+)
 from evidence_ledger import record_entry
 from target_case_state import add_actor, add_backlog, add_object, add_session
 
@@ -203,6 +211,85 @@ def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
     assert coverage_action["metadata"]["validation_path"]
     assert "Capture the exact method, URL, headers, body" in coverage_action["metadata"]["validation_path"]
     assert (tmp_path / "evidence" / "target.com" / "coverage_matrix.json").is_file()
+
+
+def test_checkpoint_does_not_queue_zero_relevance_coverage_gap():
+    proposals = _next_proposals(
+        state={"has_recon": True, "recommended_targets": []},
+        coverage_gaps=[
+            {
+                "endpoint": "/rest/admin",
+                "vuln_class": "RCE",
+                "weight": 5.0,
+                "relevance_score": 0,
+                "relevance_reason": "",
+            }
+        ],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={},
+        evidence_summary={},
+    )
+    queue = _build_next_action_queue(proposals, "target.com")
+
+    assert not any("Cover high-value matrix gap" in item for item in proposals)
+    assert not any(item["type"] == "coverage-gap" for item in queue)
+
+
+def test_checkpoint_still_queues_semantically_relevant_coverage_gap():
+    proposals = _next_proposals(
+        state={"has_recon": True, "recommended_targets": []},
+        coverage_gaps=[
+            {
+                "endpoint": "/rest/order-history",
+                "vuln_class": "IDOR",
+                "weight": 3.0,
+                "relevance_score": 3,
+                "relevance_reason": "object reference path/parameter",
+            }
+        ],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={},
+        evidence_summary={},
+    )
+    queue = _build_next_action_queue(proposals, "target.com")
+
+    assert any("Cover high-value matrix gap" in item for item in proposals)
+    coverage_action = next(item for item in queue if item["type"] == "coverage-gap")
+    assert coverage_action["metadata"]["relevance_score"] == 3
+
+
+def test_checkpoint_filters_actions_already_final_in_action_queue(tmp_path):
+    item = {
+        "id": "A1",
+        "priority": 72,
+        "type": "secondary-sweep",
+        "status": "ready",
+        "action": "Secondary-sweep lead [public-metadata]: Standard public metadata endpoints were demoted. Artifact=findings/target.com/manual_review/standard_public_metadata.txt.",
+        "command_hint": "review demoted raw artifact; re-promote only with concrete secret/chain evidence",
+        "redline_required": False,
+        "stop_condition": "record tested, blocked, dead-end, candidate, or validated finding before moving to the next queued action",
+        "metadata": {
+            "lead_category": "public-metadata",
+            "artifact": "findings/target.com/manual_review/standard_public_metadata.txt",
+        },
+    }
+    action = _checkpoint_item_to_action("target.com", item)
+    action["id"] = "AQ-0001"
+    action["status"] = "dead-end"
+    action["dedupe_key"] = _dedupe_key(action)
+    save_queue(
+        tmp_path,
+        "target.com",
+        {
+            "schema_version": 1,
+            "target": "target.com",
+            "actions": [action],
+        },
+    )
+
+    assert _filter_final_action_queue_items(tmp_path, "target.com", [item]) == []
 
 
 def test_checkpoint_surfaces_actor_matrix_gaps(tmp_path):

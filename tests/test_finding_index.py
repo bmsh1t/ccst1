@@ -103,6 +103,70 @@ def test_report_generator_consumes_structured_findings(monkeypatch, tmp_path):
     assert updated_index["findings"][0]["report_file"] == str(report_path)
 
 
+def test_report_generator_syncs_report_action_queue(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "example.com",
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "sqli_report_sync",
+                        "type": "sqli",
+                        "category": "sqli",
+                        "title": "SQLi on item",
+                        "summary": "verified SQLi",
+                        "url": "https://example.com/item?id=1",
+                        "severity": "high",
+                        "confidence": "confirmed",
+                        "validation_status": "validated",
+                        "report_status": "not_generated",
+                        "source_file": "sqli/timebased_candidates.txt",
+                        "raw": "[SQLI-POC-VERIFIED] dialect=mysql param=1 url=https://example.com/item?id=1",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    queue_dir = tmp_path / "state" / "example.com"
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "example.com",
+                "actions": [
+                    {
+                        "id": "AQ-0001",
+                        "status": "queued",
+                        "type": "report",
+                        "priority": 95,
+                        "evidence": "Draft report for validated finding sqli_report_sync; do not submit without human review.",
+                        "next_question": "Generate the report draft.",
+                        "action": "Draft report for validated finding sqli_report_sync.",
+                        "command_hint": "/report",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report_generator, "BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+    queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
+
+    assert total == 1
+    assert index[0]["queue_sync"]["status"] == "updated"
+    assert queue["actions"][0]["status"] == "reported"
+    assert "report_file=" in queue["actions"][0]["result"]
+
+
 def test_report_generator_uses_validation_summary_for_auth_bypass_narrative(monkeypatch, tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)

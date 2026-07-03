@@ -31,8 +31,10 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.action_queue import ACTIVE_STATUSES, load_queue, resolve_action
     from tools.evidence_ledger import record_entry
     from tools.evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
+    from tools.finding_index import update_finding_status
     from tools.public_exposure_signals import (
         public_exposure_candidate_ready as shared_public_exposure_candidate_ready,
         public_exposure_marker_sources as shared_public_exposure_marker_sources,
@@ -42,8 +44,10 @@ try:
     from tools.target_case_state import complete_backlog, load_case_state
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from action_queue import ACTIVE_STATUSES, load_queue, resolve_action  # type: ignore
     from evidence_ledger import record_entry  # type: ignore
     from evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence  # type: ignore
+    from finding_index import update_finding_status  # type: ignore
     from public_exposure_signals import (  # type: ignore
         public_exposure_candidate_ready as shared_public_exposure_candidate_ready,
         public_exposure_marker_sources as shared_public_exposure_marker_sources,
@@ -61,6 +65,25 @@ SQLI_PROBE_RE = re.compile(
     r"waitfor|pg_sleep|information_schema|null|true|false)\b|\$(?:ne|gt|regex|where)\b|\{\s*\"?\$)",
     re.I,
 )
+
+RUNNER_RESULT_TO_FINDING_STATUS = {
+    "tested_finding": "validated",
+    "candidate": "partial",
+    "tested_clean": "rejected",
+    "dead_end": "rejected",
+}
+RUNNER_RESULT_TO_QUEUE_STATUS = {
+    "tested_finding": "validated",
+    "candidate": "candidate",
+    "tested_clean": "tested",
+    "dead_end": "dead-end",
+}
+LANE_TO_VULN_CLASS = {
+    "authz_public_exposure": "Authz",
+    "sqli_result_diff": "SQLi",
+    "marker_replay": "RCE",
+    "idor_actor_pair": "IDOR",
+}
 
 
 def now_utc() -> str:
@@ -99,6 +122,160 @@ def _rel(path: Path, repo_root: Path) -> str:
         return str(path.relative_to(repo_root))
     except ValueError:
         return str(path)
+
+
+def _summary_path(summary: dict[str, Any], repo_root: Path) -> Path | None:
+    raw = str(summary.get("summary_path") or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = repo_root / path
+    return path
+
+
+def _findings_dir(repo_root: Path, target: str) -> Path:
+    key = target_storage_key(canonical_target_value(target))
+    return repo_root / "findings" / key
+
+
+def _endpoint_markers(url: str) -> list[str]:
+    """Return full URL and path markers for matching validation queue items."""
+    raw = str(url or "").strip()
+    markers = [raw] if raw else []
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme and parsed.netloc:
+        path_query = parsed.path or "/"
+        if parsed.query:
+            path_query = f"{path_query}?{parsed.query}"
+        markers.extend([path_query, parsed.path or "/"])
+    return [item for item in markers if item]
+
+
+def _queue_action_matches_summary(action: dict[str, Any], summary: dict[str, Any]) -> bool:
+    """Match active action-queue validation items to a runner result.
+
+    The queue may have been created from checkpoint prose, so matching must work
+    even when the only stable identifier is the finding id embedded in text.
+    """
+    finding_id = str(summary.get("finding_id") or "").strip()
+    markers = _endpoint_markers(str(summary.get("url") or summary.get("endpoint") or ""))
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    haystack = " ".join(
+        str(value or "")
+        for value in (
+            action.get("id"),
+            action.get("source_id"),
+            action.get("type"),
+            action.get("evidence"),
+            action.get("next_question"),
+            action.get("action"),
+            action.get("command_hint"),
+            metadata.get("finding_id"),
+            metadata.get("endpoint"),
+            metadata.get("url"),
+        )
+    )
+    if finding_id and finding_id in haystack:
+        return True
+    action_type = str(action.get("type") or "").lower()
+    if action_type in {"validation", "candidate-evidence-gap", "ranked-surface", "coverage-gap"}:
+        return any(marker and marker in haystack for marker in markers)
+    return False
+
+
+def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
+    target = str(summary.get("target") or "").strip()
+    finding_id = str(summary.get("finding_id") or "").strip()
+    result = str(summary.get("result") or "").strip()
+    status = RUNNER_RESULT_TO_FINDING_STATUS.get(result)
+    if not target or not finding_id or not status:
+        return {"status": "skipped", "reason": "missing target/finding/result or non-final runner result"}
+
+    findings_dir = _findings_dir(repo_root, target)
+    summary_path = _summary_path(summary, repo_root)
+    vuln_class = str(summary.get("vuln_class") or "").strip() or LANE_TO_VULN_CLASS.get(
+        str(summary.get("lane") or ""), ""
+    )
+    updated = update_finding_status(
+        findings_dir,
+        finding_id,
+        validation_status=status,
+        validation_summary=str(summary_path) if summary_path else str(summary.get("summary_path") or ""),
+        validated_at=str(summary.get("generated_at") or now_utc()),
+        vuln_class=vuln_class,
+        confidence="confirmed" if result == "tested_finding" else "",
+    )
+    if not updated:
+        return {
+            "status": "skipped",
+            "reason": "finding not found",
+            "findings_dir": str(findings_dir),
+            "finding_id": finding_id,
+        }
+    return {
+        "status": "updated",
+        "findings_dir": str(findings_dir),
+        "finding_id": finding_id,
+        "validation_status": updated.get("validation_status", ""),
+    }
+
+
+def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
+    target = str(summary.get("target") or "").strip()
+    result = str(summary.get("result") or "").strip()
+    queue_status = RUNNER_RESULT_TO_QUEUE_STATUS.get(result)
+    if not target or not queue_status:
+        return {"status": "skipped", "reason": "missing target or non-final runner result"}
+
+    queue = load_queue(repo_root, target)
+    matched: dict[str, Any] | None = None
+    for action in queue.get("actions", []):
+        if not isinstance(action, dict):
+            continue
+        if str(action.get("status") or "queued") not in ACTIVE_STATUSES:
+            continue
+        if _queue_action_matches_summary(action, summary):
+            matched = action
+            break
+    if not matched:
+        return {"status": "skipped", "reason": "no matching active action"}
+
+    summary_ref = str(summary.get("summary_path") or "")
+    resolved = resolve_action(
+        repo_root,
+        target=target,
+        action_id=str(matched.get("id") or ""),
+        status=queue_status,
+        result=f"validation-runner-result={result}; summary={summary_ref}",
+        notes=f"runner={summary.get('lane', '')}",
+    )
+    return {
+        "status": "updated",
+        "id": resolved.get("id", ""),
+        "action_status": resolved.get("status", ""),
+    }
+
+
+def sync_runner_artifacts(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
+    """Best-effort sync from deterministic runner output into autopilot state.
+
+    Runner evidence is valuable only if `/autopilot` stops asking for the same
+    validation again.  Keep this best-effort: evidence generation must not fail
+    just because findings.json or action_queue state is absent.
+    """
+    if str(summary.get("result") or "") == "skeleton":
+        return {"status": "skipped", "reason": "skeleton result does not close validation state"}
+    updates: dict[str, Any] = {}
+    try:
+        updates["finding"] = _sync_finding_status(summary, repo_root=repo_root)
+    except Exception as exc:  # pragma: no cover - defensive state sync
+        updates["finding"] = {"status": "error", "error": str(exc)}
+    try:
+        updates["action_queue"] = _sync_action_queue(summary, repo_root=repo_root)
+    except Exception as exc:  # pragma: no cover - defensive state sync
+        updates["action_queue"] = {"status": "error", "error": str(exc)}
+    return {"status": "updated", **updates}
 
 
 def parse_headers(values: list[str] | None) -> dict[str, str]:
@@ -969,6 +1146,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--target", required=True)
         p.add_argument("--finding-id", default="")
         p.add_argument("--repo-root", default=str(BASE_DIR))
+        p.add_argument("--no-sync", action="store_true", help="Do not sync runner result into findings/action_queue state")
 
     authz = sub.add_parser("authz-public-exposure", help="Validate anonymous public admin/config exposure")
     add_common(authz)
@@ -1160,6 +1338,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:  # pragma: no cover - argparse guards this
         raise ValueError(f"unknown lane: {args.lane}")
+    if not getattr(args, "no_sync", False):
+        summary["sync"] = sync_runner_artifacts(summary, repo_root=repo_root)
+        summary_path = _summary_path(summary, repo_root)
+        if summary_path is not None:
+            _write_json(summary_path, summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
