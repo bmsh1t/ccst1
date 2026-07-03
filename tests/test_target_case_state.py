@@ -70,6 +70,49 @@ def test_add_actor_session_object_and_summary(tmp_path):
     assert summary["objects"] == 1
 
 
+def test_add_session_imports_multi_header_auth_file(tmp_path):
+    target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(
+        json.dumps({
+            "cookie": "sid=owner",
+            "headers": ["X-CSRF-Token: csrf-owner", "X-Tenant: tenant-a"],
+        }),
+        encoding="utf-8",
+    )
+
+    rc = target_case_state.main([
+        "add-session",
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        TARGET,
+        "--session",
+        "sess_user_a",
+        "--actor",
+        "user_a",
+        "--auth-file",
+        str(auth_file),
+        "--bearer",
+        "owner-token",
+        "--validity",
+        "valid",
+    ])
+    state = target_case_state.load_case_state(tmp_path, TARGET)
+    session = state["sessions"]["sess_user_a"]
+
+    assert rc == 0
+    assert session["validity"] == "valid"
+    assert session["headers"] == {
+        "X-CSRF-Token": "csrf-owner",
+        "X-Tenant": "tenant-a",
+        "Cookie": "sid=owner",
+        "Authorization": "Bearer owner-token",
+    }
+    assert session["header_name"] in session["headers"]
+    assert session["header_value"] == session["headers"][session["header_name"]]
+
+
 def test_add_session_requires_existing_actor(tmp_path):
     with pytest.raises(ValueError, match="actor does not exist"):
         target_case_state.add_session(

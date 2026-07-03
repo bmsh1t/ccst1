@@ -308,7 +308,9 @@ def _existing_session_actors(state: dict[str, Any]) -> set[str]:
     sessions = state.get("sessions") if isinstance(state.get("sessions"), dict) else {}
     actors: set[str] = set()
     for session in sessions.values():
-        if isinstance(session, dict) and session.get("actor") and session.get("header_value"):
+        headers = session.get("headers") if isinstance(session, dict) and isinstance(session.get("headers"), dict) else {}
+        has_header = bool(headers) or bool(isinstance(session, dict) and session.get("header_value"))
+        if isinstance(session, dict) and session.get("actor") and has_header:
             actors.add(str(session.get("actor")))
     return actors
 

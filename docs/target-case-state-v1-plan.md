@@ -670,6 +670,38 @@ existing objects/backlogs are not duplicated
 checkpoint emits case-state seed opportunity when no active backlog exists
 ```
 
+### Phase F：Multi-Header Session v1
+
+状态：已实施。
+
+范围：
+
+```text
+tools/target_case_state.py
+tools/validation_runner.py
+tools/case_state_seed.py
+tests/test_target_case_state.py
+tests/test_validation_runner.py
+```
+
+成功标准：
+
+```text
+case_state session can store the full auth header set from .private/auth JSON
+and validation_runner --from-case-state replays all headers, not just one
+Cookie/Bearer header
+```
+
+已验证：
+
+```text
+target_case_state.py add-session --auth-file .private/user-a.json
+stores Cookie + Authorization + CSRF/tenant/custom headers under session.headers
+
+validation_runner.py idor-actor-pair --from-case-state resolves owner/peer
+multi-header sessions and preserves the complete actor context for replay
+```
+
 ## 12. 测试规划
 
 新增：

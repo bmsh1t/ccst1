@@ -242,10 +242,18 @@ def _case_state_session_header(state: dict[str, Any], actor: str) -> tuple[str, 
             continue
         if str(session.get("validity") or "unknown").lower() in invalid:
             continue
+        headers = session.get("headers") if isinstance(session.get("headers"), dict) else {}
+        normalized = {
+            str(name).strip(): str(value).strip()
+            for name, value in headers.items()
+            if str(name).strip() and str(value).strip()
+        }
         name = str(session.get("header_name") or "").strip()
         value = str(session.get("header_value") or "").strip()
         if name and value:
-            return str(session_id), {name: value}
+            normalized.setdefault(name, value)
+        if normalized:
+            return str(session_id), normalized
     raise ValueError(f"case_state session missing for actor: {actor}")
 
 

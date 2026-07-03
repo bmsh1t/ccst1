@@ -22,8 +22,10 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.auth_session import AuthSession
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from auth_session import AuthSession  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -92,6 +94,17 @@ def _ensure_shape(state: dict[str, Any], target: str) -> dict[str, Any]:
     ):
         if not isinstance(state.get(key), type(default)):
             state[key] = default
+    for session in state["sessions"].values():
+        if not isinstance(session, dict):
+            continue
+        headers = session.get("headers")
+        if not isinstance(headers, dict):
+            headers = {}
+        header_name = str(session.get("header_name") or "").strip()
+        header_value = str(session.get("header_value") or "").strip()
+        if header_name and header_value and header_name not in headers:
+            headers[header_name] = header_value
+        session["headers"] = {str(k): str(v) for k, v in headers.items() if str(k).strip() and str(v).strip()}
     return state
 
 
@@ -140,6 +153,39 @@ def _quote(value: Any) -> str:
     return shlex.quote(str(value or ""))
 
 
+def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str]:
+    """Normalize a header map through AuthSession so CR/LF and malformed names fail fast."""
+    session = AuthSession()
+    for name, value in (headers or {}).items():
+        if str(name or "").strip() and str(value or "").strip():
+            session.add_header(f"{name}: {value}")
+    return session.headers_dict()
+
+
+def _primary_header(headers: dict[str, str]) -> tuple[str, str]:
+    for name, value in headers.items():
+        if str(name or "").strip() and str(value or "").strip():
+            return str(name).strip(), str(value).strip()
+    return "", ""
+
+
+def _infer_session_kind(kind: str, headers: dict[str, str]) -> str:
+    explicit = str(kind or "unknown").strip() or "unknown"
+    if explicit != "unknown":
+        return explicit
+    names = {name.lower() for name in headers}
+    if "authorization" in names:
+        value = str(headers.get("Authorization") or headers.get("authorization") or "")
+        if value.lower().startswith("bearer "):
+            return "bearer"
+        return "custom_header"
+    if "cookie" in names:
+        return "cookie"
+    if headers:
+        return "custom_header"
+    return "unknown"
+
+
 def add_actor(
     repo_root: str | Path,
     target: str,
@@ -176,6 +222,7 @@ def add_session(
     kind: str = "unknown",
     header_name: str = "",
     header_value: str = "",
+    headers: dict[str, str] | None = None,
     source: str = "manual",
     validity: str = "unknown",
     notes: str = "",
@@ -185,20 +232,35 @@ def add_session(
     actor_id = _require_non_empty(actor, "actor")
     if actor_id not in state["actors"]:
         raise ValueError(f"actor does not exist: {actor_id}")
-    kind_value = str(kind or "unknown").strip() or "unknown"
+    current = state["sessions"].get(session_id, {})
+    current_headers = current.get("headers") if isinstance(current.get("headers"), dict) else {}
+    header_map = _normalize_headers({str(k): str(v) for k, v in current_headers.items()})
+    kind_hint = str(kind or "unknown").strip() or "unknown"
+    if not header_name and kind_hint == "bearer":
+        header_name = "Authorization"
+    if not header_name and kind_hint == "cookie":
+        header_name = "Cookie"
+    incoming_headers = _normalize_headers(headers)
+    header_map.update(incoming_headers)
+    if header_value:
+        if not header_name and kind_hint == "bearer":
+            header_name = "Authorization"
+        if not header_name and kind_hint == "cookie":
+            header_name = "Cookie"
+        header_map.update(_normalize_headers({header_name or "Authorization": header_value}))
+    elif header_name and current.get("header_value"):
+        header_map.update(_normalize_headers({header_name: str(current.get("header_value"))}))
+    header_name_value, header_value_value = _primary_header(header_map)
+    kind_value = _infer_session_kind(kind, header_map)
     if kind_value not in SESSION_KINDS:
         raise ValueError(f"unknown session kind: {kind_value}. Allowed: {', '.join(sorted(SESSION_KINDS))}")
-    if not header_name and kind_value == "bearer":
-        header_name = "Authorization"
-    if not header_name and kind_value == "cookie":
-        header_name = "Cookie"
     ts = now_utc()
-    current = state["sessions"].get(session_id, {})
     state["sessions"][session_id] = {
         "actor": actor_id,
         "kind": kind_value,
-        "header_name": str(header_name or current.get("header_name", "") or ""),
-        "header_value": str(header_value or current.get("header_value", "") or ""),
+        "header_name": header_name_value,
+        "header_value": header_value_value,
+        "headers": header_map,
         "source": str(source or current.get("source", "manual") or "manual"),
         "validity": str(validity or current.get("validity", "unknown") or "unknown"),
         "last_checked": current.get("last_checked", ""),
@@ -330,7 +392,7 @@ def _session_for_actor(state: dict[str, Any], actor: str) -> tuple[str, dict[str
             continue
         if str(session.get("validity") or "unknown").lower() in SESSION_INVALID:
             continue
-        if not session.get("header_name") or not session.get("header_value"):
+        if not session.get("headers") and (not session.get("header_name") or not session.get("header_value")):
             continue
         return str(session_id), session
     return None, None
@@ -625,6 +687,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--kind", default="unknown")
     p.add_argument("--header-name", default="")
     p.add_argument("--header-value", default="")
+    p.add_argument("--header", action="append", default=[], help="Additional 'Name: value' header; repeatable")
+    p.add_argument("--auth-file", default="", help="AuthSession JSON/.env file to import into this actor session")
+    p.add_argument("--cookie", default="", help="Shorthand for Cookie header")
+    p.add_argument("--bearer", default="", help="Shorthand for Authorization: Bearer header")
+    p.add_argument("--api-key", default="", help="Shorthand for X-API-Key header")
     p.add_argument("--source", default="manual")
     p.add_argument("--validity", default="unknown")
     p.add_argument("--notes", default="")
@@ -686,6 +753,13 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "add-actor":
         _print_json(add_actor(repo_root, args.target, actor=args.actor, role=args.role, label=args.label, notes=args.notes))
     elif args.cmd == "add-session":
+        imported_headers = AuthSession.from_sources(
+            file=args.auth_file or None,
+            headers=args.header,
+            cookie=args.cookie or None,
+            bearer=args.bearer or None,
+            api_key=args.api_key or None,
+        ).headers_dict()
         _print_json(add_session(
             repo_root,
             args.target,
@@ -694,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:
             kind=args.kind,
             header_name=args.header_name,
             header_value=args.header_value,
+            headers=imported_headers,
             source=args.source,
             validity=args.validity,
             notes=args.notes,

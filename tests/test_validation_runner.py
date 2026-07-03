@@ -425,6 +425,53 @@ def test_idor_actor_pair_from_case_state_cli_resolves_headers_and_object(monkeyp
     assert summary["case_state_ref"]["peer_session_id"] == "sess_user_b"
 
 
+def test_idor_actor_pair_from_case_state_resolves_multi_header_sessions(tmp_path):
+    target = "https://target.test"
+    target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
+    target_case_state.add_actor(tmp_path, target, actor="user_b", role="user")
+    target_case_state.add_session(
+        tmp_path,
+        target,
+        session="sess_user_a",
+        actor="user_a",
+        headers={"Cookie": "sid=owner", "X-CSRF-Token": "csrf-owner"},
+        validity="valid",
+    )
+    target_case_state.add_session(
+        tmp_path,
+        target,
+        session="sess_user_b",
+        actor="user_b",
+        headers={"Cookie": "sid=peer", "X-CSRF-Token": "csrf-peer"},
+        validity="valid",
+    )
+    target_case_state.add_object(
+        tmp_path,
+        target,
+        object_ref="order_123",
+        object_type="order",
+        owner_actor="user_a",
+        endpoint="https://target.test/api/orders/123",
+        private_marker="victim@example.test",
+    )
+
+    resolved = validation_runner.resolve_idor_actor_pair_from_case_state(
+        repo_root=tmp_path,
+        target=target,
+        object_ref="order_123",
+        peer_actor="user_b",
+    )
+
+    assert resolved["owner_headers"] == {
+        "Cookie": "sid=owner",
+        "X-CSRF-Token": "csrf-owner",
+    }
+    assert resolved["peer_headers"] == {
+        "Cookie": "sid=peer",
+        "X-CSRF-Token": "csrf-peer",
+    }
+
+
 def test_idor_actor_pair_from_case_state_requires_peer_session(tmp_path):
     target = "https://target.test"
     target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")

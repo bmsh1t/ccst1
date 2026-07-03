@@ -99,6 +99,19 @@ python3 tools/target_case_state.py next --target <target>
 python3 tools/checkpoint.py --target <target> --json
 ```
 
+When sessions already live in `.private/*.json`, import the complete header set
+instead of copying only one Cookie/Bearer header. Case-state-backed runners will
+replay all stored headers, including CSRF, tenant, org, and custom auth headers.
+
+```bash
+python3 tools/target_case_state.py add-session \
+  --target <target> \
+  --actor user_a \
+  --session sess_user_a \
+  --auth-file .private/user-a.json \
+  --validity valid
+```
+
 Use the result as a priority hint, not a hard gate:
 
 - `run_validation_runner` / `case-state-validation` -> run the exact
