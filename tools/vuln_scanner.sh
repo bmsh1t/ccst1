@@ -215,6 +215,7 @@ PY
 }
 
 mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,metasploit,manual_review,.tmp}
+: > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
 
 echo "============================================="
 echo "  Vulnerability Scanner — $TARGET"
@@ -1259,12 +1260,16 @@ fi
 # 8c: Auth bypass checks — test unauthenticated access to API endpoints
 if ! skip_has auth_bypass && [ -s "$RECON_DIR/urls/api_endpoints.txt" ]; then
     log_step "Testing API endpoints for unauthenticated access..."
+    : > "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"
     while IFS= read -r api_url; do
         STATUS=$(curl -s "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$api_url" 2>/dev/null || echo "000")
-        BODY_SIZE=$(curl -s "${BB_AUTH_ARGS[@]}" --max-time 5 "$api_url" 2>/dev/null | wc -c | tr -d ' ')
+        BODY=$(curl -s "${BB_AUTH_ARGS[@]}" --max-time 5 "$api_url" 2>/dev/null || true)
+        BODY_SIZE=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
         # Flag endpoints returning 200 with substantial body (not just error pages)
         if [ "$STATUS" = "200" ] && [ "$BODY_SIZE" -gt 500 ]; then
-            echo "$STATUS $BODY_SIZE $api_url" >> "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"
+            if printf '%s' "$BODY" | python3 "$BASE_DIR/tools/public_exposure_signals.py" --url "$api_url" --status "$STATUS" --authz-candidate >/dev/null 2>&1; then
+                echo "$STATUS $BODY_SIZE $api_url" >> "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"
+            fi
         fi
     done < <(head -30 "$RECON_DIR/urls/api_endpoints.txt")
     UNAUTH_COUNT=$(count_findings "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt")
@@ -1338,6 +1343,10 @@ if ! skip_has auth_flow; then
     fi
 else
     log_warn "Skipping auth-flow review checks (--skip)"
+fi
+
+if [ ! -s "$FINDINGS_DIR/manual_review/unsafe_skipped.txt" ]; then
+    rm -f "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
 fi
 
 # ============================================================

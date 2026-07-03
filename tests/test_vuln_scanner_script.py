@@ -79,6 +79,7 @@ def test_vuln_scanner_gates_unsafe_method_probes_by_default():
     assert "require_approval" in text
     assert "Skipping $label" in text
     assert "manual_review/unsafe_skipped.txt" in text
+    assert ': > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"' in text
     assert 'scanner_probe_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes"' in text
     assert 'scanner_probe_guard "POST" "$upload_url" "upload canary probe"' in text
     assert 'scanner_probe_guard "POST" "$BASE" "MFA rate-limit probe"' in text
@@ -94,6 +95,15 @@ def test_vuln_scanner_supports_auth_session_env():
     assert '"${BB_AUTH_ARGS[@]}"' in text
     assert 'nuclei -l "$ORDERED_SCAN"' in text
     assert 'curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null --max-time 20 "$url"' in text
+
+
+def test_vuln_scanner_auth_bypass_lane_uses_public_exposure_classifier():
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'public_exposure_signals.py' in text
+    assert '--authz-candidate' in text
+    assert ': > "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"' in text
 
 
 def test_vuln_scanner_has_upstream_v5_scan_surface():

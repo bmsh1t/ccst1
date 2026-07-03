@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""匿名公开响应里的高价值暴露信号提取。
+
+这个模块只做一件事：把“匿名可读接口”继续区分成
+1) 值得进入 authz/public exposure 验证的高价值候选
+2) 普通公开 catalog / metadata / challenge 列表
+
+目标不是全量秘密扫描，而是给 scanner / validation_runner 提供稳定、
+可复用、低误报的 body-backed 信号。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from typing import Any
+
+URL_MARKERS = {
+    "admin": re.compile(r"\badmin(?:istrat(?:or|ion))?\b", re.I),
+    "configuration": re.compile(r"\bapplication[-_/ ]?configuration\b|\bconfig(?:uration)?\b|\bsettings\b", re.I),
+    "oauth": re.compile(r"\boauth|client[_-]?id|redirect[_-]?uri|authorizedredirects\b", re.I),
+    "security-answer": re.compile(r"\bsecurity(?:question|answer)s?\b", re.I),
+    "secret-like": re.compile(
+        r"\b(secret|token|api[_-]?key|password(?:hash)?|private[-_ ]?key|seed(?:[-_ ]?phrase)?|mnemonic)\b",
+        re.I,
+    ),
+}
+
+BODY_PATH_MARKERS = {
+    "admin": re.compile(r"\badmin(?:istrat(?:or|ion))?\b", re.I),
+    "configuration": re.compile(r"\bconfig(?:uration)?\b|\bsettings\b", re.I),
+    "oauth": re.compile(r"\boauth|clientid|redirecturi|authorizedredirects\b", re.I),
+    "security-answer": re.compile(r"\bsecurity(?:question|answer)\b", re.I),
+    "secret-like": re.compile(
+        r"\b(secret|token|api[_-]?key|password(?:hash)?|privatekey|seedphrase|mnemonic)\b",
+        re.I,
+    ),
+}
+
+RAW_ASSIGNMENT_MARKERS = {
+    "admin": re.compile(r"['\"]?admin(?:istrat(?:or|ion))?['\"]?\s*[:=]", re.I),
+    "configuration": re.compile(
+        r"['\"]?(?:application[-_/ ]?configuration|config(?:uration)?|settings)['\"]?\s*[:=]",
+        re.I,
+    ),
+    "oauth": re.compile(r"['\"]?(?:oauth|client[_-]?id|redirect[_-]?uri|authorizedredirects)['\"]?\s*[:=]", re.I),
+    "security-answer": re.compile(r"['\"]?security(?:question|answer)['\"]?\s*[:=]", re.I),
+    "secret-like": re.compile(
+        r"['\"]?(?:secret|token|api[_-]?key|password(?:hash)?|private[_-]?key|seed(?:[-_ ]?phrase)?|mnemonic)['\"]?\s*[:=]",
+        re.I,
+    ),
+}
+
+JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+PEM_PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+MNEMONIC_CUE_RE = re.compile(
+    r"(?i)(wallet|mnemonic|seed(?:[-_ ]?phrase)?|recovery(?:[-_ ]?phrase)?|secret(?:[-_ ]?phrase)?)"
+    r"[^\n]{0,120}['\"]([a-z]{3,12}(?: [a-z]{3,12}){11,23})['\"]"
+)
+
+
+def _safe_json_loads(body: str) -> Any | None:
+    try:
+        return json.loads(body)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _flatten_json_paths(value: Any, prefix: str = "") -> list[str]:
+    """把 JSON key path 展平成稳定文本，避免扫整段自然语言 description。"""
+    items: list[str] = []
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            key_text = str(key)
+            path = f"{prefix}.{key_text}" if prefix else key_text
+            items.append(path)
+            items.extend(_flatten_json_paths(inner, path))
+    elif isinstance(value, list):
+        for inner in value:
+            items.extend(_flatten_json_paths(inner, prefix))
+    return items
+
+
+def _flatten_json_string_values(value: Any) -> list[str]:
+    items: list[str] = []
+    if isinstance(value, dict):
+        for inner in value.values():
+            items.extend(_flatten_json_string_values(inner))
+    elif isinstance(value, list):
+        for inner in value:
+            items.extend(_flatten_json_string_values(inner))
+    elif isinstance(value, str):
+        items.append(value)
+    return items
+
+
+def _has_strong_secret_value(*texts: str) -> bool:
+    for text in texts:
+        candidate = str(text or "")
+        if not candidate:
+            continue
+        if JWT_RE.search(candidate) or PEM_PRIVATE_KEY_RE.search(candidate) or MNEMONIC_CUE_RE.search(candidate):
+            return True
+    return False
+
+
+def public_exposure_marker_sources(url: str, body: str) -> dict[str, list[str]]:
+    """返回 url/body 各自命中的 marker。
+
+    关键策略：
+    - url 允许保留弱信号（admin/config/...），用于路由
+    - body 不扫整段自然语言；优先看 JSON key path / 赋值语境 / 强秘密值形态
+    """
+    url_text = str(url or "")
+    body_text = str(body or "")
+    url_hits = {
+        name for name, pattern in URL_MARKERS.items()
+        if pattern.search(url_text)
+    }
+
+    body_hits: set[str] = set()
+
+    payload = _safe_json_loads(body_text)
+    if payload is not None:
+        path_text = "\n".join(_flatten_json_paths(payload)).replace("_", "").replace("-", "").replace(" ", "")
+        for name, pattern in BODY_PATH_MARKERS.items():
+            if pattern.search(path_text):
+                body_hits.add(name)
+        string_values = _flatten_json_string_values(payload)
+    else:
+        string_values = []
+
+    for name, pattern in RAW_ASSIGNMENT_MARKERS.items():
+        if pattern.search(body_text):
+            body_hits.add(name)
+
+    if _has_strong_secret_value("\n".join(string_values), body_text):
+        body_hits.add("secret-like")
+
+    return {
+        "url": sorted(url_hits),
+        "body": sorted(body_hits),
+    }
+
+
+def public_exposure_markers(url: str, body: str) -> list[str]:
+    sources = public_exposure_marker_sources(url, body)
+    return sorted(set(sources["url"]) | set(sources["body"]))
+
+
+def public_exposure_candidate_ready(status: int, marker_sources: dict[str, list[str]]) -> bool:
+    """只在 body-backed 高价值信号足够时才判定为候选。"""
+    if int(status or 0) != 200:
+        return False
+
+    body_markers = set(marker_sources.get("body") or [])
+    url_markers = set(marker_sources.get("url") or [])
+    all_markers = body_markers | url_markers
+
+    if "secret-like" in body_markers:
+        return True
+    if "security-answer" in body_markers:
+        return True
+    if "configuration" in body_markers and all_markers & {"admin", "oauth"}:
+        return True
+    if "oauth" in body_markers and all_markers & {"admin", "configuration"}:
+        return True
+    return False
+
+
+def classify_public_response(url: str, body: str, *, status: int = 200) -> dict[str, Any]:
+    marker_sources = public_exposure_marker_sources(url, body)
+    markers = sorted(set(marker_sources["url"]) | set(marker_sources["body"]))
+    return {
+        "status": int(status or 0),
+        "markers": markers,
+        "marker_sources": marker_sources,
+        "candidate_ready": public_exposure_candidate_ready(int(status or 0), marker_sources),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="提取匿名公开响应里的高价值暴露信号。")
+    parser.add_argument("--url", required=True)
+    parser.add_argument("--status", type=int, default=200)
+    parser.add_argument("--body-file", default="", help="可选：从文件读取 body；默认从 stdin 读。")
+    parser.add_argument(
+        "--authz-candidate",
+        action="store_true",
+        help="只根据 candidate_ready 返回退出码；ready=0，不 ready=1。",
+    )
+    parser.add_argument("--json", action="store_true", help="输出 JSON 结果。")
+    args = parser.parse_args(argv)
+
+    if args.body_file:
+        body = open(args.body_file, encoding="utf-8", errors="replace").read()
+    else:
+        body = sys.stdin.read()
+
+    payload = classify_public_response(args.url, body, status=args.status)
+    if args.json or not args.authz_candidate:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if payload["candidate_ready"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

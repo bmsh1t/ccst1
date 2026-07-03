@@ -86,6 +86,75 @@ def test_authz_public_exposure_without_sensitive_marker_is_clean(monkeypatch, tm
     assert summary["candidate_ready"] is False
 
 
+def test_authz_public_exposure_challenge_catalog_keywords_do_not_promote(monkeypatch, tmp_path):
+    body = json.dumps(
+        {
+            "status": "success",
+            "data": [
+                {
+                    "name": "Admin Section",
+                    "description": "Reset the password of a user and learn about OAuth security questions.",
+                    "difficulty": 2,
+                    "tutorialOrder": 8,
+                    "mitigationUrl": "https://owasp.example/challenge",
+                    "hasCodingChallenge": True,
+                    "ChallengeDependencies": [],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body=body),
+    )
+
+    summary = validation_runner.run_authz_public_exposure(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/Challenges",
+        finding_id="AUTHZ-CHALLENGE-CLEAN",
+    )
+
+    assert summary["markers"] == []
+    assert summary["marker_sources"]["body"] == []
+    assert summary["result"] == "tested_clean"
+    assert summary["candidate_ready"] is False
+
+
+def test_authz_public_exposure_mnemonic_like_secret_promotes(monkeypatch, tmp_path):
+    body = json.dumps(
+        {
+            "status": "success",
+            "data": [
+                {
+                    "comment": (
+                        'Please send the wallet seed phrase: '
+                        '"purpose betray marriage blame crunch monitor spin slide donate sport lift clutch"'
+                    )
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body=body),
+    )
+
+    summary = validation_runner.run_authz_public_exposure(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/Feedbacks",
+        finding_id="AUTHZ-SECRET-FINDING",
+    )
+
+    assert "secret-like" in summary["markers"]
+    assert "secret-like" in summary["marker_sources"]["body"]
+    assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+
+
 def test_authz_public_exposure_does_not_promote_path_only_admin_marker(monkeypatch, tmp_path):
     monkeypatch.setattr(
         validation_runner,

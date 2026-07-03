@@ -33,12 +33,22 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.evidence_ledger import record_entry
     from tools.evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
+    from tools.public_exposure_signals import (
+        public_exposure_candidate_ready as shared_public_exposure_candidate_ready,
+        public_exposure_marker_sources as shared_public_exposure_marker_sources,
+        public_exposure_markers as shared_public_exposure_markers,
+    )
     from tools.response_diff import diff_responses, snapshot_response
     from tools.target_case_state import complete_backlog, load_case_state
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_ledger import record_entry  # type: ignore
     from evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence  # type: ignore
+    from public_exposure_signals import (  # type: ignore
+        public_exposure_candidate_ready as shared_public_exposure_candidate_ready,
+        public_exposure_marker_sources as shared_public_exposure_marker_sources,
+        public_exposure_markers as shared_public_exposure_markers,
+    )
     from response_diff import diff_responses, snapshot_response  # type: ignore
     from target_case_state import complete_backlog, load_case_state  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
@@ -46,13 +56,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 SCHEMA_VERSION = 1
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "POST"}
-PUBLIC_EXPOSURE_MARKERS = {
-    "admin": re.compile(r"\badmin(?:istrat(?:or|ion))?\b", re.I),
-    "configuration": re.compile(r"\b(application[-_/ ]?)?config(?:uration)?\b|\bsettings\b", re.I),
-    "oauth": re.compile(r"\boauth|client[_-]?id|redirect_uri|authorizedredirects\b", re.I),
-    "secret-like": re.compile(r"\b(secret|token|api[_-]?key|password|private key)\b", re.I),
-    "security-answer": re.compile(r"security(question|answer)|geoStalking.*Security", re.I),
-}
 SQLI_PROBE_RE = re.compile(
     r"('|--|/\*|\*/|;|\)\)|\b(?:or|and|union|select|where|from|sleep|benchmark|"
     r"waitfor|pg_sleep|information_schema|null|true|false)\b|\$(?:ne|gt|regex|where)\b|\{\s*\"?\$)",
@@ -174,35 +177,16 @@ def request_once(
 
 
 def public_exposure_markers(url: str, body: str) -> list[str]:
-    haystack = f"{url}\n{body or ''}"
-    return [name for name, pattern in PUBLIC_EXPOSURE_MARKERS.items() if pattern.search(haystack)]
+    return shared_public_exposure_markers(url, body)
 
 
 def public_exposure_marker_sources(url: str, body: str) -> dict[str, list[str]]:
-    """Return marker names split by path/source so path-only hits do not over-validate.
-
-    Admin/config words in a URL are useful routing signals, but they are not by
-    themselves proof that anonymous users received sensitive data.  Keep both
-    views so Claude can reason about the lead while the runner only promotes
-    body-backed exposure to ``tested_finding``.
-    """
-    return {
-        "url": [name for name, pattern in PUBLIC_EXPOSURE_MARKERS.items() if pattern.search(url or "")],
-        "body": [name for name, pattern in PUBLIC_EXPOSURE_MARKERS.items() if pattern.search(body or "")],
-    }
+    """按共享 helper 提取 url/body marker，避免 path-only 或叙述文本误报。"""
+    return shared_public_exposure_marker_sources(url, body)
 
 
 def public_exposure_candidate_ready(status: int, marker_sources: dict[str, list[str]]) -> bool:
-    """Decide whether anonymous public exposure has enough body-backed evidence."""
-    if int(status or 0) != 200:
-        return False
-    body_markers = set(marker_sources.get("body", []) or [])
-    all_markers = body_markers | set(marker_sources.get("url", []) or [])
-    if body_markers & {"oauth", "secret-like", "security-answer"}:
-        return True
-    if "configuration" in body_markers and all_markers & {"admin", "configuration"}:
-        return True
-    return len(body_markers) >= 2
+    return shared_public_exposure_candidate_ready(status, marker_sources)
 
 
 def looks_like_sqli_probe(value: str) -> bool:

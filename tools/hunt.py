@@ -52,6 +52,7 @@ from memory.schemas import make_journal_entry
 from memory.target_profile import default_memory_dir, load_target_profile, make_target_profile, save_target_profile
 from legacy_bridge import generate_legacy_reports, open_hunt_journal, run_legacy_cve_hunt
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
+from tools.public_exposure_signals import classify_public_response
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
 from tools.target_paths import classify_target as classify_target_input, target_storage_key
 
@@ -1454,7 +1455,7 @@ def run_api_fuzz(domain):
             use_guard=True,
             vuln_class="idor",
         )
-        if status == 200 and len(body) > 500:
+        if status == 200 and len(body) > 500 and classify_public_response(url, body, status=status)["candidate_ready"]:
             unauth_access.append(f"{status} {len(body)} {url}")
 
     idor_candidates = _write_text_lines(os.path.join(idor_dir, "idor_candidates.txt"), idor_candidates)
