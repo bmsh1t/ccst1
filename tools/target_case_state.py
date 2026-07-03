@@ -136,15 +136,6 @@ def _next_id(items: list[dict[str, Any]], prefix: str) -> str:
     return f"{prefix}{highest + 1:03d}"
 
 
-def _redact_header_value(value: str) -> str:
-    text = str(value or "")
-    if not text:
-        return ""
-    if len(text) <= 12:
-        return "<redacted>"
-    return f"{text[:8]}...<redacted>"
-
-
 def _quote(value: Any) -> str:
     return shlex.quote(str(value or ""))
 
@@ -402,33 +393,25 @@ def _readiness(
 
 
 def _build_idor_actor_pair_command(target: str, item: dict[str, Any], details: dict[str, Any], *, redact: bool) -> str:
-    owner_session = details.get("owner_session") or {}
-    peer_session = details.get("peer_session") or {}
-    obj = details.get("object") or {}
-
-    def header_arg(session: dict[str, Any]) -> str:
-        name = str(session.get("header_name") or "")
-        value = str(session.get("header_value") or "")
-        if redact:
-            value = _redact_header_value(value)
-        return f"{name}: {value}"
-
     parts = [
         "python3",
         "tools/validation_runner.py",
         "idor-actor-pair",
         "--target",
         target,
-        "--url",
-        details.get("endpoint") or item.get("endpoint") or "",
-        "--owner-header",
-        header_arg(owner_session),
-        "--peer-header",
-        header_arg(peer_session),
+        "--from-case-state",
     ]
-    marker = str(obj.get("private_marker") or "")
-    if marker:
-        parts.extend(["--expect-marker", marker if not redact else "<owner-private-marker>"])
+    if item.get("id"):
+        parts.extend(["--backlog-id", item.get("id")])
+    else:
+        parts.extend([
+            "--owner-actor",
+            details.get("owner_actor") or item.get("owner_actor") or "",
+            "--peer-actor",
+            details.get("peer_actor") or item.get("peer_actor") or "",
+            "--object-ref",
+            item.get("object_ref") or "",
+        ])
     parts.extend(["--repeat", "2"])
     return " ".join(_quote(part) for part in parts if part != "")
 

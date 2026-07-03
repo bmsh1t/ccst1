@@ -34,11 +34,13 @@ try:
     from tools.evidence_ledger import record_entry
     from tools.evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
     from tools.response_diff import diff_responses, snapshot_response
+    from tools.target_case_state import load_case_state
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_ledger import record_entry  # type: ignore
     from evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence  # type: ignore
     from response_diff import diff_responses, snapshot_response  # type: ignore
+    from target_case_state import load_case_state  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -231,6 +233,92 @@ def _actor_context_differs(
         or owner_headers != peer_headers
         or str(owner_body or "") != str(peer_body or "")
     )
+
+
+def _case_state_session_header(state: dict[str, Any], actor: str) -> tuple[str, dict[str, str]]:
+    invalid = {"invalid", "expired", "revoked"}
+    for session_id, session in (state.get("sessions") or {}).items():
+        if not isinstance(session, dict) or session.get("actor") != actor:
+            continue
+        if str(session.get("validity") or "unknown").lower() in invalid:
+            continue
+        name = str(session.get("header_name") or "").strip()
+        value = str(session.get("header_value") or "").strip()
+        if name and value:
+            return str(session_id), {name: value}
+    raise ValueError(f"case_state session missing for actor: {actor}")
+
+
+def _case_state_backlog(state: dict[str, Any], backlog_id: str) -> dict[str, Any]:
+    for item in state.get("validation_backlog") or []:
+        if isinstance(item, dict) and item.get("id") == backlog_id:
+            return item
+    raise ValueError(f"case_state backlog id not found: {backlog_id}")
+
+
+def resolve_idor_actor_pair_from_case_state(
+    *,
+    repo_root: Path,
+    target: str,
+    backlog_id: str = "",
+    owner_actor: str = "",
+    peer_actor: str = "",
+    object_ref: str = "",
+    url: str = "",
+    peer_url: str = "",
+    owner_headers: dict[str, str] | None = None,
+    peer_headers: dict[str, str] | None = None,
+    expect_marker: str = "",
+) -> dict[str, Any]:
+    """Resolve IDOR actor-pair replay material from target case_state.json."""
+    state = load_case_state(repo_root, target)
+    backlog: dict[str, Any] = _case_state_backlog(state, backlog_id) if backlog_id else {}
+    if backlog and backlog.get("runner") != "idor-actor-pair":
+        raise ValueError(f"case_state backlog is not idor-actor-pair: {backlog_id}")
+
+    ref = object_ref or str(backlog.get("object_ref") or "")
+    if not ref:
+        raise ValueError("object_ref is required when using --from-case-state")
+    obj = (state.get("objects") or {}).get(ref)
+    if not isinstance(obj, dict):
+        raise ValueError(f"case_state object_ref not found: {ref}")
+
+    owner = owner_actor or str(backlog.get("owner_actor") or obj.get("owner_actor") or "")
+    peer = peer_actor or str(backlog.get("peer_actor") or "")
+    if not owner:
+        raise ValueError(f"case_state owner actor missing for object_ref: {ref}")
+    if not peer:
+        raise ValueError("peer_actor is required when using --from-case-state")
+    if owner == peer:
+        raise ValueError("owner_actor and peer_actor must differ when using --from-case-state")
+    if owner not in (state.get("actors") or {}):
+        raise ValueError(f"case_state owner actor not found: {owner}")
+    if peer not in (state.get("actors") or {}):
+        raise ValueError(f"case_state peer actor not found: {peer}")
+
+    owner_session_id, owner_session_header = _case_state_session_header(state, owner)
+    peer_session_id, peer_session_header = _case_state_session_header(state, peer)
+    merged_owner_headers = {**owner_session_header, **dict(owner_headers or {})}
+    merged_peer_headers = {**peer_session_header, **dict(peer_headers or {})}
+    endpoint = url or str(backlog.get("endpoint") or obj.get("endpoint") or "")
+    if not endpoint:
+        raise ValueError(f"case_state endpoint missing for object_ref: {ref}")
+
+    return {
+        "url": endpoint,
+        "peer_url": peer_url or endpoint,
+        "owner_headers": merged_owner_headers,
+        "peer_headers": merged_peer_headers,
+        "expect_marker": expect_marker or str(obj.get("private_marker") or ""),
+        "case_state_ref": {
+            "backlog_id": backlog_id,
+            "object_ref": ref,
+            "owner_actor": owner,
+            "peer_actor": peer,
+            "owner_session_id": owner_session_id,
+            "peer_session_id": peer_session_id,
+        },
+    }
 
 
 def _record_ledger_if_needed(
@@ -655,6 +743,7 @@ def run_idor_actor_pair(
     browser_observed: bool = False,
     state_changing: bool = False,
     redline_checked: bool = True,
+    case_state_ref: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Replay the same object/action as owner and peer, then preserve the diff.
 
@@ -799,6 +888,7 @@ def run_idor_actor_pair(
         "result": result,
         "candidate_ready": candidate_ready,
         "expect_marker": marker,
+        "case_state_ref": case_state_ref or {},
         "repeat": repeat,
         "runs": runs,
         "artifacts": {"diff": _rel(diff_path, repo_root)},
@@ -908,11 +998,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     idor_pair = sub.add_parser("idor-actor-pair", help="Replay owner vs peer actor pair and diff responses")
     add_common(idor_pair)
-    idor_pair.add_argument("--url", required=True)
+    idor_pair.add_argument("--url", default="")
     idor_pair.add_argument("--peer-url", default="")
     idor_pair.add_argument("--method", default="GET")
     idor_pair.add_argument("--owner-header", action="append", default=[])
     idor_pair.add_argument("--peer-header", action="append", default=[])
+    idor_pair.add_argument("--from-case-state", action="store_true")
+    idor_pair.add_argument("--backlog-id", default="")
+    idor_pair.add_argument("--owner-actor", default="")
+    idor_pair.add_argument("--peer-actor", default="")
+    idor_pair.add_argument("--object-ref", default="")
     idor_pair.add_argument("--body", default="")
     idor_pair.add_argument("--owner-body", default=None)
     idor_pair.add_argument("--peer-body", default=None)
@@ -983,17 +1078,45 @@ def main(argv: list[str] | None = None) -> int:
     elif args.lane == "idor-actor-pair":
         owner_body = args.body if args.owner_body is None else args.owner_body
         peer_body = owner_body if args.peer_body is None else args.peer_body
+        owner_headers = parse_headers(args.owner_header)
+        peer_headers = parse_headers(args.peer_header)
+        url = args.url
+        peer_url = args.peer_url
+        expect_marker = args.expect_marker
+        case_state_ref: dict[str, Any] = {}
+        if args.from_case_state:
+            resolved = resolve_idor_actor_pair_from_case_state(
+                repo_root=repo_root,
+                target=args.target,
+                backlog_id=args.backlog_id,
+                owner_actor=args.owner_actor,
+                peer_actor=args.peer_actor,
+                object_ref=args.object_ref,
+                url=url,
+                peer_url=peer_url,
+                owner_headers=owner_headers,
+                peer_headers=peer_headers,
+                expect_marker=expect_marker,
+            )
+            url = resolved["url"]
+            peer_url = resolved["peer_url"]
+            owner_headers = resolved["owner_headers"]
+            peer_headers = resolved["peer_headers"]
+            expect_marker = resolved["expect_marker"]
+            case_state_ref = resolved["case_state_ref"]
+        if not url:
+            raise ValueError("--url is required unless --from-case-state resolves an object endpoint")
         summary = run_idor_actor_pair(
             repo_root=repo_root,
             target=args.target,
-            url=args.url,
+            url=url,
             method=args.method,
-            owner_headers=parse_headers(args.owner_header),
-            peer_headers=parse_headers(args.peer_header),
+            owner_headers=owner_headers,
+            peer_headers=peer_headers,
             owner_body=owner_body,
             peer_body=peer_body,
-            peer_url=args.peer_url,
-            expect_marker=args.expect_marker,
+            peer_url=peer_url,
+            expect_marker=expect_marker,
             timeout=args.timeout,
             finding_id=args.finding_id,
             repeat=args.repeat,
@@ -1001,6 +1124,7 @@ def main(argv: list[str] | None = None) -> int:
             browser_observed=args.browser_observed,
             state_changing=args.state_changing,
             redline_checked=args.redline_checked,
+            case_state_ref=case_state_ref,
         )
     elif args.lane == "idor-skeleton":
         summary = run_idor_skeleton(

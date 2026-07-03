@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+import target_case_state
 import validation_runner
 
 
@@ -340,6 +341,125 @@ def test_idor_actor_pair_rejects_identical_actor_context(tmp_path):
             target="https://target.test",
             url="https://target.test/api/orders/123",
             finding_id="IDOR-BAD-CONTEXT",
+        )
+
+
+def _build_case_state_for_idor(tmp_path):
+    target = "https://target.test"
+    target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
+    target_case_state.add_actor(tmp_path, target, actor="user_b", role="user")
+    target_case_state.add_session(
+        tmp_path,
+        target,
+        session="sess_user_a",
+        actor="user_a",
+        kind="bearer",
+        header_value="Bearer owner",
+        validity="valid",
+    )
+    target_case_state.add_session(
+        tmp_path,
+        target,
+        session="sess_user_b",
+        actor="user_b",
+        kind="bearer",
+        header_value="Bearer peer",
+        validity="valid",
+    )
+    target_case_state.add_object(
+        tmp_path,
+        target,
+        object_ref="order_123",
+        object_type="order",
+        object_id="123",
+        owner_actor="user_a",
+        endpoint="https://target.test/api/orders/123",
+        private_marker="victim@example.test",
+    )
+    target_case_state.add_backlog(
+        tmp_path,
+        target,
+        backlog_id="val_001",
+        runner="idor-actor-pair",
+        owner_actor="user_a",
+        peer_actor="user_b",
+        object_ref="order_123",
+        priority="high",
+    )
+    return target
+
+
+def test_idor_actor_pair_from_case_state_cli_resolves_headers_and_object(monkeypatch, tmp_path, capsys):
+    target = _build_case_state_for_idor(tmp_path)
+
+    def fake_request_once(**kwargs):
+        token = (kwargs.get("headers") or {}).get("Authorization", "")
+        if token == "Bearer owner":
+            return _fake_response(kwargs["url"], body='{"orderId":123,"email":"victim@example.test"}')
+        if token == "Bearer peer":
+            return _fake_response(kwargs["url"], body='{"orderId":123,"email":"victim@example.test"}')
+        return _fake_response(kwargs["url"], status=401, body='{"error":"missing token"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    rc = validation_runner.main([
+        "idor-actor-pair",
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        target,
+        "--from-case-state",
+        "--backlog-id",
+        "val_001",
+        "--finding-id",
+        "IDOR-CASE-STATE",
+    ])
+    summary = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert summary["result"] == "tested_finding"
+    assert summary["url"] == "https://target.test/api/orders/123"
+    assert summary["expect_marker"] == "victim@example.test"
+    assert summary["case_state_ref"]["backlog_id"] == "val_001"
+    assert summary["case_state_ref"]["owner_session_id"] == "sess_user_a"
+    assert summary["case_state_ref"]["peer_session_id"] == "sess_user_b"
+
+
+def test_idor_actor_pair_from_case_state_requires_peer_session(tmp_path):
+    target = "https://target.test"
+    target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
+    target_case_state.add_actor(tmp_path, target, actor="user_b", role="user")
+    target_case_state.add_session(
+        tmp_path,
+        target,
+        session="sess_user_a",
+        actor="user_a",
+        kind="bearer",
+        header_value="Bearer owner",
+    )
+    target_case_state.add_object(
+        tmp_path,
+        target,
+        object_ref="order_123",
+        object_type="order",
+        owner_actor="user_a",
+        endpoint="https://target.test/api/orders/123",
+        private_marker="victim@example.test",
+    )
+
+    with pytest.raises(ValueError, match="peer_actor is required"):
+        validation_runner.resolve_idor_actor_pair_from_case_state(
+            repo_root=tmp_path,
+            target=target,
+            object_ref="order_123",
+        )
+
+    with pytest.raises(ValueError, match="session missing"):
+        validation_runner.resolve_idor_actor_pair_from_case_state(
+            repo_root=tmp_path,
+            target=target,
+            object_ref="order_123",
+            peer_actor="user_b",
         )
 
 

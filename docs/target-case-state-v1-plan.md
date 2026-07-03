@@ -546,6 +546,8 @@ tests/test_target_case_state.py
 
 ### Phase B：接入 validation_runner
 
+状态：已实施。
+
 范围：
 
 ```text
@@ -566,6 +568,19 @@ tests/test_validation_runner.py
 
 ```text
 idor-actor-pair 可以不手写 token/header/object URL
+```
+
+已验证：
+
+```text
+validation_runner.py idor-actor-pair --from-case-state --backlog-id <val_id>
+validation_runner.py idor-actor-pair --from-case-state --owner-actor user_a --peer-actor user_b --object-ref order_123
+
+case_state 会解析：
+  owner session header
+  peer session header
+  object endpoint
+  private marker
 ```
 
 ### Phase C：接入 checkpoint

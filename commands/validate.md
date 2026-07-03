@@ -119,6 +119,23 @@ python3 tools/validation_runner.py marker-replay \
 # IDOR/Authz: generate the two-actor bundle; fill with owner/peer evidence
 python3 tools/validation_runner.py idor-actor-pair \
   --target <target> \
+  --from-case-state \
+  --backlog-id <val_id> \
+  --repeat 2 \
+  --browser-observed
+
+# Or pass explicit actor/object refs from case_state
+python3 tools/validation_runner.py idor-actor-pair \
+  --target <target> \
+  --from-case-state \
+  --owner-actor user_a \
+  --peer-actor user_b \
+  --object-ref order_123 \
+  --repeat 2
+
+# Manual fallback when case_state is not ready yet
+python3 tools/validation_runner.py idor-actor-pair \
+  --target <target> \
   --url '<same object/action URL>' \
   --owner-header 'Authorization: Bearer <owner-token>' \
   --peer-header 'Authorization: Bearer <peer-token>' \

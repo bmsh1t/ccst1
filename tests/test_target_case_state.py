@@ -120,7 +120,9 @@ def test_add_hypothesis_and_backlog_then_next_outputs_ai_orchestration(tmp_path)
     assert "downgrade_rule" in next_item
     assert "try export endpoint" in next_item["chain_extensions_if_blocked"]
     assert "validation_runner.py" in next_item["command"]
-    assert "Bearer owner-token" in next_item["command"]
+    assert "--from-case-state" in next_item["command"]
+    assert "--backlog-id val_001" in next_item["command"]
+    assert "Bearer owner-token" not in next_item["command"]
     assert "owner-token" not in next_item["redacted_command"]
 
 
