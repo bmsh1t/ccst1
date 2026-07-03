@@ -117,6 +117,16 @@ python3 tools/validation_runner.py marker-replay \
   --browser-observed
 
 # IDOR/Authz: generate the two-actor bundle; fill with owner/peer evidence
+python3 tools/validation_runner.py idor-actor-pair \
+  --target <target> \
+  --url '<same object/action URL>' \
+  --owner-header 'Authorization: Bearer <owner-token>' \
+  --peer-header 'Authorization: Bearer <peer-token>' \
+  --expect-marker '<owner-private-marker>' \
+  --repeat 2 \
+  --browser-observed
+
+# If the second actor/session is not ready yet, generate the evidence skeleton
 python3 tools/validation_runner.py idor-skeleton \
   --target <target> \
   --endpoint <exact-endpoint>

@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 import validation_runner
 
 
@@ -241,6 +243,104 @@ def test_marker_replay_without_marker_is_clean(monkeypatch, tmp_path):
     assert summary["result"] == "tested_clean"
     assert summary["candidate_ready"] is False
     assert summary["runs"][0]["marker_found"] is False
+
+
+def test_idor_actor_pair_marker_finding_creates_diff_and_ledger(monkeypatch, tmp_path):
+    def fake_request_once(**kwargs):
+        token = (kwargs.get("headers") or {}).get("Authorization", "")
+        if token == "Bearer owner":
+            return _fake_response(kwargs["url"], body='{"orderId":123,"email":"victim@example.test"}')
+        return _fake_response(kwargs["url"], body='{"orderId":123,"email":"victim@example.test"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    summary = validation_runner.run_idor_actor_pair(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/orders/123",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        expect_marker="victim@example.test",
+        finding_id="IDOR-PAIR-1",
+        repeat=2,
+        browser_observed=True,
+    )
+
+    key = _target_key("https://target.test")
+    bundle = tmp_path / "evidence" / key / "validation" / "IDOR-PAIR-1"
+    ledger = tmp_path / "memory" / "evidence" / key / "ledger.jsonl"
+    assert summary["lane"] == "idor_actor_pair"
+    assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+    assert all(run["strong_access"] for run in summary["runs"])
+    assert (bundle / "1.owner.request.txt").is_file()
+    assert (bundle / "2.peer.response.txt").is_file()
+    assert (bundle / "diff.json").is_file()
+    entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
+    assert entry["vuln_class"] == "IDOR"
+    assert entry["actor"] == "peer"
+    assert entry["object_scope"] == "other_object_same_org"
+    assert entry["variant"] == "id_swap"
+    assert entry["result"] == "tested_finding"
+    assert entry["browser_observed"] is True
+
+
+def test_idor_actor_pair_denied_peer_is_clean(monkeypatch, tmp_path):
+    def fake_request_once(**kwargs):
+        token = (kwargs.get("headers") or {}).get("Authorization", "")
+        if token == "Bearer owner":
+            return _fake_response(kwargs["url"], body='{"orderId":123,"email":"victim@example.test"}')
+        return _fake_response(kwargs["url"], status=403, body='{"error":"forbidden"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    summary = validation_runner.run_idor_actor_pair(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/orders/123",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        expect_marker="victim@example.test",
+        finding_id="IDOR-PAIR-CLEAN",
+    )
+
+    assert summary["result"] == "tested_clean"
+    assert summary["candidate_ready"] is False
+    assert summary["runs"][0]["peer_denied"] is True
+
+
+def test_idor_actor_pair_peer_access_without_private_marker_stays_candidate(monkeypatch, tmp_path):
+    def fake_request_once(**kwargs):
+        token = (kwargs.get("headers") or {}).get("Authorization", "")
+        if token == "Bearer owner":
+            return _fake_response(kwargs["url"], body='{"orderId":123,"email":"victim@example.test"}')
+        return _fake_response(kwargs["url"], body='{"orderId":123,"status":"visible"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    summary = validation_runner.run_idor_actor_pair(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/orders/123",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        expect_marker="victim@example.test",
+        finding_id="IDOR-PAIR-CANDIDATE",
+    )
+
+    assert summary["result"] == "candidate"
+    assert summary["candidate_ready"] is False
+    assert summary["runs"][0]["ambiguous_access"] is True
+
+
+def test_idor_actor_pair_rejects_identical_actor_context(tmp_path):
+    with pytest.raises(ValueError, match="identical"):
+        validation_runner.run_idor_actor_pair(
+            repo_root=tmp_path,
+            target="https://target.test",
+            url="https://target.test/api/orders/123",
+            finding_id="IDOR-BAD-CONTEXT",
+        )
 
 
 def test_idor_skeleton_writes_required_actor_pair_artifacts(tmp_path):

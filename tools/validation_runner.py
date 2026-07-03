@@ -6,6 +6,7 @@ Validation Runner v1 intentionally stays small:
 - authz-public-exposure: one anonymous/read-only request, sensitive exposure check.
 - sqli-result-diff: baseline vs single-variable perturbation, structural diff.
 - marker-replay: exact request replay plus inert marker evidence check.
+- idor-actor-pair: owner vs peer exact replay plus response diff and evidence gate.
 - idor-skeleton: create a two-actor evidence bundle skeleton without guessing sessions.
 
 AI 仍负责选择 hypothesis、解释业务影响、决定是否升级/降级；本工具只负责稳定
@@ -205,6 +206,31 @@ def public_exposure_candidate_ready(status: int, marker_sources: dict[str, list[
 def looks_like_sqli_probe(value: str) -> bool:
     """Return True when the perturbation is injection-shaped, not ordinary search text."""
     return bool(SQLI_PROBE_RE.search(str(value or "")))
+
+
+def _is_success_status(status: int) -> bool:
+    return 200 <= int(status or 0) < 300
+
+
+def _is_denied_status(status: int) -> bool:
+    return int(status or 0) in {401, 403, 404}
+
+
+def _actor_context_differs(
+    *,
+    url: str,
+    peer_url: str,
+    owner_headers: dict[str, str],
+    peer_headers: dict[str, str],
+    owner_body: str,
+    peer_body: str,
+) -> bool:
+    """Avoid validating a fake actor diff with two identical request contexts."""
+    return (
+        url != peer_url
+        or owner_headers != peer_headers
+        or str(owner_body or "") != str(peer_body or "")
+    )
 
 
 def _record_ledger_if_needed(
@@ -610,6 +636,186 @@ def run_marker_replay(
     return summary
 
 
+def run_idor_actor_pair(
+    *,
+    repo_root: Path,
+    target: str,
+    url: str,
+    method: str = "GET",
+    owner_headers: dict[str, str] | None = None,
+    peer_headers: dict[str, str] | None = None,
+    owner_body: str = "",
+    peer_body: str | None = None,
+    peer_url: str = "",
+    expect_marker: str = "",
+    timeout: int = 10,
+    finding_id: str = "",
+    repeat: int = 1,
+    no_ledger: bool = False,
+    browser_observed: bool = False,
+    state_changing: bool = False,
+    redline_checked: bool = True,
+) -> dict[str, Any]:
+    """Replay the same object/action as owner and peer, then preserve the diff.
+
+    The strong finding gate is intentionally conservative:
+    - owner must succeed;
+    - peer must also succeed;
+    - and either the peer response contains an operator-provided private marker
+      or the peer body exactly matches the owner body with non-trivial length.
+
+    If peer access is possible but the response is not strong enough, the runner
+    records ``candidate`` rather than pretending the issue is clean or proven.
+    """
+    method_u = method.upper()
+    owner_headers = dict(owner_headers or {})
+    peer_headers = dict(peer_headers or {})
+    peer_url = peer_url or url
+    peer_body = owner_body if peer_body is None else peer_body
+    if not _actor_context_differs(
+        url=url,
+        peer_url=peer_url,
+        owner_headers=owner_headers,
+        peer_headers=peer_headers,
+        owner_body=owner_body,
+        peer_body=peer_body,
+    ):
+        raise ValueError("owner and peer request contexts are identical; provide distinct actor headers/body/url")
+
+    finding_id = finding_id or _default_finding_id("idor-actor-pair", url)
+    bundle = _bundle_dir(repo_root, target, finding_id)
+    repeat = max(1, int(repeat or 1))
+    marker = str(expect_marker or "")
+    runs: list[dict[str, Any]] = []
+
+    for idx in range(1, repeat + 1):
+        owner = request_once(url=url, method=method_u, headers=owner_headers, body=owner_body, timeout=timeout)
+        peer = request_once(url=peer_url, method=method_u, headers=peer_headers, body=peer_body, timeout=timeout)
+        prefix = "" if repeat == 1 else f"{idx}."
+        owner_req = bundle / f"{prefix}owner.request.txt"
+        owner_resp = bundle / f"{prefix}owner.response.txt"
+        peer_req = bundle / f"{prefix}peer.request.txt"
+        peer_resp = bundle / f"{prefix}peer.response.txt"
+        _write_text(owner_req, owner["request_text"])
+        _write_text(owner_resp, owner["response_text"])
+        _write_text(peer_req, peer["request_text"])
+        _write_text(peer_resp, peer["response_text"])
+        diff = diff_responses(
+            baseline_status=owner["status"],
+            baseline_headers=owner["headers"],
+            baseline_body=owner["body"],
+            variant_status=peer["status"],
+            variant_headers=peer["headers"],
+            variant_body=peer["body"],
+        )
+        marker_found = bool(marker and marker in peer["body"])
+        exact_body_match = owner["body"] == peer["body"] and len(str(peer["body"] or "").strip()) >= 20
+        owner_success = _is_success_status(owner["status"])
+        peer_success = _is_success_status(peer["status"])
+        peer_denied = _is_denied_status(peer["status"])
+        strong_access = owner_success and peer_success and (marker_found if marker else exact_body_match)
+        ambiguous_access = owner_success and peer_success and not strong_access
+        runs.append({
+            "iteration": idx,
+            "owner_url": url,
+            "peer_url": peer_url,
+            "method": method_u,
+            "owner_status": owner["status"],
+            "peer_status": peer["status"],
+            "owner_success": owner_success,
+            "peer_success": peer_success,
+            "peer_denied": peer_denied,
+            "marker_found": marker_found,
+            "exact_body_match": exact_body_match,
+            "strong_access": strong_access,
+            "ambiguous_access": ambiguous_access,
+            "artifacts": {
+                "owner_request": _rel(owner_req, repo_root),
+                "owner_response": _rel(owner_resp, repo_root),
+                "peer_request": _rel(peer_req, repo_root),
+                "peer_response": _rel(peer_resp, repo_root),
+            },
+            **diff,
+        })
+
+    candidate_ready = all(bool(run["strong_access"]) for run in runs)
+    peer_denied_all = all(bool(run["peer_denied"]) or not bool(run["peer_success"]) for run in runs)
+    ambiguous_any = any(bool(run["ambiguous_access"]) for run in runs)
+    if candidate_ready:
+        result = "tested_finding"
+    elif ambiguous_any and not peer_denied_all:
+        result = "candidate"
+    else:
+        result = "tested_clean"
+
+    diff_path = bundle / "diff.json"
+    _write_json(diff_path, {"runs": runs})
+    finding = {
+        "type": "idor",
+        "url": url,
+        "summary": (
+            f"owner vs peer replay result={result}; repeat={repeat}; "
+            f"peer_statuses={[run['peer_status'] for run in runs]}"
+        ),
+        "raw": (
+            "owner peer other user response diff exact request private marker verified"
+            if candidate_ready
+            else "owner peer replay captured; strong private-data marker not proven"
+        ),
+        "confidence": "confirmed" if candidate_ready else "medium",
+    }
+    rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding, vuln_type="idor"))
+    notes = (
+        f"Validation runner IDOR actor pair: result={result}, "
+        f"repeat={repeat}, peer_statuses={[run['peer_status'] for run in runs]}."
+    )
+    ledger = _record_ledger_if_needed(
+        repo_root=repo_root,
+        no_ledger=no_ledger,
+        target=target,
+        endpoint=url,
+        method=method_u,
+        vuln_class="IDOR",
+        actor="peer",
+        object_scope="peer",
+        variant="id_swap",
+        result=result,
+        source="validation-runner:idor-actor-pair",
+        evidence_ref=_rel(diff_path, repo_root),
+        notes=notes,
+        browser_observed=browser_observed,
+        redline_checked=redline_checked,
+        state_changing=state_changing,
+    )
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "lane": "idor_actor_pair",
+        "target": canonical_target_value(target),
+        "finding_id": finding_id,
+        "url": url,
+        "peer_url": peer_url,
+        "method": method_u,
+        "generated_at": now_utc(),
+        "result": result,
+        "candidate_ready": candidate_ready,
+        "expect_marker": marker,
+        "repeat": repeat,
+        "runs": runs,
+        "artifacts": {"diff": _rel(diff_path, repo_root)},
+        "evidence_rubric": rubric,
+        "ledger_record": ledger,
+        "ai_next": {
+            "hypothesis": "server may return an owner object/action result when replayed as peer/lower-role",
+            "next_action": "If result is candidate, add a known private marker/object field or second object to distinguish public/generic data from IDOR.",
+            "stop_condition": "Peer is consistently denied, actor contexts are unavailable, or peer response lacks a private marker/exact owner-body match.",
+        },
+    }
+    summary_path = bundle / "summary.json"
+    summary["summary_path"] = _rel(summary_path, repo_root)
+    _write_json(summary_path, summary)
+    return summary
+
+
 def run_idor_skeleton(
     *,
     repo_root: Path,
@@ -700,6 +906,24 @@ def build_parser() -> argparse.ArgumentParser:
     marker.add_argument("--redline-checked", action="store_true", default=True)
     marker.add_argument("--no-ledger", action="store_true")
 
+    idor_pair = sub.add_parser("idor-actor-pair", help="Replay owner vs peer actor pair and diff responses")
+    add_common(idor_pair)
+    idor_pair.add_argument("--url", required=True)
+    idor_pair.add_argument("--peer-url", default="")
+    idor_pair.add_argument("--method", default="GET")
+    idor_pair.add_argument("--owner-header", action="append", default=[])
+    idor_pair.add_argument("--peer-header", action="append", default=[])
+    idor_pair.add_argument("--body", default="")
+    idor_pair.add_argument("--owner-body", default=None)
+    idor_pair.add_argument("--peer-body", default=None)
+    idor_pair.add_argument("--expect-marker", default="")
+    idor_pair.add_argument("--timeout", type=int, default=10)
+    idor_pair.add_argument("--repeat", type=int, default=1)
+    idor_pair.add_argument("--browser-observed", action="store_true")
+    idor_pair.add_argument("--state-changing", action="store_true")
+    idor_pair.add_argument("--redline-checked", action="store_true", default=True)
+    idor_pair.add_argument("--no-ledger", action="store_true")
+
     idor = sub.add_parser("idor-skeleton", help="Create a two-actor IDOR validation skeleton")
     add_common(idor)
     idor.add_argument("--endpoint", required=True)
@@ -751,6 +975,28 @@ def main(argv: list[str] | None = None) -> int:
             finding_id=args.finding_id,
             repeat=args.repeat,
             vuln_class=args.vuln_class,
+            no_ledger=args.no_ledger,
+            browser_observed=args.browser_observed,
+            state_changing=args.state_changing,
+            redline_checked=args.redline_checked,
+        )
+    elif args.lane == "idor-actor-pair":
+        owner_body = args.body if args.owner_body is None else args.owner_body
+        peer_body = owner_body if args.peer_body is None else args.peer_body
+        summary = run_idor_actor_pair(
+            repo_root=repo_root,
+            target=args.target,
+            url=args.url,
+            method=args.method,
+            owner_headers=parse_headers(args.owner_header),
+            peer_headers=parse_headers(args.peer_header),
+            owner_body=owner_body,
+            peer_body=peer_body,
+            peer_url=args.peer_url,
+            expect_marker=args.expect_marker,
+            timeout=args.timeout,
+            finding_id=args.finding_id,
+            repeat=args.repeat,
             no_ledger=args.no_ledger,
             browser_observed=args.browser_observed,
             state_changing=args.state_changing,
