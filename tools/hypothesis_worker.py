@@ -43,6 +43,13 @@ def _install_timeout_alarm(timeout_secs: int) -> None:
         pass
 
 
+def _cancel_timeout_alarm() -> None:
+    try:
+        signal.alarm(0)
+    except (AttributeError, ValueError):
+        pass
+
+
 def run_worker(seed_path: Path, scratch: Path, *, mock_mode: bool = False) -> dict:
     seed = json.loads(Path(seed_path).read_text(encoding="utf-8"))
     hypothesis = seed.get("hypothesis") or {}
@@ -116,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         }
     finally:
         _touch_done(scratch, summary)
+        _cancel_timeout_alarm()
     return 0
 
 

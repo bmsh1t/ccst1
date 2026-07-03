@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import sys
 from pathlib import Path
 
@@ -326,6 +327,7 @@ class TestHypothesisWorkerMockMode:
             "--timeout-secs", "5",
         ])
         assert rc == 0
+        assert signal.alarm(0) == 0
         findings = json.loads((tmp_path / "s" / "findings.json").read_text())
         assert findings == [{"endpoint": "/y", "vuln_class": "IDOR", "severity": "low"}]
         summary = json.loads((tmp_path / "s" / "done.flag").read_text().strip())
