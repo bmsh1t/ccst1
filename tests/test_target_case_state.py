@@ -165,6 +165,7 @@ def test_add_hypothesis_and_backlog_then_next_outputs_ai_orchestration(tmp_path)
     assert "validation_runner.py" in next_item["command"]
     assert "--from-case-state" in next_item["command"]
     assert "--backlog-id val_001" in next_item["command"]
+    assert "--complete-case-state" in next_item["command"]
     assert "Bearer owner-token" not in next_item["command"]
     assert "owner-token" not in next_item["redacted_command"]
 

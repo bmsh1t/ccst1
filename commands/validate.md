@@ -170,6 +170,7 @@ python3 tools/validation_runner.py idor-actor-pair \
   --target <target> \
   --from-case-state \
   --backlog-id <val_id> \
+  --complete-case-state \
   --repeat 2 \
   --browser-observed
 
@@ -216,6 +217,8 @@ python3 tools/target_case_state.py complete-backlog \
 
 Use `tested_finding`, `tested_clean`, `candidate`, `blocked`, or `dead_end`
 according to the runner output and validation reasoning.
+If the replay command includes `--complete-case-state`, the runner performs
+this local write-back automatically after saving the validation summary.
 
 ## Target-Driven Validation
 

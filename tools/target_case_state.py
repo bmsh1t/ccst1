@@ -467,6 +467,7 @@ def _build_idor_actor_pair_command(target: str, item: dict[str, Any], details: d
     ]
     if item.get("id"):
         parts.extend(["--backlog-id", item.get("id")])
+        parts.append("--complete-case-state")
     else:
         parts.extend([
             "--owner-actor",

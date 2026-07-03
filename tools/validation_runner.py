@@ -34,13 +34,13 @@ try:
     from tools.evidence_ledger import record_entry
     from tools.evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
     from tools.response_diff import diff_responses, snapshot_response
-    from tools.target_case_state import load_case_state
+    from tools.target_case_state import complete_backlog, load_case_state
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_ledger import record_entry  # type: ignore
     from evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence  # type: ignore
     from response_diff import diff_responses, snapshot_response  # type: ignore
-    from target_case_state import load_case_state  # type: ignore
+    from target_case_state import complete_backlog, load_case_state  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -1026,6 +1026,7 @@ def build_parser() -> argparse.ArgumentParser:
     idor_pair.add_argument("--state-changing", action="store_true")
     idor_pair.add_argument("--redline-checked", action="store_true", default=True)
     idor_pair.add_argument("--no-ledger", action="store_true")
+    idor_pair.add_argument("--complete-case-state", action="store_true", help="Write result back to case_state backlog after replay")
 
     idor = sub.add_parser("idor-skeleton", help="Create a two-actor IDOR validation skeleton")
     add_common(idor)
@@ -1134,6 +1135,18 @@ def main(argv: list[str] | None = None) -> int:
             redline_checked=args.redline_checked,
             case_state_ref=case_state_ref,
         )
+        if args.complete_case_state:
+            backlog_id = str((case_state_ref or {}).get("backlog_id") or "")
+            if not args.from_case_state or not backlog_id:
+                raise ValueError("--complete-case-state requires --from-case-state with --backlog-id")
+            summary["case_state_write_back"] = complete_backlog(
+                repo_root,
+                args.target,
+                backlog_id=backlog_id,
+                result=str(summary.get("result") or "candidate"),
+                evidence_ref=str(summary.get("summary_path") or ""),
+                notes="auto-written by validation_runner --complete-case-state",
+            )
     elif args.lane == "idor-skeleton":
         summary = run_idor_skeleton(
             repo_root=repo_root,

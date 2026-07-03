@@ -732,6 +732,35 @@ owner session + peer session + object endpoint ready, private_marker missing
 -> required_evidence mentions owner private marker or exact owner-body match
 ```
 
+### Phase H：Runner Write-Back v1
+
+状态：已实施。
+
+范围：
+
+```text
+tools/validation_runner.py
+tools/target_case_state.py
+tests/test_validation_runner.py
+tests/test_target_case_state.py
+commands/validate.md
+```
+
+成功标准：
+
+```text
+case-state-backed IDOR replay can update validation_backlog automatically after
+the evidence bundle is saved, so autopilot does not repeat stale backlog items
+```
+
+已验证：
+
+```text
+target_case_state.py next emits validation_runner.py ... --complete-case-state
+validation_runner.py idor-actor-pair --from-case-state --backlog-id val_001
+  --complete-case-state writes backlog.status and evidence_ref
+```
+
 ## 12. 测试规划
 
 新增：

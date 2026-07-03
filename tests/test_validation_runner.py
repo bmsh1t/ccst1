@@ -411,10 +411,13 @@ def test_idor_actor_pair_from_case_state_cli_resolves_headers_and_object(monkeyp
         "--from-case-state",
         "--backlog-id",
         "val_001",
+        "--complete-case-state",
         "--finding-id",
         "IDOR-CASE-STATE",
     ])
     summary = json.loads(capsys.readouterr().out)
+    state = target_case_state.load_case_state(tmp_path, target)
+    backlog = state["validation_backlog"][0]
 
     assert rc == 0
     assert summary["result"] == "tested_finding"
@@ -423,6 +426,9 @@ def test_idor_actor_pair_from_case_state_cli_resolves_headers_and_object(monkeyp
     assert summary["case_state_ref"]["backlog_id"] == "val_001"
     assert summary["case_state_ref"]["owner_session_id"] == "sess_user_a"
     assert summary["case_state_ref"]["peer_session_id"] == "sess_user_b"
+    assert summary["case_state_write_back"]["status"] == "tested_finding"
+    assert backlog["status"] == "tested_finding"
+    assert backlog["evidence_ref"].endswith("summary.json")
 
 
 def test_idor_actor_pair_from_case_state_resolves_multi_header_sessions(tmp_path):
