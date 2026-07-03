@@ -771,7 +771,19 @@ elif [[ "$(printf '%s' "$TARGET" | awk -F: '{print NF-1}')" = "1" ]]; then
     fi
 fi
 
-RECON_TARGET_KEY="${TARGET//\//_}"
+RECON_TARGET_KEY="$(python3 - "$TARGET" "$BASE_DIR" <<'PY'
+import sys
+
+target = sys.argv[1]
+base_dir = sys.argv[2]
+sys.path.insert(0, base_dir)
+sys.path.insert(0, f"{base_dir}/tools")
+
+from tools.target_paths import target_storage_key
+
+print(target_storage_key(target))
+PY
+)"
 RECON_DIR="$BASE_DIR/recon/$RECON_TARGET_KEY"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 THREADS="${BB_THREADS:-20}"

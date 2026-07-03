@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from checkpoint import apply_target_memory, build_checkpoint, format_checkpoint
+from checkpoint import _build_next_action_queue, _next_proposals, apply_target_memory, build_checkpoint, format_checkpoint
 from evidence_ledger import record_entry
 
 
@@ -147,10 +147,10 @@ def test_checkpoint_queues_unsafe_skipped_review_from_manual_review_artifact(tmp
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
     assert any(
-        "Review unsafe-skipped scanner lane" in item
+        "Review action-gated scanner lane" in item
         for item in checkpoint["target_write_back"]["next"]
     )
-    review_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "unsafe-skipped-review")
+    review_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "action-gated-review")
     assert review_action["redline_required"] is True
     assert review_action["metadata"]["unsafe_skipped_id"]
     assert review_action["metadata"]["artifact"] == "findings/target.com/manual_review/unsafe_skipped.txt"
@@ -177,6 +177,9 @@ def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
     assert coverage_action["metadata"]["endpoint"] == "/api/v1/admin/users"
     assert coverage_action["metadata"]["vuln_class"] == "Authz"
     assert coverage_action["metadata"]["relevance_score"] > 0
+    assert "Validation path:" in coverage_action["action"]
+    assert coverage_action["metadata"]["validation_path"]
+    assert "Capture the exact method, URL, headers, body" in coverage_action["metadata"]["validation_path"]
     assert (tmp_path / "evidence" / "target.com" / "coverage_matrix.json").is_file()
 
 
@@ -261,6 +264,92 @@ def test_checkpoint_queues_cross_evidence_convergence(tmp_path):
         item["command_hint"] == "focused replay with browser/JS/source evidence"
         for item in checkpoint["next_action_queue"]
     )
+
+
+def test_next_proposals_skip_ranked_surface_when_endpoint_already_has_tested_finding():
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": "https://api.target.com/api/admin/users?isAdmin=true",
+                    "suggested": "prioritize authz checks",
+                }
+            ],
+            "surface": {},
+        },
+        coverage_gaps=[],
+        matrix={
+            "endpoints": [
+                {
+                    "endpoint": "/api/admin/users",
+                    "cells": {"Authz": {"status": "tested_finding"}},
+                }
+            ]
+        },
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+    )
+
+    assert not any(
+        "Continue top ranked surface https://api.target.com/api/admin/users" in item
+        for item in proposals
+    )
+
+
+def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
+    url = "https://app.target.com/api/admin/export?order_id=42"
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": url,
+                    "suggested": "prioritize authenticated/browser-observed authz and workflow checks",
+                }
+            ],
+            "surface": {
+                "p1": [
+                    {
+                        "url": url,
+                        "browser_observed": True,
+                        "js_intel_endpoints": [{"method": "POST", "auth_required": "true"}],
+                        "source_intel_hypotheses": [{"type": "idor", "reason": "admin export route uses order_id"}],
+                        "suggested": "prioritize authenticated/browser-observed authz and workflow checks",
+                    }
+                ],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+    )
+
+    ranked_text = next(item for item in proposals if item.startswith("Continue top ranked surface "))
+    assert "Replay draft:" in ranked_text
+    assert "Ledger skeleton:" in ranked_text
+    assert "browser-observed request/response baseline first" in ranked_text
+    assert "prefer POST replay" in ranked_text
+
+    queue = _build_next_action_queue([ranked_text], "target.com")
+    ranked_action = queue[0]
+    assert ranked_action["type"] == "ranked-surface"
+    assert ranked_action["metadata"]["url"] == url
+    assert ranked_action["metadata"]["endpoint"] == "/api/admin/export"
+    assert "browser-observed request/response baseline first" in ranked_action["metadata"]["replay_draft"]
+    assert "Ledger skeleton:" not in ranked_action["metadata"]["replay_draft"]
+    skeleton = ranked_action["metadata"]["ledger_record_skeleton"]
+    assert "python3 tools/evidence_ledger.py record" in skeleton
+    assert "--endpoint \"/api/admin/export\"" in skeleton
+    assert "--method \"POST\"" in skeleton
+    assert "--vuln-class \"IDOR\"" in skeleton
+    assert "--browser-observed" in skeleton
+    assert "--state-changing" not in skeleton
+    assert "--redline-checked" not in skeleton
 
 
 def test_checkpoint_surfaces_context_contradictions(tmp_path):

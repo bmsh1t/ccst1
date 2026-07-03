@@ -236,15 +236,16 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
 
     return [{
         "source": "scanner_manual_review",
-        "title": "Unsafe/state-changing scanner probes were skipped",
-        "category": "unsafe-skipped",
+        "title": "Side-effect-capable scanner probes were skipped",
+        "category": "action-gated",
         "priority": "high",
         "unsafe_skipped_id": first_id,
         "unsafe_skipped_ids": [unsafe_skipped_id(line) for line in unresolved[:20]],
         "artifact": unsafe_display_path,
         "next_action": (
             f"review {unsafe_display_path} and only rerun with ALLOW_UNSAFE_HTTP_TESTS=1 "
-            "when the operator explicitly opts in for those probes"
+            "when the operator explicitly opts in for those broad scanner probes; "
+            "do not treat this as a ban on safe observed-method replay"
         ),
         "rationale": (
             "Skipped lanes may include PUT/DELETE/PATCH method tampering, upload canary POST, "

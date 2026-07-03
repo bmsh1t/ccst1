@@ -58,7 +58,7 @@ class TestRequestGuardPreflight:
 
         assert result["allowed"] is True
         assert result["action"] == "allow_advisory"
-        assert "unsafe method advisory" in result["reason"].lower()
+        assert "side-effect-capable method advisory" in result["reason"].lower()
 
     def test_uses_persisted_rate_limit_window(self, tmp_hunt_dir):
         _save_profile(tmp_hunt_dir, scope_snapshot={"in_scope": ["api.target.com"], "test_rps": 2})
@@ -105,7 +105,7 @@ class TestRequestGuardPreflight:
         assert result["action"] == "allow_advisory"
         assert result["scope_check"] == "pass"
         assert result["wait_seconds"] == 0.0
-        assert "unsafe method advisory" in result["reason"].lower()
+        assert "side-effect-capable method advisory" in result["reason"].lower()
 
 
 class TestRequestGuardRecord:

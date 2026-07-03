@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 
 SCHEMA_VERSION = 1
-SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "POST"}
 RESULTS = (
     "lead",
     "signal",
@@ -257,13 +257,51 @@ def record_entry(
     return entry
 
 
-def _object_or_admin_endpoint(endpoint: str) -> bool:
-    value = str(endpoint or "").lower()
-    return bool(
-        re.search(r"/\d{1,10}(?:/|$)", value)
-        or re.search(r"[?&][a-z0-9_]*(?:id|uuid)=", value)
-        or any(token in value for token in ("admin", "account", "org", "tenant", "user", "invoice", "order", "export", "member"))
-    )
+_OBJECT_RESOURCE_SEGMENTS = {
+    "account", "accounts", "customer", "customers", "invoice", "invoices",
+    "member", "members", "order", "orders", "org", "orgs", "organization",
+    "organizations", "profile", "profiles", "project", "projects", "team",
+    "teams", "tenant", "tenants", "user", "users", "workspace", "workspaces",
+}
+_NON_OBJECT_SELECTOR_SEGMENTS = {
+    "add", "admin", "all", "apply", "auth", "authentication", "callback",
+    "change-password", "config", "configuration", "create", "current",
+    "delete", "edit", "export", "history", "import", "internal", "invite",
+    "list", "login", "logout", "manage", "management", "metadata",
+    "new", "preview", "reset-password", "search", "select", "settings",
+    "signup", "track-order", "update", "version", "whoami",
+}
+
+
+def _object_reference_endpoint(endpoint: str) -> bool:
+    value = str(endpoint or "").strip().lower()
+    if not value:
+        return False
+    if re.search(r"/\d{1,10}(?:/|$)", value):
+        return True
+    if re.search(r"[?&][a-z0-9_]*(?:id|uuid)=", value):
+        return True
+
+    path = _canonicalize_endpoint(value)
+    segments = [segment for segment in path.split("/") if segment]
+    if not segments:
+        return False
+
+    uuid_like = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
+    for idx, segment in enumerate(segments[:-1]):
+        if segment not in _OBJECT_RESOURCE_SEGMENTS:
+            continue
+        candidate = segments[idx + 1]
+        if (
+            candidate
+            and candidate not in _OBJECT_RESOURCE_SEGMENTS
+            and candidate not in _NON_OBJECT_SELECTOR_SEGMENTS
+            and not candidate.endswith((".json", ".xml", ".txt", ".csv"))
+        ):
+            return True
+        if uuid_like.fullmatch(candidate or ""):
+            return True
+    return False
 
 
 def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "GET") -> list[dict]:
@@ -273,7 +311,12 @@ def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "G
     method_u = str(method or "GET").strip().upper()
     state_changing = method_u not in SAFE_METHODS
 
-    if vc not in {"IDOR", "Authz", "GraphQL", "CSRF"} and not _object_or_admin_endpoint(canonical_endpoint):
+    # actor matrix 只服务“角色/对象边界”类验证。像 Upload/SSRF/SQLi 即使落在
+    # admin path 上，也不应自动生成 anonymous/owner/peer 这类 actor-gap，
+    # 否则 checkpoint 会不断推送无意义待办。
+    if vc not in {"IDOR", "Authz", "GraphQL", "CSRF"}:
+        return []
+    if vc != "CSRF" and not _object_reference_endpoint(canonical_endpoint):
         return []
 
     requirements = [

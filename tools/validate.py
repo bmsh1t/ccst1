@@ -698,30 +698,43 @@ def check_h1_dups(program_handle: str, vuln_keyword: str) -> list[dict]:
 # ─── Interactive prompt helpers ───────────────────────────────────────────────
 
 def ask(prompt: str, default: str = "") -> str:
-    if default:
-        val = input(f"  {prompt} [{default}]: ").strip()
-        return val if val else default
-    return input(f"  {prompt}: ").strip()
+    try:
+        if default:
+            val = input(f"  {prompt} [{default}]: ").strip()
+            return val if val else default
+        return input(f"  {prompt}: ").strip()
+    except EOFError:
+        return default
 
 
 def ask_yn(prompt: str, default: bool = True) -> bool:
     yn = "Y/n" if default else "y/N"
-    val = input(f"  {prompt} [{yn}]: ").strip().lower()
+    try:
+        val = input(f"  {prompt} [{yn}]: ").strip().lower()
+    except EOFError:
+        return default
     if not val:
         return default
     return val in ("y", "yes")
 
 
-def ask_choice(prompt: str, choices: list[tuple[str, str]]) -> str:
+def ask_choice(prompt: str, choices: list[tuple[str, str]], default: str = "") -> str:
     """Ask user to pick from labeled choices. Returns the choice key."""
     print(f"\n  {prompt}")
     for key, label in choices:
         print(f"    {CYAN}{key}{RESET}) {label}")
+    valid = [key for key, _ in choices]
+    fallback = default if default in valid else (choices[0][0] if choices else "")
     while True:
-        val = input(f"  Choice: ").strip().upper()
-        if val in [k for k, _ in choices]:
+        try:
+            val = input(f"  Choice: ").strip().upper()
+        except EOFError:
+            return fallback
+        if not val and fallback:
+            return fallback
+        if val in valid:
             return val
-        print(f"  {YELLOW}Invalid — enter one of: {', '.join(k for k,_ in choices)}{RESET}")
+        print(f"  {YELLOW}Invalid — enter one of: {', '.join(valid)}{RESET}")
 
 
 def section(title: str):
@@ -845,55 +858,55 @@ def ask_cvss_score() -> tuple[float, str, dict]:
         ("A", "Adjacent — requires same network segment"),
         ("L", "Local — requires local access to system"),
         ("P", "Physical — requires physical device access"),
-    ])
+    ], default="N")
     ac = ask_choice("Attack Complexity (AC)", [
         ("L", "Low — reliable, no special conditions"),
         ("H", "High — requires specific conditions or timing"),
-    ])
+    ], default="L")
     at = ask_choice("Attack Requirements (AT)", [
         ("N", "None — no extra deployment/runtime condition required"),
         ("P", "Present — exploit depends on a specific condition being true"),
-    ])
+    ], default="N")
     pr = ask_choice("Privileges Required (PR)", [
         ("N", "None — no account needed"),
         ("L", "Low — regular user account"),
         ("H", "High — admin / elevated privileges"),
-    ])
+    ], default="N")
     ui = ask_choice("User Interaction (UI)", [
         ("N", "None — no user interaction required"),
         ("P", "Passive — user is exposed during normal use"),
         ("A", "Active — user must perform a specific action"),
-    ])
+    ], default="N")
     vc = ask_choice("Vulnerable System Confidentiality (VC)", [
         ("H", "High — complete disclosure of vulnerable system data"),
         ("L", "Low — partial disclosure of vulnerable system data"),
         ("N", "None"),
-    ])
+    ], default="L")
     vi = ask_choice("Vulnerable System Integrity (VI)", [
         ("H", "High — complete modification of vulnerable system data"),
         ("L", "Low — limited modification of vulnerable system data"),
         ("N", "None"),
-    ])
+    ], default="N")
     va = ask_choice("Vulnerable System Availability (VA)", [
         ("H", "High — complete shutdown or major service loss"),
         ("L", "Low — reduced performance or intermittent disruption"),
         ("N", "None"),
-    ])
+    ], default="N")
     sc = ask_choice("Subsequent System Confidentiality (SC)", [
         ("H", "High — complete disclosure in a subsequent system"),
         ("L", "Low — partial disclosure in a subsequent system"),
         ("N", "None"),
-    ])
+    ], default="N")
     si = ask_choice("Subsequent System Integrity (SI)", [
         ("H", "High — complete modification in a subsequent system"),
         ("L", "Low — limited modification in a subsequent system"),
         ("N", "None"),
-    ])
+    ], default="N")
     sa = ask_choice("Subsequent System Availability (SA)", [
         ("H", "High — complete disruption in a subsequent system"),
         ("L", "Low — partial disruption in a subsequent system"),
         ("N", "None"),
-    ])
+    ], default="N")
 
     score, vector = calculate_cvss4(av, ac, at, pr, ui, vc, vi, va, sc, si, sa)
     sev = severity_from_score(score)
@@ -1453,7 +1466,11 @@ def main():
     parser.add_argument("--findings-dir", default="", help="Directory containing findings.json")
     parser.add_argument("--finding-id", default="", help="Prefill target/type/endpoint from findings.json")
     parser.add_argument("--browser-url", default="", help="Capture validate browser evidence for this URL")
-    parser.add_argument("--browser-session", default="", help="Optional playwright-cli session name for browser evidence")
+    parser.add_argument(
+        "--browser-session",
+        default="",
+        help="Optional playwright-cli session name for fallback browser evidence when MCP artifacts are unavailable",
+    )
     parser.add_argument("--browser-evidence-dir", default="", help="Attach an existing browser evidence capture directory")
     parser.add_argument("--browser-screenshot", action="store_true", help="Also capture screenshot.png with browser evidence")
     parser.add_argument("--scanner-summary", default="", help="Attach tools/vuln_scanner.sh summary.json to validation-summary.json")

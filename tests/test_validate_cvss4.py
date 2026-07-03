@@ -122,3 +122,28 @@ def test_ask_cvss_score_uses_cvss4_output(monkeypatch, capsys):
         "SI": "H",
         "SA": "H",
     }
+
+
+def test_ask_cvss_score_uses_conservative_defaults_on_eof(monkeypatch):
+    def raise_eof(_prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+
+    score, vector, params = validate.ask_cvss_score()
+
+    assert vector == "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N"
+    assert score < 10.0
+    assert params == {
+        "AV": "N",
+        "AC": "L",
+        "AT": "N",
+        "PR": "N",
+        "UI": "N",
+        "VC": "L",
+        "VI": "N",
+        "VA": "N",
+        "SC": "N",
+        "SI": "N",
+        "SA": "N",
+    }

@@ -1283,7 +1283,7 @@ def test_autopilot_command_md_has_post_hunt_unsafe_review_gate():
     text = md.read_text(encoding="utf-8")
 
     assert "After `run_vuln_scan`" in text
-    assert "unsafe-skipped" in text
+    assert "action-gated scanner leads" in text
     assert "unsafe_skipped.txt" in text
     assert "ALLOW_UNSAFE_HTTP_TESTS=1" in text
     assert "checkpoint instead of finishing" in text
@@ -1325,7 +1325,7 @@ def test_autopilot_agent_md_has_post_hunt_unsafe_review_gate():
 
     assert "run_vuln_scan" in text
     assert "read_surface_summary" in text
-    assert "unsafe-skipped" in text
+    assert "action-gated scanner leads" in text
     assert "unsafe_skipped.txt" in text
     assert "ALLOW_UNSAFE_HTTP_TESTS=1" in text
     assert "not tested-clean" in text

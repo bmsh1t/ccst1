@@ -113,7 +113,7 @@ def _parse_request_item(item: object) -> dict:
 
 
 def _raw_request_items(raw: str) -> list[dict]:
-    """Parse playwright-cli --raw/--json requests text output into request dicts."""
+    """Parse raw browser request text output into request dicts."""
     items: list[dict] = []
     for line in raw.splitlines():
         parsed = _parse_raw_request_line(line)
@@ -203,7 +203,7 @@ def _extract_forms(snapshot_path: Path | None) -> dict:
     return {
         "status": "placeholder",
         "forms": [],
-        "note": "playwright-cli snapshot is not guaranteed to be DOM HTML; no form tags were parsed.",
+        "note": "Browser snapshot text is not guaranteed to be DOM HTML; no form tags were parsed.",
     }
 
 
@@ -273,7 +273,7 @@ def _is_js_request(item: dict) -> bool:
     """A request loaded a JS asset.
 
     Primary signal: resource_type == 'script' (Playwright DevTools protocol).
-    Fallback (when resource_type is empty — e.g., raw playwright-cli output):
+    Fallback (when resource_type is empty — e.g., raw browser capture output):
     URL extension matches a known JS extension, OR contains '.js?' (cache
     buster). Excludes everything else even when their URLs happen to contain
     'js' as a substring (e.g., '/api/jspatch/health').

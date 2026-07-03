@@ -21,7 +21,7 @@ and method tampering — the standard battery from disclosed reports.
 | Header injection | `X-Original-URL`, `X-Rewrite-URL`, `X-Forwarded-For: 127.0.0.1`, `X-Custom-IP-Authorization` |
 | Path encoding | `/admin/%2e/`, `/.admin`, `/admin/`, `/admin;/`, `/admin..;/` |
 | Suffix tricks | `/admin.json`, `/admin#`, `/admin/.` |
-| Method tampering | POST, PUT, PATCH, TRACE on a GET-only endpoint |
+| Method / verb boundary | Compare observed safe methods first; POST/PUT/PATCH/TRACE only when the concrete action has no destructive side effect or is explicitly opted in |
 
 When `byp4xx` (`lobuhi/byp4xx`) is installed it is used directly; otherwise the
 built-in fallback runs the same set with `curl`.

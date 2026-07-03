@@ -52,9 +52,12 @@ python3 tools/evidence_ledger.py record \
   --evidence-ref recon/target.com/browser/xhr_endpoints.txt:1
 ```
 
-状态改变动作必须先过红线检查。对于 `POST`、`PUT`、`PATCH`、`DELETE`、GraphQL
-mutation、admin action、payment action 等动作，只有使用测试资源、可回滚、低频且
-符合 `rules/red-lines.md` 时，才可以记录为已测试：
+状态改变动作必须先过红线检查。HTTP method 本身不是红线：POST 常用于只读查询、
+搜索、GraphQL query 和浏览器观察到的 API replay。只有具体动作会写入/删除/
+改变真实业务状态时，才需要按红线处理，例如 PUT/PATCH/DELETE、GraphQL mutation、
+admin action、payment action、upload canary、OTP/MFA 尝试、SAML 伪造提交等。
+这类动作只有使用测试资源、可回滚、低频且符合 `rules/red-lines.md` 时，才可以
+记录为已测试：
 
 ```bash
 python3 tools/evidence_ledger.py record \

@@ -64,6 +64,16 @@ def test_recon_engine_supports_assetfinder_and_puredns():
     assert "DNSX_" not in text
 
 
+def test_recon_engine_uses_canonical_target_storage_key():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'from tools.target_paths import target_storage_key' in text
+    assert 'print(target_storage_key(target))' in text
+    assert 'RECON_TARGET_KEY="$(python3 - "$TARGET" "$BASE_DIR"' in text
+    assert r'RECON_TARGET_KEY="${TARGET//\//_}"' not in text
+
+
 def test_recon_engine_preserves_host_port_lab_url_seed():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")

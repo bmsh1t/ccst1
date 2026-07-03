@@ -101,6 +101,6 @@ CHECKPOINT DECISION
 - `hunt`：有 P1/P2 或 recommended target。
 - `continue`：有 high-value coverage gap。
 - `continue`：coverage gap 为空但 Actor Matrix 仍有缺口时，也不能声称全面完成。
-- `checkpoint`：存在 unsafe-skipped 或需要人工授权的 lane。
+- `checkpoint`：存在 action-gated scanner lead 或需要人工授权的 lane。
   若来自目标专属脚本、默认凭据、写操作、上传、登录尝试或高风险 payload，先按 `templates/phased-surface-validation-plan.md` 分层：具体事实留在目标作用域，通用层只保留抽象阶段规则和安全门槛。
 - `handoff`：本轮可停，但必须保留下一步、dead end 和交接摘要。

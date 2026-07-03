@@ -540,10 +540,10 @@ _ALL_TOOL_SPECS: list[dict] = [
         "function": {
             "name": "run_browser_probe",
             "description": (
-                "Use playwright-cli to capture one browser-context page and feed observed XHR/API/GraphQL "
+                "Fallback browser capture via playwright-cli when MCP artifacts are unavailable; capture one browser-context page and feed observed XHR/API/GraphQL "
                 "requests plus params into recon/<target>/browser. Use for login/register/dashboard/app/portal, "
-                "SPA, XHR, GraphQL, or account-gated surfaces. This is the preferred first move for "
-                "app-like/browser-driven surfaces before reducing the target to curl-only testing."
+                "SPA, XHR, GraphQL, or account-gated surfaces. Prefer chrome-devtools/playwright MCP plus "
+                "tools/browser_mcp_import.py for live browser work when available before reducing the target to curl-only testing."
             ),
             "parameters": {
                 "type": "object",
@@ -3151,7 +3151,7 @@ def _build_agent_system(
         )
     mode_block += (
         "- Authorization posture: the supplied target set is this run's active target context. Do not ask for authorization proof, ownership proof, or public-program confirmation before routine recon, scanning, or evidence-driven hunting.\n"
-        "- Pause only for ambiguous target identity, unavailable credentials that cannot be derived through the controlled Credential Lane, report submission, a new target not present in the current input/context, or explicit unsafe/state-changing actions.\n"
+        "- Pause only for ambiguous target identity, unavailable credentials that cannot be derived through the controlled Credential Lane, report submission, a new target not present in the current input/context, or explicit destructive side effects / irreversible mutations / high-pressure actions.\n"
         "- Treat the provided targets as the active execution target set for this run.\n"
         "- Read local repo config early; if it marks the run as CTF/lab or sandbox mode, treat that as authoritative for this session and do not ask for external authorization before loading the config.\n"
         "- Treat recon-discovered subdomains, live hosts, URLs, JS files, parameters, and exposure candidates under the supplied targets as part of the working target set.\n"
@@ -3220,7 +3220,7 @@ def _build_agent_system(
         "- Prefer evidence-driven depth over random tool spray, but do not be timid. Use run_vuln_scan full=true, run_zero_day_fuzzer deep=true, run_js_analysis, run_secret_hunt, equivalent helpers, or small custom probes when the target is high-value, the surface is broad, a lane plateaus, or partial evidence suggests the extra cost may pay off.\n"
         "- Substantive actions must add, confirm, disprove, block, or record target evidence; do not pad the run with repeated scans or cosmetic steps.\n"
         "- Deep exhaustion checklist before finish: confirm recon/state and surface ranking were consulted; coverage matrix was rebuilt; Evidence Ledger / actor matrix was reviewed; scanner-negative results received manual follow-up; JS/source/browser/exposure context was used or explicitly ruled out; sibling/bypass/role-diff/parser/chain-building attempts were made where applicable; high-value vuln-family directions are tested, blocked, not applicable, or listed with reasons.\n"
-        "- Deep mode never overrides live-action boundaries: payment/funds/order lifecycle writes, unsafe methods, report submission, and state-changing mutations still require explicit current-turn operator intent.\n"
+        "- Deep mode never overrides live-action boundaries: payment/funds/order lifecycle writes, report submission, destructive side effects, and irreversible mutations still require explicit current-turn operator intent; HTTP method alone is advisory, not the boundary.\n"
         "- Before finishing, write concrete evidence gaps rather than a generic 'no findings' conclusion.\n"
     ) if deep_mode else ""
 
@@ -3307,7 +3307,7 @@ CORE RULES:
 7. Prioritize by impact: CMS exploits > RCE > SQLi > IDOR/auth bypass > secrets > info.
 8. If Drupal or WordPress is detected → run_cms_exploit immediately. If any stack is clearly identified, prefer run_intel for the primary /intel workflow; run_cve_hunt is the legacy compatibility path.
 9. If Java/Tomcat/JBoss/Spring is detected → run_rce_scan + run_post_param_discovery.
-10. If login/register/dashboard/app/portal, SPA/XHR/GraphQL, or account-gated surface is present → run_browser_probe first, then read_browser_surface/read_surface_summary before reducing the surface to curl-only tests.
+10. If login/register/dashboard/app/portal, SPA/XHR/GraphQL, or account-gated surface is present → prefer MCP-first browser-state work (chrome-devtools MCP live network, playwright MCP automation/snapshots, import via tools/browser_mcp_import.py); use run_browser_probe as the playwright-cli fallback, then read_browser_surface/read_surface_summary before reducing the surface to curl-only tests.
 11. If cached JS, browser, or repo-source artifacts exist → prefer run_source_intel first, then run_js_read/read_js_intel before repeating broad scanners. Use run_js_analysis as a deeper legacy follow-up when you specifically need direct JS-body extraction or secret-heavy review. If secrets/tokens/config leaks are plausible, add run_secret_hunt.
 12. If ranked workflow leads already exist → read_surface_summary and spend at least one focused step on the best lead before defaulting back to another broad scanner pass.
 13. Do not get trapped in enrichment-only loops: after one or two focused lead-driven attempts, either promote/demote the lead with evidence and widen back into the next best active lane.

@@ -105,5 +105,59 @@ def test_state_changing_record_without_redline_check_is_flagged(tmp_path):
     assert any(row["redline_required"] for row in summary["actor_matrix"]["gaps"])
 
 
+def test_post_record_is_not_state_changing_by_method_alone(tmp_path):
+    entry = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        method="POST",
+        vuln_class="IDOR",
+        actor="owner",
+        object_scope="own",
+        variant="baseline",
+        result="signal",
+    )
+
+    summary = build_summary(
+        tmp_path,
+        target="target.com",
+        focus_endpoints=["/api/search"],
+        vuln_classes=["IDOR"],
+        method="POST",
+    )
+
+    assert entry["state_changing"] is False
+    assert entry["warnings"] == []
+    assert summary["redline_unchecked_count"] == 0
+    assert not any(row["redline_required"] for row in summary["actor_matrix"]["gaps"])
+
+
 def test_actor_requirements_are_empty_for_low_signal_non_authz_class():
     assert actor_requirements("/status", "SSRF") == []
+
+
+def test_actor_requirements_ignore_non_authz_classes_even_on_admin_paths():
+    assert actor_requirements("/rest/admin/application-configuration", "Upload") == []
+
+
+def test_build_summary_does_not_emit_actor_gaps_for_upload_lane_on_admin_path(tmp_path):
+    summary = build_summary(
+        tmp_path,
+        target="target.com",
+        focus_endpoints=["/rest/admin/application-configuration"],
+        vuln_classes=["Upload"],
+    )
+
+    assert summary["actor_matrix"]["gap_count"] == 0
+    assert summary["record_commands"] == []
+
+
+def test_build_summary_does_not_emit_idor_actor_gaps_for_non_object_admin_config(tmp_path):
+    summary = build_summary(
+        tmp_path,
+        target="target.com",
+        focus_endpoints=["/rest/admin/application-configuration"],
+        vuln_classes=["IDOR"],
+    )
+
+    assert summary["actor_matrix"]["gap_count"] == 0

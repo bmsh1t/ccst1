@@ -146,28 +146,46 @@ if [ -n "$USER_SKIP_CHECKS" ]; then
     SKIP_CHECKS="${SKIP_CHECKS:-}${SKIP_CHECKS:+,}$USER_SKIP_CHECKS"
 fi
 
-unsafe_method_guard() {
+scanner_probe_guard() {
     local method="$1"
     local url="$2"
     local label="$3"
     local guard_output decision reason
 
-    # Align with the original scanner behavior: safe methods are allowed by
-    # default, while unsafe/state-changing probes require an explicit
-    # per-invocation opt-in via ALLOW_UNSAFE_HTTP_TESTS=1.
-    guard_output=$(PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$method" "$url" <<'PY'
+    # Broad scanner templates are conservative by action, not by POST itself.
+    # POST is common for read/search/GraphQL/browser-observed APIs and is not a
+    # risk signal by method alone. Specific scanner actions that may write files,
+    # trigger OTP/auth attempts, or forge SAML responses still require an
+    # explicit per-invocation opt-in via ALLOW_UNSAFE_HTTP_TESTS=1.
+    guard_output=$(PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$method" "$url" "$label" <<'PY'
 import sys
 from memory.audit_log import SafeMethodPolicy
 
 method = (sys.argv[1] or "").upper()
 url = sys.argv[2] if len(sys.argv) > 2 else ""
+label = (sys.argv[3] if len(sys.argv) > 3 else "").lower()
 policy = SafeMethodPolicy()
-if policy.is_safe(method):
+post_action_requires_opt_in = (
+    method == "POST"
+    and any(token in label for token in (
+        "upload",
+        "mfa",
+        "otp",
+        "2fa",
+        "saml",
+        "signature",
+        "response-manipulation",
+    ))
+)
+if policy.is_safe(method) and not post_action_requires_opt_in:
     print("allow")
     print("")
+elif post_action_requires_opt_in:
+    print("require_approval")
+    print(f"Scanner action {label or method} may create side effects and requires ALLOW_UNSAFE_HTTP_TESTS=1")
 else:
     print("require_approval")
-    print(f"Unsafe method {method} for {url} requires ALLOW_UNSAFE_HTTP_TESTS=1")
+    print(f"Side-effect-capable scanner method {method} for {url} requires ALLOW_UNSAFE_HTTP_TESTS=1")
 PY
 ) || {
         log_warn "Unable to evaluate safe-method policy for $label; skipping"
@@ -190,7 +208,7 @@ PY
     fi
 
     if [ "$decision" = "require_approval" ]; then
-        log_warn "$label uses unsafe HTTP method $method. Proceeding because ALLOW_UNSAFE_HTTP_TESTS=1 is set."
+        log_warn "$label uses side-effect-capable scanner method $method. Proceeding because ALLOW_UNSAFE_HTTP_TESTS=1 is set."
     fi
 
     return 0
@@ -620,7 +638,7 @@ verify_upload_poc() {
     local upload_url="$1"
     local base_url ts headers ext payload canary canary_path param dir probe_url resp
 
-    if ! unsafe_method_guard "POST" "$upload_url" "upload canary probe"; then
+    if ! scanner_probe_guard "POST" "$upload_url" "upload canary probe"; then
         return 1
     fi
 
@@ -1263,7 +1281,7 @@ fi
 # 8e: HTTP method tampering (PUT/DELETE on endpoints that should only accept GET/POST)
 if ! skip_has auth_bypass && [ -s "$LIVE_URLS" ]; then
     FIRST_LIVE_URL=$(head -1 "$LIVE_URLS" 2>/dev/null || true)
-    if [ -n "$FIRST_LIVE_URL" ] && unsafe_method_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes"; then
+    if [ -n "$FIRST_LIVE_URL" ] && scanner_probe_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes"; then
         log_step "Testing HTTP method tampering on sample endpoints..."
         while IFS= read -r url; do
             for METHOD in PUT DELETE PATCH; do
@@ -1384,7 +1402,7 @@ if ! skip_has mfa; then
             BASE=$(printf '%s\n' "$url" | cut -d'?' -f1)
             HOST=$(printf '%s\n' "$url" | grep -oE "https?://[^/]+" || true)
 
-            if unsafe_method_guard "POST" "$BASE" "MFA rate-limit probe"; then
+            if scanner_probe_guard "POST" "$BASE" "MFA rate-limit probe"; then
                 log_step "Rate limit probe: $BASE"
                 STATUS_RAW=$(for _i in $(seq 1 15); do
                     curl -sk -o /dev/null -w "%{http_code}\n" --max-time 5 \
@@ -1413,7 +1431,7 @@ if ! skip_has mfa; then
                 done
             fi
 
-            if unsafe_method_guard "POST" "$BASE" "MFA response-manipulation canary"; then
+            if scanner_probe_guard "POST" "$BASE" "MFA response-manipulation canary"; then
                 MFA_RESP=$(curl -sk "${BB_AUTH_ARGS[@]}" --max-time 5 -X POST "$BASE" \
                     -H "Content-Type: application/json" \
                     -d '{"otp":"999999"}' 2>/dev/null || true)
@@ -1476,7 +1494,7 @@ if ! skip_has saml; then
     done < <(awk '{print $2}' "$FINDINGS_DIR/saml/endpoints.txt" 2>/dev/null || true)
 
     ACS_URL=$(grep -E "saml/acs|saml/login" "$FINDINGS_DIR/saml/endpoints.txt" 2>/dev/null | head -1 | awk '{print $2}' || true)
-    if [ -n "$ACS_URL" ] && unsafe_method_guard "POST" "$ACS_URL" "SAML signature-stripping probe"; then
+    if [ -n "$ACS_URL" ] && scanner_probe_guard "POST" "$ACS_URL" "SAML signature-stripping probe"; then
         STRIPPED_SAML=$(printf '%s' '<?xml version="1.0"?><samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"><saml:Assertion><saml:Subject><saml:NameID>admin@target.com</saml:NameID></saml:Subject></saml:Assertion></samlp:Response>' | base64 | tr -d '\n')
         SAML_POST_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 8 \
             "${BB_AUTH_ARGS[@]}" \

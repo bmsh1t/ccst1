@@ -82,6 +82,41 @@ Use `/validate` when a Lead or Signal has become a Candidate, or when preparing
 `/report`. It is a strict pre-report/pre-submit gate, not a hunt-phase
 kill-switch for raw leads, anomalies, hypotheses, or chain seeds.
 
+## Deterministic Evidence Runners
+
+Before treating a lead as candidate-ready, prefer a small reproducible evidence
+runner when the lane fits. This keeps Claude focused on hypothesis choice and
+impact reasoning while tools handle replay, diff, raw evidence, and ledger
+format.
+
+```bash
+# Anonymous admin/config exposure: body-backed marker required for tested_finding
+python3 tools/validation_runner.py authz-public-exposure \
+  --target <target> \
+  --url <exact-url> \
+  --browser-observed
+
+# SQLi/NoSQLi-style read-only result diff: injection-shaped variant + stable diff
+python3 tools/validation_runner.py sqli-result-diff \
+  --target <target> \
+  --url '<exact-url-with-param>' \
+  --param <name> \
+  --baseline-value '' \
+  --variant-value '<single controlled perturbation>' \
+  --repeat 2 \
+  --browser-observed
+
+# IDOR/Authz: generate the two-actor bundle; fill with owner/peer evidence
+python3 tools/validation_runner.py idor-skeleton \
+  --target <target> \
+  --endpoint <exact-endpoint>
+```
+
+Runner output is not a replacement for `/validate`. Use it as the evidence
+plane: it writes `evidence/<target>/validation/<finding-id>/`, records the
+Evidence Ledger unless `--no-ledger` is set, and returns `ai_next` /
+`stop_condition` for Claude to decide the next hypothesis.
+
 ## Target-Driven Validation
 
 Validation uses the supplied target as the active target record. External
@@ -107,12 +142,15 @@ reintroduce external program confirmation for this run.
 /validate
 ```
 
-## Claude Code CLI Browser-State Priority
+## Browser-State Priority
 
 During validation, prove that a real user can reproduce the behavior in the
 current state:
 
-- Browser-dependent findings should use `playwright-cli` first to reproduce the flow, observe state changes, and capture evidence.
+- Prefer chrome-devtools MCP for live browser/network evidence.
+- Prefer playwright MCP for automated interaction and snapshots.
+- Use `tools/browser_evidence.py` / `playwright-cli` only when MCP is unavailable or a scriptable fallback is needed.
+- Import MCP artifacts with `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, `/autopilot`, and validation summaries can reuse the same observed browser API surface.
 - Exact non-browser requests can use `curl` / `urllib` / local helpers for lightweight replay.
 - Burp/Caido history is auxiliary replay and comparison context; missing Burp/Caido should not block validation.
 

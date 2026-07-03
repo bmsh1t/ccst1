@@ -6,7 +6,7 @@ from memory.audit_log import SafeMethodPolicy
 
 
 class TestSafeMethodPolicyDefaults:
-    """Default policy: GET/HEAD/OPTIONS are safe, everything else requires approval."""
+    """Default policy: GET/HEAD/OPTIONS/POST are low-side-effect; mutating verbs are advisory."""
 
     def test_get_is_safe(self):
         policy = SafeMethodPolicy()
@@ -20,9 +20,9 @@ class TestSafeMethodPolicyDefaults:
         policy = SafeMethodPolicy()
         assert policy.is_safe("OPTIONS") is True
 
-    def test_post_is_unsafe(self):
+    def test_post_is_safe_by_default(self):
         policy = SafeMethodPolicy()
-        assert policy.is_safe("POST") is False
+        assert policy.is_safe("POST") is True
 
     def test_put_is_unsafe(self):
         policy = SafeMethodPolicy()
@@ -40,7 +40,7 @@ class TestSafeMethodPolicyDefaults:
         policy = SafeMethodPolicy()
         assert policy.is_safe("get") is True
         assert policy.is_safe("Get") is True
-        assert policy.is_safe("post") is False
+        assert policy.is_safe("post") is True
 
 
 class TestSafeMethodPolicyCheck:
@@ -70,8 +70,8 @@ class TestSafeMethodPolicyCustom:
     """Custom safe method sets."""
 
     def test_custom_safe_methods(self):
-        policy = SafeMethodPolicy(safe_methods={"GET", "HEAD", "OPTIONS", "POST"})
-        assert policy.is_safe("POST") is True
+        policy = SafeMethodPolicy(safe_methods={"GET", "HEAD", "OPTIONS"})
+        assert policy.is_safe("POST") is False
         assert policy.is_safe("DELETE") is False
 
     def test_empty_safe_methods_blocks_everything(self):

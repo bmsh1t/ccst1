@@ -91,8 +91,10 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.surface_weights import value_weight
+    from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - top-level tools/ import
     from surface_weights import value_weight  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 VULN_CLASSES = (
     "IDOR", "SSRF", "XSS", "Race", "Authz",
@@ -220,22 +222,56 @@ _RELEVANCE_RULES: tuple[tuple[str, int, re.Pattern, str], ...] = (
     ("Path", 6, re.compile(r"/(?:download|export|file|files|attachment|attachments|include|static|assets|preview)(?:/|$|\b)", re.I), "file download/read path"),
     ("RCE", 9, re.compile(r"\b(cmd|command|exec|execute|shell|process|template|render|ssti|deserialize|deserialise|unserialize|pickle|yaml|script|workflow|job)\b", re.I), "code/template/deserialization execution candidate"),
     ("RCE", 6, re.compile(r"/(?:render|template|preview|execute|exec|job|jobs|worker|debug)(?:/|$|\b)", re.I), "render/execution path"),
-    ("SQLi", 7, re.compile(r"\b(q|query|search|filter|filters|sort|order|orderby|order_by|where|select|keyword|term|report|lookup|condition)\b", re.I), "query/filter/search parameter"),
-    ("SQLi", 3, re.compile(r"\b(id|uid|uuid|name|email|username)\b", re.I), "database-backed lookup parameter"),
     ("XXE", 8, re.compile(r"\b(xml|soap|wsdl|saml|xinclude|xxe|doctype|docx|xlsx|svg|rss|feed)\b", re.I), "XML/parser surface"),
     ("Upload", 8, re.compile(r"\b(upload|import|file|filename|attachment|avatar|media|document|csv|xlsx|zip|archive)\b", re.I), "upload/import file surface"),
     ("GraphQL", 9, re.compile(r"\b(graphql|gql|query|mutation|operationname|operation_name|variables)\b|/graphql(?:/|$|\b)", re.I), "GraphQL operation surface"),
     ("OAuth", 8, re.compile(r"\b(oauth|oidc|saml|sso|redirecturi|redirect_uri|clientid|client_id|state|nonce|pkce|scope|callback)\b", re.I), "OAuth/OIDC/SAML flow surface"),
     ("JWT", 7, re.compile(r"\b(jwt|token|access_token|refresh_token|id_token|kid|jwks|jwk|jws|bearer|authorization)\b", re.I), "token/JWT surface"),
     ("Webhook", 8, re.compile(r"\b(webhook|hook|callback|signature|hmac|event|secret)\b|/(?:webhook|hook|callback)(?:/|$|\b)", re.I), "webhook/signature surface"),
-    ("Race", 7, re.compile(r"\b(checkout|payment|pay|refund|redeem|coupon|transfer|withdraw|balance|cart|order|payout|subscription|confirm|approve)\b", re.I), "state-transition/concurrency surface"),
     ("XSS", 5, re.compile(r"\b(html|content|message|comment|title|name|callback|redirect|return|next|search|q)\b", re.I), "reflection/DOM input surface"),
     ("CSRF", 5, re.compile(r"\b(csrf|xsrf|state|token|update|change|invite|delete|remove|submit)\b", re.I), "session state-change surface"),
 )
 
+# SQLi 需要把“路径段语义”和“参数名语义”分开：
+# - `/address/select`、`/rest/order-history` 里的 select/order 是资源命名，
+#   不是天然的查询入口，不应仅凭路径就被抬进高价值 SQLi 队列。
+# - `/search?q=`、`?filter=`、`?order=` 这类参数名仍是高信号，应保持高优先级。
+_SQLI_PATH_PATTERN = re.compile(
+    r"/(?:search|query|filter|filters|lookup|report|reports)(?:/|$|\b)",
+    re.I,
+)
+_SQLI_PARAM_PATTERN = re.compile(
+    r"\b(q|query|search|filter|filters|sort|order|orderby|order_by|where|select|keyword|term|report|lookup|condition)\b",
+    re.I,
+)
+_SQLI_LOOKUP_PARAM_PATTERN = re.compile(
+    r"\b(id|uid|uuid|name|email|username)\b",
+    re.I,
+)
+_RACE_ACTION_PATH_PATTERN = re.compile(
+    r"/(?:checkout|payment|payments|pay|refund|refunds|redeem|transfer|transfers|withdraw|withdrawals|payout|payouts|confirm|approve|capture|charge|charges|subscribe|subscription|subscriptions)(?:/|$|\b)",
+    re.I,
+)
+_RACE_STATE_PARAM_PATTERN = re.compile(
+    r"\b(coupon|coupon_code|promo|promo_code|voucher|quantity|qty|amount|credits|credit|points|reward|rewards|balance|wallet|seat|seats|quota|limit|otp|totp|token|idempotency|idempotency_key)\b",
+    re.I,
+)
+
+
+def _storage_key(target: str) -> str:
+    """Return the canonical directory key shared with recon/findings/memory.
+
+    URL targets contain `/` in their raw form. Writing coverage artifacts under
+    the raw target creates split paths such as `evidence/http:/127...`, while
+    recon/findings use `target_storage_key()` (`http:_127...`). Keep every
+    coverage read/write on the shared storage key so `/autopilot` sees one
+    coherent target state.
+    """
+    return target_storage_key(canonical_target_value(target))
+
 
 def _matrix_path(repo_root: Path, target: str) -> Path:
-    return repo_root / "evidence" / target / "coverage_matrix.json"
+    return repo_root / "evidence" / _storage_key(target) / "coverage_matrix.json"
 
 
 def _empty_matrix(target: str) -> dict:
@@ -382,6 +418,56 @@ def _normalise_signal(value: str) -> str:
     return re.sub(r"[^a-z0-9_/-]+", " ", str(value or "").lower())
 
 
+def _sqli_relevance(endpoint: str, params: list[str]) -> dict:
+    """单独处理 SQLi 语义，避免路径词误伤。
+
+    目标是保留真正的 query/search/filter surface，同时避免 `/select`
+    `/order-history` 这类资源路径因为单词撞名被错误升权。
+    """
+    score = 0
+    reasons: list[str] = []
+    params_blob = _normalise_signal(" ".join(params))
+
+    if _SQLI_PATH_PATTERN.search(str(endpoint or "")):
+        score += 7
+        reasons.append("query/filter/search path")
+    if _SQLI_PARAM_PATTERN.search(params_blob):
+        score += 7
+        reasons.append("query/filter/search parameter")
+    if _SQLI_LOOKUP_PARAM_PATTERN.search(params_blob):
+        score += 3
+        reasons.append("database-backed lookup parameter")
+
+    return {
+        "relevance_score": min(score, 20),
+        "relevance_reason": "; ".join(reasons[:3]),
+    }
+
+
+def _race_relevance(endpoint: str, params: list[str]) -> dict:
+    """单独处理 Race 语义，避免状态对象名被当成状态变更动作。
+
+    `order-history`、`track-order`、`wallet/balance` 更像读取/查询资源；
+    竞态优先级应由 checkout/refund/redeem/transfer/confirm 等动作路径，
+    或 coupon/quantity/amount/quota 等状态变更参数驱动。
+    """
+    score = 0
+    reasons: list[str] = []
+    params_blob = _normalise_signal(" ".join(params))
+
+    if _RACE_ACTION_PATH_PATTERN.search(str(endpoint or "")):
+        score += 7
+        reasons.append("state-transition action path")
+    if _RACE_STATE_PARAM_PATTERN.search(params_blob):
+        score += 5
+        reasons.append("state/value-changing parameter")
+
+    return {
+        "relevance_score": min(score, 20),
+        "relevance_reason": "; ".join(reasons[:3]),
+    }
+
+
 def class_relevance(endpoint: str, vuln_class: str, observed_params: object | None = None) -> dict:
     """Score how naturally a vuln class fits an endpoint.
 
@@ -394,6 +480,11 @@ def class_relevance(endpoint: str, vuln_class: str, observed_params: object | No
         params = [str(item) for item in observed_params if str(item or "").strip()]
     elif isinstance(observed_params, (set, tuple)):
         params = [str(item) for item in observed_params if str(item or "").strip()]
+
+    if vuln_class == "SQLi":
+        return _sqli_relevance(endpoint, params)
+    if vuln_class == "Race":
+        return _race_relevance(endpoint, params)
 
     blob = _normalise_signal(" ".join([endpoint, *params]))
     score = 0
@@ -551,7 +642,15 @@ def rebuild_matrix(
     existing = {ep.get("endpoint"): ep for ep in matrix.get("endpoints", [])}
 
     # Collect URLs from recon
-    urls_path = repo / "recon" / target / "urls" / "all.txt"
+    target_key = _storage_key(target)
+    urls_dir = repo / "recon" / target_key / "urls"
+    # Prefer the denoised URL set when recon produced it. Raw all.txt keeps
+    # external embeds and historical third-party URLs for audit, but coverage
+    # should rank the current target surface instead of converting
+    # `https://third-party/player/?url=...` into a fake local `/player/` gap.
+    urls_path = urls_dir / "all_filtered.txt"
+    if not urls_path.is_file():
+        urls_path = urls_dir / "all.txt"
     urls: list[str] = []
     if urls_path.is_file():
         try:
@@ -626,7 +725,7 @@ def rebuild_matrix(
             })
 
     # Apply findings: mark cells as tested_finding
-    findings_path = repo / "findings" / target / "findings.json"
+    findings_path = repo / "findings" / target_key / "findings.json"
     if findings_path.is_file():
         try:
             findings = json.loads(findings_path.read_text(encoding="utf-8"))
@@ -649,7 +748,7 @@ def rebuild_matrix(
                         )
                         ep["cells"][vc] = {
                             "status": "tested_finding",
-                            "evidence_ref": f"findings/{target}/findings.json#{finding.get('id', '')}",
+                            "evidence_ref": f"findings/{target_key}/findings.json#{finding.get('id', '')}",
                         }
                         break
                 else:
@@ -662,7 +761,7 @@ def rebuild_matrix(
                     }
                     ep["cells"][vc] = {
                         "status": "tested_finding",
-                        "evidence_ref": f"findings/{target}/findings.json#{finding.get('id', '')}",
+                        "evidence_ref": f"findings/{target_key}/findings.json#{finding.get('id', '')}",
                     }
                     new_endpoints.append(ep)
         except (OSError, json.JSONDecodeError):
@@ -671,7 +770,7 @@ def rebuild_matrix(
     # Apply scanner_pass.json: mark cells `tested_clean` only when scanner
     # exercised them and no higher-precedence status (tested_finding > n_a)
     # already applies. Per task 05-16-b4-scanner-matrix-feedback (R2/R3).
-    _apply_scanner_pass(target, repo, new_endpoints)
+    _apply_scanner_pass(target_key, repo, new_endpoints)
 
     matrix["endpoints"] = new_endpoints
     return matrix
@@ -823,7 +922,8 @@ def _append_finding(
     skipped on the (endpoint, vuln_class) key.
     """
     repo = Path(repo_root) if repo_root else BASE_DIR
-    findings_dir = repo / "findings" / target
+    target_key = _storage_key(target)
+    findings_dir = repo / "findings" / target_key
     findings_dir.mkdir(parents=True, exist_ok=True)
     findings_path = findings_dir / "findings.json"
 

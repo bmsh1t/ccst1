@@ -181,9 +181,9 @@ def _action_sort_key(action: dict) -> tuple:
         relevance = 0
     return (
         _status_rank(str(action.get("status") or "queued")),
+        -priority,
         -relevance,
         -high_value.score,
-        -priority,
         str(action.get("created_at") or ""),
         str(action.get("id") or ""),
     )
@@ -269,13 +269,13 @@ def _sync_unsafe_skipped_review_for_action(
     action: dict,
     normalized_status: str,
 ) -> dict:
-    """Persist resolution for unsafe-skipped scanner manual-review leads."""
-    if str(action.get("type") or "") != "unsafe-skipped-review":
+    """Persist resolution for action-gated scanner manual-review leads."""
+    if str(action.get("type") or "") not in {"action-gated-review", "unsafe-skipped-review"}:
         return {}
     if normalized_status not in UNSAFE_REVIEW_FINAL_STATUSES:
         return {
             "status": "skipped",
-            "reason": f"action status {normalized_status!r} does not resolve unsafe-skipped review",
+            "reason": f"action status {normalized_status!r} does not resolve action-gated review",
         }
     metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
     unsafe_id = str(metadata.get("unsafe_skipped_id") or "").strip()
@@ -283,7 +283,7 @@ def _sync_unsafe_skipped_review_for_action(
     if not unsafe_id:
         return {
             "status": "skipped",
-            "reason": "unsafe-skipped action is missing unsafe_skipped_id metadata",
+            "reason": "action-gated review is missing unsafe_skipped_id metadata",
         }
 
     path = _unsafe_review_path(repo_root, target)
@@ -452,6 +452,40 @@ def upsert_actions(queue: dict, actions: list[dict]) -> dict:
     return stats
 
 
+def _retire_stale_checkpoint_actions(queue: dict, fresh_actions: list[dict]) -> int:
+    """Retire queued/running checkpoint TODOs that disappeared from the latest checkpoint.
+
+    只处理仍未分类的 checkpoint 源 action，避免旧噪声在 queue 里长期滞留。
+    candidate/validated/manual 等人工推进过的条目不自动改状态。
+    """
+    fresh_keys = {
+        str(action.get("dedupe_key") or _dedupe_key(action))
+        for action in fresh_actions
+        if isinstance(action, dict)
+    }
+    retired = 0
+    ts = now_utc()
+    for item in queue.get("actions", []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source") or "") != "checkpoint":
+            continue
+        if str(item.get("status") or "queued") not in {"queued", "running"}:
+            continue
+        key = str(item.get("dedupe_key") or _dedupe_key(item))
+        if key in fresh_keys:
+            continue
+        item["status"] = "n/a"
+        item["updated_at"] = ts
+        if not item.get("result"):
+            item["result"] = (
+                "Retired automatically after checkpoint refresh: the action is no longer "
+                "present in the current evidence-backed next_action_queue."
+            )
+        retired += 1
+    return retired
+
+
 def add_manual_action(
     repo_root: Path | str,
     *,
@@ -500,6 +534,8 @@ def ingest_checkpoint(repo_root: Path | str, target: str, *, checkpoint: dict | 
         if isinstance(item, dict)
     ]
     stats = upsert_actions(queue, actions)
+    stats["retired_stale"] = _retire_stale_checkpoint_actions(queue, actions)
+    queue["actions"].sort(key=_action_sort_key)
     path = save_queue(repo_root, target, queue)
     return {
         "path": str(path),

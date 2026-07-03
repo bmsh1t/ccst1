@@ -30,15 +30,14 @@ class TestAutopilotGuardAllow:
         assert result["decision"] == "allow"
 
 
-class TestAutopilotGuardUnsafeMethods:
-    """Unsafe methods should surface advisories without blocking."""
+class TestAutopilotGuardSideEffectCapableMethods:
+    """Side-effect-capable methods should surface advisories without blocking."""
 
-    def test_post_returns_allow_with_advisory(self):
+    def test_post_returns_allow_without_method_advisory(self):
         guard = AutopilotGuard()
         result = guard.check_request("POST", "https://target.com/api/users")
         assert result["decision"] == "allow"
-        assert "unsafe method" in result["reason"].lower() or "method" in result["reason"].lower()
-        assert result["advisories"]
+        assert "advisories" not in result
 
     def test_put_returns_allow_with_advisory(self):
         guard = AutopilotGuard()
@@ -136,15 +135,15 @@ class TestAutopilotGuardCombined:
         assert result["decision"] == "allow"
         assert any("circuit" in item.lower() for item in result["advisories"])
 
-    def test_unsafe_method_on_healthy_host(self):
-        """Healthy host + unsafe method = advisory, not block."""
+    def test_side_effect_capable_method_on_healthy_host(self):
+        """Healthy host + side-effect-capable method = advisory, not block."""
         guard = AutopilotGuard()
         result = guard.check_request("DELETE", "https://target.com/api/users/1")
         assert result["decision"] == "allow"
         assert result["advisories"]
 
-    def test_unsafe_method_on_tripped_host(self):
-        """Tripped host + unsafe method = combined advisories."""
+    def test_side_effect_capable_method_on_tripped_host(self):
+        """Tripped host + side-effect-capable method = combined advisories."""
         guard = AutopilotGuard(circuit_threshold=2)
         guard.record_failure("target.com")
         guard.record_failure("target.com")

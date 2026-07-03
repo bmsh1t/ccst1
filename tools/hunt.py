@@ -104,7 +104,8 @@ def log_authorization_posture(target: str) -> None:
             "Authorization posture: treating the supplied target set as this run's "
             f"active target context ({target}); no authorization prompts. "
             "Pause only for ambiguous targets, credentials that cannot be derived through the controlled Credential Lane, "
-            "report submission, or explicit unsafe/state-changing actions."
+            "report submission, or explicit destructive side effects / irreversible mutations / high-pressure actions. "
+            "HTTP method alone is advisory, not a stop condition."
         ),
     )
 
@@ -1953,7 +1954,10 @@ def read_browser_surface(domain):
     """Read browser-observed recon surface for a target."""
     browser_dir = os.path.join(_resolve_recon_dir(domain), "browser")
     if not os.path.isdir(browser_dir):
-        return f"No browser surface artifacts found for {domain}. Run run_browser_probe first."
+        return (
+            f"No browser surface artifacts found for {domain}. Import MCP artifacts with "
+            "tools/browser_mcp_import.py, or run run_browser_probe as the playwright-cli fallback."
+        )
 
     summary_path = os.path.join(browser_dir, "summary.json")
     counts = {}
@@ -2209,7 +2213,11 @@ Examples:
         ),
     )
     parser.add_argument("--browser-url", default="", help="Capture minimal browser evidence for this URL")
-    parser.add_argument("--browser-session", default="", help="Optional playwright-cli session name for browser evidence")
+    parser.add_argument(
+        "--browser-session",
+        default="",
+        help="Optional playwright-cli session name for fallback browser evidence when MCP artifacts are unavailable",
+    )
     parser.add_argument("--browser-screenshot", action="store_true", help="Also capture screenshot.png with browser evidence")
     parser.add_argument("--report-only", action="store_true", help="Only generate reports")
     parser.add_argument("--status", action="store_true", help="Show pipeline status")

@@ -341,12 +341,61 @@ class TestFindGaps:
         assert rel["relevance_score"] == 0
         assert rel["relevance_reason"] == ""
 
+    def test_sqli_semantics_require_real_query_signals_not_resource_words(self, tmp_path):
+        """`select` / `order` 资源名不应单靠路径触发 SQLi 高价值 gap。"""
+        _seed_recon(tmp_path, "x.com", [
+            "https://api.target.com/rest/order-history",
+            "https://api.target.com/address/select",
+            "https://api.target.com/rest/products/search?q=test",
+        ])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gap_pairs = {(gap["endpoint"], gap["vuln_class"]) for gap in gaps}
+        top_gap_pairs = {(gap["endpoint"], gap["vuln_class"]) for gap in gaps[:5]}
+
+        assert ("/rest/order-history", "SQLi") not in top_gap_pairs
+        assert ("/address/select", "SQLi") not in gap_pairs
+        assert ("/rest/products/search", "SQLi") in gap_pairs
+
+        assert class_relevance("/rest/order-history", "SQLi", [])["relevance_score"] == 0
+        assert class_relevance("/address/select", "SQLi", [])["relevance_score"] == 0
+        assert class_relevance("/rest/products/search", "SQLi", ["q"])["relevance_score"] > 0
+
+    def test_race_semantics_require_state_transition_not_state_resource_words(self, tmp_path):
+        """`order` / `balance` 资源名不应单靠路径触发 Race 高价值 gap。"""
+        _seed_recon(tmp_path, "x.com", [
+            "https://api.target.com/rest/order-history",
+            "https://api.target.com/rest/track-order",
+            "https://api.target.com/rest/wallet/balance",
+            "https://api.target.com/api/cart/checkout",
+            "https://api.target.com/api/payment/confirm?coupon=SAVE10",
+        ])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gap_pairs = {(gap["endpoint"], gap["vuln_class"]) for gap in gaps}
+
+        assert ("/rest/order-history", "Race") not in gap_pairs
+        assert ("/rest/track-order", "Race") not in gap_pairs
+        assert ("/rest/wallet/balance", "Race") not in gap_pairs
+        assert ("/api/cart/checkout", "Race") in gap_pairs
+        assert ("/api/payment/confirm", "Race") in gap_pairs
+
+        assert class_relevance("/rest/order-history", "Race", [])["relevance_score"] == 0
+        assert class_relevance("/rest/track-order", "Race", [])["relevance_score"] == 0
+        assert class_relevance("/rest/wallet/balance", "Race", [])["relevance_score"] == 0
+        assert class_relevance("/api/cart/checkout", "Race", [])["relevance_score"] > 0
+        assert class_relevance("/api/orders", "Race", ["coupon"])["relevance_score"] > 0
+
 
 class TestMarkCell:
     def test_mark_creates_endpoint_if_missing(self, tmp_path):
         cell = mark_cell(
             "x.com", "/admin/x", "IDOR", "n_a",
-            reason="GET-only resource",
+            reason="read-only resource",
             repo_root=tmp_path,
         )
         assert cell["status"] == "n_a"
@@ -354,7 +403,7 @@ class TestMarkCell:
         # endpoint now exists
         ep = [e for e in loaded["endpoints"] if e["endpoint"] == "/admin/x"][0]
         assert ep["cells"]["IDOR"]["status"] == "n_a"
-        assert ep["cells"]["IDOR"]["reason"] == "GET-only resource"
+        assert ep["cells"]["IDOR"]["reason"] == "read-only resource"
 
     def test_mark_overwrites_existing(self, tmp_path):
         mark_cell("x.com", "/admin/x", "IDOR", "untested", repo_root=tmp_path)
@@ -410,7 +459,7 @@ class TestMarkCell:
         """write_finding only takes effect for status=tested_finding."""
         mark_cell(
             "x.com", "/admin/x", "IDOR", "n_a",
-            reason="GET-only", repo_root=tmp_path, write_finding=True,
+            reason="read-only baseline", repo_root=tmp_path, write_finding=True,
         )
         findings_path = tmp_path / "findings" / "x.com" / "findings.json"
         # No findings.json should be created for n_a marks

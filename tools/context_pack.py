@@ -1864,7 +1864,7 @@ def _local_intel_hypothesis_seeds(local_intel: dict) -> list[str]:
     )
     if _has_browser_intel(local_intel):
         seeds.append(
-            "浏览器观察到的 XHR/API 优先做登录态、角色、租户差异对比；遇到状态改变动作先按红线降级到只读或可回滚验证。"
+            "浏览器观察到的 XHR/API 优先按原始 method / 参数形态做登录态、角色、租户差异对比；HTTP method 本身不是红线，真实破坏性副作用才需要降级到只读或可回滚验证。"
         )
     if re.search(r"\b(user|account|tenant|org|order|invoice|object|profile|workspace)[_-]?id\b|[?&]id=", browser_blob, re.I):
         seeds.append(

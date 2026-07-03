@@ -45,7 +45,7 @@ Success signal: `findings/<target>/summary.json`, `findings/<target>/findings.js
 2. ROUTE     Select the main Skill using skills/runtime-protocol.md
 3. RANK      Pick the highest-value P1 workflow: account, admin, API, export, upload, webhook, GraphQL, invite, report/download
 4. KNOWLEDGE Load only 1-2 relevant cards from knowledge/index.md when a lane needs deeper thinking
-5. CHECK     Apply rules/red-lines.md before high-volume traffic, destructive changes to real data, active stored XSS payloads, or race-style load
+5. CHECK     Apply rules/red-lines.md before high-volume traffic, destructive changes to real data, active stored XSS payloads, or race-style load; HTTP method alone is not the boundary
 6. ATTACK    Reduce one hypothesis to exact requests: auth, role, object, method, version, body diff
 7. CHAIN     Check siblings, roles, versions, and side effects when a signal appears
 8. RECORD    Preserve leads/signals/candidates with exact next evidence actions in target memory
@@ -105,7 +105,12 @@ Then rerun:
 python3 tools/surface.py --target target.com
 ```
 
-Browser-state surfaces should be handled with the browser/playwright lane first, then ingest browser-observed XHR/API artifacts before converting to curl/local probes.
+Browser-state surfaces should use the MCP-first browser lane:
+
+1. Prefer chrome-devtools MCP for live browser/network evidence.
+2. Prefer playwright MCP for automated interaction and snapshots.
+3. Use `tools/browser_evidence.py` / `playwright-cli` only when MCP is unavailable or a scriptable fallback is needed.
+4. Import MCP artifacts with `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` can continue on browser-observed XHR/API artifacts before converting them to curl/local probes.
 
 ## High-ROI Lanes
 
@@ -134,19 +139,25 @@ A callback is a Signal. Promote to Candidate only after you can tie it to a spec
 ```bash
 python3 tools/hunt.py --target target.com --scan-only --scanner-full
 python3 tools/hunt.py --target target.com --scan-only --scanner-skip module1,module2
-ALLOW_UNSAFE_HTTP_TESTS=1 python3 tools/hunt.py --target target.com --scan-only --scanner-full  # current-turn opt-in for unsafe POST/PUT/PATCH probes
+ALLOW_UNSAFE_HTTP_TESTS=1 python3 tools/hunt.py --target target.com --scan-only --scanner-full  # opt-in for side-effectful upload/MFA/SAML POST probes and PUT/PATCH method probes
 ```
 
 - Standard/quick scanner skips XSS by default.
 - `--scanner-full` expands active lanes and includes XSS unless explicitly skipped.
 - `--scanner-skip` is per invocation only; do not inherit it across targets or sessions.
-- Unsafe/state-changing scanner probes such as PUT/DELETE/PATCH method tampering,
-  upload canary POST, MFA/OTP POST, and forged SAML POST are skipped unless
-  `ALLOW_UNSAFE_HTTP_TESTS=1` is set for that invocation.
+- Side-effect-capable scanner templates such as PUT/DELETE/PATCH method
+  tampering, upload canary POST, MFA/OTP POST, and forged SAML POST are skipped
+  unless `ALLOW_UNSAFE_HTTP_TESTS=1` is set for that invocation. This scanner
+  guard does not forbid AI-guided replay of browser-observed POST, GraphQL read
+  queries, search/filter POSTs, preview/validate-only flows, or test-owned
+  reversible actions.
 
 ## Guardrails For Live Actions
 
 - Reports are never auto-submitted.
+- HTTP method alone is not a red line. Treat method as a side-effect hint and
+  decide from the concrete operation, object, data scope, cleanup path, and
+  observed request shape.
 - Payment, billing, refund, credit, wallet, coupon, cart, checkout, and fund-transfer surfaces are valid high-value lanes; avoid only real money movement or irreversible lifecycle changes unless explicitly intended.
 - Order/fulfillment/delivery/shipment/booking lifecycle write actions are Leads only; do not click, replay, race, or call them from this command.
 - Stored XSS and live HTML/script injection are opt-in per current user turn; do not submit payloads by default.

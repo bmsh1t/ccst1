@@ -387,8 +387,8 @@ class TestSurfaceRanking:
         ]
 
         assert workflow_leads[0]["source"] == "scanner_manual_review"
-        assert workflow_leads[0]["category"] == "unsafe-skipped"
-        assert "[high] unsafe-skipped: Unsafe/state-changing scanner probes were skipped" in output
+        assert workflow_leads[0]["category"] == "action-gated"
+        assert "[high] action-gated: Side-effect-capable scanner probes were skipped" in output
         assert "findings/target.com/manual_review/unsafe_skipped.txt" in output
         assert "ALLOW_UNSAFE_HTTP_TESTS=1" in output
 
@@ -424,7 +424,7 @@ class TestSurfaceRanking:
             for item in ranked["workflow_leads"]
         ]
 
-        assert not any(item.get("category") == "unsafe-skipped" for item in workflow_leads)
+        assert not any(item.get("category") in {"unsafe-skipped", "action-gated"} for item in workflow_leads)
 
     def test_reranks_structured_scanner_findings_into_p1(self, tmp_path):
         repo_root = tmp_path

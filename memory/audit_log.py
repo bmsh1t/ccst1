@@ -196,14 +196,16 @@ class CircuitBreaker:
 
 
 class SafeMethodPolicy:
-    """Track HTTP method risk hints for autopilot mode.
+    """Track HTTP method side-effect hints for autopilot mode.
 
-    Default safe methods remain GET/HEAD/OPTIONS, but the policy is advisory
-    only. Unsafe methods are flagged in the returned metadata instead of being
-    blocked or requiring a separate approval step.
+    Default low-side-effect methods include GET/HEAD/OPTIONS/POST. POST is
+    common for read queries, search/filter forms, GraphQL, and browser-observed
+    API calls, so it is not a risk signal by itself. PUT/PATCH/DELETE remain
+    advisory because they more often imply resource mutation; even then the HTTP
+    verb alone is not a block.
     """
 
-    DEFAULT_SAFE = {"GET", "HEAD", "OPTIONS"}
+    DEFAULT_SAFE = {"GET", "HEAD", "OPTIONS", "POST"}
 
     def __init__(
         self,
@@ -229,7 +231,7 @@ class SafeMethodPolicy:
             "method": method_upper,
             "url": url,
             "advisory": True,
-            "reason": f"Unsafe method {method_upper} recorded as advisory only",
+            "reason": f"Side-effect-capable method {method_upper} recorded as advisory only",
         }
 
 
@@ -238,7 +240,7 @@ class AutopilotGuard:
 
     Integrates CircuitBreaker + RateLimiter + SafeMethodPolicy into a single
     check_request() call that always allows execution while surfacing advisory
-    telemetry such as circuit-breaker state and unsafe methods.
+    telemetry such as circuit-breaker state and side-effect-capable methods.
     """
 
     def __init__(
@@ -288,7 +290,7 @@ class AutopilotGuard:
 
         method_check = self._method_policy.check(method, url)
         if method_check.get("advisory"):
-            advisories.append(str(method_check.get("reason") or "Unsafe method advisory"))
+            advisories.append(str(method_check.get("reason") or "Side-effect-capable method advisory"))
 
         result = {
             "decision": "allow",

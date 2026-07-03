@@ -9,9 +9,11 @@ import browser_evidence
 
 def test_capture_browser_evidence_writes_summary_and_last_pointer(monkeypatch, tmp_path):
     calls = []
+    envs = []
 
-    def fake_run(cmd, capture_output, text, timeout, check):
+    def fake_run(cmd, capture_output, text, timeout, check, env=None):
         calls.append(cmd)
+        envs.append(env or {})
         stdout = ""
         if "requests" in cmd:
             stdout = json.dumps(
@@ -102,6 +104,7 @@ def test_capture_browser_evidence_writes_summary_and_last_pointer(monkeypatch, t
     assert ["--raw", "requests"] in command_args
     assert ["--raw", "console"] in command_args
     assert any(args[0] == "state-save" and args[1].endswith("state.json") for args in command_args)
+    assert all(env.get("PLAYWRIGHT_DAEMON_SESSION_DIR") for env in envs)
     assert not any(
         args[0] == "screenshot" and args[1].startswith("--filename=") and args[1].endswith("screenshot.png")
         for args in command_args
@@ -111,7 +114,7 @@ def test_capture_browser_evidence_writes_summary_and_last_pointer(monkeypatch, t
 def test_capture_browser_evidence_can_capture_screenshot_when_requested(monkeypatch, tmp_path):
     calls = []
 
-    def fake_run(cmd, capture_output, text, timeout, check):
+    def fake_run(cmd, capture_output, text, timeout, check, env=None):
         calls.append(cmd)
         if "state-save" in cmd:
             Path(cmd[-1]).write_text(json.dumps({"cookies": []}), encoding="utf-8")
@@ -157,3 +160,32 @@ def test_load_last_browser_evidence_returns_compact_linkage(monkeypatch, tmp_pat
     assert linkage["dir"] == summary["evidence_dir"]
     assert linkage["summary_path"] == summary["summary_path"]
     assert linkage["url"] == "https://target.local/"
+
+
+def test_capture_browser_evidence_url_target_uses_canonical_storage_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        browser_evidence.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="[]", stderr=""),
+    )
+
+    summary = browser_evidence.capture_browser_evidence(
+        "http://127.0.0.1:3002",
+        "http://127.0.0.1:3002/",
+        label="url-target",
+        evidence_root=tmp_path / "evidence",
+    )
+
+    target_key = "http:_127.0.0.1:3002"
+    assert summary["target_key"] == target_key
+    assert summary["session"] == "browser-http___127.0.0.1_3002"
+    assert Path(summary["evidence_dir"]).is_relative_to(tmp_path / "evidence" / target_key / "browser")
+    assert (tmp_path / "evidence" / target_key / "browser" / "last-capture.json").is_file()
+    assert (tmp_path / "recon" / target_key / "browser" / "summary.json").is_file()
+    assert not (tmp_path / "evidence" / "http___127.0.0.1_3002").exists()
+
+    linkage = browser_evidence.load_last_browser_evidence(
+        "http://127.0.0.1:3002",
+        evidence_root=tmp_path / "evidence",
+    )
+    assert linkage["summary_path"] == summary["summary_path"]

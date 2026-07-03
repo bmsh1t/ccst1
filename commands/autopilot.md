@@ -44,7 +44,7 @@ python3 tools/action_queue.py next --target target.com
 - Target memory: active leads, next actions, dead ends, and handoffs influence the next lane.
 - Skills: route through `skills/runtime-protocol.md`; load only the Skill that matches the current evidence shape.
 - Use context-pack first. Knowledge: load `knowledge/index.md` plus only the 1-2 knowledge cards selected by context-pack; follow `reference_hints` only when evidence needs on-demand references, not fixed execution order.
-- Checks: `rules/red-lines.md` and `rules/coverage-gate.md` are canonical. Red-line checks are narrow safety checks, not broad permission gates.
+- Checks: `rules/red-lines.md` and `rules/coverage-gate.md` are canonical. Red-line checks are narrow safety checks, not broad permission gates. HTTP method alone is not a red line; block or downgrade only the concrete destructive, irreversible, high-pressure, persistent-payload, or real-business side effect.
 - Write-back: use checkpoint target-memory write-back proposals after meaningful progress; apply target memory only when the operator wants automatic write-back. Use `/retrospect` to promote reusable experience.
 
 ## Actionable Evidence Continuation Contract
@@ -95,7 +95,7 @@ When ready for breadth:
 python3 tools/hunt.py --target target.com --scan-only
 ```
 
-After `run_vuln_scan` or any broad scan, read the surface summary again and review `unsafe-skipped` / `unsafe_skipped.txt`. Entries skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` are not tested-clean; checkpoint instead of finishing when high-value unsafe-skipped leads remain. For target-specific ad-hoc scripts or high-risk follow-up plans, use `templates/phased-surface-validation-plan.md`: concrete facts stay target-scoped; only abstract gates become global.
+After `run_vuln_scan` or any broad scan, read the surface summary again and review action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact. This means side-effectful scanner templates were not run by default; it does not restrict safe observed-method replay. Entries skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` are not tested-clean; checkpoint instead of finishing when high-value skipped scanner leads remain. For target-specific ad-hoc scripts or high-risk follow-up plans, use `templates/phased-surface-validation-plan.md`: concrete facts stay target-scoped; only abstract gates become global.
 
 For focused high-value targets:
 
@@ -109,7 +109,7 @@ For a broad scan inside that Claude CLI loop:
 python3 tools/hunt.py --target target.com --scan-only --scanner-full
 ```
 
-`--deep` raises persistence and high-impact lane rotation. It does not change target semantics or opt into unsafe/state-changing actions. Do not add `--agent` unless explicitly using the legacy local/Ollama runtime.
+`--deep` raises persistence and high-impact lane rotation. It does not change target semantics or opt into destructive side effects, irreversible mutations, high-pressure traffic, or persistent executable payloads. Do not add `--agent` unless explicitly using the legacy local/Ollama runtime.
 
 ## Target / Lab Posture
 
@@ -137,7 +137,7 @@ After batch recon, continue on selected completed domains from `recon/<list-stem
 4. **ENRICH** — only when it changes the next test:
    - JS: `python3 tools/js_reader.py --target target.com`
    - source/routes/auth: `python3 tools/source_intel.py --target target.com [--repo-path <repo>]`
-   - browser SPA/login/XHR: browser/playwright capture, then rerun `/surface`
+   - browser SPA/login/XHR: prefer chrome-devtools MCP for live network, playwright MCP for automation/snapshots; fallback to `tools/browser_evidence.py` / `playwright-cli` only when MCP is unavailable or scriptable fallback is needed; import MCP artifacts with `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` share the observed API surface.
    - exposure/API leak/cloud identity: inspect relevant artifacts before broad scanning
    - known software/plugin/theme version: enter the Known Software Intelligence Lane
 5. **HUNT** — scanner for breadth or exact local probe for one hypothesis; prefer role/object/method/version/body diffs.
@@ -207,7 +207,7 @@ In deep mode:
 - Convert failures into next questions: sibling expansion, bypass, role/object diff, enrichment, chain-building, or lane rotation.
 - Complete a Deep Exhaustion Checklist before finish: recon/state and `/surface` consulted; coverage matrix rebuilt; Evidence Ledger / actor matrix reviewed; scanner-negative results received manual follow-up; JS/source/browser/exposure context used or explicitly ruled out; high-value vuln-family directions tested, blocked, not applicable, or listed with reasons.
 
-Deep mode never overrides Live-Action Boundaries: destructive unsafe methods, real-data mutations, real money/order lifecycle writes, report submission, and active stored XSS payload submission require test-owned/cleanable resources and explicit current-turn operator intent.
+Deep mode never overrides Live-Action Boundaries: destructive side effects, real-data mutations, real money/order lifecycle writes, report submission, and active stored XSS payload submission require test-owned/cleanable resources and explicit current-turn operator intent. Method is a signal, not the boundary: browser-observed POST, GraphQL read queries, search/filter POSTs, preview/validate-only flows, and test-owned reversible actions can be valid evidence paths.
 
 ## Credential Lane
 
@@ -269,7 +269,7 @@ Finish on state, not tool checklist:
 - `working_hypothesis` resolved, killed, or carried forward as a concrete next action.
 - Candidate validated/rejected or current hypothesis resolved.
 - Blind/OAST work drained or explicitly parked: `oast_listen` has no pending callbacks or a callback wait is recorded.
-- No unresolved `unsafe-skipped` lead remains without checkpoint.
+- No unresolved action-gated scanner lead remains without checkpoint.
 - Coverage matrix and action queue are clear or remaining matrix gap items are explicitly `blocked`, `dead-end`, `n/a`, `lead`, `signal`, or `candidate`; absent or empty matrix is not proof of coverage.
 - `intelligence.md` / advisory context is consulted or explicitly not applicable for concrete component/version evidence.
 - `rules/coverage-gate.md` is satisfied: covered, blocked, unknown, candidates, dead ends, and next actions are explicit.

@@ -6,6 +6,19 @@ import validate
 from runtime_state import load_runtime_state
 
 
+def test_validate_prompt_helpers_use_defaults_on_eof(monkeypatch):
+    def raise_eof(_prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+
+    assert validate.ask("Target", "target.local") == "target.local"
+    assert validate.ask("No default") == ""
+    assert validate.ask_yn("Continue?", default=False) is False
+    assert validate.ask_choice("Attack Vector", [("N", "Network"), ("A", "Adjacent")]) == "N"
+    assert validate.ask_choice("Integrity", [("H", "High"), ("L", "Low"), ("N", "None")], default="N") == "N"
+
+
 def test_gate2_in_scope_is_target_driven_advisory(capsys):
     passed, notes = validate.gate2_in_scope("ignored-program")
 

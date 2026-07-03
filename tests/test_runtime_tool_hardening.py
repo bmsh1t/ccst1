@@ -36,8 +36,8 @@ def test_cli_help_does_not_require_credentials_or_network() -> None:
         assert "usage" in (result.stdout + result.stderr).lower()
 
 
-def test_bypass_403_skips_unsafe_methods_by_default() -> None:
-    """403 bypass 默认不能执行 POST/PUT/PATCH/TRACE，只能记录 manual review。"""
+def test_bypass_403_skips_mutating_methods_by_default() -> None:
+    """403 bypass 默认只拦 PUT/PATCH/TRACE 这类更可能产生副作用的方法。"""
     script = (REPO / "tools" / "bypass_403.sh").read_text(encoding="utf-8")
 
     assert "ALLOW_UNSAFE_HTTP_TESTS" in script
@@ -45,5 +45,5 @@ def test_bypass_403_skips_unsafe_methods_by_default() -> None:
     assert "requires ALLOW_UNSAFE_HTTP_TESTS=1" in script
     assert 'if _have byp4xx && [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" = "1" ]; then' in script
 
-    for method in ("POST", "PUT", "PATCH", "TRACE"):
+    for method in ("PUT", "PATCH", "TRACE"):
         assert method in script

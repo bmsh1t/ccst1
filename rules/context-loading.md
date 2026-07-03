@@ -118,6 +118,10 @@ CONTEXT PACK
 - 可复用经验：按 `knowledge/promotion-rules.md` 晋升
 - 验证后发现：`/remember`
 
+能力增强必须按 `knowledge/promotion-rules.md` 的落位规则分层：
+经验/技巧/bypass 进知识库，判断进 `evidence_rubric.py`，路由进 `context_pack.py`，
+下一步进 `checkpoint.py`，重复执行动作进 `tools/`，结果进 Evidence Ledger。
+
 ## 禁止事项
 
 - 不要为了“更全面”默认读取所有 Skill。

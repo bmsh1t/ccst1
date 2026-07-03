@@ -28,12 +28,38 @@ the item to Lead/Signal instead of reporting it.
 
 ## 3. ALWAYS INCLUDE PROOF OF CONCEPT
 
-- IDOR → show victim's actual data in the response (not just 200 OK)
-- XSS → show actual cookie exfil (not just alert(document.domain))
-- SSRF → show actual internal service response (not just DNS callback)
-- SQLi → show actual database content (not just error message)
+The PoC must prove real impact, but it should use the lowest-risk evidence that
+answers the triager's question. Do not hard-ban stronger proof: when minimal
+proof is not enough to establish impact, escalate deliberately and document why.
 
-A "technically possible" finding without PoC is an Informational at best.
+Default proof ladder:
+
+- IDOR → show authorization boundary failure with two actors and private data
+  evidence; minimize copied victim data to the smallest field/sample needed.
+- XSS → show execution in the affected security context; cookie/session proof is
+  only needed when it changes impact and the test is authorized and contained.
+- SSRF → show server-side fetch impact beyond DNS-only, such as a safe internal
+  endpoint response, controlled callback metadata, or non-sensitive service
+  fingerprint.
+- SQLi → show query control with safe read-only evidence first, such as boolean
+  diff, bounded row count, DB fingerprint, current user/version, or a controlled
+  marker. Extract actual table data only when it is necessary, authorized, and
+  minimized.
+- Secret / CI/CD / cloud → prove ownership and usable permissions with the least
+  sensitive action. Secret exfiltration, privileged workflow execution, or cloud
+  data access is reserved for cases where lower-risk proof cannot establish
+  impact and `rules/red-lines.md` allows the action.
+
+Escalated proof requirements:
+
+1. Explain why lower-risk proof is insufficient.
+2. Keep scope to test accounts, test resources, non-sensitive metadata, or the
+   smallest necessary data sample.
+3. Preserve exact request/response or workflow evidence.
+4. Record cleanup or rollback steps when state changes are involved.
+
+A "technically possible" finding without PoC is an Informational at best; an
+unnecessarily invasive PoC is also a bad report.
 
 ## 4. CVSS MUST MATCH ACTUAL IMPACT
 

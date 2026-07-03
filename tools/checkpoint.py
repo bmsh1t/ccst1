@@ -14,6 +14,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
@@ -22,13 +23,15 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.autopilot_state import build_autopilot_state
     from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import high_value_gaps_from_matrix, rebuild_matrix, save_matrix
+    from tools.coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix
+    from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_state import build_autopilot_state  # type: ignore
     from context_pack import build_context_pack  # type: ignore
-    from coverage_matrix import high_value_gaps_from_matrix, rebuild_matrix, save_matrix  # type: ignore
+    from coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix  # type: ignore
+    from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
@@ -86,6 +89,26 @@ def _matrix_gaps(matrix: dict, min_weight: float = 3.0) -> list[dict]:
     return high_value_gaps_from_matrix(matrix, min_weight=min_weight)
 
 
+def _coverage_gap_validation_path(gap: dict) -> str:
+    """Return the first evidence-producing step for a coverage gap.
+
+    Coverage gaps are discovery tasks, but autopilot should immediately know
+    what proof would promote the lead to a candidate.  Reuse the same evidence
+    rubric that `/validate` uses so discovery and validation stay aligned.
+    """
+    vuln_class = str(gap.get("vuln_class") or "").strip()
+    endpoint = str(gap.get("endpoint") or "").strip()
+    reason = str(gap.get("relevance_reason") or "").strip()
+    if not vuln_class:
+        return ""
+    evaluation = evaluate_candidate_evidence({
+        "type": vuln_class,
+        "url": endpoint,
+        "summary": reason,
+    })
+    return first_missing_action(evaluation)
+
+
 def _matrix_summary(matrix: dict, gaps: list[dict]) -> dict:
     endpoints = matrix.get("endpoints") or []
     total_cells = 0
@@ -136,7 +159,7 @@ def _unsafe_leads(state: dict) -> list[dict]:
     leads = _json_list(surface.get("workflow_leads"))
     return [
         item for item in leads
-        if str(item.get("category") or "").lower() == "unsafe-skipped"
+        if str(item.get("category") or "").lower() in {"unsafe-skipped", "action-gated"}
     ]
 
 
@@ -149,11 +172,12 @@ def _unsafe_skipped_proposals(state: dict) -> list[str]:
         if not artifact and not unsafe_id:
             continue
         proposals.append(
-            "Review unsafe-skipped scanner lane {unsafe_id}: {evidence}. "
+            "Review action-gated scanner lane {unsafe_id}: {evidence}. "
             "Artifact={artifact}. Decide tested, blocked, dead-end, n/a, or candidate; "
-            "only rerun with ALLOW_UNSAFE_HTTP_TESTS=1 after explicit operator opt-in.".format(
+            "only rerun broad scanner probes with ALLOW_UNSAFE_HTTP_TESTS=1 after explicit operator opt-in; "
+            "safe observed-method replay may continue when it has no destructive side effect.".format(
                 unsafe_id=unsafe_id or "-",
-                evidence=evidence or "unsafe scanner probe was skipped",
+                evidence=evidence or "side-effect-capable scanner probe was skipped",
                 artifact=artifact or "findings/<target>/manual_review/unsafe_skipped.txt",
             )
         )
@@ -272,9 +296,211 @@ def _active_contradictions(context_pack: dict) -> list[str]:
     ]
 
 
+def _canonicalize_url_path(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if "://" in raw:
+        try:
+            parsed = urlparse(raw)
+        except ValueError:
+            return raw.split("?", 1)[0].split("#", 1)[0]
+        return (parsed.path or "/").split("?", 1)[0].split("#", 1)[0]
+    return raw.split("?", 1)[0].split("#", 1)[0]
+
+
+def _ranked_surface_entry(state: dict, url: str) -> dict:
+    surface = state.get("surface") or {}
+    for bucket in ("p1", "p2"):
+        for item in (surface.get(bucket) or []):
+            if isinstance(item, dict) and str(item.get("url") or "").strip() == str(url or "").strip():
+                return item
+    return {}
+
+
+def _ranked_surface_query_keys(url: str) -> list[str]:
+    return [key.lower() for key in re.findall(r"[?&]([^=&]+)=", str(url or ""))]
+
+
+def _ranked_surface_vuln_hint(entry: dict, url: str) -> str:
+    scanner_types = [
+        str(item.get("type") or "").strip()
+        for item in (entry.get("scanner_findings") or [])
+        if isinstance(item, dict) and str(item.get("type") or "").strip()
+    ]
+    if scanner_types:
+        return scanner_types[0]
+
+    source_types = [
+        str(item.get("type") or "").strip()
+        for item in (entry.get("source_intel_hypotheses") or [])
+        if isinstance(item, dict) and str(item.get("type") or "").strip()
+    ]
+    if source_types:
+        return source_types[0]
+
+    endpoint = _canonicalize_url_path(url)
+    query_keys = _ranked_surface_query_keys(url)
+    candidates = ["Authz", "IDOR", "SQLi", "SSRF", "Race", "Upload", "GraphQL", "RCE"]
+    scored = [
+        (klass, class_relevance(endpoint, klass, query_keys))
+        for klass in candidates
+    ]
+    scored.sort(key=lambda item: int(item[1].get("relevance_score", 0) or 0), reverse=True)
+    best_class, best_rel = scored[0]
+    if int(best_rel.get("relevance_score", 0) or 0) > 0:
+        return best_class
+    return "generic"
+
+
+def _canonical_vuln_for_ledger(vuln_hint: str) -> str:
+    value = str(vuln_hint or "").strip().lower().replace("_", "-")
+    mapping = {
+        "idor": "IDOR",
+        "authz": "Authz",
+        "auth": "Authz",
+        "access-control": "Authz",
+        "business-logic": "Authz",
+        "sqli": "SQLi",
+        "sql": "SQLi",
+        "sql-injection": "SQLi",
+        "ssrf": "SSRF",
+        "race": "Race",
+        "toctou": "Race",
+        "graphql": "GraphQL",
+        "upload": "Upload",
+        "file-upload": "Upload",
+        "rce": "RCE",
+        "ssti": "RCE",
+        "command-injection": "RCE",
+        "path": "Path",
+        "lfi": "Path",
+        "path-traversal": "Path",
+        "xxe": "XXE",
+    }
+    return mapping.get(value, "Authz")
+
+
+def _ranked_surface_replay_draft(state: dict, item: dict) -> str:
+    url = str(item.get("url") or "").strip()
+    if not url:
+        return ""
+    entry = _ranked_surface_entry(state, url)
+    query_keys = _ranked_surface_query_keys(url)
+    js_methods = [
+        str(js.get("method") or "").upper()
+        for js in (entry.get("js_intel_endpoints") or [])
+        if isinstance(js, dict) and str(js.get("method") or "").strip()
+    ]
+    js_methods = list(dict.fromkeys([method for method in js_methods if method]))
+    source_types = [
+        str(src.get("type") or "").lower()
+        for src in (entry.get("source_intel_hypotheses") or [])
+        if isinstance(src, dict) and str(src.get("type") or "").strip()
+    ]
+    source_types = list(dict.fromkeys([value for value in source_types if value]))
+
+    vuln_hint = _ranked_surface_vuln_hint(entry, url)
+    evidence_text = " ".join([
+        str(entry.get("suggested") or item.get("suggested") or ""),
+        " ".join(query_keys),
+        " ".join(source_types),
+        "browser observed" if entry.get("browser_observed") else "",
+        " ".join(js_methods),
+    ])
+    validation_path = first_missing_action(evaluate_candidate_evidence({
+        "type": vuln_hint,
+        "url": url,
+        "summary": evidence_text,
+    }))
+
+    parts: list[str] = []
+    if entry.get("browser_observed"):
+        parts.append("capture the exact browser-observed request/response baseline first")
+    if js_methods:
+        parts.append("prefer " + "/".join(js_methods[:2]) + " replay")
+    if query_keys:
+        parts.append("reuse observed parameters: " + ", ".join(query_keys[:4]))
+    if source_types:
+        parts.append("follow source hints: " + ", ".join(source_types[:3]))
+    if vuln_hint and vuln_hint != "generic":
+        parts.append(f"focus {vuln_hint} evidence")
+    if validation_path:
+        parts.append(validation_path)
+    return "; ".join(parts)
+
+
+def _ranked_surface_ledger_skeleton(state: dict, item: dict, target: str, replay_draft: str) -> str:
+    """Build a copyable ledger record command for the suggested ranked-surface replay.
+
+    This is intentionally a skeleton, not an auto-write: the operator/agent should
+    run it after the replay and adjust `--result` / `--evidence-ref` to the actual
+    evidence captured.
+    """
+    url = str(item.get("url") or "").strip()
+    if not url:
+        return ""
+    entry = _ranked_surface_entry(state, url)
+    endpoint = _canonicalize_url_path(url)
+    js_methods = [
+        str(js.get("method") or "").upper()
+        for js in (entry.get("js_intel_endpoints") or [])
+        if isinstance(js, dict) and str(js.get("method") or "").strip()
+    ]
+    method = next((value for value in js_methods if value), "GET")
+    vuln_class = _canonical_vuln_for_ledger(_ranked_surface_vuln_hint(entry, url))
+    variant = "browser_observed" if entry.get("browser_observed") else "replay"
+    evidence_ref = ""
+    if entry.get("browser_observed"):
+        evidence_ref = f"recon/{target_storage_key(canonical_target_value(target))}/browser/xhr_endpoints.txt"
+    notes = (
+        "Checkpoint ranked-surface replay skeleton; update result/evidence-ref "
+        "after baseline/variant evidence is captured."
+    )
+    parts = [
+        "python3 tools/evidence_ledger.py record",
+        "--target", _quote(target),
+        "--endpoint", _quote(endpoint),
+        "--method", _quote(method),
+        "--vuln-class", _quote(vuln_class),
+        "--actor", _quote("owner"),
+        "--object-scope", _quote("unknown"),
+        "--variant", _quote(variant),
+        "--source", _quote("checkpoint-ranked-surface"),
+        "--result", _quote("signal"),
+        "--replayed",
+    ]
+    if entry.get("browser_observed"):
+        parts.append("--browser-observed")
+    if method not in {"GET", "HEAD", "OPTIONS", "POST"}:
+        parts.extend(["--state-changing", "--redline-checked"])
+    if evidence_ref:
+        parts.extend(["--evidence-ref", _quote(evidence_ref)])
+    parts.extend(["--notes", _quote(notes)])
+    return " ".join(parts)
+
+
+def _tested_finding_endpoints(matrix: dict) -> set[str]:
+    endpoints: set[str] = set()
+    for endpoint in matrix.get("endpoints") or []:
+        if not isinstance(endpoint, dict):
+            continue
+        path = str(endpoint.get("endpoint") or "").strip()
+        cells = endpoint.get("cells") or {}
+        if not path or not isinstance(cells, dict):
+            continue
+        if any(
+            isinstance(cell, dict) and str(cell.get("status") or "") == "tested_finding"
+            for cell in cells.values()
+        ):
+            endpoints.add(path)
+    return endpoints
+
+
 def _next_proposals(
     state: dict,
     coverage_gaps: list[dict],
+    matrix: dict,
     target: str,
     context_pack: dict,
     evidence_summary: dict,
@@ -332,6 +558,7 @@ def _next_proposals(
         )
 
     proposals.extend(_unsafe_skipped_proposals(state))
+    covered_findings = _tested_finding_endpoints(matrix)
 
     repo_source_summary = state.get("repo_source_summary") or {}
     secret_findings = int(repo_source_summary.get("secret_findings", 0) or 0)
@@ -371,14 +598,17 @@ def _next_proposals(
                 score=gap.get("relevance_score", 0),
                 reason=f": {reason}" if reason else "",
             )
+        validation_path = _coverage_gap_validation_path(gap)
+        validation_suffix = f" Validation path: {validation_path}" if validation_path else ""
         proposals.append(
             "Cover high-value matrix gap: {endpoint} x {vuln_class} "
-            "(weight={weight}{relevance}). If red-line risk appears, mark blocked and use "
+            "(weight={weight}{relevance}).{validation_suffix} If red-line risk appears, mark blocked and use "
             "low-risk evidence instead.".format(
                 endpoint=gap.get("endpoint", ""),
                 vuln_class=gap.get("vuln_class", ""),
                 weight=gap.get("weight", ""),
                 relevance=relevance,
+                validation_suffix=validation_suffix,
             )
         )
     record_commands = evidence_summary.get("record_commands") or []
@@ -402,8 +632,14 @@ def _next_proposals(
     for item in (state.get("recommended_targets") or [])[:2]:
         url = str(item.get("url") or "").strip()
         suggested = str(item.get("suggested") or "").strip()
+        if _canonicalize_url_path(url) in covered_findings:
+            continue
         if url:
-            proposals.append(f"Continue top ranked surface {url}: {suggested}")
+            replay_draft = _ranked_surface_replay_draft(state, item)
+            replay_suffix = f". Replay draft: {replay_draft.rstrip('.')}" if replay_draft else ""
+            ledger_skeleton = _ranked_surface_ledger_skeleton(state, item, target, replay_draft)
+            ledger_suffix = f". Ledger skeleton: {ledger_skeleton}" if ledger_skeleton else ""
+            proposals.append(f"Continue top ranked surface {url}: {suggested}{replay_suffix}{ledger_suffix}")
     return _dedupe(proposals)[:5]
 
 
@@ -431,8 +667,8 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         )
     if "actor matrix gap" in lowered:
         return "actor-gap", 80, "focused replay + tools/evidence_ledger.py record"
-    if "unsafe-skipped scanner lane" in lowered:
-        return "unsafe-skipped-review", 88, "review unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate"
+    if "action-gated scanner lane" in lowered or "unsafe-skipped scanner lane" in lowered:
+        return "action-gated-review", 88, "review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate"
     if "high-value matrix gap" in lowered:
         return "coverage-gap", 75, "focused low-risk probe + evidence ledger"
     if "cross-evidence high-value surface" in lowered:
@@ -458,6 +694,11 @@ def _extract_action_metadata(text: str) -> dict:
     """
     value = str(text or "").strip()
     metadata: dict = {}
+    validation_match = re.search(
+        r"Validation path:\s+(?P<path>.*?)(?:\s+If red-line|\s+Stop condition:|$)",
+        value,
+        re.I,
+    )
 
     match = re.search(
         r"Cover high-value matrix gap:\s+(?P<endpoint>\S+)\s+x\s+"
@@ -475,6 +716,8 @@ def _extract_action_metadata(text: str) -> dict:
             metadata["relevance_score"] = int(match.group("score"))
         if match.group("reason"):
             metadata["relevance_reason"] = match.group("reason").strip()
+        if validation_match:
+            metadata["validation_path"] = validation_match.group("path").strip()
         return metadata
 
     match = re.search(
@@ -493,7 +736,7 @@ def _extract_action_metadata(text: str) -> dict:
         })
 
     match = re.search(
-        r"Review unsafe-skipped scanner lane\s+(?P<unsafe_id>[a-f0-9]{8,64}|-)"
+        r"Review (?:action-gated|unsafe-skipped) scanner lane\s+(?P<unsafe_id>[a-f0-9]{8,64}|-)"
         r".*?Artifact=(?P<artifact>\S*unsafe_skipped\.txt)",
         value,
         re.I,
@@ -504,6 +747,30 @@ def _extract_action_metadata(text: str) -> dict:
             "unsafe_skipped_id": "" if unsafe_id == "-" else unsafe_id,
             "artifact": match.group("artifact"),
         })
+
+    match = re.match(
+        r"Continue top ranked surface\s+(?P<url>\S+):\s*(?P<rest>.*)$",
+        value,
+        re.I,
+    )
+    if match:
+        rest = match.group("rest").strip()
+        ledger_skeleton = ""
+        if "Ledger skeleton:" in rest:
+            rest, ledger_skeleton = rest.split("Ledger skeleton:", 1)
+        suggested = rest
+        replay_draft = ""
+        if "Replay draft:" in rest:
+            suggested, replay_draft = rest.split("Replay draft:", 1)
+        metadata.update({
+            "url": match.group("url"),
+            "endpoint": _canonicalize_url_path(match.group("url")),
+            "suggested": suggested.strip().rstrip("."),
+        })
+        if replay_draft.strip():
+            metadata["replay_draft"] = replay_draft.strip().rstrip(".")
+        if ledger_skeleton.strip():
+            metadata["ledger_record_skeleton"] = ledger_skeleton.strip()
 
     return metadata
 
@@ -718,7 +985,7 @@ def build_checkpoint(
 
     decision = _decide(state, gaps, actor_gaps)
     lead = _lead_proposals(state, context)
-    next_items = _next_proposals(state, gaps, resolved_target, context, evidence_summary)
+    next_items = _next_proposals(state, gaps, matrix, resolved_target, context, evidence_summary)
     next_action_queue = _build_next_action_queue(next_items, resolved_target)
     dead_ends = _dead_end_proposals(state, gaps)
     handoff = _handoff_summary(

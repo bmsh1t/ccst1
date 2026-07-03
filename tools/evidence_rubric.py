@@ -252,6 +252,52 @@ RUBRICS: dict[str, EvidenceRubric] = {
             ),
         ),
     ),
+    "race": EvidenceRubric(
+        id="race",
+        title="Race / TOCTOU / concurrency candidate evidence",
+        requirements=(
+            _req(
+                "state_machine_baseline",
+                "state machine baseline and target-owned test object",
+                (
+                    "state machine", "baseline", "own object", "test object",
+                    "current user", "before state", "after state", "quota",
+                    "seat", "coupon", "cart", "checkout", "wallet",
+                ),
+                "Model the state machine and capture a single legal baseline on an own/test object before any concurrency attempt.",
+            ),
+            _req(
+                "bounded_sync_replay",
+                "bounded synchronized replay evidence",
+                (
+                    "parallel", "concurrent", "race", "last-byte", "sync",
+                    "synchronized", "http/2", "burst", "bounded", "low request",
+                    "replay",
+                ),
+                "Run only a small bounded synchronized replay against the own/test object and record timing, request count, and stop condition.",
+            ),
+            _req(
+                "state_delta",
+                "observable state/action delta",
+                (
+                    "double spend", "double-spend", "duplicate", "quota bypass",
+                    "limit bypass", "redeemed twice", "balance changed",
+                    "state diff", "action completed", "oversell", "negative",
+                ),
+                "Compare pre/post state and prove the duplicate action or limit bypass with the smallest stable response/state diff.",
+            ),
+            _req(
+                "redline_safe_impact",
+                "red-line checked safe impact",
+                (
+                    "red-line", "redline", "safe proof", "non-payment",
+                    "non destructive", "non-destructive", "own account",
+                    "no real money", "no victim", "rollback",
+                ),
+                "Document red-line safety: own resource, no real-victim/payment mutation, bounded requests, and rollback/cleanup path.",
+            ),
+        ),
+    ),
     "secret": EvidenceRubric(
         id="secret",
         title="Secret / key exposure candidate evidence",
@@ -442,6 +488,12 @@ ALIASES = {
     "key": "secret",
     "credential": "secret",
     "exposure": "secret",
+    "race": "race",
+    "race-condition": "race",
+    "race_condition": "race",
+    "race conditions": "race",
+    "toctou": "race",
+    "concurrency": "race",
     "xxe": "file-read",
     "lfi": "file-read",
     "rfi": "file-read",
@@ -526,6 +578,44 @@ def _is_satisfied(req: EvidenceRequirement, haystack: str) -> bool:
     return any(keyword.lower() in lower for keyword in req.keywords)
 
 
+PUBLIC_AUTHZ_EXPOSURE_RE = re.compile(
+    r"\b("
+    r"admin|application[-_/]?configuration|configuration|config|settings|"
+    r"oauth|client[-_ ]?id|redirect|secret|token|private|internal"
+    r")\b",
+    re.I,
+)
+
+
+def _authz_public_exposure_satisfies_actor_boundary(req: EvidenceRequirement, haystack: str) -> bool:
+    """Treat anonymous sensitive/admin exposure as the boundary proof.
+
+    Authz/IDOR normally needs an owner-vs-peer actor/object diff. For public
+    configuration or admin-named information disclosure there may be no object
+    or authenticated owner to compare: the boundary is anonymous -> sensitive
+    admin/config data. This keeps IDOR strict while allowing true unauth info
+    exposure to move to validation without a meaningless actor-diff loop.
+    """
+    if req.id != "actor_object_diff":
+        return False
+    lower = haystack.lower()
+    has_public_access_signal = any(
+        token in lower
+        for token in (
+            "auth_bypass",
+            "unauth",
+            "unauthenticated",
+            "anonymous",
+            "without auth",
+            "no auth",
+            "public",
+        )
+    )
+    has_200_signal = bool(re.search(r"(^|\D)200(\D|$)", lower)) or "returned 200" in lower
+    has_sensitive_admin_signal = bool(PUBLIC_AUTHZ_EXPOSURE_RE.search(haystack))
+    return has_public_access_signal and has_200_signal and has_sensitive_admin_signal
+
+
 def _has_strong_evidence(haystack: str, finding: dict | None = None) -> bool:
     lower = haystack.lower()
     if any(marker.lower() in lower for marker in STRONG_EVIDENCE_MARKERS):
@@ -560,7 +650,9 @@ def evaluate_candidate_evidence(finding: Any, *, vuln_type: str = "") -> dict[st
     next_actions: list[str] = []
     for requirement in rubric.requirements:
         item = {"id": requirement.id, "label": requirement.label}
-        if _is_satisfied(requirement, haystack):
+        if _is_satisfied(requirement, haystack) or (
+            rubric.id == "authz" and _authz_public_exposure_satisfies_actor_boundary(requirement, haystack)
+        ):
             satisfied.append(item)
         else:
             missing.append(item)

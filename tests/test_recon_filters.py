@@ -75,6 +75,7 @@ def test_filter_urls_batch_logs_external_urls_and_keeps_original_input(tmp_path)
         "removed_explosion": 1,
         "removed_encoding_errors": 0,
         "removed_html_encoding": 0,
+        "removed_js_path_artifacts": 0,
     }
     assert out.read_text(encoding="utf-8").splitlines() == [
         "https://example.com/",
@@ -155,3 +156,33 @@ def test_main_supports_log_file_and_path_explosion_switch(tmp_path, capsys):
     output = capsys.readouterr().out
     assert "Removed encoding errors: 0" in output
     assert "Removed HTML encoding: 0" in output
+    assert "Removed JS path artifacts: 0" in output
+
+
+def test_filter_urls_batch_removes_js_member_expression_path_artifacts(tmp_path):
+    src = tmp_path / "all.txt"
+    out = tmp_path / "all_filtered.txt"
+    log = tmp_path / "filter.log"
+    src.write_text(
+        "\n".join(
+            [
+                "https://example.com/i.visualViewport.scale/i.document.do",
+                "https://example.com/r.dom.offsetHeight/r.do",
+                "https://example.com/login.do",
+                "https://example.com/assets/app.config.json",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    stats = recon_filters.filter_urls_batch(src, out, "example.com", log_file=log)
+
+    assert stats["removed_js_path_artifacts"] == 2
+    assert out.read_text(encoding="utf-8").splitlines() == [
+        "https://example.com/login.do",
+        "https://example.com/assets/app.config.json",
+    ]
+    log_text = log.read_text(encoding="utf-8")
+    assert "[JS_PATH_ARTIFACT] https://example.com/i.visualViewport.scale/i.document.do" in log_text
+    assert "[JS_PATH_ARTIFACT] https://example.com/r.dom.offsetHeight/r.do" in log_text

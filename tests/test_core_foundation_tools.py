@@ -11,7 +11,7 @@ import argparse
 import json
 from pathlib import Path
 
-from tools import high_value_signals, noise_filter, parallel_workers, runtime_config, target_memory, target_paths, target_selector
+from tools import action_queue, high_value_signals, noise_filter, parallel_workers, runtime_config, target_memory, target_paths, target_selector
 
 
 def test_target_paths_canonicalizes_host_port_cidr_and_lists(tmp_path):
@@ -128,6 +128,44 @@ def test_high_value_signal_combines_action_path_query_and_evidence():
     summary = high_value_signals.summarize_high_value_signal(signal)
     assert summary.startswith("high-value:")
     assert f"(+{signal.score})" in summary
+
+
+def test_action_queue_priority_precedes_relevance_for_next_action():
+    """Checkpoint p80 actor gaps must not be displaced by lower-priority gaps.
+
+    `/autopilot` surfaces a recommended_executable_action by priority; the
+    durable action queue should preserve that ordering before applying
+    relevance/high-value tie-breaks.
+    """
+    queue = {
+        "actions": [
+            {
+                "id": "low-priority-high-relevance",
+                "status": "queued",
+                "type": "coverage-gap",
+                "priority": 75,
+                "action": "Cover /rest/admin x Authz",
+                "metadata": {
+                    "endpoint": "/rest/admin",
+                    "vuln_class": "Authz",
+                    "relevance_score": 9,
+                },
+            },
+            {
+                "id": "high-priority-actor-gap",
+                "status": "queued",
+                "type": "actor-gap",
+                "priority": 80,
+                "action": "Cover actor matrix gap",
+                "metadata": {
+                    "endpoint": "/rest/admin",
+                    "vuln_class": "Authz",
+                },
+            },
+        ],
+    }
+
+    assert action_queue.select_next_action(queue)["id"] == "high-priority-actor-gap"
 
 
 def test_noise_filter_extracts_urls_and_builtin_dedup_keeps_param_signatures(tmp_path):

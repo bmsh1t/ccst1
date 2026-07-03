@@ -26,6 +26,7 @@ from tools.coverage_matrix import (
     _apply_scanner_pass,
     load_matrix,
     rebuild_matrix,
+    save_matrix,
 )
 from tools.scanner_pass_writer import (
     CATEGORY_TO_VULN_CLASS,
@@ -49,6 +50,13 @@ def _seed_recon(repo: Path, target: str, urls: list[str]):
     p = repo / "recon" / target / "urls"
     p.mkdir(parents=True, exist_ok=True)
     (p / "all.txt").write_text("\n".join(urls), encoding="utf-8")
+
+
+def _seed_recon_filtered(repo: Path, target: str, raw_urls: list[str], filtered_urls: list[str]):
+    p = repo / "recon" / target / "urls"
+    p.mkdir(parents=True, exist_ok=True)
+    (p / "all.txt").write_text("\n".join(raw_urls), encoding="utf-8")
+    (p / "all_filtered.txt").write_text("\n".join(filtered_urls), encoding="utf-8")
 
 
 def _seed_findings_dir(repo: Path, target: str, categories: list[str]):
@@ -169,6 +177,53 @@ class TestScannerPassWriter:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestCoverageMatrixScannerPass:
+    def test_url_target_rebuild_uses_canonical_storage_key(self, fake_repo):
+        """URL targets must share the recon/findings/evidence storage key.
+
+        Regression: raw URL targets previously wrote
+        `evidence/http:/127.0.0.1:3002/coverage_matrix.json`, while recon and
+        autopilot state used `http:_127.0.0.1:3002`.
+        """
+        target = "http://127.0.0.1:3002"
+        target_key = "http:_127.0.0.1:3002"
+        _seed_recon(fake_repo, target_key, [
+            "http://127.0.0.1:3002/rest/admin/application-configuration",
+        ])
+
+        matrix = rebuild_matrix(target, repo_root=fake_repo)
+        out = save_matrix(target, matrix, fake_repo)
+
+        assert out == fake_repo / "evidence" / target_key / "coverage_matrix.json"
+        assert matrix["endpoints"][0]["endpoint"] == "/rest/admin/application-configuration"
+        assert not (fake_repo / "evidence" / "http:" / "127.0.0.1:3002").exists()
+
+    def test_rebuild_prefers_filtered_urls_over_external_raw_embeds(self, fake_repo):
+        """Filtered recon URLs should drive coverage when present.
+
+        Regression: raw all.txt may retain third-party iframe/player URLs for
+        audit. Rebuild previously canonicalized those external URLs by path,
+        creating fake target gaps like `/player/ x SSRF`.
+        """
+        target = "http://127.0.0.1:3002"
+        target_key = "http:_127.0.0.1:3002"
+        _seed_recon_filtered(
+            fake_repo,
+            target_key,
+            raw_urls=[
+                "http://127.0.0.1:3002/rest/admin/application-configuration",
+                "https://w.soundcloud.com/player/?url=https%3A%2F%2Fapi.soundcloud.com%2Ftracks%2F771984076",
+            ],
+            filtered_urls=[
+                "http://127.0.0.1:3002/rest/admin/application-configuration",
+            ],
+        )
+
+        matrix = rebuild_matrix(target, repo_root=fake_repo)
+        endpoints = {ep["endpoint"] for ep in matrix["endpoints"]}
+
+        assert "/rest/admin/application-configuration" in endpoints
+        assert "/player/" not in endpoints
+
     def test_scanner_pass_marks_untested_cells_tested_clean(self, fake_repo):
         _seed_recon(fake_repo, "ex.com", [
             "https://api.ex.com/v1/users/1",

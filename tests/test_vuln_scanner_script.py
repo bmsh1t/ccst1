@@ -73,16 +73,16 @@ def test_vuln_scanner_gates_unsafe_method_probes_by_default():
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     text = script.read_text(encoding="utf-8")
 
-    assert "unsafe_method_guard()" in text
+    assert "scanner_probe_guard()" in text
     assert "SafeMethodPolicy" in text
     assert "ALLOW_UNSAFE_HTTP_TESTS" in text
     assert "require_approval" in text
     assert "Skipping $label" in text
     assert "manual_review/unsafe_skipped.txt" in text
-    assert 'unsafe_method_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes"' in text
-    assert 'unsafe_method_guard "POST" "$upload_url" "upload canary probe"' in text
-    assert 'unsafe_method_guard "POST" "$BASE" "MFA rate-limit probe"' in text
-    assert 'unsafe_method_guard "POST" "$ACS_URL" "SAML signature-stripping probe"' in text
+    assert 'scanner_probe_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes"' in text
+    assert 'scanner_probe_guard "POST" "$upload_url" "upload canary probe"' in text
+    assert 'scanner_probe_guard "POST" "$BASE" "MFA rate-limit probe"' in text
+    assert 'scanner_probe_guard "POST" "$ACS_URL" "SAML signature-stripping probe"' in text
 
 
 def test_vuln_scanner_supports_auth_session_env():

@@ -72,7 +72,7 @@ python3 tools/action_queue.py next --target <target>
 - Skills route through `skills/runtime-protocol.md`.
 - Knowledge cards come from `knowledge/index.md`; load only matching cards and `reference_hints` from context-pack when evidence needs on-demand references.
 - Red-line and coverage semantics live in `rules/red-lines.md`, `rules/coverage-gate.md`, and `rules/hunting.md`.
-- Red-line checks are narrow safety checks, not broad permission gates.
+- Red-line checks are narrow safety checks, not broad permission gates. HTTP method alone is not a red line; block or downgrade only the concrete destructive, irreversible, high-pressure, persistent-payload, or real-business side effect.
 - Resolve queue items with `tools/action_queue.py resolve` after the smallest safe evidence-producing step.
 
 ## Actionable Evidence Continuation
@@ -97,7 +97,7 @@ AI override is part of the operating model: skip a default lane, combine knowled
 
 Use the provided target set as the active execution target set. `ctf_mode: true` in `config.json` means full local/lab coverage. External program/scope text is optional context, not an execution gate.
 
-Pause only for ambiguous target identity, unavailable credentials that cannot be derived through the controlled Credential Lane, report submission, a new target not present in the current input/context, or explicit unsafe/state-changing actions.
+Pause only for ambiguous target identity, unavailable credentials that cannot be derived through the controlled Credential Lane, report submission, a new target not present in the current input/context, or explicit destructive side effects / irreversible mutations / high-pressure actions.
 
 CTF/lab mode treats supplied target set plus repo config as the authoritative lab target record.
 
@@ -105,12 +105,16 @@ CTF/lab mode treats supplied target set plus repo config as the authoritative la
 
 Choose tools from evidence shape:
 
-- Browser/app/XHR/auth state: `playwright-cli`, browser surface capture, then replay API/XHR directly.
+- Browser/app/XHR/auth state:
+  1. Prefer chrome-devtools MCP for live browser/network evidence.
+  2. Prefer playwright MCP for automated interaction and snapshots.
+  3. Use `tools/browser_evidence.py` / `playwright-cli` only when MCP is unavailable or a scriptable fallback is needed.
+  4. Import MCP artifacts with `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` keep using the same browser-observed API surface. Replay API/XHR directly after capture.
 - Source/route/auth logic: `python3 tools/source_intel.py --target <target> [--repo-path <repo>]`.
 - JS bundles: `python3 tools/js_reader.py --target <target>` plus semantic JS review.
 - Known component/version: `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, vendor advisories, NVD/GHSA/WPScan-style sources, nuclei template names.
 - Broad coverage: scanner tools after ranking or when the user asks for scanner coverage.
-- After `run_vuln_scan`, call `read_surface_summary` / `/surface` again and inspect `unsafe-skipped` / `unsafe_skipped.txt`; entries requiring `ALLOW_UNSAFE_HTTP_TESTS=1` are not tested-clean.
+- After `run_vuln_scan`, call `read_surface_summary` / `/surface` again and inspect action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact; this means side-effectful scanner templates were skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` was set, so they are not tested-clean. It does not restrict safe observed-method replay.
 - Exact requests: curl/local helpers when browser state is not needed.
 - Byte-exact proxy/cache/smuggling/desync: inspect `tools/smuggling_executor.py` and `tools/sender_semantics.py`; browser/urllib evidence is not enough to prove absence.
 
@@ -153,7 +157,7 @@ Deep mode:
 - Convert failures into next questions, sibling expansion, bypass, role/object diff, enrichment, chain-building, or lane rotation.
 - Finish only with a concrete Deep Exhaustion Checklist: recon/state and `/surface` consulted; coverage matrix rebuilt; Evidence Ledger / actor matrix reviewed; scanner-negative results received manual follow-up; JS/source/browser/exposure context used or ruled out; high-value vuln-family directions tested, blocked, not applicable, or listed with reasons.
 
-Deep mode never overrides Live-Action Boundaries: irreversible lifecycle writes, real money movement, bulk external sends, unsafe methods, report submission, active stored XSS payload submission, and destructive mutations still require explicit current-turn operator intent.
+Deep mode never overrides Live-Action Boundaries: irreversible lifecycle writes, real money movement, bulk external sends, report submission, active stored XSS payload submission, and destructive mutations still require explicit current-turn operator intent. Method is a signal, not the boundary: browser-observed POST, GraphQL read queries, search/filter POSTs, preview/validate-only flows, and test-owned reversible actions can be valid evidence paths.
 
 ## Credential Lane
 

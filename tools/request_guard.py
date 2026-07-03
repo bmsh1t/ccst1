@@ -28,7 +28,7 @@ from memory.audit_log import AuditLog
 from memory.target_profile import default_memory_dir, load_target_profile, target_filename
 from scope_checker import ScopeChecker
 
-SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "POST"}
 FAILURE_STATUSES = {403, 429}
 DEFAULT_RECON_RPS = 10.0
 DEFAULT_TEST_RPS = 1.0
@@ -393,7 +393,7 @@ def preflight_request(
         advisories.append(f"excluded vuln class advisory: {vuln_class}")
 
     if mode == "yolo" and normalized_method not in SAFE_METHODS:
-        advisories.append(f"unsafe method advisory in yolo mode: {normalized_method}")
+        advisories.append(f"side-effect-capable method advisory in yolo mode: {normalized_method}")
 
     remaining = _remaining_seconds(host_state.get("tripped_until", 0.0), current_ts)
     if remaining > 0:

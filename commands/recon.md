@@ -15,7 +15,8 @@ recon.
 
 Pause only for ambiguous target identity, credentials that cannot be derived
 through the controlled Credential Lane, a new target not present in the current input/context, or
-explicit unsafe/state-changing actions.
+explicit destructive side effects / irreversible mutations / high-pressure
+actions. HTTP method alone is advisory, not a stop condition.
 
 ## Run This (the only required step)
 

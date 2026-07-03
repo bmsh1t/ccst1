@@ -79,7 +79,8 @@ def test_ingest_checkpoint_dedupes_active_actions(tmp_path):
     assert first["stats"]["added"] == 2
     assert second["stats"]["added"] == 0
     assert second["stats"]["updated"] == 2
-    assert load_queue(tmp_path, "target.com")["actions"][0]["id"] == "AQ-0001"
+    assert {item["id"] for item in load_queue(tmp_path, "target.com")["actions"]} == {"AQ-0001", "AQ-0002"}
+    assert select_next_action(load_queue(tmp_path, "target.com"))["id"] == "AQ-0002"
 
 
 def test_resolve_final_action_prevents_readding_same_todo(tmp_path):
@@ -98,7 +99,33 @@ def test_resolve_final_action_prevents_readding_same_todo(tmp_path):
     second = ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
     assert second["stats"]["skipped_final"] == 1
     assert summarize_queue(load_queue(tmp_path, "target.com"))["total"] == 2
-    assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "known-software-intel"
+    assert next_action["type"] == "known-software-intel"
+    assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "coverage-gap"
+
+
+def test_ingest_checkpoint_retires_stale_checkpoint_queued_actions(tmp_path):
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
+    refreshed = {
+        "next_action_queue": [
+            {
+                "id": "A2",
+                "priority": 90,
+                "type": "known-software-intel",
+                "status": "ready",
+                "action": "Check known advisories for WordPress plugin X 1.2.3.",
+                "command_hint": "/intel + cve_hunter",
+                "redline_required": False,
+            },
+        ]
+    }
+
+    result = ingest_checkpoint(tmp_path, "target.com", checkpoint=refreshed)
+    queue = load_queue(tmp_path, "target.com")
+    stale = next(item for item in queue["actions"] if item["id"] == "AQ-0001")
+
+    assert result["stats"]["retired_stale"] == 1
+    assert stale["status"] == "n/a"
+    assert "checkpoint refresh" in stale["result"].lower()
 
 
 def test_manual_action_add_and_resolve_to_candidate(tmp_path):
@@ -221,10 +248,10 @@ def test_resolve_unsafe_skipped_review_persists_resolution(tmp_path):
             {
                 "id": "A1",
                 "priority": 88,
-                "type": "unsafe-skipped-review",
+                "type": "action-gated-review",
                 "status": "ready",
-                "action": "Review unsafe-skipped scanner lane abcdef1234567890: 1 unresolved skipped probe line(s). Artifact=findings/target.com/manual_review/unsafe_skipped.txt. Decide tested, blocked, dead-end, n/a, or candidate; only rerun with ALLOW_UNSAFE_HTTP_TESTS=1 after explicit operator opt-in.",
-                "command_hint": "review unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate",
+                "action": "Review action-gated scanner lane abcdef1234567890: 1 unresolved skipped probe line(s). Artifact=findings/target.com/manual_review/unsafe_skipped.txt. Decide tested, blocked, dead-end, n/a, or candidate; only rerun with ALLOW_UNSAFE_HTTP_TESTS=1 after explicit operator opt-in.",
+                "command_hint": "review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate",
                 "redline_required": True,
                 "metadata": {
                     "unsafe_skipped_id": "abcdef1234567890",

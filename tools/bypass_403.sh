@@ -44,7 +44,7 @@ print_banner "403 / 401 Bypass Probe" "${URL:-$LIST}" \
     "Report|matched response codes per technique"
 
 if [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" != "1" ]; then
-  log "unsafe/state-changing probes disabled; set ALLOW_UNSAFE_HTTP_TESTS=1 to include POST/PUT/PATCH/TRACE"
+  log "side-effect-capable method probes disabled for the broad scanner; set ALLOW_UNSAFE_HTTP_TESTS=1 to include PUT/PATCH/TRACE"
 fi
 
 if _have byp4xx && [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" = "1" ]; then
@@ -230,9 +230,9 @@ _probe_one() {
     url=$(echo "$combo" | cut -d'|' -f2)
     hdr=$(echo "$combo" | cut -d'|' -f3)
     case "$method" in
-      POST|PUT|PATCH|TRACE)
+      PUT|PATCH|TRACE)
         if [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" != "1" ]; then
-          printf '%s|%s|%s|unsafe-disabled|0|{"verdict":"manual_review","reason":"requires ALLOW_UNSAFE_HTTP_TESTS=1"}\n' "$method" "$url" "$hdr" >> "$OUT_DIR/bypass_manual_review.txt"
+          printf '%s|%s|%s|unsafe-disabled|0|{"verdict":"manual_review","reason":"side-effect-capable scanner method requires ALLOW_UNSAFE_HTTP_TESTS=1"}\n' "$method" "$url" "$hdr" >> "$OUT_DIR/bypass_manual_review.txt"
           continue
         fi
         ;;

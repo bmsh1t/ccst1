@@ -122,7 +122,7 @@ CONTEXT PACK
   - Coverage gap: /api/org/123/users x IDOR weight=...
 - Hypothesis seeds:
   - 对象/组织/租户 ID 是否只在前端约束，服务端是否重新绑定当前身份。
-  - 浏览器观察到的 XHR/API 优先做登录态、角色、租户差异对比；遇到状态改变动作先按红线降级到只读或可回滚验证。
+  - 浏览器观察到的 XHR/API 优先按原始 method / 参数形态做登录态、角色、租户差异对比；HTTP method 本身不是红线，真实破坏性副作用才需要降级到只读或可回滚验证。
   - export/download/report 类接口是否可通过 ID 或筛选条件读取其他主体数据。
 - Alternative angles:
   - 用 Playwright/浏览器复用登录态重放关键页面，只看 Network/Console 差异和只读响应变化。

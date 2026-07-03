@@ -39,7 +39,7 @@ python3 tools/surface.py --target <target>
 解释方式：
 
 - `find-gaps` 非空：不能说“全面完成”，必须列出高价值 gap 和下一步。
-- `find-gaps` 为空：仍需结合 `/surface`、target memory、Workflow Leads、unsafe-skipped、blocked/n/a/dead-end 解释覆盖状态。
+- `find-gaps` 为空：仍需结合 `/surface`、target memory、Workflow Leads、action-gated scanner leads、blocked/n/a/dead-end 解释覆盖状态。
 - Evidence Ledger 的 Actor Matrix gaps 非空：不能说 authz/IDOR/业务逻辑完整覆盖；必须列出缺少的 actor/object/replay 差异。
 - `rebuild` 没有 endpoint：说明 recon/source/browser 输入不足，不能把空矩阵当成全面覆盖。
 - 如果某个 gap 的继续测试会触发 `rules/red-lines.md`，标记为 `blocked: red-line`，并给出低风险替代验证。

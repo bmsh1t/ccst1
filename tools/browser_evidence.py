@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""Capture minimal browser-state evidence through playwright-cli."""
+"""Fallback capture of minimal browser-state evidence through playwright-cli.
+
+Primary browser-state work should use chrome-devtools/playwright MCP when
+available, then import MCP artifacts through tools/browser_mcp_import.py. This
+module remains the scriptable fallback for CI, headless environments, and cases
+where MCP is unavailable.
+"""
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,16 +35,40 @@ def _safe_part(value: str, default: str) -> str:
 
 
 def _target_key(target: str) -> str:
+    """Return the shared canonical storage key for browser artifacts."""
+    try:
+        from target_paths import target_storage_key
+    except ImportError:  # pragma: no cover - package import path
+        from tools.target_paths import target_storage_key
+
+    try:
+        return target_storage_key(target)
+    except ValueError:
+        # Keep browser capture fail-soft for malformed/manual labels while all
+        # valid URL/domain/IP targets use the project-wide canonical key.
+        return _safe_part(target.replace("/", "_"), "unknown-target")
+
+
+def _session_key(target: str) -> str:
+    """Return a playwright-cli session-safe key independent from disk storage."""
     return _safe_part(target.replace("/", "_"), "unknown-target")
 
 
 def default_browser_session(target: str) -> str:
     """Return a stable playwright-cli session name for a target."""
-    return f"browser-{_target_key(target)}"
+    return f"browser-{_session_key(target)}"
 
 
 def _run_cli(args: list[str], *, session: str, timeout: int) -> dict:
     cmd = [PLAYWRIGHT_BIN, f"-s={session}", *args]
+    env = os.environ.copy()
+    # Codex / CI sandboxes can make ~/.cache read-only. Playwright CLI allows
+    # its daemon/session files to be redirected without changing browser
+    # binaries, so keep automation reproducible in a writable temp location.
+    if not env.get("PLAYWRIGHT_DAEMON_SESSION_DIR"):
+        daemon_dir = Path(tempfile.gettempdir()) / "ccst-playwright-daemon"
+        daemon_dir.mkdir(parents=True, exist_ok=True)
+        env["PLAYWRIGHT_DAEMON_SESSION_DIR"] = str(daemon_dir)
     try:
         completed = subprocess.run(
             cmd,
@@ -44,6 +76,7 @@ def _run_cli(args: list[str], *, session: str, timeout: int) -> dict:
             text=True,
             timeout=timeout,
             check=False,
+            env=env,
         )
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
@@ -201,7 +234,7 @@ def capture_browser_evidence(
     """Capture minimal browser evidence for one URL without closing the session."""
     target_name = _target_key(target)
     safe_label = _safe_part(label, "capture")
-    session_name = session.strip() or default_browser_session(target_name)
+    session_name = session.strip() or default_browser_session(target)
     root = Path(evidence_root) if evidence_root else DEFAULT_EVIDENCE_ROOT
     browser_root = root / target_name / "browser"
     capture_dir = browser_root / f"{_timestamp_slug()}-{safe_label}"

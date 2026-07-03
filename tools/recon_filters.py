@@ -151,6 +151,73 @@ def has_html_unicode_encoding(url):
     return False
 
 
+_JS_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+$")
+_JS_LEADING_VAR_SEGMENT_RE = re.compile(r"^[A-Za-z_$]\.[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$")
+_LIKELY_FILE_SEGMENT_RE = re.compile(r"\.(?:js|mjs|cjs|css|json|xml|txt|svg|png|jpe?g|gif|webp|avif|ico|html?)$", re.I)
+_JS_MEMBER_SIGNAL_TOKENS = {
+    "document",
+    "window",
+    "navigator",
+    "location",
+    "visualviewport",
+    "offsetheight",
+    "offsetwidth",
+    "localstorage",
+    "sessionstorage",
+    "prototype",
+    "constructor",
+    "innerhtml",
+    "outerhtml",
+    "cookie",
+    "dom",
+}
+
+
+def has_js_path_artifact(url):
+    """
+    Detect crawler artifacts where JS member expressions are mistaken for paths.
+
+    Examples:
+    - /i.visualViewport.scale/i.document.do
+    - /r.dom.offsetHeight/r.do
+
+    Heuristic goals:
+    - catch multi-segment property chains from minified/browser JS
+    - avoid stripping normal dotted filenames like /login.do or /app.config.json
+    """
+    candidate = (url or "").strip()
+    if not candidate:
+        return False
+    try:
+        parsed = urlparse(candidate if "://" in candidate or candidate.startswith("//") else f"//{candidate}")
+    except ValueError:
+        return False
+
+    segments = [segment for segment in (parsed.path or "").split("/") if segment]
+    if len(segments) < 2:
+        return False
+
+    suspicious = 0
+    js_signal_hits = 0
+    for segment in segments:
+        lowered = segment.lower()
+        if _LIKELY_FILE_SEGMENT_RE.search(segment):
+            continue
+        if not _JS_PATH_SEGMENT_RE.fullmatch(segment):
+            continue
+        parts = [part.lower() for part in segment.split(".") if part]
+        if len(parts) < 2:
+            continue
+        if _JS_LEADING_VAR_SEGMENT_RE.fullmatch(segment):
+            suspicious += 1
+        elif len(parts) >= 3 and _JS_MEMBER_SIGNAL_TOKENS.intersection(parts):
+            suspicious += 1
+        if _JS_MEMBER_SIGNAL_TOKENS.intersection(parts):
+            js_signal_hits += 1
+
+    return suspicious >= 2 or (suspicious >= 1 and js_signal_hits >= 2)
+
+
 def detect_path_explosion(url, threshold=4, log_file=None):
     """
     Detect URLs with recursive/repeated path segments (e.g., /API/API/API/).
@@ -263,7 +330,7 @@ def filter_urls_batch(input_file, output_file, target_domain,
 
     total = len(urls)
     stats = {'total': total, 'kept': 0, 'removed_external': 0, 'removed_explosion': 0,
-             'removed_encoding_errors': 0, 'removed_html_encoding': 0}
+             'removed_encoding_errors': 0, 'removed_html_encoding': 0, 'removed_js_path_artifacts': 0}
 
     # Filter URL encoding errors
     filtered = []
@@ -283,6 +350,17 @@ def filter_urls_batch(input_file, output_file, target_domain,
             stats['removed_html_encoding'] += 1
             if log_file:
                 _append_log(log_file, [f"[HTML_ENCODING] {url}"])
+        else:
+            filtered.append(url)
+    urls = filtered
+
+    # Filter JS member-expression path artifacts from crawlers/JS URL extraction
+    filtered = []
+    for url in urls:
+        if has_js_path_artifact(url):
+            stats['removed_js_path_artifacts'] += 1
+            if log_file:
+                _append_log(log_file, [f"[JS_PATH_ARTIFACT] {url}"])
         else:
             filtered.append(url)
     urls = filtered
@@ -353,6 +431,7 @@ def main(argv=None):
     print(f"  Total URLs: {stats['total']}")
     print(f"  Removed encoding errors: {stats['removed_encoding_errors']}")
     print(f"  Removed HTML encoding: {stats['removed_html_encoding']}")
+    print(f"  Removed JS path artifacts: {stats['removed_js_path_artifacts']}")
     print(f"  Removed external: {stats['removed_external']}")
     print(f"  Removed path explosion: {stats['removed_explosion']}")
     print(f"  Kept: {stats['kept']} ({kept_percent:.1f}%)")

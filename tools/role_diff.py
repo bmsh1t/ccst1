@@ -157,10 +157,16 @@ def parse_sessions(session_args: list[str]) -> dict[str, dict]:
 
 # ─── Endpoint parsing ───────────────────────────────────────────────────────
 def parse_endpoints_file(path: Path, method_allow: set[str]) -> list[tuple[str, str]]:
-    """Parse the endpoints file. Each line is `[METHOD] URL` (METHOD default GET).
+    """Parse the endpoints file. Each line is `[METHOD] URL`.
+
+    Bare URLs are replayed with GET because no captured request body is
+    available.
 
     Lines starting with `#` or empty are skipped. Methods not in method_allow
-    raise immediately so the operator is forced to opt into mutating methods.
+    raise immediately because this URL-only replay tool has no request body or
+    cleanup model. This is a request-shape guard, not a red-line rule: add
+    observed POST/PUT/PATCH/DELETE deliberately when the replay is read-only,
+    preview/validate-only, or uses test-owned reversible resources.
     """
     if not path.is_file():
         raise FileNotFoundError(f"endpoints file not found: {path}")
@@ -413,7 +419,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--method-allow",
         default="GET",
-        help="Comma-separated allowed methods (default GET). Add POST/PUT/DELETE deliberately.",
+        help=(
+            "Comma-separated allowed methods for this URL-only replay tool "
+            "(bare URLs use GET). Add observed POST/PUT/PATCH/DELETE deliberately "
+            "when the request has no destructive side effect or uses test-owned resources."
+        ),
     )
     p.add_argument("--out-dir", default="", help="Override output directory.")
     p.add_argument(
