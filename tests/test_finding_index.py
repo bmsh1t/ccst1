@@ -103,6 +103,70 @@ def test_report_generator_consumes_structured_findings(monkeypatch, tmp_path):
     assert updated_index["findings"][0]["report_file"] == str(report_path)
 
 
+def test_report_generator_uses_validation_summary_for_auth_bypass_narrative(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    validation_dir = tmp_path / "evidence" / "example.com" / "validation" / "authz-1"
+    validation_dir.mkdir(parents=True)
+    validation_summary = validation_dir / "summary.json"
+    validation_summary.write_text(
+        json.dumps(
+            {
+                "summary_path": "evidence/example.com/validation/authz-1/summary.json",
+                "markers": ["secret-like"],
+                "artifacts": {
+                    "baseline_request": "evidence/example.com/validation/authz-1/baseline.request.txt",
+                    "baseline_response": "evidence/example.com/validation/authz-1/baseline.response.txt",
+                },
+                "baseline": {"status": 200},
+                "evidence_rubric": {"summary": "authz:candidate-ready score=100 satisfied=4/4"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "example.com",
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "authz_abc123",
+                        "type": "auth_bypass",
+                        "category": "auth_bypass",
+                        "title": "AUTH_BYPASS on feedbacks",
+                        "summary": "200 1734 https://example.com/api/Feedbacks",
+                        "url": "https://example.com/api/Feedbacks",
+                        "severity": "high",
+                        "confidence": "confirmed",
+                        "validation_status": "validated",
+                        "validation_summary": str(validation_summary),
+                        "report_status": "not_generated",
+                        "source_file": "auth_bypass/unauth_api_access.txt",
+                        "line_number": 1,
+                        "template_id": "",
+                        "raw": "200 1734 https://example.com/api/Feedbacks",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    monkeypatch.setattr(report_generator, "BASE_DIR", str(tmp_path))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total == 1
+    report_path = Path(index[0]["file"])
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "Unauthenticated Sensitive Data Exposure" in report_text
+    assert "secret-like" in report_text
+    assert "Validation Summary" in report_text
+    assert "Baseline Response" in report_text
+
+
 def test_report_generator_skips_unvalidated_and_already_reported_structured_findings(
     monkeypatch,
     tmp_path,

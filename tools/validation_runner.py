@@ -189,6 +189,19 @@ def public_exposure_candidate_ready(status: int, marker_sources: dict[str, list[
     return shared_public_exposure_candidate_ready(status, marker_sources)
 
 
+def _public_exposure_impact_text(markers: list[str]) -> str:
+    marker_set = set(markers or [])
+    if "secret-like" in marker_set:
+        return "business impact: sensitive secret/token/private data exposure"
+    if "security-answer" in marker_set:
+        return "business impact: sensitive security-question/account-recovery data exposure"
+    if "oauth" in marker_set:
+        return "business impact: oauth/client configuration exposure"
+    if marker_set & {"admin", "configuration"}:
+        return "business impact: admin/application configuration exposure"
+    return "business impact: public data exposure"
+
+
 def looks_like_sqli_probe(value: str) -> bool:
     """Return True when the perturbation is injection-shaped, not ordinary search text."""
     return bool(SQLI_PROBE_RE.search(str(value or "")))
@@ -379,11 +392,15 @@ def run_authz_public_exposure(
     markers = sorted(set(marker_sources["url"]) | set(marker_sources["body"]))
     candidate_ready = public_exposure_candidate_ready(response["status"], marker_sources)
     result = "tested_finding" if candidate_ready else "tested_clean"
+    impact_text = _public_exposure_impact_text(markers) if candidate_ready else ""
     finding = {
         "type": "auth_bypass",
         "url": url,
-        "summary": f"{response['status']} {len(response['body'])} {url} markers={','.join(markers)} unauthenticated public exposure",
-        "raw": f"anonymous replay returned {response['status']} with markers {markers}",
+        "summary": (
+            f"{response['status']} {len(response['body'])} {url} "
+            f"markers={','.join(markers)} unauthenticated public exposure {impact_text}".strip()
+        ),
+        "raw": f"anonymous replay returned {response['status']} with markers {markers}; {impact_text}".strip(),
         "confidence": "confirmed" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))

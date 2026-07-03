@@ -153,6 +153,8 @@ def test_authz_public_exposure_mnemonic_like_secret_promotes(monkeypatch, tmp_pa
     assert "secret-like" in summary["marker_sources"]["body"]
     assert summary["result"] == "tested_finding"
     assert summary["candidate_ready"] is True
+    assert summary["evidence_rubric"]["ready"] is True
+    assert summary["evidence_rubric"]["status"] == "candidate-ready"
 
 
 def test_authz_public_exposure_does_not_promote_path_only_admin_marker(monkeypatch, tmp_path):

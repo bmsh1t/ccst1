@@ -524,13 +524,13 @@ def normalize_vuln_type(vuln_type: str, *, text: str = "") -> str:
     """Normalize scanner/tool labels to one rubric family."""
     raw = str(vuln_type or "").strip().lower().replace("_", "-")
     raw = re.sub(r"\s+", " ", raw)
+    if raw == "exposure" and not SECRET_HINT_RE.search(text or ""):
+        return "generic"
     if raw in ALIASES:
         return ALIASES[raw]
     dashed = raw.replace(" ", "-")
     if dashed in ALIASES:
         return ALIASES[dashed]
-    if raw == "exposure" and not SECRET_HINT_RE.search(text or ""):
-        return "generic"
     if SECRET_HINT_RE.search(" ".join([raw, text or ""])):
         return "secret"
     return "generic"

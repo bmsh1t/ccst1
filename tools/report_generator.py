@@ -15,6 +15,7 @@ import os
 import re
 import sys
 from datetime import datetime
+from pathlib import Path
 
 try:
     from finding_index import load_finding_index, update_finding_status
@@ -422,15 +423,99 @@ def format_finding_reference(finding):
     return "\n".join(references)
 
 
+def _load_validation_summary(finding):
+    """Load optional validation summary JSON for a structured finding."""
+    path = str(finding.get("validation_summary") or "").strip()
+    if not path:
+        return {}
+    summary_path = Path(path)
+    if not summary_path.is_absolute():
+        summary_path = Path(BASE_DIR) / summary_path
+    try:
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _auth_bypass_narrative(finding, validation):
+    """Render a concrete narrative from validated auth/public-exposure evidence."""
+    url = finding.get("url", "N/A")
+    baseline = validation.get("baseline") if isinstance(validation.get("baseline"), dict) else {}
+    status = baseline.get("status") or "200"
+    markers = validation.get("markers") if isinstance(validation.get("markers"), list) else []
+    marker_set = {str(item) for item in markers}
+
+    if "secret-like" in marker_set:
+        return {
+            "title": "Unauthenticated Sensitive Data Exposure on {domain}",
+            "summary": (
+                f"An unauthenticated request to `{url}` returned HTTP {status} and exposed "
+                "feedback records containing sensitive secret-like data in the response body."
+            ),
+            "impact": (
+                "Anonymous users can retrieve feedback records that include high-value secret-like "
+                "material in application data. This exposes credentials, recovery material, or other "
+                "sensitive user/operational data and can directly enable chained account or environment compromise."
+            ),
+        }
+
+    if marker_set & {"admin", "configuration", "oauth", "security-answer"}:
+        return {
+            "title": "Unauthenticated Admin Configuration Exposure on {domain}",
+            "summary": (
+                f"An unauthenticated request to `{url}` returned HTTP {status} and exposed "
+                "application/admin configuration data, including OAuth and account-recovery related fields."
+            ),
+            "impact": (
+                "Anonymous users can retrieve internal application configuration from an admin-named endpoint. "
+                "Exposed OAuth/client configuration, security-question related settings, and deployment details "
+                "materially reduce attacker effort for targeted auth abuse, recovery attacks, environment fingerprinting, "
+                "and chained compromise."
+            ),
+        }
+
+    return {
+        "title": "Authentication/Authorization Bypass on {domain}",
+        "summary": (
+            f"An unauthenticated request to `{url}` returned HTTP {status} and exposed "
+            "protected application data without the expected access control."
+        ),
+        "impact": VULN_TEMPLATES["auth_bypass"]["impact"],
+    }
+
+
+def _validation_evidence_block(validation):
+    if not validation:
+        return ""
+    lines = []
+    markers = validation.get("markers") if isinstance(validation.get("markers"), list) else []
+    if markers:
+        lines.append(f"**Observed Markers:** `{', '.join(str(item) for item in markers)}`")
+    if validation.get("summary_path"):
+        lines.append(f"**Validation Summary:** `{validation['summary_path']}`")
+    artifacts = validation.get("artifacts") if isinstance(validation.get("artifacts"), dict) else {}
+    if artifacts.get("baseline_request"):
+        lines.append(f"**Baseline Request:** `{artifacts['baseline_request']}`")
+    if artifacts.get("baseline_response"):
+        lines.append(f"**Baseline Response:** `{artifacts['baseline_response']}`")
+    rubric = validation.get("evidence_rubric") if isinstance(validation.get("evidence_rubric"), dict) else {}
+    if rubric.get("summary"):
+        lines.append(f"**Evidence Rubric:** `{rubric['summary']}`")
+    return "\n".join(lines)
+
+
 def generate_report(finding, vuln_type, target_name=None):
     """Generate a HackerOne-formatted report for a finding."""
     template = VULN_TEMPLATES.get(vuln_type, VULN_TEMPLATES["misconfig"])
 
     url = finding.get("url", "N/A")
     domain = extract_domain(url) if url != "N/A" else (target_name or "unknown")
+    validation = _load_validation_summary(finding)
+    narrative = _auth_bypass_narrative(finding, validation) if vuln_type == "auth_bypass" else {}
 
     # Build title
-    title = template["title"].format(
+    title = (narrative.get("title") or template["title"]).format(
         domain=domain,
         cve_id=finding.get("template_id", "Unknown CVE")
     )
@@ -438,6 +523,9 @@ def generate_report(finding, vuln_type, target_name=None):
     severity = finding.get("severity", template["severity"])
     severity_info = SEVERITY_MAP.get(severity, SEVERITY_MAP["medium"])
     finding_reference = format_finding_reference(finding)
+    validation_evidence = _validation_evidence_block(validation)
+    summary_text = narrative.get("summary") or f"A {vuln_type} vulnerability was discovered on `{domain}`. {template['impact'][:200]}..."
+    impact_text = narrative.get("impact") or template["impact"]
 
     report = f"""# {title}
 
@@ -448,7 +536,7 @@ def generate_report(finding, vuln_type, target_name=None):
 {template.get('cwe', 'N/A')} — {vuln_type.upper()}
 
 ## Summary
-A {vuln_type} vulnerability was discovered on `{domain}`. {template['impact'][:200]}...
+{summary_text}
 
 ## Affected URL
 ```
@@ -477,10 +565,17 @@ A {vuln_type} vulnerability was discovered on `{domain}`. {template['impact'][:2
 {finding_reference}
 """
 
+    if validation_evidence:
+        report += f"""
+
+**Validation Evidence:**
+{validation_evidence}
+"""
+
     report += f"""
 
 ## Impact
-{template['impact']}
+{impact_text}
 
 ## Remediation
 {template['remediation']}

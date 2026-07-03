@@ -79,6 +79,12 @@ def test_secret_text_uses_secret_rubric_even_when_scanner_type_is_exposure():
     assert rubric.id == "secret"
 
 
+def test_non_secret_metrics_exposure_uses_generic_rubric():
+    rubric = rubric_for("exposure", text="[prometheus-metrics] [http] [medium] https://target.test/metrics")
+
+    assert rubric.id == "generic"
+
+
 def test_race_rubric_uses_race_family_and_returns_bounded_replay_guidance():
     finding = {
         "type": "race",
