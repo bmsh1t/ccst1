@@ -23,6 +23,8 @@ Run full validation on the current finding before writing a report.
 - Candidate endpoint, vuln class, impact claim, and reproduction details
 - Exact request/response or browser/OOB evidence when available
 - `findings/<target>/findings.json` and `--finding-id` linkage when present
+- Target case state when validation depends on actors, sessions, owned objects,
+  private markers, or backlog continuity
 - Current target/runtime context from repo-local config and disk artifacts
 
 ## Outputs
@@ -38,10 +40,13 @@ Run full validation on the current finding before writing a report.
 - `findings/last-validate.json`
 - `findings/<target>/findings.json` status updates when applicable
 - `state/<target>/session.json`
+- `state/<target_key>/case_state.json` only when you explicitly complete or
+  enrich a target case backlog
 
 ## Resume Source
 
 - Structured finding linkage from `findings/<target>/findings.json`
+- Active target case backlog from `python3 tools/target_case_state.py summary --target <target> --json`
 - Latest validation summary if this finding was already partially validated
 - PASS cases hand off to `/report`; non-PASS cases hand off back to hunt with a
   concrete next evidence step
@@ -81,6 +86,33 @@ quality checks.
 Use `/validate` when a Lead or Signal has become a Candidate, or when preparing
 `/report`. It is a strict pre-report/pre-submit gate, not a hunt-phase
 kill-switch for raw leads, anomalies, hypotheses, or chain seeds.
+
+## Case-State-First Validation
+
+For actor/object/session-sensitive findings, prefer target case state before
+hand-assembling replay commands. This reduces drift across long hunts and keeps
+owner/peer/object/private-marker relationships reproducible.
+
+```bash
+python3 tools/target_case_state.py summary --target <target> --json
+python3 tools/target_case_state.py next --target <target>
+python3 tools/checkpoint.py --target <target> --json
+```
+
+Use the result as a priority hint, not a hard gate:
+
+- `run_validation_runner` / `case-state-validation` -> run the exact
+  `validation_runner.py ... --from-case-state` replay and use the raw evidence
+  as `/validate` input.
+- `enrich_case_state` / `case-state-enrichment` -> collect the missing actor,
+  session, object endpoint, or private marker before claiming candidate-ready.
+- Empty/stale/irrelevant case state -> continue manual/browser/source/JS
+  validation and optionally create a new backlog if it improves repeatability.
+- Stronger new evidence -> override the old backlog explicitly and write the
+  reason back as a new hypothesis or backlog.
+
+Case state is not a scope gate and not a substitute for `/validate`. It is the
+runtime memory that feeds deterministic evidence runners.
 
 ## Deterministic Evidence Runners
 
@@ -153,6 +185,20 @@ Runner output is not a replacement for `/validate`. Use it as the evidence
 plane: it writes `evidence/<target>/validation/<finding-id>/`, records the
 Evidence Ledger unless `--no-ledger` is set, and returns `ai_next` /
 `stop_condition` for Claude to decide the next hypothesis.
+
+After a case-state-backed replay, write back the backlog result so `/autopilot`
+does not repeat stale work:
+
+```bash
+python3 tools/target_case_state.py complete-backlog \
+  --target <target> \
+  --id <val_id> \
+  --result tested_clean \
+  --evidence-ref evidence/<target_key>/validation/<finding-id>/summary.json
+```
+
+Use `tested_finding`, `tested_clean`, `candidate`, `blocked`, or `dead_end`
+according to the runner output and validation reasoning.
 
 ## Target-Driven Validation
 

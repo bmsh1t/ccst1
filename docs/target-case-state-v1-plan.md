@@ -613,6 +613,8 @@ tests/test_checkpoint.py 已覆盖 ready/enrichment 两条回归
 
 ### Phase D：文档和规则
 
+状态：已实施。
+
 范围：
 
 ```text
@@ -626,6 +628,15 @@ rules/hunting.md
 
 ```text
 Claude CLI / autopilot 知道什么时候用 case_state
+```
+
+已验证：
+
+```text
+commands/autopilot.md 明确 case-state first, not case-state only
+agents/autopilot.md 与命令入口保持同一语义
+commands/validate.md 将 case_state 放入证据执行平面
+rules/hunting.md 明确 case_state 是连续验证记忆，不是 scope/permission/bug-class gate
 ```
 
 ## 12. 测试规划

@@ -42,6 +42,9 @@ Core discipline:
   evidence from browser/API/JS/source/recon/parameter/path/workflow context.
 - Define the current target boundary first, then map attack surface, rank it,
   run focused validation, and write back what changed.
+- Use Target Case State when actor/session/object/private-marker continuity
+  matters; it is working memory for multi-step validation, not a scope gate or
+  bug-class selector.
 - Map broadly before deep-diving, but do not use "more recon" to avoid testing
   a high-signal surface already in front of you.
 - Route from current evidence. Do not force a vulnerability class, old target
@@ -106,12 +109,18 @@ Value-first coverage model:
 Completeness discipline:
 
 - Before finish, handoff, or "no finding" summaries, inspect coverage matrix
-  and Evidence Ledger state.
+  Evidence Ledger state, and Target Case State.
 - For high-value access-control or workflow surfaces, do not stop at
   owner/baseline. Consider anonymous, owner, peer, low_role, cross_tenant,
   method/version/token/origin differences.
 - If actor/object/replay gaps remain, do not claim complete access-control or
   workflow coverage. State the remaining gaps and next safe evidence action.
+- If `tools/target_case_state.py summary --target <target> --json` shows active
+  validation backlog, either run/resolve the recommended case-state action or
+  state the AI override reason and write back a newer hypothesis/backlog.
+- If case state is missing or stale, do not stop; continue discovery through
+  surface/browser/JS/source/recon evidence and create or enrich case state only
+  when it improves the next replay.
 - If a candidate appears, move to validation. Do not call it a finding until
   validation gates pass.
 - If no candidate appears, report the state precisely as lead, signal,
@@ -123,6 +132,10 @@ Validation discipline:
   question.
 - Prefer read-only diffs, test resources, dry-run/preview/validate-only modes,
   minimal replay, and A/B role comparison.
+- Prefer `validation_runner.py ... --from-case-state` for actor/object-sensitive
+  Authz/IDOR/business-logic validation when case state is ready; if it is not
+  ready, collect the missing actor/session/object/private-marker evidence or
+  use a manual fallback without treating missing case state as a blocker.
 - State-changing actions, funds, orders, permissions, members, deletion,
   notifications, webhooks, CI/CD, and production configuration changes must
   pass `rules/red-lines.md` first.

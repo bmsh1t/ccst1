@@ -24,11 +24,7 @@ Evidence drives order. Do not rerun usable recon, do not validate/report without
 
 `/autopilot` is the primary automated entrypoint for the four-layer system. Do not create a separate workflow command for normal use.
 
-Startup context order:
-
-```text
-target memory -> skill routing -> knowledge cards -> red-line / coverage checks
-```
+Startup context order: target memory + target case state -> skill routing -> knowledge cards -> red-line / coverage checks.
 
 Minimal startup sequence:
 
@@ -36,16 +32,25 @@ Minimal startup sequence:
 python3 tools/context_pack.py --target <target>
 python3 tools/context_pack.py --target target.com
 python3 tools/autopilot_state.py --target target.com
+python3 tools/target_case_state.py summary --target target.com --json
 python3 tools/checkpoint.py --target target.com --json
 python3 tools/action_queue.py ingest-checkpoint --target target.com
 python3 tools/action_queue.py next --target target.com
 ```
 
 - Target memory: active leads, next actions, dead ends, and handoffs influence the next lane.
+- Target case state: actors, sessions, objects, private markers, active hypotheses, and validation backlog keep multi-step validation continuous.
 - Skills: route through `skills/runtime-protocol.md`; load only the Skill that matches the current evidence shape.
 - Use context-pack first. Knowledge: load `knowledge/index.md` plus only the 1-2 knowledge cards selected by context-pack; follow `reference_hints` only when evidence needs on-demand references, not fixed execution order.
 - Checks: `rules/red-lines.md` and `rules/coverage-gate.md` are canonical. Red-line checks are narrow safety checks, not broad permission gates. HTTP method alone is not a red line; block or downgrade only the concrete destructive, irreversible, high-pressure, persistent-payload, or real-business side effect.
 - Write-back: use checkpoint target-memory write-back proposals after meaningful progress; apply target memory only when the operator wants automatic write-back. Use `/retrospect` to promote reusable experience.
+
+## Case-State First, Not Case-State Only
+
+When checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer that actor/session/object action before generic coverage gaps because it preserves continuity across context windows.
+This is a priority rule, not a restriction: empty, stale, or incomplete case state must not block discovery, recon, browser/source enrichment, ranked-surface hunting, or AI-generated chain pivots.
+Use `tools/target_case_state.py next --target <target>` to inspect the backlog; run the exact `--from-case-state` replay when ready, collect missing evidence when not ready, or extend/supersede it with `add-actor` / `add-session` / `add-object` / `add-hypothesis` / `add-backlog`.
+Case state is runtime memory, not a scope gate, permission gate, fixed bug-class selector, or reason to ignore non-IDOR lanes; state the AI override reason when fresher evidence should take priority.
 
 ## Actionable Evidence Continuation Contract
 
@@ -74,40 +79,14 @@ AI override is allowed: skip a default lane, combine knowledge cards, create a n
 
 ## Run This First
 
-Single target:
-
-```bash
-python3 tools/context_pack.py --target target.com
-python3 tools/autopilot_state.py --target target.com
-python3 tools/surface.py --target target.com
-```
-
-If recon is missing/thin/stale:
-
-```bash
-python3 tools/hunt.py --target target.com --recon-only
-python3 tools/surface.py --target target.com
-```
-
-When ready for breadth:
-
-```bash
-python3 tools/hunt.py --target target.com --scan-only
-```
+Single target: `context_pack.py`, `autopilot_state.py`, and `surface.py`.
+If recon is missing/thin/stale: `python3 tools/hunt.py --target target.com --recon-only && python3 tools/surface.py --target target.com`.
+When ready for breadth: `python3 tools/hunt.py --target target.com --scan-only`.
 
 After `run_vuln_scan` or any broad scan, read the surface summary again and review action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact. This means side-effectful scanner templates were not run by default; it does not restrict safe observed-method replay. Entries skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` are not tested-clean; checkpoint instead of finishing when high-value skipped scanner leads remain. For target-specific ad-hoc scripts or high-risk follow-up plans, use `templates/phased-surface-validation-plan.md`: concrete facts stay target-scoped; only abstract gates become global.
 
-For focused high-value targets:
-
-```text
-/autopilot target.com --deep --normal
-```
-
-For a broad scan inside that Claude CLI loop:
-
-```bash
-python3 tools/hunt.py --target target.com --scan-only --scanner-full
-```
+For focused high-value targets: `/autopilot target.com --deep --normal`.
+For a broad scan inside that Claude CLI loop: `python3 tools/hunt.py --target target.com --scan-only --scanner-full`.
 
 `--deep` raises persistence and high-impact lane rotation. It does not change target semantics or opt into destructive side effects, irreversible mutations, high-pressure traffic, or persistent executable payloads. Do not add `--agent` unless explicitly using the legacy local/Ollama runtime.
 
@@ -131,7 +110,7 @@ After batch recon, continue on selected completed domains from `recon/<list-stem
 
 ## Decision Loop
 
-1. **LOAD** — autopilot state, target memory, `/pickup` if useful, `/surface`, structured findings, guard hints.
+1. **LOAD** — autopilot state, target memory, target case state, `/pickup` if useful, `/surface`, structured findings, guard hints.
 2. **RECON** — only missing/thin/stale.
 3. **RANK** — use `/surface`; do not manually summarize every recon file first.
 4. **ENRICH** — only when it changes the next test:
@@ -140,8 +119,8 @@ After batch recon, continue on selected completed domains from `recon/<list-stem
    - browser SPA/login/XHR: prefer chrome-devtools MCP for live network, playwright MCP for automation/snapshots; fallback to `tools/browser_evidence.py` / `playwright-cli` only when MCP is unavailable or scriptable fallback is needed; import MCP artifacts with `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` share the observed API surface.
    - exposure/API leak/cloud identity: inspect relevant artifacts before broad scanning
    - known software/plugin/theme version: enter the Known Software Intelligence Lane
-5. **HUNT** — scanner for breadth or exact local probe for one hypothesis; prefer role/object/method/version/body diffs.
-6. **VALIDATE** — Signal -> Candidate -> Validated Finding only with exact replay, A/B role diff, impact proof, and evidence rubric. If queue contains `candidate-evidence-gap`, fill the missing proof first, then rerun `/validate`.
+5. **HUNT** — scanner for breadth or exact local probe for one hypothesis; prefer role/object/method/version/body diffs. When actor/object/session state matters, register it in target case state so the next replay can be deterministic.
+6. **VALIDATE** — Signal -> Candidate -> Validated Finding only with exact replay, A/B role diff, impact proof, and evidence rubric. If queue contains `case-state-validation`, run the `--from-case-state` runner path; if it contains `candidate-evidence-gap`, fill the missing proof first, then rerun `/validate`.
 7. **REPORT** — draft only validated findings; never auto-submit.
 8. **CHECKPOINT** — generate next actions, target-memory proposals, coverage gaps, and retrospect prompts.
 
@@ -166,6 +145,7 @@ Before checkpoint or finish:
 python3 tools/coverage_matrix.py rebuild --target target.com
 python3 tools/coverage_matrix.py find-gaps --target target.com
 python3 tools/evidence_ledger.py summary --target target.com
+python3 tools/target_case_state.py summary --target target.com --json
 python3 tools/checkpoint.py --target target.com
 python3 tools/action_queue.py ingest-checkpoint --target target.com
 python3 tools/action_queue.py summary --target target.com
@@ -181,7 +161,7 @@ python3 tools/action_queue.py resolve --target target.com --id <id> --status tes
 
 ## Next Action Consumption Loop
 
-Read `recommended_executable_action` and `next_action_queue` from checkpoint output, then execute or resolve the queue item before stopping. Memory action queue items are state, not prose suggestions. If coverage is near 0% or high-value gaps remain, do not end with only "Next Actions"; run the next safe step, mark `blocked`/`dead-end` with evidence, or promote `lead`/`signal`/`candidate`.
+Read `recommended_executable_action` and `next_action_queue` from checkpoint output, then execute or resolve the queue item before stopping. Memory action queue items are state, not prose suggestions. `case-state-validation` and `case-state-enrichment` are high-priority queue items because they encode ready actor/session/object work; they still remain advisory if new evidence justifies an explicit AI override. If coverage is near 0% or high-value gaps remain, do not end with only "Next Actions"; run the next safe step, mark `blocked`/`dead-end` with evidence, or promote `lead`/`signal`/`candidate`.
 
 ## Checkpoint Modes
 
@@ -204,6 +184,7 @@ In deep mode:
 - Use `rules/hunting.md#high-intensity-hunting-posture` and the value-first coverage model; rotate across access/identity, injection/RCE, server-side/file/network, client-side, business workflow, and infrastructure/supply-chain directions.
 - do not lock onto authz/IDOR or any other fixed favorite class; include SQLi/NoSQLi, SSRF, XXE, RCE/SSTI/command injection, unsafe deserialization, LFI/RFI/path traversal, upload/parser, OAuth/JWT/CSRF, XSS/DOM, race/state-machine, cloud/CI/CD/secret, and business-logic lanes when evidence supports them.
 - Browser-observed APIs, JS/source-derived routes, recon, errors, parameters, workflows, and memory are evidence sources for any bug family, not fixed priorities.
+- Target case state is one runtime evidence source, not a fixed priority or IDOR-only lane; use it when it carries actor/session/object continuity, then keep rotating by current evidence.
 - Convert failures into next questions: sibling expansion, bypass, role/object diff, enrichment, chain-building, or lane rotation.
 - Complete a Deep Exhaustion Checklist before finish: recon/state and `/surface` consulted; coverage matrix rebuilt; Evidence Ledger / actor matrix reviewed; scanner-negative results received manual follow-up; JS/source/browser/exposure context used or explicitly ruled out; high-value vuln-family directions tested, blocked, not applicable, or listed with reasons.
 

@@ -77,6 +77,30 @@ def test_autopilot_docs_keep_discovery_as_first_class_mode():
         assert "not hard rails" in text
 
 
+def test_case_state_first_docs_do_not_make_it_a_hard_rail():
+    command = _read("commands/autopilot.md")
+    agent = _read("agents/autopilot.md")
+    validate = _read("commands/validate.md")
+    hunting = _read("rules/hunting.md")
+
+    for text in (command, agent):
+        assert "Case-State First, Not Case-State Only" in text
+        assert "case-state-validation" in text
+        assert "case-state-enrichment" in text
+        assert "not a scope gate" in text
+        assert "AI override" in text
+
+    assert "Case-State-First Validation" in validate
+    assert "runtime memory that feeds deterministic evidence runners" in validate
+    assert "not a substitute for `/validate`" in validate
+    assert "complete-backlog" in validate
+
+    assert "Target Case State" in hunting
+    assert "not a scope gate or" in hunting
+    assert "bug-class selector" in hunting
+    assert "without treating missing case state as a blocker" in hunting
+
+
 def test_coverage_gate_treats_underexplored_unknown_as_gap():
     text = _read("rules/coverage-gate.md")
 

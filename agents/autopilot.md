@@ -53,7 +53,7 @@ LOAD -> RANK -> ENRICH -> HUNT -> CHAIN -> VALIDATE CANDIDATES -> REPORT/CHECKPO
 Use the existing `/autopilot` flow as the four-layer runtime; do not create a parallel workflow:
 
 ```text
-target memory -> skills -> knowledge base -> checks
+target memory + target case state -> skills -> knowledge base -> checks
 ```
 
 Minimum startup:
@@ -61,6 +61,7 @@ Minimum startup:
 ```bash
 python3 tools/context_pack.py --target <target>
 python3 tools/autopilot_state.py --target <target>
+python3 tools/target_case_state.py summary --target <target> --json
 python3 tools/surface.py --target <target>
 python3 tools/coverage_matrix.py rebuild --target <target>
 python3 tools/coverage_matrix.py find-gaps --target <target>
@@ -70,10 +71,31 @@ python3 tools/action_queue.py next --target <target>
 ```
 
 - Skills route through `skills/runtime-protocol.md`.
+- Target case state stores actors, sessions, objects, private markers, hypotheses, and validation backlog under `state/<target_key>/case_state.json`.
 - Knowledge cards come from `knowledge/index.md`; load only matching cards and `reference_hints` from context-pack when evidence needs on-demand references.
 - Red-line and coverage semantics live in `rules/red-lines.md`, `rules/coverage-gate.md`, and `rules/hunting.md`.
 - Red-line checks are narrow safety checks, not broad permission gates. HTTP method alone is not a red line; block or downgrade only the concrete destructive, irreversible, high-pressure, persistent-payload, or real-business side effect.
 - Resolve queue items with `tools/action_queue.py resolve` after the smallest safe evidence-producing step.
+
+## Case-State First, Not Case-State Only
+
+If checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer
+that action before generic coverage gaps because it preserves actor/session/
+object continuity across context windows. This is not a hard rail: empty,
+missing, stale, or irrelevant case state must never block discovery, browser/JS/
+source enrichment, ranked-surface hunting, or AI-generated chain pivots.
+
+Use case state as working memory:
+
+- Ready backlog -> run the `validation_runner.py ... --from-case-state` replay
+  or resolve it with evidence.
+- Missing evidence -> collect the named actor/session/object/private marker,
+  then rerun checkpoint.
+- New workflow/object/role signal -> extend case state with `add-actor`,
+  `add-session`, `add-object`, `add-hypothesis`, or `add-backlog`.
+- Stronger fresh signal -> state the AI override reason and pursue it; do not
+  force old backlog items.
+- Case state is not a scope gate, permission gate, bug-class selector, or IDOR-only workflow.
 
 ## Actionable Evidence Continuation
 
@@ -134,10 +156,10 @@ Validation is not an early hunting kill-switch. Keep useful leads and chain seed
 
 ## Core Loop
 
-1. Load context: autopilot state, surface, structured findings, target memory, guard telemetry.
+1. Load context: autopilot state, surface, structured findings, target memory, target case state, guard telemetry.
 2. Recon/rank: run recon only when missing/thin/stale; otherwise rank cached recon and memory.
 3. Enrich: browser/source/JS before another broad scanner pass when it can reveal the real workflow.
-4. Hunt P1: test exact workflows, not just URLs; rerun surface after scanner output.
+4. Hunt P1: test exact workflows, not just URLs; register useful actor/session/object state when it makes the next replay deterministic; rerun surface after scanner output.
 5. Record: update queue, target memory, Evidence Ledger, and findings state.
 6. Validate candidates: use `/validate` and evidence rubric only for Candidate-quality items.
 7. Report/checkpoint: draft reports only for validated findings; always checkpoint before stopping or switching targets.
@@ -153,7 +175,7 @@ Deep mode:
 - Use `rules/hunting.md#high-intensity-hunting-posture` and the value-first coverage model.
 - do not lock onto authz/IDOR or any other fixed favorite class; include SQLi/NoSQLi, SSRF, XXE, RCE/SSTI/command injection, unsafe deserialization, LFI/RFI/path traversal, upload/parser, OAuth/JWT/CSRF, XSS/DOM, race/state-machine, cloud/CI/CD/secret, and business-logic lanes when evidence supports them.
 - Rotate across access/identity, injection/RCE, server-side/file/network, client-side, business workflow, and infrastructure/supply-chain bugs.
-- Browser-observed APIs, JS/source-derived routes, recon, errors, parameters, workflows, and target memory are evidence sources for any bug family.
+- Browser-observed APIs, JS/source-derived routes, recon, errors, parameters, workflows, target memory, and target case state are evidence sources for any bug family.
 - Convert failures into next questions, sibling expansion, bypass, role/object diff, enrichment, chain-building, or lane rotation.
 - Finish only with a concrete Deep Exhaustion Checklist: recon/state and `/surface` consulted; coverage matrix rebuilt; Evidence Ledger / actor matrix reviewed; scanner-negative results received manual follow-up; JS/source/browser/exposure context used or ruled out; high-value vuln-family directions tested, blocked, not applicable, or listed with reasons.
 
