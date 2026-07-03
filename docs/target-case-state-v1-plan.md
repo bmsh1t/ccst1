@@ -585,6 +585,8 @@ case_state 会解析：
 
 ### Phase C：接入 checkpoint
 
+状态：已实施。
+
 范围：
 
 ```text
@@ -597,6 +599,16 @@ commands/checkpoint.md
 
 ```text
 checkpoint 能优先输出 case_state backlog 的 exact runner command
+```
+
+已验证：
+
+```text
+build_checkpoint() 会读取 target_case_state summary/top_next_action
+ready backlog -> Case-state validation backlog + exact replay draft
+missing evidence -> Case-state enrichment backlog + missing evidence list
+recommended_executable_action 优先指向 case-state action
+tests/test_checkpoint.py 已覆盖 ready/enrichment 两条回归
 ```
 
 ### Phase D：文档和规则

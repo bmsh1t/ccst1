@@ -7,6 +7,7 @@ from pathlib import Path
 
 from checkpoint import _build_next_action_queue, _next_proposals, apply_target_memory, build_checkpoint, format_checkpoint
 from evidence_ledger import record_entry
+from target_case_state import add_actor, add_backlog, add_object, add_session
 
 
 def _seed_recon(repo_root: Path, target: str, urls: list[str]) -> None:
@@ -212,6 +213,118 @@ def test_checkpoint_surfaces_actor_matrix_gaps(tmp_path):
     assert "actor matrix gaps:" in output
     assert "Next action queue:" in output
     assert "Recommended executable action:" in output
+
+
+def test_checkpoint_prioritizes_case_state_validation_backlog(tmp_path):
+    _seed_recon(tmp_path, "target.com", [
+        "https://api.target.com/rest/order-history/123",
+    ])
+    add_actor(tmp_path, "target.com", actor="user_a", role="user", label="owner")
+    add_actor(tmp_path, "target.com", actor="user_b", role="user", label="peer")
+    add_session(
+        tmp_path,
+        "target.com",
+        session="sess_owner",
+        actor="user_a",
+        kind="bearer",
+        header_value="Bearer owner-token",
+    )
+    add_session(
+        tmp_path,
+        "target.com",
+        session="sess_peer",
+        actor="user_b",
+        kind="bearer",
+        header_value="Bearer peer-token",
+    )
+    add_object(
+        tmp_path,
+        "target.com",
+        object_ref="order_123",
+        object_type="order",
+        object_id="123",
+        owner_actor="user_a",
+        endpoint="https://api.target.com/rest/order-history/123",
+        private_marker="owner@example.test",
+    )
+    add_backlog(
+        tmp_path,
+        "target.com",
+        runner="idor-actor-pair",
+        owner_actor="user_a",
+        peer_actor="user_b",
+        object_ref="order_123",
+        priority="high",
+        required_evidence=["owner session", "peer session", "owner private marker"],
+        stop_condition="peer 403/404 or no private marker",
+        chain_extensions_if_blocked=["try export endpoint", "try mobile API equivalent"],
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+    output = format_checkpoint(checkpoint)
+
+    assert checkpoint["decision"] == "continue"
+    assert checkpoint["target_write_back"]["next"][0].startswith("Case-state validation backlog val_001:")
+    assert checkpoint["recommended_executable_action"]["type"] == "case-state-validation"
+    assert checkpoint["recommended_executable_action"]["metadata"]["backlog_id"] == "val_001"
+    assert checkpoint["recommended_executable_action"]["metadata"]["runner"] == "idor-actor-pair"
+    assert checkpoint["recommended_executable_action"]["metadata"]["owner_actor"] == "user_a"
+    assert checkpoint["recommended_executable_action"]["metadata"]["peer_actor"] == "user_b"
+    assert checkpoint["recommended_executable_action"]["metadata"]["object_ref"] == "order_123"
+    assert checkpoint["recommended_executable_action"]["metadata"]["endpoint"] == "https://api.target.com/rest/order-history/123"
+    assert "--from-case-state" in checkpoint["recommended_executable_action"]["command_hint"]
+    assert "--backlog-id val_001" in checkpoint["recommended_executable_action"]["command_hint"]
+    assert checkpoint["case_state"]["pending_validation_backlog"] == 1
+    assert checkpoint["case_state"]["top_next_action"]["backlog_id"] == "val_001"
+    assert "Case state:" in output
+    assert "pending backlog: 1" in output
+
+
+def test_checkpoint_surfaces_case_state_enrichment_when_evidence_missing(tmp_path):
+    _seed_recon(tmp_path, "target.com", [
+        "https://api.target.com/rest/order-history/123",
+    ])
+    add_actor(tmp_path, "target.com", actor="user_a", role="user", label="owner")
+    add_actor(tmp_path, "target.com", actor="user_b", role="user", label="peer")
+    add_session(
+        tmp_path,
+        "target.com",
+        session="sess_owner",
+        actor="user_a",
+        kind="bearer",
+        header_value="Bearer owner-token",
+    )
+    add_object(
+        tmp_path,
+        "target.com",
+        object_ref="order_123",
+        object_type="order",
+        object_id="123",
+        owner_actor="user_a",
+        endpoint="https://api.target.com/rest/order-history/123",
+    )
+    add_backlog(
+        tmp_path,
+        "target.com",
+        runner="idor-actor-pair",
+        owner_actor="user_a",
+        peer_actor="user_b",
+        object_ref="order_123",
+        priority="high",
+        required_evidence=["owner session", "peer session", "owner private marker"],
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert checkpoint["target_write_back"]["next"][0].startswith("Case-state enrichment backlog val_001:")
+    assert checkpoint["recommended_executable_action"]["type"] == "case-state-enrichment"
+    assert checkpoint["recommended_executable_action"]["metadata"]["backlog_id"] == "val_001"
+    assert checkpoint["recommended_executable_action"]["metadata"]["missing_evidence"] == [
+        "peer session",
+        "owner private marker",
+    ]
+    assert "replay_draft" not in checkpoint["recommended_executable_action"]["metadata"]
+    assert checkpoint["recommended_executable_action"]["command_hint"] == "enrich actor/session/object/private-marker evidence in case_state"
 
 
 def test_checkpoint_queues_cross_evidence_convergence(tmp_path):

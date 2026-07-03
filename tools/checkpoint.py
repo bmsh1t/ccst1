@@ -26,6 +26,7 @@ try:
     from tools.coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary
+    from tools.target_case_state import summary as build_case_state_summary
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_state import build_autopilot_state  # type: ignore
@@ -33,6 +34,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary  # type: ignore
+    from target_case_state import summary as build_case_state_summary  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -221,12 +223,115 @@ def _actor_gaps(evidence_summary: dict) -> list[dict]:
     ]
 
 
-def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict]) -> str:
+def _case_state_summary(repo_root: Path | str, target: str) -> dict:
+    """Load sanitized target case state summary for checkpoint routing.
+
+    这里故意吞掉 case_state 读取异常，避免 checkpoint 因可选运行态记忆损坏而整体失败。
+    """
+    try:
+        payload = build_case_state_summary(repo_root, target)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _case_state_top_next(case_state: dict) -> dict:
+    top = case_state.get("top_next_action") or {}
+    return top if isinstance(top, dict) else {}
+
+
+def _list_clause(values: object) -> str:
+    if not isinstance(values, list):
+        return ""
+    clean = [str(item or "").strip() for item in values if str(item or "").strip()]
+    return ", ".join(clean)
+
+
+def _case_state_proposal(case_state: dict) -> str:
+    top = _case_state_top_next(case_state)
+    action = str(top.get("next_action") or "").strip().lower()
+    if not action or action == "none":
+        return ""
+
+    backlog_id = str(top.get("backlog_id") or "").strip()
+    label = "Case-state next action"
+    if action == "run_validation_runner":
+        label = "Case-state validation backlog"
+    elif action == "enrich_case_state":
+        label = "Case-state enrichment backlog"
+    elif action == "create_validation_backlog":
+        label = "Case-state backlog creation"
+
+    headline = f"{label} {backlog_id}".strip()
+    if headline.endswith("backlog creation"):
+        headline = headline.rstrip()
+
+    parts = [headline + ":"]
+    hypothesis = str(top.get("hypothesis") or "").strip()
+    if hypothesis:
+        parts.append(f"Hypothesis: {hypothesis}.")
+    why_now = str(top.get("why_now") or "").strip()
+    if why_now:
+        parts.append(f"Why now: {why_now}.")
+
+    runner = str(top.get("runner") or "").strip()
+    owner_actor = str(top.get("owner_actor") or "").strip()
+    peer_actor = str(top.get("peer_actor") or "").strip()
+    object_ref = str(top.get("object_ref") or "").strip()
+    endpoint = str(top.get("endpoint") or "").strip()
+    if runner:
+        parts.append(f"Runner: {runner}.")
+    if owner_actor or peer_actor:
+        parts.append(
+            "Actors: owner={owner}, peer={peer}.".format(
+                owner=owner_actor or "-",
+                peer=peer_actor or "-",
+            )
+        )
+    if object_ref:
+        parts.append(f"Object ref: {object_ref}.")
+    if endpoint:
+        parts.append(f"Endpoint: {endpoint}.")
+
+    replay_draft = str(top.get("redacted_command") or top.get("command") or "").strip()
+    if action == "run_validation_runner" and replay_draft:
+        parts.append(f"Exact replay draft: {replay_draft}.")
+
+    required = _list_clause(top.get("required_evidence"))
+    if required:
+        parts.append(f"Required evidence: {required}.")
+    missing = _list_clause(top.get("missing_evidence"))
+    if missing:
+        parts.append(f"Missing evidence: {missing}.")
+
+    downgrade_rule = str(top.get("downgrade_rule") or "").strip()
+    if downgrade_rule:
+        parts.append(f"Downgrade rule: {downgrade_rule}.")
+    stop_condition = str(top.get("stop_condition") or "").strip()
+    if stop_condition:
+        parts.append(f"Stop condition: {stop_condition}.")
+    write_back = str(top.get("write_back") or "").strip()
+    if write_back:
+        parts.append(f"Write-back: {write_back}.")
+    chain_extensions = _list_clause(top.get("chain_extensions_if_blocked"))
+    if chain_extensions:
+        parts.append(f"Chain extensions if blocked: {chain_extensions}.")
+    return " ".join(parts).strip()
+
+
+def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case_state: dict | None = None) -> str:
     findings = _structured_findings(state)
     if findings.get("pending_validation"):
         return "validate"
     if findings.get("validated_pending_report"):
         return "report"
+    top_case_state = _case_state_top_next(case_state or {})
+    if str(top_case_state.get("next_action") or "").strip().lower() in {
+        "run_validation_runner",
+        "enrich_case_state",
+        "create_validation_backlog",
+    }:
+        return "continue"
     if not state.get("has_recon"):
         return "refresh-recon"
     if _unsafe_leads(state):
@@ -647,6 +752,18 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
     """把 checkpoint 的自然语言建议归类成 Claude 可消费的执行队列。"""
     value = str(text or "").strip()
     lowered = value.lower()
+    replay_match = re.search(
+        r"Exact replay draft:\s+(?P<cmd>.*?)(?:\.\s+(?:Required evidence|Missing evidence|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)",
+        value,
+        re.I,
+    )
+    replay_hint = replay_match.group("cmd").strip() if replay_match else ""
+    if "case-state validation backlog" in lowered:
+        return "case-state-validation", 110, replay_hint or "python3 tools/validation_runner.py ... --from-case-state"
+    if "case-state enrichment backlog" in lowered:
+        return "case-state-enrichment", 108, "enrich actor/session/object/private-marker evidence in case_state"
+    if "case-state backlog creation" in lowered:
+        return "case-state-backlog-create", 103, "promote the active hypothesis into validation backlog"
     if "candidate evidence gap" in lowered:
         return "candidate-evidence-gap", 105, "fill missing rubric evidence, then /validate"
     if "run /validate" in lowered:
@@ -694,6 +811,54 @@ def _extract_action_metadata(text: str) -> dict:
     """
     value = str(text or "").strip()
     metadata: dict = {}
+    case_state_match = re.search(
+        r"Case-state\s+(?:validation backlog|enrichment backlog|backlog creation)\s+(?P<backlog_id>[A-Za-z0-9_-]+)",
+        value,
+        re.I,
+    )
+    if case_state_match:
+        metadata["backlog_id"] = case_state_match.group("backlog_id")
+        for key, pattern in (
+            ("runner", r"Runner:\s+(?P<value>[^.]+)"),
+            ("object_ref", r"Object ref:\s+(?P<value>[^.]+)"),
+            ("endpoint", r"Endpoint:\s+(?P<value>\S+)"),
+            ("downgrade_rule", r"Downgrade rule:\s+(?P<value>.*?)(?:\.\s+(?:Stop condition|Write-back|Chain extensions if blocked):|$)"),
+            ("stop_condition", r"Stop condition:\s+(?P<value>.*?)(?:\.\s+(?:Write-back|Chain extensions if blocked):|$)"),
+            ("write_back", r"Write-back:\s+(?P<value>.*?)(?:\.\s+Chain extensions if blocked:|$)"),
+            ("hypothesis", r"Hypothesis:\s+(?P<value>.*?)(?:\.\s+Why now:|$)"),
+            ("why_now", r"Why now:\s+(?P<value>.*?)(?:\.\s+(?:Runner|Actors|Object ref|Endpoint|Exact replay draft):|$)"),
+        ):
+            match = re.search(pattern, value, re.I)
+            if match:
+                clean = match.group("value").strip()
+                if key == "endpoint":
+                    clean = clean.rstrip(".")
+                metadata[key] = clean
+
+        actors_match = re.search(
+            r"Actors:\s+owner=(?P<owner>[^,]+),\s+peer=(?P<peer>[^.]+)",
+            value,
+            re.I,
+        )
+        if actors_match:
+            metadata["owner_actor"] = actors_match.group("owner").strip()
+            metadata["peer_actor"] = actors_match.group("peer").strip()
+
+        for key, pattern in (
+            ("replay_draft", r"Exact replay draft:\s+(?P<value>.*?)(?:\.\s+(?:Required evidence|Missing evidence|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
+            ("required_evidence", r"Required evidence:\s+(?P<value>.*?)(?:\.\s+(?:Missing evidence|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
+            ("missing_evidence", r"Missing evidence:\s+(?P<value>.*?)(?:\.\s+(?:Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
+            ("chain_extensions_if_blocked", r"Chain extensions if blocked:\s+(?P<value>.*?)(?:\.$|$)"),
+        ):
+            match = re.search(pattern, value, re.I)
+            if match:
+                raw = match.group("value").strip()
+                if key in {"required_evidence", "missing_evidence", "chain_extensions_if_blocked"}:
+                    metadata[key] = [part.strip() for part in raw.split(",") if part.strip()]
+                else:
+                    metadata[key] = raw
+        return metadata
+
     validation_match = re.search(
         r"Validation path:\s+(?P<path>.*?)(?:\s+If red-line|\s+Stop condition:|$)",
         value,
@@ -982,10 +1147,14 @@ def build_checkpoint(
         vuln_classes=_evidence_vuln_classes(gaps, context),
     )
     actor_gaps = _actor_gaps(evidence_summary)
+    case_state = _case_state_summary(repo, resolved_target)
+    case_state_proposal = _case_state_proposal(case_state)
 
-    decision = _decide(state, gaps, actor_gaps)
+    decision = _decide(state, gaps, actor_gaps, case_state)
     lead = _lead_proposals(state, context)
     next_items = _next_proposals(state, gaps, matrix, resolved_target, context, evidence_summary)
+    if case_state_proposal:
+        next_items = [case_state_proposal, *next_items]
     next_action_queue = _build_next_action_queue(next_items, resolved_target)
     dead_ends = _dead_end_proposals(state, gaps)
     handoff = _handoff_summary(
@@ -1017,6 +1186,13 @@ def build_checkpoint(
         "coverage": {
             "summary": coverage_summary,
             "high_value_gaps": gaps[:10],
+        },
+        "case_state": {
+            "actors": case_state.get("actors", 0),
+            "sessions": case_state.get("sessions", 0),
+            "objects": case_state.get("objects", 0),
+            "pending_validation_backlog": case_state.get("pending_validation_backlog", 0),
+            "top_next_action": _case_state_top_next(case_state),
         },
         "evidence_ledger": {
             "path": evidence_summary.get("path", ""),
@@ -1106,6 +1282,8 @@ def format_checkpoint(checkpoint: dict) -> str:
     summary = coverage.get("summary") or {}
     write_back = checkpoint.get("target_write_back") or {}
     context = checkpoint.get("context_pack") or {}
+    case_state = checkpoint.get("case_state") or {}
+    case_state_next = case_state.get("top_next_action") or {}
     evidence = checkpoint.get("evidence_ledger") or {}
     actor_matrix = evidence.get("actor_matrix") or {}
 
@@ -1126,6 +1304,22 @@ def format_checkpoint(checkpoint: dict) -> str:
         "- Coverage:",
         f"  - endpoints: {summary.get('endpoints', 0)}",
         f"  - high-value gaps: {summary.get('high_value_gaps_count', 0)}",
+        "- Case state:",
+        f"  - actors: {case_state.get('actors', 0)}",
+        f"  - sessions: {case_state.get('sessions', 0)}",
+        f"  - objects: {case_state.get('objects', 0)}",
+        f"  - pending backlog: {case_state.get('pending_validation_backlog', 0)}",
+        "  - top next action:",
+        *_fmt_nested([
+            "{action} backlog={backlog} runner={runner} object={object_ref} owner={owner} peer={peer}".format(
+                action=case_state_next.get("next_action", "none"),
+                backlog=case_state_next.get("backlog_id", "-"),
+                runner=case_state_next.get("runner", "-"),
+                object_ref=case_state_next.get("object_ref", "-"),
+                owner=case_state_next.get("owner_actor", "-"),
+                peer=case_state_next.get("peer_actor", "-"),
+            ) if case_state_next else "none"
+        ]),
         "- Evidence ledger:",
         f"  - entries: {evidence.get('entry_count', 0)}",
         f"  - actor matrix gaps: {actor_matrix.get('gap_count', 0)}",

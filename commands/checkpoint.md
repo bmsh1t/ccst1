@@ -28,6 +28,7 @@ python3 tools/context_pack.py --target <target>
 python3 tools/autopilot_state.py --target <target> --json
 python3 tools/coverage_matrix.py rebuild --target <target>
 python3 tools/evidence_ledger.py summary --target <target>
+python3 tools/target_case_state.py summary --target <target>
 ```
 
 工具会从这些状态生成：
@@ -35,6 +36,7 @@ python3 tools/evidence_ledger.py summary --target <target>
 - 当前 decision：`refresh-recon` / `enrich` / `hunt` / `continue` / `validate` / `report` / `checkpoint` / `handoff`
 - 覆盖摘要和 high-value gaps
 - Evidence Ledger 摘要和 Actor Matrix gaps
+- Target Case State 摘要和 top backlog / enrichment action
 - target memory 的 `lead`
 - target memory 的 `next`
 - target memory 的 `dead-end`
@@ -76,6 +78,12 @@ CHECKPOINT DECISION
 - Coverage:
   - endpoints:
   - high-value gaps:
+- Case state:
+  - actors:
+  - sessions:
+  - objects:
+  - pending backlog:
+  - top next action:
 - Evidence ledger:
   - entries:
   - actor matrix gaps:
@@ -100,6 +108,7 @@ CHECKPOINT DECISION
 - `enrich`：browser/source/JS enrichment 可能改变下一步。
 - `hunt`：有 P1/P2 或 recommended target。
 - `continue`：有 high-value coverage gap。
+- `continue`：存在 active case_state backlog / enrichment action 时，优先输出 exact replay draft 或缺失证据动作。
 - `continue`：coverage gap 为空但 Actor Matrix 仍有缺口时，也不能声称全面完成。
 - `checkpoint`：存在 action-gated scanner lead 或需要人工授权的 lane。
   若来自目标专属脚本、默认凭据、写操作、上传、登录尝试或高风险 payload，先按 `templates/phased-surface-validation-plan.md` 分层：具体事实留在目标作用域，通用层只保留抽象阶段规则和安全门槛。
