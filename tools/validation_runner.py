@@ -836,9 +836,12 @@ def run_idor_actor_pair(
         })
 
     candidate_ready = all(bool(run["strong_access"]) for run in runs)
+    owner_success_all = all(bool(run["owner_success"]) for run in runs)
     peer_denied_all = all(bool(run["peer_denied"]) or not bool(run["peer_success"]) for run in runs)
     ambiguous_any = any(bool(run["ambiguous_access"]) for run in runs)
-    if candidate_ready:
+    if not owner_success_all:
+        result = "dead_end"
+    elif candidate_ready:
         result = "tested_finding"
     elif ambiguous_any and not peer_denied_all:
         result = "candidate"
@@ -904,8 +907,8 @@ def run_idor_actor_pair(
         "ledger_record": ledger,
         "ai_next": {
             "hypothesis": "server may return an owner object/action result when replayed as peer/lower-role",
-            "next_action": "If result is candidate, add a known private marker/object field or second object to distinguish public/generic data from IDOR.",
-            "stop_condition": "Peer is consistently denied, actor contexts are unavailable, or peer response lacks a private marker/exact owner-body match.",
+            "next_action": "If result is dead_end, refresh the owner baseline/session/object endpoint before treating the lane as tested. If result is candidate, add a known private marker/object field or second object to distinguish public/generic data from IDOR.",
+            "stop_condition": "Owner baseline is invalid, peer is consistently denied, actor contexts are unavailable, or peer response lacks a private marker/exact owner-body match.",
         },
     }
     summary_path = bundle / "summary.json"

@@ -761,6 +761,35 @@ validation_runner.py idor-actor-pair --from-case-state --backlog-id val_001
   --complete-case-state writes backlog.status and evidence_ref
 ```
 
+### Phase I：Autopilot Pressure Fixes v1
+
+状态：已实施。
+
+来源：
+
+```text
+Juice Shop local pressure test via /autopilot startup sequence:
+context_pack -> autopilot_state -> case_state_seed -> surface -> coverage -> checkpoint -> validation_runner
+```
+
+修复：
+
+```text
+1. case_state_seed 不再把 socket.io/session/transport/cache 参数
+   sid/EIO/transport/t/token/csrf 等识别为业务对象 ID。
+
+2. validation_runner idor-actor-pair 不再把 owner baseline 失败
+   例如 owner=500 Unexpected path 记为 tested_clean；改为 dead_end，
+   并提示刷新 owner baseline/session/object endpoint。
+```
+
+成功标准：
+
+```text
+socket.io/?sid=... -> no_seed_candidates
+owner baseline invalid + peer invalid -> result=dead_end, not tested_clean
+```
+
 ## 12. 测试规划
 
 新增：

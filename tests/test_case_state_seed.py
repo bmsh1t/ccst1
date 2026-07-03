@@ -58,6 +58,23 @@ def test_case_state_seed_extracts_query_object_from_browser_params(tmp_path):
     assert "query parameter 'order_id'" in payload["suggested_objects"][0]["reason"]
 
 
+def test_case_state_seed_ignores_socket_session_ids(tmp_path):
+    target = "target.com"
+    browser_dir = tmp_path / "recon" / "target.com" / "browser"
+    browser_dir.mkdir(parents=True)
+    (browser_dir / "xhr_endpoints.txt").write_text(
+        "https://target.com/socket.io/?EIO=4&transport=polling&t=abc&sid=8cjQfls9bMd2w3WWAAAM\n",
+        encoding="utf-8",
+    )
+
+    payload = case_state_seed.build_case_state_seed(tmp_path, target)
+
+    assert payload["status"] == "no_seed_candidates"
+    assert payload["suggested_objects"] == []
+    assert payload["suggested_backlog"] == []
+    assert payload["commands"] == []
+
+
 def test_case_state_seed_uses_existing_actors_and_sessions_for_missing_matrix(tmp_path):
     target = "target.com"
     target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")

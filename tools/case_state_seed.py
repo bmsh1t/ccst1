@@ -83,6 +83,25 @@ HIGH_PRIORITY_TYPES = {
 }
 
 GENERIC_ID_KEYS = {"id", "uuid", "guid"}
+NON_OBJECT_QUERY_KEYS = {
+    "_",
+    "cachebuster",
+    "csrf",
+    "csrf_token",
+    "eio",
+    "jwt",
+    "nonce",
+    "refresh_token",
+    "session",
+    "session_id",
+    "sessionid",
+    "sid",
+    "t",
+    "timestamp",
+    "token",
+    "transport",
+}
+NON_OBJECT_ID_STEMS = {"s", "sid", "session", "csrf", "token", "jwt"}
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,80}$")
 NUMERIC_OR_UUID_RE = re.compile(
     r"^(?:\d{1,12}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|[0-9a-fA-F]{16,64})$"
@@ -228,6 +247,8 @@ def _object_type_from_token(token: str) -> str:
     for suffix in ("id", "-id", "_id"):
         if normalized.endswith(suffix) and len(normalized) > len(suffix):
             stem = normalized[: -len(suffix)].strip("-_")
+            if len(stem) < 3 or stem in NON_OBJECT_ID_STEMS:
+                return ""
             return OBJECT_TOKEN_MAP.get(stem, stem)
     return ""
 
@@ -280,6 +301,8 @@ def object_candidates_from_endpoint(endpoint: str, source: str = "") -> list[dic
             })
 
     for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.strip().lower() in NON_OBJECT_QUERY_KEYS:
+            continue
         object_type = _object_type_from_token(key)
         object_id = _safe_id(value)
         if not object_type or not object_id:

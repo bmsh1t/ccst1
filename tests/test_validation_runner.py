@@ -310,6 +310,34 @@ def test_idor_actor_pair_denied_peer_is_clean(monkeypatch, tmp_path):
     assert summary["runs"][0]["peer_denied"] is True
 
 
+def test_idor_actor_pair_invalid_owner_baseline_is_dead_end(monkeypatch, tmp_path):
+    def fake_request_once(**kwargs):
+        return _fake_response(kwargs["url"], status=500, body="Unexpected path")
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    summary = validation_runner.run_idor_actor_pair(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/orders/123",
+        owner_headers={"Authorization": "Bearer stale-owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        expect_marker="victim@example.test",
+        finding_id="IDOR-PAIR-DEAD-END",
+        repeat=2,
+    )
+
+    key = _target_key("https://target.test")
+    ledger = tmp_path / "memory" / "evidence" / key / "ledger.jsonl"
+    entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
+
+    assert summary["result"] == "dead_end"
+    assert summary["candidate_ready"] is False
+    assert all(not run["owner_success"] for run in summary["runs"])
+    assert entry["result"] == "dead_end"
+    assert "refresh the owner baseline" in summary["ai_next"]["next_action"]
+
+
 def test_idor_actor_pair_peer_access_without_private_marker_stays_candidate(monkeypatch, tmp_path):
     def fake_request_once(**kwargs):
         token = (kwargs.get("headers") or {}).get("Authorization", "")
