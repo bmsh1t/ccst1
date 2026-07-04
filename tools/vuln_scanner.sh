@@ -52,6 +52,33 @@ filter_target_urls_copy() {
     return 0
 }
 
+filter_direct_finding_urls_copy() {
+    local input_file="$1"
+    local output_file="$2"
+    local dropped_file="${3:-}"
+    local lane_label="${4:-direct-finding-filter}"
+    if [ ! -s "$input_file" ] 2>/dev/null; then
+        : > "$output_file"
+        return 0
+    fi
+
+    # Discovery artifacts may keep third-party URLs as chain context, but
+    # direct findings must stay target-owned. Otherwise embedded GitHub,
+    # Docker, social, or CDN links can become false positive IDOR/Authz
+    # findings and dominate checkpoint/action-queue ordering.
+    if command -v python3 &>/dev/null; then
+        if (cd "$BASE_DIR" 2>/dev/null && python3 -m tools.recon_filters \
+            "$input_file" "$output_file" "$TARGET" \
+            --log-file "$dropped_file" >/dev/null 2>&1); then
+            return 0
+        fi
+    fi
+
+    log_warn "Direct finding filter failed for $lane_label; preserving input for manual review"
+    cp "$input_file" "$output_file"
+    return 0
+}
+
 timeout_bin() {
     if command -v timeout >/dev/null 2>&1; then
         printf '%s\n' timeout
@@ -240,6 +267,7 @@ mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,
 : > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
 : > "$FINDINGS_DIR/manual_review/open_200_api.txt"
 : > "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
+: > "$FINDINGS_DIR/manual_review/external_chain_context.txt"
 
 echo "============================================="
 echo "  Vulnerability Scanner — $TARGET"
@@ -1278,10 +1306,14 @@ mkdir -p "$FINDINGS_DIR/auth_bypass"
 if ! skip_has idor && [ -s "$PARAM_URLS" ]; then
     log_step "Flagging IDOR-prone parameters..."
     : > "$FINDINGS_DIR/idor/idor_candidates.txt"
+    IDOR_RAW="$FINDINGS_DIR/.tmp/idor_candidates.raw.txt"
     grep -iE '[?&](id|user_id|uid|account|profile|order|order_id|invoice|doc|file_id|report|ticket|msg|message_id|comment_id|item|product_id|cart|session|ref|record)=' \
-        "$PARAM_URLS" > "$FINDINGS_DIR/idor/idor_candidates.txt" 2>/dev/null || true
-    filter_target_urls_copy "$FINDINGS_DIR/idor/idor_candidates.txt" "$FINDINGS_DIR/idor/idor_candidates.filtered.txt" "" "idor_candidates"
-    mv "$FINDINGS_DIR/idor/idor_candidates.filtered.txt" "$FINDINGS_DIR/idor/idor_candidates.txt"
+        "$PARAM_URLS" > "$IDOR_RAW" 2>/dev/null || true
+    filter_direct_finding_urls_copy \
+        "$IDOR_RAW" \
+        "$FINDINGS_DIR/idor/idor_candidates.txt" \
+        "$FINDINGS_DIR/manual_review/external_chain_context.txt" \
+        "idor_candidates"
     IDOR_COUNT=$(count_findings "$FINDINGS_DIR/idor/idor_candidates.txt")
     [ "$IDOR_COUNT" -gt 0 ] && log_warn "IDOR candidate URLs: $IDOR_COUNT (manual testing required)" || log_done "IDOR params: none found"
 fi
@@ -1396,6 +1428,9 @@ if [ ! -s "$FINDINGS_DIR/manual_review/open_200_api.txt" ]; then
 fi
 if [ ! -s "$FINDINGS_DIR/manual_review/standard_public_metadata.txt" ]; then
     rm -f "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
+fi
+if [ ! -s "$FINDINGS_DIR/manual_review/external_chain_context.txt" ]; then
+    rm -f "$FINDINGS_DIR/manual_review/external_chain_context.txt"
 fi
 
 # ============================================================

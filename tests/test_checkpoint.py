@@ -90,6 +90,44 @@ def test_checkpoint_prioritizes_pending_validation(tmp_path):
     )
 
 
+def test_checkpoint_ignores_off_target_direct_finding_followup(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps({
+            "findings": [
+                {
+                    "id": "OFFTARGET-IDOR",
+                    "type": "idor",
+                    "severity": "high",
+                    "confidence": "confirmed",
+                    "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=1969196030",
+                    "validation_status": "unvalidated",
+                    "report_status": "not_generated",
+                },
+                {
+                    "id": "TARGET-AUTHZ",
+                    "type": "auth_bypass",
+                    "severity": "high",
+                    "confidence": "high",
+                    "url": "https://api.target.com/rest/admin/application-configuration",
+                    "validation_status": "validated",
+                    "report_status": "not_generated",
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert checkpoint["decision"] == "report"
+    assert checkpoint["structured_findings"]["pending_validation"] == 0
+    assert checkpoint["structured_findings"]["validated_pending_report"] == 1
+    assert checkpoint["structured_findings"]["next_report"]["id"] == "TARGET-AUTHZ"
+    assert "OFFTARGET-IDOR" not in json.dumps(checkpoint["next_action_queue"])
+
+
 def test_checkpoint_queues_candidate_evidence_gap_before_validate(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)

@@ -124,11 +124,23 @@ def test_vuln_scanner_keeps_recon_url_artifacts_discovery_first():
     assert 'Discovery-first' in text
     assert 'api_endpoints.target.txt' in text
     assert 'sensitive_paths.target.txt' in text
-    assert 'idor_candidates.filtered.txt' in text
     assert ': > "$FINDINGS_DIR/idor/idor_candidates.txt"' in text
     assert ': > "$FINDINGS_DIR/idor/api_sequential_ids.txt"' in text
     assert 'cp "$input_file" "$output_file"' in text
     assert '[OUT-OF-TARGET:' not in text
+
+
+def test_vuln_scanner_filters_direct_findings_but_keeps_external_chain_context():
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert "filter_direct_finding_urls_copy()" in text
+    assert "direct findings must stay target-owned" in text
+    assert "manual_review/external_chain_context.txt" in text
+    assert '"$FINDINGS_DIR/.tmp/idor_candidates.raw.txt"' in text
+    assert 'filter_direct_finding_urls_copy \\' in text
+    assert '"$FINDINGS_DIR/idor/idor_candidates.txt"' in text
+    assert 'python3 -m tools.recon_filters' in text
 
 
 def test_vuln_scanner_has_upstream_v5_scan_surface():

@@ -36,10 +36,10 @@ from memory.pattern_db import PatternDB
 from memory.target_profile import default_memory_dir, load_target_profile
 try:
     from tools.finding_index import load_finding_index
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from finding_index import load_finding_index
-    from target_paths import canonical_target_value, target_storage_key
+    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 
 _SESSION_SUMMARY_RE = re.compile(
     r"Endpoints tested:\s*(?P<endpoints_count>\d+)\.\s*"
@@ -53,7 +53,10 @@ def load_structured_finding_followup(base_dir: str | Path, target: str) -> dict:
     """Load validation/report follow-up state from findings.json."""
     findings_dir = Path(base_dir) / "findings" / target_storage_key(target)
     payload = load_finding_index(findings_dir)
-    findings = payload.get("findings", [])
+    findings = [
+        item for item in payload.get("findings", [])
+        if isinstance(item, dict) and url_belongs_to_target(str(item.get("url") or ""), target)
+    ]
     return summarize_structured_findings(findings, findings_dir)
 
 

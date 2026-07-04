@@ -21,11 +21,11 @@ from memory.target_profile import default_memory_dir, load_target_profile
 try:
     from tools.finding_index import load_finding_index
     from tools.runtime_state import inspect_recon_artifacts, load_runtime_state
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
     from finding_index import load_finding_index
     from runtime_state import inspect_recon_artifacts, load_runtime_state
-    from target_paths import canonical_target_value, target_storage_key
+    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 try:
     from tools.high_value_signals import classify_high_value_signal, summarize_high_value_signal
     from tools.surface_js_intel import (
@@ -474,6 +474,32 @@ def _build_cf_bypass_refresh_leads(context: dict) -> list[dict]:
             "evidence": host,
         })
     return leads
+
+
+def _build_external_url_context_leads(context: dict, urls: list[str]) -> list[dict]:
+    """把第三方 URL 保留为链路上下文，不作为当前目标直接验证面。"""
+    clean_urls = _dedupe_keep_order([str(url or "").strip() for url in urls if str(url or "").strip()])
+    if not clean_urls:
+        return []
+    storage_key = target_storage_key(context.get("target", ""))
+    return [{
+        "source": "external_url_context",
+        "title": f"{len(clean_urls)} third-party/integration URL(s) preserved as chain context",
+        "category": "external-chain-context",
+        "priority": "medium",
+        "artifact": f"recon/{storage_key}/urls/all.txt",
+        "next_action": (
+            f"review recon/{storage_key}/urls/all.txt and browser/JS artifacts for target-owned "
+            "integrations, hardcoded keys, OAuth/JWKS/webhook/CDN dependencies, or report-writing "
+            "context; do not run direct vulnerability validation against third-party hosts unless "
+            "ownership/scope is established"
+        ),
+        "rationale": (
+            "External URLs can be useful chain intel, but ranking them as direct surface creates "
+            "off-target false positives and unsafe validation suggestions."
+        ),
+        "evidence": ", ".join(clean_urls[:5]),
+    }]
 
 
 _WORKFLOW_LEAD_PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -1053,6 +1079,7 @@ def load_surface_context(
     scanner_findings = [
         item for item in finding_index.get("findings", [])
         if isinstance(item, dict) and item.get("url")
+        and url_belongs_to_target(str(item.get("url") or ""), target)
     ]
     intel_signals = _load_intel_signals(recon_dir)
     js_intel = load_js_intel_hypotheses(findings_dir)
@@ -1194,6 +1221,18 @@ def rank_surface(context: dict) -> dict:
         default_host,
         raw_urls + js_full_urls + list(js_intel_urls.keys()),
     )
+    raw_urls = _dedupe_keep_order(
+        raw_urls + js_full_urls + list(js_intel_urls.keys()) + list(source_intel_urls.keys())
+    )
+    external_context_urls = [
+        url for url in raw_urls
+        if not url_belongs_to_target(url, context["target"])
+    ]
+    raw_urls = [
+        url for url in raw_urls
+        if url_belongs_to_target(url, context["target"])
+    ]
+
     lead_items = _sort_workflow_leads(
         _build_exposure_lead_hints(context.get("recon_artifacts") or {}, context["target"])
         + _build_target_memory_lead_hints(target_goal_memory)
@@ -1203,6 +1242,7 @@ def rank_surface(context: dict) -> dict:
             source_intel_urls=source_intel_urls,
         )
         + _build_cf_bypass_refresh_leads(context)
+        + _build_external_url_context_leads(context, external_context_urls)
         + build_js_lead_hints(js_intel)
         + build_source_lead_hints(context.get("source_intel") or {})
         + list(context.get("manual_review_leads") or [])
@@ -1211,10 +1251,6 @@ def rank_surface(context: dict) -> dict:
         json.dumps(item, sort_keys=True)
         for item in lead_items
     ])
-
-    raw_urls = _dedupe_keep_order(
-        raw_urls + js_full_urls + list(js_intel_urls.keys()) + list(source_intel_urls.keys())
-    )
 
     for raw_url in raw_urls:
         parsed = urlparse(raw_url)

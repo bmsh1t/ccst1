@@ -154,6 +154,92 @@ class TestSurfaceRanking:
         assert "--check --auto-resolve" in cf_leads[0]["next_action"]
         assert cf_leads[0]["artifact"] == "recon/target.com/cf_cookies.txt"
 
+    def test_surface_does_not_rank_off_target_scanner_findings_as_direct_surface(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        findings_dir = repo_root / "findings" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        findings_dir.mkdir(parents=True)
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [FastAPI] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text("", encoding="utf-8")
+        (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        (findings_dir / "findings.json").write_text(
+            json.dumps({
+                "findings": [
+                    {
+                        "id": "OFFTARGET-IDOR",
+                        "type": "idor",
+                        "severity": "high",
+                        "confidence": "confirmed",
+                        "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=1969196030",
+                    },
+                    {
+                        "id": "TARGET-AUTHZ",
+                        "type": "auth_bypass",
+                        "severity": "high",
+                        "confidence": "high",
+                        "url": "https://api.target.com/rest/admin/application-configuration",
+                    },
+                ]
+            }),
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(
+            load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+        )
+
+        ranked_urls = [item["url"] for item in ranked["p1"] + ranked["p2"]]
+        assert "https://api.target.com/rest/admin/application-configuration" in ranked_urls
+        assert all("steamcommunity.com" not in url for url in ranked_urls)
+
+    def test_external_urls_become_chain_context_lead_not_direct_surface(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [FastAPI] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/rest/admin/application-configuration\n"
+            "https://ethereum.example.net/v1/mainnet/jsonrpc\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text(
+            "https://github.com/org/repo/issues?id=1\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+
+        ranked = rank_surface(
+            load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+        )
+
+        ranked_urls = [item["url"] for item in ranked["p1"] + ranked["p2"]]
+        assert "https://api.target.com/rest/admin/application-configuration" in ranked_urls
+        assert all("ethereum.example.net" not in url for url in ranked_urls)
+        assert all("github.com" not in url for url in ranked_urls)
+
+        workflow_leads = [json.loads(item) for item in ranked["workflow_leads"]]
+        external_leads = [
+            item for item in workflow_leads
+            if item.get("category") == "external-chain-context"
+        ]
+        assert external_leads
+        assert "ethereum.example.net" in external_leads[0]["evidence"]
+        assert "do not run direct vulnerability validation" in external_leads[0]["next_action"]
+
     def test_surface_output_shows_runtime_and_recon_cache(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
