@@ -151,8 +151,18 @@ def _normalize(value: str, aliases: dict[str, str], field: str) -> str:
     key = str(value or "").strip().lower().replace(" ", "_")
     if key in aliases:
         return aliases[key]
-    allowed = ", ".join(sorted(set(aliases.values())))
-    raise ValueError(f"unknown {field}: {value!r}. Allowed: {allowed}")
+    by_canonical: dict[str, list[str]] = {}
+    for input_key, canonical in aliases.items():
+        by_canonical.setdefault(canonical, []).append(input_key)
+
+    groups = []
+    for canonical in sorted(by_canonical):
+        accepted_inputs = sorted(by_canonical[canonical])
+        if accepted_inputs == [canonical]:
+            groups.append(canonical)
+        else:
+            groups.append(f"{canonical} (input: {', '.join(accepted_inputs)})")
+    raise ValueError(f"unknown {field}: {value!r}. Accepted inputs: {'; '.join(groups)}")
 
 
 def normalize_actor(value: str) -> str:

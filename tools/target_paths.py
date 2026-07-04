@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
+from urllib.parse import urlparse
 
 
 def canonical_target_value(target: str) -> str:
@@ -27,6 +28,20 @@ def classify_target(target: str) -> dict:
 
     if os.path.isfile(value):
         return {"kind": "list", "target": os.path.abspath(value)}
+
+    # URL-form targets should share the same state/recon key as the equivalent
+    # host or host:port. This keeps `/autopilot http://127.0.0.1:3002` from
+    # creating a separate `http:_127...` tree that later tools cannot resume.
+    if "://" in value:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            return {"kind": "domain", "target": value}
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        value = f"{host}:{port}" if port is not None else host
 
     try:
         network = ipaddress.ip_network(value, strict=False)

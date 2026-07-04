@@ -113,6 +113,8 @@ def test_recon_engine_filters_spa_fallback_directory_fuzz_noise():
     assert 'SPA_FALLBACK_LOG="$RECON_DIR/dirs/spa_fallback.txt"' in text
     assert 'SPA_FALLBACK_SIZE="$(detect_spa_fallback_size "$url" || true)"' in text
     assert 'FFUF_FILTER_ARGS=(-fs "$SPA_FALLBACK_SIZE")' in text
+    assert "-ac \\" in text
+    assert "-sf \\" not in text
     assert '"${FFUF_FILTER_ARGS[@]}" \\' in text
     assert "SPA fallback detected for $url" in text
 

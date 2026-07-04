@@ -31,7 +31,7 @@
 ```
   Core 4 workflow  ·  Power commands  ·  Claude CLI agents  ·  Skill routing
   20 web2 vuln classes  ·  10 web3 bug classes
-  Burp MCP  ·  Caido MCP  ·  HackerOne MCP  ·  Autonomous Mode
+  Burp MCP  ·  Caido MCP  ·  JSHook MCP  ·  HackerOne MCP  ·  Autonomous Mode
 ```
 
 </div>
@@ -568,6 +568,7 @@ Wraps `learn.py` + HackerOne MCP + hunt memory:
 |:---|:---|
 | `hunt.py` | Master orchestrator — chains recon, scan, report |
 | `recon_engine.sh` | Subdomain enum + DNS + live hosts + URL crawl |
+| `cf_solver.py` | Optional manual Cloudflare challenge clearance helper; not auto-run |
 | `learn.py` | CVE + disclosure intel from NVD, GitHub Advisory, HackerOne |
 | `intel_engine.py` | Memory-aware intel wrapper (learn.py + HackerOne MCP + memory) |
 | `validate.py` | 4-gate validation — target context, impact, dedup, CVSS |
@@ -605,11 +606,13 @@ Wraps `learn.py` + HackerOne MCP + hunt memory:
 | **Burp Suite** (`burp-mcp-client/`) | Read proxy history, replay requests, Collaborator payloads |
 | **Caido** (`caido-mcp-client/`) | Read proxy history, replay requests, traffic/search context |
 | **FofaMap MCP (FOFA + Shodan)** (`fofamap-client/`) | Optional external FOFA and Shodan asset-search tools through one MCP server |
+| **JSHook MCP** (`jshook-client/`) | Optional runtime JavaScript hook evidence for SPA/client-side behavior |
 | **HackerOne** (`hackerone-mcp/`) | `search_disclosed_reports`, `get_program_stats`, `get_program_policy` |
 
-FofaMap MCP (FOFA + Shodan) is an optional external Claude MCP capability. It
-does **not** automatically integrate with `/recon`, `/surface`, `/autopilot`,
-or `agent.py`. See `mcp/fofamap-client/README.md` for setup.
+FofaMap MCP (FOFA + Shodan) and JSHook MCP are optional external Claude MCP
+capabilities. They do **not** automatically integrate with `/recon`, `/surface`,
+`/autopilot`, or `agent.py`. See `mcp/fofamap-client/README.md` and
+`mcp/jshook-client/README.md` for setup.
 
 </details>
 
@@ -641,6 +644,7 @@ claude-bug-bounty/
 │   ├── burp-mcp-client/        Burp Suite proxy
 │   ├── caido-mcp-client/       Caido proxy
 │   ├── fofamap-client/         External FofaMap MCP (FOFA + Shodan)
+│   ├── jshook-client/          External JSHook MCP runtime JS hooks
 │   └── hackerone-mcp/          HackerOne public API
 ├── tests/                      Regression tests
 ├── rules/                      Always-active hunting + reporting rules

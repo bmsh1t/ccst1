@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from evidence_ledger import (
     actor_requirements,
     build_summary,
@@ -130,6 +132,23 @@ def test_post_record_is_not_state_changing_by_method_alone(tmp_path):
     assert entry["warnings"] == []
     assert summary["redline_unchecked_count"] == 0
     assert not any(row["redline_required"] for row in summary["actor_matrix"]["gaps"])
+
+
+def test_invalid_alias_error_lists_accepted_input_tokens(tmp_path):
+    with pytest.raises(ValueError) as exc:
+        record_entry(
+            tmp_path,
+            target="target.com",
+            endpoint="/api/accounts/42",
+            vuln_class="IDOR",
+            actor="same_org_other",
+        )
+
+    message = str(exc.value)
+    assert "Accepted inputs:" in message
+    assert "owner (input:" in message
+    assert "self" in message
+    assert "user_a" in message
 
 
 def test_actor_requirements_are_empty_for_low_signal_non_authz_class():

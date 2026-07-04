@@ -11,6 +11,7 @@
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/recon_engine.sh` | New target / stale recon / primary-domain batch | Expanded pipeline: batch→subdomain→probe→ports→urls→js→fuzz→config→API-leak→identity/cloud→params→cicd |
+| `tools/cf_solver.py` ⚠️ manual-only | Operator-approved Cloudflare challenge clearance | Optional 2Captcha+Playwright helper; writes cf_clearance headers for recon reuse |
 | `tools/recon_adapter.py` | Reading recon output programmatically | Unified reader for `recon/<target>/` artifacts |
 | `tools/cloud_recon.sh` | Target brand likely owns buckets | S3/Azure/GCP discovery + CloudFlare origin reveal |
 | `tools/cve_hunter.py` | After httpx tech detection | Match detected stack against public CVE DBs |

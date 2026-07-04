@@ -30,6 +30,16 @@ def test_target_paths_canonicalizes_host_port_cidr_and_lists(tmp_path):
     assert target_paths.target_storage_key(str(scope)) == "scope"
     assert target_paths.target_storage_key("192.168.1.0/24") == "192.168.1.0_24"
     assert target_paths.target_storage_key("app.example.test:8443") == "app.example.test:8443"
+    assert target_paths.classify_target("http://127.0.0.1:3002/#/login") == {
+        "kind": "ip",
+        "target": "127.0.0.1:3002",
+    }
+    assert target_paths.classify_target("https://Example.COM/admin?x=1") == {
+        "kind": "domain",
+        "target": "example.com",
+    }
+    assert target_paths.canonical_target_value("http://127.0.0.1:3002/#/login") == "127.0.0.1:3002"
+    assert target_paths.target_storage_key("http://127.0.0.1:3002/#/login") == "127.0.0.1:3002"
 
 
 def test_target_memory_set_append_and_handoff_use_canonical_paths(tmp_path, monkeypatch):

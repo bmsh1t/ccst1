@@ -168,6 +168,41 @@ if prompt_yes_no "Set up FofaMap MCP now? (y/N): "; then
     echo ""
 fi
 
+
+
+echo "─────────────────────────────────────────────"
+echo "Optional: JSHook MCP Integration"
+echo "─────────────────────────────────────────────"
+echo ""
+echo "Connect Claude Code to a local JSHook MCP server for runtime JavaScript"
+echo "hooking and browser-side behavior evidence."
+echo "See mcp/jshook-client/README.md for setup instructions."
+echo ""
+if prompt_yes_no "Set up JSHook MCP now? (y/N): "; then
+    echo ""
+    echo "First prepare your external JSHook MCP checkout, for example:"
+    echo "  cd /absolute/path/to/jshook-mcp"
+    echo "  npm install"
+    echo "  npm run build"
+    echo ""
+    echo "Optional runtime hints:"
+    echo "  export JSHOOK_TARGET=\"http://127.0.0.1:3002\""
+    echo "  export JSHOOK_PROFILE_DIR=\"\$HOME/.jshook-profile\""
+    echo ""
+    echo "Then add this to your Claude Code settings:"
+    echo ""
+    echo "  claude config edit"
+    echo ""
+    echo "Then add to the mcpServers section:"
+    cat "${SCRIPT_DIR}/mcp/jshook-client/config.json" | grep -A 10 '"jshook"'
+    echo ""
+    echo "Replace /absolute/path/to/jshook-mcp/dist/server.js with your local JSHook MCP entrypoint."
+    echo ""
+    echo "This is an optional external Claude MCP capability only."
+    echo "It does not automatically integrate with /recon, /surface, /autopilot, or agent.py."
+    echo ""
+fi
+
 echo "Repo-local runtime:"
 echo "  Claude Code should be launched from this repo so tools/ and memory/ paths resolve."
 echo "  cd ${SCRIPT_DIR}"

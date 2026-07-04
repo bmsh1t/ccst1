@@ -9,6 +9,7 @@ evidence/cadence-labs/__pycache__/
 targets/
 config.json
 !mcp/fofamap-client/config.json
+!mcp/jshook-client/config.json
 *.burp
 *.json.bak
 

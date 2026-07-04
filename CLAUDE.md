@@ -176,6 +176,7 @@ LOAD -> RANK -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDIDATES -> RE
 
 - `tools/hunt.py` — master orchestrator
 - `tools/recon_engine.sh` — subdomain + URL discovery
+- `tools/cf_solver.py` — optional manual Cloudflare challenge clearance helper; not auto-run by `/autopilot`
 - `tools/validate.py` — 4-gate finding validator
 - `tools/report_generator.py` — legacy report-generation compatibility backend behind the `/report` workflow
 - `tools/learn.py` — CVE + disclosure compatibility backend used by `/intel`
@@ -189,11 +190,12 @@ LOAD -> RANK -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDIDATES -> RE
 - `mcp/burp-mcp-client/` — Burp Suite proxy integration
 - `mcp/caido-mcp-client/` — Caido proxy integration
 - `mcp/fofamap-client/` — optional external FofaMap MCP (FOFA + Shodan asset search)
+- `mcp/jshook-client/` — optional external JSHook MCP for runtime JS hooks / browser-side behavior
 - `mcp/hackerone-mcp/` — HackerOne public API (Hacktivity, program stats, policy)
 
-FofaMap MCP (FOFA + Shodan) is a Claude-side optional external capability only.
-It does **not** automatically integrate with `/recon`, `/surface`,
-`/autopilot`, or `agent.py`.
+FofaMap MCP (FOFA + Shodan) and JSHook MCP are Claude-side optional external
+capabilities only. They do **not** automatically integrate with `/recon`,
+`/surface`, `/autopilot`, or `agent.py`.
 
 ### Hunt Memory (in `memory/`)
 

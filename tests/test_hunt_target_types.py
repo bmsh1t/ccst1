@@ -53,6 +53,17 @@ def test_classify_target_recognizes_domain_with_port():
     }
 
 
+def test_classify_target_normalizes_url_inputs_to_host_or_host_port():
+    assert hunt.classify_target("http://127.0.0.1:3002/#/") == {
+        "kind": "ip",
+        "target": "127.0.0.1:3002",
+    }
+    assert hunt.classify_target("https://Example.COM/api?x=1") == {
+        "kind": "domain",
+        "target": "example.com",
+    }
+
+
 def test_classify_target_rejects_invalid_port_range():
     # Port 0 is reserved, port > 65535 is invalid.
     with pytest.raises(ValueError, match="invalid IP/CIDR target"):

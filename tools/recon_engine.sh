@@ -1727,10 +1727,10 @@ if command -v ffuf &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
             ffuf -u "${url}/FUZZ" \
                 -w "$WORDLIST" \
                 -mc 200,301,302,403,405 \
+                -ac \
                 "${FFUF_FILTER_ARGS[@]}" \
                 -t "$THREADS" \
                 -rate "$RATE_LIMIT" \
-                -sf \
                 -timeout 10 \
                 "${BB_AUTH_ARGS[@]}" \
                 -o "$RECON_DIR/dirs/ffuf_${domain}.json" \

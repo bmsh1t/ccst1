@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "jshook": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/jshook-mcp/dist/server.js"
+      ],
+      "env": {
+        "JSHOOK_TARGET": "${JSHOOK_TARGET}",
+        "JSHOOK_PROFILE_DIR": "${JSHOOK_PROFILE_DIR}"
+      }
+    }
+  }
+}

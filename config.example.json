@@ -10,6 +10,14 @@
   "ffuf_threads": 40,
   "interactsh_server": "oast.pro",
 
+  "_cf_solver_comment": "Optional manual Cloudflare challenge clearance helper. Not auto-run by /autopilot. Set api_key in local config.json or TWOCAPTCHA_API_KEY; headful=true requires a desktop browser.",
+  "cf_solver": {
+    "service": "2captcha",
+    "api_key": "YOUR_2CAPTCHA_API_KEY",
+    "headful": false,
+    "balance_check": true
+  },
+
   "_brain_comment": "可用 BRAIN_PROVIDER 强制指定 LLM provider；未指定时按已配置的 API key 自动探测。",
   "_brain_providers": {
     "ollama": "OLLAMA_HOST=http://localhost:11434，本地免费",
