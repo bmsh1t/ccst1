@@ -127,6 +127,33 @@ class TestSurfaceRanking:
         kill_hosts = [item["host"] for item in [__import__("json").loads(x) for x in ranked["kill"]]]
         assert "docs.target.com" in kill_hosts
 
+    def test_cf_bypass_403_hosts_become_refresh_leads_not_kill(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "cf_cookies.txt").write_text("cf_clearance=old\n", encoding="utf-8")
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://app.target.com [403] [Just a moment...] [cloudflare] [500]\n",
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(
+            load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+        )
+
+        kill_hosts = [json.loads(item)["host"] for item in ranked["kill"]]
+        assert "app.target.com" not in kill_hosts
+
+        workflow_leads = [json.loads(item) for item in ranked["workflow_leads"]]
+        cf_leads = [item for item in workflow_leads if item.get("category") == "cf-bypass-refresh"]
+        assert cf_leads
+        assert cf_leads[0]["source"] == "cf_solver"
+        assert "--check --auto-resolve" in cf_leads[0]["next_action"]
+        assert cf_leads[0]["artifact"] == "recon/target.com/cf_cookies.txt"
+
     def test_surface_output_shows_runtime_and_recon_cache(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"

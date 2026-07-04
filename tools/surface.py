@@ -437,6 +437,45 @@ def _build_target_memory_lead_hints(target_goal_memory: dict) -> list[dict]:
     return leads
 
 
+def _build_cf_bypass_refresh_leads(context: dict) -> list[dict]:
+    """把 CF 绕过态下的 403-only host 转成刷新提示，而不是丢进 kill。
+
+    cf_solver 产出的 cf_clearance 与 User-Agent 绑定且会过期。只要
+    recon/<target>/cf_cookies.txt 存在，就说明本轮曾尝试带绕过态访问；此时
+    httpx 的 403-only 更像是 cookie 过期/UA 不匹配，而不是目标无价值。
+    """
+    if not context.get("cf_bypass_active"):
+        return []
+
+    recon_dir = Path(str(context.get("recon_dir") or ""))
+    storage_key = target_storage_key(context.get("target", ""))
+    leads: list[dict] = []
+    for host in sorted(context.get("status403_hosts") or []):
+        host_meta = (context.get("hosts") or {}).get(host) or {}
+        url = str(host_meta.get("url") or host)
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+        artifact = f"recon/{storage_key}/cf_cookies.txt"
+        if recon_dir:
+            cookie_path = recon_dir / "cf_cookies.txt"
+            if cookie_path.is_file():
+                artifact = str(cookie_path.relative_to(recon_dir.parent.parent))
+        leads.append({
+            "source": "cf_solver",
+            "title": f"403-only host may need refreshed Cloudflare clearance: {host}",
+            "category": "cf-bypass-refresh",
+            "priority": "high",
+            "artifact": artifact,
+            "next_action": f"python3 tools/cf_solver.py --target {url} --check --auto-resolve",
+            "rationale": (
+                "cf_cookies.txt exists, so a 403-only recon result may indicate an expired "
+                "cf_clearance or User-Agent mismatch; refresh before treating the host as dead."
+            ),
+            "evidence": host,
+        })
+    return leads
+
+
 _WORKFLOW_LEAD_PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
@@ -1065,6 +1104,7 @@ def load_surface_context(
         "target": target,
         "available": True,
         "recon_dir": str(recon_dir),
+        "cf_bypass_active": (recon_dir / "cf_cookies.txt").is_file(),
         "hosts": hosts,
         "status403_hosts": status403_hosts,
         "api_urls": api_urls,
@@ -1162,6 +1202,7 @@ def rank_surface(context: dict) -> dict:
             js_intel_urls=js_intel_urls,
             source_intel_urls=source_intel_urls,
         )
+        + _build_cf_bypass_refresh_leads(context)
         + build_js_lead_hints(js_intel)
         + build_source_lead_hints(context.get("source_intel") or {})
         + list(context.get("manual_review_leads") or [])
@@ -1575,6 +1616,8 @@ def rank_surface(context: dict) -> dict:
     for host, item in context["hosts"].items():
         lower_host = host.lower()
         title = item.get("title", "").lower()
+        if host in context["status403_hosts"] and context.get("cf_bypass_active"):
+            continue
         if any(token in lower_host for token in ("docs.", "status.", "blog.", "static.", "cdn.")):
             kill.append({"host": host, "reason": "likely docs/static/support host"})
             continue
