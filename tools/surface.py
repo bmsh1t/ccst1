@@ -253,25 +253,25 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
                 "evidence": f"{len(unresolved)} unresolved skipped probe line(s)",
             })
 
-    out_of_target_path = findings_dir / "manual_review" / "out_of_target_urls.txt"
-    out_of_target = _read_lines(out_of_target_path)
-    if out_of_target:
-        display_path = f"findings/{storage_key}/manual_review/out_of_target_urls.txt"
+    open_200_path = findings_dir / "manual_review" / "open_200_api.txt"
+    open_200 = _read_lines(open_200_path)
+    if open_200:
+        display_path = f"findings/{storage_key}/manual_review/open_200_api.txt"
         leads.append({
             "source": "scanner_manual_review",
-            "title": "External URLs were demoted from target-owned scanner findings",
-            "category": "out-of-target-intel",
+            "title": "Anonymous API endpoints returned substantial 200 responses",
+            "category": "open-200-api-review",
             "priority": "medium",
             "artifact": display_path,
             "next_action": (
-                f"review {display_path}; keep them as third-party / supply-chain / integration intel, "
-                "not as direct target-owned findings"
+                f"review {display_path}; sample the highest-value response bodies, identify structured data, "
+                "and promote only body-backed authz/config/secret/business-impact evidence to validation"
             ),
             "rationale": (
-                "These URLs were observed in recon artifacts but do not belong to the currently scanned live host set. "
-                "They can still be useful as chain context or dependency hints."
+                "The scanner kept non-obvious anonymous 200 responses as discovery leads instead of dropping them "
+                "or auto-promoting them as auth bypass findings."
             ),
-            "evidence": f"{len(out_of_target)} demoted external URL line(s)",
+            "evidence": f"{len(open_200)} anonymous substantial 200 response(s)",
         })
 
     public_metadata_path = findings_dir / "manual_review" / "standard_public_metadata.txt"

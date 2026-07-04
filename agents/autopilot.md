@@ -56,20 +56,24 @@ Use the existing `/autopilot` flow as the four-layer runtime; do not create a pa
 target memory + target case state -> skills -> knowledge base -> checks
 ```
 
-Minimum startup:
+Fast startup:
 
 ```bash
-python3 tools/context_pack.py --target <target>
 python3 tools/autopilot_state.py --target <target>
-python3 tools/target_case_state.py summary --target <target> --json
-python3 tools/case_state_seed.py --target <target> --json
+python3 tools/context_pack.py --target <target>
 python3 tools/surface.py --target <target>
-python3 tools/coverage_matrix.py rebuild --target <target>
-python3 tools/coverage_matrix.py find-gaps --target <target>
-python3 tools/checkpoint.py --target <target> --json
-python3 tools/action_queue.py ingest-checkpoint --target <target>
-python3 tools/action_queue.py next --target <target>
 ```
+
+Only add heavier state tools when they directly change the next action:
+
+- `tools/target_case_state.py summary/next` for actor/session/object continuity.
+- `tools/case_state_seed.py` when cached artifacts expose concrete object IDs.
+- `tools/checkpoint.py`, `tools/action_queue.py`, and `tools/coverage_matrix.py`
+  after meaningful progress, validation, or when the loop risks losing state.
+
+These tools are memory and execution aids, not a pre-flight checklist. Empty,
+stale, noisy, or low-value state must not block fresh recon, broad scan,
+browser/source enrichment, or AI-generated chain pivots.
 
 - Skills route through `skills/runtime-protocol.md`.
 - Target case state stores actors, sessions, objects, private markers, hypotheses, and validation backlog under `state/<target_key>/case_state.json`.
@@ -131,7 +135,7 @@ Choose tools from evidence shape:
 - JS bundles: `python3 tools/js_reader.py --target <target>` plus semantic JS review.
 - Known component/version: `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, vendor advisories, NVD/GHSA/WPScan-style sources, nuclei template names.
 - Broad coverage: scanner tools after ranking or when the user asks for scanner coverage.
-- After `run_vuln_scan`, call `read_surface_summary` / `/surface` again and inspect action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact; this means side-effectful scanner templates were skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` was set, so they are not tested-clean. It does not restrict safe observed-method replay. Also perform one secondary sweep on demoted manual-review leads such as `out_of_target_urls.txt` and `standard_public_metadata.txt`; they are reversible chain/secret intel, not final rejects.
+- After `run_vuln_scan`, call `read_surface_summary` / `/surface` again and inspect action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact; this means side-effectful scanner templates were skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` was set, so they are not tested-clean. It does not restrict safe observed-method replay. Also perform one secondary sweep on demoted public-metadata leads such as `standard_public_metadata.txt`; they may be reversible chain/secret intel when unusual fields appear, not final rejects.
 - Exact requests: curl/local helpers when browser state is not needed.
 - Byte-exact proxy/cache/smuggling/desync: inspect `tools/smuggling_executor.py` and `tools/sender_semantics.py`; browser/urllib evidence is not enough to prove absence.
 

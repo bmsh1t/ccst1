@@ -116,19 +116,19 @@ def test_vuln_scanner_sensitive_path_lane_clears_output_and_skips_standard_publi
     assert '[STANDARD-PUBLIC-METADATA]' in text
 
 
-def test_vuln_scanner_filters_recon_url_artifacts_to_live_target_hosts():
+def test_vuln_scanner_keeps_recon_url_artifacts_discovery_first():
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     text = script.read_text(encoding="utf-8")
 
-    assert 'build_live_scope_args()' in text
-    assert 'hosts.add(host)' in text
+    assert 'filter_target_urls_copy()' in text
+    assert 'Discovery-first' in text
     assert 'api_endpoints.target.txt' in text
     assert 'sensitive_paths.target.txt' in text
     assert 'idor_candidates.filtered.txt' in text
     assert ': > "$FINDINGS_DIR/idor/idor_candidates.txt"' in text
     assert ': > "$FINDINGS_DIR/idor/api_sequential_ids.txt"' in text
-    assert 'manual_review/out_of_target_urls.txt' in text
-    assert '[OUT-OF-TARGET:' in text
+    assert 'cp "$input_file" "$output_file"' in text
+    assert '[OUT-OF-TARGET:' not in text
 
 
 def test_vuln_scanner_has_upstream_v5_scan_surface():

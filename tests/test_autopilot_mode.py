@@ -1218,15 +1218,15 @@ def test_autopilot_command_md_has_tool_index_prelude():
 
 
 def test_autopilot_command_md_bootstraps_with_context_pack():
-    """Autopilot startup should use the context navigator before broad reads."""
+    """Autopilot startup should keep context navigation in the fast path."""
     from pathlib import Path
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
 
-    assert "python3 tools/context_pack.py --target <target>" in text
     assert "python3 tools/context_pack.py --target target.com" in text
-    assert "Use context-pack first" in text
+    assert "Fast startup" in text
+    assert "not a pre-flight checklist" in text
     assert "1-2 knowledge cards" in text
 
 
@@ -1239,7 +1239,7 @@ def test_autopilot_command_md_uses_checkpoint_tool_for_writeback():
 
     assert "python3 tools/checkpoint.py --target target.com" in text
     assert "target-memory write-back proposals" in text
-    assert "apply target memory only when the operator wants automatic write-back" in text
+    assert "apply target memory only when it is useful" in text
 
 
 def test_autopilot_command_md_requires_next_action_queue_consumption():
@@ -1331,7 +1331,7 @@ def test_autopilot_command_md_routes_subagents_via_question_to_tool_advisory():
 
 
 def test_autopilot_command_md_has_post_hunt_unsafe_review_gate():
-    """Autopilot command prompt must not treat skipped unsafe probes as clean."""
+    """Autopilot command prompt must not treat skipped side-effectful probes as clean."""
     from pathlib import Path
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
@@ -1341,7 +1341,6 @@ def test_autopilot_command_md_has_post_hunt_unsafe_review_gate():
     assert "action-gated scanner leads" in text
     assert "unsafe_skipped.txt" in text
     assert "ALLOW_UNSAFE_HTTP_TESTS=1" in text
-    assert "out_of_target_urls.txt" in text
     assert "standard_public_metadata.txt" in text
     assert "checkpoint instead of finishing" in text
 
@@ -1385,7 +1384,6 @@ def test_autopilot_agent_md_has_post_hunt_unsafe_review_gate():
     assert "action-gated scanner leads" in text
     assert "unsafe_skipped.txt" in text
     assert "ALLOW_UNSAFE_HTTP_TESTS=1" in text
-    assert "out_of_target_urls.txt" in text
     assert "standard_public_metadata.txt" in text
     assert "not tested-clean" in text
 

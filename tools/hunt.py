@@ -1432,8 +1432,10 @@ def run_api_fuzz(domain):
     findings_dir = _resolve_findings_dir(domain, create=True)
     idor_dir = os.path.join(findings_dir, "idor")
     auth_dir = os.path.join(findings_dir, "auth_bypass")
+    review_dir = os.path.join(findings_dir, "manual_review")
     os.makedirs(idor_dir, exist_ok=True)
     os.makedirs(auth_dir, exist_ok=True)
+    os.makedirs(review_dir, exist_ok=True)
 
     api_urls = _collect_api_endpoints(domain, limit=40)
     if not api_urls:
@@ -1441,6 +1443,7 @@ def run_api_fuzz(domain):
 
     idor_candidates = []
     unauth_access = []
+    open_200_review = []
     for url in api_urls:
         if re.search(r"[?&](id|user_id|uid|account|profile|order|invoice|ticket|message_id|comment_id|file_id)=", url, re.I):
             idor_candidates.append(url)
@@ -1455,12 +1458,20 @@ def run_api_fuzz(domain):
             use_guard=True,
             vuln_class="idor",
         )
-        if status == 200 and len(body) > 500 and classify_public_response(url, body, status=status)["candidate_ready"]:
-            unauth_access.append(f"{status} {len(body)} {url}")
+        if status == 200 and len(body) > 500:
+            classification = classify_public_response(url, body, status=status)
+            if classification["candidate_ready"]:
+                unauth_access.append(f"[UNAUTH-CANDIDATE] {status} {len(body)} {url}")
+            else:
+                # Discovery-first：匿名 200 + substantial body 是有价值线索，
+                # 即使暂时不像 admin/config/secret 暴露，也不应在发现阶段丢弃。
+                # 后续 /surface、validation_runner、/validate 再做降噪和影响判断。
+                open_200_review.append(f"[OPEN-200-REVIEW] {status} {len(body)} {url}")
 
     idor_candidates = _write_text_lines(os.path.join(idor_dir, "idor_candidates.txt"), idor_candidates)
     unauth_access = _write_text_lines(os.path.join(auth_dir, "unauth_api_access.txt"), unauth_access)
-    return bool(idor_candidates or unauth_access)
+    open_200_review = _write_text_lines(os.path.join(review_dir, "open_200_api.txt"), open_200_review)
+    return bool(idor_candidates or unauth_access or open_200_review)
 
 
 def run_cors_check(domain):

@@ -443,8 +443,8 @@ class TestSurfaceRanking:
             "https://api.target.com/profile\n",
             encoding="utf-8",
         )
-        (findings_dir / "out_of_target_urls.txt").write_text(
-            "[OUT-OF-TARGET:idor_candidates] https://cdn.example.net/file?id=1\n",
+        (findings_dir / "open_200_api.txt").write_text(
+            "[OPEN-200-REVIEW] 200 1200 https://api.target.com/profile\n",
             encoding="utf-8",
         )
         (findings_dir / "standard_public_metadata.txt").write_text(
@@ -460,9 +460,9 @@ class TestSurfaceRanking:
         ]
 
         categories = [item["category"] for item in workflow_leads]
-        assert "out-of-target-intel" in categories
+        assert "open-200-api-review" in categories
         assert "public-metadata" in categories
-        assert "findings/target.com/manual_review/out_of_target_urls.txt" in output
+        assert "findings/target.com/manual_review/open_200_api.txt" in output
         assert "findings/target.com/manual_review/standard_public_metadata.txt" in output
 
     def test_reranks_structured_scanner_findings_into_p1(self, tmp_path):

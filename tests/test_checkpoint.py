@@ -169,21 +169,21 @@ def test_checkpoint_queues_secondary_sweep_for_demoted_manual_review_leads(tmp_p
     _seed_recon(tmp_path, "target.com", ["https://api.target.com/profile"])
     manual_dir = tmp_path / "findings" / "target.com" / "manual_review"
     manual_dir.mkdir(parents=True)
-    (manual_dir / "out_of_target_urls.txt").write_text(
-        "[OUT-OF-TARGET:idor_candidates] https://cdn.example.net/file?id=1\n",
+    (manual_dir / "open_200_api.txt").write_text(
+        "[OPEN-200-REVIEW] 200 1200 https://api.target.com/profile\n",
         encoding="utf-8",
     )
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
     assert any(
-        "Secondary-sweep lead [out-of-target-intel]" in item
+        "Secondary-sweep lead [open-200-api-review]" in item
         for item in checkpoint["target_write_back"]["next"]
     )
     action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "secondary-sweep")
     assert action["command_hint"] == "review demoted raw artifact; re-promote only with concrete secret/chain evidence"
-    assert action["metadata"]["lead_category"] == "out-of-target-intel"
-    assert action["metadata"]["artifact"] == "findings/target.com/manual_review/out_of_target_urls.txt"
+    assert action["metadata"]["lead_category"] == "open-200-api-review"
+    assert action["metadata"]["artifact"] == "findings/target.com/manual_review/open_200_api.txt"
 
 
 def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):

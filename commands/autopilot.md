@@ -24,27 +24,32 @@ Evidence drives order. Do not rerun usable recon, do not validate/report without
 
 `/autopilot` is the primary automated entrypoint for the four-layer system. Do not create a separate workflow command for normal use.
 
-Startup context order: target memory + target case state -> skill routing -> knowledge cards -> red-line / coverage checks.
+Startup context order: target memory -> skill routing -> knowledge cards -> red-line / coverage checks.
 
-Minimal startup sequence:
+Fast startup, matching the older action-first flow:
 
 ```bash
-python3 tools/context_pack.py --target <target>
-python3 tools/context_pack.py --target target.com
 python3 tools/autopilot_state.py --target target.com
-python3 tools/target_case_state.py summary --target target.com --json
-python3 tools/case_state_seed.py --target target.com --json
-python3 tools/checkpoint.py --target target.com --json
-python3 tools/action_queue.py ingest-checkpoint --target target.com
-python3 tools/action_queue.py next --target target.com
+python3 tools/context_pack.py --target target.com
+python3 tools/surface.py --target target.com
 ```
 
+Only add heavier state tools when they directly change the next action:
+
+- `tools/target_case_state.py summary/next` — when actor/session/object continuity matters.
+- `tools/case_state_seed.py` — when cached artifacts expose concrete object IDs.
+- `tools/checkpoint.py` + `tools/action_queue.py` — after meaningful progress, validation, or when the loop risks losing state.
+
+These tools are memory and execution aids, not a pre-flight checklist. Empty,
+stale, noisy, or low-value state must not block fresh recon, broad scan,
+browser/source enrichment, or AI-generated chain pivots.
+
 - Target memory: active leads, next actions, dead ends, and handoffs influence the next lane.
-- Target case state: actors, sessions, objects, private markers, active hypotheses, and validation backlog keep multi-step validation continuous.
+- Target case state: actors, sessions, objects, private markers, active hypotheses, and validation backlog keep multi-step validation continuous when useful.
 - Skills: route through `skills/runtime-protocol.md`; load only the Skill that matches the current evidence shape.
-- Use context-pack first. Knowledge: load `knowledge/index.md` plus only the 1-2 knowledge cards selected by context-pack; follow `reference_hints` only when evidence needs on-demand references, not fixed execution order.
+- Knowledge: load `knowledge/index.md` plus only the 1-2 knowledge cards selected by context-pack; follow `reference_hints` only when evidence needs on-demand references, not fixed execution order.
 - Checks: `rules/red-lines.md` and `rules/coverage-gate.md` are canonical. Red-line checks are narrow safety checks, not broad permission gates. HTTP method alone is not a red line; block or downgrade only the concrete destructive, irreversible, high-pressure, persistent-payload, or real-business side effect.
-- Write-back: use checkpoint target-memory write-back proposals after meaningful progress; apply target memory only when the operator wants automatic write-back. Use `/retrospect` to promote reusable experience.
+- Write-back: use checkpoint target-memory write-back proposals after meaningful progress; apply target memory only when it is useful. Use `/retrospect` to promote reusable experience.
 
 ## Case-State First, Not Case-State Only
 
@@ -85,7 +90,7 @@ Single target: `context_pack.py`, `autopilot_state.py`, and `surface.py`.
 If recon is missing/thin/stale: `python3 tools/hunt.py --target target.com --recon-only && python3 tools/surface.py --target target.com`.
 When ready for breadth: `python3 tools/hunt.py --target target.com --scan-only`.
 
-After `run_vuln_scan` or any broad scan, read the surface summary again and review action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact. This means side-effectful scanner templates were not run by default; it does not restrict safe observed-method replay. Entries skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` are not tested-clean; checkpoint instead of finishing when high-value skipped scanner leads remain. Also spend one secondary sweep on demoted manual-review leads such as `out_of_target_urls.txt` and `standard_public_metadata.txt`: they are not reportable findings by default, but they remain reversible chain/secret intel. For target-specific ad-hoc scripts or high-risk follow-up plans, use `templates/phased-surface-validation-plan.md`: concrete facts stay target-scoped; only abstract gates become global.
+After `run_vuln_scan` or any broad scan, read the surface summary again and review action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact. This means side-effectful scanner templates were not run by default; it does not restrict safe observed-method replay. Entries skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` are not tested-clean; checkpoint instead of finishing when high-value skipped scanner leads remain. Also spend one secondary sweep on demoted public-metadata leads such as `standard_public_metadata.txt`: they are not reportable findings by default, but they may be reversible chain/secret intel when unusual fields appear. For target-specific ad-hoc scripts or high-risk follow-up plans, use `templates/phased-surface-validation-plan.md`: concrete facts stay target-scoped; only abstract gates become global.
 
 For focused high-value targets: `/autopilot target.com --deep --normal`.
 For a broad scan inside that Claude CLI loop: `python3 tools/hunt.py --target target.com --scan-only --scanner-full`.

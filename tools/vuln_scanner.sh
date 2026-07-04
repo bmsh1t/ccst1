@@ -30,27 +30,6 @@ log_done()  { echo -e "    ${GREEN}[✓]${NC} $1"; }
 log_vuln()  { echo -e "    ${RED}[VULN]${NC} $1"; }
 log_crit()  { echo -e "    ${RED}[CRITICAL]${NC} $1"; }
 
-build_live_scope_args() {
-    local input_file="$1"
-    python3 - "$input_file" <<'PY'
-from urllib.parse import urlparse
-import sys
-
-seen = set()
-with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
-    for raw in handle:
-        url = raw.strip()
-        if not url:
-            continue
-        parsed = urlparse(url if "://" in url else f"https://{url}")
-        host = (parsed.hostname or "").strip().lower()
-        if host and host not in seen:
-            seen.add(host)
-            print("--domain")
-            print(host)
-PY
-}
-
 filter_target_urls_copy() {
     local input_file="$1"
     local output_file="$2"
@@ -60,50 +39,17 @@ filter_target_urls_copy() {
         : > "$output_file"
         return 0
     fi
-    if [ "${#LIVE_SCOPE_ARGS[@]}" -eq 0 ]; then
-        cp "$input_file" "$output_file"
-        return 0
-    fi
-    python3 - "$LIVE_URLS" "$input_file" "$output_file" "$dropped_file" "$lane_label" <<'PY'
-from urllib.parse import urlparse
-import sys
-
-live_urls_path, input_path, output_path, dropped_path, lane_label = sys.argv[1:6]
-
-hosts = set()
-with open(live_urls_path, encoding="utf-8", errors="replace") as handle:
-    for raw in handle:
-        value = raw.strip()
-        if not value:
-            continue
-        parsed = urlparse(value if "://" in value else f"https://{value}")
-        host = (parsed.hostname or "").strip().lower()
-        if host:
-            hosts.add(host)
-
-matched: list[str] = []
-dropped: list[str] = []
-with open(input_path, encoding="utf-8", errors="replace") as handle:
-    for raw in handle:
-        line = raw.strip()
-        if not line:
-            continue
-        parsed = urlparse(line if "://" in line else f"https://{line}")
-        host = (parsed.hostname or "").strip().lower()
-        if host and host in hosts:
-            matched.append(line)
-        else:
-            dropped.append(line)
-
-with open(output_path, "w", encoding="utf-8") as handle:
-    for line in matched:
-        handle.write(line + "\n")
-
-if dropped_path and dropped:
-    with open(dropped_path, "a", encoding="utf-8") as handle:
-        for line in dropped:
-            handle.write(f"[OUT-OF-TARGET:{lane_label}] {line}\n")
-PY
+    # Discovery-first 恢复：不要在 scanner 层按“当前 live host 集合”裁掉
+    # recon 里已经发现的 URL。外部 URL、第三方 API、Docker/GitHub/CDN、
+    # webhook、OAuth/JWKS 等都可能是攻击链线索；是否属于直接 finding 交给
+    # 后续 triage/validation 判断，而不是在发现阶段丢弃。
+    #
+    # 保留函数名和参数是为了兼容下游调用与测试；dropped_file/lane_label 仅作
+    # 文档化占位，不再写“目标外 URL”降级清单。
+    : "${dropped_file:=}"
+    : "${lane_label:=}"
+    cp "$input_file" "$output_file"
+    return 0
 }
 
 timeout_bin() {
@@ -292,7 +238,7 @@ PY
 
 mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,metasploit,manual_review,.tmp}
 : > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
-: > "$FINDINGS_DIR/manual_review/out_of_target_urls.txt"
+: > "$FINDINGS_DIR/manual_review/open_200_api.txt"
 : > "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
 
 echo "============================================="
@@ -786,7 +732,6 @@ fi
 
 LIVE_COUNT=$(wc -l < "$LIVE_URLS" 2>/dev/null || echo 0)
 log_info "Scanning $LIVE_COUNT live hosts"
-mapfile -t LIVE_SCOPE_ARGS < <(build_live_scope_args "$LIVE_URLS")
 
 ORDERED_SCAN="$FINDINGS_DIR/ordered_scan_targets.txt"
 : > "$ORDERED_SCAN"
@@ -834,8 +779,8 @@ else
     [ -s "$PARAM_URLS_RAW" ] && cp "$PARAM_URLS_RAW" "$PARAM_URLS" || : > "$PARAM_URLS"
 fi
 
-filter_target_urls_copy "$RECON_DIR/urls/api_endpoints.txt" "$API_ENDPOINTS_FILTERED" "$FINDINGS_DIR/manual_review/out_of_target_urls.txt" "api_endpoints"
-filter_target_urls_copy "$RECON_DIR/urls/sensitive_paths.txt" "$SENSITIVE_PATHS_FILTERED" "$FINDINGS_DIR/manual_review/out_of_target_urls.txt" "sensitive_paths"
+filter_target_urls_copy "$RECON_DIR/urls/api_endpoints.txt" "$API_ENDPOINTS_FILTERED" "" "api_endpoints"
+filter_target_urls_copy "$RECON_DIR/urls/sensitive_paths.txt" "$SENSITIVE_PATHS_FILTERED" "" "sensitive_paths"
 # Always keep PARAM_URLS readable downstream even if filter produced empty file.
 [ -f "$PARAM_URLS" ] || cp "$PARAM_URLS_RAW" "$PARAM_URLS" 2>/dev/null || : > "$PARAM_URLS"
 
@@ -1335,7 +1280,7 @@ if ! skip_has idor && [ -s "$PARAM_URLS" ]; then
     : > "$FINDINGS_DIR/idor/idor_candidates.txt"
     grep -iE '[?&](id|user_id|uid|account|profile|order|order_id|invoice|doc|file_id|report|ticket|msg|message_id|comment_id|item|product_id|cart|session|ref|record)=' \
         "$PARAM_URLS" > "$FINDINGS_DIR/idor/idor_candidates.txt" 2>/dev/null || true
-    filter_target_urls_copy "$FINDINGS_DIR/idor/idor_candidates.txt" "$FINDINGS_DIR/idor/idor_candidates.filtered.txt" "$FINDINGS_DIR/manual_review/out_of_target_urls.txt" "idor_candidates"
+    filter_target_urls_copy "$FINDINGS_DIR/idor/idor_candidates.txt" "$FINDINGS_DIR/idor/idor_candidates.filtered.txt" "" "idor_candidates"
     mv "$FINDINGS_DIR/idor/idor_candidates.filtered.txt" "$FINDINGS_DIR/idor/idor_candidates.txt"
     IDOR_COUNT=$(count_findings "$FINDINGS_DIR/idor/idor_candidates.txt")
     [ "$IDOR_COUNT" -gt 0 ] && log_warn "IDOR candidate URLs: $IDOR_COUNT (manual testing required)" || log_done "IDOR params: none found"
@@ -1362,7 +1307,11 @@ if ! skip_has auth_bypass && [ -s "$API_ENDPOINTS_FILTERED" ]; then
         # Flag endpoints returning 200 with substantial body (not just error pages)
         if [ "$STATUS" = "200" ] && [ "$BODY_SIZE" -gt 500 ]; then
             if printf '%s' "$BODY" | python3 "$BASE_DIR/tools/public_exposure_signals.py" --url "$api_url" --status "$STATUS" --authz-candidate >/dev/null 2>&1; then
-                echo "$STATUS $BODY_SIZE $api_url" >> "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"
+                echo "[UNAUTH-CANDIDATE] $STATUS $BODY_SIZE $api_url" >> "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"
+            else
+                # Discovery-first：普通匿名 200 大响应仍保留为 review 线索，
+                # 不在 scanner 阶段直接丢弃，避免漏掉后续可链式利用的数据面。
+                echo "[OPEN-200-REVIEW] $STATUS $BODY_SIZE $api_url" >> "$FINDINGS_DIR/manual_review/open_200_api.txt"
             fi
         fi
     done < <(head -30 "$API_ENDPOINTS_FILTERED")
@@ -1442,8 +1391,8 @@ fi
 if [ ! -s "$FINDINGS_DIR/manual_review/unsafe_skipped.txt" ]; then
     rm -f "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
 fi
-if [ ! -s "$FINDINGS_DIR/manual_review/out_of_target_urls.txt" ]; then
-    rm -f "$FINDINGS_DIR/manual_review/out_of_target_urls.txt"
+if [ ! -s "$FINDINGS_DIR/manual_review/open_200_api.txt" ]; then
+    rm -f "$FINDINGS_DIR/manual_review/open_200_api.txt"
 fi
 if [ ! -s "$FINDINGS_DIR/manual_review/standard_public_metadata.txt" ]; then
     rm -f "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"

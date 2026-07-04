@@ -220,7 +220,7 @@ def _unsafe_skipped_proposals(state: dict) -> list[str]:
     return proposals
 
 
-SECONDARY_SWEEP_CATEGORIES = {"out-of-target-intel", "public-metadata"}
+SECONDARY_SWEEP_CATEGORIES = {"open-200-api-review", "public-metadata"}
 
 
 def _secondary_sweep_leads(state: dict) -> list[dict]:
