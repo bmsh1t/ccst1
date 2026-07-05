@@ -760,14 +760,55 @@ def _is_final_surface_item(item: dict) -> bool:
     return bool(item.get("ledger_final") or item.get("action_queue_final"))
 
 
+ACTIONABLE_REVIEW_SOURCES = {
+    "attack_value",
+    "browser",
+    "evidence_convergence",
+    "intel",
+    "js_intel",
+    "scanner",
+    "target_memory",
+}
+
+
+def _has_actionable_review_evidence(item: dict) -> bool:
+    """Return true when a candidate has enough evidence to lead Claude's review.
+
+    Recon-wide facts such as "non-standard port", "tech stack overlap", or
+    "untested in memory" are useful tie-breakers, but they are not concrete
+    next-action evidence by themselves. Keep those candidates in p1/p2
+    compatibility output, yet avoid letting them crowd the AI review pool when
+    browser/source/JS/scanner/parameter/intel evidence exists.
+    """
+    if any(
+        item.get(key)
+        for key in (
+            "evidence_convergence",
+            "browser_observed",
+            "js_intel_observed",
+            "source_intel_observed",
+            "scanner_findings",
+            "target_memory_hits",
+            "intel_signals",
+        )
+    ):
+        return True
+    for part in item.get("score_breakdown") or []:
+        source = str(part.get("source", ""))
+        if source in ACTIONABLE_REVIEW_SOURCES and int(part.get("score", 0) or 0) > 0:
+            return True
+    return False
+
+
 def _build_review_pool(candidates: list[dict]) -> list[dict]:
     """Build an AI-first review pool without treating score as a verdict.
 
     `p1` / `p2` remain for backward-compatible callers. This pool is the
     preferred Claude-facing surface, so it starts with evidence-rich sources
-    that are hard for regex scoring to judge correctly, then uses score-only
-    items as a tail filler. That keeps tools from steering Claude toward
-    generic high-score paths before real browser/source/scanner evidence.
+    that are hard for regex scoring to judge correctly. Score-only candidates
+    stay visible in p1/p2, but only become a fallback pool when no actionable
+    evidence exists. That keeps tools from steering Claude toward generic
+    recon/memory-only paths before real browser/source/scanner evidence.
     """
     pool: list[dict] = []
     seen: set[str] = set()
@@ -789,7 +830,11 @@ def _build_review_pool(candidates: list[dict]) -> list[dict]:
         if item.get("target_memory_hits"):
             _add_review_item(pool, seen, item, "target-memory continuation")
     for item in unresolved:
-        _add_review_item(pool, seen, item, "top advisory score")
+        if _has_actionable_review_evidence(item):
+            _add_review_item(pool, seen, item, "top advisory score")
+    if not pool:
+        for item in unresolved:
+            _add_review_item(pool, seen, item, "top advisory score (low-evidence fallback)")
     return pool
 
 

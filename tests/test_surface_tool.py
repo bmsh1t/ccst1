@@ -680,7 +680,7 @@ class TestSurfaceRanking:
         assert "Source: browser-observed XHR/API" in output
         assert "Browser-observed XHR/API: 1 xhr, 1 api" in output
 
-    def test_review_pool_prefers_evidence_rich_browser_candidate_over_score_only_tail(self, tmp_path):
+    def test_review_pool_keeps_score_only_tail_out_when_evidence_rich_exists(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
         (recon_dir / "live").mkdir(parents=True)
@@ -715,7 +715,37 @@ class TestSurfaceRanking:
 
         assert ranked["review_pool"][0]["url"] == browser_url
         assert ranked["review_pool"][0]["review_reason"] == "browser-observed API/workflow"
-        assert any(item["url"] == score_only_url for item in ranked["review_pool"])
+        assert any(item["url"] == score_only_url for item in ranked["p1"] + ranked["p2"])
+        assert all(item["url"] != score_only_url for item in ranked["review_pool"])
+
+    def test_review_pool_falls_back_to_score_only_when_no_actionable_evidence_exists(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "browser").mkdir(parents=True)
+
+        score_only_url = "https://app.target.com/rest/deluxe-membership"
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://app.target.com [200] [App] [React] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            score_only_url + "\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        (recon_dir / "browser" / "xhr_endpoints.txt").write_text("", encoding="utf-8")
+        (recon_dir / "browser" / "api_endpoints.txt").write_text("", encoding="utf-8")
+
+        ranked = rank_surface(
+            load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+        )
+
+        assert ranked["review_pool"][0]["url"] == score_only_url
+        assert ranked["review_pool"][0]["review_reason"] == "top advisory score (low-evidence fallback)"
 
     def test_js_reader_hypotheses_feed_surface_ranking(self, tmp_path):
         repo_root = tmp_path
