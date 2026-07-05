@@ -12,6 +12,7 @@ from checkpoint import (
     _decide,
     _filter_final_action_queue_items,
     _next_proposals,
+    _select_default_candidate,
     apply_target_memory,
     build_checkpoint,
     format_checkpoint,
@@ -206,6 +207,42 @@ def test_report_action_stays_above_advisory_surface_review_but_below_high_value_
     assert by_type["surface-review"]["priority"] < by_type["report"]["priority"]
     assert by_type["report"]["priority"] > by_type["secondary-sweep"]["priority"]
     assert by_type["report"]["metadata"]["finding_id"] == "F-REPORT"
+
+
+def test_default_candidate_uses_action_queue_selection_for_executable_surface_review():
+    queue = _build_next_action_queue(
+        [
+            "Draft report for validated finding F-REPORT; do not submit without human review.",
+            (
+                "Review surface candidate https://api.target.com/api/users: baseline authz checks. "
+                "Replay draft: Run authenticated role replay from case_state: "
+                "`python3 tools/validation_runner.py authz-role-replay --target \"target.com\" "
+                "--url \"https://api.target.com/api/users\" --from-case-state --repeat 2`."
+            ),
+        ],
+        "target.com",
+    )
+
+    assert queue[0]["type"] == "report"  # checkpoint 原始候选仍按 priority 排序。
+    selected = _select_default_candidate("target.com", queue)
+
+    assert selected["type"] == "surface-review"
+    assert selected["metadata"]["endpoint"] == "/api/users"
+
+
+def test_default_candidate_keeps_report_above_advisory_surface_review():
+    queue = _build_next_action_queue(
+        [
+            "Draft report for validated finding F-REPORT; do not submit without human review.",
+            "Review surface candidate https://api.target.com/api/catalog: advisory review only.",
+        ],
+        "target.com",
+    )
+
+    selected = _select_default_candidate("target.com", queue)
+
+    assert selected["type"] == "report"
+    assert selected["metadata"]["finding_id"] == "F-REPORT"
 
 
 def test_checkpoint_queues_candidate_evidence_gap_before_validate(tmp_path):

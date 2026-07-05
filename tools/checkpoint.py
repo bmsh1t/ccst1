@@ -26,6 +26,7 @@ try:
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
         load_queue as load_action_queue,
+        select_next_action as action_queue_select_next_action,
     )
     from tools.autopilot_state import build_autopilot_state
     from tools.context_pack import build_context_pack
@@ -41,6 +42,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
         load_queue as load_action_queue,
+        select_next_action as action_queue_select_next_action,
     )
     from autopilot_state import build_autopilot_state  # type: ignore
     from context_pack import build_context_pack  # type: ignore
@@ -1827,6 +1829,36 @@ def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[d
     return filtered
 
 
+def _select_default_candidate(target: str, items: list[dict]) -> dict:
+    """用 action_queue 的真实选择规则挑 checkpoint 默认项。
+
+    checkpoint 的 `next_action_queue` 是候选集；`recommended_executable_action`
+    只是兼容字段。如果这里单纯取 priority 最高项，report 会因为分数高而压过
+    已有 replay 草案的 surface-review，和 `/autopilot` 的“report 是阶段收束”
+    规则冲突。这里复用 action_queue 的选择器，只把选中的 queue action 映射回
+    原始 checkpoint item，避免两套排序语义漂移。
+    """
+    if not items:
+        return {}
+    try:
+        converted: list[dict] = []
+        by_key: dict[str, dict] = {}
+        for item in items:
+            queue_item = action_queue_checkpoint_item_to_action(target, item)
+            key = str(queue_item.get("dedupe_key") or action_queue_dedupe_key(queue_item))
+            converted.append(queue_item)
+            by_key.setdefault(key, item)
+        selected = action_queue_select_next_action({"actions": converted})
+        if selected:
+            selected_key = str(selected.get("dedupe_key") or action_queue_dedupe_key(selected))
+            if selected_key in by_key:
+                return by_key[selected_key]
+    except Exception:
+        # checkpoint 必须保持 best-effort；选择器异常时退回旧行为。
+        pass
+    return items[0]
+
+
 def _dead_end_proposals(state: dict, coverage_gaps: list[dict]) -> list[str]:
     if state.get("has_recon") and not coverage_gaps:
         stats = _surface_stats(state)
@@ -2028,7 +2060,7 @@ def build_checkpoint(
     if decision in {"continue", "hunt", "enrich", "checkpoint"} and not next_action_queue:
         decision = "handoff"
     dead_ends = _dead_end_proposals(state, gaps)
-    default_candidate = next_action_queue[0] if next_action_queue else {}
+    default_candidate = _select_default_candidate(resolved_target, next_action_queue)
     # Backward compatibility: older command docs and tests still consume the
     # historical field name. The new name makes the contract explicit: this is
     # only the default pointer from the candidate set, not a replacement for
