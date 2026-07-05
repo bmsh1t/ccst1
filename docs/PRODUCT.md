@@ -122,7 +122,7 @@ LOAD -> RANK -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDIDATES -> RE
 
 能力包括：
 
-- 在 Claude Code CLI 中优先使用已安装的 `playwright-cli` 访问页面、复用登录态、点击功能点并采集浏览器证据
+- 在 Claude Code CLI 中优先使用 chrome-devtools MCP 采集实时浏览器/Network 证据，使用 playwright MCP 做自动交互和快照；`tools/browser_evidence.py` / `playwright-cli` 仅作为 MCP 不可用或需要脚本化 fallback 时使用
 - 从浏览器真实请求中提取 XHR / API / GraphQL 端点和参数，回灌到 `recon/<target>/browser/`
 - 攻击面排序会识别浏览器态发现的高价值接口，并给 GraphQL、导出、下载、管理、订单、用户、更新、删除、邀请等端点加权
 - 从本地源码、前端 JS bundle 和 recon 产物中提取路由、GraphQL operation、对象 ID、租户/账号/角色边界和业务动作关键词
@@ -478,7 +478,7 @@ python3 tools/hunt.py --target target.com --agent --resume <session_id>
 ```text
 1. /recon target.com
 2. /hunt target.com, prioritize browser-state IDOR and business logic
-3. 使用 playwright-cli 打开登录态页面并点击关键功能
+3. 使用 chrome-devtools MCP / playwright MCP 打开登录态页面并点击关键功能
 4. 读取 recon/<target>/browser/ 中的 XHR/API/GraphQL 与参数
 5. /surface target.com
 6. 对高分接口做账号 A/B、对象 ID、角色/租户边界和业务流验证
@@ -783,7 +783,7 @@ hunt-memory/
 | `findings/` | 漏洞候选、验证摘要、源码暴露结果 |
 | `findings/<target>/source_intel/` | 源码/JS 业务逻辑假设、路由、GraphQL operation 和关键词摘要 |
 | `findings/<target>/js_intel/` | JS 阅读物料、LLM 读码后的端点、认证模型、sink 和攻击面假设 |
-| `evidence/<target>/browser/` | playwright-cli 页面快照、请求、控制台、存储状态、可选截图和最新采集指针 |
+| `evidence/<target>/browser/` | MCP 或 fallback 浏览器采集的页面快照、请求、控制台、存储状态、可选截图和最新采集指针 |
 | `reports/` | 报告草稿、报告索引、PoC 图片引用 |
 | `hunt-memory/` | 目标画像、测试历史、请求审计、成功模式 |
 | `targets/<target>/sessions/` | 本地 agent session、trace、bump 文件和 session 级 recon 工作区 |

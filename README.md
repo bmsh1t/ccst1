@@ -19,7 +19,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8+-3776AB.svg?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-615_passing-brightgreen.svg?style=flat-square)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-1979_passing-brightgreen.svg?style=flat-square)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Plugin-D97706.svg?style=flat-square&logo=anthropic&logoColor=white)](https://claude.ai/claude-code)
 
 <br>
@@ -110,7 +110,7 @@ claude                          # Start Claude Code from this repo root
 
 > Legacy CVE/report entrypoints remain available as compatibility paths, but prefer `/intel` and `/report` as the primary workflows.
 
-> **AI-first hunt loop:** load target context, rank surface, enrich app-like targets with `playwright-cli` / browser XHR / source_intel / js-reader, attack exact business workflows, preserve leads/signals, then validate only report-ready candidates.
+> **AI-first hunt loop:** load target context, rank surface, enrich app-like targets with chrome-devtools MCP / playwright MCP / browser XHR / source_intel / js-reader, attack exact business workflows, preserve leads/signals, then validate only report-ready candidates.
 
 **Step 3 — Go Autonomous**
 
@@ -208,10 +208,13 @@ add skips because of previous target context.
 >
 > **Claude Code CLI tool priority:** for web access, logged-in state,
 > SPA/XHR/GraphQL behavior, browser storage, and page interaction testing,
-> prefer the installed `playwright-cli` skill. Bulk recon still uses the
-> `httpx` / `katana` / `gau` / `waybackurls` pipeline. Fall back to `curl` /
-> `urllib` / local helpers only for lightweight API replay after the request is
-> exact. Burp/Caido history remains auxiliary context.
+> prefer chrome-devtools MCP for live browser/network evidence and playwright MCP
+> for automated interaction/snapshots. Use `tools/browser_evidence.py` /
+> `playwright-cli` only when MCP is unavailable or a scriptable fallback is
+> needed. Bulk recon still uses the `httpx` / `katana` / `gau` /
+> `waybackurls` pipeline. Fall back to `curl` / `urllib` / local helpers only
+> for lightweight API replay after the request is exact. Burp/Caido history
+> remains auxiliary context.
 
 <br>
 
@@ -463,7 +466,7 @@ Those helper controls stay in **advisory audit/replay** behavior for the supplie
 
 **Caido MCP** — Claude can read Caido proxy history, replay requests, and use captured traffic as testing context.
 
-For Claude Code CLI browser-state work, prefer the installed `playwright-cli` skill first; Burp/Caido remain auxiliary proxy-history and replay sources, while bulk recon stays on the recon pipeline.
+For Claude Code CLI browser-state work, prefer chrome-devtools MCP for live browser/network evidence and playwright MCP for automated interaction/snapshots. Use `tools/browser_evidence.py` / `playwright-cli` only as an unavailable-MCP or scriptable fallback; Burp/Caido remain auxiliary proxy-history and replay sources, while bulk recon stays on the recon pipeline.
 
 **HackerOne MCP** — Public API integration:
 - `search_disclosed_reports` — search Hacktivity by keyword or program
