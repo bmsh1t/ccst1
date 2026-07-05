@@ -1807,16 +1807,41 @@ def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[d
     except Exception:  # pragma: no cover - checkpoint should stay best-effort
         return items
 
+    def from_existing_action(action: dict) -> dict:
+        """把持久队列里的候选动作投影回 checkpoint item。"""
+        item = {
+            "id": str(action.get("id") or ""),
+            "priority": int(action.get("priority", 50) or 50),
+            "type": str(action.get("type") or "next-action"),
+            "status": str(action.get("status") or "queued"),
+            "action": str(action.get("action") or action.get("evidence") or ""),
+            "command_hint": str(action.get("command_hint") or ""),
+            "redline_required": bool(action.get("redline_required", False)),
+            "stop_condition": str(action.get("stop_condition") or ""),
+        }
+        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+        if metadata:
+            item["metadata"] = metadata
+        return item
+
     final_keys = {
         str(action.get("dedupe_key") or action_queue_dedupe_key(action))
         for action in existing.get("actions", [])
         if isinstance(action, dict)
         and str(action.get("status") or "") in ACTION_QUEUE_FINAL_STATUSES
     }
-    if not final_keys:
+    active_candidate_by_key = {
+        str(action.get("dedupe_key") or action_queue_dedupe_key(action)): from_existing_action(action)
+        for action in existing.get("actions", [])
+        if isinstance(action, dict)
+        and str(action.get("status") or "") == "candidate"
+        and str(action.get("type") or "") == "candidate-evidence-gap"
+    }
+    if not final_keys and not active_candidate_by_key:
         return items
 
     filtered: list[dict] = []
+    emitted_candidate_keys: set[str] = set()
     for item in items:
         try:
             queue_shape = action_queue_checkpoint_item_to_action(target, item)
@@ -1825,6 +1850,11 @@ def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[d
             filtered.append(item)
             continue
         if key not in final_keys:
+            if key in active_candidate_by_key:
+                if key not in emitted_candidate_keys:
+                    filtered.append(active_candidate_by_key[key])
+                    emitted_candidate_keys.add(key)
+                continue
             filtered.append(item)
     return filtered
 

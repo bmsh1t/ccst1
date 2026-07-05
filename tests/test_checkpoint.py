@@ -245,6 +245,40 @@ def test_default_candidate_keeps_report_above_advisory_surface_review():
     assert selected["metadata"]["finding_id"] == "F-REPORT"
 
 
+def test_checkpoint_replaces_replay_with_existing_candidate_evidence_gap(tmp_path):
+    target = "target.com"
+    surface_item = _build_next_action_queue(
+        [
+            (
+                "Review surface candidate https://api.target.com/api/users: baseline authz checks. "
+                "Replay draft: `python3 tools/validation_runner.py authz-role-replay "
+                "--target \"target.com\" --url \"https://api.target.com/api/users\"`."
+            )
+        ],
+        target,
+    )[0]
+    existing = _checkpoint_item_to_action(target, surface_item)
+    existing.update(
+        {
+            "id": "AQ-0001",
+            "status": "candidate",
+            "type": "candidate-evidence-gap",
+            "action": "Candidate evidence gap for api/users; do not rerun the same replay.",
+            "next_question": "Fill missing policy evidence.",
+            "command_hint": "fill missing rubric evidence, then /validate",
+        }
+    )
+    save_queue(tmp_path, target, {"schema_version": 1, "target": target, "actions": [existing]})
+
+    filtered = _filter_final_action_queue_items(tmp_path, target, [surface_item])
+    selected = _select_default_candidate(target, filtered)
+
+    assert filtered[0]["type"] == "candidate-evidence-gap"
+    assert filtered[0]["status"] == "candidate"
+    assert selected["type"] == "candidate-evidence-gap"
+    assert "do not rerun" in selected["action"]
+
+
 def test_checkpoint_queues_candidate_evidence_gap_before_validate(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)

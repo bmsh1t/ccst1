@@ -422,7 +422,7 @@ def _checkpoint_item_to_action(target: str, item: dict) -> dict:
         "Execute this evidence-backed checkpoint action and classify the lane "
         "instead of leaving it as a TODO."
     )
-    return build_action(
+    built = build_action(
         target=target,
         action_type=action_type,
         evidence=action_text,
@@ -437,6 +437,10 @@ def _checkpoint_item_to_action(target: str, item: dict) -> dict:
         stop_condition=str(item.get("stop_condition") or DEFAULT_STOP_CONDITION),
         metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else None,
     )
+    status = str(item.get("status") or "").strip().lower()
+    if status in ALLOWED_STATUSES:
+        built["status"] = status
+    return built
 
 
 def upsert_actions(queue: dict, actions: list[dict]) -> dict:

@@ -32,7 +32,14 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.action_queue import ACTIVE_STATUSES, load_queue, resolve_action
+    from tools.action_queue import (
+        ACTIVE_STATUSES,
+        load_queue,
+        resolve_action,
+        save_queue,
+        select_next_action,
+        summarize_queue,
+    )
     from tools.evidence_ledger import record_entry
     from tools.evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
     from tools.finding_index import update_finding_status
@@ -45,7 +52,14 @@ try:
     from tools.target_case_state import complete_backlog, load_case_state
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from action_queue import ACTIVE_STATUSES, load_queue, resolve_action  # type: ignore
+    from action_queue import (  # type: ignore
+        ACTIVE_STATUSES,
+        load_queue,
+        resolve_action,
+        save_queue,
+        select_next_action,
+        summarize_queue,
+    )
     from evidence_ledger import record_entry  # type: ignore
     from evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence  # type: ignore
     from finding_index import update_finding_status  # type: ignore
@@ -466,6 +480,96 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
     }
 
 
+def _candidate_queue_followup(summary: dict[str, Any]) -> dict[str, Any]:
+    """把 runner 的 candidate 结果转成下一步补证据动作。
+
+    candidate 说明“同一条 replay 已经跑完，但证据还不够报告”。如果 action_queue
+    仍保留原 surface-review 文案，下一轮会重复执行同一 runner。这里把动作降维成
+    evidence-gap，让 Claude 补 policy/object/private-marker/impact，而不是机械重放。
+    """
+    rubric = summary.get("evidence_rubric") if isinstance(summary.get("evidence_rubric"), dict) else {}
+    missing = [
+        str(item).strip()
+        for item in (rubric.get("missing_labels") or rubric.get("missing") or [])
+        if str(item).strip()
+    ]
+    next_step = ""
+    for item in rubric.get("next_actions") or []:
+        next_step = str(item or "").strip()
+        if next_step:
+            break
+    next_step = next_step.rstrip(".")
+    finding_id = str(summary.get("finding_id") or "").strip()
+    url = str(summary.get("url") or summary.get("endpoint") or "").strip()
+    summary_ref = str(summary.get("summary_path") or "").strip()
+    rubric_status = str(rubric.get("status") or "candidate").strip()
+    lane = str(summary.get("lane") or "").strip()
+
+    action = (
+        "Candidate evidence gap for {id} on {url}: rubric={status}, missing={missing}. "
+        "Next evidence step: {step}. Evidence summary: {summary_ref}. "
+        "Do not rerun the same replay unless new actor/object/policy evidence changes the test."
+    ).format(
+        id=finding_id or "-",
+        url=url or "-",
+        status=rubric_status,
+        missing=", ".join(missing[:4]) or "candidate evidence",
+        step=next_step or "fill the missing candidate evidence item, then rerun /validate if reportable",
+        summary_ref=summary_ref or "-",
+    )
+    return {
+        "type": "candidate-evidence-gap",
+        "action": action,
+        "next_question": "Fill the missing evidence or downgrade this candidate; do not repeat the same replay blindly.",
+        "command_hint": "fill missing rubric evidence, then /validate",
+        "metadata": {
+            "finding_id": finding_id,
+            "url": url,
+            "summary_path": summary_ref,
+            "runner": lane,
+            "rubric_status": rubric_status,
+            "missing_evidence": missing,
+            "next_evidence_step": next_step,
+        },
+    }
+
+
+def _patch_candidate_queue_followup(
+    repo_root: Path,
+    *,
+    target: str,
+    action_id: str,
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    """把已匹配 action 改写为 candidate-evidence-gap 并保存。"""
+    followup = _candidate_queue_followup(summary)
+    queue = load_queue(repo_root, target)
+    patched = False
+    for action in queue.get("actions", []):
+        if not isinstance(action, dict):
+            continue
+        if str(action.get("id") or "") != action_id:
+            continue
+        action["type"] = followup["type"]
+        action["action"] = followup["action"]
+        action["next_question"] = followup["next_question"]
+        action["command_hint"] = followup["command_hint"]
+        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+        metadata.update(followup["metadata"])
+        action["metadata"] = metadata
+        patched = True
+        break
+    if not patched:
+        return {"patched": False}
+    path = save_queue(repo_root, target, queue)
+    return {
+        "patched": True,
+        "path": str(path),
+        "next": select_next_action(queue),
+        "summary": summarize_queue(queue),
+    }
+
+
 def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
     target = str(summary.get("target") or "").strip()
     result = str(summary.get("result") or "").strip()
@@ -505,11 +609,20 @@ def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str,
         result=f"validation-runner-result={result}; summary={summary_ref}",
         notes=f"runner={summary.get('lane', '')}",
     )
-    return {
+    response = {
         "status": "updated",
         "id": resolved.get("id", ""),
         "action_status": resolved.get("status", ""),
     }
+    if queue_status == "candidate" and response["id"]:
+        patch = _patch_candidate_queue_followup(
+            repo_root,
+            target=target,
+            action_id=str(response["id"]),
+            summary=summary,
+        )
+        response["candidate_followup"] = patch
+    return response
 
 
 def sync_runner_artifacts(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:

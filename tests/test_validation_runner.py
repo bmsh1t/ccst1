@@ -431,6 +431,12 @@ def test_authz_role_replay_candidate_reopens_previous_tested_queue_action(monkey
     assert summary["sync"]["action_queue"]["status"] == "updated"
     assert summary["sync"]["action_queue"]["id"] == "AQ-0007"
     assert queue["actions"][0]["status"] == "candidate"
+    assert queue["actions"][0]["type"] == "candidate-evidence-gap"
+    assert "Do not rerun the same replay" in queue["actions"][0]["action"]
+    assert queue["actions"][0]["command_hint"] == "fill missing rubric evidence, then /validate"
+    assert queue["actions"][0]["metadata"]["runner"] == "authz_role_replay"
+    assert "policy/role expectation" in " ".join(queue["actions"][0]["metadata"]["missing_evidence"])
+    assert summary["sync"]["action_queue"]["candidate_followup"]["patched"] is True
 
 
 def test_authz_public_exposure_cli_syncs_finding_and_action_queue(monkeypatch, tmp_path, capsys):
