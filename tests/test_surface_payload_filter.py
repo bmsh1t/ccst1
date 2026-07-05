@@ -1,8 +1,9 @@
-"""Tests for surface.py payload-marker filter (PR-17).
+"""Tests for surface.py payload-marker handling (PR-17).
 
 Covers the helpers that filter waymore/gau historical attack probes
-from URL lists before they reach the surface ranker, plus the
-load_surface_context wiring that drops probes from each input list.
+from URL lists before replay, plus the load_surface_context wiring
+that keeps inert probe-derived surfaces so discovery does not miss
+endpoints/parameters hidden behind noisy archive URLs.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from surface import (  # noqa: E402
     is_attack_probe,
     load_surface_context,
 )
+from attack_probe_filter import sanitize_attack_probe_url  # noqa: E402
 
 
 class TestIsAttackProbe:
@@ -52,6 +54,9 @@ class TestIsAttackProbe:
 
     def test_xss_javascript_uri(self):
         assert is_attack_probe("/redirect?url=javascript:alert(1)")
+
+    def test_encoded_backslash_quote_probe_path(self):
+        assert is_attack_probe("/rest/admin/%5C%22/")
 
     def test_path_traversal(self):
         assert is_attack_probe("/file?path=../../etc/passwd")
@@ -164,6 +169,20 @@ class TestFilterAttackProbes:
         urls = ["/x?q=<script>", "/y?z=../../etc/passwd"]
         assert filter_attack_probes(urls) == []
 
+    def test_preserve_surfaces_keeps_inert_endpoint_shapes(self):
+        urls = ["/x?q=<script>", "/login?user[$ne]=admin"]
+        kept = filter_attack_probes(urls, preserve_surfaces=True)
+        assert kept == ["/x?q=__probe__", "/login?user=__probe__"]
+
+    def test_sanitize_attack_probe_url_keeps_host_path_and_param_names(self):
+        sanitized = sanitize_attack_probe_url(
+            "https://app.example/file?path=../../etc/passwd&download=1"
+        )
+        assert sanitized == "https://app.example/file?path=__probe__&download=__probe__"
+
+    def test_sanitize_attack_probe_url_strips_path_probe_fragment(self):
+        assert sanitize_attack_probe_url("/rest/admin/%5C%22/") == "/rest/admin"
+
     def test_log_file_written_when_dropped(self, tmp_path):
         log = tmp_path / "filtered.txt"
         urls = [
@@ -213,7 +232,7 @@ class TestLoadSurfaceContextFilters:
             "https://x.com/ [200] [App] [tech]", encoding="utf-8"
         )
 
-    def test_param_urls_lose_probes(self, tmp_path):
+    def test_param_urls_preserve_probe_derived_surfaces(self, tmp_path):
         self._seed(tmp_path, "x.com",
                    api_urls=[],
                    param_urls=[
@@ -225,9 +244,12 @@ class TestLoadSurfaceContextFilters:
         ctx = load_surface_context(tmp_path, "x.com")
         assert "/api/orders/1?status=open" in ctx["param_urls"]
         assert "/search?q=foo" in ctx["param_urls"]
-        # Probes filtered out
+        # Raw payloads are not replay candidates, but their endpoint/parameter
+        # shape remains visible to discovery/ranking.
         assert "/x?q=<script>alert(1)</script>" not in ctx["param_urls"]
         assert "/file?path=../../etc/passwd" not in ctx["param_urls"]
+        assert "/x?q=__probe__" in ctx["param_urls"]
+        assert "/file?path=__probe__" in ctx["param_urls"]
 
     def test_filtered_probes_log_written(self, tmp_path):
         self._seed(tmp_path, "x.com",

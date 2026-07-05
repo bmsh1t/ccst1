@@ -48,8 +48,8 @@ def test_empty_state_initializes_shape(tmp_path):
     state = target_case_state.load_case_state(tmp_path, TARGET)
 
     assert state["schema_version"] == 1
-    assert state["target"] == TARGET
-    assert state["target_key"] == "http:_127.0.0.1:3002"
+    assert state["target"] == "127.0.0.1:3002"
+    assert state["target_key"] == "127.0.0.1:3002"
     assert state["actors"] == {}
     assert state["sessions"] == {}
     assert state["objects"] == {}
@@ -258,7 +258,7 @@ def test_complete_backlog_writes_result_and_evidence_ref(tmp_path):
         TARGET,
         backlog_id="val_001",
         result="tested_finding",
-        evidence_ref="evidence/http:_127.0.0.1:3002/validation/IDOR/summary.json",
+        evidence_ref="evidence/127.0.0.1:3002/validation/IDOR/summary.json",
     )
     next_item = target_case_state.next_action(tmp_path, TARGET)
 

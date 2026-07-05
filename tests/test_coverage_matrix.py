@@ -24,6 +24,8 @@ from coverage_matrix import (
     find_high_value_gaps,
     load_matrix,
     mark_cell,
+    mark_endpoint_kind,
+    needs_endpoint_triage,
     normalize_vuln_class,
     rebuild_matrix,
     save_matrix,
@@ -37,6 +39,22 @@ def _seed_recon(tmp_path: Path, target: str, urls: list[str]) -> None:
     urls_dir = tmp_path / "recon" / target / "urls"
     urls_dir.mkdir(parents=True)
     (urls_dir / "all.txt").write_text("\n".join(urls), encoding="utf-8")
+
+
+def _seed_recon_with_filtered(
+    tmp_path: Path,
+    target: str,
+    *,
+    raw_urls: list[str],
+    filtered_urls: list[str],
+    filter_log: str = "",
+) -> None:
+    urls_dir = tmp_path / "recon" / target / "urls"
+    urls_dir.mkdir(parents=True)
+    (urls_dir / "all.txt").write_text("\n".join(raw_urls), encoding="utf-8")
+    (urls_dir / "all_filtered.txt").write_text("\n".join(filtered_urls), encoding="utf-8")
+    if filter_log:
+        (urls_dir / "filter.log").write_text(filter_log, encoding="utf-8")
 
 
 class TestEmptyMatrix:
@@ -167,6 +185,165 @@ class TestRebuildMatrix:
         assert "/api/v1/admin/users" in endpoints
         # Low-weight path filtered at default min_weight_to_include=1.0
         assert "/blog/post-1" not in endpoints
+
+    def test_rebuild_normalizes_attack_probe_without_losing_surface(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "/rest/admin/application-configuration",
+            "/rest/admin/%5C%22/",
+            "/api/search?q=<script>alert(1)</script>",
+        ])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        endpoints = [ep["endpoint"] for ep in matrix["endpoints"]]
+
+        assert "/rest/admin/application-configuration" in endpoints
+        assert "/rest/admin" in endpoints
+        assert "/api/search" in endpoints
+        assert "/rest/admin/%5C%22/" not in endpoints
+
+        by_endpoint = {ep["endpoint"]: ep for ep in matrix["endpoints"]}
+        admin_ep = by_endpoint["/rest/admin"]
+        assert "route_prefix_candidate" in admin_ep["auto_hints"]
+        assert admin_ep["source_count"] == 1
+        assert admin_ep["weight"] >= 3.0
+
+    def test_rebuild_uses_raw_all_as_lossless_backstop_for_filtered_urls(self, tmp_path):
+        _seed_recon_with_filtered(
+            tmp_path,
+            "x.com",
+            raw_urls=[
+                "/api/v1/admin/users",
+                "/api/v1/orders/123",
+            ],
+            filtered_urls=[
+                "/api/v1/admin/users",
+            ],
+        )
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        endpoints = [ep["endpoint"] for ep in matrix["endpoints"]]
+
+        assert "/api/v1/admin/users" in endpoints
+        assert "/api/v1/orders/123" in endpoints
+
+    def test_rebuild_does_not_restore_logged_js_path_artifact_from_raw_backstop(self, tmp_path):
+        artifact = "https://x.com/i.visualViewport.scale/i.document.do"
+        _seed_recon_with_filtered(
+            tmp_path,
+            "x.com",
+            raw_urls=[
+                "https://x.com/rest/admin/application-configuration",
+                artifact,
+            ],
+            filtered_urls=[
+                "https://x.com/rest/admin/application-configuration",
+            ],
+            filter_log=f"[JS_PATH_ARTIFACT] {artifact}\n",
+        )
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        endpoints = [ep["endpoint"] for ep in matrix["endpoints"]]
+
+        assert "/rest/admin/application-configuration" in endpoints
+        assert "/i.visualViewport.scale/i.document.do" not in endpoints
+
+    def test_rebuild_drops_minified_js_pseudo_endpoint_without_filter_log(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://x.com/i.visualViewport.scale/i.document.do",
+            "https://x.com/rest/admin/application-configuration",
+        ])
+
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        endpoints = [ep["endpoint"] for ep in matrix["endpoints"]]
+
+        assert "/i.visualViewport.scale/i.document.do" not in endpoints
+        assert "/rest/admin/application-configuration" in endpoints
+
+    def test_static_and_public_metadata_are_not_direct_vuln_matrix_gaps(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://x.com/assets/public/images/logo.png",
+            "https://x.com/.well-known/csaf/provider-metadata.json",
+            "https://x.com/rest/admin/application-configuration",
+        ])
+
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        by_endpoint = {ep["endpoint"]: ep for ep in matrix["endpoints"]}
+
+        static_ep = by_endpoint["/assets/public/images/logo.png"]
+        assert static_ep["endpoint_kind"] == "untriaged"
+        assert "static_asset_shape" in static_ep["auto_hints"]
+        assert static_ep["weight"] == 0.0
+        assert {cell["status"] for cell in static_ep["cells"].values()} == {"untested"}
+
+        metadata_ep = by_endpoint["/.well-known/csaf/provider-metadata.json"]
+        assert metadata_ep["endpoint_kind"] == "untriaged"
+        assert "public_metadata_path" in metadata_ep["auto_hints"]
+        assert metadata_ep["weight"] == 0.0
+        assert {cell["status"] for cell in metadata_ep["cells"].values()} == {"untested"}
+
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gap_endpoints = {gap["endpoint"] for gap in gaps}
+        assert "/assets/public/images/logo.png" not in gap_endpoints
+        assert "/.well-known/csaf/provider-metadata.json" not in gap_endpoints
+
+    def test_route_prefix_like_endpoint_stays_visible_for_ai_judgement(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://x.com/rest/admin",
+            "https://x.com/rest/admin/application-configuration",
+        ])
+
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        by_endpoint = {ep["endpoint"]: ep for ep in matrix["endpoints"]}
+
+        prefix_ep = by_endpoint["/rest/admin"]
+        child_ep = by_endpoint["/rest/admin/application-configuration"]
+        assert prefix_ep["endpoint_kind"] == "untriaged"
+        assert "api_like_path" in prefix_ep["auto_hints"]
+        assert "route_prefix_candidate" in prefix_ep["auto_hints"]
+        assert prefix_ep["source_count"] == 1
+        assert prefix_ep["weight"] >= 3.0
+        assert prefix_ep["cells"]["Authz"]["status"] == "untested"
+        assert child_ep["endpoint_kind"] == "untriaged"
+        assert child_ep["cells"]["Authz"]["status"] == "untested"
+
+    def test_needs_triage_lists_untriaged_endpoints_with_hints(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://x.com/rest/admin",
+            "https://x.com/assets/app.js",
+        ])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+
+        items = needs_endpoint_triage("x.com", repo_root=tmp_path)
+        by_endpoint = {item["endpoint"]: item for item in items}
+
+        assert "/rest/admin" in by_endpoint
+        assert "api_like_path" in by_endpoint["/rest/admin"]["auto_hints"]
+        assert "/assets/app.js" in by_endpoint
+        assert "static_asset_shape" in by_endpoint["/assets/app.js"]["auto_hints"]
+
+    def test_mark_endpoint_kind_persists_across_rebuild(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://x.com/orders",
+        ])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+
+        marked = mark_endpoint_kind(
+            "x.com",
+            "/orders",
+            "page_route",
+            reason="SPA page route; capture underlying XHR before replay",
+            repo_root=tmp_path,
+        )
+        assert marked["endpoint_kind"] == "page_route"
+        assert marked["kind_source"] == "ai_triage"
+
+        rebuilt = rebuild_matrix("x.com", repo_root=tmp_path)
+        by_endpoint = {ep["endpoint"]: ep for ep in rebuilt["endpoints"]}
+        assert by_endpoint["/orders"]["endpoint_kind"] == "page_route"
+        assert by_endpoint["/orders"]["kind_reason"].startswith("SPA page route")
+
+        remaining = needs_endpoint_triage("x.com", repo_root=tmp_path)
+        assert "/orders" not in {item["endpoint"] for item in remaining}
 
     def test_rebuild_creates_all_vuln_class_cells(self, tmp_path):
         _seed_recon(tmp_path, "x.com", ["/api/v1/admin/users"])
@@ -362,6 +539,22 @@ class TestFindGaps:
         assert class_relevance("/rest/order-history", "SQLi", [])["relevance_score"] == 0
         assert class_relevance("/address/select", "SQLi", [])["relevance_score"] == 0
         assert class_relevance("/rest/products/search", "SQLi", ["q"])["relevance_score"] > 0
+
+    def test_bare_numeric_path_not_promoted_as_high_value_idor_gap(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://app.target.com/16",
+            "https://app.target.com/orders/16",
+        ])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+
+        endpoints = {ep["endpoint"]: ep for ep in load_matrix("x.com", repo_root=tmp_path)["endpoints"]}
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gap_pairs = {(gap["endpoint"], gap["vuln_class"]) for gap in gaps}
+
+        assert "/16" not in endpoints
+        assert "/orders/16" in endpoints
+        assert ("/16", "IDOR") not in gap_pairs
 
     def test_race_semantics_require_state_transition_not_state_resource_words(self, tmp_path):
         """`order` / `balance` 资源名不应单靠路径触发 Race 高价值 gap。"""

@@ -83,6 +83,36 @@ def test_ingest_checkpoint_dedupes_active_actions(tmp_path):
     assert select_next_action(load_queue(tmp_path, "target.com"))["id"] == "AQ-0002"
 
 
+def test_checkpoint_reingest_can_clear_stale_redline_flag(tmp_path):
+    checkpoint = {
+        "next_action_queue": [
+            {
+                "id": "A1",
+                "priority": 80,
+                "type": "actor-gap",
+                "status": "ready",
+                "action": "Cover actor matrix gap: /api/orders/123 x Authz with anonymous/none/unauth_denied expected=deny status=missing.",
+                "command_hint": "focused replay + tools/evidence_ledger.py record",
+                "redline_required": True,
+                "metadata": {
+                    "endpoint": "/api/orders/123",
+                    "vuln_class": "Authz",
+                    "actor": "anonymous",
+                },
+            }
+        ]
+    }
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
+    checkpoint["next_action_queue"][0]["redline_required"] = False
+    checkpoint["next_action_queue"][0]["priority"] = 54
+
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
+
+    queue = load_queue(tmp_path, "target.com")
+    assert queue["actions"][0]["redline_required"] is False
+    assert queue["actions"][0]["priority"] == 54
+
+
 def test_resolve_final_action_prevents_readding_same_todo(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
     next_action = select_next_action(load_queue(tmp_path, "target.com"))

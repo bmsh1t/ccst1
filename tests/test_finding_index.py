@@ -51,6 +51,53 @@ def test_build_finding_index_extracts_scanner_candidates(tmp_path):
     assert reloaded["findings"][0]["validation_summary"] == "validated/validation-summary.json"
 
 
+def test_build_finding_index_skips_off_target_urls(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    idor_dir = findings_dir / "idor"
+    idor_dir.mkdir(parents=True)
+    (idor_dir / "idor_candidates.txt").write_text(
+        "https://target.com/api/orders/123\n"
+        "https://github.com/org/repo/issues/123\n",
+        encoding="utf-8",
+    )
+
+    payload = finding_index.write_finding_index(findings_dir, target="target.com")
+
+    assert payload["total"] == 1
+    assert payload["findings"][0]["url"] == "https://target.com/api/orders/123"
+    assert all("github.com" not in item["url"] for item in payload["findings"])
+
+
+def test_write_finding_index_preserves_validation_and_report_state(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    sqli_dir = findings_dir / "sqli"
+    sqli_dir.mkdir(parents=True)
+    (sqli_dir / "timebased_candidates.txt").write_text(
+        "[SQLI-POC-VERIFIED] dialect=mysql param=1 url=https://example.com/item?id=1\n",
+        encoding="utf-8",
+    )
+
+    first = finding_index.write_finding_index(findings_dir, target="example.com")
+    finding_id = first["findings"][0]["id"]
+    finding_index.update_finding_status(
+        findings_dir,
+        finding_id,
+        validation_status="validated",
+        report_status="generated",
+        validation_summary="evidence/example.com/validation/sqli/summary.json",
+        report_file="reports/example.com/sqli_001.md",
+    )
+
+    rebuilt = finding_index.write_finding_index(findings_dir, target="example.com")
+    finding = rebuilt["findings"][0]
+
+    assert finding["id"] == finding_id
+    assert finding["validation_status"] == "validated"
+    assert finding["report_status"] == "generated"
+    assert finding["validation_summary"] == "evidence/example.com/validation/sqli/summary.json"
+    assert finding["report_file"] == "reports/example.com/sqli_001.md"
+
+
 def test_report_generator_consumes_structured_findings(monkeypatch, tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)

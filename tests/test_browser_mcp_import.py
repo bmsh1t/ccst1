@@ -139,7 +139,7 @@ def test_browser_mcp_import_accepts_raw_playwright_network_text(tmp_path):
         source="playwright-mcp",
     )
 
-    target_key = "http:_127.0.0.1:3002"
+    target_key = "127.0.0.1:3002"
     recon_browser = tmp_path / "recon" / target_key / "browser"
     assert summary["counts"]["requests"] == 2
     assert (recon_browser / "xhr_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
@@ -150,4 +150,51 @@ def test_browser_mcp_import_accepts_raw_playwright_network_text(tmp_path):
         "http://127.0.0.1:3002/rest/products/search?q= :: q",
         "http://127.0.0.1:3002/socket.io/?EIO=4&transport=polling :: EIO",
         "http://127.0.0.1:3002/socket.io/?EIO=4&transport=polling :: transport",
+    ]
+
+
+def test_browser_mcp_import_merges_incremental_surface_instead_of_erasing(tmp_path):
+    target_key = "127.0.0.1:3002"
+    recon_browser = tmp_path / "recon" / target_key / "browser"
+    recon_browser.mkdir(parents=True)
+    (recon_browser / "xhr_endpoints.txt").write_text(
+        "http://127.0.0.1:3002/rest/order-history\n",
+        encoding="utf-8",
+    )
+    (recon_browser / "api_endpoints.txt").write_text(
+        "http://127.0.0.1:3002/rest/order-history\n",
+        encoding="utf-8",
+    )
+    (recon_browser / "browser_params.txt").write_text(
+        "http://127.0.0.1:3002/rest/track-order/abc :: id\n",
+        encoding="utf-8",
+    )
+
+    network_path = tmp_path / "network.txt"
+    network_path.write_text(
+        "1. [GET] http://127.0.0.1:3002/rest/products/search?q= => [200] OK\n",
+        encoding="utf-8",
+    )
+
+    browser_mcp_import.import_mcp_browser_evidence(
+        target="http://127.0.0.1:3002",
+        url="http://127.0.0.1:3002/#/",
+        network_path=network_path,
+        label="playwright-mcp",
+        evidence_root=tmp_path / "evidence",
+        recon_root=tmp_path / "recon",
+        source="playwright-mcp",
+    )
+
+    assert (recon_browser / "xhr_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
+        "http://127.0.0.1:3002/rest/order-history",
+        "http://127.0.0.1:3002/rest/products/search?q=",
+    ]
+    assert (recon_browser / "api_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
+        "http://127.0.0.1:3002/rest/order-history",
+        "http://127.0.0.1:3002/rest/products/search?q=",
+    ]
+    assert (recon_browser / "browser_params.txt").read_text(encoding="utf-8").splitlines() == [
+        "http://127.0.0.1:3002/rest/track-order/abc :: id",
+        "http://127.0.0.1:3002/rest/products/search?q= :: q",
     ]

@@ -103,7 +103,7 @@ CHECKPOINT DECISION
 ## 决策解释
 
 - `validate`：存在 pending structured finding，应进入 `/validate`。
-- `report`：存在 validated finding，但仍需人工审查，不自动提交。
+- `report`：存在 validated finding 且没有更高价值可执行深挖动作；pending report 会持续留在队列里，直到草稿生成。
 - `refresh-recon`：没有可用 recon/surface，不要声称测试完成。
 - `enrich`：browser/source/JS enrichment 可能改变下一步。
 - `hunt`：有 P1/P2 或 recommended target。

@@ -47,6 +47,9 @@ _WEIGHT_TABLE: list[tuple[re.Pattern, float, str]] = [
     # versioned API surface (authenticated APIs concentrate here)
     (re.compile(r"/api/v\d+/", re.I), 2.0, "api_v"),
     # low-value paths — actively de-prioritize
+    # Bare numeric SPA/page routes are often crawl artifacts. Resource-scoped
+    # IDs such as /orders/123 keep their normal value through other patterns.
+    (re.compile(r"^/\d{1,8}/?$", re.I), 0.2, "bare-numeric"),
     (re.compile(r"/(?:blog|marketing|landing|press|legal|static)(?:/|$)", re.I), 0.2, "low"),
     (re.compile(r"/docs(?!/api)", re.I), 0.3, "docs"),
 ]

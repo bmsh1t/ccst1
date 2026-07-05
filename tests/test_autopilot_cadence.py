@@ -71,6 +71,8 @@ def test_autopilot_keeps_decision_loop_without_legacy_cadence_bulk():
     flat = " ".join(command.split())
 
     for marker in (
+        "Expert Hunter Autopilot",
+        "fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> SCANNER QUICK -> WORKFLOW",
         "LOAD -> RANK -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT",
         "Discovery / Exploitation / Validation Modes",
         "Known Software Intelligence Lane",
@@ -91,6 +93,35 @@ def test_autopilot_keeps_decision_loop_without_legacy_cadence_bulk():
     )
     for marker in legacy_markers:
         assert marker not in command
+
+
+def test_expert_hunter_startup_is_recon_first_then_cache_aware():
+    command = _read(COMMAND)
+    agent = _read(AGENT)
+    combined = f"{command}\n{agent}"
+
+    for marker in (
+        "Super-pentester priority: business impact > workflow evidence > crown-jewel hypothesis",
+        "Fresh target startup is recon-first",
+        "scanner quick",
+        "breadth sensor",
+        "advisory lead source",
+        "scanner-negative is not completion",
+        "Existing target startup is cache-aware",
+        "Four-layer memory is the external brain, not the steering wheel",
+        "BUSINESS/CROWN JEWELS",
+        "MINIMAL PROOF",
+        "CHAIN EXPANSION",
+        "do not let them drive first contact",
+    ):
+        assert marker in combined
+
+    agent_four_layer = agent.split("## Four-Layer Runtime", 1)[1].split(
+        "## Case-State First", 1
+    )[0]
+    assert "tools/coverage_matrix.py rebuild --target <target>" not in agent_four_layer
+    assert "tools/coverage_matrix.py find-gaps --target <target>" not in agent_four_layer
+    assert "tools/checkpoint.py --target <target>" not in agent_four_layer
 
 
 def test_deep_mode_points_to_coverage_tools_instead_of_embedded_lab_fixtures():

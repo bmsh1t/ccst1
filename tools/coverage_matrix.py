@@ -90,11 +90,13 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.attack_probe_filter import is_attack_probe, sanitize_attack_probe_url
     from tools.surface_weights import value_weight
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
+    from attack_probe_filter import is_attack_probe, sanitize_attack_probe_url  # type: ignore
     from surface_weights import value_weight  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
 VULN_CLASSES = (
     "IDOR", "SSRF", "XSS", "Race", "Authz",
@@ -185,6 +187,20 @@ STATUS_VALUES = ("tested_clean", "tested_finding", "untested", "n_a")
 
 DEFAULT_MIN_WEIGHT = 3.0
 
+ENDPOINT_KIND_VALUES = (
+    "untriaged",
+    "api_endpoint",
+    "page_route",
+    "static_asset",
+    "public_metadata",
+    "route_prefix",
+    "realtime_endpoint",
+    "external_chain_context",
+    "unknown",
+)
+
+FINAL_ENDPOINT_KIND_SOURCES = {"ai_triage", "manual", "operator"}
+
 # 用于 gaps 排序的漏洞类型基础优先级。它不是覆盖范围过滤器，只在
 # endpoint/参数没有明显语义命中时做轻量 tie-break，避免默认永远从
 # VULN_CLASSES 的第一个 IDOR 开始。
@@ -256,6 +272,53 @@ _RACE_STATE_PARAM_PATTERN = re.compile(
     r"\b(coupon|coupon_code|promo|promo_code|voucher|quantity|qty|amount|credits|credit|points|reward|rewards|balance|wallet|seat|seats|quota|limit|otp|totp|token|idempotency|idempotency_key)\b",
     re.I,
 )
+
+STATIC_ASSET_EXTENSIONS = {
+    ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+    ".ico", ".webp", ".woff", ".woff2", ".ttf", ".eot", ".map", ".txt",
+    ".pdf", ".mp4", ".webm", ".wasm",
+}
+STATIC_ASSET_ROOT_SEGMENTS = {
+    "assets", "asset", "static", "public", "images", "img", "css", "js",
+    "fonts", "i18n", "locales", "favicon",
+}
+PUBLIC_METADATA_EXACT_PATHS = {
+    "/.well-known/security.txt",
+    "/.well-known/openid-configuration",
+    "/.well-known/jwks",
+    "/.well-known/jwks.json",
+    "/.well-known/csaf/provider-metadata.json",
+}
+PUBLIC_METADATA_PREFIXES = (
+    "/.well-known/csaf/",
+)
+
+ROUTE_PREFIX_CANDIDATE_SEGMENTS = {
+    "admin",
+    "api",
+    "rest",
+    "graphql",
+    "internal",
+    "staff",
+    "console",
+    "backoffice",
+    "manage",
+    "management",
+}
+
+AUTO_APPLICABILITY_NA_MARKERS = (
+    "static asset;",
+    "standard/public metadata;",
+    "route prefix/container;",
+    "minified JS property-chain artifact;",
+)
+
+STRUCTURAL_NOISE_HINTS = {
+    "static_asset_shape",
+    "public_metadata_path",
+    "minified_js_pseudo",
+    "route_prefix_candidate",
+}
 
 
 def _storage_key(target: str) -> str:
@@ -330,7 +393,7 @@ def _compute_summary(matrix: dict) -> dict:
     total = 0
     high_gaps = 0
     for ep in matrix.get("endpoints", []):
-        weight = float(ep.get("weight", 1.0) or 1.0)
+        weight = _coerce_weight(ep.get("weight", 1.0))
         for cell in ep.get("cells", {}).values():
             total += 1
             status = cell.get("status", "untested")
@@ -358,6 +421,217 @@ def _canonicalize_endpoint(url: str) -> str:
     else:
         path = url
     return path.split("?", 1)[0].split("#", 1)[0]
+
+
+def _path_segments(endpoint: str) -> list[str]:
+    path = _canonicalize_endpoint(endpoint)
+    return [part for part in path.strip("/").split("/") if part]
+
+
+def _is_identifier_token(token: str) -> bool:
+    if not token:
+        return False
+    first = token[0]
+    if not (first.isalpha() or first in {"_", "$"}):
+        return False
+    return all(ch.isalnum() or ch in {"_", "$"} for ch in token[1:])
+
+
+def _is_dotted_identifier_chain(segment: str) -> bool:
+    parts = segment.split(".")
+    return len(parts) >= 2 and all(_is_identifier_token(part) for part in parts)
+
+
+def _is_static_asset_endpoint(endpoint: str) -> bool:
+    """Return true only for structural static-file / asset paths.
+
+    这里不用漏洞语义词表判断，只看“首段是否是静态资源目录”或“后缀是否
+    是明确静态文件类型”。`/api/file.json` 这类 API 形态不会因为有点号
+    被降级。
+    """
+    path = _canonicalize_endpoint(endpoint)
+    segments = _path_segments(path)
+    if not segments:
+        return False
+    first = segments[0].lower()
+    if first in STATIC_ASSET_ROOT_SEGMENTS:
+        return True
+    suffix = Path(segments[-1]).suffix.lower()
+    return suffix in STATIC_ASSET_EXTENSIONS
+
+
+def _is_public_metadata_endpoint(endpoint: str) -> bool:
+    path = _canonicalize_endpoint(endpoint).lower().rstrip("/")
+    return path in PUBLIC_METADATA_EXACT_PATHS or any(
+        path.startswith(prefix) for prefix in PUBLIC_METADATA_PREFIXES
+    )
+
+
+def _looks_like_minified_js_pseudo_endpoint(endpoint: str) -> bool:
+    """Detect DOM/property chains accidentally emitted as URL paths.
+
+    Keep this deliberately narrow so real dotted paths such as
+    `/.well-known/openid-configuration` or `/api/file.json` survive.
+    """
+    path = str(endpoint or "").strip()
+    if not path:
+        return False
+    parts = _path_segments(path)
+    if len(parts) < 2:
+        return False
+    dotted = [
+        part for part in parts
+        if _is_dotted_identifier_chain(part)
+    ]
+    if len(dotted) < 2:
+        return False
+    joined = ".".join(dotted).lower()
+    browser_tokens = (
+        "document",
+        "window",
+        "viewport",
+        "visualviewport",
+        "prototype",
+        "addeventlistener",
+        "queryselector",
+        "getelement",
+    )
+    return any(token in joined for token in browser_tokens)
+
+
+def _endpoint_kind(endpoint: str) -> str:
+    """Return only a final structural kind when the evidence is deterministic.
+
+    Endpoint semantics are deliberately AI-first. Regex/path heuristics may
+    produce `auto_hints`, but they must not become final `endpoint_kind` until
+    Claude/operator writes them back with `mark-endpoint-kind`.
+    """
+    return "untriaged"
+
+
+def _is_route_prefix_candidate(endpoint: str, all_endpoints: set[str]) -> bool:
+    """Return a non-authoritative hint for bare container-like paths.
+
+    `/rest/admin` can be a real handler or just a prefix for
+    `/rest/admin/application-configuration`; the tool only exposes this as a
+    hint so Claude can judge from response/body/browser evidence.
+    """
+    path = str(endpoint or "").rstrip("/")
+    if not path or path == "/":
+        return False
+    segments = _path_segments(path)
+    if not segments:
+        return False
+    if segments[-1].lower() not in ROUTE_PREFIX_CANDIDATE_SEGMENTS:
+        return False
+    prefix = f"{path}/"
+    return any(other != path and str(other).startswith(prefix) for other in all_endpoints)
+
+
+def _endpoint_auto_hints(
+    endpoint: str,
+    observed_params: object | None = None,
+    all_endpoints: set[str] | None = None,
+) -> list[str]:
+    """Return non-authoritative hints for Claude triage.
+
+    These hints are facts/features for ordering and explanation. They are not
+    endpoint-kind decisions and must not be used as N/A proof.
+    """
+    hints: list[str] = []
+    path = _canonicalize_endpoint(endpoint)
+    if _looks_like_minified_js_pseudo_endpoint(path):
+        hints.append("minified_js_pseudo")
+    if _is_public_metadata_endpoint(path):
+        hints.append("public_metadata_path")
+    if _is_static_asset_endpoint(path):
+        hints.append("static_asset_shape")
+    if re.search(r"^/(?:api|rest|graphql|wp-json)(?:/|$)", path, re.I):
+        hints.append("api_like_path")
+    if all_endpoints is not None and _is_route_prefix_candidate(path, all_endpoints):
+        hints.append("route_prefix_candidate")
+    params: list[str] = []
+    if isinstance(observed_params, (list, tuple, set)):
+        params = [str(item) for item in observed_params if str(item or "").strip()]
+    if params:
+        hints.append("has_query_params")
+    return list(dict.fromkeys(hints))
+
+
+def _has_final_endpoint_kind(ep: dict | None) -> bool:
+    if not isinstance(ep, dict):
+        return False
+    return (
+        str(ep.get("kind_source") or "") in FINAL_ENDPOINT_KIND_SOURCES
+        and str(ep.get("endpoint_kind") or "") in ENDPOINT_KIND_VALUES
+    )
+
+
+def _effective_endpoint_kind(existing_ep: dict | None, endpoint: str) -> str:
+    if _has_final_endpoint_kind(existing_ep):
+        return str(existing_ep.get("endpoint_kind") or "untriaged")
+    return _endpoint_kind(endpoint)
+
+
+def _na_cell(reason: str) -> dict[str, str]:
+    return {"status": "n_a", "reason": reason}
+
+
+def _coerce_weight(value: object, default: float = 1.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _empty_cells(
+    endpoint: str = "",
+    *,
+    endpoint_kind: str | None = None,
+    auto_hints: list[str] | None = None,
+) -> dict[str, dict]:
+    kind = endpoint_kind or _endpoint_kind(endpoint)
+    hints = set(auto_hints or [])
+    reason = ""
+    # 不把 endpoint kind 当成漏洞适用性的最终裁判。static asset /
+    # public metadata 只影响优先级，不自动写 n_a；是否值得继续看由 AI
+    # 结合 JS/source/exposure 证据判断，避免工具层把攻击面“判死”。
+    # 只有结构性垃圾（dotted minified-JS 链）是 strong enough 的 floor。
+    if kind == "minified_js_pseudo" or "minified_js_pseudo" in hints:
+        reason = "minified JS property-chain artifact; not an HTTP handler endpoint"
+
+    if reason:
+        return {vc: _na_cell(reason) for vc in VULN_CLASSES}
+    return {vc: {"status": "untested"} for vc in VULN_CLASSES}
+
+
+def _is_auto_applicability_na(cell: dict) -> bool:
+    if cell.get("status") != "n_a":
+        return False
+    reason = str(cell.get("reason") or "")
+    return any(marker in reason for marker in AUTO_APPLICABILITY_NA_MARKERS)
+
+
+def _apply_endpoint_applicability(ep: dict, endpoint_kind: str) -> None:
+    """Apply conservative N/A defaults without overwriting evidence."""
+    defaults = _empty_cells(
+        str(ep.get("endpoint") or ""),
+        endpoint_kind=endpoint_kind,
+        auto_hints=list(ep.get("auto_hints") or []),
+    )
+    cells = ep.get("cells") or {}
+    for vc in VULN_CLASSES:
+        default = defaults.get(vc, {"status": "untested"})
+        current = cells.get(vc)
+        if not isinstance(current, dict):
+            cells[vc] = dict(default)
+            continue
+        if default.get("status") != "n_a" and _is_auto_applicability_na(current):
+            cells[vc] = dict(default)
+            continue
+        if default.get("status") == "n_a" and current.get("status", "untested") == "untested":
+            cells[vc] = dict(default)
+    ep["cells"] = cells
 
 
 def _split_path_query(url: str) -> tuple[str, str]:
@@ -412,6 +686,31 @@ def _param_names_from_url(url: str) -> set[str]:
         if key:
             out.add(key[:80])
     return out
+
+
+def _load_js_path_artifact_urls(urls_dir: Path) -> set[str]:
+    """Load recon-filtered JS member-expression pseudo URLs.
+
+    These entries are not merely low-priority attack surface. They are crawler
+    artifacts where JavaScript property chains were mistaken for paths, so raw
+    URL fallback must not resurrect them as coverage endpoints.
+    """
+    log_path = urls_dir / "filter.log"
+    if not log_path.is_file():
+        return set()
+    artifacts: set[str] = set()
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return artifacts
+    prefix = "[JS_PATH_ARTIFACT] "
+    for line in lines:
+        if not line.startswith(prefix):
+            continue
+        artifact = line[len(prefix):].strip()
+        if artifact:
+            artifacts.add(artifact)
+    return artifacts
 
 
 def _normalise_signal(value: str) -> str:
@@ -525,7 +824,7 @@ def _gap_sort_key(gap: dict) -> tuple:
     """Sort high-value gaps by semantic fit, endpoint value, and impact."""
     vuln_class = str(gap.get("vuln_class") or "")
     try:
-        weight = float(gap.get("weight", 1.0) or 1.0)
+        weight = _coerce_weight(gap.get("weight", 1.0))
     except (TypeError, ValueError):
         weight = 1.0
     try:
@@ -557,7 +856,7 @@ def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WE
         if not isinstance(ep, dict):
             continue
         try:
-            weight = float(ep.get("weight", 1.0) or 1.0)
+            weight = _coerce_weight(ep.get("weight", 1.0))
         except (TypeError, ValueError):
             weight = 1.0
         if weight < min_weight:
@@ -571,6 +870,10 @@ def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WE
                 "endpoint": endpoint,
                 "vuln_class": vc,
                 "weight": weight,
+                # 只存参数名和来源计数，不存参数值。checkpoint 需要这些
+                # 轻量信号来区分“真实可重放输入面”和“仅路径命中的语义 gap”。
+                "observed_params": list(observed_params),
+                "source_count": int(ep.get("source_count", 0) or 0),
             }
             gap.update(class_relevance(endpoint, vc, observed_params))
             gaps.append(gap)
@@ -578,21 +881,21 @@ def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WE
     return gaps
 
 
-def _empty_cells() -> dict[str, dict]:
-    return {vc: {"status": "untested"} for vc in VULN_CLASSES}
-
-
 def _ensure_endpoint(matrix: dict, endpoint: str, weight: float) -> dict:
     """Return the endpoint entry dict; create if missing."""
     for ep in matrix.get("endpoints", []):
         if ep.get("endpoint") == endpoint:
             return ep
+    kind = _endpoint_kind(endpoint)
+    auto_hints = _endpoint_auto_hints(endpoint)
     new_ep = {
         "endpoint": endpoint,
         "weight": weight,
+        "endpoint_kind": kind,
+        "auto_hints": auto_hints,
         "observed_params": [],
         "source_count": 0,
-        "cells": _empty_cells(),
+        "cells": _empty_cells(endpoint, endpoint_kind=kind),
     }
     matrix.setdefault("endpoints", []).append(new_ep)
     return new_ep
@@ -644,32 +947,50 @@ def rebuild_matrix(
     # Collect URLs from recon
     target_key = _storage_key(target)
     urls_dir = repo / "recon" / target_key / "urls"
-    # Prefer the denoised URL set when recon produced it. Raw all.txt keeps
-    # external embeds and historical third-party URLs for audit, but coverage
-    # should rank the current target surface instead of converting
-    # `https://third-party/player/?url=...` into a fake local `/player/` gap.
-    urls_path = urls_dir / "all_filtered.txt"
-    if not urls_path.is_file():
-        urls_path = urls_dir / "all.txt"
     urls: list[str] = []
-    if urls_path.is_file():
+    # Discovery-first: consume the denoised URL set first when present, but
+    # merge raw all.txt as a lossless backstop. SPA/noise filtering is allowed
+    # to reduce replay priority; it must not erase endpoints from coverage.
+    filtered_set: set[str] = set()
+    filtered_path = urls_dir / "all_filtered.txt"
+    for urls_path in (filtered_path, urls_dir / "all.txt"):
+        if not urls_path.is_file():
+            continue
         try:
-            urls = [
+            current_urls = [
                 line.strip()
                 for line in urls_path.read_text(encoding="utf-8", errors="ignore").splitlines()
                 if line.strip()
             ]
+            if urls_path == filtered_path:
+                filtered_set.update(current_urls)
+            urls.extend(current_urls)
         except OSError:
-            urls = []
+            continue
+    urls = list(dict.fromkeys(urls))
 
     # Build endpoint set with weights and lightweight param-name signals.
     # The canonical matrix key remains path-only, but the sorting layer can
     # now distinguish `/api/admin/users?isAdmin=true` from a generic users
     # endpoint and avoid always proposing IDOR first.
+    js_path_artifacts = _load_js_path_artifact_urls(urls_dir)
     seen: dict[str, dict] = {}
     for raw in urls:
+        if raw in js_path_artifacts:
+            continue
+        if (
+            filtered_set
+            and raw not in filtered_set
+            and raw.startswith(("http://", "https://"))
+            and not url_belongs_to_target(raw, target)
+        ):
+            continue
+        if is_attack_probe(raw):
+            raw = sanitize_attack_probe_url(raw)
         path = _canonicalize_endpoint(raw)
         if not path:
+            continue
+        if _looks_like_minified_js_pseudo_endpoint(path):
             continue
         params = _param_names_from_url(raw)
         path_query = _path_with_query(raw) or path
@@ -679,49 +1000,70 @@ def rebuild_matrix(
             "params": set(),
             "source_count": 0,
         })
-        meta["weight"] = max(float(meta.get("weight", 0.0) or 0.0), weight)
+        meta["weight"] = max(_coerce_weight(meta.get("weight", 0.0), 0.0), weight)
         meta["params"].update(params)
         meta["source_count"] = int(meta.get("source_count", 0) or 0) + 1
 
     # Apply a small semantic weight floor after all params for an endpoint
     # have been merged. This lets high-risk query surfaces participate in
     # the high-value queue even when their path alone is generic.
+    all_seen_endpoints = set(seen)
     filtered_seen: dict[str, dict] = {}
     for endpoint, meta in seen.items():
         params = sorted(meta.get("params") or [])
+        auto_hints = _endpoint_auto_hints(endpoint, params, all_endpoints=all_seen_endpoints)
         weight = max(
-            float(meta.get("weight", 1.0) or 1.0),
+            _coerce_weight(meta.get("weight", 1.0)),
             _semantic_weight_floor(endpoint, params),
         )
+        structural_noise_hints = STRUCTURAL_NOISE_HINTS - {"route_prefix_candidate"}
+        if any(hint in auto_hints for hint in structural_noise_hints):
+            weight = 0.0
+        elif "route_prefix_candidate" in auto_hints and int(meta.get("source_count", 0) or 0) == 0:
+            weight = 0.0
         if weight < min_weight_to_include:
-            continue
+            if not any(hint in auto_hints for hint in {"static_asset_shape", "public_metadata_path"}):
+                continue
         filtered_seen[endpoint] = {
             "weight": weight,
             "params": params,
             "source_count": int(meta.get("source_count", 0) or 0),
+            "auto_hints": auto_hints,
         }
 
     # Merge: keep existing cells, add new endpoints with untested cells
     new_endpoints: list[dict] = []
     for endpoint, meta in filtered_seen.items():
-        weight = float(meta.get("weight", 1.0) or 1.0)
+        weight = _coerce_weight(meta.get("weight", 1.0))
+        existing_ep = existing.get(endpoint)
+        kind = _effective_endpoint_kind(existing_ep, endpoint)
+        auto_hints = list(meta.get("auto_hints") or _endpoint_auto_hints(
+            endpoint,
+            meta.get("params") or [],
+            all_endpoints=all_seen_endpoints,
+        ))
         if endpoint in existing:
-            ep = existing[endpoint]
-            ep["weight"] = max(float(ep.get("weight", weight) or weight), weight)
+            ep = existing_ep or existing[endpoint]
+            ep["weight"] = max(_coerce_weight(ep.get("weight", weight), weight), weight)
+            if any(hint in auto_hints for hint in STRUCTURAL_NOISE_HINTS):
+                ep["weight"] = weight
+            ep["endpoint_kind"] = kind
+            ep["auto_hints"] = auto_hints
             ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(meta.get("params") or []))
             ep["source_count"] = max(int(ep.get("source_count", 0) or 0), int(meta.get("source_count", 0) or 0))
             cells = ep.get("cells") or {}
-            for vc in VULN_CLASSES:
-                cells.setdefault(vc, {"status": "untested"})
             ep["cells"] = cells
+            _apply_endpoint_applicability(ep, kind)
             new_endpoints.append(ep)
         else:
             new_endpoints.append({
                 "endpoint": endpoint,
                 "weight": weight,
+                "endpoint_kind": kind,
+                "auto_hints": auto_hints,
                 "observed_params": list(meta.get("params") or []),
                 "source_count": int(meta.get("source_count", 0) or 0),
-                "cells": _empty_cells(),
+                "cells": _empty_cells(endpoint, endpoint_kind=kind, auto_hints=auto_hints),
             })
 
     # Apply findings: mark cells as tested_finding
@@ -742,22 +1084,34 @@ def rebuild_matrix(
                 for ep in new_endpoints:
                     if ep["endpoint"] == ep_path:
                         ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(params))
+                        kind = str(ep.get("endpoint_kind") or _endpoint_kind(ep_path))
+                        ep["auto_hints"] = _endpoint_auto_hints(
+                            ep_path,
+                            ep.get("observed_params") or [],
+                            all_endpoints=all_seen_endpoints,
+                        )
                         ep["weight"] = max(
-                            float(ep.get("weight", value_weight(ep_path)) or value_weight(ep_path)),
+                            _coerce_weight(ep.get("weight", value_weight(ep_path)), value_weight(ep_path)),
                             _semantic_weight_floor(ep_path, ep.get("observed_params") or []),
                         )
+                        ep["endpoint_kind"] = kind
+                        _apply_endpoint_applicability(ep, kind)
                         ep["cells"][vc] = {
                             "status": "tested_finding",
                             "evidence_ref": f"findings/{target_key}/findings.json#{finding.get('id', '')}",
                         }
                         break
                 else:
+                    kind = _endpoint_kind(ep_path)
+                    auto_hints = _endpoint_auto_hints(ep_path, params, all_endpoints=all_seen_endpoints)
                     ep = {
                         "endpoint": ep_path,
                         "weight": max(value_weight(ep_path), _semantic_weight_floor(ep_path, params)),
+                        "endpoint_kind": kind,
+                        "auto_hints": auto_hints,
                         "observed_params": params,
                         "source_count": 0,
-                        "cells": _empty_cells(),
+                        "cells": _empty_cells(ep_path, endpoint_kind=kind, auto_hints=auto_hints),
                     }
                     ep["cells"][vc] = {
                         "status": "tested_finding",
@@ -767,9 +1121,10 @@ def rebuild_matrix(
         except (OSError, json.JSONDecodeError):
             pass
 
-    # Apply scanner_pass.json: mark cells `tested_clean` only when scanner
-    # exercised them and no higher-precedence status (tested_finding > n_a)
-    # already applies. Per task 05-16-b4-scanner-matrix-feedback (R2/R3).
+    # Apply scanner_pass.json as advisory scanner-swept metadata. Broad scanner
+    # negatives are not proof of absence, so they must not close coverage cells
+    # as `tested_clean`; only deterministic validation runners or explicit
+    # operator marks may do that.
     _apply_scanner_pass(target_key, repo, new_endpoints)
 
     matrix["endpoints"] = new_endpoints
@@ -781,11 +1136,11 @@ def _apply_scanner_pass(
     repo: Path,
     endpoints: list[dict],
 ) -> None:
-    """Mark cells tested_clean when scanner_pass.json says the scanner
-    exercised (endpoint, vuln_class) but the cell is still untested.
+    """Attach scanner-swept metadata without changing coverage status.
 
-    Cell-state precedence (highest to lowest):
-        tested_finding > tested_clean > n_a > untested
+    Scanner output is a lead source, not a validation verdict. Keeping the cell
+    `untested` prevents broad negative scans from hiding attack surface while
+    still giving Claude context that a scanner lane touched the pair.
     """
     sp_path = repo / "findings" / target / "scanner_pass.json"
     if not sp_path.is_file():
@@ -802,6 +1157,17 @@ def _apply_scanner_pass(
 
     # Build {endpoint: ep_dict} index for quick lookup
     ep_index = {ep.get("endpoint"): ep for ep in endpoints}
+
+    # Endpoint universe for route_prefix_candidate detection. Include both the
+    # rebuilt matrix endpoints and scanner-only endpoints so recomputing
+    # auto_hints here does not drop route-prefix hints produced during rebuild.
+    all_endpoints = {str(ep.get("endpoint") or "") for ep in endpoints}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        canon = _canonicalize_endpoint(str(row.get("endpoint") or ""))
+        if canon:
+            all_endpoints.add(canon)
 
     scanned_at = str(payload.get("scanned_at") or "")
     scanner_version = str(payload.get("scanner_version") or "")
@@ -825,35 +1191,53 @@ def _apply_scanner_pass(
             )
             continue
         module = str(row.get("module") or "")
+        evidence_ref = (
+            f"findings/{target}/scanner_pass.json#{module}"
+            if module else f"findings/{target}/scanner_pass.json"
+        )
 
         if endpoint not in ep_index:
-            # Endpoint not in matrix yet — add it so the tested_clean mark survives
+            # Endpoint not in matrix yet — add it so scanner-swept context is visible.
+            kind = _endpoint_kind(endpoint)
+            auto_hints = _endpoint_auto_hints(endpoint, all_endpoints=all_endpoints)
             new_ep = {
                 "endpoint": endpoint,
                 "weight": value_weight(endpoint),
+                "endpoint_kind": kind,
+                "auto_hints": auto_hints,
                 "observed_params": [],
                 "source_count": 0,
-                "cells": _empty_cells(),
+                "cells": _empty_cells(endpoint, endpoint_kind=kind, auto_hints=auto_hints),
             }
             endpoints.append(new_ep)
             ep_index[endpoint] = new_ep
 
         ep = ep_index[endpoint]
-        cells = ep.setdefault("cells", _empty_cells())
+        kind = _effective_endpoint_kind(ep, endpoint)
+        ep["endpoint_kind"] = kind
+        ep["auto_hints"] = _endpoint_auto_hints(
+            endpoint,
+            ep.get("observed_params") or [],
+            all_endpoints=all_endpoints,
+        )
+        _apply_endpoint_applicability(ep, kind)
+        cells = ep.setdefault("cells", _empty_cells(endpoint, endpoint_kind=kind))
         current = cells.get(vc, {"status": "untested"})
         cur_status = current.get("status", "untested")
-        # Precedence: tested_finding and n_a stay; otherwise upgrade to tested_clean
-        if cur_status in ("tested_finding", "n_a"):
+        if cur_status != "untested":
             continue
-        cells[vc] = {
-            "status": "tested_clean",
-            "evidence_ref": (
-                f"findings/{target}/scanner_pass.json#{module}"
-                if module else f"findings/{target}/scanner_pass.json"
-            ),
+        current = dict(current)
+        current.setdefault("status", "untested")
+        current["scanner_swept"] = True
+        current["scanner_evidence_ref"] = evidence_ref
+        if module:
+            current["scanner_module"] = module
+        current["scanner_pass"] = {
+            "evidence_ref": evidence_ref,
             "scanned_at": scanned_at,
             "scanner_version": scanner_version,
         }
+        cells[vc] = current
 
 
 def find_high_value_gaps(
@@ -864,6 +1248,84 @@ def find_high_value_gaps(
     """Return (endpoint, vuln_class) cells with status=untested AND weight >= min_weight."""
     matrix = load_matrix(target, repo_root)
     return high_value_gaps_from_matrix(matrix, min_weight=min_weight)
+
+
+def needs_endpoint_triage(
+    target: str,
+    repo_root: Path | str | None = None,
+    *,
+    limit: int | None = None,
+) -> list[dict]:
+    """Return endpoints whose semantic kind still needs Claude/operator triage."""
+    matrix = load_matrix(target, repo_root)
+    items: list[dict] = []
+    for ep in matrix.get("endpoints", []):
+        if not isinstance(ep, dict):
+            continue
+        if _has_final_endpoint_kind(ep):
+            continue
+        endpoint = str(ep.get("endpoint") or "")
+        if not endpoint:
+            continue
+        cells = ep.get("cells") or {}
+        status_counts = {
+            status: sum(1 for cell in cells.values() if isinstance(cell, dict) and cell.get("status") == status)
+            for status in STATUS_VALUES
+        }
+        observed_params = list(ep.get("observed_params") or [])
+        auto_hints = list(ep.get("auto_hints") or _endpoint_auto_hints(endpoint, observed_params))
+        items.append({
+            "endpoint": endpoint,
+            "endpoint_kind": str(ep.get("endpoint_kind") or "untriaged"),
+            "auto_hints": auto_hints,
+            "weight": _coerce_weight(ep.get("weight", 1.0)),
+            "observed_params": observed_params,
+            "source_count": int(ep.get("source_count", 0) or 0),
+            "status_counts": status_counts,
+        })
+
+    items.sort(key=lambda item: (
+        -_coerce_weight(item.get("weight", 0.0), 0.0),
+        -int(item.get("source_count", 0) or 0),
+        str(item.get("endpoint") or ""),
+    ))
+    if limit is not None and limit >= 0:
+        return items[:limit]
+    return items
+
+
+def mark_endpoint_kind(
+    target: str,
+    endpoint: str,
+    kind: str,
+    *,
+    reason: str = "",
+    source: str = "ai_triage",
+    repo_root: Path | str | None = None,
+) -> dict:
+    """Persist Claude/operator endpoint-kind triage in the coverage matrix."""
+    if kind not in ENDPOINT_KIND_VALUES:
+        raise ValueError(
+            f"unknown endpoint kind: {kind!r}. "
+            f"Valid kinds: {', '.join(ENDPOINT_KIND_VALUES)}"
+        )
+    if source not in FINAL_ENDPOINT_KIND_SOURCES:
+        raise ValueError(
+            f"unknown endpoint kind source: {source!r}. "
+            f"Valid sources: {', '.join(sorted(FINAL_ENDPOINT_KIND_SOURCES))}"
+        )
+    matrix = load_matrix(target, repo_root)
+    endpoint = _canonicalize_endpoint(endpoint)
+    ep = _ensure_endpoint(matrix, endpoint, value_weight(endpoint))
+    observed_params = list(ep.get("observed_params") or [])
+    ep["endpoint_kind"] = kind
+    ep["kind_source"] = source
+    ep["kind_reason"] = reason
+    ep["kind_triaged_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    ep["auto_hints"] = list(ep.get("auto_hints") or _endpoint_auto_hints(endpoint, observed_params))
+    _apply_endpoint_applicability(ep, kind)
+    save_matrix(target, matrix, repo_root)
+    return ep
 
 
 def mark_cell(
@@ -971,6 +1433,22 @@ def main(argv: list[str] | None = None) -> int:
     p_gaps.add_argument("--repo-root", default=str(BASE_DIR))
     p_gaps.add_argument("--min-weight", type=float, default=DEFAULT_MIN_WEIGHT)
 
+    p_needs_triage = sub.add_parser(
+        "needs-triage",
+        help="list endpoints whose kind should be decided by Claude/operator",
+    )
+    p_needs_triage.add_argument("--target", required=True)
+    p_needs_triage.add_argument("--repo-root", default=str(BASE_DIR))
+    p_needs_triage.add_argument("--limit", type=int, default=50)
+
+    p_mark_kind = sub.add_parser("mark-endpoint-kind", help="persist Claude/operator endpoint-kind triage")
+    p_mark_kind.add_argument("--target", required=True)
+    p_mark_kind.add_argument("--endpoint", required=True)
+    p_mark_kind.add_argument("--kind", required=True, choices=list(ENDPOINT_KIND_VALUES))
+    p_mark_kind.add_argument("--reason", default="")
+    p_mark_kind.add_argument("--source", default="ai_triage", choices=sorted(FINAL_ENDPOINT_KIND_SOURCES))
+    p_mark_kind.add_argument("--repo-root", default=str(BASE_DIR))
+
     p_mark = sub.add_parser("mark", help="mark a specific cell")
     p_mark.add_argument("--target", required=True)
     p_mark.add_argument("--endpoint", required=True)
@@ -1009,6 +1487,27 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "find-gaps":
         gaps = find_high_value_gaps(args.target, args.repo_root, args.min_weight)
         print(json.dumps(gaps, indent=2))
+        return 0
+
+    if args.cmd == "needs-triage":
+        items = needs_endpoint_triage(args.target, args.repo_root, limit=args.limit)
+        print(json.dumps({
+            "target": args.target,
+            "total_returned": len(items),
+            "items": items,
+        }, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.cmd == "mark-endpoint-kind":
+        ep = mark_endpoint_kind(
+            args.target,
+            args.endpoint,
+            args.kind,
+            reason=args.reason,
+            source=args.source,
+            repo_root=args.repo_root,
+        )
+        print(json.dumps(ep, ensure_ascii=False, indent=2))
         return 0
 
     if args.cmd == "mark":

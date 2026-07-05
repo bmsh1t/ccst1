@@ -84,3 +84,24 @@ def test_standard_metadata_with_secret_like_body_is_not_suppressed():
         body,
         status=200,
     )
+
+
+def test_plain_prometheus_metrics_is_review_lead_not_candidate():
+    body = "\n".join(
+        [
+            "# HELP http_requests_total Total HTTP requests",
+            "# TYPE http_requests_total counter",
+            'http_requests_total{method="get",route="/api/products",status="200"} 42',
+            'process_cpu_seconds_total 12.3',
+        ]
+    )
+
+    result = classify_public_response(
+        "https://example.com/metrics",
+        body,
+        status=200,
+    )
+
+    assert result["candidate_ready"] is False
+    assert result["standard_public_metadata"] is False
+    assert result["markers"] == []

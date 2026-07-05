@@ -157,6 +157,251 @@ def test_authz_public_exposure_mnemonic_like_secret_promotes(monkeypatch, tmp_pa
     assert summary["evidence_rubric"]["status"] == "candidate-ready"
 
 
+def _build_case_state_for_authz_role(tmp_path):
+    target = "https://target.test"
+    target_case_state.add_actor(tmp_path, target, actor="user_a", role="user")
+    target_case_state.add_actor(tmp_path, target, actor="user_b", role="user")
+    target_case_state.add_session(
+        tmp_path,
+        target,
+        session="sess_user_a",
+        actor="user_a",
+        kind="bearer",
+        header_value="Bearer owner",
+        validity="valid",
+    )
+    target_case_state.add_session(
+        tmp_path,
+        target,
+        session="sess_user_b",
+        actor="user_b",
+        kind="bearer",
+        header_value="Bearer peer",
+        validity="valid",
+    )
+    return target
+
+
+def test_authz_role_replay_from_case_state_cli_detects_role_candidate(monkeypatch, tmp_path, capsys):
+    target = _build_case_state_for_authz_role(tmp_path)
+    url = "https://target.test/api/admin/export"
+
+    def fake_request_once(**kwargs):
+        auth = (kwargs.get("headers") or {}).get("Authorization", "")
+        if auth == "Bearer owner":
+            return _fake_response(kwargs["url"], status=200, body='{"data":[{"id":1,"export":"owner"}]}')
+        if auth == "Bearer peer":
+            return _fake_response(kwargs["url"], status=403, body='{"error":"forbidden"}')
+        return _fake_response(kwargs["url"], status=401, body='{"error":"missing auth"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    rc = validation_runner.main([
+        "authz-role-replay",
+        "--target", target,
+        "--repo-root", str(tmp_path),
+        "--url", url,
+        "--from-case-state",
+        "--repeat", "1",
+    ])
+
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["lane"] == "authz_role_replay"
+    assert summary["result"] == "candidate"
+    assert summary["case_state_ref"]["owner_actor"] == "user_a"
+    assert summary["case_state_ref"]["peer_actor"] == "user_b"
+    assert summary["runs"][0]["anonymous_status"] == 401
+    assert summary["runs"][0]["owner_status"] == 200
+    assert summary["runs"][0]["peer_status"] == 403
+    assert (tmp_path / "memory" / "evidence" / _target_key(target) / "ledger.jsonl").is_file()
+
+
+def test_authz_role_replay_same_public_catalog_is_clean(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], status=200, body='{"data":[{"id":1,"name":"catalog"}]}'),
+    )
+
+    summary = validation_runner.run_authz_role_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/Products",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        finding_id="AUTHZ-ROLE-CLEAN",
+    )
+
+    assert summary["result"] == "tested_clean"
+    assert summary["candidate_ready"] is False
+
+
+def test_authz_role_replay_authenticated_broad_user_collection_is_candidate(monkeypatch, tmp_path):
+    user_collection = json.dumps({
+        "status": "success",
+        "data": [
+            {
+                "id": 1,
+                "email": "admin@example.test",
+                "username": "admin",
+                "role": "admin",
+                "lastLoginIp": "127.0.0.1",
+            },
+            {
+                "id": 2,
+                "email": "user@example.test",
+                "username": "user",
+                "role": "customer",
+                "lastLoginIp": "127.0.0.2",
+            },
+        ],
+    })
+
+    def fake_request_once(**kwargs):
+        if (kwargs.get("headers") or {}).get("Authorization"):
+            return _fake_response(kwargs["url"], status=200, body=user_collection)
+        return _fake_response(kwargs["url"], status=401, body='{"error":"missing auth"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    summary = validation_runner.run_authz_role_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/Users",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        finding_id="AUTHZ-ROLE-AUTHENTICATED-COLLECTION",
+        repeat=2,
+    )
+
+    assert summary["result"] == "candidate"
+    assert summary["candidate_ready"] is False
+    assert summary["authenticated_exposure"]["candidate"] is True
+    assert summary["runs"][0]["authenticated_exposure_candidate"] is True
+    first_check = summary["authenticated_exposure"]["checks"][0]
+    assert first_check["item_count"] == 2
+    assert "email" in first_check["identity_fields"]
+    assert "role" in first_check["authz_fields"]
+    assert "authenticated-only broad collection" in summary["evidence_rubric"]["summary"]
+
+
+def test_authz_role_replay_single_authenticated_profile_is_clean(monkeypatch, tmp_path):
+    profile = json.dumps({
+        "status": "success",
+        "data": {
+            "id": 2,
+            "email": "user@example.test",
+            "username": "user",
+            "role": "customer",
+        },
+    })
+
+    def fake_request_once(**kwargs):
+        if (kwargs.get("headers") or {}).get("Authorization"):
+            return _fake_response(kwargs["url"], status=200, body=profile)
+        return _fake_response(kwargs["url"], status=401, body='{"error":"missing auth"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    summary = validation_runner.run_authz_role_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/Profile",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        finding_id="AUTHZ-ROLE-SINGLE-PROFILE",
+    )
+
+    assert summary["result"] == "tested_clean"
+    assert summary["authenticated_exposure"]["candidate"] is False
+
+
+def test_authz_role_replay_owner_failure_overrides_rubric_to_dead_end(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], status=401, body='{"error":"invalid session"}'),
+    )
+
+    summary = validation_runner.run_authz_role_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/SecurityAnswers",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        finding_id="AUTHZ-ROLE-DEAD-END",
+    )
+
+    assert summary["result"] == "dead_end"
+    assert summary["evidence_rubric"]["status"] == "dead-end"
+    assert summary["evidence_rubric"]["score"] == 0
+    assert summary["evidence_rubric"]["missing"] == ["owner_baseline_success"]
+
+
+def test_authz_role_replay_candidate_reopens_previous_tested_queue_action(monkeypatch, tmp_path, capsys):
+    target = "https://target.test"
+    url = "https://target.test/api/Users"
+    key = _target_key(target)
+    queue_dir = tmp_path / "state" / key
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": target,
+                "actions": [
+                    {
+                        "id": "AQ-0007",
+                        "status": "tested",
+                        "type": "ranked-surface",
+                        "priority": 60,
+                        "evidence": f"Continue top ranked surface {url}",
+                        "next_question": "Replay the ranked surface.",
+                        "action": f"Replay {url} and classify it.",
+                        "command_hint": "focused hunt on ranked P1/P2 surface",
+                        "metadata": {"url": url, "endpoint": "/api/Users"},
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    user_collection = json.dumps({
+        "data": [
+            {"id": 1, "email": "admin@example.test", "username": "admin", "role": "admin"},
+            {"id": 2, "email": "user@example.test", "username": "user", "role": "customer"},
+        ],
+    })
+
+    def fake_request_once(**kwargs):
+        if (kwargs.get("headers") or {}).get("Authorization"):
+            return _fake_response(kwargs["url"], status=200, body=user_collection)
+        return _fake_response(kwargs["url"], status=401, body='{"error":"missing auth"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    rc = validation_runner.main([
+        "authz-role-replay",
+        "--repo-root", str(tmp_path),
+        "--target", target,
+        "--url", url,
+        "--owner-header", "Authorization: Bearer owner",
+        "--peer-header", "Authorization: Bearer peer",
+        "--repeat", "1",
+    ])
+
+    summary = json.loads(capsys.readouterr().out)
+    queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
+    assert rc == 0
+    assert summary["result"] == "candidate"
+    assert summary["sync"]["action_queue"]["status"] == "updated"
+    assert summary["sync"]["action_queue"]["id"] == "AQ-0007"
+    assert queue["actions"][0]["status"] == "candidate"
+
+
 def test_authz_public_exposure_cli_syncs_finding_and_action_queue(monkeypatch, tmp_path, capsys):
     target = "https://target.test"
     url = "https://target.test/rest/admin/application-configuration"
@@ -254,6 +499,75 @@ def test_authz_public_exposure_cli_syncs_finding_and_action_queue(monkeypatch, t
     assert queue["actions"][0]["status"] == "validated"
 
 
+def test_authz_public_exposure_cli_reuses_existing_url_finding_without_id(monkeypatch, tmp_path, capsys):
+    target = "https://target.test"
+    url = "https://target.test/api/Feedbacks"
+    key = _target_key(target)
+    findings_dir = tmp_path / "findings" / key
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "target": target,
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "AUTHZ-SCANNER-ID",
+                        "type": "auth_bypass",
+                        "category": "auth_bypass",
+                        "severity": "high",
+                        "confidence": "medium",
+                        "url": url,
+                        "validation_status": "unvalidated",
+                        "report_status": "not_generated",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    body = json.dumps(
+        {
+            "data": [
+                {
+                    "comment": (
+                        'wallet seed phrase: '
+                        '"purpose betray marriage blame crunch monitor spin slide donate sport lift clutch"'
+                    )
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body=body),
+    )
+
+    rc = validation_runner.main([
+        "authz-public-exposure",
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        target,
+        "--url",
+        url,
+    ])
+    summary = json.loads(capsys.readouterr().out)
+    findings = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert summary["result"] == "tested_finding"
+    assert summary["sync"]["finding"]["status"] == "updated"
+    assert summary["sync"]["finding"]["finding_id"] == "AUTHZ-SCANNER-ID"
+    assert summary["sync"]["finding"]["matched_by"] == "url"
+    assert len(findings["findings"]) == 1
+    assert findings["findings"][0]["validation_status"] == "validated"
+
+
 def test_authz_public_exposure_cli_syncs_ranked_surface_action(monkeypatch, tmp_path, capsys):
     target = "https://target.test"
     url = "https://target.test/rest/admin/application-version"
@@ -331,6 +645,8 @@ def test_authz_public_exposure_does_not_promote_path_only_admin_marker(monkeypat
     assert summary["marker_sources"]["body"] == []
     assert summary["result"] == "tested_clean"
     assert summary["candidate_ready"] is False
+    assert summary["evidence_rubric"]["ready"] is False
+    assert summary["evidence_rubric"]["status"] == "tested-clean"
 
 
 def test_sqli_result_diff_creates_diff_bundle_and_ledger(monkeypatch, tmp_path):
@@ -416,6 +732,46 @@ def test_sqli_result_diff_ordinary_search_delta_is_not_finding(monkeypatch, tmp_
     assert summary["runs"][0]["diff"]["changed"]["json_count"] is True
     assert summary["result"] == "tested_clean"
     assert summary["candidate_ready"] is False
+
+
+def test_sqli_result_diff_quote_only_result_shrink_is_not_finding(monkeypatch, tmp_path):
+    def fake_request_once(**kwargs):
+        parsed = urlparse(kwargs["url"])
+        q = parse_qs(parsed.query, keep_blank_values=True).get("name", [""])[0]
+        if q == "Score Board":
+            return _fake_response(
+                kwargs["url"],
+                body=json.dumps({
+                    "data": [{
+                        "id": 75,
+                        "name": "Score Board",
+                        "description": "Find the hidden score board page.",
+                    }]
+                }),
+            )
+        return _fake_response(kwargs["url"], body='{"data":[]}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    summary = validation_runner.run_sqli_result_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/Challenges?name=Score%20Board",
+        param="name",
+        baseline_value="Score Board",
+        variant_value="Score Board'",
+        finding_id="SQLI-QUOTE-SHRINK",
+        repeat=2,
+    )
+
+    assert summary["probe_shape"] is True
+    assert summary["runs"][0]["diff"]["changed"]["json_count"] is True
+    assert summary["runs"][0]["sqli_evidence"]["strong"] is False
+    assert "ordinary search/filter/parser behavior" in summary["sqli_evidence"]["ambiguous"][0]
+    assert summary["result"] == "tested_clean"
+    assert summary["candidate_ready"] is False
+    assert summary["evidence_rubric"]["ready"] is False
+    assert "strong_sqli_signal" in summary["evidence_rubric"]["missing"]
 
 
 def test_marker_replay_creates_bundle_and_ledger(monkeypatch, tmp_path):
@@ -589,6 +945,51 @@ def test_idor_actor_pair_peer_access_without_private_marker_stays_candidate(monk
     assert summary["runs"][0]["ambiguous_access"] is True
 
 
+def test_idor_actor_pair_exact_empty_collection_match_is_not_finding(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body='{"status":"success","data":[]}'),
+    )
+
+    summary = validation_runner.run_idor_actor_pair(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/cards",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        finding_id="IDOR-EMPTY-COLLECTION",
+    )
+
+    assert summary["runs"][0]["exact_body_match"] is True
+    assert summary["runs"][0]["private_body_match"] is False
+    assert summary["runs"][0]["ambiguous_access"] is True
+    assert summary["result"] == "candidate"
+    assert summary["candidate_ready"] is False
+
+
+def test_idor_actor_pair_exact_private_body_match_without_marker_is_finding(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body='{"orderId":123,"email":"victim@example.test"}'),
+    )
+
+    summary = validation_runner.run_idor_actor_pair(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/orders/123",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        finding_id="IDOR-PRIVATE-BODY-MATCH",
+    )
+
+    assert summary["runs"][0]["exact_body_match"] is True
+    assert summary["runs"][0]["private_body_match"] is True
+    assert summary["runs"][0]["strong_access"] is True
+    assert summary["result"] == "tested_finding"
+
+
 def test_idor_actor_pair_rejects_identical_actor_context(tmp_path):
     with pytest.raises(ValueError, match="identical"):
         validation_runner.run_idor_actor_pair(
@@ -646,6 +1047,37 @@ def _build_case_state_for_idor(tmp_path):
 
 def test_idor_actor_pair_from_case_state_cli_resolves_headers_and_object(monkeypatch, tmp_path, capsys):
     target = _build_case_state_for_idor(tmp_path)
+    key = _target_key(target)
+    queue_dir = tmp_path / "state" / key
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": target,
+                "actions": [
+                    {
+                        "id": "AQ-0001",
+                        "status": "queued",
+                        "type": "case-state-validation",
+                        "priority": 110,
+                        "evidence": "Case-state validation backlog val_001",
+                        "next_question": "Run validation runner from case state.",
+                        "action": "Run idor-actor-pair --from-case-state --backlog-id val_001",
+                        "command_hint": "python3 tools/validation_runner.py idor-actor-pair --from-case-state --backlog-id val_001",
+                        "metadata": {
+                            "backlog_id": "val_001",
+                            "runner": "idor-actor-pair",
+                            "object_ref": "order_123",
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     def fake_request_once(**kwargs):
         token = (kwargs.get("headers") or {}).get("Authorization", "")
@@ -673,6 +1105,8 @@ def test_idor_actor_pair_from_case_state_cli_resolves_headers_and_object(monkeyp
     summary = json.loads(capsys.readouterr().out)
     state = target_case_state.load_case_state(tmp_path, target)
     backlog = state["validation_backlog"][0]
+    queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
+    findings = json.loads((tmp_path / "findings" / key / "findings.json").read_text(encoding="utf-8"))
 
     assert rc == 0
     assert summary["result"] == "tested_finding"
@@ -682,8 +1116,14 @@ def test_idor_actor_pair_from_case_state_cli_resolves_headers_and_object(monkeyp
     assert summary["case_state_ref"]["owner_session_id"] == "sess_user_a"
     assert summary["case_state_ref"]["peer_session_id"] == "sess_user_b"
     assert summary["case_state_write_back"]["status"] == "tested_finding"
+    assert summary["sync"]["finding"]["status"] == "created"
+    assert summary["sync"]["action_queue"]["status"] == "updated"
     assert backlog["status"] == "tested_finding"
     assert backlog["evidence_ref"].endswith("summary.json")
+    assert queue["actions"][0]["status"] == "validated"
+    assert findings["findings"][0]["id"] == "IDOR-CASE-STATE"
+    assert findings["findings"][0]["validation_status"] == "validated"
+    assert findings["findings"][0]["report_status"] == "not_generated"
 
 
 def test_idor_actor_pair_from_case_state_resolves_multi_header_sessions(tmp_path):

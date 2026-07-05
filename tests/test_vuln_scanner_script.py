@@ -112,8 +112,12 @@ def test_vuln_scanner_sensitive_path_lane_clears_output_and_skips_standard_publi
 
     assert ': > "$FINDINGS_DIR/exposure/verified_sensitive.txt"' in text
     assert '--standard-public-metadata' in text
+    assert '--candidate-ready' in text
     assert 'manual_review/standard_public_metadata.txt' in text
+    assert 'manual_review/public_exposure_review.txt' in text
     assert '[STANDARD-PUBLIC-METADATA]' in text
+    assert '[PUBLIC-EXPOSURE-REVIEW]' in text
+    assert text.index('--candidate-ready') < text.index('verified_sensitive.txt', text.index('--candidate-ready'))
 
 
 def test_vuln_scanner_keeps_recon_url_artifacts_discovery_first():

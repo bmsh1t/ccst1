@@ -2,9 +2,9 @@
 
 Covers task 05-16-b4-scanner-matrix-feedback:
   - scanner_pass_writer produces a valid scanner_pass.json
-  - coverage_matrix.rebuild marks cells `tested_clean` when scanner_pass
-    lists them and no higher-precedence status applies
-  - Precedence: tested_finding > tested_clean > n_a > untested
+  - coverage_matrix.rebuild records scanner-swept metadata when scanner_pass
+    lists them, but does not close cells as `tested_clean`
+  - Precedence: tested_finding / tested_clean / n_a statuses are preserved
   - Backwards compatibility: missing scanner_pass.json → matrix unchanged
   - Unknown vuln_class → warning + cell stays untested (not crash)
 """
@@ -126,6 +126,21 @@ class TestScannerPassWriter:
         modules = {row["module"] for row in payload["endpoints"]}
         assert modules == {"vuln_scanner.sqli"}
 
+    def test_build_ignores_precreated_empty_category_dirs(self, fake_repo):
+        _seed_recon(fake_repo, "ex.com", ["https://x.com/a"])
+        findings = fake_repo / "findings" / "ex.com"
+        (findings / "sqli").mkdir(parents=True)
+        (findings / "idor").mkdir(parents=True)
+
+        payload = build_scanner_pass(
+            target="ex.com",
+            findings_dir=findings,
+            recon_dir=fake_repo / "recon" / "ex.com",
+        )
+
+        assert payload["module_count"] == 0
+        assert payload["endpoints"] == []
+
     def test_build_empty_when_no_endpoints(self, fake_repo):
         # recon/<t>/urls/all.txt missing
         findings = _seed_findings_dir(fake_repo, "ex.com", ["sqli"])
@@ -182,10 +197,10 @@ class TestCoverageMatrixScannerPass:
 
         Regression: raw URL targets previously wrote
         `evidence/http:/127.0.0.1:3002/coverage_matrix.json`, while recon and
-        autopilot state used `http:_127.0.0.1:3002`.
+        autopilot state used `127.0.0.1:3002`.
         """
         target = "http://127.0.0.1:3002"
-        target_key = "http:_127.0.0.1:3002"
+        target_key = "127.0.0.1:3002"
         _seed_recon(fake_repo, target_key, [
             "http://127.0.0.1:3002/rest/admin/application-configuration",
         ])
@@ -205,7 +220,7 @@ class TestCoverageMatrixScannerPass:
         creating fake target gaps like `/player/ x SSRF`.
         """
         target = "http://127.0.0.1:3002"
-        target_key = "http:_127.0.0.1:3002"
+        target_key = "127.0.0.1:3002"
         _seed_recon_filtered(
             fake_repo,
             target_key,
@@ -224,7 +239,7 @@ class TestCoverageMatrixScannerPass:
         assert "/rest/admin/application-configuration" in endpoints
         assert "/player/" not in endpoints
 
-    def test_scanner_pass_marks_untested_cells_tested_clean(self, fake_repo):
+    def test_scanner_pass_records_scanner_swept_without_marking_clean(self, fake_repo):
         _seed_recon(fake_repo, "ex.com", [
             "https://api.ex.com/v1/users/1",
         ])
@@ -240,10 +255,40 @@ class TestCoverageMatrixScannerPass:
         assert len(endpoints) == 1
         ep = endpoints[0]
         cells = ep["cells"]
-        assert cells["SQLi"]["status"] == "tested_clean"
-        assert cells["IDOR"]["status"] == "tested_clean"
+        assert cells["SQLi"]["status"] == "untested"
+        assert cells["SQLi"]["scanner_swept"] is True
+        assert cells["SQLi"]["scanner_module"] == "vuln_scanner.sqli"
+        assert cells["IDOR"]["status"] == "untested"
+        assert cells["IDOR"]["scanner_swept"] is True
         # other classes still untested
         assert cells["XSS"]["status"] == "untested"
+        assert "scanner_swept" not in cells["XSS"]
+
+    def test_scanner_pass_preserves_route_prefix_candidate_hint(self, fake_repo):
+        """scanner_pass advisory metadata must not erase AI-first endpoint hints."""
+        _seed_recon(fake_repo, "ex.com", [
+            "https://ex.com/rest/admin",
+            "https://ex.com/rest/admin/application-configuration",
+        ])
+        _write_scanner_pass_inline(
+            fake_repo, "ex.com",
+            [{
+                "endpoint": "https://ex.com/rest/admin",
+                "vuln_class": "SQLi",
+                "module": "vuln_scanner.sqli",
+            }],
+        )
+
+        matrix = rebuild_matrix("ex.com", repo_root=fake_repo)
+        by_endpoint = {ep["endpoint"]: ep for ep in matrix["endpoints"]}
+        admin_ep = by_endpoint["/rest/admin"]
+
+        assert admin_ep["endpoint_kind"] == "untriaged"
+        assert "api_like_path" in admin_ep["auto_hints"]
+        assert "route_prefix_candidate" in admin_ep["auto_hints"]
+        assert admin_ep["source_count"] == 1
+        assert admin_ep["cells"]["SQLi"]["status"] == "untested"
+        assert admin_ep["cells"]["SQLi"]["scanner_swept"] is True
 
     def test_findings_takes_precedence_over_scanner_pass(self, fake_repo):
         _seed_recon(fake_repo, "ex.com", ["https://api.ex.com/v1/users/1"])
@@ -334,8 +379,8 @@ class TestCoverageMatrixScannerPass:
         endpoints = matrix["endpoints"]
         assert any("/standalone" in ep["endpoint"] for ep in endpoints)
 
-    def test_unknown_status_does_not_downgrade_after_rebuild(self, fake_repo):
-        """Rebuild a second time — tested_clean stays tested_clean."""
+    def test_scanner_swept_metadata_persists_after_rebuild(self, fake_repo):
+        """Rebuild a second time — scanner-swept metadata stays advisory."""
         _seed_recon(fake_repo, "ex.com", ["https://api.ex.com/v1/users/1"])
         _write_scanner_pass_inline(
             fake_repo, "ex.com",
@@ -350,7 +395,8 @@ class TestCoverageMatrixScannerPass:
         save_matrix("ex.com", m1, fake_repo)
         m2 = rebuild_matrix("ex.com", repo_root=fake_repo)
         cells = m2["endpoints"][0]["cells"]
-        assert cells["SQLi"]["status"] == "tested_clean"
+        assert cells["SQLi"]["status"] == "untested"
+        assert cells["SQLi"]["scanner_swept"] is True
 
     def test_apply_scanner_pass_unit(self, fake_repo):
         """Direct _apply_scanner_pass call exercises the helper unit."""
@@ -368,6 +414,8 @@ class TestCoverageMatrixScannerPass:
             "cells": {vc: {"status": "untested"} for vc in VULN_CLASSES},
         }]
         _apply_scanner_pass("ex.com", fake_repo, endpoints)
-        assert endpoints[0]["cells"]["IDOR"]["status"] == "tested_clean"
+        assert endpoints[0]["cells"]["IDOR"]["status"] == "untested"
+        assert endpoints[0]["cells"]["IDOR"]["scanner_swept"] is True
         # other cells unchanged
         assert endpoints[0]["cells"]["XSS"]["status"] == "untested"
+        assert "scanner_swept" not in endpoints[0]["cells"]["XSS"]

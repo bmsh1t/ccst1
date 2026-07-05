@@ -280,6 +280,7 @@ def import_mcp_browser_evidence(
         requests_path=requests_file,
         snapshot_path=artifacts.get("snapshot_txt", ""),
         capture_dir=str(capture_dir),
+        merge_existing=True,
     )
     # 与 browser_evidence.py 保持同一副作用：每次导入都刷新 page→JS 映射。
     try:

@@ -262,6 +262,11 @@ def main(argv: list[str] | None = None) -> int:
         help="只根据 candidate_ready 返回退出码；ready=0，不 ready=1。",
     )
     parser.add_argument(
+        "--candidate-ready",
+        action="store_true",
+        help="只根据 body-backed exposure candidate_ready 返回退出码；ready=0，不 ready=1。",
+    )
+    parser.add_argument(
         "--standard-public-metadata",
         action="store_true",
         help="只根据标准公开 metadata 返回退出码；是 metadata=0，否则=1。",
@@ -275,10 +280,13 @@ def main(argv: list[str] | None = None) -> int:
         body = sys.stdin.read()
 
     payload = classify_public_response(args.url, body, status=args.status)
-    if args.json or not args.authz_candidate:
+    predicate_only = args.authz_candidate or args.candidate_ready or args.standard_public_metadata
+    if args.json or not predicate_only:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     if args.standard_public_metadata:
         return 0 if payload["standard_public_metadata"] else 1
+    if args.candidate_ready or args.authz_candidate:
+        return 0 if payload["candidate_ready"] else 1
     return 0 if payload["candidate_ready"] else 1
 
 

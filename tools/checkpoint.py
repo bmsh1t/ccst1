@@ -31,7 +31,7 @@ try:
     from tools.context_pack import build_context_pack
     from tools.coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
-    from tools.evidence_ledger import build_summary as build_evidence_summary
+    from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
     from tools.target_case_state import summary as build_case_state_summary
     from tools.target_paths import canonical_target_value, target_storage_key
@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from context_pack import build_context_pack  # type: ignore
     from coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
-    from evidence_ledger import build_summary as build_evidence_summary  # type: ignore
+    from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
     from target_case_state import summary as build_case_state_summary  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
@@ -125,6 +125,33 @@ def _actionable_coverage_gaps(coverage_gaps: list[dict]) -> list[dict]:
     return actionable
 
 
+def _gap_observed_params(gap: dict) -> list[str]:
+    params = gap.get("observed_params") or []
+    if not isinstance(params, list):
+        return []
+    return [str(item).strip() for item in params if str(item or "").strip()]
+
+
+def _is_path_only_authz_gap(gap: dict) -> bool:
+    """Return true for Authz gaps backed only by path semantics.
+
+    `/admin`-like paths are useful leads, but without an observed parameter,
+    exact browser request, existing finding, or body evidence they are not yet a
+    two-actor replay candidate. Treat them as baseline-classification work so
+    checkpoint does not turn every admin-looking parent path into a noisy
+    authorization task.
+    """
+    vuln_class = str(gap.get("vuln_class") or "").strip().lower()
+    if vuln_class != "authz" or _gap_observed_params(gap):
+        return False
+    reason = str(gap.get("relevance_reason") or "").lower()
+    try:
+        relevance = int(gap.get("relevance_score", 0) or 0)
+    except (TypeError, ValueError):
+        relevance = 0
+    return "admin/internal path" in reason or relevance <= 5
+
+
 def _coverage_gap_validation_path(gap: dict) -> str:
     """Return the first evidence-producing step for a coverage gap.
 
@@ -137,6 +164,17 @@ def _coverage_gap_validation_path(gap: dict) -> str:
     reason = str(gap.get("relevance_reason") or "").strip()
     if not vuln_class:
         return ""
+    if _is_path_only_authz_gap(gap):
+        return (
+            "First run an anonymous baseline GET or observed-method replay and "
+            "classify status/body before any role-diff work. If 200 with "
+            "body-backed sensitive/admin/config markers, run "
+            "`python3 tools/validation_runner.py authz-public-exposure --target "
+            "<target> --url <target>{endpoint}` and preserve raw evidence. If "
+            "401/403, record the auth boundary. If 404/5xx/framework error or "
+            "SPA fallback, record tested_clean/dead-end and pivot to "
+            "browser-observed sibling endpoints."
+        ).format(endpoint=endpoint)
     evaluation = evaluate_candidate_evidence({
         "type": vuln_class,
         "url": endpoint,
@@ -296,6 +334,87 @@ def _actor_gaps(evidence_summary: dict) -> list[dict]:
     ]
 
 
+def _case_state_count(case_state: dict | None, key: str) -> int:
+    if not isinstance(case_state, dict):
+        return 0
+    try:
+        return int(case_state.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _actor_gap_ready(gap: dict, case_state: dict | None) -> bool:
+    """判断 actor-gap 是否具备进入可执行队列的运行态前置条件。
+
+    anonymous baseline 不依赖目标运行态，可直接验证匿名访问行为。owner/peer/
+    low_role/cross_tenant 这类角色差异验证必须先有 case state 中的 actor、
+    session、object，否则 checkpoint 会生成“看起来可执行、实际缺上下文”的队列。
+    """
+    actor = str(gap.get("actor") or "").strip().lower()
+    if actor == "anonymous":
+        return True
+
+    actors = _case_state_count(case_state, "actors")
+    sessions = _case_state_count(case_state, "sessions")
+    objects = _case_state_count(case_state, "objects")
+    if actor == "owner":
+        return actors >= 1 and sessions >= 1 and objects >= 1
+    if actor in {"peer", "low_role", "cross_tenant"}:
+        return actors >= 2 and sessions >= 2 and objects >= 1
+    return actors >= 1 and sessions >= 1
+
+
+def _actionable_actor_gaps(evidence_summary: dict, case_state: dict | None = None) -> list[dict]:
+    return [
+        gap for gap in _actor_gaps(evidence_summary)
+        if _actor_gap_ready(gap, case_state)
+    ]
+
+
+def _actor_gap_enrichment_proposal(evidence_summary: dict, case_state: dict | None = None) -> str:
+    blocked = [
+        gap for gap in _actor_gaps(evidence_summary)
+        if not _actor_gap_ready(gap, case_state)
+    ]
+    if not blocked:
+        return ""
+
+    first = blocked[0]
+    missing: list[str] = []
+    actors = _case_state_count(case_state, "actors")
+    sessions = _case_state_count(case_state, "sessions")
+    objects = _case_state_count(case_state, "objects")
+    actor = str(first.get("actor") or "").strip().lower()
+    if actor in {"peer", "low_role", "cross_tenant"} and actors < 2:
+        missing.append("second actor")
+    elif actors < 1:
+        missing.append("actor")
+    if actor in {"peer", "low_role", "cross_tenant"} and sessions < 2:
+        missing.append("peer/second session")
+    elif sessions < 1:
+        missing.append("session")
+    if objects < 1:
+        missing.append("business object")
+    missing = _dedupe(missing) or ["case-state actor/session/object"]
+
+    return (
+        "Case-state enrichment lead: actor matrix has {count} role/object gap(s) "
+        "that are not executable until runtime context is registered. Example: "
+        "{endpoint} x {vuln} with {actor}/{scope}/{variant}. Missing evidence: "
+        "{missing}. Next: register actor/session/object with tools/target_case_state.py "
+        "or use tools/case_state_seed.py suggestions; keep anonymous baselines and "
+        "ranked-surface discovery moving while enrichment is missing."
+    ).format(
+        count=len(blocked),
+        endpoint=first.get("endpoint", ""),
+        vuln=first.get("vuln_class", ""),
+        actor=first.get("actor", ""),
+        scope=first.get("object_scope", ""),
+        variant=first.get("variant", ""),
+        missing=", ".join(missing),
+    )
+
+
 def _case_state_summary(repo_root: Path | str, target: str) -> dict:
     """Load sanitized target case state summary for checkpoint routing.
 
@@ -436,8 +555,6 @@ def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case
     findings = _structured_findings(state)
     if findings.get("pending_validation"):
         return "validate"
-    if findings.get("validated_pending_report"):
-        return "report"
     top_case_state = _case_state_top_next(case_state or {})
     if str(top_case_state.get("next_action") or "").strip().lower() in {
         "run_validation_runner",
@@ -445,8 +562,6 @@ def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case
         "create_validation_backlog",
     }:
         return "continue"
-    if not state.get("has_recon"):
-        return "refresh-recon"
     if _unsafe_leads(state):
         return "checkpoint"
     if _actionable_coverage_gaps(coverage_gaps):
@@ -458,6 +573,10 @@ def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case
     stats = _surface_stats(state)
     if stats["p1"] or stats["p2"] or state.get("recommended_targets"):
         return "hunt"
+    if findings.get("validated_pending_report"):
+        return "report"
+    if not state.get("has_recon"):
+        return "refresh-recon"
     if _secondary_sweep_leads(state):
         return "continue"
     return "handoff"
@@ -529,6 +648,25 @@ def _canonicalize_url_path(value: str) -> str:
     return raw.split("?", 1)[0].split("#", 1)[0]
 
 
+def _normalise_endpoint_path(value: str) -> str:
+    path = _canonicalize_url_path(value).strip()
+    if not path:
+        return ""
+    if not path.startswith("/"):
+        path = "/" + path
+    if path != "/":
+        path = path.rstrip("/")
+    return path
+
+
+def _is_parent_endpoint(parent: str, child: str) -> bool:
+    parent_path = _normalise_endpoint_path(parent)
+    child_path = _normalise_endpoint_path(child)
+    if not parent_path or not child_path or parent_path == "/" or parent_path == child_path:
+        return False
+    return child_path.startswith(parent_path + "/")
+
+
 def _ranked_surface_entry(state: dict, url: str) -> dict:
     surface = state.get("surface") or {}
     for bucket in ("p1", "p2"):
@@ -540,6 +678,20 @@ def _ranked_surface_entry(state: dict, url: str) -> dict:
 
 def _ranked_surface_query_keys(url: str) -> list[str]:
     return [key.lower() for key in re.findall(r"[?&]([^=&]+)=", str(url or ""))]
+
+
+def _path_only_authz_gap_for_url(url: str, vuln_hint: str = "Authz") -> dict:
+    endpoint = _canonicalize_url_path(url)
+    query_keys = _ranked_surface_query_keys(url)
+    rel = class_relevance(endpoint, "Authz", query_keys)
+    return {
+        "endpoint": endpoint,
+        "vuln_class": vuln_hint,
+        "weight": "",
+        "relevance_score": rel.get("relevance_score", 0),
+        "relevance_reason": rel.get("relevance_reason", ""),
+        "observed_params": query_keys,
+    }
 
 
 def _ranked_surface_vuln_hint(entry: dict, url: str) -> str:
@@ -601,7 +753,108 @@ def _canonical_vuln_for_ledger(vuln_hint: str) -> str:
     return mapping.get(value, "Authz")
 
 
-def _ranked_surface_replay_draft(state: dict, item: dict) -> str:
+def _case_state_has_role_replay_context(case_state: dict | None) -> bool:
+    return (
+        _case_state_count(case_state, "actors") >= 2
+        and _case_state_count(case_state, "sessions") >= 2
+        and _case_state_count(case_state, "objects") >= 1
+    )
+
+
+def _ranked_surface_needs_role_context(vuln_class: str, baseline_first: bool) -> bool:
+    if baseline_first:
+        return False
+    return vuln_class in {"IDOR", "Authz", "GraphQL", "CSRF"}
+
+
+def _ranked_surface_role_replay_ready(vuln_class: str, baseline_first: bool, case_state: dict | None) -> bool:
+    return (
+        _ranked_surface_needs_role_context(vuln_class, baseline_first)
+        and _case_state_has_role_replay_context(case_state)
+    )
+
+
+def _ranked_surface_browser_state_first(url: str, vuln_class: str, query_keys: list[str]) -> bool:
+    """Return true for client-side page routes where raw GET replay is low-value.
+
+    页面路由不能丢：`/orders`、`/order-summary` 这类入口经常是复杂链路的门。
+    但直接对 SPA shell 做 owner/peer HTTP GET replay 通常只得到同一份 HTML。
+    这里仅改变下一步执行方式：先抓浏览器态真实 XHR/对象 ID，再 replay 底层 API。
+    """
+    if vuln_class not in {"Authz", "IDOR"}:
+        return False
+    if query_keys:
+        return False
+    path = urlparse(str(url or "")).path.lower() or "/"
+    api_prefixes = (
+        "/api",
+        "/rest",
+        "/graphql",
+        "/socket.io",
+        "/oauth",
+        "/.well-known",
+    )
+    if any(path == prefix or path.startswith(prefix + "/") for prefix in api_prefixes):
+        return False
+    # 静态资源/下载类路径保留普通 replay；无扩展或 .html 更像客户端路由。
+    suffix = Path(path).suffix.lower()
+    return suffix in {"", ".html", ".htm"}
+
+
+def _ranked_surface_context_prereq(state: dict, item: dict, case_state: dict | None = None) -> bool:
+    url = str(item.get("url") or "").strip()
+    if not url:
+        return False
+    entry = _ranked_surface_entry(state, url)
+    vuln_hint = _ranked_surface_vuln_hint(entry, url)
+    vuln_class = _canonical_vuln_for_ledger(vuln_hint)
+    authz_gap = _path_only_authz_gap_for_url(url, vuln_hint)
+    baseline_first = _is_path_only_authz_gap(authz_gap)
+    return (
+        _ranked_surface_needs_role_context(vuln_class, baseline_first)
+        and not _case_state_has_role_replay_context(case_state)
+    )
+
+
+def _recent_anonymous_authz_clean_count(evidence_summary: dict) -> int:
+    count = 0
+    for entry in evidence_summary.get("recent_entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        result = str(entry.get("result") or "")
+        vuln_class = _canonical_vuln_for_ledger(str(entry.get("vuln_class") or ""))
+        actor = str(entry.get("actor") or "").strip().lower()
+        object_scope = str(entry.get("object_scope") or "").strip().lower()
+        if (
+            result in {"tested_clean", "dead_end", "not_applicable"}
+            and vuln_class == "Authz"
+            and actor == "anonymous"
+            and object_scope in {"none", ""}
+        ):
+            count += 1
+    return count
+
+
+def _case_state_acquisition_proposal(deferred_count: int, clean_count: int) -> str:
+    return (
+        "Case-state acquisition lead: {clean_count} recent anonymous Authz "
+        "baseline(s) are already clean, and {deferred_count} ranked role/object "
+        "surface(s) need runtime actor/session/object context before meaningful "
+        "owner/peer replay. Next: capture a real browser session or create test-owned "
+        "actors where authorized, then register actors/sessions/objects with "
+        "tools/target_case_state.py; if no authorized session path exists, record "
+        "no-auth-context and pivot to unauth/source-intel lanes instead of testing "
+        "more identical 401 baselines."
+    ).format(clean_count=clean_count, deferred_count=deferred_count)
+
+
+def _ranked_surface_replay_draft(
+    state: dict,
+    item: dict,
+    case_state: dict | None = None,
+    *,
+    target: str = "",
+) -> str:
     url = str(item.get("url") or "").strip()
     if not url:
         return ""
@@ -628,11 +881,46 @@ def _ranked_surface_replay_draft(state: dict, item: dict) -> str:
         "browser observed" if entry.get("browser_observed") else "",
         " ".join(js_methods),
     ])
-    validation_path = first_missing_action(evaluate_candidate_evidence({
-        "type": vuln_hint,
-        "url": url,
-        "summary": evidence_text,
-    }))
+    authz_gap = _path_only_authz_gap_for_url(url, vuln_hint)
+    vuln_class = _canonical_vuln_for_ledger(vuln_hint)
+    baseline_first = _is_path_only_authz_gap(authz_gap)
+    browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
+    role_replay_ready = (
+        _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
+        and not browser_state_first
+    )
+    if baseline_first:
+        validation_path = _coverage_gap_validation_path(authz_gap)
+    elif browser_state_first:
+        validation_path = (
+            "Use browser-state first for this page route: open it as owner and peer, "
+            "capture/import MCP browser artifacts, extract the real XHR/object IDs, "
+            "then run validation_runner authz-role-replay or idor-actor-pair on the "
+            "underlying API instead of replaying the raw SPA HTML shell"
+        )
+    elif role_replay_ready:
+        target_arg = _quote(target or "<target>")
+        url_arg = _quote(url)
+        validation_path = (
+            "Run authenticated role replay from case_state: "
+            f"`python3 tools/validation_runner.py authz-role-replay --target {target_arg} "
+            f"--url {url_arg} --from-case-state --repeat 2`; compare anonymous/owner/peer "
+            "status, JSON shape, and body diff; only promote body-backed public exposure "
+            "or role/object-specific authorization delta"
+        )
+    elif _ranked_surface_context_prereq(state, item, case_state):
+        validation_path = (
+            "First capture/register actor, session, and object context in "
+            "tools/target_case_state.py; until owner/peer context exists, only run "
+            "anonymous or exact browser baseline classification and do not claim "
+            "two-actor replay evidence"
+        )
+    else:
+        validation_path = first_missing_action(evaluate_candidate_evidence({
+            "type": vuln_hint,
+            "url": url,
+            "summary": evidence_text,
+        }))
 
     parts: list[str] = []
     if entry.get("browser_observed"):
@@ -645,12 +933,22 @@ def _ranked_surface_replay_draft(state: dict, item: dict) -> str:
         parts.append("follow source hints: " + ", ".join(source_types[:3]))
     if vuln_hint and vuln_hint != "generic":
         parts.append(f"focus {vuln_hint} evidence")
+    if role_replay_ready:
+        parts.append("use registered case_state owner/peer sessions")
+    if browser_state_first:
+        parts.append("browser-state-first page route; avoid treating identical SPA HTML as clean")
     if validation_path:
         parts.append(validation_path)
     return "; ".join(parts)
 
 
-def _ranked_surface_ledger_skeleton(state: dict, item: dict, target: str, replay_draft: str) -> str:
+def _ranked_surface_ledger_skeleton(
+    state: dict,
+    item: dict,
+    target: str,
+    replay_draft: str,
+    case_state: dict | None = None,
+) -> str:
     """Build a copyable ledger record command for the suggested ranked-surface replay.
 
     This is intentionally a skeleton, not an auto-write: the operator/agent should
@@ -668,8 +966,29 @@ def _ranked_surface_ledger_skeleton(state: dict, item: dict, target: str, replay
         if isinstance(js, dict) and str(js.get("method") or "").strip()
     ]
     method = next((value for value in js_methods if value), "GET")
-    vuln_class = _canonical_vuln_for_ledger(_ranked_surface_vuln_hint(entry, url))
-    variant = "browser_observed" if entry.get("browser_observed") else "replay"
+    vuln_hint = _ranked_surface_vuln_hint(entry, url)
+    vuln_class = _canonical_vuln_for_ledger(vuln_hint)
+    authz_gap = _path_only_authz_gap_for_url(url, vuln_hint)
+    baseline_first = _is_path_only_authz_gap(authz_gap)
+    context_prereq = _ranked_surface_context_prereq(state, item, case_state)
+    query_keys = _ranked_surface_query_keys(url)
+    browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
+    role_replay_ready = (
+        _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
+        and not browser_state_first
+    )
+    actor = "anonymous" if baseline_first or context_prereq else "owner"
+    object_scope = "none" if baseline_first or context_prereq else "unknown"
+    if baseline_first:
+        variant = "unauth_baseline"
+    elif context_prereq:
+        variant = "context_prereq"
+    elif browser_state_first:
+        variant = "browser_observed"
+    elif role_replay_ready:
+        variant = "role_diff"
+    else:
+        variant = "browser_observed" if entry.get("browser_observed") else "replay"
     evidence_ref = ""
     if entry.get("browser_observed"):
         evidence_ref = f"recon/{target_storage_key(canonical_target_value(target))}/browser/xhr_endpoints.txt"
@@ -677,14 +996,29 @@ def _ranked_surface_ledger_skeleton(state: dict, item: dict, target: str, replay
         "Checkpoint ranked-surface replay skeleton; update result/evidence-ref "
         "after baseline/variant evidence is captured."
     )
+    if context_prereq:
+        notes = (
+            "Checkpoint ranked-surface context prerequisite; register actor/session/object "
+            "before owner/peer replay, or update this record after baseline classification."
+        )
+    elif browser_state_first:
+        notes = (
+            "Checkpoint ranked-surface browser-state-first page route; capture/import MCP "
+            "browser artifacts, extract underlying XHR/object IDs, then replay the API."
+        )
+    elif role_replay_ready:
+        notes = (
+            "Checkpoint ranked-surface authenticated role replay; run validation_runner "
+            "authz-role-replay and update result/evidence-ref from the generated summary."
+        )
     parts = [
         "python3 tools/evidence_ledger.py record",
         "--target", _quote(target),
         "--endpoint", _quote(endpoint),
         "--method", _quote(method),
         "--vuln-class", _quote(vuln_class),
-        "--actor", _quote("owner"),
-        "--object-scope", _quote("unknown"),
+        "--actor", _quote(actor),
+        "--object-scope", _quote(object_scope),
         "--variant", _quote(variant),
         "--source", _quote("checkpoint-ranked-surface"),
         "--result", _quote("signal"),
@@ -717,6 +1051,61 @@ def _tested_finding_endpoints(matrix: dict) -> set[str]:
     return endpoints
 
 
+def _ledger_covered_cells(evidence_summary: dict) -> set[tuple[str, str]]:
+    """Return endpoint/vuln cells already closed by deterministic evidence.
+
+    A validation runner can close a ranked-surface hypothesis as tested_clean
+    without creating a structured finding or action-queue match. Checkpoint must
+    still consume that ledger fact, otherwise it keeps asking Claude to rerun
+    the same baseline.
+    """
+    covered: set[tuple[str, str]] = set()
+    for entry in evidence_summary.get("recent_entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        result = str(entry.get("result") or "")
+        if result not in {"tested_clean", "tested_finding", "dead_end", "not_applicable"}:
+            continue
+        endpoint = _normalise_endpoint_path(str(entry.get("endpoint") or entry.get("raw_endpoint") or ""))
+        vuln_class = str(entry.get("vuln_class") or "").strip()
+        if endpoint and vuln_class:
+            covered.add((endpoint, vuln_class))
+    return covered
+
+
+def _is_parent_closure_gap(gap: dict, tested_endpoints: set[str]) -> bool:
+    """Return true when a path-only gap is only a parent of validated evidence.
+
+    If `/rest/admin/application-configuration` is already validated, the parent
+    `/rest/admin` may still be interesting as a route-enumeration clue, but it
+    should not consume the immediate checkpoint queue as another Authz replay
+    unless it has its own params/body/browser evidence.
+    """
+    endpoint = str(gap.get("endpoint") or "").strip()
+    if not endpoint or not _is_path_only_authz_gap(gap):
+        return False
+    return any(_is_parent_endpoint(endpoint, tested) for tested in tested_endpoints)
+
+
+def _checkpoint_coverage_gaps(coverage_gaps: list[dict], matrix: dict, limit: int = 2) -> list[dict]:
+    """Select coverage gaps for the immediate checkpoint queue.
+
+    Coverage itself keeps all untested cells.  The execution queue is stricter:
+    it skips parent-only Authz closure gaps that are already represented by a
+    validated child endpoint, preventing noisy loops while preserving other
+    high-signal gaps for Claude to reason over.
+    """
+    tested_endpoints = _tested_finding_endpoints(matrix)
+    selected: list[dict] = []
+    for gap in _actionable_coverage_gaps(coverage_gaps):
+        if _is_parent_closure_gap(gap, tested_endpoints):
+            continue
+        selected.append(gap)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 def _next_proposals(
     state: dict,
     coverage_gaps: list[dict],
@@ -724,6 +1113,7 @@ def _next_proposals(
     target: str,
     context_pack: dict,
     evidence_summary: dict,
+    case_state: dict | None = None,
 ) -> list[str]:
     proposals: list[str] = []
     for contradiction in _active_contradictions(context_pack)[:2]:
@@ -780,6 +1170,7 @@ def _next_proposals(
     proposals.extend(_unsafe_skipped_proposals(state))
     proposals.extend(_secondary_sweep_proposals(state))
     covered_findings = _tested_finding_endpoints(matrix)
+    covered_ledger_cells = _ledger_covered_cells(evidence_summary)
 
     repo_source_summary = state.get("repo_source_summary") or {}
     secret_findings = int(repo_source_summary.get("secret_findings", 0) or 0)
@@ -811,7 +1202,7 @@ def _next_proposals(
                 )
             )
 
-    for gap in _actionable_coverage_gaps(coverage_gaps)[:2]:
+    for gap in _checkpoint_coverage_gaps(coverage_gaps, matrix):
         relevance = ""
         if int(gap.get("relevance_score", 0) or 0) > 0:
             reason = str(gap.get("relevance_reason") or "").strip()
@@ -823,8 +1214,8 @@ def _next_proposals(
         validation_suffix = f" Validation path: {validation_path}" if validation_path else ""
         proposals.append(
             "Cover high-value matrix gap: {endpoint} x {vuln_class} "
-            "(weight={weight}{relevance}).{validation_suffix} If red-line risk appears, mark blocked and use "
-            "low-risk evidence instead.".format(
+            "(weight={weight}{relevance}).{validation_suffix} If concrete side-effect risk appears, mark blocked "
+            "and use low-risk evidence instead.".format(
                 endpoint=gap.get("endpoint", ""),
                 vuln_class=gap.get("vuln_class", ""),
                 weight=gap.get("weight", ""),
@@ -832,8 +1223,7 @@ def _next_proposals(
                 validation_suffix=validation_suffix,
             )
         )
-    record_commands = evidence_summary.get("record_commands") or []
-    for idx, gap in enumerate(_actor_gaps(evidence_summary)[:3]):
+    for gap in _actionable_actor_gaps(evidence_summary, case_state)[:3]:
         redline = " Run red-line check first." if gap.get("redline_required") else ""
         proposals.append(
             "Cover actor matrix gap: {endpoint} x {vuln} with {actor}/{scope}/{variant} "
@@ -846,22 +1236,53 @@ def _next_proposals(
                 expected=gap.get("expected", ""),
                 status=gap.get("status", ""),
                 redline=redline,
-                cmd=record_commands[idx] if idx < len(record_commands) else "",
+                cmd=evidence_record_command(target, gap),
             )
         )
+    actor_enrichment = _actor_gap_enrichment_proposal(evidence_summary, case_state)
+    if actor_enrichment:
+        proposals.append(actor_enrichment)
 
-    for item in (state.get("recommended_targets") or [])[:2]:
+    clean_authz_baselines = _recent_anonymous_authz_clean_count(evidence_summary)
+    defer_role_ranked = (
+        clean_authz_baselines >= 3
+        and not _case_state_has_role_replay_context(case_state)
+    )
+    deferred_role_ranked = 0
+    ranked_surface_added = 0
+    for item in (state.get("recommended_targets") or []):
+        # Generate a small candidate window, not just the first two. Persistent
+        # action_queue final-state filtering happens after this function; if
+        # the first P1 items were already closed, we still need fresh ranked
+        # surfaces behind them so /autopilot does not hand off prematurely.
+        if ranked_surface_added >= 4:
+            break
         url = str(item.get("url") or "").strip()
         suggested = str(item.get("suggested") or "").strip()
-        if _canonicalize_url_path(url) in covered_findings:
+        endpoint_path = _normalise_endpoint_path(url)
+        if endpoint_path in covered_findings:
             continue
         if url:
-            replay_draft = _ranked_surface_replay_draft(state, item)
+            entry = _ranked_surface_entry(state, item.get("url") or "")
+            vuln_class = _canonical_vuln_for_ledger(_ranked_surface_vuln_hint(entry, url))
+            if (endpoint_path, vuln_class) in covered_ledger_cells:
+                continue
+            if defer_role_ranked and _ranked_surface_context_prereq(state, item, case_state):
+                deferred_role_ranked += 1
+                continue
+            replay_draft = _ranked_surface_replay_draft(state, item, case_state, target=target)
             replay_suffix = f". Replay draft: {replay_draft.rstrip('.')}" if replay_draft else ""
-            ledger_skeleton = _ranked_surface_ledger_skeleton(state, item, target, replay_draft)
+            ledger_skeleton = _ranked_surface_ledger_skeleton(state, item, target, replay_draft, case_state)
             ledger_suffix = f". Ledger skeleton: {ledger_skeleton}" if ledger_skeleton else ""
             proposals.append(f"Continue top ranked surface {url}: {suggested}{replay_suffix}{ledger_suffix}")
-    return _dedupe(proposals)[:5]
+            ranked_surface_added += 1
+    if deferred_role_ranked:
+        proposals.append(_case_state_acquisition_proposal(deferred_role_ranked, clean_authz_baselines))
+    # Keep a slightly wider queue window. Secondary-sweep and coverage items can
+    # be final-state filtered after queue construction; if we truncate too early
+    # the next fresh ranked surface disappears and /autopilot hands off while
+    # P1 surface remains.
+    return _dedupe(proposals)[:8]
 
 
 def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
@@ -878,17 +1299,21 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         return "case-state-validation", 110, replay_hint or "python3 tools/validation_runner.py ... --from-case-state"
     if "case-state enrichment backlog" in lowered:
         return "case-state-enrichment", 108, "enrich actor/session/object/private-marker evidence in case_state"
+    if "case-state acquisition lead" in lowered:
+        return "case-state-enrichment", 66, "capture/register actors, sessions, and owned objects with tools/target_case_state.py"
+    if "case-state enrichment lead" in lowered:
+        return "case-state-enrichment", 54, "register actor/session/object with tools/target_case_state.py or review tools/case_state_seed.py"
     if "case-state backlog creation" in lowered:
         return "case-state-backlog-create", 103, "promote the active hypothesis into validation backlog"
     if "case-state seed opportunity" in lowered:
         seed_match = re.search(r"Next:\s+(?P<cmd>python3\s+tools/case_state_seed\.py\s+.*?)(?:\.\s+Review|$)", value, re.I)
-        return "case-state-seed", 83, seed_match.group("cmd").strip() if seed_match else "python3 tools/case_state_seed.py --target <target> --json"
+        return "case-state-seed", 99, seed_match.group("cmd").strip() if seed_match else "python3 tools/case_state_seed.py --target <target> --json"
     if "candidate evidence gap" in lowered:
         return "candidate-evidence-gap", 105, "fill missing rubric evidence, then /validate"
     if "run /validate" in lowered:
         return "validation", 100, "/validate"
     if "draft report" in lowered:
-        return "report", 95, "/report"
+        return "report", 90, "/report"
     if "review context contradiction" in lowered:
         quoted_target = _quote(target) if target else "target.com"
         return "context-review", 90, f"python3 tools/context_pack.py --target {quoted_target}"
@@ -902,15 +1327,17 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
             "python3 tools/checkpoint.py --target {target}".format(target=quoted_target),
         )
     if "actor matrix gap" in lowered:
-        return "actor-gap", 80, "focused replay + tools/evidence_ledger.py record"
+        return "actor-gap", 96, "focused replay + tools/evidence_ledger.py record"
     if "action-gated scanner lane" in lowered or "unsafe-skipped scanner lane" in lowered:
-        return "action-gated-review", 88, "review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate"
+        return "action-gated-review", 93, "review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate"
     if "secondary-sweep lead" in lowered:
+        if "[public-metadata]" in lowered:
+            return "secondary-sweep", 52, "review public metadata only for unusual fields or chain pivots"
         return "secondary-sweep", 72, "review demoted raw artifact; re-promote only with concrete secret/chain evidence"
     if "high-value matrix gap" in lowered:
-        return "coverage-gap", 75, "focused low-risk probe + evidence ledger"
+        return "coverage-gap", 94, "focused low-risk probe + evidence ledger"
     if "cross-evidence high-value surface" in lowered:
-        return "evidence-convergence", 82, "focused replay with browser/JS/source evidence"
+        return "evidence-convergence", 98, "focused replay with browser/JS/source evidence"
     if "secret verification lane" in lowered:
         return "secret-verification", 86, "python3 tools/secret_triage.py --file findings/<target>/exposure/repo_secrets.json"
     if "run enrichment run_browser_probe" in lowered:
@@ -920,7 +1347,7 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
     if "run enrichment run_js_read" in lowered:
         return "js-enrichment", 70, "python3 tools/js_reader.py"
     if "continue top ranked surface" in lowered:
-        return "ranked-surface", 60, "focused hunt on ranked P1/P2 surface"
+        return "ranked-surface", 92, "focused hunt on ranked P1/P2 surface"
     return "next-action", 50, "execute the smallest safe evidence-producing step"
 
 
@@ -1005,6 +1432,43 @@ def _extract_action_metadata(text: str) -> dict:
             metadata["seed_command"] = command_match.group("cmd").strip()
         return metadata
 
+    enrichment_match = re.search(
+        r"Case-state enrichment lead:.*?Example:\s+"
+        r"(?P<endpoint>\S+)\s+x\s+(?P<vuln>[A-Za-z0-9_-]+)\s+with\s+"
+        r"(?P<actor>[^/]+)/(?P<object_scope>[^/]+)/(?P<variant>\S+).*?"
+        r"Missing evidence:\s+(?P<missing>.*?)(?:\.\s+Next:|$)",
+        value,
+        re.I,
+    )
+    if enrichment_match:
+        metadata.update({
+            "endpoint": enrichment_match.group("endpoint"),
+            "vuln_class": enrichment_match.group("vuln"),
+            "actor": enrichment_match.group("actor"),
+            "object_scope": enrichment_match.group("object_scope"),
+            "variant": enrichment_match.group("variant").rstrip("."),
+            "missing_evidence": [
+                part.strip()
+                for part in enrichment_match.group("missing").split(",")
+                if part.strip()
+            ],
+        })
+        return metadata
+
+    acquisition_match = re.search(
+        r"Case-state acquisition lead:\s+(?P<clean>\d+)\s+recent anonymous Authz "
+        r"baseline\(s\).*?and\s+(?P<deferred>\d+)\s+ranked role/object surface\(s\)",
+        value,
+        re.I,
+    )
+    if acquisition_match:
+        metadata.update({
+            "clean_authz_baselines": int(acquisition_match.group("clean")),
+            "deferred_role_surfaces": int(acquisition_match.group("deferred")),
+            "missing_evidence": ["actor", "session", "business object"],
+        })
+        return metadata
+
     validation_match = re.search(
         r"Validation path:\s+(?P<path>.*?)(?:\s+If red-line|\s+Stop condition:|$)",
         value,
@@ -1059,6 +1523,10 @@ def _extract_action_metadata(text: str) -> dict:
             "artifact": match.group("artifact"),
         })
 
+    match = re.search(r"Draft report for validated finding\s+(?P<finding_id>[^;\s]+)", value, re.I)
+    if match:
+        metadata["finding_id"] = match.group("finding_id").strip().rstrip(".")
+
     match = re.search(
         r"Secondary-sweep lead\s+\[(?P<category>[^\]]+)\]:\s+(?P<title>.*?)[.]\s+Artifact=(?P<artifact>\S+)",
         value,
@@ -1103,9 +1571,10 @@ def _build_next_action_queue(next_items: list[str], target: str = "") -> list[di
     for idx, item in enumerate(next_items, 1):
         action_type, priority, command_hint = _classify_next_action(item, target)
         metadata = _extract_action_metadata(item)
+        lowered = item.lower()
         redline_required = any(
-            token in item.lower()
-            for token in ("red-line", "state", "mutation", "unsafe", "role", "actor")
+            token in lowered
+            for token in ("red-line", "state-changing", "mutation", "unsafe", "delete", "destructive")
         )
         row = {
             "id": f"A{idx}",
@@ -1333,15 +1802,16 @@ def build_checkpoint(
         focus_endpoints=_evidence_focus_endpoints(state, gaps),
         vuln_classes=_evidence_vuln_classes(gaps, context),
     )
-    actor_gaps = _actor_gaps(evidence_summary)
     case_state = _case_state_summary(repo, resolved_target)
+    actor_gaps = _actor_gaps(evidence_summary)
+    executable_actor_gaps = _actionable_actor_gaps(evidence_summary, case_state)
     case_state_proposal = _case_state_proposal(case_state)
     case_state_seed = _case_state_seed_summary(repo, resolved_target) if not case_state_proposal else {}
     case_state_seed_proposal = _case_state_seed_proposal(case_state_seed)
 
-    decision = _decide(state, gaps, actor_gaps, case_state)
+    decision = _decide(state, gaps, executable_actor_gaps, case_state)
     lead = _lead_proposals(state, context)
-    next_items = _next_proposals(state, gaps, matrix, resolved_target, context, evidence_summary)
+    next_items = _next_proposals(state, gaps, matrix, resolved_target, context, evidence_summary, case_state)
     if case_state_proposal:
         next_items = [case_state_proposal, *next_items]
     elif case_state_seed_proposal:

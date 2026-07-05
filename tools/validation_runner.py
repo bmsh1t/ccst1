@@ -4,6 +4,7 @@
 Validation Runner v1 intentionally stays small:
 
 - authz-public-exposure: one anonymous/read-only request, sensitive exposure check.
+- authz-role-replay: anonymous/owner/peer replay on the same surface from case_state.
 - sqli-result-diff: baseline vs single-variable perturbation, structural diff.
 - marker-replay: exact request replay plus inert marker evidence check.
 - idor-actor-pair: owner vs peer exact replay plus response diff and evidence gate.
@@ -65,6 +66,13 @@ SQLI_PROBE_RE = re.compile(
     r"waitfor|pg_sleep|information_schema|null|true|false)\b|\$(?:ne|gt|regex|where)\b|\{\s*\"?\$)",
     re.I,
 )
+SQLI_ERROR_RE = re.compile(
+    r"SQL syntax|sqlite|mysql|mariadb|postgres|postgresql|psql|oracle|ORA-\d+|"
+    r"mssql|SQL Server|ODBC|JDBC|PDOException|SequelizeDatabaseError|"
+    r"near ['\"][^'\"]+['\"]: syntax error|unterminated quoted string|"
+    r"MongoError|CastError|BSON|NoSQL",
+    re.I,
+)
 
 RUNNER_RESULT_TO_FINDING_STATUS = {
     "tested_finding": "validated",
@@ -78,12 +86,27 @@ RUNNER_RESULT_TO_QUEUE_STATUS = {
     "tested_clean": "tested",
     "dead_end": "dead-end",
 }
+QUEUE_UPGRADE_TARGET_STATUSES = {"candidate", "validated"}
+QUEUE_UPGRADABLE_FINAL_STATUSES = {"tested", "dead-end", "blocked"}
 LANE_TO_VULN_CLASS = {
     "authz_public_exposure": "Authz",
+    "authz_role_replay": "Authz",
     "sqli_result_diff": "SQLi",
     "marker_replay": "RCE",
     "idor_actor_pair": "IDOR",
 }
+
+
+def _dedupe_keep_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
 
 
 def now_utc() -> str:
@@ -117,6 +140,16 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _read_json_object(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _rel(path: Path, repo_root: Path) -> str:
     try:
         return str(path.relative_to(repo_root))
@@ -137,6 +170,163 @@ def _summary_path(summary: dict[str, Any], repo_root: Path) -> Path | None:
 def _findings_dir(repo_root: Path, target: str) -> Path:
     key = target_storage_key(canonical_target_value(target))
     return repo_root / "findings" / key
+
+
+def _normalized_url_for_match(url: str) -> str:
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return str(url or "").strip().rstrip("/")
+    path = parsed.path or "/"
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}{query}".rstrip("/")
+
+
+def _find_existing_finding_id_by_url(
+    findings_dir: Path,
+    *,
+    url: str,
+    finding_type: str,
+    vuln_class: str,
+) -> str:
+    payload = _read_json_object(findings_dir / "findings.json")
+    needle = _normalized_url_for_match(url)
+    if not needle:
+        return ""
+    compatible_types = {str(finding_type or "").lower()}
+    if str(vuln_class or "").lower() == "authz":
+        compatible_types.update({"auth_bypass", "exposure"})
+
+    for item in payload.get("findings", []):
+        if not isinstance(item, dict):
+            continue
+        if _normalized_url_for_match(str(item.get("url") or "")) != needle:
+            continue
+        item_type = str(item.get("type") or item.get("category") or "").lower()
+        item_class = str(item.get("vuln_class") or "").lower()
+        if item_type in compatible_types or item_class == str(vuln_class or "").lower():
+            return str(item.get("id") or "")
+    return ""
+
+
+def _runner_finding_type(vuln_class: str, lane: str) -> str:
+    value = str(vuln_class or "").strip().lower()
+    lane_value = str(lane or "").strip().lower()
+    if value == "idor" or lane_value == "idor_actor_pair":
+        return "idor"
+    if value == "authz" or lane_value == "authz_public_exposure":
+        return "auth_bypass"
+    if value == "sqli" or lane_value == "sqli_result_diff":
+        return "sqli"
+    if value == "rce":
+        return "ssti" if lane_value == "marker_replay" else "cve"
+    return value.replace("-", "_") or "exposure"
+
+
+def _runner_finding_severity(finding_type: str) -> str:
+    if finding_type in {"sqli", "ssti", "auth_bypass"}:
+        return "high"
+    if finding_type in {"idor", "exposure"}:
+        return "medium"
+    return "medium"
+
+
+def _create_runner_finding(
+    findings_dir: Path,
+    summary: dict[str, Any],
+    *,
+    validation_status: str,
+    validation_summary: str,
+    vuln_class: str,
+) -> dict[str, Any]:
+    """Create a structured finding from deterministic runner evidence.
+
+    This bridge is intentionally finding-grade only.  It lets case-state-first
+    validation enter the report queue even when no scanner artifact created a
+    prior findings.json row.
+    """
+    finding_id = str(summary.get("finding_id") or "").strip()
+    target = str(summary.get("target") or "").strip()
+    url = str(summary.get("url") or summary.get("raw_endpoint") or "").strip()
+    lane = str(summary.get("lane") or "").strip()
+    finding_type = _runner_finding_type(vuln_class, lane)
+    path = findings_dir / "findings.json"
+    payload = _read_json_object(path)
+    if not payload:
+        payload = {
+            "schema_version": 1,
+            "generated_at": now_utc(),
+            "target": target,
+            "findings_dir": str(findings_dir),
+            "total": 0,
+            "counts": {"severity": {}, "type": {}, "confidence": {}},
+            "artifacts": {"summary_json": "", "summary_txt": ""},
+            "findings": [],
+        }
+
+    findings = payload.setdefault("findings", [])
+    if not isinstance(findings, list):
+        findings = []
+        payload["findings"] = findings
+
+    finding = next(
+        (item for item in findings if isinstance(item, dict) and item.get("id") == finding_id),
+        None,
+    )
+    if finding is None:
+        finding = {
+            "id": finding_id,
+            "type": finding_type,
+            "category": finding_type,
+            "title": f"Validated {vuln_class or finding_type} on {url or target}",
+            "summary": str((summary.get("evidence_rubric") or {}).get("summary") or summary.get("result") or "")[:240],
+            "url": url,
+            "severity": _runner_finding_severity(finding_type),
+            "confidence": "confirmed",
+            "source_file": str(summary.get("summary_path") or ""),
+            "line_number": 0,
+            "template_id": "",
+            "raw": f"validation_runner:{lane}:{finding_id}",
+            "validation_status": "unvalidated",
+            "report_status": "not_generated",
+        }
+        findings.append(finding)
+
+    finding.update({
+        "type": finding_type,
+        "category": finding.get("category") or finding_type,
+        "url": url or finding.get("url", ""),
+        "confidence": "confirmed",
+        "validation_status": validation_status,
+        "validation_summary": validation_summary,
+        "validated_at": str(summary.get("generated_at") or now_utc()),
+        "vuln_class": vuln_class,
+        "updated_at": now_utc(),
+    })
+    finding.setdefault("report_status", "not_generated")
+    finding.setdefault("severity", _runner_finding_severity(finding_type))
+
+    payload["total"] = len([item for item in findings if isinstance(item, dict)])
+    severity_counts: dict[str, int] = {}
+    type_counts: dict[str, int] = {}
+    confidence_counts: dict[str, int] = {}
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        severity = str(item.get("severity") or "medium")
+        ftype = str(item.get("type") or "exposure")
+        confidence = str(item.get("confidence") or "medium")
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        type_counts[ftype] = type_counts.get(ftype, 0) + 1
+        confidence_counts[confidence] = confidence_counts.get(confidence, 0) + 1
+    payload["counts"] = {
+        "severity": dict(sorted(severity_counts.items())),
+        "type": dict(sorted(type_counts.items())),
+        "confidence": dict(sorted(confidence_counts.items())),
+    }
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return finding
 
 
 def _endpoint_markers(url: str) -> list[str]:
@@ -161,6 +351,19 @@ def _queue_action_matches_summary(action: dict[str, Any], summary: dict[str, Any
     finding_id = str(summary.get("finding_id") or "").strip()
     markers = _endpoint_markers(str(summary.get("url") or summary.get("endpoint") or ""))
     metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    case_state_ref = summary.get("case_state_ref") if isinstance(summary.get("case_state_ref"), dict) else {}
+    case_state_write_back = (
+        summary.get("case_state_write_back")
+        if isinstance(summary.get("case_state_write_back"), dict)
+        else {}
+    )
+    backlog_id = str(
+        case_state_ref.get("backlog_id")
+        or case_state_write_back.get("id")
+        or ""
+    ).strip()
+    if backlog_id and str(metadata.get("backlog_id") or "").strip() == backlog_id:
+        return True
     haystack = " ".join(
         str(value or "")
         for value in (
@@ -174,6 +377,7 @@ def _queue_action_matches_summary(action: dict[str, Any], summary: dict[str, Any
             metadata.get("finding_id"),
             metadata.get("endpoint"),
             metadata.get("url"),
+            metadata.get("backlog_id"),
         )
     )
     if finding_id and finding_id in haystack:
@@ -207,6 +411,47 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
         confidence="confirmed" if result == "tested_finding" else "",
     )
     if not updated:
+        finding_type = _runner_finding_type(vuln_class, str(summary.get("lane") or ""))
+        existing_id = _find_existing_finding_id_by_url(
+            findings_dir,
+            url=str(summary.get("url") or summary.get("endpoint") or ""),
+            finding_type=finding_type,
+            vuln_class=vuln_class,
+        )
+        if existing_id:
+            updated = update_finding_status(
+                findings_dir,
+                existing_id,
+                validation_status=status,
+                validation_summary=str(summary_path) if summary_path else str(summary.get("summary_path") or ""),
+                validated_at=str(summary.get("generated_at") or now_utc()),
+                vuln_class=vuln_class,
+                confidence="confirmed" if result == "tested_finding" else "",
+            )
+            if updated:
+                return {
+                    "status": "updated",
+                    "findings_dir": str(findings_dir),
+                    "finding_id": existing_id,
+                    "requested_finding_id": finding_id,
+                    "validation_status": updated.get("validation_status", ""),
+                    "matched_by": "url",
+                }
+    if not updated:
+        if result == "tested_finding":
+            created = _create_runner_finding(
+                findings_dir,
+                summary,
+                validation_status=status,
+                validation_summary=str(summary_path) if summary_path else str(summary.get("summary_path") or ""),
+                vuln_class=vuln_class,
+            )
+            return {
+                "status": "created",
+                "findings_dir": str(findings_dir),
+                "finding_id": finding_id,
+                "validation_status": created.get("validation_status", ""),
+            }
         return {
             "status": "skipped",
             "reason": "finding not found",
@@ -230,16 +475,26 @@ def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str,
 
     queue = load_queue(repo_root, target)
     matched: dict[str, Any] | None = None
+    final_upgrade_match: dict[str, Any] | None = None
     for action in queue.get("actions", []):
         if not isinstance(action, dict):
             continue
-        if str(action.get("status") or "queued") not in ACTIVE_STATUSES:
+        status = str(action.get("status") or "queued")
+        if not _queue_action_matches_summary(action, summary):
             continue
-        if _queue_action_matches_summary(action, summary):
+        if status in ACTIVE_STATUSES:
             matched = action
             break
+        if (
+            queue_status in QUEUE_UPGRADE_TARGET_STATUSES
+            and status in QUEUE_UPGRADABLE_FINAL_STATUSES
+            and final_upgrade_match is None
+        ):
+            final_upgrade_match = action
     if not matched:
-        return {"status": "skipped", "reason": "no matching active action"}
+        matched = final_upgrade_match
+    if not matched:
+        return {"status": "skipped", "reason": "no matching active or upgradable action"}
 
     summary_ref = str(summary.get("summary_path") or "")
     resolved = resolve_action(
@@ -384,6 +639,106 @@ def looks_like_sqli_probe(value: str) -> bool:
     return bool(SQLI_PROBE_RE.search(str(value or "")))
 
 
+def _sqli_probe_features(value: str) -> set[str]:
+    """Classify the perturbation shape for SQLi evidence gating.
+
+    A quote or comment is a useful probe, but it is not by itself proof of SQLi:
+    search/filter endpoints often return fewer rows for odd punctuation.  The
+    runner therefore separates probe shape from promotion evidence.
+    """
+    text = str(value or "").lower()
+    features: set[str] = set()
+    if re.search(r"['\"`]|--|/\*|\*/|\)\)", text):
+        features.add("syntax-breaker")
+    if re.search(r"\bunion\b|\bselect\b|\binformation_schema\b|\bfrom\b", text):
+        features.add("union-or-select")
+    if re.search(r"\b(?:or|and)\b|(?:\b|\D)[01]\s*=\s*[01](?:\D|$)|\btrue\b|\bfalse\b", text):
+        features.add("boolean")
+    if re.search(r"\bsleep\s*\(|benchmark\s*\(|pg_sleep\s*\(|waitfor\b", text):
+        features.add("time-delay")
+    if re.search(r"\$(?:ne|gt|regex|where)\b|\{\s*\"?\$", text):
+        features.add("nosql-operator")
+    if ";" in text:
+        features.add("stacked-or-separator")
+    return features
+
+
+def _sqli_run_evidence(
+    *,
+    variant_value: str,
+    baseline_body: str,
+    variant_body: str,
+    diff: dict[str, Any],
+) -> dict[str, Any]:
+    """Return lane-specific SQLi promotion evidence for one replay run.
+
+    Strong evidence is deliberately narrower than a material diff.  This keeps
+    the runner from promoting ordinary search-result changes, while still
+    preserving the diff and next-action guidance for Claude to reason about.
+    """
+    features = _sqli_probe_features(variant_value)
+    changed = diff.get("changed") or {}
+    count_delta = (diff.get("json_count") or {}).get("delta")
+    body_delta = int((diff.get("body_length") or {}).get("delta", 0) or 0)
+    fields_added = list((diff.get("json_fields") or {}).get("added") or [])
+    fields_removed = list((diff.get("json_fields") or {}).get("removed") or [])
+    status = diff.get("status") or {}
+    status_changed = bool(changed.get("status"))
+    baseline_status = int(status.get("baseline") or 0)
+    variant_status = int(status.get("variant") or 0)
+
+    reasons: list[str] = []
+    ambiguous: list[str] = []
+
+    baseline_has_sql_error = bool(SQLI_ERROR_RE.search(str(baseline_body or "")))
+    variant_has_sql_error = bool(SQLI_ERROR_RE.search(str(variant_body or "")))
+    if variant_has_sql_error and not baseline_has_sql_error:
+        reasons.append("variant-only database/parser error marker")
+
+    if isinstance(count_delta, int) and count_delta > 0 and features & {
+        "boolean",
+        "union-or-select",
+        "nosql-operator",
+        "syntax-breaker",
+    }:
+        reasons.append(f"injection-shaped probe expanded JSON result count by {count_delta}")
+
+    if fields_added and features & {"boolean", "union-or-select", "nosql-operator"}:
+        reasons.append("injection-shaped probe added JSON fields: " + ",".join(fields_added[:5]))
+
+    if status_changed and variant_status >= 500 and baseline_status < 500:
+        if variant_has_sql_error:
+            reasons.append(f"variant changed status {baseline_status}->{variant_status} with DB error marker")
+        else:
+            ambiguous.append(
+                f"variant changed status {baseline_status}->{variant_status} without DB error marker"
+            )
+
+    if "time-delay" in features and not reasons:
+        ambiguous.append("time-shaped probe needs a timing runner, not body diff alone")
+
+    if not reasons and (changed.get("json_count") or changed.get("json_fields") or abs(body_delta) > 20):
+        if isinstance(count_delta, int) and count_delta < 0:
+            ambiguous.append(
+                "variant reduced result count; ordinary search/filter/parser behavior is possible"
+            )
+        elif fields_removed and not fields_added:
+            ambiguous.append(
+                "variant only removed JSON fields; this is not enough for SQLi promotion"
+            )
+        else:
+            ambiguous.append(
+                "material response diff lacks DB error, result expansion, or boolean/union/nosql confirmation"
+            )
+
+    return {
+        "strong": bool(reasons),
+        "features": sorted(features),
+        "reasons": reasons,
+        "ambiguous": ambiguous,
+    }
+
+
 def _is_success_status(status: int) -> bool:
     return 200 <= int(status or 0) < 300
 
@@ -407,6 +762,79 @@ def _actor_context_differs(
         or owner_headers != peer_headers
         or str(owner_body or "") != str(peer_body or "")
     )
+
+
+PRIVATE_JSON_KEYS = {
+    "email",
+    "userid",
+    "username",
+    "account",
+    "accountid",
+    "address",
+    "addressid",
+    "order",
+    "orderid",
+    "invoice",
+    "invoiceid",
+    "basket",
+    "basketid",
+    "card",
+    "cardnumber",
+    "phone",
+    "tenant",
+    "tenantid",
+    "org",
+    "orgid",
+    "organization",
+    "organizationid",
+    "token",
+    "secret",
+}
+PRIVATE_TEXT_RE = re.compile(
+    r"(?i)([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|user[_-]?id|account|address|order|invoice|basket|tenant|organization)"
+)
+
+
+def _meaningful_value(value: Any) -> bool:
+    if value in (None, "", [], {}):
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    return True
+
+
+def _json_has_private_shape(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_norm = re.sub(r"[^a-z0-9]+", "", str(key).lower())
+            if key_norm in PRIVATE_JSON_KEYS and _meaningful_value(child):
+                return True
+            if _json_has_private_shape(child):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_json_has_private_shape(item) for item in value)
+    if isinstance(value, str):
+        return bool(PRIVATE_TEXT_RE.search(value))
+    return False
+
+
+def _private_body_match(owner_body: str, peer_body: str) -> bool:
+    """Return true for exact matches that are actually private-object shaped.
+
+    Empty collection responses such as `{"status":"success","data":[]}` often
+    match across actors and are useful signals, but they are not finding-grade
+    IDOR evidence without a private marker or private fields.
+    """
+    owner_text = str(owner_body or "").strip()
+    peer_text = str(peer_body or "").strip()
+    if owner_text != peer_text or len(peer_text) < 20:
+        return False
+    try:
+        parsed = json.loads(peer_text)
+    except json.JSONDecodeError:
+        return bool(PRIVATE_TEXT_RE.search(peer_text))
+    return _json_has_private_shape(parsed)
 
 
 def _case_state_session_header(state: dict[str, Any], actor: str) -> tuple[str, dict[str, str]]:
@@ -503,6 +931,63 @@ def resolve_idor_actor_pair_from_case_state(
     }
 
 
+def _case_state_actor_ids_with_sessions(state: dict[str, Any]) -> list[str]:
+    """Return deterministic actor ids that have usable session headers."""
+    actors = state.get("actors") if isinstance(state.get("actors"), dict) else {}
+    out: list[str] = []
+    for actor in sorted(str(item) for item in actors):
+        try:
+            _case_state_session_header(state, actor)
+        except ValueError:
+            continue
+        out.append(actor)
+    return out
+
+
+def resolve_authz_role_replay_from_case_state(
+    *,
+    repo_root: Path,
+    target: str,
+    owner_actor: str = "",
+    peer_actor: str = "",
+    owner_headers: dict[str, str] | None = None,
+    peer_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Resolve two authenticated actor contexts from target case_state.json."""
+    state = load_case_state(repo_root, target)
+    actors_with_sessions = _case_state_actor_ids_with_sessions(state)
+    owner = str(owner_actor or "").strip()
+    peer = str(peer_actor or "").strip()
+    if owner and owner not in (state.get("actors") or {}):
+        raise ValueError(f"case_state owner actor not found: {owner}")
+    if peer and peer not in (state.get("actors") or {}):
+        raise ValueError(f"case_state peer actor not found: {peer}")
+    if not owner:
+        owner = actors_with_sessions[0] if actors_with_sessions else ""
+    if not peer:
+        peer = next((actor for actor in actors_with_sessions if actor != owner), "")
+    if not owner:
+        raise ValueError("owner_actor is required or at least one case_state actor session must exist")
+    if not peer:
+        raise ValueError("peer_actor is required or at least two case_state actor sessions must exist")
+    if owner == peer:
+        raise ValueError("owner_actor and peer_actor must differ")
+    owner_session_id, owner_session_header = _case_state_session_header(state, owner)
+    peer_session_id, peer_session_header = _case_state_session_header(state, peer)
+    return {
+        "owner_actor": owner,
+        "peer_actor": peer,
+        "owner_headers": {**owner_session_header, **dict(owner_headers or {})},
+        "peer_headers": {**peer_session_header, **dict(peer_headers or {})},
+        "case_state_ref": {
+            "owner_actor": owner,
+            "peer_actor": peer,
+            "owner_session_id": owner_session_id,
+            "peer_session_id": peer_session_id,
+        },
+    }
+
+
 def _record_ledger_if_needed(
     *,
     repo_root: Path,
@@ -581,6 +1066,23 @@ def run_authz_public_exposure(
         "confidence": "confirmed" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))
+    if not candidate_ready:
+        # The generic authz rubric sees words such as "admin" in URLs and can
+        # otherwise look candidate-ready even when the lane-specific classifier
+        # correctly rejected the response for lacking body-backed exposure.
+        # Keep runner output internally consistent: path/name markers are useful
+        # leads, not Candidate evidence.
+        rubric.update({
+            "status": "tested-clean",
+            "ready": False,
+            "score": 0,
+            "missing": ["body_backed_sensitive_marker"],
+            "missing_labels": ["body-backed sensitive/admin/config marker"],
+            "next_actions": [
+                "Do not promote path/name markers alone; pivot to body-backed exposure or role/object diff."
+            ],
+            "summary": "authz:tested-clean score=0 missing=body-backed sensitive/admin/config marker",
+        })
     evidence_ref = _rel(response_path, repo_root)
     notes = (
         f"Validation runner authz-public-exposure: anonymous {method.upper()} returned "
@@ -631,6 +1133,420 @@ def run_authz_public_exposure(
     }
     summary_path = bundle / "summary.json"
     _write_json(summary_path, summary)
+    summary["summary_path"] = _rel(summary_path, repo_root)
+    _write_json(summary_path, summary)
+    return summary
+
+
+def _role_replay_material_diff(diff: dict[str, Any]) -> bool:
+    """Return true for owner/peer response differences worth AI review."""
+    details = diff.get("diff") if isinstance(diff.get("diff"), dict) else {}
+    if not details:
+        return False
+    changed = details.get("changed") if isinstance(details.get("changed"), dict) else {}
+    if changed.get("status"):
+        return True
+    if changed.get("json_count") or changed.get("json_fields"):
+        return True
+    try:
+        body_length = details.get("body_length") if isinstance(details.get("body_length"), dict) else {}
+        length_delta = abs(int(body_length.get("delta", 0) or 0))
+    except (TypeError, ValueError):
+        length_delta = 0
+    return length_delta >= 32
+
+
+AUTHENTICATED_COLLECTION_IDENTITY_FIELDS = {
+    "account",
+    "accountid",
+    "address",
+    "customer",
+    "customerid",
+    "email",
+    "firstname",
+    "ip",
+    "lastloginip",
+    "lastname",
+    "phone",
+    "profileimage",
+    "tenant",
+    "tenantid",
+    "user",
+    "userid",
+    "username",
+    "workspace",
+    "workspaceid",
+}
+AUTHENTICATED_COLLECTION_AUTHZ_FIELDS = {
+    "deletedat",
+    "groups",
+    "isactive",
+    "isadmin",
+    "org",
+    "orgid",
+    "permissions",
+    "role",
+    "roles",
+}
+AUTHENTICATED_COLLECTION_SECRET_FIELDS = {
+    "apitoken",
+    "apikey",
+    "deluxetoken",
+    "password",
+    "passwordhash",
+    "recoverytoken",
+    "secret",
+    "token",
+}
+
+
+def _normalized_json_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _json_data_node(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key in ("data", "items", "results", "users", "accounts", "records"):
+            if key in value:
+                return value.get(key)
+    return value
+
+
+def _collection_dict_items(value: Any) -> list[dict[str, Any]]:
+    """Return top-level collection items without deep-scanning arbitrary prose."""
+    node = _json_data_node(value)
+    if isinstance(node, list):
+        return [item for item in node if isinstance(item, dict)]
+    return []
+
+
+def _authenticated_broad_exposure_evidence(status: int, body: str) -> dict[str, Any]:
+    """Detect authenticated-only broad data exposure candidates.
+
+    这是 role-aware replay 的保守候选信号，不直接判定漏洞。只有当匿名不可读、
+    登录态可读、响应是集合型 JSON，且集合字段体现身份/权限/账号敏感语义时，
+    才返回 candidate。这样可覆盖“低权限用户能枚举用户目录/角色/账号元数据”的
+    实战线索，同时避免把普通 public catalog 当成 authz finding。
+    """
+    evidence = {
+        "candidate": False,
+        "reason": "",
+        "item_count": 0,
+        "fields": [],
+        "identity_fields": [],
+        "authz_fields": [],
+        "secret_fields": [],
+    }
+    if not _is_success_status(status):
+        evidence["reason"] = "authenticated response was not successful"
+        return evidence
+    try:
+        payload = json.loads(body or "")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        evidence["reason"] = "authenticated response was not JSON"
+        return evidence
+
+    items = _collection_dict_items(payload)
+    fields = sorted({_normalized_json_key(key) for item in items[:50] for key in item.keys()})
+    identity_hits = sorted(set(fields) & AUTHENTICATED_COLLECTION_IDENTITY_FIELDS)
+    authz_hits = sorted(set(fields) & AUTHENTICATED_COLLECTION_AUTHZ_FIELDS)
+    secret_hits = sorted(set(fields) & AUTHENTICATED_COLLECTION_SECRET_FIELDS)
+
+    evidence.update({
+        "item_count": len(items),
+        "fields": fields,
+        "identity_fields": identity_hits,
+        "authz_fields": authz_hits,
+        "secret_fields": secret_hits,
+    })
+
+    has_sensitive_account_shape = bool(secret_hits) or (
+        bool(identity_hits) and (bool(authz_hits) or len(identity_hits) >= 2)
+    )
+    if len(items) >= 2 and has_sensitive_account_shape:
+        evidence["candidate"] = True
+        evidence["reason"] = (
+            "authenticated-only collection exposes account/identity/authz-shaped fields; "
+            "requires policy and role expectation review"
+        )
+    else:
+        evidence["reason"] = "no broad authenticated account/identity/authz collection shape"
+    return evidence
+
+
+def run_authz_role_replay(
+    *,
+    repo_root: Path,
+    target: str,
+    url: str,
+    method: str = "GET",
+    owner_headers: dict[str, str] | None = None,
+    peer_headers: dict[str, str] | None = None,
+    owner_body: str = "",
+    peer_body: str | None = None,
+    include_anonymous: bool = True,
+    timeout: int = 10,
+    finding_id: str = "",
+    repeat: int = 1,
+    no_ledger: bool = False,
+    browser_observed: bool = False,
+    state_changing: bool = False,
+    redline_checked: bool = True,
+    case_state_ref: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Replay one surface as anonymous/owner/peer without claiming object IDOR.
+
+    This lane is intentionally conservative: role/status/body differences are
+    ``candidate`` evidence for Claude to interpret, while only body-backed
+    anonymous sensitive exposure promotes directly to ``tested_finding``.
+    """
+    method_u = method.upper()
+    owner_headers = dict(owner_headers or {})
+    peer_headers = dict(peer_headers or {})
+    peer_body = owner_body if peer_body is None else peer_body
+    if not _actor_context_differs(
+        url=url,
+        peer_url=url,
+        owner_headers=owner_headers,
+        peer_headers=peer_headers,
+        owner_body=owner_body,
+        peer_body=peer_body,
+    ):
+        raise ValueError("owner and peer request contexts are identical; provide distinct actor headers/body")
+
+    finding_id = finding_id or _default_finding_id("authz-role-replay", url)
+    bundle = _bundle_dir(repo_root, target, finding_id)
+    repeat = max(1, int(repeat or 1))
+    runs: list[dict[str, Any]] = []
+    public_marker_sources: dict[str, list[str]] = {"url": [], "body": []}
+    authenticated_exposure_checks: list[dict[str, Any]] = []
+
+    for idx in range(1, repeat + 1):
+        prefix = "" if repeat == 1 else f"{idx}."
+        anonymous = (
+            request_once(url=url, method=method_u, headers={}, body="", timeout=timeout)
+            if include_anonymous else None
+        )
+        owner = request_once(url=url, method=method_u, headers=owner_headers, body=owner_body, timeout=timeout)
+        peer = request_once(url=url, method=method_u, headers=peer_headers, body=peer_body, timeout=timeout)
+
+        if anonymous is not None:
+            anon_req = bundle / f"{prefix}anonymous.request.txt"
+            anon_resp = bundle / f"{prefix}anonymous.response.txt"
+            _write_text(anon_req, anonymous["request_text"])
+            _write_text(anon_resp, anonymous["response_text"])
+            public_marker_sources = public_exposure_marker_sources(url, anonymous["body"])
+        owner_req = bundle / f"{prefix}owner.request.txt"
+        owner_resp = bundle / f"{prefix}owner.response.txt"
+        peer_req = bundle / f"{prefix}peer.request.txt"
+        peer_resp = bundle / f"{prefix}peer.response.txt"
+        _write_text(owner_req, owner["request_text"])
+        _write_text(owner_resp, owner["response_text"])
+        _write_text(peer_req, peer["request_text"])
+        _write_text(peer_resp, peer["response_text"])
+
+        owner_peer_diff = diff_responses(
+            baseline_status=owner["status"],
+            baseline_headers=owner["headers"],
+            baseline_body=owner["body"],
+            variant_status=peer["status"],
+            variant_headers=peer["headers"],
+            variant_body=peer["body"],
+        )
+        anonymous_owner_diff = (
+            diff_responses(
+                baseline_status=anonymous["status"],
+                baseline_headers=anonymous["headers"],
+                baseline_body=anonymous["body"],
+                variant_status=owner["status"],
+                variant_headers=owner["headers"],
+                variant_body=owner["body"],
+            )
+            if anonymous is not None else {}
+        )
+        authenticated_exposure = _authenticated_broad_exposure_evidence(owner["status"], owner["body"])
+        authenticated_exposure_checks.append(authenticated_exposure)
+        runs.append({
+            "iteration": idx,
+            "url": url,
+            "method": method_u,
+            "anonymous_status": anonymous["status"] if anonymous is not None else None,
+            "owner_status": owner["status"],
+            "peer_status": peer["status"],
+            "anonymous_success": _is_success_status(anonymous["status"]) if anonymous is not None else False,
+            "owner_success": _is_success_status(owner["status"]),
+            "peer_success": _is_success_status(peer["status"]),
+            "peer_denied": _is_denied_status(peer["status"]),
+            "owner_peer_material_diff": _role_replay_material_diff(owner_peer_diff),
+            "anonymous_owner_material_diff": _role_replay_material_diff(anonymous_owner_diff) if anonymous_owner_diff else False,
+            "authenticated_exposure_candidate": bool(authenticated_exposure.get("candidate")),
+            "artifacts": {
+                **({
+                    "anonymous_request": _rel(anon_req, repo_root),
+                    "anonymous_response": _rel(anon_resp, repo_root),
+                } if anonymous is not None else {}),
+                "owner_request": _rel(owner_req, repo_root),
+                "owner_response": _rel(owner_resp, repo_root),
+                "peer_request": _rel(peer_req, repo_root),
+                "peer_response": _rel(peer_resp, repo_root),
+            },
+            "owner_peer_diff": owner_peer_diff,
+            "anonymous_owner_diff": anonymous_owner_diff,
+        })
+
+    markers = sorted(set(public_marker_sources.get("url", [])) | set(public_marker_sources.get("body", [])))
+    public_ready = (
+        include_anonymous
+        and all(bool(run["anonymous_success"]) for run in runs)
+        and public_exposure_candidate_ready(runs[0]["anonymous_status"], public_marker_sources)
+    )
+    owner_success_all = all(bool(run["owner_success"]) for run in runs)
+    role_diff_any = any(bool(run["owner_peer_material_diff"]) for run in runs)
+    anonymous_denied_all = include_anonymous and all(
+        run["anonymous_status"] is not None and not bool(run["anonymous_success"]) for run in runs
+    )
+    authenticated_exposure_any = (
+        anonymous_denied_all
+        and owner_success_all
+        and all(bool(run["peer_success"]) for run in runs)
+        and all(bool(item.get("candidate")) for item in authenticated_exposure_checks)
+    )
+    if public_ready:
+        result = "tested_finding"
+    elif not owner_success_all:
+        result = "dead_end"
+    elif role_diff_any or authenticated_exposure_any:
+        result = "candidate"
+    else:
+        result = "tested_clean"
+    candidate_ready = result == "tested_finding"
+    authenticated_exposure_summary = {
+        "candidate": bool(authenticated_exposure_any),
+        "checks": authenticated_exposure_checks,
+        "reason": (
+            authenticated_exposure_checks[0].get("reason", "")
+            if authenticated_exposure_checks else ""
+        ),
+    }
+
+    diff_path = bundle / "diff.json"
+    _write_json(diff_path, {
+        "runs": runs,
+        "authenticated_exposure": authenticated_exposure_summary,
+    })
+    finding = {
+        "type": "auth_bypass",
+        "url": url,
+        "summary": (
+            f"authz role replay result={result}; repeat={repeat}; "
+            f"anonymous_statuses={[run['anonymous_status'] for run in runs]}; "
+            f"owner_statuses={[run['owner_status'] for run in runs]}; "
+            f"peer_statuses={[run['peer_status'] for run in runs]}"
+        ),
+        "raw": (
+            f"anonymous markers={markers}; owner/peer material diff={role_diff_any}; "
+            f"authenticated broad exposure={authenticated_exposure_any}; "
+            "role-aware replay captured"
+        ),
+        "confidence": "confirmed" if candidate_ready else "medium",
+    }
+    rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding, vuln_type="authz"))
+    if result == "dead_end":
+        rubric.update({
+            "status": "dead-end",
+            "ready": False,
+            "score": 0,
+            "missing": ["owner_baseline_success"],
+            "missing_labels": ["valid owner/authenticated baseline"],
+            "next_actions": [
+                "Refresh or recapture the authenticated owner request/session before drawing any authz conclusion for this surface."
+            ],
+            "summary": "authz:dead-end score=0 missing=valid owner/authenticated baseline",
+        })
+    elif result == "tested_clean":
+        rubric.update({
+            "status": "tested-clean",
+            "ready": False,
+            "score": 0,
+            "missing": ["role_or_body_backed_authz_delta"],
+            "missing_labels": ["role/object/body-backed authorization delta"],
+            "next_actions": [
+                "No role-specific difference on this exact surface; pivot to object-specific or state-changing workflow evidence."
+            ],
+            "summary": "authz:tested-clean score=0 missing=role/object/body-backed authorization delta",
+        })
+    elif result == "candidate" and authenticated_exposure_any and not role_diff_any:
+        first_check = authenticated_exposure_checks[0] if authenticated_exposure_checks else {}
+        rubric.update({
+            "status": "candidate",
+            "ready": False,
+            "missing": ["policy_or_role_expectation", "object_scope_or_private_marker"],
+            "missing_labels": [
+                "policy/role expectation for authenticated collection",
+                "object-specific private marker or documented admin-only expectation",
+            ],
+            "next_actions": [
+                "Review whether this collection should be admin-only or self-scoped; then pivot to object-specific endpoints, lower-role replay, or policy evidence before reporting."
+            ],
+            "summary": (
+                "authz:candidate authenticated-only broad collection "
+                f"items={first_check.get('item_count', 0)} "
+                f"identity={first_check.get('identity_fields', [])} "
+                f"authz={first_check.get('authz_fields', [])} "
+                f"secret={first_check.get('secret_fields', [])}"
+            ),
+        })
+    evidence_ref = _rel(diff_path, repo_root)
+    notes = (
+        f"Validation runner authz-role-replay: result={result}, repeat={repeat}, "
+        f"anonymous_statuses={[run['anonymous_status'] for run in runs]}, "
+        f"owner_statuses={[run['owner_status'] for run in runs]}, "
+        f"peer_statuses={[run['peer_status'] for run in runs]}."
+    )
+    ledger = _record_ledger_if_needed(
+        repo_root=repo_root,
+        no_ledger=no_ledger,
+        target=target,
+        endpoint=url,
+        method=method_u,
+        vuln_class="Authz",
+        actor="owner",
+        object_scope="unknown",
+        variant="role_diff",
+        result=result,
+        source="validation-runner:authz-role-replay",
+        evidence_ref=evidence_ref,
+        notes=notes,
+        browser_observed=browser_observed,
+        redline_checked=redline_checked,
+        state_changing=state_changing,
+    )
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "lane": "authz_role_replay",
+        "target": canonical_target_value(target),
+        "finding_id": finding_id,
+        "url": url,
+        "method": method_u,
+        "generated_at": now_utc(),
+        "result": result,
+        "candidate_ready": candidate_ready,
+        "markers": markers,
+        "marker_sources": public_marker_sources,
+        "authenticated_exposure": authenticated_exposure_summary,
+        "case_state_ref": case_state_ref or {},
+        "repeat": repeat,
+        "runs": runs,
+        "artifacts": {"diff": evidence_ref},
+        "evidence_rubric": rubric,
+        "ledger_record": ledger,
+        "ai_next": {
+            "hypothesis": "authenticated actor contexts may reveal a role/object authorization delta on this surface",
+            "next_action": "If candidate, inspect raw owner/peer diff or authenticated-only collection fields, then add object/private marker, lower-role, or policy evidence before reporting. If tested_clean, pivot to object-specific endpoints or state-changing workflows.",
+            "stop_condition": "Owner baseline fails, owner/peer responses are equivalent, and no authenticated-only account/identity/authz collection is present.",
+        },
+    }
+    summary_path = bundle / "summary.json"
     summary["summary_path"] = _rel(summary_path, repo_root)
     _write_json(summary_path, summary)
     return summary
@@ -698,6 +1614,12 @@ def run_sqli_result_diff(
             variant_headers=variant["headers"],
             variant_body=variant["body"],
         )
+        sqli_evidence = _sqli_run_evidence(
+            variant_value=variant_value,
+            baseline_body=base["body"],
+            variant_body=variant["body"],
+            diff=diff["diff"],
+        )
         runs.append({
             "iteration": idx,
             "baseline_url": baseline_url,
@@ -709,6 +1631,7 @@ def run_sqli_result_diff(
                 "variant_response": _rel(var_resp, repo_root),
             },
             **diff,
+            "sqli_evidence": sqli_evidence,
         })
 
     material = [
@@ -719,21 +1642,53 @@ def run_sqli_result_diff(
         for run in runs
     ]
     probe_shape = looks_like_sqli_probe(variant_value)
-    candidate_ready = probe_shape and all(material)
+    strong_sqli_evidence = [bool(run.get("sqli_evidence", {}).get("strong")) for run in runs]
+    candidate_ready = probe_shape and all(material) and all(strong_sqli_evidence)
     result = "tested_finding" if candidate_ready else "tested_clean"
     diff_summaries = [str(run.get("diff", {}).get("summary") or "") for run in runs]
+    sqli_reasons = _dedupe_keep_order([
+        reason
+        for run in runs
+        for reason in (run.get("sqli_evidence", {}).get("reasons") or [])
+    ])
+    sqli_ambiguous = _dedupe_keep_order([
+        reason
+        for run in runs
+        for reason in (run.get("sqli_evidence", {}).get("ambiguous") or [])
+    ])
     finding = {
         "type": "sqli",
         "url": url,
         "summary": (
             f"baseline vs single-variable perturbation on {param}; "
-            f"stable differential={candidate_ready}; {'; '.join(diff_summaries)}"
+            f"stable differential={all(material)}; strong SQLi evidence={candidate_ready}; "
+            f"{'; '.join(diff_summaries)}"
         ),
         "raw": "SQLI-POC-VERIFIED read-only baseline perturbation repeat stable"
-        if candidate_ready else "read-only SQLi perturbation did not produce stable material diff",
+        if candidate_ready else "read-only SQLi perturbation did not produce strong SQLi evidence",
         "confidence": "confirmed" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))
+    if not candidate_ready:
+        missing = ["strong_sqli_signal"]
+        missing_labels = ["DB error / boolean expansion / union-field / NoSQL operator confirmation"]
+        if not probe_shape:
+            missing.insert(0, "injection_shaped_probe")
+            missing_labels.insert(0, "injection-shaped probe")
+        if not all(material):
+            missing.insert(0, "stable_material_diff")
+            missing_labels.insert(0, "stable material response diff")
+        rubric.update({
+            "status": "tested-clean",
+            "ready": False,
+            "score": 0,
+            "missing": missing,
+            "missing_labels": missing_labels,
+            "next_actions": [
+                "Do not promote quote-only result shrinkage; require DB error, boolean true/false pair, result expansion, added fields, or a dedicated timing lane.",
+            ],
+            "summary": "sqli:tested-clean score=0 missing=" + ",".join(missing),
+        })
     diff_path = bundle / "diff.json"
     _write_json(diff_path, {"runs": runs})
     notes = (
@@ -771,6 +1726,11 @@ def run_sqli_result_diff(
         "result": result,
         "candidate_ready": candidate_ready,
         "probe_shape": probe_shape,
+        "sqli_evidence": {
+            "strong": candidate_ready,
+            "reasons": sqli_reasons,
+            "ambiguous": sqli_ambiguous,
+        },
         "repeat": repeat,
         "runs": runs,
         "artifacts": {"diff": _rel(diff_path, repo_root)},
@@ -937,7 +1897,8 @@ def run_idor_actor_pair(
     - owner must succeed;
     - peer must also succeed;
     - and either the peer response contains an operator-provided private marker
-      or the peer body exactly matches the owner body with non-trivial length.
+      or the peer body exactly matches the owner body with a non-trivial private
+      object shape.
 
     If peer access is possible but the response is not strong enough, the runner
     records ``candidate`` rather than pretending the issue is clean or proven.
@@ -985,10 +1946,11 @@ def run_idor_actor_pair(
         )
         marker_found = bool(marker and marker in peer["body"])
         exact_body_match = owner["body"] == peer["body"] and len(str(peer["body"] or "").strip()) >= 20
+        private_body_match = _private_body_match(owner["body"], peer["body"])
         owner_success = _is_success_status(owner["status"])
         peer_success = _is_success_status(peer["status"])
         peer_denied = _is_denied_status(peer["status"])
-        strong_access = owner_success and peer_success and (marker_found if marker else exact_body_match)
+        strong_access = owner_success and peer_success and (marker_found if marker else private_body_match)
         ambiguous_access = owner_success and peer_success and not strong_access
         runs.append({
             "iteration": idx,
@@ -1002,6 +1964,7 @@ def run_idor_actor_pair(
             "peer_denied": peer_denied,
             "marker_found": marker_found,
             "exact_body_match": exact_body_match,
+            "private_body_match": private_body_match,
             "strong_access": strong_access,
             "ambiguous_access": ambiguous_access,
             "artifacts": {
@@ -1158,6 +2121,26 @@ def build_parser() -> argparse.ArgumentParser:
     authz.add_argument("--browser-observed", action="store_true")
     authz.add_argument("--no-ledger", action="store_true")
 
+    authz_role = sub.add_parser("authz-role-replay", help="Replay anonymous/owner/peer actor contexts on one surface")
+    add_common(authz_role)
+    authz_role.add_argument("--url", required=True)
+    authz_role.add_argument("--method", default="GET")
+    authz_role.add_argument("--owner-header", action="append", default=[])
+    authz_role.add_argument("--peer-header", action="append", default=[])
+    authz_role.add_argument("--from-case-state", action="store_true")
+    authz_role.add_argument("--owner-actor", default="")
+    authz_role.add_argument("--peer-actor", default="")
+    authz_role.add_argument("--body", default="")
+    authz_role.add_argument("--owner-body", default=None)
+    authz_role.add_argument("--peer-body", default=None)
+    authz_role.add_argument("--timeout", type=int, default=10)
+    authz_role.add_argument("--repeat", type=int, default=1)
+    authz_role.add_argument("--no-anonymous", action="store_true")
+    authz_role.add_argument("--browser-observed", action="store_true")
+    authz_role.add_argument("--state-changing", action="store_true")
+    authz_role.add_argument("--redline-checked", action="store_true", default=True)
+    authz_role.add_argument("--no-ledger", action="store_true")
+
     sqli = sub.add_parser("sqli-result-diff", help="Validate read-only SQLi-style result differential")
     add_common(sqli)
     sqli.add_argument("--url", required=True)
@@ -1231,6 +2214,43 @@ def main(argv: list[str] | None = None) -> int:
             finding_id=args.finding_id,
             no_ledger=args.no_ledger,
             browser_observed=args.browser_observed,
+        )
+    elif args.lane == "authz-role-replay":
+        owner_body = args.body if args.owner_body is None else args.owner_body
+        peer_body = owner_body if args.peer_body is None else args.peer_body
+        owner_headers = parse_headers(args.owner_header)
+        peer_headers = parse_headers(args.peer_header)
+        case_state_ref: dict[str, Any] = {}
+        if args.from_case_state:
+            resolved = resolve_authz_role_replay_from_case_state(
+                repo_root=repo_root,
+                target=args.target,
+                owner_actor=args.owner_actor,
+                peer_actor=args.peer_actor,
+                owner_headers=owner_headers,
+                peer_headers=peer_headers,
+            )
+            owner_headers = resolved["owner_headers"]
+            peer_headers = resolved["peer_headers"]
+            case_state_ref = resolved["case_state_ref"]
+        summary = run_authz_role_replay(
+            repo_root=repo_root,
+            target=args.target,
+            url=args.url,
+            method=args.method,
+            owner_headers=owner_headers,
+            peer_headers=peer_headers,
+            owner_body=owner_body,
+            peer_body=peer_body,
+            include_anonymous=not args.no_anonymous,
+            timeout=args.timeout,
+            finding_id=args.finding_id,
+            repeat=args.repeat,
+            no_ledger=args.no_ledger,
+            browser_observed=args.browser_observed,
+            state_changing=args.state_changing,
+            redline_checked=args.redline_checked,
+            case_state_ref=case_state_ref,
         )
     elif args.lane == "sqli-result-diff":
         summary = run_sqli_result_diff(

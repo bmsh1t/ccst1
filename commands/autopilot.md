@@ -1,5 +1,5 @@
 ---
-description: Action-first autonomous hunt loop — load state, refresh recon only when needed, rank surface, enrich, hunt, validate candidates, report validated findings, and checkpoint. Usage: /autopilot target.com [--paranoid|--normal|--yolo|--quick|--deep] or /autopilot targets.txt
+description: Expert Hunter autonomous hunt loop — recon-first for fresh targets, cache-aware for existing targets, then rank surface, capture workflow, hunt hypotheses, validate evidence, report findings, and checkpoint. Usage: /autopilot target.com [--paranoid|--normal|--yolo|--quick|--deep] or /autopilot targets.txt
 ---
 
 # /autopilot
@@ -12,26 +12,36 @@ Advanced runtime flags are supported when the CLI/runtime exposes them: `--paral
 
 `--parallel-hypotheses` may run multiple evidence-backed hypotheses in bounded parallel when supported; it does not bypass red-line or queue resolution.
 
-Autonomous Claude CLI hunt loop:
+Expert Hunter Autopilot for Claude CLI:
 
 ```text
-LOAD -> RANK -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
+fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
+existing: LOAD -> RANK -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
 ```
 
-Evidence drives order. Do not rerun usable recon, do not validate/report without a Candidate/Validated Finding, and do not finish while queued high-value next actions remain unresolved.
+Super-pentester priority: business impact > workflow evidence > crown-jewel hypothesis > attack-surface ranking > scanner result > coverage gap. Scanner quick is the fresh-target breadth sensor and advisory lead source; scanner-positive is not a finding, scanner-negative is not completion. Evidence drives order. Do not rerun usable recon, do not validate/report without a Candidate/Validated Finding, and do not finish while queued high-value next actions remain unresolved.
 
 ## Four-Layer Automation
 
 `/autopilot` is the primary automated entrypoint for the four-layer system. Do not create a separate workflow command for normal use.
 
-Startup context order: target memory -> skill routing -> knowledge cards -> red-line / coverage checks.
+Four-layer memory is the external brain, not the steering wheel. Use it to remember target state, route skills, load sparse knowledge, and run checks after evidence exists.
 
-Fast startup, matching the older action-first flow:
+Fresh target startup is recon-first:
+
+```bash
+python3 tools/hunt.py --target target.com --recon-only
+python3 tools/surface.py --target target.com
+python3 tools/context_pack.py --target target.com
+python3 tools/hunt.py --target target.com --scan-only --quick
+```
+
+Existing target startup is cache-aware:
 
 ```bash
 python3 tools/autopilot_state.py --target target.com
-python3 tools/context_pack.py --target target.com
 python3 tools/surface.py --target target.com
+python3 tools/context_pack.py --target target.com
 ```
 
 Only add heavier state tools when they directly change the next action:
@@ -86,11 +96,11 @@ AI override is allowed: skip a default lane, combine knowledge cards, create a n
 
 ## Run This First
 
-Single target: `context_pack.py`, `autopilot_state.py`, and `surface.py`.
-If recon is missing/thin/stale: `python3 tools/hunt.py --target target.com --recon-only && python3 tools/surface.py --target target.com`.
-When ready for breadth: `python3 tools/hunt.py --target target.com --scan-only`.
+Single fresh target: `python3 tools/hunt.py --target target.com --recon-only && python3 tools/surface.py --target target.com && python3 tools/context_pack.py --target target.com && python3 tools/hunt.py --target target.com --scan-only --quick`.
+Existing target: `python3 tools/autopilot_state.py --target target.com && python3 tools/surface.py --target target.com && python3 tools/context_pack.py --target target.com`; if recon is missing/thin/stale, refresh recon first.
+When ready for deeper breadth: `python3 tools/hunt.py --target target.com --scan-only`.
 
-After `run_vuln_scan` or any broad scan, read the surface summary again and review action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact. This means side-effectful scanner templates were not run by default; it does not restrict safe observed-method replay. Entries skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` are not tested-clean; checkpoint instead of finishing when high-value skipped scanner leads remain. Also spend one secondary sweep on demoted public-metadata leads such as `standard_public_metadata.txt`: they are not reportable findings by default, but they may be reversible chain/secret intel when unusual fields appear. For target-specific ad-hoc scripts or high-risk follow-up plans, use `templates/phased-surface-validation-plan.md`: concrete facts stay target-scoped; only abstract gates become global.
+After `run_vuln_scan` or any broad scan, read the surface summary again and review action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact. Treat weak template hits as `lead`, stable diffs as `signal`, and exact request/response plus practical impact as `candidate`. This means side-effectful scanner templates were not run by default; it does not restrict safe observed-method replay. Entries skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` are not tested-clean; checkpoint instead of finishing when high-value skipped scanner leads remain. Also spend one secondary sweep on demoted public-metadata leads such as `standard_public_metadata.txt`: they are not reportable findings by default, but they may be reversible chain/secret intel when unusual fields appear. For target-specific ad-hoc scripts or high-risk follow-up plans, use `templates/phased-surface-validation-plan.md`: concrete facts stay target-scoped; only abstract gates become global.
 
 For focused high-value targets: `/autopilot target.com --deep --normal`.
 For a broad scan inside that Claude CLI loop: `python3 tools/hunt.py --target target.com --scan-only --scanner-full`.
@@ -103,7 +113,7 @@ Use the supplied target, URL, CIDR, localhost/private IP, or list input as the a
 
 ## Business Model Read
 
-Before first fresh recon, follow the existing `agent.py` system prompt directive: ensure `evidence/<target>/business_model.md` exists or write a short business-model note. Do not duplicate the taxonomy here; this command only points Claude to the canonical directive.
+During the first fresh pass, once basic target identity is known or recon is running, follow the existing `agent.py` directive: ensure `evidence/<target>/business_model.md` exists and name likely crown jewels, trust boundaries, actors, and money/data/admin workflows. This shapes hypotheses; it is not a permission gate.
 
 ## Batch List Targets
 
@@ -117,19 +127,19 @@ After batch recon, continue on selected completed domains from `recon/<list-stem
 
 ## Decision Loop
 
-1. **LOAD** — autopilot state, target memory, target case state, `/pickup` if useful, `/surface`, structured findings, guard hints.
-2. **RECON** — only missing/thin/stale.
-3. **RANK** — use `/surface`; do not manually summarize every recon file first.
-4. **ENRICH** — only when it changes the next test:
+1. **TARGET CLASSIFY** — fresh target means recon-first; existing target means load memory/state first, then refresh recon only if stale/thin.
+2. **BUSINESS/CROWN JEWELS** — infer app purpose, actors, private objects, admin/config/payment/data flows, and likely trust boundaries.
+3. **RANK / BREADTH SENSOR** — use `/surface`, then scanner quick as advisory leads; do not manually summarize every recon file first.
+4. **WORKFLOW CAPTURE / ENRICH** — prefer real browser/API behavior when it changes the next test:
    - JS: `python3 tools/js_reader.py --target target.com`
    - source/routes/auth: `python3 tools/source_intel.py --target target.com [--repo-path <repo>]`
    - browser SPA/login/XHR: prefer chrome-devtools MCP for live network, playwright MCP for automation/snapshots; fallback to `tools/browser_evidence.py` / `playwright-cli` only when MCP is unavailable or scriptable fallback is needed; import MCP artifacts with `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` share the observed API surface.
    - exposure/API leak/cloud identity: inspect relevant artifacts before broad scanning
    - known software/plugin/theme version: enter the Known Software Intelligence Lane
-5. **HUNT** — scanner for breadth or exact local probe for one hypothesis; prefer role/object/method/version/body diffs. When actor/object/session state matters, register it in target case state so the next replay can be deterministic.
-6. **VALIDATE** — Signal -> Candidate -> Validated Finding only with exact replay, A/B role diff, impact proof, and evidence rubric. If queue contains `case-state-validation`, run the `--from-case-state` runner path; if it contains `candidate-evidence-gap`, fill the missing proof first, then rerun `/validate`.
-7. **REPORT** — draft only validated findings; never auto-submit.
-8. **CHECKPOINT** — generate next actions, target-memory proposals, coverage gaps, and retrospect prompts.
+5. **HYPOTHESIS / MINIMAL PROOF** — choose one crown-jewel or workflow hypothesis; use the smallest safe replay/diff/sibling/bypass/OAST step that can prove or kill it.
+6. **CHAIN EXPANSION** — before downgrading, ask what adjacent role, object, method, state transition, integration, parser, cache, or source/JS hint could connect this signal to impact.
+7. **VALIDATE** — Signal -> Candidate -> Validated Finding only with exact replay, A/B role diff, impact proof, and evidence rubric. If queue contains `case-state-validation`, run the `--from-case-state` runner path; if it contains `candidate-evidence-gap`, fill the missing proof first, then rerun `/validate`.
+8. **RECORD / REPORT / CHECKPOINT** — update ledger/findings/case state; validated findings are reportable assets kept in queue, but report is phase closure after higher-value validation/chain/coverage actions.
 
 ## Known Software Intelligence Lane
 
@@ -150,22 +160,22 @@ Before checkpoint or finish:
 
 ```bash
 python3 tools/coverage_matrix.py rebuild --target target.com
+python3 tools/coverage_matrix.py needs-triage --target target.com
 python3 tools/coverage_matrix.py find-gaps --target target.com
 python3 tools/evidence_ledger.py summary --target target.com
 python3 tools/target_case_state.py summary --target target.com --json
 python3 tools/case_state_seed.py --target target.com --json
 python3 tools/checkpoint.py --target target.com
 python3 tools/action_queue.py ingest-checkpoint --target target.com
+python3 tools/action_queue.py next --target target.com
 python3 tools/action_queue.py summary --target target.com
 ```
 
+If `needs-triage` returns endpoints, Claude decides kind from browser/XHR, status/body, JS/source, params, and workflow evidence, then persists only high-confidence decisions with `mark-endpoint-kind`. Treat `auto_hints` as hints, not verdicts; they must not mark vuln classes `n_a`, hide attack surface, or replace Claude's judgment.
+
 If `tools/action_queue.py summary --target <target>` shows active actions, do not claim completion. Execute the next safe item, or resolve it as `blocked` / `dead-end` with evidence. If high-value gaps remain, continue or state the concrete blocker.
 
-After executing a queued action, resolve it explicitly, for example:
-
-```bash
-python3 tools/action_queue.py resolve --target target.com --id <id> --status tested --evidence "<short evidence>"
-```
+After executing a queued action, resolve it explicitly with `python3 tools/action_queue.py resolve --target target.com --id <id> --status tested --evidence "<short evidence>"`.
 
 ## Next Action Consumption Loop
 
@@ -256,7 +266,7 @@ Advisory, not routing and not a state machine:
 Finish on state, not tool checklist:
 
 - `working_hypothesis` resolved, killed, or carried forward as a concrete next action.
-- Candidate validated/rejected or current hypothesis resolved.
+- Candidate validated/rejected or current hypothesis resolved; pending reports stay queued until drafted.
 - Blind/OAST work drained or explicitly parked: `oast_listen` has no pending callbacks or a callback wait is recorded.
 - No unresolved action-gated scanner lead remains without checkpoint.
 - Coverage matrix and action queue are clear or remaining matrix gap items are explicitly `blocked`, `dead-end`, `n/a`, `lead`, `signal`, or `candidate`; absent or empty matrix is not proof of coverage.

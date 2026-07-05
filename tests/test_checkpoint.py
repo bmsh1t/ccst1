@@ -8,6 +8,8 @@ from pathlib import Path
 from action_queue import _checkpoint_item_to_action, _dedupe_key, save_queue
 from checkpoint import (
     _build_next_action_queue,
+    _coverage_gap_validation_path,
+    _decide,
     _filter_final_action_queue_items,
     _next_proposals,
     apply_target_memory,
@@ -128,6 +130,80 @@ def test_checkpoint_ignores_off_target_direct_finding_followup(tmp_path):
     assert "OFFTARGET-IDOR" not in json.dumps(checkpoint["next_action_queue"])
 
 
+def test_checkpoint_keeps_report_queued_without_outranking_high_value_hunt(tmp_path):
+    _seed_recon(tmp_path, "target.com", [
+        "https://api.target.com/api/admin/export?order_id=42",
+    ])
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True, exist_ok=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps({
+            "findings": [
+                {
+                    "id": "TARGET-AUTHZ",
+                    "type": "auth_bypass",
+                    "severity": "high",
+                    "confidence": "high",
+                    "url": "https://api.target.com/rest/admin/application-configuration",
+                    "validation_status": "validated",
+                    "report_status": "not_generated",
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert checkpoint["decision"] in {"continue", "hunt"}
+    assert checkpoint["recommended_executable_action"]["type"] != "report"
+    report_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "report")
+    assert report_action["metadata"]["finding_id"] == "TARGET-AUTHZ"
+    assert report_action["priority"] >= 90
+
+
+def test_checkpoint_decision_treats_pending_report_as_reportable_asset_not_stop_condition():
+    state = {
+        "has_recon": True,
+        "structured_findings": {
+            "validated_pending_report": 1,
+            "next_report": {"id": "F-REPORT"},
+        },
+        "surface": {"stats": {"p1": 1, "p2": 0}},
+        "recommended_targets": [{"url": "https://api.target.com/api/admin/export"}],
+    }
+
+    assert _decide(state, coverage_gaps=[], actor_gaps=[], case_state={}) == "hunt"
+
+    report_only_state = {
+        "has_recon": True,
+        "structured_findings": {
+            "validated_pending_report": 1,
+            "next_report": {"id": "F-REPORT"},
+        },
+        "surface": {"stats": {"p1": 0, "p2": 0}},
+        "recommended_targets": [],
+    }
+    assert _decide(report_only_state, coverage_gaps=[], actor_gaps=[], case_state={}) == "report"
+
+
+def test_report_action_is_below_high_value_actions_but_above_secondary_sweep():
+    queue = _build_next_action_queue([
+        "Draft report for validated finding F-REPORT; do not submit without human review.",
+        "Continue top ranked surface https://api.target.com/api/admin/export: focused authz replay",
+        "Cover high-value matrix gap: /api/admin/export x Authz (weight=5, relevance=8: admin path).",
+        "Secondary-sweep lead [open-200-api-review]: Anonymous API returned 200. "
+        "Artifact=findings/target/manual_review/open_200_api.txt. Why it matters: review. "
+        "Next action: sample body. Stop condition: keep demoted unless concrete evidence appears.",
+    ], "target.com")
+
+    by_type = {item["type"]: item for item in queue}
+    assert by_type["coverage-gap"]["priority"] > by_type["report"]["priority"]
+    assert by_type["ranked-surface"]["priority"] > by_type["report"]["priority"]
+    assert by_type["report"]["priority"] > by_type["secondary-sweep"]["priority"]
+    assert by_type["report"]["metadata"]["finding_id"] == "F-REPORT"
+
+
 def test_checkpoint_queues_candidate_evidence_gap_before_validate(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)
@@ -224,6 +300,21 @@ def test_checkpoint_queues_secondary_sweep_for_demoted_manual_review_leads(tmp_p
     assert action["metadata"]["artifact"] == "findings/target.com/manual_review/open_200_api.txt"
 
 
+def test_public_metadata_secondary_sweep_does_not_outrank_ranked_surface():
+    queue = _build_next_action_queue([
+        "Secondary-sweep lead [public-metadata]: Standard public metadata endpoints were demoted. "
+        "Artifact=findings/target.com/manual_review/standard_public_metadata.txt. "
+        "Why it matters: standard metadata. Next action: review only for unusual fields. "
+        "Stop condition: keep demoted unless concrete evidence appears.",
+        "Continue top ranked surface https://api.target.com/rest/admin/application-version: "
+        "capture baseline first",
+    ], "target.com")
+
+    by_type = {item["type"]: item for item in queue}
+    public_meta = next(item for item in queue if item.get("metadata", {}).get("lead_category") == "public-metadata")
+    assert public_meta["priority"] < by_type["ranked-surface"]["priority"]
+
+
 def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/v1/admin/users?isAdmin=true&userId=1001",
@@ -298,6 +389,59 @@ def test_checkpoint_still_queues_semantically_relevant_coverage_gap():
     assert coverage_action["metadata"]["relevance_score"] == 3
 
 
+def test_path_only_authz_coverage_gap_is_baseline_first():
+    validation_path = _coverage_gap_validation_path({
+        "endpoint": "/rest/admin",
+        "vuln_class": "Authz",
+        "weight": 5.0,
+        "relevance_score": 5,
+        "relevance_reason": "admin/internal path",
+        "observed_params": [],
+    })
+
+    assert "baseline GET or observed-method replay" in validation_path
+    assert "authz-public-exposure" in validation_path
+    assert "two-actor" not in validation_path
+
+
+def test_checkpoint_skips_parent_only_authz_gap_when_child_validated():
+    proposals = _next_proposals(
+        state={"has_recon": True, "recommended_targets": []},
+        coverage_gaps=[
+            {
+                "endpoint": "/rest/admin",
+                "vuln_class": "Authz",
+                "weight": 5.0,
+                "relevance_score": 5,
+                "relevance_reason": "admin/internal path",
+                "observed_params": [],
+            },
+            {
+                "endpoint": "/api/v1/admin/users",
+                "vuln_class": "Authz",
+                "weight": 5.0,
+                "relevance_score": 8,
+                "relevance_reason": "privilege/role parameter",
+                "observed_params": ["role"],
+            },
+        ],
+        matrix={
+            "endpoints": [
+                {
+                    "endpoint": "/rest/admin/application-configuration",
+                    "cells": {"Authz": {"status": "tested_finding"}},
+                }
+            ]
+        },
+        target="target.com",
+        context_pack={},
+        evidence_summary={},
+    )
+
+    assert not any("Cover high-value matrix gap: /rest/admin x Authz" in item for item in proposals)
+    assert any("Cover high-value matrix gap: /api/v1/admin/users x Authz" in item for item in proposals)
+
+
 def test_checkpoint_filters_actions_already_final_in_action_queue(tmp_path):
     item = {
         "id": "A1",
@@ -359,6 +503,125 @@ def test_checkpoint_surfaces_actor_matrix_gaps(tmp_path):
     assert "actor matrix gaps:" in output
     assert "Next action queue:" in output
     assert "Recommended executable action:" in output
+
+
+def test_next_proposals_only_queue_anonymous_actor_gap_without_case_state():
+    gaps = [
+        {
+            "endpoint": "/api/orders/123",
+            "method": "GET",
+            "vuln_class": "IDOR",
+            "actor": "anonymous",
+            "object_scope": "none",
+            "variant": "unauth_denied",
+            "expected": "deny",
+            "status": "missing",
+        },
+        {
+            "endpoint": "/api/orders/123",
+            "method": "GET",
+            "vuln_class": "IDOR",
+            "actor": "owner",
+            "object_scope": "own_object",
+            "variant": "baseline",
+            "expected": "allow",
+            "status": "missing",
+        },
+        {
+            "endpoint": "/api/orders/123",
+            "method": "GET",
+            "vuln_class": "IDOR",
+            "actor": "peer",
+            "object_scope": "other_object_same_org",
+            "variant": "id_swap",
+            "expected": "deny_or_no_data",
+            "status": "missing",
+        },
+    ]
+
+    proposals = _next_proposals(
+        state={"has_recon": True, "surface": {}, "recommended_targets": []},
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={},
+        evidence_summary={"actor_matrix": {"gaps": gaps}},
+        case_state={"actors": 0, "sessions": 0, "objects": 0},
+    )
+
+    actor_gap_proposals = [
+        item for item in proposals
+        if item.startswith("Cover actor matrix gap:")
+    ]
+    assert len(actor_gap_proposals) == 1
+    assert "with anonymous/none/unauth_denied" in actor_gap_proposals[0]
+    assert not any("with owner/own_object/baseline" in item for item in actor_gap_proposals)
+    assert not any("with peer/other_object_same_org/id_swap" in item for item in actor_gap_proposals)
+    assert any(item.startswith("Case-state enrichment lead:") for item in proposals)
+
+    queue = _build_next_action_queue(proposals, "target.com")
+    actor_action = next(item for item in queue if item["type"] == "actor-gap")
+    assert actor_action["redline_required"] is False
+    enrichment = next(item for item in queue if item["type"] == "case-state-enrichment")
+    assert enrichment["redline_required"] is False
+    assert enrichment["metadata"]["missing_evidence"] == [
+        "actor",
+        "session",
+        "business object",
+    ]
+
+
+def test_next_proposals_queue_role_actor_gaps_when_case_state_ready():
+    gaps = [
+        {
+            "endpoint": "/api/orders/123",
+            "method": "GET",
+            "vuln_class": "IDOR",
+            "actor": "anonymous",
+            "object_scope": "none",
+            "variant": "unauth_denied",
+            "expected": "deny",
+            "status": "missing",
+        },
+        {
+            "endpoint": "/api/orders/123",
+            "method": "GET",
+            "vuln_class": "IDOR",
+            "actor": "owner",
+            "object_scope": "own_object",
+            "variant": "baseline",
+            "expected": "allow",
+            "status": "missing",
+        },
+        {
+            "endpoint": "/api/orders/123",
+            "method": "GET",
+            "vuln_class": "IDOR",
+            "actor": "peer",
+            "object_scope": "other_object_same_org",
+            "variant": "id_swap",
+            "expected": "deny_or_no_data",
+            "status": "missing",
+        },
+    ]
+
+    proposals = _next_proposals(
+        state={"has_recon": True, "surface": {}, "recommended_targets": []},
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={},
+        evidence_summary={"actor_matrix": {"gaps": gaps}},
+        case_state={"actors": 2, "sessions": 2, "objects": 1},
+    )
+
+    assert any("with owner/own_object/baseline" in item for item in proposals)
+    assert any("with peer/other_object_same_org/id_swap" in item for item in proposals)
+    assert not any(item.startswith("Case-state enrichment lead:") for item in proposals)
+
+    queue = _build_next_action_queue(proposals, "target.com")
+    actor_actions = [item for item in queue if item["type"] == "actor-gap"]
+    assert len(actor_actions) == 3
 
 
 def test_checkpoint_prioritizes_case_state_validation_backlog(tmp_path):
@@ -613,6 +876,149 @@ def test_next_proposals_skip_ranked_surface_when_endpoint_already_has_tested_fin
     )
 
 
+def test_next_proposals_skip_ranked_surface_when_ledger_has_tested_clean():
+    url = "https://api.target.com/rest/admin/application-version"
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": url,
+                    "suggested": "prioritize authenticated/browser-observed authz and workflow checks",
+                }
+            ],
+            "surface": {
+                "p1": [{"url": url, "suggested": "prioritize authenticated/browser-observed authz and workflow checks"}],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={
+            "recent_entries": [
+                {
+                    "endpoint": "/rest/admin/application-version",
+                    "vuln_class": "Authz",
+                    "result": "tested_clean",
+                }
+            ]
+        },
+    )
+
+    assert not any(
+        "Continue top ranked surface https://api.target.com/rest/admin/application-version" in item
+        for item in proposals
+    )
+
+
+def test_next_proposals_rolls_past_covered_ranked_surfaces():
+    covered_finding = "https://api.target.com/api/admin/users"
+    covered_ledger = "https://api.target.com/rest/admin/application-version"
+    fresh = "https://api.target.com/api/orders"
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": covered_finding,
+                    "suggested": "prioritize authz checks",
+                },
+                {
+                    "url": covered_ledger,
+                    "suggested": "prioritize authz checks",
+                },
+                {
+                    "url": fresh,
+                    "suggested": "baseline authz and business-logic checks",
+                },
+            ],
+            "surface": {
+                "p1": [
+                    {"url": covered_finding, "suggested": "prioritize authz checks"},
+                    {"url": covered_ledger, "suggested": "prioritize authz checks"},
+                    {"url": fresh, "suggested": "baseline authz and business-logic checks"},
+                ],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={
+            "endpoints": [
+                {
+                    "endpoint": "/api/admin/users",
+                    "cells": {"Authz": {"status": "tested_finding"}},
+                }
+            ]
+        },
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={
+            "recent_entries": [
+                {
+                    "endpoint": "/rest/admin/application-version",
+                    "vuln_class": "Authz",
+                    "result": "tested_clean",
+                }
+            ]
+        },
+    )
+
+    assert not any(covered_finding in item for item in proposals)
+    assert not any(covered_ledger in item for item in proposals)
+    assert any(fresh in item for item in proposals)
+
+
+def test_next_proposals_keeps_ranked_surface_candidates_after_secondary_sweeps():
+    urls = [
+        "https://api.target.com/api/one",
+        "https://api.target.com/api/two",
+        "https://api.target.com/api/three",
+        "https://api.target.com/api/four",
+    ]
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {"url": url, "suggested": "baseline authz and business-logic checks"}
+                for url in urls
+            ],
+            "surface": {
+                "p1": [
+                    {"url": url, "suggested": "baseline authz and business-logic checks"}
+                    for url in urls
+                ],
+                "workflow_leads": [
+                    {
+                        "category": "open-200-api-review",
+                        "title": "Anonymous API endpoints returned substantial 200 responses",
+                        "artifact": "findings/target/manual_review/open_200_api.txt",
+                        "rationale": "manual review",
+                        "next_action": "sample raw bodies",
+                    },
+                    {
+                        "category": "public-metadata",
+                        "title": "Standard public metadata endpoints were demoted",
+                        "artifact": "findings/target/manual_review/public_metadata.txt",
+                        "rationale": "metadata",
+                        "next_action": "review only for chain pivots",
+                    },
+                ],
+            },
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+    )
+
+    ranked = [item for item in proposals if item.startswith("Continue top ranked surface ")]
+    assert len(ranked) == 4
+    assert any(urls[-1] in item for item in ranked)
+
+
 def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
     url = "https://app.target.com/api/admin/export?order_id=42"
     proposals = _next_proposals(
@@ -649,6 +1055,8 @@ def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
     assert "Ledger skeleton:" in ranked_text
     assert "browser-observed request/response baseline first" in ranked_text
     assert "prefer POST replay" in ranked_text
+    assert "First capture/register actor, session, and object context" in ranked_text
+    assert "two-actor replay evidence" in ranked_text
 
     queue = _build_next_action_queue([ranked_text], "target.com")
     ranked_action = queue[0]
@@ -662,9 +1070,251 @@ def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
     assert "--endpoint \"/api/admin/export\"" in skeleton
     assert "--method \"POST\"" in skeleton
     assert "--vuln-class \"IDOR\"" in skeleton
+    assert "--actor \"anonymous\"" in skeleton
+    assert "--variant \"context_prereq\"" in skeleton
     assert "--browser-observed" in skeleton
     assert "--state-changing" not in skeleton
     assert "--redline-checked" not in skeleton
+
+
+def test_ranked_surface_role_replay_when_case_state_ready():
+    url = "https://app.target.com/api/admin/export?order_id=42"
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": url,
+                    "suggested": "prioritize authenticated/browser-observed authz and workflow checks",
+                }
+            ],
+            "surface": {
+                "p1": [
+                    {
+                        "url": url,
+                        "browser_observed": True,
+                        "js_intel_endpoints": [{"method": "POST", "auth_required": "true"}],
+                        "source_intel_hypotheses": [{"type": "idor", "reason": "admin export route uses order_id"}],
+                        "suggested": "prioritize authenticated/browser-observed authz and workflow checks",
+                    }
+                ],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+        case_state={"actors": 2, "sessions": 2, "objects": 1},
+    )
+
+    ranked_text = next(item for item in proposals if item.startswith("Continue top ranked surface "))
+    assert "authz-role-replay" in ranked_text
+    assert "use registered case_state owner/peer sessions" in ranked_text
+    assert "First capture/register actor, session, and object context" not in ranked_text
+
+    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    skeleton = action["metadata"]["ledger_record_skeleton"]
+    assert "--actor \"owner\"" in skeleton
+    assert "--variant \"role_diff\"" in skeleton
+
+
+def test_ranked_surface_generic_api_uses_role_replay_when_case_state_ready():
+    url = "https://app.target.com/api/Orders"
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": url,
+                    "suggested": "baseline authz and business-logic checks",
+                }
+            ],
+            "surface": {
+                "p1": [
+                    {
+                        "url": url,
+                        "suggested": "baseline authz and business-logic checks",
+                    }
+                ],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+        case_state={"actors": 2, "sessions": 2, "objects": 1},
+    )
+
+    ranked_text = next(item for item in proposals if item.startswith("Continue top ranked surface "))
+    assert "authz-role-replay" in ranked_text
+    assert "--url" in ranked_text
+    assert "https://app.target.com/api/Orders" in ranked_text
+
+
+def test_ranked_surface_spa_page_route_uses_browser_state_first_with_case_state_ready():
+    url = "https://app.target.com/orders"
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": url,
+                    "suggested": "baseline authz and business-logic checks",
+                }
+            ],
+            "surface": {
+                "p1": [
+                    {
+                        "url": url,
+                        "suggested": "baseline authz and business-logic checks",
+                    }
+                ],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+        case_state={"actors": 2, "sessions": 2, "objects": 1},
+    )
+
+    ranked_text = next(item for item in proposals if item.startswith("Continue top ranked surface "))
+    assert "browser-state-first page route" in ranked_text
+    assert "underlying API" in ranked_text
+    assert "authz-role-replay --target" not in ranked_text
+    assert "raw SPA HTML shell" in ranked_text
+
+    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    skeleton = action["metadata"]["ledger_record_skeleton"]
+    assert "--actor \"owner\"" in skeleton
+    assert "--variant \"browser_observed\"" in skeleton
+    assert "browser-state-first page route" in skeleton
+
+
+def test_ranked_surface_defers_repeated_authz_baselines_when_case_state_missing():
+    url = "https://app.target.com/api/Cards"
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": url,
+                    "suggested": "baseline authz and business-logic checks",
+                }
+            ],
+            "surface": {
+                "p1": [
+                    {
+                        "url": url,
+                        "suggested": "baseline authz and business-logic checks",
+                    }
+                ],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={
+            "recent_entries": [
+                {
+                    "endpoint": "/api/Addresss",
+                    "vuln_class": "Authz",
+                    "actor": "anonymous",
+                    "object_scope": "none",
+                    "result": "tested_clean",
+                },
+                {
+                    "endpoint": "/api/BasketItems",
+                    "vuln_class": "Authz",
+                    "actor": "anonymous",
+                    "object_scope": "none",
+                    "result": "tested_clean",
+                },
+                {
+                    "endpoint": "/rest/user/change-password",
+                    "vuln_class": "Authz",
+                    "actor": "anonymous",
+                    "object_scope": "none",
+                    "result": "tested_clean",
+                },
+            ]
+        },
+        case_state={"actors": 0, "sessions": 0, "objects": 0},
+    )
+
+    assert not any(item.startswith("Continue top ranked surface ") for item in proposals)
+    acquisition = next(item for item in proposals if item.startswith("Case-state acquisition lead:"))
+    assert "3 recent anonymous Authz baseline(s)" in acquisition
+    assert "testing more identical 401 baselines" in acquisition
+
+    action = _build_next_action_queue([acquisition], "target.com")[0]
+    assert action["type"] == "case-state-enrichment"
+    assert action["priority"] == 66
+    assert action["redline_required"] is False
+    assert action["metadata"]["clean_authz_baselines"] == 3
+    assert action["metadata"]["deferred_role_surfaces"] == 1
+
+
+def test_coverage_gap_boilerplate_does_not_force_redline_first():
+    proposal = (
+        "Cover high-value matrix gap: /rest/products/search x XSS "
+        "(weight=3.0, relevance=5: reflection/DOM input surface). "
+        "Validation path: Capture the exact request or browser flow needed to reproduce the signal. "
+        "If concrete side-effect risk appears, mark blocked and use low-risk evidence instead."
+    )
+
+    action = _build_next_action_queue([proposal], "target.com")[0]
+
+    assert action["type"] == "coverage-gap"
+    assert action["redline_required"] is False
+
+
+def test_ranked_surface_path_only_authz_uses_baseline_first():
+    url = "https://app.target.com/rest/admin/application-version"
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": url,
+                    "suggested": "prioritize authenticated/browser-observed authz and workflow checks",
+                }
+            ],
+            "surface": {
+                "p1": [
+                    {
+                        "url": url,
+                        "browser_observed": True,
+                        "suggested": "prioritize authenticated/browser-observed authz and workflow checks",
+                    }
+                ],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+    )
+
+    ranked_text = next(item for item in proposals if item.startswith("Continue top ranked surface "))
+    assert "baseline GET or observed-method replay" in ranked_text
+    assert "Build a two-actor" not in ranked_text
+
+    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    skeleton = action["metadata"]["ledger_record_skeleton"]
+    assert '--actor "anonymous"' in skeleton
+    assert '--object-scope "none"' in skeleton
+    assert '--variant "unauth_baseline"' in skeleton
 
 
 def test_checkpoint_surfaces_context_contradictions(tmp_path):

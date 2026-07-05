@@ -176,7 +176,7 @@ def test_capture_browser_evidence_url_target_uses_canonical_storage_key(monkeypa
         evidence_root=tmp_path / "evidence",
     )
 
-    target_key = "http:_127.0.0.1:3002"
+    target_key = "127.0.0.1:3002"
     assert summary["target_key"] == target_key
     assert summary["session"] == "browser-http___127.0.0.1_3002"
     assert Path(summary["evidence_dir"]).is_relative_to(tmp_path / "evidence" / target_key / "browser")

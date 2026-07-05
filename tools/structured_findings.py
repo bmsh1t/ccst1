@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 try:
@@ -11,8 +12,45 @@ except ImportError:  # pragma: no cover - package import path
     from tools.evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
 
 
+def _load_validation_summary_rubric(finding: dict) -> dict:
+    """从 validation_runner 的 summary.json 读取已计算好的证据 rubric。
+
+    validation_runner 已经基于原始请求/响应给出 lane-specific rubric；
+    structured_findings 只看 findings.json 的精简行时会丢掉这些细节，导致
+    已验证 finding 在 checkpoint 里又显示 needs-evidence。这里优先复用
+    summary.json，避免用标题/URL 的弱文本重新推断证据质量。
+    """
+    candidates: list[Path] = []
+    for field in ("validation_summary", "source_file"):
+        value = str(finding.get(field) or "").strip()
+        if not value:
+            continue
+        path = Path(value)
+        candidates.append(path if path.is_absolute() else Path.cwd() / path)
+
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        rubric = payload.get("evidence_rubric")
+        if isinstance(rubric, dict) and rubric:
+            return rubric
+    return {}
+
+
 def _rubric_eval(finding: dict) -> dict:
     existing = finding.get("rubric") if isinstance(finding.get("rubric"), dict) else {}
+    if existing:
+        return existing
+    existing = finding.get("evidence_rubric") if isinstance(finding.get("evidence_rubric"), dict) else {}
+    if existing:
+        return existing
+    existing = _load_validation_summary_rubric(finding)
     if existing:
         return existing
     return evaluate_candidate_evidence(finding)

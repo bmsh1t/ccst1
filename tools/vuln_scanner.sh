@@ -7,10 +7,9 @@
 #
 # Coverage matrix feedback:
 #   On completion this script writes findings/<target>/scanner_pass.json,
-#   listing each (endpoint, vuln_class, module) pair the scanner exercised
-#   (per task 05-16-b4-scanner-matrix-feedback). `tools/coverage_matrix.py
-#   rebuild` consumes this artifact to mark already-tested cells `tested_clean`
-#   so the F3 finish-gate does not fire on cells the scanner already swept.
+#   listing each (endpoint, vuln_class, module) pair the scanner touched.
+#   `tools/coverage_matrix.py rebuild` consumes this artifact as advisory
+#   scanner_swept metadata. Scanner-negative is not tested_clean.
 # =============================================================================
 
 set -euo pipefail
@@ -1178,6 +1177,7 @@ fi
 if [ -s "$SENSITIVE_PATHS_FILTERED" ]; then
     log_step "Verifying sensitive paths from recon..."
     : > "$FINDINGS_DIR/exposure/verified_sensitive.txt"
+    : > "$FINDINGS_DIR/manual_review/public_exposure_review.txt"
     while IFS= read -r url; do
         STATUS=$(curl -s "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
         BODY=$(curl -s "${BB_AUTH_ARGS[@]}" --max-time 5 "$url" 2>/dev/null || true)
@@ -1186,7 +1186,12 @@ if [ -s "$SENSITIVE_PATHS_FILTERED" ]; then
                 echo "[STANDARD-PUBLIC-METADATA] $STATUS $url" >> "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
                 continue
             fi
-            echo "$STATUS $url" >> "$FINDINGS_DIR/exposure/verified_sensitive.txt"
+            if printf '%s' "$BODY" | python3 "$BASE_DIR/tools/public_exposure_signals.py" --url "$url" --status "$STATUS" --candidate-ready >/dev/null 2>&1; then
+                echo "$STATUS $url" >> "$FINDINGS_DIR/exposure/verified_sensitive.txt"
+            else
+                BODY_SIZE=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
+                echo "[PUBLIC-EXPOSURE-REVIEW] $STATUS $BODY_SIZE $url" >> "$FINDINGS_DIR/manual_review/public_exposure_review.txt"
+            fi
         fi
     done < <(head -50 "$SENSITIVE_PATHS_FILTERED")
 
@@ -1677,8 +1682,8 @@ else
 fi
 
 # scanner_pass.json — records which (endpoint, vuln_class) pairs this run
-# exercised, so tools/coverage_matrix.py rebuild can mark already-tested cells
-# `tested_clean` (per task 05-16-b4-scanner-matrix-feedback). Additive only;
+# touched, so tools/coverage_matrix.py rebuild can attach advisory
+# scanner_swept metadata. It must not close cells as `tested_clean`;
 # failures here MUST NOT change scanner exit semantics (R4 / NG3).
 if python3 "$BASE_DIR/tools/scanner_pass_writer.py" \
         --target "$TARGET" \

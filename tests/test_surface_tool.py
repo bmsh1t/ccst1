@@ -925,7 +925,175 @@ class TestSurfaceRanking:
 
         assert ranked["p1"][0]["url"] == "https://api.target.com/fresh?q=1"
         assert "mfa_fresh [medium/high] mfa status=unvalidated/not_generated" in output
-        assert "sqli_reported [high/confirmed] sqli status=validated/generated" in output
+        assert "sqli_reported [high/confirmed] sqli status=validated/generated" not in output
+        reported_items = [
+            item for item in ranked["p1"] + ranked["p2"]
+            if item["url"] == "https://api.target.com/reported?q=1"
+        ]
+        if reported_items:
+            assert reported_items[0]["score"] < ranked["p1"][0]["score"]
+            assert "already reported/generated" in reported_items[0]["suggested"]
+
+    def test_reported_high_value_scanner_finding_does_not_dominate_p1(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        findings_dir = repo_root / "findings" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        findings_dir.mkdir(parents=True)
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [FastAPI] [1000]\n"
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/rest/admin/application-configuration\n"
+            "https://api.target.com/api/fresh?q=1\n"
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text(
+            "https://api.target.com/api/fresh?q=1\n"
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("")
+        (findings_dir / "findings.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": "target.com",
+                    "total": 1,
+                    "findings": [
+                        {
+                            "id": "authz_reported",
+                            "type": "auth_bypass",
+                            "url": "https://api.target.com/rest/admin/application-configuration",
+                            "severity": "high",
+                            "confidence": "confirmed",
+                            "validation_status": "validated",
+                            "report_status": "generated",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
+        ranked_urls = [item["url"] for item in ranked["p1"]]
+
+        assert "https://api.target.com/api/fresh?q=1" in ranked_urls
+        assert "https://api.target.com/rest/admin/application-configuration" not in ranked_urls
+
+    def test_ledger_tested_clean_authz_demotes_matching_ranked_surface(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        ledger_dir = repo_root / "memory" / "evidence" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        ledger_dir.mkdir(parents=True)
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [FastAPI] [1000]\n"
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/rest/admin/application-version\n"
+            "https://api.target.com/api/fresh?q=1\n"
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text(
+            "https://api.target.com/api/fresh?q=1\n"
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("")
+        (ledger_dir / "ledger.jsonl").write_text(
+            json.dumps({
+                "endpoint": "/rest/admin/application-version",
+                "vuln_class": "Authz",
+                "result": "tested_clean",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
+        ranked_urls = [item["url"] for item in ranked["p1"]]
+
+        assert "https://api.target.com/api/fresh?q=1" in ranked_urls
+        assert "https://api.target.com/rest/admin/application-version" not in ranked_urls
+
+    def test_action_queue_final_status_demotes_matching_ranked_surface(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        queue_dir = repo_root / "state" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        queue_dir.mkdir(parents=True)
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://app.target.com [200] [SPA] [React] [1000]\n"
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://app.target.com/orders\n"
+            "https://app.target.com/rest/order-history\n"
+            "https://app.target.com/rest/track-order/abc123\n"
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("")
+        (recon_dir / "js" / "endpoints.txt").write_text("")
+        (queue_dir / "action_queue.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": "target.com",
+                    "actions": [
+                        {
+                            "status": "n/a",
+                            "type": "ranked-surface",
+                            "metadata": {
+                                "url": "https://app.target.com/orders",
+                                "endpoint": "/orders",
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
+        p1_urls = [item["url"] for item in ranked["p1"]]
+        visible_urls = [item["url"] for item in ranked["p1"] + ranked["p2"]]
+
+        assert "https://app.target.com/orders" not in p1_urls
+        assert "https://app.target.com/orders" not in visible_urls
+        assert "https://app.target.com/rest/order-history" in p1_urls
+
+    def test_bare_numeric_paths_do_not_become_p1_sequential_objects(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://app.target.com [200] [SPA] [React] [1000]\n"
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://app.target.com/16\n"
+            "https://app.target.com/orders/16\n"
+            "https://app.target.com/search?q=test\n"
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text(
+            "https://app.target.com/search?q=test\n"
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("")
+
+        ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
+        p1_urls = [item["url"] for item in ranked["p1"]]
+
+        assert "https://app.target.com/orders/16" in p1_urls
+        assert "https://app.target.com/16" not in p1_urls
+        assert not any(
+            item["url"] == "https://app.target.com/16"
+            and item["reasons"][0] == "Sequential object reference"
+            for item in ranked["p1"] + ranked["p2"]
+        )
 
     def test_reranks_local_intel_signals(self, tmp_path):
         repo_root = tmp_path

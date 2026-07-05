@@ -12,7 +12,7 @@ import target_case_state
 
 def test_case_state_seed_suggests_order_object_and_idor_backlog(tmp_path):
     target = "http://127.0.0.1:3002"
-    browser_dir = tmp_path / "recon" / "http:_127.0.0.1:3002" / "browser"
+    browser_dir = tmp_path / "recon" / "127.0.0.1:3002" / "browser"
     browser_dir.mkdir(parents=True)
     (browser_dir / "xhr_endpoints.txt").write_text(
         "http://127.0.0.1:3002/rest/order-history/123\n",

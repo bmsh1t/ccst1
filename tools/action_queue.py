@@ -430,9 +430,19 @@ def upsert_actions(queue: dict, actions: list[dict]) -> dict:
             if str(existing.get("status") or "queued") in FINAL_STATUSES:
                 stats["skipped_final"] += 1
                 continue
-            existing["priority"] = max(int(existing.get("priority", 50) or 50), int(action.get("priority", 50) or 50))
+            if existing.get("source") == "checkpoint" and action.get("source") == "checkpoint":
+                # checkpoint 队列是当前状态投影；允许上游重新排序，避免旧优先级
+                # 把 enrichment lead 压在真正可执行 replay 前面。
+                existing["priority"] = int(action.get("priority", 50) or 50)
+            else:
+                existing["priority"] = max(int(existing.get("priority", 50) or 50), int(action.get("priority", 50) or 50))
             existing["command_hint"] = existing.get("command_hint") or action.get("command_hint", "")
-            existing["redline_required"] = bool(existing.get("redline_required") or action.get("redline_required"))
+            if existing.get("source") == "checkpoint" and action.get("source") == "checkpoint":
+                # checkpoint 是可重复生成的投影；当上游风险判定收窄时，允许清掉
+                # 旧队列里的误报 red-line 标记，避免“actor/role”类文案长期限制执行。
+                existing["redline_required"] = bool(action.get("redline_required"))
+            else:
+                existing["redline_required"] = bool(existing.get("redline_required") or action.get("redline_required"))
             if isinstance(action.get("metadata"), dict):
                 metadata = existing.setdefault("metadata", {})
                 if isinstance(metadata, dict):

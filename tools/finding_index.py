@@ -17,6 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from tools.target_paths import url_belongs_to_target
+except ImportError:  # pragma: no cover - top-level tools/ import
+    from target_paths import url_belongs_to_target
+
 SCHEMA_VERSION = 1
 URL_RE = re.compile(r"https?://[^\s|`>'\")]+")
 BRACKET_RE = re.compile(r"\[([^\]]+)\]")
@@ -83,6 +88,18 @@ REPORTABLE_TYPES = {
     "auth_bypass",
     "mfa",
     "saml",
+}
+
+PRESERVED_FINDING_FIELDS = {
+    "validation_status",
+    "report_status",
+    "validation_summary",
+    "validated_at",
+    "vuln_class",
+    "updated_at",
+    "report_file",
+    "report_id",
+    "queue_sync",
 }
 
 
@@ -194,6 +211,14 @@ def _finding_from_line(findings_dir: Path, path: Path, line_number: int, raw: st
     }
 
 
+def _is_target_owned_finding(finding: dict[str, Any], target: str) -> bool:
+    """Return whether a structured finding is safe to promote as direct target surface."""
+    url = str(finding.get("url") or "").strip()
+    if not target or not url:
+        return True
+    return url_belongs_to_target(url, target)
+
+
 def build_finding_index(findings_dir: str | Path, *, target: str | None = None) -> dict[str, Any]:
     """Build a structured index from category ``.txt`` artifacts."""
     root = Path(findings_dir)
@@ -209,7 +234,7 @@ def build_finding_index(findings_dir: str | Path, *, target: str | None = None) 
             with path.open(encoding="utf-8", errors="replace") as handle:
                 for line_number, line in enumerate(handle, 1):
                     finding = _finding_from_line(root, path, line_number, line)
-                    if finding:
+                    if finding and _is_target_owned_finding(finding, resolved_target):
                         findings.append(finding)
 
     severity_counts: dict[str, int] = {}
@@ -239,22 +264,45 @@ def build_finding_index(findings_dir: str | Path, *, target: str | None = None) 
     }
 
 
+def _load_json_object(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _preserve_existing_finding_state(payload: dict[str, Any], existing: dict[str, Any]) -> None:
+    """Carry validation/report state across deterministic index rebuilds."""
+    existing_by_id = {
+        str(item.get("id")): item
+        for item in existing.get("findings", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    for finding in payload.get("findings", []):
+        if not isinstance(finding, dict):
+            continue
+        old = existing_by_id.get(str(finding.get("id") or ""))
+        if not old:
+            continue
+        for field in PRESERVED_FINDING_FIELDS:
+            if field in old:
+                finding[field] = old[field]
+
+
 def write_finding_index(findings_dir: str | Path, *, target: str | None = None, output: str | Path | None = None) -> dict[str, Any]:
     payload = build_finding_index(findings_dir, target=target)
     output_path = Path(output) if output else Path(findings_dir) / "findings.json"
+    _preserve_existing_finding_state(payload, _load_json_object(output_path))
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return payload
 
 
 def load_finding_index(findings_dir: str | Path) -> dict[str, Any]:
     path = Path(findings_dir) / "findings.json"
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return _load_json_object(path)
 
 
 def find_finding(findings_dir: str | Path, finding_id: str) -> dict[str, Any] | None:

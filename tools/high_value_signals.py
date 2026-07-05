@@ -72,6 +72,13 @@ HIGH_VALUE_PATH_HINTS = (
     "cd",
 )
 
+CONTEXTUAL_NUMERIC_ID_RE = re.compile(
+    r"/(?:users?|accounts?|profiles?|members?|customers?|orgs?|organizations?|tenants?|workspaces?|"
+    r"orders?|invoices?|tickets?|messages?|comments?|files?|addresses?|carts?|products?|items?)/"
+    r"\d{1,8}(?:/|$)",
+    re.I,
+)
+
 
 @dataclass(frozen=True)
 class HighValueSignal:
@@ -141,7 +148,7 @@ def classify_high_value_signal(*, path: str = "", query_keys: list[str] | None =
         add(5, "graphql", "graphql")
     if "websocket" in lower_path or lower_path.startswith("/ws") or "/ws" in lower_path:
         add(4, "websocket", "websocket")
-    if re.search(r"/\d{1,8}(?:/|$)", lower_path):
+    if CONTEXTUAL_NUMERIC_ID_RE.search(lower_path):
         add(3, "sequential", "sequential-id")
     if any(token in lower_path for token in ("upload", "import", "export", "download", "preview", "render")):
         add(3, "file", "file-flow")

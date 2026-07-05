@@ -69,6 +69,11 @@ class TestLowValuePatterns:
         assert value_weight("/blog/post-1") < 1.0
         assert "low" in weight_label("/blog/post-1")
 
+    def test_bare_numeric_route_deprioritized(self):
+        assert value_weight("/16") < 1.0
+        assert "bare-numeric" in weight_label("/16")
+        assert value_weight("/orders/16") == 1.0
+
     def test_marketing_deprioritized(self):
         assert value_weight("/marketing/campaign") < 1.0
 

@@ -19,10 +19,18 @@ if BASE_DIR not in sys.path:
 from memory.pattern_db import PatternDB
 from memory.target_profile import default_memory_dir, load_target_profile
 try:
+    from tools.evidence_ledger import load_entries as load_evidence_ledger_entries
+    from tools.action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES
+    from tools.action_queue import load_queue as load_action_queue
+    from tools.attack_probe_filter import filter_attack_probes, is_attack_probe
     from tools.finding_index import load_finding_index
     from tools.runtime_state import inspect_recon_artifacts, load_runtime_state
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
+    from evidence_ledger import load_entries as load_evidence_ledger_entries
+    from action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES  # type: ignore
+    from action_queue import load_queue as load_action_queue  # type: ignore
+    from attack_probe_filter import filter_attack_probes, is_attack_probe
     from finding_index import load_finding_index
     from runtime_state import inspect_recon_artifacts, load_runtime_state
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -577,105 +585,6 @@ def _build_evidence_convergence_leads(
     return leads[:5]
 
 
-# Payload markers that indicate a URL is a historical attack probe
-# (waymore/gau replay of prior attacker attempts) rather than a real
-# endpoint. We filter these out before ranking — they pollute P1
-# candidates with /bin/querybuilder.json?UNION+SELECT-style noise.
-#
-# Patterns are case-insensitive and match against the FULL URL
-# (path + query). Both raw and URL-encoded forms are covered.
-_PAYLOAD_MARKERS: list[re.Pattern] = [
-    # SQLi
-    re.compile(r"\bunion[\s+%20]+select\b", re.I),
-    re.compile(r"\bor[\s+%20]+1\s*=\s*1\b", re.I),
-    re.compile(r"['%27]\s*(?:or|and)\s*['%27]", re.I),
-    re.compile(r"\bsleep\s*\(\s*\d+\s*\)", re.I),
-    re.compile(r"\bbenchmark\s*\(\s*\d+", re.I),
-    # XSS
-    re.compile(r"<script\b", re.I),
-    re.compile(r"</script>", re.I),
-    re.compile(r"%3cscript", re.I),
-    re.compile(r"\bonerror\s*=", re.I),
-    re.compile(r"\bonload\s*=", re.I),
-    re.compile(r"\bjavascript:", re.I),
-    re.compile(r"\bdata:text/html", re.I),
-    # Path traversal / LFI
-    re.compile(r"\.\./\.\./", re.I),
-    re.compile(r"\.\.%2f\.\.%2f", re.I),
-    re.compile(r"%2e%2e%2f", re.I),
-    re.compile(r"\betc/passwd\b", re.I),
-    re.compile(r"\betc/hosts\b", re.I),
-    re.compile(r"/proc/self/", re.I),
-    re.compile(r"\bwindows/win\.ini\b", re.I),
-    # RCE / command injection
-    re.compile(r"\beval\s*\(", re.I),
-    re.compile(r"\bsystem\s*\(", re.I),
-    re.compile(r"\bphpinfo\s*\(", re.I),
-    re.compile(r";\s*cat\s+/", re.I),
-    re.compile(r"\|\s*cat\s+/", re.I),
-    re.compile(r"&&\s*cat\s+/", re.I),
-    re.compile(r"\$\([^)]+\)", re.I),  # $(cmd) backtick-style
-    # XXE
-    re.compile(r"<\?xml\b", re.I),
-    re.compile(r"<!ENTITY\b", re.I),
-    re.compile(r'SYSTEM\s+"file:', re.I),
-    # Log4Shell / JNDI
-    re.compile(r"\$\{jndi:", re.I),
-    re.compile(r"\$\{env:", re.I),
-    re.compile(r"\$\{lower:", re.I),
-    re.compile(r"%24%7bjndi", re.I),
-    # SSTI
-    re.compile(r"\{\{\s*\d+\s*\*\s*\d+\s*\}\}"),
-    re.compile(r"\$\{\{\s*\d+\s*\*\s*\d+\s*\}\}"),
-    re.compile(r"<%=\s*\d+\s*\*\s*\d+\s*%>"),
-    re.compile(r"#\{\s*\d+\s*\*\s*\d+\s*\}"),
-    # NoSQLi
-    re.compile(r"\[\$ne\]", re.I),
-    re.compile(r"\[\$gt\]", re.I),
-    re.compile(r"\[\$where\]", re.I),
-    re.compile(r"%24where", re.I),
-    re.compile(r"%5b%24ne%5d", re.I),
-]
-
-
-def is_attack_probe(url: str) -> bool:
-    """Return True if `url` contains payload markers indicating a
-    historical attack probe (waymore/gau replay) rather than a real
-    endpoint. Conservative: a single positive match is enough to
-    flag the URL.
-    """
-    if not url:
-        return False
-    return any(p.search(url) for p in _PAYLOAD_MARKERS)
-
-
-def filter_attack_probes(
-    urls: list[str],
-    *,
-    log_path: Path | None = None,
-) -> list[str]:
-    """Return urls minus those flagged by `is_attack_probe`. When
-    `log_path` is given AND at least one URL is filtered, append the
-    dropped URLs to that file (one per line) for operator review.
-    The log file is NOT created if nothing was filtered.
-    """
-    if not urls:
-        return []
-    kept: list[str] = []
-    dropped: list[str] = []
-    for url in urls:
-        if is_attack_probe(url):
-            dropped.append(url)
-        else:
-            kept.append(url)
-    if dropped and log_path is not None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "a", encoding="utf-8") as f:
-            for url in dropped:
-                f.write(url + "\n")
-    return kept
-
-
 def _read_httpx_hosts(recon_dir: Path) -> tuple[dict[str, dict], set[str]]:
     """Parse live/httpx_full.txt into host metadata and 403-only hosts."""
     httpx_path = recon_dir / "live" / "httpx_full.txt"
@@ -713,6 +622,19 @@ def _read_httpx_hosts(recon_dir: Path) -> tuple[dict[str, dict], set[str]]:
     return hosts, status403
 
 
+CONTEXTUAL_NUMERIC_ID_RE = re.compile(
+    r"/(?:users?|accounts?|profiles?|members?|customers?|orgs?|organizations?|tenants?|workspaces?|"
+    r"orders?|invoices?|tickets?|messages?|comments?|files?|addresses?|carts?|products?|items?)/"
+    r"\d{1,8}(?:/|$)",
+    re.I,
+)
+
+
+def _has_contextual_numeric_id(path: str) -> bool:
+    """Return true for numeric IDs with resource context, not bare `/<number>` pages."""
+    return bool(CONTEXTUAL_NUMERIC_ID_RE.search(str(path or "")))
+
+
 def _candidate_reason(path: str, query_keys: list[str]) -> tuple[str, str]:
     lower = path.lower()
     if "graphql" in lower:
@@ -721,7 +643,7 @@ def _candidate_reason(path: str, query_keys: list[str]) -> tuple[str, str]:
         return "WebSocket candidate", "authorization checks on subscribe/send actions"
     if any(key in {"id", "user_id", "account_id", "order_id"} or key.endswith("_id") for key in query_keys):
         return "ID-bearing parameter", "ID swap and sibling endpoint access control checks"
-    if re.search(r"/\d{1,8}(?:/|$)", path):
+    if _has_contextual_numeric_id(path):
         return "Sequential object reference", "numeric ID swap on GET/PUT/DELETE"
     if query_keys:
         return "Parameterized endpoint", "input tampering and auth boundary checks"
@@ -768,6 +690,8 @@ BROWSER_VALUE_KEYWORDS = (
     "delete",
     "invite",
 )
+
+LEDGER_FINAL_RESULTS = {"tested_clean", "tested_finding", "dead_end", "not_applicable"}
 
 
 def _add_score_breakdown(
@@ -879,7 +803,11 @@ def _intel_signal_matches(signal: dict, raw_url: str, path: str, query_keys: lis
     if klass == "graphql":
         return "graphql" in lower_url or "graphql" in tech
     if klass == "idor":
-        return bool(keys & {"id", "user_id", "account_id", "order_id"}) or any(key.endswith("_id") for key in keys) or bool(re.search(r"/\d{1,8}(?:/|$)", lower_path))
+        return (
+            bool(keys & {"id", "user_id", "account_id", "order_id"})
+            or any(key.endswith("_id") for key in keys)
+            or _has_contextual_numeric_id(lower_path)
+        )
     if klass == "ssrf":
         return bool(keys & {"url", "uri", "dest", "destination", "callback", "webhook", "target", "next", "return"})
     if klass == "oauth":
@@ -933,6 +861,9 @@ def _finding_score_bonus(finding: dict) -> int:
     validation_status = (finding.get("validation_status") or "").lower()
     report_status = (finding.get("report_status") or "").lower()
 
+    if report_status == "generated":
+        return -20
+
     score = 0
     if severity == "critical":
         score += 9
@@ -955,10 +886,8 @@ def _finding_score_bonus(finding: dict) -> int:
     elif vuln_type in {"mfa", "ssrf", "idor"}:
         score += 1
 
-    if validation_status == "validated" and report_status != "generated":
+    if validation_status == "validated":
         score += 3
-    elif report_status == "generated":
-        score -= 8
 
     if score < 1:
         return 1
@@ -1016,9 +945,69 @@ def _scanner_suggestion(finding: dict, fallback: str) -> str:
     vuln_type = (finding.get("type") or finding.get("category") or "").lower()
     confidence = (finding.get("confidence") or "").lower()
     source = finding.get("source_file") or "findings.json"
+    report_status = (finding.get("report_status") or "").lower()
+    if report_status == "generated":
+        return "already reported/generated; avoid repeating unless new evidence changes impact or scope"
     if confidence in {"confirmed", "high"}:
         return f"validate {vuln_type or 'scanner'} evidence from {source}, then prepare report"
     return f"review scanner candidate from {source}; {fallback}"
+
+
+def _ledger_final_cells(entries: list[dict]) -> dict[tuple[str, str], str]:
+    """Return latest final ledger result by endpoint/vulnerability class."""
+    cells: dict[tuple[str, str], str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        result = str(entry.get("result") or "").strip()
+        if result not in LEDGER_FINAL_RESULTS:
+            continue
+        endpoint = str(entry.get("endpoint") or "").split("?", 1)[0].strip()
+        vuln_class = str(entry.get("vuln_class") or "").strip()
+        if endpoint and vuln_class:
+            cells[(endpoint, vuln_class)] = result
+    return cells
+
+
+def _action_queue_final_endpoints(actions: list[dict]) -> dict[str, str]:
+    """Return endpoints that already reached a final queue status.
+
+    `surface.py` is a ranking aid, not the durable execution state owner.  When
+    `action_queue.json` says an endpoint was closed as n/a, dead-end, tested,
+    blocked, validated, reported, etc., the ranked surface should stop pushing
+    the exact same endpoint back to P1 unless fresh evidence re-enters via a
+    different concrete URL/vulnerability class.
+    """
+    endpoints: dict[str, str] = {}
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        status = str(action.get("status") or "").strip().lower()
+        if status not in ACTION_QUEUE_FINAL_STATUSES:
+            continue
+        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+        endpoint = str(metadata.get("endpoint") or "").split("?", 1)[0].strip()
+        if not endpoint:
+            url = str(metadata.get("url") or "").strip()
+            if url:
+                endpoint = (urlparse(url).path or "/").split("?", 1)[0].strip()
+        if endpoint:
+            endpoints[endpoint] = status
+    return endpoints
+
+
+def _surface_vuln_hint(path: str, suggested: str, query_keys: list[str]) -> str:
+    """Best-effort vuln class for matching ranked surface to ledger facts."""
+    text = f"{path} {suggested}".lower()
+    if "sqli" in text or "sql injection" in text:
+        return "SQLi"
+    if "id swap" in text or "idor" in text or any(key.endswith("_id") for key in query_keys):
+        return "IDOR"
+    if "authz" in text or "authorization" in text or "auth boundary" in text or "access control" in text:
+        return "Authz"
+    if any(token in text for token in ("admin", "account", "order", "payment", "tenant", "user")):
+        return "Authz"
+    return ""
 
 
 def load_surface_context(
@@ -1046,9 +1035,10 @@ def load_surface_context(
         }
 
     hosts, status403_hosts = _read_httpx_hosts(recon_dir)
-    # Payload-marker filter: drop historical attack probes from
-    # waymore/gau replay so they don't pollute P1 candidates. Dropped
-    # URLs land in _filtered_attack_probes.txt for operator review.
+    # Payload-marker handling: never lose the endpoint/parameter surface during
+    # discovery. Raw historical probes are logged for review, while inert
+    # probe-derived shapes stay in ranking so a noisy archive cannot hide a
+    # real attack surface.
     _probe_log = recon_dir / "urls" / "_filtered_attack_probes.txt"
     if write_probe_log and _probe_log.is_file():
         # Reset on each context load so the log reflects only the
@@ -1058,22 +1048,27 @@ def load_surface_context(
     api_urls = filter_attack_probes(
         _read_lines(recon_dir / "urls" / "api_endpoints.txt"),
         log_path=probe_log_path,
+        preserve_surfaces=True,
     )
     param_urls = filter_attack_probes(
         _read_lines(recon_dir / "urls" / "with_params.txt"),
         log_path=probe_log_path,
+        preserve_surfaces=True,
     )
     js_endpoints = filter_attack_probes(
         _read_lines(recon_dir / "js" / "endpoints.txt"),
         log_path=probe_log_path,
+        preserve_surfaces=True,
     )
     browser_xhr_urls = filter_attack_probes(
         _read_lines(recon_dir / "browser" / "xhr_endpoints.txt"),
         log_path=probe_log_path,
+        preserve_surfaces=True,
     )
     browser_api_urls = filter_attack_probes(
         _read_lines(recon_dir / "browser" / "api_endpoints.txt"),
         log_path=probe_log_path,
+        preserve_surfaces=True,
     )
     finding_index = load_finding_index(findings_dir)
     scanner_findings = [
@@ -1081,6 +1076,8 @@ def load_surface_context(
         if isinstance(item, dict) and item.get("url")
         and url_belongs_to_target(str(item.get("url") or ""), target)
     ]
+    ledger_entries = load_evidence_ledger_entries(repo_root, target)
+    action_queue_entries = load_action_queue(repo_root, target).get("actions", [])
     intel_signals = _load_intel_signals(recon_dir)
     js_intel = load_js_intel_hypotheses(findings_dir)
     source_intel = load_source_intel_hypotheses(findings_dir)
@@ -1140,6 +1137,8 @@ def load_surface_context(
         "browser_xhr_urls": browser_xhr_urls,
         "browser_api_urls": browser_api_urls,
         "scanner_findings": scanner_findings,
+        "ledger_entries": ledger_entries,
+        "action_queue_entries": action_queue_entries if isinstance(action_queue_entries, list) else [],
         "intel_signals": intel_signals,
         "js_intel": js_intel,
         "source_intel": source_intel,
@@ -1195,6 +1194,10 @@ def rank_surface(context: dict) -> dict:
         if not url:
             continue
         scanner_findings_by_url.setdefault(url, []).append(finding)
+    ledger_final_cells = _ledger_final_cells(context.get("ledger_entries") or [])
+    action_queue_final_endpoints = _action_queue_final_endpoints(
+        context.get("action_queue_entries") or []
+    )
 
     raw_urls = _dedupe_keep_order(
         context["api_urls"]
@@ -1305,7 +1308,7 @@ def rank_surface(context: dict) -> dict:
                 8,
                 path,
             )
-        if re.search(r"/\d{1,8}(?:/|$)", path) or any(
+        if _has_contextual_numeric_id(path) or any(
             key in {"id", "user_id", "account_id", "order_id"} or key.endswith("_id")
             for key in query_keys
         ):
@@ -1646,6 +1649,54 @@ def rank_surface(context: dict) -> dict:
                 entry["score_breakdown"] = score_breakdown
                 reasons.append(f"value-class weight ×{weight:g}")
                 entry["reasons"] = reasons
+        endpoint_path = parsed.path or "/"
+        ledger_vuln_hint = _surface_vuln_hint(path, suggested, query_keys)
+        ledger_result = ledger_final_cells.get((endpoint_path, ledger_vuln_hint)) if ledger_vuln_hint else ""
+        if ledger_result:
+            penalty = -90 if ledger_result in {"tested_clean", "dead_end", "not_applicable"} else -70
+            score += _add_score_breakdown(
+                score_breakdown,
+                "memory",
+                f"Evidence ledger final: {ledger_vuln_hint} {ledger_result}",
+                penalty,
+                endpoint_path,
+            )
+            entry["score"] = score
+            entry["score_breakdown"] = score_breakdown
+            reasons.append(f"evidence-ledger {ledger_vuln_hint} {ledger_result}")
+            entry["reasons"] = reasons
+            entry["ledger_final"] = {
+                "endpoint": endpoint_path,
+                "vuln_class": ledger_vuln_hint,
+                "result": ledger_result,
+            }
+            suggested = (
+                f"avoid repeating ledger-covered {ledger_vuln_hint} ({ledger_result}); "
+                "continue only if fresh evidence changes impact, role, object, or vuln class"
+            )
+            entry["suggested"] = suggested
+        queue_status = action_queue_final_endpoints.get(endpoint_path)
+        if queue_status:
+            score += _add_score_breakdown(
+                score_breakdown,
+                "memory",
+                f"Action queue final: {queue_status}",
+                -90,
+                endpoint_path,
+            )
+            entry["score"] = score
+            entry["score_breakdown"] = score_breakdown
+            reasons.append(f"action-queue final {queue_status}")
+            entry["reasons"] = reasons
+            entry["action_queue_final"] = {
+                "endpoint": endpoint_path,
+                "status": queue_status,
+            }
+            suggested = (
+                f"avoid repeating action-queue-covered endpoint ({queue_status}); "
+                "reopen only if fresh browser, source, role, object, or impact evidence changes the lane"
+            )
+            entry["suggested"] = suggested
         candidates.append(entry)
 
     kill = []
@@ -1655,13 +1706,13 @@ def rank_surface(context: dict) -> dict:
         if host in context["status403_hosts"] and context.get("cf_bypass_active"):
             continue
         if any(token in lower_host for token in ("docs.", "status.", "blog.", "static.", "cdn.")):
-            kill.append({"host": host, "reason": "likely docs/static/support host"})
+            kill.append({"host": host, "reason": "possible docs/static/support host"})
             continue
         if host in context["status403_hosts"]:
-            kill.append({"host": host, "reason": "403-only host from recon"})
+            kill.append({"host": host, "reason": "403-only host from recon; revisit if auth/CF/session context changes"})
             continue
         if any(token in title for token in ("documentation", "status page", "help center")):
-            kill.append({"host": host, "reason": f"title suggests low-value surface: {item.get('title', '')}"})
+            kill.append({"host": host, "reason": f"title suggests lower-priority surface: {item.get('title', '')}"})
 
     candidates.sort(key=lambda item: item["score"], reverse=True)
     p1 = [item for item in candidates if item["score"] >= 8][:8]
@@ -1830,7 +1881,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
     else:
         lines.append("1. No P2 candidates. Consider re-running recon.")
 
-    lines.extend(["", "Kill List (skip):"])
+    lines.extend(["", "Low-priority host hints (not exclusion):"])
     if kill_items:
         for item in kill_items[:5]:
             lines.append(f"- {item['host']} — {item['reason']}")
@@ -1967,7 +2018,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
         f"- Total candidates: {ranked['stats']['total_candidates']}",
         f"- P1: {ranked['stats']['p1']}",
         f"- P2: {ranked['stats']['p2']}",
-        f"- Kill list: {ranked['stats']['kill']}",
+        f"- Low-priority host hints: {ranked['stats']['kill']}",
     ])
 
     # Options surface multiple candidate next moves rather than a single

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import structured_findings
 
@@ -96,3 +97,45 @@ def test_format_structured_findings_lines_renders_expected_labels():
         "  Next validate: sqli_pending [high/confirmed] sqli https://api.target.com/search?q=1 rubric=needs-evidence missing=baseline/perturbation pair",
         "  Next report: mfa_report [medium/high] mfa https://api.target.com/mfa",
     ]
+
+
+def test_validated_finding_reuses_runner_evidence_rubric(tmp_path):
+    summary_path = tmp_path / "summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "evidence_rubric": {
+                    "rubric_id": "sqli",
+                    "status": "candidate-ready",
+                    "ready": True,
+                    "score": 100,
+                    "satisfied_count": 4,
+                    "total": 4,
+                    "missing": [],
+                    "missing_labels": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    findings_dir = tmp_path / "findings" / "target.com"
+    finding = {
+        "id": "validated_sqli",
+        "type": "sqli",
+        "severity": "high",
+        "confidence": "confirmed",
+        "url": "https://target.com/rest/products/search?q=apple",
+        "validation_status": "validated",
+        "report_status": "not_generated",
+        "validation_summary": str(summary_path),
+        # 精简 finding 行本身没有 baseline/variant 细节；应复用 runner summary，
+        # 不能重新按标题弱文本评成 needs-evidence。
+        "summary": "sqli:candidate-ready score=100 satisfied=4/4",
+    }
+
+    summary = structured_findings.summarize_structured_findings([finding], findings_dir)
+
+    assert summary["next_report"]["id"] == "validated_sqli"
+    assert summary["next_report"]["rubric_status"] == "candidate-ready"
+    assert summary["next_report"]["rubric"]["ready"] is True
+    assert summary["next_report"]["missing_evidence"] == []

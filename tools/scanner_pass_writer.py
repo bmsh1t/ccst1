@@ -2,10 +2,10 @@
 """tools/scanner_pass_writer.py — emit findings/<target>/scanner_pass.json.
 
 Records which `(endpoint, vuln_class, module)` pairs `tools/vuln_scanner.sh`
-exercised in a given run, regardless of whether a finding was produced.
-`tools/coverage_matrix.py rebuild` consumes the result to mark already-tested
-cells as `tested_clean`, closing the Phase 3 follow-up item that previously
-left scanner-swept cells in `untested` (and tripping the F3 finish-gate).
+touched in a given run, regardless of whether a finding was produced.
+`tools/coverage_matrix.py rebuild` consumes the result as advisory
+`scanner_swept` metadata. It must not mark cells `tested_clean`: broad scanner
+negatives are lead context, not evidence-grade validation.
 
 Per task 05-16-b4-scanner-matrix-feedback (R1 / R3 / C3):
   - Output schema: {scanned_at, scanner_version, endpoints: [{endpoint,
@@ -14,6 +14,8 @@ Per task 05-16-b4-scanner-matrix-feedback (R1 / R3 / C3):
     `tools/coverage_matrix.py` (`VULN_CLASSES`, alias-aware via
     `normalize_vuln_class`).
   - Additive only — does not modify findings.json or any other artifact.
+  - Advisory only — coverage cells remain `untested` until a validation runner
+    or operator mark records evidence-grade clean/finding status.
 
 Usage:
     python3 tools/scanner_pass_writer.py \
@@ -94,9 +96,9 @@ def _detect_run_modules(findings_dir: Path) -> list[str]:
     """Return scanner module category names that produced at least one file
     in findings/<target>/<category>/.
 
-    A module is considered "ran" if its category directory exists and has at
-    least one regular file (even empty findings — the directory itself proves
-    the lane was exercised).
+    A module is considered "touched" only if its category directory contains at
+    least one regular file. `vuln_scanner.sh` pre-creates category directories,
+    so directory existence alone is not evidence that a lane ran.
     """
     if not findings_dir.is_dir():
         return []
@@ -107,7 +109,8 @@ def _detect_run_modules(findings_dir: Path) -> list[str]:
         name = child.name
         if name not in CATEGORY_TO_VULN_CLASS:
             continue
-        # Lane is considered active if directory exists (even empty == ran-clean)
+        if not any(item.is_file() for item in child.iterdir()):
+            continue
         modules.append(name)
     return modules
 
@@ -202,7 +205,7 @@ def _resolve_target_findings_root(findings_dir: Path, target: str) -> Path:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Emit findings/<target>/scanner_pass.json so coverage_matrix "
-                    "can mark scanner-swept cells `tested_clean`.",
+                    "can attach scanner-swept advisory metadata.",
     )
     parser.add_argument("--target", required=True)
     parser.add_argument("--findings-dir", required=True,

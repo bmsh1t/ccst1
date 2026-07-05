@@ -40,6 +40,15 @@ def _dedupe_keep_order(items: list[str]) -> list[str]:
     return out
 
 
+def _read_existing_lines(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+
 def _load_json(path: Path | None) -> object:
     if not path or not path.is_file():
         return []
@@ -214,6 +223,7 @@ def write_browser_surface(
     requests_path: str | Path | None = None,
     snapshot_path: str | Path | None = None,
     capture_dir: str = "",
+    merge_existing: bool = False,
 ) -> dict:
     """Write recon/<target>/browser artifacts from captured request data."""
     browser_dir = Path(recon_root) / target_key / "browser"
@@ -235,6 +245,13 @@ def write_browser_surface(
         "forms": str(browser_dir / "forms.json"),
         "summary": str(browser_dir / "summary.json"),
     }
+    if merge_existing:
+        # MCP captures are often incremental: a login/order/admin workflow capture
+        # can be followed by a small homepage refresh.  Do not let the later small
+        # capture erase previously observed XHR/API surface.
+        xhr_urls = _dedupe_keep_order(_read_existing_lines(Path(artifacts["xhr_endpoints"])) + xhr_urls)
+        api_urls = _dedupe_keep_order(_read_existing_lines(Path(artifacts["api_endpoints"])) + api_urls)
+        params = _dedupe_keep_order(_read_existing_lines(Path(artifacts["browser_params"])) + params)
     _write_lines(Path(artifacts["xhr_endpoints"]), xhr_urls)
     _write_lines(Path(artifacts["api_endpoints"]), api_urls)
     _write_lines(Path(artifacts["browser_params"]), params)

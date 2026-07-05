@@ -1217,15 +1217,18 @@ def test_autopilot_command_md_has_tool_index_prelude():
     assert "docs/tool-index.md" in text
 
 
-def test_autopilot_command_md_bootstraps_with_context_pack():
-    """Autopilot startup should keep context navigation in the fast path."""
+def test_autopilot_command_md_bootstraps_recon_first_and_cache_aware():
+    """Autopilot startup should keep context navigation without making state tools the steering wheel."""
     from pathlib import Path
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
 
+    assert "Fresh target startup is recon-first" in text
+    assert "python3 tools/hunt.py --target target.com --recon-only" in text
+    assert "Existing target startup is cache-aware" in text
+    assert "python3 tools/autopilot_state.py --target target.com" in text
     assert "python3 tools/context_pack.py --target target.com" in text
-    assert "Fast startup" in text
     assert "not a pre-flight checklist" in text
     assert "1-2 knowledge cards" in text
 
@@ -1339,6 +1342,9 @@ def test_autopilot_command_md_has_post_hunt_unsafe_review_gate():
 
     assert "After `run_vuln_scan`" in text
     assert "action-gated scanner leads" in text
+    assert "weak template hits as `lead`" in text
+    assert "stable diffs as `signal`" in text
+    assert "practical impact as `candidate`" in text
     assert "unsafe_skipped.txt" in text
     assert "ALLOW_UNSAFE_HTTP_TESTS=1" in text
     assert "standard_public_metadata.txt" in text
@@ -1382,6 +1388,9 @@ def test_autopilot_agent_md_has_post_hunt_unsafe_review_gate():
     assert "run_vuln_scan" in text
     assert "read_surface_summary" in text
     assert "action-gated scanner leads" in text
+    assert "weak template hits are `lead`" in text
+    assert "stable diffs are `signal`" in text
+    assert "practical impact is `candidate`" in text
     assert "unsafe_skipped.txt" in text
     assert "ALLOW_UNSAFE_HTTP_TESTS=1" in text
     assert "standard_public_metadata.txt" in text
@@ -1415,15 +1424,20 @@ def test_autopilot_agent_md_defines_deep_as_value_first_comprehensive_depth():
     assert "high-value vuln-family directions tested, blocked, not applicable" in flat
 
 
-def test_autopilot_agent_md_bootstraps_with_context_pack_and_rebuilds_coverage():
-    """Agent prompt must stay aligned with /autopilot command startup."""
+def test_autopilot_agent_md_bootstraps_with_context_pack_without_coverage_first():
+    """Agent prompt must keep recon/cache startup aligned without coverage/checkpoint first contact."""
     from pathlib import Path
 
     md = Path(__file__).resolve().parent.parent / "agents" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
 
+    assert "Fresh target startup is recon-first" in text
+    assert "python3 tools/hunt.py --target <target> --recon-only" in text
+    assert "Existing target startup is cache-aware" in text
     assert "python3 tools/context_pack.py --target <target>" in text
     assert "python3 tools/autopilot_state.py --target <target>" in text
-    assert "python3 tools/coverage_matrix.py rebuild --target <target>" in text
-    assert "python3 tools/coverage_matrix.py find-gaps --target <target>" in text
-    assert "python3 tools/checkpoint.py --target <target>" in text
+    four_layer = text.split("## Four-Layer Runtime", 1)[1].split("## Case-State First", 1)[0]
+    assert "python3 tools/coverage_matrix.py rebuild --target <target>" not in four_layer
+    assert "python3 tools/coverage_matrix.py find-gaps --target <target>" not in four_layer
+    assert "python3 tools/checkpoint.py --target <target>" not in four_layer
+    assert "do not let them drive first contact" in four_layer
