@@ -39,7 +39,10 @@ def test_case_state_seed_suggests_order_object_and_idor_backlog(tmp_path):
         "owner private marker",
     ]
     assert any("add-object" in command and "order_123" in command for command in payload["commands"])
-    assert any("add-backlog" in command and "idor-actor-pair" in command for command in payload["commands"])
+    assert any(
+        "add-backlog" in command and "idor-actor-pair" in command and "--priority high" in command
+        for command in payload["commands"]
+    )
 
 
 def test_case_state_seed_extracts_query_object_from_browser_params(tmp_path):
@@ -56,6 +59,59 @@ def test_case_state_seed_extracts_query_object_from_browser_params(tmp_path):
     assert payload["suggested_objects"][0]["object_ref"] == "order_42"
     assert payload["suggested_objects"][0]["endpoint"] == "https://app.target.com/api/admin/export?order_id=42"
     assert "query parameter 'order_id'" in payload["suggested_objects"][0]["reason"]
+
+
+def test_case_state_seed_extracts_objects_from_browser_json_artifacts(tmp_path):
+    target = "http://127.0.0.1:3002"
+    browser_dir = tmp_path / "recon" / "127.0.0.1:3002" / "browser"
+    browser_dir.mkdir(parents=True)
+    (browser_dir / "xhr_endpoints.txt").write_text(
+        "http://127.0.0.1:3002/rest/track-order/4cf8-fc54260b56afa3ce\n",
+        encoding="utf-8",
+    )
+    (browser_dir / "stateful_order_probe.json").write_text(
+        json.dumps({
+            "created": {
+                "address_id": 7,
+                "basket_id": 6,
+                "order_confirmation": "4cf8-fc54260b56afa3ce",
+                "payment_id": 8,
+            },
+            "owner_history": {
+                "body": {
+                    "data": [
+                        {
+                            "addressId": 7,
+                            "orderId": "4cf8-fc54260b56afa3ce",
+                            "paymentId": 8,
+                        }
+                    ]
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    payload = case_state_seed.build_case_state_seed(tmp_path, target, limit=10)
+    objects = {item["object_ref"]: item for item in payload["suggested_objects"]}
+
+    assert {"address_7", "basket_6", "order_4cf8-fc54260b56afa3ce", "payment_8"} <= set(objects)
+    assert objects["order_4cf8-fc54260b56afa3ce"]["endpoint"].endswith(
+        "/rest/track-order/4cf8-fc54260b56afa3ce"
+    )
+    assert objects["order_4cf8-fc54260b56afa3ce"]["private_marker"] == "4cf8-fc54260b56afa3ce"
+    assert "json field" in objects["address_7"]["reason"]
+    address_backlog = next(
+        item for item in payload["suggested_backlog"]
+        if item["object_ref"] == "address_7"
+    )
+    assert "object endpoint" in address_backlog["missing"]
+    order_backlog = next(
+        item for item in payload["suggested_backlog"]
+        if item["object_ref"] == "order_4cf8-fc54260b56afa3ce"
+    )
+    assert "owner private marker" not in order_backlog["missing"]
+    assert any("--private-marker" in command for command in payload["commands"])
 
 
 def test_case_state_seed_ignores_socket_session_ids(tmp_path):
