@@ -1202,6 +1202,64 @@ def test_ranked_surface_generic_api_uses_role_replay_when_case_state_ready():
     assert "https://app.target.com/api/Orders" in ranked_text
 
 
+def test_ranked_surface_placeholder_object_uses_case_state_object():
+    url = "https://app.target.com/rest/basket/NaN"
+    case_state = {
+        "actors": 2,
+        "sessions": 2,
+        "objects": 1,
+        "object_samples": [
+            {
+                "object_ref": "basket_6",
+                "type": "basket",
+                "object_id": "6",
+                "endpoint": "https://app.target.com/rest/basket/6",
+            }
+        ],
+    }
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": url,
+                    "suggested": "prioritize authenticated/browser-observed authz and workflow checks",
+                }
+            ],
+            "surface": {
+                "p1": [
+                    {
+                        "url": url,
+                        "browser_observed": True,
+                        "suggested": "prioritize authenticated/browser-observed authz and workflow checks",
+                    }
+                ],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+        case_state=case_state,
+    )
+
+    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    assert "non-concrete object value NaN" in ranked_text
+    assert "do not replay it directly" in ranked_text
+    assert "idor-actor-pair" in ranked_text
+    assert "basket_6" in ranked_text
+    assert "authz-role-replay" not in ranked_text
+
+    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    skeleton = action["metadata"]["ledger_record_skeleton"]
+    assert "--endpoint \"/rest/basket/6\"" in skeleton
+    assert "--object-scope \"basket_6\"" in skeleton
+    assert "--variant \"object_replay\"" in skeleton
+    assert "/rest/basket/NaN" not in skeleton
+
+
 def test_ranked_surface_spa_page_route_uses_browser_state_first_with_case_state_ready():
     url = "https://app.target.com/orders"
     proposals = _next_proposals(

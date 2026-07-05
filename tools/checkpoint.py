@@ -33,7 +33,7 @@ try:
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
-    from tools.target_case_state import summary as build_case_state_summary
+    from tools.target_case_state import load_case_state, summary as build_case_state_summary
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
-    from target_case_state import summary as build_case_state_summary  # type: ignore
+    from target_case_state import load_case_state, summary as build_case_state_summary  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -423,6 +423,21 @@ def _case_state_summary(repo_root: Path | str, target: str) -> dict:
     """
     try:
         payload = build_case_state_summary(repo_root, target)
+        state = load_case_state(repo_root, target)
+        objects = state.get("objects") if isinstance(state.get("objects"), dict) else {}
+        if isinstance(payload, dict):
+            payload["object_samples"] = [
+                {
+                    "object_ref": str(ref),
+                    "type": str(obj.get("type") or ""),
+                    "object_id": str(obj.get("object_id") or ""),
+                    "endpoint": str(obj.get("endpoint") or ""),
+                    "owner_actor": str(obj.get("owner_actor") or ""),
+                    "private_marker": str(obj.get("private_marker") or ""),
+                }
+                for ref, obj in list(objects.items())[:8]
+                if isinstance(obj, dict)
+            ]
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
@@ -685,6 +700,78 @@ def _normalise_endpoint_path(value: str) -> str:
     return path
 
 
+PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
+
+
+def _path_segments(value: str) -> list[str]:
+    path = _canonicalize_url_path(value)
+    return [segment for segment in path.split("/") if segment]
+
+
+def _non_concrete_object_segments(value: str) -> list[str]:
+    """Return high-confidence placeholder path segments that must not be replayed directly."""
+    out: list[str] = []
+    for segment in _path_segments(value):
+        lowered = segment.strip().lower()
+        if lowered in PLACEHOLDER_OBJECT_SEGMENTS:
+            out.append(segment)
+        elif lowered.startswith(":") or (lowered.startswith("{") and lowered.endswith("}")):
+            out.append(segment)
+        elif lowered.startswith("<") and lowered.endswith(">"):
+            out.append(segment)
+    return out
+
+
+def _case_state_object_for_surface(url: str, case_state: dict | None) -> dict:
+    """Find a concrete case_state object whose type appears in the surface path."""
+    if not isinstance(case_state, dict):
+        return {}
+    samples = case_state.get("object_samples") if isinstance(case_state.get("object_samples"), list) else []
+    segments = [segment.lower().replace("_", "-") for segment in _path_segments(url)]
+    for obj in samples:
+        if not isinstance(obj, dict):
+            continue
+        object_type = str(obj.get("type") or "").strip().lower().replace("_", "-")
+        if not object_type:
+            continue
+        aliases = {object_type, f"{object_type}s"}
+        if object_type == "basket":
+            aliases.add("cart")
+        if object_type == "cart":
+            aliases.add("basket")
+        if aliases.intersection(segments):
+            return obj
+    return {}
+
+
+def _placeholder_object_replay_guidance(url: str, case_state: dict | None, target: str = "") -> str:
+    placeholders = _non_concrete_object_segments(url)
+    if not placeholders:
+        return ""
+    matched = _case_state_object_for_surface(url, case_state)
+    placeholder_text = ", ".join(placeholders)
+    if matched and matched.get("endpoint"):
+        target_arg = _quote(target or "<target>")
+        object_ref = str(matched.get("object_ref") or "")
+        endpoint = str(matched.get("endpoint") or "")
+        command = ""
+        if object_ref:
+            command = (
+                f"`python3 tools/validation_runner.py idor-actor-pair --target {target_arg} "
+                f"--from-case-state --object-ref {_quote(object_ref)} --repeat 2`"
+            )
+        return (
+            f"observed URL contains non-concrete object value {placeholder_text}; "
+            f"do not replay it directly. Substitute case_state object {object_ref or matched.get('type')} "
+            f"endpoint {endpoint} and run {command or 'owner/peer replay on the concrete endpoint'}"
+        )
+    return (
+        f"observed URL contains non-concrete object value {placeholder_text}; do not replay it directly. "
+        "First capture a browser/MCP request with a real object ID or register a concrete "
+        "case_state object, then replay the underlying API"
+    )
+
+
 def _is_parent_endpoint(parent: str, child: str) -> bool:
     parent_path = _normalise_endpoint_path(parent)
     child_path = _normalise_endpoint_path(child)
@@ -911,11 +998,15 @@ def _ranked_surface_replay_draft(
     vuln_class = _canonical_vuln_for_ledger(vuln_hint)
     baseline_first = _is_path_only_authz_gap(authz_gap)
     browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
+    placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
     role_replay_ready = (
         _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
         and not browser_state_first
+        and not placeholder_guidance
     )
-    if baseline_first:
+    if placeholder_guidance:
+        validation_path = placeholder_guidance
+    elif baseline_first:
         validation_path = _coverage_gap_validation_path(authz_gap)
     elif browser_state_first:
         validation_path = (
@@ -963,6 +1054,8 @@ def _ranked_surface_replay_draft(
         parts.append("use registered case_state owner/peer sessions")
     if browser_state_first:
         parts.append("browser-state-first page route; avoid treating identical SPA HTML as clean")
+    if placeholder_guidance:
+        parts.append("placeholder object path; require concrete object ID before replay")
     if validation_path:
         parts.append(validation_path)
     return "; ".join(parts)
@@ -999,13 +1092,22 @@ def _ranked_surface_ledger_skeleton(
     context_prereq = _ranked_surface_context_prereq(state, item, case_state)
     query_keys = _ranked_surface_query_keys(url)
     browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
+    placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
+    placeholder_object = _case_state_object_for_surface(url, case_state) if placeholder_guidance else {}
     role_replay_ready = (
         _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
         and not browser_state_first
+        and not placeholder_guidance
     )
     actor = "anonymous" if baseline_first or context_prereq else "owner"
     object_scope = "none" if baseline_first or context_prereq else "unknown"
-    if baseline_first:
+    if placeholder_object.get("object_ref"):
+        object_scope = str(placeholder_object.get("object_ref") or "unknown")
+    if placeholder_object.get("endpoint"):
+        endpoint = _normalise_endpoint_path(str(placeholder_object.get("endpoint") or ""))
+    if placeholder_guidance:
+        variant = "concrete_object_required" if not placeholder_object.get("endpoint") else "object_replay"
+    elif baseline_first:
         variant = "unauth_baseline"
     elif context_prereq:
         variant = "context_prereq"
@@ -1026,6 +1128,12 @@ def _ranked_surface_ledger_skeleton(
         notes = (
             "Checkpoint ranked-surface context prerequisite; register actor/session/object "
             "before owner/peer replay, or update this record after baseline classification."
+        )
+    elif placeholder_guidance:
+        notes = (
+            "Checkpoint ranked-surface placeholder object path; do not replay the observed "
+            "placeholder URL directly. Replace it with a concrete case_state/browser object "
+            "endpoint before recording final result."
         )
     elif browser_state_first:
         notes = (
