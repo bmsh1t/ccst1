@@ -693,6 +693,43 @@ LEDGER_FINAL_RESULTS = {"tested_clean", "tested_finding", "dead_end", "not_appli
 REVIEW_POOL_LIMIT = 16
 
 
+def _is_low_information_root_path(path: str) -> bool:
+    """Return true for root-level crawl artifacts with no resource semantics.
+
+    This is not an exclusion rule. It only de-prioritizes score-only items such
+    as `//`, `/16`, or `/v3/` when no browser/JS/source/scanner/parameter
+    evidence explains why Claude should spend the next action there. Resource
+    scoped IDs (`/orders/16`) and real versioned APIs (`/api/v3/users`) stay
+    eligible through their surrounding path context.
+    """
+    path_only = str(path or "").split("?", 1)[0]
+    if path_only in {"", "/"}:
+        return False
+    segments = [segment for segment in path_only.split("/") if segment]
+    if not segments:
+        return True
+    if len(segments) != 1:
+        return False
+    segment = segments[0].lower()
+    return segment.isdigit() or (segment.startswith("v") and segment[1:].isdigit())
+
+
+def _has_substantive_surface_evidence(entry: dict, query_keys: list[str]) -> bool:
+    """Return true when a candidate has evidence beyond recon score hints."""
+    if query_keys:
+        return True
+    evidence_fields = (
+        "browser_observed",
+        "js_intel_observed",
+        "source_intel_observed",
+        "evidence_convergence",
+        "scanner_findings",
+        "target_memory_hits",
+        "intel_signals",
+    )
+    return any(bool(entry.get(field)) for field in evidence_fields)
+
+
 def _add_score_breakdown(
     score_breakdown: list[dict],
     source: str,
@@ -1724,6 +1761,26 @@ def rank_surface(context: dict) -> dict:
                 "reopen only if fresh browser, source, role, object, or impact evidence changes the lane"
             )
             entry["suggested"] = suggested
+        if (
+            _is_low_information_root_path(path)
+            and not _has_substantive_surface_evidence(entry, query_keys)
+        ):
+            score += _add_score_breakdown(
+                score_breakdown,
+                "recon",
+                "Low-information recon-only path",
+                -8,
+                path,
+            )
+            entry["score"] = score
+            entry["score_breakdown"] = score_breakdown
+            reasons.append("low-information recon-only path")
+            entry["reasons"] = reasons
+            entry["low_information_recon_only"] = True
+            entry["suggested"] = (
+                "defer unless browser/source evidence shows a real handler or child API; "
+                "preserve as low-priority surface shape, not immediate replay"
+            )
         candidates.append(entry)
 
     kill = []

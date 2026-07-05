@@ -2239,7 +2239,7 @@ def run_idor_actor_pair(
         private_body_match = _private_body_match(owner["body"], peer["body"])
         owner_success = _is_success_status(owner["status"])
         peer_success = _is_success_status(peer["status"])
-        peer_denied = _is_denied_status(peer["status"])
+        peer_denied = _is_blocked_or_denied_response(peer["status"], peer["body"])
         strong_access = owner_success and peer_success and (marker_found if marker else private_body_match)
         ambiguous_access = owner_success and peer_success and not strong_access
         runs.append({
@@ -2268,7 +2268,7 @@ def run_idor_actor_pair(
 
     candidate_ready = all(bool(run["strong_access"]) for run in runs)
     owner_success_all = all(bool(run["owner_success"]) for run in runs)
-    peer_denied_all = all(bool(run["peer_denied"]) or not bool(run["peer_success"]) for run in runs)
+    peer_denied_all = all(bool(run["peer_denied"]) for run in runs)
     ambiguous_any = any(bool(run["ambiguous_access"]) for run in runs)
     if not owner_success_all:
         result = "dead_end"
@@ -2296,6 +2296,34 @@ def run_idor_actor_pair(
         "confidence": "confirmed" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding, vuln_type="idor"))
+    if result == "dead_end":
+        rubric.update({
+            "status": "dead-end",
+            "ready": False,
+            "score": 0,
+            "missing": ["owner_baseline_success"],
+            "missing_labels": ["valid owner object baseline"],
+            "next_actions": [
+                "Refresh the owner session, object endpoint, or private marker before drawing any IDOR conclusion."
+            ],
+            "summary": "idor:dead-end score=0 missing=valid owner object baseline",
+        })
+    elif result == "tested_clean":
+        rubric.update({
+            "status": "tested-clean",
+            "ready": False,
+            "score": 0,
+            "missing": ["peer_access_to_owner_object"],
+            "missing_labels": ["peer access to owner object/private marker"],
+            "next_actions": [
+                "No peer access on this exact object replay; pivot to a different object endpoint, state-changing workflow, or collection scoping lead."
+            ],
+            "summary": (
+                "idor:tested-clean peer denied owner object"
+                if peer_denied_all
+                else "idor:tested-clean score=0 missing=peer access to owner object/private marker"
+            ),
+        })
     notes = (
         f"Validation runner IDOR actor pair: result={result}, "
         f"repeat={repeat}, peer_statuses={[run['peer_status'] for run in runs]}."

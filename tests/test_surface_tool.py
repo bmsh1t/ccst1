@@ -240,6 +240,50 @@ class TestSurfaceRanking:
         assert "ethereum.example.net" in external_leads[0]["evidence"]
         assert "do not run direct vulnerability validation" in external_leads[0]["next_action"]
 
+    def test_low_information_recon_only_paths_do_not_beat_browser_evidence(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "browser").mkdir(parents=True)
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://app.target.com [200] [App] [nginx] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://app.target.com/v3/\n"
+            "https://app.target.com//\n"
+            "https://app.target.com/16\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        (recon_dir / "browser" / "xhr_endpoints.txt").write_text(
+            "https://app.target.com/rest/orders/123\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "browser" / "api_endpoints.txt").write_text("", encoding="utf-8")
+
+        ranked = rank_surface(
+            load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+        )
+
+        assert ranked["review_pool"][0]["url"] == "https://app.target.com/rest/orders/123"
+        low_info = [
+            item for item in ranked["review_pool"]
+            if item["url"] in {
+                "https://app.target.com/v3/",
+                "https://app.target.com//",
+                "https://app.target.com/16",
+            }
+        ]
+        assert low_info
+        assert all(item.get("low_information_recon_only") is True for item in low_info)
+        assert all(item["score"] < 3 for item in low_info)
+        assert all(item["url"] not in {p1["url"] for p1 in ranked["p1"]} for item in low_info)
+
     def test_surface_output_shows_runtime_and_recon_cache(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"

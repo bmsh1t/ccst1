@@ -1078,6 +1078,37 @@ def test_idor_actor_pair_denied_peer_is_clean(monkeypatch, tmp_path):
     assert summary["result"] == "tested_clean"
     assert summary["candidate_ready"] is False
     assert summary["runs"][0]["peer_denied"] is True
+    assert summary["evidence_rubric"]["status"] == "tested-clean"
+    assert "peer denied" in summary["evidence_rubric"]["summary"]
+
+
+def test_idor_actor_pair_blocked_400_peer_is_clean(monkeypatch, tmp_path):
+    def fake_request_once(**kwargs):
+        token = (kwargs.get("headers") or {}).get("Authorization", "")
+        if token == "Bearer owner":
+            return _fake_response(kwargs["url"], body='{"id":7,"email":"victim@example.test"}')
+        return _fake_response(
+            kwargs["url"],
+            status=400,
+            body='{"status":"error","data":"Malicious activity detected"}',
+        )
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    summary = validation_runner.run_idor_actor_pair(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/cards/7",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        expect_marker="victim@example.test",
+        finding_id="IDOR-PAIR-BLOCKED-400",
+    )
+
+    assert summary["result"] == "tested_clean"
+    assert summary["runs"][0]["peer_denied"] is True
+    assert summary["evidence_rubric"]["status"] == "tested-clean"
+    assert "peer denied" in summary["evidence_rubric"]["summary"]
 
 
 def test_idor_actor_pair_invalid_owner_baseline_is_dead_end(monkeypatch, tmp_path):
