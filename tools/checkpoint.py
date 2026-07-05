@@ -772,6 +772,13 @@ def _placeholder_object_replay_guidance(url: str, case_state: dict | None, targe
     )
 
 
+def _placeholder_concrete_endpoint(url: str, case_state: dict | None) -> str:
+    if not _non_concrete_object_segments(url):
+        return ""
+    matched = _case_state_object_for_surface(url, case_state)
+    return str(matched.get("endpoint") or "").strip() if matched else ""
+
+
 def _is_parent_endpoint(parent: str, child: str) -> bool:
     parent_path = _normalise_endpoint_path(parent)
     child_path = _normalise_endpoint_path(child)
@@ -1194,6 +1201,13 @@ def _ledger_covered_cells(evidence_summary: dict) -> set[tuple[str, str]]:
     the same baseline.
     """
     covered: set[tuple[str, str]] = set()
+    for cell in evidence_summary.get("closed_cells") or []:
+        if not isinstance(cell, dict):
+            continue
+        endpoint = _normalise_endpoint_path(str(cell.get("endpoint") or ""))
+        vuln_class = str(cell.get("vuln_class") or "").strip()
+        if endpoint and vuln_class:
+            covered.add((endpoint, vuln_class))
     for entry in evidence_summary.get("recent_entries") or []:
         if not isinstance(entry, dict):
             continue
@@ -1205,6 +1219,21 @@ def _ledger_covered_cells(evidence_summary: dict) -> set[tuple[str, str]]:
         if endpoint and vuln_class:
             covered.add((endpoint, vuln_class))
     return covered
+
+
+def _ledger_covers_cell(covered_cells: set[tuple[str, str]], endpoint: str, vuln_class: str) -> bool:
+    endpoint_path = _normalise_endpoint_path(endpoint)
+    canonical_class = _canonical_vuln_for_ledger(vuln_class)
+    if not endpoint_path:
+        return False
+    if (endpoint_path, canonical_class) in covered_cells:
+        return True
+    # IDOR and generic Authz are the same authorization family for replay
+    # de-duplication: a confirmed object replay should close a later generic
+    # role-diff suggestion for the same concrete endpoint.
+    if canonical_class in {"Authz", "IDOR"}:
+        return any((endpoint_path, sibling) in covered_cells for sibling in ("Authz", "IDOR"))
+    return False
 
 
 def _is_parent_closure_gap(gap: dict, tested_endpoints: set[str]) -> bool:
@@ -1399,7 +1428,12 @@ def _next_proposals(
         if url:
             entry = _ranked_surface_entry(state, item.get("url") or "")
             vuln_class = _canonical_vuln_for_ledger(_ranked_surface_vuln_hint(entry, url))
-            if (endpoint_path, vuln_class) in covered_ledger_cells:
+            concrete_endpoint = _placeholder_concrete_endpoint(url, case_state)
+            concrete_endpoint_path = _normalise_endpoint_path(concrete_endpoint)
+            if (
+                _ledger_covers_cell(covered_ledger_cells, endpoint_path, vuln_class)
+                or _ledger_covers_cell(covered_ledger_cells, concrete_endpoint_path, vuln_class)
+            ):
                 continue
             if defer_role_ranked and _ranked_surface_context_prereq(state, item, case_state):
                 deferred_role_ranked += 1

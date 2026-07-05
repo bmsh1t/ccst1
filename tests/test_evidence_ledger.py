@@ -153,6 +153,34 @@ def test_post_record_is_not_state_changing_by_method_alone(tmp_path):
     assert not any(row["redline_required"] for row in summary["actor_matrix"]["gaps"])
 
 
+def test_summary_closed_cells_include_older_non_recent_entries(tmp_path):
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/accounts/42",
+        vuln_class="IDOR",
+        actor="peer",
+        object_scope="other",
+        variant="id_swap",
+        result="tested_finding",
+    )
+    for index in range(6):
+        record_entry(
+            tmp_path,
+            target="target.com",
+            endpoint=f"/api/noise/{index}",
+            vuln_class="Authz",
+            result="tested_clean",
+        )
+
+    summary = build_summary(tmp_path, target="target.com")
+
+    assert not any(entry.get("endpoint") == "/api/accounts/42" for entry in summary["recent_entries"])
+    closed = next(cell for cell in summary["closed_cells"] if cell["endpoint"] == "/api/accounts/42")
+    assert closed["vuln_class"] == "IDOR"
+    assert closed["result"] == "tested_finding"
+
+
 def test_invalid_alias_error_lists_accepted_input_tokens(tmp_path):
     with pytest.raises(ValueError) as exc:
         record_entry(

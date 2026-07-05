@@ -42,6 +42,7 @@ RESULTS = (
     "not_applicable",
 )
 COVERING_RESULTS = {"signal", "candidate", "tested_clean", "tested_finding", "dead_end"}
+CLOSED_CELL_RESULTS = {"tested_clean", "tested_finding", "dead_end", "not_applicable"}
 
 ACTOR_ALIASES = {
     "anonymous": "anonymous",
@@ -519,6 +520,23 @@ def build_summary(
         if entry.get("state_changing") and not entry.get("redline_checked"):
             redline_unchecked += 1
 
+    closed_by_key: dict[tuple[str, str], dict] = {}
+    for entry in entries:
+        result = str(entry.get("result") or "")
+        if result not in CLOSED_CELL_RESULTS:
+            continue
+        endpoint = _canonicalize_endpoint(str(entry.get("endpoint") or entry.get("raw_endpoint") or ""))
+        vuln_class = str(entry.get("vuln_class") or "").strip()
+        if not endpoint or not vuln_class:
+            continue
+        closed_by_key[(endpoint, vuln_class)] = {
+            "endpoint": endpoint,
+            "vuln_class": vuln_class,
+            "result": result,
+            "ts": str(entry.get("ts") or ""),
+            "evidence_ref": str(entry.get("evidence_ref") or ""),
+        }
+
     return {
         "target": resolved_target,
         "path": str(path),
@@ -526,6 +544,7 @@ def build_summary(
         "entry_count": len(entries),
         "result_counts": counts,
         "redline_unchecked_count": redline_unchecked,
+        "closed_cells": list(closed_by_key.values()),
         "recent_entries": entries[-5:],
         "actor_matrix": {
             "endpoint_count": len(endpoints),

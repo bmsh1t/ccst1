@@ -1260,6 +1260,46 @@ def test_ranked_surface_placeholder_object_uses_case_state_object():
     assert "/rest/basket/NaN" not in skeleton
 
 
+def test_ranked_surface_placeholder_object_skips_when_concrete_endpoint_covered():
+    url = "https://app.target.com/rest/basket/NaN"
+    case_state = {
+        "actors": 2,
+        "sessions": 2,
+        "objects": 1,
+        "object_samples": [
+            {
+                "object_ref": "basket_6",
+                "type": "basket",
+                "object_id": "6",
+                "endpoint": "https://app.target.com/rest/basket/6",
+            }
+        ],
+    }
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [{"url": url, "suggested": "baseline authz"}],
+            "surface": {"p1": [{"url": url, "suggested": "baseline authz"}], "workflow_leads": []},
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={
+            "recent_entries": [
+                {
+                    "endpoint": "/rest/basket/6",
+                    "vuln_class": "IDOR",
+                    "result": "tested_finding",
+                }
+            ]
+        },
+        case_state=case_state,
+    )
+
+    assert not any(url in item for item in proposals)
+
+
 def test_ranked_surface_spa_page_route_uses_browser_state_first_with_case_state_ready():
     url = "https://app.target.com/orders"
     proposals = _next_proposals(
