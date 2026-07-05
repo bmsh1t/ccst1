@@ -531,11 +531,36 @@ def _case_state_seed_proposal(seed: dict) -> str:
     backlog = seed.get("suggested_backlog") if isinstance(seed.get("suggested_backlog"), list) else []
     if not objects and not backlog:
         return ""
-    first_object = objects[0] if objects and isinstance(objects[0], dict) else {}
-    first_backlog = backlog[0] if backlog and isinstance(backlog[0], dict) else {}
+    selected_index = 0
+    for index, item in enumerate(backlog):
+        if not isinstance(item, dict):
+            continue
+        missing = {str(value).strip().lower() for value in item.get("missing") or []}
+        if "object endpoint" not in missing:
+            selected_index = index
+            break
+    first_object = objects[selected_index] if selected_index < len(objects) and isinstance(objects[selected_index], dict) else {}
+    first_backlog = backlog[selected_index] if selected_index < len(backlog) and isinstance(backlog[selected_index], dict) else {}
     target = str(seed.get("target") or "").strip()
     command = f"python3 tools/case_state_seed.py --target {_quote(target)} --json" if target else "python3 tools/case_state_seed.py --target <target> --json"
     missing = ", ".join(str(item) for item in (first_backlog.get("missing") or [])[:4])
+    endpoint = str(first_object.get("endpoint") or "").strip()
+    if "object endpoint" in {part.strip().lower() for part in (first_backlog.get("missing") or [])}:
+        return (
+            "Case-state endpoint discovery lead: Found object candidate {object_ref} "
+            "type={object_type} endpoint=<missing>. Runner: {runner}. "
+            "Missing evidence: {missing}. Next action: identify a concrete "
+            "object-specific endpoint from browser XHR, source routes, or MCP "
+            "observations before adding IDOR backlog. Seed command: {command}. "
+            "Stop condition: no endpoint can be tied to the object ID without "
+            "substring or collection-only guessing."
+        ).format(
+            object_ref=first_object.get("object_ref", "-"),
+            object_type=first_object.get("type", "-"),
+            runner=first_backlog.get("runner", "idor-actor-pair"),
+            missing=missing or "object endpoint",
+            command=command,
+        )
     return (
         "Case-state seed opportunity: Found object candidate {object_ref} "
         "type={object_type} endpoint={endpoint}. Runner: {runner}. "
@@ -545,7 +570,7 @@ def _case_state_seed_proposal(seed: dict) -> str:
     ).format(
         object_ref=first_object.get("object_ref", "-"),
         object_type=first_object.get("type", "-"),
-        endpoint=first_object.get("endpoint", "-"),
+        endpoint=endpoint or "-",
         runner=first_backlog.get("runner", "idor-actor-pair"),
         missing=missing or "review required",
         command=command,
@@ -1312,6 +1337,8 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         return "case-state-enrichment", 54, "register actor/session/object with tools/target_case_state.py or review tools/case_state_seed.py"
     if "case-state backlog creation" in lowered:
         return "case-state-backlog-create", 103, "promote the active hypothesis into validation backlog"
+    if "case-state endpoint discovery lead" in lowered:
+        return "case-state-enrichment", 66, "identify concrete object endpoint from browser/source evidence, then update case_state"
     if "case-state seed opportunity" in lowered:
         seed_match = re.search(r"Next:\s+(?P<cmd>python3\s+tools/case_state_seed\.py\s+.*?)(?:\.\s+Review|$)", value, re.I)
         return "case-state-seed", 99, seed_match.group("cmd").strip() if seed_match else "python3 tools/case_state_seed.py --target <target> --json"
@@ -1437,6 +1464,30 @@ def _extract_action_metadata(text: str) -> dict:
             ],
         })
         command_match = re.search(r"Next:\s+(?P<cmd>python3\s+tools/case_state_seed\.py\s+.*?)(?:\.\s+Review|$)", value, re.I)
+        if command_match:
+            metadata["seed_command"] = command_match.group("cmd").strip()
+        return metadata
+
+    endpoint_seed_match = re.search(
+        r"Case-state endpoint discovery lead:\s+Found object candidate\s+(?P<object_ref>\S+)\s+"
+        r"type=(?P<object_type>\S+)\s+endpoint=(?P<endpoint>\S+)\.\s+"
+        r"Runner:\s+(?P<runner>\S+)\.\s+Missing evidence:\s+(?P<missing>.*?)(?:\.\s+Next action:|$)",
+        value,
+        re.I,
+    )
+    if endpoint_seed_match:
+        metadata.update({
+            "object_ref": endpoint_seed_match.group("object_ref"),
+            "object_type": endpoint_seed_match.group("object_type"),
+            "endpoint": endpoint_seed_match.group("endpoint"),
+            "runner": endpoint_seed_match.group("runner"),
+            "missing_evidence": [
+                part.strip()
+                for part in endpoint_seed_match.group("missing").split(",")
+                if part.strip() and part.strip() != "review required"
+            ],
+        })
+        command_match = re.search(r"Seed command:\s+(?P<cmd>python3\s+tools/case_state_seed\.py\s+.*?)(?:\.\s+Stop condition:|$)", value, re.I)
         if command_match:
             metadata["seed_command"] = command_match.group("cmd").strip()
         return metadata

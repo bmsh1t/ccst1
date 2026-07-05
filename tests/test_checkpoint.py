@@ -796,6 +796,49 @@ def test_checkpoint_surfaces_case_state_seed_opportunity_from_object_endpoint(tm
     assert "tools/case_state_seed.py" in checkpoint["recommended_executable_action"]["command_hint"]
 
 
+def test_checkpoint_demotes_endpointless_case_state_seed_to_enrichment(tmp_path):
+    _seed_recon(tmp_path, "target.com", [
+        "https://api.target.com/rest/languages",
+    ])
+    add_actor(tmp_path, "target.com", actor="user_a", role="user")
+    add_actor(tmp_path, "target.com", actor="user_b", role="user")
+    add_session(
+        tmp_path,
+        "target.com",
+        session="sess_a",
+        actor="user_a",
+        kind="bearer",
+        header_value="Bearer owner",
+    )
+    add_session(
+        tmp_path,
+        "target.com",
+        session="sess_b",
+        actor="user_b",
+        kind="bearer",
+        header_value="Bearer peer",
+    )
+    browser_dir = tmp_path / "recon" / "target.com" / "browser"
+    browser_dir.mkdir(parents=True)
+    (browser_dir / "object_probe.json").write_text(
+        json.dumps({"addressId": 7}),
+        encoding="utf-8",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+    seed_action = next(
+        item for item in checkpoint["next_action_queue"]
+        if item.get("metadata", {}).get("object_ref") == "address_7"
+    )
+
+    assert checkpoint["case_state_seed"]["status"] == "suggestions"
+    assert seed_action["type"] == "case-state-enrichment"
+    assert seed_action["priority"] < 70
+    assert seed_action["metadata"]["missing_evidence"] == ["object endpoint"]
+    assert checkpoint["recommended_executable_action"]["type"] != "case-state-seed"
+    assert "endpoint discovery lead" in seed_action["action"]
+
+
 def test_checkpoint_queues_cross_evidence_convergence(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/admin/export?order_id=42",
