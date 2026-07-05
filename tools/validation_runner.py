@@ -1148,12 +1148,12 @@ def _role_replay_material_diff(diff: dict[str, Any]) -> bool:
         return True
     if changed.get("json_count") or changed.get("json_fields"):
         return True
-    try:
-        body_length = details.get("body_length") if isinstance(details.get("body_length"), dict) else {}
-        length_delta = abs(int(body_length.get("delta", 0) or 0))
-    except (TypeError, ValueError):
-        length_delta = 0
-    return length_delta >= 32
+    # Length-only differences are common for nonce/CAPTCHA/randomized SVG,
+    # timestamps, personalized copy, compression, and other dynamic-but-equivalent
+    # responses. Without a status, JSON count, or field-shape delta, this is not
+    # strong enough to create an Authz candidate; Claude can still inspect the
+    # raw bundle if another signal makes the surface interesting.
+    return False
 
 
 AUTHENTICATED_COLLECTION_IDENTITY_FIELDS = {

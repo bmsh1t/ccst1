@@ -125,6 +125,43 @@ def test_surface_review_does_not_preempt_report_when_no_substantive_work(tmp_pat
     assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "report"
 
 
+def test_surface_review_with_runner_replay_preempts_report(tmp_path):
+    checkpoint = {
+        "next_action_queue": [
+            {
+                "id": "R1",
+                "priority": 90,
+                "type": "report",
+                "action": "Draft report for validated finding.",
+                "command_hint": "/report",
+                "redline_required": False,
+            },
+            {
+                "id": "S1",
+                "priority": 70,
+                "type": "surface-review",
+                "action": "Review surface candidate https://api.target.com/rest/user.",
+                "command_hint": "AI reviews surface evidence, then chooses the exact lane",
+                "redline_required": False,
+                "metadata": {
+                    "endpoint": "/rest/user",
+                    "replay_draft": (
+                        "Run authenticated role replay: "
+                        "python3 tools/validation_runner.py authz-role-replay "
+                        "--target target.com --url https://api.target.com/rest/user"
+                    ),
+                },
+            },
+        ]
+    }
+
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
+    selected = select_next_action(load_queue(tmp_path, "target.com"))
+
+    assert selected["type"] == "surface-review"
+    assert selected["metadata"]["endpoint"] == "/rest/user"
+
+
 def test_legacy_ranked_surface_without_runner_is_advisory(tmp_path):
     checkpoint = {
         "next_action_queue": [

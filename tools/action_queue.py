@@ -201,7 +201,14 @@ def _is_advisory_review_action(action: dict) -> bool:
     """
     action_type = str(action.get("type") or "")
     if action_type in ADVISORY_REVIEW_ACTION_TYPES:
-        return True
+        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+        replay_draft = str(metadata.get("replay_draft") or "")
+        command_hint = str(action.get("command_hint") or "")
+        # AI-first surface review stays advisory until checkpoint has converted
+        # it into a concrete replay draft. Once it contains an exact runner
+        # command, it is executable validation work and should not be preempted
+        # by report closure actions.
+        return "validation_runner.py" not in " ".join([replay_draft, command_hint])
     if action_type != "ranked-surface":
         return False
     command_hint = str(action.get("command_hint") or "")

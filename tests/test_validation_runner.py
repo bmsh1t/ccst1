@@ -317,6 +317,37 @@ def test_authz_role_replay_single_authenticated_profile_is_clean(monkeypatch, tm
     assert summary["authenticated_exposure"]["candidate"] is False
 
 
+def test_authz_role_replay_same_shape_dynamic_body_length_is_clean(monkeypatch, tmp_path):
+    bodies = iter([
+        _fake_response("https://target.test/rest/captcha", status=401, body="login required"),
+        _fake_response(
+            "https://target.test/rest/captcha",
+            status=200,
+            body='{"image":"<svg>owner-random-long</svg>","answer":"123","UserId":1}',
+        ),
+        _fake_response(
+            "https://target.test/rest/captcha",
+            status=200,
+            body='{"image":"<svg>peer-random-even-longer-value</svg>","answer":"456","UserId":2}',
+        ),
+    ])
+
+    monkeypatch.setattr(validation_runner, "request_once", lambda **kwargs: next(bodies))
+
+    summary = validation_runner.run_authz_role_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/rest/captcha",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        finding_id="AUTHZ-ROLE-DYNAMIC-SAME-SHAPE",
+    )
+
+    assert summary["result"] == "tested_clean"
+    assert summary["runs"][0]["owner_peer_material_diff"] is False
+    assert summary["runs"][0]["owner_peer_diff"]["diff"]["changed"]["body_length"] is True
+
+
 def test_authz_role_replay_owner_failure_overrides_rubric_to_dead_end(monkeypatch, tmp_path):
     monkeypatch.setattr(
         validation_runner,
