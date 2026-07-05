@@ -2051,6 +2051,9 @@ def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[d
                     emitted_candidate_keys.add(key)
                 continue
             filtered.append(item)
+    for key, candidate in active_candidate_by_key.items():
+        if key not in emitted_candidate_keys:
+            filtered.append(candidate)
     return filtered
 
 

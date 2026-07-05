@@ -1197,9 +1197,10 @@ def test_idor_actor_pair_from_case_state_resolves_multi_header_sessions(tmp_path
         repo_root=tmp_path,
         target=target,
         object_ref="order_123",
-        peer_actor="user_b",
     )
 
+    assert resolved["case_state_ref"]["owner_actor"] == "user_a"
+    assert resolved["case_state_ref"]["peer_actor"] == "user_b"
     assert resolved["owner_headers"] == {
         "Cookie": "sid=owner",
         "X-CSRF-Token": "csrf-owner",
@@ -1232,7 +1233,7 @@ def test_idor_actor_pair_from_case_state_requires_peer_session(tmp_path):
         private_marker="victim@example.test",
     )
 
-    with pytest.raises(ValueError, match="peer_actor is required"):
+    with pytest.raises(ValueError, match="at least two case_state actor sessions"):
         validation_runner.resolve_idor_actor_pair_from_case_state(
             repo_root=tmp_path,
             target=target,

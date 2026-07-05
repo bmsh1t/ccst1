@@ -1008,10 +1008,17 @@ def resolve_idor_actor_pair_from_case_state(
 
     owner = owner_actor or str(backlog.get("owner_actor") or obj.get("owner_actor") or "")
     peer = peer_actor or str(backlog.get("peer_actor") or "")
+    if not peer:
+        # Authz role replay already infers the peer actor when case_state has a
+        # clear two-session setup. IDOR object replay should behave the same:
+        # object_ref provides the owner, and the remaining session-backed actor
+        # is the natural peer candidate. 这只是解析运行态上下文，不替 AI 判断结果。
+        actors_with_sessions = _case_state_actor_ids_with_sessions(state)
+        peer = next((actor for actor in actors_with_sessions if actor != owner), "")
     if not owner:
         raise ValueError(f"case_state owner actor missing for object_ref: {ref}")
     if not peer:
-        raise ValueError("peer_actor is required when using --from-case-state")
+        raise ValueError("peer_actor is required or at least two case_state actor sessions must exist")
     if owner == peer:
         raise ValueError("owner_actor and peer_actor must differ when using --from-case-state")
     if owner not in (state.get("actors") or {}):
