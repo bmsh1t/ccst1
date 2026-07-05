@@ -114,6 +114,42 @@ def test_case_state_seed_extracts_objects_from_browser_json_artifacts(tmp_path):
     assert any("--private-marker" in command for command in payload["commands"])
 
 
+def test_case_state_seed_reuses_existing_custom_actor_sessions(tmp_path):
+    target = "target.com"
+    target_case_state.add_actor(tmp_path, target, actor="owner_account", role="user")
+    target_case_state.add_actor(tmp_path, target, actor="peer_account", role="user")
+    target_case_state.add_session(
+        tmp_path,
+        target,
+        session="owner_session",
+        actor="owner_account",
+        kind="bearer",
+        header_value="Bearer owner",
+    )
+    target_case_state.add_session(
+        tmp_path,
+        target,
+        session="peer_session",
+        actor="peer_account",
+        kind="bearer",
+        header_value="Bearer peer",
+    )
+    browser_dir = tmp_path / "recon" / "target.com" / "browser"
+    browser_dir.mkdir(parents=True)
+    (browser_dir / "object_probe.json").write_text(
+        json.dumps({"addressId": 7}),
+        encoding="utf-8",
+    )
+
+    payload = case_state_seed.build_case_state_seed(tmp_path, target)
+
+    assert payload["suggested_actors"] == []
+    assert payload["suggested_backlog"][0]["owner_actor"] == "owner_account"
+    assert payload["suggested_backlog"][0]["peer_actor"] == "peer_account"
+    assert payload["suggested_backlog"][0]["missing"] == ["object endpoint"]
+    assert any("--owner-actor owner_account" in command for command in payload["commands"])
+
+
 def test_case_state_seed_ignores_socket_session_ids(tmp_path):
     target = "target.com"
     browser_dir = tmp_path / "recon" / "target.com" / "browser"

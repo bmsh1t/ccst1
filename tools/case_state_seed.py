@@ -538,12 +538,46 @@ def _actor_suggestions(state: dict[str, Any], has_object_candidates: bool) -> li
     if not has_object_candidates:
         return []
     existing = _existing_actor_ids(state)
+    if len(existing) >= 2:
+        return []
     suggestions = []
-    if "user_a" not in existing:
+    if not existing:
         suggestions.append({"actor": "user_a", "role": "user", "label": "owner account candidate"})
-    if "user_b" not in existing:
+        suggestions.append({"actor": "user_b", "role": "user", "label": "peer account candidate"})
+    elif "user_a" in existing and "user_b" not in existing:
+        suggestions.append({"actor": "user_b", "role": "user", "label": "peer account candidate"})
+    elif "user_b" in existing and "user_a" not in existing:
+        suggestions.append({"actor": "user_a", "role": "user", "label": "owner account candidate"})
+    else:
         suggestions.append({"actor": "user_b", "role": "user", "label": "peer account candidate"})
     return suggestions
+
+
+def _choose_actor_pair(
+    state: dict[str, Any],
+    actor_suggestions: list[dict[str, str]],
+) -> tuple[str, str]:
+    """Choose owner/peer actors from real target memory before defaults.
+
+    Case-state suggestions should extend the target's existing actor matrix.
+    Hard-coding `user_a/user_b` when custom actors already exist creates noisy
+    duplicate setup commands and hides that usable sessions are already present.
+    """
+    existing = sorted(_existing_actor_ids(state))
+    session_backed = sorted(_existing_session_actors(state))
+    suggested = [str(item.get("actor") or "") for item in actor_suggestions]
+    candidates = [*session_backed, *existing, *suggested]
+    ordered: list[str] = []
+    for actor in candidates:
+        if actor and actor not in ordered:
+            ordered.append(actor)
+    owner_actor = ordered[0] if ordered else ""
+    peer_actor = ""
+    for actor in ordered[1:]:
+        if actor != owner_actor:
+            peer_actor = actor
+            break
+    return owner_actor, peer_actor
 
 
 def _actor_command(target: str, actor: dict[str, str]) -> str:
@@ -640,8 +674,7 @@ def build_case_state_seed(repo_root: str | Path, target: str, *, limit: int = 8)
     actor_suggestions = _actor_suggestions(state, bool(object_candidates))
     existing_actors = _existing_actor_ids(state)
     session_actors = _existing_session_actors(state)
-    owner_actor = "user_a" if ("user_a" in existing_actors or actor_suggestions) else ""
-    peer_actor = "user_b" if ("user_b" in existing_actors or actor_suggestions) else ""
+    owner_actor, peer_actor = _choose_actor_pair(state, actor_suggestions)
     existing_backlogs = _existing_backlog_keys(state)
 
     backlog_candidates = []
