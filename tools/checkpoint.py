@@ -2002,6 +2002,22 @@ def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[d
     except Exception:  # pragma: no cover - checkpoint should stay best-effort
         return items
 
+    def action_identities(action: dict) -> set[str]:
+        """Return stable finding/endpoint identities for stale candidate suppression."""
+        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+        identities: set[str] = set()
+        finding_id = str(metadata.get("finding_id") or "").strip().lower()
+        if finding_id:
+            identities.add(f"finding:{finding_id}")
+        for key in ("endpoint", "url"):
+            value = str(metadata.get(key) or "").strip()
+            if not value:
+                continue
+            endpoint = _normalise_endpoint_path(value).rstrip("/")
+            if endpoint:
+                identities.add(f"endpoint:{endpoint.lower()}")
+        return identities
+
     def from_existing_action(action: dict) -> dict:
         """把持久队列里的候选动作投影回 checkpoint item。"""
         item = {
@@ -2025,12 +2041,21 @@ def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[d
         if isinstance(action, dict)
         and str(action.get("status") or "") in ACTION_QUEUE_FINAL_STATUSES
     }
+    final_identities: set[str] = set()
+    for action in existing.get("actions", []):
+        if not isinstance(action, dict):
+            continue
+        if str(action.get("status") or "") not in ACTION_QUEUE_FINAL_STATUSES:
+            continue
+        final_identities.update(action_identities(action))
+
     active_candidate_by_key = {
         str(action.get("dedupe_key") or action_queue_dedupe_key(action)): from_existing_action(action)
         for action in existing.get("actions", [])
         if isinstance(action, dict)
         and str(action.get("status") or "") == "candidate"
         and str(action.get("type") or "") == "candidate-evidence-gap"
+        and not (action_identities(action) & final_identities)
     }
     if not final_keys and not active_candidate_by_key:
         return items

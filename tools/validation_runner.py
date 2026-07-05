@@ -860,6 +860,30 @@ def _is_denied_status(status: int) -> bool:
     return int(status or 0) in {401, 403, 404}
 
 
+def _is_blocked_or_denied_response(status: int, body: str = "") -> bool:
+    if _is_denied_status(status):
+        return True
+    text = str(body or "").lower()
+    return int(status or 0) == 400 and any(
+        marker in text
+        for marker in (
+            "malicious activity detected",
+            "unauthorized",
+            "forbidden",
+            "not allowed",
+            "access denied",
+        )
+    )
+
+
+def _object_specific_url(url: str) -> bool:
+    path = urllib.parse.urlparse(str(url or "")).path.strip("/")
+    if not path:
+        return False
+    last = path.rsplit("/", 1)[-1]
+    return bool(re.fullmatch(r"(?:\d+|[0-9a-f]{8,}|[0-9a-f-]{12,})", last, re.I))
+
+
 def _actor_context_differs(
     *,
     url: str,
@@ -1094,6 +1118,9 @@ def resolve_authz_role_replay_from_case_state(
         raise ValueError("owner_actor and peer_actor must differ")
     owner_session_id, owner_session_header = _case_state_session_header(state, owner)
     peer_session_id, peer_session_header = _case_state_session_header(state, peer)
+    actors = state.get("actors") if isinstance(state.get("actors"), dict) else {}
+    owner_info = actors.get(owner) if isinstance(actors.get(owner), dict) else {}
+    peer_info = actors.get(peer) if isinstance(actors.get(peer), dict) else {}
     return {
         "owner_actor": owner,
         "peer_actor": peer,
@@ -1102,6 +1129,8 @@ def resolve_authz_role_replay_from_case_state(
         "case_state_ref": {
             "owner_actor": owner,
             "peer_actor": peer,
+            "owner_role": str(owner_info.get("role") or ""),
+            "peer_role": str(peer_info.get("role") or ""),
             "owner_session_id": owner_session_id,
             "peer_session_id": peer_session_id,
         },
@@ -1317,11 +1346,80 @@ AUTHENTICATED_COLLECTION_SECRET_FIELDS = {
     "recoverytoken",
     "secret",
     "token",
+    "totpsecret",
+}
+
+LOW_PRIV_AUTHZ_ROLES = {"user", "low_role"}
+PRIVILEGED_ROLE_VALUES = {"admin", "administrator", "owner", "superadmin", "superuser", "root"}
+AUTH_COLLECTION_PATH_HINTS = {
+    "account",
+    "accounts",
+    "admin",
+    "auth",
+    "authentication",
+    "authentication-details",
+    "members",
+    "roles",
+    "user",
+    "users",
 }
 
 
 def _normalized_json_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _normalized_role_value(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _low_priv_case_state_context(case_state_ref: dict[str, Any] | None) -> bool:
+    if not isinstance(case_state_ref, dict):
+        return False
+    owner_role = str(case_state_ref.get("owner_role") or "").strip().lower()
+    peer_role = str(case_state_ref.get("peer_role") or "").strip().lower()
+    if not owner_role or not peer_role:
+        return False
+    return owner_role in LOW_PRIV_AUTHZ_ROLES and peer_role in LOW_PRIV_AUTHZ_ROLES
+
+
+def _auth_collection_path_signal(url: str) -> bool:
+    path = urllib.parse.urlparse(str(url or "")).path.lower()
+    segments = {segment for segment in re.split(r"[/._-]+", path) if segment}
+    # 同时保留完整 path token，覆盖 authentication-details 这类复合命名。
+    segments.add(path.strip("/"))
+    return bool(segments & AUTH_COLLECTION_PATH_HINTS)
+
+
+def _privileged_record_count(items: list[dict[str, Any]]) -> int:
+    count = 0
+    for item in items[:50]:
+        for key, value in item.items():
+            normalized_key = _normalized_json_key(key)
+            if normalized_key in {"role", "roles"}:
+                if isinstance(value, list):
+                    values = {_normalized_role_value(entry) for entry in value}
+                else:
+                    values = {_normalized_role_value(value)}
+                if values & PRIVILEGED_ROLE_VALUES:
+                    count += 1
+                    break
+            if normalized_key in {"isadmin", "admin"} and str(value).lower() in {"true", "1", "yes"}:
+                count += 1
+                break
+    return count
+
+
+def _distinct_identity_count(items: list[dict[str, Any]]) -> int:
+    values: set[str] = set()
+    for item in items[:50]:
+        for key, value in item.items():
+            normalized_key = _normalized_json_key(key)
+            if normalized_key in {"email", "username", "userid", "id"}:
+                clean = str(value or "").strip().lower()
+                if clean:
+                    values.add(f"{normalized_key}:{clean}")
+    return len(values)
 
 
 def _json_data_node(value: Any) -> Any:
@@ -1340,13 +1438,20 @@ def _collection_dict_items(value: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _authenticated_broad_exposure_evidence(status: int, body: str) -> dict[str, Any]:
+def _authenticated_broad_exposure_evidence(
+    status: int,
+    body: str,
+    *,
+    url: str = "",
+    case_state_ref: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Detect authenticated-only broad data exposure candidates.
 
-    这是 role-aware replay 的保守候选信号，不直接判定漏洞。只有当匿名不可读、
-    登录态可读、响应是集合型 JSON，且集合字段体现身份/权限/账号敏感语义时，
-    才返回 candidate。这样可覆盖“低权限用户能枚举用户目录/角色/账号元数据”的
-    实战线索，同时避免把普通 public catalog 当成 authz finding。
+    默认只给 role-aware replay 提供保守候选信号。只有当 case_state 明确说明
+    owner/peer 都是低权限角色，且低权限会话能读取 broad account/auth collection
+    中的 privileged records 或 auth-secret-shaped 字段时，才给 candidate-ready
+    信号。这样可覆盖“普通用户能枚举用户目录/角色/账号元数据”的实战线索，
+    同时避免把普通 public catalog 或角色未知的目录页直接当成 finding。
     """
     evidence = {
         "candidate": False,
@@ -1356,6 +1461,12 @@ def _authenticated_broad_exposure_evidence(status: int, body: str) -> dict[str, 
         "identity_fields": [],
         "authz_fields": [],
         "secret_fields": [],
+        "privileged_record_count": 0,
+        "distinct_identity_count": 0,
+        "low_privileged_context": False,
+        "auth_collection_path": False,
+        "candidate_ready": False,
+        "policy_inference": "",
     }
     if not _is_success_status(status):
         evidence["reason"] = "authenticated response was not successful"
@@ -1371,6 +1482,10 @@ def _authenticated_broad_exposure_evidence(status: int, body: str) -> dict[str, 
     identity_hits = sorted(set(fields) & AUTHENTICATED_COLLECTION_IDENTITY_FIELDS)
     authz_hits = sorted(set(fields) & AUTHENTICATED_COLLECTION_AUTHZ_FIELDS)
     secret_hits = sorted(set(fields) & AUTHENTICATED_COLLECTION_SECRET_FIELDS)
+    privileged_count = _privileged_record_count(items)
+    distinct_identity_count = _distinct_identity_count(items)
+    low_privileged_context = _low_priv_case_state_context(case_state_ref)
+    auth_collection_path = _auth_collection_path_signal(url)
 
     evidence.update({
         "item_count": len(items),
@@ -1378,6 +1493,10 @@ def _authenticated_broad_exposure_evidence(status: int, body: str) -> dict[str, 
         "identity_fields": identity_hits,
         "authz_fields": authz_hits,
         "secret_fields": secret_hits,
+        "privileged_record_count": privileged_count,
+        "distinct_identity_count": distinct_identity_count,
+        "low_privileged_context": low_privileged_context,
+        "auth_collection_path": auth_collection_path,
     })
 
     has_sensitive_account_shape = bool(secret_hits) or (
@@ -1389,6 +1508,17 @@ def _authenticated_broad_exposure_evidence(status: int, body: str) -> dict[str, 
             "authenticated-only collection exposes account/identity/authz-shaped fields; "
             "requires policy and role expectation review"
         )
+        if (
+            low_privileged_context
+            and distinct_identity_count >= 2
+            and auth_collection_path
+            and (privileged_count > 0 or bool(secret_hits))
+        ):
+            evidence["candidate_ready"] = True
+            evidence["policy_inference"] = (
+                "low-privileged authenticated actors can read a broad account/auth collection "
+                "containing privileged records or auth-secret-shaped fields"
+            )
     else:
         evidence["reason"] = "no broad authenticated account/identity/authz collection shape"
     return evidence
@@ -1484,7 +1614,12 @@ def run_authz_role_replay(
             )
             if anonymous is not None else {}
         )
-        authenticated_exposure = _authenticated_broad_exposure_evidence(owner["status"], owner["body"])
+        authenticated_exposure = _authenticated_broad_exposure_evidence(
+            owner["status"],
+            owner["body"],
+            url=url,
+            case_state_ref=case_state_ref,
+        )
         authenticated_exposure_checks.append(authenticated_exposure)
         runs.append({
             "iteration": idx,
@@ -1496,7 +1631,7 @@ def run_authz_role_replay(
             "anonymous_success": _is_success_status(anonymous["status"]) if anonymous is not None else False,
             "owner_success": _is_success_status(owner["status"]),
             "peer_success": _is_success_status(peer["status"]),
-            "peer_denied": _is_denied_status(peer["status"]),
+            "peer_denied": _is_blocked_or_denied_response(peer["status"], peer["body"]),
             "owner_peer_material_diff": _role_replay_material_diff(owner_peer_diff),
             "anonymous_owner_material_diff": _role_replay_material_diff(anonymous_owner_diff) if anonymous_owner_diff else False,
             "authenticated_exposure_candidate": bool(authenticated_exposure.get("candidate")),
@@ -1522,6 +1657,8 @@ def run_authz_role_replay(
     )
     owner_success_all = all(bool(run["owner_success"]) for run in runs)
     role_diff_any = any(bool(run["owner_peer_material_diff"]) for run in runs)
+    peer_denied_all = all(bool(run["peer_denied"]) for run in runs)
+    object_specific_peer_denied = _object_specific_url(url) and peer_denied_all
     anonymous_denied_all = include_anonymous and all(
         run["anonymous_status"] is not None and not bool(run["anonymous_success"]) for run in runs
     )
@@ -1531,10 +1668,16 @@ def run_authz_role_replay(
         and all(bool(run["peer_success"]) for run in runs)
         and all(bool(item.get("candidate")) for item in authenticated_exposure_checks)
     )
-    if public_ready:
+    authenticated_exposure_ready = (
+        authenticated_exposure_any
+        and all(bool(item.get("candidate_ready")) for item in authenticated_exposure_checks)
+    )
+    if public_ready or authenticated_exposure_ready:
         result = "tested_finding"
     elif not owner_success_all:
         result = "dead_end"
+    elif object_specific_peer_denied and not authenticated_exposure_any:
+        result = "tested_clean"
     elif role_diff_any or authenticated_exposure_any:
         result = "candidate"
     else:
@@ -1542,9 +1685,14 @@ def run_authz_role_replay(
     candidate_ready = result == "tested_finding"
     authenticated_exposure_summary = {
         "candidate": bool(authenticated_exposure_any),
+        "candidate_ready": bool(authenticated_exposure_ready),
         "checks": authenticated_exposure_checks,
         "reason": (
             authenticated_exposure_checks[0].get("reason", "")
+            if authenticated_exposure_checks else ""
+        ),
+        "policy_inference": (
+            authenticated_exposure_checks[0].get("policy_inference", "")
             if authenticated_exposure_checks else ""
         ),
     }
@@ -1593,7 +1741,28 @@ def run_authz_role_replay(
             "next_actions": [
                 "No role-specific difference on this exact surface; pivot to object-specific or state-changing workflow evidence."
             ],
-            "summary": "authz:tested-clean score=0 missing=role/object/body-backed authorization delta",
+            "summary": (
+                "authz:tested-clean object-specific peer denied"
+                if object_specific_peer_denied
+                else "authz:tested-clean score=0 missing=role/object/body-backed authorization delta"
+            ),
+        })
+    elif result == "tested_finding" and authenticated_exposure_ready:
+        first_check = authenticated_exposure_checks[0] if authenticated_exposure_checks else {}
+        rubric.update({
+            "status": "candidate-ready",
+            "ready": True,
+            "score": 95,
+            "missing": [],
+            "missing_labels": [],
+            "next_actions": [],
+            "summary": (
+                "authz:candidate-ready low-privileged broad authenticated collection "
+                f"items={first_check.get('item_count', 0)} "
+                f"privileged_records={first_check.get('privileged_record_count', 0)} "
+                f"identity_count={first_check.get('distinct_identity_count', 0)} "
+                f"secret={first_check.get('secret_fields', [])}"
+            ),
         })
     elif result == "candidate" and authenticated_exposure_any and not role_diff_any:
         first_check = authenticated_exposure_checks[0] if authenticated_exposure_checks else {}
@@ -1654,6 +1823,7 @@ def run_authz_role_replay(
         "markers": markers,
         "marker_sources": public_marker_sources,
         "authenticated_exposure": authenticated_exposure_summary,
+        "object_specific_peer_denied": bool(object_specific_peer_denied),
         "case_state_ref": case_state_ref or {},
         "repeat": repeat,
         "runs": runs,

@@ -11,6 +11,7 @@ import argparse
 import json
 import re
 import sys
+import urllib.parse
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -132,6 +133,52 @@ def _dedupe_key(action: dict) -> str:
     ]
     raw = " ".join(_compact_text(part, limit=300).lower() for part in parts if part)
     return re.sub(r"[^a-z0-9:/?&._=-]+", " ", raw).strip()
+
+
+def _normalise_identity_endpoint(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urllib.parse.urlparse(raw)
+    endpoint = parsed.path if parsed.scheme or parsed.netloc else raw.split("?", 1)[0]
+    endpoint = re.sub(r"/+", "/", endpoint or "/")
+    if not endpoint.startswith("/"):
+        endpoint = "/" + endpoint
+    return endpoint.rstrip("/").lower() or "/"
+
+
+def _action_identities(action: dict) -> set[str]:
+    """Stable identities used to suppress stale duplicate candidate actions."""
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    identities: set[str] = set()
+    finding_id = str(metadata.get("finding_id") or "").strip().lower()
+    if finding_id:
+        identities.add(f"finding:{finding_id}")
+    for key in ("endpoint", "url"):
+        endpoint = _normalise_identity_endpoint(str(metadata.get(key) or ""))
+        if endpoint:
+            identities.add(f"endpoint:{endpoint}")
+    return identities
+
+
+def _final_action_identities(queue: dict) -> set[str]:
+    identities: set[str] = set()
+    for action in queue.get("actions", []):
+        if not isinstance(action, dict):
+            continue
+        if str(action.get("status") or "") not in FINAL_STATUSES:
+            continue
+        identities.update(_action_identities(action))
+    return identities
+
+
+def _is_superseded_candidate(action: dict, final_identities: set[str]) -> bool:
+    if str(action.get("status") or "") != "candidate":
+        return False
+    if str(action.get("type") or "") != "candidate-evidence-gap":
+        return False
+    identities = _action_identities(action)
+    return bool(identities and identities & final_identities)
 
 
 def _next_id(actions: list[dict]) -> str:
@@ -526,6 +573,33 @@ def _retire_stale_checkpoint_actions(queue: dict, fresh_actions: list[dict]) -> 
     return retired
 
 
+def _retire_superseded_candidate_actions(queue: dict) -> int:
+    """Close candidate evidence gaps already superseded by final evidence.
+
+    Runner sync can validate a surface action whose earlier candidate follow-up
+    was also re-ingested under a different checkpoint projection. Keep the raw
+    history, but stop the stale candidate from steering /autopilot again.
+    """
+    final_identities = _final_action_identities(queue)
+    if not final_identities:
+        return 0
+    retired = 0
+    ts = now_utc()
+    for item in queue.get("actions", []):
+        if not isinstance(item, dict):
+            continue
+        if not _is_superseded_candidate(item, final_identities):
+            continue
+        item["status"] = "n/a"
+        item["updated_at"] = ts
+        item["result"] = (
+            "Retired automatically: this candidate evidence gap is superseded "
+            "by final validation evidence for the same finding or endpoint."
+        )
+        retired += 1
+    return retired
+
+
 def add_manual_action(
     repo_root: Path | str,
     *,
@@ -575,6 +649,7 @@ def ingest_checkpoint(repo_root: Path | str, target: str, *, checkpoint: dict | 
     ]
     stats = upsert_actions(queue, actions)
     stats["retired_stale"] = _retire_stale_checkpoint_actions(queue, actions)
+    stats["retired_superseded"] = _retire_superseded_candidate_actions(queue)
     queue["actions"].sort(key=_action_sort_key)
     path = save_queue(repo_root, target, queue)
     return {
@@ -587,9 +662,11 @@ def ingest_checkpoint(repo_root: Path | str, target: str, *, checkpoint: dict | 
 
 
 def select_next_action(queue: dict) -> dict:
+    final_identities = _final_action_identities(queue)
     candidates = [
         item for item in queue.get("actions", [])
         if isinstance(item, dict) and str(item.get("status") or "queued") in ACTIVE_STATUSES
+        and not _is_superseded_candidate(item, final_identities)
     ]
     if not candidates:
         return {}

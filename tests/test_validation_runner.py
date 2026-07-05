@@ -211,10 +211,49 @@ def test_authz_role_replay_from_case_state_cli_detects_role_candidate(monkeypatc
     assert summary["result"] == "candidate"
     assert summary["case_state_ref"]["owner_actor"] == "user_a"
     assert summary["case_state_ref"]["peer_actor"] == "user_b"
+    assert summary["case_state_ref"]["owner_role"] == "user"
+    assert summary["case_state_ref"]["peer_role"] == "user"
     assert summary["runs"][0]["anonymous_status"] == 401
     assert summary["runs"][0]["owner_status"] == 200
     assert summary["runs"][0]["peer_status"] == 403
     assert (tmp_path / "memory" / "evidence" / _target_key(target) / "ledger.jsonl").is_file()
+
+
+def test_authz_role_replay_object_endpoint_peer_blocked_is_clean(monkeypatch, tmp_path, capsys):
+    target = _build_case_state_for_authz_role(tmp_path)
+
+    def fake_request_once(**kwargs):
+        auth = (kwargs.get("headers") or {}).get("Authorization", "")
+        if auth == "Bearer owner":
+            return _fake_response(
+                kwargs["url"],
+                status=200,
+                body='{"status":"success","data":{"UserId":1,"id":7,"streetAddress":"owner only"}}',
+            )
+        if auth == "Bearer peer":
+            return _fake_response(
+                kwargs["url"],
+                status=400,
+                body='{"status":"error","data":"Malicious activity detected"}',
+            )
+        return _fake_response(kwargs["url"], status=401, body='{"error":"missing auth"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    rc = validation_runner.main([
+        "authz-role-replay",
+        "--target", target,
+        "--repo-root", str(tmp_path),
+        "--url", "https://target.test/api/Addresss/7",
+        "--from-case-state",
+        "--repeat", "1",
+    ])
+
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["result"] == "tested_clean"
+    assert summary["object_specific_peer_denied"] is True
+    assert summary["runs"][0]["peer_denied"] is True
 
 
 def test_authz_role_replay_same_public_catalog_is_clean(monkeypatch, tmp_path):
@@ -284,6 +323,117 @@ def test_authz_role_replay_authenticated_broad_user_collection_is_candidate(monk
     assert "email" in first_check["identity_fields"]
     assert "role" in first_check["authz_fields"]
     assert "authenticated-only broad collection" in summary["evidence_rubric"]["summary"]
+
+
+def test_authz_role_replay_low_privileged_user_collection_is_finding(monkeypatch, tmp_path):
+    target = _build_case_state_for_authz_role(tmp_path)
+    user_collection = json.dumps({
+        "status": "success",
+        "data": [
+            {
+                "id": 1,
+                "email": "admin@example.test",
+                "username": "admin",
+                "role": "admin",
+                "totpSecret": "",
+            },
+            {
+                "id": 2,
+                "email": "user@example.test",
+                "username": "user",
+                "role": "customer",
+                "totpSecret": "",
+            },
+        ],
+    })
+
+    def fake_request_once(**kwargs):
+        if (kwargs.get("headers") or {}).get("Authorization"):
+            return _fake_response(kwargs["url"], status=200, body=user_collection)
+        return _fake_response(kwargs["url"], status=401, body='{"error":"missing auth"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    resolved = validation_runner.resolve_authz_role_replay_from_case_state(
+        repo_root=tmp_path,
+        target=target,
+    )
+    summary = validation_runner.run_authz_role_replay(
+        repo_root=tmp_path,
+        target=target,
+        url="https://target.test/api/Users",
+        owner_headers=resolved["owner_headers"],
+        peer_headers=resolved["peer_headers"],
+        case_state_ref=resolved["case_state_ref"],
+        finding_id="AUTHZ-ROLE-LOW-PRIV-COLLECTION",
+        repeat=2,
+    )
+
+    assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+    assert summary["authenticated_exposure"]["candidate_ready"] is True
+    assert summary["authenticated_exposure"]["policy_inference"]
+    assert summary["evidence_rubric"]["status"] == "candidate-ready"
+    first_check = summary["authenticated_exposure"]["checks"][0]
+    assert first_check["low_privileged_context"] is True
+    assert first_check["privileged_record_count"] == 1
+    assert "totpsecret" in first_check["secret_fields"]
+
+
+def test_authz_role_replay_unknown_role_collection_stays_candidate(monkeypatch, tmp_path):
+    target = "https://target.test"
+    target_case_state.add_actor(tmp_path, target, actor="user_a", role="unknown")
+    target_case_state.add_actor(tmp_path, target, actor="user_b", role="unknown")
+    target_case_state.add_session(
+        tmp_path,
+        target,
+        session="sess_user_a",
+        actor="user_a",
+        kind="bearer",
+        header_value="Bearer owner",
+        validity="valid",
+    )
+    target_case_state.add_session(
+        tmp_path,
+        target,
+        session="sess_user_b",
+        actor="user_b",
+        kind="bearer",
+        header_value="Bearer peer",
+        validity="valid",
+    )
+    user_collection = json.dumps({
+        "status": "success",
+        "data": [
+            {"id": 1, "email": "admin@example.test", "role": "admin", "totpSecret": ""},
+            {"id": 2, "email": "user@example.test", "role": "customer", "totpSecret": ""},
+        ],
+    })
+
+    def fake_request_once(**kwargs):
+        if (kwargs.get("headers") or {}).get("Authorization"):
+            return _fake_response(kwargs["url"], status=200, body=user_collection)
+        return _fake_response(kwargs["url"], status=401, body='{"error":"missing auth"}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    resolved = validation_runner.resolve_authz_role_replay_from_case_state(
+        repo_root=tmp_path,
+        target=target,
+    )
+    summary = validation_runner.run_authz_role_replay(
+        repo_root=tmp_path,
+        target=target,
+        url="https://target.test/api/Users",
+        owner_headers=resolved["owner_headers"],
+        peer_headers=resolved["peer_headers"],
+        case_state_ref=resolved["case_state_ref"],
+        finding_id="AUTHZ-ROLE-UNKNOWN-COLLECTION",
+    )
+
+    assert summary["result"] == "candidate"
+    assert summary["authenticated_exposure"]["candidate"] is True
+    assert summary["authenticated_exposure"]["candidate_ready"] is False
 
 
 def test_authz_role_replay_single_authenticated_profile_is_clean(monkeypatch, tmp_path):

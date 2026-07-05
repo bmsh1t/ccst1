@@ -552,6 +552,112 @@ def test_candidate_evidence_gap_sorts_ahead_of_plain_validation(tmp_path):
     assert select_next_action(queue)["id"] == "AQ-0002"
 
 
+def test_superseded_candidate_gap_does_not_steer_next_action(tmp_path):
+    queue = load_queue(tmp_path, "target.com")
+    queue["actions"] = [
+        {
+            "id": "AQ-0001",
+            "status": "candidate",
+            "priority": 105,
+            "type": "candidate-evidence-gap",
+            "evidence_type": "checkpoint-next-action",
+            "evidence": "Candidate evidence gap for authz-role-replay-api_users.",
+            "next_question": "Fill missing policy evidence.",
+            "action": "Candidate evidence gap for authz-role-replay-api_users.",
+            "command_hint": "fill missing rubric evidence, then /validate",
+            "created_at": "2026-01-01T00:00:00Z",
+            "dedupe_key": "candidate",
+            "metadata": {
+                "endpoint": "/api/users",
+                "finding_id": "authz-role-replay-api_users",
+            },
+        },
+        {
+            "id": "AQ-0002",
+            "status": "validated",
+            "priority": 60,
+            "type": "surface-review",
+            "evidence_type": "checkpoint-next-action",
+            "evidence": "Validated role replay.",
+            "next_question": "done",
+            "action": "Validated role replay.",
+            "command_hint": "",
+            "created_at": "2026-01-01T00:00:01Z",
+            "dedupe_key": "validated",
+            "metadata": {
+                "endpoint": "/api/users",
+                "finding_id": "authz-role-replay-api_users",
+            },
+        },
+        {
+            "id": "AQ-0003",
+            "status": "queued",
+            "priority": 50,
+            "type": "case-state-enrichment",
+            "evidence_type": "checkpoint-next-action",
+            "evidence": "Find object endpoint.",
+            "next_question": "Find endpoint.",
+            "action": "Find object endpoint.",
+            "command_hint": "",
+            "created_at": "2026-01-01T00:00:02Z",
+            "dedupe_key": "next",
+        },
+    ]
+
+    assert select_next_action(queue)["id"] == "AQ-0003"
+
+
+def test_ingest_checkpoint_retires_superseded_candidate_gap(tmp_path):
+    queue = load_queue(tmp_path, "target.com")
+    queue["actions"] = [
+        {
+            "id": "AQ-0001",
+            "status": "candidate",
+            "priority": 105,
+            "type": "candidate-evidence-gap",
+            "evidence_type": "checkpoint-next-action",
+            "evidence": "Candidate evidence gap for authz-role-replay-api_users.",
+            "next_question": "Fill missing policy evidence.",
+            "action": "Candidate evidence gap for authz-role-replay-api_users.",
+            "command_hint": "fill missing rubric evidence, then /validate",
+            "created_at": "2026-01-01T00:00:00Z",
+            "dedupe_key": "candidate",
+            "source": "checkpoint",
+            "metadata": {
+                "endpoint": "/api/users",
+                "finding_id": "authz-role-replay-api_users",
+            },
+        },
+        {
+            "id": "AQ-0002",
+            "status": "validated",
+            "priority": 60,
+            "type": "surface-review",
+            "evidence_type": "checkpoint-next-action",
+            "evidence": "Validated role replay.",
+            "next_question": "done",
+            "action": "Validated role replay.",
+            "command_hint": "",
+            "created_at": "2026-01-01T00:00:01Z",
+            "dedupe_key": "validated",
+            "source": "checkpoint",
+            "metadata": {
+                "endpoint": "/api/users",
+                "finding_id": "authz-role-replay-api_users",
+            },
+        },
+    ]
+    from action_queue import save_queue
+
+    save_queue(tmp_path, "target.com", queue)
+
+    result = ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": []})
+    saved = load_queue(tmp_path, "target.com")
+
+    assert result["stats"]["retired_superseded"] == 1
+    assert saved["actions"][0]["status"] == "n/a"
+
+
 def test_relevance_metadata_breaks_same_endpoint_coverage_ties(tmp_path):
     queue = load_queue(tmp_path, "target.com")
     common = {
