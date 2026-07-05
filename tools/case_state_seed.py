@@ -94,6 +94,10 @@ HIGH_PRIORITY_TYPES = {
     "payment",
     "billing",
     "file",
+    "basket",
+    "cart",
+    "account",
+    "user",
 }
 
 GENERIC_ID_KEYS = {"id", "uuid", "guid"}
@@ -180,6 +184,19 @@ def _dedupe_objects(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if item.get("reason") and item["reason"] not in str(current.get("reason") or ""):
             current["reason"] = f"{current.get('reason', '')}; {item['reason']}".strip("; ")
     return [merged[ref] for ref in order]
+
+
+def _sort_object_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order seed candidates by actionability without dropping any surface."""
+    confidence_rank = {"high": 0, "medium": 1, "low": 2}
+
+    def key(item: dict[str, Any]) -> tuple[int, int, int, str]:
+        has_endpoint = 0 if item.get("endpoint") else 1
+        high_value_type = 0 if item.get("type") in HIGH_PRIORITY_TYPES else 1
+        confidence = confidence_rank.get(str(item.get("confidence") or "").lower(), 3)
+        return (has_endpoint, high_value_type, confidence, str(item.get("object_ref") or ""))
+
+    return sorted(items, key=key)
 
 
 def _default_host(target: str) -> str:
@@ -669,7 +686,8 @@ def build_case_state_seed(repo_root: str | Path, target: str, *, limit: int = 8)
     object_candidates = [
         item for item in object_candidates
         if str(item.get("object_ref") or "") not in existing_objects
-    ][:limit]
+    ]
+    object_candidates = _sort_object_candidates(object_candidates)[:limit]
 
     actor_suggestions = _actor_suggestions(state, bool(object_candidates))
     existing_actors = _existing_actor_ids(state)

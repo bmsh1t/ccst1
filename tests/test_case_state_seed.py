@@ -72,6 +72,7 @@ def test_case_state_seed_extracts_objects_from_browser_json_artifacts(tmp_path):
     (browser_dir / "stateful_order_probe.json").write_text(
         json.dumps({
             "created": {
+                "delivery_id": 1,
                 "address_id": 7,
                 "basket_id": 6,
                 "order_confirmation": "4cf8-fc54260b56afa3ce",
@@ -95,7 +96,9 @@ def test_case_state_seed_extracts_objects_from_browser_json_artifacts(tmp_path):
     payload = case_state_seed.build_case_state_seed(tmp_path, target, limit=10)
     objects = {item["object_ref"]: item for item in payload["suggested_objects"]}
 
-    assert {"address_7", "basket_6", "order_4cf8-fc54260b56afa3ce", "payment_8"} <= set(objects)
+    assert {"address_7", "basket_6", "delivery_1", "order_4cf8-fc54260b56afa3ce", "payment_8"} <= set(objects)
+    assert payload["suggested_objects"][0]["object_ref"] == "order_4cf8-fc54260b56afa3ce"
+    assert list(objects).index("delivery_1") > list(objects).index("address_7")
     assert objects["order_4cf8-fc54260b56afa3ce"]["endpoint"].endswith(
         "/rest/track-order/4cf8-fc54260b56afa3ce"
     )
