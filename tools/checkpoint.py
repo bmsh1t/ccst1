@@ -864,6 +864,9 @@ def _canonical_vuln_for_ledger(vuln_hint: str) -> str:
         "graphql": "GraphQL",
         "upload": "Upload",
         "file-upload": "Upload",
+        "openredirect": "OpenRedirect",
+        "open-redirect": "OpenRedirect",
+        "redirect": "OpenRedirect",
         "rce": "RCE",
         "ssti": "RCE",
         "command-injection": "RCE",
@@ -956,6 +959,31 @@ def _ranked_surface_auth_workflow_first(url: str, js_methods: list[str]) -> bool
     return not any(method in {"GET", "HEAD"} for method in js_methods)
 
 
+def _ranked_surface_parameter_behavior_first(url: str, query_keys: list[str]) -> bool:
+    """URL/redirect/fetch 参数应先做参数行为验证，而不是 role replay。"""
+    path = urlparse(str(url or "")).path.lower()
+    keys = {str(key or "").lower().replace("-", "_") for key in query_keys}
+    redirect_keys = {
+        "to",
+        "url",
+        "uri",
+        "redirect",
+        "redirect_url",
+        "redirect_uri",
+        "return",
+        "return_url",
+        "next",
+        "continue",
+        "callback",
+        "target",
+        "dest",
+        "destination",
+    }
+    if keys & redirect_keys:
+        return True
+    return any(segment in {"redirect", "callback"} for segment in path.split("/") if segment)
+
+
 def _ranked_surface_context_prereq(state: dict, item: dict, case_state: dict | None = None) -> bool:
     url = str(item.get("url") or "").strip()
     if not url:
@@ -1041,11 +1069,13 @@ def _ranked_surface_replay_draft(
     baseline_first = _is_path_only_authz_gap(authz_gap)
     browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
     auth_workflow_first = _ranked_surface_auth_workflow_first(url, js_methods)
+    parameter_behavior_first = _ranked_surface_parameter_behavior_first(url, query_keys)
     placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
     role_replay_ready = (
         _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
         and not browser_state_first
         and not auth_workflow_first
+        and not parameter_behavior_first
         and not placeholder_guidance
     )
     if placeholder_guidance:
@@ -1065,6 +1095,14 @@ def _ranked_surface_replay_draft(
             "method, headers, body, CSRF/CAPTCHA/session state, and success/failure "
             "signal; then choose authn/business-logic/credential-lane or bounded "
             "marker replay. Do not run default GET role replay on this action endpoint"
+        )
+    elif parameter_behavior_first:
+        validation_path = (
+            "Run parameter-behavior validation first: anonymous baseline vs controlled "
+            "variant for the observed URL/redirect parameter, compare status, Location "
+            "header, body reflection, and target normalization; then choose open-redirect, "
+            "SSRF, cache, or browser-boundary lane. Do not run owner/peer role replay "
+            "until a real auth boundary appears"
         )
     elif role_replay_ready:
         target_arg = _quote(target or "<target>")
@@ -1107,6 +1145,8 @@ def _ranked_surface_replay_draft(
         parts.append("browser-state-first page route; avoid treating identical SPA HTML as clean")
     if auth_workflow_first:
         parts.append("auth-workflow endpoint; exact method/body required before replay")
+    if parameter_behavior_first:
+        parts.append("parameter-behavior-first redirect/url input; avoid role replay")
     if placeholder_guidance:
         parts.append("placeholder object path; require concrete object ID before replay")
     if validation_path:
@@ -1146,16 +1186,20 @@ def _ranked_surface_ledger_skeleton(
     query_keys = _ranked_surface_query_keys(url)
     browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
     auth_workflow_first = _ranked_surface_auth_workflow_first(url, js_methods)
+    parameter_behavior_first = _ranked_surface_parameter_behavior_first(url, query_keys)
+    if parameter_behavior_first:
+        vuln_class = "OpenRedirect"
     placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
     placeholder_object = _case_state_object_for_surface(url, case_state) if placeholder_guidance else {}
     role_replay_ready = (
         _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
         and not browser_state_first
         and not auth_workflow_first
+        and not parameter_behavior_first
         and not placeholder_guidance
     )
-    actor = "anonymous" if baseline_first or context_prereq or auth_workflow_first else "owner"
-    object_scope = "none" if baseline_first or context_prereq or auth_workflow_first else "unknown"
+    actor = "anonymous" if baseline_first or context_prereq or auth_workflow_first or parameter_behavior_first else "owner"
+    object_scope = "none" if baseline_first or context_prereq or auth_workflow_first or parameter_behavior_first else "unknown"
     if placeholder_object.get("object_ref"):
         object_scope = str(placeholder_object.get("object_ref") or "unknown")
     if placeholder_object.get("endpoint"):
@@ -1170,6 +1214,8 @@ def _ranked_surface_ledger_skeleton(
         variant = "browser_observed"
     elif auth_workflow_first:
         variant = "exact_request_required"
+    elif parameter_behavior_first:
+        variant = "parameter_behavior"
     elif role_replay_ready:
         variant = "role_diff"
     else:
@@ -1202,6 +1248,12 @@ def _ranked_surface_ledger_skeleton(
             "Checkpoint ranked-surface auth workflow; capture exact observed method, "
             "headers, body, CSRF/CAPTCHA/session state, and success/failure signal before "
             "recording replay or role-diff evidence."
+        )
+    elif parameter_behavior_first:
+        notes = (
+            "Checkpoint ranked-surface URL/redirect parameter behavior; compare anonymous "
+            "baseline and controlled variants for status, Location, reflection, and target "
+            "normalization before choosing open-redirect/SSRF/browser-boundary follow-up."
         )
     elif role_replay_ready:
         notes = (

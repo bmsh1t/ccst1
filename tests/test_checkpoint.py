@@ -1280,6 +1280,48 @@ def test_ranked_surface_auth_workflow_requires_exact_request_before_role_replay(
     assert "capture exact observed method" in skeleton
 
 
+def test_ranked_surface_redirect_parameter_uses_parameter_behavior_first():
+    url = "https://app.target.com/redirect?to=https://example.test"
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": url,
+                    "suggested": "input tampering and auth boundary checks",
+                }
+            ],
+            "surface": {
+                "p1": [
+                    {
+                        "url": url,
+                        "suggested": "input tampering and auth boundary checks",
+                    }
+                ],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+        case_state={"actors": 2, "sessions": 2, "objects": 1},
+    )
+
+    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    assert "parameter-behavior-first redirect/url input; avoid role replay" in ranked_text
+    assert "Run parameter-behavior validation first" in ranked_text
+    assert "authz-role-replay" not in ranked_text
+    assert "owner/peer role replay" in ranked_text
+
+    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    skeleton = action["metadata"]["ledger_record_skeleton"]
+    assert "--vuln-class \"OpenRedirect\"" in skeleton
+    assert "--variant \"parameter_behavior\"" in skeleton
+    assert "--actor \"anonymous\"" in skeleton
+
+
 def test_ranked_surface_generic_api_uses_role_replay_when_case_state_ready():
     url = "https://app.target.com/api/Orders"
     proposals = _next_proposals(
