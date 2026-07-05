@@ -23,8 +23,6 @@ Run full validation on the current finding before writing a report.
 - Candidate endpoint, vuln class, impact claim, and reproduction details
 - Exact request/response or browser/OOB evidence when available
 - `findings/<target>/findings.json` and `--finding-id` linkage when present
-- Target case state when validation depends on actors, sessions, owned objects,
-  private markers, or backlog continuity
 - Current target/runtime context from repo-local config and disk artifacts
 
 ## Outputs
@@ -40,196 +38,28 @@ Run full validation on the current finding before writing a report.
 - `findings/last-validate.json`
 - `findings/<target>/findings.json` status updates when applicable
 - `state/<target>/session.json`
-- `state/<target_key>/case_state.json` only when you explicitly complete or
-  enrich a target case backlog
 
 ## Resume Source
 
 - Structured finding linkage from `findings/<target>/findings.json`
-- Active target case backlog from `python3 tools/target_case_state.py summary --target <target> --json`
 - Latest validation summary if this finding was already partially validated
 - PASS cases hand off to `/report`; non-PASS cases hand off back to hunt with a
   concrete next evidence step
 
-## Candidate Evidence Rubric
-
-`/validate` now reads the candidate evidence rubric when launched from
-`findings.json`. The rubric is a soft evidence upgrade gate: it does not block
-Claude from exploring, but it tells the agent what proof is still missing before
-the issue should be treated as report-ready.
-
-Core rubric families:
-
-- **Authz / IDOR / business logic** — actor/role/object diff, exact request,
-  observable response/action delta, concrete business impact.
-- **SQLi / NoSQLi** — baseline vs single-variable perturbation, stable
-  differential signal, reproducibility, bounded read-only impact proof.
-- **SSRF** — controlled callback or server-side fetch proof, server-side
-  context, safe internal/metadata/target-owned impact path, exact request.
-- **RCE / SSTI / command injection / deserialization** — inert marker or safe
-  calculation, execution/evaluation context, exact trigger request, bounded
-  non-destructive impact proof.
-- **Upload / parser / file-flow** — upload accepted, storage/parser/render path,
-  impact transition, harmless bounded artifact.
-- **Secret / key exposure** — type/source/line, ownership context,
-  validity/usability or safe-verification blocker, concrete impact path.
-- **XXE / LFI / traversal** — controlled read-only proof, baseline diff,
-  target-owned boundary/impact, exact request.
-- **Known software / CVE** — exact component/version, advisory affected range,
-  reachable feature/precondition, safe applicability PoC.
-
-When the rubric says `needs-evidence` or `signal-only`, continue with the
-smallest suggested evidence step instead of writing a report. When it says
-`candidate-ready`, still run the normal 4 validation gates and CVSS/report
-quality checks.
-
 Use `/validate` when a Lead or Signal has become a Candidate, or when preparing
 `/report`. It is a strict pre-report/pre-submit gate, not a hunt-phase
 kill-switch for raw leads, anomalies, hypotheses, or chain seeds.
-
-## Case-State-First Validation
-
-For actor/object/session-sensitive findings, prefer target case state before
-hand-assembling replay commands. This reduces drift across long hunts and keeps
-owner/peer/object/private-marker relationships reproducible.
-
-```bash
-python3 tools/target_case_state.py summary --target <target> --json
-python3 tools/target_case_state.py next --target <target>
-python3 tools/checkpoint.py --target <target> --json
-```
-
-When sessions already live in `.private/*.json`, import the complete header set
-instead of copying only one Cookie/Bearer header. Case-state-backed runners will
-replay all stored headers, including CSRF, tenant, org, and custom auth headers.
-
-```bash
-python3 tools/target_case_state.py add-session \
-  --target <target> \
-  --actor user_a \
-  --session sess_user_a \
-  --auth-file .private/user-a.json \
-  --validity valid
-```
-
-Use the result as a priority hint, not a hard gate:
-
-- `run_validation_runner` / `case-state-validation` -> run the exact
-  `validation_runner.py ... --from-case-state` replay and use the raw evidence
-  as `/validate` input.
-- `enrich_case_state` / `case-state-enrichment` -> collect the missing actor,
-  session, or object endpoint; add a private marker when available.
-- A missing private marker is an evidence-quality gap, not always an execution
-  blocker: if owner/peer sessions and object endpoint are ready, run the
-  case-state replay and let `validation_runner.py` promote only marker-backed
-  or exact non-trivial owner-body-match results.
-- Empty/stale/irrelevant case state -> continue manual/browser/source/JS
-  validation and optionally create a new backlog if it improves repeatability.
-- Stronger new evidence -> override the old backlog explicitly and write the
-  reason back as a new hypothesis or backlog.
-
-Case state is not a scope gate and not a substitute for `/validate`. It is the
-runtime memory that feeds deterministic evidence runners.
-
-## Deterministic Evidence Runners
-
-Before treating a lead as candidate-ready, prefer a small reproducible evidence
-runner when the lane fits. This keeps Claude focused on hypothesis choice and
-impact reasoning while tools handle replay, diff, raw evidence, and ledger
-format.
-
-```bash
-# Anonymous admin/config exposure: body-backed marker required for tested_finding
-python3 tools/validation_runner.py authz-public-exposure \
-  --target <target> \
-  --url <exact-url> \
-  --browser-observed
-
-# SQLi/NoSQLi-style read-only result diff: injection-shaped variant + stable diff
-python3 tools/validation_runner.py sqli-result-diff \
-  --target <target> \
-  --url '<exact-url-with-param>' \
-  --param <name> \
-  --baseline-value '' \
-  --variant-value '<single controlled perturbation>' \
-  --repeat 2 \
-  --browser-observed
-
-# RCE/SSTI/template/command-injection style safe proof:
-# replay the exact operator-provided request and require an inert marker
-python3 tools/validation_runner.py marker-replay \
-  --target <target> \
-  --url '<exact-url>' \
-  --expect-marker '<inert-marker>' \
-  --vuln-class RCE \
-  --repeat 2 \
-  --browser-observed
-
-# IDOR/Authz: generate the two-actor bundle; fill with owner/peer evidence
-python3 tools/validation_runner.py idor-actor-pair \
-  --target <target> \
-  --from-case-state \
-  --backlog-id <val_id> \
-  --complete-case-state \
-  --repeat 2 \
-  --browser-observed
-
-# Or pass explicit actor/object refs from case_state
-python3 tools/validation_runner.py idor-actor-pair \
-  --target <target> \
-  --from-case-state \
-  --owner-actor user_a \
-  --peer-actor user_b \
-  --object-ref order_123 \
-  --repeat 2
-
-# Manual fallback when case_state is not ready yet
-python3 tools/validation_runner.py idor-actor-pair \
-  --target <target> \
-  --url '<same object/action URL>' \
-  --owner-header 'Authorization: Bearer <owner-token>' \
-  --peer-header 'Authorization: Bearer <peer-token>' \
-  --expect-marker '<owner-private-marker>' \
-  --repeat 2 \
-  --browser-observed
-
-# If the second actor/session is not ready yet, generate the evidence skeleton
-python3 tools/validation_runner.py idor-skeleton \
-  --target <target> \
-  --endpoint <exact-endpoint>
-```
-
-Runner output is not a replacement for `/validate`. Use it as the evidence
-plane: it writes `evidence/<target>/validation/<finding-id>/`, records the
-Evidence Ledger unless `--no-ledger` is set, and returns `ai_next` /
-`stop_condition` for Claude to decide the next hypothesis.
-
-After a case-state-backed replay, write back the backlog result so `/autopilot`
-does not repeat stale work:
-
-```bash
-python3 tools/target_case_state.py complete-backlog \
-  --target <target> \
-  --id <val_id> \
-  --result tested_clean \
-  --evidence-ref evidence/<target_key>/validation/<finding-id>/summary.json
-```
-
-Use `tested_finding`, `tested_clean`, `candidate`, `blocked`, or `dead_end`
-according to the runner output and validation reasoning.
-If the replay command includes `--complete-case-state`, the runner performs
-this local write-back automatically after saving the validation summary.
 
 ## Target-Driven Validation
 
 Validation uses the supplied target as the active target record. External
 bounty metadata is optional context, not an execution gate. For local / CTF /
 lab targets, use challenge/lab rules and observed behavior, keep validation
-moving when external program metadata is absent, and treat write-up quality fields
+moving when `scope_snapshot.json` is absent, and treat write-up quality fields
 as report controls rather than execution blockers.
 
 If `config.json` sets `ctf_mode: true`, keep Gate 2 fully relaxed and do not
-reintroduce external program confirmation for this run.
+reintroduce external scope/program confirmation for this run.
 
 ## What This Does
 
@@ -253,7 +83,7 @@ current state:
 - Prefer chrome-devtools MCP for live browser/network evidence.
 - Prefer playwright MCP for automated interaction and snapshots.
 - Use `tools/browser_evidence.py` / `playwright-cli` only when MCP is unavailable or a scriptable fallback is needed.
-- Import MCP artifacts with `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, `/autopilot`, and validation summaries can reuse the same observed browser API surface.
+- Import useful MCP artifacts with `tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `/surface`, `/checkpoint`, `/autopilot`, and validation summaries reuse the same observed API surface.
 - Exact non-browser requests can use `curl` / `urllib` / local helpers for lightweight replay.
 - Burp/Caido history is auxiliary replay and comparison context; missing Burp/Caido should not block validation.
 
@@ -299,6 +129,31 @@ Describe the finding when prompted. Include:
 
 If you already ran `/validate` and it passed, `/report` can use the latest validation summary as report context.
 
+Optional deterministic replay/diff helpers live in `docs/evidence-runners.md`.
+Use them when they make evidence reproducible, but keep `/validate` as the
+report-readiness gate: Claude still decides impact, preconditions, and whether
+the issue is worth reporting.
+
+## Case-State-First Validation
+
+Target case state is runtime memory that feeds deterministic evidence runners:
+actors, sessions, objects, private markers, hypotheses, and validation backlog.
+It is not a substitute for `/validate`, not a scope gate, and not a reason to
+reject a replayable candidate. Use it only when it improves continuity or
+reduces header/object drift.
+
+Useful paths:
+
+```bash
+python3 tools/target_case_state.py summary --target <target> --json
+python3 tools/target_case_state.py next --target <target>
+python3 tools/target_case_state.py complete-backlog --target <target> --id <id> --result <tested_clean|tested_finding|blocked>
+```
+
+If case state suggests a backlog item, validate the underlying evidence with
+the same 7-question gate below. If live evidence is stronger than the cached
+backlog, state the AI override and continue with the stronger proof path.
+
 ## The 7-Question Gate
 
 Answer each. ONE wrong answer = STOP the report path.
@@ -324,7 +179,8 @@ accepted-impact lists are optional context, not a validation gate.
 ### Q3: Is the vulnerable asset tied to the supplied target context?
 
 Use the provided target, IP, CIDR, primary-domain batch list, or exact URL as the working
-target context. External policy notes are optional context, not validation gates.
+target context. External policy notes are optional context, not validation
+gates.
 
 ### Q4: Does it need admin or privileged access that an attacker can't get?
 
