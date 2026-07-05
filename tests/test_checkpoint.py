@@ -1238,6 +1238,48 @@ def test_ranked_surface_role_replay_when_case_state_ready():
     assert "--variant \"role_diff\"" in skeleton
 
 
+def test_ranked_surface_auth_workflow_requires_exact_request_before_role_replay():
+    url = "https://app.target.com/rest/user/login"
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {
+                    "url": url,
+                    "suggested": "baseline authz and business-logic checks",
+                }
+            ],
+            "surface": {
+                "p1": [
+                    {
+                        "url": url,
+                        "suggested": "baseline authz and business-logic checks",
+                    }
+                ],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+        case_state={"actors": 2, "sessions": 2, "objects": 1},
+    )
+
+    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    assert "auth-workflow endpoint; exact method/body required before replay" in ranked_text
+    assert "Capture the exact auth workflow request first" in ranked_text
+    assert "authz-role-replay" not in ranked_text
+    assert "default GET role replay" in ranked_text
+
+    action = _build_next_action_queue([ranked_text], "target.com")[0]
+    skeleton = action["metadata"]["ledger_record_skeleton"]
+    assert "--variant \"exact_request_required\"" in skeleton
+    assert "--actor \"anonymous\"" in skeleton
+    assert "capture exact observed method" in skeleton
+
+
 def test_ranked_surface_generic_api_uses_role_replay_when_case_state_ready():
     url = "https://app.target.com/api/Orders"
     proposals = _next_proposals(

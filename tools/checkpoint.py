@@ -923,6 +923,39 @@ def _ranked_surface_browser_state_first(url: str, vuln_class: str, query_keys: l
     return suffix in {"", ".html", ".htm"}
 
 
+def _ranked_surface_auth_workflow_first(url: str, js_methods: list[str]) -> bool:
+    """Auth workflow actions need exact method/body before replay.
+
+    Login/reset/token 类端点通常不是 GET 资源读面；没有浏览器/source 捕获到
+    method、body、CSRF/CAPTCHA、会话语义前，默认 owner/peer GET 只会制造
+    dead-end 噪声。这里不裁剪攻击面，只把下一步改为 exact-request capture。
+    """
+    path = urlparse(str(url or "")).path.lower()
+    if not path:
+        return False
+    segments = [segment for segment in re.split(r"[/._-]+", path) if segment]
+    action_terms = {
+        "login",
+        "logout",
+        "signin",
+        "signout",
+        "register",
+        "signup",
+        "reset",
+        "forgot",
+        "password",
+        "change",
+        "token",
+        "session",
+        "authenticate",
+        "authentication",
+    }
+    if not any(term in segments for term in action_terms):
+        return False
+    # 已有明确 GET/HEAD 观测时，按真实观测走；否则先捕获真实 workflow 请求。
+    return not any(method in {"GET", "HEAD"} for method in js_methods)
+
+
 def _ranked_surface_context_prereq(state: dict, item: dict, case_state: dict | None = None) -> bool:
     url = str(item.get("url") or "").strip()
     if not url:
@@ -1007,10 +1040,12 @@ def _ranked_surface_replay_draft(
     vuln_class = _canonical_vuln_for_ledger(vuln_hint)
     baseline_first = _is_path_only_authz_gap(authz_gap)
     browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
+    auth_workflow_first = _ranked_surface_auth_workflow_first(url, js_methods)
     placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
     role_replay_ready = (
         _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
         and not browser_state_first
+        and not auth_workflow_first
         and not placeholder_guidance
     )
     if placeholder_guidance:
@@ -1023,6 +1058,13 @@ def _ranked_surface_replay_draft(
             "capture/import MCP browser artifacts, extract the real XHR/object IDs, "
             "then run validation_runner authz-role-replay or idor-actor-pair on the "
             "underlying API instead of replaying the raw SPA HTML shell"
+        )
+    elif auth_workflow_first:
+        validation_path = (
+            "Capture the exact auth workflow request first: browser/source observed "
+            "method, headers, body, CSRF/CAPTCHA/session state, and success/failure "
+            "signal; then choose authn/business-logic/credential-lane or bounded "
+            "marker replay. Do not run default GET role replay on this action endpoint"
         )
     elif role_replay_ready:
         target_arg = _quote(target or "<target>")
@@ -1063,6 +1105,8 @@ def _ranked_surface_replay_draft(
         parts.append("use registered case_state owner/peer sessions")
     if browser_state_first:
         parts.append("browser-state-first page route; avoid treating identical SPA HTML as clean")
+    if auth_workflow_first:
+        parts.append("auth-workflow endpoint; exact method/body required before replay")
     if placeholder_guidance:
         parts.append("placeholder object path; require concrete object ID before replay")
     if validation_path:
@@ -1101,15 +1145,17 @@ def _ranked_surface_ledger_skeleton(
     context_prereq = _ranked_surface_context_prereq(state, item, case_state)
     query_keys = _ranked_surface_query_keys(url)
     browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
+    auth_workflow_first = _ranked_surface_auth_workflow_first(url, js_methods)
     placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
     placeholder_object = _case_state_object_for_surface(url, case_state) if placeholder_guidance else {}
     role_replay_ready = (
         _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
         and not browser_state_first
+        and not auth_workflow_first
         and not placeholder_guidance
     )
-    actor = "anonymous" if baseline_first or context_prereq else "owner"
-    object_scope = "none" if baseline_first or context_prereq else "unknown"
+    actor = "anonymous" if baseline_first or context_prereq or auth_workflow_first else "owner"
+    object_scope = "none" if baseline_first or context_prereq or auth_workflow_first else "unknown"
     if placeholder_object.get("object_ref"):
         object_scope = str(placeholder_object.get("object_ref") or "unknown")
     if placeholder_object.get("endpoint"):
@@ -1122,6 +1168,8 @@ def _ranked_surface_ledger_skeleton(
         variant = "context_prereq"
     elif browser_state_first:
         variant = "browser_observed"
+    elif auth_workflow_first:
+        variant = "exact_request_required"
     elif role_replay_ready:
         variant = "role_diff"
     else:
@@ -1148,6 +1196,12 @@ def _ranked_surface_ledger_skeleton(
         notes = (
             "Checkpoint ranked-surface browser-state-first page route; capture/import MCP "
             "browser artifacts, extract underlying XHR/object IDs, then replay the API."
+        )
+    elif auth_workflow_first:
+        notes = (
+            "Checkpoint ranked-surface auth workflow; capture exact observed method, "
+            "headers, body, CSRF/CAPTCHA/session state, and success/failure signal before "
+            "recording replay or role-diff evidence."
         )
     elif role_replay_ready:
         notes = (
