@@ -984,6 +984,39 @@ def _ranked_surface_parameter_behavior_first(url: str, query_keys: list[str]) ->
     return any(segment in {"redirect", "callback"} for segment in path.split("/") if segment)
 
 
+def _matrix_endpoint_paths(matrix: dict) -> set[str]:
+    """提取 coverage matrix 中的端点路径，供 checkpoint 做父子关系 hint。
+
+    这里不是用 matrix 给端点下结论，只补足 ranked surface 窗口看不到的
+    child endpoint。最终仍只生成 route-prefix triage 建议，由 AI/操作者
+    根据 baseline/body/browser 证据决定是否 mark-endpoint-kind。
+    """
+    paths: set[str] = set()
+    for item in matrix.get("endpoints") or []:
+        if not isinstance(item, dict):
+            continue
+        endpoint = str(item.get("endpoint") or "").strip()
+        if not endpoint:
+            continue
+        path = _normalise_endpoint_path(endpoint).rstrip("/")
+        if path:
+            paths.add(path)
+    return paths
+
+
+def _ranked_surface_state_with_matrix_paths(state: dict, matrix: dict) -> dict:
+    """给 ranked-surface 判读补充 matrix 端点全集，避免窗口截断误导。"""
+    paths = _matrix_endpoint_paths(matrix)
+    if not paths:
+        return state
+    enriched = dict(state)
+    existing = enriched.get("_matrix_endpoint_paths")
+    merged = set(existing) if isinstance(existing, (set, list, tuple)) else set()
+    merged.update(paths)
+    enriched["_matrix_endpoint_paths"] = merged
+    return enriched
+
+
 def _ranked_surface_route_prefix_first(state: dict, url: str, query_keys: list[str]) -> bool:
     """父级容器路径先做 handler/triage，不直接进入 role replay。"""
     if query_keys:
@@ -1003,6 +1036,9 @@ def _ranked_surface_route_prefix_first(state: dict, url: str, query_keys: list[s
     for item in state.get("recommended_targets") or []:
         if isinstance(item, dict):
             child_paths.add(_canonicalize_url_path(str(item.get("url") or "")).rstrip("/"))
+    extra_paths = state.get("_matrix_endpoint_paths")
+    if isinstance(extra_paths, (set, list, tuple)):
+        child_paths.update(str(item or "").rstrip("/") for item in extra_paths if str(item or "").strip())
     return any(child and child != path and child.startswith(path + "/") for child in child_paths)
 
 
@@ -1573,7 +1609,8 @@ def _next_proposals(
     )
     deferred_role_ranked = 0
     ranked_surface_added = 0
-    for item in (state.get("recommended_targets") or []):
+    ranked_state = _ranked_surface_state_with_matrix_paths(state, matrix)
+    for item in (ranked_state.get("recommended_targets") or []):
         # Generate a small candidate window, not just the first two. Persistent
         # action_queue final-state filtering happens after this function; if
         # the first P1 items were already closed, we still need fresh ranked
@@ -1586,7 +1623,7 @@ def _next_proposals(
         if endpoint_path in covered_findings:
             continue
         if url:
-            entry = _ranked_surface_entry(state, item.get("url") or "")
+            entry = _ranked_surface_entry(ranked_state, item.get("url") or "")
             vuln_class = _canonical_vuln_for_ledger(_ranked_surface_vuln_hint(entry, url))
             concrete_endpoint = _placeholder_concrete_endpoint(url, case_state)
             concrete_endpoint_path = _normalise_endpoint_path(concrete_endpoint)
@@ -1595,12 +1632,12 @@ def _next_proposals(
                 or _ledger_covers_cell(covered_ledger_cells, concrete_endpoint_path, vuln_class)
             ):
                 continue
-            if defer_role_ranked and _ranked_surface_context_prereq(state, item, case_state):
+            if defer_role_ranked and _ranked_surface_context_prereq(ranked_state, item, case_state):
                 deferred_role_ranked += 1
                 continue
-            replay_draft = _ranked_surface_replay_draft(state, item, case_state, target=target)
+            replay_draft = _ranked_surface_replay_draft(ranked_state, item, case_state, target=target)
             replay_suffix = f". Replay draft: {replay_draft.rstrip('.')}" if replay_draft else ""
-            ledger_skeleton = _ranked_surface_ledger_skeleton(state, item, target, replay_draft, case_state)
+            ledger_skeleton = _ranked_surface_ledger_skeleton(ranked_state, item, target, replay_draft, case_state)
             ledger_suffix = f". Ledger skeleton: {ledger_skeleton}" if ledger_skeleton else ""
             reason = str(item.get("review_reason") or "advisory surface evidence").strip()
             proposals.append(

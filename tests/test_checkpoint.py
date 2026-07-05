@@ -1359,6 +1359,39 @@ def test_ranked_surface_parent_prefix_uses_route_prefix_triage():
     assert "route prefix triage" in skeleton
 
 
+def test_ranked_surface_parent_prefix_uses_matrix_child_paths_when_surface_window_truncated():
+    url = "https://app.target.com/api"
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "recommended_targets": [
+                {"url": url, "suggested": "baseline authz and business-logic checks"},
+            ],
+            "surface": {
+                "p1": [
+                    {"url": url, "suggested": "baseline authz and business-logic checks"},
+                ],
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+        matrix={
+            "endpoints": [
+                {"endpoint": "/api", "cells": {}},
+                {"endpoint": "/api/Users", "cells": {}},
+            ]
+        },
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+        case_state={"actors": 2, "sessions": 2, "objects": 1},
+    )
+
+    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
+    assert "route-prefix-first parent path; validate concrete child handlers" in ranked_text
+    assert "authz-role-replay" not in ranked_text
+
+
 def test_ranked_surface_generic_api_uses_role_replay_when_case_state_ready():
     url = "https://app.target.com/api/Orders"
     proposals = _next_proposals(
