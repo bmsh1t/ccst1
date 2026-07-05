@@ -984,6 +984,28 @@ def _ranked_surface_parameter_behavior_first(url: str, query_keys: list[str]) ->
     return any(segment in {"redirect", "callback"} for segment in path.split("/") if segment)
 
 
+def _ranked_surface_route_prefix_first(state: dict, url: str, query_keys: list[str]) -> bool:
+    """父级容器路径先做 handler/triage，不直接进入 role replay。"""
+    if query_keys:
+        return False
+    path = _canonicalize_url_path(url).rstrip("/")
+    if not path or path == "/":
+        return False
+    suffix = Path(path).suffix.lower()
+    if suffix:
+        return False
+    child_paths: set[str] = set()
+    surface = state.get("surface") if isinstance(state.get("surface"), dict) else {}
+    for bucket in ("p1", "p2"):
+        for item in surface.get(bucket) or []:
+            if isinstance(item, dict):
+                child_paths.add(_canonicalize_url_path(str(item.get("url") or "")).rstrip("/"))
+    for item in state.get("recommended_targets") or []:
+        if isinstance(item, dict):
+            child_paths.add(_canonicalize_url_path(str(item.get("url") or "")).rstrip("/"))
+    return any(child and child != path and child.startswith(path + "/") for child in child_paths)
+
+
 def _ranked_surface_context_prereq(state: dict, item: dict, case_state: dict | None = None) -> bool:
     url = str(item.get("url") or "").strip()
     if not url:
@@ -1070,12 +1092,14 @@ def _ranked_surface_replay_draft(
     browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
     auth_workflow_first = _ranked_surface_auth_workflow_first(url, js_methods)
     parameter_behavior_first = _ranked_surface_parameter_behavior_first(url, query_keys)
+    route_prefix_first = _ranked_surface_route_prefix_first(state, url, query_keys)
     placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
     role_replay_ready = (
         _ranked_surface_role_replay_ready(vuln_class, baseline_first, case_state)
         and not browser_state_first
         and not auth_workflow_first
         and not parameter_behavior_first
+        and not route_prefix_first
         and not placeholder_guidance
     )
     if placeholder_guidance:
@@ -1103,6 +1127,14 @@ def _ranked_surface_replay_draft(
             "header, body reflection, and target normalization; then choose open-redirect, "
             "SSRF, cache, or browser-boundary lane. Do not run owner/peer role replay "
             "until a real auth boundary appears"
+        )
+    elif route_prefix_first:
+        validation_path = (
+            "Treat this as a possible route-prefix/container path: run one anonymous "
+            "handler baseline, compare it to concrete child endpoints, and if it is "
+            "only a prefix or 404/500 container, mark endpoint_kind=route_prefix and "
+            "focus replay on concrete child handlers. Do not run owner/peer role replay "
+            "against the parent prefix"
         )
     elif role_replay_ready:
         target_arg = _quote(target or "<target>")
@@ -1147,6 +1179,8 @@ def _ranked_surface_replay_draft(
         parts.append("auth-workflow endpoint; exact method/body required before replay")
     if parameter_behavior_first:
         parts.append("parameter-behavior-first redirect/url input; avoid role replay")
+    if route_prefix_first:
+        parts.append("route-prefix-first parent path; validate concrete child handlers")
     if placeholder_guidance:
         parts.append("placeholder object path; require concrete object ID before replay")
     if validation_path:
@@ -1187,6 +1221,7 @@ def _ranked_surface_ledger_skeleton(
     browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
     auth_workflow_first = _ranked_surface_auth_workflow_first(url, js_methods)
     parameter_behavior_first = _ranked_surface_parameter_behavior_first(url, query_keys)
+    route_prefix_first = _ranked_surface_route_prefix_first(state, url, query_keys)
     if parameter_behavior_first:
         vuln_class = "OpenRedirect"
     placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
@@ -1196,10 +1231,19 @@ def _ranked_surface_ledger_skeleton(
         and not browser_state_first
         and not auth_workflow_first
         and not parameter_behavior_first
+        and not route_prefix_first
         and not placeholder_guidance
     )
-    actor = "anonymous" if baseline_first or context_prereq or auth_workflow_first or parameter_behavior_first else "owner"
-    object_scope = "none" if baseline_first or context_prereq or auth_workflow_first or parameter_behavior_first else "unknown"
+    actor = (
+        "anonymous"
+        if baseline_first or context_prereq or auth_workflow_first or parameter_behavior_first or route_prefix_first
+        else "owner"
+    )
+    object_scope = (
+        "none"
+        if baseline_first or context_prereq or auth_workflow_first or parameter_behavior_first or route_prefix_first
+        else "unknown"
+    )
     if placeholder_object.get("object_ref"):
         object_scope = str(placeholder_object.get("object_ref") or "unknown")
     if placeholder_object.get("endpoint"):
@@ -1216,6 +1260,8 @@ def _ranked_surface_ledger_skeleton(
         variant = "exact_request_required"
     elif parameter_behavior_first:
         variant = "parameter_behavior"
+    elif route_prefix_first:
+        variant = "route_prefix_triage"
     elif role_replay_ready:
         variant = "role_diff"
     else:
@@ -1254,6 +1300,12 @@ def _ranked_surface_ledger_skeleton(
             "Checkpoint ranked-surface URL/redirect parameter behavior; compare anonymous "
             "baseline and controlled variants for status, Location, reflection, and target "
             "normalization before choosing open-redirect/SSRF/browser-boundary follow-up."
+        )
+    elif route_prefix_first:
+        notes = (
+            "Checkpoint ranked-surface route prefix triage; run one anonymous handler "
+            "baseline and, if this is only a parent/container path, mark endpoint_kind="
+            "route_prefix and focus concrete child endpoints."
         )
     elif role_replay_ready:
         notes = (
