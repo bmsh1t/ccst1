@@ -134,12 +134,29 @@ def _canonicalize_endpoint(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
+
+    def _hash_route(path: str, fragment: str) -> str:
+        fragment = str(fragment or "")
+        if not fragment.startswith("/"):
+            return ""
+        route = fragment.split("?", 1)[0].split("#", 1)[0] or "/"
+        prefix = (path or "/").split("?", 1)[0].rstrip("/") or "/"
+        return f"{prefix}#{route}"
+
     if "://" in raw:
         try:
             parsed = urlparse(raw)
         except ValueError:
             return raw.split("?", 1)[0].split("#", 1)[0]
+        hash_route = _hash_route(parsed.path or "/", parsed.fragment)
+        if hash_route:
+            return hash_route
         return (parsed.path or "/").split("?", 1)[0].split("#", 1)[0]
+    if "#/" in raw:
+        path, fragment = raw.split("#", 1)
+        hash_route = _hash_route(path or "/", fragment)
+        if hash_route:
+            return hash_route
     return raw.split("?", 1)[0].split("#", 1)[0]
 
 

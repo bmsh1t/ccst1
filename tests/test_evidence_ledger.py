@@ -43,6 +43,25 @@ def test_record_entry_writes_normalized_ledger_row(tmp_path):
     assert rows[0]["replayed"] is True
 
 
+def test_record_entry_preserves_spa_hash_route_endpoint(tmp_path):
+    entry = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint='https://target.com/#/search?q=<img src=x onerror=console.log("marker")>',
+        method="GET",
+        vuln_class="XSS",
+        actor="anonymous",
+        object_scope="none",
+        variant="browser_observed",
+        result="tested_finding",
+        browser_observed=True,
+        replayed=True,
+    )
+
+    assert entry["endpoint"] == "/#/search"
+    assert entry["raw_endpoint"].startswith("https://target.com/#/search")
+
+
 def test_actor_matrix_reports_missing_then_covered_checks(tmp_path):
     endpoint = "/api/accounts/42/export"
 
