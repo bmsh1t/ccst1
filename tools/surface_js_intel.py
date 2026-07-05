@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Helpers for feeding js-reader output into surface ranking."""
+"""Helpers for feeding js-reader output into the surface review pack."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
 def load_js_intel_hypotheses(findings_dir: Path) -> dict:
-    """Load js-reader hypotheses, if present, for surface ranking."""
+    """Load js-reader hypotheses, if present, for surface review."""
     hypotheses_path = findings_dir / "js_intel" / "hypotheses.json"
     if not hypotheses_path.is_file():
         return dict(EMPTY_JS_INTEL)

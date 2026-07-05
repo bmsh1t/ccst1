@@ -1,11 +1,11 @@
 ---
-description: Show ranked attack surface for a target based on cached recon output, hunt memory, structured findings, browser/JS/source intel, and exposure signals. Usage: /surface target.com
+description: Build an AI-first attack-surface review pack from cached recon, hunt memory, structured findings, browser/JS/source intel, and exposure signals. Usage: /surface target.com
 ---
 
 # /surface
 
-Rank cached attack surface. This is a read/rank view; it does not exploit the target.
-Claude CLI 下这是 `/autopilot` 的默认排序入口：先用目标记忆校准方向，再把 recon、hunt-memory、知识线索和检查信号合并成 P1/P2/Workflow Leads。
+Build a cached attack-surface review pack. This is a read-only evidence view; it does not exploit the target and does not replace Claude's judgment.
+Claude CLI 下这是 `/autopilot` 的默认证据整理入口：先用目标记忆校准方向，再把 recon、hunt-memory、知识线索和检查信号合并成 AI Review Pool / Advisory P1/P2 / Workflow Leads。
 
 ## Run This (the only required step)
 
@@ -33,8 +33,8 @@ If `recon/<target>/` is missing, run `/recon target.com` first. If the output sa
 
 ## What This Outputs
 
-- P1: start here
-- P2: widen after P1
+- AI Review Pool: Claude must choose final priority from evidence, not from regex score alone
+- Advisory P1/P2: score hints only, kept for compatibility with older tools
 - Kill/low-value surface
 - Target Memory: current goal, hypothesis, active leads, next actions, dead ends, and latest handoff
 - workflow leads from exposure, JS, source, browser, and scanner signals
@@ -46,13 +46,13 @@ If `recon/<target>/` is missing, run `/recon target.com` first. If the output sa
 - dead end 命中 URL 时，降低优先级并标注 `Caution: matches remembered dead end`
 - 不把记忆里的假设当作已验证结论；仍然需要 `/hunt` 和 `/validate` 证明
 
-## How To Use The Ranking
+## How To Use The Review Pack
 
-1. Start with the top P1 item unless a stronger validated/candidate finding is already pending.
-2. If P1 includes JS/source/browser/exposure hints, run that enrichment before broad scanning.
-3. If P1 is auth-gated, preserve auth state and compare roles/objects rather than widening blindly.
-4. If all P1 items are dead, write the dead lane to target memory and move to P2; do not loop on the same endpoint.
-5. Before checkpoint/finish, run `/check-coverage` and write back the next P1/P2 or dead end with `/target`.
+1. Read the AI Review Pool first; choose the next target as Claude, using business impact, browser/source evidence, object/session context, and current findings.
+2. Treat P1/P2 score as a hint, not a verdict. Do not discard lower-ranked surfaces solely because a regex score is low.
+3. If a candidate includes JS/source/browser/exposure hints, run that enrichment when it changes the next proof.
+4. If a candidate is auth-gated, preserve auth state and compare roles/objects rather than widening blindly.
+5. Before checkpoint/finish, run `/check-coverage` and write back the chosen candidate, blocker, or dead end with `/target`.
 
 ## Important Signals
 
@@ -60,13 +60,13 @@ If `recon/<target>/` is missing, run `/recon target.com` first. If the output sa
 - Verified secret hits → minimal usability proof only, then preserve evidence.
 - Identity/cloud intel → fuel for SSO, invite/reset-flow, cloud ownership, and source pivots.
 - Browser-observed XHR/API → first-class attack surface, often better than static URLs.
-- JS/source hypotheses → use as ranked leads; confirm with exact requests.
+- JS/source hypotheses → use as review leads; confirm with exact requests.
 
 ## Typical Chain
 
 ```text
 /recon target.com
 /surface target.com
-# optional: /js-read, /source-hunt, /intel, /cloud-recon, /secrets-hunt when the ranking shows a signal
+# optional: /js-read, /source-hunt, /intel, /cloud-recon, /secrets-hunt when the review pack shows a signal
 /hunt target.com
 ```

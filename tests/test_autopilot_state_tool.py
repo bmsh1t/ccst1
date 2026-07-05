@@ -39,6 +39,30 @@ class TestAutopilotState:
         assert recommended[0]["matches_resume_target"] is True
         assert recommended[1]["matches_resume_target"] is False
 
+    def test_recommended_targets_preserve_surface_review_order_over_score(self):
+        recommended = _build_recommended_targets(
+            [
+                {
+                    "url": "https://app.target.com/rest/languages",
+                    "host": "app.target.com",
+                    "suggested": "browser-observed workflow checks",
+                    "score": 7,
+                    "review_reason": "browser-observed API/workflow",
+                },
+                {
+                    "url": "https://app.target.com/rest/continue-code/apply/",
+                    "host": "app.target.com",
+                    "suggested": "baseline checks",
+                    "score": 11,
+                    "review_reason": "top advisory score",
+                },
+            ],
+            {"hosts": []},
+        )
+
+        assert recommended[0]["url"] == "https://app.target.com/rest/languages"
+        assert recommended[0]["review_reason"] == "browser-observed API/workflow"
+
     def test_requires_recon_when_missing(self, tmp_path):
         memory_dir = tmp_path / "hunt-memory"
         (memory_dir / "targets").mkdir(parents=True)
@@ -549,7 +573,7 @@ class TestAutopilotState:
         })
         assert "AUTOPILOT STATE: target.com" in output
         assert "Next action: hunt_p1" in output
-        assert "Next step: start with the top P1 target: https://api.target.com/graphql." in output
+        assert "Next step: review the top surface candidate, then choose the next evidence step: https://api.target.com/graphql." in output
         assert "https://api.target.com/graphql" in output
         assert "Last session: 1 finding(s), tried recon, idor" in output
         assert "Last endpoints: /graphql" in output

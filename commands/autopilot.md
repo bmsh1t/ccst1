@@ -19,7 +19,7 @@ fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> SCANNER QU
 existing: LOAD -> RANK -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
 ```
 
-Super-pentester priority: business impact > workflow evidence > crown-jewel hypothesis > attack-surface ranking > scanner result > coverage gap. Scanner quick is the fresh-target breadth sensor and advisory lead source; scanner-positive is not a finding, scanner-negative is not completion. Evidence drives order. Do not rerun usable recon, do not validate/report without a Candidate/Validated Finding, and do not finish while queued high-value next actions remain unresolved.
+Super-pentester priority: business impact > workflow evidence > crown-jewel hypothesis > attack-surface review evidence > scanner result > coverage gap. Scanner quick is the fresh-target breadth sensor and advisory lead source; scanner-positive is not a finding, scanner-negative is not completion. Evidence drives order. Do not rerun usable recon, do not validate/report without a Candidate/Validated Finding, and do not finish while queued high-value next actions remain unresolved.
 
 ## Four-Layer Automation
 
@@ -64,7 +64,7 @@ browser/source enrichment, or AI-generated chain pivots.
 ## Case-State First, Not Case-State Only
 
 When checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer that actor/session/object action before generic coverage gaps because it preserves continuity across context windows.
-This is a priority rule, not a restriction: empty, stale, or incomplete case state must not block discovery, recon, browser/source enrichment, ranked-surface hunting, or AI-generated chain pivots.
+This is a priority rule, not a restriction: empty, stale, or incomplete case state must not block discovery, recon, browser/source enrichment, surface-review hunting, or AI-generated chain pivots.
 Use `tools/target_case_state.py next --target <target>` to inspect the backlog; run the exact `--from-case-state` replay when ready, collect missing evidence when not ready, or extend/supersede it with `add-actor` / `add-session` / `add-object` / `add-hypothesis` / `add-backlog`.
 If cached artifacts show object IDs but case state is empty, run `tools/case_state_seed.py --target <target> --json` and review the suggested seed commands.
 Case state is runtime memory, not a scope gate, permission gate, fixed bug-class selector, or reason to ignore non-IDOR lanes; state the AI override reason when fresher evidence should take priority.
@@ -179,7 +179,7 @@ After executing a queued action, resolve it explicitly with `python3 tools/actio
 
 ## Next Action Consumption Loop
 
-Read `recommended_executable_action` and `next_action_queue` from checkpoint output, then execute or resolve the queue item before stopping. Memory action queue items are state, not prose suggestions. `case-state-validation` and `case-state-enrichment` are high-priority queue items because they encode ready actor/session/object work; they still remain advisory if new evidence justifies an explicit AI override. If coverage is near 0% or high-value gaps remain, do not end with only "Next Actions"; run the next safe step, mark `blocked`/`dead-end` with evidence, or promote `lead`/`signal`/`candidate`.
+Read checkpoint `next_action_queue` as an evidence-backed candidate set, not as a replacement for Claude's prioritization. `default_candidate` is the compatibility pointer (`recommended_executable_action` remains as an alias only). Claude must choose, execute, or resolve the next safe item before stopping. Memory action queue items are state, not prose suggestions. `case-state-validation` and `case-state-enrichment` are high-value queue items because they encode ready actor/session/object work; they still remain advisory if new evidence justifies an explicit AI override. If coverage is near 0% or high-value gaps remain, do not end with only "Next Actions"; run the next safe step, mark `blocked`/`dead-end` with evidence, or promote `lead`/`signal`/`candidate`.
 
 ## Checkpoint Modes
 
@@ -252,7 +252,7 @@ Advisory, not routing and not a state machine:
 
 | Question shape | First tool/agent |
 |---|---|
-| Which discovered hosts/routes deserve attention? | `recon-ranker`, `tools/surface.py` |
+| Which discovered hosts/routes deserve AI review? | `recon-ranker`, `tools/surface.py` |
 | What APIs/routes/params are hidden in JS? | `js-reader`, `tools/js_reader.py` |
 | Are sibling endpoints likely from a known path pattern? | `tools/sibling_generator.py` for sibling endpoints |
 | Was this class reported publicly on similar targets? | `disclosed-researcher` |

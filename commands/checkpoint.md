@@ -106,7 +106,7 @@ CHECKPOINT DECISION
 - `report`：存在 validated finding 且没有更高价值可执行深挖动作；pending report 会持续留在队列里，直到草稿生成。
 - `refresh-recon`：没有可用 recon/surface，不要声称测试完成。
 - `enrich`：browser/source/JS enrichment 可能改变下一步。
-- `hunt`：有 P1/P2 或 recommended target。
+- `hunt`：有 surface review candidates、兼容性 P1/P2 hints 或 target-memory continuation。
 - `continue`：有 high-value coverage gap。
 - `continue`：存在 active case_state backlog / enrichment action 时，优先输出 exact replay draft 或缺失证据动作。
 - `continue`：coverage gap 为空但 Actor Matrix 仍有缺口时，也不能声称全面完成。

@@ -58,7 +58,7 @@ def test_dispatch_autopilot_state_reads_combined_bootstrap_context(tmp_hunt_dir,
 
     assert "AUTOPILOT STATE: target.com" in output
     assert "Next action: hunt_p1" in output
-    assert "Recommended first targets:" in output
+    assert "Surface review candidates (AI decides final priority):" in output
     assert "https://api.target.com/graphql" in output
 
 
@@ -208,7 +208,7 @@ def test_dispatch_surface_summary_ranks_cached_recon(tmp_hunt_dir, tmp_path):
     )
 
     assert "ATTACK SURFACE: target.com" in output
-    assert "Priority 1 (start here):" in output
+    assert "AI Review Pool (advisory; Claude chooses final priority):" in output
     assert "https://api.target.com/graphql" in output
 
 

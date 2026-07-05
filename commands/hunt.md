@@ -1,10 +1,10 @@
 ---
-description: Start active hunting on a target using cached recon, surface ranking, optional enrichment, hunt memory, and focused vulnerability testing. Usage: /hunt target.com
+description: Start active hunting on a target using cached recon, AI-first surface review, optional enrichment, hunt memory, and focused vulnerability testing. Usage: /hunt target.com
 ---
 
 # /hunt
 
-Active vulnerability hunting through Claude CLI. Run the production scanner when broad coverage is useful; otherwise use the ranked surface to drive exact probes.
+Active vulnerability hunting through Claude CLI. Run the production scanner when broad coverage is useful; otherwise use the surface review pack as evidence for Claude to choose exact probes.
 
 Legacy CVE/report entrypoints remain available as compatibility paths, but the
 primary workflows are `/intel` and `/report`.

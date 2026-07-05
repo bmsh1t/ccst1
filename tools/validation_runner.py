@@ -383,7 +383,7 @@ def _queue_action_matches_summary(action: dict[str, Any], summary: dict[str, Any
     if finding_id and finding_id in haystack:
         return True
     action_type = str(action.get("type") or "").lower()
-    if action_type in {"validation", "candidate-evidence-gap", "ranked-surface", "coverage-gap"}:
+    if action_type in {"validation", "candidate-evidence-gap", "ranked-surface", "surface-review", "coverage-gap"}:
         return any(marker and marker in haystack for marker in markers)
     return False
 

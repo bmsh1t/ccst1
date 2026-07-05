@@ -99,6 +99,86 @@ def test_report_action_does_not_preempt_active_validation_work(tmp_path):
     assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "report"
 
 
+def test_surface_review_does_not_preempt_report_when_no_substantive_work(tmp_path):
+    checkpoint = {
+        "next_action_queue": [
+            {
+                "id": "R1",
+                "priority": 90,
+                "type": "report",
+                "action": "Draft report for validated finding.",
+                "command_hint": "/report",
+                "redline_required": False,
+            },
+            {
+                "id": "S1",
+                "priority": 70,
+                "type": "surface-review",
+                "action": "Review surface candidate https://api.target.com/rest/user.",
+                "command_hint": "AI reviews surface evidence, then chooses the exact lane",
+                "redline_required": False,
+            },
+        ]
+    }
+
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
+    assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "report"
+
+
+def test_legacy_ranked_surface_without_runner_is_advisory(tmp_path):
+    checkpoint = {
+        "next_action_queue": [
+            {
+                "id": "R1",
+                "priority": 90,
+                "type": "report",
+                "action": "Draft report for validated finding.",
+                "command_hint": "/report",
+                "redline_required": False,
+            },
+            {
+                "id": "OLD1",
+                "priority": 92,
+                "type": "ranked-surface",
+                "action": "Continue top ranked surface https://api.target.com/rest/legacy.",
+                "command_hint": "focused hunt on ranked P1/P2 surface",
+                "redline_required": False,
+            },
+        ]
+    }
+
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
+    assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "report"
+
+
+def test_current_surface_review_beats_stale_legacy_ranked_surface_when_only_advisory(tmp_path):
+    checkpoint = {
+        "next_action_queue": [
+            {
+                "id": "OLD1",
+                "priority": 92,
+                "type": "ranked-surface",
+                "action": "Continue top ranked surface https://api.target.com/rest/legacy.",
+                "command_hint": "focused hunt on ranked P1/P2 surface",
+                "redline_required": False,
+            },
+            {
+                "id": "S1",
+                "priority": 70,
+                "type": "surface-review",
+                "action": "Review surface candidate https://api.target.com/rest/current.",
+                "command_hint": "AI reviews surface evidence, then chooses the exact lane",
+                "redline_required": False,
+            },
+        ]
+    }
+
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
+    selected = select_next_action(load_queue(tmp_path, "target.com"))
+    assert selected["type"] == "surface-review"
+    assert "current" in selected["action"]
+
+
 def test_ingest_checkpoint_preserves_structured_metadata(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
 

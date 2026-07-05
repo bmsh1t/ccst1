@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Helpers for feeding source_intel output into surface ranking."""
+"""Helpers for feeding source_intel output into the surface review pack."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
 def load_source_intel_hypotheses(findings_dir: Path) -> dict:
-    """Load source_intel hypotheses and routes, if present, for surface ranking."""
+    """Load source_intel hypotheses and routes, if present, for surface review."""
     source_dir = findings_dir / "source_intel"
     hypotheses_path = source_dir / "hypotheses.jsonl"
     routes_path = source_dir / "routes.json"

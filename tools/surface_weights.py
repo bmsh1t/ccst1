@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-surface_weights.py — value-class weight table for surface ranking.
+surface_weights.py — legacy value-class hints for coverage-gap accounting.
 
 Purpose:
-    Power-law payout distribution in bug bounty means ~80% of paid bugs
-    live on ~20% of attack surface. This module captures that 20% as
-    URL path patterns, and returns a multiplier used by surface.py to
-    amplify the additive score for high-value paths.
+    Power-law payout distribution in bug bounty means many high-impact bugs
+    cluster around valuable workflows. This legacy module exposes path-pattern
+    hints used by coverage_matrix.py to keep gap accounting compact.
+
+    Do not treat these weights as an attack-surface verdict. surface.py no
+    longer uses them to steer Claude; it emits an AI review pack instead.
 
 Design notes:
     - This is a soft bias, not a hard filter. Low-weight paths still

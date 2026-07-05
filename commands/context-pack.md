@@ -44,7 +44,7 @@ python3 tools/context_pack.py --target <target>
 工具会：
 
 1. 读取目标层：`memory/goals/active.json` 和 `memory/goals/targets/<target>.json`。
-2. 只读调用 surface 排名，提取 P1/P2、Workflow Leads 和 target memory 线索。
+2. 只读调用 surface review pack，提取 AI Review Pool、兼容性 P1/P2 hints、Workflow Leads 和 target memory 线索。
 3. 读取覆盖矩阵 high-value gaps。
 4. 读取 `findings/<target>/findings.json` 索引。
 5. 读取小型 browser/JS/source 证据索引：
@@ -114,7 +114,7 @@ CONTEXT PACK
   - rules/red-lines.md
   - rules/coverage-gate.md
 - Evidence anchors:
-  - P1/P2 https://api.example.com/api/org/123/users score=...
+  - Surface review https://api.example.com/api/org/123/users score_hint=...
   - Browser XHR/API: https://app.example.com/api/admin/export?order_id=42
   - JS-reader endpoint: POST /api/accounts/42/export source=recon/example.com/js/admin.js auth=true
   - Source-intel hypothesis [idor]: /api/accounts/:id/export -> route contains account object id

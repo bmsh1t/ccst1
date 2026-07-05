@@ -61,6 +61,7 @@ COVERAGE_STATUS_BY_ACTION_STATUS = {
 }
 UNSAFE_REVIEW_FINAL_STATUSES = {"tested", "dead-end", "blocked", "n/a", "candidate", "validated", "reported"}
 REPORT_ACTION_TYPES = {"report"}
+ADVISORY_REVIEW_ACTION_TYPES = {"surface-review"}
 
 
 def now_utc() -> str:
@@ -188,6 +189,23 @@ def _action_sort_key(action: dict) -> tuple:
         str(action.get("created_at") or ""),
         str(action.get("id") or ""),
     )
+
+
+def _is_advisory_review_action(action: dict) -> bool:
+    """Return True for surface review items that are not exact runner work.
+
+    Older queues may still contain `ranked-surface` items from before the
+    AI-first rename. Treat them as advisory unless the command hint already
+    contains an exact validation runner command; otherwise stale p92 legacy
+    items can keep steering /autopilot away from the current review pack.
+    """
+    action_type = str(action.get("type") or "")
+    if action_type in ADVISORY_REVIEW_ACTION_TYPES:
+        return True
+    if action_type != "ranked-surface":
+        return False
+    command_hint = str(action.get("command_hint") or "")
+    return "validation_runner.py" not in command_hint
 
 
 def _normalize_status(status: str) -> str:
@@ -565,14 +583,29 @@ def select_next_action(queue: dict) -> dict:
     if not candidates:
         return {}
     # 报告是阶段收束，不应抢在仍未处理的验证、深挖、coverage、action-gated
-    # lead 前面。否则 /autopilot 会在已有 finding 后过早 report-first，削弱
-    # 复杂链路挖掘。report action 仍保留在队列里，非报告动作清完后会自然浮上来。
-    non_report_candidates = [
+    # lead 前面。surface-review 则只是 Claude 审阅候选池，不应反过来压住
+    # 已验证 finding 的报告收束；只有没有其它实质动作时才浮上来。
+    substantive_non_report_candidates = [
         item for item in candidates
         if str(item.get("type") or "") not in REPORT_ACTION_TYPES
+        and not _is_advisory_review_action(item)
     ]
-    if non_report_candidates:
-        candidates = non_report_candidates
+    if substantive_non_report_candidates:
+        candidates = substantive_non_report_candidates
+    else:
+        non_advisory_candidates = [
+            item for item in candidates
+            if not _is_advisory_review_action(item)
+        ]
+        if non_advisory_candidates:
+            candidates = non_advisory_candidates
+        else:
+            current_surface_review = [
+                item for item in candidates
+                if str(item.get("type") or "") in ADVISORY_REVIEW_ACTION_TYPES
+            ]
+            if current_surface_review:
+                candidates = current_surface_review
     candidates.sort(key=_action_sort_key)
     return candidates[0]
 

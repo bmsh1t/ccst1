@@ -111,7 +111,7 @@ def _build_recommended_targets(
     *,
     prefer_resume_targets: bool = False,
 ) -> list[dict]:
-    """Prefer non-tripped hosts first, then optionally front-load resume targets within a bucket."""
+    """Return advisory surface candidates; Claude chooses the final target."""
     host_status = {
         item.get("host", ""): item
         for item in guard_status.get("hosts", [])
@@ -120,13 +120,15 @@ def _build_recommended_targets(
 
     preferred = resume_targets or []
     recommended = []
-    for item in p1:
+    for index, item in enumerate(p1):
         status = host_status.get(item.get("host", ""), {})
         recommended.append({
             "url": item.get("url", ""),
             "host": item.get("host", ""),
             "suggested": item.get("suggested", ""),
             "score": item.get("score", 0),
+            "review_reason": item.get("review_reason", ""),
+            "review_index": index,
             "tripped": bool(status.get("tripped", False)),
             "remaining_seconds": float(status.get("remaining_seconds", 0.0) or 0.0),
             "matches_resume_target": _matches_resume_target(item.get("url", ""), preferred),
@@ -136,8 +138,7 @@ def _build_recommended_targets(
         key=lambda item: (
             item["tripped"],
             0 if (prefer_resume_targets and item["matches_resume_target"]) else 1,
-            -item["score"],
-            item["url"],
+            item["review_index"],
         )
     )
     return recommended[:5]
@@ -165,7 +166,7 @@ def _pick_next_action(
     resume_summary: dict | None,
     structured_findings: dict | None = None,
 ) -> str:
-    """Bias toward resumable session context before widening to generic P1/P2 surface."""
+    """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
     if structured_findings.get("pending_validation"):
         return "validate_finding"
@@ -184,7 +185,7 @@ def _pick_next_action(
     if latest_session and resume_targets:
         return "resume_untested"
 
-    if ranked.get("p1"):
+    if ranked.get("review_pool") or ranked.get("p1"):
         return "hunt_p1"
     if ranked.get("p2"):
         return "hunt_p2"
@@ -208,7 +209,11 @@ def _describe_next_step(state: dict) -> str:
     action = state.get("next_action", "")
     target = state.get("target", "target")
     resume_targets = state.get("resume_targets", []) or []
-    recommended_targets = state.get("recommended_targets", []) or []
+    surface_review_candidates = (
+        state.get("surface_review_candidates")
+        or state.get("recommended_targets", [])
+        or []
+    )
     tripped_hosts = (state.get("guard_status", {}) or {}).get("tripped_hosts", []) or []
     recon_artifacts = state.get("recon_artifacts") or {}
 
@@ -240,18 +245,18 @@ def _describe_next_step(state: dict) -> str:
             "coverage updates. Do not use IP rotation, WAF evasion, or social engineering."
         )
     if action == "hunt_p1":
-        if recommended_targets:
-            first_item = recommended_targets[0]
+        if surface_review_candidates:
+            first_item = surface_review_candidates[0]
             first = first_item["url"]
             if first_item.get("tripped"):
                 return (
-                    f"the top P1 host is cooling down; prefer another surface until cooldown clears: "
+                    f"the top advisory surface host is cooling down; prefer another surface until cooldown clears: "
                     f"{first}."
                 )
             if tripped_hosts:
-                return f"start with the top ready P1 target while other hosts cool down: {first}."
-            return f"start with the top P1 target: {first}."
-        return "start with the top P1 target."
+                return f"review the top ready surface candidate while other hosts cool down: {first}."
+            return f"review the top surface candidate, then choose the next evidence step: {first}."
+        return "review the surface candidates, then choose the next evidence step."
     if action == "hunt_p2":
         return "widen into the P2 surface after P1 paths are exhausted."
     if action == "refresh_recon":
@@ -678,15 +683,15 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     if resume_summary and resume_summary.get("tech_stack"):
         tech_stack = resume_summary["tech_stack"]
     elif has_recon:
-        p1 = ranked.get("p1", [])
-        if p1:
-            tech_stack = p1[0].get("tech_stack", [])
+        review_pool = ranked.get("review_pool", []) or ranked.get("p1", [])
+        if review_pool:
+            tech_stack = review_pool[0].get("tech_stack", [])
 
     next_action = _pick_next_action(has_recon, ranked, resume_summary, structured_findings)
     prefer_resume_targets = next_action == "continue_last_focus"
-    recommended_targets = (
+    surface_review_candidates = (
         _build_recommended_targets(
-            ranked.get("p1", []),
+            ranked.get("review_pool", []) or ranked.get("p1", []),
             guard_status,
             resume_targets,
             prefer_resume_targets=prefer_resume_targets,
@@ -732,7 +737,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "resume_summary": resume_summary,
         "surface": ranked if has_recon else None,
         "guard_status": guard_state,
-        "guard_hint": _build_guard_hint(guard_state, recommended_targets),
+        "guard_hint": _build_guard_hint(guard_state, surface_review_candidates),
         "pivot_hint": pivot_hint,
         "tech_stack": tech_stack,
         "next_action": next_action,
@@ -740,7 +745,10 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "enrichment_hints": enrichment_hints,
         "memory_action_queue": memory_action_queue,
         "resume_targets": resume_targets,
-        "recommended_targets": recommended_targets,
+        # AI-first field. `recommended_targets` remains a compatibility alias
+        # for older commands/tests that still expect the old key.
+        "surface_review_candidates": surface_review_candidates,
+        "recommended_targets": surface_review_candidates,
         "recent_guard_advisories": recent_guard_advisories[:3],
         "recent_guard_blocks": recent_guard_advisories[:3],
     }
@@ -960,8 +968,9 @@ def format_autopilot_state(state: dict) -> str:
         if state.get("resume_targets"):
             lines.append(f"Resume targets: {', '.join(state['resume_targets'][:3])}")
 
-    lines.append(f"P1 targets: {surface.get('stats', {}).get('p1', 0)}")
-    lines.append(f"P2 targets: {surface.get('stats', {}).get('p2', 0)}")
+    lines.append(f"Surface review candidates: {surface.get('stats', {}).get('review_pool', 0)}")
+    lines.append(f"Advisory P1 score hints: {surface.get('stats', {}).get('p1', 0)}")
+    lines.append(f"Advisory P2 score hints: {surface.get('stats', {}).get('p2', 0)}")
 
     tripped_hosts = guard_status.get("tripped_hosts", [])
     if tripped_hosts:
@@ -979,17 +988,23 @@ def format_autopilot_state(state: dict) -> str:
             if details:
                 lines.append(f"- {details}")
 
-    if state["recommended_targets"]:
+    surface_review_candidates = (
+        state.get("surface_review_candidates")
+        or state.get("recommended_targets")
+        or []
+    )
+    if surface_review_candidates:
         lines.append("")
-        lines.append("Recommended first targets:")
-        for idx, item in enumerate(state["recommended_targets"], 1):
+        lines.append("Surface review candidates (AI decides final priority):")
+        for idx, item in enumerate(surface_review_candidates, 1):
             suffix = (
                 f" [cooldown {item['remaining_seconds']:.1f}s]"
                 if item.get("tripped")
                 else ""
             )
+            reason = f" [{item['review_reason']}]" if item.get("review_reason") else ""
             lines.append(
-                f"{idx}. {item['url']} — {item['suggested']} (score {item['score']}){suffix}"
+                f"{idx}. {item['url']} — {item['suggested']} (score hint {item['score']}){reason}{suffix}"
             )
 
     return "\n".join(lines)

@@ -49,6 +49,7 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     assert checkpoint["target"] == "target.com"
     assert any("/recon target.com" in item for item in checkpoint["target_write_back"]["next"])
     assert checkpoint["recommended_executable_action"]["type"] == "recon"
+    assert checkpoint["default_candidate"] == checkpoint["recommended_executable_action"]
     assert (
         checkpoint["recommended_executable_action"]["command_hint"]
         == 'python3 tools/hunt.py --target "target.com" --recon-only && '
@@ -56,6 +57,7 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
         'python3 tools/checkpoint.py --target "target.com"'
     )
     assert "CHECKPOINT DECISION" in output
+    assert "Default candidate (compat pointer):" in output
     assert "Apply status: not applied" in output
 
 
@@ -189,10 +191,10 @@ def test_checkpoint_decision_treats_pending_report_as_reportable_asset_not_stop_
     assert _decide(report_only_state, coverage_gaps=[], actor_gaps=[], case_state={}) == "report"
 
 
-def test_report_action_is_below_high_value_actions_but_above_secondary_sweep():
+def test_report_action_stays_above_advisory_surface_review_but_below_high_value_actions():
     queue = _build_next_action_queue([
         "Draft report for validated finding F-REPORT; do not submit without human review.",
-        "Continue top ranked surface https://api.target.com/api/admin/export: focused authz replay",
+        "Review surface candidate https://api.target.com/api/admin/export: focused authz replay",
         "Cover high-value matrix gap: /api/admin/export x Authz (weight=5, relevance=8: admin path).",
         "Secondary-sweep lead [open-200-api-review]: Anonymous API returned 200. "
         "Artifact=findings/target/manual_review/open_200_api.txt. Why it matters: review. "
@@ -201,7 +203,7 @@ def test_report_action_is_below_high_value_actions_but_above_secondary_sweep():
 
     by_type = {item["type"]: item for item in queue}
     assert by_type["coverage-gap"]["priority"] > by_type["report"]["priority"]
-    assert by_type["ranked-surface"]["priority"] > by_type["report"]["priority"]
+    assert by_type["surface-review"]["priority"] < by_type["report"]["priority"]
     assert by_type["report"]["priority"] > by_type["secondary-sweep"]["priority"]
     assert by_type["report"]["metadata"]["finding_id"] == "F-REPORT"
 
@@ -308,13 +310,13 @@ def test_public_metadata_secondary_sweep_does_not_outrank_ranked_surface():
         "Artifact=findings/target.com/manual_review/standard_public_metadata.txt. "
         "Why it matters: standard metadata. Next action: review only for unusual fields. "
         "Stop condition: keep demoted unless concrete evidence appears.",
-        "Continue top ranked surface https://api.target.com/rest/admin/application-version: "
+        "Review surface candidate https://api.target.com/rest/admin/application-version: "
         "capture baseline first",
     ], "target.com")
 
     by_type = {item["type"]: item for item in queue}
     public_meta = next(item for item in queue if item.get("metadata", {}).get("lead_category") == "public-metadata")
-    assert public_meta["priority"] < by_type["ranked-surface"]["priority"]
+    assert public_meta["priority"] < by_type["surface-review"]["priority"]
 
 
 def test_checkpoint_surfaces_high_value_coverage_gaps(tmp_path):
@@ -504,7 +506,7 @@ def test_checkpoint_surfaces_actor_matrix_gaps(tmp_path):
     assert "Evidence ledger:" in output
     assert "actor matrix gaps:" in output
     assert "Next action queue:" in output
-    assert "Recommended executable action:" in output
+    assert "Default candidate (compat pointer):" in output
 
 
 def test_next_proposals_only_queue_anonymous_actor_gap_without_case_state():
@@ -873,7 +875,7 @@ def test_next_proposals_skip_ranked_surface_when_endpoint_already_has_tested_fin
     )
 
     assert not any(
-        "Continue top ranked surface https://api.target.com/api/admin/users" in item
+        "Review surface candidate https://api.target.com/api/admin/users" in item
         for item in proposals
     )
 
@@ -910,7 +912,7 @@ def test_next_proposals_skip_ranked_surface_when_ledger_has_tested_clean():
     )
 
     assert not any(
-        "Continue top ranked surface https://api.target.com/rest/admin/application-version" in item
+        "Review surface candidate https://api.target.com/rest/admin/application-version" in item
         for item in proposals
     )
 
@@ -1016,7 +1018,7 @@ def test_next_proposals_keeps_ranked_surface_candidates_after_secondary_sweeps()
         evidence_summary={},
     )
 
-    ranked = [item for item in proposals if item.startswith("Continue top ranked surface ")]
+    ranked = [item for item in proposals if item.startswith("Review surface candidate ")]
     assert len(ranked) == 4
     assert any(urls[-1] in item for item in ranked)
 
@@ -1052,7 +1054,7 @@ def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
         evidence_summary={},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Continue top ranked surface "))
+    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
     assert "Replay draft:" in ranked_text
     assert "Ledger skeleton:" in ranked_text
     assert "browser-observed request/response baseline first" in ranked_text
@@ -1062,7 +1064,7 @@ def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
 
     queue = _build_next_action_queue([ranked_text], "target.com")
     ranked_action = queue[0]
-    assert ranked_action["type"] == "ranked-surface"
+    assert ranked_action["type"] == "surface-review"
     assert ranked_action["metadata"]["url"] == url
     assert ranked_action["metadata"]["endpoint"] == "/api/admin/export"
     assert "browser-observed request/response baseline first" in ranked_action["metadata"]["replay_draft"]
@@ -1111,7 +1113,7 @@ def test_ranked_surface_role_replay_when_case_state_ready():
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Continue top ranked surface "))
+    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
     assert "authz-role-replay" in ranked_text
     assert "use registered case_state owner/peer sessions" in ranked_text
     assert "First capture/register actor, session, and object context" not in ranked_text
@@ -1151,7 +1153,7 @@ def test_ranked_surface_generic_api_uses_role_replay_when_case_state_ready():
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Continue top ranked surface "))
+    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
     assert "authz-role-replay" in ranked_text
     assert "--url" in ranked_text
     assert "https://app.target.com/api/Orders" in ranked_text
@@ -1186,7 +1188,7 @@ def test_ranked_surface_spa_page_route_uses_browser_state_first_with_case_state_
         case_state={"actors": 2, "sessions": 2, "objects": 1},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Continue top ranked surface "))
+    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
     assert "browser-state-first page route" in ranked_text
     assert "underlying API" in ranked_text
     assert "authz-role-replay --target" not in ranked_text
@@ -1252,7 +1254,7 @@ def test_ranked_surface_defers_repeated_authz_baselines_when_case_state_missing(
         case_state={"actors": 0, "sessions": 0, "objects": 0},
     )
 
-    assert not any(item.startswith("Continue top ranked surface ") for item in proposals)
+    assert not any(item.startswith("Review surface candidate ") for item in proposals)
     acquisition = next(item for item in proposals if item.startswith("Case-state acquisition lead:"))
     assert "3 recent anonymous Authz baseline(s)" in acquisition
     assert "testing more identical 401 baselines" in acquisition
@@ -1308,7 +1310,7 @@ def test_ranked_surface_path_only_authz_uses_baseline_first():
         evidence_summary={},
     )
 
-    ranked_text = next(item for item in proposals if item.startswith("Continue top ranked surface "))
+    ranked_text = next(item for item in proposals if item.startswith("Review surface candidate "))
     assert "baseline GET or observed-method replay" in ranked_text
     assert "Build a two-actor" not in ranked_text
 

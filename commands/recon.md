@@ -135,7 +135,7 @@ recon/<list-stem>/
 
 ## What To Do Next
 
-1. Single target → run `/surface target.com` to rank cached attack surface.
+1. Single target → run `/surface target.com` to build an AI-first cached attack-surface review pack.
 2. List target → read `recon/<list-stem>/batch_summary.md`, `ai_handoff.md`, `surface_ranking.txt`, and `high_value_targets.json`; use `recon/<list-stem>/<domain>` only as a grouped browsing link, then run `/surface <domain>` or `/autopilot <domain> --normal`.
 3. If exposure files are non-empty, review them as high-value pivots before broad scanning.
 4. If no live hosts, APIs, params, JS, or exposure candidates appear, move to another target.

@@ -263,6 +263,9 @@ class TestSurfaceRanking:
         assert "- run_vuln_scan (mode: hunt)" in output
         assert "Recon Cache:" in output
         assert "- Hosts: 1, surface inputs: 1, structured findings: 0" in output
+        assert "AI Review Pool (advisory; Claude chooses final priority):" in output
+        assert ranked["review_pool"][0]["url"] == "https://api.target.com/graphql"
+        assert ranked["review_pool"][0]["review_reason"]
 
     def test_target_memory_feeds_surface_output_and_workflow_leads(self, tmp_path):
         repo_root = tmp_path
@@ -677,6 +680,43 @@ class TestSurfaceRanking:
         assert "Source: browser-observed XHR/API" in output
         assert "Browser-observed XHR/API: 1 xhr, 1 api" in output
 
+    def test_review_pool_prefers_evidence_rich_browser_candidate_over_score_only_tail(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "browser").mkdir(parents=True)
+
+        browser_url = "https://app.target.com/rest/languages"
+        score_only_url = "https://app.target.com/rest/deluxe-membership"
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://app.target.com [200] [App] [React] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            score_only_url + "\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        (recon_dir / "browser" / "xhr_endpoints.txt").write_text(
+            browser_url + "\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "browser" / "api_endpoints.txt").write_text(
+            browser_url + "\n",
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(
+            load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+        )
+
+        assert ranked["review_pool"][0]["url"] == browser_url
+        assert ranked["review_pool"][0]["review_reason"] == "browser-observed API/workflow"
+        assert any(item["url"] == score_only_url for item in ranked["review_pool"])
+
     def test_js_reader_hypotheses_feed_surface_ranking(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
@@ -1013,9 +1053,11 @@ class TestSurfaceRanking:
 
         ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
         ranked_urls = [item["url"] for item in ranked["p1"]]
+        review_urls = [item["url"] for item in ranked["review_pool"]]
 
         assert "https://api.target.com/api/fresh?q=1" in ranked_urls
         assert "https://api.target.com/rest/admin/application-version" not in ranked_urls
+        assert "https://api.target.com/rest/admin/application-version" not in review_urls
 
     def test_action_queue_final_status_demotes_matching_ranked_surface(self, tmp_path):
         repo_root = tmp_path
@@ -1059,9 +1101,11 @@ class TestSurfaceRanking:
         ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
         p1_urls = [item["url"] for item in ranked["p1"]]
         visible_urls = [item["url"] for item in ranked["p1"] + ranked["p2"]]
+        review_urls = [item["url"] for item in ranked["review_pool"]]
 
         assert "https://app.target.com/orders" not in p1_urls
         assert "https://app.target.com/orders" not in visible_urls
+        assert "https://app.target.com/orders" not in review_urls
         assert "https://app.target.com/rest/order-history" in p1_urls
 
     def test_bare_numeric_paths_do_not_become_p1_sequential_objects(self, tmp_path):

@@ -1020,7 +1020,8 @@ def _text_blob(
     for field in ("active_leads", "next_actions", "dead_ends", "useful_patterns"):
         for item in (target_memory.get(field) or [])[-5:]:
             pieces.append(_entry_text(item))
-    for item in ranked.get("p1", [])[:5] + ranked.get("p2", [])[:3]:
+    review_items = ranked.get("review_pool") or (ranked.get("p1", [])[:5] + ranked.get("p2", [])[:3])
+    for item in review_items[:8]:
         pieces.extend([
             str(item.get("url") or ""),
             str(item.get("path") or ""),
@@ -1084,7 +1085,7 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
                 return item, "目标记忆层已记录该 Skill，沿用当前目标上下文。"
     if re.search(r"\b(dead[-_ ]?end|stuck|no progress|plateau)\b", blob_l):
         return "bb-methodology", "目标记忆显示方向可能卡住，先用方法论 Skill 重定向。"
-    if ranked.get("p1") or ranked.get("p2") or re.search(
+    if ranked.get("review_pool") or ranked.get("p1") or ranked.get("p2") or re.search(
         r"\b(idor|auth|graphql|sqli|sql[-_ ]?injection|ssrf|server[-_ ]?side[-_ ]?(?:fetch|request)|upload|race|webhook|api|tenant|org|admin|missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|schema[-_ ]?error|validator[-_ ]?error|param[-_ ]?discovery|param(?:eter)?[-_ ]?pollution|hpp|mass[-_ ]?assignment|over[-_ ]?posting|overposting|api[-_ ]?docs|swagger|openapi|path[-_ ]?pattern|directory[-_ ]?fuzz(?:ing)?|target[-_ ]?wordlist|structured[-_ ]?record|raw[-_ ]?log|admin[-_ ]?panel|management[-_ ]?exposure|management[-_ ]?console|monitoring[-_ ]?console|metrics|health|config[-_ ]?(?:exposure|page|endpoint|dump|leak)|configuration|stats|trace|datasource|accesskey|secretkey|secret[-_ ]?leak)\b",
         blob_l,
     ):
@@ -1847,7 +1848,8 @@ def _surface_anchor(item: dict) -> str:
     url = str(item.get("url") or "").strip()
     reasons = ", ".join(str(reason) for reason in (item.get("reasons") or [])[:2])
     score = item.get("score")
-    return f"P1/P2 {url} score={score} reasons={reasons}".strip()
+    review_reason = str(item.get("review_reason") or "surface evidence").strip()
+    return f"Surface review {url} score_hint={score} reason={review_reason}; {reasons}".strip()
 
 
 def _gap_anchor(gap: dict) -> str:
@@ -1912,7 +1914,7 @@ def _build_evidence_anchors(
     local_intel: dict,
 ) -> list[str]:
     anchors: list[str] = []
-    for item in ranked.get("p1", [])[:3]:
+    for item in (ranked.get("review_pool") or ranked.get("p1", []))[:3]:
         anchors.append(_surface_anchor(item))
     anchors.extend(_local_intel_anchors(local_intel)[:6])
     for lead in _json_list(ranked.get("workflow_leads"))[:3]:
@@ -2185,7 +2187,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "Race 验证顺序是合法单次 baseline、单次 replay 幂等检查、状态窗口/锁粒度推理、协议能力探测（如 HTTP/2 multiplex 或 last-byte 同步）和最小同步触发；只有训练/自有可回滚资源才进入低请求数并发验证。",
         ])
     if CARD_PATHS["coverage-prompts"] in cards:
-        seeds.append("把 P1/P2 surface 映射到 authz、IDOR、SSRF、Upload、GraphQL、Race 等高价值 lane，找未测组合。")
+        seeds.append("把 surface review pool 映射到 authz、IDOR、SSRF、Upload、GraphQL、Race 等高价值 lane，找未测组合；分数只是提示，最终由 Claude 结合证据判断。")
     if CARD_PATHS["dead-ends"] in cards:
         seeds.append("复查 dead end 的停止条件：只有出现新证据时才重开旧方向。")
     return _dedupe(seeds)[:6]
@@ -2193,7 +2195,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
 
 def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> list[str]:
     angles = [
-        "如果主路径证据不足，转到相邻高信号 P1/P2，而不是扩大读取全量日志。",
+        "如果主路径证据不足，转到相邻高信号 review candidate，而不是扩大读取全量日志。",
         "对浏览器态 XHR/API、JS-reader、source-intel 的新证据保持开放，必要时改选 Skill。",
     ]
     browser = local_intel.get("browser") or {}
@@ -2277,10 +2279,10 @@ def _unknowns(
 ) -> list[str]:
     items: list[str] = []
     if not ranked.get("available"):
-        items.append("No ranked surface available from local recon cache.")
+        items.append("No surface review pack available from local recon cache.")
     stats = ranked.get("stats") or {}
-    if ranked.get("available") and not stats.get("p1") and not stats.get("p2"):
-        items.append("Surface rank has no P1/P2 candidates; recon may be thin or low-signal.")
+    if ranked.get("available") and not stats.get("review_pool") and not stats.get("p1") and not stats.get("p2"):
+        items.append("Surface review pool has no candidates; recon may be thin or low-signal.")
     browser = ranked.get("browser") or {}
     local_browser = local_intel.get("browser") or {}
     if (
@@ -2324,7 +2326,7 @@ def _contradictions(
         if _entry_text(item)
     ]
     new_evidence = "\n".join(
-        [_surface_anchor(item) for item in ranked.get("p1", [])[:5]]
+        [_surface_anchor(item) for item in (ranked.get("review_pool") or ranked.get("p1", []))[:5]]
         + [
             f"{lead.get('title', '')} {lead.get('next_action', '')}"
             for lead in _json_list(ranked.get("workflow_leads"))[:5]
@@ -2387,7 +2389,8 @@ def _local_intel_source_summary(local_intel: dict) -> dict:
 
 def _focus_endpoints_for_ledger(ranked: dict, gaps: list[dict], local_intel: dict) -> list[str]:
     endpoints: list[str] = []
-    for item in ranked.get("p1", [])[:4] + ranked.get("p2", [])[:2]:
+    review_items = ranked.get("review_pool") or (ranked.get("p1", [])[:4] + ranked.get("p2", [])[:2])
+    for item in review_items[:6]:
         endpoints.append(str(item.get("url") or item.get("path") or ""))
     for gap in gaps[:4]:
         endpoints.append(str(gap.get("endpoint") or ""))

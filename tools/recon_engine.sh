@@ -1084,7 +1084,7 @@ emit_claude_hint \
     httpx_present        "$([ -n "$HTTPX_BIN" ] && echo true || echo false)" \
     puredns_present      "$(command -v puredns >/dev/null 2>&1 && echo true || echo false)"
 emit_claude_hint_actions \
-    "python3 tools/surface.py --target ${TARGET}   # rank P1/P2/Kill before broad fuzz" \
+    "python3 tools/surface.py --target ${TARGET}   # build AI surface review pack before broad fuzz" \
     "spawn recon-ranker if live hosts > 50; otherwise read surface.py directly" \
     "abandon target if live_hosts_total stays at 0 after retry"
 

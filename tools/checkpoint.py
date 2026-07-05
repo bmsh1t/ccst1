@@ -219,6 +219,7 @@ def _surface_stats(state: dict) -> dict:
     return {
         "p1": int(stats.get("p1", 0) or 0),
         "p2": int(stats.get("p2", 0) or 0),
+        "review_pool": int(stats.get("review_pool", 0) or 0),
         "workflow_leads": len(_json_list(surface.get("workflow_leads"))),
     }
 
@@ -571,7 +572,7 @@ def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case
     if state.get("next_tool_hint"):
         return "enrich"
     stats = _surface_stats(state)
-    if stats["p1"] or stats["p2"] or state.get("recommended_targets"):
+    if stats["review_pool"] or stats["p1"] or stats["p2"] or state.get("recommended_targets"):
         return "hunt"
     if findings.get("validated_pending_report"):
         return "report"
@@ -1274,7 +1275,13 @@ def _next_proposals(
             replay_suffix = f". Replay draft: {replay_draft.rstrip('.')}" if replay_draft else ""
             ledger_skeleton = _ranked_surface_ledger_skeleton(state, item, target, replay_draft, case_state)
             ledger_suffix = f". Ledger skeleton: {ledger_skeleton}" if ledger_skeleton else ""
-            proposals.append(f"Continue top ranked surface {url}: {suggested}{replay_suffix}{ledger_suffix}")
+            reason = str(item.get("review_reason") or "advisory surface evidence").strip()
+            proposals.append(
+                f"Review surface candidate {url}: {suggested}. "
+                f"Reason: {reason}. AI decision required: choose the exact lane, "
+                f"capture missing browser/source/actor evidence, or defer with evidence"
+                f"{replay_suffix}{ledger_suffix}"
+            )
             ranked_surface_added += 1
     if deferred_role_ranked:
         proposals.append(_case_state_acquisition_proposal(deferred_role_ranked, clean_authz_baselines))
@@ -1346,8 +1353,10 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         return "source-enrichment", 70, "python3 tools/source_intel.py"
     if "run enrichment run_js_read" in lowered:
         return "js-enrichment", 70, "python3 tools/js_reader.py"
+    if "review surface candidate" in lowered:
+        return "surface-review", 70, "AI reviews surface evidence, then chooses the exact lane"
     if "continue top ranked surface" in lowered:
-        return "ranked-surface", 92, "focused hunt on ranked P1/P2 surface"
+        return "ranked-surface", 70, "AI reviews ranked surface evidence, then chooses the exact lane"
     return "next-action", 50, "execute the smallest safe evidence-producing step"
 
 
@@ -1540,7 +1549,7 @@ def _extract_action_metadata(text: str) -> dict:
         })
 
     match = re.match(
-        r"Continue top ranked surface\s+(?P<url>\S+):\s*(?P<rest>.*)$",
+        r"(?:Continue top ranked surface|Review surface candidate)\s+(?P<url>\S+):\s*(?P<rest>.*)$",
         value,
         re.I,
     )
@@ -1628,9 +1637,9 @@ def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[d
 def _dead_end_proposals(state: dict, coverage_gaps: list[dict]) -> list[str]:
     if state.get("has_recon") and not coverage_gaps:
         stats = _surface_stats(state)
-        if not stats["p1"] and not stats["p2"] and not _unsafe_leads(state):
+        if not stats["review_pool"] and not stats["p1"] and not stats["p2"] and not _unsafe_leads(state):
             return [
-                "Evidence: cached surface has no P1/P2 and no high-value matrix gaps. "
+                "Evidence: cached surface has no review candidates and no high-value matrix gaps. "
                 "Why it matters: broad cached recon is currently low-signal. "
                 "Next action: only reopen after new recon, browser, source, or target-memory evidence. "
                 "Stop condition: no new evidence source appears."
@@ -1654,6 +1663,7 @@ def _handoff_summary(
     parts = [
         f"Decision={decision}",
         f"next_action={next_action or state.get('next_action', '-')}",
+        f"review_pool={stats['review_pool']}",
         f"P1={stats['p1']}",
         f"P2={stats['p2']}",
         f"workflow_leads={stats['workflow_leads']}",
@@ -1825,7 +1835,12 @@ def build_checkpoint(
     if decision in {"continue", "hunt", "enrich", "checkpoint"} and not next_action_queue:
         decision = "handoff"
     dead_ends = _dead_end_proposals(state, gaps)
-    recommended_executable_action = next_action_queue[0] if next_action_queue else {}
+    default_candidate = next_action_queue[0] if next_action_queue else {}
+    # Backward compatibility: older command docs and tests still consume the
+    # historical field name. The new name makes the contract explicit: this is
+    # only the default pointer from the candidate set, not a replacement for
+    # Claude's final judgment.
+    recommended_executable_action = default_candidate
     next_action_label = str(
         recommended_executable_action.get("type")
         or state.get("next_action")
@@ -1896,6 +1911,7 @@ def build_checkpoint(
             "handoff": handoff,
         },
         "next_action_queue": next_action_queue,
+        "default_candidate": default_candidate,
         "recommended_executable_action": recommended_executable_action,
         "commands": _write_back_commands(resolved_target, lead, next_items, dead_ends, handoff),
         "retrospect": f"/retrospect {resolved_target}",
@@ -2022,8 +2038,8 @@ def format_checkpoint(checkpoint: dict) -> str:
         *_fmt_nested(evidence.get("record_commands", [])[:3]),
         "- Next action queue:",
         *_fmt_action_queue(checkpoint.get("next_action_queue", [])),
-        "- Recommended executable action:",
-        f"  - {((checkpoint.get('recommended_executable_action') or {}).get('action') or 'none')}",
+        "- Default candidate (compat pointer):",
+        f"  - {((checkpoint.get('default_candidate') or checkpoint.get('recommended_executable_action') or {}).get('action') or 'none')}",
         "- Target write-back:",
         "  - lead:",
         *_fmt_nested(write_back.get("lead", [])),

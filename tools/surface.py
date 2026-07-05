@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-surface.py — rank cached recon output using hunt memory context.
+surface.py — build an AI-first review pack from cached recon and hunt memory.
 """
 
 import argparse
@@ -48,7 +48,6 @@ try:
         load_source_intel_hypotheses,
         source_intel_counts,
     )
-    from tools.surface_weights import value_weight, weight_label
 except ImportError:  # pragma: no cover - top-level tools/ import
     from high_value_signals import classify_high_value_signal, summarize_high_value_signal
     from surface_js_intel import (
@@ -63,7 +62,6 @@ except ImportError:  # pragma: no cover - top-level tools/ import
         load_source_intel_hypotheses,
         source_intel_counts,
     )
-    from surface_weights import value_weight, weight_label
 
 
 def _dedupe_keep_order(items):
@@ -120,7 +118,7 @@ def _count_recon_artifact(recon_artifacts: dict, key: str) -> int:
 def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]:
     """Convert recon exposure counts into soft workflow leads.
 
-    These are attention hints only: they do not alter P1/P2 scoring, do not set
+    These are attention hints only: they do not alter advisory scoring, do not set
     next_action, and do not call any follow-up tools automatically.
     """
     if not recon_artifacts.get("available"):
@@ -692,6 +690,7 @@ BROWSER_VALUE_KEYWORDS = (
 )
 
 LEDGER_FINAL_RESULTS = {"tested_clean", "tested_finding", "dead_end", "not_applicable"}
+REVIEW_POOL_LIMIT = 16
 
 
 def _add_score_breakdown(
@@ -743,6 +742,55 @@ def _format_score_breakdown(item: dict) -> str:
     if not segments:
         return str(total)
     return f"{total} = " + ", ".join(segments[:6])
+
+
+def _add_review_item(pool: list[dict], seen: set[str], item: dict, reason: str) -> None:
+    """Add one surface item to the bounded AI review pool."""
+    url = str(item.get("url") or "").strip()
+    if not url or url in seen or len(pool) >= REVIEW_POOL_LIMIT:
+        return
+    seen.add(url)
+    cloned = dict(item)
+    cloned["review_reason"] = reason
+    pool.append(cloned)
+
+
+def _is_final_surface_item(item: dict) -> bool:
+    """Return True when durable state says this surface already closed."""
+    return bool(item.get("ledger_final") or item.get("action_queue_final"))
+
+
+def _build_review_pool(candidates: list[dict]) -> list[dict]:
+    """Build an AI-first review pool without treating score as a verdict.
+
+    `p1` / `p2` remain for backward-compatible callers. This pool is the
+    preferred Claude-facing surface, so it starts with evidence-rich sources
+    that are hard for regex scoring to judge correctly, then uses score-only
+    items as a tail filler. That keeps tools from steering Claude toward
+    generic high-score paths before real browser/source/scanner evidence.
+    """
+    pool: list[dict] = []
+    seen: set[str] = set()
+    unresolved = [item for item in candidates if not _is_final_surface_item(item)]
+
+    for item in unresolved:
+        if item.get("evidence_convergence"):
+            _add_review_item(pool, seen, item, "cross-evidence convergence")
+    for item in unresolved:
+        if item.get("browser_observed"):
+            _add_review_item(pool, seen, item, "browser-observed API/workflow")
+    for item in unresolved:
+        if item.get("js_intel_observed") or item.get("source_intel_observed"):
+            _add_review_item(pool, seen, item, "JS/source-inferred surface")
+    for item in unresolved:
+        if item.get("scanner_findings"):
+            _add_review_item(pool, seen, item, "scanner lead requiring AI triage")
+    for item in unresolved:
+        if item.get("target_memory_hits"):
+            _add_review_item(pool, seen, item, "target-memory continuation")
+    for item in unresolved:
+        _add_review_item(pool, seen, item, "top advisory score")
+    return pool
 
 
 def _load_intel_signals(recon_dir: Path) -> list[dict]:
@@ -972,9 +1020,9 @@ def _ledger_final_cells(entries: list[dict]) -> dict[tuple[str, str], str]:
 def _action_queue_final_endpoints(actions: list[dict]) -> dict[str, str]:
     """Return endpoints that already reached a final queue status.
 
-    `surface.py` is a ranking aid, not the durable execution state owner.  When
+    `surface.py` is a review-pack aid, not the durable execution state owner. When
     `action_queue.json` says an endpoint was closed as n/a, dead-end, tested,
-    blocked, validated, reported, etc., the ranked surface should stop pushing
+    blocked, validated, reported, etc., the surface review pack should stop pushing
     the exact same endpoint back to P1 unless fresh evidence re-enters via a
     different concrete URL/vulnerability class.
     """
@@ -997,7 +1045,7 @@ def _action_queue_final_endpoints(actions: list[dict]) -> dict[str, str]:
 
 
 def _surface_vuln_hint(path: str, suggested: str, query_keys: list[str]) -> str:
-    """Best-effort vuln class for matching ranked surface to ledger facts."""
+    """Best-effort vuln class for matching a surface candidate to ledger facts."""
     text = f"{path} {suggested}".lower()
     if "sqli" in text or "sql injection" in text:
         return "SQLi"
@@ -1017,7 +1065,7 @@ def load_surface_context(
     *,
     write_probe_log: bool = True,
 ) -> dict:
-    """Load recon + memory data for surface ranking."""
+    """Load recon + memory data for the surface review pack."""
     repo_root = Path(repo_root)
     storage_key = target_storage_key(target)
     recon_dir = repo_root / "recon" / storage_key
@@ -1157,7 +1205,7 @@ def load_surface_context(
 
 
 def rank_surface(context: dict) -> dict:
-    """Rank attack surface candidates into P1/P2/Kill sections."""
+    """Build an AI-first surface review pack with compatibility P1/P2 hints."""
     if not context.get("available"):
         return {
             "available": False,
@@ -1628,27 +1676,6 @@ def rank_surface(context: dict) -> dict:
                 for signal in matching_intel[:5]
             ]
 
-        # Value-class weight multiplier — soft bias toward the high-value
-        # 20% of attack surface (admin/billing/auth/webhook/upload/tenant/etc.).
-        # Applied after all additive scoring so it amplifies real signal
-        # without changing per-source breakdown semantics. See surface_weights.py.
-        weight = value_weight(path)
-        if weight != 1.0:
-            weighted_score = int(round(score * weight))
-            delta = weighted_score - score
-            if delta != 0:
-                score = weighted_score
-                _add_score_breakdown(
-                    score_breakdown,
-                    "value_class",
-                    f"{weight_label(path)} ×{weight:g}",
-                    delta,
-                    path,
-                )
-                entry["score"] = score
-                entry["score_breakdown"] = score_breakdown
-                reasons.append(f"value-class weight ×{weight:g}")
-                entry["reasons"] = reasons
         endpoint_path = parsed.path or "/"
         ledger_vuln_hint = _surface_vuln_hint(path, suggested, query_keys)
         ledger_result = ledger_final_cells.get((endpoint_path, ledger_vuln_hint)) if ledger_vuln_hint else ""
@@ -1717,6 +1744,7 @@ def rank_surface(context: dict) -> dict:
     candidates.sort(key=lambda item: item["score"], reverse=True)
     p1 = [item for item in candidates if item["score"] >= 8][:8]
     p2 = [item for item in candidates if 3 <= item["score"] < 8][:8]
+    review_pool = _build_review_pool(candidates)
 
     return {
         "available": True,
@@ -1725,6 +1753,7 @@ def rank_surface(context: dict) -> dict:
         "recon_artifacts": context.get("recon_artifacts", {}),
         "p1": p1,
         "p2": p2,
+        "review_pool": review_pool,
         "kill": _dedupe_keep_order([json.dumps(item, sort_keys=True) for item in kill]),
         "memory": {
             "tested_count": len(tested_endpoints),
@@ -1749,13 +1778,14 @@ def rank_surface(context: dict) -> dict:
             "total_candidates": len(candidates),
             "p1": len(p1),
             "p2": len(p2),
+            "review_pool": len(review_pool),
             "kill": len(kill),
         },
     }
 
 
 def format_surface_output(ranked: dict, target: str) -> str:
-    """Format ranked surface output for terminal display."""
+    """Format the surface review pack for terminal display."""
     runtime_state = ranked.get("runtime_state") or {}
     recon_artifacts = ranked.get("recon_artifacts") or {}
     # v2 schema uses last_executed_workflow. v1 callers wrote current_stage;
@@ -1833,8 +1863,23 @@ def format_surface_output(ranked: dict, target: str) -> str:
         )
     if runtime_workflow or recon_artifacts.get("available"):
         lines.append("")
+    review_pool = ranked.get("review_pool") or []
     lines.extend([
-        "Priority 1 (start here):",
+        "AI Review Pool (advisory; Claude chooses final priority):",
+    ])
+    if review_pool:
+        for idx, item in enumerate(review_pool[:10], 1):
+            reason = ", ".join(item.get("reasons", [])[:2])
+            review_reason = str(item.get("review_reason") or "surface evidence").strip()
+            lines.append(f"{idx}. {item['url']} — {review_reason}; {reason}")
+            lines.append(f"   Score hint: {_format_score_breakdown(item)}")
+            lines.append(f"   Suggested evidence path: {item['suggested']}")
+    else:
+        lines.append("1. No review candidates from cached recon.")
+
+    lines.extend([
+        "",
+        "Advisory Priority 1 (score hints, not verdicts):",
     ])
     if ranked["p1"]:
         for idx, item in enumerate(ranked["p1"], 1):
@@ -1859,7 +1904,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
     else:
         lines.append("1. No clear P1 candidates from cached recon.")
 
-    lines.extend(["", "Priority 2 (after P1):"])
+    lines.extend(["", "Advisory Priority 2 (score hints, not verdicts):"])
     if ranked["p2"]:
         for idx, item in enumerate(ranked["p2"], 1):
             reason = ", ".join(item["reasons"][:2])
@@ -2039,10 +2084,10 @@ def _surface_options(ranked: dict, target: str) -> list[str]:
     recon_counts = recon_artifacts.get("counts") or {}
 
     options: list[str] = []
-    p1_count = stats.get("p1", 0)
-    if p1_count > 0:
-        options.append(f"start hunting the top P1 host ({p1_count} ranked)")
-        options.append("spawn chain-builder on the highest-confidence candidate before testing")
+    review_count = stats.get("review_pool", 0)
+    if review_count > 0:
+        options.append(f"review the AI surface pool ({review_count} candidates) and choose the next evidence step")
+        options.append("spawn chain-builder on the highest-confidence candidate after Claude reviews the evidence")
     if recon_counts.get("js_endpoints", 0) > 0:
         options.append("spawn js-reader on cached JS bundles for endpoint hypotheses")
     if recon_counts.get("browser_xhr_urls", 0) > 0 or recon_counts.get("browser_api_urls", 0) > 0:
@@ -2061,7 +2106,7 @@ def _surface_options(ranked: dict, target: str) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Rank cached recon output using hunt memory")
+    parser = argparse.ArgumentParser(description="Build an AI-first surface review pack from cached recon")
     parser.add_argument("--target", required=True, help="Target domain")
     parser.add_argument("--memory-dir", default="", help="Optional hunt-memory directory")
     parser.add_argument("--json", action="store_true", help="Output JSON summary")

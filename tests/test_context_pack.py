@@ -71,7 +71,7 @@ def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
     assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
     assert "knowledge/cards/api-idor.md" in pack["knowledge_cards"]
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
-    assert any("P1/P2" in item for item in pack["evidence_anchors"])
+    assert any("Surface review" in item for item in pack["evidence_anchors"])
     assert "AI override" in output
 
 
