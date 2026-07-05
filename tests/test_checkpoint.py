@@ -157,6 +157,8 @@ def test_checkpoint_keeps_report_queued_without_outranking_high_value_hunt(tmp_p
 
     assert checkpoint["decision"] in {"continue", "hunt"}
     assert checkpoint["recommended_executable_action"]["type"] != "report"
+    assert checkpoint["next_action"] == checkpoint["recommended_executable_action"]["type"]
+    assert "next_action=report" not in checkpoint["target_write_back"]["handoff"]
     report_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "report")
     assert report_action["metadata"]["finding_id"] == "TARGET-AUTHZ"
     assert report_action["priority"] >= 90

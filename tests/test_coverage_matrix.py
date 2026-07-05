@@ -304,6 +304,35 @@ class TestRebuildMatrix:
         assert child_ep["endpoint_kind"] == "untriaged"
         assert child_ep["cells"]["Authz"]["status"] == "untested"
 
+    def test_ai_marked_route_prefix_is_removed_from_direct_gaps(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://x.com/rest/admin",
+            "https://x.com/rest/admin/application-configuration",
+        ])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+
+        marked = mark_endpoint_kind(
+            "x.com",
+            "/rest/admin",
+            "route_prefix",
+            reason="container path; test concrete child handlers instead",
+            repo_root=tmp_path,
+        )
+        assert {cell["status"] for cell in marked["cells"].values()} == {"n_a"}
+
+        rebuilt = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", rebuilt, repo_root=tmp_path)
+        by_endpoint = {ep["endpoint"]: ep for ep in rebuilt["endpoints"]}
+        assert by_endpoint["/rest/admin"]["endpoint_kind"] == "route_prefix"
+        assert {cell["status"] for cell in by_endpoint["/rest/admin"]["cells"].values()} == {"n_a"}
+        assert by_endpoint["/rest/admin/application-configuration"]["cells"]["Authz"]["status"] == "untested"
+
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        gap_endpoints = {gap["endpoint"] for gap in gaps}
+        assert "/rest/admin" not in gap_endpoints
+        assert "/rest/admin/application-configuration" in gap_endpoints
+
     def test_needs_triage_lists_untriaged_endpoints_with_hints(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/rest/admin",
@@ -423,6 +452,33 @@ class TestRebuildMatrix:
         # All vuln_class cells exist on the new endpoint (not just the marked one)
         for vc in VULN_CLASSES:
             assert vc in wp_ep["cells"]
+
+    def test_rebuild_preserves_ai_kind_for_findings_only_endpoint(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [])
+        findings_dir = tmp_path / "findings" / "x.com"
+        findings_dir.mkdir(parents=True)
+        (findings_dir / "findings.json").write_text(json.dumps([{
+            "id": "F-1",
+            "endpoint": "/rest/products/search?q=",
+            "vuln_class": "SQLi",
+        }]), encoding="utf-8")
+
+        first = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", first, repo_root=tmp_path)
+        mark_endpoint_kind(
+            "x.com",
+            "/rest/products/search",
+            "api_endpoint",
+            reason="browser-observed query API",
+            repo_root=tmp_path,
+        )
+
+        rebuilt = rebuild_matrix("x.com", repo_root=tmp_path)
+        by_endpoint = {ep["endpoint"]: ep for ep in rebuilt["endpoints"]}
+        ep = by_endpoint["/rest/products/search"]
+        assert ep["endpoint_kind"] == "api_endpoint"
+        assert ep["kind_reason"] == "browser-observed query API"
+        assert ep["cells"]["SQLi"]["status"] == "tested_finding"
 
     def test_rebuild_handles_full_url_in_findings(self, tmp_path):
         """A finding's endpoint may be a full URL (https://host/path) —

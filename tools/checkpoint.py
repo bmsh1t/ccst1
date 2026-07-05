@@ -1645,6 +1645,7 @@ def _handoff_summary(
     state: dict,
     coverage_summary: dict,
     evidence_summary: dict,
+    next_action: str = "",
     note: str = "",
 ) -> str:
     stats = _surface_stats(state)
@@ -1652,7 +1653,7 @@ def _handoff_summary(
     actor_matrix = evidence_summary.get("actor_matrix") or {}
     parts = [
         f"Decision={decision}",
-        f"next_action={state.get('next_action', '-')}",
+        f"next_action={next_action or state.get('next_action', '-')}",
         f"P1={stats['p1']}",
         f"P2={stats['p2']}",
         f"workflow_leads={stats['workflow_leads']}",
@@ -1824,12 +1825,20 @@ def build_checkpoint(
     if decision in {"continue", "hunt", "enrich", "checkpoint"} and not next_action_queue:
         decision = "handoff"
     dead_ends = _dead_end_proposals(state, gaps)
+    recommended_executable_action = next_action_queue[0] if next_action_queue else {}
+    next_action_label = str(
+        recommended_executable_action.get("type")
+        or state.get("next_action")
+        or decision
+        or ""
+    )
     handoff = _handoff_summary(
         target=resolved_target,
         decision=decision,
         state=state,
         coverage_summary=coverage_summary,
         evidence_summary=evidence_summary,
+        next_action=next_action_label,
         note=note,
     )
 
@@ -1837,7 +1846,7 @@ def build_checkpoint(
         "target": resolved_target,
         "decision": decision,
         "phase": context.get("phase", "unknown"),
-        "next_action": state.get("next_action", ""),
+        "next_action": next_action_label,
         "context_pack": {
             "selected_skill": context.get("selected_skill", ""),
             "knowledge_cards": context.get("knowledge_cards", []),
@@ -1887,7 +1896,7 @@ def build_checkpoint(
             "handoff": handoff,
         },
         "next_action_queue": next_action_queue,
-        "recommended_executable_action": next_action_queue[0] if next_action_queue else {},
+        "recommended_executable_action": recommended_executable_action,
         "commands": _write_back_commands(resolved_target, lead, next_items, dead_ends, handoff),
         "retrospect": f"/retrospect {resolved_target}",
         "apply_status": "not applied; rerun with --apply-target-memory to write target memory",

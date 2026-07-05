@@ -60,6 +60,7 @@ COVERAGE_STATUS_BY_ACTION_STATUS = {
     "reported": "tested_finding",
 }
 UNSAFE_REVIEW_FINAL_STATUSES = {"tested", "dead-end", "blocked", "n/a", "candidate", "validated", "reported"}
+REPORT_ACTION_TYPES = {"report"}
 
 
 def now_utc() -> str:
@@ -563,6 +564,15 @@ def select_next_action(queue: dict) -> dict:
     ]
     if not candidates:
         return {}
+    # 报告是阶段收束，不应抢在仍未处理的验证、深挖、coverage、action-gated
+    # lead 前面。否则 /autopilot 会在已有 finding 后过早 report-first，削弱
+    # 复杂链路挖掘。report action 仍保留在队列里，非报告动作清完后会自然浮上来。
+    non_report_candidates = [
+        item for item in candidates
+        if str(item.get("type") or "") not in REPORT_ACTION_TYPES
+    ]
+    if non_report_candidates:
+        candidates = non_report_candidates
     candidates.sort(key=_action_sort_key)
     return candidates[0]
 

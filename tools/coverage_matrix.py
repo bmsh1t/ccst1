@@ -597,8 +597,14 @@ def _empty_cells(
     # public metadata 只影响优先级，不自动写 n_a；是否值得继续看由 AI
     # 结合 JS/source/exposure 证据判断，避免工具层把攻击面“判死”。
     # 只有结构性垃圾（dotted minified-JS 链）是 strong enough 的 floor。
+    # 例外：route_prefix 不是工具正则裁判，而是 Claude/operator 已经写回的
+    # final endpoint kind。此时应把它从“直接 replay 目标”里移出，避免
+    # `/rest/admin × 15 类` 这种虚假 coverage gap 干扰专家循环；真实子端点
+    # 仍保留为独立行继续验证。
     if kind == "minified_js_pseudo" or "minified_js_pseudo" in hints:
         reason = "minified JS property-chain artifact; not an HTTP handler endpoint"
+    elif kind == "route_prefix":
+        reason = "route prefix/container; AI-triaged as not a direct replay endpoint"
 
     if reason:
         return {vc: _na_cell(reason) for vc in VULN_CLASSES}
@@ -1084,7 +1090,8 @@ def rebuild_matrix(
                 for ep in new_endpoints:
                     if ep["endpoint"] == ep_path:
                         ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(params))
-                        kind = str(ep.get("endpoint_kind") or _endpoint_kind(ep_path))
+                        existing_ep = existing.get(ep_path)
+                        kind = _effective_endpoint_kind(existing_ep, ep_path)
                         ep["auto_hints"] = _endpoint_auto_hints(
                             ep_path,
                             ep.get("observed_params") or [],
@@ -1102,17 +1109,34 @@ def rebuild_matrix(
                         }
                         break
                 else:
-                    kind = _endpoint_kind(ep_path)
-                    auto_hints = _endpoint_auto_hints(ep_path, params, all_endpoints=all_seen_endpoints)
-                    ep = {
-                        "endpoint": ep_path,
-                        "weight": max(value_weight(ep_path), _semantic_weight_floor(ep_path, params)),
-                        "endpoint_kind": kind,
-                        "auto_hints": auto_hints,
-                        "observed_params": params,
-                        "source_count": 0,
-                        "cells": _empty_cells(ep_path, endpoint_kind=kind, auto_hints=auto_hints),
-                    }
+                    existing_ep = existing.get(ep_path)
+                    kind = _effective_endpoint_kind(existing_ep, ep_path)
+                    if isinstance(existing_ep, dict):
+                        ep = dict(existing_ep)
+                        ep["cells"] = dict(existing_ep.get("cells") or {})
+                        ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(params))
+                    else:
+                        ep = {
+                            "endpoint": ep_path,
+                            "observed_params": params,
+                            "source_count": 0,
+                            "cells": _empty_cells(ep_path, endpoint_kind=kind),
+                        }
+                    auto_hints = _endpoint_auto_hints(
+                        ep_path,
+                        ep.get("observed_params") or [],
+                        all_endpoints=all_seen_endpoints,
+                    )
+                    ep["endpoint"] = ep_path
+                    ep["weight"] = max(
+                        _coerce_weight(ep.get("weight", value_weight(ep_path)), value_weight(ep_path)),
+                        value_weight(ep_path),
+                        _semantic_weight_floor(ep_path, ep.get("observed_params") or []),
+                    )
+                    ep["endpoint_kind"] = kind
+                    ep["auto_hints"] = auto_hints
+                    ep["source_count"] = int(ep.get("source_count", 0) or 0)
+                    _apply_endpoint_applicability(ep, kind)
                     ep["cells"][vc] = {
                         "status": "tested_finding",
                         "evidence_ref": f"findings/{target_key}/findings.json#{finding.get('id', '')}",

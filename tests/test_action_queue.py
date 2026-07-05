@@ -61,6 +61,44 @@ def test_ingest_checkpoint_persists_and_prioritizes(tmp_path):
     assert (tmp_path / "state" / "target.com" / "action_queue.json").is_file()
 
 
+def test_report_action_does_not_preempt_active_validation_work(tmp_path):
+    checkpoint = {
+        "next_action_queue": [
+            {
+                "id": "R1",
+                "priority": 99,
+                "type": "report",
+                "action": "Draft report for validated finding.",
+                "command_hint": "/report",
+                "redline_required": False,
+            },
+            {
+                "id": "V1",
+                "priority": 80,
+                "type": "ranked-surface",
+                "action": "Continue browser-observed API role replay.",
+                "command_hint": "python3 tools/validation_runner.py authz-role-replay ...",
+                "redline_required": False,
+            },
+        ]
+    }
+
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
+    queue = load_queue(tmp_path, "target.com")
+
+    assert select_next_action(queue)["type"] == "ranked-surface"
+
+    validation = next(item for item in queue["actions"] if item["type"] == "ranked-surface")
+    resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=validation["id"],
+        status="tested",
+        result="Role replay completed; no additional delta.",
+    )
+    assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "report"
+
+
 def test_ingest_checkpoint_preserves_structured_metadata(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
 
