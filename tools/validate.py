@@ -1423,6 +1423,56 @@ def mark_finding_validated(findings_dir: str, finding_id: str, summary: dict, su
     )
 
 
+def _endpoint_path_for_method_match(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith(("http://", "https://")):
+        parsed = urlparse(raw)
+        return (parsed.path or "/").split("?", 1)[0].split("#", 1)[0]
+    return raw.split("?", 1)[0].split("#", 1)[0] or "/"
+
+
+def _validation_method_from_summary(summary: dict, repo: Path) -> str:
+    """Return the replay method without guessing from endpoint shape.
+
+    Explicit summary data wins. For older ad-hoc summaries that missed
+    ``method``, reuse a prior non-validate ledger entry for the same
+    endpoint/vulnerability. This preserves evidence fidelity while avoiding
+    path-based heuristics or value judgments.
+    """
+    explicit = str(summary.get("method") or "").strip()
+    if explicit:
+        return normalize_http_method(explicit)
+
+    target = str(summary.get("target") or "").strip()
+    endpoint = _endpoint_path_for_method_match(str(summary.get("endpoint") or ""))
+    vuln_class = str(summary.get("vuln_class") or "validation").strip().lower()
+    if not target or not endpoint:
+        return "GET"
+
+    try:
+        try:
+            from evidence_ledger import load_entries
+        except ImportError:  # pragma: no cover - package import path
+            from tools.evidence_ledger import load_entries
+        entries = load_entries(repo, target)
+    except Exception:  # pragma: no cover - best-effort evidence fidelity fallback
+        return "GET"
+
+    for entry in reversed(entries):
+        if str(entry.get("source") or "").strip().lower() == "validate":
+            continue
+        if _endpoint_path_for_method_match(str(entry.get("endpoint") or "")) != endpoint:
+            continue
+        if str(entry.get("vuln_class") or "").strip().lower() != vuln_class:
+            continue
+        method = str(entry.get("method") or "").strip()
+        if method:
+            return normalize_http_method(method)
+    return "GET"
+
+
 def _finding_url_from_summary(summary: dict) -> str:
     endpoint = str(summary.get("endpoint") or "").strip()
     if endpoint.startswith(("http://", "https://")):
@@ -1521,6 +1571,7 @@ def upsert_ad_hoc_validated_finding(summary: dict, summary_path: str | Path, *, 
         "line_number": 0,
         "template_id": "",
         "raw": f"validate:{summary.get('result', '')}:{summary_path}",
+        "method": _validation_method_from_summary(summary, repo),
         "validation_status": "validated" if all_pass else "partial",
         "report_status": str(finding.get("report_status") or "not_generated"),
         "validation_summary": str(summary_path),
@@ -1623,7 +1674,7 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
             repo,
             target=target,
             endpoint=endpoint,
-            method=normalize_http_method(summary.get("method")),
+            method=_validation_method_from_summary(summary, repo),
             vuln_class=str(summary.get("vuln_class") or "validation"),
             workflow="validate",
             actor="owner",

@@ -402,6 +402,49 @@ def test_sync_validation_artifacts_uses_summary_method(tmp_path):
     assert followup["next_report"]["missing_evidence"] == []
 
 
+def test_sync_validation_artifacts_infers_missing_method_from_prior_ledger_candidate(tmp_path):
+    from evidence_ledger import load_entries, record_entry
+
+    report_path = tmp_path / "findings" / "target.com-ssrf" / "hackerone-report.md"
+    report_path.parent.mkdir(parents=True)
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="https://target.com/profile/image/url",
+        method="POST",
+        vuln_class="SSRF",
+        workflow="complex-lane-pressure",
+        actor="owner",
+        object_scope="own_object",
+        variant="replay",
+        source="ai-pressure-test",
+        result="candidate",
+        replayed=True,
+        state_changing=True,
+        redline_checked=True,
+        evidence_ref="evidence/target/ssrf-summary.json",
+    )
+    summary = {
+        "target": "target.com",
+        "endpoint": "https://target.com/profile/image/url",
+        "vuln_class": "ssrf",
+        "result": "confirmed",
+        "all_gates_passed": True,
+        "report_path": str(report_path),
+    }
+
+    sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+
+    entries = load_entries(tmp_path, "target.com")
+    assert sync["ledger"]["status"] == "updated"
+    assert entries[-1]["source"] == "validate"
+    assert entries[-1]["method"] == "POST"
+
+    payload = json.loads((tmp_path / "findings" / "target.com" / "findings.json").read_text(encoding="utf-8"))
+    created = payload["findings"][0]
+    assert created["method"] == "POST"
+
+
 def test_sync_validation_artifacts_linked_finding_does_not_create_duplicate(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)
