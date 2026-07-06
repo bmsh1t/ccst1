@@ -19,7 +19,7 @@ Continue a previous hunt on a target.
 
 - You want exact continuation of a previous local agent session trace
 - You are starting a completely new target with no history
-- You only need current recon ranking; `/surface` is better for that
+- You only need current surface evidence review; `/surface` is better for that
 
 ## Inputs
 

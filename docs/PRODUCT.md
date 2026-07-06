@@ -19,7 +19,7 @@
 传统安全测试经常需要在多个终端、扫描器、笔记、报告模板之间切换。本项目把这些步骤收口为一组清晰的工作流：
 
 ```text
-目标确认 → 侦察 → 攻击面排序 → 漏洞测试 → 发现验证 → 报告生成 → 记忆沉淀
+目标确认 → 侦察 → 攻击面证据审阅 → 漏洞测试 → 发现验证 → 报告生成 → 记忆沉淀
 ```
 
 研究员既可以手动执行每一步，也可以使用自治模式让 agent 按阶段推进。
@@ -42,7 +42,7 @@
 - Web 资产侦察与漏洞测试
 - 域名 / IP / CIDR / 资产列表输入
 - API / GraphQL / 参数与鉴权边界测试
-- 浏览器态页面交互、XHR/API/GraphQL 请求回灌与攻击面排序
+- 浏览器态页面交互、XHR/API/GraphQL 请求回灌与攻击面证据审阅
 - 前端 bundle / 本地源码中的路由、对象 ID、租户边界和业务动作假设提取
 - 源码密钥与配置泄露检查
 - GitHub Actions / CI/CD 风险识别
@@ -115,7 +115,7 @@
 当前 Claude Code CLI 的核心工作流已调整为 AI-first：
 
 ```text
-LOAD -> RANK -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDIDATES -> REPORT
+LOAD -> REVIEW EVIDENCE -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDIDATES -> REPORT
 ```
 
 也就是先读取目标历史、recon、surface、findings，再用浏览器态、源码情报和 JS 阅读能力补全业务上下文，随后围绕真实业务动作做精确验证。这样可以避免工具只停留在“扫一遍”的层面，让 AI 更像高级渗透测试工程师一样主动阅读、点击、关联、复现和串联证据。
@@ -124,11 +124,11 @@ LOAD -> RANK -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDIDATES -> RE
 
 - 在 Claude Code CLI 中优先使用 chrome-devtools MCP 采集实时浏览器/Network 证据，使用 playwright MCP 做自动交互和快照；`tools/browser_evidence.py` / `playwright-cli` 仅作为 MCP 不可用或需要脚本化 fallback 时使用
 - 从浏览器真实请求中提取 XHR / API / GraphQL 端点和参数，回灌到 `recon/<target>/browser/`
-- 攻击面排序会识别浏览器态发现的高价值接口，并给 GraphQL、导出、下载、管理、订单、用户、更新、删除、邀请等端点加权
+- 攻击面证据审阅会保留浏览器态发现的高价值接口，并把 GraphQL、导出、下载、管理、订单、用户、更新、删除、邀请等端点作为 advisory hints 交给 AI 判断
 - 从本地源码、前端 JS bundle 和 recon 产物中提取路由、GraphQL operation、对象 ID、租户/账号/角色边界和业务动作关键词
 - 生成 IDOR、auth-bypass、business-logic 等假设，写入 `findings/<target>/source_intel/`
-- `/js-read` 会把 cached JS bundle 交给 `js-reader` agent 阅读，生成端点候选、认证模型、sink 热点、GraphQL operation 和排序后的攻击面假设，写入 `findings/<target>/js_intel/`
-- `/surface` 会读取 `js_intel` 假设并把 LLM 读出来的高价值 JS 接口纳入排序
+- `/js-read` 会把 cached JS bundle 交给 `js-reader` agent 阅读，生成端点候选、认证模型、sink 热点、GraphQL operation 和 AI 可审阅的攻击面假设，写入 `findings/<target>/js_intel/`
+- `/surface` 会读取 `js_intel` 假设并把 LLM 读出来的高价值 JS 接口纳入 AI Review Pool
 - Agent 在遇到 SPA、登录态、dashboard、portal、XHR/GraphQL、账号相关页面时，会优先走浏览器态与源码情报 lane，再把关键请求收敛为可复现证据
 
 ### 4. 自治挖掘 / Agent 工作流
@@ -217,7 +217,7 @@ targets/<target>/sessions/<session_id>/
 - 自动 JSONL 轮转
 - `/pickup` 续接历史挖掘
 - `/pickup` 展示 structured findings 的验证/报告续接建议
-- `/surface` 根据 recon、scanner findings、local intel 和 memory 排序攻击面
+- `/surface` 根据 recon、scanner findings、local intel 和 memory 构建攻击面证据包
 - `/remember` 保存发现和成功打法
 - `/memory-gc` 管理日志大小
 
@@ -318,9 +318,9 @@ targets/<target>/sessions/<session_id>/
 - 不能把历史经验直接当作当前目标事实
 - 当前目标证据始终优先于记忆和知识库召回
 
-### 3. 候选目标 Rerank
+### 3. 候选目标 Evidence Review
 
-目标是对侦察、扫描、情报、记忆和资产监控产生的大量候选入口做统一优先级排序。
+目标是把侦察、扫描、情报、记忆和资产监控产生的大量候选入口整理成 AI 可判断的证据包，而不是让工具替 AI 最终排序。
 
 当前已实现的第一阶段能力：
 
@@ -329,7 +329,7 @@ targets/<target>/sessions/<session_id>/
 - 根据 severity、confidence、漏洞类型做确定性加权
 - `/surface` 读取本地 `recon/<target>/intel.json` / `intel.md`
 - 根据 disclosed report / CVE / advisory 的漏洞关键词做确定性加权
-- P1 / P2 输出展示可解释评分明细，例如 `Score: 17 = attack +2, scanner +15`
+- 兼容 P1 / P2 输出只作为 advisory score hints，展示可解释评分明细，例如 `Score: 17 = attack +2, scanner +15`
 
 后续规划评分信号包括：
 
@@ -436,7 +436,7 @@ targets/<target>/sessions/<session_id>/
 自治流程会围绕以下阶段执行：
 
 ```text
-scope → recon → rank → hunt → validate → report → checkpoint
+scope → recon → review evidence → hunt → validate → report → checkpoint
 ```
 
 支持三种 checkpoint 模式：
@@ -531,7 +531,7 @@ Token / Meme coin 风险扫描：
 |---|---|
 | `/scope` | 测试前确认资产范围 |
 | `/recon` | 执行侦察流水线 |
-| `/surface` | 根据侦察结果、scanner、intel 和记忆系统排序攻击面 |
+| `/surface` | 根据侦察结果、scanner、intel 和记忆系统构建攻击面证据包 |
 | `/hunt` | 进入主动测试流程 |
 | `/js-read` | 阅读 cached JS bundle，生成 JS 攻击面假设 |
 | `/triage` | 快速判断发现是否值得继续 |
@@ -554,7 +554,7 @@ Token / Meme coin 风险扫描：
 | Agent | 角色 |
 |---|---|
 | `recon-agent` | 子域枚举、存活探测、URL 收集、nuclei 侦察 |
-| `recon-ranker` | 攻击面优先级排序 |
+| `recon-ranker` | 攻击面证据审阅辅助 |
 | `validator` | 发现验证与弱发现淘汰 |
 | `report-writer` | 漏洞报告撰写 |
 | `chain-builder` | 漏洞链构造 |
@@ -595,7 +595,7 @@ Token / Meme coin 风险扫描：
 | `tools/js_reader.py` | 为 `js-reader` agent 准备 cached JS 物料 |
 | `tools/request_guard.py` | 请求前置检查、限速、断路器和审计 |
 | `tools/scope_checker.py` | 确定性目标集匹配 |
-| `tools/surface.py` | 攻击面排序，支持 scanner / intel / js_intel / browser / memory 确定性加权和可解释评分明细 |
+| `tools/surface.py` | 攻击面证据包，支持 scanner / intel / js_intel / browser / memory 的 advisory hints 和可解释评分明细 |
 | `tools/resume.py` | 历史目标续接摘要 |
 | `tools/remember.py` | 发现与模式记忆写入 |
 | `tools/intel_engine.py` | 情报聚合 |
@@ -909,7 +909,7 @@ python3 tools/hunt.py --target target.com --agent --resume <session_id>
 它可以帮助完成：
 
 - 信息收集
-- 攻击面排序
+- 攻击面证据审阅
 - 候选漏洞扫描
 - 方法论提示
 - 证据整理

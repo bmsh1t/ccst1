@@ -15,7 +15,7 @@ evidence, replay, and summary aids.
 
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
-existing: LOAD -> RANK -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
+existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
 ```
 
 Super-pentester priority: business impact > workflow evidence > crown-jewel hypothesis > scanner/coverage hints. Scanner quick is a breadth sensor and advisory lead source; scanner-negative is not completion.
@@ -133,7 +133,7 @@ WordPress Tribe Events 6.16.3) before recording tested/dead-end/blocked/lead/sig
 If checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer
 it before generic coverage gaps because actor/session/object continuity is high
 value. This is not a hard rail: missing, stale, empty, or irrelevant case state
-must never block discovery, browser/JS/source enrichment, ranked-surface hunting,
+must never block discovery, browser/JS/source enrichment, surface-review hunting,
 or AI-generated chain pivots. Case state is not a scope gate, permission gate,
 bug-class selector, or IDOR-only workflow; AI override may pursue fresher
 business-impact evidence.

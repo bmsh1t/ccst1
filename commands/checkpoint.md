@@ -107,7 +107,7 @@ CHECKPOINT DECISION
 - `refresh-recon`：没有可用 recon/surface，不要声称测试完成。
 - `enrich`：browser/source/JS enrichment 可能改变下一步。
 - `hunt`：有 surface review candidates、advisory score hints 或 target-memory continuation。
-- `continue`：有 high-value coverage gap。
+- `continue`：有 AI-actionable coverage hint，且无法被当前证据解释为 covered / n/a / blocked / deferred。
 - `continue`：存在 active case_state backlog / enrichment action 时，优先输出 exact replay draft 或缺失证据动作。
 - `continue`：coverage gap 为空但 Actor Matrix 仍有缺口时，也不能声称全面完成。
 - `checkpoint`：存在 action-gated scanner lead 或需要人工授权的 lane。

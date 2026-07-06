@@ -39,7 +39,11 @@ def test_claude_facing_prompts_do_not_reintroduce_tool_authority_phrases():
             "commands/surface.md",
             "commands/checkpoint.md",
             "commands/context-pack.md",
+            "commands/js-read.md",
+            "commands/pickup.md",
             "agents/autopilot.md",
+            "agents/js-reader.md",
+            "agents/recon-agent.md",
             "agents/recon-ranker.md",
         )
     )
@@ -51,6 +55,10 @@ def test_claude_facing_prompts_do_not_reintroduce_tool_authority_phrases():
         "tested_clean = safe",
         "scanner-negative = complete",
         "No high-value matrix gap remains",
+        "prioritized attack surface report",
+        "ranked hunting hypotheses",
+        "ranked attack-surface leads",
+        "current recon ranking",
     )
     for phrase in forbidden:
         assert phrase not in combined
@@ -58,3 +66,27 @@ def test_claude_facing_prompts_do_not_reintroduce_tool_authority_phrases():
     assert "AI chooses priority" in combined or "AI-selected" in combined
     assert "advisory" in combined
     assert "reopen" in combined
+
+
+def test_coverage_and_checkpoint_treat_gaps_as_ai_actionable_hints():
+    coverage_gate = _read("rules/coverage-gate.md")
+    coverage_matrix = _read("tools/coverage_matrix.py")
+    checkpoint = _read("commands/checkpoint.md")
+
+    assert "evidence hint ledger" in coverage_gate
+    assert "AI-actionable `find-gaps`" in coverage_gate
+    assert "raw `find-gaps` 可以被 Claude" in coverage_gate
+    assert "not a fixed execution checklist" in coverage_matrix
+    assert "which coverage hints still need explanation" in coverage_matrix
+    assert "AI-actionable coverage hint" in checkpoint
+    assert "有 high-value coverage gap" not in checkpoint
+
+
+def test_autopilot_flow_uses_review_evidence_not_rank_as_stage():
+    command = _read("commands/autopilot.md")
+    agent = _read("agents/autopilot.md")
+
+    assert "LOAD -> REVIEW EVIDENCE -> ENRICH" in command
+    assert "LOAD -> REVIEW EVIDENCE -> ENRICH" in agent
+    assert "LOAD -> RANK -> ENRICH" not in command
+    assert "LOAD -> RANK -> ENRICH" not in agent

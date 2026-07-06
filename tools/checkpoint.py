@@ -650,8 +650,8 @@ def _lead_proposals(state: dict, context_pack: dict) -> list[str]:
         suggested = str(item.get("suggested") or "").strip()
         if url:
             proposals.append(
-                "Evidence: Ranked P1 surface {url} ({reasons}). Why it matters: "
-                "high-value attack surface from cached recon/browser/source signals. "
+                "Evidence: Surface review candidate {url} ({reasons}). Why it matters: "
+                "interesting attack-surface evidence from cached recon/browser/source signals. "
                 "Next action: {suggested}. Stop condition: no authz/data/state "
                 "difference after minimal replay.".format(
                     url=url,
@@ -2160,8 +2160,8 @@ def _handoff_summary(
         f"Decision={decision}",
         f"next_action={next_action or state.get('next_action', '-')}",
         f"review_pool={stats['review_pool']}",
-        f"P1={stats['p1']}",
-        f"P2={stats['p2']}",
+        f"advisory_first_review={stats['p1']}",
+        f"advisory_follow_up={stats['p2']}",
         f"workflow_leads={stats['workflow_leads']}",
         f"coverage_gaps={coverage_summary.get('high_value_gaps_count', 0)}",
         f"actionable_coverage_gaps={coverage_summary.get('actionable_high_value_gaps_count', 0)}",

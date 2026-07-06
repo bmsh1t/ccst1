@@ -43,7 +43,7 @@ Success signal: `findings/<target>/summary.json`, `findings/<target>/findings.js
 ```text
 1. LOAD      Run context-pack, then read /surface output, target memory, cached recon, findings, and guard hints
 2. ROUTE     Select the main Skill using skills/runtime-protocol.md
-3. RANK      Pick the highest-value P1 workflow: account, admin, API, export, upload, webhook, GraphQL, invite, report/download
+3. REVIEW    Build an evidence-backed surface view; Claude chooses the highest-value workflow: account, admin, API, export, upload, webhook, GraphQL, invite, report/download
 4. KNOWLEDGE Load only 1-2 relevant cards from knowledge/index.md when a lane needs deeper thinking
 5. CHECK     Apply rules/red-lines.md before high-volume traffic, destructive changes to real data, active stored XSS payloads, or race-style load; HTTP method alone is not the boundary
 6. ATTACK    Reduce one hypothesis to exact requests: auth, role, object, method, version, body diff
@@ -170,7 +170,7 @@ Rotate when:
 - three focused variants return identical status/body shape;
 - no auth, object, role, parser, or sink evidence remains;
 - the next step would be a state-changing action without explicit operator intent;
-- the P1 surface is exhausted and `/surface` suggests P2.
+- the current first-review surface is exhausted and `/surface` only shows follow-up hints.
 
 Then run:
 
@@ -179,4 +179,4 @@ python3 tools/checkpoint.py --target target.com
 ```
 
 Use the checkpoint output to update target memory, explain remaining coverage,
-and move to the next ranked lane.
+and move to the next evidence-backed lane.

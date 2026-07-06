@@ -170,10 +170,10 @@ def _pick_next_action(
     structured_findings = structured_findings or {}
     if structured_findings.get("next_validation"):
         return "validate_finding"
-    if structured_findings.get("validated_pending_report"):
-        return "report_finding"
 
     if not has_recon:
+        if structured_findings.get("validated_pending_report"):
+            return "report_finding"
         return "run_recon"
 
     resume_targets = _build_resume_targets(resume_summary)
@@ -191,6 +191,11 @@ def _pick_next_action(
         return "hunt_p2"
     if resume_summary and resume_summary.get("untested_endpoints"):
         return "resume_untested"
+    # A validated finding is a closure/report asset, not the steering wheel.
+    # Surface/replay/resume work above should stay available when current
+    # evidence exposes stronger live leads; otherwise keep the report visible.
+    if structured_findings.get("validated_pending_report"):
+        return "report_finding"
     return "refresh_recon"
 
 
@@ -258,7 +263,7 @@ def _describe_next_step(state: dict) -> str:
             return f"review the top surface candidate, then choose the next evidence step: {first}."
         return "review the surface candidates, then choose the next evidence step."
     if action == "hunt_p2":
-        return "widen into the P2 surface after P1 paths are exhausted."
+        return "widen into follow-up surface hints after first-review candidates are exhausted."
     if action == "refresh_recon":
         return f"refresh recon before going deeper on {target}."
     return "follow the highest-confidence target shown below."
@@ -969,8 +974,8 @@ def format_autopilot_state(state: dict) -> str:
             lines.append(f"Resume targets: {', '.join(state['resume_targets'][:3])}")
 
     lines.append(f"Surface review candidates: {surface.get('stats', {}).get('review_pool', 0)}")
-    lines.append(f"Advisory P1 score hints: {surface.get('stats', {}).get('p1', 0)}")
-    lines.append(f"Advisory P2 score hints: {surface.get('stats', {}).get('p2', 0)}")
+    lines.append(f"Advisory first-review score hints: {surface.get('stats', {}).get('p1', 0)}")
+    lines.append(f"Advisory follow-up score hints: {surface.get('stats', {}).get('p2', 0)}")
 
     tripped_hosts = guard_status.get("tripped_hosts", [])
     if tripped_hosts:

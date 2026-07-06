@@ -73,7 +73,7 @@ def test_autopilot_keeps_decision_loop_without_legacy_cadence_bulk():
     for marker in (
         "Expert Hunter Autopilot",
         "fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> SCANNER QUICK -> WORKFLOW",
-        "LOAD -> RANK -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT",
+        "LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT",
         "Discovery / Exploitation / Validation Modes",
         "Known Software Intelligence Lane",
         "Deep Mode",

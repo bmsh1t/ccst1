@@ -4,16 +4,17 @@ coverage_matrix.py — (endpoint x vuln_class) coverage state for the hunt.
 
 Purpose:
     A senior hunter does NOT finish a run while obvious high-value
-    test combinations remain untouched. The coverage matrix captures
-    this as state: for each endpoint × vuln class pair, the cell is
-    either tested-clean, tested-with-finding, untested, or N/A. The
-    Finish Condition F3 invariant (commands/autopilot.md) blocks
-    `finish` while any high-weight cell remains untested without an
-    N/A reason.
+    test combinations remain unexplained. The coverage matrix captures
+    this as an evidence hint ledger: for each endpoint × vuln class pair,
+    the cell is either tested-clean, tested-with-finding, untested, or N/A.
+    It is not a fixed execution checklist and must not override Claude's
+    attack-surface judgment. Raw gaps are hints; Claude must review them
+    against browser/source/JS evidence, Evidence Ledger, case state, raw
+    responses, and business context before treating them as actionable.
 
     This tool is NOT auto-invoked. Claude consults it via the
     Question -> Tool Reference table when its working_hypothesis
-    asks "which high-value cells remain untested?".
+    asks "which coverage hints still need explanation?".
 
 Design notes:
     - Schema per design.md Contract 4 (Phase 3): endpoints array

@@ -1924,7 +1924,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
 
     lines.extend([
         "",
-        "Advisory Priority 1 (score hints, not verdicts):",
+        "Advisory first-review score hints (legacy P1, not verdicts):",
     ])
     if ranked["p1"]:
         for idx, item in enumerate(ranked["p1"], 1):
@@ -1947,9 +1947,9 @@ def format_surface_output(ranked: dict, target: str) -> str:
             lines.append(f"   Score: {_format_score_breakdown(item)}")
             lines.append(f"   Suggested: {item['suggested']}")
     else:
-        lines.append("1. No clear P1 candidates from cached recon.")
+        lines.append("1. No clear first-review score hints from cached recon.")
 
-    lines.extend(["", "Advisory Priority 2 (score hints, not verdicts):"])
+    lines.extend(["", "Advisory follow-up score hints (legacy P2, not verdicts):"])
     if ranked["p2"]:
         for idx, item in enumerate(ranked["p2"], 1):
             reason = ", ".join(item["reasons"][:2])
@@ -1969,7 +1969,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
             lines.append(f"   Score: {_format_score_breakdown(item)}")
             lines.append(f"   Suggested: {item['suggested']}")
     else:
-        lines.append("1. No P2 candidates. Consider re-running recon.")
+        lines.append("1. No follow-up score hints. Consider re-running recon.")
 
     lines.extend(["", "Low-priority host hints (not exclusion):"])
     if kill_items:
@@ -2106,8 +2106,8 @@ def format_surface_output(ranked: dict, target: str) -> str:
         "",
         "Stats:",
         f"- Total candidates: {ranked['stats']['total_candidates']}",
-        f"- P1: {ranked['stats']['p1']}",
-        f"- P2: {ranked['stats']['p2']}",
+        f"- Advisory first-review hints: {ranked['stats']['p1']}",
+        f"- Advisory follow-up hints: {ranked['stats']['p2']}",
         f"- Low-priority host hints: {ranked['stats']['kill']}",
     ])
 
@@ -2132,7 +2132,7 @@ def _surface_options(ranked: dict, target: str) -> list[str]:
     review_count = stats.get("review_pool", 0)
     if review_count > 0:
         options.append(f"review the AI surface pool ({review_count} candidates) and choose the next evidence step")
-        options.append("spawn chain-builder on the highest-confidence candidate after Claude reviews the evidence")
+        options.append("spawn chain-builder after Claude chooses a candidate from the evidence")
     if recon_counts.get("js_endpoints", 0) > 0:
         options.append("spawn js-reader on cached JS bundles for endpoint hypotheses")
     if recon_counts.get("browser_xhr_urls", 0) > 0 or recon_counts.get("browser_api_urls", 0) > 0:

@@ -339,6 +339,56 @@ class TestAutopilotState:
         assert "Next: generate a report for validated finding admin_config." in output
         assert "Next validation:" not in output
 
+    def test_validated_report_does_not_preempt_live_surface_review(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [GraphQL] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text(
+            "https://api.target.com/api/orders?id=42\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+
+        findings_dir = repo_root / "findings" / "target.com"
+        findings_dir.mkdir(parents=True)
+        (findings_dir / "findings.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": "target.com",
+                    "findings": [
+                        {
+                            "id": "mfa_report",
+                            "type": "mfa",
+                            "severity": "medium",
+                            "confidence": "high",
+                            "url": "https://api.target.com/mfa",
+                            "validation_status": "validated",
+                            "report_status": "not_generated",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+        output = format_autopilot_state(state)
+
+        assert state["has_recon"] is True
+        assert state["surface_review_candidates"]
+        assert state["next_action"] == "hunt_p1"
+        assert "Next step: review the top surface candidate" in output
+        assert "Next report: mfa_report [medium/high] mfa https://api.target.com/mfa" in output
+        assert "Next: generate a report for validated finding mfa_report." not in output
+
     def test_prefers_p1_targets_when_recon_ready(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"

@@ -3,7 +3,7 @@ name: js-reader
 description: >-
   JS static reader. Reads cached JS materials prepared by tools/js_reader.py and
   produces attack-surface hypotheses (endpoint candidates, auth model, sink hot
-  spots, realtime/API workflow signals, ranked attack ideas with reasoning).
+  spots, realtime/API workflow signals, AI-reviewable attack ideas with reasoning).
   Use after /recon to convert raw JS into LLM-derived hunting leads. Never
   fetches URLs — only reads local files prepared by the materials step. Prefer
   a Sonnet-class model when available; otherwise inherit the current session
@@ -41,7 +41,7 @@ LinkFinder / SecretFinder / source_intel cannot.
 ## Outputs
 
 - `findings/<target>/js_intel/hypotheses.json`
-- A ranked markdown summary of the top JS-derived leads
+- An AI-reviewable markdown summary of the top JS-derived leads
 - Leads / Signals only, not validated findings
 
 ## Artifacts Written

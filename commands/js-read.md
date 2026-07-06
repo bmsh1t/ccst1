@@ -1,5 +1,5 @@
 ---
-description: Prepare cached JS materials and run the js-reader agent to produce endpoint, auth, realtime/framework, sink, and ranked hunting hypotheses. Usage: /js-read target.com
+description: Prepare cached JS materials and run the js-reader agent to produce endpoint, auth, realtime/framework, sink, and AI-reviewable hunting hypotheses. Usage: /js-read target.com
 ---
 
 # /js-read
@@ -35,7 +35,7 @@ Expected hypotheses include:
 - GraphQL operations and WebSocket/realtime signals
 - framework/source-map hints such as Next/Nuxt/source maps
 - URL-fetch, webhook, upload/import/parser leads
-- ranked attack-surface leads for `/surface` and `/hunt`
+- AI-reviewable attack-surface leads for `/surface` and `/hunt`
 
 ## When To Use
 

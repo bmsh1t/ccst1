@@ -97,9 +97,10 @@ python3 tools/coverage_matrix.py rebuild --target <target>
 python3 tools/coverage_matrix.py find-gaps --target <target>
 ```
 
-矩阵不是唯一真相，但它是防偷懒的硬证据：
+矩阵不是唯一真相，而是防偷懒的 evidence hint ledger：
 
-- `find-gaps` 非空：只能 checkpoint 或继续，不能声称全面完成。
+- 未解释的 AI-actionable `find-gaps` 非空：只能 checkpoint 或继续，不能声称全面完成。
+- raw `find-gaps` 可以被 Claude 基于 browser/source/JS、ledger、case_state、业务语义和 raw evidence 解释为 covered / n/a / low-evidence / blocked / intentionally deferred；必须写明理由。
 - `find-gaps` 为空：还要检查 `/surface` Workflow Leads、target memory dead ends、unsafe-skipped、blocked/n/a。
 - rebuild 后 endpoint 为空：说明输入不足，应标记为 `unknown` 或 `blocked`，而不是 `tested`。
 - 被红线阻止的 gap 应记录为 `blocked: red-line`，不能用危险动作补覆盖。

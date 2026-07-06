@@ -46,7 +46,7 @@ Do not become a passive scanner wrapper. Turn recon, browser behavior, source/JS
 
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
-existing: LOAD -> RANK -> ENRICH -> HUNT -> CHAIN -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
+existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> CHAIN -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
 ```
 
 ## Four-Layer Runtime
