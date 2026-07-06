@@ -83,6 +83,7 @@ def test_write_validation_summary_updates_last_validate(tmp_path, monkeypatch):
     saved = json.loads(report_summary.read_text(encoding="utf-8"))
     assert saved["target"] == "api.target.com"
     assert saved["program"] == "target-program"
+    assert saved["method"] == "GET"
     assert saved["vuln_class"] == "idor"
     assert saved["severity"] == "high"
     assert saved["result"] == "confirmed"
@@ -99,6 +100,23 @@ def test_write_validation_summary_updates_last_validate(tmp_path, monkeypatch):
     last_saved = json.loads(last_validate.read_text(encoding="utf-8"))
     assert last_saved["report_path"] == str(report_path)
     assert last_saved["submission_notes_path"] == str(submission_notes)
+
+
+def test_validation_summary_preserves_explicit_method(tmp_path):
+    report_path = tmp_path / "findings" / "target-program-ssrf" / "hackerone-report.md"
+    info = {
+        "target": "target-program",
+        "vuln_type": "SSRF",
+        "endpoint": "https://api.target.com/profile/image/url",
+        "method": "post",
+        "impact": "Server-side request is stored and readable back.",
+        "cvss_score": 5.3,
+        "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N",
+    }
+
+    summary = validate.build_validation_summary(info, all_pass=True, report_path=report_path)
+
+    assert summary["method"] == "POST"
 
 
 def test_ensure_report_output_path_creates_explicit_output_parent(tmp_path):
@@ -334,11 +352,34 @@ def test_sync_validation_artifacts_records_ledger_and_resolves_queue(tmp_path):
     assert sync["ledger"]["status"] == "updated"
     assert sync["action_queue"]["status"] == "updated"
     assert entries[-1]["source"] == "validate"
+    assert entries[-1]["method"] == "GET"
     assert entries[-1]["result"] == "tested_finding"
     assert entries[-1]["evidence_ref"].endswith("validation-summary.json")
     assert action["status"] == "validated"
     assert "validation-summary=" in action["result"]
     assert "submission-notes=" in action["notes"]
+
+
+def test_sync_validation_artifacts_uses_summary_method(tmp_path):
+    from evidence_ledger import load_entries
+
+    report_path = tmp_path / "findings" / "target.com-ssrf" / "hackerone-report.md"
+    summary = {
+        "target": "target.com",
+        "endpoint": "https://target.com/profile/image/url",
+        "method": "POST",
+        "vuln_class": "ssrf",
+        "result": "confirmed",
+        "all_gates_passed": True,
+        "report_path": str(report_path),
+    }
+
+    validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+
+    entries = load_entries(tmp_path, "target.com")
+    assert entries[-1]["method"] == "POST"
+    assert entries[-1]["endpoint"] == "/profile/image/url"
+    assert entries[-1]["raw_endpoint"] == "https://target.com/profile/image/url"
 
 
 def test_sync_validation_artifacts_partial_keeps_queue_candidate(tmp_path):

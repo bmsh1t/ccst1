@@ -125,6 +125,8 @@ def test_checkpoint_displays_runner_candidates_as_advisory_evidence(tmp_path):
     output = format_checkpoint(checkpoint)
 
     assert checkpoint["validation_runner_candidates"][0]["id"] == "idor-basket"
+    assert checkpoint["next_action_queue"][0]["type"] == "validation"
+    assert "Review validation-runner candidate idor-basket" in checkpoint["next_action_queue"][0]["action"]
     assert "Validation runner candidates (advisory; require /validate before report):" in output
     assert "idor-basket [idor_actor_pair/tested_finding]" in output
     assert checkpoint["decision"] != "report"
@@ -819,6 +821,37 @@ def test_checkpoint_skips_parent_only_authz_gap_when_child_validated():
 
     assert not any("Cover high-value matrix gap: /rest/admin x Authz" in item for item in proposals)
     assert any("Cover high-value matrix gap: /api/v1/admin/users x Authz" in item for item in proposals)
+
+
+def test_checkpoint_skips_coverage_gap_closed_by_evidence_ledger():
+    proposals = _next_proposals(
+        state={"has_recon": True, "recommended_targets": [], "surface": {"workflow_leads": []}},
+        coverage_gaps=[
+            {
+                "endpoint": "/rest/products/search",
+                "vuln_class": "XSS",
+                "weight": 3.0,
+                "relevance_score": 5,
+                "relevance_reason": "reflection/DOM input surface",
+                "observed_params": ["q"],
+            }
+        ],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={},
+        evidence_summary={
+            "closed_cells": [
+                {
+                    "endpoint": "/rest/products/search",
+                    "vuln_class": "XSS",
+                    "result": "tested_finding",
+                    "evidence_ref": "evidence/target.com/browser/dom_xss.txt",
+                }
+            ]
+        },
+    )
+
+    assert not any("Cover high-value matrix gap: /rest/products/search x XSS" in item for item in proposals)
 
 
 def test_checkpoint_filters_actions_already_final_in_action_queue(tmp_path):

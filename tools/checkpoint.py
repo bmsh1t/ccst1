@@ -898,12 +898,18 @@ def _canonical_vuln_for_ledger(vuln_hint: str) -> str:
         "sqli": "SQLi",
         "sql": "SQLi",
         "sql-injection": "SQLi",
+        "xss": "XSS",
+        "cross-site-scripting": "XSS",
         "ssrf": "SSRF",
         "race": "Race",
         "toctou": "Race",
         "graphql": "GraphQL",
+        "oauth": "OAuth",
+        "jwt": "JWT",
+        "csrf": "CSRF",
         "upload": "Upload",
         "file-upload": "Upload",
+        "webhook": "Webhook",
         "openredirect": "OpenRedirect",
         "open-redirect": "OpenRedirect",
         "redirect": "OpenRedirect",
@@ -1441,7 +1447,7 @@ def _ledger_covered_cells(evidence_summary: dict) -> set[tuple[str, str]]:
         if not isinstance(cell, dict):
             continue
         endpoint = _normalise_endpoint_path(str(cell.get("endpoint") or ""))
-        vuln_class = str(cell.get("vuln_class") or "").strip()
+        vuln_class = _canonical_vuln_for_ledger(str(cell.get("vuln_class") or "").strip())
         if endpoint and vuln_class:
             covered.add((endpoint, vuln_class))
     for entry in evidence_summary.get("recent_entries") or []:
@@ -1451,7 +1457,7 @@ def _ledger_covered_cells(evidence_summary: dict) -> set[tuple[str, str]]:
         if result not in {"tested_clean", "tested_finding", "dead_end", "not_applicable"}:
             continue
         endpoint = _normalise_endpoint_path(str(entry.get("endpoint") or entry.get("raw_endpoint") or ""))
-        vuln_class = str(entry.get("vuln_class") or "").strip()
+        vuln_class = _canonical_vuln_for_ledger(str(entry.get("vuln_class") or "").strip())
         if endpoint and vuln_class:
             covered.add((endpoint, vuln_class))
     return covered
@@ -1503,6 +1509,41 @@ def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> li
                 vuln_class=vuln_class,
                 evidence=evidence_suffix,
                 notes=notes_suffix,
+            )
+        )
+    return proposals
+
+
+def _runner_candidate_proposals(state: dict, *, limit: int = 2) -> list[str]:
+    """Expose runner evidence as AI review work when no finding row owns it yet."""
+    proposals: list[str] = []
+    for item in (state.get("validation_runner_candidates") or [])[:limit]:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = str(item.get("id") or "").strip()
+        lane = str(item.get("lane") or "").strip()
+        method = str(item.get("method") or "GET").strip().upper()
+        url = str(item.get("url") or "").strip()
+        evidence_ref = str(item.get("summary_path") or "").strip()
+        rubric = str(item.get("rubric_status") or "").strip()
+        missing = ", ".join(str(value) for value in (item.get("missing_evidence") or [])[:3])
+        if not url:
+            continue
+        rubric_suffix = f" rubric={rubric}" if rubric else ""
+        missing_suffix = f" missing={missing}" if missing else ""
+        evidence_suffix = f" Evidence={evidence_ref}." if evidence_ref else ""
+        proposals.append(
+            "Review validation-runner candidate {id} [{lane}] {method} {url}.{rubric}{missing} "
+            "AI task: read raw request/response evidence, impact, replayability, and policy context; "
+            "then run /validate if reportable, or record tested_clean/dead_end in evidence ledger."
+            "{evidence} Stop condition: validated finding, tested_clean, dead_end, or blocked_redline is recorded.".format(
+                id=candidate_id or "-",
+                lane=lane or "runner",
+                method=method,
+                url=url,
+                rubric=rubric_suffix,
+                missing=missing_suffix,
+                evidence=evidence_suffix,
             )
         )
     return proposals
@@ -1601,6 +1642,7 @@ def _next_proposals(
             )
         )
     proposals.extend(_ledger_candidate_proposals(evidence_summary))
+    proposals.extend(_runner_candidate_proposals(state))
     if not state.get("has_recon"):
         proposals.append(f"Run /recon {target}, then /surface {target}, then rerun /checkpoint {target}.")
 
@@ -1647,6 +1689,12 @@ def _next_proposals(
             )
 
     for gap in _checkpoint_coverage_gaps(coverage_gaps, matrix):
+        if _ledger_covers_cell(
+            covered_ledger_cells,
+            str(gap.get("endpoint") or ""),
+            str(gap.get("vuln_class") or ""),
+        ):
+            continue
         relevance = ""
         if int(gap.get("relevance_score", 0) or 0) > 0:
             reason = str(gap.get("relevance_reason") or "").strip()

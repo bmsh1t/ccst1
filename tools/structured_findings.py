@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:
     from evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
@@ -106,6 +107,187 @@ def _compact_runner_summary(payload: dict, path: Path, repo_root: Path) -> dict:
     }
 
 
+def _artifact_key(value: str, repo_root: Path) -> str:
+    """Return a comparable repo-relative artifact path key."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    path = Path(raw)
+    if path.is_absolute():
+        return _relative_to_repo(path, repo_root)
+    return raw
+
+
+def _url_path_query(value: str) -> str:
+    """Normalize a finding/candidate URL to path+query for final-state matching."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        return raw
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return raw
+    path = parsed.path or "/"
+    if parsed.query:
+        return f"{path}?{parsed.query}"
+    return path
+
+
+def _url_path_only(value: str) -> str:
+    """Normalize to path only, matching evidence ledger endpoint granularity."""
+    return _url_path_query(value).split("?", 1)[0]
+
+
+def _runner_lane_type(lane: str) -> str:
+    """Map runner lane names to structured finding type families."""
+    lane_l = str(lane or "").strip().lower()
+    if lane_l.startswith("authz_"):
+        return "auth_bypass"
+    if lane_l.startswith("idor_"):
+        return "idor"
+    if lane_l.startswith("sqli_"):
+        return "sqli"
+    if "ssrf" in lane_l:
+        return "ssrf"
+    if "xss" in lane_l:
+        return "xss"
+    return ""
+
+
+def _runner_lane_vuln_class(lane: str) -> str:
+    """Map runner lane names to evidence-ledger vulnerability classes."""
+    lane_l = str(lane or "").strip().lower()
+    if lane_l.startswith("authz_"):
+        return "authz"
+    if lane_l.startswith("idor_"):
+        return "idor"
+    if lane_l.startswith("sqli_"):
+        return "sqli"
+    if "ssrf" in lane_l:
+        return "ssrf"
+    if "xss" in lane_l:
+        return "xss"
+    return ""
+
+
+def _finding_type_aliases(value: str) -> set[str]:
+    """Return compatible type labels used by scanner, runner, and reports."""
+    kind = str(value or "").strip().lower()
+    aliases = {kind} if kind else set()
+    if kind in {"authz", "authorization", "auth_bypass", "exposure"}:
+        aliases.add("auth_bypass")
+    return aliases
+
+
+def _finalized_runner_candidate_keys(repo_root: Path, target_key: str) -> dict[str, set]:
+    """Load already closed finding keys so runner evidence stops resurfacing.
+
+    This is only a state-closure filter: it does not decide whether a fresh runner
+    candidate is valuable. Rejected/generated findings are final enough to hide
+    matching runner summaries from the Claude-facing review pool; runner-only
+    validated rows without report closure stay visible for `/validate`.
+    """
+    findings_path = repo_root / "findings" / target_key / "findings.json"
+    try:
+        payload = json.loads(findings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"ids": set(), "artifacts": set(), "url_types": set()}
+
+    findings = payload.get("findings", []) if isinstance(payload, dict) else payload
+    if not isinstance(findings, list):
+        return {"ids": set(), "artifacts": set(), "url_types": set()}
+
+    ids: set[str] = set()
+    artifacts: set[str] = set()
+    url_types: set[tuple[str, str]] = set()
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        validation_status = str(item.get("validation_status") or "").strip().lower()
+        report_status = str(item.get("report_status") or "").strip().lower()
+        if validation_status != "rejected" and report_status != "generated":
+            continue
+
+        finding_id = str(item.get("id") or "").strip()
+        if finding_id:
+            ids.add(finding_id)
+
+        for field in ("source_file", "validation_summary"):
+            artifact = _artifact_key(str(item.get(field) or ""), repo_root)
+            if artifact:
+                artifacts.add(artifact)
+
+        path_query = _url_path_query(str(item.get("url") or ""))
+        for alias in _finding_type_aliases(str(item.get("type") or "")):
+            if path_query and alias:
+                url_types.add((path_query, alias))
+
+    return {"ids": ids, "artifacts": artifacts, "url_types": url_types}
+
+
+def _closed_ledger_runner_keys(repo_root: Path, target_key: str) -> set[tuple[str, str, str]]:
+    """Return runner candidates closed by later AI/validate ledger evidence.
+
+    validation_runner writes its own candidate/tested_finding rows; those rows
+    must remain visible so Claude can review them. Later AI review, `/validate`,
+    or manual ledger rows are the closure signal.
+    """
+    ledger_path = repo_root / "memory" / "evidence" / target_key / "ledger.jsonl"
+    if not ledger_path.is_file():
+        return set()
+
+    final_results = {"tested_clean", "tested_finding", "dead_end", "blocked_redline", "not_applicable"}
+    closed: set[tuple[str, str, str]] = set()
+    try:
+        lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return set()
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        result = str(entry.get("result") or "").strip().lower()
+        if result not in final_results:
+            continue
+        source = str(entry.get("source") or "").strip().lower()
+        if source.startswith("validation-runner"):
+            continue
+        method = str(entry.get("method") or "GET").strip().upper() or "GET"
+        endpoint = _url_path_only(str(entry.get("raw_endpoint") or entry.get("endpoint") or ""))
+        vuln = str(entry.get("vuln_class") or "").strip().lower()
+        if method and endpoint and vuln:
+            closed.add((method, endpoint, vuln))
+    return closed
+
+
+def _runner_candidate_is_finalized(compact: dict, finalized: dict[str, set]) -> bool:
+    """Return true when a runner summary is superseded by final finding state."""
+    candidate_id = str(compact.get("id") or "").strip()
+    if candidate_id and candidate_id in finalized.get("ids", set()):
+        return True
+    summary_path = str(compact.get("summary_path") or "").strip()
+    if summary_path and summary_path in finalized.get("artifacts", set()):
+        return True
+
+    lane_type = _runner_lane_type(str(compact.get("lane") or ""))
+    path_query = _url_path_query(str(compact.get("url") or ""))
+    return bool(lane_type and path_query and (path_query, lane_type) in finalized.get("url_types", set()))
+
+
+def _runner_candidate_is_closed_by_ledger(compact: dict, closed: set[tuple[str, str, str]]) -> bool:
+    method = str(compact.get("method") or "GET").strip().upper() or "GET"
+    endpoint = _url_path_only(str(compact.get("url") or ""))
+    vuln = _runner_lane_vuln_class(str(compact.get("lane") or ""))
+    return bool(method and endpoint and vuln and (method, endpoint, vuln) in closed)
+
+
 def load_validation_runner_candidate_pool(
     repo_root: Path | str,
     target: str,
@@ -125,6 +307,8 @@ def load_validation_runner_candidate_pool(
     if not validation_dir.is_dir():
         return []
 
+    finalized = _finalized_runner_candidate_keys(repo, target_key)
+    closed_by_ledger = _closed_ledger_runner_keys(repo, target_key)
     candidates: list[tuple[float, str, dict]] = []
     for path in validation_dir.glob("*/summary.json"):
         try:
@@ -134,6 +318,10 @@ def load_validation_runner_candidate_pool(
         if not _runner_summary_is_candidate(payload):
             continue
         compact = _compact_runner_summary(payload, path, repo)
+        if _runner_candidate_is_finalized(compact, finalized):
+            continue
+        if _runner_candidate_is_closed_by_ledger(compact, closed_by_ledger):
+            continue
         try:
             mtime = path.stat().st_mtime
         except OSError:

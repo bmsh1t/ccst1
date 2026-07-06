@@ -1249,6 +1249,12 @@ def derive_validate_target(program_handle: str, endpoint: str) -> str:
     return (program_handle or "unknown").strip()
 
 
+def normalize_http_method(value: str | None) -> str:
+    """Return a stable HTTP method label for validation evidence write-back."""
+    method = str(value or "GET").strip().upper()
+    return method or "GET"
+
+
 def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | Path) -> dict:
     """Build a compact JSON summary that /remember can import later."""
     vuln_class = (info.get("vuln_type") or "").strip().lower()
@@ -1267,6 +1273,7 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
         "target": derive_validate_target(info.get("target", ""), info.get("endpoint", "")),
         "program": (info.get("target") or "").strip(),
         "endpoint": (info.get("endpoint") or "").strip(),
+        "method": normalize_http_method(info.get("method")),
         "vuln_class": vuln_class,
         "result": "confirmed" if report_ready else "partial",
         "severity": severity,
@@ -1482,7 +1489,7 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
             repo,
             target=target,
             endpoint=endpoint,
-            method="GET",
+            method=normalize_http_method(summary.get("method")),
             vuln_class=str(summary.get("vuln_class") or "validation"),
             workflow="validate",
             actor="owner",
@@ -1717,6 +1724,7 @@ def main():
     parser.add_argument("--program", default="", help="HackerOne program handle for dup check")
     parser.add_argument("--findings-dir", default="", help="Directory containing findings.json")
     parser.add_argument("--finding-id", default="", help="Prefill target/type/endpoint from findings.json")
+    parser.add_argument("--method", default="GET", help="HTTP method used by the validated replay evidence")
     parser.add_argument("--browser-url", default="", help="Capture validate browser evidence for this URL")
     parser.add_argument(
         "--browser-session",
@@ -1838,6 +1846,7 @@ def main():
         "target":      target_program,
         "vuln_type":   vuln_type,
         "endpoint":    endpoint,
+        "method":      normalize_http_method(args.method),
         "impact":      impact_desc,
         "cvss_score":  cvss_score,
         "cvss_vector": cvss_vector,

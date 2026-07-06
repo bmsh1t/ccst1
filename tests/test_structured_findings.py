@@ -313,3 +313,131 @@ def test_load_validation_runner_candidate_pool_keeps_runner_evidence_advisory(tm
     assert pool[0]["rubric_status"] == "candidate-ready"
     assert "requires /validate" in pool[0]["report_gate"]
     assert "tested_clean" not in "\n".join(lines)
+
+
+def test_load_validation_runner_candidate_pool_filters_finalized_findings(tmp_path):
+    validation_root = tmp_path / "evidence" / "target.com" / "validation"
+    for name, lane, url in [
+        ("authz-public-exposure-api_Feedbacks", "authz_public_exposure", "https://target.com/api/Feedbacks"),
+        ("sqli-result-diff-search", "sqli_result_diff", "https://target.com/rest/products/search?q=apple"),
+        ("idor-fresh", "idor_actor_pair", "https://target.com/rest/orders/9"),
+    ]:
+        summary_dir = validation_root / name
+        summary_dir.mkdir(parents=True)
+        (summary_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "lane": lane,
+                    "finding_id": name,
+                    "url": url,
+                    "method": "GET",
+                    "result": "tested_finding",
+                    "candidate_ready": True,
+                    "evidence_rubric": {
+                        "status": "candidate-ready",
+                        "ready": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "id": "auth_bypass_feedbacks",
+                        "type": "auth_bypass",
+                        "url": "https://target.com/api/Feedbacks",
+                        "validation_status": "rejected",
+                        "report_status": "not_generated",
+                    },
+                    {
+                        "id": "sqli-result-diff-search",
+                        "type": "sqli",
+                        "url": "https://target.com/rest/products/search?q=apple",
+                        "validation_status": "validated",
+                        "report_status": "generated",
+                        "source_file": "evidence/target.com/validation/sqli-result-diff-search/summary.json",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pool = structured_findings.load_validation_runner_candidate_pool(tmp_path, "target.com")
+
+    assert [item["id"] for item in pool] == ["idor-fresh"]
+
+
+def test_load_validation_runner_candidate_pool_filters_ai_closed_ledger_rows(tmp_path):
+    validation_root = tmp_path / "evidence" / "target.com" / "validation"
+    for name, lane, url in [
+        ("authz-order-history", "authz_role_replay", "https://target.com/rest/order-history"),
+        ("idor-cards", "idor_actor_pair", "https://target.com/api/Cards"),
+        ("authz-fresh", "authz_role_replay", "https://target.com/rest/memories"),
+    ]:
+        summary_dir = validation_root / name
+        summary_dir.mkdir(parents=True)
+        (summary_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "lane": lane,
+                    "finding_id": name,
+                    "url": url,
+                    "method": "GET",
+                    "result": "candidate",
+                    "candidate_ready": True,
+                    "evidence_rubric": {
+                        "status": "candidate-ready",
+                        "ready": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    ledger_dir = tmp_path / "memory" / "evidence" / "target.com"
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "ledger.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "method": "GET",
+                        "endpoint": "/rest/order-history",
+                        "vuln_class": "Authz",
+                        "source": "ai-review",
+                        "result": "tested_clean",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "method": "GET",
+                        "endpoint": "/api/Cards",
+                        "vuln_class": "IDOR",
+                        "source": "ai-review",
+                        "result": "dead_end",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "method": "GET",
+                        "endpoint": "/rest/memories",
+                        "vuln_class": "Authz",
+                        "source": "validation-runner:authz-role-replay",
+                        "result": "tested_finding",
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    pool = structured_findings.load_validation_runner_candidate_pool(tmp_path, "target.com")
+
+    assert [item["id"] for item in pool] == ["authz-fresh"]
