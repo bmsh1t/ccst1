@@ -1384,6 +1384,18 @@ def write_validation_summary(summary: dict, report_path: str | Path) -> None:
     last_validate_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
 
+def ensure_report_output_path(output_path: str | Path) -> Path:
+    """Return report path after creating its parent directory.
+
+    `--output` can point at a brand-new directory during pressure tests or
+    Claude CLI runs; report writing should not fail after the validation gates
+    have already completed.
+    """
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def mark_finding_validated(findings_dir: str, finding_id: str, summary: dict, summary_path: str | Path) -> None:
     """Best-effort update of findings.json after validation completes."""
     if not findings_dir or not finding_id:
@@ -1868,8 +1880,8 @@ def main():
         os.makedirs(base_dir, exist_ok=True)
         output_path = os.path.join(base_dir, "hackerone-report.md")
 
-    with open(output_path, "w") as f:
-        f.write(skeleton)
+    output_path = ensure_report_output_path(output_path)
+    output_path.write_text(skeleton, encoding="utf-8")
 
     summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
     write_validation_summary(summary, output_path)

@@ -101,6 +101,15 @@ def test_write_validation_summary_updates_last_validate(tmp_path, monkeypatch):
     assert last_saved["submission_notes_path"] == str(submission_notes)
 
 
+def test_ensure_report_output_path_creates_explicit_output_parent(tmp_path):
+    output_path = tmp_path / "new" / "nested" / "hackerone-report.md"
+
+    resolved = validate.ensure_report_output_path(output_path)
+
+    assert resolved == output_path
+    assert output_path.parent.is_dir()
+
+
 def test_validation_summary_records_explicit_seven_question_gate(tmp_path):
     report_path = tmp_path / "findings" / "target-program-idor" / "hackerone-report.md"
     explicit_gate = {
