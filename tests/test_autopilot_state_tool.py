@@ -539,6 +539,67 @@ class TestAutopilotState:
         assert state["resume_targets"] == ["/graphql"]
         assert state["recommended_targets"][0]["url"] == "https://api.target.com/graphql"
 
+    def test_finalized_findings_do_not_drive_resume_or_surface_next(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://target.com [200] [API] [Express] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://target.com/api/Feedbacks\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+
+        findings_dir = repo_root / "findings" / "target.com"
+        findings_dir.mkdir(parents=True)
+        (findings_dir / "findings.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": "target.com",
+                    "findings": [
+                        {
+                            "id": "auth_bypass_feedbacks",
+                            "type": "auth_bypass",
+                            "url": "https://target.com/api/Feedbacks",
+                            "validation_status": "rejected",
+                            "report_status": "not_generated",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        memory_dir = tmp_path / "hunt-memory"
+        (memory_dir / "targets").mkdir(parents=True)
+        save_target_profile(memory_dir, make_target_profile(
+            "target.com",
+            tested_endpoints=["/api/Feedbacks"],
+            untested_endpoints=[],
+            hunt_sessions=1,
+        ))
+        HuntJournal(memory_dir / "journal.jsonl").log_session_summary(
+            target="target.com",
+            action="hunt",
+            endpoints_tested=["/api/Feedbacks"],
+            vuln_classes_tried=["authz"],
+            findings_count=0,
+            session_id="sess-closed",
+        )
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
+
+        assert state["resume_targets"] == []
+        assert state["surface_review_candidates"] == []
+        assert state["next_action"] == "handoff"
+
     def test_build_autopilot_state_emits_enrichment_tool_hints(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"

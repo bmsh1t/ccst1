@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from urllib.parse import urlparse
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -51,6 +52,100 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_validation_runner_candidate_pool,
     )
     from target_paths import canonical_target_value, target_storage_key
+
+
+
+
+PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
+
+
+def _normalise_endpoint_path(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if "://" in raw:
+        try:
+            parsed = urlparse(raw)
+            path = parsed.path or "/"
+        except ValueError:
+            path = raw
+    else:
+        path = raw
+    path = path.split("?", 1)[0].split("#", 1)[0].strip()
+    if not path:
+        return ""
+    if not path.startswith("/"):
+        path = "/" + path
+    if path != "/":
+        path = path.rstrip("/")
+    return path
+
+
+def _has_placeholder_object_segment(value: str) -> bool:
+    path = _normalise_endpoint_path(value).lower()
+    segments = [segment for segment in path.split("/") if segment]
+    return any(segment in PLACEHOLDER_OBJECT_SEGMENTS for segment in segments)
+
+
+def _finalized_finding_paths(repo_root: str, resolved_target: str) -> set[str]:
+    """Return finding URL paths that are already validated/rejected/reported.
+
+    This is an egress guard for AI-facing next actions. It does not delete raw
+    surface; it only prevents old finalized findings from steering startup.
+    """
+    path = Path(repo_root) / "findings" / target_storage_key(resolved_target) / "findings.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+
+    paths: set[str] = set()
+    for item in payload.get("findings", []):
+        if not isinstance(item, dict):
+            continue
+        validation_status = str(item.get("validation_status") or "").strip().lower()
+        report_status = str(item.get("report_status") or "").strip().lower()
+        if validation_status not in {"validated", "rejected"} and report_status != "generated":
+            continue
+        endpoint_path = _normalise_endpoint_path(str(item.get("url") or item.get("endpoint") or ""))
+        # Hash-route findings normalize to root; never hide the entire SPA root.
+        if endpoint_path and endpoint_path != "/":
+            paths.add(endpoint_path)
+    return paths
+
+
+def _is_finalized_or_placeholder_surface(item: dict, finalized_paths: set[str]) -> bool:
+    url = str(item.get("url") or item.get("path") or "").strip()
+    endpoint_path = _normalise_endpoint_path(url)
+    if endpoint_path and endpoint_path in finalized_paths:
+        return True
+    if _has_placeholder_object_segment(url):
+        return True
+    suggested = str(item.get("suggested") or "").strip().lower()
+    return "already reported/generated" in suggested or "avoid repeating remembered dead end" in suggested
+
+
+def _filter_resume_targets_for_final_state(targets: list[str], finalized_paths: set[str]) -> list[str]:
+    filtered: list[str] = []
+    for target in targets:
+        endpoint_path = _normalise_endpoint_path(target)
+        if endpoint_path and endpoint_path in finalized_paths:
+            continue
+        if _has_placeholder_object_segment(target):
+            continue
+        filtered.append(target)
+    return list(dict.fromkeys(filtered))[:3]
+
+
+def _filter_ranked_for_final_state(ranked: dict, finalized_paths: set[str]) -> dict:
+    filtered = dict(ranked or {})
+    for key in ("review_pool", "p1", "p2"):
+        items = ranked.get(key) or []
+        filtered[key] = [
+            item for item in items
+            if isinstance(item, dict) and not _is_finalized_or_placeholder_surface(item, finalized_paths)
+        ]
+    return filtered
 
 
 APP_LIKE_HINT_TOKENS = (
@@ -173,9 +268,11 @@ def _pick_next_action(
     ranked: dict,
     resume_summary: dict | None,
     structured_findings: dict | None = None,
+    resume_targets: list[str] | None = None,
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
+    resume_targets = resume_targets if resume_targets is not None else _build_resume_targets(resume_summary)
     if structured_findings.get("next_validation"):
         return "validate_finding"
 
@@ -184,27 +281,24 @@ def _pick_next_action(
             return "report_finding"
         return "run_recon"
 
-    resume_targets = _build_resume_targets(resume_summary)
     latest_session = (resume_summary or {}).get("latest_session_summary") or {}
     preview = [item for item in latest_session.get("endpoints_preview", []) if item]
 
-    if latest_session and preview:
+    if latest_session and preview and resume_targets:
         return "continue_last_focus"
     if latest_session and resume_targets:
         return "resume_untested"
 
     if ranked.get("review_pool") or ranked.get("p1"):
         return "hunt_p1"
-    if ranked.get("p2"):
-        return "hunt_p2"
-    if resume_summary and resume_summary.get("untested_endpoints"):
+    if resume_targets:
         return "resume_untested"
     # A validated finding is a closure/report asset, not the steering wheel.
     # Surface/replay/resume work above should stay available when current
     # evidence exposes stronger live leads; otherwise keep the report visible.
     if structured_findings.get("validated_pending_report"):
         return "report_finding"
-    return "refresh_recon"
+    return "handoff"
 
 
 def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
@@ -274,8 +368,16 @@ def _describe_next_step(state: dict) -> str:
         return "widen into follow-up surface hints after first-review candidates are exhausted."
     if action == "refresh_recon":
         return f"refresh recon before going deeper on {target}."
+    if action == "handoff":
+        return "no strong executable next action from cached state; use checkpoint or fresh evidence before continuing."
     return "follow the highest-confidence target shown below."
 
+
+
+def _candidate_items_for_next_action(ranked: dict, next_action: str) -> list[dict]:
+    if next_action == "hunt_p2":
+        return ranked.get("p2", []) or []
+    return ranked.get("review_pool", []) or ranked.get("p1", []) or []
 
 def _build_guard_hint(guard_status: dict, recommended_targets: list[dict]) -> str:
     """Render an operator/agent-friendly guard hint for immediate action."""
@@ -673,6 +775,8 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         write_probe_log=False,
     )
     ranked = rank_surface(surface_context)
+    finalized_paths = _finalized_finding_paths(repo_root, resolved_target)
+    ranked_for_next = _filter_ranked_for_final_state(ranked, finalized_paths)
     guard_status = load_guard_status(resolved_memory_dir, resolved_target)
     tripped_hosts = [item for item in guard_status.get("hosts", []) if item.get("tripped")]
     repo_source_artifacts = list_repo_source_artifacts(repo_root, resolved_target)
@@ -686,7 +790,10 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
 
     has_recon = bool(ranked.get("available")) and bool(recon_artifacts.get("host_inventory_ready"))
     has_memory = resume_summary is not None
-    resume_targets = _build_resume_targets(resume_summary)
+    resume_targets = _filter_resume_targets_for_final_state(
+        _build_resume_targets(resume_summary),
+        finalized_paths,
+    )
     recent_guard_advisories = list(
         (resume_summary or {}).get("recent_guard_advisories")
         or (resume_summary or {}).get("recent_guard_blocks", [])
@@ -701,11 +808,17 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         if review_pool:
             tech_stack = review_pool[0].get("tech_stack", [])
 
-    next_action = _pick_next_action(has_recon, ranked, resume_summary, structured_findings)
+    next_action = _pick_next_action(
+        has_recon,
+        ranked_for_next,
+        resume_summary,
+        structured_findings,
+        resume_targets=resume_targets,
+    )
     prefer_resume_targets = next_action == "continue_last_focus"
     surface_review_candidates = (
         _build_recommended_targets(
-            ranked.get("review_pool", []) or ranked.get("p1", []),
+            _candidate_items_for_next_action(ranked_for_next, next_action),
             guard_status,
             resume_targets,
             prefer_resume_targets=prefer_resume_targets,
@@ -729,7 +842,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         repo_root=repo_root,
         resolved_target=resolved_target,
         surface_context=surface_context,
-        ranked=ranked,
+        ranked=ranked_for_next,
         repo_source_available=repo_source_available,
         next_action=next_action,
     )
@@ -750,7 +863,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "validation_runner_candidates": validation_runner_candidates,
         "target_goal_memory": target_goal_memory,
         "resume_summary": resume_summary,
-        "surface": ranked if has_recon else None,
+        "surface": ranked_for_next if has_recon else None,
         "guard_status": guard_state,
         "guard_hint": _build_guard_hint(guard_state, surface_review_candidates),
         "pivot_hint": pivot_hint,
