@@ -59,6 +59,68 @@ def test_summarize_structured_findings_picks_next_validation_and_report(tmp_path
     assert "rubric" in summary["next_validation"]
 
 
+def test_generic_metrics_exposure_does_not_become_next_validation(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings = [
+        {
+            "id": "metrics",
+            "type": "exposure",
+            "severity": "medium",
+            "confidence": "medium",
+            "title": "prometheus-metrics on https://target.test/metrics",
+            "summary": "[prometheus-metrics] [http] [medium] https://target.test/metrics",
+            "url": "https://target.test/metrics",
+            "validation_status": "unvalidated",
+            "report_status": "not_generated",
+        },
+        {
+            "id": "report_me",
+            "type": "auth_bypass",
+            "severity": "high",
+            "confidence": "confirmed",
+            "url": "https://target.test/rest/admin/application-configuration",
+            "validation_status": "validated",
+            "report_status": "not_generated",
+        },
+    ]
+
+    summary = structured_findings.summarize_structured_findings(findings, findings_dir)
+
+    assert summary["pending_validation"] == 1
+    assert summary["evidence_gap_count"] == 1
+    assert "next_validation" not in summary
+    assert summary["next_report"]["id"] == "report_me"
+
+
+def test_ready_generic_finding_can_still_drive_next_validation(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings = [
+        {
+            "id": "generic_ready",
+            "type": "exposure",
+            "severity": "medium",
+            "confidence": "medium",
+            "url": "https://target.test/debug",
+            "validation_status": "unvalidated",
+            "report_status": "not_generated",
+            "rubric": {
+                "rubric_id": "generic",
+                "status": "candidate-ready",
+                "ready": True,
+                "score": 90,
+                "missing": [],
+                "missing_labels": [],
+            },
+        },
+    ]
+
+    summary = structured_findings.summarize_structured_findings(findings, findings_dir)
+
+    assert summary["pending_validation"] == 1
+    assert summary["evidence_gap_count"] == 0
+    assert summary["next_validation"]["id"] == "generic_ready"
+
+
 def test_format_structured_findings_lines_renders_expected_labels():
     lines = structured_findings.format_structured_findings_lines(
         {

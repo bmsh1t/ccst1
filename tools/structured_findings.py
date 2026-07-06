@@ -70,6 +70,21 @@ def finding_rank_key(finding: dict) -> tuple[int, int, int]:
     )
 
 
+def _is_actionable_validation_candidate(finding: dict) -> bool:
+    """Return whether a pending finding should drive the next validation action.
+
+    Generic弱线索仍保留在 pending/evidence gap 统计里，避免隐藏攻击面；但在
+    缺少 ready 证据前不抢占 checkpoint 的下一步动作。这样 Claude 会优先处理
+    已有明确 lane/rubric 的候选，而不是被普通 `/metrics` 之类信息泄露噪声牵引。
+    """
+    rubric = _rubric_eval(finding)
+    if rubric.get("ready", False):
+        return True
+    if rubric.get("rubric_id") == "generic":
+        return False
+    return True
+
+
 def compact_structured_finding(finding: dict, findings_dir: Path) -> dict:
     """Return the compact structured finding shape used by resume/autopilot."""
     rubric = compact_evidence_rubric(_rubric_eval(finding))
@@ -122,6 +137,10 @@ def summarize_structured_findings(findings: list[dict], findings_dir: Path) -> d
 
     pending_validation.sort(key=finding_rank_key, reverse=True)
     validated_pending_report.sort(key=finding_rank_key, reverse=True)
+    actionable_pending_validation = [
+        item for item in pending_validation
+        if _is_actionable_validation_candidate(item)
+    ]
     evidence_gap_count = 0
     secret_followup_count = 0
     for item in pending_validation:
@@ -140,8 +159,8 @@ def summarize_structured_findings(findings: list[dict], findings_dir: Path) -> d
         "secret_followup_count": secret_followup_count,
         "findings_dir": str(findings_dir),
     }
-    if pending_validation:
-        result["next_validation"] = compact_structured_finding(pending_validation[0], findings_dir)
+    if actionable_pending_validation:
+        result["next_validation"] = compact_structured_finding(actionable_pending_validation[0], findings_dir)
     if validated_pending_report:
         result["next_report"] = compact_structured_finding(validated_pending_report[0], findings_dir)
     return result
