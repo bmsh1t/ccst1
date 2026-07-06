@@ -50,6 +50,18 @@ python3 tools/context_pack.py --target target.com
 ```
 
 Refresh recon only when missing, thin, stale, or contradicted by fresh evidence.
+For existing targets, run a closed-state sanity check before executing a
+historical `continue_last_focus`, resume target, or `/surface` score hint:
+
+```bash
+python3 tools/checkpoint.py --target target.com --no-refresh-coverage
+python3 tools/action_queue.py summary --target target.com
+```
+
+If checkpoint/action_queue show no executable next action, treat those historical
+hints as context rather than commands. Re-open them only when fresh
+browser/source/JS/recon evidence or business context contradicts the recorded
+closure.
 Use `context_pack.py` for compact route hints, `reference_hints`, and
 1-2 knowledge cards / on-demand references that match current evidence. Do not let
 them drive first contact. `target_case_state.py`, `case_state_seed.py`,

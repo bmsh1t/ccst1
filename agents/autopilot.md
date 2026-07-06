@@ -71,6 +71,13 @@ Only add heavier state tools when they directly change the next action:
 These tools are memory and execution aids, not a pre-flight checklist. Empty,
 stale, noisy, or low-value state must not block fresh recon, broad scan,
 browser/source enrichment, or AI-generated chain pivots.
+If checkpoint/action_queue show no executable next action, `continue_last_focus`,
+resume targets, and `/surface` score hints are historical/advisory context, not
+commands. Re-open them only when fresh browser/source/JS/recon evidence or
+business context contradicts the recorded closure.
+Before executing a historical `continue_last_focus`, resume target, or score-only
+surface hint on an existing target, do that closed-state sanity check; do not make
+checkpoint the first-contact steering wheel for fresh discovery.
 
 - Skills route through `skills/runtime-protocol.md`.
 - Target case state stores actors, sessions, objects, private markers, hypotheses, and validation backlog under `state/<target_key>/case_state.json`.
