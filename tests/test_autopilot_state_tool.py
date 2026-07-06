@@ -294,6 +294,51 @@ class TestAutopilotState:
         assert "Next: generate a report for validated finding mfa_report." in output
         assert "Next report: mfa_report [medium/high] mfa https://api.target.com/mfa" in output
 
+    def test_weak_generic_pending_does_not_mask_validated_report(self, tmp_path):
+        repo_root = tmp_path
+        findings_dir = repo_root / "findings" / "target.com"
+        findings_dir.mkdir(parents=True)
+        (findings_dir / "findings.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": "target.com",
+                    "findings": [
+                        {
+                            "id": "metrics",
+                            "type": "exposure",
+                            "severity": "medium",
+                            "confidence": "medium",
+                            "title": "prometheus-metrics on https://target.com/metrics",
+                            "summary": "[prometheus-metrics] [http] [medium] https://target.com/metrics",
+                            "url": "https://target.com/metrics",
+                            "validation_status": "unvalidated",
+                            "report_status": "not_generated",
+                        },
+                        {
+                            "id": "admin_config",
+                            "type": "auth_bypass",
+                            "severity": "high",
+                            "confidence": "confirmed",
+                            "url": "https://target.com/rest/admin/application-configuration",
+                            "validation_status": "validated",
+                            "report_status": "not_generated",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+        output = format_autopilot_state(state)
+
+        assert state["structured_findings"]["pending_validation"] == 1
+        assert "next_validation" not in state["structured_findings"]
+        assert state["next_action"] == "report_finding"
+        assert "Next: generate a report for validated finding admin_config." in output
+        assert "Next validation:" not in output
+
     def test_prefers_p1_targets_when_recon_ready(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"

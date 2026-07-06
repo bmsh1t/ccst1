@@ -168,7 +168,7 @@ def _pick_next_action(
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
-    if structured_findings.get("pending_validation"):
+    if structured_findings.get("next_validation"):
         return "validate_finding"
     if structured_findings.get("validated_pending_report"):
         return "report_finding"
