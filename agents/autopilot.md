@@ -53,31 +53,13 @@ existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> CHAIN -> VALIDATE CANDIDA
 
 Use the existing `/autopilot` flow as the four-layer runtime; do not create a parallel workflow:
 
-```text
-target memory + target case state -> skills -> knowledge base -> checks
-```
-
 Fresh target startup is recon-first: `python3 tools/hunt.py --target <target> --recon-only`, then `tools/surface.py`, `tools/context_pack.py`, and scanner quick (`python3 tools/hunt.py --target <target> --scan-only --quick`) as a breadth sensor.
 
 Existing target startup is cache-aware: `python3 tools/autopilot_state.py --target <target>`, `python3 tools/surface.py --target <target>`, and `python3 tools/context_pack.py --target <target>`; refresh recon only when missing/thin/stale.
 
-Only add heavier state tools when they directly change the next action:
+Only add heavier state tools when they directly change the next action: `target_case_state.py` for actor/session/object continuity, `case_state_seed.py` for concrete object IDs, and checkpoint/action_queue/coverage after progress, validation, handoff, or before finish; do not let them drive first contact.
 
-- `tools/target_case_state.py summary/next` for actor/session/object continuity.
-- `tools/case_state_seed.py` when cached artifacts expose concrete object IDs.
-- `tools/checkpoint.py`, `tools/action_queue.py`, and `tools/coverage_matrix.py`
-  after meaningful progress, validation, handoff, or before finish; do not let them drive first contact.
-
-These tools are memory and execution aids, not a pre-flight checklist. Empty,
-stale, noisy, or low-value state must not block fresh recon, broad scan,
-browser/source enrichment, or AI-generated chain pivots.
-If checkpoint/action_queue show no executable next action, `continue_last_focus`,
-resume targets, and `/surface` score hints are historical/advisory context, not
-commands. Re-open them only when fresh browser/source/JS/recon evidence or
-business context contradicts the recorded closure.
-Before executing a historical `continue_last_focus`, resume target, or score-only
-surface hint on an existing target, do that closed-state sanity check; do not make
-checkpoint the first-contact steering wheel for fresh discovery.
+These tools are memory and execution aids, not a pre-flight checklist. Empty/stale/noisy/low-value state must not block fresh recon, broad scan, browser/source enrichment, or AI-generated pivots. If checkpoint/action_queue show no executable next action, `continue_last_focus`, resume targets, and `/surface` score hints are historical context, not commands; re-open only when fresh browser/source/JS/recon evidence or business context contradicts closure. Before executing historical focus on an existing target, do that closed-state sanity check without making checkpoint the first-contact steering wheel.
 
 - Skills route through `skills/runtime-protocol.md`.
 - Target case state stores actors, sessions, objects, private markers, hypotheses, and validation backlog under `state/<target_key>/case_state.json`.

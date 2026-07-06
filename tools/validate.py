@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import ssl
@@ -25,6 +26,11 @@ try:
     from finding_index import find_finding, load_finding_index, update_finding_status
 except ImportError:  # pragma: no cover - package import path
     from tools.finding_index import find_finding, load_finding_index, update_finding_status
+
+try:
+    from target_paths import target_storage_key
+except ImportError:  # pragma: no cover - package import path
+    from tools.target_paths import target_storage_key
 
 try:
     from browser_evidence import (
@@ -1417,6 +1423,133 @@ def mark_finding_validated(findings_dir: str, finding_id: str, summary: dict, su
     )
 
 
+def _finding_url_from_summary(summary: dict) -> str:
+    endpoint = str(summary.get("endpoint") or "").strip()
+    if endpoint.startswith(("http://", "https://")):
+        return endpoint
+    target = str(summary.get("target") or summary.get("program") or "").strip()
+    if not target:
+        return endpoint
+    base = target if target.startswith(("http://", "https://")) else f"http://{target}"
+    if endpoint and not endpoint.startswith("/"):
+        endpoint = "/" + endpoint
+    return base.rstrip("/") + (endpoint or "/")
+
+
+def _finding_id_from_summary(summary: dict) -> str:
+    vuln_class = str(summary.get("vuln_class") or "validation").strip().lower() or "validation"
+    endpoint = str(summary.get("endpoint") or "").strip() or "endpoint"
+    digest = hashlib.sha1(f"{vuln_class}:{endpoint}".encode("utf-8")).hexdigest()[:10]
+    safe_endpoint = endpoint.split("?", 1)[0].strip("/") or "root"
+    safe_endpoint = "".join(ch if ch.isalnum() else "_" for ch in safe_endpoint).strip("_")
+    return f"validate-{vuln_class}-{safe_endpoint[:48]}-{digest}"
+
+
+def _refresh_simple_finding_counts(payload: dict) -> None:
+    findings = [item for item in payload.get("findings", []) if isinstance(item, dict)]
+    payload["total"] = len(findings)
+    for field, out_key in (
+        ("severity", "severity_counts"),
+        ("type", "type_counts"),
+        ("confidence", "confidence_counts"),
+    ):
+        counts: dict[str, int] = {}
+        for finding in findings:
+            key = str(finding.get(field) or "unknown")
+            counts[key] = counts.get(key, 0) + 1
+        payload[out_key] = counts
+
+
+def upsert_ad_hoc_validated_finding(summary: dict, summary_path: str | Path, *, repo_root: str | Path | None = None) -> dict:
+    """Create/update a structured finding for `/validate` runs without finding_id.
+
+    Linked validations already update `findings.json` through `mark_finding_validated`.
+    Ad-hoc validations still need a structured row, otherwise a confirmed issue
+    can live only in Evidence Ledger and disappear from `/checkpoint` report flow.
+    """
+    target = str(summary.get("target") or "").strip()
+    endpoint = str(summary.get("endpoint") or "").strip()
+    if not target or not endpoint:
+        return {"status": "skipped", "reason": "missing target or endpoint"}
+    if str(summary.get("finding_id") or "").strip():
+        return {"status": "skipped", "reason": "linked finding already handled"}
+
+    repo = Path(repo_root) if repo_root is not None else BASE_DIR
+    findings_dir = repo / "findings" / target_storage_key(target)
+    findings_dir.mkdir(parents=True, exist_ok=True)
+    path = findings_dir / "findings.json"
+    payload = load_finding_index(findings_dir)
+    if not payload:
+        payload = {
+            "schema_version": 1,
+            "target": target_storage_key(target),
+            "findings_dir": str(findings_dir),
+            "findings": [],
+        }
+
+    finding_id = _finding_id_from_summary(summary)
+    findings = payload.setdefault("findings", [])
+    if not isinstance(findings, list):
+        findings = []
+        payload["findings"] = findings
+    existing = next(
+        (
+            item for item in findings
+            if isinstance(item, dict) and (
+                item.get("id") == finding_id
+                or (
+                    str(item.get("url") or "") == _finding_url_from_summary(summary)
+                    and str(item.get("vuln_class") or "").lower() == str(summary.get("vuln_class") or "").lower()
+                )
+            )
+        ),
+        None,
+    )
+
+    all_pass = bool(summary.get("all_gates_passed"))
+    finding = existing if isinstance(existing, dict) else {}
+    finding.update({
+        "id": finding.get("id") or finding_id,
+        "type": str(summary.get("vuln_class") or "validation").strip().lower() or "validation",
+        "category": str(summary.get("vuln_class") or "validation").strip().lower() or "validation",
+        "title": f"Validated {summary.get('vuln_class', 'validation')} on {_finding_url_from_summary(summary)}",
+        "summary": str(summary.get("notes") or summary.get("impact") or summary.get("result") or "validated finding"),
+        "url": _finding_url_from_summary(summary),
+        "severity": str(summary.get("severity") or "medium").lower(),
+        "confidence": "confirmed" if all_pass else "medium",
+        "source_file": str(summary_path),
+        "line_number": 0,
+        "template_id": "",
+        "raw": f"validate:{summary.get('result', '')}:{summary_path}",
+        "validation_status": "validated" if all_pass else "partial",
+        "report_status": str(finding.get("report_status") or "not_generated"),
+        "validation_summary": str(summary_path),
+        "validated_at": str(summary.get("validated_at") or ""),
+        "vuln_class": str(summary.get("vuln_class") or "validation"),
+        "report_draft_path": str(summary.get("report_path") or ""),
+        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    })
+    if all_pass:
+        vuln_class = str(summary.get("vuln_class") or "validation")
+        finding["evidence_rubric"] = {
+            "rubric_id": vuln_class.lower(),
+            "status": "validated",
+            "ready": True,
+            "score": 100,
+            "satisfied_count": 4,
+            "total": 4,
+            "missing": [],
+            "missing_labels": [],
+            "next_actions": [],
+            "summary": f"{vuln_class.lower()}:validated via /validate gates",
+        }
+    if existing is None:
+        findings.append(finding)
+    _refresh_simple_finding_counts(payload)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {"status": "updated", "path": str(path), "id": finding["id"]}
+
+
 def _validation_summary_path(report_path: str | Path) -> Path:
     return Path(report_path).parent / "validation-summary.json"
 
@@ -1478,6 +1611,7 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
     summary_path = _validation_summary_path(summary.get("report_path") or "")
     ledger_update: dict = {}
     queue_update: dict = {}
+    finding_update: dict = {}
 
     try:
         try:
@@ -1544,7 +1678,17 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
     except Exception as exc:  # pragma: no cover - defensive best-effort path
         queue_update = {"status": "error", "error": str(exc)}
 
-    return {"status": "updated", "ledger": ledger_update, "action_queue": queue_update}
+    try:
+        finding_update = upsert_ad_hoc_validated_finding(summary, summary_path, repo_root=repo)
+    except Exception as exc:  # pragma: no cover - defensive best-effort path
+        finding_update = {"status": "error", "error": str(exc)}
+
+    return {
+        "status": "updated",
+        "ledger": ledger_update,
+        "action_queue": queue_update,
+        "finding_index": finding_update,
+    }
 
 
 def _map_validate_result_to_calibration_outcome(result: str) -> str | None:

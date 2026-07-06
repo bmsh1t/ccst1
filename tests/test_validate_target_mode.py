@@ -362,6 +362,7 @@ def test_sync_validation_artifacts_records_ledger_and_resolves_queue(tmp_path):
 
 def test_sync_validation_artifacts_uses_summary_method(tmp_path):
     from evidence_ledger import load_entries
+    from resume import load_structured_finding_followup
 
     report_path = tmp_path / "findings" / "target.com-ssrf" / "hackerone-report.md"
     summary = {
@@ -372,14 +373,72 @@ def test_sync_validation_artifacts_uses_summary_method(tmp_path):
         "result": "confirmed",
         "all_gates_passed": True,
         "report_path": str(report_path),
+        "validated_at": "2026-07-06T10:03:11Z",
+        "severity": "medium",
+        "impact": "server-side URL fetch with callback proof",
+        "seven_question_gate_passed": True,
+        "four_validation_gates_passed": True,
+        "seven_question_gate_decision": "pass",
     }
+    report_path.parent.mkdir(parents=True)
+    (report_path.parent / "validation-summary.json").write_text(
+        json.dumps(summary),
+        encoding="utf-8",
+    )
 
-    validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+    sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
 
     entries = load_entries(tmp_path, "target.com")
     assert entries[-1]["method"] == "POST"
     assert entries[-1]["endpoint"] == "/profile/image/url"
     assert entries[-1]["raw_endpoint"] == "https://target.com/profile/image/url"
+    assert sync["finding_index"]["status"] == "updated"
+
+    followup = load_structured_finding_followup(tmp_path, "target.com")
+    assert followup["validated_pending_report"] == 1
+    assert followup["next_report"]["type"] == "ssrf"
+    assert followup["next_report"]["url"] == "https://target.com/profile/image/url"
+    assert followup["next_report"]["rubric"]["ready"] is True
+    assert followup["next_report"]["missing_evidence"] == []
+
+
+def test_sync_validation_artifacts_linked_finding_does_not_create_duplicate(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "target.com",
+                "findings": [
+                    {
+                        "id": "sqli_deadbeef",
+                        "type": "sqli",
+                        "url": "https://target.com/item?id=1",
+                        "validation_status": "unvalidated",
+                        "report_status": "not_generated",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "findings" / "target.com-sqli" / "hackerone-report.md"
+    summary = {
+        "target": "target.com",
+        "endpoint": "https://target.com/item?id=1",
+        "vuln_class": "sqli",
+        "result": "confirmed",
+        "all_gates_passed": True,
+        "finding_id": "sqli_deadbeef",
+        "report_path": str(report_path),
+    }
+
+    sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+
+    payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    assert sync["finding_index"]["status"] == "skipped"
+    assert len(payload["findings"]) == 1
 
 
 def test_sync_validation_artifacts_partial_keeps_queue_candidate(tmp_path):
