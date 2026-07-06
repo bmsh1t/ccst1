@@ -98,6 +98,85 @@ def test_write_finding_index_preserves_validation_and_report_state(tmp_path):
     assert finding["report_file"] == "reports/example.com/sqli_001.md"
 
 
+def test_write_finding_index_preserves_runner_backed_orphan_findings(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    sqli_dir = findings_dir / "sqli"
+    sqli_dir.mkdir(parents=True)
+    (sqli_dir / "timebased_candidates.txt").write_text(
+        "[SQLI-POC-VERIFIED] dialect=mysql param=1 url=https://example.com/item?id=1\n",
+        encoding="utf-8",
+    )
+
+    first = finding_index.write_finding_index(findings_dir, target="example.com")
+    first["findings"].append(
+        {
+            "id": "authz-role-replay-api_users",
+            "type": "auth_bypass",
+            "category": "auth_bypass",
+            "title": "Runner-backed role replay candidate",
+            "summary": "authz:candidate-ready score=100 satisfied=4/4",
+            "url": "https://example.com/api/Users",
+            "severity": "high",
+            "confidence": "confirmed",
+            "source_file": "evidence/example.com/validation/authz-role-replay-api_users/summary.json",
+            "line_number": 0,
+            "template_id": "",
+            "raw": "validation_runner:authz_role_replay:authz-role-replay-api_users",
+            "validation_status": "partial",
+            "report_status": "not_generated",
+            "evidence_rubric": {"status": "candidate-ready"},
+        }
+    )
+    first["total"] = len(first["findings"])
+    (findings_dir / "findings.json").write_text(json.dumps(first), encoding="utf-8")
+
+    rebuilt = finding_index.write_finding_index(findings_dir, target="example.com")
+    by_id = {item["id"]: item for item in rebuilt["findings"]}
+
+    assert rebuilt["total"] == 2
+    assert "authz-role-replay-api_users" in by_id
+    assert by_id["authz-role-replay-api_users"]["validation_status"] == "partial"
+    assert by_id["authz-role-replay-api_users"]["source_file"].startswith("evidence/")
+    assert rebuilt["counts"]["type"] == {"auth_bypass": 1, "sqli": 1}
+
+
+def test_write_finding_index_drops_default_scanner_orphans(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    sqli_dir = findings_dir / "sqli"
+    sqli_dir.mkdir(parents=True)
+    (sqli_dir / "current.txt").write_text(
+        "[SQLI-POC-VERIFIED] dialect=mysql param=1 url=https://example.com/item?id=1\n",
+        encoding="utf-8",
+    )
+
+    first = finding_index.write_finding_index(findings_dir, target="example.com")
+    first["findings"].append(
+        {
+            "id": "sqli_old_orphan",
+            "type": "sqli",
+            "category": "sqli",
+            "title": "Old scanner-only candidate",
+            "summary": "old scanner-only row",
+            "url": "https://example.com/old?id=1",
+            "severity": "high",
+            "confidence": "medium",
+            "source_file": "sqli/old.txt",
+            "line_number": 1,
+            "template_id": "",
+            "raw": "[SQLI] https://example.com/old?id=1",
+            "validation_status": "unvalidated",
+            "report_status": "not_generated",
+        }
+    )
+    first["total"] = len(first["findings"])
+    (findings_dir / "findings.json").write_text(json.dumps(first), encoding="utf-8")
+
+    rebuilt = finding_index.write_finding_index(findings_dir, target="example.com")
+
+    assert rebuilt["total"] == 1
+    assert all(item["id"] != "sqli_old_orphan" for item in rebuilt["findings"])
+
+
 def test_report_generator_consumes_structured_findings(monkeypatch, tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)
@@ -148,6 +227,137 @@ def test_report_generator_consumes_structured_findings(monkeypatch, tmp_path):
     assert updated_index["findings"][0]["report_status"] == "generated"
     assert updated_index["findings"][0]["report_id"] == "sqli_001"
     assert updated_index["findings"][0]["report_file"] == str(report_path)
+
+
+def test_report_generator_keeps_existing_generated_reports_in_index(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    report_dir = tmp_path / "reports" / "example.com"
+    report_dir.mkdir(parents=True)
+    existing_report = report_dir / "sqli_001.md"
+    existing_report.write_text("# Existing SQLi report\n", encoding="utf-8")
+    validation_dir = tmp_path / "evidence" / "example.com" / "validation" / "xss-1"
+    validation_dir.mkdir(parents=True)
+    validation_summary = validation_dir / "validation-summary.json"
+    validation_summary.write_text(
+        json.dumps(
+            {
+                "all_gates_passed": True,
+                "four_validation_gates_passed": True,
+                "seven_question_gate_passed": True,
+                "seven_question_gate_decision": "pass",
+                "evidence_rubric": {"summary": "xss browser marker evidence"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "example.com",
+                "total": 2,
+                "findings": [
+                    {
+                        "id": "sqli_done",
+                        "type": "sqli",
+                        "category": "sqli",
+                        "title": "SQLi on item",
+                        "summary": "verified SQLi",
+                        "url": "https://example.com/item?id=1",
+                        "severity": "high",
+                        "confidence": "confirmed",
+                        "validation_status": "validated",
+                        "report_status": "generated",
+                        "report_id": "sqli_001",
+                        "report_file": str(existing_report),
+                        "source_file": "sqli/timebased_candidates.txt",
+                        "raw": "[SQLI-POC-VERIFIED] https://example.com/item?id=1",
+                    },
+                    {
+                        "id": "xss_new",
+                        "type": "xss",
+                        "category": "xss",
+                        "title": "DOM XSS on search",
+                        "summary": "browser marker XSS",
+                        "url": "https://example.com/#/search?q=<img>",
+                        "severity": "medium",
+                        "confidence": "confirmed",
+                        "validation_status": "validated",
+                        "validation_summary": str(validation_summary),
+                        "report_status": "not_generated",
+                        "source_file": "xss/manual_ai_candidates.txt",
+                        "raw": "[DOM-XSS-MARKER] https://example.com/#/search?q=<img>",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total == 2
+    assert {item["finding_id"] for item in index} == {"sqli_done", "xss_new"}
+    saved = json.loads((report_dir / "INDEX.json").read_text(encoding="utf-8"))
+    assert saved["total_reports"] == 2
+    assert {item["finding_id"] for item in saved["reports"]} == {"sqli_done", "xss_new"}
+
+
+def test_report_generator_uses_canonical_report_dir_for_url_target(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "127.0.0.1:3002"
+    findings_dir.mkdir(parents=True)
+    validation_dir = tmp_path / "evidence" / "127.0.0.1:3002" / "validation" / "xss"
+    validation_dir.mkdir(parents=True)
+    validation_summary = validation_dir / "validation-summary.json"
+    validation_summary.write_text(
+        json.dumps(
+            {
+                "all_gates_passed": True,
+                "four_validation_gates_passed": True,
+                "seven_question_gate_passed": True,
+                "seven_question_gate_decision": "pass",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "http://127.0.0.1:3002",
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "xss_url_target",
+                        "type": "xss",
+                        "category": "xss",
+                        "title": "DOM XSS",
+                        "summary": "DOM XSS marker",
+                        "url": "http://127.0.0.1:3002/#/search?q=<img>",
+                        "severity": "medium",
+                        "confidence": "confirmed",
+                        "validation_status": "validated",
+                        "validation_summary": str(validation_summary),
+                        "report_status": "not_generated",
+                        "source_file": "xss/manual.txt",
+                        "raw": "[DOM-XSS] http://127.0.0.1:3002/#/search?q=<img>",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total == 1
+    report_path = Path(index[0]["file"])
+    assert report_path.parent == tmp_path / "reports" / "127.0.0.1:3002"
+    assert (tmp_path / "reports" / "127.0.0.1:3002" / "INDEX.json").is_file()
+    assert not (tmp_path / "reports" / "http:" / "127.0.0.1:3002").exists()
 
 
 def test_report_generator_syncs_report_action_queue(monkeypatch, tmp_path):
@@ -333,9 +543,9 @@ def test_report_generator_skips_unvalidated_and_already_reported_structured_find
 
     total, index = report_generator.process_findings_dir(str(findings_dir))
 
-    assert total == 1
-    assert len(index) == 1
-    assert index[0]["finding_id"] == "validated_pending"
+    assert total == 2
+    assert len(index) == 2
+    assert {item["finding_id"] for item in index} == {"validated_pending", "validated_done"}
     updated_index = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
     statuses = {item["id"]: item["report_status"] for item in updated_index["findings"]}
     assert statuses == {
@@ -410,3 +620,49 @@ def test_validate_prefill_loads_finding_candidate(tmp_path):
     assert prefill["summary"] == "[MFA-NO-RATE-LIMIT] https://example.com/mfa/verify"
     assert prefill["rubric"]["rubric_id"] == "authz"
     assert prefill["rubric"]["status"] in {"needs-evidence", "candidate-ready", "signal-only"}
+
+
+def test_validate_prefill_uses_runner_evidence_rubric(tmp_path, monkeypatch):
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path)
+    summary_path = tmp_path / "evidence" / "target.com" / "validation" / "sqli-search" / "summary.json"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text(
+        json.dumps(
+            {
+                "evidence_rubric": {
+                    "rubric_id": "sqli",
+                    "status": "candidate-ready",
+                    "score": 100,
+                    "missing_labels": [],
+                    "summary": "sqli:candidate-ready score=100 satisfied=4/4",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "target.com",
+                "findings": [
+                    {
+                        "id": "sqli-search",
+                        "type": "sqli",
+                        "url": "https://target.com/rest/products/search?q=apple",
+                        "summary": "sqli:candidate-ready score=100 satisfied=4/4",
+                        "source_file": "evidence/target.com/validation/sqli-search/summary.json",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    prefill = validate.load_finding_prefill(str(findings_dir), "sqli-search")
+
+    assert prefill["rubric"]["rubric_id"] == "sqli"
+    assert prefill["rubric"]["status"] == "candidate-ready"
+    assert prefill["rubric"]["score"] == 100

@@ -275,27 +275,104 @@ def _load_json_object(path: Path) -> dict[str, Any]:
 
 
 def _preserve_existing_finding_state(payload: dict[str, Any], existing: dict[str, Any]) -> None:
-    """Carry validation/report state across deterministic index rebuilds."""
+    """Carry validation/report state across deterministic index rebuilds.
+
+    `findings.json` is not fed only by scanner text files. Evidence runners and
+    `/validate` can append replay-backed candidates whose `source_file` points
+    at `evidence/.../summary.json`. A rebuild must not silently drop those
+    out-of-band rows, otherwise the AI loses validated/candidate state even
+    though the raw evidence still exists.
+    """
     existing_by_id = {
         str(item.get("id")): item
         for item in existing.get("findings", [])
         if isinstance(item, dict) and item.get("id")
     }
+    rebuilt_ids: set[str] = set()
     for finding in payload.get("findings", []):
         if not isinstance(finding, dict):
             continue
-        old = existing_by_id.get(str(finding.get("id") or ""))
+        finding_id = str(finding.get("id") or "")
+        if finding_id:
+            rebuilt_ids.add(finding_id)
+        old = existing_by_id.get(finding_id)
         if not old:
             continue
         for field in PRESERVED_FINDING_FIELDS:
             if field in old:
                 finding[field] = old[field]
 
+    preserved_orphans = []
+    target = str(payload.get("target") or "")
+    for finding_id, old in existing_by_id.items():
+        if finding_id in rebuilt_ids:
+            continue
+        if not _should_preserve_orphan_finding(old, target=target):
+            continue
+        preserved_orphans.append(dict(old))
+
+    if preserved_orphans:
+        findings = payload.setdefault("findings", [])
+        if isinstance(findings, list):
+            findings.extend(preserved_orphans)
+
+
+def _should_preserve_orphan_finding(finding: dict[str, Any], *, target: str) -> bool:
+    """Return whether a finding absent from scanner text output must survive.
+
+    Default, unreviewed scanner rows are deterministic projections of current
+    `*.txt` artifacts and can disappear when their source line disappears.
+    Replay-backed, validated, rejected, partial, or reported rows are runtime
+    state and must be kept unless they are clearly off-target.
+    """
+    url = str(finding.get("url") or "").strip()
+    if url and target and not url_belongs_to_target(url, target):
+        return False
+
+    validation_status = str(finding.get("validation_status") or "unvalidated")
+    report_status = str(finding.get("report_status") or "not_generated")
+    if validation_status not in {"", "unvalidated"}:
+        return True
+    if report_status not in {"", "not_generated"}:
+        return True
+
+    source_file = str(finding.get("source_file") or "")
+    raw = str(finding.get("raw") or "")
+    if source_file.startswith("evidence/") or "/evidence/" in source_file:
+        return True
+    if raw.startswith("validation_runner:"):
+        return True
+    return False
+
+
+def _refresh_finding_counts(payload: dict[str, Any]) -> None:
+    """Recalculate totals after scanner rows and preserved runtime rows merge."""
+    findings = [item for item in payload.get("findings", []) if isinstance(item, dict)]
+    payload["total"] = len(findings)
+
+    severity_counts: dict[str, int] = {}
+    type_counts: dict[str, int] = {}
+    confidence_counts: dict[str, int] = {}
+    for finding in findings:
+        severity = str(finding.get("severity") or "medium")
+        vuln_type = str(finding.get("type") or "exposure")
+        confidence = str(finding.get("confidence") or "medium")
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        type_counts[vuln_type] = type_counts.get(vuln_type, 0) + 1
+        confidence_counts[confidence] = confidence_counts.get(confidence, 0) + 1
+
+    payload["counts"] = {
+        "severity": dict(sorted(severity_counts.items())),
+        "type": dict(sorted(type_counts.items())),
+        "confidence": dict(sorted(confidence_counts.items())),
+    }
+
 
 def write_finding_index(findings_dir: str | Path, *, target: str | None = None, output: str | Path | None = None) -> dict[str, Any]:
     payload = build_finding_index(findings_dir, target=target)
     output_path = Path(output) if output else Path(findings_dir) / "findings.json"
     _preserve_existing_finding_state(payload, _load_json_object(output_path))
+    _refresh_finding_counts(payload)
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return payload
 

@@ -608,7 +608,10 @@ def _retire_stale_checkpoint_actions(queue: dict, fresh_actions: list[dict]) -> 
     """Retire queued/running checkpoint TODOs that disappeared from the latest checkpoint.
 
     只处理仍未分类的 checkpoint 源 action，避免旧噪声在 queue 里长期滞留。
-    candidate/validated/manual 等人工推进过的条目不自动改状态。
+    candidate-evidence-gap/validated/manual 等人工推进过的条目不自动改状态。
+    例外：/validate 跑完但未过 gate 的 validation action 会被标为 candidate；
+    如果最新 checkpoint 已经转向其它候选，它不应继续用旧的“再跑 /validate”
+    文案劫持下一步。finding 自身仍保留 partial/candidate 状态，AI 可随时重开。
     """
     fresh_keys = {
         str(action.get("dedupe_key") or _dedupe_key(action))
@@ -622,7 +625,11 @@ def _retire_stale_checkpoint_actions(queue: dict, fresh_actions: list[dict]) -> 
             continue
         if str(item.get("source") or "") != "checkpoint":
             continue
-        if str(item.get("status") or "queued") not in {"queued", "running"}:
+        status = str(item.get("status") or "queued")
+        action_type = str(item.get("type") or "")
+        stale_checkpoint_todo = status in {"queued", "running"}
+        stale_partial_validation = status == "candidate" and action_type == "validation"
+        if not (stale_checkpoint_todo or stale_partial_validation):
             continue
         key = str(item.get("dedupe_key") or _dedupe_key(item))
         if key in fresh_keys:

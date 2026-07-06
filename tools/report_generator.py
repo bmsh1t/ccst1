@@ -20,9 +20,11 @@ from pathlib import Path
 try:
     from action_queue import ACTIVE_STATUSES, load_queue, resolve_action
     from finding_index import load_finding_index, update_finding_status
+    from target_paths import target_storage_key
 except ImportError:  # pragma: no cover - package import path
     from tools.action_queue import ACTIVE_STATUSES, load_queue, resolve_action
     from tools.finding_index import load_finding_index, update_finding_status
+    from tools.target_paths import target_storage_key
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
@@ -719,7 +721,7 @@ def _is_reportable_structured_finding(finding):
 def process_findings_dir(findings_dir):
     """Process all findings in a directory and generate reports."""
     structured_index = load_finding_index(findings_dir)
-    target_name = structured_index.get("target") or os.path.basename(findings_dir)
+    target_name = _report_target_name(structured_index, findings_dir)
     report_dir = os.path.join(REPORTS_DIR, target_name)
     os.makedirs(report_dir, exist_ok=True)
 
@@ -746,6 +748,9 @@ def process_findings_dir(findings_dir):
 
     structured_findings = structured_index.get("findings", []) if isinstance(structured_index, dict) else []
     if structured_findings:
+        report_index.extend(_existing_structured_report_entries(structured_findings))
+        total_reports = len(report_index)
+
         reportable_findings = [
             finding for finding in structured_findings if _is_reportable_structured_finding(finding)
         ]
@@ -837,6 +842,52 @@ def process_findings_dir(findings_dir):
                 })
 
     return write_report_index(report_dir, target_name, total_reports, report_index)
+
+
+def _report_target_name(structured_index, findings_dir):
+    """Return canonical target storage key for report output paths."""
+    raw_target = ""
+    if isinstance(structured_index, dict):
+        raw_target = str(structured_index.get("target") or "").strip()
+    raw_target = raw_target or os.path.basename(str(findings_dir).rstrip(os.sep))
+    return target_storage_key(raw_target)
+
+
+def _existing_structured_report_entries(structured_findings):
+    """Build report index rows for findings already marked as generated.
+
+    Report generation can be called repeatedly as new candidates pass
+    `/validate`. The index should describe the current report set, not only the
+    reports created in this invocation.
+    """
+    entries = []
+    seen = set()
+    for finding in structured_findings:
+        if not isinstance(finding, dict):
+            continue
+        if str(finding.get("report_status") or "").strip().lower() != "generated":
+            continue
+        report_file = str(finding.get("report_file") or "").strip()
+        if not report_file:
+            continue
+        report_id = str(finding.get("report_id") or "").strip() or Path(report_file).stem
+        key = str(finding.get("id") or "") or report_file
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append({
+            "id": report_id,
+            "finding_id": finding.get("id", ""),
+            "title": finding.get("title") or f"{str(finding.get('type') or 'finding').upper()} on {finding.get('url', '')}",
+            "severity": finding.get("severity", "medium"),
+            "url": finding.get("url", ""),
+            "file": report_file,
+            "type": finding.get("type") or finding.get("category") or "misconfig",
+            "source_file": finding.get("source_file", ""),
+            "confidence": finding.get("confidence", ""),
+            "queue_sync": finding.get("queue_sync", {}),
+        })
+    return entries
 
 
 def write_report_index(report_dir, target_name, total_reports, report_index):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import checkpoint as checkpoint_module
 from action_queue import _checkpoint_item_to_action, _dedupe_key, save_queue
 from checkpoint import (
     _build_next_action_queue,
@@ -254,6 +255,43 @@ def test_checkpoint_decision_ignores_non_actionable_pending_validation():
         "recommended_targets": [],
     }
     assert _decide(report_only_state, coverage_gaps=[], actor_gaps=[], case_state={}) == "report"
+
+
+def test_checkpoint_handoff_next_action_does_not_reuse_stale_runtime_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        checkpoint_module,
+        "build_autopilot_state",
+        lambda *args, **kwargs: {
+            "has_recon": True,
+            "next_action": "continue_last_focus",
+            "structured_findings": {
+                "pending_validation": 1,
+                "evidence_gap_count": 1,
+            },
+            "surface": {"stats": {"review_pool": 0, "p1": 0, "p2": 0, "workflow_leads": 0}},
+            "recommended_targets": [],
+            "validation_runner_candidates": [],
+        },
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "build_context_pack",
+        lambda *args, **kwargs: {"phase": "recon", "selected_skill": "", "knowledge_cards": []},
+    )
+    monkeypatch.setattr(checkpoint_module, "rebuild_matrix", lambda *args, **kwargs: {"endpoints": []})
+    monkeypatch.setattr(checkpoint_module, "save_matrix", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        checkpoint_module,
+        "build_evidence_summary",
+        lambda *args, **kwargs: {"actor_matrix": {"gap_count": 0, "gaps": []}},
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert checkpoint["decision"] == "handoff"
+    assert checkpoint["next_action"] == "handoff"
+    assert checkpoint["recommended_executable_action"] == {}
+    assert "next_action=continue_last_focus" not in checkpoint["target_write_back"]["handoff"]
 
 
 def test_matrix_summary_separates_raw_and_actionable_coverage_gaps():
@@ -535,6 +573,44 @@ def test_checkpoint_queues_candidate_evidence_gap_before_validate(tmp_path):
         for item in checkpoint["target_write_back"]["next"]
     )
     assert checkpoint["recommended_executable_action"]["type"] == "candidate-evidence-gap"
+
+
+def test_checkpoint_treats_candidate_ready_with_missing_labels_as_evidence_gap(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps({
+            "findings": [
+                {
+                    "id": "IDOR-BASKET",
+                    "type": "idor",
+                    "severity": "medium",
+                    "confidence": "confirmed",
+                    "url": "https://target.com/rest/basket/6",
+                    "validation_status": "candidate",
+                    "report_status": "not_generated",
+                    "evidence_rubric": {
+                        "rubric_id": "authz",
+                        "status": "candidate-ready",
+                        "ready": True,
+                        "score": 90,
+                        "missing_labels": ["target-owned business impact"],
+                        "next_actions": [
+                            "Tie the diff to concrete target-owned impact before reporting.",
+                        ],
+                    },
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert checkpoint["decision"] == "validate"
+    assert checkpoint["recommended_executable_action"]["type"] == "candidate-evidence-gap"
+    assert "target-owned business impact" in checkpoint["recommended_executable_action"]["action"]
+    assert checkpoint["next_action_queue"][0]["type"] == "candidate-evidence-gap"
 
 
 def test_checkpoint_queues_secret_verification_lane_from_repo_source_summary(tmp_path):
@@ -1753,6 +1829,44 @@ def test_ranked_surface_placeholder_object_skips_when_concrete_endpoint_covered(
     assert not any(url in item for item in proposals)
 
 
+def test_ranked_surface_skips_finalized_finding_url(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    url = "https://target.com/#/search?q=%3Cimg%20src=x%20onerror=marker()%3E"
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "id": "xss_validated",
+                        "type": "xss",
+                        "url": url,
+                        "validation_status": "validated",
+                        "report_status": "not_generated",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proposals = _next_proposals(
+        state={
+            "has_recon": True,
+            "structured_findings": {"findings_dir": str(findings_dir)},
+            "recommended_targets": [{"url": url, "suggested": "review scanner candidate"}],
+            "surface": {"p1": [{"url": url, "suggested": "review scanner candidate"}], "workflow_leads": []},
+        },
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={"contradictions": []},
+        evidence_summary={},
+    )
+
+    assert not any("Review surface candidate" in item and url in item for item in proposals)
+
+
 def test_ranked_surface_spa_page_route_uses_browser_state_first_with_case_state_ready():
     url = "https://app.target.com/orders"
     proposals = _next_proposals(
@@ -1915,7 +2029,7 @@ def test_ranked_surface_path_only_authz_uses_baseline_first():
     assert '--variant "unauth_baseline"' in skeleton
 
 
-def test_checkpoint_surfaces_context_contradictions(tmp_path):
+def test_checkpoint_surfaces_context_contradictions_without_queueing_them(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/graphql",
     ])
@@ -1938,12 +2052,11 @@ def test_checkpoint_surfaces_context_contradictions(tmp_path):
         "Remembered dead end may have new evidence" in item
         for item in checkpoint["context_pack"]["contradictions"]
     )
-    assert any(
+    assert not any(
         "Review context contradiction" in item
         for item in checkpoint["target_write_back"]["next"]
     )
-    context_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "context-review")
-    assert context_action["command_hint"] == 'python3 tools/context_pack.py --target "target.com"'
+    assert not any(item["type"] == "context-review" for item in checkpoint["next_action_queue"])
     assert "Contradictions:" in output
 
 

@@ -1651,7 +1651,22 @@ def load_finding_prefill(findings_dir: str, finding_id: str) -> dict:
     finding = find_finding(findings_dir, finding_id)
     if not finding:
         return {}
-    rubric = evaluate_candidate_evidence(finding)
+    rubric = finding.get("evidence_rubric") if isinstance(finding.get("evidence_rubric"), dict) else {}
+    if not rubric:
+        source_file = str(finding.get("source_file") or "")
+        source_path = Path(source_file)
+        if source_file and not source_path.is_absolute():
+            source_path = BASE_DIR / source_file
+        if source_path.is_file() and source_path.suffix == ".json":
+            try:
+                source_payload = json.loads(source_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                source_payload = {}
+            source_rubric = source_payload.get("evidence_rubric") if isinstance(source_payload, dict) else {}
+            if isinstance(source_rubric, dict):
+                rubric = source_rubric
+    if not rubric:
+        rubric = evaluate_candidate_evidence(finding)
 
     return {
         "target": payload.get("target") or Path(findings_dir).name,

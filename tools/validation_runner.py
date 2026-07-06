@@ -224,6 +224,42 @@ def _find_existing_finding_id_by_url(
     return ""
 
 
+def _find_existing_finding(findings_dir: Path, finding_id: str) -> dict[str, Any]:
+    payload = _read_json_object(findings_dir / "findings.json")
+    for item in payload.get("findings", []):
+        if isinstance(item, dict) and str(item.get("id") or "") == finding_id:
+            return item
+    return {}
+
+
+def _runner_sync_gate_updates(
+    findings_dir: Path,
+    finding_id: str,
+    status: str,
+    *,
+    validation_summary: str,
+    validated_at: str,
+) -> dict[str, str]:
+    """Return gate fields for runner sync without downgrading /validate.
+
+    validation_runner creates candidate evidence only.  Re-running it after
+    `/validate` should refresh raw evidence/rubric, not erase report readiness
+    or replace the final validation-summary pointer with a runner summary.
+    """
+    existing = _find_existing_finding(findings_dir, finding_id)
+    if str(existing.get("validation_status") or "") == "validated" and status == "candidate":
+        return {
+            "validation_status": "validated",
+            "validation_summary": str(existing.get("validation_summary") or validation_summary),
+            "validated_at": str(existing.get("validated_at") or validated_at),
+        }
+    return {
+        "validation_status": status,
+        "validation_summary": validation_summary,
+        "validated_at": validated_at,
+    }
+
+
 def _runner_finding_type(vuln_class: str, lane: str) -> str:
     value = str(vuln_class or "").strip().lower()
     lane_value = str(lane or "").strip().lower()
@@ -312,6 +348,9 @@ def _create_runner_finding(
         "category": finding.get("category") or finding_type,
         "url": url or finding.get("url", ""),
         "confidence": "confirmed",
+        # 保留 runner 的证据 rubric，供 /validate 和 checkpoint 展示。
+        # /validate 仍是最终报告 gate；这里不是把 runner 证据当最终结论。
+        "evidence_rubric": summary.get("evidence_rubric") or finding.get("evidence_rubric") or {},
         "validation_status": validation_status,
         "validation_summary": validation_summary,
         "validated_at": str(summary.get("generated_at") or now_utc()),
@@ -417,13 +456,21 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
     vuln_class = str(summary.get("vuln_class") or "").strip() or LANE_TO_VULN_CLASS.get(
         str(summary.get("lane") or ""), ""
     )
+    summary_ref = str(summary_path) if summary_path else str(summary.get("summary_path") or "")
+    generated_at = str(summary.get("generated_at") or now_utc())
+    gate_updates = _runner_sync_gate_updates(
+        findings_dir,
+        finding_id,
+        status,
+        validation_summary=summary_ref,
+        validated_at=generated_at,
+    )
     updated = update_finding_status(
         findings_dir,
         finding_id,
-        validation_status=status,
-        validation_summary=str(summary_path) if summary_path else str(summary.get("summary_path") or ""),
-        validated_at=str(summary.get("generated_at") or now_utc()),
+        **gate_updates,
         vuln_class=vuln_class,
+        evidence_rubric=summary.get("evidence_rubric") or {},
         confidence="confirmed" if result == "tested_finding" else "",
     )
     if not updated:
@@ -435,13 +482,19 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
             vuln_class=vuln_class,
         )
         if existing_id:
+            gate_updates = _runner_sync_gate_updates(
+                findings_dir,
+                existing_id,
+                status,
+                validation_summary=summary_ref,
+                validated_at=generated_at,
+            )
             updated = update_finding_status(
                 findings_dir,
                 existing_id,
-                validation_status=status,
-                validation_summary=str(summary_path) if summary_path else str(summary.get("summary_path") or ""),
-                validated_at=str(summary.get("generated_at") or now_utc()),
+                **gate_updates,
                 vuln_class=vuln_class,
+                evidence_rubric=summary.get("evidence_rubric") or {},
                 confidence="confirmed" if result == "tested_finding" else "",
             )
             if updated:

@@ -390,6 +390,59 @@ def test_ingest_checkpoint_retires_stale_checkpoint_queued_actions(tmp_path):
     assert "checkpoint refresh" in stale["result"].lower()
 
 
+def test_ingest_checkpoint_retires_stale_partial_validation_candidate(tmp_path):
+    stale_checkpoint = {
+        "next_action_queue": [
+            {
+                "id": "A1",
+                "priority": 100,
+                "type": "validation",
+                "status": "ready",
+                "action": "Run /validate for finding F-old on https://target.com/api/feedbacks.",
+                "command_hint": "/validate",
+                "redline_required": True,
+                "metadata": {
+                    "endpoint": "/api/feedbacks",
+                    "finding_id": "F-old",
+                },
+            }
+        ]
+    }
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=stale_checkpoint)
+    queue = load_queue(tmp_path, "target.com")
+    queue["actions"][0]["status"] = "candidate"
+    queue["actions"][0]["result"] = "validation-summary=/tmp/feedbacks/validation-summary.json"
+    from action_queue import save_queue
+
+    save_queue(tmp_path, "target.com", queue)
+
+    refreshed = {
+        "next_action_queue": [
+            {
+                "id": "A1",
+                "priority": 100,
+                "type": "validation",
+                "status": "ready",
+                "action": "Run /validate for finding F-new on https://target.com/rest/products/search?q=apple.",
+                "command_hint": "/validate",
+                "redline_required": True,
+                "metadata": {
+                    "endpoint": "/rest/products/search",
+                    "finding_id": "F-new",
+                },
+            }
+        ]
+    }
+
+    result = ingest_checkpoint(tmp_path, "target.com", checkpoint=refreshed)
+    saved = load_queue(tmp_path, "target.com")
+    stale = next(item for item in saved["actions"] if item["metadata"]["finding_id"] == "F-old")
+
+    assert result["stats"]["retired_stale"] == 1
+    assert stale["status"] == "n/a"
+    assert select_next_action(saved)["metadata"]["finding_id"] == "F-new"
+
+
 def test_manual_action_add_and_resolve_to_candidate(tmp_path):
     added = add_manual_action(
         tmp_path,

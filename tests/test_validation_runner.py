@@ -683,7 +683,70 @@ def test_authz_public_exposure_cli_syncs_finding_and_action_queue(monkeypatch, t
     assert finding["confidence"] == "confirmed"
     assert finding["validation_summary"].endswith("summary.json")
     assert finding["vuln_class"] == "Authz"
+    assert finding["evidence_rubric"]["status"] == "candidate-ready"
     assert queue["actions"][0]["status"] == "candidate"
+
+
+def test_runner_sync_does_not_downgrade_validated_finding(monkeypatch, tmp_path, capsys):
+    target = "https://target.test"
+    url = "https://target.test/rest/admin/application-configuration"
+    key = _target_key(target)
+    findings_dir = tmp_path / "findings" / key
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "target": target,
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "AUTHZ-VALIDATED",
+                        "type": "auth_bypass",
+                        "severity": "high",
+                        "confidence": "confirmed",
+                        "url": url,
+                        "validation_status": "validated",
+                        "validation_summary": "validated/validation-summary.json",
+                        "report_status": "not_generated",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(
+            kwargs["url"],
+            body=json.dumps({"config": {"application": {"name": "Shop"}, "googleOauth": {"clientId": "x"}}}),
+        ),
+    )
+
+    rc = validation_runner.main(
+        [
+            "authz-public-exposure",
+            "--repo-root",
+            str(tmp_path),
+            "--target",
+            target,
+            "--url",
+            url,
+            "--finding-id",
+            "AUTHZ-VALIDATED",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+    findings = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert summary["sync"]["finding"]["validation_status"] == "validated"
+    assert findings["findings"][0]["validation_status"] == "validated"
+    assert findings["findings"][0]["validation_summary"] == "validated/validation-summary.json"
+    assert findings["findings"][0]["evidence_rubric"]["status"] == "candidate-ready"
 
 
 def test_authz_public_exposure_cli_reuses_existing_url_finding_without_id(monkeypatch, tmp_path, capsys):
