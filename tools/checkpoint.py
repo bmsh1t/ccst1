@@ -34,6 +34,7 @@ try:
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
+    from tools.closure_resolver import ClosureResolver
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import load_case_state, summary as build_case_state_summary
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -51,6 +52,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
+    from closure_resolver import ClosureResolver  # type: ignore
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import load_case_state, summary as build_case_state_summary  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
@@ -317,19 +319,6 @@ def _artifact_endpoints(repo_root: Path | None, target: str, artifact: str) -> l
     return _dedupe(endpoints)
 
 
-def _closed_ledger_endpoint_classes(evidence_summary: dict) -> dict[str, set[str]]:
-    closed: dict[str, set[str]] = {}
-    for cell in evidence_summary.get("closed_cells") or []:
-        if not isinstance(cell, dict):
-            continue
-        endpoint = _normalise_endpoint_path(str(cell.get("endpoint") or ""))
-        vuln_class = _canonical_vuln_for_ledger(str(cell.get("vuln_class") or ""))
-        if not endpoint:
-            continue
-        closed.setdefault(endpoint, set()).add(vuln_class)
-    return closed
-
-
 def _secondary_sweep_closed_by_ledger(
     lead: dict,
     *,
@@ -343,16 +332,8 @@ def _secondary_sweep_closed_by_ledger(
     if not endpoints:
         return False
 
-    closed = _closed_ledger_endpoint_classes(evidence_summary)
     required_classes = SECONDARY_SWEEP_REQUIRED_LEDGER_CLASSES.get(category, set())
-    for endpoint in endpoints:
-        classes = closed.get(endpoint, set())
-        if required_classes:
-            if not classes.intersection(required_classes):
-                return False
-        elif not classes:
-            return False
-    return True
+    return ClosureResolver(evidence_summary).are_endpoints_closed(endpoints, required_classes)
 
 
 def _secondary_sweep_proposals(
@@ -759,8 +740,7 @@ def _lead_proposals(
         if url:
             endpoint_path = _normalise_endpoint_path(url)
             vuln_hint = _ranked_surface_vuln_hint(item, url)
-            vuln_class = _canonical_vuln_for_ledger(vuln_hint)
-            if vuln_hint != "generic" and _ledger_covers_cell(_ledger_covered_cells(evidence_summary or {}), endpoint_path, vuln_class):
+            if _ledger_covers_cell(_ledger_covered_cells(evidence_summary or {}), endpoint_path, vuln_hint):
                 continue
             proposals.append(
                 "Evidence: Surface review candidate {url} ({reasons}). Why it matters: "
@@ -1545,48 +1525,13 @@ def _tested_finding_endpoints(matrix: dict) -> set[str]:
     return endpoints
 
 
-def _ledger_covered_cells(evidence_summary: dict) -> set[tuple[str, str]]:
-    """Return endpoint/vuln cells already closed by deterministic evidence.
-
-    A validation runner can close a ranked-surface hypothesis as tested_clean
-    without creating a structured finding or action-queue match. Checkpoint must
-    still consume that ledger fact, otherwise it keeps asking Claude to rerun
-    the same baseline.
-    """
-    covered: set[tuple[str, str]] = set()
-    for cell in evidence_summary.get("closed_cells") or []:
-        if not isinstance(cell, dict):
-            continue
-        endpoint = _normalise_endpoint_path(str(cell.get("endpoint") or ""))
-        vuln_class = _canonical_vuln_for_ledger(str(cell.get("vuln_class") or "").strip())
-        if endpoint and vuln_class:
-            covered.add((endpoint, vuln_class))
-    for entry in evidence_summary.get("recent_entries") or []:
-        if not isinstance(entry, dict):
-            continue
-        result = str(entry.get("result") or "")
-        if result not in {"tested_clean", "tested_finding", "dead_end", "not_applicable"}:
-            continue
-        endpoint = _normalise_endpoint_path(str(entry.get("endpoint") or entry.get("raw_endpoint") or ""))
-        vuln_class = _canonical_vuln_for_ledger(str(entry.get("vuln_class") or "").strip())
-        if endpoint and vuln_class:
-            covered.add((endpoint, vuln_class))
-    return covered
+def _ledger_covered_cells(evidence_summary: dict, matrix: dict | None = None) -> ClosureResolver:
+    """Return the unified closure resolver for endpoint/vuln cells."""
+    return ClosureResolver(evidence_summary or {}, matrix or {})
 
 
-def _ledger_covers_cell(covered_cells: set[tuple[str, str]], endpoint: str, vuln_class: str) -> bool:
-    endpoint_path = _normalise_endpoint_path(endpoint)
-    canonical_class = _canonical_vuln_for_ledger(vuln_class)
-    if not endpoint_path:
-        return False
-    if (endpoint_path, canonical_class) in covered_cells:
-        return True
-    # IDOR and generic Authz are the same authorization family for replay
-    # de-duplication: a confirmed object replay should close a later generic
-    # role-diff suggestion for the same concrete endpoint.
-    if canonical_class in {"Authz", "IDOR"}:
-        return any((endpoint_path, sibling) in covered_cells for sibling in ("Authz", "IDOR"))
-    return False
+def _ledger_covers_cell(covered_cells: ClosureResolver, endpoint: str, vuln_class: str) -> bool:
+    return covered_cells.is_cell_closed(endpoint, vuln_class)
 
 
 def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> list[str]:
@@ -1775,7 +1720,7 @@ def _next_proposals(
         )
     )
     covered_findings = _tested_finding_endpoints(matrix)
-    covered_ledger_cells = _ledger_covered_cells(evidence_summary)
+    covered_ledger_cells = _ledger_covered_cells(evidence_summary, matrix)
 
     repo_source_summary = state.get("repo_source_summary") or {}
     secret_findings = int(repo_source_summary.get("secret_findings", 0) or 0)
@@ -1879,12 +1824,18 @@ def _next_proposals(
             continue
         if url:
             entry = _ranked_surface_entry(ranked_state, item.get("url") or "")
-            vuln_class = _canonical_vuln_for_ledger(_ranked_surface_vuln_hint(entry, url))
+            vuln_hint = _ranked_surface_vuln_hint(entry, url)
             concrete_endpoint = _placeholder_concrete_endpoint(url, case_state)
             concrete_endpoint_path = _normalise_endpoint_path(concrete_endpoint)
+            placeholder_object_closed = bool(
+                concrete_endpoint_path
+                and _non_concrete_object_segments(url)
+                and _ledger_covers_cell(covered_ledger_cells, concrete_endpoint_path, "IDOR")
+            )
             if (
-                _ledger_covers_cell(covered_ledger_cells, endpoint_path, vuln_class)
-                or _ledger_covers_cell(covered_ledger_cells, concrete_endpoint_path, vuln_class)
+                _ledger_covers_cell(covered_ledger_cells, endpoint_path, vuln_hint)
+                or _ledger_covers_cell(covered_ledger_cells, concrete_endpoint_path, vuln_hint)
+                or placeholder_object_closed
             ):
                 continue
             if defer_role_ranked and _ranked_surface_context_prereq(ranked_state, item, case_state):

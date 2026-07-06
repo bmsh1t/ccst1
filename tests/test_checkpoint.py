@@ -748,6 +748,39 @@ def test_lead_proposals_skip_ledger_closed_surface_candidate():
     assert all("/api/Feedbacks" not in item for item in proposals)
 
 
+def test_lead_proposals_keep_unknown_surface_type_fail_open():
+    proposals = _lead_proposals(
+        {
+            "has_recon": True,
+            "surface": {
+                "p1": [
+                    {
+                        "url": "https://api.target.com/api/Feedbacks",
+                        "reasons": ["API endpoint"],
+                        "suggested": "review unusual scanner signal",
+                        "scanner_findings": [{"type": "unknown-custom-signal"}],
+                    }
+                ],
+                "workflow_leads": [],
+            },
+        },
+        {"hypothesis_seeds": []},
+        target="target.com",
+        evidence_summary={
+            "closed_cells": [
+                {
+                    "endpoint": "/api/Feedbacks",
+                    "vuln_class": "Authz",
+                    "result": "tested_finding",
+                    "ts": "2026-07-06T00:00:00Z",
+                }
+            ]
+        },
+    )
+
+    assert any("/api/Feedbacks" in item for item in proposals)
+
+
 def test_checkpoint_keeps_open_200_secondary_sweep_without_authz_ledger_closure(tmp_path):
     _seed_recon(tmp_path, "target.com", ["https://api.target.com/profile"])
     manual_dir = tmp_path / "findings" / "target.com" / "manual_review"

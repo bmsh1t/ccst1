@@ -181,6 +181,24 @@ def test_summary_closed_cells_include_older_non_recent_entries(tmp_path):
     assert closed["result"] == "tested_finding"
 
 
+def test_summary_closed_cells_include_blocked_redline_terminal_rows(tmp_path):
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/profile/image/url",
+        method="POST",
+        vuln_class="SSRF",
+        result="blocked_redline",
+        evidence_ref="evidence/target/ssrf_redline.txt",
+    )
+
+    summary = build_summary(tmp_path, target="target.com")
+
+    closed = next(cell for cell in summary["closed_cells"] if cell["endpoint"] == "/profile/image/url")
+    assert closed["vuln_class"] == "SSRF"
+    assert closed["result"] == "blocked_redline"
+
+
 def test_summary_open_candidates_survive_recency_but_close_on_final_result(tmp_path):
     record_entry(
         tmp_path,

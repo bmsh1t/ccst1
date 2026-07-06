@@ -42,7 +42,7 @@ RESULTS = (
     "not_applicable",
 )
 COVERING_RESULTS = {"signal", "candidate", "tested_clean", "tested_finding", "dead_end"}
-CLOSED_CELL_RESULTS = {"tested_clean", "tested_finding", "dead_end", "not_applicable"}
+CLOSED_CELL_RESULTS = {"tested_clean", "tested_finding", "dead_end", "blocked_redline", "not_applicable"}
 
 ACTOR_ALIASES = {
     "anonymous": "anonymous",

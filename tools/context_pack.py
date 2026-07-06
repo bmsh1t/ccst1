@@ -21,6 +21,7 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from memory.target_profile import default_memory_dir
+    from tools.closure_resolver import ClosureResolver
     from tools.coverage_matrix import find_high_value_gaps, load_matrix
     from tools.evidence_ledger import build_summary as build_evidence_summary
     from tools.structured_findings import (
@@ -31,6 +32,7 @@ try:
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
+    from closure_resolver import ClosureResolver  # type: ignore
     from coverage_matrix import find_high_value_gaps, load_matrix  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary  # type: ignore
     from structured_findings import (  # type: ignore
@@ -2394,16 +2396,7 @@ def _ledger_closed_after_dead_end(dead_text: str, dead_ts: str, evidence_summary
     paths = _dead_end_paths(dead_text)
     if not paths:
         return False
-    latest_by_path: dict[str, str] = {}
-    for cell in evidence_summary.get("closed_cells") or []:
-        if not isinstance(cell, dict):
-            continue
-        endpoint = _normalise_path_token(str(cell.get("endpoint") or ""))
-        ts = str(cell.get("ts") or "").strip()
-        if not endpoint or not ts:
-            continue
-        latest_by_path[endpoint] = max(latest_by_path.get(endpoint, ""), ts)
-    return any(latest_by_path.get(path, "") > dead_ts for path in paths)
+    return ClosureResolver(evidence_summary or {}).closed_after(paths, dead_ts)
 
 
 def _contradictions(
