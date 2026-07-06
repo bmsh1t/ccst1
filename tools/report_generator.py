@@ -501,6 +501,31 @@ def _load_validation_summary(finding):
     return data if isinstance(data, dict) else {}
 
 
+def _validation_summary_is_report_ready(finding, validation):
+    """Return whether an attached validation summary is a report-readiness gate."""
+    path = str(finding.get("validation_summary") or "").strip()
+    if not path:
+        return None
+    gate_fields = {
+        "all_gates_passed",
+        "seven_question_gate_passed",
+        "four_validation_gates_passed",
+        "seven_question_gate_decision",
+    }
+    if not validation or not any(field in validation for field in gate_fields):
+        return False
+    if validation.get("all_gates_passed") is False:
+        return False
+    if validation.get("seven_question_gate_passed") is False:
+        return False
+    if validation.get("four_validation_gates_passed") is False:
+        return False
+    decision = str(validation.get("seven_question_gate_decision") or "").strip().lower()
+    if decision in {"kill", "chain_required", "needs_review"}:
+        return False
+    return bool(validation.get("all_gates_passed") or validation.get("seven_question_gate_passed"))
+
+
 def _auth_bypass_narrative(finding, validation):
     """Render a concrete narrative from validated auth/public-exposure evidence."""
     url = finding.get("url", "N/A")
@@ -682,16 +707,8 @@ def _is_reportable_structured_finding(finding):
     if validation_status and validation_status != "validated":
         return False
     validation = _load_validation_summary(finding)
-    if validation:
-        if validation.get("all_gates_passed") is False:
-            return False
-        if validation.get("seven_question_gate_passed") is False:
-            return False
-        if validation.get("four_validation_gates_passed") is False:
-            return False
-        decision = str(validation.get("seven_question_gate_decision") or "").strip().lower()
-        if decision in {"kill", "chain_required", "needs_review"}:
-            return False
+    if _validation_summary_is_report_ready(finding, validation) is False:
+        return False
 
     if report_status == "generated":
         return False

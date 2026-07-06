@@ -161,7 +161,7 @@ def test_format_structured_findings_lines_renders_expected_labels():
     ]
 
 
-def test_validated_finding_reuses_runner_evidence_rubric(tmp_path):
+def test_runner_validated_finding_reuses_rubric_but_still_needs_validate_gate(tmp_path):
     summary_path = tmp_path / "summary.json"
     summary_path.write_text(
         json.dumps(
@@ -197,7 +197,41 @@ def test_validated_finding_reuses_runner_evidence_rubric(tmp_path):
 
     summary = structured_findings.summarize_structured_findings([finding], findings_dir)
 
+    assert summary["validated_pending_report"] == 0
+    assert summary["pending_validation"] == 1
+    assert summary["next_validation"]["id"] == "validated_sqli"
+    assert summary["next_validation"]["rubric_status"] == "candidate-ready"
+    assert summary["next_validation"]["rubric"]["ready"] is True
+    assert summary["next_validation"]["missing_evidence"] == []
+
+
+def test_validate_summary_passed_finding_is_report_ready(tmp_path):
+    summary_path = tmp_path / "validation-summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "all_gates_passed": True,
+                "seven_question_gate_passed": True,
+                "seven_question_gate_decision": "pass",
+                "four_validation_gates_passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    findings_dir = tmp_path / "findings" / "target.com"
+    finding = {
+        "id": "validated_sqli",
+        "type": "sqli",
+        "severity": "high",
+        "confidence": "confirmed",
+        "url": "https://target.com/rest/products/search?q=apple",
+        "validation_status": "validated",
+        "report_status": "not_generated",
+        "validation_summary": str(summary_path),
+    }
+
+    summary = structured_findings.summarize_structured_findings([finding], findings_dir)
+
+    assert summary["pending_validation"] == 0
+    assert summary["validated_pending_report"] == 1
     assert summary["next_report"]["id"] == "validated_sqli"
-    assert summary["next_report"]["rubric_status"] == "candidate-ready"
-    assert summary["next_report"]["rubric"]["ready"] is True
-    assert summary["next_report"]["missing_evidence"] == []

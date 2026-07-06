@@ -114,3 +114,30 @@ def test_structured_report_generation_rejects_failed_seven_question_gate(tmp_pat
     }
 
     assert report_generator._is_reportable_structured_finding(finding) is False
+
+
+def test_structured_report_generation_rejects_runner_summary_without_report_gate(tmp_path):
+    summary_path = tmp_path / "runner-summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "lane": "authz_public_exposure",
+                "result": "tested_finding",
+                "candidate_ready": True,
+                "evidence_rubric": {
+                    "rubric_id": "authz",
+                    "status": "candidate-ready",
+                    "ready": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    finding = {
+        "id": "authz_001",
+        "url": "https://app.example.com/api/Feedbacks",
+        "validation_status": "validated",
+        "validation_summary": str(summary_path),
+    }
+
+    assert report_generator._is_reportable_structured_finding(finding) is False

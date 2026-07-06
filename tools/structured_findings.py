@@ -43,6 +43,54 @@ def _load_validation_summary_rubric(finding: dict) -> dict:
     return {}
 
 
+def _load_validation_summary_payload(finding: dict) -> tuple[dict, bool]:
+    """Load validation_summary JSON and report whether a summary path was present."""
+    value = str(finding.get("validation_summary") or "").strip()
+    if not value:
+        return {}, False
+    path = Path(value)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if not path.is_file():
+        return {}, True
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}, True
+    return (payload if isinstance(payload, dict) else {}), True
+
+
+def _validation_report_ready(finding: dict) -> bool | None:
+    """Return report-readiness when validation_summary exists.
+
+    `validation_runner` summaries prove lane evidence, but they are not the
+    `/validate` report-readiness gate. If a validation_summary path exists and
+    lacks the 7-question / 4-gate fields, keep the finding as a validation
+    follow-up instead of reporting it.
+    """
+    payload, summary_present = _load_validation_summary_payload(finding)
+    if not summary_present:
+        return None
+    gate_fields = {
+        "all_gates_passed",
+        "seven_question_gate_passed",
+        "four_validation_gates_passed",
+        "seven_question_gate_decision",
+    }
+    if not payload or not any(field in payload for field in gate_fields):
+        return False
+    if payload.get("all_gates_passed") is False:
+        return False
+    if payload.get("seven_question_gate_passed") is False:
+        return False
+    if payload.get("four_validation_gates_passed") is False:
+        return False
+    decision = str(payload.get("seven_question_gate_decision") or "").strip().lower()
+    if decision in {"kill", "chain_required", "needs_review"}:
+        return False
+    return bool(payload.get("all_gates_passed") or payload.get("seven_question_gate_passed"))
+
+
 def _rubric_eval(finding: dict) -> dict:
     existing = finding.get("rubric") if isinstance(finding.get("rubric"), dict) else {}
     if existing:
@@ -119,15 +167,25 @@ def summarize_structured_findings(findings: list[dict], findings_dir: Path) -> d
             "findings_dir": str(findings_dir),
         }
 
-    pending_validation = [
-        item for item in valid_findings
-        if str(item.get("validation_status", "unvalidated") or "unvalidated") == "unvalidated"
-    ]
+    pending_validation = []
+    for item in valid_findings:
+        validation_status = str(item.get("validation_status", "unvalidated") or "unvalidated")
+        report_status = str(item.get("report_status", "not_generated") or "not_generated")
+        if validation_status == "unvalidated":
+            pending_validation.append(item)
+            continue
+        if (
+            validation_status == "validated"
+            and report_status != "generated"
+            and _validation_report_ready(item) is False
+        ):
+            pending_validation.append(item)
     validated_pending_report = [
         item for item in valid_findings
         if (
             str(item.get("validation_status", "") or "") == "validated"
             and str(item.get("report_status", "not_generated") or "not_generated") != "generated"
+            and _validation_report_ready(item) is not False
         )
     ]
     reported = [

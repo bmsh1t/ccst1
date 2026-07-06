@@ -231,6 +231,10 @@ def test_report_generator_uses_validation_summary_for_auth_bypass_narrative(monk
                 },
                 "baseline": {"status": 200},
                 "evidence_rubric": {"summary": "authz:candidate-ready score=100 satisfied=4/4"},
+                "all_gates_passed": True,
+                "seven_question_gate_passed": True,
+                "seven_question_gate_decision": "pass",
+                "four_validation_gates_passed": True,
             }
         ),
         encoding="utf-8",
