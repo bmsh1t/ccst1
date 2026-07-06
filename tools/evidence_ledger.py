@@ -295,9 +295,9 @@ _NON_OBJECT_SELECTOR_SEGMENTS = {
     "add", "admin", "all", "apply", "auth", "authentication", "callback",
     "change-password", "config", "configuration", "create", "current",
     "delete", "edit", "export", "history", "import", "internal", "invite",
-    "list", "login", "logout", "manage", "management", "metadata",
-    "new", "preview", "reset-password", "search", "select", "settings",
-    "signup", "track-order", "update", "version", "whoami",
+    "image", "list", "login", "logout", "manage", "management", "metadata",
+    "new", "photo", "picture", "preview", "reset-password", "search", "select",
+    "settings", "signup", "track-order", "update", "url", "version", "whoami",
 }
 
 

@@ -280,6 +280,18 @@ def test_build_summary_does_not_emit_actor_gaps_for_upload_lane_on_admin_path(tm
     assert summary["record_commands"] == []
 
 
+def test_build_summary_does_not_emit_actor_gaps_for_profile_image_url_action(tmp_path):
+    summary = build_summary(
+        tmp_path,
+        target="target.com",
+        focus_endpoints=["/profile/image/url"],
+        vuln_classes=["IDOR", "Authz"],
+    )
+
+    assert summary["actor_matrix"]["gap_count"] == 0
+    assert summary["record_commands"] == []
+
+
 def test_build_summary_does_not_emit_idor_actor_gaps_for_non_object_admin_config(tmp_path):
     summary = build_summary(
         tmp_path,
