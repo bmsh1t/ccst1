@@ -1034,6 +1034,35 @@ def test_dead_end_new_surface_becomes_contradiction(tmp_path):
     )
 
 
+def test_newer_ledger_closure_suppresses_stale_dead_end_contradiction(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/graphql"])
+    _seed_target_memory(tmp_path, "target.com", {
+        "dead_ends": [
+            {
+                "ts": "2026-01-01T00:00:00Z",
+                "text": "GraphQL https://api.target.com/graphql introspection disabled; no operation names in JS",
+            }
+        ],
+    })
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/graphql",
+        vuln_class="GraphQL",
+        result="dead_end",
+        source="ai-review",
+        workflow="pressure-test",
+        notes="AI reviewed newer GraphQL evidence and closed the old dead-end contradiction.",
+    )
+
+    pack = build_context_pack(tmp_path, target="target.com", focus="graphql")
+
+    assert all(
+        "Remembered dead end may have new evidence" not in item
+        for item in pack["contradictions"]
+    )
+
+
 def test_context_pack_ignores_unrelated_active_target_when_target_explicit(tmp_path):
     _seed_recon(tmp_path, "target.com", ["https://api.target.com/api/users?id=1"])
     goals_dir = tmp_path / "memory" / "goals"

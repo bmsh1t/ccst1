@@ -13,6 +13,7 @@ from checkpoint import (
     _coverage_gap_validation_path,
     _decide,
     _filter_final_action_queue_items,
+    _lead_proposals,
     _matrix_summary,
     _next_proposals,
     _select_default_candidate,
@@ -679,6 +680,99 @@ def test_checkpoint_queues_secondary_sweep_for_demoted_manual_review_leads(tmp_p
     assert action["command_hint"] == "review demoted raw artifact; re-promote only with concrete secret/chain evidence"
     assert action["metadata"]["lead_category"] == "open-200-api-review"
     assert action["metadata"]["artifact"] == "findings/target.com/manual_review/open_200_api.txt"
+
+
+def test_checkpoint_suppresses_secondary_sweep_when_artifact_endpoint_closed_by_ledger(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/profile"])
+    manual_dir = tmp_path / "findings" / "target.com" / "manual_review"
+    manual_dir.mkdir(parents=True)
+    (manual_dir / "open_200_api.txt").write_text(
+        "[OPEN-200-REVIEW] 200 1200 https://api.target.com/profile\n",
+        encoding="utf-8",
+    )
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/profile",
+        vuln_class="Authz",
+        result="tested_clean",
+        source="ai-review",
+        workflow="secondary-sweep",
+        evidence_ref="findings/target.com/manual_review/open_200_api.txt",
+        notes="AI reviewed anonymous 200 body and found no secret/config/business-impact evidence.",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert not any(
+        "Secondary-sweep lead [open-200-api-review]" in item
+        for item in checkpoint["target_write_back"]["next"]
+    )
+    assert not any(
+        "Anonymous API endpoints returned substantial 200 responses" in item
+        for item in checkpoint["target_write_back"]["lead"]
+    )
+    assert not any(item["type"] == "secondary-sweep" for item in checkpoint["next_action_queue"])
+
+
+def test_lead_proposals_skip_ledger_closed_surface_candidate():
+    proposals = _lead_proposals(
+        {
+            "has_recon": True,
+            "surface": {
+                "p1": [
+                    {
+                        "url": "https://api.target.com/api/Feedbacks",
+                        "reasons": ["API endpoint"],
+                        "suggested": "validate auth_bypass evidence from auth_bypass/unauth_api_access.txt",
+                        "scanner_findings": [{"type": "auth_bypass"}],
+                    }
+                ],
+                "workflow_leads": [],
+            },
+        },
+        {"hypothesis_seeds": []},
+        target="target.com",
+        evidence_summary={
+            "closed_cells": [
+                {
+                    "endpoint": "/api/Feedbacks",
+                    "vuln_class": "Authz",
+                    "result": "tested_finding",
+                    "ts": "2026-07-06T00:00:00Z",
+                }
+            ]
+        },
+    )
+
+    assert all("/api/Feedbacks" not in item for item in proposals)
+
+
+def test_checkpoint_keeps_open_200_secondary_sweep_without_authz_ledger_closure(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/profile"])
+    manual_dir = tmp_path / "findings" / "target.com" / "manual_review"
+    manual_dir.mkdir(parents=True)
+    (manual_dir / "open_200_api.txt").write_text(
+        "[OPEN-200-REVIEW] 200 1200 https://api.target.com/profile\n",
+        encoding="utf-8",
+    )
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/profile",
+        vuln_class="SQLi",
+        result="tested_clean",
+        source="ai-review",
+        workflow="pressure-test",
+        notes="SQLi lane was tested, but anonymous 200 exposure review is still unclosed.",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert any(
+        "Secondary-sweep lead [open-200-api-review]" in item
+        for item in checkpoint["target_write_back"]["next"]
+    )
 
 
 def test_public_metadata_secondary_sweep_does_not_outrank_ranked_surface():

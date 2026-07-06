@@ -36,7 +36,7 @@ try:
     from tools.case_state_seed import build_case_state_seed
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import load_case_state, summary as build_case_state_summary
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from case_state_seed import build_case_state_seed  # type: ignore
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import load_case_state, summary as build_case_state_summary  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
 
 def now_utc() -> str:
@@ -265,6 +265,14 @@ def _unsafe_skipped_proposals(state: dict) -> list[str]:
 
 
 SECONDARY_SWEEP_CATEGORIES = {"open-200-api-review", "public-metadata"}
+SECONDARY_SWEEP_REQUIRED_LEDGER_CLASSES = {
+    "open-200-api-review": {"Authz"},
+    # Standard metadata review is about "is this ordinary public metadata or an
+    # unusual chain pivot?", not a single vuln class.  Any explicit final ledger
+    # row for the artifact endpoint is enough to stop repeating the same review.
+    "public-metadata": set(),
+}
+URL_IN_ARTIFACT_RE = re.compile(r"https?://[^\s\]\"'<>]+")
 
 
 def _secondary_sweep_leads(state: dict) -> list[dict]:
@@ -276,9 +284,93 @@ def _secondary_sweep_leads(state: dict) -> list[dict]:
     ]
 
 
-def _secondary_sweep_proposals(state: dict) -> list[str]:
+def _artifact_endpoints(repo_root: Path | None, target: str, artifact: str) -> list[str]:
+    """Extract target-owned endpoint paths from a manual-review artifact.
+
+    This is a state-closure helper, not an attack-surface classifier: the raw
+    artifact stays on disk, and unreadable/unknown artifacts remain visible to
+    Claude instead of being silently closed.
+    """
+    if repo_root is None:
+        return []
+    artifact_value = str(artifact or "").strip()
+    if not artifact_value:
+        return []
+    path = Path(artifact_value)
+    if not path.is_absolute():
+        path = repo_root / path
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    endpoints: list[str] = []
+    for match in URL_IN_ARTIFACT_RE.finditer(text):
+        url = match.group(0).rstrip(".,;)]}'\"")
+        if target and not url_belongs_to_target(url, target):
+            continue
+        endpoint = _normalise_endpoint_path(url)
+        if endpoint:
+            endpoints.append(endpoint)
+    return _dedupe(endpoints)
+
+
+def _closed_ledger_endpoint_classes(evidence_summary: dict) -> dict[str, set[str]]:
+    closed: dict[str, set[str]] = {}
+    for cell in evidence_summary.get("closed_cells") or []:
+        if not isinstance(cell, dict):
+            continue
+        endpoint = _normalise_endpoint_path(str(cell.get("endpoint") or ""))
+        vuln_class = _canonical_vuln_for_ledger(str(cell.get("vuln_class") or ""))
+        if not endpoint:
+            continue
+        closed.setdefault(endpoint, set()).add(vuln_class)
+    return closed
+
+
+def _secondary_sweep_closed_by_ledger(
+    lead: dict,
+    *,
+    repo_root: Path | None,
+    target: str,
+    evidence_summary: dict,
+) -> bool:
+    category = str(lead.get("category") or "").strip().lower()
+    artifact = str(lead.get("artifact") or "").strip()
+    endpoints = _artifact_endpoints(repo_root, target, artifact)
+    if not endpoints:
+        return False
+
+    closed = _closed_ledger_endpoint_classes(evidence_summary)
+    required_classes = SECONDARY_SWEEP_REQUIRED_LEDGER_CLASSES.get(category, set())
+    for endpoint in endpoints:
+        classes = closed.get(endpoint, set())
+        if required_classes:
+            if not classes.intersection(required_classes):
+                return False
+        elif not classes:
+            return False
+    return True
+
+
+def _secondary_sweep_proposals(
+    state: dict,
+    *,
+    repo_root: Path | None = None,
+    target: str = "",
+    evidence_summary: dict | None = None,
+) -> list[str]:
     proposals: list[str] = []
     for lead in _secondary_sweep_leads(state)[:3]:
+        if _secondary_sweep_closed_by_ledger(
+            lead,
+            repo_root=repo_root,
+            target=target,
+            evidence_summary=evidence_summary or {},
+        ):
+            continue
         category = str(lead.get("category") or "").strip() or "secondary-sweep"
         title = str(lead.get("title") or "").strip()
         artifact = str(lead.get("artifact") or "").strip() or "findings/<target>/manual_review/<artifact>.txt"
@@ -628,10 +720,24 @@ def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case
     return "handoff"
 
 
-def _lead_proposals(state: dict, context_pack: dict) -> list[str]:
+def _lead_proposals(
+    state: dict,
+    context_pack: dict,
+    *,
+    repo_root: Path | None = None,
+    target: str = "",
+    evidence_summary: dict | None = None,
+) -> list[str]:
     proposals: list[str] = []
     surface = state.get("surface") or {}
     for lead in _json_list(surface.get("workflow_leads"))[:3]:
+        if _secondary_sweep_closed_by_ledger(
+            lead,
+            repo_root=repo_root,
+            target=target,
+            evidence_summary=evidence_summary or {},
+        ):
+            continue
         title = str(lead.get("title") or "").strip()
         next_action = str(lead.get("next_action") or "").strip()
         why = str(lead.get("rationale") or lead.get("category") or "workflow lead").strip()
@@ -651,6 +757,11 @@ def _lead_proposals(state: dict, context_pack: dict) -> list[str]:
         reasons = ", ".join(str(reason) for reason in (item.get("reasons") or [])[:2])
         suggested = str(item.get("suggested") or "").strip()
         if url:
+            endpoint_path = _normalise_endpoint_path(url)
+            vuln_hint = _ranked_surface_vuln_hint(item, url)
+            vuln_class = _canonical_vuln_for_ledger(vuln_hint)
+            if vuln_hint != "generic" and _ledger_covers_cell(_ledger_covered_cells(evidence_summary or {}), endpoint_path, vuln_class):
+                continue
             proposals.append(
                 "Evidence: Surface review candidate {url} ({reasons}). Why it matters: "
                 "interesting attack-surface evidence from cached recon/browser/source signals. "
@@ -1590,6 +1701,7 @@ def _next_proposals(
     context_pack: dict,
     evidence_summary: dict,
     case_state: dict | None = None,
+    repo_root: Path | None = None,
 ) -> list[str]:
     proposals: list[str] = []
     # Contradictions are Claude-facing advisory context, not executable work.
@@ -1654,7 +1766,14 @@ def _next_proposals(
         )
 
     proposals.extend(_unsafe_skipped_proposals(state))
-    proposals.extend(_secondary_sweep_proposals(state))
+    proposals.extend(
+        _secondary_sweep_proposals(
+            state,
+            repo_root=repo_root,
+            target=target,
+            evidence_summary=evidence_summary,
+        )
+    )
     covered_findings = _tested_finding_endpoints(matrix)
     covered_ledger_cells = _ledger_covered_cells(evidence_summary)
 
@@ -2472,8 +2591,23 @@ def build_checkpoint(
     case_state_seed_proposal = _case_state_seed_proposal(case_state_seed)
 
     decision = _decide(state, gaps, executable_actor_gaps, case_state)
-    lead = _lead_proposals(state, context)
-    next_items = _next_proposals(state, gaps, matrix, resolved_target, context, evidence_summary, case_state)
+    lead = _lead_proposals(
+        state,
+        context,
+        repo_root=repo,
+        target=resolved_target,
+        evidence_summary=evidence_summary,
+    )
+    next_items = _next_proposals(
+        state,
+        gaps,
+        matrix,
+        resolved_target,
+        context,
+        evidence_summary,
+        case_state,
+        repo_root=repo,
+    )
     if case_state_proposal:
         next_items = [case_state_proposal, *next_items]
     elif case_state_seed_proposal:

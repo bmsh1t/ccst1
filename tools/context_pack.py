@@ -2338,16 +2338,85 @@ def _token_overlap(a: str, b: str) -> bool:
     return any(token in haystack for token in list(tokens)[:12])
 
 
+URL_TOKEN_RE = re.compile(r"https?://[^\s\]\"'<>]+")
+PATH_TOKEN_RE = re.compile(r"(?<![:/])(/[A-Za-z0-9._~%!$&'()*+,;=:@/-]+(?:\?[A-Za-z0-9._~%!$&'()*+,;=:@/?-]+)?)")
+
+
+def _normalise_path_token(value: str) -> str:
+    raw = str(value or "").strip().rstrip(".,;:)]}'\"")
+    if not raw:
+        return ""
+    if "://" in raw:
+        try:
+            raw = urlparse(raw).path or "/"
+        except ValueError:
+            raw = raw.split("?", 1)[0].split("#", 1)[0]
+    path = raw.split("?", 1)[0].split("#", 1)[0].strip()
+    if not path:
+        return ""
+    if not path.startswith("/"):
+        path = "/" + path
+    if path != "/":
+        path = path.rstrip("/")
+    return path
+
+
+def _entry_ts(item: object) -> str:
+    if isinstance(item, dict):
+        return str(item.get("ts") or "").strip()
+    return ""
+
+
+def _dead_end_paths(text: str) -> list[str]:
+    value = str(text or "")
+    paths: list[str] = []
+    for match in URL_TOKEN_RE.finditer(value):
+        paths.append(_normalise_path_token(match.group(0)))
+    value_without_urls = URL_TOKEN_RE.sub(" ", value)
+    paths.extend([
+        path
+        for path in (_normalise_path_token(match.group(0)) for match in PATH_TOKEN_RE.finditer(value_without_urls))
+        if path and path != "/"
+    ])
+    return _dedupe([path for path in paths if path and path != "/"])
+
+
+def _ledger_closed_after_dead_end(dead_text: str, dead_ts: str, evidence_summary: dict) -> bool:
+    """Return true when newer explicit ledger closure resolves a memory conflict.
+
+    Target memory dead-ends are useful reminders, but once Claude writes a later
+    final ledger row for the same endpoint, repeating "may have new evidence" is
+    stale steering.  This only suppresses the contradiction message; raw memory
+    and evidence remain available for reopening.
+    """
+    if not dead_ts:
+        return False
+    paths = _dead_end_paths(dead_text)
+    if not paths:
+        return False
+    latest_by_path: dict[str, str] = {}
+    for cell in evidence_summary.get("closed_cells") or []:
+        if not isinstance(cell, dict):
+            continue
+        endpoint = _normalise_path_token(str(cell.get("endpoint") or ""))
+        ts = str(cell.get("ts") or "").strip()
+        if not endpoint or not ts:
+            continue
+        latest_by_path[endpoint] = max(latest_by_path.get(endpoint, ""), ts)
+    return any(latest_by_path.get(path, "") > dead_ts for path in paths)
+
+
 def _contradictions(
     target: str,
     goal_memory: dict,
     ranked: dict,
     gaps: list[dict],
     local_intel: dict,
+    evidence_summary: dict | None = None,
 ) -> list[str]:
     items: list[str] = []
     dead_ends = [
-        _entry_text(item)
+        {"text": _entry_text(item), "ts": _entry_ts(item)}
         for item in ((goal_memory.get("target") or {}).get("dead_ends") or [])[-5:]
         if _entry_text(item)
     ]
@@ -2361,9 +2430,12 @@ def _contradictions(
         + _local_intel_blob(local_intel)[:20]
     )
     for dead in dead_ends:
-        if _token_overlap(dead, new_evidence):
+        dead_text = str(dead.get("text") or "")
+        if _ledger_closed_after_dead_end(dead_text, str(dead.get("ts") or ""), evidence_summary or {}):
+            continue
+        if _token_overlap(dead_text, new_evidence):
             items.append(
-                f"Remembered dead end may have new evidence now: {dead[:140]}"
+                f"Remembered dead end may have new evidence now: {dead_text[:140]}"
             )
     workflow_leads = _json_list(ranked.get("workflow_leads"))
     if not gaps and workflow_leads:
@@ -2715,7 +2787,7 @@ def build_context_pack(
         "alternative_angles": _alternative_angles(cards, ranked, local_intel),
         "unknowns": _unknowns(ranked, goal_memory, matrix, findings, local_intel)
         + _ledger_unknowns(evidence_summary),
-        "contradictions": _contradictions(resolved_target, goal_memory, ranked, gaps, local_intel),
+        "contradictions": _contradictions(resolved_target, goal_memory, ranked, gaps, local_intel, evidence_summary),
         "actor_matrix_gaps": (evidence_summary.get("actor_matrix") or {}).get("gaps", [])[:8],
         "do_not_load": [
             "full skills/* tree",
