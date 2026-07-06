@@ -212,6 +212,7 @@ def _matrix_summary(matrix: dict, gaps: list[dict]) -> dict:
         "total_cells": total_cells,
         **counts,
         "high_value_gaps_count": len(gaps),
+        "actionable_high_value_gaps_count": len(_actionable_coverage_gaps(gaps)),
     }
 
 
@@ -2163,6 +2164,7 @@ def _handoff_summary(
         f"P2={stats['p2']}",
         f"workflow_leads={stats['workflow_leads']}",
         f"coverage_gaps={coverage_summary.get('high_value_gaps_count', 0)}",
+        f"actionable_coverage_gaps={coverage_summary.get('actionable_high_value_gaps_count', 0)}",
         f"actor_gaps={actor_matrix.get('gap_count', 0)}",
     ]
     if findings.get("pending_validation"):
@@ -2497,6 +2499,7 @@ def format_checkpoint(checkpoint: dict) -> str:
         "- Coverage:",
         f"  - endpoints: {summary.get('endpoints', 0)}",
         f"  - high-value gaps: {summary.get('high_value_gaps_count', 0)}",
+        f"  - actionable high-value gaps: {summary.get('actionable_high_value_gaps_count', 0)}",
         "- Case state:",
         f"  - actors: {case_state.get('actors', 0)}",
         f"  - sessions: {case_state.get('sessions', 0)}",

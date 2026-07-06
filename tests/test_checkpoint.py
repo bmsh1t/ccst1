@@ -12,6 +12,7 @@ from checkpoint import (
     _coverage_gap_validation_path,
     _decide,
     _filter_final_action_queue_items,
+    _matrix_summary,
     _next_proposals,
     _select_default_candidate,
     apply_target_memory,
@@ -221,6 +222,37 @@ def test_checkpoint_decision_ignores_non_actionable_pending_validation():
         "recommended_targets": [],
     }
     assert _decide(report_only_state, coverage_gaps=[], actor_gaps=[], case_state={}) == "report"
+
+
+def test_matrix_summary_separates_raw_and_actionable_coverage_gaps():
+    matrix = {
+        "endpoints": [
+            {
+                "endpoint": "/rest/admin/application-configuration",
+                "weight": 5.0,
+                "cells": {"RCE": {"status": "untested"}},
+            }
+        ]
+    }
+    gaps = [
+        {
+            "endpoint": "/rest/admin/application-configuration",
+            "vuln_class": "RCE",
+            "weight": 5.0,
+            "relevance_score": 0,
+        },
+        {
+            "endpoint": "/api/search",
+            "vuln_class": "SQLi",
+            "weight": 5.0,
+            "relevance_score": 7,
+        },
+    ]
+
+    summary = _matrix_summary(matrix, gaps)
+
+    assert summary["high_value_gaps_count"] == 2
+    assert summary["actionable_high_value_gaps_count"] == 1
 
 
 def test_report_action_stays_above_advisory_surface_review_but_below_high_value_actions():
