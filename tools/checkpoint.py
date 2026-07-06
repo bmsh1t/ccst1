@@ -596,7 +596,7 @@ def _case_state_seed_proposal(seed: dict) -> str:
 
 def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case_state: dict | None = None) -> str:
     findings = _structured_findings(state)
-    if findings.get("pending_validation"):
+    if findings.get("next_validation"):
         return "validate"
     top_case_state = _case_state_top_next(case_state or {})
     if str(top_case_state.get("next_action") or "").strip().lower() in {
@@ -2112,6 +2112,23 @@ def _select_default_candidate(target: str, items: list[dict]) -> dict:
     return items[0]
 
 
+def _align_decision_with_default_candidate(decision: str, default_candidate: dict) -> str:
+    """Keep checkpoint's phase label consistent with the selected executable item.
+
+    `_decide` uses broad state signals, while `_next_proposals` later filters
+    stale/covered ranked surfaces through ledger and action-queue state. If that
+    filtering leaves only a report candidate, the final checkpoint should say
+    `report` instead of `hunt`; otherwise Claude sees contradictory steering.
+    """
+    if (
+        decision in {"continue", "hunt", "enrich", "checkpoint"}
+        and isinstance(default_candidate, dict)
+        and str(default_candidate.get("type") or "") == "report"
+    ):
+        return "report"
+    return decision
+
+
 def _dead_end_proposals(state: dict, coverage_gaps: list[dict]) -> list[str]:
     if state.get("has_recon") and not coverage_gaps:
         stats = _surface_stats(state)
@@ -2314,6 +2331,7 @@ def build_checkpoint(
         decision = "handoff"
     dead_ends = _dead_end_proposals(state, gaps)
     default_candidate = _select_default_candidate(resolved_target, next_action_queue)
+    decision = _align_decision_with_default_candidate(decision, default_candidate)
     # Backward compatibility: older command docs and tests still consume the
     # historical field name. The new name makes the contract explicit: this is
     # only the default pointer from the candidate set, not a replacement for

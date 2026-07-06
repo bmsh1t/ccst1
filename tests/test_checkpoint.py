@@ -8,6 +8,7 @@ from pathlib import Path
 from action_queue import _checkpoint_item_to_action, _dedupe_key, save_queue
 from checkpoint import (
     _build_next_action_queue,
+    _align_decision_with_default_candidate,
     _coverage_gap_validation_path,
     _decide,
     _filter_final_action_queue_items,
@@ -192,6 +193,36 @@ def test_checkpoint_decision_treats_pending_report_as_reportable_asset_not_stop_
     assert _decide(report_only_state, coverage_gaps=[], actor_gaps=[], case_state={}) == "report"
 
 
+def test_checkpoint_decision_ignores_non_actionable_pending_validation():
+    state = {
+        "has_recon": True,
+        "structured_findings": {
+            "pending_validation": 1,
+            "evidence_gap_count": 1,
+            # generic弱线索没有 next_validation，只保留统计，不应驱动 validate。
+            "validated_pending_report": 1,
+            "next_report": {"id": "F-REPORT"},
+        },
+        "surface": {"stats": {"p1": 1, "p2": 0}},
+        "recommended_targets": [{"url": "https://api.target.com/api/admin/export"}],
+    }
+
+    assert _decide(state, coverage_gaps=[], actor_gaps=[], case_state={}) == "hunt"
+
+    report_only_state = {
+        "has_recon": True,
+        "structured_findings": {
+            "pending_validation": 1,
+            "evidence_gap_count": 1,
+            "validated_pending_report": 1,
+            "next_report": {"id": "F-REPORT"},
+        },
+        "surface": {"stats": {"p1": 0, "p2": 0}},
+        "recommended_targets": [],
+    }
+    assert _decide(report_only_state, coverage_gaps=[], actor_gaps=[], case_state={}) == "report"
+
+
 def test_report_action_stays_above_advisory_surface_review_but_below_high_value_actions():
     queue = _build_next_action_queue([
         "Draft report for validated finding F-REPORT; do not submit without human review.",
@@ -243,6 +274,21 @@ def test_default_candidate_keeps_report_above_advisory_surface_review():
 
     assert selected["type"] == "report"
     assert selected["metadata"]["finding_id"] == "F-REPORT"
+
+
+def test_decision_aligns_to_report_when_filtering_leaves_only_report():
+    assert _align_decision_with_default_candidate(
+        "hunt",
+        {"type": "report", "metadata": {"finding_id": "F-REPORT"}},
+    ) == "report"
+    assert _align_decision_with_default_candidate(
+        "hunt",
+        {"type": "surface-review"},
+    ) == "hunt"
+    assert _align_decision_with_default_candidate(
+        "validate",
+        {"type": "report"},
+    ) == "validate"
 
 
 def test_checkpoint_replaces_replay_with_existing_candidate_evidence_gap(tmp_path):
