@@ -552,6 +552,16 @@ def _validation_evidence_block(validation):
     if not validation:
         return ""
     lines = []
+    seven_status = validation.get("seven_question_gate_decision")
+    if seven_status:
+        seven_pass = "PASS" if validation.get("seven_question_gate_passed") else "NEEDS REVIEW"
+        lines.append(f"**7-Question Gate:** `{seven_pass}` (`{seven_status}`)")
+    if "four_validation_gates_passed" in validation:
+        four_pass = "PASS" if validation.get("four_validation_gates_passed") else "NEEDS REVIEW"
+        lines.append(f"**Four Validation Gates:** `{four_pass}`")
+    if "all_gates_passed" in validation:
+        combined = "PASS" if validation.get("all_gates_passed") else "NEEDS REVIEW"
+        lines.append(f"**Combined Report Readiness:** `{combined}`")
     markers = validation.get("markers") if isinstance(validation.get("markers"), list) else []
     if markers:
         lines.append(f"**Observed Markers:** `{', '.join(str(item) for item in markers)}`")
@@ -671,6 +681,17 @@ def _is_reportable_structured_finding(finding):
     # state yet; keep them reportable instead of breaking historical workflows.
     if validation_status and validation_status != "validated":
         return False
+    validation = _load_validation_summary(finding)
+    if validation:
+        if validation.get("all_gates_passed") is False:
+            return False
+        if validation.get("seven_question_gate_passed") is False:
+            return False
+        if validation.get("four_validation_gates_passed") is False:
+            return False
+        decision = str(validation.get("seven_question_gate_decision") or "").strip().lower()
+        if decision in {"kill", "chain_required", "needs_review"}:
+            return False
 
     if report_status == "generated":
         return False

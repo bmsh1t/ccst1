@@ -1,5 +1,6 @@
 """Regression tests for report_generator.py manual workflow."""
 
+import json
 from pathlib import Path
 import sys
 
@@ -60,3 +61,56 @@ def test_manual_mode_requires_type_and_url(monkeypatch, capsys):
     assert excinfo.value.code == 1
     output = capsys.readouterr()
     assert "Manual mode requires --type and --url" in output.out
+
+
+def test_report_includes_validation_gate_status(tmp_path):
+    summary_path = tmp_path / "validation-summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "all_gates_passed": True,
+                "seven_question_gate_passed": True,
+                "seven_question_gate_decision": "pass",
+                "four_validation_gates_passed": True,
+                "summary_path": str(summary_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    finding = {
+        "id": "idor_001",
+        "type": "idor",
+        "url": "https://api.example.com/orders/42",
+        "severity": "high",
+        "raw": "validated owner/peer response diff",
+        "validation_summary": str(summary_path),
+    }
+
+    content, _title = report_generator.generate_report(finding, "idor", "example.com")
+
+    assert "**7-Question Gate:** `PASS` (`pass`)" in content
+    assert "**Four Validation Gates:** `PASS`" in content
+    assert "**Combined Report Readiness:** `PASS`" in content
+
+
+def test_structured_report_generation_rejects_failed_seven_question_gate(tmp_path):
+    summary_path = tmp_path / "validation-summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "all_gates_passed": False,
+                "seven_question_gate_passed": False,
+                "seven_question_gate_decision": "chain_required",
+                "four_validation_gates_passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    finding = {
+        "id": "redirect_001",
+        "url": "https://app.example.com/redirect?to=https://evil.example",
+        "validation_status": "validated",
+        "validation_summary": str(summary_path),
+    }
+
+    assert report_generator._is_reportable_structured_finding(finding) is False

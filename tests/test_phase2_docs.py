@@ -44,6 +44,9 @@ def test_report_doc_marks_legacy_report_entrypoints_as_compatibility_paths_only(
 
     assert "primary reporting workflow" in content
     assert "compatibility paths only" in content
+    assert "seven_question_gate_passed: true" in content
+    assert "four_validation_gates_passed: true" in content
+    assert "all_gates_passed: true" in content
 
 
 def test_claude_code_target_isolation_docs_prevent_inherited_scanner_skips():

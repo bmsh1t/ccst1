@@ -171,6 +171,31 @@ class TestRememberFromValidate:
         assert prefill["result"] == "confirmed"
         assert prefill["notes"] == "Read another user's order"
 
+    def test_loads_prefill_downgrades_failed_seven_question_gate(self, tmp_path):
+        summary_path = tmp_path / "validation-summary.json"
+        summary_path.write_text(
+            json.dumps(
+                {
+                    "target": "target.com",
+                    "endpoint": "https://target.com/oauth/redirect",
+                    "vuln_class": "open_redirect",
+                    "severity": "medium",
+                    "result": "confirmed",
+                    "all_gates_passed": False,
+                    "seven_question_gate_passed": False,
+                    "seven_question_gate_decision": "chain_required",
+                    "four_validation_gates_passed": True,
+                    "impact": "Needs OAuth code theft chain before report.",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        prefill = remember.load_validate_prefill(summary_path)
+
+        assert prefill["result"] == "partial"
+        assert prefill["notes"] == "Needs OAuth code theft chain before report."
+
     def test_main_can_import_fields_from_validate_summary(self, tmp_hunt_dir, monkeypatch, capsys):
         summary_path = tmp_hunt_dir / "validation-summary.json"
         summary_path.write_text(

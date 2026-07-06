@@ -10,11 +10,21 @@ This is the preferred primary reporting workflow; legacy report-generation entry
 
 ## Pre-Conditions
 
-Run `/validate` first. All 4 gates must pass before running this command.
+Run `/validate` first. The latest `validation-summary.json` must show both:
+
+- `seven_question_gate_passed: true`
+- `four_validation_gates_passed: true`
+
+`all_gates_passed: true` is the combined report-readiness signal. If the
+7-Question Gate is `chain_required`, `needs_review`, or `kill`, do not draft a
+standalone report; continue chain-building or evidence collection instead.
 
 Never write a report before validating. N/A submissions hurt your validity ratio.
 
-If a validation summary exists from the latest `/validate` run, use it as the starting context. If not, ask the user for the missing endpoint, evidence, impact, and reproduction details before drafting.
+If a validation summary exists from the latest `/validate` run, use it as the
+starting context and include its gate status in the evidence section. If not,
+ask the user for the missing endpoint, evidence, impact, and reproduction
+details before drafting.
 
 When the validation summary contains `finding_id`, `finding_source_file`, or
 `finding_summary`, include those references in the evidence section so the

@@ -120,7 +120,29 @@ def load_validate_prefill(path: str | Path | None = None) -> dict:
         raise ValueError(f"Invalid validate summary: {summary_path}")
 
     result = (data.get("result") or "").strip().lower()
-    if not result:
+    seven_decision = str(data.get("seven_question_gate_decision") or "").strip().lower()
+    gate_fields_present = any(
+        key in data
+        for key in (
+            "all_gates_passed",
+            "seven_question_gate_passed",
+            "four_validation_gates_passed",
+            "seven_question_gate_decision",
+        )
+    )
+    if gate_fields_present:
+        report_ready = bool(data.get("all_gates_passed"))
+        if data.get("seven_question_gate_passed") is False:
+            report_ready = False
+        if data.get("four_validation_gates_passed") is False:
+            report_ready = False
+        if seven_decision in {"kill", "chain_required", "needs_review"}:
+            report_ready = False
+        if not report_ready:
+            result = "partial"
+        elif not result:
+            result = "confirmed"
+    elif not result:
         result = "confirmed" if data.get("all_gates_passed") else "partial"
 
     return {
