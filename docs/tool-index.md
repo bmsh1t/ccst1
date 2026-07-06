@@ -94,7 +94,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL surface from browser evidence |
 | `tools/hai_browser_recon.js` | Need browser-side recon snippet | Playwright recon helper script (JS) |
 | `tools/js_reader.py` | JS bundles cached | Prepare js-reader agent materials from cached JS |
-| `tools/surface.py` | Cached recon ready for review | Build AI-first attack-surface review pack with hunt-memory context; P1/P2 are compatibility score hints |
+| `tools/surface.py` | Cached recon ready for review | Build AI-first attack-surface review pack with hunt-memory context; scores are advisory hints |
 | `tools/surface_js_intel.py` | After js-reader has run | Feed js-reader hypotheses into `surface.py` |
 | `tools/surface_source_intel.py` | After source_intel has run | Feed source-intel hypotheses into `surface.py` |
 | `tools/mindmap.py` | Choosing vuln class for a stack | Mermaid mind map + tech→vuln-class priority |
@@ -214,6 +214,7 @@ When deprecating a tool: keep the row but prefix label with `(deprecated)`.
 ## Related References
 
 - `rules/hunting.md` — canonical state model + lane semantics
+- `rules/tool-ai-boundary.md` — AI judges, tools preserve evidence
 - `commands/autopilot.md` — autonomous loop execution contract
 - `docs/v4.4.2-autopilot-capability-gaps.md` — historical capability-gap notes
 - `docs/PRODUCT.md` — product-level overview

@@ -5,7 +5,7 @@ description: Build an AI-first attack-surface review pack from cached recon, hun
 # /surface
 
 Build a cached attack-surface review pack. This is a read-only evidence view; it does not exploit the target and does not replace Claude's judgment.
-Claude CLI 下这是 `/autopilot` 的默认证据整理入口：先用目标记忆校准方向，再把 recon、hunt-memory、知识线索和检查信号合并成 AI Review Pool / Advisory P1/P2 / Workflow Leads。
+Claude CLI 下这是 `/autopilot` 的默认证据整理入口：先用目标记忆校准方向，再把 recon、hunt-memory、知识线索和检查信号合并成 AI Review Pool / advisory score hints / Workflow Leads。
 
 ## Run This (the only required step)
 
@@ -34,8 +34,8 @@ If `recon/<target>/` is missing, run `/recon target.com` first. If the output sa
 ## What This Outputs
 
 - AI Review Pool: Claude must choose final priority from evidence, not from regex score alone
-- Advisory P1/P2: score hints only, kept for compatibility with older tools
-- Kill/low-value surface
+- Advisory score hints only, kept for compatibility with older tools
+- Low-priority / reopenable hints; never exclusions
 - Target Memory: current goal, hypothesis, active leads, next actions, dead ends, and latest handoff
 - workflow leads from exposure, JS, source, browser, and scanner signals
 - compact next actions for `/hunt` or `/autopilot`
@@ -49,7 +49,7 @@ If `recon/<target>/` is missing, run `/recon target.com` first. If the output sa
 ## How To Use The Review Pack
 
 1. Read the AI Review Pool first; choose the next target as Claude, using business impact, browser/source evidence, object/session context, and current findings.
-2. Treat P1/P2 score as a hint, not a verdict. Do not discard lower-ranked surfaces solely because a regex score is low.
+2. Treat every score as a hint, not a verdict. Do not discard lower-ranked surfaces solely because a regex score is low.
 3. If a candidate includes JS/source/browser/exposure hints, run that enrichment when it changes the next proof.
 4. If a candidate is auth-gated, preserve auth state and compare roles/objects rather than widening blindly.
 5. Before checkpoint/finish, run `/check-coverage` and write back the chosen candidate, blocker, or dead end with `/target`.

@@ -1,5 +1,5 @@
 ---
-description: Expert Hunter AI-first autonomous hunt loop — recon/cache state, rank surface, enrich with browser/source/JS, hunt, validate candidates, report validated findings, and checkpoint useful memory. Usage: /autopilot target.com [--paranoid|--normal|--yolo|--quick|--deep] or /autopilot targets.txt
+description: Expert Hunter AI-first autonomous hunt loop — recon/cache state, review surface evidence, enrich with browser/source/JS, hunt, validate candidates, report validated findings, and checkpoint useful memory. Usage: /autopilot target.com [--paranoid|--normal|--yolo|--quick|--deep] or /autopilot targets.txt
 ---
 
 # /autopilot
@@ -22,7 +22,7 @@ Super-pentester priority: business impact > workflow evidence > crown-jewel hypo
 ## Tool Index
 Before unusual/non-default helpers, scan `docs/tool-index.md` once per session.
 Canonical runtime references: `skills/runtime-protocol.md`, `rules/red-lines.md`,
-`rules/coverage-gate.md`, `rules/hunting.md`, `knowledge/index.md`,
+`rules/coverage-gate.md`, `rules/hunting.md`, `rules/tool-ai-boundary.md`, `knowledge/index.md`,
 `tools/action_queue.py`, `tools/coverage_matrix.py`, `tools/evidence_ledger.py`,
 and `docs/evidence-runners.md`. These are navigation aids, not a state machine.
 ## Four-Layer Automation
@@ -102,7 +102,7 @@ Prefer browser-state truth over guessed routes:
 Use `python3 tools/js_reader.py --target target.com` for JS materials and
 `python3 tools/source_intel.py --target target.com [--repo-path <repo>]` for
 source/route/auth logic. AI should turn these hints into concrete replay drafts,
-not just rankings.
+not just tool rankings.
 For byte-exact HTTP/cache/smuggling/desync work, use
 `tools/sender_semantics.py --require <capabilities>` and
 `tools/smuggling_executor.py --variant <variant>`; browser evidence cannot prove
@@ -110,11 +110,11 @@ wire-level absence.
 ## Core Decision Loop
 1. Load target freshness and existing evidence; fresh targets start with recon, existing targets start with cache/state.
 2. Model BUSINESS/CROWN JEWELS: actors, private objects, workflows, admin/config/payment/data flows, trust boundaries.
-3. Rank surface and context; scanner quick is only breadth signal.
+3. Build a surface/context evidence pack; AI chooses priority, and scanner quick is only breadth signal.
 4. Capture real browser/source/JS/API request shapes when they can change the next test.
 5. Hunt one high-value hypothesis with MINIMAL PROOF; then attempt CHAIN EXPANSION through role/object/state/method/parser/cache/source/integration pivots.
 6. Promote Lead -> Signal -> Candidate -> Validated Finding only with replayable evidence and practical impact.
-7. REPORT/CHECKPOINT only after stronger validation/chain/coverage actions no longer outrank the pending report; never auto-submit.
+7. REPORT/CHECKPOINT only after AI judges stronger validation/chain/coverage actions no longer outrank the pending report; never auto-submit.
 ## Actionable Evidence Continuation Contract
 Claude must not turn an evidence-backed next step into a passive TODO. Use
 `python3 tools/action_queue.py ingest-checkpoint --target target.com`,
@@ -150,6 +150,9 @@ For repeatable replay/diff, use `docs/evidence-runners.md` and keep the AI in
 charge of interpretation. Runners should preserve raw baseline/variant evidence,
 diff summaries, risk/red-line status, and stop conditions; they must not convert
 weak hints into findings.
+Runner labels such as `tested_clean` are execution-layer labels, not final truth;
+if raw evidence or business/object/role semantics contradict the label, reopen
+or upgrade the lead and record why.
 
 ```bash
 python3 tools/validation_runner.py authz-public-exposure --target target.com --url <url>
@@ -179,17 +182,19 @@ If coverage is near 0%, do not end with only a report suggestion, stale
 queue item, or scanner summary; generate/execute the smallest safe evidence step
 or write a precise blocker. Claude may skip, reorder, or override queue items
 when browser/source/recon evidence shows a better move.
+Final queue statuses are not immutable truth; reopen an item when raw evidence
+or business context contradicts an earlier tested/dead-end/n/a label.
 ## Question -> Tool Reference (advisory, not routing)
 This reference is advisory, not routing and not a state machine.
 
 | Question | Cheap route |
 |---|---|
-| What surface matters most? | `recon-ranker` Task or `/surface` review |
+| What surface matters most? | AI review over `/surface` evidence pack; `recon-ranker` may assist |
 | JS secrets/endpoints/sinks? | `js-reader` Task + `tools/js_reader.py` |
 | Candidate evidence enough? | `validator` Task + `/validate` |
 | A -> B chain fit? | `chain-builder` Task |
 | Report ready? | `report-writer` Task |
-| High-value cells untested? | `python3 tools/coverage_matrix.py find-gaps --target target.com` |
+| Coverage hints still actionable? | `python3 tools/coverage_matrix.py find-gaps --target target.com` |
 | Same disclosed pattern? | `disclosed-researcher` Task or knowledge card source IDs |
 | Recent code/changelog activity? | `tools/fresh_code.py` |
 | sibling endpoints? | `tools/sibling_generator.py` |
@@ -249,9 +254,10 @@ Finish on evidence state, not a tool checklist:
 - `working_hypothesis` is resolved, killed, blocked, or promoted to Candidate / Validated Finding.
 - `oast_listen` is checked when blind/OAST testing was used.
 - No unresolved high-value action-gated scanner lead remains; otherwise checkpoint instead of finishing.
-- No high-value matrix gap remains after `python3 tools/coverage_matrix.py rebuild --target target.com` and `python3 tools/coverage_matrix.py find-gaps --target target.com`; absent or empty matrix is not proof of coverage.
+- No unresolved AI-actionable high-value matrix gap remains after reviewing `python3 tools/coverage_matrix.py rebuild --target target.com`, `python3 tools/coverage_matrix.py find-gaps --target target.com`, checkpoint output, browser/source/JS evidence, and business context; raw matrix gaps are hints, not finish blockers, and absent or empty matrix is not proof of coverage.
 - `evidence/<target>/intelligence.md`, browser, JS, source, exposure, and knowledge context were consulted when available.
 - Target memory has a useful handoff when the target is not genuinely exhausted.
+- A pending report is a closure asset, not a stop signal; continue hunting when stronger live evidence, browser/source leads, or high-value business workflows remain.
 
 End with target, mode, strongest evidence, findings/candidates, blockers/dead
 ends, and next best action.

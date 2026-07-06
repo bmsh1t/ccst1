@@ -25,6 +25,7 @@ skills/runtime-protocol.md
 knowledge/index.md
 rules/red-lines.md
 rules/coverage-gate.md
+rules/tool-ai-boundary.md
 ```
 
 如果 `memory/goals/active.json` 不存在，先根据用户当前目标建立或询问目标上下文。

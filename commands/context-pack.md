@@ -44,7 +44,7 @@ python3 tools/context_pack.py --target <target>
 工具会：
 
 1. 读取目标层：`memory/goals/active.json` 和 `memory/goals/targets/<target>.json`。
-2. 只读调用 surface review pack，提取 AI Review Pool、兼容性 P1/P2 hints、Workflow Leads 和 target memory 线索。
+2. 只读调用 surface review pack，提取 AI Review Pool、advisory score hints、Workflow Leads 和 target memory 线索。
 3. 读取覆盖矩阵 high-value gaps。
 4. 读取 `findings/<target>/findings.json` 索引。
 5. 读取小型 browser/JS/source 证据索引：
