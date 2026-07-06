@@ -216,6 +216,83 @@ def test_current_surface_review_beats_stale_legacy_ranked_surface_when_only_advi
     assert "current" in selected["action"]
 
 
+def test_low_evidence_top_advisory_surface_review_does_not_drive_next(tmp_path):
+    queue = load_queue(tmp_path, "target.com")
+    queue["actions"] = [
+        {
+            "id": "AQ-0001",
+            "status": "queued",
+            "priority": 70,
+            "type": "surface-review",
+            "evidence_type": "checkpoint-next-action",
+            "evidence": (
+                "Review surface candidate https://target.com/address/create: "
+                "baseline authz and business-logic checks. Reason: top advisory score. "
+                "AI decision required: choose the exact lane."
+            ),
+            "next_question": "Execute checkpoint action.",
+            "action": (
+                "Review surface candidate https://target.com/address/create: "
+                "baseline authz and business-logic checks. Reason: top advisory score. "
+                "AI decision required: choose the exact lane."
+            ),
+            "command_hint": "AI reviews surface evidence, then chooses the exact lane",
+            "created_at": "2026-01-01T00:00:00Z",
+            "dedupe_key": "old-low-evidence",
+            "source": "checkpoint",
+            "metadata": {
+                "endpoint": "/address/create",
+                "suggested": (
+                    "baseline authz and business-logic checks. Reason: top advisory score. "
+                    "AI decision required: choose the exact lane"
+                ),
+                "replay_draft": "browser-state-first page route; extract the real XHR first",
+            },
+        }
+    ]
+
+    assert select_next_action(queue) == {}
+
+
+def test_low_evidence_surface_review_with_exact_runner_stays_selectable(tmp_path):
+    queue = load_queue(tmp_path, "target.com")
+    queue["actions"] = [
+        {
+            "id": "AQ-0001",
+            "status": "queued",
+            "priority": 70,
+            "type": "surface-review",
+            "evidence_type": "checkpoint-next-action",
+            "evidence": (
+                "Review surface candidate https://target.com/api/users: "
+                "baseline authz checks. Reason: top advisory score. "
+                "Replay draft: python3 tools/validation_runner.py authz-role-replay "
+                "--target target.com --url https://target.com/api/users"
+            ),
+            "next_question": "Execute checkpoint action.",
+            "action": (
+                "Review surface candidate https://target.com/api/users: "
+                "baseline authz checks. Reason: top advisory score. "
+                "Replay draft: python3 tools/validation_runner.py authz-role-replay "
+                "--target target.com --url https://target.com/api/users"
+            ),
+            "command_hint": "AI reviews surface evidence, then chooses the exact lane",
+            "created_at": "2026-01-01T00:00:00Z",
+            "dedupe_key": "runner-backed-review",
+            "source": "checkpoint",
+            "metadata": {
+                "endpoint": "/api/users",
+                "replay_draft": (
+                    "python3 tools/validation_runner.py authz-role-replay "
+                    "--target target.com --url https://target.com/api/users"
+                ),
+            },
+        }
+    ]
+
+    assert select_next_action(queue)["id"] == "AQ-0001"
+
+
 def test_ingest_checkpoint_preserves_structured_metadata(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
 

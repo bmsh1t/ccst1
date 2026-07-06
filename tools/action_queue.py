@@ -63,6 +63,10 @@ COVERAGE_STATUS_BY_ACTION_STATUS = {
 UNSAFE_REVIEW_FINAL_STATUSES = {"tested", "dead-end", "blocked", "n/a", "candidate", "validated", "reported"}
 REPORT_ACTION_TYPES = {"report"}
 ADVISORY_REVIEW_ACTION_TYPES = {"surface-review"}
+LOW_EVIDENCE_SURFACE_REVIEW_MARKERS = (
+    "reason: top advisory score",
+    "reason: top advisory score (low-evidence fallback)",
+)
 
 
 def now_utc() -> str:
@@ -260,6 +264,38 @@ def _is_advisory_review_action(action: dict) -> bool:
         return False
     command_hint = str(action.get("command_hint") or "")
     return "validation_runner.py" not in command_hint
+
+
+def _is_low_evidence_surface_review_action(action: dict) -> bool:
+    """Return True for stale score-only surface reviews that should not drive next.
+
+    `/surface` keeps score-only candidates visible in P1/P2 for recall, but the
+    AI Review Pool is now evidence-first. Older checkpoint queues can still
+    contain `surface-review` actions whose only reason was "top advisory score";
+    selecting those via `action_queue next` reintroduces the stale regex/score
+    steering we intentionally removed from `/surface`.
+
+    Do not hide executable reviews: once a review contains an exact
+    `validation_runner.py` replay, `_is_advisory_review_action` returns False
+    and this helper leaves it selectable.
+    """
+    if str(action.get("type") or "") not in ADVISORY_REVIEW_ACTION_TYPES:
+        return False
+    if not _is_advisory_review_action(action):
+        return False
+
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    blob = " ".join(
+        str(part or "")
+        for part in (
+            action.get("evidence"),
+            action.get("action"),
+            action.get("command_hint"),
+            metadata.get("suggested"),
+            metadata.get("replay_draft"),
+        )
+    ).lower()
+    return any(marker in blob for marker in LOW_EVIDENCE_SURFACE_REVIEW_MARKERS)
 
 
 def _normalize_status(status: str) -> str:
@@ -667,6 +703,7 @@ def select_next_action(queue: dict) -> dict:
         item for item in queue.get("actions", [])
         if isinstance(item, dict) and str(item.get("status") or "queued") in ACTIVE_STATUSES
         and not _is_superseded_candidate(item, final_identities)
+        and not _is_low_evidence_surface_review_action(item)
     ]
     if not candidates:
         return {}
