@@ -578,8 +578,8 @@ def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str,
         return {"status": "skipped", "reason": "missing target or non-final runner result"}
 
     queue = load_queue(repo_root, target)
-    matched: dict[str, Any] | None = None
-    final_upgrade_match: dict[str, Any] | None = None
+    matches: list[dict[str, Any]] = []
+    final_upgrade_matches: list[dict[str, Any]] = []
     for action in queue.get("actions", []):
         if not isinstance(action, dict):
             continue
@@ -587,41 +587,49 @@ def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str,
         if not _queue_action_matches_summary(action, summary):
             continue
         if status in ACTIVE_STATUSES:
-            matched = action
-            break
+            matches.append(action)
+            continue
         if (
             queue_status in QUEUE_UPGRADE_TARGET_STATUSES
             and status in QUEUE_UPGRADABLE_FINAL_STATUSES
-            and final_upgrade_match is None
         ):
-            final_upgrade_match = action
-    if not matched:
-        matched = final_upgrade_match
-    if not matched:
+            final_upgrade_matches.append(action)
+    if not matches:
+        matches = final_upgrade_matches
+    if not matches:
         return {"status": "skipped", "reason": "no matching active or upgradable action"}
 
     summary_ref = str(summary.get("summary_path") or "")
-    resolved = resolve_action(
-        repo_root,
-        target=target,
-        action_id=str(matched.get("id") or ""),
-        status=queue_status,
-        result=f"validation-runner-result={result}; summary={summary_ref}",
-        notes=f"runner={summary.get('lane', '')}",
-    )
-    response = {
-        "status": "updated",
-        "id": resolved.get("id", ""),
-        "action_status": resolved.get("status", ""),
-    }
-    if queue_status == "candidate" and response["id"]:
-        patch = _patch_candidate_queue_followup(
+    resolved_items = []
+    for matched in matches:
+        resolved = resolve_action(
             repo_root,
             target=target,
-            action_id=str(response["id"]),
-            summary=summary,
+            action_id=str(matched.get("id") or ""),
+            status=queue_status,
+            result=f"validation-runner-result={result}; summary={summary_ref}",
+            notes=f"runner={summary.get('lane', '')}",
         )
-        response["candidate_followup"] = patch
+        resolved_items.append(resolved)
+    first = resolved_items[0]
+    response = {
+        "status": "updated",
+        "id": first.get("id", ""),
+        "ids": [str(item.get("id") or "") for item in resolved_items if item.get("id")],
+        "updated_count": len(resolved_items),
+        "action_status": first.get("status", ""),
+    }
+    if queue_status == "candidate" and response["ids"]:
+        patches = [
+            _patch_candidate_queue_followup(
+                repo_root,
+                target=target,
+                action_id=action_id,
+                summary=summary,
+            )
+            for action_id in response["ids"]
+        ]
+        response["candidate_followup"] = patches[0] if len(patches) == 1 else patches
     return response
 
 

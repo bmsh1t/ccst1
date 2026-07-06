@@ -755,6 +755,82 @@ def test_authz_public_exposure_cli_reuses_existing_url_finding_without_id(monkey
     assert findings["findings"][0]["validation_status"] == "validated"
 
 
+def test_authz_public_exposure_sync_closes_duplicate_validation_actions(monkeypatch, tmp_path, capsys):
+    target = "https://target.test"
+    url = "https://target.test/api/Feedbacks"
+    key = _target_key(target)
+    queue_dir = tmp_path / "state" / key
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": target,
+                "actions": [
+                    {
+                        "id": "AQ-0001",
+                        "status": "queued",
+                        "type": "candidate-evidence-gap",
+                        "priority": 105,
+                        "evidence": f"Candidate evidence gap for finding AUTHZ-SCANNER-ID on {url}",
+                        "next_question": "Fill missing evidence.",
+                        "action": f"Candidate evidence gap for finding AUTHZ-SCANNER-ID on {url}",
+                        "command_hint": "fill missing rubric evidence, then /validate",
+                    },
+                    {
+                        "id": "AQ-0002",
+                        "status": "queued",
+                        "type": "validation",
+                        "priority": 100,
+                        "evidence": f"Run /validate for finding AUTHZ-SCANNER-ID on {url}",
+                        "next_question": "Validate candidate.",
+                        "action": f"Run /validate for finding AUTHZ-SCANNER-ID on {url}",
+                        "command_hint": "/validate",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    body = json.dumps(
+        {
+            "data": [
+                {
+                    "comment": (
+                        'wallet seed phrase: '
+                        '"purpose betray marriage blame crunch monitor spin slide donate sport lift clutch"'
+                    )
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body=body),
+    )
+
+    rc = validation_runner.main([
+        "authz-public-exposure",
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        target,
+        "--url",
+        url,
+    ])
+    summary = json.loads(capsys.readouterr().out)
+    queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert summary["sync"]["action_queue"]["updated_count"] == 2
+    assert set(summary["sync"]["action_queue"]["ids"]) == {"AQ-0001", "AQ-0002"}
+    assert {item["status"] for item in queue["actions"]} == {"validated"}
+
+
 def test_authz_public_exposure_cli_syncs_ranked_surface_action(monkeypatch, tmp_path, capsys):
     target = "https://target.test"
     url = "https://target.test/rest/admin/application-version"
