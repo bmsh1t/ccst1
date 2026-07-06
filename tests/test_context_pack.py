@@ -85,6 +85,37 @@ def test_context_pack_exposes_registry_metadata_for_selected_cards(tmp_path):
     assert "Knowledge card capabilities:" in format_context_pack(pack)
 
 
+def test_context_pack_exposes_runner_candidates_without_marking_report_ready(tmp_path):
+    validation_dir = tmp_path / "evidence" / "target.com" / "validation" / "idor-basket"
+    validation_dir.mkdir(parents=True)
+    (validation_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "lane": "idor_actor_pair",
+                "finding_id": "idor-basket",
+                "url": "https://target.com/rest/basket/6",
+                "method": "GET",
+                "result": "tested_finding",
+                "candidate_ready": True,
+                "evidence_rubric": {
+                    "status": "candidate-ready",
+                    "ready": True,
+                    "summary": "authz:candidate-ready",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pack = build_context_pack(tmp_path, target="https://target.com/#/basket")
+    output = format_context_pack(pack)
+
+    assert pack["validation_runner_candidates"][0]["id"] == "idor-basket"
+    assert any("Runner candidate evidence" in item for item in pack["evidence_anchors"])
+    assert "Validation runner candidate evidence (advisory; not report-ready):" in output
+    assert "requires /validate" in output
+
+
 def test_context_pack_defers_extra_case_router_cards_instead_of_dropping(tmp_path):
     pack = build_context_pack(
         tmp_path,

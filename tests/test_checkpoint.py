@@ -97,6 +97,38 @@ def test_checkpoint_prioritizes_pending_validation(tmp_path):
     )
 
 
+def test_checkpoint_displays_runner_candidates_as_advisory_evidence(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://target.com/rest/basket/6"])
+    validation_dir = tmp_path / "evidence" / "target.com" / "validation" / "idor-basket"
+    validation_dir.mkdir(parents=True)
+    (validation_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "lane": "idor_actor_pair",
+                "finding_id": "idor-basket",
+                "url": "https://target.com/rest/basket/6",
+                "method": "GET",
+                "result": "tested_finding",
+                "candidate_ready": True,
+                "evidence_rubric": {
+                    "status": "candidate-ready",
+                    "ready": True,
+                    "summary": "authz:candidate-ready",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+    output = format_checkpoint(checkpoint)
+
+    assert checkpoint["validation_runner_candidates"][0]["id"] == "idor-basket"
+    assert "Validation runner candidates (advisory; require /validate before report):" in output
+    assert "idor-basket [idor_actor_pair/tested_finding]" in output
+    assert checkpoint["decision"] != "report"
+
+
 def test_checkpoint_ignores_off_target_direct_finding_followup(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)

@@ -37,11 +37,19 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from surface import load_surface_context, rank_surface
 try:
     from tools.runtime_state import inspect_recon_artifacts, load_runtime_state
-    from tools.structured_findings import format_structured_findings_lines
+    from tools.structured_findings import (
+        format_structured_findings_lines,
+        format_validation_runner_candidate_lines,
+        load_validation_runner_candidate_pool,
+    )
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from runtime_state import inspect_recon_artifacts, load_runtime_state
-    from structured_findings import format_structured_findings_lines
+    from structured_findings import (
+        format_structured_findings_lines,
+        format_validation_runner_candidate_lines,
+        load_validation_runner_candidate_pool,
+    )
     from target_paths import canonical_target_value, target_storage_key
 
 
@@ -671,6 +679,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     repo_source_available = bool(repo_source_artifacts)
     repo_source_summary = load_repo_source_summary(repo_root, resolved_target) if repo_source_available else {}
     structured_findings = load_structured_finding_followup(repo_root, resolved_target)
+    validation_runner_candidates = load_validation_runner_candidate_pool(repo_root, resolved_target)
     runtime_state = load_runtime_state(repo_root, resolved_target)
     recon_artifacts = inspect_recon_artifacts(repo_root, resolved_target)
     target_goal_memory = load_target_goal_memory(repo_root, resolved_target)
@@ -738,6 +747,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "runtime_state": runtime_state,
         "recon_artifacts": recon_artifacts,
         "structured_findings": structured_findings,
+        "validation_runner_candidates": validation_runner_candidates,
         "target_goal_memory": target_goal_memory,
         "resume_summary": resume_summary,
         "surface": ranked if has_recon else None,
@@ -846,6 +856,13 @@ def format_autopilot_state(state: dict) -> str:
                     inline_header=True,
                 )
             )
+        runner_candidate_lines = format_validation_runner_candidate_lines(
+            state.get("validation_runner_candidates") or [],
+            header="Validation runner candidates (advisory; require /validate before report):",
+            limit=4,
+        )
+        if runner_candidate_lines:
+            lines.extend(runner_candidate_lines)
         if recent_guard_advisories:
             lines.append("Recent guard advisories:")
             for item in recent_guard_advisories[:3]:
@@ -946,6 +963,14 @@ def format_autopilot_state(state: dict) -> str:
                 inline_header=True,
             )
         )
+
+    runner_candidate_lines = format_validation_runner_candidate_lines(
+        state.get("validation_runner_candidates") or [],
+        header="Validation runner candidates (advisory; require /validate before report):",
+        limit=4,
+    )
+    if runner_candidate_lines:
+        lines.extend(runner_candidate_lines)
 
     if workflow_leads:
         lines.append("Workflow leads:")

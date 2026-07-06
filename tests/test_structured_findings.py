@@ -235,3 +235,52 @@ def test_validate_summary_passed_finding_is_report_ready(tmp_path):
     assert summary["pending_validation"] == 0
     assert summary["validated_pending_report"] == 1
     assert summary["next_report"]["id"] == "validated_sqli"
+
+
+def test_load_validation_runner_candidate_pool_keeps_runner_evidence_advisory(tmp_path):
+    summary_dir = tmp_path / "evidence" / "target.com" / "validation" / "sqli-result-diff-search"
+    summary_dir.mkdir(parents=True)
+    (summary_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "lane": "sqli_result_diff",
+                "finding_id": "sqli-result-diff-search",
+                "url": "https://target.com/rest/products/search?q=apple",
+                "method": "GET",
+                "result": "tested_finding",
+                "candidate_ready": True,
+                "evidence_rubric": {
+                    "status": "candidate-ready",
+                    "ready": True,
+                    "summary": "sqli:candidate-ready score=100",
+                    "missing_labels": [],
+                },
+                "ai_next": {
+                    "next_action": "run /validate before report",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    clean_dir = tmp_path / "evidence" / "target.com" / "validation" / "authz-clean"
+    clean_dir.mkdir(parents=True)
+    (clean_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "lane": "authz_role_replay",
+                "url": "https://target.com/api/me",
+                "result": "tested_clean",
+                "candidate_ready": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pool = structured_findings.load_validation_runner_candidate_pool(tmp_path, "https://target.com/app")
+    lines = structured_findings.format_validation_runner_candidate_lines(pool)
+
+    assert len(pool) == 1
+    assert pool[0]["id"] == "sqli-result-diff-search"
+    assert pool[0]["rubric_status"] == "candidate-ready"
+    assert "requires /validate" in pool[0]["report_gate"]
+    assert "tested_clean" not in "\n".join(lines)

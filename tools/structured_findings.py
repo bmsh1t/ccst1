@@ -8,8 +8,10 @@ from pathlib import Path
 
 try:
     from evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
+    from target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - package import path
     from tools.evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
+    from tools.target_paths import canonical_target_value, target_storage_key
 
 
 def _load_validation_summary_rubric(finding: dict) -> dict:
@@ -58,6 +60,104 @@ def _load_validation_summary_payload(finding: dict) -> tuple[dict, bool]:
     except (OSError, json.JSONDecodeError):
         return {}, True
     return (payload if isinstance(payload, dict) else {}), True
+
+
+def _relative_to_repo(path: Path, repo_root: Path) -> str:
+    try:
+        return str(path.relative_to(repo_root))
+    except ValueError:
+        return str(path)
+
+
+def _runner_summary_is_candidate(payload: dict) -> bool:
+    """Return whether validation_runner summary should be shown to Claude.
+
+    这里不判断“可报告”，只判断这份 runner 证据是否值得 AI 复核。
+    `/validate` 的 7-Question Gate / 4-gate 才能决定 report-ready。
+    """
+    if not isinstance(payload, dict) or not payload.get("lane"):
+        return False
+    result = str(payload.get("result") or "").strip().lower()
+    rubric = payload.get("evidence_rubric") if isinstance(payload.get("evidence_rubric"), dict) else {}
+    return bool(
+        payload.get("candidate_ready") is True
+        or result in {"tested_finding", "candidate"}
+        or rubric.get("ready") is True
+    )
+
+
+def _compact_runner_summary(payload: dict, path: Path, repo_root: Path) -> dict:
+    rubric = payload.get("evidence_rubric") if isinstance(payload.get("evidence_rubric"), dict) else {}
+    ai_next = payload.get("ai_next") if isinstance(payload.get("ai_next"), dict) else {}
+    return {
+        "id": str(payload.get("finding_id") or path.parent.name or "").strip(),
+        "lane": str(payload.get("lane") or "").strip(),
+        "result": str(payload.get("result") or "").strip(),
+        "candidate_ready": bool(payload.get("candidate_ready")),
+        "url": str(payload.get("url") or "").strip(),
+        "method": str(payload.get("method") or "").strip() or "GET",
+        "generated_at": str(payload.get("generated_at") or "").strip(),
+        "summary_path": _relative_to_repo(path, repo_root),
+        "rubric_status": str(rubric.get("status") or "").strip(),
+        "rubric_summary": str(rubric.get("summary") or "").strip(),
+        "missing_evidence": list(rubric.get("missing_labels") or [])[:3],
+        "next_action": str(ai_next.get("next_action") or "").strip(),
+        "report_gate": "requires /validate seven-question + four validation gates before report",
+    }
+
+
+def load_validation_runner_candidate_pool(
+    repo_root: Path | str,
+    target: str,
+    *,
+    limit: int = 12,
+) -> list[dict]:
+    """Load runner-produced candidate evidence as an AI review pool.
+
+    validation_runner 负责 replay/diff/raw evidence 保存；本函数只把这些
+    证据摘要暴露给 Claude 选择下一条 `/validate`，不会把它们升级成
+    report-ready，也不会替 Claude 做价值排序。
+    """
+    repo = Path(repo_root)
+    resolved_target = canonical_target_value(target)
+    target_key = target_storage_key(resolved_target)
+    validation_dir = repo / "evidence" / target_key / "validation"
+    if not validation_dir.is_dir():
+        return []
+
+    candidates: list[tuple[float, str, dict]] = []
+    for path in validation_dir.glob("*/summary.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _runner_summary_is_candidate(payload):
+            continue
+        compact = _compact_runner_summary(payload, path, repo)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        candidates.append((mtime, compact["summary_path"], compact))
+
+    # 只按证据新鲜度和路径稳定排序；不按漏洞价值/优先级排序，避免工具替 AI 决策。
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+
+    seen: set[tuple[str, str, str]] = set()
+    pool: list[dict] = []
+    for _, _, item in candidates:
+        key = (
+            str(item.get("lane") or ""),
+            str(item.get("method") or ""),
+            str(item.get("url") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        pool.append(item)
+        if len(pool) >= limit:
+            break
+    return pool
 
 
 def _validation_report_ready(finding: dict) -> bool | None:
@@ -289,6 +389,42 @@ def format_structured_findings_lines(
                 confidence=next_report.get("confidence", "-"),
                 type=next_report.get("type", "-"),
                 url=next_report.get("url", ""),
+            )
+        )
+    return lines
+
+
+def format_validation_runner_candidate_lines(
+    candidates: list[dict],
+    *,
+    header: str | None = None,
+    indent: str = "",
+    limit: int = 6,
+) -> list[str]:
+    """Render runner candidate evidence without implying report readiness."""
+    if not candidates:
+        return []
+    lines: list[str] = []
+    if header:
+        lines.append(f"{indent}{header}")
+    for item in candidates[:limit]:
+        missing = ", ".join(str(value) for value in (item.get("missing_evidence") or [])[:2])
+        missing_suffix = f" missing={missing}" if missing else ""
+        rubric = str(item.get("rubric_status") or "").strip()
+        rubric_suffix = f" rubric={rubric}" if rubric else ""
+        lines.append(
+            "{indent}{id} [{lane}/{result}] {method} {url}{rubric_suffix}{missing_suffix}; "
+            "evidence={summary_path}; gate={gate}".format(
+                indent=indent,
+                id=item.get("id", "-"),
+                lane=item.get("lane", "-"),
+                result=item.get("result", "-"),
+                method=item.get("method", "GET"),
+                url=item.get("url", ""),
+                rubric_suffix=rubric_suffix,
+                missing_suffix=missing_suffix,
+                summary_path=item.get("summary_path", ""),
+                gate=item.get("report_gate", "requires /validate before report"),
             )
         )
     return lines

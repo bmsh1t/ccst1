@@ -23,12 +23,20 @@ try:
     from memory.target_profile import default_memory_dir
     from tools.coverage_matrix import find_high_value_gaps, load_matrix
     from tools.evidence_ledger import build_summary as build_evidence_summary
+    from tools.structured_findings import (
+        format_validation_runner_candidate_lines,
+        load_validation_runner_candidate_pool,
+    )
     from tools.surface import load_surface_context, rank_surface
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
     from coverage_matrix import find_high_value_gaps, load_matrix  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary  # type: ignore
+    from structured_findings import (  # type: ignore
+        format_validation_runner_candidate_lines,
+        load_validation_runner_candidate_pool,
+    )
     from surface import load_surface_context, rank_surface  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
@@ -1856,6 +1864,24 @@ def _gap_anchor(gap: dict) -> str:
     return f"Coverage gap: {gap.get('endpoint', '')} x {gap.get('vuln_class', '')} weight={gap.get('weight', '')}"
 
 
+def _runner_candidate_anchors(candidates: list[dict]) -> list[str]:
+    anchors: list[str] = []
+    for item in candidates[:4]:
+        rubric = str(item.get("rubric_status") or "").strip()
+        rubric_suffix = f" rubric={rubric}" if rubric else ""
+        anchors.append(
+            "Runner candidate evidence: {lane}/{result} {method} {url}{rubric}; "
+            "requires /validate gates before report".format(
+                lane=item.get("lane", ""),
+                result=item.get("result", ""),
+                method=item.get("method", "GET"),
+                url=item.get("url", ""),
+                rubric=rubric_suffix,
+            )
+        )
+    return anchors
+
+
 def _local_intel_anchors(local_intel: dict) -> list[str]:
     anchors: list[str] = []
     browser = local_intel.get("browser") or {}
@@ -2637,6 +2663,7 @@ def build_context_pack(
     ranked = _surface_state(repo, resolved_target, memory_dir)
     gaps, matrix = _safe_find_gaps(resolved_target, target_key, repo)
     findings = _load_findings(repo, target_key)
+    runner_candidates = load_validation_runner_candidate_pool(repo, resolved_target)
     local_intel = _load_local_intel(repo, target_key)
     blob = _text_blob(focus, goal_memory, ranked, gaps, findings, local_intel)
     skill, why_skill = _select_skill(focus, blob, ranked, findings, goal_memory)
@@ -2657,7 +2684,11 @@ def build_context_pack(
         SKILL_PATHS[skill],
         "knowledge/index.md",
         ledger_path,
-    ] + _local_intel_paths(local_intel))
+    ] + _local_intel_paths(local_intel) + [
+        str(item.get("summary_path") or "")
+        for item in runner_candidates[:6]
+        if item.get("summary_path")
+    ])
 
     pack = {
         "target": resolved_target,
@@ -2677,7 +2708,9 @@ def build_context_pack(
         "reference_hints": _reference_hints(cards, blob, focus, skill),
         "required_checks": checks,
         "evidence_anchors": _build_evidence_anchors(ranked, goal_memory, gaps, findings, local_intel)
+        + _runner_candidate_anchors(runner_candidates)
         + _ledger_anchors(evidence_summary),
+        "validation_runner_candidates": runner_candidates,
         "hypothesis_seeds": _hypothesis_seeds(cards, blob, local_intel),
         "alternative_angles": _alternative_angles(cards, ranked, local_intel),
         "unknowns": _unknowns(ranked, goal_memory, matrix, findings, local_intel)
@@ -2705,6 +2738,7 @@ def build_context_pack(
             "workflow_leads": len(_json_list(ranked.get("workflow_leads"))),
             "coverage_gaps": len(gaps),
             "findings": len(findings),
+            "validation_runner_candidates": len(runner_candidates),
             **_local_intel_source_summary(local_intel),
             **_ledger_source_summary(evidence_summary),
         },
@@ -2755,6 +2789,11 @@ def format_context_pack(pack: dict) -> str:
         *_format_list(pack["required_checks"]),
         "- Evidence anchors:",
         *_format_list(pack["evidence_anchors"]),
+        "- Validation runner candidate evidence (advisory; not report-ready):",
+        *_format_list(format_validation_runner_candidate_lines(
+            pack.get("validation_runner_candidates", []),
+            limit=6,
+        )),
         "- Hypothesis seeds:",
         *_format_list(pack["hypothesis_seeds"]),
         "- Alternative angles:",

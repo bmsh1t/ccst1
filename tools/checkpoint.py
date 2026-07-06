@@ -34,6 +34,7 @@ try:
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
+    from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import load_case_state, summary as build_case_state_summary
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -50,6 +51,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
+    from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import load_case_state, summary as build_case_state_summary  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
@@ -2166,6 +2168,7 @@ def _handoff_summary(
         f"coverage_gaps={coverage_summary.get('high_value_gaps_count', 0)}",
         f"actionable_coverage_gaps={coverage_summary.get('actionable_high_value_gaps_count', 0)}",
         f"actor_gaps={actor_matrix.get('gap_count', 0)}",
+        f"runner_candidates={len(state.get('validation_runner_candidates') or [])}",
     ]
     if findings.get("pending_validation"):
         next_validation = findings.get("next_validation") or {}
@@ -2401,6 +2404,7 @@ def build_checkpoint(
         },
         "surface": _surface_stats(state),
         "structured_findings": _structured_findings(state),
+        "validation_runner_candidates": state.get("validation_runner_candidates") or [],
         "unsafe_skipped": _unsafe_leads(state),
         "target_write_back": {
             "lead": lead,
@@ -2535,6 +2539,11 @@ def format_checkpoint(checkpoint: dict) -> str:
         ]),
         "  - record commands:",
         *_fmt_nested(evidence.get("record_commands", [])[:3]),
+        "- Validation runner candidates (advisory; require /validate before report):",
+        *_fmt_list(format_validation_runner_candidate_lines(
+            checkpoint.get("validation_runner_candidates") or [],
+            limit=5,
+        )),
         "- Next action queue:",
         *_fmt_action_queue(checkpoint.get("next_action_queue", [])),
         "- Default candidate (compat pointer):",

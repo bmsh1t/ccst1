@@ -262,6 +262,51 @@ class TestAutopilotState:
         assert "Structured findings: total=1, pending_validation=1" in output
         assert "Next validation: sqli_pending [high/confirmed] sqli https://api.target.com/search?q=1" in output
 
+    def test_outputs_validation_runner_candidates_as_advisory_pool(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://target.com [200] [API] [Express] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://target.com/rest/basket/6\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+
+        validation_dir = repo_root / "evidence" / "target.com" / "validation" / "idor-basket"
+        validation_dir.mkdir(parents=True)
+        (validation_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "lane": "idor_actor_pair",
+                    "finding_id": "idor-basket",
+                    "url": "https://target.com/rest/basket/6",
+                    "method": "GET",
+                    "result": "tested_finding",
+                    "candidate_ready": True,
+                    "evidence_rubric": {
+                        "status": "candidate-ready",
+                        "ready": True,
+                        "summary": "authz:candidate-ready",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+        output = format_autopilot_state(state)
+
+        assert state["validation_runner_candidates"][0]["id"] == "idor-basket"
+        assert "Validation runner candidates (advisory; require /validate before report):" in output
+        assert "idor-basket [idor_actor_pair/tested_finding]" in output
+
     def test_prioritizes_validated_structured_finding_report(self, tmp_path):
         repo_root = tmp_path
         findings_dir = repo_root / "findings" / "target.com"
