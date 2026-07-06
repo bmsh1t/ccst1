@@ -86,16 +86,60 @@ def test_write_validation_summary_updates_last_validate(tmp_path, monkeypatch):
     assert saved["vuln_class"] == "idor"
     assert saved["severity"] == "high"
     assert saved["result"] == "confirmed"
+    assert saved["seven_question_gate_passed"] is True
+    assert saved["seven_question_gate"]["source"] == "derived_from_4_gates"
     assert saved["submission_notes_path"] == str(submission_notes)
 
     notes = submission_notes.read_text(encoding="utf-8")
     assert "Validation summary: `validation-summary.json`" in notes
     assert "Raw HTTP request" in notes
+    assert "7-Question Gate: `PASS`" in notes
     assert "Four validation gates: `PASS`" in notes
 
     last_saved = json.loads(last_validate.read_text(encoding="utf-8"))
     assert last_saved["report_path"] == str(report_path)
     assert last_saved["submission_notes_path"] == str(submission_notes)
+
+
+def test_validation_summary_records_explicit_seven_question_gate(tmp_path):
+    report_path = tmp_path / "findings" / "target-program-idor" / "hackerone-report.md"
+    explicit_gate = {
+        "source": "ai_explicit",
+        "questions": {
+            "q1_replayable_now": {"status": "pass", "basis": "Exact owner/peer replay captured."},
+            "q2_impact_demonstrated": {"status": "pass", "basis": "Peer private order returned."},
+            "q3_target_context": {"status": "pass", "basis": "Endpoint host matches supplied target."},
+            "q4_attacker_access": {"status": "pass", "basis": "Regular user session only."},
+            "q5_not_known_behavior": {"status": "pass", "basis": "No matching disclosed issue found."},
+            "q6_impact_beyond_possible": {"status": "pass", "basis": "Response includes private marker."},
+            "q7_not_never_submit": {"status": "chain_required", "basis": "Standalone signal needs proven chain.", "next_action": "Report only the chained impact."},
+        },
+    }
+    info = {
+        "target": "target-program",
+        "vuln_type": "Open Redirect",
+        "endpoint": "https://target.local/oauth/redirect",
+        "impact": "Redirect can become account takeover only with OAuth code theft chain.",
+        "cvss_score": 5.3,
+        "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:A/VC:L/VI:L/VA:N/SC:N/SI:N/SA:N",
+        "gate1_pass": True,
+        "gate2_pass": True,
+        "gate3_pass": True,
+        "gate4_pass": True,
+        "seven_question_gate": explicit_gate,
+    }
+
+    summary = validate.build_validation_summary(info, all_pass=True, report_path=report_path)
+
+    assert summary["result"] == "partial"
+    assert summary["all_gates_passed"] is False
+    assert summary["four_validation_gates_passed"] is True
+    assert summary["seven_question_gate_passed"] is False
+    assert summary["seven_question_gate_decision"] == "chain_required"
+    assert summary["seven_question_gate"]["source"] == "explicit"
+    q7 = summary["seven_question_gate"]["questions"]["q7_not_never_submit"]
+    assert q7["status"] == "chain_required"
+    assert q7["next_action"] == "Report only the chained impact."
 
 
 

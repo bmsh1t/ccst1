@@ -69,6 +69,11 @@ reintroduce external scope/program confirmation for this run.
 4. Calculates and records validation context where applicable
 5. Outputs: PASS (write the report), KILL (do not report), or DOWNGRADE (impact not strong enough)
 
+`tools/validate.py` records the 7-Question Gate in `validation-summary.json`.
+If Claude/operator already made an explicit Q1-Q7 judgment, save it as JSON and
+pass `--seven-question-json <file>`; otherwise the script stores a coarse
+`derived_from_4_gates` audit block so the report path remains reviewable.
+
 ## Usage
 
 ```

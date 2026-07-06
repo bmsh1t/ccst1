@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 validate.py — Interactive bug validation assistant.
-Walks through the 4 validation gates, checks for duplicates, calculates CVSS,
-and generates a skeleton HackerOne report.
+Records the 7-Question report-readiness gate, walks through the 4 validation
+gates, checks for duplicates, calculates CVSS, and generates a skeleton
+HackerOne report.
 
 Usage:
   python3 tools/validate.py
@@ -84,6 +85,211 @@ BLUE   = "\033[94m"
 BOLD   = "\033[1m"
 DIM    = "\033[2m"
 RESET  = "\033[0m"
+
+
+SEVEN_QUESTION_DEFINITIONS = (
+    ("q1_replayable_now", "Can I demonstrate this step-by-step right now?"),
+    ("q2_impact_demonstrated", "Is the impact clearly demonstrated?"),
+    ("q3_target_context", "Is the vulnerable asset tied to the supplied target context?"),
+    ("q4_attacker_access", "Does it avoid privileged access an attacker cannot get?"),
+    ("q5_not_known_behavior", "Is this not known or documented behavior?"),
+    ("q6_impact_beyond_possible", "Can impact be proved beyond technically possible?"),
+    ("q7_not_never_submit", "Is this not on the never-submit list unless chained?"),
+)
+SEVEN_QUESTION_KEYS = tuple(key for key, _ in SEVEN_QUESTION_DEFINITIONS)
+SEVEN_QUESTION_STATUSES = {"pass", "fail", "partial", "chain_required", "unknown"}
+
+
+def _normalize_seven_question_status(value, default: str = "unknown") -> str:
+    """把 AI/operator 输入归一成固定枚举，避免 summary 出现自由文本状态。"""
+    if isinstance(value, bool):
+        return "pass" if value else "fail"
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "yes": "pass",
+        "y": "pass",
+        "true": "pass",
+        "ok": "pass",
+        "passed": "pass",
+        "no": "fail",
+        "n": "fail",
+        "false": "fail",
+        "failed": "fail",
+        "needs_chain": "chain_required",
+        "chain": "chain_required",
+        "needs_review": "unknown",
+        "review": "unknown",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in SEVEN_QUESTION_STATUSES else default
+
+
+def _seven_question_entry(
+    *,
+    key: str,
+    question: str,
+    status: str,
+    basis: str,
+    source: str,
+    blocker: str = "",
+    next_action: str = "",
+) -> dict:
+    """生成一个稳定的 Q1-Q7 记录项；供 report/remember/复盘审计使用。"""
+    item = {
+        "question": question,
+        "status": _normalize_seven_question_status(status),
+        "basis": str(basis or "").strip(),
+        "source": str(source or "derived").strip(),
+    }
+    if blocker:
+        item["blocker"] = str(blocker).strip()
+    if next_action:
+        item["next_action"] = str(next_action).strip()
+    return item
+
+
+def _gate_bool(info: dict, key: str) -> bool | None:
+    value = info.get(key)
+    return value if isinstance(value, bool) else None
+
+
+def _derive_seven_question_gate(info: dict) -> dict:
+    """从现有 4 gates 粗略派生 7-gate；显式 AI 判断可覆盖它。"""
+    gate1 = _gate_bool(info, "gate1_pass")
+    gate2 = _gate_bool(info, "gate2_pass")
+    gate3 = _gate_bool(info, "gate3_pass")
+    gate4 = _gate_bool(info, "gate4_pass")
+    gate1_notes = info.get("gate1_notes") if isinstance(info.get("gate1_notes"), dict) else {}
+    gate3_notes = info.get("gate3_notes") if isinstance(info.get("gate3_notes"), dict) else {}
+
+    concrete = bool(gate3_notes.get("concrete_impact"))
+    has_proof = bool(gate3_notes.get("has_proof"))
+    gate3_notes_available = bool(gate3_notes)
+    no_unrealistic = bool(gate3_notes.get("no_unrealistic_preconditions"))
+    not_documented = gate1_notes.get("not_documented_behavior")
+    q6_status = (
+        "pass"
+        if (gate3 is True and (not gate3_notes_available or (concrete and has_proof)))
+        else ("partial" if concrete or has_proof else ("fail" if gate3 is False else "unknown"))
+    )
+
+    derived = {
+        "q1_replayable_now": _seven_question_entry(
+            key="q1_replayable_now",
+            question=SEVEN_QUESTION_DEFINITIONS[0][1],
+            status="pass" if gate1 is True else ("fail" if gate1 is False else "unknown"),
+            basis="Derived from Gate 1 reproducibility checks.",
+            source="derived_from_4_gates",
+            next_action="Capture exact request/response and rerun validation." if gate1 is False else "",
+        ),
+        "q2_impact_demonstrated": _seven_question_entry(
+            key="q2_impact_demonstrated",
+            question=SEVEN_QUESTION_DEFINITIONS[1][1],
+            status="pass" if gate3 is True else ("fail" if gate3 is False else "unknown"),
+            basis="Derived from Gate 3 exploitability and impact checks.",
+            source="derived_from_4_gates",
+            next_action="Show concrete victim/data/action impact." if gate3 is False else "",
+        ),
+        "q3_target_context": _seven_question_entry(
+            key="q3_target_context",
+            question=SEVEN_QUESTION_DEFINITIONS[2][1],
+            status="pass" if gate2 is True else ("fail" if gate2 is False else "unknown"),
+            basis="Derived from Gate 2 supplied-target-context check.",
+            source="derived_from_4_gates",
+        ),
+        "q4_attacker_access": _seven_question_entry(
+            key="q4_attacker_access",
+            question=SEVEN_QUESTION_DEFINITIONS[3][1],
+            status="pass" if (gate3 is True or no_unrealistic) else ("fail" if gate3 is False else "unknown"),
+            basis="Derived from Gate 3 unrealistic-precondition check.",
+            source="derived_from_4_gates",
+            next_action="Prove the attack works with realistic attacker privileges." if gate3 is False else "",
+        ),
+        "q5_not_known_behavior": _seven_question_entry(
+            key="q5_not_known_behavior",
+            question=SEVEN_QUESTION_DEFINITIONS[4][1],
+            status="pass" if (gate4 is True and not_documented is not False) else ("fail" if gate4 is False or not_documented is False else "unknown"),
+            basis="Derived from Gate 1 documentation check and Gate 4 advisory duplicate check.",
+            source="derived_from_4_gates",
+            next_action="Check docs, changelog, disclosed reports, and known issues." if (gate4 is False or not_documented is False) else "",
+        ),
+        "q6_impact_beyond_possible": _seven_question_entry(
+            key="q6_impact_beyond_possible",
+            question=SEVEN_QUESTION_DEFINITIONS[5][1],
+            status=q6_status,
+            basis="Derived from Gate 3 concrete-impact/proof fields.",
+            source="derived_from_4_gates",
+            next_action="Upgrade from technical possibility to concrete data/action proof." if q6_status != "pass" else "",
+        ),
+        "q7_not_never_submit": _seven_question_entry(
+            key="q7_not_never_submit",
+            question=SEVEN_QUESTION_DEFINITIONS[6][1],
+            status="pass",
+            basis="No never-submit exception was recorded in the 4-gate run; pass explicit seven_question_gate to override if Q7 fails or needs a chain.",
+            source="derived_from_4_gates",
+        ),
+    }
+    return derived
+
+
+def _explicit_seven_question_gate(raw: dict) -> dict:
+    """读取 Claude/operator 显式 Q1-Q7 判断，允许简单字符串或完整对象。"""
+    questions = raw.get("questions") if isinstance(raw.get("questions"), dict) else raw
+    parsed: dict[str, dict] = {}
+    for key, question in SEVEN_QUESTION_DEFINITIONS:
+        value = questions.get(key) if isinstance(questions, dict) else None
+        if isinstance(value, dict):
+            status = value.get("status", "unknown")
+            basis = value.get("basis") or value.get("reason") or value.get("evidence") or ""
+            blocker = value.get("blocker", "")
+            next_action = value.get("next_action", "")
+        else:
+            status = value if value is not None else "unknown"
+            basis = ""
+            blocker = ""
+            next_action = ""
+        parsed[key] = _seven_question_entry(
+            key=key,
+            question=question,
+            status=status,
+            basis=basis,
+            source=str(raw.get("source") or "ai_explicit"),
+            blocker=blocker,
+            next_action=next_action,
+        )
+    return parsed
+
+
+def _seven_question_decision(questions: dict) -> tuple[bool, str]:
+    statuses = [
+        _normalize_seven_question_status((questions.get(key) or {}).get("status"))
+        for key in SEVEN_QUESTION_KEYS
+    ]
+    if any(status == "fail" for status in statuses):
+        return False, "kill"
+    if any(status == "chain_required" for status in statuses):
+        return False, "chain_required"
+    if any(status in {"partial", "unknown"} for status in statuses):
+        return False, "needs_review"
+    return True, "pass"
+
+
+def build_seven_question_gate(info: dict) -> dict:
+    """构建 validation-summary.json 中的 7-Question Gate 审计块。"""
+    explicit = info.get("seven_question_gate")
+    questions = (
+        _explicit_seven_question_gate(explicit)
+        if isinstance(explicit, dict) and explicit
+        else _derive_seven_question_gate(info)
+    )
+    passed, decision = _seven_question_decision(questions)
+    return {
+        "schema_version": 1,
+        "source": "explicit" if isinstance(explicit, dict) and explicit else "derived_from_4_gates",
+        "passed": passed,
+        "decision": decision,
+        "questions": questions,
+    }
 
 # ─── CVSS 4.0 scoring ─────────────────────────────────────────────────────────
 
@@ -1047,18 +1253,32 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
     """Build a compact JSON summary that /remember can import later."""
     vuln_class = (info.get("vuln_type") or "").strip().lower()
     severity = severity_from_score(float(info.get("cvss_score", 0.0) or 0.0)).lower()
+    gate_info = dict(info)
+    if not any(key in gate_info for key in ("gate1_pass", "gate2_pass", "gate3_pass", "gate4_pass")):
+        gate_info.update({
+            "gate1_pass": bool(all_pass),
+            "gate2_pass": bool(all_pass),
+            "gate3_pass": bool(all_pass),
+            "gate4_pass": bool(all_pass),
+        })
+    seven_question_gate = build_seven_question_gate(gate_info)
+    report_ready = bool(all_pass and seven_question_gate.get("passed"))
     summary = {
         "target": derive_validate_target(info.get("target", ""), info.get("endpoint", "")),
         "program": (info.get("target") or "").strip(),
         "endpoint": (info.get("endpoint") or "").strip(),
         "vuln_class": vuln_class,
-        "result": "confirmed" if all_pass else "partial",
+        "result": "confirmed" if report_ready else "partial",
         "severity": severity,
         "notes": (info.get("impact") or "").strip(),
         "impact": (info.get("impact") or "").strip(),
         "cvss_score": float(info.get("cvss_score", 0.0) or 0.0),
         "cvss_vector": info.get("cvss_vector", ""),
-        "all_gates_passed": bool(all_pass),
+        "all_gates_passed": report_ready,
+        "four_validation_gates_passed": bool(all_pass),
+        "seven_question_gate_passed": bool(seven_question_gate.get("passed")),
+        "seven_question_gate_decision": seven_question_gate.get("decision", "needs_review"),
+        "seven_question_gate": seven_question_gate,
         "report_path": str(report_path),
         "validated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -1106,6 +1326,9 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
 def build_submission_notes(summary: dict) -> str:
     """Build a compact human checklist for final bounty submission review."""
     gates = "PASS" if summary.get("all_gates_passed") else "NEEDS REVIEW"
+    seven_gate = "PASS" if summary.get("seven_question_gate_passed") else "NEEDS REVIEW"
+    seven_decision = summary.get("seven_question_gate_decision", "needs_review")
+    four_gates = "PASS" if summary.get("four_validation_gates_passed", summary.get("all_gates_passed")) else "NEEDS REVIEW"
     evidence = summary.get("browser_evidence") or {}
     evidence_path = evidence.get("summary_path") or evidence.get("dir") or "[attach raw request/response evidence]"
     scanner_path = summary.get("scanner_summary_path") or "[optional scanner summary path]"
@@ -1126,7 +1349,9 @@ def build_submission_notes(summary: dict) -> str:
 - [ ] Raw HTTP response proving impact is pasted into the report PoC section.
 - [ ] Evidence artifact path is attached: `{evidence_path}`
 - [ ] Scanner handoff reviewed: `{scanner_path}`
-- [ ] Four validation gates: `{gates}`
+- [ ] 7-Question Gate: `{seven_gate}` (`{seven_decision}`)
+- [ ] Four validation gates: `{four_gates}`
+- [ ] Combined report-readiness gates: `{gates}`
 
 ## Submission checklist
 
@@ -1475,6 +1700,11 @@ def main():
     parser.add_argument("--browser-screenshot", action="store_true", help="Also capture screenshot.png with browser evidence")
     parser.add_argument("--scanner-summary", default="", help="Attach tools/vuln_scanner.sh summary.json to validation-summary.json")
     parser.add_argument(
+        "--seven-question-json",
+        default="",
+        help="Optional JSON containing Claude/operator 7-Question Gate judgments for validation-summary.json",
+    )
+    parser.add_argument(
         "--scanner-confidence",
         default="unknown",
         choices=["confirmed", "possible", "informational", "unknown"],
@@ -1493,8 +1723,8 @@ def main():
     print(f"\n{BOLD}{CYAN}{'═' * 60}{RESET}")
     print(f"{BOLD}{CYAN}  Validation Assistant{RESET}")
     print(f"{BOLD}{CYAN}{'═' * 60}{RESET}")
-    print(f"\nThis will walk you through the 4 validation gates,")
-    print(f"calculate your CVSS score, and generate a report skeleton.\n")
+    print(f"\nThis records the 7-Question Gate, walks through the 4 validation gates,")
+    print(f"calculates your CVSS score, and generates a report skeleton.\n")
     config = load_config()
     ctf_mode = bool(config.get("ctf_mode", False))
     if ctf_mode:
@@ -1524,6 +1754,7 @@ def main():
 
     target_prompt = "Target / program / lab name"
     scanner_summary = load_json_file(args.scanner_summary)
+    seven_question_input = load_json_file(args.seven_question_json)
     target_program = args.program or ask(
         target_prompt,
         finding_prefill.get("target", "unknown"),
@@ -1588,7 +1819,13 @@ def main():
         "gate2_pass":  g2_pass,
         "gate3_pass":  g3_pass,
         "gate4_pass":  g4_pass,
+        "gate1_notes": g1_notes,
+        "gate2_notes": g2_notes,
+        "gate3_notes": g3_notes,
+        "gate4_notes": g4_notes,
     }
+    if args.seven_question_json:
+        info["seven_question_gate"] = seven_question_input
     if args.scanner_summary:
         info["scanner_summary_path"] = args.scanner_summary
         info["scanner_summary"] = scanner_summary
