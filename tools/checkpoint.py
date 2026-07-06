@@ -2005,6 +2005,24 @@ def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[d
     except Exception:  # pragma: no cover - checkpoint should stay best-effort
         return items
 
+    def is_final_for_checkpoint(action: dict) -> bool:
+        """Return whether a persisted action should suppress checkpoint work.
+
+        validation_runner historically synced ``tested_finding`` to
+        ``status=validated``. Under the current AI-first contract that only
+        means runner evidence exists; `/validate` must still run the
+        seven-question + four-gate report-readiness audit. Treat those legacy
+        runner-only rows as non-final so they do not hide the real validate
+        action.
+        """
+        status = str(action.get("status") or "")
+        if status not in ACTION_QUEUE_FINAL_STATUSES:
+            return False
+        result = str(action.get("result") or "").strip()
+        if status == "validated" and result.startswith("validation-runner-result="):
+            return False
+        return True
+
     def action_identities(action: dict) -> set[str]:
         """Return stable finding/endpoint identities for stale candidate suppression."""
         metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
@@ -2042,13 +2060,13 @@ def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[d
         str(action.get("dedupe_key") or action_queue_dedupe_key(action))
         for action in existing.get("actions", [])
         if isinstance(action, dict)
-        and str(action.get("status") or "") in ACTION_QUEUE_FINAL_STATUSES
+        and is_final_for_checkpoint(action)
     }
     final_identities: set[str] = set()
     for action in existing.get("actions", []):
         if not isinstance(action, dict):
             continue
-        if str(action.get("status") or "") not in ACTION_QUEUE_FINAL_STATUSES:
+        if not is_final_for_checkpoint(action):
             continue
         final_identities.update(action_identities(action))
 

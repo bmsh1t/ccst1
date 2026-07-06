@@ -165,12 +165,29 @@ def _action_identities(action: dict) -> set[str]:
     return identities
 
 
+def _is_runner_only_validated(action: dict) -> bool:
+    """Return whether a legacy row was closed by validation_runner only.
+
+    validation_runner saves replay/diff evidence. It must not satisfy the
+    `/validate` report-readiness gate by itself.
+    """
+    return (
+        str(action.get("status") or "") == "validated"
+        and str(action.get("result") or "").strip().startswith("validation-runner-result=")
+    )
+
+
+def _is_final_action(action: dict) -> bool:
+    status = str(action.get("status") or "")
+    return status in FINAL_STATUSES and not _is_runner_only_validated(action)
+
+
 def _final_action_identities(queue: dict) -> set[str]:
     identities: set[str] = set()
     for action in queue.get("actions", []):
         if not isinstance(action, dict):
             continue
-        if str(action.get("status") or "") not in FINAL_STATUSES:
+        if not _is_final_action(action):
             continue
         identities.update(_action_identities(action))
     return identities
@@ -540,9 +557,21 @@ def upsert_actions(queue: dict, actions: list[dict]) -> dict:
             continue
         existing = existing_by_key.get(key)
         if existing:
-            if str(existing.get("status") or "queued") in FINAL_STATUSES:
+            if _is_final_action(existing):
                 stats["skipped_final"] += 1
                 continue
+            if _is_runner_only_validated(existing):
+                existing["status"] = str(action.get("status") or "queued")
+                previous_result = str(existing.get("result") or "").strip()
+                existing["notes"] = _compact_text(
+                    (
+                        f"{existing.get('notes', '')} "
+                        "Reopened: validation_runner evidence is candidate-only; "
+                        "run /validate gates before treating this as validated. "
+                        f"Previous result: {previous_result}"
+                    ),
+                    1000,
+                )
             if existing.get("source") == "checkpoint" and action.get("source") == "checkpoint":
                 # checkpoint 队列是当前状态投影；允许上游重新排序，避免旧优先级
                 # 把 enrichment lead 压在真正可执行 replay 前面。

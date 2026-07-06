@@ -679,11 +679,11 @@ def test_authz_public_exposure_cli_syncs_finding_and_action_queue(monkeypatch, t
     assert summary["sync"]["finding"]["status"] == "updated"
     assert summary["sync"]["action_queue"]["status"] == "updated"
     finding = findings["findings"][0]
-    assert finding["validation_status"] == "validated"
+    assert finding["validation_status"] == "candidate"
     assert finding["confidence"] == "confirmed"
     assert finding["validation_summary"].endswith("summary.json")
     assert finding["vuln_class"] == "Authz"
-    assert queue["actions"][0]["status"] == "validated"
+    assert queue["actions"][0]["status"] == "candidate"
 
 
 def test_authz_public_exposure_cli_reuses_existing_url_finding_without_id(monkeypatch, tmp_path, capsys):
@@ -752,7 +752,7 @@ def test_authz_public_exposure_cli_reuses_existing_url_finding_without_id(monkey
     assert summary["sync"]["finding"]["finding_id"] == "AUTHZ-SCANNER-ID"
     assert summary["sync"]["finding"]["matched_by"] == "url"
     assert len(findings["findings"]) == 1
-    assert findings["findings"][0]["validation_status"] == "validated"
+    assert findings["findings"][0]["validation_status"] == "candidate"
 
 
 def test_authz_public_exposure_sync_closes_duplicate_validation_actions(monkeypatch, tmp_path, capsys):
@@ -828,7 +828,7 @@ def test_authz_public_exposure_sync_closes_duplicate_validation_actions(monkeypa
     assert rc == 0
     assert summary["sync"]["action_queue"]["updated_count"] == 2
     assert set(summary["sync"]["action_queue"]["ids"]) == {"AQ-0001", "AQ-0002"}
-    assert {item["status"] for item in queue["actions"]} == {"validated"}
+    assert {item["status"] for item in queue["actions"]} == {"candidate"}
 
 
 def test_authz_public_exposure_cli_syncs_ranked_surface_action(monkeypatch, tmp_path, capsys):
@@ -1414,9 +1414,9 @@ def test_idor_actor_pair_from_case_state_cli_resolves_headers_and_object(monkeyp
     assert summary["sync"]["action_queue"]["status"] == "updated"
     assert backlog["status"] == "tested_finding"
     assert backlog["evidence_ref"].endswith("summary.json")
-    assert queue["actions"][0]["status"] == "validated"
+    assert queue["actions"][0]["status"] == "candidate"
     assert findings["findings"][0]["id"] == "IDOR-CASE-STATE"
-    assert findings["findings"][0]["validation_status"] == "validated"
+    assert findings["findings"][0]["validation_status"] == "candidate"
     assert findings["findings"][0]["report_status"] == "not_generated"
 
 

@@ -121,6 +121,35 @@ def test_ready_generic_finding_can_still_drive_next_validation(tmp_path):
     assert summary["next_validation"]["id"] == "generic_ready"
 
 
+def test_runner_candidate_status_remains_pending_validation(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings = [
+        {
+            "id": "runner_candidate",
+            "type": "sqli",
+            "severity": "high",
+            "confidence": "confirmed",
+            "url": "https://target.test/rest/products/search?q=apple",
+            "validation_status": "candidate",
+            "report_status": "not_generated",
+            "rubric": {
+                "rubric_id": "sqli",
+                "status": "candidate-ready",
+                "ready": True,
+                "score": 100,
+                "missing": [],
+                "missing_labels": [],
+            },
+        }
+    ]
+
+    summary = structured_findings.summarize_structured_findings(findings, findings_dir)
+
+    assert summary["pending_validation"] == 1
+    assert summary["validated_pending_report"] == 0
+    assert summary["next_validation"]["id"] == "runner_candidate"
+
+
 def test_format_structured_findings_lines_renders_expected_labels():
     lines = structured_findings.format_structured_findings_lines(
         {

@@ -271,7 +271,7 @@ def summarize_structured_findings(findings: list[dict], findings_dir: Path) -> d
     for item in valid_findings:
         validation_status = str(item.get("validation_status", "unvalidated") or "unvalidated")
         report_status = str(item.get("report_status", "not_generated") or "not_generated")
-        if validation_status == "unvalidated":
+        if validation_status in {"unvalidated", "candidate", "partial", "needs_validation"}:
             pending_validation.append(item)
             continue
         if (

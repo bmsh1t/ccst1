@@ -735,6 +735,44 @@ def test_ingest_checkpoint_retires_superseded_candidate_gap(tmp_path):
     assert saved["actions"][0]["status"] == "n/a"
 
 
+def test_ingest_checkpoint_reopens_runner_only_validated_action(tmp_path):
+    checkpoint = {
+        "next_action_queue": [
+            {
+                "id": "A1",
+                "priority": 100,
+                "type": "validation",
+                "status": "ready",
+                "action": (
+                    "Run /validate for finding AUTHZ-SYNC on https://target.com/api/Feedbacks; "
+                    "verify replay, A/B diff, impact, evidence rubric, and red-line safety before report."
+                ),
+                "command_hint": "/validate",
+                "redline_required": True,
+                "stop_condition": "run validate gates",
+            }
+        ]
+    }
+    first = ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
+    queue = load_queue(tmp_path, "target.com")
+    action = queue["actions"][0]
+    action["status"] = "validated"
+    action["result"] = "validation-runner-result=tested_finding; summary=evidence/target.com/validation/authz/summary.json"
+    from action_queue import save_queue
+
+    save_queue(tmp_path, "target.com", queue)
+
+    second = ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
+    saved = load_queue(tmp_path, "target.com")
+
+    assert first["stats"]["added"] == 1
+    assert second["stats"]["updated"] == 1
+    assert second["stats"]["skipped_final"] == 0
+    assert saved["actions"][0]["status"] == "queued"
+    assert second["next"]["id"] == saved["actions"][0]["id"]
+    assert "runner evidence is candidate-only" in saved["actions"][0]["notes"]
+
+
 def test_relevance_metadata_breaks_same_endpoint_coverage_ties(tmp_path):
     queue = load_queue(tmp_path, "target.com")
     common = {

@@ -89,13 +89,15 @@ SQLI_ERROR_RE = re.compile(
 )
 
 RUNNER_RESULT_TO_FINDING_STATUS = {
-    "tested_finding": "validated",
-    "candidate": "partial",
+    # validation_runner 只证明候选证据包，不代表 /validate gate 已通过。
+    "tested_finding": "candidate",
+    "candidate": "candidate",
     "tested_clean": "rejected",
     "dead_end": "rejected",
 }
 RUNNER_RESULT_TO_QUEUE_STATUS = {
-    "tested_finding": "validated",
+    # runner 的 tested_finding 仍需交给 AI + /validate 做最终验证。
+    "tested_finding": "candidate",
     "candidate": "candidate",
     "tested_clean": "tested",
     "dead_end": "dead-end",
@@ -505,23 +507,40 @@ def _candidate_queue_followup(summary: dict[str, Any]) -> dict[str, Any]:
     rubric_status = str(rubric.get("status") or "candidate").strip()
     lane = str(summary.get("lane") or "").strip()
 
-    action = (
-        "Candidate evidence gap for {id} on {url}: rubric={status}, missing={missing}. "
-        "Next evidence step: {step}. Evidence summary: {summary_ref}. "
-        "Do not rerun the same replay unless new actor/object/policy evidence changes the test."
-    ).format(
-        id=finding_id or "-",
-        url=url or "-",
-        status=rubric_status,
-        missing=", ".join(missing[:4]) or "candidate evidence",
-        step=next_step or "fill the missing candidate evidence item, then rerun /validate if reportable",
-        summary_ref=summary_ref or "-",
-    )
+    ready = bool(rubric.get("ready")) and not missing
+    if ready:
+        action = (
+            "Runner candidate evidence for {id} on {url}: rubric={status}. "
+            "Next evidence step: run /validate to apply the seven-question and four-gate report-readiness audit. "
+            "Evidence summary: {summary_ref}. Do not treat runner output as report-ready by itself."
+        ).format(
+            id=finding_id or "-",
+            url=url or "-",
+            status=rubric_status,
+            summary_ref=summary_ref or "-",
+        )
+        next_question = "Run /validate or downgrade after AI review; do not report from runner output alone."
+        command_hint = "/validate"
+    else:
+        action = (
+            "Candidate evidence gap for {id} on {url}: rubric={status}, missing={missing}. "
+            "Next evidence step: {step}. Evidence summary: {summary_ref}. "
+            "Do not rerun the same replay unless new actor/object/policy evidence changes the test."
+        ).format(
+            id=finding_id or "-",
+            url=url or "-",
+            status=rubric_status,
+            missing=", ".join(missing[:4]) or "candidate evidence",
+            step=next_step or "fill the missing candidate evidence item, then rerun /validate if reportable",
+            summary_ref=summary_ref or "-",
+        )
+        next_question = "Fill the missing evidence or downgrade this candidate; do not repeat the same replay blindly."
+        command_hint = "fill missing rubric evidence, then /validate"
     return {
         "type": "candidate-evidence-gap",
         "action": action,
-        "next_question": "Fill the missing evidence or downgrade this candidate; do not repeat the same replay blindly.",
-        "command_hint": "fill missing rubric evidence, then /validate",
+        "next_question": next_question,
+        "command_hint": command_hint,
         "metadata": {
             "finding_id": finding_id,
             "url": url,
@@ -529,7 +548,7 @@ def _candidate_queue_followup(summary: dict[str, Any]) -> dict[str, Any]:
             "runner": lane,
             "rubric_status": rubric_status,
             "missing_evidence": missing,
-            "next_evidence_step": next_step,
+            "next_evidence_step": next_step or ("run /validate report-readiness audit" if ready else ""),
         },
     }
 

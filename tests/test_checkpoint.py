@@ -460,7 +460,7 @@ def test_checkpoint_drops_active_candidate_superseded_by_validated_endpoint(tmp_
     validated.update({
         "id": "AQ-0002",
         "status": "validated",
-        "result": "validation-runner-result=tested_finding",
+        "result": "validation-summary=evidence/target.com/validate/F-1/summary.json",
     })
     save_queue(
         tmp_path,
@@ -476,6 +476,35 @@ def test_checkpoint_drops_active_candidate_superseded_by_validated_endpoint(tmp_
     filtered = _filter_final_action_queue_items(tmp_path, target, [fresh_surface])
 
     assert all(item.get("type") != "candidate-evidence-gap" for item in filtered)
+
+
+def test_checkpoint_keeps_validate_action_when_only_runner_marked_validated(tmp_path):
+    target = "target.com"
+    item = _build_next_action_queue(
+        [
+            (
+                "Run /validate for finding AUTHZ-SYNC on https://target.com/api/Feedbacks; "
+                "verify replay, A/B diff, impact, evidence rubric, and red-line safety before report."
+            )
+        ],
+        target,
+    )[0]
+    action = _checkpoint_item_to_action(target, item)
+    action.update({
+        "id": "AQ-0001",
+        "status": "validated",
+        "result": "validation-runner-result=tested_finding; summary=evidence/target.com/validation/authz/summary.json",
+        "dedupe_key": _dedupe_key(action),
+    })
+    save_queue(
+        tmp_path,
+        target,
+        {"schema_version": 1, "target": target, "actions": [action]},
+    )
+
+    filtered = _filter_final_action_queue_items(tmp_path, target, [item])
+
+    assert filtered == [item]
 
 
 def test_checkpoint_queues_candidate_evidence_gap_before_validate(tmp_path):
