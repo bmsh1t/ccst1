@@ -32,6 +32,35 @@ python3 tools/hunt.py --target target.com --auth-file .private/target.json
 
 The `.private/` directory is gitignored. Use it.
 
+## Optional test-account email verification
+
+When a lab or authorized target requires email verification for a self-owned test
+account, use the local receiver helper as an optional setup aid:
+
+```bash
+python3 /root/tool/aitool/zocom/mail_receiver.py --generate --prefix ccst-test
+python3 /root/tool/aitool/zocom/mail_receiver.py --poll ccst-test@example.test --code --timeout 120
+python3 /root/tool/aitool/zocom/mail_receiver.py --poll ccst-test@example.test --regex 'https?://[^\s<>"]+' --timeout 120
+```
+
+Import form for scripts that need custom extraction:
+
+```python
+import sys
+sys.path.append("/root/tool/aitool/zocom")
+from mail_receiver import MailReceiver, load_mail_config
+
+receiver = MailReceiver(load_mail_config("/root/tool/aitool/zocom/env.json"))
+email = receiver.generate_email("ccst-test")
+code = receiver.poll_code(email, timeout=120)
+```
+
+Keep this as account setup / case-state enrichment, not a credential attack. Use
+only lab or target-owned test accounts, keep receiver config and resulting
+sessions out of git, then store the final Cookie/Bearer/CSRF headers in
+`.private/<target>.json` or `state/<target_key>/case_state.json`.
+
+
 ## What gets auth'd
 
 | Stage | Tool | Auth-aware? |

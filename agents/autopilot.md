@@ -187,7 +187,7 @@ Password brute force, default credential checks, and password spray are not abso
 
 `/autopilot` may select `/wordlist-gen -> /breach-check -> /osint-employees -> /spray` when it is a high-value route for current evidence; this is not a requirement that every other lane fails first. Require concrete login endpoint, success/failure signal, username source, bounded target-derived password set, rate/lockout discipline, audit log, and stop-on-hit.
 
-If execution hygiene is missing, write a target-memory next action instead of silently dropping the lane or launching guesses.
+If self-owned lab/authorized account setup needs email verification, use `/root/tool/aitool/zocom/mail_receiver.py` as optional setup aid and store only final auth headers in `.private/` or case_state. If execution hygiene is missing, write a target-memory next action instead of silently dropping the lane or launching guesses.
 
 ## Live-Action Boundaries
 
