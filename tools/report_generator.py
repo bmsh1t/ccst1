@@ -403,6 +403,25 @@ VULN_TEMPLATES.update({
         "cwe": "CWE-287",
         "references": ["https://owasp.org/www-project-web-security-testing-guide/"],
     },
+    "jwt": {
+        "title": "JWT Validation Weakness on {domain}",
+        "severity": "high",
+        "impact": (
+            "Weak JWT validation can allow attackers to forge token claims, bypass role checks, "
+            "or access protected user or administrative data without the intended privileges."
+        ),
+        "remediation": (
+            "1. Reject unsigned tokens and disallow the none algorithm\n"
+            "2. Pin the expected signing algorithm server-side\n"
+            "3. Verify signatures, issuer, audience, expiry, and role claims on every request\n"
+            "4. Keep authorization decisions on the server, not in client-decoded token state"
+        ),
+        "cwe": "CWE-347",
+        "references": [
+            "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/06-Testing_for_JWT",
+            "https://portswigger.net/web-security/jwt",
+        ],
+    },
 })
 
 
@@ -741,6 +760,7 @@ def process_findings_dir(findings_dir):
         "auth_bypass": "auth_bypass",
         "mfa": "mfa",
         "saml": "saml",
+        "jwt": "jwt",
     }
 
     total_reports = 0

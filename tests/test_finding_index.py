@@ -229,6 +229,50 @@ def test_report_generator_consumes_structured_findings(monkeypatch, tmp_path):
     assert updated_index["findings"][0]["report_file"] == str(report_path)
 
 
+def test_report_generator_preserves_jwt_structured_finding_type(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "example.com",
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "jwt_alg_none_abc123",
+                        "type": "jwt",
+                        "category": "jwt",
+                        "title": "JWT alg none role escalation",
+                        "summary": "validated JWT alg=none role escalation",
+                        "url": "https://example.com/rest/order-history/orders",
+                        "severity": "high",
+                        "confidence": "confirmed",
+                        "validation_status": "validated",
+                        "report_status": "not_generated",
+                        "source_file": "evidence/example.com/jwt/validation-summary.json",
+                        "raw": "validate:confirmed:evidence/example.com/jwt/validation-summary.json",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total == 1
+    assert index[0]["finding_id"] == "jwt_alg_none_abc123"
+    assert index[0]["type"] == "jwt"
+    report_path = Path(index[0]["file"])
+    assert report_path.name == "jwt_001.md"
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "JWT Validation Weakness" in report_text
+    updated_index = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    assert updated_index["findings"][0]["report_id"] == "jwt_001"
+
+
 def test_report_generator_keeps_existing_generated_reports_in_index(monkeypatch, tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)
