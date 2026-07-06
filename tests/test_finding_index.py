@@ -536,6 +536,87 @@ def test_report_generator_uses_validation_summary_for_auth_bypass_narrative(monk
     assert "Baseline Response" in report_text
 
 
+def test_report_generator_uses_write_sink_auth_bypass_narrative(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    validation_dir = tmp_path / "evidence" / "example.com" / "validation" / "forged-review"
+    validation_dir.mkdir(parents=True)
+    validation_summary = validation_dir / "summary.json"
+    validation_summary.write_text(
+        json.dumps(
+            {
+                "summary_path": "evidence/example.com/validation/forged-review/summary.json",
+                "method": "PUT",
+                "endpoint": "/rest/products/1/reviews",
+                "markers": ["anonymous_state_change", "author_spoof", "public_ui_visibility"],
+                "ai_assessment": (
+                    "Anonymous requests can create public reviews whose author field is taken "
+                    "from the request body."
+                ),
+                "artifacts": {
+                    "anonymous_request": "evidence/example.com/validation/forged-review/request.txt",
+                    "anonymous_response_body": "evidence/example.com/validation/forged-review/response.body",
+                },
+                "evidence_rubric": {
+                    "summary": "authz/business-logic:validated via anonymous state change"
+                },
+                "all_gates_passed": True,
+                "seven_question_gate_passed": True,
+                "seven_question_gate_decision": "report",
+                "four_validation_gates_passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "example.com",
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "authz_forged_review",
+                        "type": "auth_bypass",
+                        "category": "auth_bypass",
+                        "title": "Forged review author",
+                        "summary": (
+                            "Anonymous PUT accepts author from request body and renders the "
+                            "review as admin@example.com."
+                        ),
+                        "url": "https://example.com/rest/products/1/reviews",
+                        "method": "PUT",
+                        "severity": "medium",
+                        "confidence": "confirmed",
+                        "validation_status": "validated",
+                        "validation_summary": str(validation_summary),
+                        "report_status": "not_generated",
+                        "source_file": "evidence/example.com/validation/forged-review/summary.json",
+                        "line_number": 0,
+                        "template_id": "",
+                        "raw": "manual-ai-validated:forged-review",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    monkeypatch.setattr(report_generator, "BASE_DIR", str(tmp_path))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total == 1
+    report_text = Path(index[0]["file"]).read_text(encoding="utf-8")
+    assert "Unauthenticated Content Impersonation" in report_text
+    assert "unauthenticated `PUT` request" in report_text
+    assert "Send a `PUT` request" in report_text
+    assert "request.txt" in report_text
+    assert "author field" in report_text
+    assert "Navigate to the following URL" not in report_text
+    assert "returned HTTP 200" not in report_text
+
+
 def test_report_generator_skips_unvalidated_and_already_reported_structured_findings(
     monkeypatch,
     tmp_path,

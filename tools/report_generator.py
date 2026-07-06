@@ -548,10 +548,17 @@ def _validation_summary_is_report_ready(finding, validation):
 
 
 def _auth_bypass_narrative(finding, validation):
-    """Render a concrete narrative from validated auth/public-exposure evidence."""
+    """Render a concrete narrative from validated auth/public-exposure evidence.
+
+    Public exposure runners provide a ``baseline.status`` response and can safely
+    use the classic "anonymous GET returned 200" wording. Manual/AI validated
+    authz findings can be write sinks or business-logic sinks, so this function
+    must fall back to the validated summary fields instead of inventing a GET/200
+    exposure narrative.
+    """
     url = finding.get("url", "N/A")
     baseline = validation.get("baseline") if isinstance(validation.get("baseline"), dict) else {}
-    status = baseline.get("status") or "200"
+    status = baseline.get("status")
     markers = validation.get("markers") if isinstance(validation.get("markers"), list) else []
     marker_set = {str(item) for item in markers}
 
@@ -559,7 +566,7 @@ def _auth_bypass_narrative(finding, validation):
         return {
             "title": "Unauthenticated Sensitive Data Exposure on {domain}",
             "summary": (
-                f"An unauthenticated request to `{url}` returned HTTP {status} and exposed "
+                f"An unauthenticated request to `{url}` returned HTTP {status or '200'} and exposed "
                 "feedback records containing sensitive secret-like data in the response body."
             ),
             "impact": (
@@ -573,7 +580,7 @@ def _auth_bypass_narrative(finding, validation):
         return {
             "title": "Unauthenticated Admin Configuration Exposure on {domain}",
             "summary": (
-                f"An unauthenticated request to `{url}` returned HTTP {status} and exposed "
+                f"An unauthenticated request to `{url}` returned HTTP {status or '200'} and exposed "
                 "application/admin configuration data, including OAuth and account-recovery related fields."
             ),
             "impact": (
@@ -584,12 +591,48 @@ def _auth_bypass_narrative(finding, validation):
             ),
         }
 
-    return {
-        "title": "Authentication/Authorization Bypass on {domain}",
-        "summary": (
+    method = str(validation.get("method") or finding.get("method") or "request").strip().upper()
+    finding_summary = str(finding.get("summary") or "").strip()
+    ai_assessment = str(validation.get("ai_assessment") or "").strip()
+
+    if marker_set & {"anonymous_state_change", "author_spoof", "public_ui_visibility"}:
+        summary = (
+            f"An unauthenticated `{method}` request to `{url}` can create attacker-controlled "
+            "content that is publicly rendered under a forged author identity."
+        )
+        if finding_summary:
+            summary += f" {finding_summary}"
+        if ai_assessment:
+            summary += f" {ai_assessment}"
+        return {
+            "title": "Unauthenticated Content Impersonation on {domain}",
+            "summary": summary,
+            "impact": (
+                "Attackers can create public content under another user's or privileged user's identity. "
+                "This undermines content integrity, auditability, and user trust, and can be chained with "
+                "social engineering or reputation abuse when the forged identity is trusted."
+            ),
+        }
+
+    if finding_summary or ai_assessment:
+        details = " ".join(part for part in (finding_summary, ai_assessment) if part)
+        return {
+            "title": "Authentication/Authorization Bypass on {domain}",
+            "summary": f"Validated `{method}` authorization/business-logic evidence was recorded for `{url}`. {details}",
+            "impact": ai_assessment or VULN_TEMPLATES["auth_bypass"]["impact"],
+        }
+
+    if status:
+        summary = (
             f"An unauthenticated request to `{url}` returned HTTP {status} and exposed "
             "protected application data without the expected access control."
-        ),
+        )
+    else:
+        summary = f"Validated authorization bypass evidence was recorded for `{url}`."
+
+    return {
+        "title": "Authentication/Authorization Bypass on {domain}",
+        "summary": summary,
         "impact": VULN_TEMPLATES["auth_bypass"]["impact"],
     }
 
@@ -624,6 +667,48 @@ def _validation_evidence_block(validation):
     return "\n".join(lines)
 
 
+def _reproduction_steps_block(finding, validation, url):
+    """Render method-aware reproduction steps for the report body."""
+    method = str(
+        validation.get("method") or finding.get("method") or "GET"
+    ).strip().upper() or "GET"
+    if method == "GET":
+        return f"""1. Navigate to the following URL:
+   ```
+   {url}
+   ```
+2. Observe the vulnerable behavior as described below."""
+
+    artifacts = validation.get("artifacts") if isinstance(validation.get("artifacts"), dict) else {}
+    request_artifact = (
+        artifacts.get("anonymous_request")
+        or artifacts.get("baseline_request")
+        or artifacts.get("request")
+        or ""
+    )
+    response_artifact = (
+        artifacts.get("anonymous_response_body")
+        or artifacts.get("baseline_response")
+        or artifacts.get("response")
+        or ""
+    )
+    lines = [
+        f"1. Send a `{method}` request to the affected endpoint:",
+        "   ```",
+        f"   {url}",
+        "   ```",
+    ]
+    if request_artifact:
+        lines.append(f"2. Use the request shape captured in `{request_artifact}`.")
+    else:
+        lines.append("2. Use the request shape captured in the validation evidence.")
+    if response_artifact:
+        lines.append(f"3. Observe the response and follow-up behavior captured in `{response_artifact}`.")
+    else:
+        lines.append("3. Observe the response and follow-up behavior described below.")
+    return "\n".join(lines)
+
+
 def generate_report(finding, vuln_type, target_name=None):
     """Generate a HackerOne-formatted report for a finding."""
     template = VULN_TEMPLATES.get(vuln_type, VULN_TEMPLATES["misconfig"])
@@ -643,6 +728,7 @@ def generate_report(finding, vuln_type, target_name=None):
     severity_info = SEVERITY_MAP.get(severity, SEVERITY_MAP["medium"])
     finding_reference = format_finding_reference(finding)
     validation_evidence = _validation_evidence_block(validation)
+    reproduction_steps = _reproduction_steps_block(finding, validation, url)
     summary_text = narrative.get("summary") or f"A {vuln_type} vulnerability was discovered on `{domain}`. {template['impact'][:200]}..."
     impact_text = narrative.get("impact") or template["impact"]
 
@@ -663,11 +749,7 @@ def generate_report(finding, vuln_type, target_name=None):
 ```
 
 ## Steps to Reproduce
-1. Navigate to the following URL:
-   ```
-   {url}
-   ```
-2. Observe the vulnerable behavior as described below.
+{reproduction_steps}
 
 ## Evidence / Proof of Concept
 **Scanner Output:**
