@@ -466,6 +466,9 @@ def test_remaining_web2_category_cards_are_indexed():
     assert "prompt injection" in llm
     assert "工具调用" in llm
     assert "tool_calls" in llm
+    assert "Backend/error disclosure" in llm
+    assert "internal host:port" in llm
+    assert "connection refused" in llm
 
     assert "knowledge/cards/api-testing-workflow.md" in index
     assert "knowledge/cards/business-logic-state-machines.md" in index

@@ -36,7 +36,7 @@ deep_refs: []
 
 - Chatbot、AI assistant、RAG search、文档问答、邮件/工单总结、agent tool、function calling。
 - 模型能访问账号数据、订单、文档、URL、代码仓库、浏览器内容或内部 API。
-- 输出显示引用来源、工具调用结果、权限错误或系统提示片段。
+- 输出显示引用来源、工具调用结果、权限错误、系统提示片段、SSE/stream error、内部模型服务地址或 tool-call metadata。
 
 ## 思路分支
 
@@ -45,6 +45,7 @@ deep_refs: []
 - Tool abuse：模型调用搜索、邮件、订单、账号、文件、HTTP fetch 等工具。
 - Excessive agency：模型可直接调用高风险工具，例如 debug SQL、账号删除、邮件发送、订单修改，而缺少权限/确认门。
 - Data boundary：跨用户、跨组织、未授权文档或隐藏上下文泄露。
+- Backend/error disclosure：SSE 或 JSON 错误泄露模型 provider、internal host:port、重试框架、tool/function 名称或参数 schema；先按信息泄露线索处理，只有能链到工具边界、内部服务访问或敏感配置时才升级。
 
 ## 技巧家族 / Payload 家族
 
@@ -59,12 +60,14 @@ deep_refs: []
 - 是否区分模型幻觉和真实工具/数据访问？
 - 是否记录输入源、检索证据、工具调用和最终影响？
 - 是否先枚举工具清单，再选择一个训练/测试对象做最小影响验证？
+- 如果只看到 `connection refused`、provider error、internal host:port 或 stack/error wrapper，是否已区分“环境/依赖故障”与“可利用泄露”？
 - 状态改变是否只在训练/测试资源上验证？
 
 ## 最小验证
 
-- 建立正常问答或工具调用 baseline。
+- 建立正常问答或工具调用 baseline；如果模型不可达，保存 raw stream/error 即停止，不把不可达本身当 prompt-injection。
 - 单变量加入直接/间接 prompt，比较引用、工具调用、输出和权限差异。
+- Backend error 只算 lead：需要证明内部地址、provider、tool schema 或参数能进一步造成敏感数据访问、内部服务利用、权限绕过或业务动作，才升 candidate。
 - Candidate 前需要真实数据/工具边界证据，而不是单纯“模型听话”。
 
 ## 常见误判 / 死路
