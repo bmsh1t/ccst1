@@ -1472,6 +1472,42 @@ def _ledger_covers_cell(covered_cells: set[tuple[str, str]], endpoint: str, vuln
     return False
 
 
+def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> list[str]:
+    """把 Evidence Ledger 里的开放 candidate 变成 AI-facing 验证动作。
+
+    这里不判断 candidate 是否“该报”，只防止 AI 手工验证出的复杂链路
+    被 ledger 吃掉后从 checkpoint 视野里消失。最终升降级仍交给 Claude
+    结合原始证据、7-Question Gate 和四个验证门判断。
+    """
+    proposals: list[str] = []
+    for entry in (evidence_summary.get("open_candidates") or [])[:limit]:
+        if not isinstance(entry, dict):
+            continue
+        endpoint = str(entry.get("endpoint") or entry.get("raw_endpoint") or "").strip()
+        vuln_class = str(entry.get("vuln_class") or "").strip()
+        method = str(entry.get("method") or "GET").strip().upper()
+        evidence_ref = str(entry.get("evidence_ref") or "").strip()
+        notes = str(entry.get("notes") or "").strip()
+        if not endpoint or not vuln_class:
+            continue
+        evidence_suffix = f" Evidence={evidence_ref}." if evidence_ref else ""
+        notes_suffix = f" Notes={notes[:220]}." if notes else ""
+        proposals.append(
+            "Run /validate for ledger candidate {method} {endpoint} x {vuln_class}. "
+            "AI task: review raw evidence, impact, replayability, and side-effect/risk status; "
+            "then promote to finding/report or downgrade with evidence ledger update."
+            "{evidence}{notes} Stop condition: validated finding, tested_clean, "
+            "dead_end, or blocked_redline is recorded.".format(
+                method=method,
+                endpoint=endpoint,
+                vuln_class=vuln_class,
+                evidence=evidence_suffix,
+                notes=notes_suffix,
+            )
+        )
+    return proposals
+
+
 def _is_parent_closure_gap(gap: dict, tested_endpoints: set[str]) -> bool:
     """Return true when a path-only gap is only a parent of validated evidence.
 
@@ -1564,6 +1600,7 @@ def _next_proposals(
                 id=next_report.get("id", "-"),
             )
         )
+    proposals.extend(_ledger_candidate_proposals(evidence_summary))
     if not state.get("has_recon"):
         proposals.append(f"Run /recon {target}, then /surface {target}, then rerun /checkpoint {target}.")
 
@@ -2460,6 +2497,7 @@ def build_checkpoint(
             "path": evidence_summary.get("path", ""),
             "entry_count": evidence_summary.get("entry_count", 0),
             "redline_unchecked_count": evidence_summary.get("redline_unchecked_count", 0),
+            "open_candidates": (evidence_summary.get("open_candidates") or [])[:10],
             "actor_matrix": {
                 "gap_count": (evidence_summary.get("actor_matrix") or {}).get("gap_count", 0),
                 "covered_count": (evidence_summary.get("actor_matrix") or {}).get("covered_count", 0),
@@ -2587,8 +2625,19 @@ def format_checkpoint(checkpoint: dict) -> str:
         ]),
         "- Evidence ledger:",
         f"  - entries: {evidence.get('entry_count', 0)}",
+        f"  - open candidates: {len(evidence.get('open_candidates') or [])}",
         f"  - actor matrix gaps: {actor_matrix.get('gap_count', 0)}",
         f"  - red-line unchecked: {evidence.get('redline_unchecked_count', 0)}",
+        "  - candidate validation:",
+        *_fmt_nested([
+            "{method} {endpoint} x {vuln} evidence={evidence}".format(
+                method=item.get("method", ""),
+                endpoint=item.get("endpoint", ""),
+                vuln=item.get("vuln_class", ""),
+                evidence=item.get("evidence_ref", ""),
+            )
+            for item in (evidence.get("open_candidates") or [])[:3]
+        ]),
         "  - actor gaps:",
         *_fmt_nested([
             "{endpoint} x {vuln}: {actor}/{scope}/{variant} expected={expected} status={status}".format(

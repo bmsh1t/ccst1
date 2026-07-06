@@ -181,6 +181,50 @@ def test_summary_closed_cells_include_older_non_recent_entries(tmp_path):
     assert closed["result"] == "tested_finding"
 
 
+def test_summary_open_candidates_survive_recency_but_close_on_final_result(tmp_path):
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/profile/image/url",
+        method="POST",
+        vuln_class="SSRF",
+        actor="owner",
+        object_scope="own",
+        variant="replay",
+        result="candidate",
+        evidence_ref="evidence/target/ssrf.json",
+    )
+    for index in range(6):
+        record_entry(
+            tmp_path,
+            target="target.com",
+            endpoint=f"/api/noise/{index}",
+            vuln_class="Authz",
+            result="tested_clean",
+        )
+
+    summary = build_summary(tmp_path, target="target.com")
+
+    assert not any(entry.get("endpoint") == "/profile/image/url" for entry in summary["recent_entries"])
+    assert any(entry.get("endpoint") == "/profile/image/url" for entry in summary["open_candidates"])
+
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/profile/image/url",
+        method="POST",
+        vuln_class="SSRF",
+        actor="owner",
+        object_scope="own",
+        variant="replay",
+        result="dead_end",
+    )
+
+    closed = build_summary(tmp_path, target="target.com")
+
+    assert not any(entry.get("endpoint") == "/profile/image/url" for entry in closed["open_candidates"])
+
+
 def test_invalid_alias_error_lists_accepted_input_tokens(tmp_path):
     with pytest.raises(ValueError) as exc:
         record_entry(

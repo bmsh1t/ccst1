@@ -884,6 +884,38 @@ def test_checkpoint_surfaces_actor_matrix_gaps(tmp_path):
     assert "Default candidate (compat pointer):" in output
 
 
+def test_checkpoint_surfaces_open_ledger_candidate_for_ai_validation(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://target.com/profile/image/url"])
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/profile/image/url",
+        method="POST",
+        vuln_class="SSRF",
+        actor="owner",
+        object_scope="own",
+        variant="replay",
+        result="candidate",
+        replayed=True,
+        state_changing=True,
+        redline_checked=True,
+        evidence_ref="evidence/target.com/complex/ssrf.json",
+        notes="server-side URL fetch stored response",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+    output = format_checkpoint(checkpoint)
+
+    assert checkpoint["evidence_ledger"]["open_candidates"][0]["endpoint"] == "/profile/image/url"
+    assert any(
+        "Run /validate for ledger candidate POST /profile/image/url x SSRF" in item
+        for item in checkpoint["target_write_back"]["next"]
+    )
+    assert any(item["type"] == "validation" for item in checkpoint["next_action_queue"])
+    assert "open candidates: 1" in output
+    assert "POST /profile/image/url x SSRF" in output
+
+
 def test_next_proposals_only_queue_anonymous_actor_gap_without_case_state():
     gaps = [
         {

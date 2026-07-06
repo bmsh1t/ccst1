@@ -521,21 +521,35 @@ def build_summary(
             redline_unchecked += 1
 
     closed_by_key: dict[tuple[str, str], dict] = {}
+    open_candidate_by_key: dict[tuple[str, str], dict] = {}
     for entry in entries:
         result = str(entry.get("result") or "")
-        if result not in CLOSED_CELL_RESULTS:
-            continue
         endpoint = _canonicalize_endpoint(str(entry.get("endpoint") or entry.get("raw_endpoint") or ""))
         vuln_class = str(entry.get("vuln_class") or "").strip()
         if not endpoint or not vuln_class:
             continue
-        closed_by_key[(endpoint, vuln_class)] = {
+        key = (endpoint, vuln_class)
+        if result == "candidate":
+            # Candidate 是“需要 AI/validate 继续判断”的开放状态；如果后续同一
+            # endpoint × vuln 已经被 clean/finding/dead_end 覆盖，就不再暴露。
+            open_candidate_by_key[key] = entry
+            continue
+        if result not in CLOSED_CELL_RESULTS:
+            continue
+        open_candidate_by_key.pop(key, None)
+        closed_by_key[key] = {
             "endpoint": endpoint,
             "vuln_class": vuln_class,
             "result": result,
             "ts": str(entry.get("ts") or ""),
             "evidence_ref": str(entry.get("evidence_ref") or ""),
         }
+
+    open_candidates = sorted(
+        open_candidate_by_key.values(),
+        key=lambda item: str(item.get("ts") or ""),
+        reverse=True,
+    )[:10]
 
     return {
         "target": resolved_target,
@@ -545,6 +559,7 @@ def build_summary(
         "result_counts": counts,
         "redline_unchecked_count": redline_unchecked,
         "closed_cells": list(closed_by_key.values()),
+        "open_candidates": open_candidates,
         "recent_entries": entries[-5:],
         "actor_matrix": {
             "endpoint_count": len(endpoints),
