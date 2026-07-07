@@ -151,6 +151,6 @@ After running, if:
 - No interesting JavaScript bundles
 
 → Report: "Target surface is low-signal in this recon timebox. Preserve the
-observed hosts/paths and revisit if browser/XHR traffic, source/JS routes,
+observed hosts/paths and reopen/revisit if browser/XHR traffic, source/JS routes,
 authenticated workflows, API docs, object IDs, WebSocket/GraphQL, or business
 context creates a concrete next evidence action."
