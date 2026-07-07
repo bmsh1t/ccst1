@@ -32,7 +32,7 @@ Four-layer memory is the external brain, not the steering wheel:
 target memory / target case state -> skill routing -> knowledge cards -> checks
 ```
 
-Fresh target startup is recon-first and starts by surfacing ctf mode:
+Fresh target startup is recon-first:
 
 ```bash
 python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'
@@ -43,7 +43,7 @@ python3 tools/context_pack.py --target target.com
 python3 tools/hunt.py --target target.com --scan-only --quick
 ```
 
-Existing target startup is cache-aware and starts by surfacing ctf mode:
+Existing target startup is cache-aware:
 
 ```bash
 python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'
