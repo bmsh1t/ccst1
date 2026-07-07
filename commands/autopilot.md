@@ -14,7 +14,7 @@ Expert Hunter Autopilot for Claude CLI. Claude is the hunter; tools are memory,
 evidence, replay, and summary aids.
 
 ```text
-fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
+fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
 existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
 ```
 
@@ -38,6 +38,9 @@ Fresh target startup is recon-first:
 python3 tools/hunt.py --target target.com --recon-only
 python3 tools/surface.py --target target.com
 python3 tools/context_pack.py --target target.com
+# If recon shows an app-like, SPA, authenticated, object/workflow, GraphQL,
+# WebSocket, or business surface, capture/import browser MCP evidence before
+# letting scanner hints dominate attention.
 python3 tools/hunt.py --target target.com --scan-only --quick
 ```
 
@@ -122,8 +125,8 @@ wire-level absence.
 ## Core Decision Loop
 1. Load target freshness and existing evidence; fresh targets start with recon, existing targets start with cache/state.
 2. Model BUSINESS/CROWN JEWELS: actors, private objects, workflows, admin/config/payment/data flows, trust boundaries.
-3. Build a surface/context evidence pack; AI chooses priority, and scanner quick is only breadth signal.
-4. Capture real browser/source/JS/API request shapes when they can change the next test.
+3. Build a surface/context evidence pack; AI chooses priority.
+4. Capture real browser/source/JS/API request shapes when they can change the next test; scanner quick is only a later breadth signal.
 5. Hunt one high-value hypothesis with MINIMAL PROOF; then attempt CHAIN EXPANSION through role/object/state/method/parser/cache/source/integration pivots.
 6. Promote Lead -> Signal -> Candidate -> Validated Finding only with replayable evidence and practical impact.
 7. REPORT/CHECKPOINT only after AI judges stronger validation/chain/coverage actions no longer outrank the pending report; never auto-submit.

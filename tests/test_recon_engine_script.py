@@ -158,6 +158,8 @@ def test_recon_engine_supports_primary_domain_batch_and_domain_waymore():
     assert 'head -n "$batch_size" "$pending_file" > "$run_targets_file"' in text
     assert 'echo "- Remaining: $remaining_total"' in text
     assert 'print(re.sub(r"[^A-Za-z0-9._-]+", "_", stem))' in text
+    assert "CICD_ORGS_FOUND=$(printf '%s\\n' \"$GITHUB_ORGS\" | grep -cE" in text
+    assert '[ -n "$CICD_ORGS_FOUND" ] || CICD_ORGS_FOUND=0' in text
     assert 'phase                batch_recon' in text
     assert 'note                 "targets.txt is treated as a primary-domain batch; each target has its own recon/<domain>/"' in text
     assert 'TARGET_KIND="list"' not in text
@@ -221,14 +223,34 @@ def test_recon_engine_denoising_is_non_destructive():
     assert 'URL_FILTER_LOG="recon/${RECON_TARGET_KEY}/urls/filter.log"' in text
     assert 'with_params_filtered.txt' in text
     assert 'js_files_filtered.txt' in text
+    assert 'build_filtered_first_backstop()' in text
+    assert 'with_params_analysis.txt' in text
+    assert 'js_files_analysis.txt' in text
     assert 'api_endpoints_filtered.txt' in text
     assert 'sensitive_paths_filtered.txt' in text
     assert 'urls_filtered        "$URLS_FILTERED"' in text
     assert 'url_filter_log       "$URL_FILTER_LOG"' in text
-    assert 'JS_FILES_FOR_ANALYSIS="$RECON_DIR/urls/js_files_filtered.txt"' in text
-    assert 'PARAM_URLS_FOR_DISCOVERY="$RECON_DIR/urls/with_params_filtered.txt"' in text
+    assert 'JS_FILES_FOR_ANALYSIS="$RECON_DIR/urls/js_files_analysis.txt"' in text
+    assert 'PARAM_URLS_FOR_DISCOVERY="$RECON_DIR/urls/with_params_analysis.txt"' in text
+    assert '"$RECON_DIR/urls/js_files_filtered.txt" \\\n    "$RECON_DIR/urls/js_files.txt"' in text
+    assert '"$RECON_DIR/urls/with_params_filtered.txt" \\\n    "$RECON_DIR/urls/with_params.txt"' in text
     assert '"$RECON_DIR/urls/${url_file}.txt" \\\n                "$RECON_DIR/urls/${url_file}.txt"' not in text
     assert 'cat "$RECON_DIR/urls/"*.txt' not in text
+
+
+def test_recon_engine_records_phase_manifest_without_value_judgment():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'RECON_MANIFEST="$RECON_DIR/recon_manifest.jsonl"' in text
+    assert "record_recon_phase()" in text
+    assert '"record_type": "recon_phase"' in text
+    assert '"phase": phase' in text
+    assert '"status": status' in text
+    assert "manifest records phase execution only, not surface value" in text
+    assert "not tested clean" in text
+    assert "bounded host sampling, not complete directory coverage" in text
+    assert "raw all.txt remains the lossless backstop" in text
 
 
 def test_recon_engine_supports_optional_post_run_raw_url_compression():

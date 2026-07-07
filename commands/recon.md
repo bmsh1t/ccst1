@@ -70,7 +70,7 @@ The integrated `tools/recon_engine.sh` path may run, when available:
 - live probing and fingerprinting: ProjectDiscovery `httpx`, WAF/origin hints, lightweight ports/services
 - URL collection: `katana`, `gau`, `waymore`
 - URL denoising: non-destructive `_filtered` URL views plus `urls/filter.log`; raw `urls/all.txt` is preserved
-- JS/API extraction: JS file list, JS endpoints, potential JS secrets, API/GraphQL-like paths, parameterized URLs
+- JS/API extraction: JS file list, JS endpoints, potential JS secrets, API/GraphQL-like paths, parameterized URLs; JS/parameter analysis uses filtered-first ordering with raw backstop
 - bounded directory/parameter fuzzing and config discovery with timeout guards
 - exposure candidates: API docs, config files, cloud storage, S3 buckets, third-party hosted assets
 - API leak detection: `porch-pirate`, `postleaksNg`, Osmedeus `SwaggerSpy`, plus bounded `trufflehog` verified-secret pass
@@ -87,6 +87,7 @@ candidates under that target remain active assets for this run.
 
 ```text
 recon/<target>/
+├── recon_manifest.jsonl
 ├── subdomains/all.txt
 ├── live/httpx_full.txt
 ├── live/urls.txt
@@ -96,8 +97,10 @@ recon/<target>/
 ├── urls/all_filtered.txt
 ├── urls/with_params.txt
 ├── urls/with_params_filtered.txt
+├── urls/with_params_analysis.txt
 ├── urls/js_files.txt
 ├── urls/js_files_filtered.txt
+├── urls/js_files_analysis.txt
 ├── urls/api_endpoints.txt
 ├── urls/api_endpoints_filtered.txt
 ├── urls/filter.log
@@ -137,8 +140,10 @@ recon/<list-stem>/
 
 1. Single target → run `/surface target.com` to build an AI-first cached attack-surface review pack.
 2. List target → read `recon/<list-stem>/batch_summary.md`, `ai_handoff.md`, `surface_ranking.txt`, and `high_value_targets.json`; use `recon/<list-stem>/<domain>` only as a grouped browsing link, then run `/surface <domain>` or `/autopilot <domain> --normal`.
-3. If exposure files are non-empty, review them as high-value pivots before broad scanning.
-4. If no live hosts, APIs, params, JS, or exposure candidates appear, move to another target.
+3. Read `recon/<target>/recon_manifest.jsonl` when a phase looks empty; distinguish skipped/partial phases from true low-signal results.
+4. If exposure files are non-empty, review them as high-value pivots before broad scanning.
+5. If the target looks app-like, SPA/authenticated, object/workflow-heavy, GraphQL, WebSocket, or business-critical, capture/import browser/source/JS evidence before scanner quick.
+6. If no live hosts, APIs, params, JS, or exposure candidates appear, preserve the low-signal recon state and move on unless new scope/browser/source evidence appears.
 
 ## References
 

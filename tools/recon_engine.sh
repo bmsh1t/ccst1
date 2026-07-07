@@ -73,6 +73,57 @@ emit_claude_hint_actions() {
     } 2>/dev/null || true
 }
 
+record_recon_phase() {
+    local phase="$1"
+    local status="${2:-ok}"
+    local artifact="${3:-}"
+    local count="${4:-0}"
+    local note="${5:-}"
+
+    # Manifest 是阶段账本，不做价值判断；用于让 Claude 区分“无结果”和“未运行/跳过”。
+    [ -n "${RECON_MANIFEST:-}" ] || return 0
+    python3 - "$RECON_MANIFEST" "$TARGET" "${RECON_TARGET_KEY:-}" "$QUICK_MODE" \
+        "$phase" "$status" "$artifact" "$count" "$note" <<'PY' || true
+import json
+import sys
+from datetime import datetime, timezone
+
+manifest, target, target_key, quick_mode, phase, status, artifact, count, note = sys.argv[1:]
+try:
+    count_value = int(str(count).strip() or "0")
+except ValueError:
+    count_value = 0
+
+record = {
+    "record_type": "recon_phase",
+    "target": target,
+    "target_key": target_key,
+    "mode": "quick" if quick_mode == "--quick" else "full",
+    "phase": phase,
+    "status": status,
+    "artifact": artifact,
+    "count": count_value,
+    "note": note,
+    "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+}
+with open(manifest, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+PY
+}
+
+build_filtered_first_backstop() {
+    local filtered="$1"
+    local raw="$2"
+    local output="$3"
+
+    # filtered 只决定优先级，raw 作为无损兜底追加，避免降噪误删导致后续 JS/参数证据变薄。
+    : > "$output"
+    {
+        [ -s "$filtered" ] && cat "$filtered"
+        [ -s "$raw" ] && cat "$raw"
+    } 2>/dev/null | awk 'NF && !seen[$0]++' > "$output" || true
+}
+
 timeout_bin() {
     if command -v timeout >/dev/null 2>&1; then
         printf '%s\n' timeout
@@ -797,6 +848,8 @@ if [ -z "$HTTPX_BIN" ]; then
 fi
 
 mkdir -p "$RECON_DIR"/{subdomains,live,ports,urls,js,dirs,params,exposure,logs}
+RECON_MANIFEST="$RECON_DIR/recon_manifest.jsonl"
+: > "$RECON_MANIFEST"
 : > "$DISCOVERY_HOSTS_FILE"
 
 # Pre-seed result files that summary blocks read via `< file`. Without these,
@@ -847,8 +900,10 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/urls/all_filtered.txt"
 : > "$RECON_DIR/urls/with_params.txt"
 : > "$RECON_DIR/urls/with_params_filtered.txt"
+: > "$RECON_DIR/urls/with_params_analysis.txt"
 : > "$RECON_DIR/urls/js_files.txt"
 : > "$RECON_DIR/urls/js_files_filtered.txt"
+: > "$RECON_DIR/urls/js_files_analysis.txt"
 : > "$RECON_DIR/urls/api_endpoints.txt"
 : > "$RECON_DIR/urls/api_endpoints_filtered.txt"
 : > "$RECON_DIR/urls/sensitive_paths.txt"
@@ -878,6 +933,12 @@ echo "  Time: $(date)"
 bb_auth_active && bb_auth_banner
 echo "============================================="
 echo ""
+record_recon_phase \
+    target_setup \
+    ok \
+    "recon/${RECON_TARGET_KEY}/" \
+    1 \
+    "target_kind=${TARGET_KIND}; manifest records phase execution only, not surface value"
 
 # ============================================================
 # Phase 1: Subdomain Enumeration
@@ -982,6 +1043,14 @@ PY
 fi
 
 SUBS_TOTAL=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null | tr -d ' ' || echo 0)
+SUBDOMAIN_STATUS="ok"
+[ "$TARGET_KIND" != "domain" ] && SUBDOMAIN_STATUS="skipped"
+record_recon_phase \
+    subdomain_enum \
+    "$SUBDOMAIN_STATUS" \
+    "recon/${RECON_TARGET_KEY}/subdomains/all.txt" \
+    "$SUBS_TOTAL" \
+    "domain targets run passive enum; URL/IP/CIDR targets seed discovery hosts directly"
 emit_claude_hint \
     phase                subdomain_enum \
     target_kind          "$TARGET_KIND" \
@@ -1077,6 +1146,20 @@ ensure_explicit_port_seed_live
 
 LIVE_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
 RESOLVED_TOTAL=$(wc -l < "$DISCOVERY_HOSTS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+HTTP_STATUS="ok"
+if [ ! -s "$HTTPX_INPUT_FILE" ]; then
+    HTTP_STATUS="skipped"
+elif [ -z "$HTTPX_BIN" ]; then
+    HTTP_STATUS="skipped"
+elif [ "$LIVE_TOTAL" -eq 0 ]; then
+    HTTP_STATUS="partial"
+fi
+record_recon_phase \
+    http_probing \
+    "$HTTP_STATUS" \
+    "recon/${RECON_TARGET_KEY}/live/urls.txt" \
+    "$LIVE_TOTAL" \
+    "httpx live-host inventory; 0 live hosts is low signal, not target closure"
 emit_claude_hint \
     phase                http_probing \
     resolved_hosts_total "$RESOLVED_TOTAL" \
@@ -1086,7 +1169,7 @@ emit_claude_hint \
 emit_claude_hint_actions \
     "python3 tools/surface.py --target ${TARGET}   # build AI surface review pack before broad fuzz" \
     "spawn recon-ranker if live hosts > 50; otherwise read surface.py directly" \
-    "abandon target if live_hosts_total stays at 0 after retry"
+    "if live_hosts_total stays 0 after retry, preserve recon as low-signal and revisit only if scope/browser/source evidence changes"
 
 # ============================================================
 # Phase 2.5: WAF Fingerprinting
@@ -1160,13 +1243,23 @@ else
 fi
 
 WAF_HITS=$(wc -l < "$RECON_DIR/live/wafw00f_hits.txt" 2>/dev/null | tr -d ' ' || echo 0)
+WAF_PHASE_STATUS="skipped"
+if command -v wafw00f >/dev/null 2>&1 && [ -s "$RECON_DIR/live/urls.txt" ]; then
+    WAF_PHASE_STATUS="ok"
+fi
+record_recon_phase \
+    waf_fp \
+    "$WAF_PHASE_STATUS" \
+    "recon/${RECON_TARGET_KEY}/live/wafw00f_hits.txt" \
+    "$WAF_HITS" \
+    "sampled WAF fingerprinting; no hit does not prove no edge control"
 emit_claude_hint \
     phase                waf_fp \
     waf_results_lines    "$WAF_HITS" \
     wafw00f_present      "$(command -v wafw00f >/dev/null 2>&1 && echo true || echo false)"
 emit_claude_hint_actions \
     "bash tools/bypass_403.sh <url> on any 403 endpoint discovered later" \
-    "skip if no WAF was detected — proceed to origin discovery"
+    "if no WAF was detected, treat this as no sampled edge-control signal and continue recon"
 
 # ============================================================
 # Phase 2.6: Origin Discovery
@@ -1283,6 +1376,16 @@ fi
 ORIGIN_CANDS_FILE="$RECON_DIR/live/origin_candidates.txt"
 [ -s "$RECON_DIR/live/unwaf_bypass_ips.txt" ] && ORIGIN_CANDS_FILE="$RECON_DIR/live/unwaf_bypass_ips.txt"
 ORIGIN_CANDS=$(wc -l < "$ORIGIN_CANDS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+ORIGIN_PHASE_STATUS="skipped"
+if [ "$UNWAF_ENABLE" -eq 1 ]; then
+    ORIGIN_PHASE_STATUS="${UNWAF_STATUS:-ok}"
+fi
+record_recon_phase \
+    origin_disco \
+    "$ORIGIN_PHASE_STATUS" \
+    "recon/${RECON_TARGET_KEY}/live/origin_candidates.txt" \
+    "$ORIGIN_CANDS" \
+    "origin discovery is opt-in; skipped means not attempted, not tested clean"
 emit_claude_hint \
     phase                origin_disco \
     origin_candidates    "$ORIGIN_CANDS" \
@@ -1291,7 +1394,7 @@ emit_claude_hint \
     unwaf_skipped        "$([ "$UNWAF_SKIP" -eq 1 ] && echo true || echo false)"
 emit_claude_hint_actions \
     "curl -H \"Host: ${TARGET}\" http://<origin_ip>/   # WAF bypass via origin" \
-    "skip if origin_candidates is 0"
+    "if origin_candidates is 0, preserve that as an unattempted/low-signal origin lane"
 
 # ============================================================
 # Phase 3: Port Scanning
@@ -1400,12 +1503,24 @@ fi
 cat "$RECON_DIR/ports/open_ports.txt" "$RECON_DIR/ports/open_ports_naabu.txt" "$RECON_DIR/ports/open_ports_explicit.txt" 2>/dev/null \
     | awk 'NF' | sort -u > "$RECON_DIR/ports/open_ports_all.txt" || true
 PORTS_OPEN=$(wc -l < "$RECON_DIR/ports/open_ports_all.txt" 2>/dev/null | tr -d ' ' || echo 0)
+PORT_PHASE_STATUS="ok"
+if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
+    PORT_PHASE_STATUS="seeded"
+elif ! command -v naabu >/dev/null 2>&1 && ! command -v nmap >/dev/null 2>&1; then
+    PORT_PHASE_STATUS="skipped"
+fi
+record_recon_phase \
+    port_scan \
+    "$PORT_PHASE_STATUS" \
+    "recon/${RECON_TARGET_KEY}/ports/open_ports_all.txt" \
+    "$PORTS_OPEN" \
+    "bounded infra inventory; explicit URL/port targets preserve supplied port without broad scan"
 emit_claude_hint \
     phase                port_scan \
     open_ports_total     "$PORTS_OPEN"
 emit_claude_hint_actions \
     "review non-standard ports (8080/3000/9200/etc) for less-reviewed surface" \
-    "skip port scan results if hosts list is already large"
+    "treat port results as sampled infra context when the host list is large"
 
 # ============================================================
 # Phase 4: URL Collection
@@ -1512,6 +1627,14 @@ URLS_PARAMS=$(wc -l < "$RECON_DIR/urls/with_params.txt" 2>/dev/null | tr -d ' ' 
 URLS_JS=$(wc -l < "$RECON_DIR/urls/js_files.txt" 2>/dev/null | tr -d ' ' || echo 0)
 URLS_API=$(wc -l < "$RECON_DIR/urls/api_endpoints.txt" 2>/dev/null | tr -d ' ' || echo 0)
 URLS_SENS=$(wc -l < "$RECON_DIR/urls/sensitive_paths.txt" 2>/dev/null | tr -d ' ' || echo 0)
+URL_COLLECTION_STATUS="ok"
+[ "$URLS_TOTAL" -eq 0 ] && URL_COLLECTION_STATUS="partial"
+record_recon_phase \
+    url_collection \
+    "$URL_COLLECTION_STATUS" \
+    "recon/${RECON_TARGET_KEY}/urls/all.txt" \
+    "$URLS_TOTAL" \
+    "raw URL corpus is authoritative; filtered files are priority views only"
 
 # ============================================================
 # Phase 4.5: URL Denoising (non-destructive)
@@ -1527,6 +1650,7 @@ URLS_SENS_FILTERED=0
 URL_FILTER_LOG="recon/${RECON_TARGET_KEY}/urls/filter.log"
 URL_FILTER_LOG_ABS="$RECON_DIR/urls/filter.log"
 URL_FILTER_SUMMARY="$RECON_DIR/urls/filter_summary.txt"
+URL_DENOISE_STATUS="skipped"
 
 # Avoid stale filtered artifacts when recon is rerun in the same target dir.
 : > "$RECON_DIR/urls/all_filtered.txt"
@@ -1537,6 +1661,7 @@ URL_FILTER_SUMMARY="$RECON_DIR/urls/filter_summary.txt"
 
 if [ -s "$RECON_DIR/urls/all.txt" ] && [ -f "$BASE_DIR/tools/recon_filters.py" ]; then
     log_step "Filtering URL noise into auxiliary *_filtered files (raw files preserved)..."
+    URL_DENOISE_STATUS="ok"
 
     : > "$URL_FILTER_LOG_ABS"
     : > "$URL_FILTER_SUMMARY"
@@ -1563,11 +1688,19 @@ if [ -s "$RECON_DIR/urls/all.txt" ] && [ -f "$BASE_DIR/tools/recon_filters.py" ]
 
         log_done "Denoising complete: raw all.txt preserved; filtered URLs: $URLS_FILTERED; review $URL_FILTER_LOG"
     else
+        URL_DENOISE_STATUS="partial"
         log_warn "Denoising produced no filtered URL file; raw all.txt preserved"
     fi
 else
     log_warn "Skipping denoising - recon_filters.py not found or no URLs collected"
 fi
+
+record_recon_phase \
+    url_denoising \
+    "$URL_DENOISE_STATUS" \
+    "recon/${RECON_TARGET_KEY}/urls/all_filtered.txt" \
+    "$URLS_FILTERED" \
+    "non-destructive priority view; raw all.txt remains the lossless backstop"
 
 emit_claude_hint \
     phase                url_collection \
@@ -1593,10 +1726,15 @@ emit_claude_hint_actions \
 echo ""
 log_info "Phase 5: JavaScript Analysis"
 
-JS_FILES_FOR_ANALYSIS="$RECON_DIR/urls/js_files_filtered.txt"
-[ -s "$JS_FILES_FOR_ANALYSIS" ] || JS_FILES_FOR_ANALYSIS="$RECON_DIR/urls/js_files.txt"
+JS_FILES_FOR_ANALYSIS="$RECON_DIR/urls/js_files_analysis.txt"
+build_filtered_first_backstop \
+    "$RECON_DIR/urls/js_files_filtered.txt" \
+    "$RECON_DIR/urls/js_files.txt" \
+    "$JS_FILES_FOR_ANALYSIS"
+JS_ANALYSIS_STATUS="skipped"
 
 if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
+    JS_ANALYSIS_STATUS="ok"
     log_step "Extracting endpoints from JS files (top 50)..."
     mkdir -p "$RECON_DIR/js"
     LINKFINDER_BIN="$(resolve_linkfinder_path || true)"
@@ -1650,6 +1788,12 @@ fi
 JS_ENDPOINTS=$(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null | tr -d ' ' || echo 0)
 JS_SECRETS=$(wc -l < "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null | tr -d ' ' || echo 0)
 JS_LINKFINDER=$(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null | tr -d ' ' || echo 0)
+record_recon_phase \
+    js_analysis \
+    "$JS_ANALYSIS_STATUS" \
+    "recon/${RECON_TARGET_KEY}/js/endpoints.txt" \
+    "$JS_ENDPOINTS" \
+    "JS input uses filtered-first ordering plus raw js_files.txt backstop"
 emit_claude_hint \
     phase                  js_analysis \
     endpoints_extracted    "$JS_ENDPOINTS" \
@@ -1747,6 +1891,16 @@ else
 fi
 
 FFUF_HITS=$(find "$RECON_DIR/dirs" -name 'ffuf_*.json' 2>/dev/null | wc -l | tr -d ' ')
+DIR_FUZZ_STATUS="skipped"
+if command -v ffuf >/dev/null 2>&1 && [ -s "$RECON_DIR/live/urls.txt" ]; then
+    DIR_FUZZ_STATUS="ok"
+fi
+record_recon_phase \
+    dir_fuzz \
+    "$DIR_FUZZ_STATUS" \
+    "recon/${RECON_TARGET_KEY}/dirs/" \
+    "$FFUF_HITS" \
+    "bounded host sampling, not complete directory coverage"
 emit_claude_hint \
     phase                dir_fuzz \
     hosts_fuzzed         "$FFUF_HITS" \
@@ -1801,6 +1955,14 @@ else
 fi
 
 CONFIG_EXPOSED=$(wc -l < "$RECON_DIR/exposure/config_files.txt" 2>/dev/null | tr -d ' ' || echo 0)
+CONFIG_PHASE_STATUS="skipped"
+[ -s "$RECON_DIR/live/urls.txt" ] && CONFIG_PHASE_STATUS="ok"
+record_recon_phase \
+    config_exposure \
+    "$CONFIG_PHASE_STATUS" \
+    "recon/${RECON_TARGET_KEY}/exposure/config_files.txt" \
+    "$CONFIG_EXPOSED" \
+    "fixed low-impact config path probes; evidence candidates require AI review"
 emit_claude_hint \
     phase                config_exposure \
     exposed_count        "$CONFIG_EXPOSED" \
@@ -1902,6 +2064,14 @@ log_done "API doc candidates: $API_DOC_COUNT"
 log_done "Cloud storage candidates: $CLOUD_CANDIDATE_COUNT"
 log_done "S3 bucket candidates: $S3_BUCKET_COUNT"
 log_done "External service hosts: $EXTERNAL_SERVICE_COUNT"
+
+EXPOSURE_TOTAL=$((API_DOC_COUNT + CLOUD_CANDIDATE_COUNT + S3_BUCKET_COUNT + EXTERNAL_SERVICE_COUNT))
+record_recon_phase \
+    exposure_candidates \
+    ok \
+    "recon/${RECON_TARGET_KEY}/exposure/" \
+    "$EXPOSURE_TOTAL" \
+    "correlation over already collected recon artifacts; no extra OSINT scan"
 
 emit_claude_hint \
     phase                exposure_candidates \
@@ -2017,6 +2187,14 @@ API_LEAK_VERIFIED_COUNT=$(wc -l < "$API_LEAK_TRUFFLEHOG" 2>/dev/null | tr -d ' '
 POSTMAN_LINE_COUNT=$(wc -l < "$POSTMAN_LEAKS" 2>/dev/null | tr -d ' ' || echo 0)
 POSTLEAKS_URL_COUNT=$(wc -l < "$POSTLEAKS_URLS" 2>/dev/null | tr -d ' ' || echo 0)
 SWAGGER_LINE_COUNT=$(wc -l < "$SWAGGER_LEAKS" 2>/dev/null | tr -d ' ' || echo 0)
+API_LEAK_PHASE_STATUS="skipped"
+[ -n "$API_LEAK_TARGET" ] && API_LEAK_PHASE_STATUS="ok"
+record_recon_phase \
+    api_leak_detection \
+    "$API_LEAK_PHASE_STATUS" \
+    "recon/${RECON_TARGET_KEY}/exposure/api_leak_candidates.txt" \
+    "$API_LEAK_CANDIDATE_COUNT" \
+    "domain-keyed public API leak signal; raw candidates remain for AI review"
 
 emit_claude_hint \
     phase                api_leak_detection \
@@ -2036,8 +2214,10 @@ emit_claude_hint_actions \
 echo ""
 log_info "Phase 6.7.5: API Candidate Validation"
 
+API_VALIDATION_STATUS="skipped"
 if [ -f "tools/validate_api_candidates.sh" ]; then
     log_step "Validating API leak and doc candidates (filtering non-API documents)..."
+    API_VALIDATION_STATUS="ok"
 
     # Validate API leak candidates
     if [ -f "$API_LEAK_CANDIDATES" ] && [ -s "$API_LEAK_CANDIDATES" ]; then
@@ -2065,6 +2245,13 @@ if [ -f "tools/validate_api_candidates.sh" ]; then
 else
     log_warn "validate_api_candidates.sh not found - skipping API candidate validation"
 fi
+API_VALIDATED_TOTAL=$((API_LEAK_CANDIDATE_COUNT + API_DOC_COUNT))
+record_recon_phase \
+    api_candidate_validation \
+    "$API_VALIDATION_STATUS" \
+    "recon/${RECON_TARGET_KEY}/exposure/*.validated" \
+    "$API_VALIDATED_TOTAL" \
+    "validated files are denoised views; original candidates are preserved"
 
 # ============================================================
 # Phase 6.8: Identity and Cloud Intel
@@ -2173,6 +2360,14 @@ log_done "emailfinder: $EMAIL_COUNT lines ($EMAILFINDER_STATUS)"
 log_done "LeakSearch: $LEAKSEARCH_COUNT lines ($LEAKSEARCH_STATUS)"
 log_done "cloud_enum: $CLOUD_ENUM_COUNT lines ($CLOUD_ENUM_STATUS)"
 
+IDENTITY_TOTAL=$((EMAIL_COUNT + LEAKSEARCH_COUNT + CLOUD_ENUM_COUNT))
+record_recon_phase \
+    identity_cloud_intel \
+    ok \
+    "recon/${RECON_TARGET_KEY}/exposure/identity_intel/summary.md" \
+    "$IDENTITY_TOTAL" \
+    "identity/cloud artifacts are hypothesis seeds, not credential-use actions"
+
 emit_claude_hint \
     phase                identity_cloud_intel \
     emailfinder_status   "$EMAILFINDER_STATUS" \
@@ -2192,10 +2387,15 @@ emit_claude_hint_actions \
 echo ""
 log_info "Phase 7: Parameter Discovery"
 
-PARAM_URLS_FOR_DISCOVERY="$RECON_DIR/urls/with_params_filtered.txt"
-[ -s "$PARAM_URLS_FOR_DISCOVERY" ] || PARAM_URLS_FOR_DISCOVERY="$RECON_DIR/urls/with_params.txt"
+PARAM_URLS_FOR_DISCOVERY="$RECON_DIR/urls/with_params_analysis.txt"
+build_filtered_first_backstop \
+    "$RECON_DIR/urls/with_params_filtered.txt" \
+    "$RECON_DIR/urls/with_params.txt" \
+    "$PARAM_URLS_FOR_DISCOVERY"
+PARAM_DISCOVERY_STATUS="skipped"
 
 if [ -s "$PARAM_URLS_FOR_DISCOVERY" ]; then
+    PARAM_DISCOVERY_STATUS="ok"
     log_step "Extracting parameters from collected URLs..."
 
     # Extract parameter names (macOS compatible - no grep -P)
@@ -2220,6 +2420,12 @@ fi
 
 UNIQUE_PARAMS=$(wc -l < "$RECON_DIR/params/unique_params.txt" 2>/dev/null | tr -d ' ' || echo 0)
 INTERESTING_PARAMS=$(wc -l < "$RECON_DIR/params/interesting_params.txt" 2>/dev/null | tr -d ' ' || echo 0)
+record_recon_phase \
+    param_disco \
+    "$PARAM_DISCOVERY_STATUS" \
+    "recon/${RECON_TARGET_KEY}/params/unique_params.txt" \
+    "$UNIQUE_PARAMS" \
+    "parameter input uses filtered-first ordering plus raw with_params.txt backstop"
 emit_claude_hint \
     phase                param_disco \
     unique_params        "$UNIQUE_PARAMS" \
@@ -2261,14 +2467,25 @@ else
     fi
 fi
 
-CICD_ORGS_FOUND=$(echo "$GITHUB_ORGS" | grep -cE '^[a-zA-Z0-9_-]+' 2>/dev/null || echo 0)
+CICD_ORGS_FOUND=$(printf '%s\n' "$GITHUB_ORGS" | grep -cE '^[a-zA-Z0-9_-]+' 2>/dev/null || true)
+[ -n "$CICD_ORGS_FOUND" ] || CICD_ORGS_FOUND=0
+CICD_PHASE_STATUS="skipped"
+if [ -n "$GITHUB_ORGS" ] && [ -x "$CICD_SCANNER" ] && command -v sisakulint >/dev/null 2>&1; then
+    CICD_PHASE_STATUS="ok"
+fi
+record_recon_phase \
+    cicd \
+    "$CICD_PHASE_STATUS" \
+    "recon/${RECON_TARGET_KEY}/cicd/" \
+    "$CICD_ORGS_FOUND" \
+    "CI/CD workflow scan runs only when GitHub orgs and sisakulint are available"
 emit_claude_hint \
     phase                cicd \
     orgs_scanned         "$CICD_ORGS_FOUND" \
     sisakulint_present   "$(command -v sisakulint >/dev/null 2>&1 && echo true || echo false)"
 emit_claude_hint_actions \
     "review findings/cicd/<org>/scan_results.txt for pull_request_target / unsafe-context risks" \
-    "skip if no GitHub orgs were auto-detected"
+    "if no GitHub orgs were auto-detected, leave CI/CD as no cached signal rather than tested clean"
 
 # ============================================================
 # Optional post-run storage guard
@@ -2307,6 +2524,8 @@ echo "  Unique params:     $(wc -l < "$RECON_DIR/params/unique_params.txt" 2>/de
 echo "  API doc candidates: $(wc -l < "$RECON_DIR/exposure/api_doc_candidates.txt" 2>/dev/null || echo 0)"
 [ -f "$RECON_DIR/exposure/cloud_storage_candidates.txt" ] && \
 echo "  Cloud candidates:  $(wc -l < "$RECON_DIR/exposure/cloud_storage_candidates.txt" 2>/dev/null || echo 0)"
+[ -f "$RECON_MANIFEST" ] && \
+echo "  Phase manifest:    $RECON_MANIFEST"
 
 [ -d "$RECON_DIR/cicd" ] && \
 echo "  CI/CD findings:   $(find "$RECON_DIR/cicd" -name 'scan_results.txt' -exec grep -cP '\.github/workflows/' {} + 2>/dev/null | awk -F: '{s+=$NF} END {print s+0}')"
@@ -2315,6 +2534,9 @@ echo ""
 echo "  Results: $RECON_DIR/"
 echo "============================================="
 echo ""
-echo "  Next: Run vulnerability scanner"
-echo "    ./tools/vuln_scanner.sh $RECON_DIR"
+echo "  Next: Build the AI evidence pack, then choose the highest-value hypothesis"
+echo "    python3 tools/surface.py --target $TARGET"
+echo "    python3 tools/context_pack.py --target $TARGET"
+echo "    # Optional breadth sensor after AI/browser/source review:"
+echo "    python3 tools/hunt.py --target $TARGET --scan-only --quick"
 echo "============================================="
