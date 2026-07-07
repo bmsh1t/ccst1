@@ -262,15 +262,22 @@ Target profiles, target-history notes, target-note snapshots, ownership hints, r
 limits, cooldowns, and method notes are advisory context. They can influence
 ordering and replay strategy, but not whether execution may continue.
 
-## 5. 5-MINUTE RULE
+## 5. 5-MINUTE LOW-SIGNAL TRIAGE
 
-If a target surface shows nothing interesting after 5 minutes → move on.
+If a target surface shows nothing interesting after 5 minutes, treat that as
+low signal for the current timebox, not proof that the surface has no attack
+value. Deprioritize it, preserve the observed hosts/paths/notes, and record the
+evidence that would justify reopening.
 
-Kill signals:
+Low-signal indicators:
 - All hosts return 403 or static pages
 - No API endpoints with ID parameters
 - No JavaScript bundles with interesting paths
 - nuclei returns 0 medium/high findings
+
+Reopen immediately when fresh browser/XHR traffic, source/JS routes,
+authenticated workflow, API docs, object IDs, WebSocket/GraphQL, or business
+context creates a concrete next evidence action.
 
 ## 6. AUTOMATION = HIGHEST DUP RATE
 
@@ -286,7 +293,9 @@ Manual: IDOR testing, auth bypass, business logic, race conditions
 
 Ask: "What's the worst thing that could happen if auth was broken here?"
 
-If the answer is "nothing valuable" → skip the feature.
+If the answer is "nothing valuable" → lower priority for now, but preserve the
+feature if it can connect to auth, roles, objects, payments, admin/config,
+exports, integrations, or another chain step.
 If the answer is "admin access, PII exfil, fund theft" → hunt there.
 
 ## 8. HUNT LESS-SATURATED BUG CLASSES

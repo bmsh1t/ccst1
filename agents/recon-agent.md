@@ -142,7 +142,7 @@ If the `burp` MCP server is available:
 
 If Burp MCP is NOT available, skip this section entirely — all recon works without it.
 
-## 5-Minute Kill Check
+## 5-Minute Low-Signal Triage
 
 After running, if:
 - All hosts return 403 or static pages
@@ -150,4 +150,7 @@ After running, if:
 - 0 nuclei medium/high findings
 - No interesting JavaScript bundles
 
-→ Report: "Target surface appears limited. Consider moving to a different target."
+→ Report: "Target surface is low-signal in this recon timebox. Preserve the
+observed hosts/paths and revisit if browser/XHR traffic, source/JS routes,
+authenticated workflows, API docs, object IDs, WebSocket/GraphQL, or business
+context creates a concrete next evidence action."

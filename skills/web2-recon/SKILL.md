@@ -83,16 +83,22 @@ which subfinder httpx dnsx nuclei katana waybackurls gau dalfox ffuf anew gf int
 
 ---
 
-## THE 5-MINUTE RULE
+## THE 5-MINUTE LOW-SIGNAL TRIAGE
 
-> If a target shows nothing interesting after 5 minutes of recon, move on. Don't burn hours on dead surface.
+> Use the first 5 minutes as an attention allocator, not an exclusion rule. If
+> recon is low-signal, deprioritize the surface for this timebox, preserve what
+> was observed, and revisit when fresh evidence appears.
 
-**5-minute kill signals:**
+**Low-signal indicators (do not discard the attack surface):**
 - All subdomains return 403 or static marketing pages
 - No API endpoints visible in URLs
 - No JavaScript bundles with interesting endpoint paths
 - nuclei returns 0 medium/high findings
 - No forms, no authentication, no user data
+
+Record why the surface is low-signal and what would reopen it. Reopen quickly if
+browser/XHR traffic, source/JS routes, authenticated workflows, API docs,
+object IDs, WebSocket/GraphQL, or business-flow evidence appears.
 
 ---
 
@@ -299,9 +305,11 @@ access key/secret 只进入最小证据和验证计划，不导入云管平台�
 
 ---
 
-## TARGET SCORING — GO / NO-GO
+## TARGET SCORING — BOUNTY ROI ONLY
 
-Score before spending time. Skip if score < 4.
+Score bug bounty targets before spending multi-day effort. This is not an
+execution gate for lab, localhost, private-scope, or explicitly authorized
+targets. Low score means lower bounty ROI, not absence of attack surface.
 
 | Criterion | Points |
 |---|---|
@@ -315,18 +323,22 @@ Score before spending time. Skip if score < 4.
 | Source code available | +1 |
 | Prior disclosed reports to study | +1 |
 
-**< 4:** Skip
+**< 4:** Low bounty ROI — deprioritize for target selection only
 **4-5:** Only if nothing better available
 **6-8:** Good — spend 1-3 days
 **>= 9:** Excellent — spend up to 1 week
 
-### Pre-Dive Hard Kill Signals
+### Pre-Dive Bounty ROI Filters
 
-1. Max bounty < $500 → not worth your time
-2. All recent reports are N/A or duplicate → hunters saturated it
-3. Scope is only a static marketing page → no attack surface
-4. Company < 5 employees with no revenue → won't pay
-5. Explicitly excludes your planned bug class in rules
+These filters are for public bounty target selection. Do not apply them as
+attack-surface closure on user-supplied labs, localhost/private scopes, or
+explicitly authorized targets.
+
+1. Max bounty < $500 → low ROI for multi-day bounty work
+2. All recent reports are N/A or duplicate → likely saturated; seek unique evidence before deep dive
+3. Scope is only a static marketing page → low-signal until auth, JS/source, API docs, or workflow evidence appears
+4. Company < 5 employees with no revenue → payout risk for bounty selection
+5. Explicitly excludes your planned bug class in rules → choose another allowed lane for that program
 
 ---
 
