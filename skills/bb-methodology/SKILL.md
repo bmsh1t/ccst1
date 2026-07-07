@@ -274,11 +274,10 @@ callbacks. Full 4-command workflow lives in `commands/hunt.md` →
 | Known software vuln (CVE) | 1-day speed workflow |
 | Nothing after 20 min on this endpoint | Rotate (20-minute rule) |
 
-### CTF-Web Pivot Prompts
+### Boundary Pivot Prompts
 
-When testing stalls, borrow the decision shape from
-`/root/tool/ccst/ctf-skills/ctf-web/SKILL.md` without importing CTF-only
-assumptions. Ask:
+When testing stalls, use the distilled boundary-first decision shape without
+importing external writeup assumptions. Ask:
 
 ```text
 1. Boundary: browser, backend, auth flow, proxy/parser, worker, cache, or storage?

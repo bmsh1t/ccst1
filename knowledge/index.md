@@ -136,25 +136,11 @@ Skill 与检查层决定。
 | `knowledge/payloads/command-execution-probes.md` | 命令执行/RCE 低风险 probe 家族和证据要求 | 已有明确 RCE sink 或 primitive，需要最小影响证明时 |
 | `knowledge/payloads/controlled-shell-primitives.md` | webshell / reverse shell 受控使用前提、禁止默认化和记录要求 | 低风险 probe 不足，且当前轮明确授权 shell primitive 时 |
 
-## 本地 CTF Web Deep References
+## 外部材料蒸馏记录
 
-`ctf-web` 不默认加载全文。它作为知识卡 `deep_refs` 和
-`rules/playbook-router.md` 的深水区参考：只有当前证据已经命中具体输入面、
-primitive、parser 差异或验证问题时才读取。读取时提取可迁移的技巧、思路、
-payload 家族和链式验证模型，不照搬拿 flag、DoS/ReDoS、持久 webshell、批量
-读取或纯 CTF 终局流程。
-
-| CTF Web 参考 | 主要挂载知识卡 |
-|---|---|
-| `/root/tool/ccst/ctf-skills/ctf-web/sql-injection.md` | `sqli-hidden-surfaces` |
-| `/root/tool/ccst/ctf-skills/ctf-web/auth-jwt.md` | `auth-sso-token-edge-cases` |
-| `/root/tool/ccst/ctf-skills/ctf-web/auth-infra.md` | `auth-sso-token-edge-cases` |
-| `/root/tool/ccst/ctf-skills/ctf-web/server-side*.md` | `xxe-xml-parser`, `path-traversal-file-read`, `ssrf-internal-impact`, `upload-to-execution`, `controlled-rce-impact` |
-| `/root/tool/ccst/ctf-skills/ctf-web/server-side-deser.md` | `insecure-deserialization`, `controlled-rce-impact` |
-| `/root/tool/ccst/ctf-skills/ctf-web/server-side-exec*.md` | `server-side-template-injection`, `upload-to-execution`, `controlled-rce-impact` |
-| `/root/tool/ccst/ctf-skills/ctf-web/client-side.md` | `xss-client-injection`, `browser-client-boundaries` |
-| `/root/tool/ccst/ctf-skills/ctf-web/server-side-advanced.md` | `proxy-cache-boundaries` |
-| `/root/tool/ccst/ctf-skills/ctf-web/node-and-prototype.md` | `node-prototype-pollution`, `controlled-rce-impact` |
+默认知识加载只依赖项目内已蒸馏卡片、payload pack 和 playbook，不再挂载本机
+绝对路径形式的原始外部笔记。外部材料的审计、取舍和未吸收原因保存在
+`docs/ctf-web-distillation-audit.md`；该文档只用于人工追溯，不参与默认路由。
 
 ## 深度 Playbooks
 

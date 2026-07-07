@@ -12,8 +12,7 @@ trigger_tags:
 risk: high
 maturity: draft
 load_priority: medium
-deep_refs:
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-advanced.md
+deep_refs: []
 ---
 
 # Proxy / Host Header / Request Smuggling / Cache

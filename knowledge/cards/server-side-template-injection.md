@@ -20,7 +20,6 @@ load_priority: medium
 deep_refs:
   - knowledge/payloads/command-execution-probes.md
   - knowledge/playbooks/controlled-rce-validation.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-exec.md
 ---
 
 # SSTI / 服务端模板注入

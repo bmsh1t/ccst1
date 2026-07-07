@@ -15,7 +15,6 @@ load_priority: medium
 deep_refs:
   - knowledge/payloads/command-execution-probes.md
   - knowledge/playbooks/controlled-rce-validation.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-deser.md
 ---
 
 # 反序列化 / Signed Object

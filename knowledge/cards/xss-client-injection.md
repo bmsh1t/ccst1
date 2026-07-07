@@ -15,8 +15,7 @@ trigger_tags:
 risk: medium
 maturity: draft
 load_priority: medium
-deep_refs:
-  - /root/tool/ccst/ctf-skills/ctf-web/client-side.md
+deep_refs: []
 ---
 
 # XSS / 客户端注入上下文

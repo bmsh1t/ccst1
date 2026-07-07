@@ -72,13 +72,13 @@ Read only when the active evidence asks for concrete detail:
 | DOM/source sinks, language grep, server-side RCE/deserialization sink search | `skills/security-arsenal/references/sink-and-grep-patterns.md` |
 | Recon, ffuf, Semgrep, subdomain takeover checks, cloud/storage enum, SAML tooling | `skills/security-arsenal/references/recon-tool-usage.md` |
 
-## CTF-Web Inspired Pattern Router
+## Boundary-First Pattern Router
 
-Use `/root/tool/ccst/ctf-skills/ctf-web/SKILL.md` as a deep-water routing
-reference, not as a CTF executor. The useful part is the decision shape:
-`boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -> impact`.
-Do not import flag hunting, admin-bot assumptions, DoS/ReDoS, persistent shell,
-or broad payload spraying into real targets.
+Use the distilled project decision shape, not raw external notes or fixed
+payload routes: `boundary -> baseline -> hidden surface -> bug family ->
+primitive -> connector -> impact`. Keep this as an AI reasoning aid; do not
+import flag hunting, admin-bot assumptions, DoS/ReDoS, persistent shell, or
+broad payload spraying into real targets.
 
 ### Boundary-First Pass
 

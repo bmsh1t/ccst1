@@ -18,8 +18,6 @@ risk: medium-to-high
 maturity: draft
 load_priority: medium
 deep_refs:
-  - /root/tool/ccst/ctf-skills/ctf-web/node-and-prototype.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-advanced-4.md
   - knowledge/cards/controlled-rce-impact.md
   - knowledge/playbooks/controlled-rce-validation.md
 ---

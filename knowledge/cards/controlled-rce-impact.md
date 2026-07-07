@@ -18,12 +18,6 @@ deep_refs:
   - knowledge/payloads/command-execution-probes.md
   - knowledge/payloads/controlled-shell-primitives.md
   - knowledge/playbooks/controlled-rce-validation.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-2.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-deser.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-exec.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-exec-2.md
-  - /root/tool/ccst/ctf-skills/ctf-web/node-and-prototype.md
 ---
 
 # 受控 RCE / 命令执行影响证明
@@ -36,13 +30,13 @@ deep_refs:
 - 不默认执行 reverse shell、webshell、持久化、文件写入、横向移动、批量读取、真实数据导出或服务扰动。
 - 需要 shell primitive 时，必须有明确当前轮授权、测试资源、清理计划和红线检查。
 - 不默认 dump 全量环境变量、配置文件、密钥、数据库、用户数据或云凭证。
-- 深挖时读取 `deep_refs` 中的 `ctf-web` 深度参考，提取执行 primitive、
-  解析器差异、gadget 思路和链式证明，不照搬拿 flag / 持久 shell / 批量读取流程。
+- 深挖时优先使用项目内 payload/playbook 和已蒸馏的执行 primitive、解析器差异、
+  gadget 思路和链式证明；历史 CTF 来源只在审计文档中追溯，不照搬拿 flag / 持久 shell / 批量读取流程。
 - 有明确 endpoint/input/command primitive 时，写入 action queue，类型可标记为 `controlled-rce-impact`。
 
 ## 能力定位
 
-本卡用于把 CTF 中的 RCE / shell / post-exploit 技巧转译为授权渗透里的
+本卡用于把 RCE / shell / post-exploit 技巧转译为授权渗透里的
 Controlled Exploitation / Impact Proof。它给 `web2-vuln-classes` 和
 `triage-validation` 补充高风险利用后的最小证明模型，不替代红线和验证 gate。
 

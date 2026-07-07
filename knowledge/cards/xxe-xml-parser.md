@@ -13,8 +13,7 @@ trigger_tags:
 risk: medium
 maturity: draft
 load_priority: medium
-deep_refs:
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side.md
+deep_refs: []
 ---
 
 # XXE / XML Parser 面

@@ -24,10 +24,7 @@ trigger_tags:
 risk: medium
 maturity: draft
 load_priority: medium
-deep_refs:
-  - /root/tool/ccst/ctf-skills/ctf-web/auth-jwt.md
-  - /root/tool/ccst/ctf-skills/ctf-web/auth-infra.md
-  - /root/tool/ccst/ctf-skills/ctf-web/auth-and-access.md
+deep_refs: []
 ---
 
 # Auth / SSO / Token 边界异常
@@ -46,8 +43,8 @@ deep_refs:
 - 如果其他漏洞能读取 MFA/TOTP secret、reset token、OAuth/link secret 或生成 step-up 中间 token，应验证是否能完成 step-up 并获得完整 session；报告不打印 secret、一次性验证码或完整 token。
 - 不把公开 client_id、OAuth client_secret、用户名枚举、缺少 PKCE 文案直接升级
   为 Candidate；必须证明账号、会话、租户或权限边界影响。
-- 深挖时读取 `deep_refs` 中的 auth 深度参考，提取 token/SSO 边界差异和验证模型，
-  不照搬凭证收割、真实账号接管或 destructive IdP/API 操作。
+- 深挖时优先使用本卡和账号恢复卡中已蒸馏的 token/SSO 边界差异和验证模型，
+  历史 CTF 来源只在审计文档中追溯，不照搬凭证收割、真实账号接管或 destructive IdP/API 操作。
 
 ## 能力定位
 

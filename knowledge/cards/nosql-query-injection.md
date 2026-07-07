@@ -11,8 +11,7 @@ trigger_tags:
 risk: medium
 maturity: draft
 load_priority: medium
-deep_refs:
-  - /root/tool/ccst/ctf-skills/ctf-web/sql-injection.md
+deep_refs: []
 ---
 
 # NoSQL / Query Operator Injection

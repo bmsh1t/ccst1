@@ -106,7 +106,7 @@ def test_access_control_boundary_matrix_is_part_of_skill_flow():
     assert "浏览器 fetch 不能设置受限头时不要据此停止" in context_pack
 
 
-def test_ctf_web_skill_is_used_as_pattern_router_not_executor():
+def test_boundary_router_uses_distilled_project_shape_not_raw_ctf_refs():
     runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
     methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
@@ -115,16 +115,19 @@ def test_ctf_web_skill_is_used_as_pattern_router_not_executor():
     assert "boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -> impact" in runtime
     assert "不照搬 CTF 的 flag 路径" in runtime
 
-    assert "## CTF-Web Inspired Pattern Router" in web2
-    assert "/root/tool/ccst/ctf-skills/ctf-web/SKILL.md" in web2
-    assert "boundary -> baseline -> hidden surface -> bug family -> primitive -> connector" in web2
+    assert "## Boundary-First Pattern Router" in web2
+    assert "/root/tool/ccst/ctf-skills" not in web2
+    assert "boundary -> baseline -> hidden surface -> bug family" in web2
+    assert "primitive -> connector -> impact" in web2
     assert "Source/config/secret/file read signal" in web2
-    assert "Do not import flag hunting" in web2
+    assert "broad payload spraying" in web2
 
-    assert "### CTF-Web Pivot Prompts" in methodology
+    assert "### Boundary Pivot Prompts" in methodology
+    assert "/root/tool/ccst/ctf-skills" not in methodology
     assert "Primitive:" in web2
     assert "Connector:" in web2
     assert "Do not copy flag" in methodology
+    assert "/root/tool/ccst/ctf-skills" not in runtime
 
 
 def test_layer_placement_standard_keeps_skills_small_and_project_aligned():

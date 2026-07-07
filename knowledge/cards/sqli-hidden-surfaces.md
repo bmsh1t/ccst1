@@ -23,8 +23,6 @@ maturity: proven
 load_priority: high
 deep_refs:
   - knowledge/payloads/sqli-low-risk-probes.md
-  - /root/tool/ccst/ctf-skills/ctf-web/sql-injection.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-advanced-4.md
 ---
 
 # SQLi 非显式输入面
@@ -44,8 +42,8 @@ deep_refs:
 - 只把可复现的状态码、长度、错误类型、排序、布尔响应、字段集合或 DBMS 指纹差异作为信号。
 - 单次 500、WAF/路由差异、缓存 miss 或不可复现异常不能升级为 Candidate。
 - 大 payload、绕过矩阵和工具参数按需读取 `knowledge/payloads/sqli-low-risk-probes.md`。
-- 深挖时读取 `deep_refs` 中的 `ctf-web` SQLi 深度参考，提取 Header、
-  EXIF/QR/XML、二阶、parser/DBMS 差异和绕过思路，不照搬 flag 抽取或高频盲注流程。
+- 深挖时优先使用本卡和 `knowledge/payloads/sqli-low-risk-probes.md` 中已蒸馏的 Header、
+  EXIF/QR/XML、二阶、parser/DBMS 差异和证据模型；历史 CTF 来源只在审计文档中追溯，不进入默认上下文。
 
 ## 能力定位
 

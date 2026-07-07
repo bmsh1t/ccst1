@@ -16,10 +16,6 @@ load_priority: medium
 deep_refs:
   - knowledge/cards/ssrf-url-fetch.md
   - knowledge/playbooks/controlled-rce-validation.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-advanced-2.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-advanced-3.md
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side-advanced-4.md
 ---
 
 # SSRF 内部影响证明
@@ -30,8 +26,8 @@ deep_refs:
 - 默认不做大范围端口扫描，不批量读取内部数据，不抓取云凭证。
 - 最小影响证明优先：单个明确内部目标、状态级响应、banner/health 级证据、可复现请求。
 - SSRF-to-RCE 或 SSRF-to-internal-read 要转受控影响证明 playbook。
-- 深挖时读取 `deep_refs` 中的 `ctf-web` SSRF/parser 深度参考，提取 parser
-  mismatch、redirect、内部服务链路和协议差异思路，不照搬内网扫描或凭证抓取流程。
+- 深挖时优先使用本卡、`ssrf-url-fetch` 和 `render-pipeline-ssrf` 中已蒸馏的 parser
+  mismatch、redirect、内部服务链路和协议差异思路；历史外部来源只在审计文档中追溯，不照搬内网扫描或凭证抓取流程。
 
 ## 能力定位
 

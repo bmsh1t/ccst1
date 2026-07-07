@@ -18,34 +18,30 @@ When the in-tool methodology runs short, these upstream collections are the
 ones to mirror or grep next. They are pulled from the project owner's
 GitHub stars list — high-signal repos curated by working bounty hunters.
 
-## Local Web deep-delta references
+## Project Web deep-delta references
 
-The current project remains the canonical source for Web2 methodology and
-payload basics. Use the local `ctf-skills` material only as Web exploitation
-delta references when current evidence matches `rules/playbook-router.md`.
-Do not copy whole files or use non-Web CTF categories in the default Claude CLI
-attention chain.
+The current project is the canonical source for Web2 methodology and payload
+basics. When current evidence needs deeper detail, load the distilled project
+assets below instead of raw external notes or local absolute paths.
 
-| Local path | Use it for |
+| Project path | Use it for |
 |---|---|
-| `rules/playbook-router.md` | Evidence-shaped router from Web signal → local deep reference → existing project tool |
-| `/root/tool/ccst/ctf-skills/ctf-web/auth-jwt.md` | JWK/JKU/KID/JWE/cookie crypto JWT edge cases after an actual token or issuer metadata is found |
-| `/root/tool/ccst/ctf-skills/ctf-web/auth-infra.md` | OAuth/OIDC/SAML callback, state, token, NameID, and IdP processing edge cases |
-| `/root/tool/ccst/ctf-skills/ctf-web/auth-and-access.md` | Auth boundary, hidden endpoint, 403/parser mismatch, redirect chain, access-control deltas |
-| `/root/tool/ccst/ctf-skills/ctf-web/server-side*.md` | SSTI/SSRF/XXE/command/parser edge cases beyond the project’s baseline checklist |
-| `/root/tool/ccst/ctf-skills/ctf-web/server-side-deser.md` | Java/Python/PHP/.NET/Werkzeug/SoapClient deserialization triage when serialized input is evidenced |
-| `/root/tool/ccst/ctf-skills/ctf-web/server-side-advanced*.md` | Nginx alias, parse_url/curl mismatch, Docker/ElasticSearch SSRF chains, WeasyPrint/CairoSVG, gopher protocol chains |
-| `/root/tool/ccst/ctf-skills/ctf-web/node-and-prototype.md` | Node/Express/lodash/qs/pug/vm2/happy-dom prototype pollution and VM/sink chains |
-| `/root/tool/ccst/ctf-skills/ctf-web/sql-injection.md` | Second-order, Host header, EXIF/QR/XML, SQLite timing, LDAP/Mongo/parser SQL/NoSQL deltas |
-| `/root/tool/ccst/ctf-skills/ctf-ai-ml/llm-attacks.md` | Web AI/chatbot/RAG/agent tool-use only; not general ML/CTF solving |
+| `rules/playbook-router.md` | Evidence-shaped router from Web signal → project card/playbook/tool |
+| `knowledge/cards/auth-sso-token-edge-cases.md` | JWT/JWE/JWKS, OAuth/OIDC/SAML, account-linking, MFA/step-up token boundaries |
+| `knowledge/cards/sqli-hidden-surfaces.md` | Hidden SQLi inputs, second-order SQLi, auth-token connector fields |
+| `knowledge/cards/ssrf-url-fetch.md` | URL fetch entry validation and parser/fetcher discrepancy questions |
+| `knowledge/cards/ssrf-internal-impact.md` | Low-impact SSRF internal reachability and impact proof |
+| `knowledge/cards/render-pipeline-ssrf.md` | PDF/image/HTML/render/export pipeline SSRF and file-read pivots |
+| `knowledge/cards/upload-parser.md` | Upload/import/archive/parser differentials and processing chains |
+| `knowledge/cards/upload-to-execution.md` | Upload-to-execution as controlled impact proof |
+| `knowledge/cards/controlled-rce-impact.md` | RCE/command/SSTI/deser impact proof, red-line and cleanup model |
+| `knowledge/cards/node-prototype-pollution.md` | Node/prototype source → property → gadget → sink chains |
+| `knowledge/cards/web-llm-tool-chains.md` | Web LLM/RAG/agent tool-use boundary testing |
 
-Excluded from default routing: `ctf-crypto/`, `ctf-forensics/`,
-`ctf-malware/`, `ctf-misc/`, `ctf-osint/`, `ctf-pwn/`, `ctf-reverse/`,
-`ctf-writeup/`, `solve-challenge/`, XSS-heavy client-side payload references,
-DoS/ReDoS, and pure CTF flag-path material. Weak-password brute force is not
-an absolute red line, but it is excluded from this default reference router;
-use `skills/credential-attack/` or controlled `/spray` when the operator or
-`/autopilot` selects the credential lane under `rules/red-lines.md`.
+Raw external CTF categories, writeups, flag paths, DoS/ReDoS, broad payload
+dictionaries, and local absolute reference paths are excluded from the default
+Claude CLI attention chain. External material is first audited and distilled
+into the project assets above.
 
 ## Methodology / playbooks
 

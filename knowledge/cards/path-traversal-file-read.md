@@ -12,8 +12,7 @@ trigger_tags:
 risk: medium
 maturity: draft
 load_priority: medium
-deep_refs:
-  - /root/tool/ccst/ctf-skills/ctf-web/server-side.md
+deep_refs: []
 ---
 
 # 路径遍历 / LFI / 文件读取

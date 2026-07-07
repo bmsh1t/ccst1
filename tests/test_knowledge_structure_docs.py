@@ -128,8 +128,8 @@ def test_sqli_article_card_uses_v2_structure_and_payload_pack():
     assert "hidden-input" in card
     assert "deep_refs:" in card
     assert "knowledge/payloads/sqli-low-risk-probes.md" in card
-    assert "/root/tool/ccst/ctf-skills/ctf-web/sql-injection.md" in card
-    assert "提取 Header" in card
+    assert "/root/tool/ccst/ctf-skills" not in card
+    assert "已蒸馏的 Header" in card
     assert "## Quick Recall" in card
     assert "Header 示例是候选形态，不是固定字典" in card
     assert "sibling 参数迁移" in card
@@ -165,20 +165,23 @@ def test_controlled_exploitation_cards_define_impact_proof_layer():
     assert "Controlled Exploitation / Impact Proof" in rce
     assert "不默认执行 reverse shell、webshell、持久化" in rce
     assert "controlled-rce-impact" in rce
-    assert "/root/tool/ccst/ctf-skills/ctf-web/server-side-exec.md" in rce
-    assert "/root/tool/ccst/ctf-skills/ctf-web/server-side-deser.md" in rce
+    assert "/root/tool/ccst/ctf-skills" not in rce
+    assert "knowledge/payloads/command-execution-probes.md" in rce
+    assert "knowledge/playbooks/controlled-rce-validation.md" in rce
     assert "不照搬拿 flag / 持久 shell / 批量读取流程" in rce
 
     assert "id: upload-to-execution" in upload
     assert "webshell / script execution 属于高风险受控影响证明" in upload
     assert "Controlled shell primitive" in upload
-    assert "/root/tool/ccst/ctf-skills/ctf-web/server-side-exec-2.md" in upload
+    assert "/root/tool/ccst/ctf-skills" not in upload
+    assert "knowledge/cards/upload-parser.md" in upload
     assert "不把 webshell 上传变成默认动作" in upload
 
     assert "id: ssrf-internal-impact" in ssrf
     assert "SSRF callback 只是入口信号" in ssrf
     assert "默认不做大范围端口扫描" in ssrf
-    assert "/root/tool/ccst/ctf-skills/ctf-web/server-side-advanced-2.md" in ssrf
+    assert "/root/tool/ccst/ctf-skills" not in ssrf
+    assert "knowledge/cards/ssrf-url-fetch.md" in ssrf
     assert "不照搬内网扫描或凭证抓取流程" in ssrf
 
     assert "id: command-execution-probes" in command_probes
@@ -196,9 +199,9 @@ def test_controlled_exploitation_cards_define_impact_proof_layer():
     assert "knowledge/cards/ssrf-internal-impact.md" in index
     assert "knowledge/payloads/controlled-shell-primitives.md" in index
     assert "knowledge/playbooks/controlled-rce-validation.md" in index
-    assert "## 本地 CTF Web Deep References" in index
-    assert "`ctf-web` 不默认加载全文" in index
-    assert "/root/tool/ccst/ctf-skills/ctf-web/sql-injection.md" in index
+    assert "## 外部材料蒸馏记录" in index
+    assert "不再挂载本机" in index
+    assert "/root/tool/ccst/ctf-skills" not in index
 
 
 def test_auth_sso_and_node_cards_are_indexed_with_deep_refs():
@@ -219,8 +222,8 @@ def test_auth_sso_and_node_cards_are_indexed_with_deep_refs():
     assert "account-linking" in auth_sso
     assert "Claim tamper" in auth_sso
     assert "decode-only" in auth_sso
-    assert "/root/tool/ccst/ctf-skills/ctf-web/auth-jwt.md" in auth_sso
-    assert "/root/tool/ccst/ctf-skills/ctf-web/auth-infra.md" in auth_sso
+    assert "/root/tool/ccst/ctf-skills" not in auth_sso
+    assert "历史 CTF 来源只在审计文档中追溯" in auth_sso
     assert "不照搬凭证收割" in auth_sso
 
     assert "id: node-prototype-pollution" in node
@@ -230,16 +233,15 @@ def test_auth_sso_and_node_cards_are_indexed_with_deep_refs():
     assert "Wire payload" in node
     assert "JSON.stringify" in node
     assert "sessionId" in node
-    assert "/root/tool/ccst/ctf-skills/ctf-web/node-and-prototype.md" in node
+    assert "/root/tool/ccst/ctf-skills" not in node
     assert "knowledge/cards/controlled-rce-impact.md" in node
     assert "不照搬 RCE payload" in node
 
     assert "knowledge/cards/auth-credential-recovery-flows.md" in index
     assert "knowledge/cards/auth-sso-token-edge-cases.md" in index
     assert "knowledge/cards/node-prototype-pollution.md" in index
-    assert "/root/tool/ccst/ctf-skills/ctf-web/auth-jwt.md" in index
-    assert "/root/tool/ccst/ctf-skills/ctf-web/auth-infra.md" in index
-    assert "/root/tool/ccst/ctf-skills/ctf-web/node-and-prototype.md" in index
+    assert "docs/ctf-web-distillation-audit.md" in index
+    assert "/root/tool/ccst/ctf-skills" not in index
 
 
 def test_parser_file_read_and_deser_cards_are_indexed():
@@ -274,7 +276,7 @@ def test_parser_file_read_and_deser_cards_are_indexed():
     assert "knowledge/cards/path-traversal-file-read.md" in index
     assert "knowledge/cards/server-side-template-injection.md" in index
     assert "knowledge/cards/insecure-deserialization.md" in index
-    assert "`insecure-deserialization`" in index
+    assert "knowledge/cards/insecure-deserialization.md" in index
 
 
 def test_remaining_web2_category_cards_are_indexed():

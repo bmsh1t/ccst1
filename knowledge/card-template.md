@@ -93,7 +93,7 @@ deep_refs:
 | `risk` | `low` / `medium` / `high`，指验证动作风险，不是漏洞严重性 |
 | `maturity` | `draft` / `tested` / `proven` |
 | `load_priority` | `low` / `medium` / `high` |
-| `deep_refs` | payload、bypass、长案例或外部参考附录路径；可以指向本地 `ctf-web` 原文，但只能按需读取 |
+| `deep_refs` | payload、playbook、长案例或项目内附录路径；不要指向本机绝对路径或未蒸馏原文 |
 | `updated` | 可选，最后人工维护日期 |
 
 ## 知识类型
@@ -115,6 +115,6 @@ deep_refs:
 - 示例可以具体，例如参数名、header、payload 形态、绕过类别；但必须说明它们是候选形态，不是固定字典。
 - front matter 和 Quick Recall 要保持短小，便于 context-pack 快速加载。
 - 深度 payload / bypass / 长案例使用 `deep_refs` 按需加载，避免污染常规上下文。
-- `ctf-web` 这类深度参考只作为技巧来源：吸收思路、变形和验证模型，不照搬
-  拿 flag、DoS/ReDoS、持久 shell、批量读取或纯 CTF 终局流程。
+- 外部材料必须先蒸馏成触发条件、证据门槛、停止条件或项目内 payload/playbook；
+  不在知识卡里直接挂载本机绝对路径、整篇原文或一次性题解。
 - 不保存真实凭证、个人数据、客户数据或未经脱敏的响应正文。

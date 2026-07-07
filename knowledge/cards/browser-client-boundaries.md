@@ -16,8 +16,7 @@ trigger_tags:
 risk: medium
 maturity: draft
 load_priority: medium
-deep_refs:
-  - /root/tool/ccst/ctf-skills/ctf-web/client-side.md
+deep_refs: []
 ---
 
 # 浏览器端边界 / CORS / CSRF / Clickjacking / DOM
