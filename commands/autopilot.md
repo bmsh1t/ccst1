@@ -8,7 +8,7 @@ Invocation arguments: `$ARGUMENTS`
 Parse arguments first. The first non-flag argument is the target, URL, IP/CIDR,
 or primary-domain batch list. If no target is present, ask for the exact target.
 `--deep` activates the Deep Mode section; cadence flags only affect checkpoint
-frequency.
+frequency. First surface repo-local lab mode without printing full config: `python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'`.
 
 Expert Hunter Autopilot for Claude CLI. Claude is the hunter; tools are memory,
 evidence, replay, and summary aids.
