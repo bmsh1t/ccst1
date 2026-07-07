@@ -1,7 +1,6 @@
 ---
 description: Expert Hunter AI-first autonomous hunt loop — recon/cache state, review surface evidence, enrich with browser/source/JS, hunt, validate candidates, report validated findings, and checkpoint useful memory. Usage: /autopilot target.com [--paranoid|--normal|--yolo|--quick|--deep] or /autopilot targets.txt
 ---
-
 # /autopilot
 Invocation arguments: `$ARGUMENTS`
 
@@ -138,6 +137,7 @@ Claude must not turn an evidence-backed next step into a passive TODO. Use
 when a durable queue helps. Applies to known product/CMS/plugin/theme/library versions,
 exposed routes, authz/IDOR, SQLi/NoSQLi, SSRF, XXE, RCE/SSTI/command injection,
 parser/file/network/client/business lanes. Do not overfit this contract into a fixed checklist.
+When a primary lane is blocked, do not checkpoint/finish immediately if adjacent high-value lanes remain. Continue with the smallest applicable adjacent lane first, and only stop after the remaining high-value lanes are tested, blocked, dead-end, or not applicable.
 ## Known Software Intelligence Lane
 This is one specialization of the Actionable Evidence Continuation Contract:
 when a concrete product/plugin/theme/library/version appears, it must not stop

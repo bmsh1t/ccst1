@@ -22,6 +22,8 @@ def test_autopilot_requires_known_software_intelligence_lane():
     assert "known product/CMS/plugin/theme/library versions" in text
     assert "authz/IDOR, SQLi/NoSQLi, SSRF, XXE, RCE/SSTI/command injection" in text
     assert "Do not overfit this contract into a fixed checklist" in text
+    assert "When a primary lane is blocked, do not checkpoint/finish immediately if adjacent high-value lanes remain." in text
+    assert "remaining high-value lanes are tested, blocked, dead-end, or not applicable" in text
     assert "## Known Software Intelligence Lane" in text
     assert 'must not stop at "needs CVE lookup."' in flat
     assert "one specialization of the Actionable Evidence Continuation Contract" in flat
@@ -40,6 +42,9 @@ def test_autopilot_agent_inherits_known_software_lane():
     assert "Do not turn concrete evidence into a passive TODO" in text
     assert "tools/action_queue.py ingest-checkpoint --target <target>" in text
     assert "tools/action_queue.py resolve" in text
+    assert "Do not end a run merely because a primary lane is blocked." in text
+    assert "remaining high-value lanes have been executed, blocked, dead-end, or clearly not applicable" in text
+    assert "Examples include auth bootstrap (register, invite, reset, verification)" in text
     assert "applies broadly: known software versions, exposed routes" in text
     assert "## Known Software Intelligence Lane" in text
     assert "concrete product/plugin/theme/library and version" in flat

@@ -93,6 +93,8 @@ Do not overfit this contract into a fixed checklist. Normalize evidence, choose 
 
 Queue bridge: `tools/action_queue.py ingest-checkpoint --target <target>`; `tools/action_queue.py next --target <target>`; resolve with `tools/action_queue.py resolve --target <target> --id <id> --status tested --evidence "<short evidence>"`.
 
+Do not end a run merely because a primary lane is blocked. Checkpoint/finish is allowed only after the remaining high-value lanes have been executed, blocked, dead-end, or clearly not applicable. When auth, WAF, or manual-browser blockers appear, expand into the smallest applicable adjacent high-value lane before considering closure. Examples include auth bootstrap (register, invite, reset, verification), controlled credential access when its prerequisites exist, edge/WAF lanes, and public-side JS/source/version/metadata/sibling-route continuation.
+
 ## Discovery / Exploitation / Validation Modes
 
 Evidence-driven depth does not mean evidence-only testing.
@@ -122,6 +124,8 @@ Choose tools from evidence shape:
   2. Prefer playwright MCP for automated interaction and snapshots.
   3. Use `tools/browser_evidence.py` / `playwright-cli` only when MCP is unavailable or a scriptable fallback is needed.
   4. Import MCP artifacts with `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` keep using the same browser-observed API surface. Replay API/XHR directly after capture.
+  Reuse an existing browser/page/tab when it already represents the needed actor/session/origin; prefer opening a new tab/page over a new browser process.
+  When chrome-devtools/playwright evidence leaves a specific runtime JavaScript question unresolved, JSHook MCP can be used as an optional follow-up evidence source.
 - Source/route/auth logic: `python3 tools/source_intel.py --target <target> [--repo-path <repo>]`.
 - JS bundles: `python3 tools/js_reader.py --target <target>` plus semantic JS review.
 - Known component/version: `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, vendor advisories, NVD/GHSA/WPScan-style sources, nuclei template names.
