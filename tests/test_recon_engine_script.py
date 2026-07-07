@@ -253,12 +253,13 @@ def test_recon_engine_records_phase_manifest_without_value_judgment():
     assert "raw all.txt remains the lossless backstop" in text
 
 
-def test_recon_engine_supports_optional_post_run_raw_url_compression():
+def test_recon_engine_defaults_to_post_run_raw_url_compression():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
 
     assert "post_compress_raw_recon_urls()" in text
     assert "BBHUNT_RECON_POST_COMPRESS" in text
+    assert 'env_truthy "${BBHUNT_RECON_POST_COMPRESS:-1}"' in text
     assert "BBHUNT_RECON_COMPRESS_MIN_MB" in text
     assert "for src in gau wayback waymore katana; do" in text
     assert 'gzip -9 -f "$file"' in text

@@ -70,6 +70,7 @@ The integrated `tools/recon_engine.sh` path may run, when available:
 - live probing and fingerprinting: ProjectDiscovery `httpx`, WAF/origin hints, lightweight ports/services
 - URL collection: `katana`, `gau`, `waymore`
 - URL denoising: non-destructive `_filtered` URL views plus `urls/filter.log`; raw `urls/all.txt` is preserved
+- Storage guard: large raw collector source files (`katana`/`gau`/`waymore`/`wayback`) are gzip-compressed after `all.txt` and `_filtered` files are built; set `BBHUNT_RECON_POST_COMPRESS=0` to keep source `.txt` files
 - JS/API extraction: JS file list, JS endpoints, potential JS secrets, API/GraphQL-like paths, parameterized URLs; JS/parameter analysis uses filtered-first ordering with raw backstop
 - bounded directory/parameter fuzzing and config discovery with timeout guards
 - exposure candidates: API docs, config files, cloud storage, S3 buckets, third-party hosted assets

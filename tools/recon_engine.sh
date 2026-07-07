@@ -163,9 +163,10 @@ post_compress_raw_recon_urls() {
     local total_after=0
     local src file before after gz_size
 
-    # 默认不改变文件形态；空间紧张时显式开启。只压缩原始采集源，
+    # 默认开启无损压缩：只压缩已并入 all.txt 的原始采集源，
     # 不动 all.txt/with_params.txt/exposure/live/subdomains，避免影响后续 AI 分析。
-    if ! env_truthy "${BBHUNT_RECON_POST_COMPRESS:-0}"; then
+    # 如需保留原始 .txt 文件形态，可设置 BBHUNT_RECON_POST_COMPRESS=0。
+    if ! env_truthy "${BBHUNT_RECON_POST_COMPRESS:-1}"; then
         return 0
     fi
 
