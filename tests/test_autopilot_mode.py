@@ -1229,6 +1229,8 @@ def test_autopilot_command_md_bootstraps_recon_first_and_cache_aware():
     assert "Existing target startup is cache-aware" in text
     assert "python3 tools/autopilot_state.py --target target.com" in text
     assert "python3 tools/context_pack.py --target target.com" in text
+    assert 'print({"ctf_mode": f(".")})' in text
+    assert text.index('print({"ctf_mode": f(".")})') < text.index("python3 tools/autopilot_state.py --target target.com")
     assert "not a pre-flight checklist" in text
     assert "1-2 knowledge cards" in text
 

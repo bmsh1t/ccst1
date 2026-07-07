@@ -8,7 +8,7 @@ Invocation arguments: `$ARGUMENTS`
 Parse arguments first. The first non-flag argument is the target, URL, IP/CIDR,
 or primary-domain batch list. If no target is present, ask for the exact target.
 `--deep` activates the Deep Mode section; cadence flags only affect checkpoint
-frequency. First surface repo-local lab mode without printing full config: `python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'`.
+frequency.
 
 Expert Hunter Autopilot for Claude CLI. Claude is the hunter; tools are memory,
 evidence, replay, and summary aids.
@@ -32,21 +32,21 @@ Four-layer memory is the external brain, not the steering wheel:
 target memory / target case state -> skill routing -> knowledge cards -> checks
 ```
 
-Fresh target startup is recon-first:
+Fresh target startup is recon-first and starts by surfacing ctf mode:
 
 ```bash
+python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'
 python3 tools/hunt.py --target target.com --recon-only
 python3 tools/surface.py --target target.com
 python3 tools/context_pack.py --target target.com
-# If recon shows an app-like, SPA, authenticated, object/workflow, GraphQL,
-# WebSocket, or business surface, capture/import browser MCP evidence before
-# letting scanner hints dominate attention.
+# If app-like/SPA/auth/workflow/API surface appears, import browser MCP evidence before scanner hints dominate.
 python3 tools/hunt.py --target target.com --scan-only --quick
 ```
 
-Existing target startup is cache-aware:
+Existing target startup is cache-aware and starts by surfacing ctf mode:
 
 ```bash
+python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'
 python3 tools/autopilot_state.py --target target.com
 python3 tools/surface.py --target target.com
 python3 tools/context_pack.py --target target.com

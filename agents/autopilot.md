@@ -52,6 +52,7 @@ existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> CHAIN -> VALIDATE CANDIDA
 ## Four-Layer Runtime
 
 Use the existing `/autopilot` flow as the four-layer runtime; do not create a parallel workflow:
+First command in every run: `python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'`.
 
 Fresh target startup is recon-first: `python3 tools/hunt.py --target <target> --recon-only`, then `tools/surface.py` and `tools/context_pack.py`. If the surface is app-like, SPA/authenticated, object/workflow-heavy, GraphQL, WebSocket, or business-critical, capture/import browser/source/JS truth before scanner quick. Scanner quick (`python3 tools/hunt.py --target <target> --scan-only --quick`) remains a later breadth sensor, not the first-contact steering wheel.
 
