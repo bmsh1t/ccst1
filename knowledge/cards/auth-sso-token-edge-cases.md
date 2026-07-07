@@ -14,6 +14,10 @@ trigger_tags:
   - saml
   - sso
   - token-binding
+  - mfa
+  - 2fa
+  - step-up
+  - tmp-token
   - email-trust
   - audience
   - redirect-uri
@@ -38,6 +42,8 @@ deep_refs:
   或 account-linking 输入。
 - OAuth/SSO 里最容易被低估的不是 token 语法，而是信任传递：邮箱归属、预注册
   半账户、cross-client `aud` 和 callback 锚定错误，经常直接落到账户接管。
+- MFA/step-up 里最容易被低估的是“中间 token + 外部可读 secret”的连接器：`tmpToken`、challenge token、setup token、recovery token 必须和用户、时间、session、MFA secret、服务端状态绑定。
+- 如果其他漏洞能读取 MFA/TOTP secret、reset token、OAuth/link secret 或生成 step-up 中间 token，应验证是否能完成 step-up 并获得完整 session；报告不打印 secret、一次性验证码或完整 token。
 - 不把公开 client_id、OAuth client_secret、用户名枚举、缺少 PKCE 文案直接升级
   为 Candidate；必须证明账号、会话、租户或权限边界影响。
 - 深挖时读取 `deep_refs` 中的 auth 深度参考，提取 token/SSO 边界差异和验证模型，
@@ -72,6 +78,7 @@ deep_refs:
   当前 session、client、issuer 和 callback。
 - Account-linking boundary：SSO 返回的 email / NameID / external_id 是否能绑定到错误账号。
 - Session lifecycle boundary：refresh token、旧 token、登出、角色变化后 token 是否仍可访问旧权限。
+- MFA / step-up boundary：登录、敏感操作、设备绑定、reset、recovery、2FA verify 中间 token 是否只证明“第一阶段已过”，还是还能被外部可读 secret 或跨账号状态完成为完整 session。
 
 ## 技巧家族 / Payload 家族
 
@@ -84,6 +91,7 @@ deep_refs:
   callback open redirect、client confusion。
 - SAML 差异：NameID/email 映射、RelayState 绑定、ACS endpoint、签名覆盖范围、XML parser 差异。
 - Account-linking 差异：email normalization、verified email、external_id、tenant/org 绑定。
+- Step-up / MFA 差异：`tmpToken`、challenge token、setup token、recovery token、remember-device token、backup-code flow；分别检查 token 类型、目标用户、有效期、一次性、session 绑定、secret 绑定和跨流程复用。
 
 示例是候选形态，不是固定字典；只有目标证据支持时才优先尝试。
 
@@ -96,6 +104,8 @@ deep_refs:
 - redirect_uri/state/nonce/PKCE 是否绑定到当前 session，而不是只做存在性检查？
 - SAML/OIDC identity 是否绑定稳定 external_id，还是只靠 email / NameID 文本？
 - 角色/组织变化后，旧 token / refresh token / SSO session 是否仍保留旧权限？
+- 如果其他漏洞已泄露 secret/token/认证表字段，是否把它和 step-up/MFA/reset/refresh 流程做了连接器验证，而不是只报告“字段泄露”？
+- 中间 token 是否能被不持有原始密码/原始 session 的攻击路径获得，且是否能被外部可读 secret 完成为完整 session？
 
 ## 最小验证
 
@@ -107,6 +117,7 @@ deep_refs:
   admin 页面，确认服务端实际身份变化；不要把“token 可编辑”当成结论。
 - 对 redirect/state/nonce/PKCE，用自有账号或本地 callback 证明绑定缺失，不诱导真实用户。
 - 对 SAML/OIDC account linking，只证明测试账号或自有账号的错误绑定可能性，不接管真实账号。
+- 对 MFA/step-up 链，先保存合法流程 baseline，再用自有/授权账号验证：外部漏洞取得的 secret 或中间 token 是否能让 `/verify`、reset、recovery、remember-device 或 refresh 流程签发完整 session；最终只用只读身份页/role endpoint 证明身份差异。
 - Candidate 前必须有 replayable 请求、身份差异、边界解释和影响说明。
 
 ## 常见误判 / 死路
@@ -117,6 +128,8 @@ deep_refs:
 - redirect_uri 报错差异不等于可劫持；必须证明 code/token/session 会到攻击者控制位置。
 - 缺少 PKCE 不一定是漏洞；要看 client 类型、code 绑定、client secret、redirect 约束和攻击前提。
 - SAML XML 可解析不等于签名绕过；要证明签名覆盖范围或身份映射错误。
+- 看到 `tmpToken`、MFA prompt 或 masked secret 字段不等于 2FA 绕过；必须证明可获得可用 secret/中间 token，并能换成完整 session 或敏感操作授权。
+- 认证表里出现 secret-shaped 字段不等于可用 secret；masked、空值、历史值或服务端二次绑定失败时只能记录为 dead-end/metadata exposure。
 
 ## 关联 Skills
 

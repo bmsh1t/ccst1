@@ -16,6 +16,8 @@ trigger_tags:
   - non-parameterizable
   - order-by
   - identifier
+  - auth-secret
+  - mfa-secret
 risk: low-to-medium
 maturity: proven
 load_priority: high
@@ -36,6 +38,8 @@ deep_refs:
 - sibling 参数迁移：从 A 接口提取 `sort`、`order`、`status`、`type`、`orgId`、`tenantId` 等少量高信号字段，喂给同业务 B 接口。
 - Parser/encoding 差异：XML entity、URL/Unicode 编码、大小写、分隔符或 content-type 转换可能绕过前置过滤，解码后才进入后端 SQL 查询。
 - SQLi 也别只盯值位：`ORDER BY`、列名/表名、占位符名、事务控制和跨表字段这类非参数化位置，经常是“看起来参数化了但实际没保护到”的盲区。
+- SQLi 读到认证相关表时，不只停在 email/hash/schema；主动检查是否存在 MFA/TOTP secret、reset token、API key、session seed、OAuth link secret、step-up token 等认证连接器字段。
+- 若认证连接器字段可读，再评估是否能低影响串成 `数据提取 -> step-up/MFA/reset/token 流程 -> victim session/role proof`；报告时不打印 secret、一次性验证码或完整 token。
 - 验证顺序：baseline -> 单变量扰动 -> 稳定差异 -> 最小证据 -> 必要时再工具化确认。
 - 只把可复现的状态码、长度、错误类型、排序、布尔响应、字段集合或 DBMS 指纹差异作为信号。
 - 单次 500、WAF/路由差异、缓存 miss 或不可复现异常不能升级为 Candidate。
@@ -60,6 +64,7 @@ deep_refs:
 - 同业务横向复用：从 sibling endpoint、JS/source、浏览器 XHR、历史请求和 schema 中提取参数/字段名，验证同一业务查询函数是否存在未暴露分支。
 - 差异闭环：只把可复现的状态码、长度、错误类型、排序、布尔响应、字段集合或 DBMS 指纹差异作为信号；单次 500 或 WAF/路由差异只记 Signal/Dead End。
 - 二阶建模：如果输入先进入日志、审计、风控、统计或报表，再在后台查询中触发差异，必须记录 store step 和 trigger step。
+- 认证连接器链：如果 SQLi 可读用户、认证、MFA、reset、token、session、OAuth/linking 表或字段，不要只把它当“数据泄露”；优先判断这些字段是否能驱动后续认证流程并形成可验证 session/role 差异。
 - 工具化门槛：只有出现稳定 baseline-vs-perturbation 差异后，才考虑交给 sqlmap/ghauri/人工 payload 矩阵做低风险确认。
 
 ## 技巧家族 / Payload 家族
@@ -80,6 +85,7 @@ deep_refs:
 - 路由片段：`/user/{slug}`、`/tenant/{id}`、`/report/{type}`、`/search/{keyword}`、CMS slug、分类名、地区码、版本号。
 - sibling 参数复用：把 A 接口里的 `sort`、`order`、`status`、`type`、`orgId`、`tenantId`、`scope` 少量喂给同业务 B 接口。
 - 二阶链路：登录日志、访问审计、风控黑白名单、统计报表、搜索索引、导入预览、上传 metadata。
+- 认证连接器：MFA/TOTP secret、recovery/reset token、email verification token、API key、OAuth/link secret、session seed、remember-me secret、step-up/challenge token 相关字段；这些是链路候选，不是默认枚举目标。
 - 编码/parser 形态：XML entity、URL/Unicode 编码、大小写/注释/分隔符变体、JSON/form/XML content-type 差异；示例只是候选，不代表默认绕过矩阵。
 - 低风险扰动形态：单引号、双单引号、括号、布尔等价扰动或编码等价扰动；必须单变量对照，不能高频 time-based。
 
@@ -88,6 +94,7 @@ deep_refs:
 - 不把具体 header、路径格式、参数名、payload 或工具选择写成必选流程。
 - 不把请求元数据、路由片段、跨接口隐藏参数或二阶链路视为穷尽列表；它们只是“非显式输入面”的常见示例。
 - 不执行高频 time-based、OOB 扩大验证、批量数据枚举、破坏性写入或会影响真实业务状态的动作。
+- 不在公开报告中打印可用 secret、一次性验证码、完整 session/JWT/API key；只记录字段存在性、长度/指纹、流程状态和身份差异，原始敏感证据留在本地 evidence。
 
 ## 适用场景
 
@@ -110,6 +117,7 @@ deep_refs:
 - 是否从 JS/source/browser XHR、历史请求、schema、OpenAPI/Postman 泄露中提取了同业务参数？
 - 是否对 path segment 逐段建模，而不是把所有路径差异都当作路由 404？
 - 是否考虑了日志、审计、风控、搜索、排序、报表、导入/上传 metadata 的二阶查询？
+- 如果能读认证相关表/字段，是否检查了 MFA/TOTP secret、reset/recovery token、session/token seed、OAuth/linking secret 等“能继续驱动认证流程”的连接器？
 - 是否把疑似信号写回 action queue，避免只在总结里写“后续测试 SQLi”？
 
 ## 发散问题
@@ -118,6 +126,7 @@ deep_refs:
 - 路由中间件是否把 path segment、rewrite 后的路径或 slug 抠出来做资源、权限、分类、租户或 CMS 查询？
 - 同业务接口的参数是否能横向复用，触发后端公共查询函数里的隐藏分支？
 - JS/source/browser 里出现但 UI 当前路径不传的参数，是否仍被后端读取？
+- SQLi 可读出的字段是否能和登录、MFA、reset、invite、OAuth linking、remember-me 或 token refresh 流程对接，形成可证明的 session/role 改变？
 - 响应差异是数据库语法/布尔/类型差异，还是只是路由/WAF/缓存差异？
 
 ## 最小验证
@@ -128,6 +137,7 @@ deep_refs:
 - 从已知接口提取参数集，将同业务 sibling endpoint 追加少量高信号参数，再对单个参数做成对扰动。
 - 对所有疑似信号先做 2-3 次稳定性复测，再决定是否交给 `sqlmap -r` 或 `ghauri`。
 - 优先记录最小证据：请求、响应差异、受影响输入面、DBMS 指纹或稳定布尔差异。
+- 读到认证连接器字段时，用自有/授权测试账号或靶场账号做最小链路验证：先证明字段可读，再证明中间 token/step-up/reset/MFA 流程可被驱动，最后只用只读身份页或低影响 endpoint 证明 session/role 差异。
 
 ## 晋升到 Skill / Queue 的条件
 
@@ -149,6 +159,7 @@ deep_refs:
 - 非显式输入面无法稳定影响响应，且没有错误、布尔、时间、排序或字段集合差异。
 - 继续验证需要破坏性写入、批量请求、高延迟 time-based 枚举或真实数据修改。
 - 只有一次性报错，无法复现或无法关联到数据库查询。
+- 认证连接器字段只是 masked、空值、不可用历史值，或后续 step-up/reset/MFA 流程绑定了不可绕过的服务端状态。
 
 ## 检查要求
 
