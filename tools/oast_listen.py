@@ -32,6 +32,7 @@ Subcommands:
 
 Usage examples:
   python3 tools/oast_listen.py start    --target shop.com
+  python3 tools/oast_listen.py --start --provider interactsh  # legacy alias; uses target=default
   python3 tools/oast_listen.py payloads --target shop.com --vuln-class XXE
   python3 tools/oast_listen.py poll     --target shop.com
   python3 tools/oast_listen.py stop     --target shop.com
@@ -230,6 +231,25 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _pid_matches_oast(pid: int, paths: dict[str, Path]) -> bool:
+    """确认 pid 确实是本目标 OAST listener，避免 pid 复用导致误杀。
+
+    Linux 下优先读取 `/proc/<pid>/cmdline`，要求命令行同时包含
+    `interactsh-client` 和当前 target 的 callbacks.jsonl 路径。若平台没有
+    `/proc`，保持旧行为：只要 pid 存活就视为可管理，避免破坏非 Linux 环境。
+    """
+    proc_cmdline = Path(f"/proc/{pid}/cmdline")
+    if not proc_cmdline.exists():
+        return _pid_alive(pid)
+    try:
+        text = proc_cmdline.read_bytes().replace(b"\x00", b" ").decode(
+            "utf-8", errors="replace"
+        )
+    except OSError:
+        return False
+    return INTERACTSH_BIN in text and str(paths["callbacks"]) in text
+
+
 def _read_pid(p: Path) -> Optional[int]:
     if not p.is_file():
         return None
@@ -313,7 +333,7 @@ def cmd_start(target: str, allow_external: bool) -> int:
     paths = _paths(target)
     # Single-instance guard.
     pid = _read_pid(paths["pid"])
-    if pid is not None and pid > 0 and _pid_alive(pid):
+    if pid is not None and pid > 0 and _pid_alive(pid) and _pid_matches_oast(pid, paths):
         existing_url = paths["url"].read_text().strip() if paths["url"].is_file() else "(unknown)"
         _log_warn(f"OAST already running for {target} (pid={pid}); URL={existing_url}")
         _emit_start_hint(target, "already_running", existing_url, "interactsh")
@@ -462,6 +482,12 @@ def cmd_stop(target: str) -> int:
         return 0
     if not _pid_alive(pid):
         _log_warn(f"recorded pid {pid} not alive; cleaning state")
+        for key in ("pid", "url", "backend"):
+            if paths[key].is_file():
+                paths[key].unlink()
+        return 0
+    if not _pid_matches_oast(pid, paths):
+        _log_warn(f"recorded pid {pid} is alive but does not match this OAST listener; cleaning stale state")
         for key in ("pid", "url", "backend"):
             if paths[key].is_file():
                 paths[key].unlink()
@@ -665,9 +691,59 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _normalize_legacy_argv(argv: list[str]) -> list[str]:
+    """兼容旧提示里常见的 `--start --provider interactsh` 写法。
+
+    当前规范 CLI 使用子命令：`start --target <target>`。但长期会话里模型
+    偶尔会生成旧式 flag，argparse 会把 provider 值误当成 subcommand。
+    这里只做薄兼容，不改变标准子命令路径：
+
+    - `--start` / `--poll` / `--stop` / `--status` / `--payloads` 映射到子命令；
+    - `--provider interactsh` 对本工具没有额外含义，丢弃；
+    - `--provider webhook|webhook.site|webhook-site` 映射为 `--allow-external`；
+    - legacy `--start` 缺少 target 时使用 `default`，保证“只想拿 OAST URL”
+      的临时命令不会因为组织目录名而失败。标准 `start` 仍要求显式 target。
+    """
+    legacy_to_cmd = {
+        "--start": "start",
+        "--poll": "poll",
+        "--stop": "stop",
+        "--status": "status",
+        "--payloads": "payloads",
+    }
+    matched = next((flag for flag in legacy_to_cmd if flag in argv), None)
+    if matched is None:
+        return argv
+
+    normalized: list[str] = [legacy_to_cmd[matched]]
+    provider: str | None = None
+    skip_next = False
+    for idx, item in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if item == matched:
+            continue
+        if item == "--provider":
+            provider = argv[idx + 1] if idx + 1 < len(argv) else ""
+            skip_next = True
+            continue
+        normalized.append(item)
+
+    if normalized[0] == "start" and "--target" not in normalized:
+        normalized.extend(["--target", os.environ.get("OAST_TARGET", "default")])
+
+    provider_norm = (provider or "").strip().lower().replace("_", "-")
+    if normalized[0] == "start" and provider_norm in {"webhook", "webhook.site", "webhook-site"}:
+        if "--allow-external" not in normalized:
+            normalized.append("--allow-external")
+    return normalized
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(_normalize_legacy_argv(raw_argv))
 
     if args.cmd == "start":
         return cmd_start(args.target, args.allow_external)

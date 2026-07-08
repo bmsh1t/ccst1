@@ -63,7 +63,9 @@ def test_start_emits_hint_on_already_running(isolated_findings, capsys):
     paths["base"].mkdir(parents=True)
     paths["pid"].write_text(str(os.getpid()))  # current process: definitely alive
     paths["url"].write_text("abc.oast.fun")
-    with patch.object(oast_listen, "interactsh_installed", return_value=True):
+    with patch.object(oast_listen, "interactsh_installed", return_value=True), patch.object(
+        oast_listen, "_pid_matches_oast", return_value=True
+    ):
         rc = oast_listen.main(["start", "--target", "demo.com"])
     captured = capsys.readouterr()
     assert rc == 0
@@ -71,10 +73,75 @@ def test_start_emits_hint_on_already_running(isolated_findings, capsys):
     assert "abc.oast.fun" in captured.out
 
 
+def test_legacy_start_provider_interactsh_uses_default_target(isolated_findings, capsys):
+    """旧式 `--start --provider interactsh` 不应把 provider 值误当 subcommand。"""
+    with patch.object(oast_listen, "interactsh_installed", return_value=False):
+        rc = oast_listen.main(["--start", "--provider", "interactsh"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "state: soft_dep_missing" in captured.out
+    assert "target: default" in captured.out
+
+
+def test_legacy_start_provider_keeps_explicit_target(isolated_findings, capsys):
+    """旧式 flag 带 target 时仍写入目标专属 OAST 状态。"""
+    with patch.object(oast_listen, "interactsh_installed", return_value=False):
+        rc = oast_listen.main([
+            "--start",
+            "--provider",
+            "interactsh",
+            "--target",
+            "shop.example",
+        ])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "target: shop.example" in captured.out
+
+
+def test_legacy_start_provider_webhook_maps_allow_external(isolated_findings, capsys):
+    """旧式 `--provider webhook.site` 等价于 start + --allow-external。"""
+    fake_response = MagicMock()
+    fake_response.__enter__ = MagicMock(return_value=fake_response)
+    fake_response.__exit__ = MagicMock(return_value=False)
+    fake_response.read = MagicMock(return_value=json.dumps({"uuid": "legacy-token"}).encode())
+    with patch.object(oast_listen, "interactsh_installed", return_value=False), patch.object(
+        oast_listen, "urlopen", return_value=fake_response
+    ):
+        rc = oast_listen.main([
+            "--start",
+            "--provider",
+            "webhook.site",
+            "--target",
+            "demo.com",
+        ])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "backend: webhook.site" in captured.out
+    assert "webhook.site/legacy-token" in captured.out
+
+
 def test_pid_alive_handles_dead_pid(isolated_findings):
     """A pid that was never spawned should report not alive."""
     # PID 999999 is exceedingly unlikely to exist.
     assert oast_listen._pid_alive(999999) is False
+
+
+def test_stop_cleans_stale_live_pid_without_killing(isolated_findings, capsys):
+    """pid 复用/撞到无关进程时，只清状态，不应对无关 pid 发 SIGTERM。"""
+    paths = oast_listen._paths("demo.com")
+    paths["base"].mkdir(parents=True)
+    paths["pid"].write_text("3")
+    paths["url"].write_text("abc.oast.fun")
+    paths["backend"].write_text("interactsh")
+    with patch.object(oast_listen, "_pid_alive", return_value=True), patch.object(
+        oast_listen, "_pid_matches_oast", return_value=False
+    ), patch.object(oast_listen.os, "kill") as mock_kill:
+        rc = oast_listen.main(["stop", "--target", "demo.com"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "does not match this OAST listener" in captured.err
+    mock_kill.assert_not_called()
+    assert not paths["pid"].exists()
 
 
 # ─── Poll ───────────────────────────────────────────────────────────────────
