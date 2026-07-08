@@ -1235,6 +1235,9 @@ def test_autopilot_command_md_bootstraps_recon_first_and_cache_aware():
     assert "run the ctf-mode + freshness/state check once per invocation" in text
     assert "next_action: wait_recon" in text
     assert "Recon: in progress" in text
+    assert "next_action: wait_scan" in text
+    assert "Scan: in progress" in text
+    assert "do not start another `scan-only --quick`" in text
     assert "not a pre-flight checklist" in text
     assert "1-2 knowledge cards" in text
 
@@ -1446,6 +1449,9 @@ def test_autopilot_agent_md_bootstraps_with_context_pack_without_coverage_first(
     assert "run ctf-mode + freshness/state check once per invocation" in text
     assert "next_action: wait_recon" in text
     assert "Recon: in progress" in text
+    assert "next_action: wait_scan" in text
+    assert "Scan: in progress" in text
+    assert "do not launch another `scan-only --quick`" in text
     assert "Repeating startup commands is not progress" in text
     four_layer = text.split("## Four-Layer Runtime", 1)[1].split("## Case-State First", 1)[0]
     assert "python3 tools/coverage_matrix.py rebuild --target <target>" not in four_layer

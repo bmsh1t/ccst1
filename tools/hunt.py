@@ -2149,6 +2149,17 @@ def hunt_target(
             browser_session=browser_session,
         )
 
+    _persist_runtime_state(
+        canonical_target,
+        mode="scan_running",
+        current_stage="scan",
+        last_completed_step="run_scan_started",
+        recon_completed=recon_available,
+        scan_completed=False,
+        reports_generated=0,
+        ctf_mode=ctf_mode,
+        enrichment_tools=result.get("enrichment", []),
+    )
     result["scan"] = run_vuln_scan(
         canonical_target,
         quick=quick,
@@ -2193,7 +2204,7 @@ def hunt_target(
         canonical_target,
         mode="scan_only" if scan_only else ("quick" if quick else "full"),
         current_stage="report" if result["reports"] else "scan",
-        last_completed_step="capture_browser_evidence" if result.get("browser_evidence") else "generate_reports",
+        last_completed_step="capture_browser_evidence" if result.get("browser_evidence") else "run_vuln_scan",
         recon_completed=recon_available,
         scan_completed=result["scan"],
         reports_generated=result["reports"],

@@ -1142,6 +1142,72 @@ class TestAutopilotState:
         assert state["recon_in_progress"] is False
         assert state["next_action"] == "run_recon"
 
+    def test_scan_running_runtime_state_waits_instead_of_restart_loop(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [GraphQL] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/graphql\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        update_runtime_state(
+            repo_root,
+            "target.com",
+            mode="scan_running",
+            last_executed_workflow="run_scan_started",
+        )
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+        output = format_autopilot_state(state)
+
+        assert state["has_recon"] is True
+        assert state["scan_in_progress"] is True
+        assert state["next_action"] == "wait_scan"
+        assert "Scan: in progress" in output
+        assert "do not launch another scan-only quick" in output
+
+    def test_stale_scan_running_marker_allows_single_rerun(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [GraphQL] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/graphql\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        state_dir = repo_root / "state" / "target.com"
+        state_dir.mkdir(parents=True)
+        (state_dir / "session.json").write_text(
+            json.dumps({
+                "schema_version": 2,
+                "target": "target.com",
+                "storage_key": "target.com",
+                "mode": "scan_running",
+                "last_executed_workflow": "run_scan_started",
+                "updated_at": "2000-01-01T00:00:00Z",
+            }),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+
+        assert state["has_recon"] is True
+        assert state["scan_in_progress"] is False
+        assert state["next_action"] != "wait_scan"
+
     def test_formats_recent_guard_advisories_section(self):
         output = format_autopilot_state({
             "target": "target.com",

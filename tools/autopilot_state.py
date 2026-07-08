@@ -271,12 +271,16 @@ def _pick_next_action(
     structured_findings: dict | None = None,
     resume_targets: list[str] | None = None,
     recon_in_progress: bool = False,
+    scan_in_progress: bool = False,
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
     resume_targets = resume_targets if resume_targets is not None else _build_resume_targets(resume_summary)
     if structured_findings.get("next_validation"):
         return "validate_finding"
+
+    if scan_in_progress:
+        return "wait_scan"
 
     if not has_recon:
         if structured_findings.get("validated_pending_report"):
@@ -307,7 +311,7 @@ def _pick_next_action(
 
 def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
     """Return whether live probing should pause and cached-evidence work should continue."""
-    if next_action in {"run_recon", "validate_finding", "report_finding"}:
+    if next_action in {"run_recon", "wait_recon", "wait_scan", "validate_finding", "report_finding"}:
         return False
     tracked = int(guard_status.get("tracked_hosts", 0) or 0)
     tripped = int(guard_status.get("tripped_hosts", 0) or 0)
@@ -337,6 +341,11 @@ def _describe_next_step(state: dict) -> str:
         return (
             f"wait/poll the existing /recon {target} run; do not launch another recon. "
             "If the running marker is stale, rerun recon once with a fresh log."
+        )
+    if action == "wait_scan":
+        return (
+            f"wait/poll the existing scan-only quick run for {target}; do not launch another "
+            "scan-only quick. If the running marker is stale, rerun the scanner once with a fresh log."
         )
     if action == "validate_finding":
         followup = (state.get("structured_findings") or {}).get("next_validation") or {}
@@ -412,6 +421,26 @@ def _runtime_recon_in_progress(runtime_state: dict, *, stale_after_seconds: int 
         return True
     return (datetime.now(timezone.utc) - updated_at).total_seconds() <= stale_after_seconds
 
+
+def _runtime_scan_in_progress(runtime_state: dict, *, stale_after_seconds: int = 7200) -> bool:
+    """Return True when hunt.py marked scanner breadth work as started but not completed.
+
+    The marker is a durable breadcrumb, not a vulnerability judgment. It only
+    prevents repeated `--scan-only --quick` launches when the previous scanner
+    process is still within its expected runtime window.
+    """
+    workflow = str(
+        runtime_state.get("last_executed_workflow")
+        or runtime_state.get("current_stage")
+        or ""
+    ).strip()
+    mode = str(runtime_state.get("mode", "") or "").strip()
+    if workflow != "run_scan_started" and mode != "scan_running":
+        return False
+    updated_at = _parse_runtime_updated_at(runtime_state.get("updated_at", ""))
+    if updated_at is None:
+        return True
+    return (datetime.now(timezone.utc) - updated_at).total_seconds() <= stale_after_seconds
 
 
 def _candidate_items_for_next_action(ranked: dict, next_action: str) -> list[dict]:
@@ -693,7 +722,7 @@ def _build_enrichment_hints(
     next_action: str,
 ) -> tuple[str, list[dict]]:
     """Suggest the most useful enrichment tool before widening generic hunting."""
-    if next_action in {"run_recon", "validate_finding", "report_finding"}:
+    if next_action in {"run_recon", "wait_recon", "wait_scan", "validate_finding", "report_finding"}:
         return "", []
 
     storage_key = target_storage_key(resolved_target)
@@ -830,6 +859,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         _runtime_recon_in_progress(runtime_state)
         and not bool(recon_artifacts.get("ready"))
     )
+    scan_in_progress = _runtime_scan_in_progress(runtime_state)
     target_goal_memory = load_target_goal_memory(repo_root, resolved_target)
 
     has_recon = bool(ranked.get("available")) and bool(recon_artifacts.get("host_inventory_ready"))
@@ -859,6 +889,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         structured_findings,
         resume_targets=resume_targets,
         recon_in_progress=recon_in_progress,
+        scan_in_progress=scan_in_progress,
     )
     prefer_resume_targets = next_action == "continue_last_focus"
     surface_review_candidates = (
@@ -905,6 +936,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "runtime_state": runtime_state,
         "recon_artifacts": recon_artifacts,
         "recon_in_progress": recon_in_progress,
+        "scan_in_progress": scan_in_progress,
         "structured_findings": structured_findings,
         "validation_runner_candidates": validation_runner_candidates,
         "target_goal_memory": target_goal_memory,
@@ -964,6 +996,8 @@ def format_autopilot_state(state: dict) -> str:
         runtime_mode = str(runtime_state.get("mode", "") or "").strip()
         if runtime_workflow:
             lines.append(f"Last Workflow: {runtime_workflow}" + (f" (mode: {runtime_mode})" if runtime_mode else ""))
+        if state.get("scan_in_progress"):
+            lines.append("Scan: in progress")
         if recon_artifacts.get("available"):
             missing = recon_artifacts.get("missing") or []
             warnings = recon_artifacts.get("warnings") or []
@@ -1041,6 +1075,8 @@ def format_autopilot_state(state: dict) -> str:
         f"Next action: {state['next_action']}",
         f"Next step: {_describe_next_step(state)}",
     ]
+    if state.get("scan_in_progress"):
+        lines.append("Scan: in progress")
     runtime_workflow = str(
         runtime_state.get("last_executed_workflow")
         or runtime_state.get("current_stage")

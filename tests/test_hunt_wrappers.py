@@ -730,6 +730,7 @@ def test_classic_hunt_target_recon_only_skips_enrichment_and_scan(monkeypatch):
 def test_classic_hunt_target_scan_only_skips_enrichment_and_runs_scan(monkeypatch, tmp_path):
     domain = "example.com"
     calls = []
+    runtime_updates = []
     recon_dir = tmp_path / "recon" / domain
     recon_dir.mkdir(parents=True)
 
@@ -744,6 +745,11 @@ def test_classic_hunt_target_scan_only_skips_enrichment_and_runs_scan(monkeypatc
         "_run_classic_enrichment_hints",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("enrichment must not run in scan-only mode")),
     )
+    monkeypatch.setattr(
+        hunt,
+        "_persist_runtime_state",
+        lambda target, **kwargs: runtime_updates.append((target, kwargs)),
+    )
 
     result = hunt.hunt_target(domain, scan_only=True)
 
@@ -752,3 +758,8 @@ def test_classic_hunt_target_scan_only_skips_enrichment_and_runs_scan(monkeypatc
     assert "enrichment" not in result
     assert calls == [("scan", domain)]
     assert result["reports"] == 0
+    assert runtime_updates[0][0] == domain
+    assert runtime_updates[0][1]["mode"] == "scan_running"
+    assert runtime_updates[0][1]["last_completed_step"] == "run_scan_started"
+    assert runtime_updates[-1][1]["mode"] == "scan_only"
+    assert runtime_updates[-1][1]["last_completed_step"] == "run_vuln_scan"
