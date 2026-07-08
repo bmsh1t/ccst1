@@ -58,7 +58,7 @@ Fresh target startup is recon-first: `python3 tools/hunt.py --target <target> --
 
 Existing target startup is cache-aware: `python3 tools/autopilot_state.py --target <target>`, `python3 tools/surface.py --target <target>`, and `python3 tools/context_pack.py --target <target>`; refresh recon only when missing/thin/stale.
 
-Startup anti-loop: run ctf-mode + freshness/state check once per invocation. If recon-only is already running in the background, do not announce a fresh start or launch another recon; wait/poll for its output, then continue to surface/context/browser. Repeating startup commands is not progress.
+Startup anti-loop: run ctf-mode + freshness/state check once per invocation. If `autopilot_state.py` returns `next_action: wait_recon` or `Recon: in progress`, do not announce a fresh start or launch another recon; wait/poll that run, then continue to surface/context/browser. Repeating startup commands is not progress.
 
 Only add heavier state tools when they directly change the next action: `target_case_state.py` for actor/session/object continuity, `case_state_seed.py` for concrete object IDs, and checkpoint/action_queue/coverage after progress, validation, handoff, or before finish; do not let them drive first contact.
 

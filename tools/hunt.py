@@ -2089,6 +2089,18 @@ def hunt_target(
         batch_ready = os.path.isfile(os.path.join(_resolve_recon_dir(canonical_target), "batch_manifest.jsonl"))
         return _batch_recon_result(canonical_target, batch_ready, started, ctf_mode=ctf_mode)
 
+    if recon_only and not scan_only:
+        _persist_runtime_state(
+            canonical_target,
+            mode="recon_running",
+            current_stage="recon",
+            last_completed_step="run_recon_started",
+            recon_completed=False,
+            scan_completed=False,
+            reports_generated=0,
+            ctf_mode=ctf_mode,
+        )
+
     if not scan_only:
         result["recon"] = run_recon(canonical_target, quick=quick)
         if not result["recon"]:

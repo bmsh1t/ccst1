@@ -1104,6 +1104,44 @@ class TestAutopilotState:
         assert "Recon cache issue: live/httpx_full.txt" in output
         assert "rerun /recon target.com; cached recon is incomplete" in output
 
+    def test_recon_running_runtime_state_waits_instead_of_restart_loop(self, tmp_path):
+        repo_root = tmp_path
+        update_runtime_state(
+            repo_root,
+            "target.com",
+            mode="recon_running",
+            last_executed_workflow="run_recon_started",
+        )
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+        output = format_autopilot_state(state)
+
+        assert state["has_recon"] is False
+        assert state["recon_in_progress"] is True
+        assert state["next_action"] == "wait_recon"
+        assert "Recon: in progress" in output
+        assert "wait/poll the existing /recon target.com run; do not launch another recon" in output
+
+    def test_stale_recon_running_marker_allows_single_rerun(self, tmp_path):
+        state_dir = tmp_path / "state" / "target.com"
+        state_dir.mkdir(parents=True)
+        (state_dir / "session.json").write_text(
+            json.dumps({
+                "schema_version": 2,
+                "target": "target.com",
+                "storage_key": "target.com",
+                "mode": "recon_running",
+                "last_executed_workflow": "run_recon_started",
+                "updated_at": "2000-01-01T00:00:00Z",
+            }),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+
+        assert state["recon_in_progress"] is False
+        assert state["next_action"] == "run_recon"
+
     def test_formats_recent_guard_advisories_section(self):
         output = format_autopilot_state({
             "target": "target.com",

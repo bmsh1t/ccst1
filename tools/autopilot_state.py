@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -269,6 +270,7 @@ def _pick_next_action(
     resume_summary: dict | None,
     structured_findings: dict | None = None,
     resume_targets: list[str] | None = None,
+    recon_in_progress: bool = False,
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
@@ -279,6 +281,8 @@ def _pick_next_action(
     if not has_recon:
         if structured_findings.get("validated_pending_report"):
             return "report_finding"
+        if recon_in_progress:
+            return "wait_recon"
         return "run_recon"
 
     latest_session = (resume_summary or {}).get("latest_session_summary") or {}
@@ -329,6 +333,11 @@ def _describe_next_step(state: dict) -> str:
         if recon_artifacts.get("available") and missing:
             return f"rerun /recon {target}; cached recon is incomplete ({', '.join(missing[:2])})."
         return f"run /recon {target} first."
+    if action == "wait_recon":
+        return (
+            f"wait/poll the existing /recon {target} run; do not launch another recon. "
+            "If the running marker is stale, rerun recon once with a fresh log."
+        )
     if action == "validate_finding":
         followup = (state.get("structured_findings") or {}).get("next_validation") or {}
         if followup:
@@ -371,6 +380,37 @@ def _describe_next_step(state: dict) -> str:
     if action == "handoff":
         return "no strong executable next action from cached state; use checkpoint or fresh evidence before continuing."
     return "follow the highest-confidence target shown below."
+
+
+def _parse_runtime_updated_at(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _runtime_recon_in_progress(runtime_state: dict, *, stale_after_seconds: int = 7200) -> bool:
+    """Return True when hunt.py marked recon as started but not completed.
+
+    This avoids fragile `ps` detection: `autopilot_state.py` can read the
+    durable session breadcrumb, and stale markers expire instead of blocking
+    recon forever after a crashed shell.
+    """
+    workflow = str(
+        runtime_state.get("last_executed_workflow")
+        or runtime_state.get("current_stage")
+        or ""
+    ).strip()
+    mode = str(runtime_state.get("mode", "") or "").strip()
+    if workflow != "run_recon_started" and mode != "recon_running":
+        return False
+    updated_at = _parse_runtime_updated_at(runtime_state.get("updated_at", ""))
+    if updated_at is None:
+        return True
+    return (datetime.now(timezone.utc) - updated_at).total_seconds() <= stale_after_seconds
 
 
 
@@ -786,6 +826,10 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     validation_runner_candidates = load_validation_runner_candidate_pool(repo_root, resolved_target)
     runtime_state = load_runtime_state(repo_root, resolved_target)
     recon_artifacts = inspect_recon_artifacts(repo_root, resolved_target)
+    recon_in_progress = (
+        _runtime_recon_in_progress(runtime_state)
+        and not bool(recon_artifacts.get("ready"))
+    )
     target_goal_memory = load_target_goal_memory(repo_root, resolved_target)
 
     has_recon = bool(ranked.get("available")) and bool(recon_artifacts.get("host_inventory_ready"))
@@ -814,6 +858,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         resume_summary,
         structured_findings,
         resume_targets=resume_targets,
+        recon_in_progress=recon_in_progress,
     )
     prefer_resume_targets = next_action == "continue_last_focus"
     surface_review_candidates = (
@@ -859,6 +904,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "repo_source_summary": repo_source_summary,
         "runtime_state": runtime_state,
         "recon_artifacts": recon_artifacts,
+        "recon_in_progress": recon_in_progress,
         "structured_findings": structured_findings,
         "validation_runner_candidates": validation_runner_candidates,
         "target_goal_memory": target_goal_memory,
@@ -902,11 +948,12 @@ def format_autopilot_state(state: dict) -> str:
     ]
 
     if not state["has_recon"]:
+        recon_label = "in progress" if state.get("recon_in_progress") else "missing"
         lines = [
             f"AUTOPILOT STATE: {state['target']}",
             "═══════════════════════════════════════",
             "",
-            "Recon: missing",
+            f"Recon: {recon_label}",
             f"Memory: {'available' if state['has_memory'] else 'missing'}",
         ]
         runtime_workflow = str(

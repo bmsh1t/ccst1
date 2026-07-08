@@ -696,12 +696,18 @@ def test_classic_hunt_target_continues_when_enrichment_hint_fails(monkeypatch, t
 def test_classic_hunt_target_recon_only_skips_enrichment_and_scan(monkeypatch):
     domain = "example.com"
     calls = []
+    runtime_updates = []
 
     monkeypatch.setattr(hunt, "run_recon", lambda target, quick=False: calls.append(("recon", target)) or True)
     monkeypatch.setattr(hunt, "run_vuln_scan", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("scan must not run")))
     monkeypatch.setattr(hunt, "generate_reports", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("reports must not run")))
     monkeypatch.setattr(hunt, "_update_target_profile", lambda *args, **kwargs: None)
     monkeypatch.setattr(hunt, "_auto_log_session_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hunt,
+        "_persist_runtime_state",
+        lambda target, **kwargs: runtime_updates.append((target, kwargs)),
+    )
     monkeypatch.setattr(
         hunt,
         "_run_classic_enrichment_hints",
@@ -714,6 +720,11 @@ def test_classic_hunt_target_recon_only_skips_enrichment_and_scan(monkeypatch):
     assert result["scan"] is False
     assert "enrichment" not in result
     assert calls == [("recon", domain)]
+    assert runtime_updates[0][0] == domain
+    assert runtime_updates[0][1]["mode"] == "recon_running"
+    assert runtime_updates[0][1]["last_completed_step"] == "run_recon_started"
+    assert runtime_updates[-1][1]["mode"] == "recon_only"
+    assert runtime_updates[-1][1]["last_completed_step"] == "run_recon"
 
 
 def test_classic_hunt_target_scan_only_skips_enrichment_and_runs_scan(monkeypatch, tmp_path):
