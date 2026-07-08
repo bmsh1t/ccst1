@@ -1231,6 +1231,9 @@ def test_autopilot_command_md_bootstraps_recon_first_and_cache_aware():
     assert "python3 tools/context_pack.py --target target.com" in text
     assert 'print({"ctf_mode": f(".")})' in text
     assert text.index('print({"ctf_mode": f(".")})') < text.index("python3 tools/autopilot_state.py --target target.com")
+    assert "Startup anti-loop" in text
+    assert "run the ctf-mode + freshness/state check once per invocation" in text
+    assert "If `hunt.py --recon-only` is already running in the background, do not start another one" in text
     assert "not a pre-flight checklist" in text
     assert "1-2 knowledge cards" in text
 
@@ -1438,6 +1441,9 @@ def test_autopilot_agent_md_bootstraps_with_context_pack_without_coverage_first(
     assert "Existing target startup is cache-aware" in text
     assert "python3 tools/context_pack.py --target <target>" in text
     assert "python3 tools/autopilot_state.py --target <target>" in text
+    assert "Startup anti-loop" in text
+    assert "run ctf-mode + freshness/state check once per invocation" in text
+    assert "Repeating startup commands is not progress" in text
     four_layer = text.split("## Four-Layer Runtime", 1)[1].split("## Case-State First", 1)[0]
     assert "python3 tools/coverage_matrix.py rebuild --target <target>" not in four_layer
     assert "python3 tools/coverage_matrix.py find-gaps --target <target>" not in four_layer

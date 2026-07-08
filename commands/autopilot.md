@@ -41,7 +41,6 @@ python3 tools/context_pack.py --target target.com
 # If app-like/SPA/auth/workflow/API surface appears, import browser MCP evidence before scanner hints dominate.
 python3 tools/hunt.py --target target.com --scan-only --quick
 ```
-
 Existing target startup is cache-aware and starts by surfacing ctf mode:
 
 ```bash
@@ -50,10 +49,7 @@ python3 tools/autopilot_state.py --target target.com
 python3 tools/surface.py --target target.com
 python3 tools/context_pack.py --target target.com
 ```
-
-Refresh recon only when missing, thin, stale, or contradicted by fresh evidence.
-For existing targets, run a closed-state sanity check before executing a
-historical `continue_last_focus`, resume target, or `/surface` score hint:
+Startup anti-loop: run the ctf-mode + freshness/state check once per invocation. If `hunt.py --recon-only` is already running in the background, do not start another one; wait/poll for output, then continue to surface/context/browser. Refresh recon only when missing, thin, stale, or contradicted by fresh evidence. For existing targets, run a closed-state sanity check before executing a historical `continue_last_focus`, resume target, or `/surface` score hint:
 
 ```bash
 python3 tools/checkpoint.py --target target.com --no-refresh-coverage
