@@ -2102,7 +2102,23 @@ def hunt_target(
         )
 
     if not scan_only:
-        result["recon"] = run_recon(canonical_target, quick=quick)
+        try:
+            result["recon"] = run_recon(canonical_target, quick=quick)
+        except Exception:
+            if recon_only:
+                # recon phase 已经退出（异常也是退出）。先覆盖 running marker，
+                # 避免下一轮 autopilot 被旧 `recon_running` 卡住；异常继续向上抛。
+                _persist_runtime_state(
+                    canonical_target,
+                    mode="recon_only",
+                    current_stage="recon",
+                    last_completed_step="run_recon",
+                    recon_completed=False,
+                    scan_completed=False,
+                    reports_generated=0,
+                    ctf_mode=ctf_mode,
+                )
+            raise
         if not result["recon"]:
             log("warn", f"Recon had issues for {canonical_target}, continuing anyway...")
 
@@ -2110,6 +2126,18 @@ def hunt_target(
         return _batch_recon_result(canonical_target, result["recon"], started, ctf_mode=ctf_mode)
 
     if recon_only:
+        # phase 退出后立即覆盖 running marker；后续 profile/browser 失败也不会
+        # 让 `run_recon_started` 误导下一轮 autopilot。
+        _persist_runtime_state(
+            canonical_target,
+            mode="recon_only",
+            current_stage="recon",
+            last_completed_step="run_recon",
+            recon_completed=result["recon"],
+            scan_completed=False,
+            reports_generated=0,
+            ctf_mode=ctf_mode,
+        )
         elapsed_minutes = (time.monotonic() - started) / 60.0
         _update_target_profile(canonical_target, elapsed_minutes=elapsed_minutes, recon_completed=result["recon"])
         _auto_log_session_summary(
@@ -2160,11 +2188,45 @@ def hunt_target(
         ctf_mode=ctf_mode,
         enrichment_tools=result.get("enrichment", []),
     )
-    result["scan"] = run_vuln_scan(
+    try:
+        result["scan"] = run_vuln_scan(
+            canonical_target,
+            quick=quick,
+            scanner_full=scanner_full,
+            scanner_skip=scanner_skip,
+        )
+    except Exception:
+        # scanner phase 已经退出（异常也是退出）。先覆盖 running marker，
+        # 避免下一轮 autopilot 等待一个已经崩掉的 scan-only 进程。
+        _persist_runtime_state(
+            canonical_target,
+            mode="scan_only" if scan_only else ("quick" if quick else "full"),
+            current_stage="scan",
+            last_completed_step="run_vuln_scan",
+            recon_completed=recon_available,
+            scan_completed=False,
+            reports_generated=0,
+            cve_hunt=cve_hunt,
+            zero_day=zero_day,
+            ctf_mode=ctf_mode,
+            enrichment_tools=result.get("enrichment", []),
+        )
+        raise
+
+    # phase 退出后立即覆盖 running marker；后续 CVE/zero-day/browser/profile
+    # 失败也不会把 `run_scan_started` 留给下一轮 autopilot。
+    _persist_runtime_state(
         canonical_target,
-        quick=quick,
-        scanner_full=scanner_full,
-        scanner_skip=scanner_skip,
+        mode="scan_only" if scan_only else ("quick" if quick else "full"),
+        current_stage="scan",
+        last_completed_step="run_vuln_scan",
+        recon_completed=recon_available,
+        scan_completed=result["scan"],
+        reports_generated=0,
+        cve_hunt=cve_hunt,
+        zero_day=zero_day,
+        ctf_mode=ctf_mode,
+        enrichment_tools=result.get("enrichment", []),
     )
 
     # CVE hunting (only when explicitly requested)

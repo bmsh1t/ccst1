@@ -8,6 +8,7 @@ import types
 from pathlib import Path
 
 import hunt
+import pytest
 from memory.hunt_journal import HuntJournal
 from tools.auth_session import AuthSession
 
@@ -727,6 +728,31 @@ def test_classic_hunt_target_recon_only_skips_enrichment_and_scan(monkeypatch):
     assert runtime_updates[-1][1]["last_completed_step"] == "run_recon"
 
 
+def test_classic_hunt_target_recon_exception_closes_running_marker(monkeypatch):
+    domain = "example.com"
+    runtime_updates = []
+
+    def raise_recon(*_args, **_kwargs):
+        raise RuntimeError("recon crashed")
+
+    monkeypatch.setattr(hunt, "run_recon", raise_recon)
+    monkeypatch.setattr(hunt, "run_vuln_scan", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("scan must not run")))
+    monkeypatch.setattr(
+        hunt,
+        "_persist_runtime_state",
+        lambda target, **kwargs: runtime_updates.append((target, kwargs)),
+    )
+
+    with pytest.raises(RuntimeError, match="recon crashed"):
+        hunt.hunt_target(domain, recon_only=True)
+
+    assert runtime_updates[0][1]["mode"] == "recon_running"
+    assert runtime_updates[0][1]["last_completed_step"] == "run_recon_started"
+    assert runtime_updates[-1][1]["mode"] == "recon_only"
+    assert runtime_updates[-1][1]["last_completed_step"] == "run_recon"
+    assert runtime_updates[-1][1]["recon_completed"] is False
+
+
 def test_classic_hunt_target_scan_only_skips_enrichment_and_runs_scan(monkeypatch, tmp_path):
     domain = "example.com"
     calls = []
@@ -763,3 +789,36 @@ def test_classic_hunt_target_scan_only_skips_enrichment_and_runs_scan(monkeypatc
     assert runtime_updates[0][1]["last_completed_step"] == "run_scan_started"
     assert runtime_updates[-1][1]["mode"] == "scan_only"
     assert runtime_updates[-1][1]["last_completed_step"] == "run_vuln_scan"
+
+
+def test_classic_hunt_target_scan_exception_closes_running_marker(monkeypatch, tmp_path):
+    domain = "example.com"
+    runtime_updates = []
+    recon_dir = tmp_path / "recon" / domain
+    recon_dir.mkdir(parents=True)
+
+    def raise_scan(*_args, **_kwargs):
+        raise RuntimeError("scan crashed")
+
+    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
+    monkeypatch.setattr(hunt, "run_recon", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("recon must not run")))
+    monkeypatch.setattr(hunt, "run_vuln_scan", raise_scan)
+    monkeypatch.setattr(
+        hunt,
+        "_run_classic_enrichment_hints",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("enrichment must not run in scan-only mode")),
+    )
+    monkeypatch.setattr(
+        hunt,
+        "_persist_runtime_state",
+        lambda target, **kwargs: runtime_updates.append((target, kwargs)),
+    )
+
+    with pytest.raises(RuntimeError, match="scan crashed"):
+        hunt.hunt_target(domain, scan_only=True)
+
+    assert runtime_updates[0][1]["mode"] == "scan_running"
+    assert runtime_updates[0][1]["last_completed_step"] == "run_scan_started"
+    assert runtime_updates[-1][1]["mode"] == "scan_only"
+    assert runtime_updates[-1][1]["last_completed_step"] == "run_vuln_scan"
+    assert runtime_updates[-1][1]["scan_completed"] is False
