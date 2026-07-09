@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -38,7 +37,12 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from resume import load_resume_summary, load_structured_finding_followup
     from surface import load_surface_context, rank_surface
 try:
-    from tools.runtime_state import inspect_recon_artifacts, load_runtime_state
+    from tools.runtime_state import (
+        inspect_recon_artifacts,
+        load_runtime_state,
+        runtime_recon_in_progress,
+        runtime_scan_in_progress,
+    )
     from tools.structured_findings import (
         format_structured_findings_lines,
         format_validation_runner_candidate_lines,
@@ -46,7 +50,12 @@ try:
     )
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from runtime_state import inspect_recon_artifacts, load_runtime_state
+    from runtime_state import (  # type: ignore
+        inspect_recon_artifacts,
+        load_runtime_state,
+        runtime_recon_in_progress,
+        runtime_scan_in_progress,
+    )
     from structured_findings import (
         format_structured_findings_lines,
         format_validation_runner_candidate_lines,
@@ -394,56 +403,14 @@ def _describe_next_step(state: dict) -> str:
     return "follow the highest-confidence target shown below."
 
 
-def _parse_runtime_updated_at(value: str) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
-
-
 def _runtime_recon_in_progress(runtime_state: dict, *, stale_after_seconds: int = 7200) -> bool:
-    """Return True when hunt.py marked recon as started but not completed.
-
-    This avoids fragile `ps` detection: `autopilot_state.py` can read the
-    durable session breadcrumb, and stale markers expire instead of blocking
-    recon forever after a crashed shell.
-    """
-    workflow = str(runtime_state.get("last_executed_workflow") or "").strip()
-    mode = str(runtime_state.get("mode", "") or "").strip()
-    # `last_executed_workflow` 是比 mode 更明确的完成/启动信号。
-    # 如果完成态写入成功但旧 mode 意外残留为 *_running，不能继续误判为运行中。
-    if workflow and workflow != "run_recon_started":
-        return False
-    if workflow != "run_recon_started" and mode != "recon_running":
-        return False
-    updated_at = _parse_runtime_updated_at(runtime_state.get("updated_at", ""))
-    if updated_at is None:
-        return True
-    return (datetime.now(timezone.utc) - updated_at).total_seconds() <= stale_after_seconds
+    """Compatibility wrapper around the shared runtime-state gate."""
+    return runtime_recon_in_progress(runtime_state, stale_after_seconds=stale_after_seconds)
 
 
 def _runtime_scan_in_progress(runtime_state: dict, *, stale_after_seconds: int = 7200) -> bool:
-    """Return True when hunt.py marked scanner breadth work as started but not completed.
-
-    The marker is a durable breadcrumb, not a vulnerability judgment. It only
-    prevents repeated `--scan-only --quick` launches when the previous scanner
-    process is still within its expected runtime window.
-    """
-    workflow = str(runtime_state.get("last_executed_workflow") or "").strip()
-    mode = str(runtime_state.get("mode", "") or "").strip()
-    # `last_executed_workflow` 是比 mode 更明确的完成/启动信号。
-    # 如果完成态写入成功但旧 mode 意外残留为 *_running，不能继续误判为运行中。
-    if workflow and workflow != "run_scan_started":
-        return False
-    if workflow != "run_scan_started" and mode != "scan_running":
-        return False
-    updated_at = _parse_runtime_updated_at(runtime_state.get("updated_at", ""))
-    if updated_at is None:
-        return True
-    return (datetime.now(timezone.utc) - updated_at).total_seconds() <= stale_after_seconds
+    """Compatibility wrapper around the shared runtime-state gate."""
+    return runtime_scan_in_progress(runtime_state, stale_after_seconds=stale_after_seconds)
 
 
 def _candidate_items_for_next_action(ranked: dict, next_action: str) -> list[dict]:

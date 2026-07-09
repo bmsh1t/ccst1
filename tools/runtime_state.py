@@ -40,6 +40,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key
 
 SCHEMA_VERSION = 2
+RUNNING_MARKER_STALE_SECONDS = 7200
 
 # Whitelist of fields that actually get persisted to session.json.
 # Anything else passed to update_runtime_state() is silently dropped.
@@ -77,6 +78,57 @@ LEGACY_FIELD_RENAMES = {
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_runtime_updated_at(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def runtime_recon_in_progress(
+    runtime_state: dict,
+    *,
+    stale_after_seconds: int = RUNNING_MARKER_STALE_SECONDS,
+) -> bool:
+    """Return True when recon is freshly marked as started but not completed.
+
+    这是执行态判断，不是攻击面判断。`last_executed_workflow` 比 `mode`
+    更权威：如果完成态已写入，即使旧 `mode` 残留为 `recon_running`，
+    也不能继续阻塞后续 AI 判断。
+    """
+    workflow = str(runtime_state.get("last_executed_workflow") or "").strip()
+    mode = str(runtime_state.get("mode", "") or "").strip()
+    if workflow and workflow != "run_recon_started":
+        return False
+    if workflow != "run_recon_started" and mode != "recon_running":
+        return False
+    updated_at = _parse_runtime_updated_at(runtime_state.get("updated_at", ""))
+    if updated_at is None:
+        return True
+    return (datetime.now(timezone.utc) - updated_at).total_seconds() <= stale_after_seconds
+
+
+def runtime_scan_in_progress(
+    runtime_state: dict,
+    *,
+    stale_after_seconds: int = RUNNING_MARKER_STALE_SECONDS,
+) -> bool:
+    """Return True when scan-only quick is freshly marked as running."""
+    workflow = str(runtime_state.get("last_executed_workflow") or "").strip()
+    mode = str(runtime_state.get("mode", "") or "").strip()
+    if workflow and workflow != "run_scan_started":
+        return False
+    if workflow != "run_scan_started" and mode != "scan_running":
+        return False
+    updated_at = _parse_runtime_updated_at(runtime_state.get("updated_at", ""))
+    if updated_at is None:
+        return True
+    return (datetime.now(timezone.utc) - updated_at).total_seconds() <= stale_after_seconds
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
@@ -327,6 +379,31 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "missing": missing,
         "warnings": warnings,
     }
+
+
+def runtime_wait_action(
+    repo_root: str | Path,
+    target: str,
+    *,
+    stale_after_seconds: int = RUNNING_MARKER_STALE_SECONDS,
+) -> str:
+    """Return the transient wait action required by fresh runtime markers.
+
+    This is the shared egress guard for Claude-facing status views. It only
+    prevents duplicate long-running phases; it must not close queue items,
+    suppress attack surface, or encode vulnerability value.
+    """
+    resolved_target = canonical_target_value(target)
+    runtime = load_runtime_state(repo_root, resolved_target)
+    recon = inspect_recon_artifacts(repo_root, resolved_target)
+    if (
+        runtime_recon_in_progress(runtime, stale_after_seconds=stale_after_seconds)
+        and not bool(recon.get("ready"))
+    ):
+        return "wait_recon"
+    if runtime_scan_in_progress(runtime, stale_after_seconds=stale_after_seconds):
+        return "wait_scan"
+    return ""
 
 
 # ─── Derived view ───────────────────────────────────────────────────────────

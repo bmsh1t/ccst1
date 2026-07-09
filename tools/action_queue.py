@@ -23,9 +23,11 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.high_value_signals import classify_high_value_signal
+    from tools.runtime_state import runtime_wait_action
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from high_value_signals import classify_high_value_signal  # type: ignore
+    from runtime_state import runtime_wait_action  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -714,22 +716,65 @@ def ingest_checkpoint(repo_root: Path | str, target: str, *, checkpoint: dict | 
         checkpoint = build_checkpoint(repo_root, target=target)
 
     queue = load_queue(repo_root, target)
+    current_runtime_wait = runtime_wait_action(repo_root, target)
+    runtime_wait_projection = current_runtime_wait in {"wait_recon", "wait_scan"} or str(
+        checkpoint.get("decision") or checkpoint.get("next_action") or ""
+    ) in {
+        "wait_recon",
+        "wait_scan",
+    }
     actions = [
         _checkpoint_item_to_action(target, item)
         for item in checkpoint.get("next_action_queue", []) or []
         if isinstance(item, dict)
     ]
     stats = upsert_actions(queue, actions)
-    stats["retired_stale"] = _retire_stale_checkpoint_actions(queue, actions)
-    stats["retired_superseded"] = _retire_superseded_candidate_actions(queue)
+    if runtime_wait_projection:
+        # wait_* 是临时执行态，不代表旧 action 过时；不要因为 checkpoint
+        # 暂时输出空队列就把可恢复的验证/报告/深挖项标成 n/a。
+        stats["retired_stale"] = 0
+        stats["retired_superseded"] = 0
+    else:
+        stats["retired_stale"] = _retire_stale_checkpoint_actions(queue, actions)
+        stats["retired_superseded"] = _retire_superseded_candidate_actions(queue)
     queue["actions"].sort(key=_action_sort_key)
     path = save_queue(repo_root, target, queue)
     return {
         "path": str(path),
         "target": canonical_target_value(target),
         "stats": stats,
-        "next": select_next_action(queue),
-        "summary": summarize_queue(queue),
+        "next": select_next_action_for_target(repo_root, target, queue),
+        "summary": summarize_queue(queue, repo_root=repo_root, target=target),
+    }
+
+
+def _runtime_wait_queue_action(wait_action: str, target: str) -> dict:
+    """Build a transient queue-shaped pointer for active long-running phases."""
+    resolved = canonical_target_value(target)
+    if wait_action == "wait_recon":
+        action = (
+            f"Wait/poll the existing /recon {resolved} run; do not launch another recon. "
+            "Resume the queued action after the running marker clears or becomes stale."
+        )
+    else:
+        action = (
+            f"Wait/poll the existing scan-only quick run for {resolved}; do not launch another "
+            "scan-only quick. Resume the queued action after the running marker clears or becomes stale."
+        )
+    return {
+        "id": "runtime-wait",
+        "target": resolved,
+        "status": "transient",
+        "type": wait_action,
+        "priority": 1000,
+        "evidence_type": "runtime-state",
+        "evidence": "Fresh long-running phase marker is active.",
+        "next_question": "Has the existing long-running phase completed, cleared, or become stale?",
+        "action": action,
+        "command_hint": "poll existing run; do not dequeue or start another long-running phase",
+        "source": "runtime_state",
+        "redline_required": False,
+        "stop_condition": "running marker clears, completes, or becomes stale",
     }
 
 
@@ -771,6 +816,23 @@ def select_next_action(queue: dict) -> dict:
     return candidates[0]
 
 
+def select_next_action_for_target(
+    repo_root: Path | str,
+    target: str,
+    queue: dict | None = None,
+) -> dict:
+    """Select next action, but let fresh runtime wait markers preempt old queue rows.
+
+    The preemption is transient and non-destructive: queued validation/report/
+    surface work remains on disk and becomes selectable again when the marker
+    clears or expires.
+    """
+    wait_action = runtime_wait_action(repo_root, target)
+    if wait_action in {"wait_recon", "wait_scan"}:
+        return _runtime_wait_queue_action(wait_action, target)
+    return select_next_action(queue if queue is not None else load_queue(repo_root, target))
+
+
 def resolve_action(
     repo_root: Path | str,
     *,
@@ -803,8 +865,8 @@ def resolve_action(
             "id": action_id,
             "previous_status": previous,
             "status": normalized,
-            "next": select_next_action(queue),
-            "summary": summarize_queue(queue),
+            "next": select_next_action_for_target(repo_root, target, queue),
+            "summary": summarize_queue(queue, repo_root=repo_root, target=target),
         }
         if coverage_update:
             response["coverage_update"] = coverage_update
@@ -814,12 +876,22 @@ def resolve_action(
     raise KeyError(f"action not found: {action_id}")
 
 
-def summarize_queue(queue: dict) -> dict:
+def summarize_queue(
+    queue: dict,
+    *,
+    repo_root: Path | str | None = None,
+    target: str | None = None,
+) -> dict:
     actions = [item for item in queue.get("actions", []) if isinstance(item, dict)]
     by_status = Counter(str(item.get("status") or "queued") for item in actions)
     by_type = Counter(str(item.get("type") or "next-action") for item in actions)
     active = [item for item in actions if str(item.get("status") or "queued") in ACTIVE_STATUSES]
     final = [item for item in actions if str(item.get("status") or "") in FINAL_STATUSES]
+    selected = (
+        select_next_action_for_target(repo_root, target, queue)
+        if repo_root is not None and target
+        else select_next_action(queue)
+    )
     return {
         "target": queue.get("target", ""),
         "total": len(actions),
@@ -827,7 +899,7 @@ def summarize_queue(queue: dict) -> dict:
         "final": len(final),
         "by_status": dict(sorted(by_status.items())),
         "by_type": dict(sorted(by_type.items())),
-        "next_id": (select_next_action(queue) or {}).get("id", ""),
+        "next_id": (selected or {}).get("id", ""),
     }
 
 
@@ -851,9 +923,13 @@ def format_action(action: dict) -> str:
     return "\n".join(lines)
 
 
-def format_summary(queue: dict) -> str:
-    summary = summarize_queue(queue)
-    next_action = select_next_action(queue)
+def format_summary(queue: dict, *, repo_root: Path | str | None = None, target: str | None = None) -> str:
+    summary = summarize_queue(queue, repo_root=repo_root, target=target)
+    next_action = (
+        select_next_action_for_target(repo_root, target, queue)
+        if repo_root is not None and target
+        else select_next_action(queue)
+    )
     lines = [
         "ACTION QUEUE",
         f"- Target: {summary.get('target')}",
@@ -956,12 +1032,15 @@ def main(argv: list[str] | None = None) -> int:
                 safety=args.safety,
                 stop_condition=args.stop_condition,
             )
-            _print(result if args.json else format_summary(result["queue"]), as_json=args.json)
+            _print(
+                result if args.json else format_summary(result["queue"], repo_root=repo, target=args.target),
+                as_json=args.json,
+            )
             return 0
 
         if args.command == "next":
             queue = load_queue(repo, args.target)
-            action = select_next_action(queue)
+            action = select_next_action_for_target(repo, args.target, queue)
             _print(action if args.json else format_action(action), as_json=args.json)
             return 0 if action else 1
 
@@ -974,12 +1053,19 @@ def main(argv: list[str] | None = None) -> int:
                 result=args.result or args.evidence,
                 notes=args.notes,
             )
-            _print(result if args.json else format_summary(load_queue(repo, args.target)), as_json=args.json)
+            _print(
+                result if args.json else format_summary(load_queue(repo, args.target), repo_root=repo, target=args.target),
+                as_json=args.json,
+            )
             return 0
 
         if args.command == "summary":
             queue = load_queue(repo, args.target)
-            _print(summarize_queue(queue) if args.json else format_summary(queue), as_json=args.json)
+            _print(
+                summarize_queue(queue, repo_root=repo, target=args.target)
+                if args.json else format_summary(queue, repo_root=repo, target=args.target),
+                as_json=args.json,
+            )
             return 0
 
         if args.command == "list":
