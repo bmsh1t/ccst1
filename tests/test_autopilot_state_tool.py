@@ -1122,6 +1122,39 @@ class TestAutopilotState:
         assert "Recon: in progress" in output
         assert "wait/poll the existing /recon target.com run; do not launch another recon" in output
 
+    def test_recon_running_marker_preempts_validation_followup(self, tmp_path):
+        findings_dir = tmp_path / "findings" / "target.com"
+        findings_dir.mkdir(parents=True)
+        (findings_dir / "findings.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target": "target.com",
+                "findings": [
+                    {
+                        "id": "idor_wait_recon",
+                        "type": "idor",
+                        "severity": "high",
+                        "confidence": "confirmed",
+                        "url": "https://target.com/api/orders/1",
+                        "validation_status": "unvalidated",
+                        "report_status": "not_generated",
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+        update_runtime_state(
+            tmp_path,
+            "target.com",
+            mode="recon_running",
+            last_executed_workflow="run_recon_started",
+        )
+
+        state = build_autopilot_state(str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+
+        assert state["structured_findings"]["next_validation"]["id"] == "idor_wait_recon"
+        assert state["next_action"] == "wait_recon"
+
     def test_stale_recon_running_marker_allows_single_rerun(self, tmp_path):
         state_dir = tmp_path / "state" / "target.com"
         state_dir.mkdir(parents=True)
@@ -1185,6 +1218,54 @@ class TestAutopilotState:
         assert state["next_action"] == "wait_scan"
         assert "Scan: in progress" in output
         assert "do not launch another scan-only quick" in output
+
+    def test_scan_running_marker_preempts_validation_followup(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://target.com [200] [HTML] [OK] [100]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://target.com/api/orders/1\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        findings_dir = repo_root / "findings" / "target.com"
+        findings_dir.mkdir(parents=True)
+        (findings_dir / "findings.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target": "target.com",
+                "findings": [
+                    {
+                        "id": "idor_wait_scan",
+                        "type": "idor",
+                        "severity": "high",
+                        "confidence": "confirmed",
+                        "url": "https://target.com/api/orders/1",
+                        "validation_status": "unvalidated",
+                        "report_status": "not_generated",
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+        update_runtime_state(
+            repo_root,
+            "target.com",
+            mode="scan_running",
+            last_executed_workflow="run_scan_started",
+        )
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+
+        assert state["structured_findings"]["next_validation"]["id"] == "idor_wait_scan"
+        assert state["scan_in_progress"] is True
+        assert state["next_action"] == "wait_scan"
 
     def test_stale_scan_running_marker_allows_single_rerun(self, tmp_path):
         repo_root = tmp_path

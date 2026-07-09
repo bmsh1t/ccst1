@@ -276,17 +276,20 @@ def _pick_next_action(
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
     resume_targets = resume_targets if resume_targets is not None else _build_resume_targets(resume_summary)
-    if structured_findings.get("next_validation"):
-        return "validate_finding"
-
+    # Fresh running markers are execution-state gates. They must win over
+    # validation/report/surface priorities so a second Claude loop does not
+    # relaunch or ignore an already-running long phase.
+    if recon_in_progress:
+        return "wait_recon"
     if scan_in_progress:
         return "wait_scan"
+
+    if structured_findings.get("next_validation"):
+        return "validate_finding"
 
     if not has_recon:
         if structured_findings.get("validated_pending_report"):
             return "report_finding"
-        if recon_in_progress:
-            return "wait_recon"
         return "run_recon"
 
     latest_session = (resume_summary or {}).get("latest_session_summary") or {}
