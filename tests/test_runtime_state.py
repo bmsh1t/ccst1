@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from runtime_state import (
     DEPRECATED_FIELDS,
     PERSISTED_FIELDS,
@@ -41,6 +43,40 @@ def test_update_and_load_runtime_state(tmp_path):
     for field in ("current_stage", "pending_validation", "recon_completed"):
         assert field not in loaded, f"deprecated field leaked into v2 file: {field}"
     assert loaded["updated_at"]
+
+
+def test_update_runtime_state_preserves_existing_file_when_atomic_replace_fails(tmp_path, monkeypatch):
+    """写入失败时不能暴露半截 session.json，也不能破坏旧的可读状态。"""
+    update_runtime_state(
+        tmp_path,
+        "target.com",
+        mode="scan_running",
+        last_executed_workflow="run_scan_started",
+    )
+    state_file = tmp_path / "state" / "target.com" / "session.json"
+    original_text = state_file.read_text(encoding="utf-8")
+    original_replace = type(state_file).replace
+
+    def fail_session_replace(self, target):
+        if self.name.startswith(".session.json."):
+            raise OSError("simulated replace failure")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(type(state_file), "replace", fail_session_replace)
+
+    with pytest.raises(OSError, match="simulated replace failure"):
+        update_runtime_state(
+            tmp_path,
+            "target.com",
+            mode="scan_only",
+            last_executed_workflow="run_vuln_scan",
+        )
+
+    assert state_file.read_text(encoding="utf-8") == original_text
+    loaded = load_runtime_state(tmp_path, "target.com")
+    assert loaded["mode"] == "scan_running"
+    assert loaded["last_executed_workflow"] == "run_scan_started"
+    assert not list(state_file.parent.glob(".session.json.*.tmp"))
 
 
 def test_persisted_fields_whitelist_is_explicit():

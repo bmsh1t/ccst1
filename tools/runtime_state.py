@@ -27,6 +27,8 @@ v1 → v2 migration:
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -75,6 +77,39 @@ LEGACY_FIELD_RENAMES = {
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    """Atomically write JSON to `path` without exposing half-written state.
+
+    Multiple Claude sessions may read `state/<target>/session.json` while
+    `hunt.py` is writing `*_running` breadcrumbs. Direct `write_text()` can
+    briefly expose truncated JSON, causing readers to miss `wait_recon` /
+    `wait_scan`. Write in the same directory and replace atomically instead.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
 
 
 def _state_dir(repo_root: str | Path, target: str) -> Path:
@@ -153,8 +188,7 @@ def update_runtime_state(repo_root: str | Path, target: str, **fields) -> dict:
         payload.pop(legacy, None)
 
     path = state_path(repo_root, resolved_target)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_json_atomic(path, payload)
     return payload
 
 
