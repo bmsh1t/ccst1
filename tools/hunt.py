@@ -994,14 +994,8 @@ def _batch_recon_result(canonical_target, recon_ok, started, *, ctf_mode=False):
     if os.path.isfile(summary):
         log("info", f"Batch summary: {summary}")
 
-    _update_target_profile(canonical_target, elapsed_minutes=elapsed_minutes, recon_completed=bool(recon_ok))
-    _auto_log_session_summary(
-        canonical_target,
-        recon_completed=bool(recon_ok),
-        scan_completed=False,
-        cve_hunt=False,
-        zero_day=False,
-    )
+    # batch recon phase 已经退出；先覆盖可能存在的 `recon_running` marker。
+    # 后续 profile/journal 失败也不应让下一轮 autopilot 继续等待已结束的批量 recon。
     _persist_runtime_state(
         canonical_target,
         mode="batch_recon",
@@ -1013,6 +1007,14 @@ def _batch_recon_result(canonical_target, recon_ok, started, *, ctf_mode=False):
         cve_hunt=False,
         zero_day=False,
         ctf_mode=ctf_mode,
+    )
+    _update_target_profile(canonical_target, elapsed_minutes=elapsed_minutes, recon_completed=bool(recon_ok))
+    _auto_log_session_summary(
+        canonical_target,
+        recon_completed=bool(recon_ok),
+        scan_completed=False,
+        cve_hunt=False,
+        zero_day=False,
     )
 
     for label, path in (("completed", completed), ("failed", failed)):

@@ -753,6 +753,35 @@ def test_classic_hunt_target_recon_exception_closes_running_marker(monkeypatch):
     assert runtime_updates[-1][1]["recon_completed"] is False
 
 
+def test_classic_hunt_target_batch_profile_exception_closes_running_marker(monkeypatch, tmp_path):
+    scope_file = tmp_path / "scope.txt"
+    scope_file.write_text("example.com\n", encoding="utf-8")
+    runtime_updates = []
+
+    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
+    monkeypatch.setattr(hunt, "run_recon", lambda target, quick=False: True)
+    monkeypatch.setattr(
+        hunt,
+        "_persist_runtime_state",
+        lambda target, **kwargs: runtime_updates.append((target, kwargs)),
+    )
+    monkeypatch.setattr(
+        hunt,
+        "_update_target_profile",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("profile crashed")),
+    )
+    monkeypatch.setattr(hunt, "_auto_log_session_summary", lambda *args, **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="profile crashed"):
+        hunt.hunt_target(str(scope_file), recon_only=True)
+
+    assert runtime_updates[0][1]["mode"] == "recon_running"
+    assert runtime_updates[0][1]["last_completed_step"] == "run_recon_started"
+    assert runtime_updates[-1][1]["mode"] == "batch_recon"
+    assert runtime_updates[-1][1]["last_completed_step"] == "run_recon_batch"
+    assert runtime_updates[-1][1]["recon_completed"] is True
+
+
 def test_classic_hunt_target_scan_only_skips_enrichment_and_runs_scan(monkeypatch, tmp_path):
     domain = "example.com"
     calls = []
