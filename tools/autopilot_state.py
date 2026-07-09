@@ -408,12 +408,12 @@ def _runtime_recon_in_progress(runtime_state: dict, *, stale_after_seconds: int 
     durable session breadcrumb, and stale markers expire instead of blocking
     recon forever after a crashed shell.
     """
-    workflow = str(
-        runtime_state.get("last_executed_workflow")
-        or runtime_state.get("current_stage")
-        or ""
-    ).strip()
+    workflow = str(runtime_state.get("last_executed_workflow") or "").strip()
     mode = str(runtime_state.get("mode", "") or "").strip()
+    # `last_executed_workflow` 是比 mode 更明确的完成/启动信号。
+    # 如果完成态写入成功但旧 mode 意外残留为 *_running，不能继续误判为运行中。
+    if workflow and workflow != "run_recon_started":
+        return False
     if workflow != "run_recon_started" and mode != "recon_running":
         return False
     updated_at = _parse_runtime_updated_at(runtime_state.get("updated_at", ""))
@@ -429,12 +429,12 @@ def _runtime_scan_in_progress(runtime_state: dict, *, stale_after_seconds: int =
     prevents repeated `--scan-only --quick` launches when the previous scanner
     process is still within its expected runtime window.
     """
-    workflow = str(
-        runtime_state.get("last_executed_workflow")
-        or runtime_state.get("current_stage")
-        or ""
-    ).strip()
+    workflow = str(runtime_state.get("last_executed_workflow") or "").strip()
     mode = str(runtime_state.get("mode", "") or "").strip()
+    # `last_executed_workflow` 是比 mode 更明确的完成/启动信号。
+    # 如果完成态写入成功但旧 mode 意外残留为 *_running，不能继续误判为运行中。
+    if workflow and workflow != "run_scan_started":
+        return False
     if workflow != "run_scan_started" and mode != "scan_running":
         return False
     updated_at = _parse_runtime_updated_at(runtime_state.get("updated_at", ""))

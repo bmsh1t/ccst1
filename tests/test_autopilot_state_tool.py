@@ -1142,6 +1142,19 @@ class TestAutopilotState:
         assert state["recon_in_progress"] is False
         assert state["next_action"] == "run_recon"
 
+    def test_completed_recon_workflow_overrides_stale_running_mode(self, tmp_path):
+        update_runtime_state(
+            tmp_path,
+            "target.com",
+            mode="recon_running",
+            last_executed_workflow="run_recon",
+        )
+
+        state = build_autopilot_state(str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+
+        assert state["recon_in_progress"] is False
+        assert state["next_action"] != "wait_recon"
+
     def test_scan_running_runtime_state_waits_instead_of_restart_loop(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
@@ -1200,6 +1213,34 @@ class TestAutopilotState:
                 "updated_at": "2000-01-01T00:00:00Z",
             }),
             encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+
+        assert state["has_recon"] is True
+        assert state["scan_in_progress"] is False
+        assert state["next_action"] != "wait_scan"
+
+    def test_completed_scan_workflow_overrides_stale_running_mode(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [GraphQL] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/graphql\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        update_runtime_state(
+            repo_root,
+            "target.com",
+            mode="scan_running",
+            last_executed_workflow="run_vuln_scan",
         )
 
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
