@@ -22,6 +22,7 @@ from checkpoint import (
     format_checkpoint,
 )
 from evidence_ledger import record_entry
+from runtime_state import update_runtime_state
 from target_case_state import add_actor, add_backlog, add_object, add_session
 
 
@@ -97,6 +98,81 @@ def test_checkpoint_prioritizes_pending_validation(tmp_path):
         item["type"] == "validation"
         for item in checkpoint["next_action_queue"]
     )
+
+
+def test_checkpoint_runtime_wait_marker_preempts_pending_validation(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://target.com/api/orders/1"])
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True, exist_ok=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps({
+            "findings": [
+                {
+                    "id": "F-wait-scan",
+                    "type": "idor",
+                    "severity": "high",
+                    "confidence": "confirmed",
+                    "url": "https://target.com/api/orders/1",
+                    "validation_status": "unvalidated",
+                    "report_status": "not_generated",
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+    update_runtime_state(
+        tmp_path,
+        "target.com",
+        mode="scan_running",
+        last_executed_workflow="run_scan_started",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
+
+    assert checkpoint["decision"] == "wait_scan"
+    assert checkpoint["next_action"] == "wait_scan"
+    assert checkpoint["next_action_queue"] == []
+    assert checkpoint["default_candidate"] == {}
+    assert checkpoint["recommended_executable_action"]["type"] == "wait_scan"
+    assert checkpoint["recommended_executable_action"]["status"] == "transient"
+    assert checkpoint["target_write_back"]["next"] == []
+
+
+def test_checkpoint_runtime_recon_wait_marker_preempts_pending_validation(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps({
+            "findings": [
+                {
+                    "id": "F-wait-recon",
+                    "type": "idor",
+                    "severity": "high",
+                    "confidence": "confirmed",
+                    "url": "https://target.com/api/orders/1",
+                    "validation_status": "unvalidated",
+                    "report_status": "not_generated",
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+    update_runtime_state(
+        tmp_path,
+        "target.com",
+        mode="recon_running",
+        last_executed_workflow="run_recon_started",
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
+
+    assert checkpoint["decision"] == "wait_recon"
+    assert checkpoint["next_action"] == "wait_recon"
+    assert checkpoint["next_action_queue"] == []
+    assert checkpoint["default_candidate"] == {}
+    assert checkpoint["recommended_executable_action"]["type"] == "wait_recon"
+    assert checkpoint["recommended_executable_action"]["status"] == "transient"
+    assert checkpoint["target_write_back"]["next"] == []
 
 
 def test_checkpoint_displays_runner_candidates_as_advisory_evidence(tmp_path):

@@ -2353,6 +2353,31 @@ def _align_decision_with_default_candidate(decision: str, default_candidate: dic
     return decision
 
 
+def _runtime_wait_candidate(wait_action: str, target: str) -> dict:
+    """Return a transient status pointer for fresh long-running phase markers."""
+    if wait_action == "wait_recon":
+        action = (
+            f"Wait/poll the existing /recon {target} run; do not launch another recon. "
+            "Rerun checkpoint after the running marker clears or becomes stale."
+        )
+    else:
+        action = (
+            f"Wait/poll the existing scan-only quick run for {target}; do not launch "
+            "another scan-only quick. Rerun checkpoint after the running marker clears "
+            "or becomes stale."
+        )
+    return {
+        "id": "runtime-wait",
+        "priority": 1000,
+        "type": wait_action,
+        "status": "transient",
+        "action": action,
+        "command_hint": "poll existing run; do not enqueue persistent validation/report work yet",
+        "redline_required": False,
+        "stop_condition": "running marker clears, completes, or becomes stale",
+    }
+
+
 def _dead_end_proposals(state: dict, coverage_gaps: list[dict]) -> list[str]:
     if state.get("has_recon") and not coverage_gaps:
         stats = _surface_stats(state)
@@ -2568,16 +2593,29 @@ def build_checkpoint(
         resolved_target,
         _build_next_action_queue(next_items, resolved_target),
     )
-    if decision in {"continue", "hunt", "enrich", "checkpoint"} and not next_action_queue:
-        decision = "handoff"
     dead_ends = _dead_end_proposals(state, gaps)
-    default_candidate = _select_default_candidate(resolved_target, next_action_queue)
-    decision = _align_decision_with_default_candidate(decision, default_candidate)
-    # Backward compatibility: older command docs and tests still consume the
-    # historical field name. The new name makes the contract explicit: this is
-    # only the default pointer from the candidate set, not a replacement for
-    # Claude's final judgment.
-    recommended_executable_action = default_candidate
+    runtime_wait_action = str(state.get("next_action") or "")
+    if runtime_wait_action in {"wait_recon", "wait_scan"}:
+        # Fresh running markers are transient execution gates, not persistent
+        # queue work. Do not enqueue validation/report/surface candidates while
+        # a long-running phase is still marked active.
+        decision = runtime_wait_action
+        lead = []
+        next_items = []
+        dead_ends = []
+        next_action_queue = []
+        default_candidate = {}
+        recommended_executable_action = _runtime_wait_candidate(runtime_wait_action, resolved_target)
+    else:
+        if decision in {"continue", "hunt", "enrich", "checkpoint"} and not next_action_queue:
+            decision = "handoff"
+        default_candidate = _select_default_candidate(resolved_target, next_action_queue)
+        decision = _align_decision_with_default_candidate(decision, default_candidate)
+        # Backward compatibility: older command docs and tests still consume the
+        # historical field name. The new name makes the contract explicit: this is
+        # only the default pointer from the candidate set, not a replacement for
+        # Claude's final judgment.
+        recommended_executable_action = default_candidate
     next_action_label = str(
         recommended_executable_action.get("type")
         or decision
