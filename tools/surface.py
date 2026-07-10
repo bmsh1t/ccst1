@@ -25,6 +25,7 @@ try:
     from tools.action_queue import load_queue as load_action_queue
     from tools.attack_probe_filter import filter_attack_probes, is_attack_probe
     from tools.finding_index import load_finding_index
+    from tools.recon_adapter import ReconAdapter
     from tools.runtime_state import inspect_recon_artifacts, load_runtime_state
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
@@ -34,6 +35,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     from action_queue import load_queue as load_action_queue  # type: ignore
     from attack_probe_filter import filter_attack_probes, is_attack_probe
     from finding_index import load_finding_index
+    from recon_adapter import ReconAdapter
     from runtime_state import inspect_recon_artifacts, load_runtime_state
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 try:
@@ -805,7 +807,10 @@ def _has_actionable_review_evidence(item: dict) -> bool:
     return False
 
 
-def _build_review_pool(candidates: list[dict]) -> list[dict]:
+def _build_review_pool(
+    candidates: list[dict],
+    ffuf_candidates: list[dict] | None = None,
+) -> list[dict]:
     """Build an AI-first review pool without treating score as a verdict.
 
     `p1` / `p2` remain for backward-compatible callers. This pool is the
@@ -837,10 +842,73 @@ def _build_review_pool(candidates: list[dict]) -> list[dict]:
     for item in unresolved:
         if _has_actionable_review_evidence(item):
             _add_review_item(pool, seen, item, "top advisory score")
+    for item in ffuf_candidates or []:
+        _add_review_item(pool, seen, item, "ffuf-observed route; AI triage required")
     if not pool:
         for item in unresolved:
             _add_review_item(pool, seen, item, "top advisory score (low-evidence fallback)")
     return pool
+
+
+def _build_ffuf_review_candidates(
+    ffuf_summary: dict,
+    target: str,
+    candidates: list[dict],
+) -> list[dict]:
+    """构建中性 FFUF sample，不让其进入价值打分。"""
+    if not ffuf_summary.get("available"):
+        return []
+    by_url = {
+        str(item.get("url") or "").strip(): item
+        for item in candidates
+        if str(item.get("url") or "").strip()
+    }
+    result = []
+    for observation in (ffuf_summary.get("review_sample") or [])[:4]:
+        if not isinstance(observation, dict):
+            continue
+        url = str(observation.get("url") or "").strip()
+        if not url or not url_belongs_to_target(url, target):
+            continue
+        response_meta = {
+            key: observation.get(key)
+            for key in (
+                "status",
+                "length",
+                "words",
+                "lines",
+                "content_type",
+                "redirect_location",
+                "input",
+            )
+        }
+        existing = by_url.get(url)
+        if existing is not None:
+            existing["ffuf_observed"] = True
+            existing["ffuf_observation"] = response_meta
+            result.append(existing)
+            continue
+
+        parsed = urlparse(url)
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        result.append({
+            "url": url,
+            "host": parsed.netloc,
+            "path": path,
+            "score": 0,
+            "score_breakdown": [],
+            "reasons": ["FFUF observation"],
+            "suggested": (
+                "inspect cached response metadata and current business/browser/source context, "
+                "then let AI choose whether a focused replay is warranted"
+            ),
+            "tech_stack": [],
+            "ffuf_observed": True,
+            "ffuf_observation": response_meta,
+        })
+    return result
 
 
 def _load_intel_signals(recon_dir: Path) -> list[dict]:
@@ -1164,6 +1232,7 @@ def load_surface_context(
     ledger_entries = load_evidence_ledger_entries(repo_root, target)
     action_queue_entries = load_action_queue(repo_root, target).get("actions", [])
     intel_signals = _load_intel_signals(recon_dir)
+    ffuf_summary = ReconAdapter(recon_dir).get_ffuf_summary()
     js_intel = load_js_intel_hypotheses(findings_dir)
     source_intel = load_source_intel_hypotheses(findings_dir)
     manual_review_leads = _build_manual_review_lead_hints(findings_dir, storage_key)
@@ -1225,6 +1294,7 @@ def load_surface_context(
         "ledger_entries": ledger_entries,
         "action_queue_entries": action_queue_entries if isinstance(action_queue_entries, list) else [],
         "intel_signals": intel_signals,
+        "ffuf_summary": ffuf_summary,
         "js_intel": js_intel,
         "source_intel": source_intel,
         "manual_review_leads": manual_review_leads,
@@ -1758,6 +1828,13 @@ def rank_surface(context: dict) -> dict:
                 )
         candidates.append(entry)
 
+    ffuf_summary = context.get("ffuf_summary") or {}
+    ffuf_review_candidates = _build_ffuf_review_candidates(
+        ffuf_summary,
+        context["target"],
+        candidates,
+    )
+
     kill = []
     for host, item in context["hosts"].items():
         lower_host = host.lower()
@@ -1776,7 +1853,7 @@ def rank_surface(context: dict) -> dict:
     candidates.sort(key=lambda item: item["score"], reverse=True)
     p1 = [item for item in candidates if item["score"] >= 8][:8]
     p2 = [item for item in candidates if 3 <= item["score"] < 8][:8]
-    review_pool = _build_review_pool(candidates)
+    review_pool = _build_review_pool(candidates, ffuf_review_candidates)
 
     return {
         "available": True,
@@ -1799,6 +1876,7 @@ def rank_surface(context: dict) -> dict:
         "intel": {
             "signal_count": len(context.get("intel_signals", [])),
         },
+        "ffuf": ffuf_summary,
         "js_intel": js_intel_counts(js_intel),
         "source_intel": source_intel_counts(context.get("source_intel") or {}),
         "workflow_leads": workflow_leads,
@@ -1814,6 +1892,69 @@ def rank_surface(context: dict) -> dict:
             "kill": len(kill),
         },
     }
+
+
+def _format_ffuf_evidence_lines(ffuf: dict, target: str) -> list[str]:
+    """渲染有界 FFUF 事实，不判断 route 价值。"""
+    if not ffuf:
+        return []
+    if not ffuf.get("available"):
+        if not ffuf.get("needs_summary"):
+            return []
+        artifact = str(ffuf.get("artifact") or "dirs/ffuf_*.json*")
+        if not artifact.startswith("recon/"):
+            artifact = f"recon/{target_storage_key(target)}/{artifact}"
+        legacy_count = int(ffuf.get("legacy_raw_files", 0) or 0)
+        return [
+            "FFUF Evidence (unranked):",
+            f"- Cached artifact requires a compact summary: {artifact} (legacy files: {legacy_count})",
+        ]
+
+    lines = [
+        "FFUF Evidence (unranked; AI decides route value):",
+        (
+            f"- Observations: {int(ffuf.get('observations', 0) or 0)}, "
+            f"sample: {int(ffuf.get('sample_count', 0) or 0)}, "
+            f"overflow: {int(ffuf.get('overflow', 0) or 0)}, "
+            f"control failures: {int(ffuf.get('control_failed', 0) or 0)}, "
+            f"status: {json.dumps(ffuf.get('status_counts') or {}, sort_keys=True)}"
+        ),
+    ]
+    controls = ffuf.get("controls") or []
+    if controls:
+        rendered = [
+            f"{item.get('status', 0)}/{item.get('length', 0)}/{item.get('content_type', '') or '-'}"
+            for item in controls[:6]
+            if isinstance(item, dict)
+        ]
+        suffix = f" (+{len(controls) - len(rendered)} more)" if len(controls) > len(rendered) else ""
+        lines.append("- Random-miss controls: " + ", ".join(rendered) + suffix)
+    heavy = ffuf.get("heavy_signatures") or []
+    if heavy:
+        rendered = [
+            (
+                f"{item.get('signature_id', '-')}:status={item.get('status', 0)}"
+                f"/len={item.get('length', 0)}/count={item.get('count', 0)}"
+                f"/ratio={item.get('ratio', 0)}"
+                f"/control_match={str(bool(item.get('matches_random_miss_control'))).lower()}"
+            )
+            for item in heavy[:4]
+            if isinstance(item, dict)
+        ]
+        lines.append("- Heavy response signatures: " + ", ".join(rendered))
+    artifacts = ffuf.get("artifacts") or []
+    artifact_paths = [
+        (
+            str(item.get("path") or "")
+            if str(item.get("path") or "").startswith("recon/")
+            else f"recon/{target_storage_key(target)}/{item.get('path', '')}"
+        )
+        for item in artifacts[:2]
+        if isinstance(item, dict) and item.get("path")
+    ]
+    if artifact_paths:
+        lines.append("- Full evidence: " + ", ".join(artifact_paths))
+    return lines
 
 
 def format_surface_output(ranked: dict, target: str) -> str:
@@ -1872,7 +2013,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
         lines.append("Recon Cache:")
         lines.append(
             f"- Hosts: {counts.get('hosts', 0)}, "
-            f"surface inputs: {counts.get('api_urls', 0) + counts.get('param_urls', 0) + counts.get('js_endpoints', 0) + counts.get('browser_xhr_urls', 0) + counts.get('browser_api_urls', 0)}, "
+            f"surface inputs: {counts.get('api_urls', 0) + counts.get('param_urls', 0) + counts.get('js_endpoints', 0) + counts.get('browser_xhr_urls', 0) + counts.get('browser_api_urls', 0) + counts.get('ffuf_observations', 0)}, "
             f"structured findings: {counts.get('structured_findings', 0)}, "
             f"ports: {counts.get('open_ports', 0)}, "
             f"waf: {counts.get('waf_hits', 0)}, "
@@ -1894,6 +2035,10 @@ def format_surface_output(ranked: dict, target: str) -> str:
             + (f" (mode: {runtime_mode})" if runtime_mode else "")
         )
     if runtime_workflow or recon_artifacts.get("available"):
+        lines.append("")
+    ffuf_lines = _format_ffuf_evidence_lines(ranked.get("ffuf") or {}, target)
+    if ffuf_lines:
+        lines.extend(ffuf_lines)
         lines.append("")
     review_pool = ranked.get("review_pool") or []
     lines.extend([

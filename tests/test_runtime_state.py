@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from tools.recon_adapter import ReconAdapter
+
 from runtime_state import (
     DEPRECATED_FIELDS,
     PERSISTED_FIELDS,
@@ -274,3 +276,53 @@ def test_inspect_recon_artifacts_warns_on_surface_gaps(tmp_path):
     assert payload["ready"] is True
     assert payload["surface_inputs_ready"] is False
     assert payload["warnings"] == ["no URL, JS, browser, or structured finding surface artifacts found yet"]
+
+
+def test_inspect_recon_artifacts_accepts_compact_ffuf_surface(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir(parents=True)
+    (recon_dir / "js").mkdir(parents=True)
+    (recon_dir / "dirs").mkdir(parents=True)
+    (recon_dir / "live" / "httpx_full.txt").write_text(
+        "https://target.com [200] [Site]\n",
+        encoding="utf-8",
+    )
+    (recon_dir / "dirs" / "ffuf_results.jsonl").write_text(
+        json.dumps({
+            "url": "https://target.com/admin",
+            "status": 403,
+            "length": 123,
+            "words": 10,
+            "lines": 2,
+            "content-type": "text/html",
+            "input": {"FUZZ": "admin"},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    ReconAdapter(recon_dir).summarize_ffuf_results()
+
+    payload = inspect_recon_artifacts(tmp_path, "target.com")
+
+    assert payload["counts"]["ffuf_observations"] == 1
+    assert payload["surface_inputs_ready"] is True
+    assert payload["ffuf_needs_summary"] is False
+
+
+def test_inspect_recon_artifacts_reports_legacy_ffuf_without_parsing_it(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir(parents=True)
+    (recon_dir / "js").mkdir(parents=True)
+    (recon_dir / "dirs").mkdir(parents=True)
+    (recon_dir / "dirs" / "ffuf_target.com.json").write_text(
+        "{this intentionally does not parse",
+        encoding="utf-8",
+    )
+
+    payload = inspect_recon_artifacts(tmp_path, "target.com")
+
+    assert payload["counts"]["ffuf_observations"] == 0
+    assert payload["counts"]["ffuf_legacy_raw_files"] == 1
+    assert payload["ffuf_needs_summary"] is True
+    assert payload["warnings"] == ["FFUF artifacts found but compact summary is missing or stale"]

@@ -1,9 +1,43 @@
 """Tests for ReconAdapter — normalizes recon output across formats."""
 
+import gzip
 import json
+import os
 import pytest
 
-from tools.recon_adapter import ReconAdapter
+from tools.recon_adapter import ReconAdapter, main as recon_adapter_main
+
+
+def _ffuf_result(
+    url,
+    *,
+    status=200,
+    length=100,
+    words=10,
+    lines=2,
+    content_type="text/html",
+    fuzz="admin",
+):
+    return {
+        "url": url,
+        "status": status,
+        "length": length,
+        "words": words,
+        "lines": lines,
+        "content-type": content_type,
+        "redirectlocation": "",
+        "input": {"FUZZ": fuzz},
+        "host": url.split("/", 3)[2],
+    }
+
+
+def _write_ffuf_jsonl(path, records, *, append=False):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = "at" if append else "wt"
+    opener = gzip.open if path.name.endswith(".gz") else open
+    with opener(path, mode, encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record) + "\n")
 
 
 @pytest.fixture
@@ -303,3 +337,217 @@ class TestReconAdapterEdgeCases:
         adapter = ReconAdapter(recon_dir)
         subs = adapter.get_subdomains()
         assert len(subs) == 2
+
+
+class TestReconAdapterFfuf:
+    """FFUF artifacts stay lossless on disk and bounded in AI-facing views."""
+
+    def test_summary_streams_gzip_and_ignores_sensitive_fields(self, recon_dir, tmp_path):
+        artifact = recon_dir / "dirs" / "ffuf_results.jsonl.gz"
+        records = [
+            {
+                **_ffuf_result(
+                    f"https://target.com/path-{index}",
+                    status=403,
+                    length=123,
+                    fuzz=f"path-{index}",
+                ),
+                "headers": {"Authorization": "Bearer SHOULD_NOT_LEAK"},
+                "cookie": "session=SHOULD_NOT_LEAK",
+            }
+            for index in range(20)
+        ]
+        records.append(_ffuf_result("https://target.com/real", status=200, length=456))
+        _write_ffuf_jsonl(artifact, records)
+
+        controls = tmp_path / "controls.jsonl"
+        _write_ffuf_jsonl(
+            controls,
+            [_ffuf_result("https://target.com/__missing", status=403, length=123)],
+        )
+        adapter = ReconAdapter(recon_dir)
+        summary = adapter.summarize_ffuf_results(
+            attempted=1,
+            succeeded=1,
+            control_failed=1,
+            controls_path=controls,
+        )
+
+        assert summary["observations"] == 21
+        assert summary["status_counts"] == {"200": 1, "403": 20}
+        assert summary["control_failed"] == 1
+        assert summary["heavy_signatures"][0]["count"] == 20
+        assert summary["heavy_signatures"][0]["matches_random_miss_control"] is True
+        assert summary["sample_count"] == 2
+        summary_text = json.dumps(summary)
+        assert "SHOULD_NOT_LEAK" not in summary_text
+        assert adapter.get_ffuf_summary()["available"] is True
+
+    def test_reads_concatenated_gzip_members(self, recon_dir):
+        artifact = recon_dir / "dirs" / "ffuf_results.jsonl.gz"
+        _write_ffuf_jsonl(artifact, [_ffuf_result("https://target.com/a")])
+        _write_ffuf_jsonl(
+            artifact,
+            [_ffuf_result("https://target.com/b", status=405)],
+            append=True,
+        )
+
+        observations = list(ReconAdapter(recon_dir).iter_ffuf_observations())
+
+        assert [item["url"] for item in observations] == [
+            "https://target.com/a",
+            "https://target.com/b",
+        ]
+
+    def test_control_filter_size_requires_two_matching_200_responses(self, recon_dir, tmp_path):
+        controls = tmp_path / "controls.jsonl"
+        _write_ffuf_jsonl(
+            controls,
+            [
+                _ffuf_result("https://target.com/missing-a", status=200, length=321),
+                _ffuf_result("https://target.com/missing-b", status=200, length=321),
+            ],
+        )
+        adapter = ReconAdapter(recon_dir)
+        assert adapter.get_ffuf_control_filter_size(controls) == 321
+
+        _write_ffuf_jsonl(
+            controls,
+            [
+                _ffuf_result("https://target.com/missing-a", status=403, length=321),
+                _ffuf_result("https://target.com/missing-b", status=403, length=321),
+            ],
+        )
+        assert adapter.get_ffuf_control_filter_size(controls) == 0
+
+    def test_malformed_json_is_partial_evidence_not_total_failure(self, recon_dir):
+        artifact = recon_dir / "dirs" / "ffuf_results.jsonl"
+        artifact.write_text(
+            json.dumps(_ffuf_result("https://target.com/a"))
+            + "\n{broken\n"
+            + json.dumps(_ffuf_result("https://target.com/b", status=403))
+            + "\n",
+            encoding="utf-8",
+        )
+
+        summary = ReconAdapter(recon_dir).summarize_ffuf_results()
+
+        assert summary["observations"] == 2
+        assert summary["parse_error_count"] == 1
+        assert len(summary["parse_error_preview"]) == 1
+
+    def test_heavy_signatures_use_bounded_output(self, recon_dir):
+        artifact = recon_dir / "dirs" / "ffuf_results.jsonl.gz"
+        records = [
+            _ffuf_result(
+                f"https://target.com/noise-{index}",
+                status=403,
+                length=1000 + index,
+            )
+            for index in range(100)
+        ]
+        records.extend(
+            _ffuf_result(
+                f"https://target.com/dominant-{index}",
+                status=403,
+                length=777,
+            )
+            for index in range(100)
+        )
+        _write_ffuf_jsonl(artifact, records)
+
+        summary = ReconAdapter(recon_dir).summarize_ffuf_results()
+
+        assert len(summary["heavy_signatures"]) <= 8
+        dominant = next(item for item in summary["heavy_signatures"] if item["length"] == 777)
+        assert dominant["count"] == 100
+        assert dominant["ratio"] == 0.5
+
+    def test_bounded_page_filters_by_status_and_signature(self, recon_dir):
+        artifact = recon_dir / "dirs" / "ffuf_results.jsonl"
+        _write_ffuf_jsonl(
+            artifact,
+            [
+                _ffuf_result("https://target.com/a", status=403, length=123),
+                _ffuf_result("https://target.com/b", status=200, length=456),
+                _ffuf_result("https://target.com/c", status=403, length=123),
+            ],
+        )
+        adapter = ReconAdapter(recon_dir)
+        summary = adapter.summarize_ffuf_results()
+        signature_id = next(
+            item["signature_id"]
+            for item in summary["heavy_signatures"]
+            if item["status"] == 403
+        )
+
+        status_page = adapter.get_ffuf_observations(status=403, offset=1, limit=1)
+        signature_page = adapter.get_ffuf_observations(signature_id=signature_id, limit=10)
+
+        assert [item["url"] for item in status_page] == ["https://target.com/c"]
+        assert len(signature_page) == 2
+        with pytest.raises(ValueError):
+            adapter.get_ffuf_observations(limit=1001)
+
+    def test_stale_summary_is_not_consumed(self, recon_dir):
+        artifact = recon_dir / "dirs" / "ffuf_results.jsonl"
+        _write_ffuf_jsonl(artifact, [_ffuf_result("https://target.com/a")])
+        adapter = ReconAdapter(recon_dir)
+        adapter.summarize_ffuf_results()
+        stat = artifact.stat()
+        os.utime(artifact, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
+
+        summary = adapter.get_ffuf_summary()
+
+        assert summary["available"] is False
+        assert summary["stale"] is True
+        assert summary["needs_summary"] is True
+
+    def test_legacy_raw_is_only_read_explicitly(self, recon_dir):
+        legacy = recon_dir / "dirs" / "ffuf_target.com.json"
+        legacy.write_text(
+            json.dumps({
+                "config": {"headers": {"Authorization": "Bearer SECRET"}},
+                "results": [_ffuf_result("https://target.com/legacy", status=301)],
+            }),
+            encoding="utf-8",
+        )
+        adapter = ReconAdapter(recon_dir)
+
+        unavailable = adapter.get_ffuf_summary()
+        assert unavailable["needs_summary"] is True
+        assert unavailable["legacy_raw_files"] == 1
+        assert list(adapter.iter_ffuf_observations()) == []
+        assert len(list(adapter.iter_ffuf_observations(include_legacy=True))) == 1
+
+        summary = adapter.summarize_ffuf_results(include_legacy=True)
+        assert summary["observations"] == 1
+        assert "SECRET" not in json.dumps(summary)
+
+    def test_cli_summarizes_and_reads_bounded_pages(self, recon_dir, capsys):
+        artifact = recon_dir / "dirs" / "ffuf_results.jsonl"
+        _write_ffuf_jsonl(
+            artifact,
+            [
+                _ffuf_result("https://target.com/a", status=403),
+                _ffuf_result("https://target.com/b", status=200),
+            ],
+        )
+
+        assert recon_adapter_main([
+            "--recon-dir", str(recon_dir),
+            "--summarize-ffuf",
+            "--attempted", "1",
+            "--succeeded", "1",
+        ]) == 0
+        summary = json.loads(capsys.readouterr().out)
+        assert summary["observations"] == 2
+
+        assert recon_adapter_main([
+            "--recon-dir", str(recon_dir),
+            "--read-ffuf",
+            "--status", "403",
+            "--limit", "1",
+        ]) == 0
+        page = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert [item["url"] for item in page] == ["https://target.com/a"]

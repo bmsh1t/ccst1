@@ -34,9 +34,11 @@ from pathlib import Path
 
 try:
     from tools.finding_index import load_finding_index
+    from tools.recon_adapter import ReconAdapter
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from finding_index import load_finding_index
+    from recon_adapter import ReconAdapter
     from target_paths import canonical_target_value, target_storage_key
 
 SCHEMA_VERSION = 2
@@ -324,6 +326,13 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
             "warnings": [],
         }
 
+    ffuf_summary = ReconAdapter(recon_dir).get_ffuf_summary()
+    ffuf_observations = (
+        int(ffuf_summary.get("observations", 0) or 0)
+        if ffuf_summary.get("available")
+        else 0
+    )
+    ffuf_legacy_raw_files = int(ffuf_summary.get("legacy_raw_files", 0) or 0)
     counts = {
         "hosts": _line_count(recon_dir / "live" / "httpx_full.txt"),
         "api_urls": _line_count(recon_dir / "urls" / "api_endpoints.txt"),
@@ -331,6 +340,8 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "js_endpoints": _line_count(recon_dir / "js" / "endpoints.txt"),
         "browser_xhr_urls": _line_count(recon_dir / "browser" / "xhr_endpoints.txt"),
         "browser_api_urls": _line_count(recon_dir / "browser" / "api_endpoints.txt"),
+        "ffuf_observations": ffuf_observations,
+        "ffuf_legacy_raw_files": ffuf_legacy_raw_files,
     }
     exposure_counts, exposure_paths = _inspect_exposure_counts(recon_dir)
     infra_counts, infra_paths = _inspect_named_counts(recon_dir, INFRA_COUNT_PATHS)
@@ -354,6 +365,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
             "js_endpoints",
             "browser_xhr_urls",
             "browser_api_urls",
+            "ffuf_observations",
             "structured_findings",
         )
     )
@@ -362,7 +374,9 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     warnings = []
     if not host_inventory_ready:
         missing.append("live/httpx_full.txt")
-    if host_inventory_ready and not surface_inputs_ready:
+    if ffuf_summary.get("needs_summary"):
+        warnings.append("FFUF artifacts found but compact summary is missing or stale")
+    if host_inventory_ready and not surface_inputs_ready and not warnings:
         warnings.append("no URL, JS, browser, or structured finding surface artifacts found yet")
 
     return {
@@ -376,6 +390,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "exposure_paths": exposure_paths,
         "infra_ready": any(value > 0 for value in infra_counts.values()),
         "infra_paths": infra_paths,
+        "ffuf_needs_summary": bool(ffuf_summary.get("needs_summary")),
         "missing": missing,
         "warnings": warnings,
     }

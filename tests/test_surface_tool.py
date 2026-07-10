@@ -7,6 +7,7 @@ from memory.schemas import make_pattern_entry
 from memory.target_profile import make_target_profile, save_target_profile
 from runtime_state import update_runtime_state
 from surface import format_surface_output, load_surface_context, rank_surface, unsafe_skipped_id
+from tools.recon_adapter import ReconAdapter
 
 
 class TestSurfaceContext:
@@ -80,6 +81,96 @@ class TestSurfaceContext:
 
 
 class TestSurfaceRanking:
+
+    def test_ffuf_summary_enters_neutral_review_pool_without_off_target_promotion(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "dirs").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://target.com [200] [Site] [nginx] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "dirs" / "ffuf_results.jsonl").write_text(
+            "\n".join([
+                json.dumps({
+                    "url": "https://target.com/admin",
+                    "status": 403,
+                    "length": 123,
+                    "words": 10,
+                    "lines": 2,
+                    "content-type": "text/html",
+                    "input": {"FUZZ": "admin"},
+                }),
+                json.dumps({
+                    "url": "https://external.example/api",
+                    "status": 200,
+                    "length": 456,
+                    "words": 20,
+                    "lines": 3,
+                    "content-type": "application/json",
+                    "input": {"FUZZ": "api"},
+                }),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        ReconAdapter(recon_dir).summarize_ffuf_results()
+
+        context = load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+        ranked = rank_surface(context)
+        output = format_surface_output(ranked, "target.com")
+
+        assert context["ffuf_summary"]["available"] is True
+        assert ranked["ffuf"]["observations"] == 2
+        assert [item["url"] for item in ranked["review_pool"]] == ["https://target.com/admin"]
+        item = ranked["review_pool"][0]
+        assert item["ffuf_observed"] is True
+        assert item["score"] == 0
+        assert item["review_reason"] == "ffuf-observed route; AI triage required"
+        assert "external.example" not in [entry["url"] for entry in ranked["review_pool"]]
+        assert "FFUF Evidence (unranked; AI decides route value):" in output
+        assert "Full evidence: recon/target.com/dirs/ffuf_results.jsonl" in output
+
+    def test_ffuf_metadata_merges_into_stronger_existing_surface_once(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "dirs").mkdir(parents=True)
+        url = "https://api.target.com/api/users?id=1"
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [FastAPI] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(url + "\n", encoding="utf-8")
+        (recon_dir / "urls" / "with_params.txt").write_text(url + "\n", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        (recon_dir / "dirs" / "ffuf_results.jsonl").write_text(
+            json.dumps({
+                "url": url,
+                "status": 200,
+                "length": 456,
+                "words": 20,
+                "lines": 3,
+                "content-type": "application/json",
+                "input": {"FUZZ": "api/users?id=1"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        ReconAdapter(recon_dir).summarize_ffuf_results()
+
+        ranked = rank_surface(
+            load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+        )
+        matching = [item for item in ranked["review_pool"] if item["url"] == url]
+
+        assert len(matching) == 1
+        assert matching[0]["ffuf_observed"] is True
+        assert matching[0]["score"] > 0
+        assert matching[0]["review_reason"] != "ffuf-observed route; AI triage required"
 
     def test_ranks_graphql_and_untested_high(self, tmp_path):
         repo_root = tmp_path

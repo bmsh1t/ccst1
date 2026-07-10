@@ -14,7 +14,7 @@ def test_recon_engine_guards_common_set_e_pitfalls():
     assert 'cat "$RECON_DIR/subdomains/"*.txt 2>/dev/null | sort -u > "$RECON_DIR/subdomains/all.txt" || true' in text
     assert '"$HTTPX_BIN" -l "$HTTPX_INPUT_FILE"' in text
     assert "resolve_pd_httpx()" in text
-    assert 'FUZZ_COUNT=$((FUZZ_COUNT + 1))' in text
+    assert 'FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))' in text
     assert 'CONTENT_TYPE=$(curl -sI "${BB_AUTH_ARGS[@]}" --max-time 5 "${base_url}${path}" 2>/dev/null | grep -i content-type | head -1 || true)' in text
     assert "for host in network.hosts():" in text
     assert "if count >= limit:" in text
@@ -105,18 +105,35 @@ def test_recon_engine_filters_spa_fallback_directory_fuzz_noise():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
 
-    assert "detect_spa_fallback_size()" in text
-    assert "/__bbhunt_missing_${RANDOM}_${RANDOM}" in text
-    assert 'code_a=$(curl -sS -L "${BB_AUTH_ARGS[@]}" --max-time 8' in text
-    assert '[ "$code_a" = "200" ] && [ "$code_b" = "200" ]' in text
-    assert '[ "$size_a" -gt 0 ] && [ "$size_a" = "$size_b" ]' in text
+    assert 'FFUF_CONTROL_WORDLIST_TMP="$(mktemp' in text
+    assert "__bbhunt_missing_%s_%s" in text
+    assert '-w "$FFUF_CONTROL_WORDLIST_TMP"' in text
+    assert "-mc all" in text
+    assert "--ffuf-control-size" in text
+    assert "curl -sS -L" not in text
     assert 'SPA_FALLBACK_LOG="$RECON_DIR/dirs/spa_fallback.txt"' in text
-    assert 'SPA_FALLBACK_SIZE="$(detect_spa_fallback_size "$url" || true)"' in text
     assert 'FFUF_FILTER_ARGS=(-fs "$SPA_FALLBACK_SIZE")' in text
     assert "-ac \\" in text
     assert "-sf \\" not in text
     assert '"${FFUF_FILTER_ARGS[@]}" \\' in text
-    assert "SPA fallback detected for $url" in text
+    assert "two FFUF controls returned 200" in text
+    assert 'if [ "$SPA_FALLBACK_SIZE" -gt 0 ]; then' in text
+
+
+def test_recon_engine_streams_one_compressed_ffuf_artifact_without_coverage_merge():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'FFUF_RESULT_ARTIFACT="$RECON_DIR/dirs/ffuf_results.jsonl.gz"' in text
+    assert '-s -json 2>> "$FFUF_LOG" | gzip -c >> "$FFUF_RESULT_TMP"' in text
+    assert '--summarize-ffuf' in text
+    assert '--controls "$FFUF_CONTROL_TMP"' in text
+    assert '--control-failed "$FFUF_CONTROL_FAILED"' in text
+    assert 'FFUF_OBSERVATIONS' in text
+    assert 'FFUF_SUMMARY_OK="true"' in text
+    assert '-o "$RECON_DIR/dirs/ffuf_' not in text
+    ffuf_block = text[text.index('log_info "Phase 6: Directory Fuzzing"'):text.index('log_info "Phase 6.5: Config File Exposure Check"')]
+    assert 'urls/all.txt' not in ffuf_block
 
 
 def test_recon_engine_js_secret_regex_handles_camelcase_and_spacing():
@@ -249,7 +266,8 @@ def test_recon_engine_records_phase_manifest_without_value_judgment():
     assert '"status": status' in text
     assert "manifest records phase execution only, not surface value" in text
     assert "not tested clean" in text
-    assert "bounded host sampling, not complete directory coverage" in text
+    assert "bounded host sampling" in text
+    assert "not complete directory coverage" in text
     assert "raw all.txt remains the lossless backstop" in text
 
 

@@ -30,6 +30,7 @@ If `recon/<target>/` is missing, run `/recon target.com` first. If the output sa
 - `findings/<target>/js_intel/` from `/js-read`
 - `findings/<target>/source_intel/` from source intelligence
 - `recon/<target>/browser/` browser-observed XHR/API surface
+- `recon/<target>/dirs/ffuf_summary.json` compact FFUF observations; full results stay in `ffuf_results.jsonl.gz`
 
 ## What This Outputs
 
@@ -38,6 +39,7 @@ If `recon/<target>/` is missing, run `/recon target.com` first. If the output sa
 - Low-priority / reopenable hints; never exclusions
 - Target Memory: current goal, hypothesis, active leads, next actions, dead ends, and latest handoff
 - workflow leads from exposure, JS, source, browser, and scanner signals
+- unranked FFUF status/control/signature facts plus at most four neutral Review Pool samples
 - compact next actions for `/hunt` or `/autopilot`
 
 目标记忆只做软偏置：
@@ -50,9 +52,17 @@ If `recon/<target>/` is missing, run `/recon target.com` first. If the output sa
 
 1. Read the AI Review Pool first; choose the next target as Claude, using business impact, browser/source evidence, object/session context, and current findings.
 2. Treat every score as a hint, not a verdict. Do not discard lower-ranked surfaces solely because a regex score is low.
-3. If a candidate includes JS/source/browser/exposure hints, run that enrichment when it changes the next proof.
-4. If a candidate is auth-gated, preserve auth state and compare roles/objects rather than widening blindly.
-5. Before checkpoint/finish, run `/check-coverage` and write back the chosen candidate, blocker, or dead end with `/target`.
+3. For FFUF evidence, compare random-miss controls and heavy response signatures, then page the full artifact by status/signature when needed. A control match is a noise hypothesis, not an exclusion.
+4. If a candidate includes JS/source/browser/exposure hints, run that enrichment when it changes the next proof.
+5. If a candidate is auth-gated, preserve auth state and compare roles/objects rather than widening blindly.
+6. Before checkpoint/finish, run `/check-coverage` and write back the chosen candidate, blocker, or dead end with `/target`.
+
+Bounded FFUF evidence paging:
+
+```bash
+python3 tools/recon_adapter.py --recon-dir recon/<target_key> --read-ffuf --status 403 --offset 0 --limit 100
+python3 tools/recon_adapter.py --recon-dir recon/<target_key> --read-ffuf --signature-id <id> --offset 0 --limit 100
+```
 
 ## Important Signals
 

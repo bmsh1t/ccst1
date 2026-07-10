@@ -230,6 +230,10 @@ post_compress_raw_recon_urls() {
 
 cleanup_auth_tmpfiles() {
     [ -n "${WAFW00F_HEADERS_FILE:-}" ] && [ -f "$WAFW00F_HEADERS_FILE" ] && rm -f "$WAFW00F_HEADERS_FILE"
+    [ -n "${FFUF_RESULT_TMP:-}" ] && [ -f "$FFUF_RESULT_TMP" ] && rm -f "$FFUF_RESULT_TMP"
+    [ -n "${FFUF_CONTROL_TMP:-}" ] && [ -f "$FFUF_CONTROL_TMP" ] && rm -f "$FFUF_CONTROL_TMP"
+    [ -n "${FFUF_CONTROL_RUN_TMP:-}" ] && [ -f "$FFUF_CONTROL_RUN_TMP" ] && rm -f "$FFUF_CONTROL_RUN_TMP"
+    [ -n "${FFUF_CONTROL_WORDLIST_TMP:-}" ] && [ -f "$FFUF_CONTROL_WORDLIST_TMP" ] && rm -f "$FFUF_CONTROL_WORDLIST_TMP"
     return 0  # Always succeed: EXIT trap propagates its return code to the script
 }
 
@@ -1814,32 +1818,34 @@ log_info "Phase 6: Directory Fuzzing"
 
 WORDLIST_DIR="$BASE_DIR/wordlists"
 LEGACY_WORDLIST_DIR="$BASE_DIR/tools/wordlists"
+WORDLIST=""
+FFUF_ATTEMPTED=0
+FFUF_SUCCEEDED=0
+FFUF_FAILED=0
+FFUF_CONTROL_FAILED=0
+FFUF_OBSERVATIONS=0
+FFUF_PARSE_ERRORS=0
+FFUF_SAMPLE_COUNT=0
+FFUF_OVERFLOW=0
+FFUF_STATUS_COUNTS="{}"
+FFUF_HEAVY_SIGNATURES="-"
+FFUF_RESULT_TMP=""
+FFUF_CONTROL_TMP=""
+FFUF_CONTROL_RUN_TMP=""
+FFUF_CONTROL_WORDLIST_TMP=""
+FFUF_RESULT_ARTIFACT=""
+FFUF_PHASE_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/"
+FFUF_SUMMARY_ARTIFACT="-"
+FFUF_SKIP_REASON=""
+FFUF_SUMMARY_OK="false"
+DIR_FUZZ_STATUS="skipped"
+FFUF_LOG="$RECON_DIR/logs/ffuf.log"
 
-detect_spa_fallback_size() {
-    local base_url="$1"
-    local rand_a rand_b tmp_a tmp_b code_a code_b size_a size_b
-
-    rand_a="/__bbhunt_missing_${RANDOM}_${RANDOM}"
-    rand_b="/__bbhunt_missing_${RANDOM}_${RANDOM}"
-    tmp_a="$(mktemp)"
-    tmp_b="$(mktemp)"
-
-    code_a=$(curl -sS -L "${BB_AUTH_ARGS[@]}" --max-time 8 -o "$tmp_a" -w '%{http_code}' "${base_url%/}${rand_a}" 2>/dev/null || true)
-    code_b=$(curl -sS -L "${BB_AUTH_ARGS[@]}" --max-time 8 -o "$tmp_b" -w '%{http_code}' "${base_url%/}${rand_b}" 2>/dev/null || true)
-    size_a=$(wc -c < "$tmp_a" 2>/dev/null | tr -d ' ' || echo 0)
-    size_b=$(wc -c < "$tmp_b" 2>/dev/null | tr -d ' ' || echo 0)
-    rm -f "$tmp_a" "$tmp_b"
-
-    if [ "$code_a" = "200" ] && [ "$code_b" = "200" ] && [ "$size_a" -gt 0 ] && [ "$size_a" = "$size_b" ]; then
-        printf '%s\n' "$size_a"
-        return 0
-    fi
-    return 1
-}
-
-if command -v ffuf &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
-    # Select wordlist
-    WORDLIST=""
+if ! command -v ffuf >/dev/null 2>&1; then
+    FFUF_SKIP_REASON="ffuf not installed"
+elif [ ! -s "$RECON_DIR/live/urls.txt" ]; then
+    FFUF_SKIP_REASON="no live URLs"
+else
     if [ -f "$WORDLIST_DIR/common.txt" ]; then
         WORDLIST="$WORDLIST_DIR/common.txt"
     elif [ -f "$LEGACY_WORDLIST_DIR/common.txt" ]; then
@@ -1850,26 +1856,74 @@ if command -v ffuf &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
         WORDLIST="$LEGACY_WORDLIST_DIR/raft-medium-dirs.txt"
     elif [ -f /usr/share/wordlists/dirb/common.txt ]; then
         WORDLIST="/usr/share/wordlists/dirb/common.txt"
+    else
+        FFUF_SKIP_REASON="no wordlist"
+    fi
+fi
+
+if [ -n "$WORDLIST" ]; then
+    MAX_FUZZ=$([ "$QUICK_MODE" = "--quick" ] && echo 2 || echo 5)
+    SPA_FALLBACK_LOG="$RECON_DIR/dirs/spa_fallback.txt"
+    : > "$SPA_FALLBACK_LOG"
+    : > "$FFUF_LOG"
+    FFUF_CONTROL_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf_controls.XXXXXX")"
+    FFUF_RESULT_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf_results.XXXXXX")"
+
+    if command -v gzip >/dev/null 2>&1 && gzip -c /dev/null > "$FFUF_RESULT_TMP" 2>> "$FFUF_LOG"; then
+        FFUF_RESULT_ARTIFACT="$RECON_DIR/dirs/ffuf_results.jsonl.gz"
+        FFUF_USE_GZIP="true"
+    else
+        : > "$FFUF_RESULT_TMP"
+        FFUF_RESULT_ARTIFACT="$RECON_DIR/dirs/ffuf_results.jsonl"
+        FFUF_USE_GZIP="false"
     fi
 
-    if [ -n "$WORDLIST" ]; then
-        # Fuzz top 5 live hosts
-        FUZZ_COUNT=0
-        MAX_FUZZ=$([ "$QUICK_MODE" = "--quick" ] && echo 2 || echo 5)
-        SPA_FALLBACK_LOG="$RECON_DIR/dirs/spa_fallback.txt"
-        : > "$SPA_FALLBACK_LOG"
+    while IFS= read -r url && [ "$FFUF_ATTEMPTED" -lt "$MAX_FUZZ" ]; do
+        [ -n "$url" ] || continue
+        FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))
+        FFUF_FILTER_ARGS=()
+        FFUF_CONTROL_WORDLIST_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf-control-words.XXXXXX")"
+        FFUF_CONTROL_RUN_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf-control-run.XXXXXX")"
+        printf '__bbhunt_missing_%s_%s\n__bbhunt_missing_%s_%s\n' \
+            "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" > "$FFUF_CONTROL_WORDLIST_TMP"
 
-        while IFS= read -r url && [ "$FUZZ_COUNT" -lt "$MAX_FUZZ" ]; do
-            domain=$(echo "$url" | sed 's|https\?://||;s|[/:].*||')
-            SPA_FALLBACK_SIZE="$(detect_spa_fallback_size "$url" || true)"
-            FFUF_FILTER_ARGS=()
-            if [ -n "$SPA_FALLBACK_SIZE" ]; then
+        if ffuf -u "${url}/FUZZ" \
+            -w "$FFUF_CONTROL_WORDLIST_TMP" \
+            -mc all \
+            -s -json \
+            -t 1 \
+            -rate "$RATE_LIMIT" \
+            -timeout 10 \
+            "${BB_AUTH_ARGS[@]}" \
+            > "$FFUF_CONTROL_RUN_TMP" 2>> "$FFUF_LOG"; then
+            cat "$FFUF_CONTROL_RUN_TMP" >> "$FFUF_CONTROL_TMP"
+            if ! SPA_FALLBACK_SIZE="$(python3 "$BASE_DIR/tools/recon_adapter.py" \
+                --recon-dir "$RECON_DIR" \
+                --ffuf-control-size \
+                --controls "$FFUF_CONTROL_RUN_TMP" 2>> "$FFUF_LOG")"; then
+                SPA_FALLBACK_SIZE=0
+                FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + 1))
+            fi
+            if ! [[ "$SPA_FALLBACK_SIZE" =~ ^[0-9]+$ ]]; then
+                SPA_FALLBACK_SIZE=0
+                FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + 1))
+            fi
+            if [ "$SPA_FALLBACK_SIZE" -gt 0 ]; then
                 FFUF_FILTER_ARGS=(-fs "$SPA_FALLBACK_SIZE")
                 printf '%s\t%s\n' "$url" "$SPA_FALLBACK_SIZE" >> "$SPA_FALLBACK_LOG"
-                log_warn "SPA fallback detected for $url (unknown paths return 200 size=$SPA_FALLBACK_SIZE); ffuf will filter that size"
+                log_warn "SPA fallback observed for $url (two FFUF controls returned 200 size=$SPA_FALLBACK_SIZE); filtering that size"
             fi
-            log_step "Fuzzing: $url"
-            ffuf -u "${url}/FUZZ" \
+        else
+            FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + 1))
+            log_warn "FFUF random-miss controls failed for $url; continuing without a fallback size filter"
+        fi
+        rm -f "$FFUF_CONTROL_WORDLIST_TMP" "$FFUF_CONTROL_RUN_TMP"
+        FFUF_CONTROL_WORDLIST_TMP=""
+        FFUF_CONTROL_RUN_TMP=""
+
+        log_step "Fuzzing: $url"
+        if [ "$FFUF_USE_GZIP" = "true" ]; then
+            if ffuf -u "${url}/FUZZ" \
                 -w "$WORDLIST" \
                 -mc 200,301,302,403,405 \
                 -ac \
@@ -1878,37 +1932,124 @@ if command -v ffuf &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
                 -rate "$RATE_LIMIT" \
                 -timeout 10 \
                 "${BB_AUTH_ARGS[@]}" \
-                -o "$RECON_DIR/dirs/ffuf_${domain}.json" \
-                -of json 2>/dev/null || true
-            FUZZ_COUNT=$((FUZZ_COUNT + 1))
-        done < "$RECON_DIR/live/urls.txt"
+                -s -json 2>> "$FFUF_LOG" | gzip -c >> "$FFUF_RESULT_TMP"; then
+                FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + 1))
+            else
+                FFUF_FAILED=$((FFUF_FAILED + 1))
+                log_warn "FFUF failed for $url; any valid partial JSONL remains in the evidence artifact"
+            fi
+        else
+            if ffuf -u "${url}/FUZZ" \
+                -w "$WORDLIST" \
+                -mc 200,301,302,403,405 \
+                -ac \
+                "${FFUF_FILTER_ARGS[@]}" \
+                -t "$THREADS" \
+                -rate "$RATE_LIMIT" \
+                -timeout 10 \
+                "${BB_AUTH_ARGS[@]}" \
+                -s -json >> "$FFUF_RESULT_TMP" 2>> "$FFUF_LOG"; then
+                FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + 1))
+            else
+                FFUF_FAILED=$((FFUF_FAILED + 1))
+                log_warn "FFUF failed for $url; any valid partial JSONL remains in the evidence artifact"
+            fi
+        fi
+    done < "$RECON_DIR/live/urls.txt"
 
-        log_done "Directory fuzzing complete ($FUZZ_COUNT hosts)"
+    if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
+        mv -f "$FFUF_RESULT_TMP" "$FFUF_RESULT_ARTIFACT"
+        FFUF_RESULT_TMP=""
+        if [ "$FFUF_USE_GZIP" = "true" ]; then
+            rm -f "$RECON_DIR/dirs/ffuf_results.jsonl"
+        else
+            rm -f "$RECON_DIR/dirs/ffuf_results.jsonl.gz"
+        fi
+        FFUF_PHASE_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/$(basename "$FFUF_RESULT_ARTIFACT")"
+
+        if python3 "$BASE_DIR/tools/recon_adapter.py" \
+            --recon-dir "$RECON_DIR" \
+            --summarize-ffuf \
+            --controls "$FFUF_CONTROL_TMP" \
+            --attempted "$FFUF_ATTEMPTED" \
+            --succeeded "$FFUF_SUCCEEDED" \
+            --failed "$FFUF_FAILED" \
+            --control-failed "$FFUF_CONTROL_FAILED" \
+            >> "$FFUF_LOG" 2>&1; then
+            FFUF_SUMMARY_OK="true"
+            FFUF_SUMMARY_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/ffuf_summary.json"
+            if FFUF_SUMMARY_VALUES="$(python3 - "$RECON_DIR/dirs/ffuf_summary.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+heavy = ",".join(
+    f"{item.get('signature_id', '-')}:status={item.get('status', 0)}/count={item.get('count', 0)}/ratio={item.get('ratio', 0)}/control={str(bool(item.get('matches_random_miss_control'))).lower()}"
+    for item in (payload.get("heavy_signatures") or [])[:4]
+) or "-"
+print(
+    payload.get("observations", 0),
+    payload.get("parse_error_count", 0),
+    payload.get("sample_count", 0),
+    payload.get("overflow", 0),
+    json.dumps(payload.get("status_counts") or {}, separators=(",", ":")),
+    heavy,
+    sep="\t",
+)
+PY
+)"; then
+                IFS=$'\t' read -r FFUF_OBSERVATIONS FFUF_PARSE_ERRORS FFUF_SAMPLE_COUNT FFUF_OVERFLOW FFUF_STATUS_COUNTS FFUF_HEAVY_SIGNATURES <<< "$FFUF_SUMMARY_VALUES"
+            else
+                FFUF_SUMMARY_OK="false"
+                log_warn "FFUF summary was written but its compact counters could not be read"
+            fi
+        else
+            log_warn "ReconAdapter failed to summarize FFUF evidence; full result artifact was preserved"
+        fi
     else
-        log_warn "No wordlist found — run: python3 tools/hunt.py --setup-wordlists"
+        FFUF_SKIP_REASON="no usable base URLs"
+        rm -f "$FFUF_RESULT_TMP"
+        FFUF_RESULT_TMP=""
     fi
-else
-    log_warn "ffuf not installed or no live hosts — skipping directory fuzzing"
+
+    rm -f "$FFUF_CONTROL_TMP"
+    FFUF_CONTROL_TMP=""
 fi
 
-FFUF_HITS=$(find "$RECON_DIR/dirs" -name 'ffuf_*.json' 2>/dev/null | wc -l | tr -d ' ')
-DIR_FUZZ_STATUS="skipped"
-if command -v ffuf >/dev/null 2>&1 && [ -s "$RECON_DIR/live/urls.txt" ]; then
+if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
     DIR_FUZZ_STATUS="ok"
+    if [ "$FFUF_FAILED" -gt 0 ] || [ "$FFUF_CONTROL_FAILED" -gt 0 ] || \
+       [ "$FFUF_PARSE_ERRORS" -gt 0 ] || [ "$FFUF_SUMMARY_OK" != "true" ]; then
+        DIR_FUZZ_STATUS="partial"
+    fi
+    log_done "Directory fuzzing complete: attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED observations=$FFUF_OBSERVATIONS"
+else
+    log_warn "Directory fuzzing skipped: ${FFUF_SKIP_REASON:-no runnable inputs}"
 fi
+
+FFUF_PHASE_NOTE="bounded host sampling; attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED parse_errors=$FFUF_PARSE_ERRORS; not complete directory coverage"
+[ -n "$FFUF_SKIP_REASON" ] && FFUF_PHASE_NOTE="$FFUF_PHASE_NOTE; skipped_reason=$FFUF_SKIP_REASON"
 record_recon_phase \
     dir_fuzz \
     "$DIR_FUZZ_STATUS" \
-    "recon/${RECON_TARGET_KEY}/dirs/" \
-    "$FFUF_HITS" \
-    "bounded host sampling, not complete directory coverage"
+    "$FFUF_PHASE_ARTIFACT" \
+    "$FFUF_OBSERVATIONS" \
+    "$FFUF_PHASE_NOTE"
 emit_claude_hint \
     phase                dir_fuzz \
-    hosts_fuzzed         "$FFUF_HITS" \
-    ffuf_present         "$(command -v ffuf >/dev/null 2>&1 && echo true || echo false)"
-emit_claude_hint_actions \
-    "curl each 200 hit individually before validating" \
-    "spawn validator for any 200 on admin/internal/dev keyword hosts"
+    status               "$DIR_FUZZ_STATUS" \
+    hosts_attempted      "$FFUF_ATTEMPTED" \
+    hosts_succeeded      "$FFUF_SUCCEEDED" \
+    hosts_failed         "$FFUF_FAILED" \
+    observations         "$FFUF_OBSERVATIONS" \
+    status_counts        "$FFUF_STATUS_COUNTS" \
+    heavy_signatures     "$FFUF_HEAVY_SIGNATURES" \
+    review_sample_count  "$FFUF_SAMPLE_COUNT" \
+    review_overflow      "$FFUF_OVERFLOW" \
+    artifact             "$FFUF_PHASE_ARTIFACT" \
+    summary              "$FFUF_SUMMARY_ARTIFACT" \
+    interpretation       "AI review required; control matches are evidence hints, not exclusions"
 
 # ============================================================
 # Phase 6.5: Config File Exposure Check

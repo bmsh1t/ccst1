@@ -173,6 +173,26 @@ class TestSaveLoadRoundTrip:
 
 
 class TestRebuildMatrix:
+    def test_rebuild_does_not_expand_ffuf_only_evidence(self, tmp_path):
+        dirs = tmp_path / "recon" / "x.com" / "dirs"
+        dirs.mkdir(parents=True)
+        (dirs / "ffuf_results.jsonl").write_text(
+            json.dumps({
+                "url": "https://x.com/admin",
+                "status": 403,
+                "length": 123,
+                "words": 10,
+                "lines": 2,
+                "content-type": "text/html",
+                "input": {"FUZZ": "admin"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+
+        assert matrix["endpoints"] == []
+
     def test_rebuild_from_recon_urls(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [
             "/api/v1/admin/users",        # weight high (admin + api_v)
