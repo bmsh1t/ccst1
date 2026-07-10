@@ -294,7 +294,7 @@ Use this Core 4 when you want a clear Claude Code CLI loop from attack-surface d
 | `/web3-audit <contract>` | 10-class smart contract checklist + Foundry PoC |
 | `/token-scan <token>` | Meme/token risk review and rug-pull checklist |
 | `/autopilot target.com` | Full autonomous hunt loop with safety checkpoints |
-| `/surface target.com` | AI-ranked attack surface from recon + memory |
+| `/surface target.com` | AI Review Pool with advisory evidence from recon + memory |
 | `/pickup target.com` | Continue previous hunt — shows what's untested |
 | `/remember` | Save finding or pattern to persistent memory |
 | `/intel target.com` | CVEs + disclosures cross-referenced with your hunt history |
@@ -336,7 +336,7 @@ Specialized agents, each tuned for its role:
 |:---|:---|:---|
 | **autopilot** | Autonomous hunt loop with advisory guard telemetry | Prefer Sonnet -> current session fallback |
 | **recon-agent** | Subdomain enum, live hosts, URL crawl, nuclei | Prefer Haiku *(fast)* → current session fallback |
-| **recon-ranker** | Attack surface ranking from recon + memory | Prefer Haiku *(fast)* -> current session fallback |
+| **recon-ranker** | AI review and prioritization of recon + memory evidence | Prefer Haiku *(fast)* -> current session fallback |
 | **js-reader** | Reads cached JS materials into ranked attack-surface hypotheses | Prefer Sonnet -> current session fallback |
 | **report-writer** | Professional reports, impact-first, human tone | Prefer Opus *(quality)* → current session fallback |
 | **validator** | 7-Question Gate + 4-gate finding validation | Prefer Sonnet → current session fallback |

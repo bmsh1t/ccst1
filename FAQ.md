@@ -44,8 +44,9 @@ resolution may drift from what the project expects.
 
 - `/recon`: refreshes target recon caches and writes output to
   `recon/<target>/`.
-- `/surface`: reads existing recon plus hunt memory and ranks attack surface;
-  it does not actively exploit.
+- `/surface`: reads existing recon plus hunt memory and presents an AI Review
+  Pool with advisory evidence hints; Claude chooses the priority and next lane.
+  It does not actively exploit.
 - `/hunt`: starts the active testing flow and chooses directions based on
   cached data, memory, and the current target context.
 

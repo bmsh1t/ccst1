@@ -98,7 +98,7 @@ local practice / lab assets.
 | `/triage` | `/triage` — quick 7-Question Gate |
 | `/web3-audit` | `/web3-audit <contract.sol>` — smart contract audit |
 | `/autopilot` | `/autopilot target.com --normal` — autonomous hunt loop |
-| `/surface` | `/surface target.com` — ranked attack surface |
+| `/surface` | `/surface target.com` — AI Review Pool + advisory surface evidence |
 | `/pickup` | `/pickup target.com` — continue previous hunt |
 | `/remember` | `/remember` — log finding to hunt memory |
 | `/intel` | `/intel target.com` — fetch CVE + disclosure intel |
@@ -141,7 +141,7 @@ Use the shortest path from context to evidence and keep the long-form rules in
 their canonical files:
 
 ```text
-LOAD -> RANK -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDIDATES -> REPORT
+LOAD -> REVIEW EVIDENCE -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDIDATES -> REPORT
 ```
 
 - Read target history, cached recon, structured findings, and `/surface` output first.
@@ -160,7 +160,7 @@ LOAD -> RANK -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDIDATES -> RE
 - `web3-auditor` — smart contract bug class analysis
 - `chain-builder` — builds A→B→C exploit chains
 - `autopilot` — autonomous hunt loop (scope→recon→rank→hunt→validate→report)
-- `recon-ranker` — attack surface ranking from recon output + memory
+- `recon-ranker` — AI review and prioritization of recon output + memory
 - `js-reader` — LLM-derived attack-surface hypotheses from cached JS materials
 - `token-auditor` — fast meme coin/token rug pull and security analysis
 - `credential-hunter` — runs credential-prep stages and prepares controlled `/spray` decisions

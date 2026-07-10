@@ -279,15 +279,12 @@ Reopen immediately when fresh browser/XHR traffic, source/JS routes,
 authenticated workflow, API docs, object IDs, WebSocket/GraphQL, or business
 context creates a concrete next evidence action.
 
-## 6. AUTOMATION = HIGHEST DUP RATE
+## 6. AUTOMATION COLLECTS AND REPLAYS; AI DECIDES
 
-Use automation for RECON only (subdomain enum, live hosts, URL crawl).
-Manual testing finds unique bugs. Automated scanners find duplicates.
-
-```
-Automation: recon (subfinder, httpx, katana, nuclei)
-Manual: IDOR testing, auth bypass, business logic, race conditions
-```
+Use automation for repeatable collection, normalization, raw-evidence capture,
+and bounded replay/diff. Use AI reasoning for hypothesis generation, surface
+selection, cross-evidence links, validation design, and promotion/demotion.
+Scanner and replay output is evidence, not an attack-surface verdict.
 
 ## 7. IMPACT-FIRST HUNTING
 
@@ -314,15 +311,18 @@ previous target.
 One target deeply understood > ten targets shallowly tested.
 
 ```
-Read 5+ disclosed reports for the target before hunting
+Read disclosed reports on demand when target, technology, or workflow evidence
+suggests they can change the current hypothesis; do not block hunting on an
+arbitrary report count
 Understand the business domain
 Map the crown jewels (what would hurt the company most?)
 ```
 
 ## 10. THE SIBLING RULE
 
-> "Check EVERY sibling endpoint. If `/api/user/123/orders` requires auth,
-> check `/api/user/123/export`, `/api/user/123/delete`, `/api/user/123/share`."
+Check a bounded set of evidence-linked siblings. Derive them from a shared
+handler, object/action family, browser traffic, JS/source route, or API docs;
+do not brute-force every guessed sibling merely because its name is plausible.
 
 This rule explains 30% of all paid IDOR/auth bugs.
 
@@ -342,12 +342,14 @@ and move on.
 Features < 30 days old have the lowest security maturity.
 Monitor GitHub commits. Hunt new features first.
 
-## 13. PAYMENT LANE IS SKIPPED BY DEFAULT
+## 13. PAYMENT LANE REQUIRES SIDE-EFFECT CONTROL, NOT DEFAULT SKIP
 
-Do not prioritize payment, billing, refund, credit, wallet, coupon, gift-card,
-or fund-transfer testing unless the operator explicitly opts in for the current
-target. Prefer identity, access control, data exposure, admin, export/download,
-upload/import, webhook, GraphQL, OAuth/SAML, and SSRF-style surfaces.
+Payment, billing, refund, credit, wallet, coupon, gift-card, and fund-transfer
+workflows are high-value attack surfaces. Explore their objects, authorization,
+state transitions, previews, calculations, and test-owned reversible flows.
+Require the applicable red-line confirmation before a real charge, refund,
+transfer, balance mutation, or other irreversible side effect; do not turn that
+side-effect gate into a blanket skip of the lane.
 
 ## 14. 20-MINUTE ROTATION RULE
 
