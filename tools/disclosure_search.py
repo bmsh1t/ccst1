@@ -43,6 +43,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+try:
+    from tools.target_paths import canonical_target_value, target_storage_key
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+
 CACHE_DIR_NAME = "state/disclosure_cache"
 DEFAULT_CACHE_TTL_HOURS = 72
 
@@ -299,7 +304,7 @@ class DisclosedReport:
 
 
 def _cache_path(repo_root: Path, target: str) -> Path:
-    safe_target = target.replace("/", "_").replace(":", "_")
+    safe_target = target_storage_key(target).replace(":", "_")
     return repo_root / CACHE_DIR_NAME / f"{safe_target}.json"
 
 
@@ -624,9 +629,11 @@ def write_disclosed_patterns(
 ) -> Path:
     """Run the full pipeline; write evidence/<target>/disclosed_patterns.md."""
     repo = Path(repo_root) if repo_root else BASE_DIR
+    resolved_target = canonical_target_value(target)
+    target_key = target_storage_key(resolved_target)
 
     h1_client = None if no_mcp else _load_h1_client()
-    cache = _load_cache(repo, target, cache_ttl_hours) if not no_mcp else None
+    cache = _load_cache(repo, resolved_target, cache_ttl_hours) if not no_mcp else None
 
     if cache:
         same = [DisclosedReport(**item) for item in cache.get("same", [])]
@@ -637,10 +644,10 @@ def write_disclosed_patterns(
             # status from the cached buckets so old caches don't crash.
             coverage_status = "covered" if (same or similar) else "no_mcp_coverage"
     else:
-        tech_stack = _load_tech_stack_hint(repo, target)
-        same = search_same_target(target, h1_client=h1_client)
+        tech_stack = _load_tech_stack_hint(repo, target_key)
+        same = search_same_target(resolved_target, h1_client=h1_client)
         similar = search_similar_targets(
-            target, tech_stack=tech_stack, h1_client=h1_client
+            resolved_target, tech_stack=tech_stack, h1_client=h1_client
         )
         if h1_client is None:
             coverage_status = "mcp_unavailable"
@@ -649,8 +656,8 @@ def write_disclosed_patterns(
         else:
             coverage_status = "covered"
         if not no_mcp:
-            _save_cache(repo, target, {
-                "target": target,
+            _save_cache(repo, resolved_target, {
+                "target": resolved_target,
                 "same": [vars(r) for r in same],
                 "similar": [vars(r) for r in similar],
                 "coverage_status": coverage_status,
@@ -661,13 +668,13 @@ def write_disclosed_patterns(
     # B7: dedup against hunt-memory/patterns.jsonl before render. Skip when
     # MCP is unavailable — there is nothing to dedup against anyway.
     if coverage_status != "mcp_unavailable":
-        tech_stack_for_dedup = _load_tech_stack_hint(repo, target)
+        tech_stack_for_dedup = _load_tech_stack_hint(repo, target_key)
         same_dedup, same_stats = _dedup_against_local(
-            reports=same, target=target,
+            reports=same, target=resolved_target,
             tech_stack=tech_stack_for_dedup, repo_root=repo,
         )
         similar_dedup, similar_stats = _dedup_against_local(
-            reports=similar, target=target,
+            reports=similar, target=resolved_target,
             tech_stack=tech_stack_for_dedup, repo_root=repo,
         )
         dedup_header = _format_dedup_header(same_stats, similar_stats)
@@ -677,13 +684,13 @@ def write_disclosed_patterns(
         dedup_header = ""
 
     md = render_disclosed_patterns_md(
-        target, same, similar, seeds, coverage_status,
+        resolved_target, same, similar, seeds, coverage_status,
         same_dedup=same_dedup, similar_dedup=similar_dedup,
         dedup_header=dedup_header,
     )
 
     if output_path is None:
-        out_dir = repo / "evidence" / target
+        out_dir = repo / "evidence" / target_key
         out_dir.mkdir(parents=True, exist_ok=True)
         output_path = out_dir / "disclosed_patterns.md"
     else:

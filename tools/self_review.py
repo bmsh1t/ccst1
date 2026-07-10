@@ -36,6 +36,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+try:
+    from tools.target_paths import target_storage_key
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_paths import target_storage_key  # type: ignore
+
 
 VERDICT_NO_FLAW = "no_flaw_found"
 VERDICT_LIKELY = "likely_flaw"
@@ -82,7 +87,7 @@ def parse_verdict_file(path: Path | str) -> Optional[str]:
 def red_team_path_for(target: str, finding_id: str, repo_root: Path | str | None = None) -> Path:
     """Canonical evidence path for a red-team review of a single finding."""
     repo = Path(repo_root) if repo_root else BASE_DIR
-    return repo / "evidence" / target / "findings" / finding_id / "red_team.md"
+    return repo / "evidence" / target_storage_key(target) / "findings" / finding_id / "red_team.md"
 
 
 # ---------------------------------------------------------------------

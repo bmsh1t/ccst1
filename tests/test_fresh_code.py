@@ -269,6 +269,16 @@ class TestWriteFreshCode:
         assert out == custom
         assert custom.exists()
 
+    def test_url_target_uses_storage_key(self, tmp_path):
+        out = write_fresh_code(
+            "http://127.0.0.1:3002/#/login",
+            repo_root=tmp_path,
+            skip_network=True,
+        )
+
+        assert out == tmp_path / "evidence" / "127.0.0.1:3002" / "fresh_code.md"
+        assert "127.0.0.1:3002" in out.read_text(encoding="utf-8")
+
 
 class TestQuestionToToolDiscoverability:
     """PRD R5 + Contract 6: tool must appear in Q->Tool table."""

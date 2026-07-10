@@ -51,6 +51,7 @@ from tools.repo_source_artifacts import (
     repo_source_exposure_dir,
 )
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
+from tools.target_paths import target_storage_key
 
 # ── Ollama native tool calling (fallback / always available) ───────────────────
 try:
@@ -1401,7 +1402,7 @@ def _f4_intelligence_gate(
     """Return (passed, message). Pass if intelligence.md is absent OR has
     been read this session via `read_intelligence`."""
     repo = Path(repo_root) if repo_root else Path(__file__).resolve().parent
-    intel_path = repo / "evidence" / target / "intelligence.md"
+    intel_path = repo / "evidence" / target_storage_key(target) / "intelligence.md"
     if not intel_path.is_file():
         # No intelligence layer — gate satisfied. Per B2 R3 emit a single audit line.
         return True, f"[AUDIT] F4 gate: no intelligence layer for target {target!r}"
@@ -1418,14 +1419,21 @@ def _f4_intelligence_gate(
 def _finish_gate_block_or_warn(
     gate_msg: str,
     mode: str,
+    *,
+    passed: bool = False,
 ) -> tuple[bool, str]:
     """Return (block, message_to_emit).
+
+    已通过的 gate 仍可能返回 audit note；这类消息只原样展示，不能转成
+    finish 阻断。
 
     paranoid / normal: hard block (block=True) with the gate's SYSTEM message.
     yolo: do not block; emit a `[YOLO-OVERRIDE]` warning that includes the message.
     """
     if not gate_msg:
         return False, ""
+    if passed:
+        return False, gate_msg
     normalized = _normalize_autopilot_mode(mode)
     if normalized == "yolo":
         return False, f"[YOLO-OVERRIDE] {gate_msg}"
@@ -2061,7 +2069,7 @@ class ToolDispatcher:
 
     def _summarize_reports(self, domain: str, count: int) -> str:
         h = _h()
-        report_dir = os.path.join(h.REPORTS_DIR, domain)
+        report_dir = h._resolve_reports_dir(domain)
         lines = [f"generate_reports: {count} report(s) generated"]
         if os.path.isdir(report_dir):
             index_path = os.path.join(report_dir, "INDEX.json")
@@ -2110,7 +2118,7 @@ class ToolDispatcher:
         the local intelligence layer.
         """
         resolved_repo_root = Path(repo_root) if repo_root else Path(_h().BASE_DIR)
-        intel_path = resolved_repo_root / "evidence" / domain / "intelligence.md"
+        intel_path = resolved_repo_root / "evidence" / target_storage_key(domain) / "intelligence.md"
         if not intel_path.is_file():
             return (
                 f"No intelligence layer at {intel_path}. "
@@ -3582,13 +3590,15 @@ class ReActAgent:
                 # ── F3 invariant: coverage matrix gap gate ───────────────
                 if name == "finish":
                     f3_passed, f3_msg = _f3_coverage_gate(self.domain)
-                    if f3_msg:
-                        block, emit = _finish_gate_block_or_warn(f3_msg, self.autopilot_mode)
-                        if block:
-                            print(f"{YELLOW}[Agent] F3 finish-gate blocked finish.{NC}", flush=True)
-                            results.append(emit)
-                            continue
-                        # yolo: emit warning, allow finish through this gate
+                    block, emit = _finish_gate_block_or_warn(
+                        f3_msg, self.autopilot_mode, passed=f3_passed,
+                    )
+                    if block:
+                        print(f"{YELLOW}[Agent] F3 finish-gate blocked finish.{NC}", flush=True)
+                        results.append(emit)
+                        continue
+                    if emit:
+                        # yolo override，或已通过 gate 的 audit-only 消息。
                         results.append(emit)
 
                 # ── F4 invariant: intelligence layer consulted ───────────
@@ -3596,13 +3606,15 @@ class ReActAgent:
                     f4_passed, f4_msg = _f4_intelligence_gate(
                         self.domain, self.memory.completed_steps,
                     )
-                    if f4_msg:
-                        block, emit = _finish_gate_block_or_warn(f4_msg, self.autopilot_mode)
-                        if block:
-                            print(f"{YELLOW}[Agent] F4 finish-gate blocked finish.{NC}", flush=True)
-                            results.append(emit)
-                            continue
-                        # yolo or audit-only F4 (no intelligence file): emit and pass
+                    block, emit = _finish_gate_block_or_warn(
+                        f4_msg, self.autopilot_mode, passed=f4_passed,
+                    )
+                    if block:
+                        print(f"{YELLOW}[Agent] F4 finish-gate blocked finish.{NC}", flush=True)
+                        results.append(emit)
+                        continue
+                    if emit:
+                        # yolo override，或已通过 gate 的 audit-only 消息。
                         results.append(emit)
 
                 # ── Loop detection ───────────────────────────────────────

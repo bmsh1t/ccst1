@@ -49,6 +49,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+try:
+    from tools.target_paths import target_storage_key
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_paths import target_storage_key  # type: ignore
+
 
 DEFAULT_BUDGET_TOOLS = 12
 DEFAULT_TIMEOUT_SECS = 300        # 5 minutes per worker
@@ -157,7 +162,7 @@ def _scratch_dir_for(target: str, kind: str, worker_id: str, repo_root: Path) ->
 
     Layout: evidence/<target>/workers/<kind>-<worker_id>/
     """
-    return repo_root / "evidence" / target / "workers" / f"{kind}-{worker_id}"
+    return repo_root / "evidence" / target_storage_key(target) / "workers" / f"{kind}-{worker_id}"
 
 
 def _prepare_scratch(scratch_dir: Path) -> None:
@@ -516,7 +521,7 @@ def _append_to_target_findings(target: str, new_findings: list[dict], repo: Path
 
     Returns count of rows actually appended (after de-dup against existing).
     """
-    findings_path = repo / "findings" / target / "findings.json"
+    findings_path = repo / "findings" / target_storage_key(target) / "findings.json"
     findings_path.parent.mkdir(parents=True, exist_ok=True)
     existing = _read_json_safely(findings_path, [])
     if not isinstance(existing, list):
@@ -685,7 +690,7 @@ def worker_audit_extras(handle: WorkerHandle) -> dict:
 # ---------------------------------------------------------------------
 
 def _cli_workers_for_target(target: str, repo: Path) -> list[dict]:
-    base = repo / "evidence" / target / "workers"
+    base = repo / "evidence" / target_storage_key(target) / "workers"
     if not base.exists():
         return []
     out = []

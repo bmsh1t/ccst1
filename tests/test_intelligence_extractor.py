@@ -214,6 +214,25 @@ class TestWriteIntelligence:
         assert path == custom
         assert custom.exists()
 
+    def test_url_target_uses_canonical_storage_key_and_preserves_identity(self, tmp_path):
+        target = "http://127.0.0.1:3002/#/login"
+        _write(
+            tmp_path / "recon" / "127.0.0.1:3002" / "data.txt",
+            "ops@target.test\n",
+        )
+        intel_path = tmp_path / "evidence" / "127.0.0.1:3002" / "intelligence.md"
+        _write(intel_path, "# Identity Intel — 127.0.0.1:3002\n\n- existing identity hint\n")
+
+        path = write_intelligence(target, tmp_path)
+        write_intelligence(target, tmp_path)
+        content = path.read_text(encoding="utf-8")
+
+        assert path == intel_path
+        assert "ops@target.test" in content
+        assert "existing identity hint" in content
+        assert content.count("ccst:intelligence:local-extractor:start") == 1
+        assert not (tmp_path / "evidence" / "http:").exists()
+
 
 class TestExtractorContract:
     """Surface-level contract checks — anchor field names, not regex bodies."""

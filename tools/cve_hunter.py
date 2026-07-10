@@ -17,6 +17,7 @@ import sys
 from datetime import datetime
 
 from runtime_exec import run_shell_command_split
+from target_paths import target_storage_key
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FINDINGS_DIR = os.path.join(BASE_DIR, "findings")
@@ -283,7 +284,7 @@ def hunt_cves(domain, recon_dir=None):
     print(f"  CVE Hunter — {domain}")
     print("=" * 50)
 
-    findings_dir = os.path.join(FINDINGS_DIR, domain, "cves")
+    findings_dir = os.path.join(FINDINGS_DIR, target_storage_key(domain), "cves")
     os.makedirs(findings_dir, exist_ok=True)
 
     # Step 0: Check for exposed config files
@@ -367,7 +368,7 @@ def main():
         domain = os.path.basename(recon_dir)
 
     if not recon_dir and domain:
-        potential = os.path.join(BASE_DIR, "recon", domain)
+        potential = os.path.join(BASE_DIR, "recon", target_storage_key(domain))
         if os.path.isdir(potential):
             recon_dir = potential
 

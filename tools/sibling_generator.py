@@ -38,6 +38,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+try:
+    from tools.target_paths import canonical_target_value, target_storage_key
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+
 DEFAULT_MAX_SIBLINGS = 20
 
 
@@ -240,14 +245,17 @@ def queue_sibling_probes(
     Returns the path to the written queue file.
     """
     repo = Path(repo_root) if repo_root else BASE_DIR
+    resolved_target = canonical_target_value(target)
+    target_key = target_storage_key(resolved_target)
     endpoint = str(finding.get("endpoint") or finding.get("url") or "")
     finding_id = str(finding.get("id") or "anonymous")
 
     template = extract_template(endpoint)
-    all_urls = _load_all_urls(target, repo)
+    all_urls = _load_all_urls(target_key, repo)
     siblings = find_siblings(template, all_urls, max_count=max_count)
 
     payload = {
+        "target": resolved_target,
         "source_finding_id": finding_id,
         "source_endpoint": endpoint,
         "extracted_template": template.full_template,
@@ -259,7 +267,7 @@ def queue_sibling_probes(
         "executed_count": 0,
     }
 
-    out_dir = repo / "evidence" / target / "probes" / "queue"
+    out_dir = repo / "evidence" / target_key / "probes" / "queue"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"siblings_{finding_id}.json"
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

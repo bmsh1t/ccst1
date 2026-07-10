@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 # Import learn.py functions (same repo)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,9 +34,11 @@ SHARED_TOOLS_DIR = os.environ.get(
 
 from learn import fetch_github_advisories, fetch_nvd_cves, severity_order
 try:
-    from tools.target_paths import target_storage_key
+    from tools.intelligence_extractor import merge_managed_section
+    from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from target_paths import target_storage_key
+    from intelligence_extractor import merge_managed_section  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key
 
 # Try importing HackerOne MCP server
 try:
@@ -74,11 +77,16 @@ def load_memory_context(memory_dir: str, target: str) -> dict:
     if not memory_dir or not os.path.isdir(memory_dir):
         return context
 
+    resolved_target = canonical_target_value(target)
+
     # Load target profile
     targets_dir = os.path.join(memory_dir, "targets")
     if os.path.isdir(targets_dir):
         # Normalize target name to filename
-        target_file = target.replace(".", "-").replace("/", "-") + ".json"
+        target_file = (
+            resolved_target.replace(".", "-").replace("/", "-").replace("\\", "-")
+            + ".json"
+        )
         target_path = os.path.join(targets_dir, target_file)
         if os.path.isfile(target_path):
             try:
@@ -103,7 +111,7 @@ def load_memory_context(memory_dir: str, target: str) -> dict:
                         continue
                     try:
                         entry = json.loads(line)
-                        if entry.get("target") == target:
+                        if canonical_target_value(str(entry.get("target") or "")) == resolved_target:
                             # Check if any tag looks like a CVE
                             for tag in entry.get("tags", []):
                                 if tag.upper().startswith("CVE-"):
@@ -239,7 +247,8 @@ def run_identity_intel(target: str, timeout: int = 180) -> dict:
 
     这不是 finding，也不会尝试登录或撞库；结果仅作为 /intel 假设燃料。
     """
-    target_key = target_storage_key(target)
+    resolved_target = canonical_target_value(target)
+    target_key = target_storage_key(resolved_target)
     out_dir = os.path.join(REPO_ROOT, "evidence", target_key, "identity_intel")
     os.makedirs(out_dir, exist_ok=True)
 
@@ -251,7 +260,7 @@ def run_identity_intel(target: str, timeout: int = 180) -> dict:
     emailfinder_cmd = _resolve_emailfinder()
     if emailfinder_cmd:
         emailfinder_status = "ok" if _run_command(
-            emailfinder_cmd + ["-d", target],
+            emailfinder_cmd + ["-d", resolved_target],
             emails_path,
             timeout=min(timeout, 120),
         ) else "partial"
@@ -262,7 +271,7 @@ def run_identity_intel(target: str, timeout: int = 180) -> dict:
     leaksearch_cmd = _resolve_leaksearch()
     if leaksearch_cmd:
         leaksearch_status = "ok" if _run_command(
-            leaksearch_cmd + ["-k", target, "-o", leaksearch_path],
+            leaksearch_cmd + ["-k", resolved_target, "-o", leaksearch_path],
             leaksearch_path,
             timeout=timeout,
         ) else "partial"
@@ -272,7 +281,7 @@ def run_identity_intel(target: str, timeout: int = 180) -> dict:
     email_count = _line_count(emails_path)
     leak_line_count = _line_count(leaksearch_path)
     summary = [
-        f"# Identity Intel — {target}",
+        f"# Identity Intel — {resolved_target}",
         "",
         "这些是身份/凭据情报，不是漏洞结论；用于指导 SSO、找回密码、邀请流、租户枚举等后续假设。",
         "",
@@ -290,11 +299,18 @@ def run_identity_intel(target: str, timeout: int = 180) -> dict:
     with open(summary_path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(summary))
 
-    intelligence_path = os.path.join(REPO_ROOT, "evidence", target_key, "intelligence.md")
-    os.makedirs(os.path.dirname(intelligence_path), exist_ok=True)
-    with open(intelligence_path, "a", encoding="utf-8") as handle:
-        handle.write("\n\n")
-        handle.write("\n".join(summary))
+    intelligence_path = Path(REPO_ROOT) / "evidence" / target_key / "intelligence.md"
+    intelligence_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = intelligence_path.read_text(encoding="utf-8", errors="replace") if intelligence_path.is_file() else ""
+    intelligence_path.write_text(
+        merge_managed_section(
+            existing,
+            "identity-intel",
+            "\n".join(summary),
+            legacy_heading_prefix="# Identity Intel",
+        ),
+        encoding="utf-8",
+    )
 
     return {
         "emailfinder_status": emailfinder_status,
@@ -547,36 +563,37 @@ def main():
     parser.add_argument("--memory-dir", default="", help="Path to hunt-memory directory")
     parser.add_argument("--json", action="store_true", help="Output as JSON instead of formatted text")
     args = parser.parse_args()
+    resolved_target = canonical_target_value(args.target)
 
     techs = [t.strip() for t in args.tech.split(",") if t.strip()] if args.tech else []
 
     # Load memory context before enforcing --tech so standalone /intel can reuse prior recon/hunt state.
-    memory = load_memory_context(args.memory_dir, args.target)
-    techs = resolve_tech_stack(args.target, techs, memory)
+    memory = load_memory_context(args.memory_dir, resolved_target)
+    techs = resolve_tech_stack(resolved_target, techs, memory)
 
     if not techs:
         print(f"{YELLOW}No tech stack specified. Use --tech to specify technologies.{RESET}")
-        print(f"Example: python3 intel_engine.py --target {args.target} --tech nextjs,graphql")
+        print(f"Example: python3 intel_engine.py --target {resolved_target} --tech nextjs,graphql")
         sys.exit(1)
 
     print(f"\n{BOLD}Intel Engine{RESET}")
-    print(f"Target: {CYAN}{args.target}{RESET}")
+    print(f"Target: {CYAN}{resolved_target}{RESET}")
     print(f"Tech: {CYAN}{', '.join(techs)}{RESET}")
     if args.program:
         print(f"Program: {CYAN}{args.program}{RESET}")
     print()
 
     # Fetch all intel
-    results = fetch_all_intel(techs, args.target, args.program)
+    results = fetch_all_intel(techs, resolved_target, args.program)
 
     # Prioritize against memory
     intel = prioritize_intel(results, memory)
-    intel["identity_intel"] = run_identity_intel(args.target)
+    intel["identity_intel"] = run_identity_intel(resolved_target)
 
     if args.json:
         print(json.dumps(intel, indent=2))
     else:
-        print(format_output(args.target, intel))
+        print(format_output(resolved_target, intel))
 
 
 if __name__ == "__main__":

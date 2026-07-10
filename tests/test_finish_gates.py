@@ -170,6 +170,22 @@ def test_f4_passes_when_no_intelligence_layer(fake_repo):
     assert "no intelligence layer" in msg
 
 
+def test_f4_url_target_reads_canonical_intelligence_path(tmp_path):
+    repo = tmp_path / "repo"
+    intel = repo / "evidence" / "127.0.0.1:3002" / "intelligence.md"
+    intel.parent.mkdir(parents=True)
+    intel.write_text("# Intelligence\n", encoding="utf-8")
+
+    passed, msg = _f4_intelligence_gate(
+        "http://127.0.0.1:3002/#/login",
+        completed_steps=[],
+        repo_root=repo,
+    )
+
+    assert passed is False
+    assert str(intel) in msg
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Mode awareness: yolo override
 # ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +213,14 @@ def test_empty_message_never_blocks():
     block, emit = _finish_gate_block_or_warn("", "paranoid")
     assert block is False
     assert emit == ""
+
+
+@pytest.mark.parametrize("mode", ["paranoid", "normal", "yolo"])
+def test_passed_gate_audit_message_never_blocks(mode):
+    audit = "[AUDIT] gate unavailable; continuing"
+    block, emit = _finish_gate_block_or_warn(audit, mode, passed=True)
+    assert block is False
+    assert emit == audit
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -350,6 +374,21 @@ def test_read_intelligence_reads_existing_file(tmp_path):
     msg = dispatcher._read_intelligence("target.com", repo_root=str(fake_repo))
     assert "intelligence.md" in msg
     assert "body line" in msg
+
+
+def test_read_intelligence_url_target_uses_canonical_path(tmp_path):
+    fake_repo = tmp_path / "repo"
+    intel_path = fake_repo / "evidence" / "127.0.0.1:3002" / "intelligence.md"
+    intel_path.parent.mkdir(parents=True)
+    intel_path.write_text("# canonical intel\n", encoding="utf-8")
+
+    from agent import ToolDispatcher
+    dispatcher = ToolDispatcher.__new__(ToolDispatcher)
+    dispatcher.domain = "http://127.0.0.1:3002/#/login"
+    msg = dispatcher._read_intelligence(dispatcher.domain, repo_root=str(fake_repo))
+
+    assert "canonical intel" in msg
+    assert str(intel_path) in msg
 
 
 def test_read_intelligence_truncates_huge_files(tmp_path):

@@ -330,6 +330,16 @@ class TestCoverageStatus:
         text = out.read_text(encoding="utf-8")
         assert "MCP coverage: mcp_unavailable" in text
 
+    def test_url_target_uses_storage_key(self, tmp_path):
+        out = write_disclosed_patterns(
+            "http://127.0.0.1:3002/#/login",
+            repo_root=tmp_path,
+            no_mcp=True,
+        )
+
+        assert out == tmp_path / "evidence" / "127.0.0.1:3002" / "disclosed_patterns.md"
+        assert "127.0.0.1:3002" in out.read_text(encoding="utf-8")
+
     def test_legacy_cache_without_status_field_does_not_crash(self, tmp_path):
         """Old caches written before PR-13 lack `coverage_status`. The
         loader must back-fill (`covered` if buckets non-empty,

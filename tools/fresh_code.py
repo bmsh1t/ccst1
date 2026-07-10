@@ -44,6 +44,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+try:
+    from tools.target_paths import canonical_target_value, target_storage_key
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+
 CT_TIMEOUT_SEC = 30
 WEB_TIMEOUT_SEC = 15
 GITHUB_TIMEOUT_SEC = 20
@@ -359,24 +364,26 @@ def write_fresh_code(
 ) -> Path:
     """Run the 3 fetches and write evidence/<target>/fresh_code.md."""
     repo = Path(repo_root) if repo_root else BASE_DIR
+    resolved_target = canonical_target_value(target)
+    target_key = target_storage_key(resolved_target)
 
     if skip_network:
         ct = {"subdomains": [], "status": "empty"}
         changelog = {"highlights": [], "status": "empty"}
         github = {"repos": [], "status": "no_org"}
     else:
-        ct = fetch_ct_log_subdomains(target, days)
-        changelog = fetch_changelog_highlights(target, days)
+        ct = fetch_ct_log_subdomains(resolved_target, days)
+        changelog = fetch_changelog_highlights(resolved_target, days)
         if skip_github:
             github = {"repos": [], "status": "no_org"}
         else:
-            org = _detect_github_org(target, repo)
+            org = _detect_github_org(target_key, repo)
             github = fetch_github_org_activity(org, days) if org else {"repos": [], "status": "no_org"}
 
-    md = render_fresh_code_md(target, ct, changelog, github)
+    md = render_fresh_code_md(resolved_target, ct, changelog, github)
 
     if output_path is None:
-        out_dir = repo / "evidence" / target
+        out_dir = repo / "evidence" / target_key
         out_dir.mkdir(parents=True, exist_ok=True)
         output_path = out_dir / "fresh_code.md"
     else:

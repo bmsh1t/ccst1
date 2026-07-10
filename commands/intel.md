@@ -11,8 +11,8 @@ inputs, not findings.
 ## Run This (the only required step)
 
 ```bash
-python3 tools/intel_engine.py --target target.com
 python3 tools/intelligence_extractor.py target.com
+python3 tools/intel_engine.py --target target.com
 ```
 
 Optional when tech/program is known:

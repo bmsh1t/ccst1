@@ -218,6 +218,21 @@ class TestQueueSiblingProbes:
         payload = json.loads(out.read_text(encoding="utf-8"))
         assert payload["source_endpoint"] == "/api/v1/orders/100"
 
+    def test_url_target_uses_storage_key(self, tmp_path):
+        target = "http://127.0.0.1:3002/#/login"
+        urls = tmp_path / "recon" / "127.0.0.1:3002" / "urls" / "all.txt"
+        urls.parent.mkdir(parents=True)
+        urls.write_text("http://127.0.0.1:3002/api/v1/invoices/2\n", encoding="utf-8")
+
+        out = queue_sibling_probes(
+            target,
+            {"id": "idor-1", "endpoint": "/api/v1/orders/1"},
+            repo_root=tmp_path,
+        )
+
+        assert out.parent == tmp_path / "evidence" / "127.0.0.1:3002" / "probes" / "queue"
+        assert json.loads(out.read_text(encoding="utf-8"))["target"] == "127.0.0.1:3002"
+
 
 class TestQuestionToToolDiscoverability:
     """PRD R5 + Contract 6: tool must appear in the Q->Tool table."""

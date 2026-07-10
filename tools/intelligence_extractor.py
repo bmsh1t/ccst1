@@ -38,6 +38,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+try:
+    from tools.target_paths import canonical_target_value, target_storage_key
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+
+
+MANAGED_SECTION_PREFIX = "ccst:intelligence"
+
 # Each extractor: (category_name, compiled_regex, value_group_index_or_full)
 # Order matters only for output ordering.
 EXTRACTORS: list[tuple[str, re.Pattern, int]] = [
@@ -168,13 +176,14 @@ def extract_intelligence(
         IntelligenceCorpus with extracted items grouped by category.
     """
     repo = Path(repo_root) if repo_root else BASE_DIR
+    target_key = target_storage_key(target)
     corpus = IntelligenceCorpus()
 
     candidate_roots = [
-        ("recon", repo / "recon" / target),
-        ("js_intel", repo / "findings" / target / "js_intel"),
-        ("source_intel", repo / "findings" / target / "source_intel"),
-        ("findings", repo / "findings" / target),
+        ("recon", repo / "recon" / target_key),
+        ("js_intel", repo / "findings" / target_key / "js_intel"),
+        ("source_intel", repo / "findings" / target_key / "source_intel"),
+        ("findings", repo / "findings" / target_key),
     ]
 
     for label, root in candidate_roots:
@@ -239,6 +248,59 @@ def render_markdown(target: str, corpus: IntelligenceCorpus) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def merge_managed_section(
+    existing: str,
+    section_id: str,
+    content: str,
+    *,
+    legacy_heading_prefix: str = "",
+    replace_legacy_intelligence_document: bool = False,
+) -> str:
+    """把一个受管 section 幂等写入 intelligence.md 文本。
+
+    旧版 extractor 会覆盖整个文档，identity intel 则无 marker 追加在尾部。
+    迁移时保留 identity tail；后续重跑只替换对应 section，避免重复或互相覆盖。
+    """
+    section_id = re.sub(r"[^a-z0-9_-]+", "-", section_id.lower()).strip("-")
+    start = f"<!-- {MANAGED_SECTION_PREFIX}:{section_id}:start -->"
+    end = f"<!-- {MANAGED_SECTION_PREFIX}:{section_id}:end -->"
+    block = f"{start}\n{content.rstrip()}\n{end}\n"
+    current = existing or ""
+
+    start_at = current.find(start)
+    end_at = current.find(end, start_at + len(start)) if start_at >= 0 else -1
+    if start_at >= 0 and end_at >= 0:
+        end_at += len(end)
+        merged = current[:start_at].rstrip() + "\n\n" + block + current[end_at:].lstrip("\n")
+        return merged.strip() + "\n"
+
+    if replace_legacy_intelligence_document and current.lstrip().startswith("# Intelligence —"):
+        identity = re.search(r"(?m)^# Identity Intel\b", current)
+        tail = current[identity.start():].strip() if identity else ""
+        return (block + ("\n" + tail + "\n" if tail else "")).strip() + "\n"
+
+    if legacy_heading_prefix:
+        legacy = re.search(rf"(?m)^{re.escape(legacy_heading_prefix)}\b", current)
+        if legacy:
+            # 旧 identity section 到下一个一级标题或 managed section 为止；
+            # 不能为了迁移旧格式而删除其后的 operator/其他 producer 内容。
+            tail = current[legacy.end():]
+            boundary = re.search(
+                rf"(?m)^(?:# (?!#)|<!-- {re.escape(MANAGED_SECTION_PREFIX)}:[^>]+:start -->)",
+                tail,
+            )
+            legacy_end = legacy.end() + boundary.start() if boundary else len(current)
+            current = (
+                current[:legacy.start()].rstrip()
+                + "\n\n"
+                + current[legacy_end:].lstrip("\n")
+            ).strip()
+
+    if current.strip():
+        return current.rstrip() + "\n\n" + block
+    return block
+
+
 def write_intelligence(
     target: str,
     repo_root: Path | str | None = None,
@@ -246,16 +308,28 @@ def write_intelligence(
 ) -> Path:
     """Run extraction and write intelligence.md. Returns the written path."""
     repo = Path(repo_root) if repo_root else BASE_DIR
-    corpus = extract_intelligence(target, repo)
+    resolved_target = canonical_target_value(target)
+    target_key = target_storage_key(resolved_target)
+    corpus = extract_intelligence(resolved_target, repo)
     if output_path is None:
-        out_dir = repo / "evidence" / target
+        out_dir = repo / "evidence" / target_key
         out_dir.mkdir(parents=True, exist_ok=True)
         output_path = out_dir / "intelligence.md"
     else:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    output_path.write_text(render_markdown(target, corpus), encoding="utf-8")
+    rendered = render_markdown(resolved_target, corpus)
+    existing = output_path.read_text(encoding="utf-8", errors="replace") if output_path.is_file() else ""
+    output_path.write_text(
+        merge_managed_section(
+            existing,
+            "local-extractor",
+            rendered,
+            replace_legacy_intelligence_document=True,
+        ),
+        encoding="utf-8",
+    )
     return output_path
 
 
