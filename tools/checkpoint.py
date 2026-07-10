@@ -796,43 +796,6 @@ def _normalise_endpoint_path(value: str) -> str:
     return path
 
 
-def _finalized_finding_surfaces(state: dict) -> tuple[set[str], set[str]]:
-    """返回已经由 `/validate` 或报告流程收束的 URL/path。
-
-    ranked-surface 仍然可以给 AI 提示线索，但不应该在同一个 finding
-    已 validated/rejected/generated 后继续把它推成下一步。这里仅做状态过滤，
-    未验证的 finding 仍保留给 AI 判断。
-    """
-    findings = _structured_findings(state)
-    findings_dir = str(findings.get("findings_dir") or "").strip()
-    if not findings_dir:
-        return set(), set()
-    path = Path(findings_dir) / "findings.json"
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set(), set()
-
-    exact_urls: set[str] = set()
-    endpoint_paths: set[str] = set()
-    for item in payload.get("findings", []):
-        if not isinstance(item, dict):
-            continue
-        validation_status = str(item.get("validation_status") or "").strip().lower()
-        report_status = str(item.get("report_status") or "").strip().lower()
-        if validation_status not in {"validated", "rejected"} and report_status != "generated":
-            continue
-        url = str(item.get("url") or "").strip()
-        if not url:
-            continue
-        exact_urls.add(url)
-        normalised = _normalise_endpoint_path(url)
-        # Hash-route findings normalise to "/"；不能因此隐藏整个 SPA 根路由。
-        if normalised and normalised != "/":
-            endpoint_paths.add(normalised)
-    return exact_urls, endpoint_paths
-
-
 PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
 
 
@@ -1719,7 +1682,6 @@ def _next_proposals(
             evidence_summary=evidence_summary,
         )
     )
-    covered_findings = _tested_finding_endpoints(matrix)
     covered_ledger_cells = _ledger_covered_cells(evidence_summary, matrix)
 
     repo_source_summary = state.get("repo_source_summary") or {}
@@ -1807,7 +1769,6 @@ def _next_proposals(
     deferred_role_ranked = 0
     ranked_surface_added = 0
     ranked_state = _ranked_surface_state_with_matrix_paths(state, matrix)
-    finalized_urls, finalized_paths = _finalized_finding_surfaces(state)
     for item in (ranked_state.get("recommended_targets") or []):
         # Generate a small candidate window, not just the first two. Persistent
         # action_queue final-state filtering happens after this function; if
@@ -1818,10 +1779,6 @@ def _next_proposals(
         url = str(item.get("url") or "").strip()
         suggested = str(item.get("suggested") or "").strip()
         endpoint_path = _normalise_endpoint_path(url)
-        if url in finalized_urls or (endpoint_path and endpoint_path != "/" and endpoint_path in finalized_paths):
-            continue
-        if endpoint_path in covered_findings:
-            continue
         if url:
             entry = _ranked_surface_entry(ranked_state, item.get("url") or "")
             vuln_hint = _ranked_surface_vuln_hint(entry, url)

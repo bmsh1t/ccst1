@@ -19,6 +19,7 @@ if BASE_DIR not in sys.path:
 from memory.pattern_db import PatternDB
 from memory.target_profile import default_memory_dir, load_target_profile
 try:
+    from tools.closure_resolver import ClosureResolver
     from tools.evidence_ledger import load_entries as load_evidence_ledger_entries
     from tools.action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES
     from tools.action_queue import load_queue as load_action_queue
@@ -27,6 +28,7 @@ try:
     from tools.runtime_state import inspect_recon_artifacts, load_runtime_state
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
+    from closure_resolver import ClosureResolver  # type: ignore
     from evidence_ledger import load_entries as load_evidence_ledger_entries
     from action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES  # type: ignore
     from action_queue import load_queue as load_action_queue  # type: ignore
@@ -689,7 +691,6 @@ BROWSER_VALUE_KEYWORDS = (
     "invite",
 )
 
-LEDGER_FINAL_RESULTS = {"tested_clean", "tested_finding", "dead_end", "not_applicable"}
 REVIEW_POOL_LIMIT = 16
 
 
@@ -756,8 +757,12 @@ def _add_review_item(pool: list[dict], seen: set[str], item: dict, reason: str) 
 
 
 def _is_final_surface_item(item: dict) -> bool:
-    """Return True when durable state says this surface already closed."""
-    return bool(item.get("ledger_final") or item.get("action_queue_final"))
+    """Return True only for an explicitly finalized surface identity.
+
+    Raw URL surface is not lane-specific. Authz/SQLi/SSRF 等任一 cell 关闭都
+    不能隐藏整个 endpoint；精确 action 去重由 checkpoint/action_queue 负责。
+    """
+    return bool(item.get("surface_identity_final"))
 
 
 ACTIONABLE_REVIEW_SOURCES = {
@@ -1046,30 +1051,12 @@ def _scanner_suggestion(finding: dict, fallback: str) -> str:
     return f"review scanner candidate from {source}; {fallback}"
 
 
-def _ledger_final_cells(entries: list[dict]) -> dict[tuple[str, str], str]:
-    """Return latest final ledger result by endpoint/vulnerability class."""
-    cells: dict[tuple[str, str], str] = {}
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        result = str(entry.get("result") or "").strip()
-        if result not in LEDGER_FINAL_RESULTS:
-            continue
-        endpoint = str(entry.get("endpoint") or "").split("?", 1)[0].strip()
-        vuln_class = str(entry.get("vuln_class") or "").strip()
-        if endpoint and vuln_class:
-            cells[(endpoint, vuln_class)] = result
-    return cells
-
-
 def _action_queue_final_endpoints(actions: list[dict]) -> dict[str, str]:
-    """Return endpoints that already reached a final queue status.
+    """Return endpoint-level queue history for advisory display only.
 
-    `surface.py` is a review-pack aid, not the durable execution state owner. When
-    `action_queue.json` says an endpoint was closed as n/a, dead-end, tested,
-    blocked, validated, reported, etc., the surface review pack should stop pushing
-    the exact same endpoint back to P1 unless fresh evidence re-enters via a
-    different concrete URL/vulnerability class.
+    Queue rows often lack a precise vulnerability class and evidence timestamp.
+    Therefore this map must never become a closure filter: a final Authz action on
+    one endpoint cannot hide SQLi/GraphQL/new browser evidence on the same path.
     """
     endpoints: dict[str, str] = {}
     for action in actions:
@@ -1094,6 +1081,11 @@ def _surface_vuln_hint(path: str, suggested: str, query_keys: list[str]) -> str:
     text = f"{path} {suggested}".lower()
     if "sqli" in text or "sql injection" in text:
         return "SQLi"
+    if "ssrf" in text or any(
+        key in {"url", "uri", "dest", "destination", "callback", "webhook", "target"}
+        for key in query_keys
+    ):
+        return "SSRF"
     if "id swap" in text or "idor" in text or any(key.endswith("_id") for key in query_keys):
         return "IDOR"
     if "authz" in text or "authorization" in text or "auth boundary" in text or "access control" in text:
@@ -1287,7 +1279,9 @@ def rank_surface(context: dict) -> dict:
         if not url:
             continue
         scanner_findings_by_url.setdefault(url, []).append(finding)
-    ledger_final_cells = _ledger_final_cells(context.get("ledger_entries") or [])
+    closure_resolver = ClosureResolver({
+        "recent_entries": context.get("ledger_entries") or [],
+    })
     action_queue_final_endpoints = _action_queue_final_endpoints(
         context.get("action_queue_entries") or []
     )
@@ -1723,9 +1717,11 @@ def rank_surface(context: dict) -> dict:
 
         endpoint_path = parsed.path or "/"
         ledger_vuln_hint = _surface_vuln_hint(path, suggested, query_keys)
-        ledger_result = ledger_final_cells.get((endpoint_path, ledger_vuln_hint)) if ledger_vuln_hint else ""
+        ledger_result = closure_resolver.closed_result(endpoint_path, ledger_vuln_hint)
         if ledger_result:
-            penalty = -90 if ledger_result in {"tested_clean", "dead_end", "not_applicable"} else -70
+            # 终态只说明这个精确 lane 已处理，不代表 endpoint 无其他攻击面。
+            # 保留轻量历史提示，不把 raw surface 从 AI Review Pool 移除。
+            penalty = -3
             score += _add_score_breakdown(
                 score_breakdown,
                 "memory",
@@ -1737,38 +1733,29 @@ def rank_surface(context: dict) -> dict:
             entry["score_breakdown"] = score_breakdown
             reasons.append(f"evidence-ledger {ledger_vuln_hint} {ledger_result}")
             entry["reasons"] = reasons
-            entry["ledger_final"] = {
+            entry["ledger_history"] = {
                 "endpoint": endpoint_path,
                 "vuln_class": ledger_vuln_hint,
                 "result": ledger_result,
             }
             suggested = (
-                f"avoid repeating ledger-covered {ledger_vuln_hint} ({ledger_result}); "
-                "continue only if fresh evidence changes impact, role, object, or vuln class"
+                f"ledger shows {ledger_vuln_hint}={ledger_result}; avoid repeating that exact lane, "
+                "but keep the endpoint open for a different class or fresh browser/source evidence"
             )
             entry["suggested"] = suggested
         queue_status = action_queue_final_endpoints.get(endpoint_path)
         if queue_status:
-            score += _add_score_breakdown(
-                score_breakdown,
-                "memory",
-                f"Action queue final: {queue_status}",
-                -90,
-                endpoint_path,
-            )
-            entry["score"] = score
-            entry["score_breakdown"] = score_breakdown
-            reasons.append(f"action-queue final {queue_status}")
+            reasons.append(f"action-queue history {queue_status}")
             entry["reasons"] = reasons
-            entry["action_queue_final"] = {
+            entry["action_queue_history"] = {
                 "endpoint": endpoint_path,
                 "status": queue_status,
             }
-            suggested = (
-                f"avoid repeating action-queue-covered endpoint ({queue_status}); "
-                "reopen only if fresh browser, source, role, object, or impact evidence changes the lane"
-            )
-            entry["suggested"] = suggested
+            if not _has_actionable_review_evidence(entry):
+                entry["suggested"] = (
+                    f"review prior action-queue outcome ({queue_status}) before repeating the same lane; "
+                    "fresh browser/source/role/object evidence may justify a different test"
+                )
         candidates.append(entry)
 
     kill = []

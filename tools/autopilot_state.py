@@ -124,15 +124,9 @@ def _finalized_finding_paths(repo_root: str, resolved_target: str) -> set[str]:
     return paths
 
 
-def _is_finalized_or_placeholder_surface(item: dict, finalized_paths: set[str]) -> bool:
+def _is_placeholder_surface(item: dict) -> bool:
     url = str(item.get("url") or item.get("path") or "").strip()
-    endpoint_path = _normalise_endpoint_path(url)
-    if endpoint_path and endpoint_path in finalized_paths:
-        return True
-    if _has_placeholder_object_segment(url):
-        return True
-    suggested = str(item.get("suggested") or "").strip().lower()
-    return "already reported/generated" in suggested or "avoid repeating remembered dead end" in suggested
+    return _has_placeholder_object_segment(url)
 
 
 def _filter_resume_targets_for_final_state(targets: list[str], finalized_paths: set[str]) -> list[str]:
@@ -147,13 +141,14 @@ def _filter_resume_targets_for_final_state(targets: list[str], finalized_paths: 
     return list(dict.fromkeys(filtered))[:3]
 
 
-def _filter_ranked_for_final_state(ranked: dict, finalized_paths: set[str]) -> dict:
+def _filter_ranked_placeholders(ranked: dict) -> dict:
+    """只移除无法直接 replay 的占位对象，不按 finding/dead-end 隐藏 raw surface。"""
     filtered = dict(ranked or {})
     for key in ("review_pool", "p1", "p2"):
         items = ranked.get(key) or []
         filtered[key] = [
             item for item in items
-            if isinstance(item, dict) and not _is_finalized_or_placeholder_surface(item, finalized_paths)
+            if isinstance(item, dict) and not _is_placeholder_surface(item)
         ]
     return filtered
 
@@ -815,7 +810,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     )
     ranked = rank_surface(surface_context)
     finalized_paths = _finalized_finding_paths(repo_root, resolved_target)
-    ranked_for_next = _filter_ranked_for_final_state(ranked, finalized_paths)
+    ranked_for_next = _filter_ranked_placeholders(ranked)
     guard_status = load_guard_status(resolved_memory_dir, resolved_target)
     tripped_hosts = [item for item in guard_status.get("hosts", []) if item.get("tripped")]
     repo_source_artifacts = list_repo_source_artifacts(repo_root, resolved_target)

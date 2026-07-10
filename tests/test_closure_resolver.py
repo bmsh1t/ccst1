@@ -72,6 +72,9 @@ def test_recent_entries_close_only_final_results_including_blocked_redline():
     assert resolver.is_cell_closed("/b", "XSS") is False
     assert resolver.is_cell_closed("/c", "XSS") is False
     assert resolver.is_cell_closed("/d", "SSRF") is True
+    assert resolver.closed_result("/a/", "xss") == "tested_clean"
+    assert resolver.closed_result("/d", "ssrf") == "blocked_redline"
+    assert resolver.closed_result("/b", "XSS") == ""
 
 
 def test_matrix_closed_statuses_are_auxiliary_closed_source():

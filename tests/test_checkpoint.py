@@ -2097,7 +2097,7 @@ def test_ranked_surface_placeholder_object_skips_when_concrete_endpoint_covered(
     assert not any(url in item for item in proposals)
 
 
-def test_ranked_surface_skips_finalized_finding_url(tmp_path):
+def test_ranked_surface_finalized_finding_does_not_hide_raw_endpoint(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)
     url = "https://target.com/#/search?q=%3Cimg%20src=x%20onerror=marker()%3E"
@@ -2132,7 +2132,7 @@ def test_ranked_surface_skips_finalized_finding_url(tmp_path):
         evidence_summary={},
     )
 
-    assert not any("Review surface candidate" in item and url in item for item in proposals)
+    assert any("Review surface candidate" in item and url in item for item in proposals)
 
 
 def test_ranked_surface_spa_page_route_uses_browser_state_first_with_case_state_ready():

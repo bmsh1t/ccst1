@@ -97,10 +97,18 @@ class ClosureResolver:
     def __init__(self, evidence_summary: dict | None = None, matrix: dict | None = None) -> None:
         self._closed_classes: dict[str, set[str]] = {}
         self._closed_ts: dict[str, str] = {}
+        self._closed_results: dict[tuple[str, str], str] = {}
+        self._closed_result_ts: dict[tuple[str, str], str] = {}
         self._ingest_ledger(evidence_summary or {})
         self._ingest_matrix(matrix or {})
 
-    def _mark(self, endpoint: str, vuln_class: str, ts: str = "") -> None:
+    def _mark(
+        self,
+        endpoint: str,
+        vuln_class: str,
+        ts: str = "",
+        result: str = "",
+    ) -> None:
         ep = canonical_endpoint_path(endpoint)
         vc = canonical_vuln_class(vuln_class)
         if not ep or not vc:
@@ -109,6 +117,14 @@ class ClosureResolver:
         ts = str(ts or "").strip()
         if ts:
             self._closed_ts[ep] = max(self._closed_ts.get(ep, ""), ts)
+        result = str(result or "").strip()
+        if result:
+            key = (ep, vc)
+            previous_ts = self._closed_result_ts.get(key, "")
+            # 有时间戳时保留最新终态；旧记录没有时间戳时按 append 顺序覆盖。
+            if not previous_ts or not ts or ts >= previous_ts:
+                self._closed_results[key] = result
+                self._closed_result_ts[key] = ts
 
     def _ingest_ledger(self, evidence_summary: dict) -> None:
         for cell in evidence_summary.get("closed_cells") or []:
@@ -121,6 +137,7 @@ class ClosureResolver:
                 str(cell.get("endpoint") or ""),
                 str(cell.get("vuln_class") or ""),
                 str(cell.get("ts") or ""),
+                result,
             )
 
         # 兜底：summary 的 closed_cells 如果裁剪过，recent_entries 里的终态也能闭合。
@@ -133,6 +150,7 @@ class ClosureResolver:
                 str(entry.get("endpoint") or entry.get("raw_endpoint") or ""),
                 str(entry.get("vuln_class") or ""),
                 str(entry.get("ts") or ""),
+                str(entry.get("result") or ""),
             )
 
     def _ingest_matrix(self, matrix: dict) -> None:
@@ -147,7 +165,11 @@ class ClosureResolver:
                 if not isinstance(cell, dict):
                     continue
                 if str(cell.get("status") or "") in CLOSED_MATRIX_STATUSES:
-                    self._mark(endpoint, str(vuln_class))
+                    self._mark(
+                        endpoint,
+                        str(vuln_class),
+                        result=str(cell.get("status") or ""),
+                    )
 
     def is_cell_closed(self, endpoint: str, vuln_class: str) -> bool:
         """同一 endpoint × vuln_class 是否已关闭。
@@ -159,6 +181,14 @@ class ClosureResolver:
         if not ep or not vc:
             return False
         return vc in self._closed_classes.get(ep, set())
+
+    def closed_result(self, endpoint: str, vuln_class: str) -> str:
+        """返回精确 endpoint × vuln_class 的终态标签；未知类型 fail-open。"""
+        ep = canonical_endpoint_path(endpoint)
+        vc = canonical_vuln_class(vuln_class)
+        if not ep or not vc:
+            return ""
+        return self._closed_results.get((ep, vc), "")
 
     def are_endpoints_closed(
         self,

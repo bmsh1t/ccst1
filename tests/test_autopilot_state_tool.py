@@ -7,12 +7,37 @@ from memory.hunt_journal import HuntJournal
 from memory.pattern_db import PatternDB
 from memory.schemas import make_journal_entry, make_pattern_entry
 from memory.target_profile import make_target_profile, save_target_profile
-from autopilot_state import _build_recommended_targets, build_autopilot_state, format_autopilot_state
+from autopilot_state import (
+    _build_recommended_targets,
+    _filter_ranked_placeholders,
+    build_autopilot_state,
+    format_autopilot_state,
+)
 from request_guard import record_request
 from runtime_state import update_runtime_state
 
 
 class TestAutopilotState:
+
+    def test_ranked_filter_keeps_closed_history_but_removes_object_placeholders(self):
+        kept_dead_end = {
+            "url": "https://app.target.com/api/orders",
+            "suggested": "avoid repeating remembered dead end unless new evidence changed",
+        }
+        kept_reported = {
+            "url": "https://app.target.com/api/users",
+            "suggested": "already reported/generated; avoid repeating exact lane",
+        }
+        placeholder = {"url": "https://app.target.com/rest/basket/NaN"}
+
+        filtered = _filter_ranked_placeholders({
+            "review_pool": [kept_dead_end, kept_reported, placeholder],
+            "p1": [kept_dead_end, kept_reported, placeholder],
+            "p2": [],
+        })
+
+        assert filtered["review_pool"] == [kept_dead_end, kept_reported]
+        assert filtered["p1"] == [kept_dead_end, kept_reported]
 
     def test_recommended_targets_frontload_last_focus_within_same_guard_bucket(self):
         recommended = _build_recommended_targets(
@@ -539,7 +564,7 @@ class TestAutopilotState:
         assert state["resume_targets"] == ["/graphql"]
         assert state["recommended_targets"][0]["url"] == "https://api.target.com/graphql"
 
-    def test_finalized_findings_do_not_drive_resume_or_surface_next(self, tmp_path):
+    def test_finalized_findings_do_not_drive_resume_but_do_not_hide_surface(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
         (recon_dir / "live").mkdir(parents=True)
@@ -597,8 +622,9 @@ class TestAutopilotState:
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
 
         assert state["resume_targets"] == []
-        assert state["surface_review_candidates"] == []
-        assert state["next_action"] == "handoff"
+        assert state["surface_review_candidates"]
+        assert state["surface_review_candidates"][0]["url"] == "https://target.com/api/Feedbacks"
+        assert state["next_action"] == "hunt_p1"
 
     def test_build_autopilot_state_emits_enrichment_tool_hints(self, tmp_path):
         repo_root = tmp_path

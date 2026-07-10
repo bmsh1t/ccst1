@@ -55,8 +55,6 @@ DEFAULT_STOP_CONDITION = (
 )
 COVERAGE_STATUS_BY_ACTION_STATUS = {
     "tested": "tested_clean",
-    "dead-end": "tested_clean",
-    "blocked": "n_a",
     "n/a": "n_a",
     "candidate": "tested_finding",
     "validated": "tested_finding",
@@ -333,9 +331,10 @@ def _sync_coverage_matrix_for_action(
 ) -> dict:
     """把 coverage-gap 队列动作的最终状态回写到 coverage matrix。
 
-    action_queue 的状态比 coverage_matrix 更细：dead-end/blocked/candidate
-    是执行层语义；矩阵只有 tested_clean/tested_finding/n_a/untested。
-    因此这里做保守映射，避免同一个已处理 gap 在 checkpoint 中反复出现。
+    action_queue 的状态比 coverage_matrix 更细。只有明确 tested/candidate/
+    validated/reported/n-a 才能改变矩阵事实；dead-end 和 blocked 只关闭当前
+    queue action，不能伪装成 tested_clean 或 not-applicable。精确 action 的
+    去重由持久 queue/closure gate 负责。
     """
     if str(action.get("type") or "") != "coverage-gap":
         return {}

@@ -1052,7 +1052,7 @@ class TestSurfaceRanking:
         assert "https://api.target.com/api/fresh?q=1" in ranked_urls
         assert "https://api.target.com/rest/admin/application-configuration" not in ranked_urls
 
-    def test_ledger_tested_clean_authz_demotes_matching_ranked_surface(self, tmp_path):
+    def test_ledger_tested_clean_authz_is_lane_history_not_surface_exclusion(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
         ledger_dir = repo_root / "memory" / "evidence" / "target.com"
@@ -1086,10 +1086,19 @@ class TestSurfaceRanking:
         review_urls = [item["url"] for item in ranked["review_pool"]]
 
         assert "https://api.target.com/api/fresh?q=1" in ranked_urls
-        assert "https://api.target.com/rest/admin/application-version" not in ranked_urls
-        assert "https://api.target.com/rest/admin/application-version" not in review_urls
+        assert "https://api.target.com/rest/admin/application-version" in ranked_urls
+        assert "https://api.target.com/rest/admin/application-version" in review_urls
+        item = next(
+            item for item in ranked["p1"]
+            if item["url"] == "https://api.target.com/rest/admin/application-version"
+        )
+        assert item["ledger_history"] == {
+            "endpoint": "/rest/admin/application-version",
+            "vuln_class": "Authz",
+            "result": "tested_clean",
+        }
 
-    def test_action_queue_final_status_demotes_matching_ranked_surface(self, tmp_path):
+    def test_action_queue_final_status_is_history_not_surface_exclusion(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
         queue_dir = repo_root / "state" / "target.com"
@@ -1133,10 +1142,61 @@ class TestSurfaceRanking:
         visible_urls = [item["url"] for item in ranked["p1"] + ranked["p2"]]
         review_urls = [item["url"] for item in ranked["review_pool"]]
 
-        assert "https://app.target.com/orders" not in p1_urls
-        assert "https://app.target.com/orders" not in visible_urls
-        assert "https://app.target.com/orders" not in review_urls
+        assert "https://app.target.com/orders" in p1_urls
+        assert "https://app.target.com/orders" in visible_urls
+        assert "https://app.target.com/orders" in review_urls
+        orders = next(item for item in ranked["p1"] if item["url"] == "https://app.target.com/orders")
+        assert orders["action_queue_history"]["status"] == "n/a"
         assert "https://app.target.com/rest/order-history" in p1_urls
+
+    def test_surface_uses_resolver_normalization_and_blocked_redline(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        ledger_dir = repo_root / "memory" / "evidence" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        ledger_dir.mkdir(parents=True)
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [FastAPI] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/api/sqli/search?q=test\n"
+            "https://api.target.com/api/import?url=https://example.test\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text(
+            "https://api.target.com/api/sqli/search?q=test\n"
+            "https://api.target.com/api/import?url=https://example.test\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        (ledger_dir / "ledger.jsonl").write_text(
+            json.dumps({
+                "endpoint": "/api/sqli/search/",
+                "vuln_class": "sqli",
+                "result": "tested_clean",
+            }) + "\n" + json.dumps({
+                "endpoint": "/api/import",
+                "vuln_class": "ssrf",
+                "result": "blocked_redline",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
+        items = {item["url"]: item for item in ranked["p1"] + ranked["p2"]}
+
+        sqli = items["https://api.target.com/api/sqli/search?q=test"]
+        ssrf = items["https://api.target.com/api/import?url=https://example.test"]
+        assert sqli["ledger_history"]["result"] == "tested_clean"
+        assert sqli["ledger_history"]["vuln_class"] == "SQLi"
+        assert ssrf["ledger_history"]["result"] == "blocked_redline"
+        assert ssrf["ledger_history"]["vuln_class"] == "SSRF"
+        assert sqli["url"] in [item["url"] for item in ranked["review_pool"]]
+        assert ssrf["url"] in [item["url"] for item in ranked["review_pool"]]
 
     def test_bare_numeric_paths_do_not_become_p1_sequential_objects(self, tmp_path):
         repo_root = tmp_path

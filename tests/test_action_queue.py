@@ -15,7 +15,7 @@ from action_queue import (
     select_next_action_for_target,
     summarize_queue,
 )
-from coverage_matrix import load_matrix
+from coverage_matrix import load_matrix, mark_cell
 from runtime_state import update_runtime_state
 
 
@@ -655,6 +655,37 @@ def test_resolve_coverage_gap_candidate_marks_tested_finding(tmp_path):
     assert resolved["status"] == "candidate"
     assert resolved["coverage_update"]["coverage_status"] == "tested_finding"
     assert endpoint["cells"]["Authz"]["status"] == "tested_finding"
+
+
+def test_dead_end_and_blocked_do_not_falsify_coverage_status(tmp_path):
+    for status in ("dead-end", "blocked"):
+        target = f"{status}.target.com"
+        mark_cell(
+            target,
+            "/api/admin/users",
+            "Authz",
+            "untested",
+            reason="seed",
+            repo_root=tmp_path,
+            write_finding=False,
+        )
+        ingest_checkpoint(tmp_path, target, checkpoint=_checkpoint())
+        queue = load_queue(tmp_path, target)
+        coverage = next(item for item in queue["actions"] if item["type"] == "coverage-gap")
+
+        resolved = resolve_action(
+            tmp_path,
+            target=target,
+            action_id=coverage["id"],
+            status=status,
+            result=f"{status} for the current evidence path",
+        )
+
+        matrix = load_matrix(target, repo_root=tmp_path)
+        endpoint = next(item for item in matrix["endpoints"] if item["endpoint"] == "/api/admin/users")
+        assert resolved["coverage_update"]["status"] == "skipped"
+        assert "does not close a coverage cell" in resolved["coverage_update"]["reason"]
+        assert endpoint["cells"]["Authz"]["status"] == "untested"
 
 
 def test_resolve_unsafe_skipped_review_persists_resolution(tmp_path):
