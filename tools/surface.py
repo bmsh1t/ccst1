@@ -25,6 +25,12 @@ try:
     from tools.action_queue import load_queue as load_action_queue
     from tools.attack_probe_filter import filter_attack_probes, is_attack_probe
     from tools.finding_index import load_finding_index
+    from tools.observation_inventory import (
+        InventoryError,
+        inventory_path,
+        summarize_inventory,
+        sync_inventory,
+    )
     from tools.recon_adapter import ReconAdapter
     from tools.runtime_state import inspect_recon_artifacts, load_runtime_state
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -35,6 +41,12 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     from action_queue import load_queue as load_action_queue  # type: ignore
     from attack_probe_filter import filter_attack_probes, is_attack_probe
     from finding_index import load_finding_index
+    from observation_inventory import (  # type: ignore
+        InventoryError,
+        inventory_path,
+        summarize_inventory,
+        sync_inventory,
+    )
     from recon_adapter import ReconAdapter
     from runtime_state import inspect_recon_artifacts, load_runtime_state
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -117,6 +129,26 @@ def _count_recon_artifact(recon_artifacts: dict, key: str) -> int:
         return int(counts.get(key, 0) or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _sync_observation_inventory(repo_root: Path, target: str) -> dict:
+    """同步中性 observation 状态，并把故障保留为显式 surface warning。"""
+    try:
+        return summarize_inventory(sync_inventory(repo_root, target))
+    except (InventoryError, OSError) as exc:
+        return {
+            "available": False,
+            "path": str(inventory_path(repo_root, target)),
+            "error": str(exc),
+            "total": 0,
+            "present": 0,
+            "untouched": 0,
+            "reviewing": 0,
+            "reviewed": 0,
+            "parked": 0,
+            "stale": 0,
+            "sample": [],
+        }
 
 
 def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]:
@@ -1236,6 +1268,7 @@ def load_surface_context(
     js_intel = load_js_intel_hypotheses(findings_dir)
     source_intel = load_source_intel_hypotheses(findings_dir)
     manual_review_leads = _build_manual_review_lead_hints(findings_dir, storage_key)
+    observation_inventory = _sync_observation_inventory(repo_root, target)
 
     profile = None
     pattern_matches = []
@@ -1298,6 +1331,7 @@ def load_surface_context(
         "js_intel": js_intel,
         "source_intel": source_intel,
         "manual_review_leads": manual_review_leads,
+        "observation_inventory": observation_inventory,
         "target_goal_memory": target_goal_memory,
         "profile": profile,
         "runtime_state": runtime_state,
@@ -1854,6 +1888,7 @@ def rank_surface(context: dict) -> dict:
     p1 = [item for item in candidates if item["score"] >= 8][:8]
     p2 = [item for item in candidates if 3 <= item["score"] < 8][:8]
     review_pool = _build_review_pool(candidates, ffuf_review_candidates)
+    observation_inventory = context.get("observation_inventory") or {}
 
     return {
         "available": True,
@@ -1863,6 +1898,7 @@ def rank_surface(context: dict) -> dict:
         "p1": p1,
         "p2": p2,
         "review_pool": review_pool,
+        "observation_inventory": observation_inventory,
         "kill": _dedupe_keep_order([json.dumps(item, sort_keys=True) for item in kill]),
         "memory": {
             "tested_count": len(tested_endpoints),
@@ -1890,6 +1926,9 @@ def rank_surface(context: dict) -> dict:
             "p2": len(p2),
             "review_pool": len(review_pool),
             "kill": len(kill),
+            "observation_total": int(observation_inventory.get("total", 0) or 0),
+            "observation_untouched": int(observation_inventory.get("untouched", 0) or 0),
+            "observation_stale": int(observation_inventory.get("stale", 0) or 0),
         },
     }
 
@@ -2036,6 +2075,28 @@ def format_surface_output(ranked: dict, target: str) -> str:
         )
     if runtime_workflow or recon_artifacts.get("available"):
         lines.append("")
+    observation_inventory = ranked.get("observation_inventory") or {}
+    inventory_error = str(observation_inventory.get("error") or "").strip()
+    if inventory_error:
+        lines.extend([
+            "Observation Inventory:",
+            f"- Warning: {inventory_error}",
+            f"- State: {observation_inventory.get('path', '')}",
+            "",
+        ])
+    elif observation_inventory.get("available"):
+        lines.extend([
+            "Observation Inventory (neutral; no route ranking):",
+            (
+                f"- Total: {observation_inventory.get('total', 0)}, "
+                f"present: {observation_inventory.get('present', 0)}, "
+                f"untouched: {observation_inventory.get('untouched', 0)}, "
+                f"stale: {observation_inventory.get('stale', 0)}, "
+                f"reviewing: {observation_inventory.get('reviewing', 0)}"
+            ),
+            f"- State: {observation_inventory.get('path', '')}",
+            "",
+        ])
     ffuf_lines = _format_ffuf_evidence_lines(ranked.get("ffuf") or {}, target)
     if ffuf_lines:
         lines.extend(ffuf_lines)

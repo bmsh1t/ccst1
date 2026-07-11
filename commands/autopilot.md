@@ -31,8 +31,7 @@ Super-pentester priority: business impact > workflow evidence > crown-jewel hypo
 Before unusual/non-default helpers, scan `docs/tool-index.md` once per session.
 Canonical runtime references: `skills/runtime-protocol.md`, `rules/red-lines.md`,
 `rules/coverage-gate.md`, `rules/hunting.md`, `rules/tool-ai-boundary.md`, `knowledge/index.md`,
-`tools/action_queue.py`, `tools/coverage_matrix.py`, `tools/evidence_ledger.py`,
-and `docs/evidence-runners.md`. These are navigation aids, not a state machine.
+`tools/action_queue.py`, `tools/coverage_matrix.py`, `tools/evidence_ledger.py`, `tools/observation_inventory.py`, and `docs/evidence-runners.md`. These are navigation aids, not a state machine.
 ## Four-Layer Automation
 Four-layer memory is the external brain, not the steering wheel:
 ```text
@@ -46,7 +45,7 @@ cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_she
 cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only [--quick]
 # usable cache: inspect surface/context before a later quick scan
 cd -- <repo_root_shell> && python3 tools/surface.py --target <target_shell>
-cd -- <repo_root_shell> && python3 tools/context_pack.py --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/context_pack.py --target <target_shell> && python3 tools/observation_inventory.py summary --target <target_shell>
 cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick
 ```
 If state returns `wait_recon` / `wait_scan`, do not start that phase again;
@@ -79,9 +78,7 @@ Checkpoint can emit target-memory write-back proposals:
 ```bash
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell>
 ```
-Review the proposal and apply target memory only when it is useful; stale/noisy
-state must not block recon, browser/source enrichment, AI-selected pivots, or a
-better live hypothesis.
+Review the proposal and apply target memory only when it is useful; stale/noisy state must not block recon, browser/source enrichment, AI-selected pivots, or a better live hypothesis. Observation inventory is a completeness reminder, not an execution queue: before declaring surface exhaustion, inspect its bounded untouched/stale summary or `/observations`; promote an item only when Claude can state the evidence question. Never route every untouched observation to a Skill or enqueue it automatically.
 ## Authorization Posture
 Treat the supplied target set as the active authorized execution set for this
 run. Do not pause for routine recon/scanning/hunting authorization re-checks.

@@ -1124,7 +1124,17 @@ def run_recon(domain, quick=False):
             per_target = 900 if quick else 1800
             timeout = max(1800, min(43200, per_target * max(list_count, 1)))
         proc.wait(timeout=timeout)
-        return proc.returncode == 0
+        success = proc.returncode == 0
+        if success and target_info["kind"] != "list":
+            try:
+                from observation_inventory import sync_inventory
+
+                repo_root = os.path.dirname(os.path.abspath(RECON_DIR))
+                sync_inventory(repo_root, normalized_target)
+            except Exception as exc:
+                # recon 结果仍然有效，但 inventory 缺口必须显式出现在日志中。
+                log("warn", f"Observation inventory sync failed for {normalized_target}: {exc}")
+        return success
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
         log("err", f"Recon timed out for {normalized_target}")

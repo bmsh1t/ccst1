@@ -228,6 +228,9 @@ def _surface_stats(state: dict) -> dict:
         "p2": int(stats.get("p2", 0) or 0),
         "review_pool": int(stats.get("review_pool", 0) or 0),
         "workflow_leads": len(_json_list(surface.get("workflow_leads"))),
+        "observation_total": int(stats.get("observation_total", 0) or 0),
+        "observation_untouched": int(stats.get("observation_untouched", 0) or 0),
+        "observation_stale": int(stats.get("observation_stale", 0) or 0),
     }
 
 
@@ -2338,7 +2341,13 @@ def _runtime_wait_candidate(wait_action: str, target: str) -> dict:
 def _dead_end_proposals(state: dict, coverage_gaps: list[dict]) -> list[str]:
     if state.get("has_recon") and not coverage_gaps:
         stats = _surface_stats(state)
-        if not stats["review_pool"] and not stats["p1"] and not stats["p2"] and not _unsafe_leads(state):
+        if (
+            not stats["review_pool"]
+            and not stats["p1"]
+            and not stats["p2"]
+            and not stats["observation_untouched"]
+            and not _unsafe_leads(state)
+        ):
             return [
                 "Evidence: cached surface has no review candidates and no high-value matrix gaps. "
                 "Why it matters: broad cached recon is currently low-signal. "
@@ -2368,6 +2377,9 @@ def _handoff_summary(
         f"advisory_first_review={stats['p1']}",
         f"advisory_follow_up={stats['p2']}",
         f"workflow_leads={stats['workflow_leads']}",
+        f"observation_total={stats['observation_total']}",
+        f"observation_untouched={stats['observation_untouched']}",
+        f"observation_stale={stats['observation_stale']}",
         f"coverage_gaps={coverage_summary.get('high_value_gaps_count', 0)}",
         f"actionable_coverage_gaps={coverage_summary.get('actionable_high_value_gaps_count', 0)}",
         f"actor_gaps={actor_matrix.get('gap_count', 0)}",

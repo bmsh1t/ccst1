@@ -2309,6 +2309,18 @@ def _unknowns(
     if not ranked.get("available"):
         items.append("No surface review pack available from local recon cache.")
     stats = ranked.get("stats") or {}
+    observation_inventory = ranked.get("observation_inventory") or {}
+    inventory_error = str(observation_inventory.get("error") or "").strip()
+    if inventory_error:
+        items.append(f"Observation inventory could not be read: {inventory_error}")
+    elif observation_inventory.get("available") and observation_inventory.get("untouched"):
+        items.append(
+            "Observation inventory still has {untouched} untouched item(s), including {stale} stale; "
+            "use the bounded sample or inventory list before declaring surface exhaustion.".format(
+                untouched=observation_inventory.get("untouched", 0),
+                stale=observation_inventory.get("stale", 0),
+            )
+        )
     if ranked.get("available") and not stats.get("review_pool") and not stats.get("p1") and not stats.get("p2"):
         items.append("Surface review pool has no candidates; recon may be thin or low-signal.")
     browser = ranked.get("browser") or {}
@@ -2801,6 +2813,9 @@ def build_context_pack(
             "p1": (ranked.get("stats") or {}).get("p1", 0),
             "p2": (ranked.get("stats") or {}).get("p2", 0),
             "workflow_leads": len(_json_list(ranked.get("workflow_leads"))),
+            "observation_total": int((ranked.get("observation_inventory") or {}).get("total", 0) or 0),
+            "observation_untouched": int((ranked.get("observation_inventory") or {}).get("untouched", 0) or 0),
+            "observation_stale": int((ranked.get("observation_inventory") or {}).get("stale", 0) or 0),
             "coverage_gaps": len(gaps),
             "findings": len(findings),
             "validation_runner_candidates": len(runner_candidates),

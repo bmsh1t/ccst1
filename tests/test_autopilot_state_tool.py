@@ -558,6 +558,10 @@ class TestAutopilotState:
         assert state["next_action"] == "recon_no_live_hosts"
         assert "do not rerun recon automatically" in output
         assert "completed with no live host inventory" in state["recon_blocker"]
+        inventory = state["observation_inventory"]
+        assert inventory["total"] >= 1
+        assert inventory["untouched"] >= 1
+        assert "Observation inventory: total=" in output
 
     def test_missing_recon_precedes_validated_structured_finding_report(self, tmp_path):
         repo_root = tmp_path

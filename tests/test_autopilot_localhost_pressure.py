@@ -69,6 +69,10 @@ def _write_recon_fixture(repo_root, target: str, base_url: str) -> None:
         f"{base_url}/api/orders?id=1\n",
         encoding="utf-8",
     )
+    (recon_dir / "urls" / "all.txt").write_text(
+        f"{base_url}/api/orders?id=1\n",
+        encoding="utf-8",
+    )
     (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
 
 
@@ -140,6 +144,9 @@ def test_localhost_sequential_fresh_resume_batch_queue_runner_and_checkpoint(
     existing = build_autopilot_state(str(tmp_path), target, memory_dir=str(memory_dir))
     assert existing["has_recon"] is True
     assert existing["next_action"] == "hunt_p1"
+    inventory = existing["observation_inventory"]
+    assert inventory["total"] >= 1
+    assert inventory["untouched"] == inventory["total"]
 
     scope = tmp_path / "scope.txt"
     scope.write_text(f"{target}\n", encoding="utf-8")

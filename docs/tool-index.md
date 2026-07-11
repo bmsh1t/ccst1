@@ -125,6 +125,7 @@ identity, and cloud signals without re-enumerating everything.
 |---|---|---|
 | `tools/hunt.py` | Master hunt entrypoint (CLI) | Orchestrator — wraps recon/scan/agent/report flows |
 | `tools/autopilot_state.py` | Reading current autopilot state | Combine resume + surface context into one state view |
+| `tools/observation_inventory.py` | Recon has many observations or a target resumes across sessions | Persist neutral untouched/stale observations without choosing a vuln route or Skill |
 | `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
 | `tools/target_case_state.py` | Multi-actor/object validation needs durable target state | Actor/session/object registry, multi-header auth session import, validation backlog next action |
 | `tools/case_state_seed.py` | Browser/recon/JS/source artifacts reveal object IDs but case state is empty | Suggest add-actor/add-object/add-backlog commands; no auto-write |

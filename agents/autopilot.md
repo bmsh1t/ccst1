@@ -51,7 +51,7 @@ existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> CHAIN -> VALIDATE CANDIDA
 ## Four-Layer Runtime
 
 Use the existing `/autopilot` flow as the four-layer runtime; do not create a parallel workflow:
-First surface ctf mode, then run `python3 tools/autopilot_state.py --target <target>` exactly once before choosing fresh, existing, or batch behavior. Fresh state may launch `tools/hunt.py --recon-only`; usable cache continues to `tools/surface.py` and `tools/context_pack.py`. If the surface is app-like, SPA/authenticated, object/workflow-heavy, GraphQL, WebSocket, or business-critical, capture/import browser/source/JS truth before scanner quick. Scanner quick (`python3 tools/hunt.py --target <target> --scan-only --quick`) remains a later breadth sensor, not the first-contact steering wheel.
+First surface ctf mode, then run `python3 tools/autopilot_state.py --target <target>` exactly once before choosing fresh, existing, or batch behavior. Fresh state may launch `tools/hunt.py --recon-only`; usable cache continues to `tools/surface.py` and `tools/context_pack.py`. If the surface is app-like, SPA/authenticated, object/workflow-heavy, GraphQL, WebSocket, or business-critical, capture/import browser/source/JS truth before scanner quick. Scanner quick (`python3 tools/hunt.py --target <target> --scan-only --quick`) remains a later breadth sensor, not the first-contact steering wheel. Read the bounded `observation_inventory` summary exposed by state/surface before declaring exhaustion; use `/observations` for untouched/stale details, then let Claude decide whether evidence justifies promotion. Never auto-route or enqueue the full inventory.
 For a URL-form input, keep canonical host state but inspect the exact path/query seed before historical focus or score hints. Pass a supplied `--auth-file` to hunt/recon/scan commands.
 
 For a readable primary-domain list, run batch recon/handoff only, read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed domain, then rerun `autopilot_state.py` for that domain before surface/scan/hunt. Never scan or actively hunt the batch index; `invalid_batch_target` and `batch_failed` are terminal until input/evidence changes.
@@ -162,7 +162,7 @@ Validation is not an early hunting kill-switch. Keep useful leads and chain seed
 4. Hunt one hypothesis with minimal proof, then attempt chain expansion across role/object/method/state/integration/parser/cache/source hints before downgrade.
 5. Record evidence in queue, target memory, Evidence Ledger, findings state, and case state when continuity helps.
 6. Validate only Candidate-quality items with `/validate` and evidence rubric; draft reports when AI judges stronger validation/chain/coverage actions no longer outrank the pending report.
-7. Run checkpoint/coverage/action_queue at handoff, before finish, or after meaningful progress—not as the first steering wheel.
+7. Review the bounded untouched/stale observation summary, then run checkpoint/coverage/action_queue at handoff, before finish, or after meaningful progress—not as the first steering wheel.
 
 ## Deep Mode
 

@@ -12,6 +12,7 @@ from checkpoint import (
     _align_decision_with_default_candidate,
     _coverage_gap_validation_path,
     _decide,
+    _dead_end_proposals,
     _filter_final_action_queue_items,
     _lead_proposals,
     _matrix_summary,
@@ -2326,6 +2327,26 @@ def test_checkpoint_surfaces_context_contradictions_without_queueing_them(tmp_pa
     )
     assert not any(item["type"] == "context-review" for item in checkpoint["next_action_queue"])
     assert "Contradictions:" in output
+
+
+def test_untouched_observation_prevents_false_surface_exhaustion():
+    proposals = _dead_end_proposals(
+        {
+            "has_recon": True,
+            "surface": {
+                "stats": {
+                    "p1": 0,
+                    "p2": 0,
+                    "review_pool": 0,
+                    "observation_untouched": 1,
+                },
+                "workflow_leads": [],
+            },
+        },
+        coverage_gaps=[],
+    )
+
+    assert proposals == []
 
 
 def test_apply_target_memory_appends_checkpoint_entries(tmp_path):

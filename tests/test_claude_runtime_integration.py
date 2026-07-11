@@ -162,6 +162,15 @@ def staged_claude_runtime(tmp_path_factory):
     return {"claude": claude_path, "home": home, "stage_root": stage_root}
 
 
+def test_staged_runtime_installs_observations_command(staged_claude_runtime):
+    command = staged_claude_runtime["home"] / ".claude" / "commands" / "observations.md"
+
+    assert command.is_file()
+    text = command.read_text(encoding="utf-8")
+    assert "observation_inventory.py sync" in text
+    assert "不判断漏洞类别、攻击价值或下一项 Skill" in text
+
+
 @pytest.fixture
 def run_staged_claude(fake_anthropic_server, staged_claude_runtime):
     def run(*prompt_args: str, cwd: Path = REPO_ROOT) -> dict:

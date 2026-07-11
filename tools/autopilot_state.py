@@ -1219,6 +1219,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "target_goal_memory": target_goal_memory,
         "resume_summary": resume_summary,
         "surface": ranked_for_next if has_recon else None,
+        "observation_inventory": ranked.get("observation_inventory") or {},
         "guard_status": guard_state,
         "guard_hint": _build_guard_hint(guard_state, surface_review_candidates),
         "pivot_hint": pivot_hint,
@@ -1306,6 +1307,12 @@ def format_autopilot_state(state: dict) -> str:
         json.loads(item) if isinstance(item, str) else item
         for item in ((state.get("surface") or {}).get("workflow_leads", []) or [])
     ]
+    surface = state.get("surface") or {}
+    observation_inventory = (
+        state.get("observation_inventory")
+        or surface.get("observation_inventory")
+        or {}
+    )
 
     if not state["has_recon"]:
         if state.get("recon_in_progress"):
@@ -1362,6 +1369,16 @@ def format_autopilot_state(state: dict) -> str:
             lines.append("Repo source: available — use read_repo_source_summary")
         if active_goal_memory or target_memory:
             lines.extend(_format_target_goal_memory_lines(active_goal_memory, target_memory))
+        inventory_error = str(observation_inventory.get("error") or "").strip()
+        if inventory_error:
+            lines.append(f"Observation inventory warning: {inventory_error}")
+        elif observation_inventory.get("available"):
+            lines.append(
+                "Observation inventory: "
+                f"total={observation_inventory.get('total', 0)}, "
+                f"untouched={observation_inventory.get('untouched', 0)}, "
+                f"stale={observation_inventory.get('stale', 0)}"
+            )
         memory_action_queue = state.get("memory_action_queue") or []
         if memory_action_queue:
             lines.append("Memory action queue:")
@@ -1400,7 +1417,6 @@ def format_autopilot_state(state: dict) -> str:
                     lines.append(f"- {details}")
         return "\n".join(lines) + "\n"
 
-    surface = state["surface"] or {}
     lines = [
         f"AUTOPILOT STATE: {state['target']}",
         "═══════════════════════════════════════",
@@ -1482,6 +1498,17 @@ def format_autopilot_state(state: dict) -> str:
                 state.get("resolved_target") or state["target"],
                 recon_artifacts,
             )
+        )
+    inventory_error = str(observation_inventory.get("error") or "").strip()
+    if inventory_error:
+        lines.append(f"Observation inventory warning: {inventory_error}")
+    elif observation_inventory.get("available"):
+        lines.append(
+            "Observation inventory: "
+            f"total={observation_inventory.get('total', 0)}, "
+            f"untouched={observation_inventory.get('untouched', 0)}, "
+            f"stale={observation_inventory.get('stale', 0)}, "
+            f"reviewing={observation_inventory.get('reviewing', 0)}"
         )
 
     if state["tech_stack"]:

@@ -149,33 +149,14 @@ def test_resume_docs_explain_storage_key_for_cidr_and_host_list_targets():
     assert "list filename stem" in content
 
 
-def test_claude_settings_keep_trellis_hooks_and_memory_gc_stop_hook():
-    settings = json.loads((REPO_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    hooks = settings["hooks"]
+def test_tracked_claude_hook_contract_is_complete():
+    payload = json.loads((REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    hooks = payload["hooks"]
 
-    # Trellis hook integrations (SessionStart / PreToolUse / UserPromptSubmit)
-    # are user-local config and may or may not be in the project repo's
-    # settings.json — the operator typically keeps them under skip-worktree.
-    # Skip the Trellis-hook assertions when the project repo's settings.json
-    # is the minimal form (no SessionStart hook).
-    if "SessionStart" not in hooks:
-        import pytest
-        pytest.skip(
-            "Project repo settings.json is the minimal form (no Trellis hooks); "
-            "Trellis hook integrations are user-local config kept under "
-            "skip-worktree."
-        )
-
-    assert "SessionStart" in hooks
-    assert "PreToolUse" in hooks
-    assert "UserPromptSubmit" in hooks
-
-    stop_commands = [
-        hook.get("command", "")
-        for item in hooks.get("Stop", [])
-        for hook in item.get("hooks", [])
-    ]
-    assert any("tools.memory_gc --rotate" in command for command in stop_commands)
+    # 个人 .claude/settings.json 属于 runtime 配置，不能作为仓库质量门输入。
+    events = {item.get("event") for item in hooks}
+    assert {"SessionStart", "SessionStop", "Stop"} <= events
+    assert all(str(item.get("command") or "").strip() for item in hooks)
 
 
 def test_claude_code_prompt_files_are_utf8_and_not_corrupted():
