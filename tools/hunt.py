@@ -53,6 +53,7 @@ from memory.schemas import make_journal_entry
 from memory.target_profile import default_memory_dir, load_target_profile, make_target_profile, save_target_profile
 from legacy_bridge import generate_legacy_reports, open_hunt_journal, run_legacy_cve_hunt
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
+from tools.autopilot_args import cadence_from_namespace
 from tools.public_exposure_signals import classify_public_response
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
 from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock
@@ -74,11 +75,7 @@ _AUTH_SESSION: AuthSession | None = None
 
 def resolve_autopilot_mode(args) -> str:
     """Resolve CLI checkpoint mode with paranoid as the safe default."""
-    if getattr(args, "yolo", False):
-        return "yolo"
-    if getattr(args, "normal", False):
-        return "normal"
-    return "paranoid"
+    return cadence_from_namespace(args)
 
 
 def load_config():

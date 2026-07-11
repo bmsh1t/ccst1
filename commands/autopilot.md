@@ -1,13 +1,16 @@
 ---
 description: Expert Hunter AI-first autonomous hunt loop — recon/cache state, review surface evidence, enrich with browser/source/JS, hunt, validate candidates, report validated findings, and checkpoint useful memory. Usage: /autopilot target.com [--paranoid|--normal|--yolo|--quick|--deep] or /autopilot targets.txt
+allowed-tools: Bash
 ---
 # /autopilot
-Invocation arguments: `$ARGUMENTS`
+Authoritative argument contract (do not reinterpret): !`python3 tools/autopilot_args.py --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6"`
 
-Parse arguments first. The first non-flag argument is the target, URL, IP/CIDR,
-or primary-domain batch list. If no target is present, ask for the exact target.
-`--deep` activates the Deep Mode section; cadence flags only affect checkpoint
-frequency.
+Obey `action` before Runtime Preflight: `ask_target` asks for the exact target;
+`stop_invalid_arguments` reports `errors` and stops; only `continue` may act.
+Use `target_shell` for Bash, `recon_flags` only on fresh/refresh recon, and the
+parsed cadence/quick/deep values exactly. `--quick` lowers recon cost but never
+skips browser/source/validation or implies completion; scanner quick remains a
+breadth sensor. `--deep` increases value-first depth without relaxing red lines.
 
 Expert Hunter Autopilot for Claude CLI. Claude is the hunter; tools are memory,
 evidence, replay, and summary aids.
@@ -262,10 +265,9 @@ Red-line checks are narrow safety checks, not broad workflow blockers. Controlle
 credential testing and OAST are not red lines when bounded; active stored XSS payload,
 actions that change real account or permission state, or trigger CI/CD/deployment
 side effects require explicit current-turn intent.
-## Advanced Mode Flags
-Compatibility flags: `--parallel`, `--max-parallel`, `--parallel-hypotheses`,
-`--vision`, `--self-review`, and `--calibrate-patterns`. Use them only when
-fanout, screenshots, adversarial review, or pattern calibration adds evidence.
+Legacy-only `--parallel`, `--max-parallel`, `--parallel-hypotheses`, `--vision`,
+`--self-review`, and `--calibrate-patterns` are invalid inline; use `python3 agent.py --target <target> ...`
+for those options; baseline local-agent runs use `python3 tools/hunt.py --target <target> --agent`.
 ## Finish Condition
 Finish on evidence state, not a tool checklist:
 - `working_hypothesis` is resolved, killed, blocked, or promoted to Candidate / Validated Finding.

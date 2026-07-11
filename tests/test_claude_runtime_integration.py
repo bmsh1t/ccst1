@@ -6,6 +6,7 @@ import errno
 import json
 import os
 import queue
+import shlex
 import shutil
 import subprocess
 import threading
@@ -15,10 +16,19 @@ from pathlib import Path
 import pytest
 
 from tools import runtime_doctor
+from tools.autopilot_args import (
+    MAX_CAPTURED_TOKENS,
+    parse_autopilot_args,
+    render_autopilot_args_json,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FAKE_RESPONSE_TEXT = "runtime-probe-ok"
+DYNAMIC_ARGUMENT_COMMAND = (
+    '!`python3 tools/autopilot_args.py --json -- '
+    '"$0" "$1" "$2" "$3" "$4" "$5" "$6"`'
+)
 
 
 class _CaptureServer(ThreadingHTTPServer):
@@ -186,7 +196,7 @@ def run_staged_claude(fake_anthropic_server, staged_claude_runtime):
                 "--setting-sources",
                 "user",
                 "--tools",
-                "",
+                "Bash",
                 "--no-session-persistence",
                 *prompt_args,
             ],
@@ -238,7 +248,19 @@ def _installed_command_body(home: Path, arguments: str) -> str:
     closing_index = next(
         index for index, line in enumerate(lines[1:], 1) if line.strip() == "---"
     )
-    return "".join(lines[closing_index + 1:]).replace("$ARGUMENTS", arguments)
+    body = "".join(lines[closing_index + 1:])
+    assert body.count(DYNAMIC_ARGUMENT_COMMAND) == 1
+    captured_tokens = shlex.split(arguments)[:MAX_CAPTURED_TOKENS] if arguments else []
+    parsed_json = render_autopilot_args_json(
+        parse_autopilot_args(captured_tokens, cwd=REPO_ROOT)
+    )
+    return body.replace(DYNAMIC_ARGUMENT_COMMAND, parsed_json)
+
+
+def _parsed_argument_contract(command_body: str) -> dict:
+    prefix = "Authoritative argument contract (do not reinterpret): "
+    line = next(line for line in command_body.splitlines() if line.startswith(prefix))
+    return json.loads(line.removeprefix(prefix))
 
 
 @pytest.mark.parametrize(
@@ -273,8 +295,46 @@ def test_real_claude_cli_expands_installed_autopilot_arguments(
     )
     assert "$ARGUMENTS" not in command_body
     assert "description: Expert Hunter" not in command_body
-    if not arguments:
-        assert "If no target is present, ask for the exact target." in command_body
+    assert _parsed_argument_contract(command_body) == parse_autopilot_args(
+        shlex.split(arguments)[:MAX_CAPTURED_TOKENS] if arguments else [],
+        cwd=REPO_ROOT,
+    )
+
+
+def test_real_claude_cli_expands_readable_batch_target(
+    run_staged_claude,
+    staged_claude_runtime,
+):
+    scope = staged_claude_runtime["stage_root"] / "primary targets.txt"
+    scope.write_text("one.example.test\ntwo.example.test\n", encoding="utf-8")
+
+    payload = run_staged_claude(f"/autopilot '{scope}' --normal")
+    command_body = next(
+        text for text in _message_texts(payload) if text.startswith("# /autopilot")
+    )
+    parsed = _parsed_argument_contract(command_body)
+
+    assert parsed["valid"] is True
+    assert parsed["target"] == str(scope.resolve())
+    assert parsed["target_kind"] == "list"
+    assert parsed["cadence"] == "normal"
+
+
+def test_real_claude_cli_marks_seventh_argument_as_overflow(
+    run_staged_claude,
+):
+    payload = run_staged_claude(
+        "/autopilot example.test --quick --deep --normal --quick --deep --quick"
+    )
+    command_body = next(
+        text for text in _message_texts(payload) if text.startswith("# /autopilot")
+    )
+    parsed = _parsed_argument_contract(command_body)
+
+    assert parsed["valid"] is False
+    assert parsed["action"] == "stop_invalid_arguments"
+    assert parsed["deep"] is True
+    assert [error["code"] for error in parsed["errors"]] == ["overflow"]
 
 
 def test_real_claude_cli_discovers_installed_optional_autopilot_agent(

@@ -46,6 +46,7 @@ from typing import Any
 from memory import HuntJournal
 from memory.target_profile import default_memory_dir, load_target_profile
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
+from tools.autopilot_args import cadence_from_namespace
 from tools.repo_source_artifacts import (
     list_repo_source_artifacts,
     repo_source_exposure_dir,
@@ -263,11 +264,7 @@ def _normalize_autopilot_mode(mode: str | None) -> str:
 
 def _resolve_cli_autopilot_mode(args: argparse.Namespace) -> str:
     """Resolve checkpoint mode flags for the direct agent CLI."""
-    if getattr(args, "yolo", False):
-        return "yolo"
-    if getattr(args, "normal", False):
-        return "normal"
-    return "paranoid"
+    return cadence_from_namespace(args)
 
 
 def _load_agent_runtime_config() -> dict:

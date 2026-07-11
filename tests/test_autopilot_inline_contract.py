@@ -22,6 +22,20 @@ def test_slash_command_runs_inline_with_one_controller_and_bounded_specialist():
     assert "--isolated" not in text
 
 
+def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
+    text = _read("commands/autopilot.md")
+    normalized = " ".join(text.split())
+
+    assert 'allowed-tools: Bash' in text
+    assert 'tools/autopilot_args.py --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6"' in text
+    assert "Authoritative argument contract (do not reinterpret)" in normalized
+    assert "only `continue` may act" in normalized
+    assert "invalid inline" in normalized
+    assert "python3 agent.py --target <target>" in normalized
+    assert "python3 tools/hunt.py --target <target> --agent" in normalized
+    assert '"$ARGUMENTS"' not in text
+
+
 def test_optional_autopilot_agent_is_not_the_slash_command_backend():
     text = _read("agents/autopilot.md")
     normalized = " ".join(text.split())
