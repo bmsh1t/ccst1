@@ -128,9 +128,29 @@ def test_deep_mode_points_to_coverage_tools_instead_of_embedded_lab_fixtures():
     command = _read(COMMAND)
 
     assert "Deep Exhaustion Checklist" in command
-    assert "python3 tools/coverage_matrix.py rebuild --target target.com" in command
-    assert "python3 tools/coverage_matrix.py find-gaps --target target.com" in command
-    assert "python3 tools/action_queue.py summary --target target.com" in command
+    assert "python3 tools/coverage_matrix.py rebuild --target <target_shell>" in command
+    assert "python3 tools/coverage_matrix.py find-gaps --target <target_shell>" in command
+    assert "python3 tools/action_queue.py summary --target <target_shell>" in command
 
     # Cadence lab fixtures are no longer required for the compact prompt model.
     assert "evidence/cadence-labs" not in command
+
+
+def test_compact_transition_contract_preserves_cadence_and_single_specialist_budget():
+    command = _read(COMMAND)
+    agent = _read(AGENT)
+    combined = f"{command}\n{agent}"
+
+    for marker in (
+        "## Compact Transition Gate",
+        "after each substantive state change",
+        "coherent lane batch",
+        "blocker/handoff/finish",
+        "bounded evidence-fit sibling or chain",
+        "401/403/404/405/415",
+        "three homogeneous no-information results",
+        "rotating form/session token",
+    ):
+        assert marker in combined
+
+    assert "After using one, this invocation cannot call a second specialist." in command

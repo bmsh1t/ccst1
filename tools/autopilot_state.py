@@ -19,6 +19,10 @@ if TOOLS_DIR not in sys.path:
 
 from memory.target_profile import default_memory_dir
 try:
+    from tools.action_queue import load_queue, select_next_action
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from action_queue import load_queue, select_next_action
+try:
     from tools.repo_source_artifacts import (
         list_repo_source_artifacts,
         load_repo_source_summary,
@@ -48,7 +52,12 @@ try:
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
     )
-    from tools.target_paths import canonical_target_value, classify_target, target_storage_key
+    from tools.target_paths import (
+        canonical_target_value,
+        classify_target,
+        target_list_entries,
+        target_storage_key,
+    )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from runtime_state import (  # type: ignore
         inspect_recon_artifacts,
@@ -61,7 +70,12 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
     )
-    from target_paths import canonical_target_value, classify_target, target_storage_key
+    from target_paths import (  # type: ignore
+        canonical_target_value,
+        classify_target,
+        target_list_entries,
+        target_storage_key,
+    )
 
 
 
@@ -273,9 +287,12 @@ def _pick_next_action(
     ranked: dict,
     resume_summary: dict | None,
     structured_findings: dict | None = None,
+    validation_runner_next: dict | None = None,
+    action_queue_next: dict | None = None,
     resume_targets: list[str] | None = None,
     recon_in_progress: bool = False,
     scan_in_progress: bool = False,
+    recon_completed_no_live_hosts: bool = False,
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
@@ -290,10 +307,14 @@ def _pick_next_action(
 
     if structured_findings.get("next_validation"):
         return "validate_finding"
+    if validation_runner_next:
+        return "review_validation_candidate"
+    if action_queue_next:
+        return "resume_action_queue"
 
     if not has_recon:
-        if structured_findings.get("validated_pending_report"):
-            return "report_finding"
+        if recon_completed_no_live_hosts:
+            return "recon_no_live_hosts"
         return "run_recon"
 
     latest_session = (resume_summary or {}).get("latest_session_summary") or {}
@@ -318,7 +339,16 @@ def _pick_next_action(
 
 def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
     """Return whether live probing should pause and cached-evidence work should continue."""
-    if next_action in {"run_recon", "wait_recon", "wait_scan", "validate_finding", "report_finding"}:
+    if next_action in {
+        "run_recon",
+        "wait_recon",
+        "wait_scan",
+        "validate_finding",
+        "review_validation_candidate",
+        "resume_action_queue",
+        "recon_no_live_hosts",
+        "report_finding",
+    }:
         return False
     tracked = int(guard_status.get("tracked_hosts", 0) or 0)
     tripped = int(guard_status.get("tripped_hosts", 0) or 0)
@@ -359,6 +389,25 @@ def _describe_next_step(state: dict) -> str:
         if followup:
             return f"validate structured finding {followup.get('id')} on {followup.get('url')}."
         return "validate the highest-priority structured finding."
+    if action == "review_validation_candidate":
+        candidate = state.get("validation_runner_next") or {}
+        if candidate:
+            return (
+                f"review validation-runner candidate {candidate.get('id')}; inspect raw evidence, "
+                "then use /validate or record a ledger downgrade."
+            )
+        return "review the next validation-runner candidate before starting another long phase."
+    if action == "resume_action_queue":
+        item = state.get("action_queue_next") or {}
+        if item:
+            return f"resume durable action {item.get('id')}: {item.get('action') or item.get('command_hint')}."
+        return "resume the highest-priority substantive durable action."
+    if action == "recon_no_live_hosts":
+        return (
+            "recon completed with no live hosts; review cached infra/exposure/offline evidence "
+            "and record the blocker. Explicit refresh, stale artifacts, or contradictory fresh "
+            "evidence is required; do not rerun recon automatically."
+        )
     if action == "report_finding":
         followup = (state.get("structured_findings") or {}).get("next_report") or {}
         if followup:
@@ -687,7 +736,16 @@ def _build_enrichment_hints(
     next_action: str,
 ) -> tuple[str, list[dict]]:
     """Suggest the most useful enrichment tool before widening generic hunting."""
-    if next_action in {"run_recon", "wait_recon", "wait_scan", "validate_finding", "report_finding"}:
+    if next_action in {
+        "run_recon",
+        "wait_recon",
+        "wait_scan",
+        "validate_finding",
+        "review_validation_candidate",
+        "resume_action_queue",
+        "recon_no_live_hosts",
+        "report_finding",
+    }:
         return "", []
 
     storage_key = target_storage_key(resolved_target)
@@ -796,13 +854,61 @@ def _build_memory_action_queue(target_goal_memory: dict) -> list[dict]:
     return queue
 
 
+def _is_substantive_queue_action(item: dict) -> bool:
+    """仅让已有证据状态或明确 replay 命令抢占 fresh recon。"""
+    status = str(item.get("status") or "queued").strip().lower()
+    if status in {"running", "signal", "candidate"}:
+        return True
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    command = " ".join(
+        str(value or "").strip()
+        for value in (
+            item.get("command_hint"),
+            metadata.get("replay_draft"),
+        )
+    ).strip()
+    return command.startswith(("python3 ", "/validate ", "curl ", "playwright-cli "))
+
+
+def _load_substantive_action_queue_next(repo_root: str, target: str) -> dict:
+    """复用 action_queue 的公开 selector，不复制其排序与去重规则。"""
+    selected = select_next_action(load_queue(repo_root, target))
+    if not isinstance(selected, dict) or not _is_substantive_queue_action(selected):
+        return {}
+    return selected
+
+
+def _recon_completed_without_live_hosts(
+    runtime_state: dict,
+    recon_artifacts: dict,
+    *,
+    recon_in_progress: bool,
+) -> bool:
+    """识别已退出 recon 长阶段、但没有 HTTP live inventory 的终态。"""
+    if recon_in_progress:
+        return False
+    if not recon_artifacts.get("available") or recon_artifacts.get("host_inventory_ready"):
+        return False
+    workflow = str(runtime_state.get("last_executed_workflow") or "").strip()
+    # 没有完成 breadcrumb 时仍允许首次/损坏缓存执行一次 recon；所有 started
+    # marker 都由 runtime gate 负责，不能误判成完成。
+    return bool(workflow and not workflow.endswith("_started"))
+
+
 def _read_batch_lines(path: Path) -> list[str]:
     """Read a small batch index file with stable de-duplication."""
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
-    return list(dict.fromkeys(line.strip() for line in lines if line.strip()))
+    values = []
+    for line in lines:
+        value = line.strip().strip("\ufeff").rstrip("/").lower()
+        if value.startswith("*."):
+            value = value[2:]
+        if value:
+            values.append(value)
+    return list(dict.fromkeys(values))
 
 
 def _read_batch_manifest_completed(path: Path) -> list[str]:
@@ -820,7 +926,9 @@ def _read_batch_manifest_completed(path: Path) -> list[str]:
                 continue
             if not isinstance(item, dict) or item.get("status") != "ok":
                 continue
-            target = str(item.get("target") or "").strip()
+            target = str(item.get("target") or "").strip().rstrip("/").lower()
+            if target.startswith("*."):
+                target = target[2:]
             if target:
                 completed.append(target)
     return list(dict.fromkeys(completed))
@@ -837,7 +945,9 @@ def _read_batch_ranked_targets(path: Path, completed: list[str]) -> list[dict]:
     for item in payload if isinstance(payload, list) else []:
         if not isinstance(item, dict):
             continue
-        target = str(item.get("target") or "").strip()
+        target = str(item.get("target") or "").strip().rstrip("/").lower()
+        if target.startswith("*."):
+            target = target[2:]
         if target not in completed_set:
             continue
         try:
@@ -869,13 +979,23 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
     storage_key = target_storage_key(resolved_target)
     batch_dir = Path(repo_root) / "recon" / storage_key
     manifest_path = batch_dir / "batch_manifest.jsonl"
+    current_entries = target_list_entries(resolved_target)
+    current_set = set(current_entries)
     completed = _read_batch_lines(batch_dir / "completed_targets.txt")
     if not completed:
         completed = _read_batch_manifest_completed(manifest_path)
+    completed = [item for item in completed if item in current_set]
     failed = _read_batch_lines(batch_dir / "failed_targets.txt")
-    pending = _read_batch_lines(batch_dir / "pending_targets.txt")
+    failed = [item for item in failed if item in current_set and item not in set(completed)]
+    artifact_pending = _read_batch_lines(batch_dir / "pending_targets.txt")
     processed = set(completed) | set(failed)
-    pending = [item for item in pending if item not in processed]
+    # 当前 list 是 batch identity。旧 pending 仅提供顺序提示，新加入的输入也必须
+    # 进入本轮 pending，不能因为同 stem 的历史 artifact 被漏掉。
+    pending = [
+        item
+        for item in dict.fromkeys([*artifact_pending, *current_entries])
+        if item in current_set and item not in processed
+    ]
     runtime_state = load_runtime_state(repo_root, resolved_target)
     recon_in_progress = _runtime_recon_in_progress(runtime_state)
     candidates = _read_batch_ranked_targets(
@@ -883,10 +1003,17 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
         completed,
     )
 
-    if recon_in_progress:
+    blocker = ""
+    if not current_entries:
+        next_action = "invalid_batch_target"
+        blocker = "the current target list has no usable primary-domain entries"
+    elif recon_in_progress:
         next_action = "wait_recon"
     elif candidates:
         next_action = "select_completed_domain"
+    elif not pending and failed:
+        next_action = "batch_failed"
+        blocker = "all current batch entries failed and no pending target remains"
     else:
         next_action = "run_batch_recon"
 
@@ -907,10 +1034,12 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
             "ai_handoff": str(batch_dir / "ai_handoff.md"),
             "surface_ranking": str(batch_dir / "surface_ranking.txt"),
             "high_value_targets": str(batch_dir / "high_value_targets.json"),
+            "current_entries": current_entries,
             "completed": completed,
             "failed": failed,
             "pending": pending,
             "candidates": candidates,
+            "blocker": blocker,
         },
     }
 
@@ -939,6 +1068,12 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     repo_source_summary = load_repo_source_summary(repo_root, resolved_target) if repo_source_available else {}
     structured_findings = load_structured_finding_followup(repo_root, resolved_target)
     validation_runner_candidates = load_validation_runner_candidate_pool(repo_root, resolved_target)
+    validation_runner_next = (
+        validation_runner_candidates[0]
+        if validation_runner_candidates
+        else {}
+    )
+    action_queue_next = _load_substantive_action_queue_next(repo_root, resolved_target)
     runtime_state = load_runtime_state(repo_root, resolved_target)
     recon_artifacts = inspect_recon_artifacts(repo_root, resolved_target)
     recon_in_progress = (
@@ -946,6 +1081,11 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         and not bool(recon_artifacts.get("ready"))
     )
     scan_in_progress = _runtime_scan_in_progress(runtime_state)
+    recon_completed_no_live_hosts = _recon_completed_without_live_hosts(
+        runtime_state,
+        recon_artifacts,
+        recon_in_progress=recon_in_progress,
+    )
     target_goal_memory = load_target_goal_memory(repo_root, resolved_target)
 
     has_recon = bool(ranked.get("available")) and bool(recon_artifacts.get("host_inventory_ready"))
@@ -973,9 +1113,12 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         ranked_for_next,
         resume_summary,
         structured_findings,
+        validation_runner_next,
+        action_queue_next,
         resume_targets=resume_targets,
         recon_in_progress=recon_in_progress,
         scan_in_progress=scan_in_progress,
+        recon_completed_no_live_hosts=recon_completed_no_live_hosts,
     )
     prefer_resume_targets = next_action == "continue_last_focus"
     surface_review_candidates = (
@@ -1013,6 +1156,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     return {
         "target": target,
         "resolved_target": resolved_target,
+        "target_kind": classify_target(resolved_target)["kind"],
         "memory_dir": resolved_memory_dir,
         "has_recon": has_recon,
         "has_memory": has_memory,
@@ -1023,8 +1167,17 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "recon_artifacts": recon_artifacts,
         "recon_in_progress": recon_in_progress,
         "scan_in_progress": scan_in_progress,
+        "recon_completed_no_live_hosts": recon_completed_no_live_hosts,
+        "recon_blocker": (
+            "recon completed with no live host inventory"
+            if recon_completed_no_live_hosts
+            else ""
+        ),
         "structured_findings": structured_findings,
         "validation_runner_candidates": validation_runner_candidates,
+        "validation_runner_next": validation_runner_next,
+        "action_queue_next": action_queue_next,
+        "action_queue": {"next": action_queue_next},
         "target_goal_memory": target_goal_memory,
         "resume_summary": resume_summary,
         "surface": ranked_for_next if has_recon else None,
@@ -1046,6 +1199,20 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     }
 
 
+def _format_durable_action_lines(item: dict) -> list[str]:
+    """Format the selected persistent action without dumping the full queue."""
+    if not item:
+        return []
+    lines = [
+        "Durable action queue next:",
+        f"- {item.get('id', '-')}: {item.get('action') or item.get('type') or ''}",
+    ]
+    command_hint = str(item.get("command_hint") or "").strip()
+    if command_hint:
+        lines.append(f"  Command: {command_hint}")
+    return lines
+
+
 def format_autopilot_state(state: dict) -> str:
     """Format autopilot bootstrap state for terminal display."""
     if state.get("target_kind") == "list":
@@ -1056,6 +1223,7 @@ def format_autopilot_state(state: dict) -> str:
             "",
             f"Next Action: {state['next_action']}",
             f"Recon: {'in progress' if state.get('recon_in_progress') else 'idle'}",
+            f"Current Inputs: {len(batch.get('current_entries') or [])}",
             f"Completed: {len(batch.get('completed') or [])}",
             f"Failed: {len(batch.get('failed') or [])}",
             f"Pending: {len(batch.get('pending') or [])}",
@@ -1063,6 +1231,13 @@ def format_autopilot_state(state: dict) -> str:
             f"Surface Ranking: {batch.get('surface_ranking', '')}",
             f"Manifest: {batch.get('manifest', '')}",
         ]
+        blocker = str(batch.get("blocker") or "").strip()
+        if blocker:
+            lines.extend(["", f"Blocker: {blocker}"])
+        if state.get("next_action") == "invalid_batch_target":
+            lines.append("Stop: add at least one usable primary domain before batch recon.")
+        elif state.get("next_action") == "batch_failed":
+            lines.append("Stop: do not retry the failed batch automatically; review failure evidence or refresh explicitly.")
         candidates = batch.get("candidates") or []
         if candidates:
             lines.extend(["", "Completed-domain candidates:"])
@@ -1095,13 +1270,19 @@ def format_autopilot_state(state: dict) -> str:
     ]
 
     if not state["has_recon"]:
-        recon_label = "in progress" if state.get("recon_in_progress") else "missing"
+        if state.get("recon_in_progress"):
+            recon_label = "in progress"
+        elif state.get("recon_completed_no_live_hosts"):
+            recon_label = "completed; no live hosts"
+        else:
+            recon_label = "missing"
         lines = [
             f"AUTOPILOT STATE: {state['target']}",
             "═══════════════════════════════════════",
             "",
             f"Recon: {recon_label}",
             f"Memory: {'available' if state['has_memory'] else 'missing'}",
+            f"Next action: {state['next_action']}",
         ]
         runtime_workflow = str(
             runtime_state.get("last_executed_workflow")
@@ -1151,6 +1332,7 @@ def format_autopilot_state(state: dict) -> str:
                     f"- {item.get('id', '-')}: {item.get('action', '')} "
                     f"| hint: {item.get('command_hint', '')}"
                 )
+        lines.extend(_format_durable_action_lines(state.get("action_queue_next") or {}))
         lines.append(f"Next: {_describe_next_step(state)}")
         guard_hint = str(state.get("guard_hint", "") or "").strip()
         if guard_hint:
@@ -1223,6 +1405,7 @@ def format_autopilot_state(state: dict) -> str:
                 f"- {item.get('id', '-')}: {item.get('action', '')} "
                 f"| hint: {item.get('command_hint', '')}"
             )
+    lines.extend(_format_durable_action_lines(state.get("action_queue_next") or {}))
 
     guard_status = state.get("guard_status", {})
     lines.append(

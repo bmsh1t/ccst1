@@ -1,27 +1,27 @@
 ---
-description: Expert Hunter AI-first autonomous hunt loop — recon/cache state, review surface evidence, enrich with browser/source/JS, hunt, validate candidates, report validated findings, and checkpoint useful memory. Usage: /autopilot target.com [--paranoid|--normal|--yolo|--quick|--deep] or /autopilot targets.txt
+description: Expert Hunter AI-first autonomous hunt loop — recon/cache state, review surface evidence, enrich with browser/source/JS, hunt, validate candidates, report validated findings, and checkpoint useful memory. Usage: /autopilot target.com [--paranoid|--normal|--yolo|--quick|--deep] [--auth-file PATH] or /autopilot targets.txt
 allowed-tools: Bash
 ---
 # /autopilot
-Authoritative argument contract (do not reinterpret): !`python3 tools/autopilot_args.py --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6"`
+Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6"`
 
-Obey `action` before Runtime Preflight: `ask_target` asks for the exact target;
-`stop_invalid_arguments` reports `errors` and stops; only `continue` may act.
-Use `target_shell` for Bash, `recon_flags` only on fresh/refresh recon, and the
-parsed cadence/quick/deep values exactly. `--quick` lowers recon cost but never
+Obey bootstrap `action` before any other step: `ask_target` asks for the exact target;
+`stop_invalid_arguments` reports `arguments.errors`; `stop_runtime_drift` reports
+the compact runtime counts and stops. Only `continue` may act. Use
+`arguments.target_shell` for Bash, expand `arguments.hunt_auth_flags` (equivalently
+`--auth-file <arguments.auth_file_shell>`) on hunt/recon/scan when non-null, use `arguments.recon_flags` only on fresh/refresh recon, and obey
+the parsed cadence/quick/deep values exactly. `--quick` lowers recon cost but never
 skips browser/source/validation or implies completion; scanner quick remains a
 breadth sensor. `--deep` increases value-first depth without relaxing red lines.
-
 Expert Hunter Autopilot for Claude CLI. Claude is the hunter; tools are memory,
 evidence, replay, and summary aids.
-Execution contract: `/autopilot` runs inline in the current Claude session as the sole controller and does not create/resume legacy `agent_session.json`; specialists default to zero, and at most one bounded specialist may answer one evidence question without spawning agents, running full recon/scans, writing final closure, or controlling finish.
+Execution contract: `/autopilot` runs inline in the current Claude session as the sole controller and does not create/resume legacy `agent_session.json`; specialists default to zero, and at most one bounded specialist may answer one evidence question without spawning agents, running full recon/scans, writing final closure, or controlling finish. After using one, this invocation cannot call a second specialist.
 ## Runtime Preflight
-Before any target state or active tool action, require this project root and a matching installed Claude runtime:
-```bash
-test -f tools/runtime_doctor.py && test -f commands/autopilot.md
-python3 tools/runtime_doctor.py --kind commands,agents,skills --fail-on-drift
-```
-If either command fails, stop. Missing marker: ask the operator to `cd` here and restart Claude. Drift: show `/sync-check`; request explicit confirmation before any runtime sync. Never sync automatically.
+The bootstrap already performed the only startup gate in this order: arguments,
+read-only runtime compare, then compact target state. Never repeat or bypass it.
+Run every project command as `cd -- <repo_root_shell> && ...`; do not derive a
+second root from the current cwd. Runtime drift: show `/sync-check`, request
+explicit confirmation before any sync, and never sync automatically.
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
 existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
@@ -38,32 +38,30 @@ Four-layer memory is the external brain, not the steering wheel:
 ```text
 target memory / target case state -> skill routing -> knowledge cards -> checks
 ```
-Every invocation is state-first. Surface ctf mode, then read state once before choosing fresh, existing, or batch behavior:
+Every invocation is state-first: bootstrap `ctf_mode` and compact `state` are the
+only initial read. Branch only after that state read; after a long phase, refresh with:
 ```bash
-python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'
-python3 tools/autopilot_state.py --target target.com
-```
-Branch only after that state read:
-```bash
+cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell>
 # next_action=run_recon: launch once; append --quick only when requested
-python3 tools/hunt.py --target target.com --recon-only
+cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only [--quick]
 # usable cache: inspect surface/context before a later quick scan
-python3 tools/surface.py --target target.com
-python3 tools/context_pack.py --target target.com
-python3 tools/hunt.py --target target.com --scan-only --quick
+cd -- <repo_root_shell> && python3 tools/surface.py --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/context_pack.py --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick
 ```
 If state returns `wait_recon` / `wait_scan`, do not start that phase again;
 wait/poll, then rerun state before continuing. Runtime phase locks are the final
-duplicate-launch guard. Refresh recon only when missing, thin, stale, or contradicted by fresh evidence.
+duplicate-launch guard. `review_validation_candidate` reviews raw runner evidence before `/validate`; `resume_action_queue` executes its durable replay; `recon_no_live_hosts` records the offline blocker and never reruns automatically. Refresh recon only when missing, thin, stale, or contradicted by fresh evidence.
+If `arguments.seed_url` is non-null, inspect `<seed_url_shell>` through browser/source/workflow evidence before historical focus or score hints, even for existing canonical target state.
 For a readable primary-domain list, the list context is recon/handoff only:
 1. Run `autopilot_state.py --target targets.txt` before batch recon.
-2. Run `hunt.py --target targets.txt --recon-only` only when state says `run_batch_recon`; append `--quick` only when requested, and never scan the list/index.
+2. Run `hunt.py --target targets.txt --recon-only` only when state says `run_batch_recon`; append `--quick` only when requested, and never scan the list/index. `invalid_batch_target` / `batch_failed` stop without automatic retry.
 3. Read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed domain, then rerun `autopilot_state.py --target <domain>`.
 4. Only the selected domain may enter surface/context/browser/scan/hunt; do not aggregate active work across the batch.
 For existing single targets, run a closed-state sanity check before executing a historical `continue_last_focus`, resume target, or `/surface` score hint:
 ```bash
-python3 tools/checkpoint.py --target target.com --no-refresh-coverage
-python3 tools/action_queue.py summary --target target.com
+cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --no-refresh-coverage
+cd -- <repo_root_shell> && python3 tools/action_queue.py summary --target <target_shell>
 ```
 If checkpoint/action_queue show no executable next action, treat those historical
 hints as context rather than commands. Re-open them only when fresh
@@ -76,10 +74,9 @@ them drive first contact. `target_case_state.py`, `case_state_seed.py`,
 and `validation_runner.py` are not a pre-flight checklist; use them only when
 they reduce drift, preserve actor/session/object continuity, or produce stable
 evidence.
-
 Checkpoint can emit target-memory write-back proposals:
 ```bash
-python3 tools/checkpoint.py --target target.com
+cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell>
 ```
 Review the proposal and apply target memory only when it is useful; stale/noisy
 state must not block recon, browser/source enrichment, AI-selected pivots, or a
@@ -100,25 +97,21 @@ Before recon or immediately after first recon output, write/read
 prompt directive without duplicating a fixed workflow taxonomy.
 ## Discovery / Exploitation / Validation Modes
 Evidence-driven depth does not mean evidence-only testing.
-
 - Discovery mode: when evidence is weak or surface is underexplored, actively generate new evidence from browser-observed APIs, JS/source-derived routes, cached recon, API docs/leaks, hidden parameters, path-pattern siblings, component/CVE intelligence, roles, objects, and workflow mapping.
 - Exploitation mode: when a host/path/parameter/component/version/behavior signal exists, turn it into the smallest safe replay, diff, sibling expansion, bypass, OAST, CVE applicability, or chain-building step.
 - Validation mode: when a Candidate exists, prove practical impact with the lowest-impact replay/diff and the `/validate` evidence rubric.
 Focused fuzz is an optional AI-selected discovery action only when browser/JS/source/API/recon evidence supports one concrete template and bounded, deduplicated wordlist. Baseline FFUF is an automatic breadth sensor; an empty baseline does not trigger focused fuzz. Keep each run under isolated `recon/<target_key>/focused_fuzz/<run_id>/` raw/summary artifacts, then write the AI judgment through `target_memory.py lead/dead-end`; never auto-expand surface, queue, or coverage.
-
 AI override is first-class: skip, reorder, combine, or invent the next action
 when evidence supports it. State the reason, red-line status, next verification
 step, and stop condition. Tool recommendations are advisory, not hard rails.
 ## Browser / Source / JS Enrichment
 Prefer browser-state truth over guessed routes:
-
 1. chrome-devtools MCP for live browser/network/console evidence.
 2. playwright MCP for automated interaction and snapshots.
 3. `tools/browser_evidence.py` / `playwright-cli` only when MCP is unavailable or a scriptable fallback is needed.
 4. Import useful MCP artifacts with `tools/browser_mcp_import.py` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` share the same browser-observed API surface.
-
-Use `python3 tools/js_reader.py --target target.com` for JS materials and
-`python3 tools/source_intel.py --target target.com [--repo-path <repo>]` for
+Use `cd -- <repo_root_shell> && python3 tools/js_reader.py --target <target_shell>` for JS materials and
+`cd -- <repo_root_shell> && python3 tools/source_intel.py --target <target_shell> [--repo-path <repo>]` for
 source/route/auth logic. AI should turn these hints into concrete replay drafts,
 not just tool rankings.
 For byte-exact HTTP/cache/smuggling/desync work, use
@@ -135,18 +128,24 @@ wire-level absence.
 7. REPORT/CHECKPOINT only after AI judges stronger validation/chain/coverage actions no longer outrank the pending report; never auto-submit.
 ## Actionable Evidence Continuation Contract
 Claude must not turn an evidence-backed next step into a passive TODO. Use
-`python3 tools/action_queue.py ingest-checkpoint --target target.com`,
-`python3 tools/action_queue.py next --target target.com`, and
-`python3 tools/action_queue.py resolve --target target.com --id <id> --status <state> --evidence <why>`
+`cd -- <repo_root_shell> && python3 tools/action_queue.py ingest-checkpoint --target <target_shell>`,
+`cd -- <repo_root_shell> && python3 tools/action_queue.py next --target <target_shell>`, and
+`cd -- <repo_root_shell> && python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>`
 when a durable queue helps. Applies to known product/CMS/plugin/theme/library versions,
 exposed routes, authz/IDOR, SQLi/NoSQLi, SSRF, XXE, RCE/SSTI/command injection,
 parser/file/network/client/business lanes. Do not overfit this contract into a fixed checklist.
 When a primary lane is blocked, do not checkpoint/finish immediately if adjacent high-value lanes remain. Continue with the smallest applicable adjacent lane first, and only stop after the remaining high-value lanes are tested, blocked, dead-end, or not applicable.
+## Compact Transition Gate
+- Apply `arguments.checkpoint_trigger`: paranoid after each substantive state change; normal after a coherent lane batch; yolo only on blocker/handoff/finish. Every mode writes evidence state.
+- After a primary Candidate/Validated result, evaluate one bounded evidence-fit sibling or chain before closing; do not expand a generic checklist.
+- On 401/403/404/405/415 or a parser delta, select one evidence-linked bypass family or explicitly close that route.
+- After three homogeneous no-information results, resolve the current action and rotate to one adjacent high-value lane.
+- Before replaying a rotating form/session token, refresh it from the legitimate baseline page/session.
 ## Known Software Intelligence Lane
 This is one specialization of the Actionable Evidence Continuation Contract:
 when a concrete product/plugin/theme/library/version appears, it must not stop
-at "needs CVE lookup." Use `python3 tools/intel_engine.py --target target.com`
-and `python3 tools/cve_hunter.py target.com`, then check NVD, GitHub Advisory, WPScan/vulnerability DB, vendor changelog, and reachability (for example,
+at "needs CVE lookup." Use `cd -- <repo_root_shell> && python3 tools/intel_engine.py --target <target_shell>`
+and `cd -- <repo_root_shell> && python3 tools/cve_hunter.py <target_shell>`, then check NVD, GitHub Advisory, WPScan/vulnerability DB, vendor changelog, and reachability (for example,
 WordPress Tribe Events 6.16.3) before recording tested/dead-end/blocked/lead/signal/candidate.
 ## Case-State First, Not Case-State Only
 If checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer
@@ -160,9 +159,9 @@ business-impact evidence.
 Useful commands:
 
 ```bash
-python3 tools/target_case_state.py summary --target target.com --json
-python3 tools/case_state_seed.py --target target.com --json
-python3 tools/validation_runner.py idor-actor-pair --target target.com --from-case-state
+cd -- <repo_root_shell> && python3 tools/target_case_state.py summary --target <target_shell> --json
+cd -- <repo_root_shell> && python3 tools/case_state_seed.py --target <target_shell> --json
+cd -- <repo_root_shell> && python3 tools/validation_runner.py idor-actor-pair --target <target_shell> --from-case-state
 ```
 ## Evidence Runners
 For repeatable replay/diff, use `docs/evidence-runners.md` and keep the AI in
@@ -174,9 +173,9 @@ if raw evidence or business/object/role semantics contradict the label, reopen
 or upgrade the lead and record why.
 
 ```bash
-python3 tools/validation_runner.py authz-public-exposure --target target.com --url <url>
-python3 tools/validation_runner.py sqli-result-diff --target target.com --url '<url>' --param q --baseline-value test --variant-value '<variant>'
-python3 tools/evidence_ledger.py summary --target target.com
+cd -- <repo_root_shell> && python3 tools/validation_runner.py authz-public-exposure --target <target_shell> --url <url>
+cd -- <repo_root_shell> && python3 tools/validation_runner.py sqli-result-diff --target <target_shell> --url '<url>' --param q --baseline-value test --variant-value '<variant>'
+cd -- <repo_root_shell> && python3 tools/evidence_ledger.py summary --target <target_shell>
 ```
 ## After `run_vuln_scan`
 Rerun/read surface before declaring exhaustion. Inspect action-gated scanner leads,
@@ -190,10 +189,10 @@ of finishing.
 Checkpoint and memory queues are candidate sets, not orders:
 
 ```bash
-python3 tools/checkpoint.py --target target.com
-python3 tools/action_queue.py ingest-checkpoint --target target.com
-python3 tools/action_queue.py next --target target.com
-python3 tools/action_queue.py summary --target target.com
+cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/action_queue.py ingest-checkpoint --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/action_queue.py next --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/action_queue.py summary --target <target_shell>
 ```
 
 Read `recommended_executable_action`, `next_action_queue`, and the Memory action queue.
@@ -213,7 +212,7 @@ This reference is advisory, not routing and not a state machine.
 | Candidate evidence enough? | `validator` Task + `/validate` |
 | A -> B chain fit? | `chain-builder` Task |
 | Report ready? | `report-writer` Task |
-| Coverage hints still actionable? | `python3 tools/coverage_matrix.py find-gaps --target target.com` |
+| Coverage hints still actionable? | `cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell>` |
 | Same disclosed pattern? | `disclosed-researcher` Task or knowledge card source IDs |
 | Recent code/changelog activity? | `tools/fresh_code.py` |
 | sibling endpoints? | `tools/sibling_generator.py` |
@@ -237,11 +236,11 @@ and crown-jewel hypotheses tried; coverage matrix rebuilt; Evidence Ledger /
 actor matrix reviewed; unresolved actions recorded with reasons.
 
 ```bash
-python3 tools/coverage_matrix.py rebuild --target target.com
-python3 tools/coverage_matrix.py find-gaps --target target.com
-python3 tools/evidence_ledger.py summary --target target.com
-python3 tools/checkpoint.py --target target.com
-python3 tools/action_queue.py summary --target target.com
+cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/evidence_ledger.py summary --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/action_queue.py summary --target <target_shell>
 ```
 ## Credential Lane
 Credential testing is controlled and evidence-driven, not a default brute-force
@@ -266,14 +265,14 @@ credential testing and OAST are not red lines when bounded; active stored XSS pa
 actions that change real account or permission state, or trigger CI/CD/deployment
 side effects require explicit current-turn intent.
 Legacy-only `--parallel`, `--max-parallel`, `--parallel-hypotheses`, `--vision`,
-`--self-review`, and `--calibrate-patterns` are invalid inline; use `python3 agent.py --target <target> ...`
-for those options; baseline local-agent runs use `python3 tools/hunt.py --target <target> --agent`.
+`--self-review`, and `--calibrate-patterns` are invalid inline; use `cd -- <repo_root_shell> && python3 agent.py --target <target_shell> ...`
+for those options; baseline local-agent runs use `cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> --agent`.
 ## Finish Condition
 Finish on evidence state, not a tool checklist:
 - `working_hypothesis` is resolved, killed, blocked, or promoted to Candidate / Validated Finding.
 - `oast_listen` is checked when blind/OAST testing was used.
 - No unresolved high-value action-gated scanner lead remains; otherwise checkpoint instead of finishing.
-- No unresolved AI-actionable high-value matrix gap remains after reviewing `python3 tools/coverage_matrix.py rebuild --target target.com`, `python3 tools/coverage_matrix.py find-gaps --target target.com`, checkpoint output, browser/source/JS evidence, and business context; raw matrix gaps are hints, not finish blockers, and absent or empty matrix is not proof of coverage.
+- No unresolved AI-actionable high-value matrix gap remains after reviewing `cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>`, `cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell>`, checkpoint output, browser/source/JS evidence, and business context; raw matrix gaps are hints, not finish blockers, and absent or empty matrix is not proof of coverage.
 - `evidence/<target>/intelligence.md`, browser, JS, source, exposure, and knowledge context were consulted when available.
 - Target memory has a useful handoff when the target is not genuinely exhausted.
 - A pending report is a closure asset, not a stop signal; continue hunting when stronger live evidence, browser/source leads, or high-value business workflows remain.

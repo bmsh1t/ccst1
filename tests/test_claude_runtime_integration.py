@@ -18,15 +18,17 @@ import pytest
 from tools import runtime_doctor
 from tools.autopilot_args import (
     MAX_CAPTURED_TOKENS,
-    parse_autopilot_args,
-    render_autopilot_args_json,
+)
+from tools.autopilot_bootstrap import (
+    build_autopilot_bootstrap,
+    render_autopilot_bootstrap_json,
 )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FAKE_RESPONSE_TEXT = "runtime-probe-ok"
 DYNAMIC_ARGUMENT_COMMAND = (
-    '!`python3 tools/autopilot_args.py --json -- '
+    '!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- '
     '"$0" "$1" "$2" "$3" "$4" "$5" "$6"`'
 )
 
@@ -162,7 +164,7 @@ def staged_claude_runtime(tmp_path_factory):
 
 @pytest.fixture
 def run_staged_claude(fake_anthropic_server, staged_claude_runtime):
-    def run(*prompt_args: str) -> dict:
+    def run(*prompt_args: str, cwd: Path = REPO_ROOT) -> dict:
         while True:
             try:
                 fake_anthropic_server.requests.get_nowait()
@@ -200,7 +202,7 @@ def run_staged_claude(fake_anthropic_server, staged_claude_runtime):
                 "--no-session-persistence",
                 *prompt_args,
             ],
-            cwd=REPO_ROOT,
+            cwd=cwd,
             env=env,
             stdin=subprocess.DEVNULL,
             text=True,
@@ -241,7 +243,7 @@ def _all_request_text(payload: dict) -> str:
     return "\n".join(texts)
 
 
-def _installed_command_body(home: Path, arguments: str) -> str:
+def _installed_command_body(home: Path, arguments: str, *, cwd: Path = REPO_ROOT) -> str:
     text = (home / ".claude" / "commands" / "autopilot.md").read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
     assert lines and lines[0].strip() == "---"
@@ -251,14 +253,19 @@ def _installed_command_body(home: Path, arguments: str) -> str:
     body = "".join(lines[closing_index + 1:])
     assert body.count(DYNAMIC_ARGUMENT_COMMAND) == 1
     captured_tokens = shlex.split(arguments)[:MAX_CAPTURED_TOKENS] if arguments else []
-    parsed_json = render_autopilot_args_json(
-        parse_autopilot_args(captured_tokens, cwd=REPO_ROOT)
+    parsed_json = render_autopilot_bootstrap_json(
+        build_autopilot_bootstrap(
+            captured_tokens,
+            cwd=cwd,
+            repo_root=REPO_ROOT,
+            runtime_root=home / ".claude",
+        )
     )
     return body.replace(DYNAMIC_ARGUMENT_COMMAND, parsed_json)
 
 
-def _parsed_argument_contract(command_body: str) -> dict:
-    prefix = "Authoritative argument contract (do not reinterpret): "
+def _parsed_bootstrap_contract(command_body: str) -> dict:
+    prefix = "Authoritative bootstrap contract (do not reinterpret): "
     line = next(line for line in command_body.splitlines() if line.startswith(prefix))
     return json.loads(line.removeprefix(prefix))
 
@@ -295,9 +302,11 @@ def test_real_claude_cli_expands_installed_autopilot_arguments(
     )
     assert "$ARGUMENTS" not in command_body
     assert "description: Expert Hunter" not in command_body
-    assert _parsed_argument_contract(command_body) == parse_autopilot_args(
+    assert _parsed_bootstrap_contract(command_body) == build_autopilot_bootstrap(
         shlex.split(arguments)[:MAX_CAPTURED_TOKENS] if arguments else [],
         cwd=REPO_ROOT,
+        repo_root=REPO_ROOT,
+        runtime_root=staged_claude_runtime["home"] / ".claude",
     )
 
 
@@ -312,7 +321,7 @@ def test_real_claude_cli_expands_readable_batch_target(
     command_body = next(
         text for text in _message_texts(payload) if text.startswith("# /autopilot")
     )
-    parsed = _parsed_argument_contract(command_body)
+    parsed = _parsed_bootstrap_contract(command_body)["arguments"]
 
     assert parsed["valid"] is True
     assert parsed["target"] == str(scope.resolve())
@@ -329,12 +338,88 @@ def test_real_claude_cli_marks_seventh_argument_as_overflow(
     command_body = next(
         text for text in _message_texts(payload) if text.startswith("# /autopilot")
     )
-    parsed = _parsed_argument_contract(command_body)
+    parsed = _parsed_bootstrap_contract(command_body)["arguments"]
 
     assert parsed["valid"] is False
     assert parsed["action"] == "stop_invalid_arguments"
     assert parsed["deep"] is True
     assert [error["code"] for error in parsed["errors"]] == ["overflow"]
+
+
+def test_real_claude_cli_expands_url_seed_and_auth_file_policy(
+    run_staged_claude,
+    staged_claude_runtime,
+):
+    auth_file = staged_claude_runtime["stage_root"] / "autopilot-auth.json"
+    auth_file.write_text('{"cookie":"session=staged"}\n', encoding="utf-8")
+
+    payload = run_staged_claude(
+        f"/autopilot https://Example.TEST/account/orders?tab=open --auth-file {auth_file} --normal"
+    )
+    command_body = next(
+        text for text in _message_texts(payload) if text.startswith("# /autopilot")
+    )
+    arguments = _parsed_bootstrap_contract(command_body)["arguments"]
+
+    assert arguments["target"] == "example.test"
+    assert arguments["seed_url"] == "https://Example.TEST/account/orders?tab=open"
+    assert arguments["auth_file"] == str(auth_file.resolve())
+    assert arguments["hunt_auth_flags"] == ["--auth-file", str(auth_file.resolve())]
+    assert arguments["checkpoint_policy"] == "batched"
+
+
+def test_real_claude_cli_runtime_drift_stops_before_state_projection(
+    run_staged_claude,
+    staged_claude_runtime,
+):
+    agent_path = (
+        staged_claude_runtime["home"]
+        / ".claude"
+        / "agents"
+        / "claude-bug-bounty"
+        / "autopilot.md"
+    )
+    original = agent_path.read_text(encoding="utf-8")
+    agent_path.write_text(original + "\n<!-- staged drift -->\n", encoding="utf-8")
+    try:
+        payload = run_staged_claude("/autopilot runtime-drift-no-state.test")
+    finally:
+        agent_path.write_text(original, encoding="utf-8")
+
+    command_body = next(
+        text for text in _message_texts(payload) if text.startswith("# /autopilot")
+    )
+    bootstrap = _parsed_bootstrap_contract(command_body)
+
+    assert bootstrap["action"] == "stop_runtime_drift"
+    assert bootstrap["runtime"]["clean"] is False
+    assert bootstrap["runtime"]["drift_count"] >= 1
+    assert "state" not in bootstrap
+
+
+def test_real_claude_cli_uses_same_bootstrap_from_repo_root_and_nested_cwd(
+    run_staged_claude,
+    staged_claude_runtime,
+):
+    nested = REPO_ROOT / "tools"
+    root_payload = run_staged_claude("/autopilot example.test --normal")
+    nested_payload = run_staged_claude(
+        "/autopilot example.test --normal",
+        cwd=nested,
+    )
+    root_body = next(
+        text for text in _message_texts(root_payload) if text.startswith("# /autopilot")
+    )
+    nested_body = next(
+        text for text in _message_texts(nested_payload) if text.startswith("# /autopilot")
+    )
+
+    root_bootstrap = _parsed_bootstrap_contract(root_body)
+    nested_bootstrap = _parsed_bootstrap_contract(nested_body)
+    assert root_bootstrap == nested_bootstrap
+    assert root_bootstrap["repo_root"] == str(REPO_ROOT)
+    assert root_bootstrap["runtime"]["clean"] is True
+    assert root_bootstrap["state"]["next_action"]
 
 
 def test_real_claude_cli_discovers_installed_optional_autopilot_agent(

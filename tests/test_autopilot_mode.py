@@ -1225,13 +1225,12 @@ def test_autopilot_command_md_bootstraps_state_first_then_branches():
     text = md.read_text(encoding="utf-8")
 
     assert "Every invocation is state-first" in text
-    assert "python3 tools/hunt.py --target target.com --recon-only" in text
+    assert "python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only" in text
     assert "Branch only after that state read" in text
-    assert "python3 tools/autopilot_state.py --target target.com" in text
-    assert "python3 tools/context_pack.py --target target.com" in text
-    assert 'print({"ctf_mode": f(".")})' in text
-    assert text.index('print({"ctf_mode": f(".")})') < text.index("python3 tools/autopilot_state.py --target target.com")
-    assert text.index("python3 tools/autopilot_state.py --target target.com") < text.index("python3 tools/hunt.py --target target.com --recon-only")
+    assert "python3 tools/autopilot_state.py --target <target_shell>" in text
+    assert "python3 tools/context_pack.py --target <target_shell>" in text
+    assert "bootstrap `ctf_mode` and compact `state`" in text
+    assert text.index("python3 tools/autopilot_state.py --target <target_shell>") < text.index("python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only")
     assert "If state returns `wait_recon` / `wait_scan`, do not start that phase again" in text
     assert "Runtime phase locks are the final" in text
     assert "not a pre-flight checklist" in text
@@ -1245,7 +1244,7 @@ def test_autopilot_command_md_uses_checkpoint_tool_for_writeback():
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
 
-    assert "python3 tools/checkpoint.py --target target.com" in text
+    assert "python3 tools/checkpoint.py --target <target_shell>" in text
     assert "target-memory write-back proposals" in text
     assert "apply target memory only when it is useful" in text
 
@@ -1297,8 +1296,8 @@ def test_autopilot_command_md_finish_is_invariant_check_not_checklist():
     )
     for anchor in invariant_anchors:
         assert anchor in text, f"finish invariant anchor missing: {anchor}"
-    assert "python3 tools/coverage_matrix.py rebuild --target target.com" in text
-    assert "python3 tools/coverage_matrix.py find-gaps --target target.com" in text
+    assert "python3 tools/coverage_matrix.py rebuild --target <target_shell>" in text
+    assert "python3 tools/coverage_matrix.py find-gaps --target <target_shell>" in text
     assert "absent or empty matrix is not proof of coverage" in text
     # The framing must NOT reintroduce the checkbox idiom (state check,
     # not flow gate per C3).
@@ -1379,8 +1378,8 @@ def test_autopilot_command_md_defines_deep_as_value_first_comprehensive_depth():
     assert "LFI/RFI/path traversal" in text
     assert "coverage matrix rebuilt" in flat
     assert "Evidence Ledger / actor matrix reviewed" in flat
-    assert "python3 tools/evidence_ledger.py summary --target target.com" in text
-    assert "python3 tools/checkpoint.py --target target.com" in text
+    assert "python3 tools/evidence_ledger.py summary --target <target_shell>" in text
+    assert "python3 tools/checkpoint.py --target <target_shell>" in text
 
 
 def test_autopilot_agent_md_has_post_hunt_unsafe_review_gate():

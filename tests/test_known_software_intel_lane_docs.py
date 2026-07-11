@@ -16,9 +16,9 @@ def test_autopilot_requires_known_software_intelligence_lane():
 
     assert "## Actionable Evidence Continuation Contract" in text
     assert "must not turn an evidence-backed next step into a passive TODO" in text
-    assert "python3 tools/action_queue.py ingest-checkpoint --target target.com" in text
-    assert "python3 tools/action_queue.py next --target target.com" in text
-    assert "python3 tools/action_queue.py resolve --target target.com" in text
+    assert "python3 tools/action_queue.py ingest-checkpoint --target <target_shell>" in text
+    assert "python3 tools/action_queue.py next --target <target_shell>" in text
+    assert "python3 tools/action_queue.py resolve --target <target_shell>" in text
     assert "known product/CMS/plugin/theme/library versions" in text
     assert "authz/IDOR, SQLi/NoSQLi, SSRF, XXE, RCE/SSTI/command injection" in text
     assert "Do not overfit this contract into a fixed checklist" in text
@@ -27,8 +27,8 @@ def test_autopilot_requires_known_software_intelligence_lane():
     assert "## Known Software Intelligence Lane" in text
     assert 'must not stop at "needs CVE lookup."' in flat
     assert "one specialization of the Actionable Evidence Continuation Contract" in flat
-    assert "python3 tools/intel_engine.py --target target.com" in text
-    assert "python3 tools/cve_hunter.py target.com" in text
+    assert "python3 tools/intel_engine.py --target <target_shell>" in text
+    assert "python3 tools/cve_hunter.py <target_shell>" in text
     assert "NVD, GitHub Advisory, WPScan/vulnerability DB" in text
     assert "vendor changelog" in text
     assert "WordPress Tribe Events 6.16.3" in text

@@ -12,16 +12,16 @@ def _read(relative_path: str) -> str:
 
 def test_slash_command_reads_state_before_any_long_phase():
     text = _read("commands/autopilot.md")
+    bootstrap = text.index("tools/autopilot_bootstrap.py")
     preflight = text.index("## Runtime Preflight")
-    repo_root_check = text.index("test -f tools/runtime_doctor.py", preflight)
-    drift_check = text.index("python3 tools/runtime_doctor.py --kind commands,agents,skills --fail-on-drift", preflight)
+    state_contract = text.index("compact target state", preflight)
     startup = text.index("Every invocation is state-first")
-    state_read = text.index("python3 tools/autopilot_state.py --target target.com", startup)
-    recon = text.index("python3 tools/hunt.py --target target.com --recon-only", state_read)
-    surface = text.index("python3 tools/surface.py --target target.com", state_read)
-    scan = text.index("python3 tools/hunt.py --target target.com --scan-only --quick", state_read)
+    state_read = text.index("python3 tools/autopilot_state.py --target <target_shell>", startup)
+    recon = text.index("python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only", state_read)
+    surface = text.index("python3 tools/surface.py --target <target_shell>", state_read)
+    scan = text.index("python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick", state_read)
 
-    assert repo_root_check < drift_check < state_read < recon < surface < scan
+    assert bootstrap < preflight < state_contract < state_read < recon < surface < scan
     assert "Runtime phase locks are the final\nduplicate-launch guard" in text
 
 
@@ -29,10 +29,14 @@ def test_slash_command_runtime_preflight_is_read_only_and_fail_fast():
     text = _read("commands/autopilot.md")
     preflight = text.split("## Runtime Preflight", 1)[1].split("## Tool Index", 1)[0]
 
-    assert "If either command fails, stop." in preflight
-    assert "request explicit confirmation before any runtime sync" in preflight
-    assert "Never sync automatically." in preflight
+    assert "arguments,\nread-only runtime compare, then compact target state" in preflight
+    assert "Only `continue` may act" in text
+    assert "cd -- <repo_root_shell> &&" in preflight
+    flat_preflight = " ".join(preflight.split())
+    assert "request explicit confirmation before any sync" in flat_preflight
+    assert "never sync automatically" in flat_preflight
     assert "--sync" not in preflight
+    assert "python3 tools/runtime_doctor.py" not in preflight
 
 
 def test_slash_command_limits_batch_to_recon_and_single_domain_handoff():

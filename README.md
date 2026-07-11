@@ -153,9 +153,14 @@ python3 tools/hunt.py --target target.com --agent --auth-from-env
 Inside Claude Code, say the auth source explicitly in the turn, for example:
 
 ```text
-/hunt target.com, use auth file .private/auth.json and focus account/export workflows
-/autopilot target.com --normal, use BBHUNT_COOKIE from env and prioritize API/object ownership paths
+/hunt target.com --auth-file .private/auth.json
+/autopilot target.com --normal --auth-file .private/auth.json
 ```
+
+For environment-backed auth, export `BBHUNT_COOKIE` / `BBHUNT_BEARER` before the
+slash command, then use a separate executable turn such as
+`/autopilot target.com --normal`. Do not append natural-language instructions to
+the same slash-command line.
 
 **How to continue work:**
 

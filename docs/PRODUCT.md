@@ -137,6 +137,12 @@ Claude CLI `/autopilot` 默认在当前 Claude 会话内运行，由当前会话
 finish 决策；默认不创建 subagent，只在边界明确的证据任务需要隔离上下文时调用最多一个
 不再派生 agent 的短生命周期 specialist。
 
+slash 入口先做只读 bootstrap：参数解析、Claude runtime drift 比对、再读取 compact target
+state。默认顺序执行，适合 2-8 GB 主机；不会隐式并行或启动第二个 controller。正式语法为
+`/autopilot <target> [--paranoid|--normal|--yolo] [--quick] [--deep] [--auth-file PATH]`。
+URL 目标保留 canonical host state，同时先消费给定 path/query seed；环境认证需在 slash
+命令前导出，认证文件使用独立 `--auth-file PATH` 参数。
+
 项目另有一个通过 `tools/hunt.py --agent` 显式启动的 ReAct 风格本地 agent：
 
 - 支持 Ollama 本地模型
@@ -438,6 +444,10 @@ targets/<target>/sessions/<session_id>/
 默认在当前 Claude 会话内运行，不创建或恢复 legacy `agent_session.json`。当前会话是唯一
 Controller；specialist 默认关闭，最多临时调用一个处理 JS/source/CVE review 或 Candidate
 反证，并由当前会话回收结果。
+
+`--paranoid` 在每次 substantive state change 后 checkpoint，`--normal` 在一个 coherent
+evidence lane batch 后 checkpoint，`--yolo` 只在 blocker、handoff 或 finish checkpoint；三者
+都会写 evidence state。
 
 自治流程会围绕以下阶段执行：
 

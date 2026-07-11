@@ -107,8 +107,8 @@ def _host_port(value: str) -> tuple[str, int | None]:
     return (parsed.hostname or "").lower().strip("."), port
 
 
-def _target_list_entries(path: str) -> list[str]:
-    """Return normalized primary targets from a readable batch list."""
+def target_list_entries(path: str) -> list[str]:
+    """Return normalized primary domains from a readable batch list."""
     entries = []
     seen = set()
     try:
@@ -117,7 +117,7 @@ def _target_list_entries(path: str) -> list[str]:
         return []
     with lines:
         for raw in lines:
-            value = raw.strip().strip("\ufeff").rstrip("/")
+            value = raw.strip().strip("\ufeff").rstrip("/").lower()
             if not value or value.startswith("#"):
                 continue
             if value.startswith("*."):
@@ -141,7 +141,7 @@ def url_belongs_to_target(url: str, target: str, *, allow_subdomains: bool = Tru
 
     target_info = classify_target(canonical_target_value(target))
     if target_info["kind"] == "list":
-        for listed_target in _target_list_entries(target_info["target"]):
+        for listed_target in target_list_entries(target_info["target"]):
             # Primary-domain lists are intentionally one level deep. A line
             # resolving to another local file is not a root target and must
             # not recurse into nested or self-referential lists.

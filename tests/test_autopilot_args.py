@@ -22,8 +22,14 @@ EXPECTED_KEYS = [
     "target",
     "target_kind",
     "target_shell",
+    "seed_url",
+    "seed_url_shell",
+    "auth_file",
+    "auth_file_shell",
+    "hunt_auth_flags",
     "cadence",
     "checkpoint_policy",
+    "checkpoint_trigger",
     "quick",
     "deep",
     "recon_flags",
@@ -38,7 +44,7 @@ def test_parse_defaults_to_paranoid_and_accepts_flags_around_target():
 
     assert list(payload) == EXPECTED_KEYS
     assert payload == {
-        "schema_version": 1,
+        "schema_version": 2,
         "valid": True,
         "action": "continue",
         "argv": ["--quick", "https://Example.TEST/admin?x=1", "--deep", "--normal"],
@@ -46,8 +52,14 @@ def test_parse_defaults_to_paranoid_and_accepts_flags_around_target():
         "target": "example.test",
         "target_kind": "domain",
         "target_shell": "example.test",
+        "seed_url": "https://Example.TEST/admin?x=1",
+        "seed_url_shell": "'https://Example.TEST/admin?x=1'",
+        "auth_file": None,
+        "auth_file_shell": None,
+        "hunt_auth_flags": [],
         "cadence": "normal",
         "checkpoint_policy": "batched",
+        "checkpoint_trigger": "checkpoint after each coherent evidence-lane batch",
         "quick": True,
         "deep": True,
         "recon_flags": ["--quick"],
@@ -57,7 +69,9 @@ def test_parse_defaults_to_paranoid_and_accepts_flags_around_target():
     default_payload = autopilot_args.parse_autopilot_args(["example.test"])
     assert default_payload["cadence"] == "paranoid"
     assert default_payload["checkpoint_policy"] == "frequent"
+    assert default_payload["checkpoint_trigger"] == "checkpoint after every substantive state change"
     assert default_payload["recon_flags"] == []
+    assert default_payload["seed_url"] is None
 
 
 @pytest.mark.parametrize(
@@ -100,6 +114,84 @@ def test_repeated_core_flags_are_idempotent():
     assert payload["cadence"] == "normal"
     assert payload["quick"] is True
     assert payload["deep"] is True
+
+
+def test_auth_file_relative_path_and_full_six_token_core_invocation(tmp_path):
+    auth_file = tmp_path / "private auth.json"
+    auth_file.write_text('{"cookie":"session=example"}\n', encoding="utf-8")
+
+    payload = autopilot_args.parse_autopilot_args(
+        [
+            "example.test",
+            "--normal",
+            "--quick",
+            "--deep",
+            "--auth-file",
+            auth_file.name,
+        ],
+        cwd=tmp_path,
+    )
+
+    assert payload["valid"] is True
+    assert payload["auth_file"] == str(auth_file.resolve())
+    assert shlex.split(payload["auth_file_shell"]) == [str(auth_file.resolve())]
+    assert payload["hunt_auth_flags"] == ["--auth-file", str(auth_file.resolve())]
+    assert payload["recon_flags"] == ["--quick"]
+
+    overflow = autopilot_args.parse_autopilot_args(
+        [*payload["argv"], "--quick"],
+        cwd=tmp_path,
+    )
+    assert overflow["valid"] is False
+    assert [error["code"] for error in overflow["errors"]] == ["overflow"]
+
+
+def test_auth_file_equal_form_resolves_absolute_path(tmp_path):
+    auth_file = tmp_path / "auth.env"
+    auth_file.write_text("BBHUNT_COOKIE=session=example\n", encoding="utf-8")
+
+    payload = autopilot_args.parse_autopilot_args(
+        ["--auth-file=" + str(auth_file), "https://example.test/account"],
+        cwd=tmp_path / "unrelated",
+    )
+
+    assert payload["valid"] is True
+    assert payload["auth_file"] == str(auth_file.resolve())
+    assert payload["seed_url"] == "https://example.test/account"
+
+
+@pytest.mark.parametrize(
+    ("auth_args", "expected_code"),
+    (
+        (["--auth-file"], "missing_auth_file_value"),
+        (["--auth-file="], "missing_auth_file_value"),
+        (["--auth-file", "missing.json"], "invalid_auth_file"),
+    ),
+)
+def test_invalid_auth_file_arguments_stop_before_runtime(tmp_path, auth_args, expected_code):
+    payload = autopilot_args.parse_autopilot_args(
+        ["example.test", *auth_args],
+        cwd=tmp_path,
+    )
+
+    assert payload["valid"] is False
+    assert payload["action"] == "stop_invalid_arguments"
+    assert expected_code in [error["code"] for error in payload["errors"]]
+
+
+def test_multiple_auth_files_are_rejected(tmp_path):
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    first.write_text("{}\n", encoding="utf-8")
+    second.write_text("{}\n", encoding="utf-8")
+
+    payload = autopilot_args.parse_autopilot_args(
+        ["example.test", "--auth-file=" + str(first), "--auth-file=" + str(second)],
+        cwd=tmp_path,
+    )
+
+    assert payload["valid"] is False
+    assert [error["code"] for error in payload["errors"]] == ["auth_file_conflict"]
 
 
 def test_empty_claude_placeholder_slots_do_not_count_as_arguments():

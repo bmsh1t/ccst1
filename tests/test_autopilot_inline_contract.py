@@ -27,13 +27,30 @@ def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
     normalized = " ".join(text.split())
 
     assert 'allowed-tools: Bash' in text
-    assert 'tools/autopilot_args.py --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6"' in text
-    assert "Authoritative argument contract (do not reinterpret)" in normalized
-    assert "only `continue` may act" in normalized
+    assert 'tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6"' in text
+    assert "git rev-parse --show-toplevel" in text
+    assert "Authoritative bootstrap contract (do not reinterpret)" in normalized
+    assert "Only `continue` may act" in normalized
     assert "invalid inline" in normalized
-    assert "python3 agent.py --target <target>" in normalized
-    assert "python3 tools/hunt.py --target <target> --agent" in normalized
+    assert "python3 agent.py --target <target_shell>" in normalized
+    assert "python3 tools/hunt.py --target <target_shell> --agent" in normalized
+    assert "repo_root_shell" in normalized
     assert '"$ARGUMENTS"' not in text
+
+
+def test_inline_auth_and_seed_contract_uses_formal_arguments_only():
+    command = _read("commands/autopilot.md")
+    readme = _read("README.md")
+    product = _read("docs/PRODUCT.md")
+
+    assert "[--auth-file PATH]" in command
+    assert "arguments.seed_url" in command
+    assert "arguments.hunt_auth_flags" in command
+    assert "arguments.auth_file_shell" in command
+    assert "cd -- <repo_root_shell> &&" in command
+    assert "/autopilot target.com --normal --auth-file .private/auth.json" in readme
+    assert "/autopilot target.com --normal, use" not in readme
+    assert "URL 目标保留 canonical host state" in product
 
 
 def test_optional_autopilot_agent_is_not_the_slash_command_backend():

@@ -56,6 +56,75 @@ class TestAutopilotState:
         assert "alpha.test" in output
         assert "Do not run surface, scan, or active hunting against the batch index." in output
 
+    def test_empty_batch_is_terminal_instead_of_restarting_recon(self, tmp_path):
+        scope = tmp_path / "targets.txt"
+        scope.write_text("# no current targets\n\n", encoding="utf-8")
+
+        state = build_autopilot_state(str(tmp_path), str(scope))
+        output = format_autopilot_state(state)
+
+        assert state["next_action"] == "invalid_batch_target"
+        assert state["batch"]["current_entries"] == []
+        assert state["batch"]["pending"] == []
+        assert "Stop: add at least one usable primary domain" in output
+
+    def test_all_failed_current_batch_is_terminal(self, tmp_path):
+        scope = tmp_path / "targets.txt"
+        scope.write_text("alpha.test\nbeta.test\n", encoding="utf-8")
+        batch_dir = tmp_path / "recon" / "targets"
+        batch_dir.mkdir(parents=True)
+        (batch_dir / "failed_targets.txt").write_text(
+            "alpha.test\nbeta.test\nold.test\n",
+            encoding="utf-8",
+        )
+        (batch_dir / "pending_targets.txt").write_text(
+            "old.test\n",
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(tmp_path), str(scope))
+        output = format_autopilot_state(state)
+
+        assert state["next_action"] == "batch_failed"
+        assert state["batch"]["failed"] == ["alpha.test", "beta.test"]
+        assert state["batch"]["pending"] == []
+        assert "do not retry the failed batch automatically" in output
+
+    def test_changed_batch_input_filters_old_candidates_and_adds_current_pending(self, tmp_path):
+        scope = tmp_path / "targets.txt"
+        scope.write_text("beta.test\n", encoding="utf-8")
+        batch_dir = tmp_path / "recon" / "targets"
+        batch_dir.mkdir(parents=True)
+        (batch_dir / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
+        (batch_dir / "pending_targets.txt").write_text("alpha.test\n", encoding="utf-8")
+        (batch_dir / "high_value_targets.json").write_text(
+            json.dumps([{"target": "alpha.test", "score": 99}]),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(tmp_path), str(scope))
+
+        assert state["next_action"] == "run_batch_recon"
+        assert state["batch"]["current_entries"] == ["beta.test"]
+        assert state["batch"]["completed"] == []
+        assert state["batch"]["candidates"] == []
+        assert state["batch"]["pending"] == ["beta.test"]
+
+    def test_partial_batch_keeps_current_pending_when_ranked_json_is_invalid(self, tmp_path):
+        scope = tmp_path / "targets.txt"
+        scope.write_text("alpha.test\nbeta.test\n", encoding="utf-8")
+        batch_dir = tmp_path / "recon" / "targets"
+        batch_dir.mkdir(parents=True)
+        (batch_dir / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
+        (batch_dir / "pending_targets.txt").write_text("beta.test\nold.test\n", encoding="utf-8")
+        (batch_dir / "high_value_targets.json").write_text("{invalid", encoding="utf-8")
+
+        state = build_autopilot_state(str(tmp_path), str(scope))
+
+        assert state["next_action"] == "select_completed_domain"
+        assert state["batch"]["pending"] == ["beta.test"]
+        assert [item["target"] for item in state["batch"]["candidates"]] == ["alpha.test"]
+
     def test_ranked_filter_keeps_closed_history_but_removes_object_placeholders(self):
         kept_dead_end = {
             "url": "https://app.target.com/api/orders",
@@ -338,10 +407,109 @@ class TestAutopilotState:
         output = format_autopilot_state(state)
 
         assert state["validation_runner_candidates"][0]["id"] == "idor-basket"
+        assert state["validation_runner_next"]["id"] == "idor-basket"
+        assert state["next_action"] == "review_validation_candidate"
+        assert "review validation-runner candidate idor-basket" in output
         assert "Validation runner candidates (advisory; require /validate before report):" in output
         assert "idor-basket [idor_actor_pair/tested_finding]" in output
 
-    def test_prioritizes_validated_structured_finding_report(self, tmp_path):
+    def test_substantive_durable_queue_preempts_fresh_recon(self, tmp_path):
+        queue_dir = tmp_path / "state" / "target.com"
+        queue_dir.mkdir(parents=True)
+        (queue_dir / "action_queue.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target": "target.com",
+                "actions": [
+                    {
+                        "id": "AQ-0001",
+                        "target": "target.com",
+                        "status": "candidate",
+                        "type": "candidate-evidence-gap",
+                        "priority": 95,
+                        "action": "Review the exact owner/peer response diff.",
+                        "command_hint": "/validate idor-orders",
+                        "evidence": "runner summary is candidate-ready",
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(
+            str(tmp_path),
+            "target.com",
+            memory_dir=str(tmp_path / "hunt-memory"),
+        )
+        output = format_autopilot_state(state)
+
+        assert state["has_recon"] is False
+        assert state["action_queue_next"]["id"] == "AQ-0001"
+        assert state["next_action"] == "resume_action_queue"
+        assert "resume durable action AQ-0001" in output
+
+    def test_advisory_queue_item_does_not_preempt_fresh_recon(self, tmp_path):
+        queue_dir = tmp_path / "state" / "target.com"
+        queue_dir.mkdir(parents=True)
+        (queue_dir / "action_queue.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target": "target.com",
+                "actions": [
+                    {
+                        "id": "AQ-0001",
+                        "target": "target.com",
+                        "status": "queued",
+                        "type": "surface-review",
+                        "priority": 92,
+                        "action": "Review a score-only surface hint.",
+                        "command_hint": "choose a route",
+                        "evidence": "Reason: top advisory score",
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(
+            str(tmp_path),
+            "target.com",
+            memory_dir=str(tmp_path / "hunt-memory"),
+        )
+
+        assert state["action_queue_next"] == {}
+        assert state["next_action"] == "run_recon"
+
+    def test_completed_recon_without_live_hosts_is_terminal(self, tmp_path):
+        recon_dir = tmp_path / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text("", encoding="utf-8")
+        (recon_dir / "exposure").mkdir()
+        (recon_dir / "exposure" / "config_files.txt").write_text(
+            "https://target.com/.env\n",
+            encoding="utf-8",
+        )
+        update_runtime_state(
+            tmp_path,
+            "target.com",
+            mode="recon_only",
+            last_executed_workflow="run_recon",
+        )
+
+        state = build_autopilot_state(
+            str(tmp_path),
+            "target.com",
+            memory_dir=str(tmp_path / "hunt-memory"),
+        )
+        output = format_autopilot_state(state)
+
+        assert state["has_recon"] is False
+        assert state["recon_completed_no_live_hosts"] is True
+        assert state["next_action"] == "recon_no_live_hosts"
+        assert "do not rerun recon automatically" in output
+        assert "completed with no live host inventory" in state["recon_blocker"]
+
+    def test_missing_recon_precedes_validated_structured_finding_report(self, tmp_path):
         repo_root = tmp_path
         findings_dir = repo_root / "findings" / "target.com"
         findings_dir.mkdir(parents=True)
@@ -369,8 +537,8 @@ class TestAutopilotState:
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
         output = format_autopilot_state(state)
 
-        assert state["next_action"] == "report_finding"
-        assert "Next: generate a report for validated finding mfa_report." in output
+        assert state["next_action"] == "run_recon"
+        assert "Next: run /recon target.com first." in output
         assert "Next report: mfa_report [medium/high] mfa https://api.target.com/mfa" in output
 
     def test_weak_generic_pending_does_not_mask_validated_report(self, tmp_path):
@@ -414,8 +582,9 @@ class TestAutopilotState:
 
         assert state["structured_findings"]["pending_validation"] == 1
         assert "next_validation" not in state["structured_findings"]
-        assert state["next_action"] == "report_finding"
-        assert "Next: generate a report for validated finding admin_config." in output
+        assert state["next_action"] == "run_recon"
+        assert "Next: run /recon target.com first." in output
+        assert "Next report: admin_config [high/confirmed] auth_bypass" in output
         assert "Next validation:" not in output
 
     def test_validated_report_does_not_preempt_live_surface_review(self, tmp_path):
@@ -1188,6 +1357,55 @@ class TestAutopilotState:
         state = build_autopilot_state(str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
 
         assert state["structured_findings"]["next_validation"]["id"] == "idor_wait_recon"
+        assert state["next_action"] == "wait_recon"
+
+    def test_recon_running_marker_preempts_runner_and_durable_queue(self, tmp_path):
+        validation_dir = tmp_path / "evidence" / "target.com" / "validation" / "runner-wait"
+        validation_dir.mkdir(parents=True)
+        (validation_dir / "summary.json").write_text(
+            json.dumps({
+                "lane": "authz_role_replay",
+                "finding_id": "runner-wait",
+                "url": "https://target.com/api/admin",
+                "method": "GET",
+                "result": "tested_finding",
+                "candidate_ready": True,
+                "evidence_rubric": {"status": "candidate-ready", "ready": True},
+            }),
+            encoding="utf-8",
+        )
+        queue_dir = tmp_path / "state" / "target.com"
+        queue_dir.mkdir(parents=True)
+        (queue_dir / "action_queue.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target": "target.com",
+                "actions": [{
+                    "id": "AQ-0001",
+                    "status": "candidate",
+                    "type": "candidate-evidence-gap",
+                    "priority": 99,
+                    "action": "review candidate evidence",
+                    "command_hint": "/validate runner-wait",
+                }],
+            }),
+            encoding="utf-8",
+        )
+        update_runtime_state(
+            tmp_path,
+            "target.com",
+            mode="recon_running",
+            last_executed_workflow="run_recon_started",
+        )
+
+        state = build_autopilot_state(
+            str(tmp_path),
+            "target.com",
+            memory_dir=str(tmp_path / "hunt-memory"),
+        )
+
+        assert state["validation_runner_next"]["id"] == "runner-wait"
+        assert state["action_queue_next"]["id"] == "AQ-0001"
         assert state["next_action"] == "wait_recon"
 
     def test_stale_recon_running_marker_allows_single_rerun(self, tmp_path):

@@ -17,7 +17,7 @@ except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_args.py` 直接�
     from target_paths import classify_target
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_EFFECTIVE_TOKENS = 6
 MAX_CAPTURED_TOKENS = MAX_EFFECTIVE_TOKENS + 1
 
@@ -30,6 +30,11 @@ CHECKPOINT_POLICIES = {
     "paranoid": "frequent",
     "normal": "batched",
     "yolo": "minimal",
+}
+CHECKPOINT_TRIGGERS = {
+    "paranoid": "checkpoint after every substantive state change",
+    "normal": "checkpoint after each coherent evidence-lane batch",
+    "yolo": "checkpoint only on blocker, handoff, or finish",
 }
 BOOLEAN_FLAGS = {"--quick": "quick", "--deep": "deep"}
 LEGACY_BOOLEAN_FLAGS = {
@@ -92,6 +97,20 @@ def _resolve_target(target_input: str, cwd: str | os.PathLike[str] | None) -> di
     }
 
 
+def _resolve_auth_file(
+    auth_file_input: str,
+    cwd: str | os.PathLike[str] | None,
+) -> str:
+    """按 slash invocation cwd 解析静态 auth 文件，并在 active tool 前失败。"""
+    path = Path(auth_file_input).expanduser()
+    if not path.is_absolute():
+        path = Path(cwd or Path.cwd()) / path
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise ValueError(f"auth file is not a readable file: {auth_file_input}")
+    return str(resolved)
+
+
 def parse_autopilot_args(
     argv: Sequence[str],
     cwd: str | os.PathLike[str] | None = None,
@@ -101,6 +120,7 @@ def parse_autopilot_args(
     errors: list[dict[str, Any]] = []
     targets: list[str] = []
     cadence_flags: list[str] = []
+    auth_file_inputs: list[str] = []
     quick = False
     deep = False
 
@@ -127,6 +147,34 @@ def parse_autopilot_args(
                 quick = True
             else:
                 deep = True
+            index += 1
+            continue
+        if token == "--auth-file":
+            if index + 1 >= len(effective_argv) or effective_argv[index + 1].startswith("-"):
+                errors.append(
+                    _error(
+                        "missing_auth_file_value",
+                        "--auth-file requires one JSON or .env file path.",
+                        token=token,
+                    )
+                )
+                index += 1
+            else:
+                auth_file_inputs.append(effective_argv[index + 1])
+                index += 2
+            continue
+        if token.startswith("--auth-file="):
+            value = token.split("=", 1)[1].strip()
+            if value:
+                auth_file_inputs.append(value)
+            else:
+                errors.append(
+                    _error(
+                        "missing_auth_file_value",
+                        "--auth-file requires one JSON or .env file path.",
+                        token=token,
+                    )
+                )
             index += 1
             continue
 
@@ -179,12 +227,22 @@ def parse_autopilot_args(
                 targets=targets,
             )
         )
+    if len(auth_file_inputs) > 1:
+        errors.append(
+            _error(
+                "auth_file_conflict",
+                "Inline /autopilot accepts at most one --auth-file path.",
+                paths=auth_file_inputs,
+            )
+        )
 
     cadence = CADENCE_FLAGS[cadence_flags[0]] if cadence_flags else "paranoid"
     target_input = targets[0] if len(targets) == 1 else None
     target = None
     target_kind = None
     target_shell = None
+    seed_url = None
+    seed_url_shell = None
     if target_input is not None:
         try:
             resolved = _resolve_target(target_input, cwd)
@@ -200,6 +258,25 @@ def parse_autopilot_args(
             target = resolved["target"]
             target_kind = resolved["target_kind"]
             target_shell = shlex.quote(target)
+            if "://" in target_input:
+                seed_url = target_input
+                seed_url_shell = shlex.quote(seed_url)
+
+    auth_file = None
+    auth_file_shell = None
+    if len(auth_file_inputs) == 1:
+        try:
+            auth_file = _resolve_auth_file(auth_file_inputs[0], cwd)
+        except (OSError, ValueError) as exc:
+            errors.append(
+                _error(
+                    "invalid_auth_file",
+                    f"Invalid /autopilot auth file: {exc}",
+                    path=auth_file_inputs[0],
+                )
+            )
+        else:
+            auth_file_shell = shlex.quote(auth_file)
 
     if errors:
         action = "stop_invalid_arguments"
@@ -223,8 +300,14 @@ def parse_autopilot_args(
         "target": target,
         "target_kind": target_kind,
         "target_shell": target_shell,
+        "seed_url": seed_url,
+        "seed_url_shell": seed_url_shell,
+        "auth_file": auth_file,
+        "auth_file_shell": auth_file_shell,
+        "hunt_auth_flags": ["--auth-file", auth_file] if auth_file else [],
         "cadence": cadence,
         "checkpoint_policy": CHECKPOINT_POLICIES[cadence],
+        "checkpoint_trigger": CHECKPOINT_TRIGGERS[cadence],
         "quick": quick,
         "deep": deep,
         "recon_flags": ["--quick"] if quick else [],
