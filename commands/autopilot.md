@@ -97,6 +97,7 @@ Evidence-driven depth does not mean evidence-only testing.
 - Discovery mode: when evidence is weak or surface is underexplored, actively generate new evidence from browser-observed APIs, JS/source-derived routes, cached recon, API docs/leaks, hidden parameters, path-pattern siblings, component/CVE intelligence, roles, objects, and workflow mapping.
 - Exploitation mode: when a host/path/parameter/component/version/behavior signal exists, turn it into the smallest safe replay, diff, sibling expansion, bypass, OAST, CVE applicability, or chain-building step.
 - Validation mode: when a Candidate exists, prove practical impact with the lowest-impact replay/diff and the `/validate` evidence rubric.
+Focused fuzz is an optional AI-selected discovery action only when browser/JS/source/API/recon evidence supports one concrete template and bounded, deduplicated wordlist. Baseline FFUF is an automatic breadth sensor; an empty baseline does not trigger focused fuzz. Keep each run under isolated `recon/<target_key>/focused_fuzz/<run_id>/` raw/summary artifacts, then write the AI judgment through `target_memory.py lead/dead-end`; never auto-expand surface, queue, or coverage.
 
 AI override is first-class: skip, reorder, combine, or invent the next action
 when evidence supports it. State the reason, red-line status, next verification

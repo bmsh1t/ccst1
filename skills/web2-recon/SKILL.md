@@ -256,33 +256,103 @@ Recon 阶段只产出候选材料，不把缺参错误当漏洞：
 
 ## DIRECTORY FUZZING
 
-### ffuf — Standard Fuzzing
+### Baseline FFUF 与 Focused FFUF
+
+`tools/recon_engine.sh` 已自动执行 baseline FFUF：使用固定通用词表、有界 live URL、
+SPA/WAF control、压缩 JSONL 和 compact summary。它是 breadth sensor，不代表路径覆盖
+完整；Claude 不重复运行，也不因 baseline 零命中而自动转入 focused fuzz。
+
+Focused fuzz 是 AI 显式选择的 discovery action。仅当 browser/JS/source/API docs/schema/
+GraphQL/recon/history 已支持一个具体 URL 或 request template，且它比当前 replay、authz、
+object、workflow 等路线更有价值时执行。每次运行前必须由 AI：
+
+1. 从真实路径分段、参数、API 名词/动词、XHR、source route、schema 和 sibling 命名规律
+   生成有界、去重的 `wordlist.txt`；不得机械合并整份通用大字典。
+2. 绑定一个明确的 `FUZZ` 位置、认证上下文、证据来源、请求率和停止条件；不同 template
+   或认证形态使用不同 run。
+3. 设置随机 miss/control 或显式 matcher/filter 来解释 SPA/WAF/fallback 差异；工具只保存
+   事实，不替 AI 判断命中价值。
+
+每次 focused run 使用隔离目录，不覆盖 baseline，也不写入 `urls/all.txt`、surface、
+action queue 或 coverage：
 
 ```bash
-# Directory discovery on a live host
-ffuf -u "https://target.com/FUZZ" \
-     -w ~/wordlists/common.txt \
-     -mc 200,201,204,301,302,307,401,403 \
-     -ac \
-     -t 40 \
-     -o /tmp/ffuf-dirs.json
+RUN_DIR='recon/<target_key>/focused_fuzz/20260710-api-v2-sibling-routes'
+mkdir -p "$RUN_DIR/dirs"
+# 将 AI 从当前证据选择、去重后的有限候选写入 "$RUN_DIR/wordlist.txt"
 
-# API endpoint discovery
-ffuf -u "https://target.com/api/FUZZ" \
-     -w ~/wordlists/api-endpoints.txt \
-     -mc 200,201,204,301,302 \
-     -ac \
-     -t 20
+set -o pipefail
+if ffuf -u 'https://target.com/api/v2/FUZZ' \
+  -w "$RUN_DIR/wordlist.txt" \
+  -H 'Authorization: Bearer <token>' -b 'session=<cookie>' \
+  -mc all -ac -rate 20 -t 5 -timeout 10 \
+  -s -json 2> "$RUN_DIR/ffuf.log" \
+  | gzip -c > "$RUN_DIR/dirs/ffuf_results.jsonl.gz"; then
+  RUN_COUNTS=(--attempted 1 --succeeded 1)
+else
+  RUN_COUNTS=(--attempted 1 --failed 1)
+fi
 
-# IDOR fuzzing with authenticated request
-# Create req.txt with Authorization: Bearer TOKEN
-ffuf -request /tmp/req.txt \
-     -request-proto https \
-     -w <(seq 1 10000) \
-     -fc 404 \
-     -ac \
-     -t 10
+python3 tools/recon_adapter.py --recon-dir "$RUN_DIR" \
+  --summarize-ffuf "${RUN_COUNTS[@]}"
 ```
+
+根路径 discovery 使用 `ffuf -u 'https://target.com/FUZZ'`；嵌套 API/path 使用当前证据
+支持的 `/api/vN/FUZZ`、`/service/FUZZ` 等 prefix。认证请求可以使用 `-H`、`-b`，也可把
+browser/proxy 捕获并清理后的 raw request 保存到当前 run：
+
+```bash
+RUN_DIR='recon/<target_key>/focused_fuzz/20260710-account-object-values'
+mkdir -p "$RUN_DIR/dirs"
+# request.txt 中只保留当前测试所需的 method、path、header/cookie 和一个明确 FUZZ 位置。
+set -o pipefail
+ffuf -request "$RUN_DIR/request.txt" -request-proto https \
+  -w "$RUN_DIR/wordlist.txt" \
+  -mc all -ac -rate 10 -t 3 -timeout 10 \
+  -s -json 2> "$RUN_DIR/ffuf.log" \
+  | gzip -c > "$RUN_DIR/dirs/ffuf_results.jsonl.gz"
+```
+
+`FUZZ` 可以位于 path、query、body 或 header；每次只改变一个边界，并沿用上面的隔离
+artifact 契约：
+
+```bash
+# path
+ffuf -u 'https://target.com/api/v2/FUZZ' -w "$RUN_DIR/wordlist.txt" -mc all -ac -rate 10 -t 3
+# query
+ffuf -u 'https://target.com/api/v2/items?view=FUZZ' -w "$RUN_DIR/wordlist.txt" -mc all -ac -rate 10 -t 3
+# body
+ffuf -u 'https://target.com/api/v2/items' -X POST -H 'Content-Type: application/json' \
+  -d '{"action":"FUZZ"}' -w "$RUN_DIR/wordlist.txt" -mc all -ac -rate 10 -t 3
+# header
+ffuf -u 'https://target.com/api/v2/items' -H 'X-API-Version: FUZZ' \
+  -w "$RUN_DIR/wordlist.txt" -mc all -ac -rate 10 -t 3
+```
+
+保留 `-ac`；只有 control/baseline 支持时才增加如 `-fc 404`、`-fs <control-size>` 的显式
+过滤。摘要之后用现有 adapter 有界分页查看 raw observations，不复制结果集：
+
+```bash
+python3 tools/recon_adapter.py --recon-dir "$RUN_DIR" \
+  --read-ffuf --offset 0 --limit 100
+```
+
+复核时以结果 URL、响应特征和保存的 `wordlist.txt` 为完整证据链，不单独依赖 raw
+`input.FUZZ`；FFUF 可能对该字段编码，`-ac` 校准值也可能影响它。
+
+由 AI 解释响应差异并写回现有目标记忆。有效线索记录证据路径、价值、下一步和停止条件；
+没有新增信息时记录本次有界范围，避免新 session 重复：
+
+```bash
+python3 tools/target_memory.py lead \
+  "Focused fuzz evidence: $RUN_DIR/dirs/ffuf_summary.json; why: <signal>; next: <verification>; stop: <condition>" \
+  --target target.com
+python3 tools/target_memory.py dead-end \
+  "Focused fuzz scope: <template + evidence>; artifact: $RUN_DIR/dirs/ffuf_results.jsonl.gz; result: <why no useful signal>" \
+  --target target.com
+```
+
+候选进入具体漏洞验证 lane 后，再按该 lane 的 Evidence Ledger 契约保存 replay 证据。
 
 ### Pattern-Based Directory Fuzzing
 
