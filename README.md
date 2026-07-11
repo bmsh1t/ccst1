@@ -162,10 +162,16 @@ Inside Claude Code, say the auth source explicitly in the turn, for example:
 | Goal | Recommended path |
 |---|---|
 | See where the last run stopped for this target | `/pickup target.com` |
-| Continue this target with a clean agent run state | `/hunt target.com` or `/autopilot target.com --normal` |
+| Continue this target in the current Claude session using persisted target state | `/hunt target.com` or `/autopilot target.com --normal` |
 | Resume the exact previous agent working memory / trace | `python3 tools/hunt.py --target target.com --agent --resume latest` |
 
-Autonomous agent runs start a fresh local session by default under
+Claude CLI `/autopilot` runs inline in the current Claude session and does not
+implicitly create or resume `agent_session.json`. It is the sole controller for
+target state and may use at most one bounded, non-nesting specialist when a
+specific evidence question benefits from isolated context.
+
+Explicit legacy local-agent runs started with `tools/hunt.py --agent` create a
+fresh session by default under
 `targets/<storage-key>/sessions/<session_id>/`. For domains and single IPs the
 storage key matches the target; CIDR targets replace `/` with `_`, and host-list
 targets use the list filename stem. `/pickup` only reads target-level

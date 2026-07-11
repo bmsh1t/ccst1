@@ -133,11 +133,15 @@ LOAD -> REVIEW EVIDENCE -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDI
 
 ### 4. 自治挖掘 / Agent 工作流
 
-本地有一个 ReAct 风格 agent：
+Claude CLI `/autopilot` 默认在当前 Claude 会话内运行，由当前会话独占目标状态写回和
+finish 决策；默认不创建 subagent，只在边界明确的证据任务需要隔离上下文时调用最多一个
+不再派生 agent 的短生命周期 specialist。
+
+项目另有一个通过 `tools/hunt.py --agent` 显式启动的 ReAct 风格本地 agent：
 
 - 支持 Ollama 本地模型
 - 可选 LangGraph 后端
-- 默认每次自治运行创建新的本地 agent session，避免复用旧 `agent_session.json` 造成状态串扰
+- 每次显式 legacy 本地 agent 运行默认创建新的 session，避免复用旧 `agent_session.json` 造成状态串扰
 - 支持显式 session 续跑：`--resume latest` 或 `--resume <session_id>`
 - `/pickup` 只读取目标级历史、structured findings 和下一步建议，不会隐式复用旧 agent session
 - 本地 session 产物隔离在 `targets/<target>/sessions/<session_id>/`，便于复盘、trace 和人工介入
@@ -174,7 +178,7 @@ paranoid / normal / yolo
 | 目标级续接 | 查看目标历史、未测端点、历史发现、structured finding 状态 | 使用 `/pickup target.com`，不会污染下一次自治运行 |
 | Agent 精确续跑 | 继续上一轮 ReAct agent 的 working memory、finding log、observation buffer 和 trace | 使用 `--resume latest` 或 `--resume <session_id>` 显式开启 |
 
-默认的 `/autopilot target.com` 或 agent 运行会创建新的本地 session：
+只有显式的 `tools/hunt.py --target target.com --agent` 本地 agent 运行会创建新的 session：
 
 ```text
 targets/<target>/sessions/<session_id>/
@@ -425,13 +429,15 @@ targets/<target>/sessions/<session_id>/
 
 ### 场景三：自治挖掘
 
-适用于希望 agent 按固定节奏推进测试流程。
+适用于希望当前 Claude 会话按固定节奏推进测试流程。
 
 ```text
 /autopilot target.com --normal
 ```
 
-默认会创建新的本地 agent session。这样同一个目标可以多轮测试，但每轮自治 agent 的 working memory 和 trace 都保持独立。
+默认在当前 Claude 会话内运行，不创建或恢复 legacy `agent_session.json`。当前会话是唯一
+Controller；specialist 默认关闭，最多临时调用一个处理 JS/source/CVE review 或 Candidate
+反证，并由当前会话回收结果。
 
 自治流程会围绕以下阶段执行：
 
@@ -844,14 +850,14 @@ python3 tools/token_scanner.py contracts/Token.sol
 | 场景 | 用法 | 说明 |
 |---|---|---|
 | 想知道目标历史状态 | `/pickup target.com` | 读取目标级历史、未测端点、structured findings 和下一步建议 |
-| 想继续测试目标 | `/hunt target.com` 或 `/autopilot target.com --normal` | 默认创建新的本地 agent session，避免旧运行状态串扰 |
+| 想继续测试目标 | `/hunt target.com` 或 `/autopilot target.com --normal` | 在当前 Claude 会话继续，复用目标级持久状态，不隐式恢复 legacy agent session |
 | 想继续上一轮 agent 的精确状态 | `python3 tools/hunt.py --target target.com --agent --resume latest` | 复用上一轮 `agent_session.json`、trace 和 working memory |
 
 简单理解：
 
 - `/pickup` = “看历史和下一步建议”
-- 默认 `/autopilot` = “开一轮干净的新自治测试”
-- `--resume` = “继续上一次那个 agent 的脑子和执行轨迹”
+- 默认 `/autopilot` = “在当前 Claude 会话继续自治测试”
+- `tools/hunt.py --agent --resume` = “继续上一次 legacy 本地 agent 的脑子和执行轨迹”
 
 ### 标准 Web 目标
 

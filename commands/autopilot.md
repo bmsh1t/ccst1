@@ -11,6 +11,7 @@ frequency.
 
 Expert Hunter Autopilot for Claude CLI. Claude is the hunter; tools are memory,
 evidence, replay, and summary aids.
+Execution contract: `/autopilot` runs inline in the current Claude session as the sole controller and does not create/resume legacy `agent_session.json`; specialists default to zero, and at most one bounded specialist may answer one evidence question without spawning agents, running full recon/scans, writing final closure, or controlling finish.
 
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT

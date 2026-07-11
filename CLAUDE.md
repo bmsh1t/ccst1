@@ -140,6 +140,10 @@ local practice / lab assets.
 Use the shortest path from context to evidence and keep the long-form rules in
 their canonical files:
 
+- Claude CLI `/autopilot` runs inline in the current Claude session as the sole target-state controller. It does not implicitly create or resume legacy `agent_session.json` state.
+- A bounded specialist is optional, defaults to off, and is limited to one non-nesting evidence task; the current session collects the result and owns checkpoint/finish.
+- `python3 tools/hunt.py --target <target> --agent [--resume ...]` is the separate legacy local-agent runtime with isolated session/trace semantics.
+
 ```text
 LOAD -> REVIEW EVIDENCE -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDIDATES -> REPORT
 ```
