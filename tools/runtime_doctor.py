@@ -26,11 +26,16 @@ def _runtime_root(path: str | Path | None = None) -> Path:
 
 def _repo_files(repo_root: Path, kind: str) -> dict[str, Path]:
     base = repo_root / kind
+    if not base.is_dir():
+        return {}
     if kind == "skills":
-        files = {
-            str(path.relative_to(base)): path
-            for path in sorted(base.glob("*/SKILL.md"))
-        }
+        files: dict[str, Path] = {}
+        for skill_dir in sorted(path for path in base.iterdir() if path.is_dir()):
+            files.update({
+                str(path.relative_to(base)): path
+                for path in sorted(skill_dir.rglob("*"))
+                if path.is_file()
+            })
         files.update({
             str(path.relative_to(base)): path
             for path in sorted(base.glob("*.md"))
@@ -42,17 +47,39 @@ def _repo_files(repo_root: Path, kind: str) -> dict[str, Path]:
     }
 
 
-def _runtime_files(runtime_root: Path, kind: str) -> dict[str, Path]:
+def _runtime_files(
+    runtime_root: Path,
+    kind: str,
+    *,
+    repo_files: dict[str, Path] | None = None,
+) -> dict[str, Path]:
     base = runtime_root / RUNTIME_SUBDIRS[kind]
     if kind == "skills":
-        files = {
-            str(path.relative_to(base)): path
-            for path in sorted(base.glob("*/SKILL.md"))
+        managed_files = repo_files or {}
+        managed_roots = {
+            Path(relative_path).parts[0]
+            for relative_path in managed_files
+            if len(Path(relative_path).parts) > 1
         }
-        files.update({
-            str(path.relative_to(base)): path
-            for path in sorted(base.glob("*.md"))
-        })
+        shared_files = {
+            relative_path
+            for relative_path in managed_files
+            if len(Path(relative_path).parts) == 1
+        }
+        files: dict[str, Path] = {}
+        for root_name in sorted(managed_roots):
+            skill_dir = base / root_name
+            if not skill_dir.is_dir():
+                continue
+            files.update({
+                str(path.relative_to(base)): path
+                for path in sorted(skill_dir.rglob("*"))
+                if path.is_file()
+            })
+        for relative_path in sorted(shared_files):
+            path = base / relative_path
+            if path.is_file():
+                files[relative_path] = path
         return files
     return {
         path.name: path
@@ -76,13 +103,7 @@ def _intentional_disabled_runtime_files(runtime_files: dict[str, Path], kind: st
 
 def compare_kind(repo_root: Path, runtime_root: Path, kind: str) -> dict:
     repo_files = _repo_files(repo_root, kind)
-    runtime_files = _runtime_files(runtime_root, kind)
-    if kind == "skills":
-        runtime_files = {
-            rel_path: path
-            for rel_path, path in runtime_files.items()
-            if rel_path in repo_files
-        }
+    runtime_files = _runtime_files(runtime_root, kind, repo_files=repo_files)
     disabled_runtime_files = _intentional_disabled_runtime_files(runtime_files, kind)
     items: list[dict[str, str]] = []
     matched_runtime_paths: set[Path] = set()
@@ -180,13 +201,7 @@ def sync_runtime(
         if kind not in KIND_ORDER:
             continue
         repo_files = _repo_files(resolved_repo, kind)
-        runtime_files = _runtime_files(resolved_runtime, kind)
-        if kind == "skills":
-            runtime_files = {
-                rel_path: path
-                for rel_path, path in runtime_files.items()
-                if rel_path in repo_files
-            }
+        runtime_files = _runtime_files(resolved_runtime, kind, repo_files=repo_files)
         disabled_runtime_files = _intentional_disabled_runtime_files(runtime_files, kind)
         for rel_path, src in repo_files.items():
             disabled_dst = disabled_runtime_files.get(rel_path)

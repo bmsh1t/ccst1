@@ -236,6 +236,77 @@ def test_compare_runtime_includes_shared_skill_markdown_files(tmp_path):
     )
 
 
+def test_compare_and_sync_runtime_recursively_manages_skill_resources(tmp_path):
+    repo_root = _repo_fixture(tmp_path / "repo")
+    runtime_root = _runtime_fixture_with_external_skill(tmp_path / "runtime")
+    repo_reference = repo_root / "skills" / "bug-bounty" / "references" / "routing.md"
+    runtime_reference = runtime_root / "skills" / "bug-bounty" / "references" / "routing.md"
+    stale_reference = runtime_root / "skills" / "bug-bounty" / "references" / "stale.md"
+    external_reference = runtime_root / "skills" / "playwright-cli" / "references" / "external.md"
+    _write(repo_reference, "repo nested reference\n")
+    _write(runtime_reference, "old nested reference\n")
+    _write(stale_reference, "stale managed resource\n")
+    _write(external_reference, "external resource\n")
+
+    payload = runtime_doctor.compare_runtime(
+        repo_root=repo_root,
+        runtime_root=runtime_root,
+        kinds=["skills"],
+    )
+
+    skills = payload["kinds"][0]
+    assert skills["counts"] == {"ok": 1, "diff": 1, "missing": 0, "extra": 1}
+    assert {
+        (item["status"], item["relative_path"])
+        for item in skills["items"]
+        if item["status"] != "ok"
+    } == {
+        ("diff", "bug-bounty/references/routing.md"),
+        ("extra", "bug-bounty/references/stale.md"),
+    }
+    assert all("playwright-cli" not in item["relative_path"] for item in skills["items"])
+
+    changes = runtime_doctor.sync_runtime(
+        repo_root=repo_root,
+        runtime_root=runtime_root,
+        kinds=["skills"],
+        prune=True,
+    )
+
+    assert runtime_reference.read_text(encoding="utf-8") == "repo nested reference\n"
+    assert not stale_reference.exists()
+    assert external_reference.read_text(encoding="utf-8") == "external resource\n"
+    assert str(runtime_reference) in changes["copied"]
+    assert str(stale_reference) in changes["removed"]
+    assert runtime_doctor.compare_runtime(
+        repo_root=repo_root,
+        runtime_root=runtime_root,
+        kinds=["skills"],
+    )["clean"] is True
+
+
+def test_compare_runtime_reports_missing_nested_skill_resource(tmp_path):
+    repo_root = _repo_fixture(tmp_path / "repo")
+    runtime_root = _runtime_fixture(tmp_path / "runtime")
+    _write(
+        repo_root / "skills" / "bug-bounty" / "references" / "routing.md",
+        "repo nested reference\n",
+    )
+
+    payload = runtime_doctor.compare_runtime(
+        repo_root=repo_root,
+        runtime_root=runtime_root,
+        kinds=["skills"],
+    )
+
+    skills = payload["kinds"][0]
+    assert skills["counts"] == {"ok": 1, "diff": 0, "missing": 1, "extra": 0}
+    assert any(
+        item["status"] == "missing"
+        and item["relative_path"] == "bug-bounty/references/routing.md"
+        for item in skills["items"]
+    )
+
 def test_sync_runtime_copies_shared_skill_markdown_files(tmp_path):
     repo_root = _repo_fixture(tmp_path / "repo")
     runtime_root = _runtime_fixture(tmp_path / "runtime")

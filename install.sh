@@ -48,7 +48,7 @@ done
 for skill_dir in "${SCRIPT_DIR}"/skills/*/; do
     skill_name=$(basename "$skill_dir")
     mkdir -p "${INSTALL_DIR}/${skill_name}"
-    cp "${skill_dir}SKILL.md" "${INSTALL_DIR}/${skill_name}/SKILL.md"
+    cp -a "${skill_dir}." "${INSTALL_DIR}/${skill_name}/"
     echo "✓ Installed skill: ${skill_name}"
 done
 

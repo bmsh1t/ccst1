@@ -12,11 +12,17 @@ frequency.
 Expert Hunter Autopilot for Claude CLI. Claude is the hunter; tools are memory,
 evidence, replay, and summary aids.
 Execution contract: `/autopilot` runs inline in the current Claude session as the sole controller and does not create/resume legacy `agent_session.json`; specialists default to zero, and at most one bounded specialist may answer one evidence question without spawning agents, running full recon/scans, writing final closure, or controlling finish.
+## Runtime Preflight
+Before any target state or active tool action, require this project root and a matching installed Claude runtime:
+```bash
+test -f tools/runtime_doctor.py && test -f commands/autopilot.md
+python3 tools/runtime_doctor.py --kind commands,agents,skills --fail-on-drift
+```
+If either command fails, stop. Missing marker: ask the operator to `cd` here and restart Claude. Drift: show `/sync-check`; request explicit confirmation before any runtime sync. Never sync automatically.
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
 existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
 ```
-
 Super-pentester priority: business impact > workflow evidence > crown-jewel hypothesis > scanner/coverage hints. Scanner quick is a breadth sensor and advisory lead source; scanner-negative is not completion.
 ## Tool Index
 Before unusual/non-default helpers, scan `docs/tool-index.md` once per session.
@@ -29,13 +35,11 @@ Four-layer memory is the external brain, not the steering wheel:
 ```text
 target memory / target case state -> skill routing -> knowledge cards -> checks
 ```
-
 Every invocation is state-first. Surface ctf mode, then read state once before choosing fresh, existing, or batch behavior:
 ```bash
 python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'
 python3 tools/autopilot_state.py --target target.com
 ```
-
 Branch only after that state read:
 ```bash
 # next_action=run_recon: launch once; append --quick only when requested
@@ -48,19 +52,16 @@ python3 tools/hunt.py --target target.com --scan-only --quick
 If state returns `wait_recon` / `wait_scan`, do not start that phase again;
 wait/poll, then rerun state before continuing. Runtime phase locks are the final
 duplicate-launch guard. Refresh recon only when missing, thin, stale, or contradicted by fresh evidence.
-
 For a readable primary-domain list, the list context is recon/handoff only:
 1. Run `autopilot_state.py --target targets.txt` before batch recon.
 2. Run `hunt.py --target targets.txt --recon-only` only when state says `run_batch_recon`; append `--quick` only when requested, and never scan the list/index.
 3. Read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed domain, then rerun `autopilot_state.py --target <domain>`.
 4. Only the selected domain may enter surface/context/browser/scan/hunt; do not aggregate active work across the batch.
-
 For existing single targets, run a closed-state sanity check before executing a historical `continue_last_focus`, resume target, or `/surface` score hint:
 ```bash
 python3 tools/checkpoint.py --target target.com --no-refresh-coverage
 python3 tools/action_queue.py summary --target target.com
 ```
-
 If checkpoint/action_queue show no executable next action, treat those historical
 hints as context rather than commands. Re-open them only when fresh
 browser/source/JS/recon evidence or business context contradicts the recorded
@@ -77,7 +78,6 @@ Checkpoint can emit target-memory write-back proposals:
 ```bash
 python3 tools/checkpoint.py --target target.com
 ```
-
 Review the proposal and apply target memory only when it is useful; stale/noisy
 state must not block recon, browser/source enrichment, AI-selected pivots, or a
 better live hypothesis.
@@ -268,7 +268,6 @@ Compatibility flags: `--parallel`, `--max-parallel`, `--parallel-hypotheses`,
 fanout, screenshots, adversarial review, or pattern calibration adds evidence.
 ## Finish Condition
 Finish on evidence state, not a tool checklist:
-
 - `working_hypothesis` is resolved, killed, blocked, or promoted to Candidate / Validated Finding.
 - `oast_listen` is checked when blind/OAST testing was used.
 - No unresolved high-value action-gated scanner lead remains; otherwise checkpoint instead of finishing.
@@ -276,5 +275,4 @@ Finish on evidence state, not a tool checklist:
 - `evidence/<target>/intelligence.md`, browser, JS, source, exposure, and knowledge context were consulted when available.
 - Target memory has a useful handoff when the target is not genuinely exhausted.
 - A pending report is a closure asset, not a stop signal; continue hunting when stronger live evidence, browser/source leads, or high-value business workflows remain.
-
 End with target, mode, strongest evidence, findings/candidates, blockers/dead ends, and next best action.
