@@ -165,3 +165,53 @@ def test_bootstrap_state_is_compact_and_json_cli_is_single_line(monkeypatch, tmp
     assert "surface" not in payload["state"]
     assert "items" not in payload["runtime"]
     assert "do-not-project" not in output
+
+
+def test_bootstrap_projects_only_bounded_candidate_rubric():
+    state = _state("/tmp/repo", "example.test")
+    state["next_action"] = "collect_candidate_evidence"
+    state["structured_findings"] = {
+        "next_validation": {
+            "id": "idor-orders",
+            "url": "https://example.test/api/orders/7",
+            "raw_request": "do-not-project",
+            "rubric": {
+                "rubric_id": "authz",
+                "status": "needs-evidence",
+                "ready": False,
+                "score": 50,
+                "satisfied_count": 2,
+                "total": 5,
+                "missing_labels": ["actor A", "actor B", "response diff", "impact"],
+                "next_actions": [
+                    "",
+                    "compare the same object with two owned actors",
+                    "capture the stable response difference",
+                ],
+                "missing": [{"id": "large-detail"}] * 100,
+                "summary": "do-not-project",
+                "raw_evidence": ["do-not-project"] * 100,
+            },
+        }
+    }
+
+    compact = autopilot_bootstrap.compact_autopilot_state(state)
+
+    assert compact["structured_next"] == {
+        "id": "idor-orders",
+        "url": "https://example.test/api/orders/7",
+        "rubric": {
+            "rubric_id": "authz",
+            "status": "needs-evidence",
+            "ready": False,
+            "score": 50,
+            "satisfied_count": 2,
+            "total": 5,
+            "missing_labels": ["actor A", "actor B", "response diff"],
+            "next_actions": ["compare the same object with two owned actors"],
+        },
+    }
+    encoded = json.dumps(compact)
+    assert "raw_request" not in encoded
+    assert "raw_evidence" not in encoded
+    assert "do-not-project" not in encoded

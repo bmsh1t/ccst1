@@ -66,11 +66,32 @@ def _compact_candidate(item: dict[str, Any]) -> dict[str, Any]:
         "review_reason",
         "suggested",
     )
-    return {
+    compact = {
         key: item[key]
         for key in keys
         if key in item and item[key] not in (None, "", [], {})
     }
+    rubric = item.get("rubric") if isinstance(item.get("rubric"), dict) else {}
+    if rubric:
+        compact["rubric"] = {
+            "rubric_id": str(rubric.get("rubric_id") or ""),
+            "status": str(rubric.get("status") or ""),
+            "ready": bool(rubric.get("ready", False)),
+            "score": int(rubric.get("score", 0) or 0),
+            "satisfied_count": int(rubric.get("satisfied_count", 0) or 0),
+            "total": int(rubric.get("total", 0) or 0),
+            "missing_labels": [
+                str(value)
+                for value in (rubric.get("missing_labels") or [])[:3]
+                if str(value).strip()
+            ],
+            "next_actions": [
+                str(value)
+                for value in (rubric.get("next_actions") or [])
+                if str(value).strip()
+            ][:1],
+        }
+    return compact
 
 
 def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:

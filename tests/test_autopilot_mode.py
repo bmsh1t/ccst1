@@ -1,6 +1,7 @@
 """Regression tests for autopilot mode wiring across hunt.py and agent.py."""
 
 import os
+import shlex
 import sys
 
 import agent
@@ -916,6 +917,23 @@ def test_hunt_main_passes_autopilot_mode_to_agent(monkeypatch, tmp_path):
     assert captured["resume_session_id"] is None
     assert captured["ctf_mode"] is True
     assert captured["deep_mode"] is True
+
+
+def test_hunt_missing_tool_hint_uses_shell_safe_root_install_script(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    repo_root = tmp_path / "repo with (special chars)"
+    monkeypatch.setattr(hunt, "BASE_DIR", str(repo_root))
+    monkeypatch.setattr(hunt, "check_tools", lambda: ([], ["ffuf"]))
+    monkeypatch.setattr(hunt, "select_targets", lambda top_n: None)
+    monkeypatch.setattr(sys, "argv", ["hunt.py", "--select-targets"])
+
+    hunt.main()
+
+    expected = f"Run: bash {shlex.quote(str(repo_root / 'install_tools.sh'))}"
+    assert expected in capsys.readouterr().out
 
 
 def test_hunt_main_passes_quick_mode_to_agent(monkeypatch, tmp_path):

@@ -52,6 +52,7 @@ cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> [--auth
 If state returns `wait_recon` / `wait_scan`, do not start that phase again;
 wait/poll, then rerun state before continuing. Runtime phase locks are the final
 duplicate-launch guard. `review_validation_candidate` reviews raw runner evidence before `/validate`; `resume_action_queue` executes its durable replay; `recon_no_live_hosts` records the offline blocker and never reruns automatically. Refresh recon only when missing, thin, stale, or contradicted by fresh evidence.
+`collect_candidate_evidence` consumes `state.structured_next.rubric`: execute its first bounded `next_actions` item (or record a precise blocker/downgrade), preserve the named `missing_labels` evidence, then rerun state. Do not call `/validate` until state returns `validate_finding`.
 If `arguments.seed_url` is non-null, inspect `<seed_url_shell>` through browser/source/workflow evidence before historical focus or score hints, even for existing canonical target state.
 For a readable primary-domain list, the list context is recon/handoff only:
 1. Run `autopilot_state.py --target targets.txt` before batch recon.

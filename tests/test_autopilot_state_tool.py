@@ -10,6 +10,7 @@ from memory.target_profile import make_target_profile, save_target_profile
 from autopilot_state import (
     _build_recommended_targets,
     _filter_ranked_placeholders,
+    _pick_next_action,
     build_autopilot_state,
     format_autopilot_state,
 )
@@ -315,7 +316,7 @@ class TestAutopilotState:
         assert "cached recon/browser/JS/source evidence" in output
         assert "residential" not in output.lower()
 
-    def test_prioritizes_pending_structured_finding_validation(self, tmp_path):
+    def test_pending_structured_finding_collects_missing_candidate_evidence(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
         (recon_dir / "live").mkdir(parents=True)
@@ -346,6 +347,21 @@ class TestAutopilotState:
                             "url": "https://api.target.com/search?q=1",
                             "validation_status": "unvalidated",
                             "report_status": "not_generated",
+                            "rubric": {
+                                "rubric_id": "sqli",
+                                "status": "needs-evidence",
+                                "ready": False,
+                                "score": 50,
+                                "satisfied_count": 2,
+                                "total": 4,
+                                "missing_labels": [
+                                    "paired baseline and probe",
+                                    "stable response difference",
+                                ],
+                                "next_actions": [
+                                    "capture a paired baseline/probe response diff",
+                                ],
+                            },
                         }
                     ],
                 }
@@ -360,10 +376,44 @@ class TestAutopilotState:
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
         output = format_autopilot_state(state)
 
-        assert state["next_action"] == "validate_finding"
-        assert "Next step: validate structured finding sqli_pending on https://api.target.com/search?q=1." in output
+        assert state["next_action"] == "collect_candidate_evidence"
+        assert "collect candidate evidence for finding sqli_pending" in output
+        assert "missing=paired baseline and probe, stable response difference" in output
+        assert "Next evidence step: capture a paired baseline/probe response diff" in output
         assert "Structured findings: total=1, pending_validation=1" in output
         assert "Next validation: sqli_pending [high/confirmed] sqli https://api.target.com/search?q=1" in output
+        assert state["next_tool_hint"] == ""
+
+    def test_ready_and_legacy_structured_candidates_still_validate(self):
+        ready = {
+            "next_validation": {
+                "id": "ready-candidate",
+                "rubric": {"ready": True, "status": "candidate-ready"},
+            }
+        }
+        legacy = {"next_validation": {"id": "legacy-candidate"}}
+
+        assert _pick_next_action(True, {}, None, ready) == "validate_finding"
+        assert _pick_next_action(True, {}, None, legacy) == "validate_finding"
+
+    def test_wait_marker_preempts_missing_candidate_evidence(self):
+        structured = {
+            "next_validation": {
+                "id": "waiting-candidate",
+                "rubric": {"ready": False, "status": "needs-evidence"},
+            }
+        }
+
+        assert (
+            _pick_next_action(
+                True,
+                {},
+                None,
+                structured,
+                recon_in_progress=True,
+            )
+            == "wait_recon"
+        )
 
     def test_outputs_validation_runner_candidates_as_advisory_pool(self, tmp_path):
         repo_root = tmp_path

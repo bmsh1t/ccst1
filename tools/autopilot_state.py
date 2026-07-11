@@ -305,7 +305,17 @@ def _pick_next_action(
     if scan_in_progress:
         return "wait_scan"
 
-    if structured_findings.get("next_validation"):
+    next_validation = structured_findings.get("next_validation") or {}
+    if next_validation:
+        rubric = (
+            next_validation.get("rubric")
+            if isinstance(next_validation, dict)
+            and isinstance(next_validation.get("rubric"), dict)
+            else {}
+        )
+        # 旧状态可能没有 rubric；只在显式 non-ready 时改走补证据流程。
+        if rubric and "ready" in rubric and not bool(rubric.get("ready")):
+            return "collect_candidate_evidence"
         return "validate_finding"
     if validation_runner_next:
         return "review_validation_candidate"
@@ -343,6 +353,7 @@ def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
         "run_recon",
         "wait_recon",
         "wait_scan",
+        "collect_candidate_evidence",
         "validate_finding",
         "review_validation_candidate",
         "resume_action_queue",
@@ -383,6 +394,32 @@ def _describe_next_step(state: dict) -> str:
         return (
             f"wait/poll the existing scan-only quick run for {target}; do not launch another "
             "scan-only quick. If the running marker is stale, rerun the scanner once with a fresh log."
+        )
+    if action == "collect_candidate_evidence":
+        followup = (state.get("structured_findings") or {}).get("next_validation") or {}
+        rubric = followup.get("rubric") if isinstance(followup.get("rubric"), dict) else {}
+        missing = [
+            str(item).strip()
+            for item in (rubric.get("missing_labels") or [])[:3]
+            if str(item).strip()
+        ]
+        evidence_step = next(
+            (
+                str(item).strip()
+                for item in rubric.get("next_actions") or []
+                if str(item).strip()
+            ),
+            "fill the first missing candidate evidence item",
+        )
+        return (
+            "collect candidate evidence for finding {id} on {url}; rubric={status}, "
+            "missing={missing}. Next evidence step: {step}. Rerun state before /validate.".format(
+                id=followup.get("id", "-"),
+                url=followup.get("url", ""),
+                status=rubric.get("status", "needs-evidence"),
+                missing=", ".join(missing) or "candidate evidence",
+                step=evidence_step,
+            )
         )
     if action == "validate_finding":
         followup = (state.get("structured_findings") or {}).get("next_validation") or {}
@@ -740,6 +777,7 @@ def _build_enrichment_hints(
         "run_recon",
         "wait_recon",
         "wait_scan",
+        "collect_candidate_evidence",
         "validate_finding",
         "review_validation_candidate",
         "resume_action_queue",

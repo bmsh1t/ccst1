@@ -54,3 +54,16 @@ def test_optional_agent_uses_the_same_state_first_contract():
     assert "run `python3 tools/autopilot_state.py --target <target>` exactly once before choosing fresh, existing, or batch behavior" in text
     assert "Never scan or actively hunt the batch index" in text
     assert "Runtime phase locks are the final duplicate-launch guard" in text
+
+
+def test_command_and_optional_agent_share_candidate_evidence_routing():
+    command = " ".join(_read("commands/autopilot.md").split())
+    agent = " ".join(_read("agents/autopilot.md").split())
+
+    for text in (command, agent):
+        assert "collect_candidate_evidence" in text
+        assert "missing_labels" in text
+        assert "next_actions" in text
+        assert "validate_finding" in text
+    assert "Do not call `/validate` until state returns `validate_finding`" in command
+    assert "Use `/validate` only after state returns `validate_finding`" in agent
