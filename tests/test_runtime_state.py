@@ -9,10 +9,12 @@ from tools.recon_adapter import ReconAdapter
 from runtime_state import (
     DEPRECATED_FIELDS,
     PERSISTED_FIELDS,
+    RuntimePhaseBusy,
     SCHEMA_VERSION,
     derive_state_view,
     inspect_recon_artifacts,
     load_runtime_state,
+    runtime_phase_lock,
     update_runtime_state,
 )
 
@@ -91,6 +93,28 @@ def test_persisted_fields_whitelist_is_explicit():
         "last_validation_result",
         "last_validated_finding_id",
     })
+
+
+def test_runtime_phase_lock_blocks_same_target_phase_only(tmp_path):
+    with runtime_phase_lock(tmp_path, "target.com", "recon") as lock_path:
+        assert lock_path == tmp_path / "state" / "target.com" / "locks" / "recon.lock"
+        with pytest.raises(RuntimePhaseBusy, match="recon is already running"):
+            with runtime_phase_lock(tmp_path, "target.com", "recon"):
+                pass
+
+        with runtime_phase_lock(tmp_path, "target.com", "scan"):
+            pass
+        with runtime_phase_lock(tmp_path, "other.test", "recon"):
+            pass
+
+    with runtime_phase_lock(tmp_path, "target.com", "recon"):
+        pass
+
+
+def test_runtime_phase_lock_rejects_unknown_phase(tmp_path):
+    with pytest.raises(ValueError, match="unsupported runtime phase"):
+        with runtime_phase_lock(tmp_path, "target.com", "report"):
+            pass
 
 
 def test_load_v1_schema_maps_legacy_field(tmp_path):

@@ -54,13 +54,11 @@ existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> CHAIN -> VALIDATE CANDIDA
 ## Four-Layer Runtime
 
 Use the existing `/autopilot` flow as the four-layer runtime; do not create a parallel workflow:
-First command in every run: `python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'`.
+First surface ctf mode, then run `python3 tools/autopilot_state.py --target <target>` exactly once before choosing fresh, existing, or batch behavior. Fresh state may launch `tools/hunt.py --recon-only`; usable cache continues to `tools/surface.py` and `tools/context_pack.py`. If the surface is app-like, SPA/authenticated, object/workflow-heavy, GraphQL, WebSocket, or business-critical, capture/import browser/source/JS truth before scanner quick. Scanner quick (`python3 tools/hunt.py --target <target> --scan-only --quick`) remains a later breadth sensor, not the first-contact steering wheel.
 
-Fresh target startup is recon-first: `python3 tools/hunt.py --target <target> --recon-only`, then `tools/surface.py` and `tools/context_pack.py`. If the surface is app-like, SPA/authenticated, object/workflow-heavy, GraphQL, WebSocket, or business-critical, capture/import browser/source/JS truth before scanner quick. Scanner quick (`python3 tools/hunt.py --target <target> --scan-only --quick`) remains a later breadth sensor, not the first-contact steering wheel.
+For a readable primary-domain list, run batch recon/handoff only, read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed domain, then rerun `autopilot_state.py` for that domain before surface/scan/hunt. Never scan or actively hunt the batch index.
 
-Existing target startup is cache-aware: `python3 tools/autopilot_state.py --target <target>`, `python3 tools/surface.py --target <target>`, and `python3 tools/context_pack.py --target <target>`; refresh recon only when missing/thin/stale.
-
-Startup anti-loop: run ctf-mode + freshness/state check once per invocation. If `autopilot_state.py` returns `next_action: wait_recon` / `Recon: in progress`, do not announce a fresh start or launch another recon. If it returns `next_action: wait_scan` / `Scan: in progress`, do not launch another `scan-only --quick`; wait/poll that run, then continue to surface/context/browser. Repeating startup commands is not progress; repeating scan commands is not progress.
+Startup anti-loop: if `autopilot_state.py` returns `next_action: wait_recon` / `Recon: in progress`, do not announce a fresh start or launch another recon. If it returns `next_action: wait_scan` / `Scan: in progress`, do not launch another `scan-only --quick`; wait/poll and rerun state. Runtime phase locks are the final duplicate-launch guard. Repeating startup or scan commands is not progress.
 
 Only add heavier state tools when they directly change the next action: `target_case_state.py` for actor/session/object continuity, `case_state_seed.py` for concrete object IDs, and checkpoint/action_queue/coverage after progress, validation, handoff, or before finish; do not let them drive first contact.
 

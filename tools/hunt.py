@@ -30,6 +30,7 @@ import ssl
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urljoin, urlparse
@@ -54,6 +55,7 @@ from legacy_bridge import generate_legacy_reports, open_hunt_journal, run_legacy
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
 from tools.public_exposure_signals import classify_public_response
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
+from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock
 from tools.target_paths import classify_target as classify_target_input, target_storage_key
 
 # Colors
@@ -2055,7 +2057,7 @@ def _run_classic_enrichment_hints(
     return executed
 
 
-def hunt_target(
+def _hunt_target_impl(
     domain,
     quick=False,
     recon_only=False,
@@ -2282,6 +2284,56 @@ def hunt_target(
     return result
 
 
+def hunt_target(
+    domain,
+    quick=False,
+    recon_only=False,
+    scan_only=False,
+    cve_hunt=False,
+    zero_day=False,
+    scanner_full=False,
+    scanner_skip="",
+    browser_url="",
+    browser_session="",
+    browser_screenshot=False,
+    ctf_mode=False,
+):
+    """Run one target pipeline while preventing duplicate long phases."""
+    target_info = classify_target(domain)
+    canonical_target = target_info["target"]
+    phases = []
+    if target_info["kind"] == "list":
+        if not scan_only:
+            phases.append("recon")
+    elif recon_only:
+        phases.append("recon")
+    elif scan_only:
+        phases.append("scan")
+    else:
+        # Full classic runs reserve both phases in a fixed order. This avoids a
+        # second process starting scan while the first is still rebuilding recon.
+        phases.extend(("recon", "scan"))
+
+    repo_root = os.path.dirname(os.path.abspath(RECON_DIR))
+    with ExitStack() as stack:
+        for phase in phases:
+            stack.enter_context(runtime_phase_lock(repo_root, canonical_target, phase))
+        return _hunt_target_impl(
+            canonical_target,
+            quick=quick,
+            recon_only=recon_only,
+            scan_only=scan_only,
+            cve_hunt=cve_hunt,
+            zero_day=zero_day,
+            scanner_full=scanner_full,
+            scanner_skip=scanner_skip,
+            browser_url=browser_url,
+            browser_session=browser_session,
+            browser_screenshot=browser_screenshot,
+            ctf_mode=ctf_mode,
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Bug Bounty Hunt Orchestrator",
@@ -2451,20 +2503,24 @@ Examples:
         if not os.path.exists(os.path.join(WORDLIST_DIR, "common.txt")):
             setup_wordlists()
 
-        result = hunt_target(
-            args.target,
-            quick=args.quick,
-            recon_only=args.recon_only,
-            scan_only=args.scan_only,
-            cve_hunt=args.cve_hunt,
-            zero_day=args.zero_day,
-            scanner_full=args.scanner_full,
-            scanner_skip=args.scanner_skip,
-            browser_url=args.browser_url,
-            browser_session=args.browser_session,
-            browser_screenshot=args.browser_screenshot,
-            ctf_mode=ctf_mode,
-        )
+        try:
+            result = hunt_target(
+                args.target,
+                quick=args.quick,
+                recon_only=args.recon_only,
+                scan_only=args.scan_only,
+                cve_hunt=args.cve_hunt,
+                zero_day=args.zero_day,
+                scanner_full=args.scanner_full,
+                scanner_skip=args.scanner_skip,
+                browser_url=args.browser_url,
+                browser_session=args.browser_session,
+                browser_screenshot=args.browser_screenshot,
+                ctf_mode=ctf_mode,
+            )
+        except RuntimePhaseBusy as exc:
+            log("warn", str(exc))
+            sys.exit(2)
         print_dashboard([result])
         return
 
@@ -2495,12 +2551,16 @@ Examples:
         log("info", f"  Domain: {primary_domain}")
         log("info", f"  Program: {target.get('url', 'N/A')}")
 
-        result = hunt_target(
-            primary_domain,
-            quick=args.quick,
-            scanner_full=args.scanner_full,
-            scanner_skip=args.scanner_skip,
-        )
+        try:
+            result = hunt_target(
+                primary_domain,
+                quick=args.quick,
+                scanner_full=args.scanner_full,
+                scanner_skip=args.scanner_skip,
+            )
+        except RuntimePhaseBusy as exc:
+            log("warn", str(exc))
+            sys.exit(2)
         results.append(result)
 
     print_dashboard(results)

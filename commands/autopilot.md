@@ -12,7 +12,6 @@ frequency.
 Expert Hunter Autopilot for Claude CLI. Claude is the hunter; tools are memory,
 evidence, replay, and summary aids.
 Execution contract: `/autopilot` runs inline in the current Claude session as the sole controller and does not create/resume legacy `agent_session.json`; specialists default to zero, and at most one bounded specialist may answer one evidence question without spawning agents, running full recon/scans, writing final closure, or controlling finish.
-
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
 existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
@@ -27,31 +26,36 @@ Canonical runtime references: `skills/runtime-protocol.md`, `rules/red-lines.md`
 and `docs/evidence-runners.md`. These are navigation aids, not a state machine.
 ## Four-Layer Automation
 Four-layer memory is the external brain, not the steering wheel:
-
 ```text
 target memory / target case state -> skill routing -> knowledge cards -> checks
 ```
 
-Fresh target startup is recon-first and starts by surfacing ctf mode:
-
-```bash
-python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'
-python3 tools/hunt.py --target target.com --recon-only
-python3 tools/surface.py --target target.com
-python3 tools/context_pack.py --target target.com
-# If app-like/SPA/auth/workflow/API surface appears, import browser MCP evidence before scanner hints dominate.
-python3 tools/hunt.py --target target.com --scan-only --quick
-```
-Existing target startup is cache-aware and starts by surfacing ctf mode:
-
+Every invocation is state-first. Surface ctf mode, then read state once before choosing fresh, existing, or batch behavior:
 ```bash
 python3 -c 'from tools.runtime_config import is_ctf_mode_enabled as f; print({"ctf_mode": f(".")})'
 python3 tools/autopilot_state.py --target target.com
+```
+
+Branch only after that state read:
+```bash
+# next_action=run_recon: launch once; append --quick only when requested
+python3 tools/hunt.py --target target.com --recon-only
+# usable cache: inspect surface/context before a later quick scan
 python3 tools/surface.py --target target.com
 python3 tools/context_pack.py --target target.com
+python3 tools/hunt.py --target target.com --scan-only --quick
 ```
-Startup anti-loop: run the ctf-mode + freshness/state check once per invocation. If `autopilot_state.py` returns `next_action: wait_recon` / `Recon: in progress`, do not start another recon; if it returns `next_action: wait_scan` / `Scan: in progress`, do not start another `scan-only --quick`; wait/poll that run, then continue to surface/context/browser. Refresh recon only when missing, thin, stale, or contradicted by fresh evidence. For existing targets, run a closed-state sanity check before executing a historical `continue_last_focus`, resume target, or `/surface` score hint:
+If state returns `wait_recon` / `wait_scan`, do not start that phase again;
+wait/poll, then rerun state before continuing. Runtime phase locks are the final
+duplicate-launch guard. Refresh recon only when missing, thin, stale, or contradicted by fresh evidence.
 
+For a readable primary-domain list, the list context is recon/handoff only:
+1. Run `autopilot_state.py --target targets.txt` before batch recon.
+2. Run `hunt.py --target targets.txt --recon-only` only when state says `run_batch_recon`; append `--quick` only when requested, and never scan the list/index.
+3. Read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed domain, then rerun `autopilot_state.py --target <domain>`.
+4. Only the selected domain may enter surface/context/browser/scan/hunt; do not aggregate active work across the batch.
+
+For existing single targets, run a closed-state sanity check before executing a historical `continue_last_focus`, resume target, or `/surface` score hint:
 ```bash
 python3 tools/checkpoint.py --target target.com --no-refresh-coverage
 python3 tools/action_queue.py summary --target target.com
@@ -70,7 +74,6 @@ they reduce drift, preserve actor/session/object continuity, or produce stable
 evidence.
 
 Checkpoint can emit target-memory write-back proposals:
-
 ```bash
 python3 tools/checkpoint.py --target target.com
 ```
@@ -274,5 +277,4 @@ Finish on evidence state, not a tool checklist:
 - Target memory has a useful handoff when the target is not genuinely exhausted.
 - A pending report is a closure asset, not a stop signal; continue hunting when stronger live evidence, browser/source leads, or high-value business workflows remain.
 
-End with target, mode, strongest evidence, findings/candidates, blockers/dead
-ends, and next best action.
+End with target, mode, strongest evidence, findings/candidates, blockers/dead ends, and next best action.

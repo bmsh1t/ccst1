@@ -728,6 +728,28 @@ def test_classic_hunt_target_recon_only_skips_enrichment_and_scan(monkeypatch):
     assert runtime_updates[-1][1]["last_completed_step"] == "run_recon"
 
 
+def test_classic_hunt_target_busy_recon_does_not_write_runtime_marker(monkeypatch, tmp_path):
+    domain = "example.com"
+    runtime_updates = []
+    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
+    monkeypatch.setattr(
+        hunt,
+        "_persist_runtime_state",
+        lambda target, **kwargs: runtime_updates.append((target, kwargs)),
+    )
+    monkeypatch.setattr(
+        hunt,
+        "run_recon",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("busy recon must not start")),
+    )
+
+    with hunt.runtime_phase_lock(tmp_path, domain, "recon"):
+        with pytest.raises(hunt.RuntimePhaseBusy, match="recon is already running"):
+            hunt.hunt_target(domain, recon_only=True)
+
+    assert runtime_updates == []
+
+
 def test_classic_hunt_target_recon_exception_closes_running_marker(monkeypatch):
     domain = "example.com"
     runtime_updates = []

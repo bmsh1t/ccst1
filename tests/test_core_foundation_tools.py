@@ -61,6 +61,44 @@ def test_url_belongs_to_target_distinguishes_direct_evidence_from_chain_context(
     )
 
 
+def test_url_belongs_to_target_checks_each_primary_target_in_list(tmp_path):
+    scope = tmp_path / "scope.txt"
+    scope.write_text(
+        "# primary roots\n*.example.com\napi.example.test:8443\n",
+        encoding="utf-8",
+    )
+
+    assert target_paths.url_belongs_to_target(
+        "https://shop.example.com/orders",
+        str(scope),
+    )
+    assert target_paths.url_belongs_to_target(
+        "https://api.example.test:8443/v1/users",
+        str(scope),
+    )
+    assert not target_paths.url_belongs_to_target(
+        "https://api.example.test/v1/users",
+        str(scope),
+    )
+    assert not target_paths.url_belongs_to_target(
+        "https://third-party.test/callback",
+        str(scope),
+    )
+
+
+def test_url_belongs_to_target_does_not_recurse_into_nested_lists(tmp_path, monkeypatch):
+    nested = tmp_path / "nested.txt"
+    nested.write_text("nested.example.test\n", encoding="utf-8")
+    scope = tmp_path / "scope.txt"
+    scope.write_text(f"{nested.name}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert not target_paths.url_belongs_to_target(
+        "https://nested.example.test/api",
+        str(scope),
+    )
+
+
 def test_target_memory_set_append_and_handoff_use_canonical_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(target_memory, "BASE_DIR", tmp_path)
     monkeypatch.setattr(target_memory, "GOALS_DIR", tmp_path / "memory" / "goals")

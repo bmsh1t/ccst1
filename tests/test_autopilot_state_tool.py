@@ -19,6 +19,43 @@ from runtime_state import update_runtime_state
 
 class TestAutopilotState:
 
+    def test_batch_state_selects_only_completed_domain_handoff(self, tmp_path):
+        scope = tmp_path / "targets.txt"
+        scope.write_text("alpha.test\nbeta.test\ngamma.test\n", encoding="utf-8")
+        batch_dir = tmp_path / "recon" / "targets"
+        batch_dir.mkdir(parents=True)
+        (batch_dir / "batch_manifest.jsonl").write_text(
+            '{"target":"alpha.test","status":"ok"}\n'
+            '{"target":"beta.test","status":"failed"}\n',
+            encoding="utf-8",
+        )
+        (batch_dir / "failed_targets.txt").write_text("beta.test\n", encoding="utf-8")
+        (batch_dir / "pending_targets.txt").write_text(
+            "alpha.test\nbeta.test\ngamma.test\n",
+            encoding="utf-8",
+        )
+        (batch_dir / "high_value_targets.json").write_text(
+            json.dumps([
+                {"target": "alpha.test", "score": "invalid", "top_signals": []},
+                {"target": "uncompleted.test", "score": 99, "top_signals": []},
+            ]),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(tmp_path), str(scope))
+
+        assert state["target_kind"] == "list"
+        assert state["next_action"] == "select_completed_domain"
+        assert state["batch"]["completed"] == ["alpha.test"]
+        assert state["batch"]["failed"] == ["beta.test"]
+        assert state["batch"]["pending"] == ["gamma.test"]
+        assert [item["target"] for item in state["batch"]["candidates"]] == ["alpha.test"]
+        assert state["batch"]["candidates"][0]["score"] == 0
+        output = format_autopilot_state(state)
+        assert "Completed-domain candidates:" in output
+        assert "alpha.test" in output
+        assert "Do not run surface, scan, or active hunting against the batch index." in output
+
     def test_ranked_filter_keeps_closed_history_but_removes_object_placeholders(self):
         kept_dead_end = {
             "url": "https://app.target.com/api/orders",
@@ -146,57 +183,29 @@ class TestAutopilotState:
         assert "Memory action queue:" in output
         assert "continue org API role diff" in output
 
-    def test_host_list_relative_target_reuses_saved_memory_and_guard_state(self, tmp_path, monkeypatch):
+    def test_host_list_relative_target_uses_batch_handoff_not_aggregate_surface(self, tmp_path, monkeypatch):
         repo_root = tmp_path
         list_file = repo_root / "scope.txt"
         list_file.write_text("api.target.com\n", encoding="utf-8")
         monkeypatch.chdir(repo_root)
 
         recon_dir = repo_root / "recon" / "scope"
-        (recon_dir / "live").mkdir(parents=True)
-        (recon_dir / "urls").mkdir(parents=True)
-        (recon_dir / "js").mkdir(parents=True)
-        (recon_dir / "live" / "httpx_full.txt").write_text(
-            "https://api.target.com [200] [API] [Next.js,GraphQL] [1000]\n"
-        )
-        (recon_dir / "urls" / "api_endpoints.txt").write_text(
-            "https://api.target.com/graphql\n"
-        )
-        (recon_dir / "urls" / "with_params.txt").write_text("")
-        (recon_dir / "js" / "endpoints.txt").write_text("")
-
-        canonical_target = str(list_file.resolve())
-        memory_dir = tmp_path / "hunt-memory"
-        (memory_dir / "targets").mkdir(parents=True)
-        save_target_profile(
-            memory_dir,
-            make_target_profile(
-                canonical_target,
-                tech_stack=["next.js", "graphql"],
-                untested_endpoints=["/graphql"],
-                hunt_sessions=1,
-            ),
-        )
-        now_ts = time.time()
-        record_request(
-            memory_dir=memory_dir,
-            target=canonical_target,
-            url="https://api.target.com/graphql",
-            method="GET",
-            response_status=403,
-            breaker_threshold=1,
-            breaker_cooldown=30,
-            now_ts=now_ts,
+        recon_dir.mkdir(parents=True)
+        (recon_dir / "completed_targets.txt").write_text("api.target.com\n")
+        (recon_dir / "high_value_targets.json").write_text(
+            json.dumps([{"target": "api.target.com", "score": 12}]),
+            encoding="utf-8",
         )
 
-        state = build_autopilot_state(str(repo_root), "scope.txt", memory_dir=str(memory_dir))
+        state = build_autopilot_state(str(repo_root), "scope.txt")
 
+        assert state["resolved_target"] == str(list_file.resolve())
+        assert state["target_kind"] == "list"
         assert state["has_recon"] is True
-        assert state["has_memory"] is True
-        assert state["guard_status"]["tracked_hosts"] == 1
-        assert len(state["guard_status"]["tripped_hosts"]) == 1
-        assert state["recommended_targets"]
-        assert state["recommended_targets"][0]["tripped"] is True
+        assert state["next_action"] == "select_completed_domain"
+        assert state["batch"]["candidates"][0]["target"] == "api.target.com"
+        assert "surface" not in state
+        assert "guard_status" not in state
 
     def test_all_hosts_tripped_pivots_to_cached_evidence_work(self, tmp_path):
         repo_root = tmp_path

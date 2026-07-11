@@ -29,8 +29,11 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+import fcntl
 
 try:
     from tools.finding_index import load_finding_index
@@ -43,6 +46,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 SCHEMA_VERSION = 2
 RUNNING_MARKER_STALE_SECONDS = 7200
+RUNTIME_PHASES = frozenset({"recon", "scan"})
 
 # Whitelist of fields that actually get persisted to session.json.
 # Anything else passed to update_runtime_state() is silently dropped.
@@ -168,6 +172,65 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
 
 def _state_dir(repo_root: str | Path, target: str) -> Path:
     return Path(repo_root) / "state" / target_storage_key(target)
+
+
+class RuntimePhaseBusy(RuntimeError):
+    """Raised when another process already owns a target phase lock."""
+
+    def __init__(self, target: str, phase: str, lock_path: Path):
+        self.target = canonical_target_value(target)
+        self.phase = phase
+        self.lock_path = lock_path
+        super().__init__(
+            f"{phase} is already running for {self.target}; lock: {lock_path}"
+        )
+
+
+@contextmanager
+def runtime_phase_lock(repo_root: str | Path, target: str, phase: str):
+    """Hold a non-blocking process lock for one long-running target phase.
+
+    The lock is acquired before a caller writes its running marker. `flock`
+    releases automatically when the process exits, so a crash cannot leave a
+    stale lock that needs timestamp or PID guessing.
+    """
+    normalized_phase = str(phase or "").strip().lower()
+    if normalized_phase not in RUNTIME_PHASES:
+        raise ValueError(f"unsupported runtime phase: {phase}")
+
+    resolved_target = canonical_target_value(target)
+    lock_dir = _state_dir(repo_root, resolved_target) / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{normalized_phase}.lock"
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimePhaseBusy(resolved_target, normalized_phase, lock_path) from exc
+
+        handle.seek(0)
+        handle.truncate()
+        handle.write(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "phase": normalized_phase,
+                    "target": resolved_target,
+                    "acquired_at": _now_utc(),
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        handle.flush()
+        os.fsync(handle.fileno())
+        yield lock_path
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 def state_path(repo_root: str | Path, target: str) -> Path:

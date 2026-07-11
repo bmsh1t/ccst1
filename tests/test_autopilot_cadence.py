@@ -95,19 +95,19 @@ def test_autopilot_keeps_decision_loop_without_legacy_cadence_bulk():
         assert marker not in command
 
 
-def test_expert_hunter_startup_is_recon_first_then_cache_aware():
+def test_expert_hunter_startup_is_state_first_then_evidence_driven():
     command = _read(COMMAND)
     agent = _read(AGENT)
     combined = f"{command}\n{agent}"
 
     for marker in (
         "Super-pentester priority: business impact > workflow evidence > crown-jewel hypothesis",
-        "Fresh target startup is recon-first",
+        "Every invocation is state-first",
         "scanner quick",
         "breadth sensor",
         "advisory lead source",
         "scanner-negative is not completion",
-        "Existing target startup is cache-aware",
+        "Branch only after that state read",
         "Four-layer memory is the external brain, not the steering wheel",
         "BUSINESS/CROWN JEWELS",
         "MINIMAL PROOF",

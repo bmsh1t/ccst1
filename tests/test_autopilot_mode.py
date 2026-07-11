@@ -1217,27 +1217,23 @@ def test_autopilot_command_md_has_tool_index_prelude():
     assert "docs/tool-index.md" in text
 
 
-def test_autopilot_command_md_bootstraps_recon_first_and_cache_aware():
-    """Autopilot startup should keep context navigation without making state tools the steering wheel."""
+def test_autopilot_command_md_bootstraps_state_first_then_branches():
+    """Autopilot startup reads transient state before any long phase."""
     from pathlib import Path
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
 
-    assert "Fresh target startup is recon-first" in text
+    assert "Every invocation is state-first" in text
     assert "python3 tools/hunt.py --target target.com --recon-only" in text
-    assert "Existing target startup is cache-aware" in text
+    assert "Branch only after that state read" in text
     assert "python3 tools/autopilot_state.py --target target.com" in text
     assert "python3 tools/context_pack.py --target target.com" in text
     assert 'print({"ctf_mode": f(".")})' in text
     assert text.index('print({"ctf_mode": f(".")})') < text.index("python3 tools/autopilot_state.py --target target.com")
-    assert "Startup anti-loop" in text
-    assert "run the ctf-mode + freshness/state check once per invocation" in text
-    assert "next_action: wait_recon" in text
-    assert "Recon: in progress" in text
-    assert "next_action: wait_scan" in text
-    assert "Scan: in progress" in text
-    assert "do not start another `scan-only --quick`" in text
+    assert text.index("python3 tools/autopilot_state.py --target target.com") < text.index("python3 tools/hunt.py --target target.com --recon-only")
+    assert "If state returns `wait_recon` / `wait_scan`, do not start that phase again" in text
+    assert "Runtime phase locks are the final" in text
     assert "not a pre-flight checklist" in text
     assert "1-2 knowledge cards" in text
 
@@ -1433,26 +1429,25 @@ def test_autopilot_agent_md_defines_deep_as_value_first_comprehensive_depth():
     assert "high-value vuln-family directions tested, blocked, not applicable" in flat
 
 
-def test_autopilot_agent_md_bootstraps_with_context_pack_without_coverage_first():
-    """Agent prompt must keep recon/cache startup aligned without coverage/checkpoint first contact."""
+def test_autopilot_agent_md_bootstraps_state_first_without_coverage_first():
+    """Agent prompt must read state before recon/cache work without coverage first contact."""
     from pathlib import Path
 
     md = Path(__file__).resolve().parent.parent / "agents" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
 
-    assert "Fresh target startup is recon-first" in text
-    assert "python3 tools/hunt.py --target <target> --recon-only" in text
-    assert "Existing target startup is cache-aware" in text
-    assert "python3 tools/context_pack.py --target <target>" in text
+    assert "before choosing fresh, existing, or batch behavior" in text
+    assert "tools/hunt.py --recon-only" in text
+    assert "tools/context_pack.py" in text
     assert "python3 tools/autopilot_state.py --target <target>" in text
+    assert text.index("python3 tools/autopilot_state.py --target <target>") < text.index("tools/hunt.py --recon-only")
     assert "Startup anti-loop" in text
-    assert "run ctf-mode + freshness/state check once per invocation" in text
     assert "next_action: wait_recon" in text
     assert "Recon: in progress" in text
     assert "next_action: wait_scan" in text
     assert "Scan: in progress" in text
     assert "do not launch another `scan-only --quick`" in text
-    assert "Repeating startup commands is not progress" in text
+    assert "Runtime phase locks are the final duplicate-launch guard" in text
     four_layer = text.split("## Four-Layer Runtime", 1)[1].split("## Case-State First", 1)[0]
     assert "python3 tools/coverage_matrix.py rebuild --target <target>" not in four_layer
     assert "python3 tools/coverage_matrix.py find-gaps --target <target>" not in four_layer

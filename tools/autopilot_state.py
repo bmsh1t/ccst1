@@ -48,7 +48,7 @@ try:
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
     )
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, classify_target, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from runtime_state import (  # type: ignore
         inspect_recon_artifacts,
@@ -61,7 +61,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
     )
-    from target_paths import canonical_target_value, target_storage_key
+    from target_paths import canonical_target_value, classify_target, target_storage_key
 
 
 
@@ -796,10 +796,131 @@ def _build_memory_action_queue(target_goal_memory: dict) -> list[dict]:
     return queue
 
 
+def _read_batch_lines(path: Path) -> list[str]:
+    """Read a small batch index file with stable de-duplication."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    return list(dict.fromkeys(line.strip() for line in lines if line.strip()))
+
+
+def _read_batch_manifest_completed(path: Path) -> list[str]:
+    """Recover completed domains from JSONL when the compact list is absent."""
+    completed = []
+    try:
+        handle = path.open(encoding="utf-8", errors="replace")
+    except OSError:
+        return completed
+    with handle:
+        for raw in handle:
+            try:
+                item = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict) or item.get("status") != "ok":
+                continue
+            target = str(item.get("target") or "").strip()
+            if target:
+                completed.append(target)
+    return list(dict.fromkeys(completed))
+
+
+def _read_batch_ranked_targets(path: Path, completed: list[str]) -> list[dict]:
+    """Return AI handoff candidates that are backed by completed recon."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = []
+    completed_set = set(completed)
+    ranked = []
+    for item in payload if isinstance(payload, list) else []:
+        if not isinstance(item, dict):
+            continue
+        target = str(item.get("target") or "").strip()
+        if target not in completed_set:
+            continue
+        try:
+            score = int(item.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            score = 0
+        ranked.append({
+            "target": target,
+            "score": score,
+            "top_signals": item.get("top_signals") or [],
+            "recon_dir": str(item.get("recon_dir") or f"recon/{target_storage_key(target)}"),
+        })
+    ranked_targets = {item["target"] for item in ranked}
+    ranked.extend(
+        {
+            "target": target,
+            "score": 0,
+            "top_signals": [],
+            "recon_dir": f"recon/{target_storage_key(target)}",
+        }
+        for target in completed
+        if target not in ranked_targets
+    )
+    return ranked
+
+
+def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: str) -> dict:
+    """Build the list-only recon/handoff state without treating the index as a target."""
+    storage_key = target_storage_key(resolved_target)
+    batch_dir = Path(repo_root) / "recon" / storage_key
+    manifest_path = batch_dir / "batch_manifest.jsonl"
+    completed = _read_batch_lines(batch_dir / "completed_targets.txt")
+    if not completed:
+        completed = _read_batch_manifest_completed(manifest_path)
+    failed = _read_batch_lines(batch_dir / "failed_targets.txt")
+    pending = _read_batch_lines(batch_dir / "pending_targets.txt")
+    processed = set(completed) | set(failed)
+    pending = [item for item in pending if item not in processed]
+    runtime_state = load_runtime_state(repo_root, resolved_target)
+    recon_in_progress = _runtime_recon_in_progress(runtime_state)
+    candidates = _read_batch_ranked_targets(
+        batch_dir / "high_value_targets.json",
+        completed,
+    )
+
+    if recon_in_progress:
+        next_action = "wait_recon"
+    elif candidates:
+        next_action = "select_completed_domain"
+    else:
+        next_action = "run_batch_recon"
+
+    return {
+        "target": target,
+        "resolved_target": resolved_target,
+        "target_kind": "list",
+        "has_recon": bool(completed),
+        "has_memory": False,
+        "runtime_state": runtime_state,
+        "recon_in_progress": recon_in_progress,
+        "scan_in_progress": False,
+        "next_action": next_action,
+        "batch": {
+            "batch_dir": str(batch_dir),
+            "manifest": str(manifest_path),
+            "summary": str(batch_dir / "batch_summary.md"),
+            "ai_handoff": str(batch_dir / "ai_handoff.md"),
+            "surface_ranking": str(batch_dir / "surface_ranking.txt"),
+            "high_value_targets": str(batch_dir / "high_value_targets.json"),
+            "completed": completed,
+            "failed": failed,
+            "pending": pending,
+            "candidates": candidates,
+        },
+    }
+
+
 def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = None) -> dict:
     """Build a practical autopilot bootstrap state for a target."""
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
     resolved_target = canonical_target_value(target)
+    if classify_target(resolved_target)["kind"] == "list":
+        return _build_batch_autopilot_state(repo_root, target, resolved_target)
     resume_summary = load_resume_summary(resolved_memory_dir, target)
     # autopilot_state 是启动态读取工具，不应改写 surface 的过滤日志。
     surface_context = load_surface_context(
@@ -927,6 +1048,35 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
 
 def format_autopilot_state(state: dict) -> str:
     """Format autopilot bootstrap state for terminal display."""
+    if state.get("target_kind") == "list":
+        batch = state.get("batch") or {}
+        lines = [
+            f"AUTOPILOT BATCH STATE: {state['target']}",
+            "═══════════════════════════════════════",
+            "",
+            f"Next Action: {state['next_action']}",
+            f"Recon: {'in progress' if state.get('recon_in_progress') else 'idle'}",
+            f"Completed: {len(batch.get('completed') or [])}",
+            f"Failed: {len(batch.get('failed') or [])}",
+            f"Pending: {len(batch.get('pending') or [])}",
+            f"AI Handoff: {batch.get('ai_handoff', '')}",
+            f"Surface Ranking: {batch.get('surface_ranking', '')}",
+            f"Manifest: {batch.get('manifest', '')}",
+        ]
+        candidates = batch.get("candidates") or []
+        if candidates:
+            lines.extend(["", "Completed-domain candidates:"])
+            for index, item in enumerate(candidates[:10], 1):
+                lines.append(
+                    f"{index}. {item['target']} (score hint {item.get('score', 0)})"
+                )
+            lines.extend([
+                "",
+                "Select one completed domain, then rerun autopilot_state.py for that domain.",
+                "Do not run surface, scan, or active hunting against the batch index.",
+            ])
+        return "\n".join(lines)
+
     summary = state.get("resume_summary") or {}
     latest_session = summary.get("latest_session_summary") or {}
     recent_guard_advisories = state.get("recent_guard_advisories") or state.get("recent_guard_blocks", []) or []
