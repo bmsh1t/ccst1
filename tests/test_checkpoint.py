@@ -23,7 +23,7 @@ from checkpoint import (
     format_checkpoint,
 )
 from evidence_ledger import record_entry
-from runtime_state import update_runtime_state
+from runtime_state import runtime_phase_lock, update_runtime_state
 from target_case_state import add_actor, add_backlog, add_object, add_session
 
 
@@ -133,15 +133,51 @@ def test_checkpoint_runtime_wait_marker_preempts_pending_validation(tmp_path):
         last_executed_workflow="run_scan_started",
     )
 
+    with runtime_phase_lock(tmp_path, "target.com", "scan"):
+        checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
+
+        assert checkpoint["decision"] == "wait_scan"
+        assert checkpoint["next_action"] == "wait_scan"
+        assert checkpoint["next_action_queue"] == []
+        assert checkpoint["default_candidate"] == {}
+        assert checkpoint["recommended_executable_action"]["type"] == "wait_scan"
+        assert checkpoint["recommended_executable_action"]["status"] == "transient"
+        assert checkpoint["target_write_back"]["next"] == []
+
+
+def test_checkpoint_orphan_scan_marker_releases_pending_validation(tmp_path):
+    """进程退出后遗留 marker 不能让 checkpoint 继续返回 wait_scan。"""
+    _seed_recon(tmp_path, "target.com", ["https://target.com/api/orders/1"])
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True, exist_ok=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps({
+            "findings": [
+                {
+                    "id": "F-orphan-scan",
+                    "type": "idor",
+                    "severity": "high",
+                    "confidence": "confirmed",
+                    "url": "https://target.com/api/orders/1",
+                    "validation_status": "unvalidated",
+                    "report_status": "not_generated",
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+    update_runtime_state(
+        tmp_path,
+        "target.com",
+        mode="scan_running",
+        last_executed_workflow="run_scan_started",
+    )
+
     checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
 
-    assert checkpoint["decision"] == "wait_scan"
-    assert checkpoint["next_action"] == "wait_scan"
-    assert checkpoint["next_action_queue"] == []
-    assert checkpoint["default_candidate"] == {}
-    assert checkpoint["recommended_executable_action"]["type"] == "wait_scan"
-    assert checkpoint["recommended_executable_action"]["status"] == "transient"
-    assert checkpoint["target_write_back"]["next"] == []
+    assert checkpoint["decision"] == "validate"
+    assert checkpoint["next_action"] != "wait_scan"
+    assert checkpoint["recommended_executable_action"]["type"] != "wait_scan"
 
 
 def test_checkpoint_runtime_recon_wait_marker_preempts_pending_validation(tmp_path):
@@ -170,15 +206,16 @@ def test_checkpoint_runtime_recon_wait_marker_preempts_pending_validation(tmp_pa
         last_executed_workflow="run_recon_started",
     )
 
-    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
+    with runtime_phase_lock(tmp_path, "target.com", "recon"):
+        checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
 
-    assert checkpoint["decision"] == "wait_recon"
-    assert checkpoint["next_action"] == "wait_recon"
-    assert checkpoint["next_action_queue"] == []
-    assert checkpoint["default_candidate"] == {}
-    assert checkpoint["recommended_executable_action"]["type"] == "wait_recon"
-    assert checkpoint["recommended_executable_action"]["status"] == "transient"
-    assert checkpoint["target_write_back"]["next"] == []
+        assert checkpoint["decision"] == "wait_recon"
+        assert checkpoint["next_action"] == "wait_recon"
+        assert checkpoint["next_action_queue"] == []
+        assert checkpoint["default_candidate"] == {}
+        assert checkpoint["recommended_executable_action"]["type"] == "wait_recon"
+        assert checkpoint["recommended_executable_action"]["status"] == "transient"
+        assert checkpoint["target_write_back"]["next"] == []
 
 
 def test_checkpoint_displays_runner_candidates_as_advisory_evidence(tmp_path):

@@ -753,12 +753,12 @@ def _runtime_wait_queue_action(wait_action: str, target: str) -> dict:
     if wait_action == "wait_recon":
         action = (
             f"Wait/poll the existing /recon {resolved} run; do not launch another recon. "
-            "Resume the queued action after the running marker clears or becomes stale."
+            "Resume the queued action after the matching recon phase lock releases."
         )
     else:
         action = (
             f"Wait/poll the existing scan-only quick run for {resolved}; do not launch another "
-            "scan-only quick. Resume the queued action after the running marker clears or becomes stale."
+            "scan-only quick. Resume the queued action after the matching scan phase lock releases."
         )
     return {
         "id": "runtime-wait",
@@ -767,13 +767,13 @@ def _runtime_wait_queue_action(wait_action: str, target: str) -> dict:
         "type": wait_action,
         "priority": 1000,
         "evidence_type": "runtime-state",
-        "evidence": "Fresh long-running phase marker is active.",
-        "next_question": "Has the existing long-running phase completed, cleared, or become stale?",
+        "evidence": "Matching long-running phase marker and flock are active.",
+        "next_question": "Has the existing long-running phase completed or released its matching phase lock?",
         "action": action,
         "command_hint": "poll existing run; do not dequeue or start another long-running phase",
         "source": "runtime_state",
         "redline_required": False,
-        "stop_condition": "running marker clears, completes, or becomes stale",
+        "stop_condition": "completed workflow is written or the matching phase lock releases",
     }
 
 

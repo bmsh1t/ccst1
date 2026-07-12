@@ -15,7 +15,7 @@ from autopilot_state import (
     format_autopilot_state,
 )
 from request_guard import record_request
-from runtime_state import update_runtime_state
+from runtime_state import runtime_phase_lock, update_runtime_state
 from target_paths import target_storage_key
 
 
@@ -84,8 +84,9 @@ class TestAutopilotState:
             last_executed_workflow="run_recon_started",
         )
 
-        first_state = build_autopilot_state(str(tmp_path), str(first))
-        second_state = build_autopilot_state(str(tmp_path), str(second))
+        with runtime_phase_lock(tmp_path, str(first), "recon"):
+            first_state = build_autopilot_state(str(tmp_path), str(first))
+            second_state = build_autopilot_state(str(tmp_path), str(second))
 
         assert target_storage_key(str(first)) != target_storage_key(str(second))
         assert first_state["next_action"] == "wait_recon"
@@ -1425,14 +1426,21 @@ class TestAutopilotState:
             last_executed_workflow="run_recon_started",
         )
 
-        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
-        output = format_autopilot_state(state)
+        with runtime_phase_lock(repo_root, "target.com", "recon"):
+            state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+            output = format_autopilot_state(state)
 
-        assert state["has_recon"] is False
-        assert state["recon_in_progress"] is True
-        assert state["next_action"] == "wait_recon"
-        assert "Recon: in progress" in output
-        assert "wait/poll the existing /recon target.com run; do not launch another recon" in output
+            assert state["has_recon"] is False
+            assert state["recon_in_progress"] is True
+            assert state["next_action"] == "wait_recon"
+            assert "Recon: in progress" in output
+            assert "wait/poll the existing /recon target.com run; do not launch another recon" in output
+
+        # 宿主直接终止后台任务时 flock 会释放，但 session marker 仍可能很新。
+        # 这时必须立即恢复 recon，而不是等待 marker 的两小时超时。
+        orphaned = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+        assert orphaned["recon_in_progress"] is False
+        assert orphaned["next_action"] == "run_recon"
 
     def test_recon_running_marker_preempts_validation_followup(self, tmp_path):
         findings_dir = tmp_path / "findings" / "target.com"
@@ -1462,7 +1470,8 @@ class TestAutopilotState:
             last_executed_workflow="run_recon_started",
         )
 
-        state = build_autopilot_state(str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+        with runtime_phase_lock(tmp_path, "target.com", "recon"):
+            state = build_autopilot_state(str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
 
         assert state["structured_findings"]["next_validation"]["id"] == "idor_wait_recon"
         assert state["next_action"] == "wait_recon"
@@ -1506,11 +1515,12 @@ class TestAutopilotState:
             last_executed_workflow="run_recon_started",
         )
 
-        state = build_autopilot_state(
-            str(tmp_path),
-            "target.com",
-            memory_dir=str(tmp_path / "hunt-memory"),
-        )
+        with runtime_phase_lock(tmp_path, "target.com", "recon"):
+            state = build_autopilot_state(
+                str(tmp_path),
+                "target.com",
+                memory_dir=str(tmp_path / "hunt-memory"),
+            )
 
         assert state["validation_runner_next"]["id"] == "runner-wait"
         assert state["action_queue_next"]["id"] == "AQ-0001"
@@ -1571,14 +1581,19 @@ class TestAutopilotState:
             last_executed_workflow="run_scan_started",
         )
 
-        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
-        output = format_autopilot_state(state)
+        with runtime_phase_lock(repo_root, "target.com", "scan"):
+            state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+            output = format_autopilot_state(state)
 
-        assert state["has_recon"] is True
-        assert state["scan_in_progress"] is True
-        assert state["next_action"] == "wait_scan"
-        assert "Scan: in progress" in output
-        assert "do not launch another scan-only quick" in output
+            assert state["has_recon"] is True
+            assert state["scan_in_progress"] is True
+            assert state["next_action"] == "wait_scan"
+            assert "Scan: in progress" in output
+            assert "do not launch another scan-only quick" in output
+
+        orphaned = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+        assert orphaned["scan_in_progress"] is False
+        assert orphaned["next_action"] != "wait_scan"
 
     def test_scan_running_marker_preempts_validation_followup(self, tmp_path):
         repo_root = tmp_path
@@ -1622,7 +1637,8 @@ class TestAutopilotState:
             last_executed_workflow="run_scan_started",
         )
 
-        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+        with runtime_phase_lock(repo_root, "target.com", "scan"):
+            state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
 
         assert state["structured_findings"]["next_validation"]["id"] == "idor_wait_scan"
         assert state["scan_in_progress"] is True

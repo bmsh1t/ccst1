@@ -96,40 +96,41 @@ def _parse_runtime_updated_at(value: str) -> datetime | None:
         return None
 
 
-def runtime_recon_in_progress(
+def _runtime_phase_marker_matches(
     runtime_state: dict,
     *,
-    stale_after_seconds: int = RUNNING_MARKER_STALE_SECONDS,
+    phase: str,
 ) -> bool:
-    """Return True when recon is freshly marked as started but not completed.
+    """判断 runtime marker 是否仍指向指定 phase 的启动状态。
 
-    这是执行态判断，不是攻击面判断。`last_executed_workflow` 比 `mode`
-    更权威：如果完成态已写入，即使旧 `mode` 残留为 `recon_running`，
-    也不能继续阻塞后续 AI 判断。
+    marker 只记录一次启动意图，不代表执行进程仍然存活。调用方必须再结合
+    `runtime_phase_is_active()` 判断对应 flock 是否仍被持有，不能把该
+    marker 单独当作 wait gate。
     """
+    normalized_phase = str(phase or "").strip().lower()
+    if normalized_phase not in RUNTIME_PHASES:
+        raise ValueError(f"unsupported runtime phase: {phase}")
+
     workflow = str(runtime_state.get("last_executed_workflow") or "").strip()
     mode = str(runtime_state.get("mode", "") or "").strip()
-    if workflow and workflow != "run_recon_started":
+    started_workflow = f"run_{normalized_phase}_started"
+    running_mode = f"{normalized_phase}_running"
+    # 完成态 workflow 比残留的 mode 更权威，不能继续阻塞后续 AI 判断。
+    if workflow and workflow != started_workflow:
         return False
-    if workflow != "run_recon_started" and mode != "recon_running":
+    if workflow != started_workflow and mode != running_mode:
         return False
-    updated_at = _parse_runtime_updated_at(runtime_state.get("updated_at", ""))
-    if updated_at is None:
-        return True
-    return (datetime.now(timezone.utc) - updated_at).total_seconds() <= stale_after_seconds
+    return True
 
 
-def runtime_scan_in_progress(
+def _runtime_phase_marker_is_fresh(
     runtime_state: dict,
     *,
+    phase: str,
     stale_after_seconds: int = RUNNING_MARKER_STALE_SECONDS,
 ) -> bool:
-    """Return True when scan-only quick is freshly marked as running."""
-    workflow = str(runtime_state.get("last_executed_workflow") or "").strip()
-    mode = str(runtime_state.get("mode", "") or "").strip()
-    if workflow and workflow != "run_scan_started":
-        return False
-    if workflow != "run_scan_started" and mode != "scan_running":
+    """判断指定 phase 的启动 marker 是否仍在兼容性新鲜窗口内。"""
+    if not _runtime_phase_marker_matches(runtime_state, phase=phase):
         return False
     updated_at = _parse_runtime_updated_at(runtime_state.get("updated_at", ""))
     if updated_at is None:
@@ -233,6 +234,49 @@ def runtime_phase_lock(repo_root: str | Path, target: str, phase: str):
             handle.close()
 
 
+def _runtime_phase_lock_status(
+    repo_root: str | Path,
+    target: str,
+    phase: str,
+) -> bool | None:
+    """只读探测匹配 lock，不改写 target runtime state。
+
+    锁被其它进程持有时返回 ``True``；能立即获取（或从未创建）时返回
+    ``False``；无法探测时返回 ``None``。最后一种情况让调用方保留 fresh
+    marker 的保守兜底，而不是把 I/O 错误误判为 phase 已退出。
+    """
+    normalized_phase = str(phase or "").strip().lower()
+    if normalized_phase not in RUNTIME_PHASES:
+        raise ValueError(f"unsupported runtime phase: {phase}")
+
+    resolved_target = canonical_target_value(target)
+    lock_path = _state_dir(repo_root, resolved_target) / "locks" / f"{normalized_phase}.lock"
+    if not lock_path.is_file():
+        return False
+
+    try:
+        # 只读打开避免 status 查询创建残留 lock 文件。真正的执行方在获取锁前
+        # 已经创建该文件；若它在 is_file() 与 open() 之间退出，视为未活跃即可。
+        with lock_path.open("r", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            try:
+                return False
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+
+
+def runtime_phase_is_active(repo_root: str | Path, target: str, phase: str) -> bool:
+    """判断是否有存活进程持有 target phase 的 flock。"""
+    return _runtime_phase_lock_status(repo_root, target, phase) is True
+
+
 def state_path(repo_root: str | Path, target: str) -> Path:
     """Return the per-target runtime state file path."""
     return _state_dir(repo_root, target) / "session.json"
@@ -265,6 +309,76 @@ def load_runtime_state(repo_root: str | Path, target: str) -> dict:
     if payload.get("schema_version", 1) < SCHEMA_VERSION:
         return _migrate_legacy_payload(payload)
     return payload
+
+
+def runtime_phase_in_progress(
+    repo_root: str | Path,
+    target: str,
+    phase: str,
+    runtime_state: dict | None = None,
+    *,
+    stale_after_seconds: int = RUNNING_MARKER_STALE_SECONDS,
+) -> bool:
+    """判断 runtime marker 对应的 phase 是否仍有存活执行者。
+
+    `session.json` 会在进程被突然终止后保留，`flock` 则由内核自动释放。
+    匹配 marker 与活跃锁必须同时存在，才能避免被杀掉的 Claude 后台任务让
+    `/autopilot` 一直停在 `wait_scan` 或 `wait_recon`。活跃锁比时间戳更
+    权威，因此长时间扫描不会被旧 marker 窗口错误放行。
+    """
+    normalized_phase = str(phase or "").strip().lower()
+    if normalized_phase not in RUNTIME_PHASES:
+        raise ValueError(f"unsupported runtime phase: {phase}")
+
+    resolved_target = canonical_target_value(target)
+    state = runtime_state if isinstance(runtime_state, dict) else load_runtime_state(repo_root, resolved_target)
+    if not _runtime_phase_marker_matches(state, phase=normalized_phase):
+        return False
+
+    lock_status = _runtime_phase_lock_status(repo_root, resolved_target, normalized_phase)
+    if lock_status is not None:
+        # 活跃锁才是实际 liveness：长扫描超过旧 marker 窗口也必须继续等待。
+        return lock_status
+    # 时间戳仅在 lock 探测 I/O 失败时保留保守兼容兜底。
+    return _runtime_phase_marker_is_fresh(
+        state,
+        phase=normalized_phase,
+        stale_after_seconds=stale_after_seconds,
+    )
+
+
+def runtime_recon_in_progress(
+    runtime_state: dict,
+    *,
+    stale_after_seconds: int = RUNNING_MARKER_STALE_SECONDS,
+) -> bool:
+    """兼容旧调用：仅判断 recon 的 running marker 是否新鲜。
+
+    该函数没有 repo/target，无法检查 flock；Claude-facing 的 wait gate
+    必须使用 `runtime_phase_in_progress()`。
+    """
+    return _runtime_phase_marker_is_fresh(
+        runtime_state,
+        phase="recon",
+        stale_after_seconds=stale_after_seconds,
+    )
+
+
+def runtime_scan_in_progress(
+    runtime_state: dict,
+    *,
+    stale_after_seconds: int = RUNNING_MARKER_STALE_SECONDS,
+) -> bool:
+    """兼容旧调用：仅判断 scan 的 running marker 是否新鲜。
+
+    该函数没有 repo/target，无法检查 flock；Claude-facing 的 wait gate
+    必须使用 `runtime_phase_in_progress()`。
+    """
+    return _runtime_phase_marker_is_fresh(
+        runtime_state,
+        phase="scan",
+        stale_after_seconds=stale_after_seconds,
+    )
 
 
 def update_runtime_state(repo_root: str | Path, target: str, **fields) -> dict:
@@ -475,11 +589,23 @@ def runtime_wait_action(
     runtime = load_runtime_state(repo_root, resolved_target)
     recon = inspect_recon_artifacts(repo_root, resolved_target)
     if (
-        runtime_recon_in_progress(runtime, stale_after_seconds=stale_after_seconds)
+        runtime_phase_in_progress(
+            repo_root,
+            resolved_target,
+            "recon",
+            runtime,
+            stale_after_seconds=stale_after_seconds,
+        )
         and not bool(recon.get("ready"))
     ):
         return "wait_recon"
-    if runtime_scan_in_progress(runtime, stale_after_seconds=stale_after_seconds):
+    if runtime_phase_in_progress(
+        repo_root,
+        resolved_target,
+        "scan",
+        runtime,
+        stale_after_seconds=stale_after_seconds,
+    ):
         return "wait_scan"
     return ""
 

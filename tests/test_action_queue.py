@@ -16,7 +16,7 @@ from action_queue import (
     summarize_queue,
 )
 from coverage_matrix import load_matrix, mark_cell
-from runtime_state import update_runtime_state
+from runtime_state import runtime_phase_lock, update_runtime_state
 
 
 def _checkpoint() -> dict:
@@ -73,14 +73,15 @@ def test_target_next_honors_scan_wait_marker_without_deleting_queue(tmp_path):
         last_executed_workflow="run_scan_started",
     )
 
-    selected = select_next_action_for_target(tmp_path, "target.com")
-    queue = load_queue(tmp_path, "target.com")
+    with runtime_phase_lock(tmp_path, "target.com", "scan"):
+        selected = select_next_action_for_target(tmp_path, "target.com")
+        queue = load_queue(tmp_path, "target.com")
 
-    assert selected["type"] == "wait_scan"
-    assert selected["id"] == "runtime-wait"
-    assert summarize_queue(queue, repo_root=tmp_path, target="target.com")["next_id"] == "runtime-wait"
-    assert select_next_action(queue)["id"] == queued_before["id"]
-    assert summarize_queue(queue)["active"] == 2
+        assert selected["type"] == "wait_scan"
+        assert selected["id"] == "runtime-wait"
+        assert summarize_queue(queue, repo_root=tmp_path, target="target.com")["next_id"] == "runtime-wait"
+        assert select_next_action(queue)["id"] == queued_before["id"]
+        assert summarize_queue(queue)["active"] == 2
 
     update_runtime_state(
         tmp_path,
@@ -89,6 +90,23 @@ def test_target_next_honors_scan_wait_marker_without_deleting_queue(tmp_path):
         last_executed_workflow="run_vuln_scan",
     )
     assert select_next_action_for_target(tmp_path, "target.com")["id"] == queued_before["id"]
+
+
+def test_target_next_ignores_orphan_scan_marker_and_keeps_queue_selectable(tmp_path):
+    """被终止的后台 scanner 释放锁后不能继续掩盖已持久化的下一步。"""
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
+    queued_before = select_next_action(load_queue(tmp_path, "target.com"))
+    update_runtime_state(
+        tmp_path,
+        "target.com",
+        mode="scan_running",
+        last_executed_workflow="run_scan_started",
+    )
+
+    selected = select_next_action_for_target(tmp_path, "target.com")
+
+    assert selected["id"] == queued_before["id"]
+    assert selected["type"] != "wait_scan"
 
 
 def test_target_next_honors_recon_wait_marker_without_deleting_queue(tmp_path):
@@ -101,11 +119,12 @@ def test_target_next_honors_recon_wait_marker_without_deleting_queue(tmp_path):
         last_executed_workflow="run_recon_started",
     )
 
-    selected = select_next_action_for_target(tmp_path, "target.com")
+    with runtime_phase_lock(tmp_path, "target.com", "recon"):
+        selected = select_next_action_for_target(tmp_path, "target.com")
 
-    assert selected["type"] == "wait_recon"
-    assert selected["id"] == "runtime-wait"
-    assert select_next_action(load_queue(tmp_path, "target.com"))["id"] == queued_before["id"]
+        assert selected["type"] == "wait_recon"
+        assert selected["id"] == "runtime-wait"
+        assert select_next_action(load_queue(tmp_path, "target.com"))["id"] == queued_before["id"]
 
     update_runtime_state(
         tmp_path,
@@ -125,17 +144,18 @@ def test_action_queue_cli_next_honors_runtime_wait_marker(tmp_path, capsys):
         last_executed_workflow="run_scan_started",
     )
 
-    code = main([
-        "--repo-root", str(tmp_path),
-        "next",
-        "--target", "target.com",
-        "--json",
-    ])
-    output = json.loads(capsys.readouterr().out)
+    with runtime_phase_lock(tmp_path, "target.com", "scan"):
+        code = main([
+            "--repo-root", str(tmp_path),
+            "next",
+            "--target", "target.com",
+            "--json",
+        ])
+        output = json.loads(capsys.readouterr().out)
 
-    assert code == 0
-    assert output["type"] == "wait_scan"
-    assert output["status"] == "transient"
+        assert code == 0
+        assert output["type"] == "wait_scan"
+        assert output["status"] == "transient"
 
 
 def test_ingest_checkpoint_runtime_wait_does_not_retire_existing_queue(tmp_path):
@@ -148,17 +168,18 @@ def test_ingest_checkpoint_runtime_wait_does_not_retire_existing_queue(tmp_path)
         last_executed_workflow="run_scan_started",
     )
 
-    result = ingest_checkpoint(
-        tmp_path,
-        "target.com",
-        checkpoint={"next_action_queue": []},
-    )
-    queue = load_queue(tmp_path, "target.com")
+    with runtime_phase_lock(tmp_path, "target.com", "scan"):
+        result = ingest_checkpoint(
+            tmp_path,
+            "target.com",
+            checkpoint={"next_action_queue": []},
+        )
+        queue = load_queue(tmp_path, "target.com")
 
-    assert result["stats"]["retired_stale"] == 0
-    assert result["next"]["type"] == "wait_scan"
-    assert summarize_queue(queue)["active"] == 2
-    assert select_next_action(queue)["id"] == queued_before["id"]
+        assert result["stats"]["retired_stale"] == 0
+        assert result["next"]["type"] == "wait_scan"
+        assert summarize_queue(queue)["active"] == 2
+        assert select_next_action(queue)["id"] == queued_before["id"]
 
 
 def test_report_action_does_not_preempt_active_validation_work(tmp_path):

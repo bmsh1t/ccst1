@@ -44,8 +44,7 @@ try:
     from tools.runtime_state import (
         inspect_recon_artifacts,
         load_runtime_state,
-        runtime_recon_in_progress,
-        runtime_scan_in_progress,
+        runtime_phase_in_progress,
     )
     from tools.structured_findings import (
         format_structured_findings_lines,
@@ -63,8 +62,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from runtime_state import (  # type: ignore
         inspect_recon_artifacts,
         load_runtime_state,
-        runtime_recon_in_progress,
-        runtime_scan_in_progress,
+        runtime_phase_in_progress,
     )
     from structured_findings import (
         format_structured_findings_lines,
@@ -299,9 +297,8 @@ def _pick_next_action(
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
     resume_targets = resume_targets if resume_targets is not None else _build_resume_targets(resume_summary)
-    # Fresh running markers are execution-state gates. They must win over
-    # validation/report/surface priorities so a second Claude loop does not
-    # relaunch or ignore an already-running long phase.
+    # 活跃 phase gate 必须优先于 validation/report/surface，避免第二个 Claude
+    # loop 重启或忽略仍持有 flock 的长任务。
     if recon_in_progress:
         return "wait_recon"
     if scan_in_progress:
@@ -390,12 +387,12 @@ def _describe_next_step(state: dict) -> str:
     if action == "wait_recon":
         return (
             f"wait/poll the existing /recon {target} run; do not launch another recon. "
-            "If the running marker is stale, rerun recon once with a fresh log."
+            "Refresh state after the matching recon phase lock releases."
         )
     if action == "wait_scan":
         return (
             f"wait/poll the existing scan-only quick run for {target}; do not launch another "
-            "scan-only quick. If the running marker is stale, rerun the scanner once with a fresh log."
+            "scan-only quick. Refresh state after the matching scan phase lock releases."
         )
     if action == "collect_candidate_evidence":
         followup = (state.get("structured_findings") or {}).get("next_validation") or {}
@@ -486,14 +483,38 @@ def _describe_next_step(state: dict) -> str:
     return "follow the highest-confidence target shown below."
 
 
-def _runtime_recon_in_progress(runtime_state: dict, *, stale_after_seconds: int = 7200) -> bool:
-    """Compatibility wrapper around the shared runtime-state gate."""
-    return runtime_recon_in_progress(runtime_state, stale_after_seconds=stale_after_seconds)
+def _runtime_recon_in_progress(
+    repo_root: str,
+    target: str,
+    runtime_state: dict,
+    *,
+    stale_after_seconds: int = 7200,
+) -> bool:
+    """兼容现有调用点的 shared runtime-state gate 包装。"""
+    return runtime_phase_in_progress(
+        repo_root,
+        target,
+        "recon",
+        runtime_state,
+        stale_after_seconds=stale_after_seconds,
+    )
 
 
-def _runtime_scan_in_progress(runtime_state: dict, *, stale_after_seconds: int = 7200) -> bool:
-    """Compatibility wrapper around the shared runtime-state gate."""
-    return runtime_scan_in_progress(runtime_state, stale_after_seconds=stale_after_seconds)
+def _runtime_scan_in_progress(
+    repo_root: str,
+    target: str,
+    runtime_state: dict,
+    *,
+    stale_after_seconds: int = 7200,
+) -> bool:
+    """兼容现有调用点的 shared runtime-state gate 包装。"""
+    return runtime_phase_in_progress(
+        repo_root,
+        target,
+        "scan",
+        runtime_state,
+        stale_after_seconds=stale_after_seconds,
+    )
 
 
 def _candidate_items_for_next_action(ranked: dict, next_action: str) -> list[dict]:
@@ -1037,7 +1058,7 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
         if item in current_set and item not in processed
     ]
     runtime_state = load_runtime_state(repo_root, resolved_target)
-    recon_in_progress = _runtime_recon_in_progress(runtime_state)
+    recon_in_progress = _runtime_recon_in_progress(repo_root, resolved_target, runtime_state)
     candidates = _read_batch_ranked_targets(
         batch_dir / "high_value_targets.json",
         completed,
@@ -1118,10 +1139,10 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     runtime_state = load_runtime_state(repo_root, resolved_target)
     recon_artifacts = inspect_recon_artifacts(repo_root, resolved_target)
     recon_in_progress = (
-        _runtime_recon_in_progress(runtime_state)
+        _runtime_recon_in_progress(repo_root, resolved_target, runtime_state)
         and not bool(recon_artifacts.get("ready"))
     )
-    scan_in_progress = _runtime_scan_in_progress(runtime_state)
+    scan_in_progress = _runtime_scan_in_progress(repo_root, resolved_target, runtime_state)
     recon_completed_no_live_hosts = _recon_completed_without_live_hosts(
         runtime_state,
         recon_artifacts,

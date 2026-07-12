@@ -2370,17 +2370,17 @@ def _align_decision_with_default_candidate(decision: str, default_candidate: dic
 
 
 def _runtime_wait_candidate(wait_action: str, target: str) -> dict:
-    """Return a transient status pointer for fresh long-running phase markers."""
+    """Return a transient status pointer for an active long-running phase lock."""
     if wait_action == "wait_recon":
         action = (
             f"Wait/poll the existing /recon {target} run; do not launch another recon. "
-            "Rerun checkpoint after the running marker clears or becomes stale."
+            "Rerun checkpoint after the matching recon phase lock releases."
         )
     else:
         action = (
             f"Wait/poll the existing scan-only quick run for {target}; do not launch "
-            "another scan-only quick. Rerun checkpoint after the running marker clears "
-            "or becomes stale."
+            "another scan-only quick. Rerun checkpoint after the matching scan phase "
+            "lock releases."
         )
     return {
         "id": "runtime-wait",
@@ -2390,7 +2390,7 @@ def _runtime_wait_candidate(wait_action: str, target: str) -> dict:
         "action": action,
         "command_hint": "poll existing run; do not enqueue persistent validation/report work yet",
         "redline_required": False,
-        "stop_condition": "running marker clears, completes, or becomes stale",
+        "stop_condition": "completed workflow is written or the matching phase lock releases",
     }
 
 
@@ -2621,9 +2621,8 @@ def build_checkpoint(
     dead_ends = _dead_end_proposals(state, gaps)
     runtime_wait_action = str(state.get("next_action") or "")
     if runtime_wait_action in {"wait_recon", "wait_scan"}:
-        # Fresh running markers are transient execution gates, not persistent
-        # queue work. Do not enqueue validation/report/surface candidates while
-        # a long-running phase is still marked active.
+        # 活跃 phase gate 属于瞬时执行态，不是持久 queue 工作。只要匹配 flock
+        # 仍被持有，就不要 enqueue validation/report/surface candidates。
         decision = runtime_wait_action
         lead = []
         next_items = []

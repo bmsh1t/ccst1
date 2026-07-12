@@ -1,6 +1,10 @@
 """Tests for lightweight runtime state + recon artifact inspection."""
 
 import json
+import subprocess
+import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -14,7 +18,12 @@ from runtime_state import (
     derive_state_view,
     inspect_recon_artifacts,
     load_runtime_state,
+    runtime_phase_in_progress,
+    runtime_phase_is_active,
     runtime_phase_lock,
+    runtime_recon_in_progress,
+    runtime_scan_in_progress,
+    runtime_wait_action,
     update_runtime_state,
 )
 
@@ -115,6 +124,87 @@ def test_runtime_phase_lock_rejects_unknown_phase(tmp_path):
     with pytest.raises(ValueError, match="unsupported runtime phase"):
         with runtime_phase_lock(tmp_path, "target.com", "report"):
             pass
+
+
+def test_runtime_phase_liveness_requires_running_marker_and_held_lock(tmp_path):
+    """孤儿 marker 不能伪装成仍在运行的长 phase。"""
+    update_runtime_state(
+        tmp_path,
+        "target.com",
+        mode="scan_running",
+        last_executed_workflow="run_scan_started",
+    )
+    scan_state = load_runtime_state(tmp_path, "target.com")
+
+    assert runtime_phase_is_active(tmp_path, "target.com", "scan") is False
+    assert runtime_phase_in_progress(tmp_path, "target.com", "scan", scan_state) is False
+    assert runtime_scan_in_progress(scan_state) is True
+
+    with runtime_phase_lock(tmp_path, "target.com", "scan"):
+        assert runtime_phase_is_active(tmp_path, "target.com", "scan") is True
+        assert runtime_phase_in_progress(tmp_path, "target.com", "scan", scan_state) is True
+        assert runtime_scan_in_progress(scan_state) is True
+        stale_scan_state = {**scan_state, "updated_at": "2000-01-01T00:00:00Z"}
+        assert runtime_phase_in_progress(tmp_path, "target.com", "scan", stale_scan_state) is True
+
+    update_runtime_state(
+        tmp_path,
+        "target.com",
+        mode="recon_running",
+        last_executed_workflow="run_recon_started",
+    )
+    recon_state = load_runtime_state(tmp_path, "target.com")
+    assert runtime_recon_in_progress(recon_state) is True
+    assert runtime_phase_in_progress(tmp_path, "target.com", "recon", recon_state) is False
+    with runtime_phase_lock(tmp_path, "target.com", "recon"):
+        assert runtime_phase_in_progress(tmp_path, "target.com", "recon", recon_state) is True
+
+
+def test_runtime_phase_liveness_recovers_after_terminated_owner_process(tmp_path):
+    """模拟 Claude 杀掉后台 scanner 后，flock 释放应立即取消 wait_scan。"""
+    repo_root = Path(__file__).resolve().parents[1]
+    child_code = """
+import sys
+import time
+from tools.runtime_state import runtime_phase_lock, update_runtime_state
+
+runtime_root, target = sys.argv[1:]
+with runtime_phase_lock(runtime_root, target, 'scan'):
+    update_runtime_state(
+        runtime_root,
+        target,
+        mode='scan_running',
+        last_executed_workflow='run_scan_started',
+    )
+    time.sleep(60)
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(tmp_path), "target.com"],
+        cwd=repo_root,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            state = load_runtime_state(tmp_path, "target.com")
+            if runtime_phase_in_progress(tmp_path, "target.com", "scan", state):
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("child scanner owner never acquired the scan phase lock")
+
+        assert runtime_wait_action(tmp_path, "target.com") == "wait_scan"
+        process.terminate()
+        process.wait(timeout=5)
+
+        state = load_runtime_state(tmp_path, "target.com")
+        assert state["last_executed_workflow"] == "run_scan_started"
+        assert runtime_scan_in_progress(state) is True
+        assert runtime_phase_in_progress(tmp_path, "target.com", "scan", state) is False
+        assert runtime_wait_action(tmp_path, "target.com") == ""
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def test_load_v1_schema_maps_legacy_field(tmp_path):
