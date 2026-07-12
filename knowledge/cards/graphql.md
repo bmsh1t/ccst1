@@ -1,4 +1,29 @@
+---
+id: graphql
+type: technique-card
+related_skills:
+  - web2-recon
+  - web2-vuln-classes
+  - triage-validation
+trigger_tags:
+  - graphql
+  - node-id
+  - introspection
+  - subscription
+risk: medium
+maturity: draft
+load_priority: high
+deep_refs: []
+---
+
 # GraphQL / Subscription / Global ID
+
+## Quick Recall
+
+- 触发：GraphQL endpoint、合法 query/variables、global ID、字段差异或 subscription 线索。
+- 最小验证：从已观察 operation 出发，优先做双主体只读 node/字段或事件 role diff。
+- 证据门：introspection 本身不是漏洞；必须有字段、对象、租户或订阅事件的实际越权差异。
+- 停止：没有合法请求样本/边界证据，或只能靠深层递归、alias 洪泛和大查询继续。
 
 ## 适用场景
 

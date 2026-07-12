@@ -1,4 +1,29 @@
+---
+id: api-idor
+type: technique-card
+related_skills:
+  - bb-methodology
+  - web2-vuln-classes
+  - triage-validation
+trigger_tags:
+  - idor
+  - object-id
+  - tenant
+  - actor-diff
+risk: medium
+maturity: draft
+load_priority: high
+deep_refs: []
+---
+
 # API IDOR / 对象级越权
+
+## Quick Recall
+
+- 触发：请求可控对象 ID，且存在多账号、角色或租户边界。
+- 最小验证：用 owner/peer 两个主体做单变量 ID 替换，保留可 replay 的 baseline。
+- 证据门：必须记录主体身份、对象归属、响应字段/数量或实际操作差异；前端隐藏不算越权。
+- 停止：没有可复现请求、服务端稳定拒绝，或继续验证会改变真实资源状态。
 
 ## 适用场景
 

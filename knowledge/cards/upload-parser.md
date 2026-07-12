@@ -1,4 +1,30 @@
+---
+id: upload-parser
+type: technique-card
+related_skills:
+  - web2-recon
+  - web2-vuln-classes
+  - security-arsenal
+  - triage-validation
+trigger_tags:
+  - upload
+  - import
+  - parser
+  - converter
+risk: medium-to-high
+maturity: draft
+load_priority: high
+deep_refs: []
+---
+
 # 上传 / 导入 / 解析器链
+
+## Quick Recall
+
+- 触发：上传/导入后存在扫描、转换、预览、下载、分享或异步处理链。
+- 最小验证：使用无害小样本追踪存储、处理和读取路径，再做下载/预览权限对照。
+- 证据门：必须记录实际处理器、权限边界和影响；不把扩展名差异直接升级为漏洞。
+- 停止：无法触发处理链，或需要恶意文件、资源耗尽及真实用户影响才能继续。
 
 ## 适用场景
 

@@ -1,4 +1,29 @@
+---
+id: race-conditions
+type: technique-card
+related_skills:
+  - bb-methodology
+  - web2-vuln-classes
+  - triage-validation
+trigger_tags:
+  - race
+  - concurrency
+  - state-diff
+  - low-frequency
+risk: high
+maturity: draft
+load_priority: medium
+deep_refs: []
+---
+
 # Race Condition / 并发状态差异
+
+## Quick Recall
+
+- 触发：同一资源有次数/额度/状态转换，且存在检查后修改或重复提交窗口。
+- 最小验证：先建状态模型；只有测试资源和明确授权时，才用最少并发请求验证窗口。
+- 证据门：说明竞争窗口、攻击者权限、状态/影响差异；请求数量本身不是证据。
+- 停止：没有测试资源、只能高压或破坏性验证，或单次 replay 已证明幂等/事务保护。
 
 ## 适用场景
 

@@ -1,4 +1,30 @@
+---
+id: auth-access
+type: technique-card
+related_skills:
+  - bb-methodology
+  - web2-vuln-classes
+  - triage-validation
+  - security-arsenal
+trigger_tags:
+  - authz
+  - role
+  - org-boundary
+  - session
+risk: medium
+maturity: draft
+load_priority: high
+deep_refs: []
+---
+
 # 认证与访问边界
+
+## Quick Recall
+
+- 触发：角色、组织、session、401/403 或管理路径存在权限边界差异。
+- 最小验证：同一 replay 请求在最小身份矩阵中只改变一个 method/path/header/session 变量。
+- 证据门：必须证明后端实际放行了不应访问的资源或操作，不能只凭 UI 差异。
+- 停止：服务端稳定拒绝、没有可复现请求，或继续操作会影响真实账号/业务状态。
 
 ## 适用场景
 

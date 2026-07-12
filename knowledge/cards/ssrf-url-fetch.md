@@ -1,4 +1,29 @@
+---
+id: ssrf-url-fetch
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - security-arsenal
+  - triage-validation
+trigger_tags:
+  - url-fetch
+  - webhook
+  - import-url
+  - server-side-fetch
+risk: medium-to-high
+maturity: draft
+load_priority: high
+deep_refs: []
+---
+
 # SSRF / URL Fetch 面
+
+## Quick Recall
+
+- 触发：用户可控 URL、webhook/import/preview 等功能，并有后端主动请求线索。
+- 最小验证：先用单一可控 callback 建立服务端访问 baseline，再一次只改变一个解析变量。
+- 证据门：记录来源、时间、请求特征、状态/回显和实际影响；访问自有 URL 不等于高危 SSRF。
+- 停止：无法证明服务端请求、只有 DNS-only 信号，或需要访问未授权内部系统。
 
 ## 适用场景
 
