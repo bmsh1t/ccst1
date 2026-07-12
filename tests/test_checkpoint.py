@@ -51,6 +51,8 @@ def _seed_recon(repo_root: Path, target: str, urls: list[str]) -> None:
 def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     checkpoint = build_checkpoint(tmp_path, target="target.com")
     output = format_checkpoint(checkpoint)
+    witness_path = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
+    witness = json.loads(witness_path.read_text(encoding="utf-8"))
 
     assert checkpoint["decision"] == "refresh-recon"
     assert checkpoint["target"] == "target.com"
@@ -66,6 +68,9 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     assert "CHECKPOINT DECISION" in output
     assert "Default candidate (compat pointer):" in output
     assert "Apply status: not applied" in output
+    assert checkpoint["runtime_witness"]["path"] == "state/target.com/checkpoint_latest.json"
+    assert witness["kind"] == "autopilot_checkpoint_witness"
+    assert witness["context_pack"]["selected_skill"] == checkpoint["context_pack"]["selected_skill"]
 
 
 def test_checkpoint_prioritizes_pending_validation(tmp_path):

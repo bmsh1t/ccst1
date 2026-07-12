@@ -92,10 +92,12 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.attack_probe_filter import is_attack_probe, sanitize_attack_probe_url
+    from tools.finding_index import load_finding_index, upsert_finding
     from tools.surface_weights import value_weight
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
     from attack_probe_filter import is_attack_probe, sanitize_attack_probe_url  # type: ignore
+    from finding_index import load_finding_index, upsert_finding  # type: ignore
     from surface_weights import value_weight  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
@@ -1077,10 +1079,8 @@ def rebuild_matrix(
     findings_path = repo / "findings" / target_key / "findings.json"
     if findings_path.is_file():
         try:
-            findings = json.loads(findings_path.read_text(encoding="utf-8"))
-            if isinstance(findings, dict):
-                findings = findings.get("findings", [])
-            for finding in findings or []:
+            findings_payload = load_finding_index(findings_path.parent)
+            for finding in findings_payload.get("findings", []):
                 raw_endpoint = str(finding.get("endpoint") or finding.get("url") or "")
                 ep_path = _canonicalize_endpoint(raw_endpoint)
                 params = sorted(_param_names_from_url(raw_endpoint))
@@ -1143,7 +1143,7 @@ def rebuild_matrix(
                         "evidence_ref": f"findings/{target_key}/findings.json#{finding.get('id', '')}",
                     }
                     new_endpoints.append(ep)
-        except (OSError, json.JSONDecodeError):
+        except OSError:
             pass
 
     # Apply scanner_pass.json as advisory scanner-swept metadata. Broad scanner
@@ -1403,42 +1403,26 @@ def _append_finding(
     reason: str,
     repo_root: Path | str | None = None,
 ) -> None:
-    """Append an entry to findings/<target>/findings.json so the cell
-    survives a future `rebuild_matrix` call. Generates a stable id
-    from (endpoint, vuln_class). Idempotent — duplicate entries are
-    skipped on the (endpoint, vuln_class) key.
-    """
+    """Upsert a canonical finding so the cell survives future rebuilds."""
     repo = Path(repo_root) if repo_root else BASE_DIR
     target_key = _storage_key(target)
     findings_dir = repo / "findings" / target_key
-    findings_dir.mkdir(parents=True, exist_ok=True)
-    findings_path = findings_dir / "findings.json"
-
-    existing: list[dict] = []
-    if findings_path.is_file():
-        try:
-            data = json.loads(findings_path.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                existing = data
-            elif isinstance(data, dict):
-                existing = list(data.get("findings", []))
-        except (OSError, json.JSONDecodeError):
-            existing = []
-
-    finding_id = f"M-{vuln_class}-{abs(hash(endpoint)) % 10_000_000}"
-    for item in existing:
-        if (item.get("endpoint") == endpoint
-                and item.get("vuln_class") == vuln_class):
-            return  # idempotent
-
-    existing.append({
-        "id": finding_id,
+    upsert_finding(findings_dir, {
         "endpoint": endpoint,
+        "url": endpoint,
         "vuln_class": vuln_class,
+        "type": vuln_class.lower(),
+        "category": vuln_class.lower(),
+        "title": f"{vuln_class} finding on {endpoint}",
+        "summary": reason or f"Coverage matrix marked {endpoint} as tested_finding for {vuln_class}",
+        "severity": "medium",
+        "confidence": "confirmed",
         "reason": reason,
         "source": "mark_cell",
-    })
-    findings_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        "source_file": "coverage_matrix",
+        "validation_status": "candidate",
+        "report_status": "not_generated",
+    }, target=canonical_target_value(target))
 
 
 def main(argv: list[str] | None = None) -> int:

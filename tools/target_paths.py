@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+import json
 import os
 import re
+from pathlib import Path
 from urllib.parse import urlparse
 
 
@@ -78,17 +81,105 @@ def classify_target(target: str) -> dict:
     return {"kind": "domain", "target": value}
 
 
+def _list_storage_stem(normalized_target: str) -> str:
+    basename = os.path.basename(normalized_target)
+    stem = os.path.splitext(basename)[0] or basename.strip(".") or "scope-list"
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", stem) or "scope-list"
+
+
+def legacy_list_storage_key(target: str) -> str:
+    """Return the pre-digest list key for explicit compatibility handling."""
+    target_info = classify_target(target)
+    if target_info["kind"] != "list":
+        return target_storage_key(target)
+    return _list_storage_stem(target_info["target"])
+
+
 def target_storage_key(target: str) -> str:
     """Return the canonical on-disk storage key for a target."""
     target_info = classify_target(target)
     normalized_target = target_info["target"]
     if target_info["kind"] == "list":
-        basename = os.path.basename(normalized_target)
-        stem = os.path.splitext(basename)[0] or basename.strip(".") or "scope-list"
-        return re.sub(r"[^A-Za-z0-9._-]+", "_", stem)
+        stem = _list_storage_stem(normalized_target)
+        canonical_path = os.path.realpath(normalized_target)
+        digest = hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()[:10]
+        return f"{stem}--{digest}"
     if target_info["kind"] == "cidr":
         return normalized_target.replace("/", "_")
     return re.sub(r"[^A-Za-z0-9._:-]+", "_", normalized_target).strip("._-") or "unknown-target"
+
+
+def migrate_legacy_list_storage(repo_root: str | Path, target: str) -> dict:
+    """Move an owned stem-only batch state/recon tree to the digest key.
+
+    A stem-only directory is ambiguous by definition. Migration therefore
+    requires the old runtime session to name the same canonical list path;
+    otherwise the old data remains untouched for explicit operator review.
+    """
+    target_info = classify_target(target)
+    if target_info["kind"] != "list":
+        return {"status": "not_list", "migrated": []}
+
+    resolved_target = target_info["target"]
+    old_key = _list_storage_stem(resolved_target)
+    new_key = target_storage_key(resolved_target)
+    if old_key == new_key:
+        return {"status": "current", "old_key": old_key, "new_key": new_key, "migrated": []}
+
+    repo = Path(repo_root)
+    old_state = repo / "state" / old_key
+    session_path = old_state / "session.json"
+    try:
+        session = json.loads(session_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        session = {}
+    recorded_target = str(session.get("target") or "") if isinstance(session, dict) else ""
+    owner_matches = bool(
+        recorded_target
+        and os.path.realpath(recorded_target) == os.path.realpath(resolved_target)
+    )
+    if not owner_matches:
+        return {
+            "status": "owner_unverified",
+            "old_key": old_key,
+            "new_key": new_key,
+            "migrated": [],
+        }
+
+    migrated = []
+    skipped = []
+    for root_name in ("state", "recon"):
+        old_path = repo / root_name / old_key
+        new_path = repo / root_name / new_key
+        if not old_path.exists():
+            continue
+        if new_path.exists():
+            skipped.append(str(old_path))
+            continue
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        old_path.replace(new_path)
+        migrated.append(str(new_path))
+        if root_name == "state":
+            migrated_session = new_path / "session.json"
+            try:
+                session_payload = json.loads(migrated_session.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                session_payload = {}
+            if isinstance(session_payload, dict):
+                session_payload["storage_key"] = new_key
+                temp_path = migrated_session.with_name(f".{migrated_session.name}.migrating")
+                temp_path.write_text(
+                    json.dumps(session_payload, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                temp_path.replace(migrated_session)
+    return {
+        "status": "migrated" if migrated else "nothing_to_migrate",
+        "old_key": old_key,
+        "new_key": new_key,
+        "migrated": migrated,
+        "skipped": skipped,
+    }
 
 
 def _host_port(value: str) -> tuple[str, int | None]:

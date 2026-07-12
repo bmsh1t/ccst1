@@ -150,7 +150,7 @@ def test_localhost_sequential_fresh_resume_batch_queue_runner_and_checkpoint(
 
     scope = tmp_path / "scope.txt"
     scope.write_text(f"{target}\n", encoding="utf-8")
-    batch_dir = tmp_path / "recon" / "scope"
+    batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
     batch_dir.mkdir()
     (batch_dir / "completed_targets.txt").write_text(f"{target}\n", encoding="utf-8")
     (batch_dir / "high_value_targets.json").write_text(

@@ -12,6 +12,7 @@ from tools.js_reader import (
     _looks_like_vendor,
     prepare_materials,
 )
+from tools.target_paths import target_storage_key
 
 
 def _write(path: Path, content: str = "// stub\n") -> None:
@@ -79,7 +80,7 @@ def test_collects_cached_js_files_and_recon_artifacts(repo_root: Path) -> None:
 def test_prepare_materials_uses_storage_key_for_host_list_target(repo_root: Path) -> None:
     target_list = repo_root / "scope.txt"
     target_list.write_text("api.example.com\nshop.example.com\n", encoding="utf-8")
-    stored_target = "scope"
+    stored_target = target_storage_key(str(target_list))
 
     _write(repo_root / "recon" / stored_target / "js_dump" / "app.js", "fetch('/api/users')\n")
     _write(

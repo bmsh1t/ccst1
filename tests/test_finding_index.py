@@ -8,6 +8,106 @@ import report_generator
 import validate
 
 
+def test_load_finding_index_migrates_legacy_list_without_losing_lifecycle_state(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    legacy = [
+        {
+            "id": "legacy-validated",
+            "endpoint": "/api/orders/1",
+            "vuln_class": "IDOR",
+            "severity": "high",
+            "validation_status": "validated",
+            "report_status": "generated",
+            "report_id": "idor_001",
+            "report_file": "reports/example.com/idor_001.md",
+        },
+        {
+            "id": "legacy-validated",
+            "endpoint": "/api/orders/1",
+            "vuln_class": "IDOR",
+            "severity": "medium",
+        },
+        {
+            "endpoint": "/api/orders/2",
+            "vuln_class": "IDOR",
+            "severity": "medium",
+        },
+    ]
+    path = findings_dir / "findings.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    payload = finding_index.load_finding_index(findings_dir)
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload == persisted
+    assert persisted["schema_version"] == 1
+    assert persisted["total"] == 2
+    assert isinstance(persisted["findings"], list)
+    by_id = {item["id"]: item for item in persisted["findings"]}
+    assert by_id["legacy-validated"]["validation_status"] == "validated"
+    assert by_id["legacy-validated"]["report_id"] == "idor_001"
+    generated = next(item for item in persisted["findings"] if item["id"] != "legacy-validated")
+    assert generated["id"].startswith("idor_")
+    assert generated["url"] == "/api/orders/2"
+
+
+def test_upsert_finding_uses_semantic_identity_and_preserves_advanced_lifecycle(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    first = finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "runner-id",
+            "endpoint": "/api/orders/1",
+            "vuln_class": "IDOR",
+            "severity": "low",
+            "validation_status": "validated",
+            "report_status": "generated",
+            "report_id": "idor_001",
+        },
+        target="example.com",
+    )
+    second = finding_index.upsert_finding(
+        findings_dir,
+        {
+            "endpoint": "/api/orders/1",
+            "vuln_class": "IDOR",
+            "severity": "high",
+            "validation_status": "unvalidated",
+            "report_status": "not_generated",
+        },
+        target="example.com",
+    )
+
+    assert first["created"] is True
+    assert second["created"] is False
+    payload = finding_index.load_finding_index(findings_dir)
+    assert payload["total"] == 1
+    finding = payload["findings"][0]
+    assert finding["id"] == "runner-id"
+    assert finding["severity"] == "high"
+    assert finding["validation_status"] == "validated"
+    assert finding["report_status"] == "generated"
+    assert finding["report_id"] == "idor_001"
+
+
+def test_upsert_findings_without_endpoints_do_not_collapse_by_type(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+
+    result = finding_index.upsert_findings(
+        findings_dir,
+        [
+            {"id": "source-one", "type": "exposure", "raw": "first source artifact"},
+            {"id": "source-two", "type": "exposure", "raw": "second source artifact"},
+        ],
+        target="example.com",
+    )
+
+    assert result["created"] == 2
+    assert result["payload"]["total"] == 2
+    assert {item["id"] for item in result["payload"]["findings"]} == {"source-one", "source-two"}
+
+
 def test_build_finding_index_extracts_scanner_candidates(tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     sqli_dir = findings_dir / "sqli"
@@ -347,6 +447,127 @@ def test_report_generator_keeps_existing_generated_reports_in_index(monkeypatch,
     saved = json.loads((report_dir / "INDEX.json").read_text(encoding="utf-8"))
     assert saved["total_reports"] == 2
     assert {item["finding_id"] for item in saved["reports"]} == {"sqli_done", "xss_new"}
+
+
+def test_report_generator_incremental_same_type_uses_next_id_without_overwrite(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "sqli-first",
+            "type": "sqli",
+            "category": "sqli",
+            "title": "First SQLi",
+            "summary": "first validated SQLi",
+            "url": "https://example.com/items?id=1",
+            "severity": "high",
+            "confidence": "confirmed",
+            "validation_status": "validated",
+            "report_status": "not_generated",
+            "raw": "[SQLI-POC-VERIFIED] first",
+        },
+        target="example.com",
+    )
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    first_total, first_index = report_generator.process_findings_dir(str(findings_dir))
+    first_report = Path(first_index[0]["file"])
+    first_content = first_report.read_text(encoding="utf-8")
+    assert first_total == 1
+    assert first_report.name == "sqli_001.md"
+
+    finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "sqli-second",
+            "type": "sqli",
+            "category": "sqli",
+            "title": "Second SQLi",
+            "summary": "second validated SQLi",
+            "url": "https://example.com/search?q=test",
+            "severity": "high",
+            "confidence": "confirmed",
+            "validation_status": "validated",
+            "report_status": "not_generated",
+            "raw": "[SQLI-POC-VERIFIED] second",
+        },
+        target="example.com",
+    )
+    second_total, second_index = report_generator.process_findings_dir(str(findings_dir))
+    payload = finding_index.load_finding_index(findings_dir)
+    by_id = {item["id"]: item for item in payload["findings"]}
+
+    assert second_total == 2
+    assert {item["id"] for item in second_index} == {"sqli_001", "sqli_002"}
+    assert by_id["sqli-first"]["report_id"] == "sqli_001"
+    assert by_id["sqli-second"]["report_id"] == "sqli_002"
+    assert first_report.read_text(encoding="utf-8") == first_content
+    assert (first_report.parent / "sqli_002.md").is_file()
+
+
+def test_report_generator_does_not_overwrite_unowned_report_file(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    report_dir = tmp_path / "reports" / "example.com"
+    report_dir.mkdir(parents=True)
+    occupied = report_dir / "sqli_001.md"
+    occupied.write_text("# Existing unrelated report\n", encoding="utf-8")
+    finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "sqli-new",
+            "type": "sqli",
+            "url": "https://example.com/items?id=2",
+            "severity": "high",
+            "confidence": "confirmed",
+            "validation_status": "validated",
+            "report_status": "not_generated",
+            "raw": "[SQLI-POC-VERIFIED] new",
+        },
+        target="example.com",
+    )
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total == 1
+    assert index[0]["id"] == "sqli_002"
+    assert occupied.read_text(encoding="utf-8") == "# Existing unrelated report\n"
+    assert (report_dir / "sqli_002.md").is_file()
+
+
+def test_report_generator_reuses_same_finding_crash_artifact(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    finding = {
+        "id": "sqli-crash-recovery",
+        "type": "sqli",
+        "url": "https://example.com/items?id=3",
+        "severity": "high",
+        "confidence": "confirmed",
+        "validation_status": "validated",
+        "report_status": "not_generated",
+        "raw": "[SQLI-POC-VERIFIED] crash recovery",
+    }
+    finding_index.upsert_finding(findings_dir, finding, target="example.com")
+    report_dir = tmp_path / "reports" / "example.com"
+    report_dir.mkdir(parents=True)
+    report_content, _ = report_generator.generate_report(finding, "sqli", "example.com")
+    crash_file = report_dir / "sqli_004.md"
+    crash_file.write_text(report_content, encoding="utf-8")
+    before = crash_file.read_bytes()
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+    persisted = finding_index.find_finding(findings_dir, "sqli-crash-recovery")
+
+    assert total == 1
+    assert index[0]["id"] == "sqli_004"
+    assert crash_file.read_bytes() == before
+    assert persisted is not None
+    assert persisted["report_status"] == "generated"
+    assert persisted["report_id"] == "sqli_004"
 
 
 def test_report_generator_uses_canonical_report_dir_for_url_target(monkeypatch, tmp_path):

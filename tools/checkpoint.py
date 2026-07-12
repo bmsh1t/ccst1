@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """自动生成 Claude CLI 目标 checkpoint 和目标记忆写回建议。
 
-默认只读并输出建议；只有传入 `--apply-target-memory` 时，才会把
-lead / next / dead-end / handoff 追加写入目标记忆层。知识库、Skills、
-Rules 永远只给建议，不在这里自动修改。
+默认输出建议，并写入可派生 coverage 与小型 runtime-v2 checkpoint witness；
+只有传入 `--apply-target-memory` 时，才会把 lead / next / dead-end / handoff
+追加写入目标记忆层。知识库、Skills、Rules 永远只给建议，不在这里自动修改。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -78,6 +80,60 @@ def _write_json(path: Path, payload: dict) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    """Write a runtime witness without exposing a partial JSON document."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def write_checkpoint_witness(
+    repo_root: Path | str,
+    target: str,
+    checkpoint: dict,
+) -> dict:
+    """Persist the minimal runtime-v2 proof that checkpoint routing ran."""
+    repo = Path(repo_root)
+    resolved_target = canonical_target_value(target)
+    context = checkpoint.get("context_pack") if isinstance(checkpoint.get("context_pack"), dict) else {}
+    payload = {
+        "schema_version": 1,
+        "kind": "autopilot_checkpoint_witness",
+        "generated_at": now_utc(),
+        "target": resolved_target,
+        "target_key": target_storage_key(resolved_target),
+        "context_pack": {
+            "selected_skill": context.get("selected_skill", ""),
+            "knowledge_cards": context.get("knowledge_cards", []),
+            "reference_hints": context.get("reference_hints", []),
+            "required_checks": context.get("required_checks", []),
+        },
+    }
+    path = repo / "state" / target_storage_key(resolved_target) / "checkpoint_latest.json"
+    _write_json_atomic(path, payload)
+    return {"path": str(path), "payload": payload}
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -2600,7 +2656,7 @@ def build_checkpoint(
         note=note,
     )
 
-    return {
+    checkpoint = {
         "target": resolved_target,
         "decision": decision,
         "phase": context.get("phase", "unknown"),
@@ -2608,6 +2664,7 @@ def build_checkpoint(
         "context_pack": {
             "selected_skill": context.get("selected_skill", ""),
             "knowledge_cards": context.get("knowledge_cards", []),
+            "reference_hints": context.get("reference_hints", []),
             "required_checks": context.get("required_checks", []),
             "contradictions": context.get("contradictions", []),
         },
@@ -2662,6 +2719,13 @@ def build_checkpoint(
         "retrospect": f"/retrospect {resolved_target}",
         "apply_status": "not applied; rerun with --apply-target-memory to write target memory",
     }
+    witness = write_checkpoint_witness(repo, resolved_target, checkpoint)
+    witness_path = Path(witness["path"])
+    checkpoint["runtime_witness"] = {
+        "schema_version": witness["payload"]["schema_version"],
+        "path": str(witness_path.relative_to(repo)) if witness_path.is_relative_to(repo) else str(witness_path),
+    }
+    return checkpoint
 
 
 def _quote(text: str) -> str:

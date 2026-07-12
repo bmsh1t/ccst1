@@ -314,14 +314,18 @@ run_domain_list_batch() {
     local high_value_file ranking_file ai_handoff_file target_links_file
     local pending_file run_targets_file processed_file batch_size_raw batch_size batch_reset chunk_mode
     batch_name="$(basename "$list_file")"
-    batch_key="$(python3 - "$list_file" <<'PY'
-import os
-import re
+    batch_key="$(python3 - "$list_file" "$BASE_DIR" <<'PY'
 import sys
 
-basename = os.path.basename(sys.argv[1])
-stem = os.path.splitext(basename)[0] or basename.strip(".") or "scope-list"
-print(re.sub(r"[^A-Za-z0-9._-]+", "_", stem))
+target = sys.argv[1]
+base_dir = sys.argv[2]
+sys.path.insert(0, base_dir)
+sys.path.insert(0, f"{base_dir}/tools")
+
+from tools.target_paths import migrate_legacy_list_storage, target_storage_key
+
+migrate_legacy_list_storage(base_dir, target)
+print(target_storage_key(target))
 PY
 )"
     [ -z "$batch_key" ] && batch_key="scope-list"

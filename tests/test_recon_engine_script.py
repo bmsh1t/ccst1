@@ -156,6 +156,8 @@ def test_recon_engine_supports_primary_domain_batch_and_domain_waymore():
     assert "run_domain_list_batch()" in text
     assert 'if [ -f "$TARGET" ] && [ -r "$TARGET" ]; then' in text
     assert 'run_domain_list_batch "$TARGET" "$QUICK_MODE"' in text
+    assert "from tools.target_paths import migrate_legacy_list_storage, target_storage_key" in text
+    assert "migrate_legacy_list_storage(base_dir, target)" in text
     assert 'batch_manifest.jsonl' in text
     assert 'batch_summary.md' in text
     assert 'ai_handoff.md' in text
@@ -174,7 +176,7 @@ def test_recon_engine_supports_primary_domain_batch_and_domain_waymore():
     assert 'grep -Fvx -f "$processed_file" "$targets_file"' in text
     assert 'head -n "$batch_size" "$pending_file" > "$run_targets_file"' in text
     assert 'echo "- Remaining: $remaining_total"' in text
-    assert 'print(re.sub(r"[^A-Za-z0-9._-]+", "_", stem))' in text
+    assert "print(target_storage_key(target))" in text
     assert "CICD_ORGS_FOUND=$(printf '%s\\n' \"$GITHUB_ORGS\" | grep -cE" in text
     assert '[ -n "$CICD_ORGS_FOUND" ] || CICD_ORGS_FOUND=0' in text
     assert 'phase                batch_recon' in text

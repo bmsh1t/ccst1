@@ -704,11 +704,12 @@ class TestMarkCell:
         findings_path = tmp_path / "findings" / "x.com" / "findings.json"
         assert findings_path.is_file()
         data = json.loads(findings_path.read_text(encoding="utf-8"))
-        assert isinstance(data, list)
-        entry = next(e for e in data if e["endpoint"] == "/wp-json/wp/v2/users")
+        assert isinstance(data, dict)
+        entry = next(e for e in data["findings"] if e["endpoint"] == "/wp-json/wp/v2/users")
         assert entry["vuln_class"] == "Authz"
         assert entry["reason"] == "user enum verified"
         assert entry["source"] == "mark_cell"
+        assert entry["validation_status"] == "candidate"
 
     def test_write_finding_idempotent(self, tmp_path):
         """Repeated mark_cell with write_finding=True must not duplicate."""
@@ -721,8 +722,38 @@ class TestMarkCell:
             )
         findings_path = tmp_path / "findings" / "x.com" / "findings.json"
         data = json.loads(findings_path.read_text(encoding="utf-8"))
-        wp_entries = [e for e in data if e["endpoint"] == "/wp-json/wp/v2/users"]
+        wp_entries = [e for e in data["findings"] if e["endpoint"] == "/wp-json/wp/v2/users"]
         assert len(wp_entries) == 1
+
+    def test_write_finding_preserves_existing_canonical_lifecycle(self, tmp_path):
+        findings_path = tmp_path / "findings" / "x.com" / "findings.json"
+        findings_path.parent.mkdir(parents=True)
+        findings_path.write_text(json.dumps({
+            "schema_version": 1,
+            "target": "x.com",
+            "total": 1,
+            "findings": [{
+                "id": "existing-validated",
+                "url": "https://x.com/search?q=1",
+                "type": "sqli",
+                "severity": "high",
+                "confidence": "confirmed",
+                "validation_status": "validated",
+                "report_status": "generated",
+                "report_id": "sqli_001",
+            }],
+        }), encoding="utf-8")
+
+        mark_cell(
+            "x.com", "/api/orders/1", "IDOR", "tested_finding",
+            reason="owner/peer divergence", repo_root=tmp_path, write_finding=True,
+        )
+        payload = json.loads(findings_path.read_text(encoding="utf-8"))
+        by_id = {item["id"]: item for item in payload["findings"]}
+
+        assert payload["total"] == 2
+        assert by_id["existing-validated"]["validation_status"] == "validated"
+        assert by_id["existing-validated"]["report_id"] == "sqli_001"
 
     def test_write_finding_skipped_for_non_finding_status(self, tmp_path):
         """write_finding only takes effect for status=tested_finding."""
@@ -907,7 +938,7 @@ class TestExtendedVulnClasses:
         findings_path = tmp_path / "findings" / target / "findings.json"
         assert findings_path.is_file()
         data = json.loads(findings_path.read_text(encoding="utf-8"))
-        entry = next(e for e in data if e["endpoint"] == endpoint)
+        entry = next(e for e in data["findings"] if e["endpoint"] == endpoint)
         assert entry["vuln_class"] == new_class
         assert entry["source"] == "mark_cell"
         # Force-clean rebuild wipes operator state, but findings.json
@@ -1037,7 +1068,7 @@ class TestVulnClassNormalization:
                 encoding="utf-8"
             )
         )
-        assert findings[0]["vuln_class"] == "SQLi"
+        assert findings["findings"][0]["vuln_class"] == "SQLi"
 
     def test_mark_cell_with_alias(self, tmp_path):
         """AC3: `mark --vuln-class lfi` resolves to canonical `Path`."""

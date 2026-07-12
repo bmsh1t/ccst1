@@ -6,6 +6,9 @@ import importlib.util
 import json
 from pathlib import Path
 
+from tools.checkpoint import build_checkpoint, write_checkpoint_witness
+from tools.runtime_state import update_runtime_state
+
 SCRIPT = Path(__file__).resolve().parent / "skill-validator" / "check_autopilot_run.py"
 SPEC = importlib.util.spec_from_file_location("check_autopilot_run", SCRIPT)
 assert SPEC and SPEC.loader
@@ -29,8 +32,15 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 def _write_passing_run(repo: Path, target: str = "demo.test") -> None:
     state_dir = repo / "state" / target
     evidence_dir = repo / "memory" / "evidence" / target
-    _write_json(
-        state_dir / "session.json",
+    update_runtime_state(
+        repo,
+        target,
+        mode="autopilot",
+        last_executed_workflow="checkpoint",
+    )
+    write_checkpoint_witness(
+        repo,
+        target,
         {
             "context_pack": {
                 "selected_skill": "skills/web2-vuln-classes/SKILL.md",
@@ -38,8 +48,7 @@ def _write_passing_run(repo: Path, target: str = "demo.test") -> None:
                 "reference_hints": [
                     {"path": "skills/security-arsenal/references/payload-families.md"}
                 ],
-            },
-            "commands": ["python3 tools/context_pack.py --target demo.test --focus ssti"],
+            }
         },
     )
     _write_json(
@@ -103,7 +112,7 @@ def test_cli_returns_zero_for_passing_run(tmp_path, capsys):
 
 def test_missing_context_pack_artifact_fails_context_check(tmp_path):
     _write_passing_run(tmp_path)
-    (tmp_path / "state" / "demo.test" / "session.json").unlink()
+    (tmp_path / "state" / "demo.test" / "checkpoint_latest.json").unlink()
 
     result = check_autopilot_run.check_run(tmp_path, "demo.test")
 
@@ -113,6 +122,41 @@ def test_missing_context_pack_artifact_fails_context_check(tmp_path):
     assert result["checks"]["context_pack"]["passed"] is False
     assert result["checks"]["context_pack"]["score"] == 0
     assert "selected_skill" in result["checks"]["context_pack"]["missing"]
+
+
+def test_runtime_v2_session_remains_minimal_and_witness_supplies_context(tmp_path):
+    _write_passing_run(tmp_path)
+    session = json.loads(
+        (tmp_path / "state" / "demo.test" / "session.json").read_text(encoding="utf-8")
+    )
+    witness = json.loads(
+        (tmp_path / "state" / "demo.test" / "checkpoint_latest.json").read_text(encoding="utf-8")
+    )
+
+    assert session["schema_version"] == 2
+    assert "context_pack" not in session
+    assert witness["kind"] == "autopilot_checkpoint_witness"
+    assert witness["context_pack"]["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert check_autopilot_run.check_run(tmp_path, "demo.test")["passed"] is True
+
+
+def test_real_checkpoint_projection_satisfies_runtime_v2_context_contract(tmp_path):
+    _write_passing_run(tmp_path)
+
+    checkpoint = build_checkpoint(
+        tmp_path,
+        target="demo.test",
+        refresh_coverage=False,
+    )
+    result = check_autopilot_run.check_run(tmp_path, "demo.test")
+    witness = json.loads(
+        (tmp_path / "state" / "demo.test" / "checkpoint_latest.json").read_text(encoding="utf-8")
+    )
+
+    assert result["passed"] is True
+    assert result["checks"]["context_pack"]["score"] == 30
+    assert witness["context_pack"]["selected_skill"] == checkpoint["context_pack"]["selected_skill"]
+    assert witness["context_pack"]["knowledge_cards"] == checkpoint["context_pack"]["knowledge_cards"]
 
 
 def test_natural_language_only_action_fails_executable_check(tmp_path):

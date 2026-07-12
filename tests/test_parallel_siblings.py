@@ -258,6 +258,41 @@ class TestConsolidateFindings:
 
 
 class TestJoinAndConsolidate:
+    def test_join_preserves_existing_canonical_findings(self, fake_repo):
+        repo, target = fake_repo
+        findings_path = repo / "findings" / target / "findings.json"
+        findings_path.parent.mkdir(parents=True, exist_ok=True)
+        findings_path.write_text(json.dumps({
+            "schema_version": 1,
+            "target": target,
+            "total": 1,
+            "counts": {"severity": {"high": 1}, "type": {"sqli": 1}, "confidence": {"confirmed": 1}},
+            "findings": [{
+                "id": "existing-validated",
+                "url": "https://target.test/search?q=1",
+                "type": "sqli",
+                "severity": "high",
+                "confidence": "confirmed",
+                "validation_status": "validated",
+                "report_status": "not_generated",
+            }],
+        }))
+        results = [
+            pw.WorkerResult(
+                worker_id="w", kind="sibling", scratch_dir="", completed=True,
+                timed_out=False, exit_code=0,
+                findings=[{"endpoint": "/api/orders/1", "vuln_class": "IDOR", "severity": "high"}],
+            ),
+        ]
+
+        summary = pw.join_and_consolidate(results, target, repo_root=repo)
+        payload = json.loads(findings_path.read_text(encoding="utf-8"))
+
+        assert summary["appended_to_findings"] == 1
+        assert payload["total"] == 2
+        by_id = {item["id"]: item for item in payload["findings"]}
+        assert by_id["existing-validated"]["validation_status"] == "validated"
+
     def test_appends_new_findings_and_dedups_against_existing(self, fake_repo):
         repo, target = fake_repo
         existing = [{"endpoint": "/old", "vuln_class": "IDOR", "severity": "low"}]
@@ -277,7 +312,8 @@ class TestJoinAndConsolidate:
         assert summary["consolidated_findings"] == 2
         assert summary["appended_to_findings"] == 1
         contents = json.loads(findings_path.read_text())
-        endpoints = {f["endpoint"] for f in contents}
+        assert isinstance(contents, dict)
+        endpoints = {f["endpoint"] for f in contents["findings"]}
         assert endpoints == {"/old", "/new"}
 
     def test_summary_carries_worker_counts(self, fake_repo):

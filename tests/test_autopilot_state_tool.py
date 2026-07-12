@@ -16,6 +16,7 @@ from autopilot_state import (
 )
 from request_guard import record_request
 from runtime_state import update_runtime_state
+from target_paths import target_storage_key
 
 
 class TestAutopilotState:
@@ -23,7 +24,7 @@ class TestAutopilotState:
     def test_batch_state_selects_only_completed_domain_handoff(self, tmp_path):
         scope = tmp_path / "targets.txt"
         scope.write_text("alpha.test\nbeta.test\ngamma.test\n", encoding="utf-8")
-        batch_dir = tmp_path / "recon" / "targets"
+        batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
         batch_dir.mkdir(parents=True)
         (batch_dir / "batch_manifest.jsonl").write_text(
             '{"target":"alpha.test","status":"ok"}\n'
@@ -69,10 +70,63 @@ class TestAutopilotState:
         assert state["batch"]["pending"] == []
         assert "Stop: add at least one usable primary domain" in output
 
+    def test_same_stem_batch_lists_do_not_share_recon_wait_state(self, tmp_path):
+        first = tmp_path / "a" / "scope.txt"
+        second = tmp_path / "b" / "scope.txt"
+        first.parent.mkdir()
+        second.parent.mkdir()
+        first.write_text("alpha.test\n", encoding="utf-8")
+        second.write_text("beta.test\n", encoding="utf-8")
+        update_runtime_state(
+            tmp_path,
+            str(first),
+            mode="recon_only",
+            last_executed_workflow="run_recon_started",
+        )
+
+        first_state = build_autopilot_state(str(tmp_path), str(first))
+        second_state = build_autopilot_state(str(tmp_path), str(second))
+
+        assert target_storage_key(str(first)) != target_storage_key(str(second))
+        assert first_state["next_action"] == "wait_recon"
+        assert second_state["next_action"] == "run_batch_recon"
+
+    def test_owned_legacy_batch_state_and_recon_are_migrated(self, tmp_path):
+        scope = tmp_path / "targets.txt"
+        scope.write_text("alpha.test\n", encoding="utf-8")
+        old_state = tmp_path / "state" / "targets"
+        old_state.mkdir(parents=True)
+        (old_state / "session.json").write_text(json.dumps({
+            "schema_version": 2,
+            "target": str(scope.resolve()),
+            "storage_key": "targets",
+            "mode": "recon_only",
+            "last_executed_workflow": "run_recon",
+            "updated_at": "2026-07-12T00:00:00Z",
+        }), encoding="utf-8")
+        old_recon = tmp_path / "recon" / "targets"
+        old_recon.mkdir(parents=True)
+        (old_recon / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
+        (old_recon / "high_value_targets.json").write_text(
+            json.dumps([{"target": "alpha.test", "score": 5}]),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(tmp_path), str(scope))
+        new_key = target_storage_key(str(scope))
+
+        assert state["next_action"] == "select_completed_domain"
+        migrated_session = tmp_path / "state" / new_key / "session.json"
+        assert migrated_session.is_file()
+        assert json.loads(migrated_session.read_text(encoding="utf-8"))["storage_key"] == new_key
+        assert (tmp_path / "recon" / new_key / "completed_targets.txt").is_file()
+        assert not old_state.exists()
+        assert not old_recon.exists()
+
     def test_all_failed_current_batch_is_terminal(self, tmp_path):
         scope = tmp_path / "targets.txt"
         scope.write_text("alpha.test\nbeta.test\n", encoding="utf-8")
-        batch_dir = tmp_path / "recon" / "targets"
+        batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
         batch_dir.mkdir(parents=True)
         (batch_dir / "failed_targets.txt").write_text(
             "alpha.test\nbeta.test\nold.test\n",
@@ -94,7 +148,7 @@ class TestAutopilotState:
     def test_changed_batch_input_filters_old_candidates_and_adds_current_pending(self, tmp_path):
         scope = tmp_path / "targets.txt"
         scope.write_text("beta.test\n", encoding="utf-8")
-        batch_dir = tmp_path / "recon" / "targets"
+        batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
         batch_dir.mkdir(parents=True)
         (batch_dir / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
         (batch_dir / "pending_targets.txt").write_text("alpha.test\n", encoding="utf-8")
@@ -114,7 +168,7 @@ class TestAutopilotState:
     def test_partial_batch_keeps_current_pending_when_ranked_json_is_invalid(self, tmp_path):
         scope = tmp_path / "targets.txt"
         scope.write_text("alpha.test\nbeta.test\n", encoding="utf-8")
-        batch_dir = tmp_path / "recon" / "targets"
+        batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
         batch_dir.mkdir(parents=True)
         (batch_dir / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
         (batch_dir / "pending_targets.txt").write_text("beta.test\nold.test\n", encoding="utf-8")
@@ -259,7 +313,7 @@ class TestAutopilotState:
         list_file.write_text("api.target.com\n", encoding="utf-8")
         monkeypatch.chdir(repo_root)
 
-        recon_dir = repo_root / "recon" / "scope"
+        recon_dir = repo_root / "recon" / target_storage_key("scope.txt")
         recon_dir.mkdir(parents=True)
         (recon_dir / "completed_targets.txt").write_text("api.target.com\n")
         (recon_dir / "high_value_targets.json").write_text(

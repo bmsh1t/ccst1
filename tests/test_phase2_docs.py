@@ -146,7 +146,7 @@ def test_resume_docs_explain_storage_key_for_cidr_and_host_list_targets():
     assert "targets/<storage-key>/sessions/<session_id>/" in content
     assert "cidr targets replace `/` with `_`" in content
     assert "host-list" in content
-    assert "list filename stem" in content
+    assert "list filename stem plus a canonical-path digest" in content
 
 
 def test_tracked_claude_hook_contract_is_complete():

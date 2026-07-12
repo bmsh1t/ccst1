@@ -23,9 +23,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 try:
-    from finding_index import find_finding, load_finding_index, update_finding_status
+    from finding_index import find_finding, load_finding_index, update_finding_status, upsert_finding
 except ImportError:  # pragma: no cover - package import path
-    from tools.finding_index import find_finding, load_finding_index, update_finding_status
+    from tools.finding_index import find_finding, load_finding_index, update_finding_status, upsert_finding
 
 try:
     from target_paths import target_storage_key
@@ -1495,21 +1495,6 @@ def _finding_id_from_summary(summary: dict) -> str:
     return f"validate-{vuln_class}-{safe_endpoint[:48]}-{digest}"
 
 
-def _refresh_simple_finding_counts(payload: dict) -> None:
-    findings = [item for item in payload.get("findings", []) if isinstance(item, dict)]
-    payload["total"] = len(findings)
-    for field, out_key in (
-        ("severity", "severity_counts"),
-        ("type", "type_counts"),
-        ("confidence", "confidence_counts"),
-    ):
-        counts: dict[str, int] = {}
-        for finding in findings:
-            key = str(finding.get(field) or "unknown")
-            counts[key] = counts.get(key, 0) + 1
-        payload[out_key] = counts
-
-
 def upsert_ad_hoc_validated_finding(summary: dict, summary_path: str | Path, *, repo_root: str | Path | None = None) -> dict:
     """Create/update a structured finding for `/validate` runs without finding_id.
 
@@ -1526,40 +1511,10 @@ def upsert_ad_hoc_validated_finding(summary: dict, summary_path: str | Path, *, 
 
     repo = Path(repo_root) if repo_root is not None else BASE_DIR
     findings_dir = repo / "findings" / target_storage_key(target)
-    findings_dir.mkdir(parents=True, exist_ok=True)
-    path = findings_dir / "findings.json"
-    payload = load_finding_index(findings_dir)
-    if not payload:
-        payload = {
-            "schema_version": 1,
-            "target": target_storage_key(target),
-            "findings_dir": str(findings_dir),
-            "findings": [],
-        }
-
     finding_id = _finding_id_from_summary(summary)
-    findings = payload.setdefault("findings", [])
-    if not isinstance(findings, list):
-        findings = []
-        payload["findings"] = findings
-    existing = next(
-        (
-            item for item in findings
-            if isinstance(item, dict) and (
-                item.get("id") == finding_id
-                or (
-                    str(item.get("url") or "") == _finding_url_from_summary(summary)
-                    and str(item.get("vuln_class") or "").lower() == str(summary.get("vuln_class") or "").lower()
-                )
-            )
-        ),
-        None,
-    )
-
     all_pass = bool(summary.get("all_gates_passed"))
-    finding = existing if isinstance(existing, dict) else {}
-    finding.update({
-        "id": finding.get("id") or finding_id,
+    finding = {
+        "id": finding_id,
         "type": str(summary.get("vuln_class") or "validation").strip().lower() or "validation",
         "category": str(summary.get("vuln_class") or "validation").strip().lower() or "validation",
         "title": f"Validated {summary.get('vuln_class', 'validation')} on {_finding_url_from_summary(summary)}",
@@ -1573,13 +1528,13 @@ def upsert_ad_hoc_validated_finding(summary: dict, summary_path: str | Path, *, 
         "raw": f"validate:{summary.get('result', '')}:{summary_path}",
         "method": _validation_method_from_summary(summary, repo),
         "validation_status": "validated" if all_pass else "partial",
-        "report_status": str(finding.get("report_status") or "not_generated"),
+        "report_status": "not_generated",
         "validation_summary": str(summary_path),
         "validated_at": str(summary.get("validated_at") or ""),
         "vuln_class": str(summary.get("vuln_class") or "validation"),
         "report_draft_path": str(summary.get("report_path") or ""),
         "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    })
+    }
     if all_pass:
         vuln_class = str(summary.get("vuln_class") or "validation")
         finding["evidence_rubric"] = {
@@ -1594,11 +1549,9 @@ def upsert_ad_hoc_validated_finding(summary: dict, summary_path: str | Path, *, 
             "next_actions": [],
             "summary": f"{vuln_class.lower()}:validated via /validate gates",
         }
-    if existing is None:
-        findings.append(finding)
-    _refresh_simple_finding_counts(payload)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return {"status": "updated", "path": str(path), "id": finding["id"]}
+    result = upsert_finding(findings_dir, finding, target=target)
+    persisted = result.get("finding") or finding
+    return {"status": "updated", "path": result.get("path", ""), "id": persisted["id"]}
 
 
 def _validation_summary_path(report_path: str | Path) -> Path:

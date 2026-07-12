@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tools.mindmap import resolve_output_path
+from tools.target_paths import target_storage_key
 
 
 def test_resolve_output_path_uses_storage_key_for_host_list_target(tmp_path: Path, monkeypatch) -> None:
@@ -13,9 +14,10 @@ def test_resolve_output_path_uses_storage_key_for_host_list_target(tmp_path: Pat
     monkeypatch.chdir(tmp_path)
 
     output_path = resolve_output_path(target="scope.txt", repo_root=str(tmp_path))
+    storage_key = target_storage_key(str(list_file))
 
-    assert output_path == str(tmp_path / "findings" / "scope" / "mindmap.md")
-    assert (tmp_path / "findings" / "scope").is_dir()
+    assert output_path == str(tmp_path / "findings" / storage_key / "mindmap.md")
+    assert (tmp_path / "findings" / storage_key).is_dir()
 
 
 def test_resolve_output_path_keeps_cidr_under_storage_key(tmp_path: Path) -> None:

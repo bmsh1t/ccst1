@@ -819,6 +819,97 @@ def _is_reportable_structured_finding(finding):
     return True
 
 
+def _report_file_matches_finding(report_file, finding):
+    """Return whether an existing draft can be reused for this finding."""
+    finding_id = str(finding.get("id") or "").strip()
+    if not finding_id:
+        return False
+    try:
+        text = Path(report_file).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return f"- **Finding ID:** {finding_id}" in text
+
+
+def _occupied_report_ids(structured_findings, report_dir):
+    """Collect report IDs and their known finding owners from state and disk."""
+    occupied = {}
+    for finding in structured_findings:
+        if not isinstance(finding, dict):
+            continue
+        report_id = str(finding.get("report_id") or "").strip()
+        if report_id:
+            occupied.setdefault(report_id, str(finding.get("id") or ""))
+
+    index_path = Path(report_dir) / "INDEX.json"
+    try:
+        index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        index_payload = {}
+    for entry in index_payload.get("reports", []) if isinstance(index_payload, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        report_id = str(entry.get("id") or "").strip()
+        if report_id:
+            occupied.setdefault(report_id, str(entry.get("finding_id") or ""))
+
+    for path in Path(report_dir).glob("*.md"):
+        if path.name == "SUMMARY.md":
+            continue
+        occupied.setdefault(path.stem, "")
+    return occupied
+
+
+def _next_report_id(vuln_type, finding, report_dir, occupied):
+    """Allocate a stable, unoccupied numeric report ID for one finding."""
+    finding_id = str(finding.get("id") or "").strip()
+    requested = str(finding.get("report_id") or "").strip()
+    pattern = re.compile(rf"^{re.escape(vuln_type)}_(\d+)$")
+
+    # Recover a draft written immediately before the finding-status update.
+    for path in sorted(Path(report_dir).glob(f"{vuln_type}_*.md")):
+        if not pattern.fullmatch(path.stem):
+            continue
+        owner = occupied.get(path.stem)
+        if owner in (None, "", finding_id) and _report_file_matches_finding(path, finding):
+            return path.stem
+
+    if requested and pattern.fullmatch(requested):
+        owner = occupied.get(requested)
+        report_file = Path(report_dir) / f"{requested}.md"
+        owner_matches = owner in (None, "", finding_id)
+        file_matches = not report_file.exists() or _report_file_matches_finding(report_file, finding)
+        if owner_matches and file_matches:
+            return requested
+
+    highest = 0
+    for report_id in occupied:
+        match = pattern.fullmatch(str(report_id))
+        if match:
+            highest = max(highest, int(match.group(1)))
+
+    sequence = highest + 1
+    while True:
+        report_id = f"{vuln_type}_{sequence:03d}"
+        report_file = Path(report_dir) / f"{report_id}.md"
+        if report_id not in occupied and not report_file.exists():
+            return report_id
+        sequence += 1
+
+
+def _create_or_reuse_report(report_file, report_content, finding):
+    """Create without overwrite, or reuse a same-finding crash artifact."""
+    path = Path(report_file)
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(report_content)
+        return "created"
+    except FileExistsError:
+        if _report_file_matches_finding(path, finding):
+            return "reused"
+        raise
+
+
 def process_findings_dir(findings_dir):
     """Process all findings in a directory and generate reports."""
     structured_index = load_finding_index(findings_dir)
@@ -852,11 +943,12 @@ def process_findings_dir(findings_dir):
     if structured_findings:
         report_index.extend(_existing_structured_report_entries(structured_findings))
         total_reports = len(report_index)
+        occupied_report_ids = _occupied_report_ids(structured_findings, report_dir)
 
         reportable_findings = [
             finding for finding in structured_findings if _is_reportable_structured_finding(finding)
         ]
-        for i, finding in enumerate(reportable_findings, 1):
+        for finding in reportable_findings:
 
             vuln_type = finding.get("type") or finding.get("category") or "misconfig"
             if vuln_type not in VULN_TEMPLATES:
@@ -864,10 +956,21 @@ def process_findings_dir(findings_dir):
 
             report_content, title = generate_report(finding, vuln_type, target_name)
 
-            report_id = f"{vuln_type}_{i:03d}"
-            report_file = os.path.join(report_dir, f"{report_id}.md")
-            with open(report_file, "w") as rf:
-                rf.write(report_content)
+            while True:
+                report_id = _next_report_id(
+                    vuln_type,
+                    finding,
+                    report_dir,
+                    occupied_report_ids,
+                )
+                report_file = os.path.join(report_dir, f"{report_id}.md")
+                try:
+                    _create_or_reuse_report(report_file, report_content, finding)
+                    break
+                except FileExistsError:
+                    # Another writer claimed the candidate after allocation.
+                    occupied_report_ids[report_id] = ""
+            occupied_report_ids[report_id] = str(finding.get("id") or "")
 
             if finding.get("id"):
                 update_finding_status(

@@ -179,7 +179,7 @@ Explicit legacy local-agent runs started with `tools/hunt.py --agent` create a
 fresh session by default under
 `targets/<storage-key>/sessions/<session_id>/`. For domains and single IPs the
 storage key matches the target; CIDR targets replace `/` with `_`, and host-list
-targets use the list filename stem. `/pickup` only reads target-level
+targets use the list filename stem plus a canonical-path digest. `/pickup` only reads target-level
 history and structured findings. It does not automatically reuse an old
 `agent_session.json`. Use these commands only when you explicitly want to
 continue the previous agent's local state:

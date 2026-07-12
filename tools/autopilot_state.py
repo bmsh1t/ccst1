@@ -55,6 +55,7 @@ try:
     from tools.target_paths import (
         canonical_target_value,
         classify_target,
+        migrate_legacy_list_storage,
         target_list_entries,
         target_storage_key,
     )
@@ -73,6 +74,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import (  # type: ignore
         canonical_target_value,
         classify_target,
+        migrate_legacy_list_storage,
         target_list_entries,
         target_storage_key,
     )
@@ -1087,6 +1089,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
     resolved_target = canonical_target_value(target)
     if classify_target(resolved_target)["kind"] == "list":
+        migrate_legacy_list_storage(repo_root, resolved_target)
         return _build_batch_autopilot_state(repo_root, target, resolved_target)
     resume_summary = load_resume_summary(resolved_memory_dir, target)
     # autopilot_state 是启动态读取工具，不应改写 surface 的过滤日志。

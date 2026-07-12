@@ -8,8 +8,9 @@ below can be inspected by a human and by `check_autopilot_run.py`.
 
 For target `<target>` with storage key `<target_key>`:
 
-- `state/<target_key>/session.json`, `checkpoint.json`, or `autopilot_run.json`
-  records context-pack use, selected skill, and route detail.
+- `state/<target_key>/session.json` records only runtime-v2 breadcrumbs;
+  `state/<target_key>/checkpoint_latest.json` records context-pack use,
+  selected skill, and route detail.
 - `state/<target_key>/action_queue.json` records executable next actions and
   at least one resolved/final item.
 - `memory/evidence/<target_key>/ledger.jsonl` records raw request/response,

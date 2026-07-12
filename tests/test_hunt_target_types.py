@@ -169,7 +169,7 @@ def test_hunt_target_list_recon_stops_before_aggregate_scan(monkeypatch, tmp_pat
 
     seen = {"recon": [], "scan": [], "reports": [], "profile": [], "summary": [], "state": []}
     recon_root = tmp_path / "recon"
-    batch_dir = recon_root / "targets"
+    batch_dir = recon_root / hunt._target_storage_key(str(list_file))
     batch_dir.mkdir(parents=True)
     (batch_dir / "batch_manifest.jsonl").write_text(
         '{"target":"example.com","status":"ok"}\n',

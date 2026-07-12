@@ -28,7 +28,8 @@ Continue a previous hunt on a target.
 - `findings/<target>/findings.json`
 - `state/<target>/session.json`
 - Cached recon health and repo-source summary when present
-- Read-only checkpoint summary from `python3 tools/checkpoint.py --target <target> --no-refresh-coverage`
+- Checkpoint summary from `python3 tools/checkpoint.py --target <target> --no-refresh-coverage`;
+  this updates only the bounded runtime-v2 checkpoint witness
 
 ## Outputs
 
@@ -40,8 +41,8 @@ Continue a previous hunt on a target.
 
 ## Artifacts Written
 
-- None by default
-- `/pickup` is a read-only continuation summary
+- `state/<target_key>/checkpoint_latest.json`
+- `/pickup` does not apply target-memory write-back or modify knowledge/Skills/rules
 
 ## Resume Source
 
@@ -77,7 +78,8 @@ lane unless the current user turn explicitly excludes that lane.
 4. Shows structured finding follow-up from `findings/<target>/findings.json`
 5. Suggests the next validation or report command when a candidate is pending
 6. Suggests techniques based on tech stack + pattern DB
-7. Shows a read-only checkpoint decision and target-memory write-back proposal
+7. Shows a checkpoint decision and target-memory write-back proposal while
+   recording only the bounded runtime-v2 witness
 8. Asks: continue hunting, checkpoint write-back, validate/report pending findings, or re-run recon?
 
 ## Usage

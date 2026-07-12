@@ -42,7 +42,7 @@ try:
     )
     from tools.evidence_ledger import record_entry
     from tools.evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
-    from tools.finding_index import update_finding_status
+    from tools.finding_index import load_finding_index, update_finding_status, upsert_finding
     from tools.public_exposure_signals import (
         public_exposure_candidate_ready as shared_public_exposure_candidate_ready,
         public_exposure_marker_sources as shared_public_exposure_marker_sources,
@@ -62,7 +62,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from evidence_ledger import record_entry  # type: ignore
     from evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence  # type: ignore
-    from finding_index import update_finding_status  # type: ignore
+    from finding_index import load_finding_index, update_finding_status, upsert_finding  # type: ignore
     from public_exposure_signals import (  # type: ignore
         public_exposure_candidate_ready as shared_public_exposure_candidate_ready,
         public_exposure_marker_sources as shared_public_exposure_marker_sources,
@@ -204,7 +204,7 @@ def _find_existing_finding_id_by_url(
     finding_type: str,
     vuln_class: str,
 ) -> str:
-    payload = _read_json_object(findings_dir / "findings.json")
+    payload = load_finding_index(findings_dir)
     needle = _normalized_url_for_match(url)
     if not needle:
         return ""
@@ -225,7 +225,7 @@ def _find_existing_finding_id_by_url(
 
 
 def _find_existing_finding(findings_dir: Path, finding_id: str) -> dict[str, Any]:
-    payload = _read_json_object(findings_dir / "findings.json")
+    payload = load_finding_index(findings_dir)
     for item in payload.get("findings", []):
         if isinstance(item, dict) and str(item.get("id") or "") == finding_id:
             return item
@@ -301,87 +301,30 @@ def _create_runner_finding(
     url = str(summary.get("url") or summary.get("raw_endpoint") or "").strip()
     lane = str(summary.get("lane") or "").strip()
     finding_type = _runner_finding_type(vuln_class, lane)
-    path = findings_dir / "findings.json"
-    payload = _read_json_object(path)
-    if not payload:
-        payload = {
-            "schema_version": 1,
-            "generated_at": now_utc(),
-            "target": target,
-            "findings_dir": str(findings_dir),
-            "total": 0,
-            "counts": {"severity": {}, "type": {}, "confidence": {}},
-            "artifacts": {"summary_json": "", "summary_txt": ""},
-            "findings": [],
-        }
-
-    findings = payload.setdefault("findings", [])
-    if not isinstance(findings, list):
-        findings = []
-        payload["findings"] = findings
-
-    finding = next(
-        (item for item in findings if isinstance(item, dict) and item.get("id") == finding_id),
-        None,
-    )
-    if finding is None:
-        finding = {
-            "id": finding_id,
-            "type": finding_type,
-            "category": finding_type,
-            "title": f"Validated {vuln_class or finding_type} on {url or target}",
-            "summary": str((summary.get("evidence_rubric") or {}).get("summary") or summary.get("result") or "")[:240],
-            "url": url,
-            "severity": _runner_finding_severity(finding_type),
-            "confidence": "confirmed",
-            "source_file": str(summary.get("summary_path") or ""),
-            "line_number": 0,
-            "template_id": "",
-            "raw": f"validation_runner:{lane}:{finding_id}",
-            "validation_status": "unvalidated",
-            "report_status": "not_generated",
-        }
-        findings.append(finding)
-
-    finding.update({
+    result = upsert_finding(findings_dir, {
+        "id": finding_id,
         "type": finding_type,
-        "category": finding.get("category") or finding_type,
-        "url": url or finding.get("url", ""),
+        "category": finding_type,
+        "title": f"Validated {vuln_class or finding_type} on {url or target}",
+        "summary": str((summary.get("evidence_rubric") or {}).get("summary") or summary.get("result") or "")[:240],
+        "url": url,
+        "severity": _runner_finding_severity(finding_type),
         "confidence": "confirmed",
+        "source_file": str(summary.get("summary_path") or ""),
+        "line_number": 0,
+        "template_id": "",
+        "raw": f"validation_runner:{lane}:{finding_id}",
         # 保留 runner 的证据 rubric，供 /validate 和 checkpoint 展示。
         # /validate 仍是最终报告 gate；这里不是把 runner 证据当最终结论。
-        "evidence_rubric": summary.get("evidence_rubric") or finding.get("evidence_rubric") or {},
+        "evidence_rubric": summary.get("evidence_rubric") or {},
         "validation_status": validation_status,
         "validation_summary": validation_summary,
         "validated_at": str(summary.get("generated_at") or now_utc()),
         "vuln_class": vuln_class,
         "updated_at": now_utc(),
-    })
-    finding.setdefault("report_status", "not_generated")
-    finding.setdefault("severity", _runner_finding_severity(finding_type))
-
-    payload["total"] = len([item for item in findings if isinstance(item, dict)])
-    severity_counts: dict[str, int] = {}
-    type_counts: dict[str, int] = {}
-    confidence_counts: dict[str, int] = {}
-    for item in findings:
-        if not isinstance(item, dict):
-            continue
-        severity = str(item.get("severity") or "medium")
-        ftype = str(item.get("type") or "exposure")
-        confidence = str(item.get("confidence") or "medium")
-        severity_counts[severity] = severity_counts.get(severity, 0) + 1
-        type_counts[ftype] = type_counts.get(ftype, 0) + 1
-        confidence_counts[confidence] = confidence_counts.get(confidence, 0) + 1
-    payload["counts"] = {
-        "severity": dict(sorted(severity_counts.items())),
-        "type": dict(sorted(type_counts.items())),
-        "confidence": dict(sorted(confidence_counts.items())),
-    }
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return finding
+        "report_status": "not_generated",
+    }, target=target)
+    return result.get("finding") or {}
 
 
 def _endpoint_markers(url: str) -> list[str]:

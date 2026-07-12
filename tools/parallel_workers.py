@@ -50,8 +50,10 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.finding_index import upsert_findings
     from tools.target_paths import target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from finding_index import upsert_findings  # type: ignore
     from target_paths import target_storage_key  # type: ignore
 
 
@@ -517,29 +519,13 @@ def _consolidate_findings(results: Iterable[WorkerResult]) -> list[dict]:
 
 
 def _append_to_target_findings(target: str, new_findings: list[dict], repo: Path) -> int:
-    """Append consolidated rows to findings/<target>/findings.json.
+    """Upsert consolidated rows into canonical findings/<target>/findings.json.
 
     Returns count of rows actually appended (after de-dup against existing).
     """
-    findings_path = repo / "findings" / target_storage_key(target) / "findings.json"
-    findings_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_json_safely(findings_path, [])
-    if not isinstance(existing, list):
-        existing = []
-    seen_keys = {
-        (str(f.get("endpoint") or f.get("url") or ""), str(f.get("vuln_class") or "").lower())
-        for f in existing
-    }
-    appended = 0
-    for f in new_findings:
-        key = (str(f.get("endpoint") or f.get("url") or ""), str(f.get("vuln_class") or "").lower())
-        if key in seen_keys:
-            continue
-        existing.append(f)
-        seen_keys.add(key)
-        appended += 1
-    findings_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-    return appended
+    findings_dir = repo / "findings" / target_storage_key(target)
+    result = upsert_findings(findings_dir, new_findings, target=target)
+    return int(result.get("created", 0) or 0)
 
 
 def _trigger_matrix_rebuild(target: str, repo: Path) -> bool:

@@ -12,7 +12,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -264,14 +266,169 @@ def build_finding_index(findings_dir: str | Path, *, target: str | None = None) 
     }
 
 
-def _load_json_object(path: Path) -> dict[str, Any]:
+def _load_json_value(path: Path) -> Any:
     if not path.is_file():
-        return {}
+        return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _empty_finding_index(findings_dir: Path, *, target: str | None = None) -> dict[str, Any]:
+    resolved_target = str(target or findings_dir.name)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": _now_utc(),
+        "target": resolved_target,
+        "findings_dir": str(findings_dir),
+        "total": 0,
+        "counts": {"severity": {}, "type": {}, "confidence": {}},
+        "artifacts": {
+            "summary_json": "summary.json" if (findings_dir / "summary.json").is_file() else "",
+            "summary_txt": "summary.txt" if (findings_dir / "summary.txt").is_file() else "",
+        },
+        "findings": [],
+    }
+
+
+def _finding_semantic_key(finding: dict[str, Any]) -> tuple[str, str]:
+    endpoint = str(finding.get("url") or finding.get("endpoint") or "").strip().rstrip("/")
+    vuln_class = str(
+        finding.get("vuln_class")
+        or finding.get("type")
+        or finding.get("category")
+        or "finding"
+    ).strip().lower().replace("-", "_")
+    return endpoint, vuln_class
+
+
+def _generated_finding_id(finding: dict[str, Any]) -> str:
+    endpoint, vuln_class = _finding_semantic_key(finding)
+    source = str(finding.get("source_file") or finding.get("source") or "")
+    raw = str(finding.get("raw") or finding.get("reason") or "")
+    identity = f"{endpoint}|{vuln_class}" if endpoint else f"{vuln_class}|{source}|{raw}"
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]
+    prefix = re.sub(r"[^a-z0-9_-]+", "_", vuln_class) or "finding"
+    return f"{prefix}_{digest}"
+
+
+def _normalize_finding(finding: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(finding)
+    endpoint = str(normalized.get("url") or normalized.get("endpoint") or "").strip()
+    vuln_type = str(
+        normalized.get("type")
+        or normalized.get("category")
+        or normalized.get("vuln_class")
+        or "finding"
+    ).strip().lower().replace("-", "_")
+    if endpoint:
+        normalized["url"] = str(normalized.get("url") or endpoint)
+    if vuln_type:
+        normalized["type"] = str(normalized.get("type") or vuln_type)
+        normalized["category"] = str(normalized.get("category") or vuln_type)
+    normalized["id"] = str(normalized.get("id") or _generated_finding_id(normalized))
+    normalized.setdefault("validation_status", "unvalidated")
+    normalized.setdefault("report_status", "not_generated")
+    return normalized
+
+
+def _merge_finding_rows(
+    existing: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge evidence fields without resetting advanced lifecycle state."""
+    merged = dict(existing)
+    for key, value in candidate.items():
+        if value in (None, ""):
+            continue
+        if (
+            key == "validation_status"
+            and value == "unvalidated"
+            and existing.get(key) not in (None, "", "unvalidated")
+        ):
+            continue
+        if (
+            key == "report_status"
+            and value == "not_generated"
+            and existing.get(key) not in (None, "", "not_generated")
+        ):
+            continue
+        merged[key] = value
+    if _finding_semantic_key(existing) == _finding_semantic_key(candidate):
+        merged["id"] = existing.get("id") or candidate.get("id")
+    return _normalize_finding(merged)
+
+
+def _legacy_list_to_index(
+    findings_dir: Path,
+    rows: list[Any],
+    *,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Convert the historical target-level list payload into canonical schema."""
+    payload = _empty_finding_index(findings_dir, target=target)
+    findings: list[dict[str, Any]] = []
+    index_by_id: dict[str, int] = {}
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        finding = _normalize_finding(raw)
+        finding_id = str(finding["id"])
+        existing_index = index_by_id.get(finding_id)
+        if existing_index is None:
+            index_by_id[finding_id] = len(findings)
+            findings.append(finding)
+            continue
+        findings[existing_index] = _merge_finding_rows(findings[existing_index], finding)
+    payload["findings"] = findings
+    _refresh_finding_counts(payload)
+    return payload
+
+
+def _write_finding_payload(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically persist the canonical target-level finding payload."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def _load_finding_payload(
+    path: Path,
+    findings_dir: Path,
+    *,
+    target: str | None = None,
+    migrate_legacy: bool = False,
+) -> dict[str, Any]:
+    raw = _load_json_value(path)
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, list):
         return {}
-    return payload if isinstance(payload, dict) else {}
+    payload = _legacy_list_to_index(findings_dir, raw, target=target)
+    if migrate_legacy:
+        _write_finding_payload(path, payload)
+    return payload
 
 
 def _preserve_existing_finding_state(payload: dict[str, Any], existing: dict[str, Any]) -> None:
@@ -369,17 +526,111 @@ def _refresh_finding_counts(payload: dict[str, Any]) -> None:
 
 
 def write_finding_index(findings_dir: str | Path, *, target: str | None = None, output: str | Path | None = None) -> dict[str, Any]:
-    payload = build_finding_index(findings_dir, target=target)
-    output_path = Path(output) if output else Path(findings_dir) / "findings.json"
-    _preserve_existing_finding_state(payload, _load_json_object(output_path))
+    root = Path(findings_dir)
+    payload = build_finding_index(root, target=target)
+    output_path = Path(output) if output else root / "findings.json"
+    existing = _load_finding_payload(
+        output_path,
+        root,
+        target=target,
+        migrate_legacy=False,
+    )
+    _preserve_existing_finding_state(payload, existing)
     _refresh_finding_counts(payload)
-    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_finding_payload(output_path, payload)
     return payload
 
 
 def load_finding_index(findings_dir: str | Path) -> dict[str, Any]:
-    path = Path(findings_dir) / "findings.json"
-    return _load_json_object(path)
+    root = Path(findings_dir)
+    path = root / "findings.json"
+    return _load_finding_payload(path, root, migrate_legacy=True)
+
+
+def upsert_findings(
+    findings_dir: str | Path,
+    findings: list[dict[str, Any]],
+    *,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Create or merge target findings through the canonical mutation boundary."""
+    root = Path(findings_dir)
+    path = root / "findings.json"
+    payload = load_finding_index(root) or _empty_finding_index(root, target=target)
+    if target:
+        payload["target"] = target
+    payload.setdefault("schema_version", SCHEMA_VERSION)
+    payload.setdefault("findings_dir", str(root))
+
+    existing_rows = [
+        _normalize_finding(item)
+        for item in payload.get("findings", [])
+        if isinstance(item, dict)
+    ]
+    payload["findings"] = existing_rows
+    id_to_index = {str(item.get("id")): idx for idx, item in enumerate(existing_rows)}
+    semantic_to_index = {
+        _finding_semantic_key(item): idx
+        for idx, item in enumerate(existing_rows)
+        if _finding_semantic_key(item)[0]
+    }
+
+    created = 0
+    updated = 0
+    mutated: list[dict[str, Any]] = []
+    for raw in findings:
+        if not isinstance(raw, dict):
+            continue
+        candidate = _normalize_finding(raw)
+        index = id_to_index.get(str(candidate.get("id") or ""))
+        semantic_key = _finding_semantic_key(candidate)
+        if index is None and semantic_key[0]:
+            index = semantic_to_index.get(semantic_key)
+
+        if index is None:
+            existing_rows.append(candidate)
+            index = len(existing_rows) - 1
+            created += 1
+        else:
+            existing = existing_rows[index]
+            candidate = _merge_finding_rows(existing, candidate)
+            existing_rows[index] = candidate
+            updated += 1
+
+        candidate["updated_at"] = _now_utc()
+        existing_rows[index] = candidate
+        id_to_index[str(candidate.get("id") or "")] = index
+        persisted_semantic_key = _finding_semantic_key(candidate)
+        if persisted_semantic_key[0]:
+            semantic_to_index[persisted_semantic_key] = index
+        mutated.append(candidate)
+
+    payload["updated_at"] = _now_utc()
+    _refresh_finding_counts(payload)
+    _write_finding_payload(path, payload)
+    return {
+        "created": created,
+        "updated": updated,
+        "findings": mutated,
+        "payload": payload,
+        "path": str(path),
+    }
+
+
+def upsert_finding(
+    findings_dir: str | Path,
+    finding: dict[str, Any],
+    *,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Single-row convenience wrapper around :func:`upsert_findings`."""
+    result = upsert_findings(findings_dir, [finding], target=target)
+    return {
+        "created": bool(result["created"]),
+        "finding": result["findings"][0] if result["findings"] else {},
+        "payload": result["payload"],
+        "path": result["path"],
+    }
 
 
 def find_finding(findings_dir: str | Path, finding_id: str) -> dict[str, Any] | None:
@@ -412,7 +663,8 @@ def update_finding_status(findings_dir: str | Path, finding_id: str, **updates: 
     if updated_finding is None:
         return None
 
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _refresh_finding_counts(payload)
+    _write_finding_payload(path, payload)
     return updated_finding
 
 

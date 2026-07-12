@@ -27,7 +27,8 @@ def test_target_paths_canonicalizes_host_port_cidr_and_lists(tmp_path):
         "target": "192.168.1.0/24",
     }
     assert target_paths.canonical_target_value(str(scope)) == str(scope.resolve())
-    assert target_paths.target_storage_key(str(scope)) == "scope"
+    assert target_paths.target_storage_key(str(scope)).startswith("scope--")
+    assert target_paths.legacy_list_storage_key(str(scope)) == "scope"
     assert target_paths.target_storage_key("192.168.1.0/24") == "192.168.1.0_24"
     assert target_paths.target_storage_key("app.example.test:8443") == "app.example.test:8443"
     assert target_paths.classify_target("http://127.0.0.1:3002/#/login") == {
@@ -40,6 +41,22 @@ def test_target_paths_canonicalizes_host_port_cidr_and_lists(tmp_path):
     }
     assert target_paths.canonical_target_value("http://127.0.0.1:3002/#/login") == "127.0.0.1:3002"
     assert target_paths.target_storage_key("http://127.0.0.1:3002/#/login") == "127.0.0.1:3002"
+
+
+def test_target_paths_isolates_same_stem_lists_by_canonical_path(tmp_path):
+    first = tmp_path / "a" / "scope.txt"
+    second = tmp_path / "b" / "scope.txt"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text("same.test\n", encoding="utf-8")
+    second.write_text("same.test\n", encoding="utf-8")
+
+    first_key = target_paths.target_storage_key(str(first))
+    second_key = target_paths.target_storage_key(str(second))
+
+    assert first_key.startswith("scope--")
+    assert second_key.startswith("scope--")
+    assert first_key != second_key
 
 
 def test_url_belongs_to_target_distinguishes_direct_evidence_from_chain_context():
@@ -308,6 +325,7 @@ def test_parallel_workers_join_consolidate_preserves_highest_severity_and_append
         "matrix_rebuilt": True,
     }
     assert second["appended_to_findings"] == 0
-    assert len(findings) == 1
-    assert findings[0]["severity"] == "high"
-    assert findings[0]["worker_id"] == "w2"
+    assert findings["schema_version"] == 1
+    assert len(findings["findings"]) == 1
+    assert findings["findings"][0]["severity"] == "high"
+    assert findings["findings"][0]["worker_id"] == "w2"
