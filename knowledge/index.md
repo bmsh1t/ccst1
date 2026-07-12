@@ -13,6 +13,23 @@ Skill 与检查层决定。
 以后新增经验、技巧、bypass、判断门、路由触发或稳定执行能力时，先登记 capability，
 再决定落到哪个具体层：
 
+### 质量门
+
+提交新增或修改的知识文档前运行：
+
+```bash
+python3 tools/knowledge_audit.py
+```
+
+审计会检查 registry 身份、`kind/layer/load` 契约、active 文档登记、v2 frontmatter、
+类型对应的信号/证据/停止/流程 section，以及 `deep_refs`、`related_cards` 和 Markdown
+内部链接。`error` 表示加载或引用已经不可信，默认会以非零退出；旧 card 缺少 v2
+frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳入门禁时使用
+`python3 tools/knowledge_audit.py --strict`。完整 JSON 报告可用 `--json` 输出。
+
+质量门是显式治理命令和 pytest 回归，不进入每次 `/autopilot` 启动 preflight；运行时仍由
+`context_pack` 根据目标证据和 registry 元数据选择有限卡片。
+
 | 能力类型 | 落位 |
 |---|---|
 | 技巧 / bypass / 经验 | `knowledge/cards/` 或 references |

@@ -118,3 +118,15 @@ deep_refs:
 - 外部材料必须先蒸馏成触发条件、证据门槛、停止条件或项目内 payload/playbook；
   不在知识卡里直接挂载本机绝对路径、整篇原文或一次性题解。
 - 不保存真实凭证、个人数据、客户数据或未经脱敏的响应正文。
+
+## 提交前质量门
+
+新增或修改 card、payload pack、playbook 后，在仓库根目录运行：
+
+```bash
+python3 tools/knowledge_audit.py
+```
+
+必须修复所有 `error`。没有 frontmatter 的旧 card 会暂时产生 `warning`，可按能力演进
+逐张迁移；`--strict` 用于迁移阶段把 warning 也作为失败条件。不要为了通过审计添加
+固定字数、代码块或与当前路由无关的工具映射。

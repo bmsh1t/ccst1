@@ -24,6 +24,10 @@ try:
     from tools.closure_resolver import ClosureResolver
     from tools.coverage_matrix import find_high_value_gaps, load_matrix
     from tools.evidence_ledger import build_summary as build_evidence_summary
+    from tools.knowledge_registry import (
+        load_card_metadata_by_file,
+        load_card_paths,
+    )
     from tools.structured_findings import (
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
@@ -35,6 +39,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from closure_resolver import ClosureResolver  # type: ignore
     from coverage_matrix import find_high_value_gaps, load_matrix  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary  # type: ignore
+    from knowledge_registry import (  # type: ignore
+        load_card_metadata_by_file,
+        load_card_paths,
+    )
     from structured_findings import (  # type: ignore
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
@@ -309,98 +317,25 @@ COMMAND_INJECTION_RE = re.compile(
     re.I,
 )
 
-CARD_PATHS = {
-    "api-idor": "knowledge/cards/api-idor.md",
-    "auth-access": "knowledge/cards/auth-access.md",
-    "auth-hidden-switches": "knowledge/cards/auth-hidden-switches.md",
-    "auth-sso-token-edge-cases": "knowledge/cards/auth-sso-token-edge-cases.md",
-    "auth-credential-recovery-flows": "knowledge/cards/auth-credential-recovery-flows.md",
-    "api-testing-workflow": "knowledge/cards/api-testing-workflow.md",
-    "business-logic-state-machines": "knowledge/cards/business-logic-state-machines.md",
-    "missing-parameter-discovery": "knowledge/cards/missing-parameter-discovery.md",
-    "path-pattern-management-exposure": "knowledge/cards/path-pattern-management-exposure.md",
-    "ssrf-url-fetch": "knowledge/cards/ssrf-url-fetch.md",
-    "ssrf-internal-impact": "knowledge/cards/ssrf-internal-impact.md",
-    "graphql": "knowledge/cards/graphql.md",
-    "sqli-hidden-surfaces": "knowledge/cards/sqli-hidden-surfaces.md",
-    "nosql-query-injection": "knowledge/cards/nosql-query-injection.md",
-    "xxe-xml-parser": "knowledge/cards/xxe-xml-parser.md",
-    "path-traversal-file-read": "knowledge/cards/path-traversal-file-read.md",
-    "server-side-template-injection": "knowledge/cards/server-side-template-injection.md",
-    "insecure-deserialization": "knowledge/cards/insecure-deserialization.md",
-    "xss-client-injection": "knowledge/cards/xss-client-injection.md",
-    "browser-client-boundaries": "knowledge/cards/browser-client-boundaries.md",
-    "proxy-cache-boundaries": "knowledge/cards/proxy-cache-boundaries.md",
-    "websocket-realtime-api": "knowledge/cards/websocket-realtime-api.md",
-    "information-disclosure-source-config": "knowledge/cards/information-disclosure-source-config.md",
-    "web-llm-tool-chains": "knowledge/cards/web-llm-tool-chains.md",
-    "upload-parser": "knowledge/cards/upload-parser.md",
-    "upload-to-execution": "knowledge/cards/upload-to-execution.md",
-    "controlled-rce-impact": "knowledge/cards/controlled-rce-impact.md",
-    "node-prototype-pollution": "knowledge/cards/node-prototype-pollution.md",
-    "signature-scope-mismatch": "knowledge/cards/signature-scope-mismatch.md",
-    "view-differential": "knowledge/cards/view-differential.md",
-    "path-allowlist-normalization": "knowledge/cards/path-allowlist-normalization.md",
-    "connection-string-injection": "knowledge/cards/connection-string-injection.md",
-    "import-migration-trust": "knowledge/cards/import-migration-trust.md",
-    "stale-derived-authz": "knowledge/cards/stale-derived-authz.md",
-    "connection-reuse-key": "knowledge/cards/connection-reuse-key.md",
-    "redirect-header-leak": "knowledge/cards/redirect-header-leak.md",
-    "xs-leak-oracle": "knowledge/cards/xs-leak-oracle.md",
-    "cli-argument-injection": "knowledge/cards/cli-argument-injection.md",
-    "type-confusion-controlflow": "knowledge/cards/type-confusion-controlflow.md",
-    "second-order-sink": "knowledge/cards/second-order-sink.md",
-    "render-pipeline-ssrf": "knowledge/cards/render-pipeline-ssrf.md",
-    "race-conditions": "knowledge/cards/race-conditions.md",
-    "coverage-prompts": "knowledge/cards/coverage-prompts.md",
-    "dead-ends": "knowledge/cards/dead-ends.md",
-}
-
-CAPABILITY_REGISTRY_PATH = "knowledge/capabilities.yaml"
+CARD_PATHS = load_card_paths(BASE_DIR)
 
 
 def _load_capability_registry(repo_root: Path | str = BASE_DIR) -> dict[str, dict[str, str]]:
-    """读取知识能力注册表的受控 YAML 子集。
-
-    这里不引入 PyYAML；registry 当前只使用简单 scalar 字段和 list 字段。
-    context-pack 只需要 card file -> layer/load/purpose 这些轻量元信息。
-    """
-    repo = Path(repo_root)
-    path = repo / CAPABILITY_REGISTRY_PATH
-    if not path.is_file():
-        path = BASE_DIR / CAPABILITY_REGISTRY_PATH
-    if not path.is_file():
-        return {}
-
-    items: list[dict[str, str]] = []
-    current: dict[str, str] | None = None
-    in_capabilities = False
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line == "capabilities:":
-            in_capabilities = True
-            continue
-        if not in_capabilities:
-            continue
-        if line.startswith("  - id: "):
-            if current:
-                items.append(current)
-            current = {"id": line.split(":", 1)[1].strip().strip('"')}
-            continue
-        if current is not None and line.startswith("    ") and ":" in line and not line.lstrip().startswith("- "):
-            key, value = line.strip().split(":", 1)
-            current[key] = value.strip().strip('"')
-    if current:
-        items.append(current)
-
+    """读取 card file -> metadata；临时 target repo 可回落到安装仓库。"""
+    raw = load_card_metadata_by_file(repo_root, fallback_root=BASE_DIR)
     return {
-        item["file"]: item
-        for item in items
-        if item.get("kind") == "card" and item.get("file")
+        path: {key: str(value) for key, value in item.items() if value is not None}
+        for path, item in raw.items()
     }
 
 
-def _card_capability(path: str, repo_root: Path | str = BASE_DIR) -> dict[str, str]:
-    registry = _load_capability_registry(repo_root)
+def _card_capability(
+    path: str,
+    repo_root: Path | str = BASE_DIR,
+    *,
+    registry: dict[str, dict[str, str]] | None = None,
+) -> dict[str, str]:
+    registry = registry if registry is not None else _load_capability_registry(repo_root)
     item = registry.get(path, {})
     return {
         "file": path,
@@ -412,7 +347,8 @@ def _card_capability(path: str, repo_root: Path | str = BASE_DIR) -> dict[str, s
 
 
 def _card_capabilities(paths: list[str], repo_root: Path | str = BASE_DIR) -> list[dict[str, str]]:
-    return [_card_capability(path, repo_root) for path in paths]
+    registry = _load_capability_registry(repo_root)
+    return [_card_capability(path, repo_root, registry=registry) for path in paths]
 
 
 def _budget_knowledge_cards(
@@ -430,8 +366,9 @@ def _budget_knowledge_cards(
     selected: list[str] = []
     deferred: list[str] = []
     case_router_count = 0
+    registry = _load_capability_registry(repo_root)
     for path in _dedupe(paths):
-        meta = _card_capability(path, repo_root)
+        meta = _card_capability(path, repo_root, registry=registry)
         if meta["layer"] == "case-router" and case_router_count >= max_case_router:
             deferred.append(path)
             continue

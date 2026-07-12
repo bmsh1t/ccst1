@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 
 from context_pack import build_context_pack
+from knowledge_registry import load_registry
 
 
 DISTILLED_ROUTER_CARDS = [
@@ -85,34 +86,13 @@ def _repo_root() -> Path:
 
 
 def _load_capability_registry() -> tuple[dict[str, int], list[dict[str, str]]]:
-    """解析本仓库受控的 capabilities.yaml 子集，避免为测试引入 PyYAML 依赖。"""
-    text = (_repo_root() / "knowledge" / "capabilities.yaml").read_text(encoding="utf-8")
-    contracts: dict[str, int] = {}
-    for key in ("max_core_cards", "default_cards_max"):
-        for line in text.splitlines():
-            if line.strip().startswith(f"{key}:"):
-                contracts[key] = int(line.split(":", 1)[1].strip())
-
-    capabilities: list[dict[str, str]] = []
-    current: dict[str, str] | None = None
-    in_capabilities = False
-    for line in text.splitlines():
-        if line == "capabilities:":
-            in_capabilities = True
-            continue
-        if not in_capabilities:
-            continue
-        if line.startswith("  - id: "):
-            if current:
-                capabilities.append(current)
-            current = {"id": line.split(":", 1)[1].strip().strip('"')}
-            continue
-        if current is not None and line.startswith("    ") and ":" in line and not line.lstrip().startswith("- "):
-            key, value = line.strip().split(":", 1)
-            current[key] = value.strip().strip('"')
-    if current:
-        capabilities.append(current)
-    return contracts, capabilities
+    """通过生产 parser 读取 registry，避免测试维护第二套 YAML 契约。"""
+    registry = load_registry(_repo_root())
+    contracts = {
+        key: int(registry.contracts[key])
+        for key in ("max_core_cards", "default_cards_max")
+    }
+    return contracts, [dict(item) for item in registry.capabilities]
 
 
 def _card_capabilities() -> list[dict[str, str]]:
