@@ -1,4 +1,30 @@
+---
+id: signature-scope-mismatch
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - bb-methodology
+  - triage-validation
+trigger_tags:
+  - signature-scope
+  - signed-bytes
+  - xsw
+  - jwks
+  - binding
+risk: high
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # 验签范围与消费对象不一致（签名/密钥绑定缺失）
+
+## Quick Recall
+
+- 触发：签名覆盖范围、key binding、JWKS 选择或验签/消费两侧规范化不一致。
+- 最小验证：对自有测试对象只改变一个未签名字段/引用，比较验签结果与最终消费对象。
+- 证据门：必须证明未签名或错绑数据影响身份、权限或业务处理，不以解析差异定性。
+- 停止：密钥与身份强绑定、签名覆盖完整请求且两侧消费同一规范化结果。
 
 ## 适用场景
 

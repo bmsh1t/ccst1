@@ -1,4 +1,29 @@
+---
+id: view-differential
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - bb-methodology
+  - security-arsenal
+trigger_tags:
+  - view-differential
+  - validation-view
+  - consumption-view
+  - canonicalization
+risk: medium
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # 校验视图与执行视图的规范化/编码/截断差异
+
+## Quick Recall
+
+- 触发：校验、日志、缓存和实际执行对同一输入采用不同编码/截断/规范化视图。
+- 最小验证：对测试输入只改变一个边界表示，比较校验结果与最终消费对象。
+- 证据门：必须证明差异穿过安全判定并改变资源、权限或执行行为。
+- 停止：两侧共用同一规范化结果，或差异不改变安全行为。
 
 ## 适用场景
 

@@ -1,4 +1,29 @@
+---
+id: stale-derived-authz
+type: technique-card
+related_skills:
+  - bb-methodology
+  - web2-vuln-classes
+  - triage-validation
+trigger_tags:
+  - stale-authz
+  - role-cache
+  - revoked-permission
+  - deprovision
+risk: medium
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # 授权/凭证的派生态未随源变更及时失效
+
+## Quick Recall
+
+- 触发：角色撤销、成员移除或权限变更后仍存在旧 token、缓存或派生连接。
+- 最小验证：用测试主体记录授权前后 baseline，在受控时间窗复用旧派生状态。
+- 证据门：必须证明撤销后仍能访问具体资源/操作，并记录时间与主体差异。
+- 停止：撤销即时传播到所有派生态，或无法构造低风险的先授权后撤销窗口。
 
 ## 适用场景
 

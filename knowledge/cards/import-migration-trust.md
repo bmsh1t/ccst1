@@ -1,4 +1,29 @@
+---
+id: import-migration-trust
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - bb-methodology
+  - triage-validation
+trigger_tags:
+  - import
+  - migration
+  - restore
+  - trust-boundary
+risk: medium
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # 导入/恢复/迁移类功能坍塌信任边界
+
+## Quick Recall
+
+- 触发：导入、恢复、迁移或备份流程把外部对象带入新的权限/租户上下文。
+- 最小验证：用测试 fixture 追踪导入对象的 owner、来源和操作级校验。
+- 证据门：必须证明导入后权限、身份绑定或敏感字段发生越界变化。
+- 停止：每一步都有操作级校验，或继续验证需要真实数据和破坏性状态变化。
 
 ## 适用场景
 

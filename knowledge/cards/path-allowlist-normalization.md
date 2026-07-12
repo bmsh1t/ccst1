@@ -1,4 +1,29 @@
+---
+id: path-allowlist-normalization
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - web2-recon
+  - security-arsenal
+trigger_tags:
+  - allowlist
+  - normalization
+  - startswith
+  - dot-segment
+risk: medium
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # 路径前缀/白名单归一化绕过（含 off-by-slash）
+
+## Quick Recall
+
+- 触发：路径 allowlist、startswith、dot-segment、编码或代理/后端规范化不一致。
+- 最小验证：先记录允许/拒绝 baseline，每次只改变一个 slash、编码或路径段变量。
+- 证据门：必须证明同一输入在校验与消费阶段到达不同资源或权限边界。
+- 停止：统一规范化后精确锚定、无可控路径分量，或只出现普通 404/WAF 差异。
 
 ## 适用场景
 

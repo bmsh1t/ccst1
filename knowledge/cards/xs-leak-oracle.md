@@ -1,4 +1,29 @@
+---
+id: xs-leak-oracle
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - triage-validation
+  - security-arsenal
+trigger_tags:
+  - xs-leak
+  - oracle
+  - timing
+  - resource-size
+risk: medium
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # XS-Leak / 可观测差异侧信道 oracle
+
+## Quick Recall
+
+- 触发：跨域请求无法直接读响应，但登录/未登录或对象状态产生稳定时间/大小/资源差异。
+- 最小验证：用自有账号和受控页面做 baseline-vs-variant，重复少量采样确认信号稳定。
+- 证据门：必须说明攻击者可观测量、状态差异和可推断信息，不以单次抖动定性。
+- 停止：各状态无稳定差异，或 CORB/CORP/SameSite 等边界可靠阻断可观测量。
 
 ## 适用场景
 

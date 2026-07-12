@@ -1,4 +1,29 @@
+---
+id: type-confusion-controlflow
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - triage-validation
+  - security-arsenal
+trigger_tags:
+  - type-confusion
+  - json-shape
+  - reserved-key
+  - control-flow
+risk: medium-to-high
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # 攻击者控制参数类型/形状翻转框架控制流
+
+## Quick Recall
+
+- 触发：JSON/表单字段的类型、数组/对象形状或保留键可由请求控制。
+- 最小验证：保持业务值不变，只替换一个类型/形状并比较校验、分支和输出。
+- 证据门：必须证明控制流或安全判定改变，并记录解析前后形态与实际影响。
+- 停止：严格类型/形状校验，或变换不改变任何安全行为。
 
 ## 适用场景
 

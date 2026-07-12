@@ -1,4 +1,28 @@
+---
+id: cli-argument-injection
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - cicd-security
+  - security-arsenal
+trigger_tags:
+  - cli-wrapper
+  - flag-injection
+  - terminal-escape
+risk: medium-to-high
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # CLI 包装器的参数/flag 注入与终端转义注入
+
+## Quick Recall
+
+- 触发：服务端把用户输入拼入 CLI、flag、shell wrapper 或终端输出路径。
+- 最小验证：用无害参数和数组式边界做单变量 replay，确认是否进入选项位或解释层。
+- 证据门：必须证明参数改变了受控命令/文件行为；只出现错误文案不算注入。
+- 停止：参数被 `--`/白名单/数组传参隔离，或继续验证会执行破坏性命令。
 
 ## 适用场景
 

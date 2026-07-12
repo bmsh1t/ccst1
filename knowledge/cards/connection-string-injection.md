@@ -1,4 +1,29 @@
+---
+id: connection-string-injection
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - security-arsenal
+  - triage-validation
+trigger_tags:
+  - connection-string
+  - jdbc
+  - driver-option
+  - protocol-handler
+risk: high
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # 连接串/驱动/协议处理器参数注入致文件读与 RCE
+
+## Quick Recall
+
+- 触发：用户输入进入 JDBC/连接串、driver option、协议 handler 或外部资源配置。
+- 最小验证：先确认解析层读取单个受控选项，再用无害资源观察文件/网络行为差异。
+- 证据门：必须区分纯解析错误与真实文件读、网络访问或代码执行影响。
+- 停止：scheme/参数严格白名单，或只到达无副作用解析层。
 
 ## 适用场景
 

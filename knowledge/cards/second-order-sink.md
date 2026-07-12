@@ -1,4 +1,29 @@
+---
+id: second-order-sink
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - bb-methodology
+  - triage-validation
+trigger_tags:
+  - second-order
+  - delayed-sink
+  - async-sink
+  - stored-render
+risk: medium-to-high
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # 二阶/延迟 sink 注入（异步模板、SSTI、跨端反序列化）
+
+## Quick Recall
+
+- 触发：输入先被存储/排队，后续由异步任务、模板、解析器或另一端消费。
+- 最小验证：用无害 marker 追踪写入点、延迟任务和最终 sink 的完整链路。
+- 证据门：必须关联注入点与危险消费上下文，并记录实际执行/状态差异。
+- 停止：消费端做正确编码/白名单，或无法把输入关联到危险 sink。
 
 ## 适用场景
 

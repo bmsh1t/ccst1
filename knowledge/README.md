@@ -90,4 +90,4 @@ knowledge/
 可晋升经验
 ```
 
-现有旧卡可以逐步迁移，不要求一次性重写；但新增经验应按这个结构沉淀。
+现有 active 卡已完成 v2 frontmatter 和 `Quick Recall` 迁移；新增经验也必须按这个结构沉淀。

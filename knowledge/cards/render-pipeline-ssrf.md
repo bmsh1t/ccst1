@@ -1,4 +1,30 @@
+---
+id: render-pipeline-ssrf
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - security-arsenal
+  - triage-validation
+trigger_tags:
+  - render-pipeline
+  - pdf
+  - screenshot
+  - wkhtmltopdf
+  - ssrf
+risk: high
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # 渲染/转换/导出管线作为 SSRF/RCE 攻击面
+
+## Quick Recall
+
+- 触发：PDF、截图、HTML 转换器或导出服务接收 URL/文件并在后端渲染。
+- 最小验证：先用自有 callback/无害文件确认管线，再只改变一个协议或重定向变量。
+- 证据门：记录服务端请求/文件访问和实际回显或影响；不把渲染成功直接当 RCE。
+- 停止：管线不发起网络/文件访问，或 scheme、重定向和本地读取均稳定隔离。
 
 ## 适用场景
 

@@ -1,4 +1,29 @@
+---
+id: connection-reuse-key
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - web2-recon
+  - triage-validation
+trigger_tags:
+  - connection-reuse
+  - pool-key
+  - tenant-key
+  - keep-alive
+risk: medium
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # 连接/缓存复用键遗漏安全维度
+
+## Quick Recall
+
+- 触发：连接池、缓存、keep-alive 或复用键看起来遗漏租户、角色或认证上下文。
+- 最小验证：用两个受控上下文请求同一资源，单变量改变主体并观察复用边界。
+- 证据门：必须证明跨上下文共享了不应共享的响应、连接状态或权限结果。
+- 停止：复用键包含完整安全维度，或无法制造跨上下文共享条目。
 
 ## 适用场景
 

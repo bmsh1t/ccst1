@@ -1,4 +1,29 @@
+---
+id: auth-hidden-switches
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - bb-methodology
+  - bug-bounty
+  - triage-validation
+trigger_tags:
+  - hidden-auth-param
+  - login-branch
+  - auth-state-machine
+risk: medium
+maturity: draft
+load_priority: medium
+deep_refs: []
+---
+
 # 隐藏认证参数 / 登录分支开关
+
+## Quick Recall
+
+- 触发：登录请求或相邻材料暴露隐藏参数、认证源、模式、渠道或旧入口。
+- 最小验证：用自有/测试账号建立三组 baseline，每次只改变一个分支选择器。
+- 证据门：必须出现 session、token、角色、用户身份或后端认证状态的稳定差异。
+- 停止：只有用户名枚举/文案变化，或需要爆破、OTP 绕过和真实账号尝试。
 
 ## 能力定位
 

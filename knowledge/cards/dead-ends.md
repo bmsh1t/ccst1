@@ -1,4 +1,27 @@
+---
+id: dead-ends
+type: dead-end-card
+related_skills:
+  - bb-methodology
+  - triage-validation
+trigger_tags:
+  - dead-end
+  - low-value
+  - stop-condition
+risk: low
+maturity: draft
+load_priority: medium
+deep_refs: []
+---
+
 # 常见低价值方向与停止条件
+
+## Quick Recall
+
+- 触发：线索只有关键词、前端差异、低置信扫描或重复无信息结果。
+- 最小验证：确认是否仍有新的证据变量、可 replay 请求或相邻高价值入口。
+- 证据门：Lead 不能包装成 Candidate；放弃方向需记录原因和可替代路线。
+- 停止：没有新变量、无法复现、已命中低价值模式或继续会触碰红线。
 
 ## 适用场景
 

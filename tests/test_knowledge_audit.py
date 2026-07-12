@@ -119,7 +119,7 @@ def test_current_knowledge_repository_has_no_blocking_errors() -> None:
     assert report.errors == 0
     assert report.capabilities == 50
     assert report.documents == 48
-    assert report.warnings == 18
+    assert report.warnings == 0
 
 
 def test_legacy_card_is_a_single_migration_warning(tmp_path: Path) -> None:

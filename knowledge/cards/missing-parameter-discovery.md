@@ -1,4 +1,30 @@
+---
+id: missing-parameter-discovery
+type: technique-card
+related_skills:
+  - web2-recon
+  - web2-vuln-classes
+  - bb-methodology
+  - bug-bounty
+  - triage-validation
+trigger_tags:
+  - missing-parameter
+  - null-response
+  - hidden-param
+risk: medium
+maturity: draft
+load_priority: medium
+deep_refs: []
+---
+
 # 缺参信号 / 隐藏参数发现
+
+## Quick Recall
+
+- 触发：缺参、空参、schema/binder 错误或目标材料暴露未知输入面。
+- 最小验证：固定原请求 baseline，使用目标词表逐个加入候选并比较响应结构差异。
+- 证据门：必须说明参数来源和稳定影响；数据访问迹象停在最小字段级证据。
+- 停止：差异只是 WAF/缓存抖动，或需要高频枚举、敏感数据采集和破坏性动作。
 
 ## 能力定位
 

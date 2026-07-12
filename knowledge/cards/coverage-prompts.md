@@ -1,4 +1,43 @@
+---
+id: coverage-prompts
+type: checklist-card
+related_skills:
+  - bb-methodology
+  - web2-recon
+  - web2-vuln-classes
+trigger_tags:
+  - coverage
+  - missed-lane
+  - checklist-gap
+risk: low
+maturity: draft
+load_priority: medium
+deep_refs: []
+---
+
 # 覆盖提醒
+
+## Quick Recall
+
+- 触发：当前 surface、证据或 checkpoint 显示某个相邻测试面尚未覆盖。
+- 最小验证：只选择与现有证据相邻的一条 lane，先记录 baseline、验证路径和停止条件。
+- 证据门：每项覆盖必须能回到可 replay 请求、证据记录和明确的状态出口。
+- 停止：没有语义相关性、只剩泛化清单，或继续动作会触碰红线/真实业务状态。
+
+## 触发信号
+
+- API、认证、上传、URL Fetch、GraphQL/WebSocket 或业务状态机出现未闭合的 surface。
+- 当前 action queue、evidence ledger 或 checkpoint 明确显示某类 lane 缺少验证或收敛记录。
+
+## 推荐动作
+
+- 从当前证据选择一条最小遗漏 lane，补齐 replay、evidence、stop condition 和最终状态。
+- 不把本卡的覆盖提醒直接变成固定扫描顺序；无法证明相关性时降级为记录项。
+
+## 检查要求
+
+- 每个提醒都必须有对应的 baseline、最小验证路径和 `next action`/`blocked`/`n/a`/`dead-end` 出口。
+- 覆盖统计可以保留未测数量，但不得把数量本身升级为漏洞或强制执行理由。
 
 这张知识卡用于提醒 Claude 不要漏掉常见高价值测试面。它不是强制全测清单，而是覆盖基线的发散辅助。
 

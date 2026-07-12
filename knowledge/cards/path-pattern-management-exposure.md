@@ -1,4 +1,31 @@
+---
+id: path-pattern-management-exposure
+type: technique-card
+related_skills:
+  - web2-recon
+  - web2-vuln-classes
+  - bb-methodology
+  - bug-bounty
+  - triage-validation
+trigger_tags:
+  - management-path
+  - admin-path
+  - monitoring
+  - naming-pattern
+risk: medium
+maturity: draft
+load_priority: medium
+deep_refs: []
+---
+
 # 命名规律 / 结构化记录反哺发现
+
+## Quick Recall
+
+- 触发：路径、子域、静态资源或结构化记录显示管理/监控/配置命名规律。
+- 最小验证：从目标自身材料生成有界词表，只验证最像的兄弟路径和只读入口。
+- 证据门：记录可达性、认证要求、敏感字段或配置影响；secret 只保留最小证据。
+- 停止：候选接近无边界爆破，或需要默认凭据、云资源枚举、真实数据/运维动作。
 
 ## 能力定位
 

@@ -1,4 +1,29 @@
+---
+id: redirect-header-leak
+type: technique-card
+related_skills:
+  - web2-vuln-classes
+  - web2-recon
+  - triage-validation
+trigger_tags:
+  - redirect
+  - authorization-header
+  - sensitive-header
+  - cross-origin
+risk: medium-to-high
+maturity: draft
+load_priority: low
+deep_refs: []
+---
+
 # 跨源重定向未完整剥离敏感头致凭据外泄
+
+## Quick Recall
+
+- 触发：服务端或客户端跟随跨源 redirect，且请求携带 Authorization/cookie 等敏感头。
+- 最小验证：使用自有控制的 destination 建立 baseline，只改变一个重定向边界。
+- 证据门：必须记录目标源实际收到的敏感头及其归属，不以 redirect 状态码单独定性。
+- 停止：跨源跳转严格剥离敏感头、端口并有凭证隔离，或客户端不自动跟随。
 
 ## 适用场景
 
