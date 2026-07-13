@@ -19,10 +19,20 @@ trigger_tags:
   - auth-secret
   - mfa-secret
 risk: low-to-medium
-maturity: proven
+maturity: draft
 load_priority: high
 deep_refs:
   - knowledge/payloads/sqli-low-risk-probes.md
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1663299"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "31756"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "983710"
 ---
 
 # SQLi 非显式输入面
@@ -171,8 +181,3 @@ deep_refs:
 - 某类请求元数据在特定框架、网关或业务系统中反复进入 SQL 查询。
 - 某类 path/routing segment 命名与数据库资源查询强相关。
 - 某类参数集可以跨 sibling endpoint 复用并触发隐藏后端分支。
-
-## 源报告（on-demand）
-
-- source_report_ids: `1663299`, `31756`, `983710`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

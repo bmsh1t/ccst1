@@ -20,6 +20,31 @@ load_priority: medium
 deep_refs:
   - knowledge/cards/controlled-rce-impact.md
   - knowledge/playbooks/controlled-rce-validation.md
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "276031"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "2208860"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "188086"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "470519"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "470547"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "861744"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "187542"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1668723"
 ---
 
 # Node Prototype Pollution / VM Sink 链
@@ -128,8 +153,3 @@ prototype pollution / VM sink 方向，不替代 RCE 受控影响证明。
 - 某类 Node 框架或包组合稳定出现污染 source 和 gadget。
 - 某类 JSON schema / config API 容易暴露 merge/path-set 行为。
 - 某类无 sink 的污染 primitive 多次低价值，应沉淀为 dead-end 条件。
-
-## 源报告（on-demand）
-
-- source_report_ids: `276031`, `2208860`, `188086`, `470519`, `470547`, `861744`, `187542`, `1668723`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

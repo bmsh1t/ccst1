@@ -15,6 +15,46 @@ risk: medium
 maturity: draft
 load_priority: high
 deep_refs: []
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1424291"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "2081930"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "2323303"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "138869"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1122408"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1591412"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "351361"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "287758"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "587910"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "810880"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "665722"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1276373"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "128085"
 ---
 
 # 认证与访问边界
@@ -93,8 +133,3 @@ deep_refs: []
 - 某类产品的权限字段命名和真实边界之间的稳定关系
 - 某种身份矩阵能快速暴露访问控制缺陷
 - 反复出现但低价值的 403 差异模式
-
-## 源报告（on-demand）
-
-- source_report_ids: `1424291`, `2081930`, `2323303`, `138869`, `1122408`, `1591412`, `351361`, `287758`, `587910`, `810880`, `665722`, `1276373`, `128085`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

@@ -25,6 +25,31 @@ risk: medium
 maturity: draft
 load_priority: medium
 deep_refs: []
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "671406"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1074047"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "101962"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1889161"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "151058"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "892904"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1923672"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1567186"
 ---
 
 # Auth / SSO / Token 边界异常
@@ -148,8 +173,3 @@ deep_refs: []
 - 某类 IdP / SSO / JWT 库在目标里反复出现同类绑定缺陷。
 - 某类 callback / redirect / token refresh baseline 能稳定暴露高价值 auth 边界。
 - 某类 public client / metadata / error 差异多次低价值，应沉淀为 dead-end 条件。
-
-## 源报告（on-demand）
-
-- source_report_ids: `671406`, `1074047`, `101962`, `1889161`, `151058`, `892904`, `1923672`, `1567186`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

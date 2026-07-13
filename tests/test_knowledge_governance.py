@@ -3,7 +3,7 @@ from pathlib import Path
 import json
 
 from context_pack import build_context_pack
-from knowledge_registry import load_registry
+from knowledge_registry import load_registry, parse_knowledge_document, parse_source_refs
 
 
 DISTILLED_ROUTER_CARDS = [
@@ -105,15 +105,20 @@ def _capabilities_by_kind(kind: str) -> list[dict[str, str]]:
     return [item for item in capabilities if item.get("kind") == kind]
 
 
-def test_distilled_cards_are_marked_as_on_demand_case_routers():
+def _card_source_refs(name: str):
+    text = (_repo_root() / "knowledge" / "cards" / name).read_text(encoding="utf-8")
+    parsed = parse_knowledge_document(text)
+    assert parsed.metadata is not None
+    return parse_source_refs(parsed.metadata, source_path=f"knowledge/cards/{name}")
+
+
+def test_distilled_cards_keep_structured_source_refs():
     cards_dir = _repo_root() / "knowledge" / "cards"
 
     for name in DISTILLED_ROUTER_CARDS + FOLDED_DISTILLED_CARDS:
         text = (cards_dir / name).read_text(encoding="utf-8")
-        assert "## 源报告（on-demand）" in text
-        assert "source_report_ids:" in text
-        assert "本地案例库查询指针" in text
-        assert "不要默认拉取全文" in text
+        assert _card_source_refs(name)
+        assert "source_report_ids:" not in text
 
 
 def test_absorbed_distilled_notes_are_preserved_in_archive():
@@ -130,9 +135,8 @@ def test_absorbed_distilled_sources_are_reconnected_to_target_cards():
 
     for name in ABSORBED_DISTILLED_TARGET_CARDS:
         text = (cards_dir / name).read_text(encoding="utf-8")
-        assert "## 源报告（on-demand）" in text
-        assert "source_report_ids:" in text
-        assert "本地案例库查询指针" in text
+        assert _card_source_refs(name)
+        assert "source_report_ids:" not in text
 
 
 def test_capability_registry_registers_every_card_once():
@@ -142,6 +146,48 @@ def test_capability_registry_registers_every_card_once():
 
     assert set(registered_cards) == actual_cards
     assert len(registered_cards) == len(set(registered_cards))
+
+
+def test_active_source_refs_match_pre_migration_baseline() -> None:
+    fixture = json.loads(
+        (_repo_root() / "tests" / "fixtures" / "knowledge_source_refs_baseline.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    registry = load_registry(_repo_root())
+    paths = registry.card_paths()
+    observed_ids: list[str] = []
+
+    for card_id, expected in fixture["cards"].items():
+        path = _repo_root() / paths[card_id]
+        parsed = parse_knowledge_document(path.read_text(encoding="utf-8"))
+        assert parsed.metadata is not None
+        actual = [ref.id for ref in parse_source_refs(parsed.metadata, source_path=str(path))]
+        assert actual == expected
+        observed_ids.extend(actual)
+
+    assert len(fixture["cards"]) == 25
+    assert len(set(observed_ids)) == 206
+    for card_path in (_repo_root() / "knowledge" / "cards").glob("*.md"):
+        assert "source_report_ids:" not in card_path.read_text(encoding="utf-8")
+    for card_id, entry in ((item["id"], item) for item in registry.by_kind("card")):
+        if entry.get("layer") == "case-router":
+            parsed = parse_knowledge_document(
+                (_repo_root() / entry["file"]).read_text(encoding="utf-8")
+            )
+            assert parsed.metadata is not None
+            assert parse_source_refs(parsed.metadata, source_path=entry["file"])
+
+    cloud = next(item for item in registry.by_kind("card") if item["id"] == "cloud-control-plane-pivots")
+    assert cloud["layer"] == "reference"
+    assert cloud["load"] == "signal-only"
+
+
+def test_card_template_does_not_seed_a_fake_source_reference() -> None:
+    template = (_repo_root() / "knowledge" / "card-template.md").read_text(encoding="utf-8")
+
+    assert "source_refs: []" in template
+    assert 'id: "123456"' not in template
 
 
 def test_capability_registry_registers_every_payload_pack_and_playbook_once():
@@ -202,7 +248,8 @@ def test_distilled_router_cards_are_registered_as_case_router_layer():
         assert registry[name]["load"] == "on-demand"
 
     for name in FOLDED_DISTILLED_CARDS:
-        assert registry[name].get("case_router") == "folded-source-report-footer"
+        assert "case_router" not in registry[name]
+        assert registry[name]["layer"] == "core"
 
 
 def test_capability_registry_tracks_secondary_sweep_workflows():
@@ -227,7 +274,7 @@ def test_knowledge_index_preserves_card_layering_contract():
     assert "## 深度附录 / Payload Packs" in index
     assert "## 深度 Playbooks" in index
     assert "router / recall 层" in index
-    assert "source_report_ids" in index
+    assert "source_refs" in index
     assert "不要默认拉取报告全文" in index
 
 

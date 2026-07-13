@@ -12,28 +12,30 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal
 from urllib.parse import unquote, urlparse
 
-try:
-    import yaml
-except ImportError as exc:  # pragma: no cover - 由 requirements.txt 保证
-    raise RuntimeError(
-        "缺少 PyYAML；请先执行 `python3 -m pip install -r requirements.txt`"
-    ) from exc
-
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.knowledge_registry import KnowledgeRegistry, KnowledgeRegistryError, load_registry
+    from tools.knowledge_registry import (
+        KnowledgeRegistry,
+        KnowledgeRegistryError,
+        load_registry,
+        parse_knowledge_document,
+        parse_source_refs,
+    )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from knowledge_registry import (  # type: ignore
         KnowledgeRegistry,
         KnowledgeRegistryError,
         load_registry,
+        parse_knowledge_document,
+        parse_source_refs,
     )
 
 
 Severity = Literal["error", "warning"]
+SourceMode = Literal["off", "if-present", "required"]
 
 REGISTRY_PATH = "knowledge/capabilities.yaml"
 DOCUMENT_ROOTS = {
@@ -103,6 +105,8 @@ class AuditReport:
     capabilities: int = 0
     documents: int = 0
     issues: list[AuditIssue] = field(default_factory=list)
+    checks: dict[str, Any] = field(default_factory=dict)
+    skipped: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def ordered_issues(self) -> list[AuditIssue]:
@@ -132,6 +136,8 @@ class AuditReport:
             "errors": self.errors,
             "warnings": self.warnings,
             "passed": self.errors == 0,
+            "checks": self.checks,
+            "skipped": self.skipped,
             "issues": [issue.to_dict() for issue in self.ordered_issues],
         }
 
@@ -557,37 +563,6 @@ def _audit_registry(
     return document_entries
 
 
-@dataclass(frozen=True)
-class ParsedDocument:
-    metadata: dict[str, Any] | None
-    body: str
-    frontmatter_error: str | None = None
-
-
-def _parse_document(text: str) -> ParsedDocument:
-    lines = text.lstrip("\ufeff").splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
-        return ParsedDocument(metadata=None, body=text)
-    closing = next(
-        (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
-        None,
-    )
-    if closing is None:
-        return ParsedDocument(None, "", "frontmatter 缺少结束分隔符 `---`")
-    raw_frontmatter = "".join(lines[1:closing])
-    try:
-        metadata = yaml.safe_load(raw_frontmatter)
-    except yaml.YAMLError as exc:
-        return ParsedDocument(None, "".join(lines[closing + 1 :]), str(exc))
-    if not isinstance(metadata, dict):
-        return ParsedDocument(
-            None,
-            "".join(lines[closing + 1 :]),
-            "frontmatter 根节点必须是映射",
-        )
-    return ParsedDocument(metadata, "".join(lines[closing + 1 :]))
-
-
 def _headings(body: str) -> list[str]:
     return [
         re.sub(r"[`*_]", "", heading).strip().casefold()
@@ -755,6 +730,10 @@ def _audit_document(
     report: AuditReport,
     repo_root: Path,
     entry: dict[str, Any],
+    *,
+    source_mode: SourceMode,
+    corpus_dir: Path,
+    corpus_status: dict[str, Any],
 ) -> None:
     file_path = entry.get("file")
     kind = entry.get("kind")
@@ -774,7 +753,7 @@ def _audit_document(
             f"无法读取知识文档: {exc}",
         )
         return
-    parsed = _parse_document(text)
+    parsed = parse_knowledge_document(text)
     if parsed.frontmatter_error:
         _add(
             report,
@@ -815,6 +794,58 @@ def _audit_document(
             )
     else:
         _audit_frontmatter(report, repo_root, entry, parsed.metadata)
+        if kind == "card":
+            source_error = False
+            try:
+                source_refs = parse_source_refs(parsed.metadata, source_path=file_path)
+            except KnowledgeRegistryError as exc:
+                source_error = True
+                _add(report, "error", "source-refs-invalid", file_path, str(exc))
+                source_refs = ()
+            if entry.get("layer") == "case-router" and not source_refs and not source_error:
+                _add(
+                    report,
+                    "error",
+                    "source-refs-required",
+                    file_path,
+                    "case-router card 必须至少包含一个 source_refs",
+                )
+            if source_refs and source_mode != "off" and corpus_status.get("status") == "available":
+                # resolver 是案例存在性的唯一判断入口；audit 只把 dangling 结果变成硬门，
+                # 不把案例内容或工具结果升级成漏洞结论。
+                try:
+                    from tools.case_corpus import get_case
+                except ImportError:  # pragma: no cover - direct tools/ execution
+                    from case_corpus import get_case  # type: ignore
+                for source_ref in source_refs:
+                    resolved = get_case(
+                        source_ref.id,
+                        corpus_dir=corpus_dir,
+                    )
+                    if resolved.get("status") == "not-found":
+                        _add(
+                            report,
+                            "error",
+                            "source-ref-dangling",
+                            file_path,
+                            f"source_refs 指向 corpus 中不存在的 report ID: {source_ref.id}",
+                        )
+                    elif resolved.get("status") != "ok":
+                        _add(
+                            report,
+                            "error",
+                            "source-ref-resolution",
+                            file_path,
+                            f"source_refs 无法解析 report ID {source_ref.id}: {resolved.get('reason', '')}",
+                        )
+            if re.search(r"(?m)^\s*-\s*source_report_ids\s*:", parsed.body):
+                _add(
+                    report,
+                    "error",
+                    "legacy-source-footer",
+                    file_path,
+                    "active card 不得继续使用 source_report_ids Markdown footer",
+                )
         for label in _missing_sections(kind, headings):
             _add(
                 report,
@@ -836,9 +867,59 @@ def _audit_document(
     _audit_markdown_links(report, repo_root, path, parsed.body)
 
 
-def audit_repository(repo_root: Path | str = BASE_DIR) -> AuditReport:
+def audit_repository(
+    repo_root: Path | str = BASE_DIR,
+    *,
+    source_mode: SourceMode = "if-present",
+    corpus_dir: Path | str | None = None,
+) -> AuditReport:
     repo = Path(repo_root).resolve()
+    if source_mode not in {"off", "if-present", "required"}:
+        raise ValueError(f"unsupported source_mode: {source_mode}")
     report = AuditReport()
+    resolved_corpus_dir = Path(corpus_dir) if corpus_dir is not None else repo / "distill" / "corpus"
+    if not resolved_corpus_dir.is_absolute():
+        resolved_corpus_dir = repo / resolved_corpus_dir
+    source_state: dict[str, Any] = {
+        "mode": source_mode,
+        "status": "off" if source_mode == "off" else "unavailable",
+        "reason": "source resolution disabled" if source_mode == "off" else "",
+    }
+    if source_mode != "off":
+        try:
+            from tools.case_corpus import corpus_status as get_corpus_status
+        except ImportError:  # pragma: no cover - direct tools/ execution
+            from case_corpus import corpus_status as get_corpus_status  # type: ignore
+        source_state = get_corpus_status(corpus_dir=resolved_corpus_dir)
+        source_state["mode"] = source_mode
+        if source_state.get("status") == "unavailable":
+            item = {
+                "check": "source-resolution",
+                "reason": source_state.get("reason", "corpus unavailable"),
+            }
+            report.skipped.append(item)
+            if source_mode == "required":
+                _add(
+                    report,
+                    "error",
+                    "source-corpus-unavailable",
+                    str(resolved_corpus_dir),
+                    "required source resolution 需要可用的本地 case corpus",
+                )
+        elif source_state.get("status") in {"stale", "invalid"}:
+            _add(
+                report,
+                "error",
+                "source-corpus-invalid",
+                str(resolved_corpus_dir),
+                f"source corpus 状态为 {source_state.get('status')}: {source_state.get('reason', '')}",
+            )
+    report.checks["source_resolution"] = {
+        "mode": source_mode,
+        "status": source_state.get("status"),
+        "reason": source_state.get("reason", ""),
+        "corpus_dir": str(resolved_corpus_dir),
+    }
     actual_documents = _active_documents(repo)
     report.documents = len(actual_documents)
     try:
@@ -859,7 +940,14 @@ def audit_repository(repo_root: Path | str = BASE_DIR) -> AuditReport:
         if not isinstance(file_path, str) or file_path in audited:
             continue
         audited.add(file_path)
-        _audit_document(report, repo, entry)
+        _audit_document(
+            report,
+            repo,
+            entry,
+            source_mode=source_mode,
+            corpus_dir=resolved_corpus_dir,
+            corpus_status=source_state,
+        )
     return report
 
 
@@ -885,6 +973,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", action="store_true", help="输出完整 JSON 报告")
     parser.add_argument(
+        "--source-mode",
+        choices=("off", "if-present", "required"),
+        default="if-present",
+        help="来源 report 解析强度；默认 if-present，不因缺少可选 corpus 阻断审计",
+    )
+    parser.add_argument(
+        "--corpus-dir",
+        default=None,
+        help="可选本地 case corpus 路径（默认 <repo>/distill/corpus）",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="warnings 也返回非零退出码",
@@ -894,7 +993,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    report = audit_repository(args.repo_root)
+    report = audit_repository(
+        args.repo_root,
+        source_mode=args.source_mode,
+        corpus_dir=args.corpus_dir,
+    )
     if args.json:
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
     else:

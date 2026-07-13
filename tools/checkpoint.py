@@ -40,6 +40,7 @@ try:
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import load_case_state, summary as build_case_state_summary
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.experience_schema import make_entry_id
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
@@ -58,6 +59,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import load_case_state, summary as build_case_state_summary  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
+    from experience_schema import make_entry_id  # type: ignore
 
 
 def now_utc() -> str:
@@ -2474,7 +2476,7 @@ def _empty_target_memory(target: str) -> dict:
     }
 
 
-def _append_unique_entries(memory: dict, field: str, entries: list[str]) -> int:
+def _append_unique_entries(memory: dict, field: str, entries: list[str], target: str) -> int:
     existing = {
         str(item.get("text") or "").strip()
         for item in (memory.get(field) or [])
@@ -2485,7 +2487,21 @@ def _append_unique_entries(memory: dict, field: str, entries: list[str]) -> int:
         clean = str(text or "").strip()
         if not clean or clean in existing:
             continue
-        memory.setdefault(field, []).append({"ts": now_utc(), "text": clean})
+        item = {"ts": now_utc(), "text": clean}
+        if field in {"dead_ends", "useful_patterns"}:
+            item.update(
+                {
+                    "entry_id": make_entry_id(
+                        target=target,
+                        field=field,
+                        text=clean,
+                        evidence_refs=[],
+                    ),
+                    "kind": "dead-end" if field == "dead_ends" else "useful-pattern",
+                    "evidence_refs": [],
+                }
+            )
+        memory.setdefault(field, []).append(item)
         existing.add(clean)
         added += 1
     return added
@@ -2503,16 +2519,19 @@ def apply_target_memory(repo_root: Path | str, target: str, checkpoint: dict) ->
             memory,
             "active_leads",
             checkpoint.get("target_write_back", {}).get("lead", [])[:3],
+            resolved_target,
         ),
         "next": _append_unique_entries(
             memory,
             "next_actions",
             checkpoint.get("target_write_back", {}).get("next", [])[:5],
+            resolved_target,
         ),
         "dead_end": _append_unique_entries(
             memory,
             "dead_ends",
             checkpoint.get("target_write_back", {}).get("dead_end", [])[:2],
+            resolved_target,
         ),
     }
 

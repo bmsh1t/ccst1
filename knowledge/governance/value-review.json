@@ -1,0 +1,1459 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-13T07:07:32Z",
+  "reviewer": "Codex",
+  "model_profile": "claude-cli/static-review/2026-07-13",
+  "dispositions": [
+    "ab-required",
+    "archive",
+    "downgrade",
+    "keep",
+    "keep-draft",
+    "merge"
+  ],
+  "cards": [
+    {
+      "card_id": "api-idor",
+      "card_path": "knowledge/cards/api-idor.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "idor",
+        "object-id",
+        "tenant",
+        "actor-diff"
+      ],
+      "source_refs_count": 7,
+      "source_strength": "case-pointers",
+      "unique_value": "validate card for idor, object-id, tenant, actor-diff",
+      "overlap_with": [],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/api-idor.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "api-testing-workflow",
+      "card_path": "knowledge/cards/api-testing-workflow.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "api-testing",
+        "rest-api",
+        "soap-api",
+        "mobile-api",
+        "openapi"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡给 `web2-vuln-classes` 提供 API 类目标的组织方式和补漏 checklist。它负责让 AI 想到更多 API 入口和边界，不接管 `/surface`、`/autopilot` 或具体漏洞 Skill 的执行流程。",
+      "overlap_with": [],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/api-testing-workflow.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "auth-access",
+      "card_path": "knowledge/cards/auth-access.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "authz",
+        "role",
+        "org-boundary",
+        "session"
+      ],
+      "source_refs_count": 13,
+      "source_strength": "case-pointers",
+      "unique_value": "validate card for authz, role, org-boundary, session",
+      "overlap_with": [],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/auth-access.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "auth-credential-recovery-flows",
+      "card_path": "knowledge/cards/auth-credential-recovery-flows.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "password-reset",
+        "account-recovery",
+        "username-enumeration",
+        "credential-attack",
+        "mfa"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡给 `web2-vuln-classes` 补充认证恢复、凭证状态机和受控凭证测试思路。它提供技巧和补漏点，不替代 red-line、coverage gate，也不把认证测试自动扩大成无边界爆破。",
+      "overlap_with": [
+        "auth-sso-token-edge-cases"
+      ],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/auth-credential-recovery-flows.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "auth-hidden-switches",
+      "card_path": "knowledge/cards/auth-hidden-switches.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "hidden-auth-param",
+        "login-branch",
+        "auth-state-machine"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡用于认证、ATO、登录绕过或管理入口测试中，补充隐藏认证分支、非 UI 参数、旧入口、移动端入口和认证状态机切换的联想方向。输出候选假设、发散问题和最小验证提示，供当前认证测试流程选择使用。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/auth-hidden-switches.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "auth-sso-token-edge-cases",
+      "card_path": "knowledge/cards/auth-sso-token-edge-cases.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "jwt",
+        "jwe",
+        "jwks",
+        "oauth",
+        "oidc",
+        "saml",
+        "sso",
+        "token-binding",
+        "mfa",
+        "2fa",
+        "step-up",
+        "tmp-token",
+        "email-trust",
+        "audience",
+        "redirect-uri"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "本卡为 `auth-access` 和 `auth-hidden-switches` 补充 token/SSO 深水区思路： 当目标出现 JWT/JWE/JWKS、OAuth/OIDC、SAML、SSO、IdP 或 account-linking 证据时， 帮助当前 Skill 选择高价值、低影响的验证路径。它不替代身份矩阵，也不替代 `triage-validation`。",
+      "overlap_with": [
+        "auth-credential-recovery-flows",
+        "cicd-trust-boundaries",
+        "dns-email-trust-boundaries",
+        "signature-scope-mismatch",
+        "xxe-xml-parser"
+      ],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/auth-sso-token-edge-cases.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "browser-client-boundaries",
+      "card_path": "knowledge/cards/browser-client-boundaries.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "cors",
+        "csrf",
+        "clickjacking",
+        "dom-xss",
+        "postmessage",
+        "open-redirect",
+        "cookie-manipulation",
+        "dom-clobbering"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "本卡给 `web2-vuln-classes` 补充浏览器执行模型和客户端边界验证，不替代具体漏洞 Skill。",
+      "overlap_with": [],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/browser-client-boundaries.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "business-logic-state-machines",
+      "card_path": "knowledge/cards/business-logic-state-machines.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "business-logic",
+        "logic-flaw",
+        "state-machine",
+        "workflow-validation",
+        "client-side-controls",
+        "payment",
+        "rounding",
+        "gateway-state"
+      ],
+      "source_refs_count": 5,
+      "source_strength": "case-pointers",
+      "unique_value": "本卡给 `web2-vuln-classes` 补充业务流程建模和状态机验证思路。它是供料层：帮助 AI 想到非注入、非传统 CVE 的高价值测试路径，不替代当前 Skill 的 red-line、coverage 和验证门。",
+      "overlap_with": [],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/business-logic-state-machines.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "cicd-trust-boundaries",
+      "card_path": "knowledge/cards/cicd-trust-boundaries.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "ci-cd",
+        "github-actions",
+        "gitlab-ci",
+        "jenkins",
+        "runner",
+        "oidc",
+        "workflow-trigger"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "沿 workflow -> runner -> OIDC/secret -> deploy 连接器追踪信任边界",
+      "overlap_with": [
+        "auth-sso-token-edge-cases"
+      ],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "与 cicd-security Skill 重叠较高，保留压缩的边界触发和停止条件，不宣称模型增量。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/cicd-trust-boundaries.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "cli-argument-injection",
+      "card_path": "knowledge/cards/cli-argument-injection.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "cli-wrapper",
+        "flag-injection",
+        "terminal-escape"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "bypass card for cli-wrapper, flag-injection, terminal-escape",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/cli-argument-injection.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "cloud-control-plane-pivots",
+      "card_path": "knowledge/cards/cloud-control-plane-pivots.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "cloud-control-plane",
+        "cloud-metadata",
+        "iam",
+        "rbac",
+        "service-account",
+        "artifact-deploy"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "把 SSRF/源码/CI 线索连接到 identity -> permission -> control-plane action",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "来源指针不足且当前是 reference/signal-only；保持 draft，不伪造 case-router 或 proven。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/cloud-control-plane-pivots.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "connection-reuse-key",
+      "card_path": "knowledge/cards/connection-reuse-key.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "connection-reuse",
+        "pool-key",
+        "tenant-key",
+        "keep-alive"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "connector card for connection-reuse, pool-key, tenant-key, keep-alive",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/connection-reuse-key.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "connection-string-injection",
+      "card_path": "knowledge/cards/connection-string-injection.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "connection-string",
+        "jdbc",
+        "driver-option",
+        "protocol-handler"
+      ],
+      "source_refs_count": 7,
+      "source_strength": "case-pointers",
+      "unique_value": "bypass card for connection-string, jdbc, driver-option, protocol-handler",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/connection-string-injection.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "controlled-rce-impact",
+      "card_path": "knowledge/cards/controlled-rce-impact.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "rce",
+        "command-injection",
+        "ssti",
+        "deserialization",
+        "upload-execution",
+        "impact-proof"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡用于把 RCE / shell / post-exploit 技巧转译为授权渗透里的 Controlled Exploitation / Impact Proof。它给 `web2-vuln-classes` 和 `triage-validation` 补充高风险利用后的最小证明模型，不替代红线和验证 gate。",
+      "overlap_with": [
+        "insecure-deserialization",
+        "server-side-template-injection",
+        "ssrf-internal-impact",
+        "upload-to-execution"
+      ],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/controlled-rce-impact.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "coverage-prompts",
+      "card_path": "knowledge/cards/coverage-prompts.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "coverage",
+        "missed-lane",
+        "checklist-gap"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "route card for coverage, missed-lane, checklist-gap",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/coverage-prompts.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "dead-ends",
+      "card_path": "knowledge/cards/dead-ends.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "dead-end",
+        "low-value",
+        "stop-condition"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "anti-pattern card for dead-end, low-value, stop-condition",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/dead-ends.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "dns-email-trust-boundaries",
+      "card_path": "knowledge/cards/dns-email-trust-boundaries.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "dns",
+        "subdomain-takeover",
+        "dangling-cname",
+        "mx",
+        "spf",
+        "dkim",
+        "dmarc",
+        "email-trust"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "区分 DNS/email 记录常识与 recovery、SSO、sender-trust 连接器",
+      "overlap_with": [
+        "auth-sso-token-edge-cases"
+      ],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "基础 SPF/DKIM/DMARC 常识可能已知，暂保留可迁移的身份恢复边界和停止条件，未做 live A/B。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/dns-email-trust-boundaries.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "graphql",
+      "card_path": "knowledge/cards/graphql.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "graphql",
+        "node-id",
+        "introspection",
+        "subscription"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "validate card for graphql, node-id, introspection, subscription",
+      "overlap_with": [],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/graphql.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "import-migration-trust",
+      "card_path": "knowledge/cards/import-migration-trust.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "import",
+        "migration",
+        "restore",
+        "trust-boundary"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "connector card for import, migration, restore, trust-boundary",
+      "overlap_with": [
+        "upload-parser"
+      ],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/import-migration-trust.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "information-disclosure-source-config",
+      "card_path": "knowledge/cards/information-disclosure-source-config.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "information-disclosure",
+        "source-map",
+        "debug",
+        "backup"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡给 `web2-vuln-classes` 和 `triage-validation` 提供信息泄露的影响建模和补漏清单。",
+      "overlap_with": [],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/information-disclosure-source-config.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "insecure-deserialization",
+      "card_path": "knowledge/cards/insecure-deserialization.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "deserialization",
+        "signed-object",
+        "viewstate",
+        "rememberme"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡给 `web2-vuln-classes` 提供 serialized object 的识别、完整性判断和利用分支。 它不默认武器化 gadget chain，RCE 影响证明交给 `controlled-rce-impact`。",
+      "overlap_with": [
+        "controlled-rce-impact"
+      ],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/insecure-deserialization.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "missing-parameter-discovery",
+      "card_path": "knowledge/cards/missing-parameter-discovery.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "missing-parameter",
+        "null-response",
+        "hidden-param"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡用于 recon 或 Web2 漏洞验证中出现缺参、空参、类型错误、schema/validator/binder 错误时，补充隐藏参数发现、目标词表构造和低风险响应差异验证的联想方向。输出候选假设、发散问题和最小验证提示，供当前 recon 或漏洞验证流程选择使用。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/missing-parameter-discovery.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "node-prototype-pollution",
+      "card_path": "knowledge/cards/node-prototype-pollution.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "node",
+        "prototype-pollution",
+        "json-merge",
+        "template-sink",
+        "vm",
+        "express",
+        "same-realm",
+        "monkey-patch"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "本卡给 `web2-vuln-classes` 补充 Node/Express/JS 对象污染与 gadget 链思路。它用于 从源代码、前端 bundle、错误栈、package metadata 和 JSON/API 行为中识别可验证的 prototype pollution / VM sink 方向，不替代 RCE 受控影响证明。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/node-prototype-pollution.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "nosql-query-injection",
+      "card_path": "knowledge/cards/nosql-query-injection.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "nosql",
+        "operator-injection",
+        "mongodb"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡给 `web2-vuln-classes` 补充 NoSQL 查询语义、parser/type confusion 和 operator injection 思路。",
+      "overlap_with": [],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/nosql-query-injection.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "path-allowlist-normalization",
+      "card_path": "knowledge/cards/path-allowlist-normalization.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "allowlist",
+        "normalization",
+        "startswith",
+        "dot-segment"
+      ],
+      "source_refs_count": 16,
+      "source_strength": "case-pointers",
+      "unique_value": "bypass card for allowlist, normalization, startswith, dot-segment",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/path-allowlist-normalization.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "path-pattern-management-exposure",
+      "card_path": "knowledge/cards/path-pattern-management-exposure.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "management-path",
+        "admin-path",
+        "monitoring",
+        "naming-pattern"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡用于 recon、路径发现或管理面暴露测试中，补充目标命名规律、有界词表、局部递归和结构化记录反哺二次发现的联想方向。输出候选假设、发散问题和最小验证提示，供当前 recon 或暴露面验证流程选择使用。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/path-pattern-management-exposure.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "path-traversal-file-read",
+      "card_path": "knowledge/cards/path-traversal-file-read.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "path-traversal",
+        "directory-traversal",
+        "lfi",
+        "file-read"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡给 `web2-vuln-classes` 补充文件选择器识别、路径解析差异和 file-read 链路思路。 它提供技巧和 checklist，不替代红线、覆盖 gate 或 `triage-validation`。",
+      "overlap_with": [],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/path-traversal-file-read.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "payment-callback-idempotency",
+      "card_path": "knowledge/cards/payment-callback-idempotency.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "payment-callback",
+        "webhook",
+        "callback-signature",
+        "idempotency",
+        "replay-window",
+        "async-settlement"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "把回调签名消费、事件归属、乱序重放和幂等键连成一条验证连接器",
+      "overlap_with": [
+        "ssrf-url-fetch"
+      ],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "与业务状态机、签名和 race 卡有交集，但组合顺序仍可作为按需连接器；当前没有 live A/B，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/payment-callback-idempotency.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "proxy-cache-boundaries",
+      "card_path": "knowledge/cards/proxy-cache-boundaries.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "host-header",
+        "request-smuggling",
+        "cache-poisoning",
+        "cache-deception"
+      ],
+      "source_refs_count": 14,
+      "source_strength": "case-pointers",
+      "unique_value": "本卡给 `web2-vuln-classes` 补充代理、缓存和传输边界的思路，不替代专门工具和红线检查。",
+      "overlap_with": [],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/proxy-cache-boundaries.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "race-conditions",
+      "card_path": "knowledge/cards/race-conditions.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "race",
+        "concurrency",
+        "state-diff",
+        "low-frequency"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "validation card for race, concurrency, state-diff, low-frequency",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/race-conditions.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "redirect-header-leak",
+      "card_path": "knowledge/cards/redirect-header-leak.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "redirect",
+        "authorization-header",
+        "sensitive-header",
+        "cross-origin"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "connector card for redirect, authorization-header, sensitive-header, cross-origin",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/redirect-header-leak.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "render-pipeline-ssrf",
+      "card_path": "knowledge/cards/render-pipeline-ssrf.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "render-pipeline",
+        "pdf",
+        "screenshot",
+        "wkhtmltopdf",
+        "ssrf"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "connector card for render-pipeline, pdf, screenshot, wkhtmltopdf",
+      "overlap_with": [
+        "ssrf-internal-impact"
+      ],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/render-pipeline-ssrf.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "second-order-sink",
+      "card_path": "knowledge/cards/second-order-sink.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "second-order",
+        "delayed-sink",
+        "async-sink",
+        "stored-render"
+      ],
+      "source_refs_count": 4,
+      "source_strength": "case-pointers",
+      "unique_value": "connector card for second-order, delayed-sink, async-sink, stored-render",
+      "overlap_with": [
+        "sqli-hidden-surfaces"
+      ],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/second-order-sink.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "server-side-template-injection",
+      "card_path": "knowledge/cards/server-side-template-injection.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "ssti",
+        "template-injection",
+        "jinja",
+        "twig",
+        "erb",
+        "freemarker",
+        "tornado-template",
+        "mako-template",
+        "handlebars-template"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡给 `web2-vuln-classes` 提供 SSTI 输入面、指纹和升级路径。它负责发散和补漏， 受控执行证明仍交给 `controlled-rce-impact` 和检查层。",
+      "overlap_with": [
+        "controlled-rce-impact"
+      ],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/server-side-template-injection.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "signature-scope-mismatch",
+      "card_path": "knowledge/cards/signature-scope-mismatch.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "signature-scope",
+        "signed-bytes",
+        "xsw",
+        "jwks",
+        "binding"
+      ],
+      "source_refs_count": 5,
+      "source_strength": "case-pointers",
+      "unique_value": "bypass card for signature-scope, signed-bytes, xsw, jwks",
+      "overlap_with": [
+        "auth-sso-token-edge-cases"
+      ],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/signature-scope-mismatch.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "sqli-hidden-surfaces",
+      "card_path": "knowledge/cards/sqli-hidden-surfaces.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "sqli",
+        "hidden-input",
+        "request-metadata",
+        "path-segment",
+        "sibling-params",
+        "second-order",
+        "non-parameterizable",
+        "order-by",
+        "identifier",
+        "auth-secret",
+        "mfa-secret"
+      ],
+      "source_refs_count": 3,
+      "source_strength": "case-pointers",
+      "unique_value": "本卡用于 SQLi 测试中常规 query/body 参数无信号时，补充非显式输入面、跨接口参数、请求元数据和二阶链路的联想方向。输出候选假设、发散问题和最小验证提示，供当前 SQLi lane 选择使用。",
+      "overlap_with": [
+        "second-order-sink"
+      ],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/sqli-hidden-surfaces.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "ssrf-internal-impact",
+      "card_path": "knowledge/cards/ssrf-internal-impact.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "ssrf",
+        "internal-service",
+        "metadata",
+        "url-parser",
+        "impact-proof"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡用于在 `ssrf-url-fetch` 已证明服务端请求行为后，补充内部影响证明思路。 它不替代 SSRF 入口验证，只处理“如何安全证明影响”。",
+      "overlap_with": [
+        "controlled-rce-impact",
+        "render-pipeline-ssrf"
+      ],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/ssrf-internal-impact.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "ssrf-url-fetch",
+      "card_path": "knowledge/cards/ssrf-url-fetch.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "url-fetch",
+        "webhook",
+        "import-url",
+        "server-side-fetch"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "route card for url-fetch, webhook, import-url, server-side-fetch",
+      "overlap_with": [
+        "payment-callback-idempotency"
+      ],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/ssrf-url-fetch.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "stale-derived-authz",
+      "card_path": "knowledge/cards/stale-derived-authz.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "stale-authz",
+        "role-cache",
+        "revoked-permission",
+        "deprovision"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "connector card for stale-authz, role-cache, revoked-permission, deprovision",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/stale-derived-authz.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "type-confusion-controlflow",
+      "card_path": "knowledge/cards/type-confusion-controlflow.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "type-confusion",
+        "json-shape",
+        "reserved-key",
+        "control-flow"
+      ],
+      "source_refs_count": 11,
+      "source_strength": "case-pointers",
+      "unique_value": "bypass card for type-confusion, json-shape, reserved-key, control-flow",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/type-confusion-controlflow.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "upload-parser",
+      "card_path": "knowledge/cards/upload-parser.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "upload",
+        "import",
+        "parser",
+        "converter"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "route card for upload, import, parser, converter",
+      "overlap_with": [
+        "import-migration-trust",
+        "upload-to-execution"
+      ],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/upload-parser.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "upload-to-execution",
+      "card_path": "knowledge/cards/upload-to-execution.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "upload",
+        "file-parser",
+        "webshell",
+        "upload-execution",
+        "parser-chain"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡补充 `upload-parser` 的高阶分支：当上传/导入/解析链可能通向执行时， 将 webshell、polyglot、wrapper、解析器差异等高风险技巧转译为受控影响证明。",
+      "overlap_with": [
+        "controlled-rce-impact",
+        "upload-parser"
+      ],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/upload-to-execution.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "view-differential",
+      "card_path": "knowledge/cards/view-differential.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "view-differential",
+        "validation-view",
+        "consumption-view",
+        "canonicalization"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "bypass card for view-differential, validation-view, consumption-view, canonicalization",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/view-differential.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "web-llm-tool-chains",
+      "card_path": "knowledge/cards/web-llm-tool-chains.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "web-llm",
+        "prompt-injection",
+        "rag",
+        "tool-call",
+        "invisible-unicode",
+        "unicode-tag"
+      ],
+      "source_refs_count": 1,
+      "source_strength": "case-pointers",
+      "unique_value": "本卡给 `web2-vuln-classes` 补充 LLM/RAG/agent 工具链的攻击面建模和最小验证。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/web-llm-tool-chains.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "websocket-realtime-api",
+      "card_path": "knowledge/cards/websocket-realtime-api.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "websocket",
+        "cswsh",
+        "realtime"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡给 `web2-vuln-classes` 补充 WebSocket/订阅类 API 的权限、消息 schema 和跨站边界。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/websocket-realtime-api.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "xs-leak-oracle",
+      "card_path": "knowledge/cards/xs-leak-oracle.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "xs-leak",
+        "oracle",
+        "timing",
+        "resource-size"
+      ],
+      "source_refs_count": 8,
+      "source_strength": "case-pointers",
+      "unique_value": "bypass card for xs-leak, oracle, timing, resource-size",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/xs-leak-oracle.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "xss-client-injection",
+      "card_path": "knowledge/cards/xss-client-injection.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "xss",
+        "reflected-xss",
+        "stored-xss",
+        "client-xss",
+        "csp",
+        "sanitizer",
+        "mxss"
+      ],
+      "source_refs_count": 16,
+      "source_strength": "case-pointers",
+      "unique_value": "本卡给 `web2-vuln-classes` 补充 XSS 输入面发现、上下文识别、payload 家族和最小验证思路。它只提供知识和联想，不决定测试顺序，也不替代浏览器边界类检查。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/xss-client-injection.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "xxe-xml-parser",
+      "card_path": "knowledge/cards/xxe-xml-parser.md",
+      "layer": "core",
+      "load": "signal-or-default",
+      "maturity": "draft",
+      "trigger_tags": [
+        "xxe",
+        "xml-parser",
+        "xinclude",
+        "soap",
+        "saml"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡给 `web2-vuln-classes` 提供 XML parser 攻击面的联想、技巧家族和补漏项。 它不替代 Skill 的流程判断，也不自动进入敏感文件读取或内网探测。",
+      "overlap_with": [
+        "auth-sso-token-edge-cases"
+      ],
+      "ai_likely_known": "likely",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/xxe-xml-parser.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    }
+  ]
+}

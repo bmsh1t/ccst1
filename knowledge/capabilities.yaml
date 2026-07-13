@@ -23,7 +23,6 @@ capabilities:
     layer: core
     load: signal-or-default
     purpose: validate
-    case_router: folded-source-report-footer
     triggers:
       - idor
       - object-id
@@ -46,7 +45,6 @@ capabilities:
     layer: core
     load: signal-or-default
     purpose: validate
-    case_router: folded-source-report-footer
     triggers:
       - authz
       - role
@@ -217,7 +215,6 @@ capabilities:
     layer: core
     load: signal-or-default
     purpose: route
-    case_router: folded-source-report-footer
     triggers:
       - url-fetch
       - webhook
@@ -229,7 +226,6 @@ capabilities:
     layer: core
     load: signal-or-default
     purpose: route
-    case_router: folded-source-report-footer
     triggers:
       - upload
       - import
@@ -291,6 +287,61 @@ capabilities:
       - coverage
       - missed-lane
       - checklist-gap
+  - id: cicd-trust-boundaries
+    kind: card
+    file: knowledge/cards/cicd-trust-boundaries.md
+    layer: reference
+    load: signal-only
+    purpose: chain
+    triggers:
+      - ci-cd
+      - github-actions
+      - gitlab-ci
+      - jenkins
+      - runner
+      - oidc
+      - workflow-trigger
+  - id: cloud-control-plane-pivots
+    kind: card
+    file: knowledge/cards/cloud-control-plane-pivots.md
+    layer: reference
+    load: signal-only
+    purpose: chain
+    triggers:
+      - cloud-control-plane
+      - cloud-metadata
+      - iam
+      - rbac
+      - service-account
+      - artifact-deploy
+  - id: dns-email-trust-boundaries
+    kind: card
+    file: knowledge/cards/dns-email-trust-boundaries.md
+    layer: reference
+    load: signal-only
+    purpose: validate
+    triggers:
+      - dns
+      - subdomain-takeover
+      - dangling-cname
+      - mx
+      - spf
+      - dkim
+      - dmarc
+      - email-trust
+  - id: payment-callback-idempotency
+    kind: card
+    file: knowledge/cards/payment-callback-idempotency.md
+    layer: reference
+    load: signal-only
+    purpose: validate
+    triggers:
+      - payment-callback
+      - webhook
+      - callback-signature
+      - idempotency
+      - replay-window
+      - async-settlement
   - id: dead-ends
     kind: card
     file: knowledge/cards/dead-ends.md

@@ -14,6 +14,40 @@ risk: medium-to-high
 maturity: draft
 load_priority: low
 deep_refs: []
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "960244"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "49652"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1130721"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1095612"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "186194"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1106652"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "386807"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "213789"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "240958"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "946728"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "387250"
 ---
 
 # 攻击者控制参数类型/形状翻转框架控制流
@@ -67,8 +101,3 @@ deep_refs: []
 ## 可晋升经验
 
 - 弱类型/动态分派处优先做类型形状 fuzz：标量<->数组<->对象<->null。
-
-## 源报告（on-demand）
-
-- source_report_ids: `960244`, `49652`, `1130721`, `1095612`, `186194`, `1106652`, `386807`, `213789`, `240958`, `946728`, `387250`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

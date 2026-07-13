@@ -14,6 +14,31 @@ risk: medium
 maturity: draft
 load_priority: low
 deep_refs: []
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "700831"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "416983"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1285226"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1193321"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "411337"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "300179"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1959219"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1200700"
 ---
 
 # 授权/凭证的派生态未随源变更及时失效
@@ -67,8 +92,3 @@ deep_refs: []
 ## 可晋升经验
 
 - 凡是"签发即长期有效"的能力，都追问撤销传播路径。
-
-## 源报告（on-demand）
-
-- source_report_ids: `700831`, `416983`, `1285226`, `1193321`, `411337`, `300179`, `1959219`, `1200700`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

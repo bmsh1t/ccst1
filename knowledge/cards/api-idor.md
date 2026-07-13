@@ -14,6 +14,28 @@ risk: medium
 maturity: draft
 load_priority: high
 deep_refs: []
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "158330"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "510759"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "2011431"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1773895"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "321444"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "778803"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1238017"
 ---
 
 # API IDOR / 对象级越权
@@ -83,8 +105,3 @@ deep_refs: []
 - 某类命名模式反复指向高价值对象边界
 - 某个框架或产品形态中列表/导出接口反复弱于详情接口
 - 某类字段组合能稳定提示多租户边界
-
-## 源报告（on-demand）
-
-- source_report_ids: `158330`, `510759`, `2011431`, `1773895`, `321444`, `778803`, `1238017`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

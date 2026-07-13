@@ -14,6 +14,28 @@ risk: high
 maturity: draft
 load_priority: low
 deep_refs: []
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1529790"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1547877"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "153026"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "838196"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1966083"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "411519"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "2065306"
 ---
 
 # 连接串/驱动/协议处理器参数注入致文件读与 RCE
@@ -67,8 +89,3 @@ deep_refs: []
 ## 可晋升经验
 
 - 连接串与协议处理器是被低估的 RCE 面：先枚举其危险参数与查找语义。
-
-## 源报告（on-demand）
-
-- source_report_ids: `1529790`, `1547877`, `153026`, `838196`, `1966083`, `411519`, `2065306`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

@@ -59,7 +59,10 @@ python3 tools/distill_reports.py --prepare --max 500 --batch-size 25
 python3 tools/distill_reports.py --ingest distill/work/scored.json
 ```
 
-把 `worth_skill = true` 的候选渲染成卡草稿写入 `knowledge/candidates/`。
+把 `worth_skill = true` 的候选渲染成卡草稿写入 `knowledge/candidates/`，并登记到
+`knowledge/candidates/lifecycle.jsonl` 的 `pending` 状态。评分 JSON 仍接受
+`source_report_ids` 作为输入兼容字段；staging 草稿和正式卡统一输出结构化
+`source_refs`，后续经 `/kb promote` 审核和晋升。
 工具**拒绝**写入 `knowledge/cards/`。emails / 长 token 有 backstop 脱敏。
 
 ### 6. 人工复核 + 晋升
@@ -76,6 +79,7 @@ distill/work/batch_*.jsonl# 打分批次
 distill/work/manifest.json# 批次清单 + rubric 指针
 distill/work/scored.json  # Claude 两轮打分结果（人工/流程写）
 knowledge/candidates/*.md # 候选卡草稿（复核队列）
+knowledge/candidates/lifecycle.jsonl # 候选状态审计事件
 ```
 
 ## 纪律
@@ -83,7 +87,8 @@ knowledge/candidates/*.md # 候选卡草稿（复核队列）
 - 候选是**未验证的思路**，不是发现，禁止直接用于测试。
 - 只提炼思路（原理 / 触发信号 / 发散问题 / 停止条件），不写 payload、
   不写目标专属 exploit、不写凭证或 reporter PII。
-- 候选进 `knowledge/candidates/`，正式卡只能经 `/kb promote` 人工晋升。
+- 候选进 `knowledge/candidates/`，正式卡只能经 `/kb promote` 人工晋升；生命周期检查使用
+  `python3 tools/knowledge_candidates.py audit --strict`。
 - 和 `rules/` 冲突时，以 `rules/` 为准。
 
 ## 相关

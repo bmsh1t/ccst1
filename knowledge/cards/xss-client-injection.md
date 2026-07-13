@@ -16,6 +16,55 @@ risk: medium
 maturity: draft
 load_priority: medium
 deep_refs: []
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "893305"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "2279346"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1436142"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "386334"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "199779"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1115139"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "777241"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1087122"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "633231"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1125425"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "662287"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1731349"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1212067"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1198517"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "824689"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1665658"
 ---
 
 # XSS / 客户端注入上下文
@@ -103,8 +152,3 @@ deep_refs: []
 - 某类框架、sanitizer、Markdown 或 template 组合反复出现可迁移 bypass。
 - 某类低价值 XSS 能稳定链到高价值 connector。
 - 某类 context break 或 CSP 绕过在多个目标中可复用。
-
-## 源报告（on-demand）
-
-- source_report_ids: `893305`, `2279346`, `1436142`, `386334`, `199779`, `1115139`, `777241`, `1087122`, `633231`, `1125425`, `662287`, `1731349`, `1212067`, `1198517`, `824689`, `1665658`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

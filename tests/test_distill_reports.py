@@ -245,6 +245,15 @@ class TestScrub:
 # Ingest
 # --------------------------------------------------------------------------- #
 class TestIngest:
+    def test_candidate_renderer_uses_structured_source_refs(self):
+        rendered = candidate_to_card_md(_candidate())
+
+        assert "## 来源引用（source_refs）" in rendered
+        assert "type: corpus-report" in rendered
+        assert "corpus: hackerone-disclosed-reports" in rendered
+        assert 'id: "838510"' in rendered
+        assert "source_report_ids:" not in rendered
+
     def test_writes_only_worth_skill(self, tmp_path):
         candidates = [
             _candidate(worth_skill=True, card_title="good"),

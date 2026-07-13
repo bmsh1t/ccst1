@@ -15,6 +15,31 @@ risk: high
 maturity: draft
 load_priority: low
 deep_refs: []
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "885975"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "2262382"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "312543"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "530974"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "843256"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "941178"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "776017"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "809248"
 ---
 
 # 渲染/转换/导出管线作为 SSRF/RCE 攻击面
@@ -68,8 +93,3 @@ deep_refs: []
 ## 可晋升经验
 
 - 把"导出/渲染/转码"当作一类高信号 SSRF 入口，而非普通 fetch。
-
-## 源报告（on-demand）
-
-- source_report_ids: `885975`, `2262382`, `312543`, `530974`, `843256`, `941178`, `776017`, `809248`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

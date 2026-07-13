@@ -53,6 +53,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Iterable
 
+try:
+    from tools.knowledge_candidates import register_corpus_candidate
+    from tools.knowledge_registry import SOURCE_REF_CORPUS, SOURCE_REF_TYPE
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from knowledge_candidates import register_corpus_candidate  # type: ignore
+    from knowledge_registry import SOURCE_REF_CORPUS, SOURCE_REF_TYPE  # type: ignore
+
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
 
@@ -243,7 +250,20 @@ def candidate_to_card_md(candidate: dict) -> str:
         f"- category: {scrub_text(str(candidate.get('category', 'n/a')))}",
         f"- worth_skill: {candidate.get('worth_skill', 'n/a')}",
         "",
+        "## 来源引用（source_refs）",
+        "",
     ]
+    for source_id in source_ids:
+        lines.extend(
+            [
+                f"- type: {SOURCE_REF_TYPE}",
+                f"  corpus: {SOURCE_REF_CORPUS}",
+                f'  id: "{scrub_text(str(source_id))}"',
+            ]
+        )
+    if not source_ids:
+        lines.append("- （待补充）")
+    lines.append("")
     for key, header in CARD_SECTIONS:
         lines.append(f"## {header}")
         lines.append("")
@@ -267,6 +287,9 @@ def ingest_candidates(
     out_dir: Path | str = CANDIDATES_DIR,
     *,
     keep_rejected: bool = False,
+    register_lifecycle: bool | None = None,
+    lifecycle_path: Path | str | None = None,
+    repo_root: Path | str | None = None,
 ) -> list[Path]:
     """Write scored candidates into the staging review queue as card drafts.
 
@@ -276,6 +299,11 @@ def ingest_candidates(
     out_dir = Path(out_dir)
     _assert_safe_output_dir(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    should_register = register_lifecycle
+    if should_register is None:
+        should_register = out_dir.resolve() == CANDIDATES_DIR.resolve()
+    resolved_repo = Path(repo_root or REPO_ROOT).resolve()
+    resolved_lifecycle = Path(lifecycle_path).resolve() if lifecycle_path else None
 
     written: list[Path] = []
     for idx, candidate in enumerate(candidates):
@@ -285,10 +313,25 @@ def ingest_candidates(
             continue
         slug = _slug(str(candidate.get("card_title") or candidate.get("knowledge_point") or ""))
         path = out_dir / f"{slug}.md"
-        # Avoid clobbering within one ingest run.
-        if path.exists():
-            path = out_dir / f"{slug}-{idx}.md"
+        suffix = 0
+        while path.exists():
+            suffix += 1
+            path = out_dir / f"{slug}-{suffix}.md"
         path.write_text(candidate_to_card_md(candidate), encoding="utf-8")
+        if should_register:
+            try:
+                register_corpus_candidate(
+                    path,
+                    source_report_ids=candidate.get("source_report_ids") or [],
+                    repo_root=resolved_repo,
+                    lifecycle_path=resolved_lifecycle,
+                )
+            except (OSError, ValueError) as exc:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                raise ValueError(f"failed to register candidate {path.name}: {exc}") from exc
         written.append(path)
     return written
 

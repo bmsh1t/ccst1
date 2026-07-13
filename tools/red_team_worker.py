@@ -63,6 +63,14 @@ def _install_timeout_alarm(timeout_secs: int) -> None:
         pass
 
 
+def _cancel_timeout_alarm() -> None:
+    """正常完成或捕获异常后清除进程级定时器，避免泄漏到调用方。"""
+    try:
+        signal.alarm(0)
+    except (AttributeError, ValueError):
+        pass
+
+
 def write_review(
     *,
     target: str,
@@ -177,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         }
     finally:
         _touch_done(scratch, summary)
+        _cancel_timeout_alarm()
     return 0
 
 

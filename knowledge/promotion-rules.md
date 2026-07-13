@@ -124,3 +124,11 @@ Promote to Skill / Queue when: 什么时候交给 Skill 或 action queue
 - 是否有明确停止条件
 - 是否和 `rules/` 冲突
 - 是否能帮助 Skills 层做更好的分支选择
+
+正式卡晋升后的治理不写回 candidate lifecycle：
+
+- `knowledge/candidates/lifecycle.jsonl` 只回答候选是否 pending/reviewed/promoted。
+- `knowledge/governance/events.jsonl` 只回答正式卡是否 active、被替代/退休/恢复，以及
+  maturity 是否有 reviewer、model profile 和可复跑证据。
+- `tested` / `proven` 必须通过 `tools/knowledge_lifecycle.py review` 记录证据；没有证据的
+  历史声明保守保持或降为 `draft`，不能用 `legacy` 绕过门禁。

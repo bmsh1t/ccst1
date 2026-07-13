@@ -14,6 +14,31 @@ risk: medium
 maturity: draft
 load_priority: low
 deep_refs: []
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "44513"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "730779"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1086108"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "2101076"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "815085"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "945990"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "397792"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "52042"
 ---
 
 # 校验视图与执行视图的规范化/编码/截断差异
@@ -67,8 +92,3 @@ deep_refs: []
 ## 可晋升经验
 
 - "检查的是不是你执行的那份"是通用发散母题，可迁移到路径、认证、限速、去重。
-
-## 源报告（on-demand）
-
-- source_report_ids: `44513`, `730779`, `1086108`, `2101076`, `815085`, `945990`, `397792`, `52042`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

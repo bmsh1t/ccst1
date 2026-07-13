@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 try:
@@ -16,10 +17,124 @@ except ImportError as exc:  # pragma: no cover - 由 requirements.txt 保证
 
 
 REGISTRY_RELATIVE_PATH = Path("knowledge/capabilities.yaml")
+SOURCE_REF_TYPE = "corpus-report"
+SOURCE_REF_CORPUS = "hackerone-disclosed-reports"
+REPORT_ID_RE = re.compile(r"^[1-9][0-9]*$")
 
 
 class KnowledgeRegistryError(RuntimeError):
     """注册表无法被可靠读取或索引。"""
+
+
+@dataclass(frozen=True)
+class ParsedKnowledgeDocument:
+    """共享 Markdown frontmatter 解码结果，供 audit 和 resolver 复用。"""
+
+    metadata: dict[str, Any] | None
+    body: str
+    frontmatter_error: str | None = None
+
+
+@dataclass(frozen=True)
+class KnowledgeSourceRef:
+    """知识卡来源的规范化 v1 记录。"""
+
+    type: str
+    corpus: str
+    id: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"type": self.type, "corpus": self.corpus, "id": self.id}
+
+
+def parse_knowledge_document(text: str) -> ParsedKnowledgeDocument:
+    """解析知识 Markdown 的 frontmatter；格式错误由调用方按文件上下文报告。"""
+    lines = text.lstrip("\ufeff").splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return ParsedKnowledgeDocument(metadata=None, body=text)
+    closing = next(
+        (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
+        None,
+    )
+    if closing is None:
+        return ParsedKnowledgeDocument(
+            metadata=None,
+            body="",
+            frontmatter_error="frontmatter 缺少结束分隔符 `---`",
+        )
+    raw_frontmatter = "".join(lines[1:closing])
+    try:
+        metadata = yaml.safe_load(raw_frontmatter)
+    except yaml.YAMLError as exc:
+        return ParsedKnowledgeDocument(
+            metadata=None,
+            body="".join(lines[closing + 1 :]),
+            frontmatter_error=str(exc),
+        )
+    if not isinstance(metadata, dict):
+        return ParsedKnowledgeDocument(
+            metadata=None,
+            body="".join(lines[closing + 1 :]),
+            frontmatter_error="frontmatter 根节点必须是映射",
+        )
+    return ParsedKnowledgeDocument(
+        metadata=metadata,
+        body="".join(lines[closing + 1 :]),
+    )
+
+
+def parse_source_refs(
+    metadata: dict[str, Any],
+    *,
+    source_path: str = "<frontmatter>",
+) -> tuple[KnowledgeSourceRef, ...]:
+    """严格解析 card frontmatter.source_refs，集中维护来源契约。"""
+    raw_refs = metadata.get("source_refs", [])
+    if raw_refs is None:
+        raw_refs = []
+    if not isinstance(raw_refs, list):
+        raise KnowledgeRegistryError(
+            f"{source_path}: frontmatter.source_refs 必须是对象列表"
+        )
+
+    refs: list[KnowledgeSourceRef] = []
+    seen: set[tuple[str, str, str]] = set()
+    required_keys = {"type", "corpus", "id"}
+    for index, raw_ref in enumerate(raw_refs):
+        location = f"{source_path}: source_refs[{index}]"
+        if not isinstance(raw_ref, dict):
+            raise KnowledgeRegistryError(f"{location} 必须是对象")
+        unknown = set(raw_ref) - required_keys
+        missing = required_keys - set(raw_ref)
+        if unknown:
+            raise KnowledgeRegistryError(
+                f"{location} 含未知字段: {sorted(unknown)}"
+            )
+        if missing:
+            raise KnowledgeRegistryError(
+                f"{location} 缺少字段: {sorted(missing)}"
+            )
+        ref_type = raw_ref["type"]
+        corpus = raw_ref["corpus"]
+        report_id = raw_ref["id"]
+        if ref_type != SOURCE_REF_TYPE:
+            raise KnowledgeRegistryError(
+                f"{location}.type 必须为 {SOURCE_REF_TYPE!r}"
+            )
+        if corpus != SOURCE_REF_CORPUS:
+            raise KnowledgeRegistryError(
+                f"{location}.corpus 必须为 {SOURCE_REF_CORPUS!r}"
+            )
+        if not isinstance(report_id, str) or not REPORT_ID_RE.fullmatch(report_id):
+            raise KnowledgeRegistryError(
+                f"{location}.id 必须是非零十进制字符串"
+            )
+        identity = (ref_type, corpus, report_id)
+        if identity in seen:
+            raise KnowledgeRegistryError(f"{location} 与前序来源重复: {report_id}")
+        seen.add(identity)
+        refs.append(KnowledgeSourceRef(*identity))
+    return tuple(refs)
 
 
 @dataclass(frozen=True)

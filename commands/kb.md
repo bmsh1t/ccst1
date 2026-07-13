@@ -1,5 +1,5 @@
 ---
-description: 使用知识库层为当前 Skill 补充思路、案例和停止条件。用法：/kb index | /kb suggest | /kb card <name> | /kb promote
+description: 使用知识库层为当前 Skill 补充思路、案例和停止条件。用法：/kb index | /kb suggest | /kb card <name> | /kb cases ... | /kb promote
 ---
 
 # /kb
@@ -19,7 +19,12 @@ description: 使用知识库层为当前 Skill 补充思路、案例和停止条
 /kb card auth-access
 /kb card ssrf-url-fetch
 /kb card dead-ends
+/kb cases status
+/kb cases get <report-id> [--full]
+/kb cases from-card <card-id> [--report-id <id>] [--full]
+/kb cases search --class <weakness> [--limit N]
 /kb promote
+/kb lifecycle audit
 ```
 
 ## 子命令语义
@@ -63,9 +68,89 @@ Stop condition: 放弃条件
 Related card: 使用的知识卡
 ```
 
+### `/kb cases ...`
+
+案例查询是显式、只读、按需的补充链路，不会被 `/kb index` 或 `/kb suggest` 自动调用，
+也不会写入 finding、evidence ledger、target memory 或 action queue。底层命令使用仓库内
+可选的 gitignored `distill/corpus/`；没有本地 corpus 时返回结构化 `unavailable`，普通
+知识流程继续执行。
+
+```bash
+python3 tools/case_corpus.py status --json
+python3 tools/case_corpus.py get <report-id> --json
+python3 tools/case_corpus.py get <report-id> --full --json
+python3 tools/case_corpus.py from-card <card-id> --json
+python3 tools/case_corpus.py from-card <card-id> --report-id <id> --full --json
+python3 tools/case_corpus.py search --class <weakness> --limit 20 --json
+```
+
+默认只返回一个案例摘要；完整 `vulnerability_information` 必须显式指定一个 report ID
+和 `--full`。`from-card` 只接受卡片 frontmatter 的结构化 `source_refs`，并在结果中保留
+`pointers` 与 `dangling_refs`，供 Claude 决定是否补证据或降级，不把解析结果当成漏洞结论。
+
+本地 corpus 由用户显式构建，不自动下载或安装依赖：
+
+```bash
+python3 tools/case_corpus.py build --input distill/work/batch_000.jsonl
+```
+
 ### `/kb promote`
 
-把目标记忆或复盘中的可复用经验晋升到知识库。
+把目标记忆或复盘中的可复用经验晋升到知识库。候选状态由
+`tools/knowledge_candidates.py` 的追加式 lifecycle log 维护，不能直接把 markdown
+复制到 `knowledge/cards/`。
+
+从带 evidence refs 的目标经验创建候选：
+
+```bash
+python3 tools/target_memory.py pattern "两角色只读差异可复用" \
+  --kind validation-technique \
+  --evidence-ref memory/evidence/example/ledger.jsonl#L3 \
+  --target example.com
+python3 tools/knowledge_candidates.py stage \
+  --kind validation-technique \
+  --title "两角色只读差异验证" \
+  --summary "保留 baseline/variant 和响应差异，先确认权限边界再进入报告门。" \
+  --source example.com <entry-id>
+```
+
+跨目标经验可重复 `--source TARGET ENTRY_ID`；每个来源都必须有可定位证据。
+报告蒸馏候选由 `/distill --ingest` 自动登记到同一 pending 队列。
+
+```bash
+python3 tools/knowledge_candidates.py list
+python3 tools/knowledge_candidates.py review <candidate-id> \
+  --reviewer human --reason "已在两个目标复核，补齐停止条件"
+python3 tools/knowledge_candidates.py promote <candidate-id> \
+  --card-id <registered-card-id> \
+  --reviewer human --reason "正式卡已注册并通过严格知识质量门"
+python3 tools/knowledge_candidates.py reject <candidate-id> \
+  --reviewer human --reason "只适用于单个目标，无法迁移"
+python3 tools/knowledge_candidates.py supersede <candidate-id> \
+  --replacement <new-candidate-or-card> \
+  --reviewer human --reason "新卡覆盖范围更完整"
+python3 tools/knowledge_candidates.py audit --strict
+```
+
+状态只能按 `pending -> reviewed -> promoted|rejected|superseded` 迁移；`promote`
+会检查正式卡存在、registry 登记和 `knowledge_audit.py --strict`，不会覆盖同名卡。
+
+候选晋升后，正式卡另有独立的治理日志，不复用 candidate 状态：
+
+```bash
+python3 tools/knowledge_lifecycle.py audit
+python3 tools/knowledge_lifecycle.py review <card-id> \
+  --maturity tested --reviewer human --reason "可复跑证据" \
+  --model-profile claude-cli/profile --evidence-ref tests/fixtures/review.md#L1
+python3 tools/knowledge_lifecycle.py retire <card-id> \
+  --reviewer human --reason "被更完整卡替代"
+python3 tools/knowledge_lifecycle.py supersede <old-card> \
+  --replacement <active-card> --reviewer human --reason "范围合并"
+```
+
+`knowledge/governance/events.jsonl` 是 append-only 事实来源；`maturity` 与 active/retired/
+superseded 生命周期分离。工具只检查 reviewer、model profile、证据引用和 replacement
+完整性，不自动判断知识价值、合并对象或晋升 verdict。
 
 晋升前必须读取：
 

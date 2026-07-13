@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from case_corpus import build_corpus
 from knowledge_audit import audit_repository, main
 
 
@@ -46,6 +47,7 @@ def _v2_card(
     identifier: str = "demo-card",
     frontmatter_id: str | None = None,
     frontmatter_type: str = "technique-card",
+    source_refs: list[dict] | None = None,
     body: str | None = None,
 ) -> str:
     metadata = {
@@ -58,6 +60,8 @@ def _v2_card(
         "load_priority": "medium",
         "deep_refs": [],
     }
+    if source_refs is not None:
+        metadata["source_refs"] = source_refs
     body = body or """\
 # Demo card
 
@@ -117,8 +121,8 @@ def test_current_knowledge_repository_has_no_blocking_errors() -> None:
     report = audit_repository()
 
     assert report.errors == 0
-    assert report.capabilities == 50
-    assert report.documents == 48
+    assert report.capabilities == 54
+    assert report.documents == 52
     assert report.warnings == 0
 
 
@@ -246,3 +250,148 @@ def test_malformed_registry_fails_without_traceback(tmp_path: Path, capsys) -> N
     output = capsys.readouterr().out
     assert "registry-load" in output
     assert "Traceback" not in output
+
+
+def test_case_router_requires_structured_source_refs(tmp_path: Path) -> None:
+    registry = _base_registry(_card(layer="case-router", load="on-demand"))
+    _write_repo(tmp_path, registry, card_text=_v2_card())
+
+    report = audit_repository(tmp_path)
+
+    assert "source-refs-required" in _codes(report)
+
+
+def test_legacy_source_footer_is_blocking_for_active_cards(tmp_path: Path) -> None:
+    registry = _base_registry(_card())
+    body = _v2_card(
+        body="""\
+# Demo card
+
+## Quick Recall
+
+- signal
+
+## 触发信号
+
+- signal
+
+## 最小验证
+
+- baseline
+
+## 常见误判 / 死路
+
+- stop
+
+## 推荐动作
+
+- record
+
+## 源报告（on-demand）
+
+- source_report_ids: `1`
+"""
+    )
+    _write_repo(tmp_path, registry, card_text=body)
+
+    report = audit_repository(tmp_path)
+
+    assert "legacy-source-footer" in _codes(report)
+
+
+def test_source_resolution_missing_corpus_is_skipped_or_required(tmp_path: Path) -> None:
+    registry = _base_registry(_card())
+    _write_repo(
+        tmp_path,
+        registry,
+        card_text=_v2_card(
+            source_refs=[
+                {
+                    "type": "corpus-report",
+                    "corpus": "hackerone-disclosed-reports",
+                    "id": "1",
+                }
+            ]
+        ),
+    )
+
+    optional = audit_repository(tmp_path, source_mode="if-present")
+    required = audit_repository(tmp_path, source_mode="required")
+
+    assert optional.errors == 0
+    assert optional.skipped
+    assert required.errors == 1
+    assert "source-corpus-unavailable" in _codes(required)
+
+
+def test_source_resolution_available_corpus_rejects_dangling_ref(tmp_path: Path) -> None:
+    registry = _base_registry(_card())
+    _write_repo(
+        tmp_path,
+        registry,
+        card_text=_v2_card(
+            source_refs=[
+                {
+                    "type": "corpus-report",
+                    "corpus": "hackerone-disclosed-reports",
+                    "id": "2",
+                }
+            ]
+        ),
+    )
+    source = tmp_path / "batch.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "id": 1,
+                "title": "fixture",
+                "vulnerability_information": "steps",
+                "weakness": "SSRF",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    corpus = tmp_path / "distill" / "corpus"
+    build_corpus([source], corpus_dir=corpus)
+
+    report = audit_repository(tmp_path, source_mode="if-present", corpus_dir=corpus)
+
+    assert "source-ref-dangling" in _codes(report)
+
+
+def test_source_resolution_available_corpus_passes_valid_ref(tmp_path: Path) -> None:
+    registry = _base_registry(_card())
+    _write_repo(
+        tmp_path,
+        registry,
+        card_text=_v2_card(
+            source_refs=[
+                {
+                    "type": "corpus-report",
+                    "corpus": "hackerone-disclosed-reports",
+                    "id": "1",
+                }
+            ]
+        ),
+    )
+    source = tmp_path / "batch.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "id": 1,
+                "title": "fixture",
+                "vulnerability_information": "steps",
+                "weakness": "SSRF",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    corpus = tmp_path / "distill" / "corpus"
+    build_corpus([source], corpus_dir=corpus)
+
+    report = audit_repository(tmp_path, source_mode="required", corpus_dir=corpus)
+
+    assert report.errors == 0
+    assert report.checks["source_resolution"]["status"] == "available"

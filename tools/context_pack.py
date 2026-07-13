@@ -388,6 +388,11 @@ REFERENCE_PATHS = {
 }
 
 DISTILLED_TOKEN_TO_CARDS = (
+    (re.compile(r"\b(payment[-_ ]?(?:callback|webhook|notify)|callback[-_ ]?signature|webhook[-_ ]?signature|idempotenc(?:y|t)|replay[-_ ]?(?:window|nonce)|async[-_ ]?settlement)\b", re.I), ("payment-callback-idempotency",)),
+    # OIDC 也常作为独立身份信号；只有同时出现 workflow/runner/deploy 边界时才路由到 CI/CD 卡。
+    (re.compile(r"(?:\b(ci[-_ ]?/?cd|cicd|github[-_ ]?actions|gitlab[-_ ]?ci|jenkins|self[-_ ]?hosted[-_ ]?runner|workflow[-_ ]?trigger|pull_request_target|artifact[-_ ]?deploy)\b|(?=.*\boidc\b)(?=.*\b(?:runner|workflow|artifact|deploy)\b))", re.I), ("cicd-trust-boundaries",)),
+    (re.compile(r"\b(cloud[-_ ]?control[-_ ]?plane|cloud[-_ ]?metadata|metadata[-_ ]?service|cloud[-_ ]?(?:iam|rbac)|service[-_ ]?account|workload[-_ ]?identity|assume[-_ ]?role|pass[-_ ]?role|control[-_ ]?plane)\b", re.I), ("cloud-control-plane-pivots",)),
+    (re.compile(r"\b(subdomain[-_ ]?takeover|dangling[-_ ]?(?:dns|cname)|dns[-_ ]?trust|mx[-_ ]?record|email[-_ ]?spoof|spf|dkim|dmarc)\b", re.I), ("dns-email-trust-boundaries",)),
     (re.compile(r"\b(signature[-_ ]?scope[-_ ]?mismatch|signed bytes|consumption object|xsw|duplicate assertion)\b", re.I), ("signature-scope-mismatch",)),
     (re.compile(r"\b(oauth[-_ ]?sso[-_ ]?trust|email trust|audience confusion|redirect_uri trust)\b", re.I), ("auth-sso-token-edge-cases",)),
     (re.compile(r"\b(view[-_ ]?differential|validation view|consumption view|verified view|executed view|canonicalization gap)\b", re.I), ("view-differential",)),
@@ -2002,6 +2007,26 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "业务逻辑先建状态机 baseline：谁能在什么前置状态下执行哪一步、服务端是否重新计算价格/权限/数量/流程顺序。",
             "重点看客户端可控价格/数量/折扣/角色/邮箱/流程步骤、异常输入、重复提交、双用途 endpoint 和跨步骤参数复用；训练/自有资源内验证，真实高影响状态默认先 dry-run。",
+        ])
+    if CARD_PATHS.get("payment-callback-idempotency") in cards:
+        seeds.extend([
+            "支付 callback/webhook 先画 pending->paid/refunded 状态和事件归属，再比较签名覆盖、订单/金额/受益人绑定、幂等键、重试和乱序；200/success 不等于权益已改变。",
+            "只在自有/训练订单上做单变量 callback、重试或 idempotency 对照并 read-back；没有 dry-run、回滚或副作用证据时保持 Lead/blocked。",
+        ])
+    if CARD_PATHS.get("cicd-trust-boundaries") in cards:
+        seeds.extend([
+            "CI/CD 按 untrusted input -> workflow context -> runner -> secret/OIDC -> artifact/deploy 画数据流；触发器、checkout ref、权限和环境保护必须逐跳有证据。",
+            "配置/日志和 dummy marker 优先于执行未知 workflow；id-token、self-hosted runner 或未固定 action 只是信号，必须证明不可信输入到达高权限下游。",
+        ])
+    if CARD_PATHS.get("cloud-control-plane-pivots") in cards:
+        seeds.extend([
+            "云控制面按入口->身份->权限->单个资源动作->影响分层；metadata、OIDC、service account 或 policy 名称不能替代 caller、资源和动作证据。",
+            "先做授权环境 caller identity/describe 或 dry-run；create/update/delete、secret read、跨租户和持久化动作默认 blocked。",
+        ])
+    if CARD_PATHS.get("dns-email-trust-boundaries") in cards:
+        seeds.extend([
+            "DNS/email 先对照权威解析、CNAME/NS/MX、HTTP/TLS 和 SPF/DKIM/DMARC alignment；缺记录、p=none 或 provider 404 本身不是影响。",
+            "邮件/身份验证只用自有测试域和账号做单变量 normalization、From/Reply-To、verified email 或 callback 对照，必须证明接管、投递、绑定或业务状态影响。",
         ])
     if CARD_PATHS["missing-parameter-discovery"] in cards:
         seeds.extend([

@@ -8,6 +8,8 @@ import pytest
 
 from knowledge_registry import (
     KnowledgeRegistryError,
+    parse_knowledge_document,
+    parse_source_refs,
     load_card_metadata_by_file,
     load_card_paths,
     load_registry,
@@ -108,3 +110,44 @@ def test_card_index_rejects_duplicate_identity(
 
     with pytest.raises(KnowledgeRegistryError, match=message):
         load_card_paths(tmp_path)
+
+
+def test_source_refs_are_normalized_by_the_shared_parser() -> None:
+    parsed = parse_knowledge_document(
+        """---
+id: demo
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: \"461308\"
+---
+# Demo
+"""
+    )
+
+    assert parsed.frontmatter_error is None
+    assert parsed.metadata is not None
+    refs = parse_source_refs(parsed.metadata, source_path="knowledge/cards/demo.md")
+    assert len(refs) == 1
+    assert refs[0].as_dict() == {
+        "type": "corpus-report",
+        "corpus": "hackerone-disclosed-reports",
+        "id": "461308",
+    }
+
+
+@pytest.mark.parametrize(
+    "source_refs",
+    [
+        [{"type": "wrong", "corpus": "hackerone-disclosed-reports", "id": "1"}],
+        [{"type": "corpus-report", "corpus": "other", "id": "1"}],
+        [{"type": "corpus-report", "corpus": "hackerone-disclosed-reports", "id": 1}],
+        [
+            {"type": "corpus-report", "corpus": "hackerone-disclosed-reports", "id": "1"},
+            {"type": "corpus-report", "corpus": "hackerone-disclosed-reports", "id": "1"},
+        ],
+    ],
+)
+def test_source_refs_reject_invalid_or_duplicate_entries(source_refs) -> None:
+    with pytest.raises(KnowledgeRegistryError):
+        parse_source_refs({"source_refs": source_refs}, source_path="demo.md")

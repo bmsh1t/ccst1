@@ -147,6 +147,14 @@ def _install_timeout_alarm(timeout_secs: int) -> None:
         pass
 
 
+def _cancel_timeout_alarm() -> None:
+    """正常完成后清除 SIGALRM，避免 worker 定时器影响宿主进程。"""
+    try:
+        signal.alarm(0)
+    except (AttributeError, ValueError):
+        pass
+
+
 def run_worker(seed_path: Path, scratch: Path, target: str, budget_tools: int) -> dict:
     """Main worker loop. Returns summary dict."""
     seed = json.loads(Path(seed_path).read_text(encoding="utf-8"))
@@ -258,6 +266,7 @@ def main(argv: list[str] | None = None) -> int:
         }
     finally:
         _touch_done(scratch, summary)
+        _cancel_timeout_alarm()
 
     return 0
 

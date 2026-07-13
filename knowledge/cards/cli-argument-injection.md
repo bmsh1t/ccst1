@@ -13,6 +13,31 @@ risk: medium-to-high
 maturity: draft
 load_priority: low
 deep_refs: []
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "658013"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "653125"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "682442"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "587854"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "733072"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1070247"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "651518"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1154034"
 ---
 
 # CLI 包装器的参数/flag 注入与终端转义注入
@@ -66,8 +91,3 @@ deep_refs: []
 ## 可晋升经验
 
 - 拼命令行先找参数注入面：能否以 - 开头、有无 --、黑名单还是白名单。
-
-## 源报告（on-demand）
-
-- source_report_ids: `658013`, `653125`, `682442`, `587854`, `733072`, `1070247`, `651518`, `1154034`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

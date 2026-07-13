@@ -14,6 +14,55 @@ risk: medium
 maturity: draft
 load_priority: low
 deep_refs: []
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1087744"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1245165"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1575014"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1829170"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1631350"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1357948"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1040786"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1386547"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "387279"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "307672"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "405100"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "840736"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "381192"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "776684"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "1250730"
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "156615"
 ---
 
 # 路径前缀/白名单归一化绕过（含 off-by-slash）
@@ -67,8 +116,3 @@ deep_refs: []
 ## 可晋升经验
 
 - 前缀白名单几乎必测 off-by-slash 与代理/后端归一差。
-
-## 源报告（on-demand）
-
-- source_report_ids: `1087744`, `1245165`, `1575014`, `1829170`, `1631350`, `1357948`, `1040786`, `1386547`, `387279`, `307672`, `405100`, `840736`, `381192`, `776684`, `1250730`, `156615`
-- 用途：这些 ID 只作为本地案例库查询指针。只有当前证据已命中本卡触发信号，且需要真实攻击链形状、报告写作先例或相似案例时，才按需查询 gitignored 的 `distill/` 本地缓存；不要默认拉取全文，不把报告正文、目标域名、payload 或 PII 写入知识卡。

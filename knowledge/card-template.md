@@ -22,6 +22,7 @@ maturity: draft
 load_priority: medium
 deep_refs:
   - knowledge/payloads/example.md
+source_refs: []
 ---
 
 # 知识卡标题
@@ -94,7 +95,17 @@ deep_refs:
 | `maturity` | `draft` / `tested` / `proven` |
 | `load_priority` | `low` / `medium` / `high` |
 | `deep_refs` | payload、playbook、长案例或项目内附录路径；不要指向本机绝对路径或未蒸馏原文 |
+| `source_refs` | 结构化、按需查询的来源；v1 使用 `corpus-report` + `hackerone-disclosed-reports` + 字符串 ID |
 | `updated` | 可选，最后人工维护日期 |
+
+只有存在已经核对的本地案例指针时，才把空列表替换为对象列表：
+
+```yaml
+source_refs:
+  - type: corpus-report
+    corpus: hackerone-disclosed-reports
+    id: "<non-zero-decimal-report-id>"
+```
 
 ## 知识类型
 
@@ -117,6 +128,10 @@ deep_refs:
 - 深度 payload / bypass / 长案例使用 `deep_refs` 按需加载，避免污染常规上下文。
 - 外部材料必须先蒸馏成触发条件、证据门槛、停止条件或项目内 payload/playbook；
   不在知识卡里直接挂载本机绝对路径、整篇原文或一次性题解。
+- `source_refs` 是 active 卡的唯一案例来源权威；不要再添加 `source_report_ids` Markdown footer。
+- 没有真实来源时保持 `source_refs: []`，不得用示例数字、猜测 ID 或模型记忆填充来源。
+- active 卡的正式生命周期由 `knowledge/governance/events.jsonl` 维护；`maturity` 只表示
+  证据强度，不能代替 `reviewed/retired/superseded/restored` 状态。
 - 不保存真实凭证、个人数据、客户数据或未经脱敏的响应正文。
 
 ## 提交前质量门

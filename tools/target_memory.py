@@ -14,6 +14,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
+    from tools.experience_schema import (
+        EXPERIENCE_KINDS,
+        make_entry_id,
+        normalize_evidence_refs,
+        normalize_experience_kind,
+    )
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from experience_schema import (  # type: ignore
+        EXPERIENCE_KINDS,
+        make_entry_id,
+        normalize_evidence_refs,
+        normalize_experience_kind,
+    )
+
+try:
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key
@@ -144,9 +159,23 @@ def append_entry(args: argparse.Namespace, field: str, label: str) -> str:
     }
     if not entry["text"]:
         raise SystemExit(f"{label} text is required")
+    if field in {"useful_patterns", "dead_ends"}:
+        default_kind = "dead-end" if field == "dead_ends" else "useful-pattern"
+        evidence_refs = normalize_evidence_refs(getattr(args, "evidence_ref", []))
+        entry["entry_id"] = make_entry_id(
+            target=target,
+            field=field,
+            text=entry["text"],
+            evidence_refs=evidence_refs,
+        )
+        entry["kind"] = normalize_experience_kind(
+            getattr(args, "kind", None), default=default_kind
+        )
+        entry["evidence_refs"] = evidence_refs
     target_memory.setdefault(field, []).append(entry)
     save_target_memory(target_memory)
-    return f"{label} saved for {target}: {entry['text']}"
+    suffix = f" [{entry['entry_id']}]" if entry.get("entry_id") else ""
+    return f"{label} saved for {target}{suffix}: {entry['text']}"
 
 
 def write_handoff(args: argparse.Namespace) -> str:
@@ -254,6 +283,19 @@ def build_parser() -> argparse.ArgumentParser:
         item_parser = subparsers.add_parser(name, help=help_text)
         item_parser.add_argument("text", nargs="+")
         item_parser.add_argument("--target", default=None)
+        if name in {"pattern", "dead-end"}:
+            item_parser.add_argument(
+                "--kind",
+                choices=EXPERIENCE_KINDS,
+                default=None,
+                help="experience kind; defaults to pattern/dead-end based on the command",
+            )
+            item_parser.add_argument(
+                "--evidence-ref",
+                action="append",
+                default=[],
+                help="repository-relative evidence reference; repeatable",
+            )
         item_parser.set_defaults(func=lambda args, f=field, n=name.upper(): append_entry(args, f, n))
 
     handoff_parser = subparsers.add_parser("handoff", help="write session handoff markdown")
