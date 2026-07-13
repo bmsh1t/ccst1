@@ -13,12 +13,13 @@ the compact runtime counts and stops. Only `continue` may act. Use
 the parsed cadence/quick/deep values exactly. `--quick` lowers recon cost but never
 skips browser/source/validation or implies completion; scanner quick remains a
 breadth sensor. `--deep` increases value-first depth without relaxing red lines.
+On `continue`, treat `capabilities` as advisory: `session_managed` names are not availability claims; use MCP only when visible in this Claude session, otherwise follow a viable fallback/recommended path. Missing/degraded tools never block, trigger installation, request installation permission, or count as tested-clean; record material limits in the handoff.
 Expert Hunter Autopilot for Claude CLI. Claude is the hunter; tools are memory,
 evidence, replay, and summary aids.
 Execution contract: `/autopilot` runs inline in the current Claude session as the sole controller and does not create/resume legacy `agent_session.json`; specialists default to zero, and at most one bounded specialist may answer one evidence question without spawning agents, running full recon/scans, writing final closure, or controlling finish. After using one, this invocation cannot call a second specialist.
 ## Runtime Preflight
-The bootstrap already performed the only startup gate in this order: arguments,
-read-only runtime compare, then compact target state. Never repeat or bypass it.
+The bootstrap already performed the startup sequence in this order: arguments,
+read-only runtime compare, advisory capability profile, then compact target state. Never repeat or bypass it; arguments/runtime remain the only blocking gates.
 Run every project command as `cd -- <repo_root_shell> && ...`; do not derive a
 second root from the current cwd. Runtime drift: show `/sync-check`, request
 explicit confirmation before any sync, and never sync automatically.
@@ -37,8 +38,8 @@ Four-layer memory is the external brain, not the steering wheel:
 ```text
 target memory / target case state -> skill routing -> knowledge cards -> checks
 ```
-Every invocation is state-first: bootstrap `ctf_mode` and compact `state` are the
-only initial read. Branch only after that state read; after a long phase, refresh with:
+Every invocation is state-first: bootstrap `ctf_mode` and compact `state`, plus advisory `capabilities`, are the
+only initial inputs. Branch only after that state read; after a long phase, refresh with:
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell>
 # next_action=run_recon: launch once; append --quick only when requested

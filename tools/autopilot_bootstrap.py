@@ -12,11 +12,16 @@ from typing import Any, Sequence
 try:
     from tools.autopilot_args import parse_autopilot_args
     from tools.autopilot_state import build_autopilot_state
+    from tools.capability_profile import (
+        build_capability_profile,
+        unknown_capability_profile,
+    )
     from tools.runtime_config import is_ctf_mode_enabled
     from tools.runtime_doctor import KIND_ORDER, compare_runtime
 except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直接执行
     from autopilot_args import parse_autopilot_args
     from autopilot_state import build_autopilot_state
+    from capability_profile import build_capability_profile, unknown_capability_profile
     from runtime_config import is_ctf_mode_enabled
     from runtime_doctor import KIND_ORDER, compare_runtime
 
@@ -184,6 +189,7 @@ def build_autopilot_bootstrap(
             "runtime_root": "",
             "kinds": {},
         },
+        "capabilities": unknown_capability_profile(),
         "ctf_mode": False,
     }
 
@@ -200,6 +206,12 @@ def build_autopilot_bootstrap(
     if not runtime["clean"]:
         payload["action"] = "stop_runtime_drift"
         return payload
+
+    try:
+        payload["capabilities"] = build_capability_profile(resolved_repo)
+    except Exception:
+        # 能力快照只能影响推荐路径，任何探测异常都不能阻断 target state。
+        payload["capabilities"] = unknown_capability_profile("profile-error")
 
     payload["ctf_mode"] = is_ctf_mode_enabled(resolved_repo)
     state = build_autopilot_state(str(resolved_repo), str(arguments["target"]))

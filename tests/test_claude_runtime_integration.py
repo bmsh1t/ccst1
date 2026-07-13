@@ -317,6 +317,10 @@ def test_real_claude_cli_expands_installed_autopilot_arguments(
         repo_root=REPO_ROOT,
         runtime_root=staged_claude_runtime["home"] / ".claude",
     )
+    bootstrap = _parsed_bootstrap_contract(command_body)
+    if bootstrap["action"] == "continue":
+        assert bootstrap["capabilities"]["checked"] is True
+        assert bootstrap["capabilities"]["status"] in {"ready", "degraded"}
 
 
 def test_real_claude_cli_expands_readable_batch_target(
@@ -403,6 +407,7 @@ def test_real_claude_cli_runtime_drift_stops_before_state_projection(
     assert bootstrap["action"] == "stop_runtime_drift"
     assert bootstrap["runtime"]["clean"] is False
     assert bootstrap["runtime"]["drift_count"] >= 1
+    assert bootstrap["capabilities"]["checked"] is False
     assert "state" not in bootstrap
 
 

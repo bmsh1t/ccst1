@@ -14,6 +14,7 @@ def test_slash_command_reads_state_before_any_long_phase():
     text = _read("commands/autopilot.md")
     bootstrap = text.index("tools/autopilot_bootstrap.py")
     preflight = text.index("## Runtime Preflight")
+    capabilities = text.index("advisory capability profile", preflight)
     state_contract = text.index("compact target state", preflight)
     startup = text.index("Every invocation is state-first")
     state_read = text.index("python3 tools/autopilot_state.py --target <target_shell>", startup)
@@ -21,7 +22,7 @@ def test_slash_command_reads_state_before_any_long_phase():
     surface = text.index("python3 tools/surface.py --target <target_shell>", state_read)
     scan = text.index("python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick", state_read)
 
-    assert bootstrap < preflight < state_contract < state_read < recon < surface < scan
+    assert bootstrap < preflight < capabilities < state_contract < state_read < recon < surface < scan
     assert "Runtime phase locks are the final\nduplicate-launch guard" in text
 
 
@@ -29,7 +30,8 @@ def test_slash_command_runtime_preflight_is_read_only_and_fail_fast():
     text = _read("commands/autopilot.md")
     preflight = text.split("## Runtime Preflight", 1)[1].split("## Tool Index", 1)[0]
 
-    assert "arguments,\nread-only runtime compare, then compact target state" in preflight
+    assert "arguments,\nread-only runtime compare, advisory capability profile, then compact target state" in preflight
+    assert "arguments/runtime remain the only blocking gates" in preflight
     assert "Only `continue` may act" in text
     assert "cd -- <repo_root_shell> &&" in preflight
     flat_preflight = " ".join(preflight.split())
@@ -37,6 +39,17 @@ def test_slash_command_runtime_preflight_is_read_only_and_fail_fast():
     assert "never sync automatically" in flat_preflight
     assert "--sync" not in preflight
     assert "python3 tools/runtime_doctor.py" not in preflight
+
+
+def test_slash_command_consumes_capabilities_as_advisory_only():
+    text = " ".join(_read("commands/autopilot.md").split())
+
+    assert "treat `capabilities` as advisory" in text
+    assert "`session_managed` names are not availability claims" in text
+    assert "use MCP only when visible in this Claude session" in text
+    assert "Missing/degraded tools never block" in text
+    assert "trigger installation" in text
+    assert "count as tested-clean" in text
 
 
 def test_slash_command_limits_batch_to_recon_and_single_domain_handoff():
