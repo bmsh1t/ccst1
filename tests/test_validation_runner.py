@@ -755,6 +755,160 @@ def test_runner_sync_does_not_downgrade_validated_finding(monkeypatch, tmp_path,
     assert findings["findings"][0]["evidence_rubric"]["status"] == "candidate-ready"
 
 
+def test_runner_sync_completes_missing_claim_identity_without_creating_second_finding(tmp_path):
+    import finding_index
+
+    target = "target.test"
+    findings_dir = tmp_path / "findings" / target
+    findings_dir.mkdir(parents=True)
+    claim_path = findings_dir / "manual-authz.json"
+    claim_path.write_text(
+        json.dumps(
+            {
+                "kind": "finding_claim",
+                "schema_version": 1,
+                "title": "Interrupted authorization validation",
+                "vuln_class": "authz",
+                "evidence": {"artifact": "evidence/target.test/raw.json"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    claim = finding_index.list_root_finding_claims(findings_dir, target=target)[0]
+    finding_index.reconcile_root_finding_claims(findings_dir, target=target)
+    summary_path = tmp_path / "evidence" / target / "validation" / claim["id"] / "summary.json"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text("{}\n", encoding="utf-8")
+
+    sync = validation_runner._sync_finding_status(
+        {
+            "target": target,
+            "finding_id": claim["id"],
+            "result": "tested_finding",
+            "url": "https://target.test/api/orders/42",
+            "vuln_class": "authz",
+            "lane": "authz_public_exposure",
+            "summary_path": str(summary_path),
+            "evidence_rubric": {"status": "candidate-ready", "ready": True},
+        },
+        repo_root=tmp_path,
+    )
+    payload = finding_index.load_finding_index(findings_dir)
+    row = payload["findings"][0]
+
+    assert sync["status"] == "updated"
+    assert payload["total"] == 1
+    assert row["id"] == claim["id"]
+    assert row["url"] == "https://target.test/api/orders/42"
+    assert "endpoint" not in row["incomplete_fields"]
+    assert row["claim_status"] == "complete"
+
+
+def test_runner_sync_rejects_off_target_completion_for_missing_endpoint(tmp_path):
+    import finding_index
+
+    target = "target.test"
+    findings_dir = tmp_path / "findings" / target
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "manual-authz.json").write_text(
+        json.dumps(
+            {
+                "kind": "finding_claim",
+                "schema_version": 1,
+                "title": "Interrupted authorization validation",
+                "vuln_class": "authz",
+                "evidence": {"artifact": "evidence/target.test/raw.json"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    claim = finding_index.list_root_finding_claims(findings_dir, target=target)[0]
+    finding_index.reconcile_root_finding_claims(findings_dir, target=target)
+
+    sync = validation_runner._sync_finding_status(
+        {
+            "target": target,
+            "finding_id": claim["id"],
+            "result": "tested_finding",
+            "url": "other.test/api/orders/42",
+            "vuln_class": "authz",
+            "lane": "authz_public_exposure",
+        },
+        repo_root=tmp_path,
+    )
+    row = finding_index.find_finding(findings_dir, claim["id"])
+
+    assert sync["status"] == "skipped"
+    assert "off target" in sync["reason"]
+    assert row is not None
+    assert row["url"] == ""
+    assert "endpoint" in row["incomplete_fields"]
+
+
+@pytest.mark.parametrize(
+    ("runner_url", "runner_class", "reason"),
+    [
+        (
+            "https://target.test/api/orders/99",
+            "authz",
+            "runner endpoint conflicts with non-empty canonical finding identity",
+        ),
+        (
+            "https://target.test/api/orders/42",
+            "sqli",
+            "runner vulnerability class conflicts with non-empty canonical finding identity",
+        ),
+    ],
+)
+def test_runner_sync_rejects_non_empty_canonical_identity_conflicts(
+    tmp_path,
+    runner_url,
+    runner_class,
+    reason,
+):
+    import finding_index
+
+    target = "target.test"
+    findings_dir = tmp_path / "findings" / target
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "manual-authz.json").write_text(
+        json.dumps(
+            {
+                "kind": "finding_claim",
+                "schema_version": 1,
+                "title": "Authorization validation",
+                "endpoint": "/api/orders/42",
+                "vuln_class": "authz",
+                "evidence": {"artifact": "evidence/target.test/raw.json"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    claim = finding_index.list_root_finding_claims(findings_dir, target=target)[0]
+    finding_index.reconcile_root_finding_claims(findings_dir, target=target)
+    index_path = findings_dir / "findings.json"
+    events_path = findings_dir / "mutation-events.jsonl"
+    index_before = index_path.read_bytes()
+    events_before = events_path.read_bytes()
+
+    sync = validation_runner._sync_finding_status(
+        {
+            "target": target,
+            "finding_id": claim["id"],
+            "result": "tested_finding",
+            "url": runner_url,
+            "vuln_class": runner_class,
+            "lane": "authz_public_exposure",
+        },
+        repo_root=tmp_path,
+    )
+
+    assert sync["status"] == "skipped"
+    assert sync["reason"] == reason
+    assert index_path.read_bytes() == index_before
+    assert events_path.read_bytes() == events_before
+
+
 def test_authz_public_exposure_cli_reuses_existing_url_finding_without_id(monkeypatch, tmp_path, capsys):
     target = "https://target.test"
     url = "https://target.test/api/Feedbacks"

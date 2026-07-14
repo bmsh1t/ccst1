@@ -655,6 +655,10 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
     # Use the same field semantics as tools/structured_findings.py so derived
     # counts are consistent with what /pickup / autopilot_state report.
     for item in items:
+        val_status = str(item.get("validation_status", "unvalidated") or "unvalidated").lower()
+        if val_status == "needs_owner_revalidation":
+            findings["owner_revalidation_pending"] += 1
+            continue
         provenance = verify_finalized_finding_owner_provenance(
             findings_dir,
             item,
@@ -663,9 +667,8 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
         if provenance.get("required") and not provenance.get("valid"):
             findings["owner_revalidation_pending"] += 1
             continue
-        val_status = str(item.get("validation_status", "unvalidated") or "unvalidated").lower()
         report_status = str(item.get("report_status", "not_generated") or "not_generated").lower()
-        if val_status == "unvalidated":
+        if val_status in {"unvalidated", "candidate", "partial", "needs_validation"}:
             findings["pending_validation"] += 1
         elif val_status == "validated" and report_status != "generated":
             findings["validated_pending_report"] += 1

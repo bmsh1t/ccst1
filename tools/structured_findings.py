@@ -516,8 +516,12 @@ def _compact_owner_revalidation(
 ) -> dict:
     """Project an untrusted finality claim as a candidate-only recovery action."""
     compact = compact_structured_finding(finding, findings_dir)
-    compact["claimed_validation_status"] = compact.get("validation_status", "")
-    compact["claimed_report_status"] = compact.get("report_status", "")
+    compact["claimed_validation_status"] = str(
+        finding.get("claimed_validation_status") or compact.get("validation_status", "")
+    )
+    compact["claimed_report_status"] = str(
+        finding.get("claimed_report_status") or compact.get("report_status", "")
+    )
     compact["validation_status"] = "needs_owner_revalidation"
     compact["report_status"] = "not_generated"
     compact["lifecycle_status"] = "needs_owner_revalidation"
@@ -561,6 +565,19 @@ def summarize_structured_findings(
     eligible_findings = []
     owner_revalidation_pending: list[tuple[dict, dict]] = []
     for item in valid_findings:
+        if str(item.get("validation_status") or "").strip().lower() == "needs_owner_revalidation":
+            owner_revalidation_pending.append(
+                (
+                    item,
+                    {
+                        "reason": str(
+                            item.get("owner_revalidation_reason")
+                            or "owner-provenance-invalid"
+                        )
+                    },
+                )
+            )
+            continue
         if enforce_owner_provenance:
             provenance = verify_finalized_finding_owner_provenance(
                 findings_dir,

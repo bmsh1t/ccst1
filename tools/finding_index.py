@@ -34,6 +34,9 @@ OWNER_PROVENANCE_FIELD = "owner_provenance"
 FINDING_OWNER = "tools.finding_index"
 FINALIZED_VALIDATION_STATUSES = frozenset({"validated", "rejected"})
 FINALIZED_REPORT_STATUSES = frozenset({"generated", "reported"})
+OWNER_REVALIDATION_STATUS = "needs_owner_revalidation"
+ROOT_CLAIM_KIND = "finding_claim"
+ROOT_CLAIM_SCHEMA_VERSION = 1
 URL_RE = re.compile(r"https?://[^\s|`>'\")]+")
 BRACKET_RE = re.compile(r"\[([^\]]+)\]")
 
@@ -105,6 +108,8 @@ PRESERVED_FINDING_FIELDS = {
     "validation_status",
     "report_status",
     "validation_summary",
+    "validation_summary_sha256",
+    "validation_report_path",
     "validated_at",
     "vuln_class",
     "updated_at",
@@ -115,12 +120,15 @@ PRESERVED_FINDING_FIELDS = {
     # scanner index 时不能丢失其可追溯来源和稳定 identity。
     "claim_id",
     "claim_source_file",
+    "claim_revision",
+    "claim_sources",
     "claimed_severity",
     "claim_target",
     "claim_status",
     "incomplete_fields",
     "claimed_validation_status",
     "claimed_report_status",
+    "owner_revalidation_reason",
 }
 
 # 根目录 JSON 是 Claude/人工常见的临时落点，但它不是 canonical finding
@@ -195,6 +203,8 @@ def finding_evidence_summary(finding: dict[str, Any]) -> dict[str, str]:
         "source_file",
         "claim_source_file",
         "validation_summary",
+        "validation_summary_sha256",
+        "validation_report_path",
         "report_file",
         "report_id",
         "evidence_ref",
@@ -212,6 +222,45 @@ def finding_evidence_summary(finding: dict[str, Any]) -> dict[str, str]:
         # prose into the audit log.
         summary["source"] = "canonical-finding-row"
     return summary
+
+
+def _resolve_finding_artifact_path(findings_dir: str | Path, value: str) -> Path | None:
+    """Resolve an owner-recorded artifact across target- and repo-relative styles."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    candidates = [path] if path.is_absolute() else [Path(findings_dir) / path]
+    if not path.is_absolute():
+        root = Path(findings_dir)
+        if len(root.parents) >= 2:
+            candidates.append(root.parents[1] / path)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _attach_validation_summary_digest(
+    findings_dir: str | Path,
+    finding: dict[str, Any],
+) -> None:
+    """Bind a locatable validation summary to the row/event snapshot."""
+    path = _resolve_finding_artifact_path(
+        findings_dir,
+        str(finding.get("validation_summary") or ""),
+    )
+    if path is None or not path.is_file():
+        return
+    finding["validation_summary_sha256"] = _sha256_file(path)
 
 
 def _new_mutation_event_id(
@@ -331,6 +380,9 @@ def _write_payload_with_owner_provenance(
     to the caller and intentionally leaves a detectable runtime-invalid row.
     Retrying the owner mutation repairs that state without an unsafe rollback.
     """
+    for finding in mutated_findings:
+        if isinstance(finding, dict):
+            _attach_validation_summary_digest(findings_dir, finding)
     events = _prepare_owner_provenance(
         mutated_findings,
         target=target,
@@ -417,6 +469,24 @@ def verify_finding_owner_provenance(
         return {"valid": False, "reason": "event-fingerprint-mismatch", "event_id": event_id}
     if event.get("evidence_summary") != evidence_summary:
         return {"valid": False, "reason": "evidence-summary-mismatch", "event_id": event_id}
+    expected_summary_digest = str(finding.get("validation_summary_sha256") or "").strip()
+    if expected_summary_digest:
+        summary_path = _resolve_finding_artifact_path(
+            findings_dir,
+            str(finding.get("validation_summary") or ""),
+        )
+        if summary_path is None or not summary_path.is_file():
+            return {
+                "valid": False,
+                "reason": "validation-summary-missing",
+                "event_id": event_id,
+            }
+        if _sha256_file(summary_path) != expected_summary_digest:
+            return {
+                "valid": False,
+                "reason": "validation-summary-content-mismatch",
+                "event_id": event_id,
+            }
     return {
         "valid": True,
         "event_id": event_id,
@@ -461,6 +531,56 @@ def verify_finalized_finding_owner_provenance(
         return {"required": False, "valid": True, "reason": "not-finalized"}
     result = verify_finding_owner_provenance(findings_dir, finding, target=target)
     return {"required": True, **result}
+
+
+def _quarantine_finality_claim(
+    finding: dict[str, Any],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """把未验证的终态声明降级为可审计的 owner revalidation 行。
+
+    rebuild、legacy migration 和通用 upsert 都会重新签名其输出。如果直接保留旧的
+    ``validated/generated`` 字段，这些正常 owner 操作反而会把无 event 的终态洗白。
+    降级后仍保留证据/report 指针和原声明，供显式 ``/validate`` 重放，但任何 consumer
+    都不能把它当作已完成生命周期。
+    """
+    quarantined = dict(finding)
+    validation_status = str(quarantined.get("validation_status") or "unvalidated").strip().lower()
+    report_status = str(quarantined.get("report_status") or "not_generated").strip().lower()
+    quarantined["claimed_validation_status"] = str(
+        quarantined.get("claimed_validation_status") or validation_status
+    )
+    quarantined["claimed_report_status"] = str(
+        quarantined.get("claimed_report_status") or report_status
+    )
+    quarantined["validation_status"] = OWNER_REVALIDATION_STATUS
+    quarantined["report_status"] = "not_generated"
+    quarantined["owner_revalidation_reason"] = reason or "owner-provenance-invalid"
+    quarantined.pop(OWNER_PROVENANCE_FIELD, None)
+    _sync_legacy_lifecycle_fields(quarantined)
+    return quarantined
+
+
+def _normalize_existing_row_for_owner_mutation(
+    findings_dir: str | Path,
+    finding: dict[str, Any],
+    *,
+    target: str,
+) -> dict[str, Any]:
+    """Normalize an existing row without re-authorizing untrusted finality."""
+    normalized = _normalize_finding(finding)
+    provenance = verify_finalized_finding_owner_provenance(
+        findings_dir,
+        normalized,
+        target=target,
+    )
+    if not provenance.get("required") or provenance.get("valid"):
+        return normalized
+    return _quarantine_finality_claim(
+        normalized,
+        reason=str(provenance.get("reason") or "owner-provenance-invalid"),
+    )
 
 
 def _line_count(path: Path) -> int:
@@ -659,6 +779,17 @@ def _claim_incomplete_fields(title: str, endpoint: str, vuln_type: str, detail: 
     return missing
 
 
+def _root_claim_revision(payload: dict[str, Any]) -> str:
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 def _root_claim_from_json(
     findings_dir: Path,
     path: Path,
@@ -676,6 +807,15 @@ def _root_claim_from_json(
     if path.name in ROOT_CLAIM_EXCLUDED_FILES:
         return None
     if "findings" in payload or payload.get("kind") == "autopilot_checkpoint_witness":
+        return None
+
+    raw_kind = str(payload.get("kind") or "").strip().lower().replace("-", "_")
+    if raw_kind and raw_kind != ROOT_CLAIM_KIND:
+        return None
+    if raw_kind == ROOT_CLAIM_KIND and payload.get("schema_version") not in {
+        None,
+        ROOT_CLAIM_SCHEMA_VERSION,
+    }:
         return None
 
     title = _claim_value(payload, "title", "name", "finding_title")
@@ -697,13 +837,11 @@ def _root_claim_from_json(
     # arbitrary metadata JSON, and never substitute the target root for a
     # missing endpoint.
     identity_count = sum(bool(value) for value in (title, endpoint, vuln_type))
-    explicit_claim_state = any(
-        payload.get(key) not in (None, "", [], {})
-        for key in ("state", "status", "validation_status", "severity", "impact", "evidence")
-    )
-    if identity_count == 0 or (not has_claim_detail and not explicit_claim_state):
+    explicit_claim = raw_kind == ROOT_CLAIM_KIND
+    legacy_evidence_claim = identity_count >= 2 and has_claim_detail
+    if identity_count == 0 or (not explicit_claim and not legacy_evidence_claim):
         return None
-    if target and "//" in endpoint and not url_belongs_to_target(endpoint, target):
+    if endpoint and target and not url_belongs_to_target(endpoint, target):
         return None
 
     relative_path = str(path.relative_to(findings_dir))
@@ -714,12 +852,20 @@ def _root_claim_from_json(
     claimed_validation_status = _claim_value(payload, "validation_status", "state", "status")
     claimed_report_status = _claim_value(payload, "report_status", "report_state")
     claim_target = _claim_value(payload, "target", "host")
-    if claim_target and "//" in claim_target and target and not url_belongs_to_target(claim_target, target):
+    if claim_target and target and not url_belongs_to_target(claim_target, target):
         return None
+    claim_revision = _root_claim_revision(payload)
+    claim_source = {
+        "claim_id": claim_id,
+        "source_file": relative_path,
+        "revision": claim_revision,
+    }
     return {
         "id": claim_id,
         "claim_id": claim_id,
         "claim_source_file": relative_path,
+        "claim_revision": claim_revision,
+        "claim_sources": [claim_source],
         # Keep an absolute artifact pointer for Claude's next evidence step;
         # `claim_source_file` remains the stable, portable identity.
         "source_file": str(path),
@@ -774,16 +920,15 @@ def list_root_finding_claims(
         target=resolved_target,
         migrate_legacy=False,
     )
-    reconciled_ids = {
-        str(item.get("claim_id") or item.get("id") or "")
-        for item in canonical.get("findings", [])
-        if isinstance(item, dict)
-    }
-    reconciled_sources = {
-        str(item.get("claim_source_file") or "")
-        for item in canonical.get("findings", [])
-        if isinstance(item, dict)
-    }
+    reconciled_revisions: set[tuple[str, str]] = set()
+    for item in canonical.get("findings", []):
+        if not isinstance(item, dict):
+            continue
+        for source in _normalized_claim_source_entries(item):
+            source_file = str(source.get("source_file") or "")
+            revision = str(source.get("revision") or "")
+            if source_file and revision:
+                reconciled_revisions.add((source_file, revision))
 
     claims: list[dict[str, Any]] = []
     for path in sorted(root.glob("*.json")):
@@ -794,9 +939,9 @@ def list_root_finding_claims(
         if not claim:
             continue
         if not include_reconciled and (
-            claim["claim_id"] in reconciled_ids
-            or claim["claim_source_file"] in reconciled_sources
-        ):
+            str(claim.get("claim_source_file") or ""),
+            str(claim.get("claim_revision") or ""),
+        ) in reconciled_revisions:
             continue
         claims.append(claim)
 
@@ -973,6 +1118,57 @@ def _sync_legacy_lifecycle_fields(finding: dict[str, Any]) -> dict[str, Any]:
     return finding
 
 
+def _normalized_claim_source_entries(finding: dict[str, Any]) -> list[dict[str, str]]:
+    """Normalize scalar/collection claim trace into a stable revision set."""
+    entries: list[dict[str, str]] = []
+    raw_entries = finding.get("claim_sources")
+    if isinstance(raw_entries, list):
+        for raw in raw_entries:
+            if not isinstance(raw, dict):
+                continue
+            source_file = str(raw.get("source_file") or "").strip()
+            if not source_file:
+                continue
+            entries.append(
+                {
+                    "claim_id": str(raw.get("claim_id") or "").strip(),
+                    "source_file": source_file,
+                    "revision": str(raw.get("revision") or "").strip(),
+                }
+            )
+    scalar_source = str(finding.get("claim_source_file") or "").strip()
+    if scalar_source:
+        entries.append(
+            {
+                "claim_id": str(finding.get("claim_id") or finding.get("id") or "").strip(),
+                "source_file": scalar_source,
+                "revision": str(finding.get("claim_revision") or "").strip(),
+            }
+        )
+
+    unique: dict[tuple[str, str], dict[str, str]] = {}
+    for item in entries:
+        key = (item["source_file"], item["revision"])
+        existing = unique.get(key)
+        if existing is None or (not existing.get("claim_id") and item.get("claim_id")):
+            unique[key] = item
+    return [unique[key] for key in sorted(unique)]
+
+
+def _merge_claim_sources(
+    existing: dict[str, Any],
+    candidate: dict[str, Any],
+) -> list[dict[str, str]]:
+    return _normalized_claim_source_entries(
+        {
+            "claim_sources": [
+                *_normalized_claim_source_entries(existing),
+                *_normalized_claim_source_entries(candidate),
+            ]
+        }
+    )
+
+
 def _normalize_finding(finding: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(finding)
     endpoint = str(normalized.get("url") or normalized.get("endpoint") or "").strip()
@@ -990,6 +1186,9 @@ def _normalize_finding(finding: dict[str, Any]) -> dict[str, Any]:
     normalized["id"] = str(normalized.get("id") or _generated_finding_id(normalized))
     normalized.setdefault("validation_status", "unvalidated")
     normalized.setdefault("report_status", "not_generated")
+    claim_sources = _normalized_claim_source_entries(normalized)
+    if claim_sources:
+        normalized["claim_sources"] = claim_sources
     _sync_legacy_lifecycle_fields(normalized)
     return normalized
 
@@ -1003,16 +1202,28 @@ def _merge_finding_rows(
     for key, value in candidate.items():
         if value in (None, ""):
             continue
+        if key == "claim_sources":
+            merged[key] = _merge_claim_sources(existing, candidate)
+            continue
         if (
             key == "validation_status"
-            and value == "unvalidated"
-            and existing.get(key) not in (None, "", "unvalidated")
+            and str(existing.get(key) or "").strip().lower()
+            in FINALIZED_VALIDATION_STATUSES | {OWNER_REVALIDATION_STATUS}
+            and str(value or "").strip().lower()
+            != str(existing.get(key) or "").strip().lower()
         ):
             continue
         if (
             key == "report_status"
-            and value == "not_generated"
-            and existing.get(key) not in (None, "", "not_generated")
+            and str(existing.get(key) or "").strip().lower() in FINALIZED_REPORT_STATUSES
+            and str(value or "").strip().lower()
+            not in FINALIZED_REPORT_STATUSES
+        ):
+            continue
+        if (
+            key == "report_status"
+            and str(existing.get(key) or "").strip().lower() == "reported"
+            and str(value or "").strip().lower() == "generated"
         ):
             continue
         merged[key] = value
@@ -1036,8 +1247,14 @@ def _legacy_list_to_index(
             continue
         finding = _normalize_finding(raw)
         # Historical list payloads never had owner provenance. Ignore any
-        # ad-hoc field and mint it only through the migration owner write.
+        # ad-hoc field and quarantine lifecycle finality before the migration
+        # owner signs the safe recovery row.
         finding.pop(OWNER_PROVENANCE_FIELD, None)
+        if finding_requires_owner_provenance(finding):
+            finding = _quarantine_finality_claim(
+                finding,
+                reason="legacy-finality-without-owner-event",
+            )
         finding_id = str(finding["id"])
         existing_index = index_by_id.get(finding_id)
         if existing_index is None:
@@ -1104,7 +1321,12 @@ def _load_finding_payload(
     return payload
 
 
-def _preserve_existing_finding_state(payload: dict[str, Any], existing: dict[str, Any]) -> None:
+def _preserve_existing_finding_state(
+    payload: dict[str, Any],
+    existing: dict[str, Any],
+    *,
+    findings_dir: Path,
+) -> None:
     """Carry validation/report state across deterministic index rebuilds.
 
     `findings.json` is not fed only by scanner text files. Evidence runners and
@@ -1113,8 +1335,13 @@ def _preserve_existing_finding_state(payload: dict[str, Any], existing: dict[str
     out-of-band rows, otherwise the AI loses validated/candidate state even
     though the raw evidence still exists.
     """
+    target = str(payload.get("target") or findings_dir.name)
     existing_by_id = {
-        str(item.get("id")): item
+        str(item.get("id")): _normalize_existing_row_for_owner_mutation(
+            findings_dir,
+            item,
+            target=target,
+        )
         for item in existing.get("findings", [])
         if isinstance(item, dict) and item.get("id")
     }
@@ -1133,7 +1360,6 @@ def _preserve_existing_finding_state(payload: dict[str, Any], existing: dict[str
                 finding[field] = old[field]
 
     preserved_orphans = []
-    target = str(payload.get("target") or "")
     for finding_id, old in existing_by_id.items():
         if finding_id in rebuilt_ids:
             continue
@@ -1208,7 +1434,7 @@ def write_finding_index(findings_dir: str | Path, *, target: str | None = None, 
         target=target,
         migrate_legacy=False,
     )
-    _preserve_existing_finding_state(payload, existing)
+    _preserve_existing_finding_state(payload, existing, findings_dir=root)
     _refresh_finding_counts(payload)
     updated_at = _now_utc()
     payload["updated_at"] = updated_at
@@ -1228,10 +1454,14 @@ def write_finding_index(findings_dir: str | Path, *, target: str | None = None, 
     return payload
 
 
-def load_finding_index(findings_dir: str | Path) -> dict[str, Any]:
+def load_finding_index(
+    findings_dir: str | Path,
+    *,
+    migrate_legacy: bool = True,
+) -> dict[str, Any]:
     root = Path(findings_dir)
     path = root / "findings.json"
-    return _load_finding_payload(path, root, migrate_legacy=True)
+    return _load_finding_payload(path, root, migrate_legacy=migrate_legacy)
 
 
 def upsert_findings(
@@ -1249,8 +1479,13 @@ def upsert_findings(
     payload.setdefault("schema_version", SCHEMA_VERSION)
     payload.setdefault("findings_dir", str(root))
 
+    resolved_target = str(payload.get("target") or target or root.name)
     existing_rows = [
-        _normalize_finding(item)
+        _normalize_existing_row_for_owner_mutation(
+            root,
+            item,
+            target=resolved_target,
+        )
         for item in payload.get("findings", [])
         if isinstance(item, dict)
     ]
@@ -1330,8 +1565,13 @@ def upsert_finding(
     }
 
 
-def find_finding(findings_dir: str | Path, finding_id: str) -> dict[str, Any] | None:
-    payload = load_finding_index(findings_dir)
+def find_finding(
+    findings_dir: str | Path,
+    finding_id: str,
+    *,
+    migrate_legacy: bool = True,
+) -> dict[str, Any] | None:
+    payload = load_finding_index(findings_dir, migrate_legacy=migrate_legacy)
     for finding in payload.get("findings", []):
         if isinstance(finding, dict) and finding.get("id") == finding_id:
             return finding
@@ -1355,6 +1595,14 @@ def update_finding_status(findings_dir: str | Path, finding_id: str, **updates: 
             if value in (None, ""):
                 continue
             finding[key] = value
+        requested_validation = str(updates.get("validation_status") or "").strip().lower()
+        requested_report = str(updates.get("report_status") or "").strip().lower()
+        if requested_validation in FINALIZED_VALIDATION_STATUSES:
+            finding.pop("claimed_validation_status", None)
+            finding.pop("owner_revalidation_reason", None)
+        if requested_report in FINALIZED_REPORT_STATUSES:
+            finding.pop("claimed_report_status", None)
+            finding.pop("owner_revalidation_reason", None)
         _sync_legacy_lifecycle_fields(finding)
         finding["updated_at"] = _now_utc()
         updated_finding = finding

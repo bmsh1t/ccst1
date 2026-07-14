@@ -26,3 +26,13 @@ def test_checkpoint_reads_evidence_ledger_before_handoff():
     assert "python3 tools/evidence_ledger.py summary --target <target>" in text
     assert "Evidence Ledger 摘要和 Actor Matrix gaps" in text
     assert "coverage gap 为空但 Actor Matrix 仍有缺口" in text
+
+
+def test_checkpoint_documents_limited_root_claim_owner_writes():
+    text = _read("commands/checkpoint.md")
+
+    assert "findings/<target_key>/findings.json（仅通过 finding_index" in text
+    assert "findings/<target_key>/mutation-events.jsonl" in text
+    assert '"kind": "finding_claim"' in text
+    assert '"schema_version": 1' in text
+    assert "findings/*" not in text

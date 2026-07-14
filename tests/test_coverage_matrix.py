@@ -30,6 +30,7 @@ from coverage_matrix import (
     rebuild_matrix,
     save_matrix,
 )
+from finding_index import update_finding_status, upsert_finding
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -727,22 +728,24 @@ class TestMarkCell:
 
     def test_write_finding_preserves_existing_canonical_lifecycle(self, tmp_path):
         findings_path = tmp_path / "findings" / "x.com" / "findings.json"
-        findings_path.parent.mkdir(parents=True)
-        findings_path.write_text(json.dumps({
-            "schema_version": 1,
-            "target": "x.com",
-            "total": 1,
-            "findings": [{
+        upsert_finding(
+            findings_path.parent,
+            {
                 "id": "existing-validated",
                 "url": "https://x.com/search?q=1",
                 "type": "sqli",
                 "severity": "high",
                 "confidence": "confirmed",
-                "validation_status": "validated",
-                "report_status": "generated",
-                "report_id": "sqli_001",
-            }],
-        }), encoding="utf-8")
+            },
+            target="x.com",
+        )
+        update_finding_status(
+            findings_path.parent,
+            "existing-validated",
+            validation_status="validated",
+            report_status="generated",
+            report_id="sqli_001",
+        )
 
         mark_cell(
             "x.com", "/api/orders/1", "IDOR", "tested_finding",

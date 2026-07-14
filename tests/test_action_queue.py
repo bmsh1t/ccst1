@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from action_queue import (
     add_manual_action,
@@ -11,6 +14,7 @@ from action_queue import (
     load_queue,
     main,
     resolve_action,
+    save_queue,
     select_next_action,
     select_next_action_for_target,
     summarize_queue,
@@ -1017,3 +1021,69 @@ def test_relevance_metadata_breaks_same_endpoint_coverage_ties(tmp_path):
     ]
 
     assert select_next_action(queue)["id"] == "AQ-0002"
+
+
+def test_load_queue_rejects_corrupt_or_invalid_canonical_state(tmp_path):
+    path = tmp_path / "state" / "target.com" / "action_queue.json"
+    path.parent.mkdir(parents=True)
+
+    path.write_text('{"actions":', encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid action queue JSON"):
+        load_queue(tmp_path, "target.com")
+
+    path.write_text(json.dumps([{"id": "AQ-0001"}]), encoding="utf-8")
+    with pytest.raises(ValueError, match="must contain one object"):
+        load_queue(tmp_path, "target.com")
+
+    path.write_text(json.dumps({"schema_version": 1, "actions": {}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="actions must be a list"):
+        load_queue(tmp_path, "target.com")
+
+    path.write_text(json.dumps({"schema_version": 2, "actions": []}), encoding="utf-8")
+    with pytest.raises(ValueError, match="schema_version must be 1"):
+        load_queue(tmp_path, "target.com")
+
+
+def test_save_queue_atomic_replace_failure_preserves_previous_bytes(tmp_path, monkeypatch):
+    initial = load_queue(tmp_path, "target.com")
+    initial["actions"] = [{"id": "AQ-0001", "status": "queued"}]
+    path = save_queue(tmp_path, "target.com", initial)
+    previous = path.read_bytes()
+
+    replacement = dict(initial)
+    replacement["actions"] = [{"id": "AQ-0002", "status": "queued"}]
+    original_replace = Path.replace
+
+    def fail_queue_replace(self, target):
+        if self.parent == path.parent and self.name.startswith(f".{path.name}."):
+            raise OSError("synthetic replace failure")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_queue_replace)
+    with pytest.raises(OSError, match="synthetic replace failure"):
+        save_queue(tmp_path, "target.com", replacement)
+
+    assert path.read_bytes() == previous
+    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
+
+
+def test_action_queue_cli_reports_corrupt_state(tmp_path, capsys):
+    path = tmp_path / "state" / "target.com" / "action_queue.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{broken\n", encoding="utf-8")
+
+    rc = main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "summary",
+            "--target",
+            "target.com",
+            "--json",
+        ]
+    )
+
+    assert rc == 2
+    error = capsys.readouterr().err
+    assert "invalid action queue JSON" in error
+    assert str(path) in error

@@ -113,6 +113,30 @@ def test_checkpoint_cli_syncs_durable_action_queue_idempotently(tmp_path, capsys
     assert len(second_queue["actions"]) == len(first_queue["actions"])
 
 
+def test_checkpoint_cli_fails_fast_without_overwriting_corrupt_action_queue(tmp_path, capsys):
+    queue_path = tmp_path / "state" / "target.com" / "action_queue.json"
+    queue_path.parent.mkdir(parents=True)
+    queue_path.write_text('{"actions":', encoding="utf-8")
+    original = queue_path.read_bytes()
+
+    exit_code = checkpoint_module.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--target",
+            "target.com",
+            "--no-refresh-coverage",
+            "--json",
+        ]
+    )
+
+    error = capsys.readouterr().err
+    assert exit_code == 2
+    assert "checkpoint action queue preflight failed" in error
+    assert str(queue_path) in error
+    assert queue_path.read_bytes() == original
+
+
 def test_checkpoint_cli_reconciles_root_json_claim_and_links_durable_actions(tmp_path, capsys):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)

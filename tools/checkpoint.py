@@ -3015,21 +3015,33 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     repo = Path(args.repo_root)
+    resolved_target = canonical_target_value(args.target)
+    # Durable handoff 损坏时必须在 root-claim reconciliation 等写入前停止，避免把
+    # “无法读取旧 queue”误当作可从空状态继续构建 checkpoint。
+    try:
+        load_action_queue(repo, resolved_target)
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"checkpoint action queue preflight failed: {exc}", file=sys.stderr)
+        return 2
     try:
         claim_sync = reconcile_root_finding_claims(
-            repo / "findings" / target_storage_key(canonical_target_value(args.target)),
-            target=canonical_target_value(args.target),
+            repo / "findings" / target_storage_key(resolved_target),
+            target=resolved_target,
         )
     except (OSError, ValueError, KeyError) as exc:
         print(f"checkpoint finding-claim reconciliation failed: {exc}", file=sys.stderr)
         return 2
-    checkpoint = build_checkpoint(
-        repo,
-        target=args.target,
-        note=args.note,
-        memory_dir=args.memory_dir or None,
-        refresh_coverage=not args.no_refresh_coverage,
-    )
+    try:
+        checkpoint = build_checkpoint(
+            repo,
+            target=args.target,
+            note=args.note,
+            memory_dir=args.memory_dir or None,
+            refresh_coverage=not args.no_refresh_coverage,
+        )
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"checkpoint state build failed: {exc}", file=sys.stderr)
+        return 2
     checkpoint["root_finding_claim_sync"] = claim_sync
     try:
         sync_checkpoint_action_queue(repo, checkpoint)

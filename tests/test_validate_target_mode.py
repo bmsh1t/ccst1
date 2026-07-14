@@ -1,6 +1,7 @@
 """Regression tests for validate.py target-driven advisory behavior."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -117,7 +118,7 @@ def test_non_tty_machine_decision_binds_canonical_finding_and_uses_owner(tmp_pat
     )
     output = json.loads(capsys.readouterr().out)
     persisted = find_finding(findings_dir, "sqli_machine")
-    summary_path = tmp_path / report_relative.replace("machine-report.md", "validation-summary.json")
+    summary_path = Path(output["summary_path"])
 
     assert exit_code == 0
     assert output["finding_id"] == "sqli_machine"
@@ -174,6 +175,123 @@ def test_machine_decision_binding_error_has_no_new_validation_write(tmp_path, mo
     assert not (tmp_path / "findings" / "last-validate.json").exists()
 
 
+def test_machine_decision_binding_error_does_not_migrate_legacy_finding_list(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    target = "target.com"
+    findings_dir = tmp_path / "findings" / target
+    findings_dir.mkdir(parents=True)
+    findings_path = findings_dir / "findings.json"
+    findings_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "legacy-sqli",
+                    "type": "sqli",
+                    "url": "https://target.com/item?id=1",
+                    "validation_status": "validated",
+                    "report_status": "generated",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    original = findings_path.read_bytes()
+    evidence_ref = tmp_path / "evidence" / target / "raw.txt"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text("raw\n", encoding="utf-8")
+    decision = _machine_decision(
+        target=target,
+        finding_id="legacy-sqli",
+        endpoint="/wrong-path",
+        report_path="findings/target.com/validated/should-not-exist.md",
+        evidence_ref=str(evidence_ref),
+    )
+    decision_path = tmp_path / "bad-legacy-decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+
+    exit_code = validate.main(
+        [
+            "--target",
+            target,
+            "--finding-id",
+            "legacy-sqli",
+            "--decision-json",
+            str(decision_path),
+        ]
+    )
+
+    assert exit_code == 2
+    assert "decision.endpoint does not match" in capsys.readouterr().err
+    assert findings_path.read_bytes() == original
+    assert not (findings_dir / "mutation-events.jsonl").exists()
+    assert not (findings_dir / "validated").exists()
+    assert not (tmp_path / "findings" / "last-validate.json").exists()
+
+
+def test_valid_machine_decision_revalidates_quarantined_legacy_finality(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from finding_index import find_finding, verify_finding_owner_provenance
+
+    target = "target.com"
+    findings_dir = tmp_path / "findings" / target
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "legacy-sqli",
+                    "type": "sqli",
+                    "url": "https://target.com/item?id=1",
+                    "validation_status": "validated",
+                    "report_status": "generated",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    evidence_ref = tmp_path / "evidence" / target / "raw.txt"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text("raw\n", encoding="utf-8")
+    decision = _machine_decision(
+        target=target,
+        finding_id="legacy-sqli",
+        endpoint="/item?id=1",
+        report_path="findings/target.com/validated/legacy-sqli.md",
+        evidence_ref=str(evidence_ref),
+    )
+    decision_path = tmp_path / "valid-legacy-decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+
+    assert validate.main(
+        [
+            "--target",
+            target,
+            "--finding-id",
+            "legacy-sqli",
+            "--decision-json",
+            str(decision_path),
+            "--json",
+        ]
+    ) == 0
+    capsys.readouterr()
+    finding = find_finding(findings_dir, "legacy-sqli")
+
+    assert finding is not None
+    assert finding["validation_status"] == "validated"
+    assert finding["report_status"] == "not_generated"
+    assert verify_finding_owner_provenance(findings_dir, finding, target=target)["valid"] is True
+
+
 def test_gate2_in_scope_is_target_driven_advisory(capsys):
     passed, notes = validate.gate2_in_scope("ignored-program")
 
@@ -225,10 +343,9 @@ def test_write_validation_summary_updates_last_validate(tmp_path, monkeypatch):
     }
 
     summary = validate.build_validation_summary(info, all_pass=True, report_path=report_path)
-    validate.write_validation_summary(summary, report_path)
+    report_summary = validate.write_validation_summary(summary, report_path)
 
-    report_summary = report_path.parent / "validation-summary.json"
-    submission_notes = report_path.parent / "submission-notes.md"
+    submission_notes = Path(summary["submission_notes_path"])
     last_validate = tmp_path / "findings" / "last-validate.json"
 
     assert report_summary.exists()
@@ -247,7 +364,7 @@ def test_write_validation_summary_updates_last_validate(tmp_path, monkeypatch):
     assert saved["submission_notes_path"] == str(submission_notes)
 
     notes = submission_notes.read_text(encoding="utf-8")
-    assert "Validation summary: `validation-summary.json`" in notes
+    assert f"Validation summary: `{report_summary.name}`" in notes
     assert "Raw HTTP request" in notes
     assert "7-Question Gate: `PASS`" in notes
     assert "Four validation gates: `PASS`" in notes
@@ -255,6 +372,275 @@ def test_write_validation_summary_updates_last_validate(tmp_path, monkeypatch):
     last_saved = json.loads(last_validate.read_text(encoding="utf-8"))
     assert last_saved["report_path"] == str(report_path)
     assert last_saved["submission_notes_path"] == str(submission_notes)
+
+
+def test_machine_validation_isolates_artifacts_and_binds_summary_content(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from finding_index import find_finding, upsert_finding, verify_finding_owner_provenance
+
+    target = "target.com"
+    findings_dir = tmp_path / "findings" / target
+    evidence_ref = tmp_path / "evidence" / target / "raw-pair.json"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text('{"baseline":"one","variant":"many"}\n', encoding="utf-8")
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+
+    outputs = []
+    for finding_id, endpoint, report_name in (
+        ("sqli-one", "/item?id=1", "one.md"),
+        ("sqli-two", "/item?id=2", "two.md"),
+    ):
+        upsert_finding(
+            findings_dir,
+            {
+                "id": finding_id,
+                "type": "sqli",
+                "url": f"https://target.com{endpoint}",
+                "validation_status": "candidate",
+            },
+            target=target,
+        )
+        decision = _machine_decision(
+            target=target,
+            finding_id=finding_id,
+            endpoint=endpoint,
+            report_path=f"findings/{target}/validated/{report_name}",
+            evidence_ref=str(evidence_ref),
+        )
+        decision_path = tmp_path / f"{finding_id}.decision.json"
+        decision_path.write_text(json.dumps(decision), encoding="utf-8")
+
+        assert validate.main(
+            [
+                "--target",
+                target,
+                "--finding-id",
+                finding_id,
+                "--decision-json",
+                str(decision_path),
+                "--json",
+            ]
+        ) == 0
+        outputs.append(json.loads(capsys.readouterr().out))
+
+    summary_paths = [Path(item["summary_path"]) for item in outputs]
+    notes_paths = [Path(item["submission_notes_path"]) for item in outputs]
+    assert summary_paths[0] != summary_paths[1]
+    assert notes_paths[0] != notes_paths[1]
+    assert [json.loads(path.read_text(encoding="utf-8"))["finding_id"] for path in summary_paths] == [
+        "sqli-one",
+        "sqli-two",
+    ]
+
+    first = find_finding(findings_dir, "sqli-one")
+    second = find_finding(findings_dir, "sqli-two")
+    assert first is not None and second is not None
+    assert first["validation_summary"] == str(summary_paths[0])
+    assert second["validation_summary"] == str(summary_paths[1])
+    assert first["validation_summary_sha256"]
+    assert second["validation_summary_sha256"]
+    assert verify_finding_owner_provenance(findings_dir, first, target=target)["valid"] is True
+
+    summary_paths[0].write_text('{"finding_id":"sqli-two"}\n', encoding="utf-8")
+    invalid = verify_finding_owner_provenance(findings_dir, first, target=target)
+    assert invalid["valid"] is False
+    assert invalid["reason"] == "validation-summary-content-mismatch"
+
+
+def test_machine_validation_rejects_report_path_owned_by_another_finding(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from finding_index import upsert_finding
+
+    target = "target.com"
+    findings_dir = tmp_path / "findings" / target
+    evidence_ref = tmp_path / "evidence" / target / "raw.txt"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text("raw\n", encoding="utf-8")
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+    shared_report = f"findings/{target}/validated/shared.md"
+
+    for finding_id, endpoint in (("sqli-one", "/item?id=1"), ("sqli-two", "/item?id=2")):
+        upsert_finding(
+            findings_dir,
+            {
+                "id": finding_id,
+                "type": "sqli",
+                "url": f"https://target.com{endpoint}",
+                "validation_status": "candidate",
+            },
+            target=target,
+        )
+
+    first_decision = _machine_decision(
+        target=target,
+        finding_id="sqli-one",
+        endpoint="/item?id=1",
+        report_path=shared_report,
+        evidence_ref=str(evidence_ref),
+    )
+    first_path = tmp_path / "first.json"
+    first_path.write_text(json.dumps(first_decision), encoding="utf-8")
+    assert validate.main(
+        ["--target", target, "--finding-id", "sqli-one", "--decision-json", str(first_path), "--json"]
+    ) == 0
+    capsys.readouterr()
+    report_path = tmp_path / shared_report
+    original_report = report_path.read_bytes()
+
+    second_decision = _machine_decision(
+        target=target,
+        finding_id="sqli-two",
+        endpoint="/item?id=2",
+        report_path=shared_report,
+        evidence_ref=str(evidence_ref),
+    )
+    second_decision["report"]["content"] = "# Different finding\n"
+    second_path = tmp_path / "second.json"
+    second_path.write_text(json.dumps(second_decision), encoding="utf-8")
+
+    assert validate.main(
+        ["--target", target, "--finding-id", "sqli-two", "--decision-json", str(second_path)]
+    ) == 2
+    assert "report path is already owned by another finding" in capsys.readouterr().err
+    assert report_path.read_bytes() == original_report
+    second_summary, second_notes = validate.validation_artifact_paths(
+        {"finding_id": "sqli-two"},
+        report_path,
+    )
+    assert not second_summary.exists()
+    assert not second_notes.exists()
+    second_row = validate.load_finding_prefill(str(findings_dir), "sqli-two")
+    assert second_row["validation_report_path"] == ""
+    assert json.loads(
+        (tmp_path / "findings" / "last-validate.json").read_text(encoding="utf-8")
+    )["finding_id"] == "sqli-one"
+
+
+def test_machine_validation_allows_same_finding_report_rerun(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from finding_index import find_finding, upsert_finding, verify_finding_owner_provenance
+
+    target = "target.com"
+    finding_id = "sqli-rerun"
+    findings_dir = tmp_path / "findings" / target
+    evidence_ref = tmp_path / "evidence" / target / "raw.txt"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text("raw\n", encoding="utf-8")
+    upsert_finding(
+        findings_dir,
+        {
+            "id": finding_id,
+            "type": "sqli",
+            "url": "https://target.com/item?id=1",
+            "validation_status": "candidate",
+        },
+        target=target,
+    )
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+    report_rel = f"findings/{target}/validated/rerun.md"
+
+    outputs = []
+    for run_number in (1, 2):
+        decision = _machine_decision(
+            target=target,
+            finding_id=finding_id,
+            endpoint="/item?id=1",
+            report_path=report_rel,
+            evidence_ref=str(evidence_ref),
+        )
+        decision["report"]["content"] = f"# Finding rerun {run_number}\n"
+        decision_path = tmp_path / f"decision-{run_number}.json"
+        decision_path.write_text(json.dumps(decision), encoding="utf-8")
+
+        assert validate.main(
+            [
+                "--target",
+                target,
+                "--finding-id",
+                finding_id,
+                "--decision-json",
+                str(decision_path),
+                "--json",
+            ]
+        ) == 0
+        outputs.append(json.loads(capsys.readouterr().out))
+
+    assert outputs[0]["summary_path"] == outputs[1]["summary_path"]
+    assert (tmp_path / report_rel).read_text(encoding="utf-8") == "# Finding rerun 2\n"
+    finding = find_finding(findings_dir, finding_id)
+    assert finding is not None
+    assert finding["validation_status"] == "validated"
+    assert verify_finding_owner_provenance(findings_dir, finding, target=target)["valid"] is True
+
+
+def test_machine_validation_recovers_byte_identical_unowned_report_after_crash(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from finding_index import find_finding, upsert_finding
+
+    target = "target.com"
+    finding_id = "sqli-crash-replay"
+    findings_dir = tmp_path / "findings" / target
+    evidence_ref = tmp_path / "evidence" / target / "raw.txt"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text("raw\n", encoding="utf-8")
+    upsert_finding(
+        findings_dir,
+        {
+            "id": finding_id,
+            "type": "sqli",
+            "url": "https://target.com/item?id=1",
+            "validation_status": "candidate",
+        },
+        target=target,
+    )
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+    report_rel = f"findings/{target}/validated/crash-replay.md"
+    decision = _machine_decision(
+        target=target,
+        finding_id=finding_id,
+        endpoint="/item?id=1",
+        report_path=report_rel,
+        evidence_ref=str(evidence_ref),
+    )
+    report_path = tmp_path / report_rel
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text(decision["report"]["content"].rstrip() + "\n", encoding="utf-8")
+    decision_path = tmp_path / "crash-replay.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+
+    assert validate.main(
+        [
+            "--target",
+            target,
+            "--finding-id",
+            finding_id,
+            "--decision-json",
+            str(decision_path),
+            "--json",
+        ]
+    ) == 0
+    output = json.loads(capsys.readouterr().out)
+    finding = find_finding(findings_dir, finding_id)
+
+    assert Path(output["summary_path"]).is_file()
+    assert finding is not None
+    assert finding["validation_report_path"] == str(report_path)
 
 
 def test_validation_summary_preserves_explicit_method(tmp_path):
@@ -610,6 +996,7 @@ def test_sync_validation_artifacts_uses_summary_method(tmp_path):
         json.dumps(summary),
         encoding="utf-8",
     )
+    summary["validation_summary_path"] = str(report_path.parent / "validation-summary.json")
 
     sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
 

@@ -1108,6 +1108,22 @@ def _project_untrusted_finality_as_candidate(
     a candidate but remove the untrusted validation/report bonus and closure
     signal from this read-only projection.
     """
+    if str(finding.get("validation_status") or "").strip().lower() == "needs_owner_revalidation":
+        projected = dict(finding)
+        projected["claimed_validation_status"] = str(
+            finding.get("claimed_validation_status") or "needs_owner_revalidation"
+        )
+        projected["claimed_report_status"] = str(
+            finding.get("claimed_report_status") or finding.get("report_status") or ""
+        )
+        projected["validation_status"] = "candidate"
+        projected["report_status"] = "not_generated"
+        projected["lifecycle_status"] = "needs_owner_revalidation"
+        projected["provenance_reason"] = str(
+            finding.get("owner_revalidation_reason") or "owner-provenance-invalid"
+        )
+        return projected
+
     provenance = verify_finalized_finding_owner_provenance(
         findings_dir,
         finding,

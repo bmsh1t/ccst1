@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import tempfile
 import urllib.parse
 from collections import Counter
 from datetime import datetime, timezone
@@ -96,15 +98,22 @@ def load_queue(repo_root: Path | str, target: str) -> dict:
         return _empty_queue(target)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _empty_queue(target)
+    except OSError as exc:
+        raise ValueError(f"unable to read action queue {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid action queue JSON {path}: {exc.msg}") from exc
     if not isinstance(payload, dict):
-        return _empty_queue(target)
+        raise ValueError(f"action queue {path} must contain one object")
+    schema_version = payload.get("schema_version", SCHEMA_VERSION)
+    if schema_version != SCHEMA_VERSION:
+        raise ValueError(
+            f"action queue {path} schema_version must be {SCHEMA_VERSION}, got {schema_version!r}"
+        )
     payload.setdefault("schema_version", SCHEMA_VERSION)
     payload.setdefault("target", canonical_target_value(target))
     payload.setdefault("actions", [])
     if not isinstance(payload["actions"], list):
-        payload["actions"] = []
+        raise ValueError(f"action queue {path} actions must be a list")
     return payload
 
 
@@ -113,7 +122,28 @@ def save_queue(repo_root: Path | str, target: str, queue: dict) -> Path:
     queue["target"] = canonical_target_value(target)
     queue["updated_at"] = now_utc()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(json.dumps(queue, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
     return path
 
 
@@ -1075,7 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
             actions.sort(key=_action_sort_key)
             _print(actions if args.json else "\n\n".join(format_action(item) for item in actions), as_json=args.json)
             return 0
-    except (KeyError, ValueError) as exc:
+    except (KeyError, OSError, ValueError) as exc:
         print(f"action_queue: {exc}", file=sys.stderr)
         return 2
 

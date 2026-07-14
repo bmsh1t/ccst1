@@ -27,9 +27,9 @@ from typing import Any, Sequence
 from urllib.parse import urlparse
 
 try:
-    from finding_index import find_finding, load_finding_index, update_finding_status, upsert_finding
+    from finding_index import load_finding_index, update_finding_status, upsert_finding
 except ImportError:  # pragma: no cover - package import path
-    from tools.finding_index import find_finding, load_finding_index, update_finding_status, upsert_finding
+    from tools.finding_index import load_finding_index, update_finding_status, upsert_finding
 
 try:
     from target_paths import canonical_target_value, target_storage_key
@@ -1446,11 +1446,15 @@ def build_submission_notes(summary: dict) -> str:
     draft = summary.get("report_draft") if isinstance(summary.get("report_draft"), dict) else {}
     draft_status = str(draft.get("status") or summary.get("report_draft_status") or "unknown")
 
+    validation_summary_name = Path(
+        str(summary.get("validation_summary_path") or "validation-summary.json")
+    ).name
+
     return f"""# Submission Notes
 
 ## Machine-readable handoff
 
-- Validation summary: `validation-summary.json`
+- Validation summary: `{validation_summary_name}`
 - Report draft: `{summary.get('report_path', '')}`
 - Result: `{summary.get('result', '')}`
 - Severity: `{summary.get('severity', '')}`
@@ -1476,26 +1480,51 @@ def build_submission_notes(summary: dict) -> str:
 """
 
 
+def _validation_artifact_key(summary: dict, report_path: str | Path) -> str:
+    """Return a deterministic, collision-resistant per-finding artifact key."""
+    raw_identity = str(summary.get("finding_id") or Path(report_path).stem or "validation").strip()
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_identity).strip(".-_") or "validation"
+    digest = hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()[:10]
+    return f"{slug[:64]}-{digest}"
+
+
+def validation_artifact_paths(
+    summary: dict,
+    report_path: str | Path,
+) -> tuple[Path, Path]:
+    """Return canonical summary/notes paths owned by one finding identity."""
+    parent = Path(report_path).parent
+    key = _validation_artifact_key(summary, report_path)
+    return (
+        parent / f"{key}.validation-summary.json",
+        parent / f"{key}.submission-notes.md",
+    )
+
+
 def write_submission_notes(summary: dict, report_path: str | Path) -> Path:
     """Write per-report submission notes for human final review."""
-    notes_path = Path(report_path).parent / "submission-notes.md"
+    report_summary_path, notes_path = validation_artifact_paths(summary, report_path)
     notes_path.parent.mkdir(parents=True, exist_ok=True)
+    summary["validation_summary_path"] = str(report_summary_path)
+    summary["submission_notes_path"] = str(notes_path)
     notes_path.write_text(build_submission_notes(summary), encoding="utf-8")
     return notes_path
 
 
-def write_validation_summary(summary: dict, report_path: str | Path) -> None:
+def write_validation_summary(summary: dict, report_path: str | Path) -> Path:
     """Persist per-report summary and repo-global last-validate pointer."""
     report_path = Path(report_path)
-    report_summary_path = report_path.parent / "validation-summary.json"
+    report_summary_path, submission_notes_path = validation_artifact_paths(summary, report_path)
     report_summary_path.parent.mkdir(parents=True, exist_ok=True)
-    submission_notes_path = write_submission_notes(summary, report_path)
+    summary["validation_summary_path"] = str(report_summary_path)
     summary["submission_notes_path"] = str(submission_notes_path)
+    submission_notes_path.write_text(build_submission_notes(summary), encoding="utf-8")
     report_summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     last_validate_path = BASE_DIR / "findings" / "last-validate.json"
     last_validate_path.parent.mkdir(parents=True, exist_ok=True)
     last_validate_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return report_summary_path
 
 
 def ensure_report_output_path(output_path: str | Path) -> Path:
@@ -1520,6 +1549,7 @@ def mark_finding_validated(findings_dir: str, finding_id: str, summary: dict, su
         finding_id,
         validation_status=status,
         validation_summary=str(summary_path),
+        validation_report_path=str(summary.get("report_path") or ""),
         validated_at=summary.get("validated_at", ""),
     )
 
@@ -1655,8 +1685,12 @@ def upsert_ad_hoc_validated_finding(summary: dict, summary_path: str | Path, *, 
     return {"status": "updated", "path": result.get("path", ""), "id": persisted["id"]}
 
 
-def _validation_summary_path(report_path: str | Path) -> Path:
-    return Path(report_path).parent / "validation-summary.json"
+def _validation_summary_path(report_path: str | Path, *, summary: dict | None = None) -> Path:
+    payload = summary if isinstance(summary, dict) else {}
+    recorded = str(payload.get("validation_summary_path") or "").strip()
+    if recorded:
+        return Path(recorded)
+    return validation_artifact_paths(payload, report_path)[0]
 
 
 def _validation_endpoint_markers(endpoint: str) -> list[str]:
@@ -1713,7 +1747,10 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
     if not target or not endpoint:
         return {"status": "skipped", "reason": "missing target or endpoint"}
 
-    summary_path = _validation_summary_path(summary.get("report_path") or "")
+    summary_path = _validation_summary_path(
+        summary.get("report_path") or "",
+        summary=summary,
+    )
     ledger_update: dict = {}
     queue_update: dict = {}
     finding_update: dict = {}
@@ -1901,10 +1938,22 @@ def update_runtime_state_after_validate(summary: dict, findings_dir: str = "") -
         return
 
 
-def load_finding_prefill(findings_dir: str, finding_id: str) -> dict:
-    """Load defaults for interactive validation from findings.json."""
-    payload = load_finding_index(findings_dir)
-    finding = find_finding(findings_dir, finding_id)
+def load_finding_prefill(
+    findings_dir: str,
+    finding_id: str,
+    *,
+    migrate_legacy: bool = True,
+) -> dict:
+    """Load defaults from findings.json, optionally without legacy write-back."""
+    payload = load_finding_index(findings_dir, migrate_legacy=migrate_legacy)
+    finding = next(
+        (
+            item
+            for item in payload.get("findings", [])
+            if isinstance(item, dict) and str(item.get("id") or "") == finding_id
+        ),
+        None,
+    )
     if not finding:
         return {}
     rubric = finding.get("evidence_rubric") if isinstance(finding.get("evidence_rubric"), dict) else {}
@@ -1932,6 +1981,9 @@ def load_finding_prefill(findings_dir: str, finding_id: str) -> dict:
         "source_file": finding.get("source_file") or "",
         "summary": finding.get("summary") or finding.get("raw") or "",
         "rubric": rubric,
+        "validation_report_path": finding.get("validation_report_path") or "",
+        "report_draft_path": finding.get("report_draft_path") or "",
+        "report_file": finding.get("report_file") or "",
     }
 
 
@@ -2152,6 +2204,67 @@ def _resolve_machine_report(
     return report_path, content
 
 
+def _resolved_repo_path(value: Any, *, repo_root: Path) -> Path | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = repo_root / path
+    return path.resolve()
+
+
+def _assert_machine_report_path_available(
+    findings_dir: Path,
+    *,
+    finding_id: str,
+    report_path: Path,
+    report_content: str,
+    repo_root: Path,
+) -> None:
+    """Reject cross-finding report reuse before the first validation write."""
+    payload = load_finding_index(findings_dir, migrate_legacy=False)
+    owners: set[str] = set()
+    for item in payload.get("findings", []):
+        if not isinstance(item, dict):
+            continue
+        for key in ("validation_report_path", "report_draft_path", "report_file"):
+            owned_path = _resolved_repo_path(item.get(key), repo_root=repo_root)
+            if owned_path == report_path:
+                owners.add(str(item.get("id") or ""))
+                break
+    other_owners = {owner for owner in owners if owner and owner != finding_id}
+    if other_owners:
+        raise ValueError(
+            "decision report path is already owned by another finding: "
+            + ", ".join(sorted(other_owners))
+        )
+    if not report_path.exists() or finding_id in owners:
+        return
+    expected = report_content.rstrip() + "\n"
+    try:
+        current = report_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"unable to inspect existing decision.report.path: {report_path}: {exc}") from exc
+    if current != expected:
+        raise ValueError(
+            "decision.report.path already exists without matching canonical finding ownership"
+        )
+
+
+def _write_machine_report(path: Path, content: str) -> None:
+    """Create a report exclusively, allowing only a preflight-approved replay."""
+    rendered = content.rstrip() + "\n"
+    if path.exists():
+        path.write_text(rendered, encoding="utf-8")
+        return
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(rendered)
+    except FileExistsError as exc:
+        raise ValueError(f"decision.report.path appeared during exclusive create: {path}") from exc
+
+
 def _build_machine_validation_input(
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], dict[str, Any], Path, Path, str]:
@@ -2162,7 +2275,14 @@ def _build_machine_validation_input(
     if finding_id != args.finding_id:
         raise ValueError("decision.finding_id must exactly match --finding-id")
     findings_dir = _resolve_machine_findings_dir(args, decision_target)
-    prefill = load_finding_prefill(str(findings_dir), finding_id)
+    # Machine binding must remain a pure preflight. In particular, a legacy
+    # list payload is normalized in memory but not migrated until every
+    # decision field has passed and the explicit owner transition begins.
+    prefill = load_finding_prefill(
+        str(findings_dir),
+        finding_id,
+        migrate_legacy=False,
+    )
     if not prefill:
         raise ValueError(f"finding id not found in findings.json: {finding_id}")
     indexed_target = canonical_target_value(str(prefill.get("target") or ""))
@@ -2189,6 +2309,13 @@ def _build_machine_validation_input(
     report_path, report_content = _resolve_machine_report(
         decision.get("report"),
         findings_dir=findings_dir,
+        repo_root=BASE_DIR,
+    )
+    _assert_machine_report_path_available(
+        findings_dir,
+        finding_id=finding_id,
+        report_path=report_path,
+        report_content=report_content,
         repo_root=BASE_DIR,
     )
 
@@ -2223,20 +2350,20 @@ def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
     """Apply an explicit non-TTY validation decision through existing owners only."""
     info, prefill, findings_dir, report_path, report_content = _build_machine_validation_input(args)
     output_path = ensure_report_output_path(report_path)
-    output_path.write_text(report_content.rstrip() + "\n", encoding="utf-8")
+    _write_machine_report(output_path, report_content)
 
     all_pass = all(bool(info.get(f"{key}_pass")) for key in MACHINE_DECISION_GATE_KEYS)
     summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
-    write_validation_summary(summary, output_path)
+    summary_path = write_validation_summary(summary, output_path)
     validation_sync = sync_validation_artifacts(summary, repo_root=BASE_DIR)
     if validation_sync.get("status") == "updated":
         summary["validation_sync"] = validation_sync
-        write_validation_summary(summary, output_path)
+        summary_path = write_validation_summary(summary, output_path)
     mark_finding_validated(
         str(findings_dir),
         str(prefill.get("finding_id") or ""),
         summary,
-        output_path.parent / "validation-summary.json",
+        summary_path,
     )
     update_runtime_state_after_validate(summary, str(findings_dir))
     return {
@@ -2244,7 +2371,8 @@ def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
         "finding_id": str(prefill.get("finding_id") or ""),
         "findings_dir": str(findings_dir),
         "report_path": str(output_path),
-        "summary_path": str(output_path.parent / "validation-summary.json"),
+        "summary_path": str(summary_path),
+        "submission_notes_path": str(summary.get("submission_notes_path") or ""),
         "result": str(summary.get("result") or ""),
         "report_ready": bool(summary.get("report_ready")),
         "validation_sync": validation_sync,
@@ -2462,17 +2590,17 @@ def _run_interactive_validation(args: argparse.Namespace, parser: argparse.Argum
     output_path.write_text(skeleton, encoding="utf-8")
 
     summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
-    write_validation_summary(summary, output_path)
+    summary_path = write_validation_summary(summary, output_path)
     validation_sync = sync_validation_artifacts(summary)
     if validation_sync.get("status") == "updated":
         summary["validation_sync"] = validation_sync
-        write_validation_summary(summary, output_path)
+        summary_path = write_validation_summary(summary, output_path)
     if finding_prefill:
         mark_finding_validated(
             args.findings_dir,
             finding_prefill.get("finding_id", ""),
             summary,
-            Path(output_path).parent / "validation-summary.json",
+            summary_path,
         )
     update_runtime_state_after_validate(summary, args.findings_dir)
 

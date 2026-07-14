@@ -21,7 +21,7 @@ def _record_owner_provenance(findings_dir: Path, finding_id: str) -> None:
     assert updated is not None
 
 
-def test_load_finding_index_migrates_legacy_list_without_losing_lifecycle_state(tmp_path):
+def test_load_finding_index_migrates_legacy_list_without_trusting_finality(tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)
     legacy = [
@@ -58,7 +58,10 @@ def test_load_finding_index_migrates_legacy_list_without_losing_lifecycle_state(
     assert persisted["total"] == 2
     assert isinstance(persisted["findings"], list)
     by_id = {item["id"]: item for item in persisted["findings"]}
-    assert by_id["legacy-validated"]["validation_status"] == "validated"
+    assert by_id["legacy-validated"]["validation_status"] == "needs_owner_revalidation"
+    assert by_id["legacy-validated"]["report_status"] == "not_generated"
+    assert by_id["legacy-validated"]["claimed_validation_status"] == "validated"
+    assert by_id["legacy-validated"]["claimed_report_status"] == "generated"
     assert by_id["legacy-validated"]["report_id"] == "idor_001"
     generated = next(item for item in persisted["findings"] if item["id"] != "legacy-validated")
     assert generated["id"].startswith("idor_")
@@ -182,6 +185,83 @@ def test_legacy_list_migration_records_owner_provenance(tmp_path):
         target="example.com",
     )["valid"] is True
     assert finding["owner_provenance"]["operation"] == "legacy_migration"
+    assert finding["validation_status"] == "needs_owner_revalidation"
+    assert finding["report_status"] == "not_generated"
+    assert finding["claimed_validation_status"] == "validated"
+    assert finding["claimed_report_status"] == "generated"
+
+
+def test_rebuild_quarantines_direct_finality_instead_of_reauthorizing_it(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    sqli_dir = findings_dir / "sqli"
+    sqli_dir.mkdir(parents=True)
+    (sqli_dir / "candidates.txt").write_text(
+        "[SQLI-POC-VERIFIED] url=https://example.com/item?id=1\n",
+        encoding="utf-8",
+    )
+    initial = finding_index.write_finding_index(findings_dir, target="example.com")
+    finding_id = initial["findings"][0]["id"]
+
+    payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    payload["findings"][0]["validation_status"] = "validated"
+    payload["findings"][0]["report_status"] = "generated"
+    (findings_dir / "findings.json").write_text(json.dumps(payload), encoding="utf-8")
+    assert finding_index.verify_finding_owner_provenance(
+        findings_dir,
+        payload["findings"][0],
+        target="example.com",
+    )["valid"] is False
+
+    rebuilt = finding_index.write_finding_index(findings_dir, target="example.com")
+    finding = next(item for item in rebuilt["findings"] if item["id"] == finding_id)
+
+    assert finding["validation_status"] == "needs_owner_revalidation"
+    assert finding["report_status"] == "not_generated"
+    assert finding["claimed_validation_status"] == "validated"
+    assert finding["claimed_report_status"] == "generated"
+    assert finding_index.verify_finding_owner_provenance(
+        findings_dir,
+        finding,
+        target="example.com",
+    )["valid"] is True
+
+
+def test_upsert_quarantines_direct_finality_before_merging_candidate(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    created = finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "sqli-direct-edit",
+            "url": "https://example.com/item?id=1",
+            "type": "sqli",
+            "validation_status": "candidate",
+        },
+        target="example.com",
+    )
+    payload = created["payload"]
+    payload["findings"][0]["validation_status"] = "validated"
+    payload["findings"][0]["report_status"] = "generated"
+    (findings_dir / "findings.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "sqli-direct-edit",
+            "url": "https://example.com/item?id=1",
+            "type": "sqli",
+            "severity": "high",
+            "validation_status": "candidate",
+        },
+        target="example.com",
+    )
+    finding = finding_index.find_finding(findings_dir, "sqli-direct-edit")
+
+    assert finding is not None
+    assert finding["severity"] == "high"
+    assert finding["validation_status"] == "needs_owner_revalidation"
+    assert finding["report_status"] == "not_generated"
+    assert finding["claimed_validation_status"] == "validated"
+    assert finding["claimed_report_status"] == "generated"
 
 
 def test_upsert_findings_without_endpoints_do_not_collapse_by_type(tmp_path):
@@ -369,6 +449,160 @@ def test_incomplete_root_json_claim_is_recoverable_without_fabricating_endpoint(
     assert persisted["claim_source_file"] == "jwt-unverified-signature.json"
     assert persisted["validation_status"] == "candidate"
     assert persisted["evidence_rubric"]["ready"] is False
+
+
+def test_root_claim_classifier_rejects_status_json_and_unknown_kind(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "tool-status.json").write_text(
+        json.dumps({"title": "Nightly probe summary", "status": "ok"}),
+        encoding="utf-8",
+    )
+    (findings_dir / "foreign-kind.json").write_text(
+        json.dumps(
+            {
+                "kind": "tool_run_summary",
+                "title": "Potential SQL injection",
+                "endpoint": "/item?id=1",
+                "vuln_class": "sqli",
+                "evidence": {"artifact": "raw.txt"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (findings_dir / "future-schema.json").write_text(
+        json.dumps(
+            {
+                "kind": "finding_claim",
+                "schema_version": 2,
+                "title": "Unsupported claim schema",
+                "endpoint": "/item?id=1",
+                "vuln_class": "sqli",
+                "evidence": {"artifact": "raw.txt"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert finding_index.list_root_finding_claims(findings_dir, target="target.com") == []
+
+    (findings_dir / "explicit-incomplete.json").write_text(
+        json.dumps(
+            {
+                "kind": "finding_claim",
+                "schema_version": 1,
+                "title": "Interrupted validation claim",
+                "status": "candidate",
+            }
+        ),
+        encoding="utf-8",
+    )
+    claims = finding_index.list_root_finding_claims(findings_dir, target="target.com")
+    assert len(claims) == 1
+    assert claims[0]["claim_source_file"] == "explicit-incomplete.json"
+    assert set(claims[0]["incomplete_fields"]) == {"endpoint", "vuln_class", "claim_detail"}
+
+
+def test_root_claim_classifier_rejects_scheme_less_off_target_identity(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "off-target.json").write_text(
+        json.dumps(
+            {
+                "kind": "finding_claim",
+                "schema_version": 1,
+                "title": "Copied claim",
+                "target": "other.test",
+                "endpoint": "other.test/api/private",
+                "vuln_class": "idor",
+                "evidence": {"artifact": "raw.txt"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert finding_index.list_root_finding_claims(findings_dir, target="target.com") == []
+
+
+def test_root_claim_revision_replays_and_completes_missing_identity(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    claim_path = findings_dir / "manual-authz.json"
+    payload = {
+        "kind": "finding_claim",
+        "schema_version": 1,
+        "title": "Authorization claim",
+        "vuln_class": "idor",
+        "evidence": {"artifact": "evidence/target.com/raw.json"},
+    }
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    first_claim = finding_index.list_root_finding_claims(findings_dir, target="target.com")[0]
+    finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
+    first_row = finding_index.find_finding(findings_dir, first_claim["id"])
+    assert first_row is not None
+    assert first_row["url"] == ""
+    assert "endpoint" in first_row["incomplete_fields"]
+
+    payload["endpoint"] = "/api/orders/42"
+    claim_path.write_text(json.dumps(payload), encoding="utf-8")
+    revised = finding_index.list_root_finding_claims(findings_dir, target="target.com")
+    assert len(revised) == 1
+    assert revised[0]["id"] == first_claim["id"]
+    assert revised[0]["claim_revision"] != first_claim["claim_revision"]
+
+    replay = finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
+    row = finding_index.find_finding(findings_dir, first_claim["id"])
+    assert replay["updated"] == 1
+    assert row is not None
+    assert row["url"] == "/api/orders/42"
+    assert "endpoint" not in row["incomplete_fields"]
+    assert len(row["claim_sources"]) == 2
+    assert finding_index.reconcile_root_finding_claims(
+        findings_dir,
+        target="target.com",
+    )["status"] == "noop"
+
+
+def test_multi_source_claim_reconciliation_is_idempotent_and_lifecycle_monotonic(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "validated-sqli",
+            "url": "/item?id=1",
+            "type": "sqli",
+            "validation_status": "validated",
+            "report_status": "generated",
+        },
+        target="target.com",
+    )
+    for name, title in (("a.json", "First claim"), ("b.json", "Second claim")):
+        (findings_dir / name).write_text(
+            json.dumps(
+                {
+                    "kind": "finding_claim",
+                    "schema_version": 1,
+                    "title": title,
+                    "endpoint": "/item?id=1",
+                    "vuln_class": "sqli",
+                    "evidence": {"artifact": f"evidence/target.com/{name}"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    first = finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
+    row = finding_index.find_finding(findings_dir, "validated-sqli")
+    second = finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
+
+    assert first["updated"] == 2
+    assert second["status"] == "noop"
+    assert row is not None
+    assert row["validation_status"] == "validated"
+    assert row["report_status"] == "generated"
+    assert {item["source_file"] for item in row["claim_sources"]} == {"a.json", "b.json"}
 
 
 def test_owner_mutation_keeps_legacy_state_aliases_in_sync(tmp_path):

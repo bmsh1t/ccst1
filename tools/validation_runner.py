@@ -55,7 +55,7 @@ try:
     )
     from tools.response_diff import diff_responses, snapshot_response
     from tools.target_case_state import complete_backlog, load_case_state
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES,
@@ -80,7 +80,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from response_diff import diff_responses, snapshot_response  # type: ignore
     from target_case_state import complete_backlog, load_case_state  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -205,6 +205,20 @@ def _normalized_url_for_match(url: str) -> str:
     path = parsed.path or "/"
     query = f"?{parsed.query}" if parsed.query else ""
     return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}{query}".rstrip("/")
+
+
+def _endpoint_identity_for_match(url: str) -> str:
+    """Normalize full/relative forms to one path+query identity."""
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme and parsed.netloc:
+        path = parsed.path or "/"
+        return f"{path}?{parsed.query}" if parsed.query else path
+    if raw.startswith("/"):
+        return raw.rstrip("/") or "/"
+    return _normalized_url_for_match(raw)
 
 
 def _find_existing_finding_id_by_url(
@@ -429,6 +443,55 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
     )
     summary_ref = str(summary_path) if summary_path else str(summary.get("summary_path") or "")
     generated_at = str(summary.get("generated_at") or now_utc())
+    existing = _find_existing_finding(findings_dir, finding_id)
+    identity_updates: dict[str, Any] = {}
+    if existing:
+        candidate_url = str(summary.get("url") or summary.get("endpoint") or "").strip()
+        existing_url = str(existing.get("url") or existing.get("endpoint") or "").strip()
+        if candidate_url and not url_belongs_to_target(candidate_url, target):
+            return {
+                "status": "skipped",
+                "reason": f"runner endpoint is off target: {candidate_url}",
+                "finding_id": finding_id,
+            }
+        if existing_url and candidate_url:
+            existing_identity = _endpoint_identity_for_match(existing_url)
+            candidate_identity = _endpoint_identity_for_match(candidate_url)
+            if existing_identity != candidate_identity:
+                return {
+                    "status": "skipped",
+                    "reason": "runner endpoint conflicts with non-empty canonical finding identity",
+                    "finding_id": finding_id,
+                }
+        elif candidate_url:
+            identity_updates["url"] = candidate_url
+
+        incomplete = [str(item) for item in (existing.get("incomplete_fields") or [])]
+        class_incomplete = "vuln_class" in incomplete
+        existing_class = str(existing.get("vuln_class") or "").strip()
+        if (
+            existing_class
+            and not class_incomplete
+            and vuln_class
+            and existing_class.lower() != vuln_class.lower()
+        ):
+            return {
+                "status": "skipped",
+                "reason": "runner vulnerability class conflicts with non-empty canonical finding identity",
+                "finding_id": finding_id,
+            }
+        if class_incomplete and vuln_class:
+            finding_type = _runner_finding_type(vuln_class, str(summary.get("lane") or ""))
+            identity_updates["type"] = finding_type
+            identity_updates["category"] = finding_type
+        if identity_updates.get("url"):
+            incomplete = [item for item in incomplete if item != "endpoint"]
+        if vuln_class:
+            incomplete = [item for item in incomplete if item != "vuln_class"]
+        if incomplete != list(existing.get("incomplete_fields") or []):
+            identity_updates["incomplete_fields"] = incomplete
+            identity_updates["claim_status"] = "complete" if not incomplete else "incomplete"
+
     gate_updates = _runner_sync_gate_updates(
         findings_dir,
         finding_id,
@@ -441,6 +504,7 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
         findings_dir,
         finding_id,
         **gate_updates,
+        **identity_updates,
         vuln_class=vuln_class,
         evidence_rubric=summary.get("evidence_rubric") or {},
         confidence="confirmed" if result == "tested_finding" else "",

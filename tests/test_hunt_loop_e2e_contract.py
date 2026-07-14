@@ -97,15 +97,14 @@ def test_recon_surface_findings_validate_remember_report_contract(monkeypatch, t
         all_pass=True,
         report_path=validation_report_path,
     )
-    validate.write_validation_summary(validation_summary, validation_report_path)
+    summary_path = validate.write_validation_summary(validation_summary, validation_report_path)
     validate.mark_finding_validated(
         str(findings_dir),
         prefill["finding_id"],
         validation_summary,
-        validation_report_path.parent / "validation-summary.json",
+        summary_path,
     )
 
-    summary_path = validation_report_path.parent / "validation-summary.json"
     assert summary_path.is_file()
     assert (repo_root / "findings" / "last-validate.json").is_file()
     saved_validation_summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -158,12 +157,12 @@ def test_recon_surface_findings_validate_remember_report_contract(monkeypatch, t
         all_pass=True,
         report_path=validation_report_path,
     )
-    validate.write_validation_summary(completed_summary, validation_report_path)
+    completed_summary_path = validate.write_validation_summary(completed_summary, validation_report_path)
     validate.mark_finding_validated(
         str(findings_dir),
         prefill["finding_id"],
         completed_summary,
-        validation_report_path.parent / "validation-summary.json",
+        completed_summary_path,
     )
     total_reports, report_index = report_generator.process_findings_dir(str(findings_dir))
 

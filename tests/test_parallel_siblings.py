@@ -25,6 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from tools import parallel_workers as pw   # noqa: E402
+from tools.finding_index import update_finding_status, upsert_finding  # noqa: E402
 
 
 # ---------------------------------------------------------------------
@@ -261,22 +262,23 @@ class TestJoinAndConsolidate:
     def test_join_preserves_existing_canonical_findings(self, fake_repo):
         repo, target = fake_repo
         findings_path = repo / "findings" / target / "findings.json"
-        findings_path.parent.mkdir(parents=True, exist_ok=True)
-        findings_path.write_text(json.dumps({
-            "schema_version": 1,
-            "target": target,
-            "total": 1,
-            "counts": {"severity": {"high": 1}, "type": {"sqli": 1}, "confidence": {"confirmed": 1}},
-            "findings": [{
+        upsert_finding(
+            findings_path.parent,
+            {
                 "id": "existing-validated",
                 "url": "https://target.test/search?q=1",
                 "type": "sqli",
                 "severity": "high",
                 "confidence": "confirmed",
-                "validation_status": "validated",
-                "report_status": "not_generated",
-            }],
-        }))
+            },
+            target=target,
+        )
+        update_finding_status(
+            findings_path.parent,
+            "existing-validated",
+            validation_status="validated",
+            report_status="not_generated",
+        )
         results = [
             pw.WorkerResult(
                 worker_id="w", kind="sibling", scratch_dir="", completed=True,
