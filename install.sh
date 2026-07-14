@@ -13,7 +13,10 @@ prompt_yes_no() {
     # In some terminals or Claude Code wrappers, Enter can arrive as CR/LF.
     # Bash read strips LF but keeps CR. Disable echo while reading, then print
     # the normalized answer ourselves so CR never appears as a visible ^M.
-    if [ ! -r /dev/tty ]; then
+    # A staged runtime install and CI have no operator to answer optional MCP
+    # questions.  /dev/tty can still exist under a test runner, so stdin must
+    # itself be a terminal before reading from it through the controlling tty.
+    if [ ! -t 0 ] || [ ! -r /dev/tty ]; then
         echo "${prompt}n"
         return 1
     fi

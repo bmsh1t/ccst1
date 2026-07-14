@@ -80,6 +80,33 @@ pass `--seven-question-json <file>`; otherwise the script stores a coarse
 /validate
 ```
 
+## Non-TTY Claude CLI
+
+`claude -p` has no interactive stdin. Do not let EOF answer a gate and never
+edit `findings/<target>/findings.json` directly. Bind a complete machine decision
+to the existing canonical finding instead:
+
+```bash
+python3 tools/validate.py --target <target> --finding-id <canonical-id> \
+  --decision-json /tmp/validate-decision.json --json
+```
+
+`--target` resolves only `findings/<target-key>`; `--findings-dir` is the
+equivalent explicit path. The decision JSON must use `schema_version: 1` and
+include `target`, `finding_id`, `endpoint`, `vuln_class`, `method`, `impact`,
+four explicit `gates.gate1..gate4.passed` booleans with notes, complete Q1–Q7
+statuses/bases in `seven_question_gate.questions`, `cvss.score`/`vector`, an
+`evidence.summary` plus non-empty existing `evidence.refs`, and
+`report.path`/`report.content`. The target, ID, endpoint and class must match
+the canonical row before any write occurs; the report path stays below that
+row's `findings/<target>/` directory.
+
+The tool writes the summary, ledger/queue handoff and canonical status through
+their existing owners. `finding_index` also records a target-scoped owner
+mutation event, so a later runtime check can distinguish an owner mutation from
+an untracked JSON edit. Omit `--decision-json` only from a real TTY session;
+non-TTY calls fail closed without creating report, finding, queue or runtime state.
+
 ## Browser-State Priority
 
 During validation, prove that a real user can reproduce the behavior in the

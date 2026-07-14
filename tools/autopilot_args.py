@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 from argparse import Namespace
@@ -17,9 +18,11 @@ except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_args.py` 直接�
     from target_paths import classify_target
 
 
-SCHEMA_VERSION = 2
-MAX_EFFECTIVE_TOKENS = 6
+SCHEMA_VERSION = 3
+# target + auth pair + quick + deep + cadence + max-lanes pair
+MAX_EFFECTIVE_TOKENS = 8
 MAX_CAPTURED_TOKENS = MAX_EFFECTIVE_TOKENS + 1
+MAX_LANES = 32
 
 CADENCE_FLAGS = {
     "--paranoid": "paranoid",
@@ -121,6 +124,7 @@ def parse_autopilot_args(
     targets: list[str] = []
     cadence_flags: list[str] = []
     auth_file_inputs: list[str] = []
+    max_lanes_inputs: list[str] = []
     quick = False
     deep = False
 
@@ -172,6 +176,42 @@ def parse_autopilot_args(
                     _error(
                         "missing_auth_file_value",
                         "--auth-file requires one JSON or .env file path.",
+                        token=token,
+                    )
+                )
+            index += 1
+            continue
+
+        if token == "--max-lanes":
+            next_value = effective_argv[index + 1] if index + 1 < len(effective_argv) else ""
+            if (
+                not next_value
+                or (
+                    next_value.startswith("-")
+                    and not re.fullmatch(r"-\d+", next_value)
+                )
+            ):
+                errors.append(
+                    _error(
+                        "missing_max_lanes_value",
+                        "--max-lanes requires a positive integer value.",
+                        token=token,
+                    )
+                )
+                index += 1
+            else:
+                max_lanes_inputs.append(effective_argv[index + 1])
+                index += 2
+            continue
+        if token.startswith("--max-lanes="):
+            value = token.split("=", 1)[1].strip()
+            if value:
+                max_lanes_inputs.append(value)
+            else:
+                errors.append(
+                    _error(
+                        "missing_max_lanes_value",
+                        "--max-lanes requires a positive integer value.",
                         token=token,
                     )
                 )
@@ -233,6 +273,44 @@ def parse_autopilot_args(
                 "auth_file_conflict",
                 "Inline /autopilot accepts at most one --auth-file path.",
                 paths=auth_file_inputs,
+            )
+        )
+
+    max_lanes: int | None = None
+    if len(max_lanes_inputs) > 1:
+        errors.append(
+            _error(
+                "max_lanes_conflict",
+                "Inline /autopilot accepts at most one --max-lanes value.",
+                values=max_lanes_inputs,
+            )
+        )
+    elif max_lanes_inputs:
+        raw_max_lanes = max_lanes_inputs[0]
+        try:
+            parsed_max_lanes = int(raw_max_lanes)
+        except ValueError:
+            parsed_max_lanes = 0
+        if (
+            not raw_max_lanes.isdigit()
+            or parsed_max_lanes < 1
+            or parsed_max_lanes > MAX_LANES
+        ):
+            errors.append(
+                _error(
+                    "invalid_max_lanes",
+                    f"--max-lanes must be an integer from 1 to {MAX_LANES}.",
+                    value=raw_max_lanes,
+                    maximum=MAX_LANES,
+                )
+            )
+        else:
+            max_lanes = parsed_max_lanes
+    if max_lanes is not None and not deep:
+        errors.append(
+            _error(
+                "max_lanes_requires_deep",
+                "--max-lanes is valid only together with --deep.",
             )
         )
 
@@ -310,6 +388,16 @@ def parse_autopilot_args(
         "checkpoint_trigger": CHECKPOINT_TRIGGERS[cadence],
         "quick": quick,
         "deep": deep,
+        "max_lanes": max_lanes,
+        "invocation_batch": {
+            "bounded": bool(deep and max_lanes is not None),
+            "max_lanes": max_lanes,
+            "handoff": (
+                "checkpoint_and_handoff_after_max_lanes"
+                if deep and max_lanes is not None
+                else "normal_finish_condition"
+            ),
+        },
         "recon_flags": ["--quick"] if quick else [],
         "errors": errors,
     }

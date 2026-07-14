@@ -134,8 +134,37 @@ def test_recon_surface_findings_validate_remember_report_contract(monkeypatch, t
     assert "/api/v2/orders?id=42" in profile["tested_endpoints"]
     assert profile["findings"][0]["vuln_class"] == "sqli"
 
-    # Report phase: report generator consumes findings.json and emits report index.
+    # A generated validation skeleton with unresolved placeholders is a working
+    # draft, not a report-ready finding.  The report generator must not turn it
+    # into a final report merely because replay evidence already passed.
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(repo_root / "reports"))
+    total_reports, report_index = report_generator.process_findings_dir(str(findings_dir))
+
+    assert saved_validation_summary["validation_evidence_passed"] is True
+    assert saved_validation_summary["all_gates_passed"] is False
+    assert total_reports == 0
+    assert report_index == []
+
+    # Completing the draft changes only report readiness; the validated finding
+    # and its raw evidence remain the same.  A later report generation can then
+    # consume the structured finding normally.
+    validation_report_path.write_text(
+        "# SQL Injection on /api/v2/orders\n\n"
+        "The exact request and response diff are attached as validation evidence.\n",
+        encoding="utf-8",
+    )
+    completed_summary = validate.build_validation_summary(
+        validation_info,
+        all_pass=True,
+        report_path=validation_report_path,
+    )
+    validate.write_validation_summary(completed_summary, validation_report_path)
+    validate.mark_finding_validated(
+        str(findings_dir),
+        prefill["finding_id"],
+        completed_summary,
+        validation_report_path.parent / "validation-summary.json",
+    )
     total_reports, report_index = report_generator.process_findings_dir(str(findings_dir))
 
     assert total_reports == 1

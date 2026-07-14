@@ -19,11 +19,19 @@ from pathlib import Path
 
 try:
     from action_queue import ACTIVE_STATUSES, load_queue, resolve_action
-    from finding_index import load_finding_index, update_finding_status
+    from finding_index import (
+        load_finding_index,
+        update_finding_status,
+        verify_finalized_finding_owner_provenance,
+    )
     from target_paths import target_storage_key
 except ImportError:  # pragma: no cover - package import path
     from tools.action_queue import ACTIVE_STATUSES, load_queue, resolve_action
-    from tools.finding_index import load_finding_index, update_finding_status
+    from tools.finding_index import (
+        load_finding_index,
+        update_finding_status,
+        verify_finalized_finding_owner_provenance,
+    )
     from tools.target_paths import target_storage_key
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -797,7 +805,12 @@ def generate_report(finding, vuln_type, target_name=None):
     return report, title
 
 
-def _is_reportable_structured_finding(finding):
+def _is_reportable_structured_finding(
+    finding,
+    *,
+    findings_dir: str | os.PathLike | None = None,
+    target: str | None = None,
+):
     """Return whether a structured finding should enter auto-report generation."""
     if not isinstance(finding, dict) or not finding.get("url"):
         return False
@@ -809,6 +822,19 @@ def _is_reportable_structured_finding(finding):
     # state yet; keep them reportable instead of breaking historical workflows.
     if validation_status and validation_status != "validated":
         return False
+    if validation_status == "validated":
+        # A direct JSON edit is not enough to enter report generation.  The
+        # report writer is a lifecycle consumer, so require the same owner
+        # provenance that runtime state and checkpoint use.
+        if not findings_dir:
+            return False
+        provenance = verify_finalized_finding_owner_provenance(
+            findings_dir,
+            finding,
+            target=target,
+        )
+        if not provenance.get("valid"):
+            return False
     validation = _load_validation_summary(finding)
     if _validation_summary_is_report_ready(finding, validation) is False:
         return False
@@ -940,13 +966,27 @@ def process_findings_dir(findings_dir):
     report_index = []
 
     structured_findings = structured_index.get("findings", []) if isinstance(structured_index, dict) else []
+    provenance_target = str(structured_index.get("target") or "").strip() if isinstance(structured_index, dict) else ""
+    provenance_target = provenance_target or target_name
     if structured_findings:
-        report_index.extend(_existing_structured_report_entries(structured_findings))
+        report_index.extend(
+            _existing_structured_report_entries(
+                structured_findings,
+                findings_dir=findings_dir,
+                target=provenance_target,
+            )
+        )
         total_reports = len(report_index)
         occupied_report_ids = _occupied_report_ids(structured_findings, report_dir)
 
         reportable_findings = [
-            finding for finding in structured_findings if _is_reportable_structured_finding(finding)
+            finding
+            for finding in structured_findings
+            if _is_reportable_structured_finding(
+                finding,
+                findings_dir=findings_dir,
+                target=provenance_target,
+            )
         ]
         for finding in reportable_findings:
 
@@ -1058,7 +1098,12 @@ def _report_target_name(structured_index, findings_dir):
     return target_storage_key(raw_target)
 
 
-def _existing_structured_report_entries(structured_findings):
+def _existing_structured_report_entries(
+    structured_findings,
+    *,
+    findings_dir: str | os.PathLike,
+    target: str | None = None,
+):
     """Build report index rows for findings already marked as generated.
 
     Report generation can be called repeatedly as new candidates pass
@@ -1071,6 +1116,13 @@ def _existing_structured_report_entries(structured_findings):
         if not isinstance(finding, dict):
             continue
         if str(finding.get("report_status") or "").strip().lower() != "generated":
+            continue
+        provenance = verify_finalized_finding_owner_provenance(
+            findings_dir,
+            finding,
+            target=target,
+        )
+        if not provenance.get("valid"):
             continue
         report_file = str(finding.get("report_file") or "").strip()
         if not report_file:

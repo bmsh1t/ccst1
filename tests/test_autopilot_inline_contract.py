@@ -27,7 +27,7 @@ def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
     normalized = " ".join(text.split())
 
     assert 'allowed-tools: Bash' in text
-    assert 'tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6"' in text
+    assert 'tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"' in text
     assert "git rev-parse --show-toplevel" in text
     assert "Authoritative bootstrap contract (do not reinterpret)" in normalized
     assert "Only `continue` may act" in normalized
@@ -51,6 +51,18 @@ def test_inline_auth_and_seed_contract_uses_formal_arguments_only():
     assert "/autopilot target.com --normal --auth-file .private/auth.json" in readme
     assert "/autopilot target.com --normal, use" not in readme
     assert "URL 目标保留 canonical host state" in product
+
+
+def test_bounded_deep_invocation_handoffs_instead_of_expanding_new_lanes():
+    command = _read("commands/autopilot.md")
+    agent = _read("agents/autopilot.md")
+
+    assert "[--max-lanes N]" in command
+    assert "invocation_batch.bounded" in command
+    assert "browser/source discoveries become next-invocation work, not lane N+1" in command
+    assert "after lane N do not execute a newly discovered queue item" in command
+    assert "terminal handoff override target-exhaustion bullets" in command
+    assert "checkpoint/sync durable queue" in agent
 
 
 def test_optional_autopilot_agent_is_not_the_slash_command_backend():

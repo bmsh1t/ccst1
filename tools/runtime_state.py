@@ -36,11 +36,14 @@ from pathlib import Path
 import fcntl
 
 try:
-    from tools.finding_index import load_finding_index
+    from tools.finding_index import (
+        load_finding_index,
+        verify_finalized_finding_owner_provenance,
+    )
     from tools.recon_adapter import ReconAdapter
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from finding_index import load_finding_index
+    from finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from recon_adapter import ReconAdapter
     from target_paths import canonical_target_value, target_storage_key
 
@@ -636,6 +639,7 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
     findings = {
         "structured_total": 0,
         "pending_validation": 0,
+        "owner_revalidation_pending": 0,
         "validated_pending_report": 0,
         "reports_generated": 0,
     }
@@ -651,8 +655,16 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
     # Use the same field semantics as tools/structured_findings.py so derived
     # counts are consistent with what /pickup / autopilot_state report.
     for item in items:
-        val_status = str(item.get("validation_status", "unvalidated") or "unvalidated")
-        report_status = str(item.get("report_status", "not_generated") or "not_generated")
+        provenance = verify_finalized_finding_owner_provenance(
+            findings_dir,
+            item,
+            target=target,
+        )
+        if provenance.get("required") and not provenance.get("valid"):
+            findings["owner_revalidation_pending"] += 1
+            continue
+        val_status = str(item.get("validation_status", "unvalidated") or "unvalidated").lower()
+        report_status = str(item.get("report_status", "not_generated") or "not_generated").lower()
         if val_status == "unvalidated":
             findings["pending_validation"] += 1
         elif val_status == "validated" and report_status != "generated":

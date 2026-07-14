@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 
+import finding_index
 import structured_findings
 
 
@@ -184,10 +185,54 @@ def test_format_structured_findings_lines_renders_expected_labels():
 
     assert lines == [
         "  Structured Findings:",
-        "  total=2, pending_validation=1, validated_pending_report=1, reported=0, evidence_gaps=1",
+        "  total=2, pending_validation=1, owner_revalidation_pending=0, draft_completion_pending=0, validated_pending_report=1, reported=0, evidence_gaps=1",
         "  Next validate: sqli_pending [high/confirmed] sqli https://api.target.com/search?q=1 rubric=needs-evidence missing=baseline/perturbation pair",
         "  Next report: mfa_report [medium/high] mfa https://api.target.com/mfa",
     ]
+
+
+def test_validated_incomplete_draft_requires_completion_not_revalidation(tmp_path):
+    summary_path = tmp_path / "validation-summary.json"
+    report_path = tmp_path / "findings" / "target.com-sqli" / "hackerone-report.md"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "validation_evidence_passed": True,
+                "all_gates_passed": False,
+                "four_validation_gates_passed": True,
+                "seven_question_gate_passed": True,
+                "seven_question_gate_decision": "pass",
+                "report_path": str(report_path),
+                "report_draft": {
+                    "status": "incomplete",
+                    "placeholder_count": 4,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    finding = {
+        "id": "validated_sqli_draft",
+        "type": "sqli",
+        "severity": "high",
+        "confidence": "confirmed",
+        "url": "https://target.com/rest/products/search?q=apple",
+        "validation_status": "validated",
+        "report_status": "not_generated",
+        "validation_summary": str(summary_path),
+    }
+
+    summary = structured_findings.summarize_structured_findings(
+        [finding],
+        tmp_path / "findings" / "target.com",
+    )
+
+    assert summary["pending_validation"] == 0
+    assert summary["draft_completion_pending"] == 1
+    assert summary["validated_pending_report"] == 0
+    assert summary["next_draft_completion"]["id"] == "validated_sqli_draft"
+    assert summary["next_draft_completion"]["report_draft_path"] == str(report_path)
+    assert summary["next_draft_completion"]["report_draft_placeholder_count"] == 4
 
 
 def test_runner_validated_finding_reuses_rubric_but_still_needs_validate_gate(tmp_path):
@@ -367,6 +412,18 @@ def test_load_validation_runner_candidate_pool_filters_finalized_findings(tmp_pa
             }
         ),
         encoding="utf-8",
+    )
+    finding_index.update_finding_status(
+        findings_dir,
+        "auth_bypass_feedbacks",
+        validation_status="rejected",
+        report_status="not_generated",
+    )
+    finding_index.update_finding_status(
+        findings_dir,
+        "sqli-result-diff-search",
+        validation_status="validated",
+        report_status="generated",
     )
 
     pool = structured_findings.load_validation_runner_candidate_pool(tmp_path, "target.com")

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """自动生成 Claude CLI 目标 checkpoint 和目标记忆写回建议。
 
-默认输出建议，并写入可派生 coverage 与小型 runtime-v2 checkpoint witness；
-只有传入 `--apply-target-memory` 时，才会把 lead / next / dead-end / handoff
-追加写入目标记忆层。知识库、Skills、Rules 永远只给建议，不在这里自动修改。
+默认输出建议，并写入可派生 coverage、小型 runtime-v2 checkpoint witness，且通过
+`action_queue` owner 幂等同步可执行的 next-action queue。只有传入
+`--apply-target-memory` 时，才会把 lead / next / dead-end / handoff 追加写入目标
+记忆层。知识库、Skills、Rules 永远只给建议，不在这里自动修改。
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ try:
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
+        ingest_checkpoint as ingest_action_queue_checkpoint,
         load_queue as load_action_queue,
         select_next_action as action_queue_select_next_action,
     )
@@ -37,6 +39,7 @@ try:
     from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
     from tools.closure_resolver import ClosureResolver
+    from tools.finding_index import reconcile_root_finding_claims
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import load_case_state, summary as build_case_state_summary
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -46,6 +49,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
+        ingest_checkpoint as ingest_action_queue_checkpoint,
         load_queue as load_action_queue,
         select_next_action as action_queue_select_next_action,
     )
@@ -56,6 +60,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
     from closure_resolver import ClosureResolver  # type: ignore
+    from finding_index import reconcile_root_finding_claims  # type: ignore
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import load_case_state, summary as build_case_state_summary  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
@@ -133,9 +138,56 @@ def write_checkpoint_witness(
             "required_checks": context.get("required_checks", []),
         },
     }
+    queue_sync = checkpoint.get("action_queue_sync")
+    if isinstance(queue_sync, dict):
+        queue_path = str(queue_sync.get("path") or "").strip()
+        if queue_path:
+            candidate_path = Path(queue_path)
+            try:
+                queue_path = str(candidate_path.relative_to(repo))
+            except ValueError:
+                pass
+        stats = queue_sync.get("stats") if isinstance(queue_sync.get("stats"), dict) else {}
+        next_action = queue_sync.get("next") if isinstance(queue_sync.get("next"), dict) else {}
+        payload["action_queue"] = {
+            "synchronized": True,
+            "path": queue_path,
+            "added": int(stats.get("added", 0) or 0),
+            "updated": int(stats.get("updated", 0) or 0),
+            "next_id": str(next_action.get("id") or ""),
+        }
     path = repo / "state" / target_storage_key(resolved_target) / "checkpoint_latest.json"
     _write_json_atomic(path, payload)
     return {"path": str(path), "payload": payload}
+
+
+def sync_checkpoint_action_queue(
+    repo_root: Path | str,
+    checkpoint: dict,
+) -> dict:
+    """Persist checkpoint proposals through the action-queue owner.
+
+    ``build_checkpoint`` intentionally remains a reusable projection builder.
+    The CLI boundary is the runtime handoff: once a real `/checkpoint` command
+    has produced executable proposals, it must not rely on Claude remembering a
+    second ``ingest-checkpoint`` command before the next session.
+    """
+    repo = Path(repo_root)
+    target = str(checkpoint.get("target") or "").strip()
+    if not target:
+        raise ValueError("checkpoint action queue sync requires a target")
+    result = ingest_action_queue_checkpoint(repo, target, checkpoint=checkpoint)
+    if not isinstance(result, dict):
+        raise ValueError("action queue owner returned an invalid sync result")
+    checkpoint["action_queue_sync"] = result
+    witness = write_checkpoint_witness(repo, target, checkpoint)
+    checkpoint["runtime_witness"] = {
+        "schema_version": witness["payload"]["schema_version"],
+        "path": str(Path(witness["path"]).relative_to(repo))
+        if Path(witness["path"]).is_relative_to(repo)
+        else str(witness["path"]),
+    }
+    return result
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -733,6 +785,11 @@ def _case_state_seed_proposal(seed: dict) -> str:
 
 def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case_state: dict | None = None) -> str:
     findings = _structured_findings(state)
+    if findings.get("next_owner_revalidation"):
+        # A mutable JSON finality claim is not a closure. Keep the next step in
+        # the durable checkpoint as a candidate recovery instead of selecting
+        # report generation or suppressing the surface.
+        return "continue"
     if findings.get("next_validation"):
         return "validate"
     top_case_state = _case_state_top_next(case_state or {})
@@ -1680,8 +1737,23 @@ def _next_proposals(
     # they matter for the next hypothesis.
 
     findings = _structured_findings(state)
+    next_owner_revalidation = findings.get("next_owner_revalidation") or {}
     next_validation = findings.get("next_validation") or {}
     next_report = findings.get("next_report") or {}
+    if next_owner_revalidation:
+        proposals.append(
+            "Owner-provenance recovery for finding {id} on {url}: it claims "
+            "{validation}/{report} but provenance is {reason}. Treat it as a "
+            "candidate, replay locatable raw evidence, then rerun /validate with "
+            "the canonical finding id so finding_index records the transition. "
+            "Do not report or resolve this claim from JSON alone.".format(
+                id=next_owner_revalidation.get("id", "-"),
+                url=next_owner_revalidation.get("url", ""),
+                validation=next_owner_revalidation.get("claimed_validation_status", "-"),
+                report=next_owner_revalidation.get("claimed_report_status", "-"),
+                reason=next_owner_revalidation.get("provenance_reason", "owner-provenance-invalid"),
+            )
+        )
     if next_validation:
         rubric = next_validation.get("rubric") if isinstance(next_validation.get("rubric"), dict) else {}
         missing_items = []
@@ -2145,6 +2217,14 @@ def _extract_action_metadata(text: str) -> dict:
             "unsafe_skipped_id": "" if unsafe_id == "-" else unsafe_id,
             "artifact": match.group("artifact"),
         })
+
+    match = re.search(
+        r"(?:Candidate evidence gap|Run /validate) for finding\s+(?P<finding_id>[^;\s]+)",
+        value,
+        re.I,
+    )
+    if match:
+        metadata["finding_id"] = match.group("finding_id").strip().rstrip(".")
 
     match = re.search(r"Draft report for validated finding\s+(?P<finding_id>[^;\s]+)", value, re.I)
     if match:
@@ -2810,6 +2890,16 @@ def format_checkpoint(checkpoint: dict) -> str:
     case_state_next = case_state.get("top_next_action") or {}
     evidence = checkpoint.get("evidence_ledger") or {}
     actor_matrix = evidence.get("actor_matrix") or {}
+    queue_sync = checkpoint.get("action_queue_sync") or {}
+    claim_sync = checkpoint.get("root_finding_claim_sync") or {}
+    queue_sync_text = "not run"
+    if queue_sync:
+        queue_sync_text = "path={path} added={added} updated={updated} next={next_id}".format(
+            path=queue_sync.get("path", "-"),
+            added=(queue_sync.get("stats") or {}).get("added", 0),
+            updated=(queue_sync.get("stats") or {}).get("updated", 0),
+            next_id=(queue_sync.get("next") or {}).get("id", "none"),
+        )
 
     lines = [
         "CHECKPOINT DECISION",
@@ -2825,6 +2915,13 @@ def format_checkpoint(checkpoint: dict) -> str:
             str(item) for item in context.get("contradictions", [])
             if str(item).strip() and str(item).strip().lower() != "none detected."
         ]),
+        "- Root finding claim reconciliation:",
+        "  - status={status} created={created} updated={updated} claims={claims}".format(
+            status=claim_sync.get("status", "not run"),
+            created=claim_sync.get("created", 0),
+            updated=claim_sync.get("updated", 0),
+            claims=len(claim_sync.get("claims") or []),
+        ),
         "- Coverage:",
         f"  - endpoints: {summary.get('endpoints', 0)}",
         f"  - high-value gaps: {summary.get('high_value_gaps_count', 0)}",
@@ -2882,6 +2979,8 @@ def format_checkpoint(checkpoint: dict) -> str:
         )),
         "- Next action queue:",
         *_fmt_action_queue(checkpoint.get("next_action_queue", [])),
+        "- Durable action queue sync:",
+        f"  - {queue_sync_text}",
         "- Default candidate (compat pointer):",
         f"  - {((checkpoint.get('default_candidate') or checkpoint.get('recommended_executable_action') or {}).get('action') or 'none')}",
         "- Target write-back:",
@@ -2916,6 +3015,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     repo = Path(args.repo_root)
+    try:
+        claim_sync = reconcile_root_finding_claims(
+            repo / "findings" / target_storage_key(canonical_target_value(args.target)),
+            target=canonical_target_value(args.target),
+        )
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"checkpoint finding-claim reconciliation failed: {exc}", file=sys.stderr)
+        return 2
     checkpoint = build_checkpoint(
         repo,
         target=args.target,
@@ -2923,6 +3030,12 @@ def main(argv: list[str] | None = None) -> int:
         memory_dir=args.memory_dir or None,
         refresh_coverage=not args.no_refresh_coverage,
     )
+    checkpoint["root_finding_claim_sync"] = claim_sync
+    try:
+        sync_checkpoint_action_queue(repo, checkpoint)
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"checkpoint action queue sync failed: {exc}", file=sys.stderr)
+        return 2
     if args.apply_target_memory:
         result = apply_target_memory(repo, checkpoint["target"], checkpoint)
         checkpoint["apply_status"] = "applied target memory"

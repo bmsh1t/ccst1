@@ -32,6 +32,15 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 def _write_passing_run(repo: Path, target: str = "demo.test") -> None:
     state_dir = repo / "state" / target
     evidence_dir = repo / "memory" / "evidence" / target
+    raw_evidence_path = repo / "evidence" / target / "raw" / "ssti_probe_001.json"
+    _write_json(
+        raw_evidence_path,
+        {
+            "target": target,
+            "request": "GET /profile?name={{probe}} HTTP/1.1",
+            "response": "HTTP/1.1 200 OK",
+        },
+    )
     update_runtime_state(
         repo,
         target,
@@ -73,7 +82,7 @@ def _write_passing_run(repo: Path, target: str = "demo.test") -> None:
                 "target": "demo.test",
                 "endpoint": "/profile",
                 "raw_endpoint": "/profile?name={{probe}}",
-                "evidence_ref": "evidence/demo.test/raw/ssti_probe_001.json",
+                "evidence_ref": f"evidence/{target}/raw/ssti_probe_001.json",
                 "result": "tested_clean",
             }
         ],
@@ -191,7 +200,28 @@ def test_missing_raw_evidence_fails_evidence_check(tmp_path):
     assert result["grade"] == "needs_review"
     assert result["checks"]["evidence_path"]["passed"] is False
     assert result["checks"]["evidence_path"]["score"] == 0
-    assert result["checks"]["evidence_path"]["missing"] == ["evidence_ref_or_raw_endpoint"]
+    assert result["checks"]["evidence_path"]["missing"] == ["locatable_evidence_ref_or_raw_artifact"]
+
+
+def test_raw_endpoint_only_does_not_satisfy_evidence_contract(tmp_path):
+    _write_passing_run(tmp_path)
+    _write_jsonl(
+        tmp_path / "memory" / "evidence" / "demo.test" / "ledger.jsonl",
+        [
+            {
+                "target": "demo.test",
+                "endpoint": "/profile",
+                "raw_endpoint": "/profile?name={{probe}}",
+                "result": "candidate",
+            }
+        ],
+    )
+
+    result = check_autopilot_run.check_run(tmp_path, "demo.test")
+
+    assert result["passed"] is False
+    assert result["checks"]["evidence_path"]["passed"] is False
+    assert result["checks"]["evidence_path"]["missing"] == ["locatable_evidence_ref_or_raw_artifact"]
 
 
 def test_active_only_queue_fails_resolution_check(tmp_path):
@@ -209,6 +239,85 @@ def test_active_only_queue_fails_resolution_check(tmp_path):
     assert result["checks"]["queue_resolution_and_stop"]["passed"] is False
     assert result["checks"]["queue_resolution_and_stop"]["score"] == 10
     assert "final_status" in result["checks"]["queue_resolution_and_stop"]["missing"]
+
+
+def test_unreconciled_root_json_claim_fails_even_with_unrelated_final_queue(tmp_path):
+    _write_passing_run(tmp_path)
+    claim_path = tmp_path / "findings" / "demo.test" / "manual-sqli.json"
+    _write_json(
+        claim_path,
+        {
+            "title": "Manual SQLi claim",
+            "severity": "critical",
+            "endpoint": "/rest/products/search",
+            "vuln_class": "SQLi",
+            "poc": "curl https://demo.test/rest/products/search?q=...",
+            "impact": "claimed database access",
+        },
+    )
+
+    result = check_autopilot_run.check_run(tmp_path, "demo.test")
+
+    assert result["passed"] is False
+    check = result["checks"]["queue_resolution_and_stop"]
+    assert check["passed"] is False
+    assert "unreconciled_root_finding_claim" in check["missing"]
+    assert "manual-sqli.json" in check["evidence"]
+
+
+def test_direct_validated_json_row_without_owner_provenance_fails_runtime_contract(tmp_path):
+    _write_passing_run(tmp_path)
+    findings_path = tmp_path / "findings" / "demo.test" / "findings.json"
+    _write_json(
+        findings_path,
+        {
+            "schema_version": 1,
+            "target": "demo.test",
+            "findings": [
+                {
+                    "id": "manual-validated",
+                    "type": "ssti",
+                    "url": "https://demo.test/profile",
+                    "validation_status": "validated",
+                    "report_status": "not_generated",
+                    "validation_summary": "evidence/demo.test/raw/ssti_probe_001.json",
+                }
+            ],
+        },
+    )
+
+    result = check_autopilot_run.check_run(tmp_path, "demo.test")
+    check = result["checks"]["queue_resolution_and_stop"]
+
+    assert result["passed"] is False
+    assert result["score"] == 90
+    assert "owner_provenance_for_validated_or_generated_finding" in check["missing"]
+    assert "manual-validated:missing-owner-provenance" in check["evidence"]
+
+
+def test_owner_api_validated_row_satisfies_runtime_provenance_contract(tmp_path):
+    from tools.finding_index import upsert_finding
+
+    _write_passing_run(tmp_path)
+    findings_dir = tmp_path / "findings" / "demo.test"
+    upsert_finding(
+        findings_dir,
+        {
+            "id": "owner-validated",
+            "type": "ssti",
+            "url": "https://demo.test/profile",
+            "source_file": "evidence/demo.test/raw/ssti_probe_001.json",
+            "validation_summary": "evidence/demo.test/raw/ssti_probe_001.json",
+            "validation_status": "validated",
+            "report_status": "not_generated",
+        },
+        target="demo.test",
+    )
+
+    result = check_autopilot_run.check_run(tmp_path, "demo.test")
+
+    assert result["passed"] is True
+    assert result["score"] == 100
 
 
 def test_high_risk_default_stop_condition_fails_stop_check(tmp_path):

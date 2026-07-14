@@ -24,9 +24,11 @@ if str(TOOLS_DIR) not in sys.path:
 
 try:
     from action_queue import DEFAULT_STOP_CONDITION, FINAL_STATUSES
+    from finding_index import list_root_finding_claims, verify_finding_owner_provenance
     from target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct execution fallback
     from tools.action_queue import DEFAULT_STOP_CONDITION, FINAL_STATUSES  # type: ignore
+    from tools.finding_index import list_root_finding_claims, verify_finding_owner_provenance  # type: ignore
     from tools.target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -40,11 +42,8 @@ CONTEXT_ARTIFACT_NAMES = {
 }
 CONTEXT_ARTIFACT_PATTERNS = ("*checkpoint*.json", "*autopilot*.json", "*.log", "*.md", "*.txt")
 COMMAND_HINT_FIELDS = ("command_hint", "recommended_executable_action", "action")
-EVIDENCE_FIELDS = (
-    "evidence_ref",
-    "raw_endpoint",
-    "raw_request_path",
-    "raw_response_path",
+EVIDENCE_REF_FIELDS = ("evidence_ref",)
+RAW_EVIDENCE_CONTAINER_FIELDS = (
     "raw_artifact",
     "artifact_path",
     "capture_path",
@@ -155,6 +154,129 @@ def _load_queue(repo_root: Path, target_key: str) -> dict:
     return {"actions": []}
 
 
+def _merge_root_claim_consistency(
+    check: dict,
+    *,
+    repo_root: Path,
+    target: str,
+    target_key: str,
+    queue: dict,
+) -> dict:
+    """Make bare root finding claims visible to the runtime-contract gate.
+
+    A model can write ``findings/<target>/claim.json`` without invoking the
+    canonical finding owner.  Such a file must either be reconciled into
+    ``findings.json`` and linked to a durable action, or the run remains
+    structurally incomplete regardless of unrelated final queue rows.
+    """
+    findings_dir = repo_root / "findings" / target_key
+    unresolved = list_root_finding_claims(findings_dir, target=target)
+    all_claims = list_root_finding_claims(
+        findings_dir,
+        target=target,
+        include_reconciled=True,
+    )
+    payload = _read_json(findings_dir / "findings.json")
+    rows = payload.get("findings", []) if isinstance(payload, dict) else []
+    canonical_rows = [item for item in rows if isinstance(item, dict)]
+    actions = [item for item in queue.get("actions", []) if isinstance(item, dict)]
+
+    missing: list[str] = []
+    evidence: list[str] = []
+    if unresolved:
+        missing.append("unreconciled_root_finding_claim")
+        evidence.append(
+            "unreconciled_root_claim="
+            + ", ".join(str(item.get("claim_source_file") or "-") for item in unresolved[:3])
+        )
+
+    untracked: list[str] = []
+    for claim in all_claims:
+        claim_id = str(claim.get("claim_id") or claim.get("id") or "")
+        source = str(claim.get("claim_source_file") or "")
+        row = next(
+            (
+                item
+                for item in canonical_rows
+                if str(item.get("claim_id") or item.get("id") or "") == claim_id
+                or (source and str(item.get("claim_source_file") or "") == source)
+            ),
+            None,
+        )
+        if not row:
+            continue
+        validation_status = str(row.get("validation_status") or "").strip().lower()
+        report_status = str(row.get("report_status") or "").strip().lower()
+        if validation_status in {"validated", "rejected"} or report_status == "generated":
+            continue
+        finding_id = str(row.get("id") or "")
+        linked = any(
+            str((action.get("metadata") or {}).get("finding_id") or "") == finding_id
+            for action in actions
+            if isinstance(action.get("metadata"), dict)
+        )
+        if not linked:
+            untracked.append(finding_id or source or "<unknown>")
+
+    if untracked:
+        missing.append("root_finding_claim_without_durable_action")
+        evidence.append("untracked_root_claim=" + ", ".join(untracked[:3]))
+
+    if missing:
+        check["passed"] = False
+        check["missing"] = [*(check.get("missing") or []), *missing]
+        base = str(check.get("evidence") or "")
+        check["evidence"] = "; ".join(part for part in [base, *evidence] if part)
+    return check
+
+
+def _merge_owner_provenance_consistency(
+    check: dict,
+    *,
+    repo_root: Path,
+    target: str,
+    target_key: str,
+) -> dict:
+    """Require owner provenance for report-capable canonical lifecycle rows.
+
+    This remains part of the existing queue-resolution/stop hard gate rather
+    than creating a fifth score axis. Ordinary scanner leads do not need this
+    check; a row that claims `validated` or `generated` must prove that its
+    canonical mutation came through finding_index instead of a direct JSON edit.
+    """
+    findings_dir = repo_root / "findings" / target_key
+    payload = _read_json(findings_dir / "findings.json")
+    rows = payload.get("findings", []) if isinstance(payload, dict) else []
+    invalid: list[str] = []
+    for finding in rows:
+        if not isinstance(finding, dict):
+            continue
+        validation_status = str(finding.get("validation_status") or "").strip().lower()
+        report_status = str(finding.get("report_status") or "").strip().lower()
+        if validation_status != "validated" and report_status not in {"generated", "reported"}:
+            continue
+        verification = verify_finding_owner_provenance(
+            findings_dir,
+            finding,
+            target=target,
+        )
+        if not verification.get("valid"):
+            finding_id = str(finding.get("id") or "<no-id>")
+            invalid.append(f"{finding_id}:{verification.get('reason') or 'invalid'}")
+
+    if invalid:
+        check["passed"] = False
+        check["missing"] = [
+            *(check.get("missing") or []),
+            "owner_provenance_for_validated_or_generated_finding",
+        ]
+        base = str(check.get("evidence") or "")
+        check["evidence"] = "; ".join(
+            part for part in [base, "invalid_owner_provenance=" + ", ".join(invalid[:3])] if part
+        )
+    return check
+
+
 def _discover_context_artifacts(repo_root: Path, target_key: str) -> list[tuple[Path, Any, str]]:
     state_dir = repo_root / "state" / target_key
     if not state_dir.is_dir():
@@ -260,19 +382,55 @@ def _check_evidence_path(repo_root: Path, target_key: str) -> dict:
     path = repo_root / "memory" / "evidence" / target_key / "ledger.jsonl"
     rows = _load_jsonl(path)
     for idx, row in enumerate(rows, 1):
-        for field in EVIDENCE_FIELDS:
-            value = row.get(field)
-            if isinstance(value, str) and value.strip():
+        for field in EVIDENCE_REF_FIELDS:
+            value = _locate_evidence_path(repo_root, row.get(field))
+            if value is not None:
                 return {
                     "passed": True,
-                    "evidence": f"{path.relative_to(repo_root)}:{idx} {field}={_compact(value)}",
+                    "evidence": f"{path.relative_to(repo_root)}:{idx} {field}={_compact(str(value))}",
+                    "missing": [],
+                }
+        request = _locate_evidence_path(repo_root, row.get("raw_request_path"))
+        response = _locate_evidence_path(repo_root, row.get("raw_response_path"))
+        if request is not None and response is not None:
+            return {
+                "passed": True,
+                "evidence": (
+                    f"{path.relative_to(repo_root)}:{idx} raw_request_path={_compact(str(request))}; "
+                    f"raw_response_path={_compact(str(response))}"
+                ),
+                "missing": [],
+            }
+        for field in RAW_EVIDENCE_CONTAINER_FIELDS:
+            value = _locate_evidence_path(repo_root, row.get(field))
+            if value is not None:
+                return {
+                    "passed": True,
+                    "evidence": f"{path.relative_to(repo_root)}:{idx} {field}={_compact(str(value))}",
                     "missing": [],
                 }
     return {
         "passed": False,
-        "evidence": f"{path.relative_to(repo_root)} has no row with raw evidence path or raw_endpoint",
-        "missing": ["evidence_ref_or_raw_endpoint"],
+        "evidence": (
+            f"{path.relative_to(repo_root)} has no row with a locatable evidence_ref, "
+            "raw request/response pair, or raw evidence artifact"
+        ),
+        "missing": ["locatable_evidence_ref_or_raw_artifact"],
     }
+
+
+def _locate_evidence_path(repo_root: Path, value: Any) -> Path | None:
+    """Resolve a ledger artifact pointer; a bare endpoint is never evidence."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = repo_root / candidate
+    try:
+        return candidate if candidate.exists() else None
+    except OSError:
+        return None
 
 
 def _is_high_risk_action(action: dict) -> bool:
@@ -362,6 +520,8 @@ def _score_queue_resolution(check: dict) -> int:
         score -= 10
     if "custom_stop_condition_for_high_risk" in missing:
         score -= 10
+    if "owner_provenance_for_validated_or_generated_finding" in missing:
+        score -= 10
     return max(score, 0)
 
 
@@ -397,11 +557,24 @@ def check_run(repo_root: Path | str, target: str) -> dict:
     resolved_target = canonical_target_value(target)
     target_key = target_storage_key(resolved_target)
     queue = _load_queue(repo, target_key)
+    queue_resolution = _merge_root_claim_consistency(
+        _check_queue_resolution_and_stop(queue),
+        repo_root=repo,
+        target=resolved_target,
+        target_key=target_key,
+        queue=queue,
+    )
+    queue_resolution = _merge_owner_provenance_consistency(
+        queue_resolution,
+        repo_root=repo,
+        target=resolved_target,
+        target_key=target_key,
+    )
     checks = {
         "context_pack": _check_context_pack(repo, target_key),
         "executable_action": _check_executable_action(queue),
         "evidence_path": _check_evidence_path(repo, target_key),
-        "queue_resolution_and_stop": _check_queue_resolution_and_stop(queue),
+        "queue_resolution_and_stop": queue_resolution,
     }
     score, max_score = _score_checks(checks)
     passed = all(item["passed"] for item in checks.values())

@@ -52,6 +52,24 @@ def _runtime_projection(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _invocation_batch_projection(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Expose the parsed deep batch boundary without asking Claude to reparse flags."""
+    raw = arguments.get("invocation_batch")
+    batch = raw if isinstance(raw, dict) else {}
+    max_lanes = batch.get("max_lanes")
+    if not isinstance(max_lanes, int) or isinstance(max_lanes, bool):
+        max_lanes = None
+    bounded = bool(batch.get("bounded"))
+    return {
+        "bounded": bounded,
+        "max_lanes": max_lanes,
+        "handoff": str(
+            batch.get("handoff")
+            or ("checkpoint_and_handoff_after_max_lanes" if bounded else "normal_finish_condition")
+        ),
+    }
+
+
 def _compact_candidate(item: dict[str, Any]) -> dict[str, Any]:
     """投影一个启动候选，丢弃完整 surface/runner payload。"""
     keys = (
@@ -67,16 +85,40 @@ def _compact_candidate(item: dict[str, Any]) -> dict[str, Any]:
         "action",
         "command_hint",
         "evidence",
+        "evidence_ref",
+        "evidence_available",
+        "claim_source_file",
+        "source_file",
+        "claim_target",
+        "claim_status",
+        "incomplete_fields",
+        "title",
+        "validation_status",
+        "report_status",
         "stop_condition",
         "review_reason",
         "suggested",
+        "report_draft_path",
+        "report_draft_status",
+        "report_draft_placeholder_count",
+        "claimed_validation_status",
+        "claimed_report_status",
+        "lifecycle_status",
+        "provenance_reason",
+        "required_action",
     )
     compact = {
         key: item[key]
         for key in keys
         if key in item and item[key] not in (None, "", [], {})
     }
+    # root-level JSON claims use ``evidence_rubric`` before checkpoint has
+    # reconciled them into the canonical structured-finding projection.  Keep
+    # the compact bootstrap contract uniform without exposing claim prose or
+    # raw evidence payloads.
     rubric = item.get("rubric") if isinstance(item.get("rubric"), dict) else {}
+    if not rubric and isinstance(item.get("evidence_rubric"), dict):
+        rubric = item["evidence_rubric"]
     if rubric:
         compact["rubric"] = {
             "rubric_id": str(rubric.get("rubric_id") or ""),
@@ -103,12 +145,30 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     """生成仅供 startup 路由使用的有界 state 视图。"""
     next_action = str(state.get("next_action") or "")
     structured = state.get("structured_findings") or {}
-    structured_next = structured.get("next_validation") or structured.get("next_report") or {}
+    structured_next = (
+        structured.get("next_owner_revalidation")
+        or structured.get("next_validation")
+        or structured.get("next_draft_completion")
+        or structured.get("next_report")
+        or {}
+    )
+    if structured.get("next_owner_revalidation"):
+        structured_next_kind = "owner_revalidation"
+    elif structured.get("next_validation"):
+        structured_next_kind = "validation"
+    elif structured.get("next_draft_completion"):
+        structured_next_kind = "draft_completion"
+    elif structured.get("next_report"):
+        structured_next_kind = "report"
+    else:
+        structured_next_kind = ""
     runner_next = state.get("validation_runner_next") or {}
     if not runner_next:
         runner_candidates = state.get("validation_runner_candidates") or []
         runner_next = runner_candidates[0] if runner_candidates else {}
     queue_next = state.get("action_queue_next") or {}
+    memory_candidate_next = state.get("memory_candidate_next") or {}
+    root_claim_next = state.get("root_finding_claim_next") or {}
     recon_artifacts = state.get("recon_artifacts") or {}
     batch = state.get("batch") or {}
 
@@ -135,6 +195,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             "artifacts_available": bool(recon_artifacts.get("available")),
             "artifacts_ready": bool(recon_artifacts.get("ready")),
             "host_inventory_ready": bool(recon_artifacts.get("host_inventory_ready")),
+            "fresh_recon_ready": bool(state.get("fresh_recon_ready")),
             "blocker": str(state.get("recon_blocker") or ""),
         },
         "structured_next": (
@@ -142,6 +203,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             if isinstance(structured_next, dict)
             else {}
         ),
+        "structured_next_kind": structured_next_kind,
         "runner_next": (
             _compact_candidate(runner_next)
             if isinstance(runner_next, dict)
@@ -150,6 +212,19 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
         "queue_next": (
             _compact_candidate(queue_next)
             if isinstance(queue_next, dict)
+            else {}
+        ),
+        "memory_candidate_next": (
+            _compact_candidate(memory_candidate_next)
+            if isinstance(memory_candidate_next, dict)
+            else {}
+        ),
+        # An unreconciled root JSON claim is not a validated finding.  It must
+        # still be visible at startup so Claude can run checkpoint, which is
+        # the only owner-approved bridge into findings.json/action_queue.
+        "root_claim_next": (
+            _compact_candidate(root_claim_next)
+            if isinstance(root_claim_next, dict)
             else {}
         ),
         "batch": compact_batch,
@@ -182,6 +257,10 @@ def build_autopilot_bootstrap(
         "repo_root": str(resolved_repo),
         "repo_root_shell": shlex.quote(str(resolved_repo)),
         "arguments": arguments,
+        # This is intentionally duplicated as a tiny top-level projection:
+        # the command must consume the parser result, not reinterpret raw
+        # slash tokens while deciding when a deep invocation hands off.
+        "invocation_batch": _invocation_batch_projection(arguments),
         "runtime": {
             "checked": False,
             "clean": None,

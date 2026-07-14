@@ -42,7 +42,12 @@ try:
     )
     from tools.evidence_ledger import record_entry
     from tools.evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
-    from tools.finding_index import load_finding_index, update_finding_status, upsert_finding
+    from tools.finding_index import (
+        load_finding_index,
+        update_finding_status,
+        upsert_finding,
+        verify_finalized_finding_owner_provenance,
+    )
     from tools.public_exposure_signals import (
         public_exposure_candidate_ready as shared_public_exposure_candidate_ready,
         public_exposure_marker_sources as shared_public_exposure_marker_sources,
@@ -62,7 +67,12 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from evidence_ledger import record_entry  # type: ignore
     from evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence  # type: ignore
-    from finding_index import load_finding_index, update_finding_status, upsert_finding  # type: ignore
+    from finding_index import (  # type: ignore
+        load_finding_index,
+        update_finding_status,
+        upsert_finding,
+        verify_finalized_finding_owner_provenance,
+    )
     from public_exposure_signals import (  # type: ignore
         public_exposure_candidate_ready as shared_public_exposure_candidate_ready,
         public_exposure_marker_sources as shared_public_exposure_marker_sources,
@@ -237,6 +247,7 @@ def _runner_sync_gate_updates(
     finding_id: str,
     status: str,
     *,
+    target: str,
     validation_summary: str,
     validated_at: str,
 ) -> dict[str, str]:
@@ -248,11 +259,28 @@ def _runner_sync_gate_updates(
     """
     existing = _find_existing_finding(findings_dir, finding_id)
     if str(existing.get("validation_status") or "") == "validated" and status == "candidate":
-        return {
-            "validation_status": "validated",
-            "validation_summary": str(existing.get("validation_summary") or validation_summary),
-            "validated_at": str(existing.get("validated_at") or validated_at),
+        provenance = verify_finalized_finding_owner_provenance(
+            findings_dir,
+            existing,
+            target=target,
+        )
+        if provenance.get("valid"):
+            return {
+                "validation_status": "validated",
+                "validation_summary": str(existing.get("validation_summary") or validation_summary),
+                "validated_at": str(existing.get("validated_at") or validated_at),
+            }
+        # The runner has fresh raw evidence, but a direct prior finality claim
+        # cannot preserve report readiness. Rewrite the lifecycle as a
+        # candidate through the owner API below.
+        updates = {
+            "validation_status": status,
+            "validation_summary": validation_summary,
+            "validated_at": validated_at,
         }
+        if str(existing.get("report_status") or "").strip().lower() in {"generated", "reported"}:
+            updates["report_status"] = "not_generated"
+        return updates
     return {
         "validation_status": status,
         "validation_summary": validation_summary,
@@ -405,6 +433,7 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
         findings_dir,
         finding_id,
         status,
+        target=target,
         validation_summary=summary_ref,
         validated_at=generated_at,
     )
@@ -429,6 +458,7 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
                 findings_dir,
                 existing_id,
                 status,
+                target=target,
                 validation_summary=summary_ref,
                 validated_at=generated_at,
             )

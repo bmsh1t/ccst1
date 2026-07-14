@@ -24,7 +24,10 @@ try:
     from tools.action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES
     from tools.action_queue import load_queue as load_action_queue
     from tools.attack_probe_filter import filter_attack_probes, is_attack_probe
-    from tools.finding_index import load_finding_index
+    from tools.finding_index import (
+        load_finding_index,
+        verify_finalized_finding_owner_provenance,
+    )
     from tools.observation_inventory import (
         InventoryError,
         inventory_path,
@@ -40,7 +43,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     from action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES  # type: ignore
     from action_queue import load_queue as load_action_queue  # type: ignore
     from attack_probe_filter import filter_attack_probes, is_attack_probe
-    from finding_index import load_finding_index
+    from finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from observation_inventory import (  # type: ignore
         InventoryError,
         inventory_path,
@@ -1092,6 +1095,36 @@ def _finding_score_bonus(finding: dict) -> int:
     return score
 
 
+def _project_untrusted_finality_as_candidate(
+    finding: dict,
+    *,
+    findings_dir: Path,
+    target: str,
+) -> dict:
+    """Keep an edited finality claim visible without letting it close surface work.
+
+    ``surface`` is a reader, not a second finding owner.  When a row declares
+    a final lifecycle state without a matching owner event, preserve its URL as
+    a candidate but remove the untrusted validation/report bonus and closure
+    signal from this read-only projection.
+    """
+    provenance = verify_finalized_finding_owner_provenance(
+        findings_dir,
+        finding,
+        target=target,
+    )
+    if not provenance.get("required") or provenance.get("valid"):
+        return finding
+    projected = dict(finding)
+    projected["claimed_validation_status"] = str(finding.get("validation_status") or "")
+    projected["claimed_report_status"] = str(finding.get("report_status") or "")
+    projected["validation_status"] = "candidate"
+    projected["report_status"] = "not_generated"
+    projected["lifecycle_status"] = "needs_owner_revalidation"
+    projected["provenance_reason"] = str(provenance.get("reason") or "owner-provenance-invalid")
+    return projected
+
+
 def _source_intel_score_bonus(hypothesis: dict) -> int:
     """Return deterministic score boost from source_intel hypothesis type."""
     hypothesis_type = str(hypothesis.get("type", "")).lower()
@@ -1257,7 +1290,12 @@ def load_surface_context(
     )
     finding_index = load_finding_index(findings_dir)
     scanner_findings = [
-        item for item in finding_index.get("findings", [])
+        _project_untrusted_finality_as_candidate(
+            item,
+            findings_dir=findings_dir,
+            target=target,
+        )
+        for item in finding_index.get("findings", [])
         if isinstance(item, dict) and item.get("url")
         and url_belongs_to_target(str(item.get("url") or ""), target)
     ]

@@ -56,7 +56,7 @@ For a URL-form input, keep canonical host state but inspect the exact path/query
 
 For a readable primary-domain list, run batch recon/handoff only, read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed domain, then rerun `autopilot_state.py` for that domain before surface/scan/hunt. Never scan or actively hunt the batch index; `invalid_batch_target` and `batch_failed` are terminal until input/evidence changes.
 
-Startup anti-loop: if `autopilot_state.py` returns `next_action: wait_recon` / `Recon: in progress`, do not announce a fresh start or launch another recon. If it returns `next_action: wait_scan` / `Scan: in progress`, do not launch another `scan-only --quick`; wait/poll and rerun state. Runtime phase locks are the final duplicate-launch guard. Repeating startup or scan commands is not progress. Candidate routing: when state returns `collect_candidate_evidence`, execute the first bounded `structured_findings.next_validation.rubric.next_actions` item or record a precise blocker/downgrade, preserve the named `missing_labels` evidence, then rerun state. Use `/validate` only after state returns `validate_finding`.
+Startup anti-loop: if `autopilot_state.py` returns `next_action: wait_recon` / `Recon: in progress`, do not announce a fresh start or launch another recon. If it returns `next_action: wait_scan` / `Scan: in progress`, do not launch another `scan-only --quick`; wait/poll and rerun state. Runtime phase locks are the final duplicate-launch guard. Repeating startup or scan commands is not progress. `prepare_surface_context` runs cached surface/context; `collect_candidate_evidence` uses structured `next_actions` and `missing_labels`, or a memory candidate only after reviewing locatable evidence, otherwise collects raw request/response. If bootstrap exposes `root_claim_next`, run `/checkpoint` first to reconcile the claim through `finding_index`, then use its refreshed canonical finding ID with a matching `validation_runner.py --finding-id` so raw proof is attached to that candidate. Use `/validate` only after state returns `validate_finding`; `complete_report_draft` fills placeholders without reopening validated evidence.
 
 Only add heavier state tools when they directly change the next action: `target_case_state.py` for actor/session/object continuity, `case_state_seed.py` for concrete object IDs, and checkpoint/action_queue/coverage after progress, validation, handoff, or before finish; do not let them drive first contact.
 
@@ -91,11 +91,11 @@ This applies broadly: known software versions, exposed routes, browser XHR/API c
 
 Do not overfit this contract into a fixed checklist. Normalize evidence, choose the next safe action, execute or resolve it, then update state to `tested`, `dead-end`, `blocked`, `lead`, `signal`, or `candidate`.
 
-Queue bridge: `tools/action_queue.py ingest-checkpoint --target <target>`; `tools/action_queue.py next --target <target>`; resolve with `tools/action_queue.py resolve --target <target> --id <id> --status tested --evidence "<short evidence>"`.
+`tools/checkpoint.py` automatically syncs executable proposals to the durable queue; use `tools/action_queue.py next --target <target>` and resolve with `tools/action_queue.py resolve --target <target> --id <id> --status tested --evidence "<short evidence>"`. `tools/action_queue.py ingest-checkpoint --target <target>` is legacy/manual recovery only.
 
 Do not end a run merely because a primary lane is blocked. Checkpoint/finish is allowed only after the remaining high-value lanes have been executed, blocked, dead-end, or clearly not applicable. When auth, WAF, or manual-browser blockers appear, expand into the smallest applicable adjacent high-value lane before considering closure. Examples include auth bootstrap (register, invite, reset, verification), controlled credential access when its prerequisites exist, edge/WAF lanes, and public-side JS/source/version/metadata/sibling-route continuation.
 ## Compact Transition Gate
-- Paranoid checkpoints after each substantive state change; normal after a coherent lane batch; yolo only on blocker/handoff/finish. Every mode writes evidence state.
+- Paranoid checkpoints after each substantive state change; normal after a coherent lane batch; yolo only on blocker/handoff/finish. Every mode writes evidence state. If the caller explicitly supplied `--deep --max-lanes N`, N is only this invocation's named substantive-lane cap: after lane N checkpoint/sync durable queue, state the handoff, and do not start a newly discovered lane.
 - After a primary Candidate/Validated result, evaluate one bounded evidence-fit sibling or chain before closing.
 - On 401/403/404/405/415 or parser delta, try one evidence-linked bypass family or explicitly close it; after three homogeneous no-information results, resolve and rotate lanes.
 - Refresh rotating form/session tokens from the legitimate baseline page/session before each replay.
@@ -152,8 +152,7 @@ If a concrete product/plugin/theme/library and version appears, do not leave "ne
 Lead -> Signal -> Candidate -> Validated Finding -> Report
 ```
 
-Validation is not an early hunting kill-switch. Keep useful leads and chain seeds while hunting; promote only replayable, impact-bearing candidates. A validated finding is a reportable asset kept in queue, not an automatic stop condition; scanner-negative never ends the hunt by itself.
-
+Validation is not an early hunting kill-switch. Keep useful leads and chain seeds while hunting; promote only replayable, impact-bearing candidates. Only a structured same-target finding with locatable raw evidence and matching `finding_index` owner provenance may be called confirmed/validated; target-memory prose and direct JSON edits remain lead/candidate, and placeholder drafts are not report-ready. A validated finding is a reportable asset, not an automatic stop condition; scanner-negative never ends the hunt by itself.
 ## Core Loop
 
 1. Classify target freshness: fresh -> recon-first; existing -> load memory/state and refresh recon only if stale/thin.
@@ -163,9 +162,10 @@ Validation is not an early hunting kill-switch. Keep useful leads and chain seed
 5. Record evidence in queue, target memory, Evidence Ledger, findings state, and case state when continuity helps.
 6. Validate only Candidate-quality items with `/validate` and evidence rubric; draft reports when AI judges stronger validation/chain/coverage actions no longer outrank the pending report.
 7. Review the bounded untouched/stale observation summary, then run checkpoint/coverage/action_queue at handoff, before finish, or after meaningful progress—not as the first steering wheel.
-
+## High-impact success handoff
+A reproduced exploit or browser-observed impact is not a finding lifecycle transition. After RCE, SSRF, XXE, deserialization, upload, JWT, or another high-impact lane, save exact raw request/response or a locatable browser artifact; if no runner exists, write a target-owned root claim JSON under `findings/<target-key>/` with `title`, `target`, `vuln_class`/`type`, known `endpoint`/`path`, impact, and evidence refs, then run `tools/checkpoint.py` for owner candidate/action creation.
+Missing endpoint data is an explicit incomplete claim; never invent the target root as an endpoint. Refresh state, use the canonical ID for `/validate`, or close the action as blocked/dead-end; terminal prose alone cannot establish confirmed/validated state.
 ## Deep Mode
-
 Use `--deep` when the target is high-value, surface is broad, shallow scanner-negative results are not enough, or evidence gaps remain. `--deep` is a value-first comprehensive depth flag, not a checkpoint mode.
 
 Deep mode:

@@ -6,6 +6,7 @@ autopilot_state.py — combine resume + surface context into one practical state
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -41,6 +42,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from resume import load_resume_summary, load_structured_finding_followup
     from surface import load_surface_context, rank_surface
 try:
+    from tools.finding_index import (
+        list_root_finding_claims,
+        verify_finalized_finding_owner_provenance,
+    )
     from tools.runtime_state import (
         inspect_recon_artifacts,
         load_runtime_state,
@@ -59,6 +64,10 @@ try:
         target_storage_key,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from finding_index import (  # type: ignore
+        list_root_finding_claims,
+        verify_finalized_finding_owner_provenance,
+    )
     from runtime_state import (  # type: ignore
         inspect_recon_artifacts,
         load_runtime_state,
@@ -130,6 +139,15 @@ def _finalized_finding_paths(repo_root: str, resolved_target: str) -> set[str]:
         validation_status = str(item.get("validation_status") or "").strip().lower()
         report_status = str(item.get("report_status") or "").strip().lower()
         if validation_status not in {"validated", "rejected"} and report_status != "generated":
+            continue
+        provenance = verify_finalized_finding_owner_provenance(
+            path.parent,
+            item,
+            target=resolved_target,
+        )
+        if not provenance.get("valid"):
+            # Direct JSON lifecycle claims must not hide a resume target.  The
+            # structured state projects them as owner-revalidation candidates.
             continue
         endpoint_path = _normalise_endpoint_path(str(item.get("url") or item.get("endpoint") or ""))
         # Hash-route findings normalize to root; never hide the entire SPA root.
@@ -293,6 +311,9 @@ def _pick_next_action(
     recon_in_progress: bool = False,
     scan_in_progress: bool = False,
     recon_completed_no_live_hosts: bool = False,
+    memory_candidate_next: dict | None = None,
+    root_finding_claim_next: dict | None = None,
+    fresh_recon_ready: bool = False,
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
@@ -304,6 +325,8 @@ def _pick_next_action(
     if scan_in_progress:
         return "wait_scan"
 
+    if structured_findings.get("next_owner_revalidation"):
+        return "revalidate_finding_owner"
     next_validation = structured_findings.get("next_validation") or {}
     if next_validation:
         rubric = (
@@ -316,10 +339,21 @@ def _pick_next_action(
         if rubric and "ready" in rubric and not bool(rubric.get("ready")):
             return "collect_candidate_evidence"
         return "validate_finding"
+    if root_finding_claim_next:
+        # 根目录裸 JSON 是人工/AI 的临时 claim，不是 canonical lifecycle。
+        # 它必须先补 locatable raw evidence 并由 checkpoint 归档为 candidate；
+        # 不能因为 prose PoC 而直接被称为 validated。
+        return "collect_candidate_evidence"
     if validation_runner_next:
         return "review_validation_candidate"
     if action_queue_next:
         return "resume_action_queue"
+    if memory_candidate_next:
+        # target memory 是兼容层，不是 durable owner。没有可定位原始证据时，
+        # 它只能把下一会话带回补证据动作，不能直接把 prose 提升为 finding。
+        if bool(memory_candidate_next.get("evidence_available")):
+            return "validate_finding"
+        return "collect_candidate_evidence"
 
     if not has_recon:
         if recon_completed_no_live_hosts:
@@ -336,8 +370,12 @@ def _pick_next_action(
 
     if ranked.get("review_pool") or ranked.get("p1"):
         return "hunt_p1"
+    if fresh_recon_ready:
+        return "prepare_surface_context"
     if resume_targets:
         return "resume_untested"
+    if structured_findings.get("draft_completion_pending"):
+        return "complete_report_draft"
     # A validated finding is a closure/report asset, not the steering wheel.
     # Surface/replay/resume work above should stay available when current
     # evidence exposes stronger live leads; otherwise keep the report visible.
@@ -352,10 +390,13 @@ def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
         "run_recon",
         "wait_recon",
         "wait_scan",
+        "revalidate_finding_owner",
         "collect_candidate_evidence",
         "validate_finding",
         "review_validation_candidate",
         "resume_action_queue",
+        "prepare_surface_context",
+        "complete_report_draft",
         "recon_no_live_hosts",
         "report_finding",
     }:
@@ -394,8 +435,24 @@ def _describe_next_step(state: dict) -> str:
             f"wait/poll the existing scan-only quick run for {target}; do not launch another "
             "scan-only quick. Refresh state after the matching scan phase lock releases."
         )
+    if action == "revalidate_finding_owner":
+        finding = (state.get("structured_findings") or {}).get("next_owner_revalidation") or {}
+        return (
+            "finding {id} claims {validation}/{report} without valid owner provenance "
+            "({reason}); treat it only as a candidate, replay locatable raw evidence, then rerun "
+            "/validate with its canonical id so finding_index records the lifecycle mutation. "
+            "Do not report or suppress the endpoint from the claim alone."
+        ).format(
+            id=finding.get("id", "-"),
+            validation=finding.get("claimed_validation_status", "-"),
+            report=finding.get("claimed_report_status", "-"),
+            reason=finding.get("provenance_reason", "owner-provenance-invalid"),
+        )
     if action == "collect_candidate_evidence":
         followup = (state.get("structured_findings") or {}).get("next_validation") or {}
+        memory_candidate = state.get("memory_candidate_next") or {}
+        root_claim = state.get("root_finding_claim_next") or {}
+        candidate = followup if followup else (root_claim if root_claim else memory_candidate)
         rubric = followup.get("rubric") if isinstance(followup.get("rubric"), dict) else {}
         missing = [
             str(item).strip()
@@ -410,20 +467,48 @@ def _describe_next_step(state: dict) -> str:
             ),
             "fill the first missing candidate evidence item",
         )
+        if followup:
+            return (
+                "collect candidate evidence for finding {id} on {url}; rubric={status}, "
+                "missing={missing}. Next evidence step: {step}. Rerun state before /validate.".format(
+                    id=candidate.get("id", "-"),
+                    url=candidate.get("url", ""),
+                    status=rubric.get("status", "needs-evidence"),
+                    missing=", ".join(missing) or "candidate evidence",
+                    step=evidence_step,
+                )
+            )
+        if root_claim:
+            return (
+                "inspect root JSON finding claim {id} at {source}; capture locatable raw "
+                "request/response and run /checkpoint to reconcile it as a candidate. "
+                "Missing fields: {missing}. Do not call it validated or report-ready "
+                "from the claim alone. Never invent an endpoint from the target root."
+            ).format(
+                id=root_claim.get("id", "-"),
+                source=root_claim.get("source_file", ""),
+                missing=", ".join(str(item) for item in (root_claim.get("incomplete_fields") or []))
+                or "none",
+            )
         return (
-            "collect candidate evidence for finding {id} on {url}; rubric={status}, "
-            "missing={missing}. Next evidence step: {step}. Rerun state before /validate.".format(
-                id=followup.get("id", "-"),
-                url=followup.get("url", ""),
-                status=rubric.get("status", "needs-evidence"),
-                missing=", ".join(missing) or "candidate evidence",
-                step=evidence_step,
+            "collect raw request/response or a locatable evidence_ref for target-memory "
+            "candidate {id}; do not call /validate from prose alone. Candidate: {action}".format(
+                id=candidate.get("id", "-"),
+                action=candidate.get("action", ""),
             )
         )
     if action == "validate_finding":
         followup = (state.get("structured_findings") or {}).get("next_validation") or {}
         if followup:
             return f"validate structured finding {followup.get('id')} on {followup.get('url')}."
+        memory_candidate = state.get("memory_candidate_next") or {}
+        if memory_candidate:
+            return (
+                "validate target-memory candidate {id} after reviewing its linked raw evidence: {action}."
+            ).format(
+                id=memory_candidate.get("id", "-"),
+                action=memory_candidate.get("action", ""),
+            )
         return "validate the highest-priority structured finding."
     if action == "review_validation_candidate":
         candidate = state.get("validation_runner_next") or {}
@@ -476,6 +561,21 @@ def _describe_next_step(state: dict) -> str:
         return "review the surface candidates, then choose the next evidence step."
     if action == "hunt_p2":
         return "widen into follow-up surface hints after first-review candidates are exhausted."
+    if action == "prepare_surface_context":
+        return (
+            "recon is ready but has no ranked replay candidate yet; run /surface and context-pack "
+            "from the cached recon, then select the smallest evidence-producing hunt action."
+        )
+    if action == "complete_report_draft":
+        draft = (state.get("structured_findings") or {}).get("next_draft_completion") or {}
+        return (
+            "complete report draft for validated finding {id} from its linked raw evidence; "
+            "replace all placeholders before report generation, without reopening the validated replay. "
+            "Draft: {path}".format(
+                id=draft.get("id", "-"),
+                path=draft.get("report_draft_path", ""),
+            )
+        )
     if action == "refresh_recon":
         return f"refresh recon before going deeper on {target}."
     if action == "handoff":
@@ -800,10 +900,13 @@ def _build_enrichment_hints(
         "run_recon",
         "wait_recon",
         "wait_scan",
+        "revalidate_finding_owner",
         "collect_candidate_evidence",
         "validate_finding",
         "review_validation_candidate",
         "resume_action_queue",
+        "prepare_surface_context",
+        "complete_report_draft",
         "recon_no_live_hosts",
         "report_finding",
     }:
@@ -892,7 +995,44 @@ def _memory_action_hint(text: str) -> str:
     return "execute smallest safe evidence-producing step"
 
 
-def _build_memory_action_queue(target_goal_memory: dict) -> list[dict]:
+_MEMORY_EVIDENCE_REF_RE = re.compile(
+    r"\b(?:evidence(?:_ref)?|raw_(?:request|response|artifact)(?:_path)?)\s*[:=]\s*([^\s,;]+)",
+    re.IGNORECASE,
+)
+
+
+def _memory_evidence_ref(text: str) -> str:
+    """Extract one explicit artifact pointer from legacy target-memory prose.
+
+    Target memory is intentionally human-readable and is not a second evidence
+    schema.  This narrow compatibility parser only recognises an explicit
+    ``Evidence=...``/``evidence_ref=...`` token emitted by checkpoint helpers.
+    Unknown prose remains evidence-missing and therefore cannot promote itself.
+    """
+    match = _MEMORY_EVIDENCE_REF_RE.search(str(text or ""))
+    if not match:
+        return ""
+    return match.group(1).strip().strip("'\"").rstrip(".,;:)]}")
+
+
+def _memory_evidence_available(repo_root: str | Path | None, evidence_ref: str) -> bool:
+    """Return whether a legacy memory artifact pointer resolves on disk."""
+    if not repo_root or not evidence_ref:
+        return False
+    path = Path(evidence_ref)
+    if not path.is_absolute():
+        path = Path(repo_root) / path
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _build_memory_action_queue(
+    target_goal_memory: dict,
+    *,
+    repo_root: str | Path | None = None,
+) -> list[dict]:
     target_memory = target_goal_memory.get("target") or {}
     entries = target_memory.get("next_actions") or []
     if not isinstance(entries, list):
@@ -906,13 +1046,33 @@ def _build_memory_action_queue(target_goal_memory: dict) -> list[dict]:
             text = str(item or "").strip()
         if not text:
             continue
-        queue.append({
+        evidence_ref = _memory_evidence_ref(text)
+        entry = {
             "id": f"M{idx}",
             "source": "target_memory",
             "action": text,
             "command_hint": _memory_action_hint(text),
-        })
+        }
+        if evidence_ref:
+            entry["evidence_ref"] = evidence_ref
+            entry["evidence_available"] = _memory_evidence_available(repo_root, evidence_ref)
+        else:
+            entry["evidence_available"] = False
+        queue.append(entry)
     return queue
+
+
+def _select_memory_candidate(memory_action_queue: list[dict]) -> dict:
+    """Return the highest-priority legacy `/validate` handoff, if any.
+
+    A durable action queue and structured finding remain authoritative.  This
+    is only a recovery bridge for targets produced before checkpoint CLI queue
+    synchronisation existed.
+    """
+    for item in memory_action_queue:
+        if str(item.get("command_hint") or "") == "/validate":
+            return item
+    return {}
 
 
 def _is_substantive_queue_action(item: dict) -> bool:
@@ -954,6 +1114,27 @@ def _recon_completed_without_live_hosts(
     # 没有完成 breadcrumb 时仍允许首次/损坏缓存执行一次 recon；所有 started
     # marker 都由 runtime gate 负责，不能误判成完成。
     return bool(workflow and not workflow.endswith("_started"))
+
+
+def _fresh_recon_needs_surface_context(
+    runtime_state: dict,
+    *,
+    has_recon: bool,
+    has_memory: bool,
+    recon_in_progress: bool,
+) -> bool:
+    """Identify the one-shot fresh recon -> surface/context handoff.
+
+    A completed fresh recon can legitimately have only a live host inventory.
+    Returning generic ``handoff`` in that state makes the next Claude session
+    infer the continuation from prose.  Restrict this branch to the immediate
+    recon breadcrumb so genuinely exhausted existing targets still hand off.
+    """
+    if not has_recon or has_memory or recon_in_progress:
+        return False
+    workflow = str(runtime_state.get("last_executed_workflow") or "").strip().lower()
+    mode = str(runtime_state.get("mode") or "").strip().lower()
+    return workflow in {"run_recon", "recon"} or mode == "recon_only"
 
 
 def _read_batch_lines(path: Path) -> list[str]:
@@ -1129,6 +1310,11 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     repo_source_available = bool(repo_source_artifacts)
     repo_source_summary = load_repo_source_summary(repo_root, resolved_target) if repo_source_available else {}
     structured_findings = load_structured_finding_followup(repo_root, resolved_target)
+    root_finding_claims = list_root_finding_claims(
+        Path(repo_root) / "findings" / target_storage_key(resolved_target),
+        target=resolved_target,
+    )
+    root_finding_claim_next = root_finding_claims[0] if root_finding_claims else {}
     validation_runner_candidates = load_validation_runner_candidate_pool(repo_root, resolved_target)
     validation_runner_next = (
         validation_runner_candidates[0]
@@ -1152,6 +1338,12 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
 
     has_recon = bool(ranked.get("available")) and bool(recon_artifacts.get("host_inventory_ready"))
     has_memory = resume_summary is not None
+    fresh_recon_ready = _fresh_recon_needs_surface_context(
+        runtime_state,
+        has_recon=has_recon,
+        has_memory=has_memory,
+        recon_in_progress=recon_in_progress,
+    )
     resume_targets = _filter_resume_targets_for_final_state(
         _build_resume_targets(resume_summary),
         finalized_paths,
@@ -1161,6 +1353,14 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         or (resume_summary or {}).get("recent_guard_blocks", [])
         or []
     )
+    # Build the legacy compatibility projection before choosing the next
+    # action.  Previously this happened afterwards, so visible `/validate`
+    # handoffs could never affect the authoritative state selection.
+    memory_action_queue = _build_memory_action_queue(
+        target_goal_memory,
+        repo_root=repo_root,
+    )
+    memory_candidate_next = _select_memory_candidate(memory_action_queue)
 
     tech_stack = []
     if resume_summary and resume_summary.get("tech_stack"):
@@ -1181,6 +1381,9 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         recon_in_progress=recon_in_progress,
         scan_in_progress=scan_in_progress,
         recon_completed_no_live_hosts=recon_completed_no_live_hosts,
+        memory_candidate_next=memory_candidate_next,
+        root_finding_claim_next=root_finding_claim_next,
+        fresh_recon_ready=fresh_recon_ready,
     )
     prefer_resume_targets = next_action == "continue_last_focus"
     surface_review_candidates = (
@@ -1213,7 +1416,6 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         repo_source_available=repo_source_available,
         next_action=next_action,
     )
-    memory_action_queue = _build_memory_action_queue(target_goal_memory)
 
     return {
         "target": target,
@@ -1230,17 +1432,21 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "recon_in_progress": recon_in_progress,
         "scan_in_progress": scan_in_progress,
         "recon_completed_no_live_hosts": recon_completed_no_live_hosts,
+        "fresh_recon_ready": fresh_recon_ready,
         "recon_blocker": (
             "recon completed with no live host inventory"
             if recon_completed_no_live_hosts
             else ""
         ),
         "structured_findings": structured_findings,
+        "root_finding_claims": root_finding_claims,
+        "root_finding_claim_next": root_finding_claim_next,
         "validation_runner_candidates": validation_runner_candidates,
         "validation_runner_next": validation_runner_next,
         "action_queue_next": action_queue_next,
         "action_queue": {"next": action_queue_next},
         "target_goal_memory": target_goal_memory,
+        "memory_candidate_next": memory_candidate_next,
         "resume_summary": resume_summary,
         "surface": ranked_for_next if has_recon else None,
         "observation_inventory": ranked.get("observation_inventory") or {},
@@ -1273,6 +1479,27 @@ def _format_durable_action_lines(item: dict) -> list[str]:
     command_hint = str(item.get("command_hint") or "").strip()
     if command_hint:
         lines.append(f"  Command: {command_hint}")
+    return lines
+
+
+def _format_root_finding_claim_lines(claims: list[dict]) -> list[str]:
+    """Render unindexed root JSON claims without promoting their lifecycle."""
+    if not claims:
+        return []
+    lines = ["Unreconciled root finding claims (not validated):"]
+    for item in claims[:3]:
+        missing = ", ".join(str(value) for value in (item.get("incomplete_fields") or []))
+        lines.append(
+            "- {id} [{severity}] {type} {url} source={source} missing={missing}; collect raw proof, "
+            "then run /checkpoint to create the canonical candidate.".format(
+                id=item.get("id", "-"),
+                severity=item.get("severity", "medium"),
+                type=item.get("type", "finding"),
+                url=item.get("url", ""),
+                source=item.get("source_file", ""),
+                missing=missing or "none",
+            )
+        )
     return lines
 
 
@@ -1411,6 +1638,16 @@ def format_autopilot_state(state: dict) -> str:
                     f"- {item.get('id', '-')}: {item.get('action', '')} "
                     f"| hint: {item.get('command_hint', '')}"
                 )
+        memory_candidate = state.get("memory_candidate_next") or {}
+        if memory_candidate:
+            evidence_state = "available" if memory_candidate.get("evidence_available") else "missing"
+            lines.append(
+                "Memory candidate fallback: {id} raw-evidence={evidence}".format(
+                    id=memory_candidate.get("id", "-"),
+                    evidence=evidence_state,
+                )
+            )
+        lines.extend(_format_root_finding_claim_lines(state.get("root_finding_claims") or []))
         lines.extend(_format_durable_action_lines(state.get("action_queue_next") or {}))
         lines.append(f"Next: {_describe_next_step(state)}")
         guard_hint = str(state.get("guard_hint", "") or "").strip()
@@ -1483,6 +1720,16 @@ def format_autopilot_state(state: dict) -> str:
                 f"- {item.get('id', '-')}: {item.get('action', '')} "
                 f"| hint: {item.get('command_hint', '')}"
             )
+    memory_candidate = state.get("memory_candidate_next") or {}
+    if memory_candidate:
+        evidence_state = "available" if memory_candidate.get("evidence_available") else "missing"
+        lines.append(
+            "Memory candidate fallback: {id} raw-evidence={evidence}".format(
+                id=memory_candidate.get("id", "-"),
+                evidence=evidence_state,
+            )
+        )
+    lines.extend(_format_root_finding_claim_lines(state.get("root_finding_claims") or []))
     lines.extend(_format_durable_action_lines(state.get("action_queue_next") or {}))
 
     guard_status = state.get("guard_status", {})

@@ -116,6 +116,7 @@ claude                          # Start Claude Code from this repo root
 
 ```bash
 /autopilot target.com --normal  # Full autonomous hunt loop
+/autopilot target.com --deep --normal --max-lanes 4  # Bounded deep invocation, then durable handoff
 /intel target.com               # Fetch CVE + disclosure intel
 /pickup target.com              # Pick up where you left off
 ```

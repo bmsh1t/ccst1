@@ -123,6 +123,27 @@ def test_invalid_arguments_stop_before_runtime_or_target_state(monkeypatch, tmp_
     assert "state" not in payload
 
 
+def test_bootstrap_projects_bounded_deep_invocation_batch(monkeypatch, tmp_path):
+    monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", _clean_runtime)
+    monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", _capabilities)
+    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_state", _state)
+
+    payload = autopilot_bootstrap.build_autopilot_bootstrap(
+        ["example.test", "--deep", "--normal", "--max-lanes", "3"],
+        cwd=tmp_path,
+        repo_root=tmp_path,
+        runtime_root=tmp_path / "runtime",
+    )
+
+    assert payload["action"] == "continue"
+    assert payload["arguments"]["max_lanes"] == 3
+    assert payload["invocation_batch"] == {
+        "bounded": True,
+        "max_lanes": 3,
+        "handoff": "checkpoint_and_handoff_after_max_lanes",
+    }
+
+
 def test_runtime_drift_stops_before_target_state(monkeypatch, tmp_path):
     monkeypatch.setattr(
         autopilot_bootstrap,
@@ -306,4 +327,84 @@ def test_bootstrap_projects_only_bounded_candidate_rubric():
     encoded = json.dumps(compact)
     assert "raw_request" not in encoded
     assert "raw_evidence" not in encoded
+    assert "do-not-project" not in encoded
+
+
+def test_bootstrap_projects_recovery_and_draft_completion_handoffs():
+    state = _state("/tmp/repo", "example.test")
+    state["next_action"] = "prepare_surface_context"
+    state["fresh_recon_ready"] = True
+    state["structured_findings"] = {
+        "next_draft_completion": {
+            "id": "sqli-report-draft",
+            "url": "https://example.test/rest/products/search?q=test",
+            "report_draft_path": "findings/example.test-sqli/hackerone-report.md",
+            "report_draft_status": "incomplete",
+            "report_draft_placeholder_count": 3,
+        }
+    }
+    state["memory_candidate_next"] = {
+        "id": "M1",
+        "action": "Run /validate after reviewing the raw pair.",
+        "command_hint": "/validate",
+        "evidence_ref": "evidence/example.test/raw/pair.json",
+        "evidence_available": True,
+    }
+    state["root_finding_claim_next"] = {
+        "id": "claim_1a2b3c",
+        "title": "Unverified SQLi claim",
+        "type": "sqli",
+        "url": "/rest/products/search",
+        "claim_source_file": "manual-sqli.json",
+        "source_file": "/tmp/repo/findings/example.test/manual-sqli.json",
+        "validation_status": "candidate",
+        "report_status": "not_generated",
+        "poc": "do-not-project",
+        "evidence_rubric": {
+            "rubric_id": "sqli",
+            "status": "needs-evidence",
+            "ready": False,
+            "score": 0,
+            "satisfied_count": 0,
+            "total": 4,
+            "missing_labels": ["baseline", "stable diff", "impact", "repeat"],
+            "next_actions": ["capture a baseline and controlled perturbation"],
+            "raw_evidence": ["do-not-project"],
+        },
+    }
+
+    compact = autopilot_bootstrap.compact_autopilot_state(state)
+
+    assert compact["next_action"] == "prepare_surface_context"
+    assert compact["recon"]["fresh_recon_ready"] is True
+    assert compact["structured_next_kind"] == "draft_completion"
+    assert compact["structured_next"]["report_draft_status"] == "incomplete"
+    assert compact["memory_candidate_next"] == {
+        "id": "M1",
+        "action": "Run /validate after reviewing the raw pair.",
+        "command_hint": "/validate",
+        "evidence_ref": "evidence/example.test/raw/pair.json",
+        "evidence_available": True,
+    }
+    assert compact["root_claim_next"] == {
+        "id": "claim_1a2b3c",
+        "title": "Unverified SQLi claim",
+        "type": "sqli",
+        "url": "/rest/products/search",
+        "claim_source_file": "manual-sqli.json",
+        "source_file": "/tmp/repo/findings/example.test/manual-sqli.json",
+        "validation_status": "candidate",
+        "report_status": "not_generated",
+        "rubric": {
+            "rubric_id": "sqli",
+            "status": "needs-evidence",
+            "ready": False,
+            "score": 0,
+            "satisfied_count": 0,
+            "total": 4,
+            "missing_labels": ["baseline", "stable diff", "impact"],
+            "next_actions": ["capture a baseline and controlled perturbation"],
+        },
+    }
+    encoded = json.dumps(compact)
     assert "do-not-project" not in encoded

@@ -50,14 +50,29 @@ _SESSION_SUMMARY_RE = re.compile(
 
 
 def load_structured_finding_followup(base_dir: str | Path, target: str) -> dict:
-    """Load validation/report follow-up state from findings.json."""
+    """Load owner-verified validation/report follow-up state from findings.json."""
     findings_dir = Path(base_dir) / "findings" / target_storage_key(target)
     payload = load_finding_index(findings_dir)
     findings = [
         item for item in payload.get("findings", [])
-        if isinstance(item, dict) and url_belongs_to_target(str(item.get("url") or ""), target)
+        if isinstance(item, dict)
+        and (
+            url_belongs_to_target(str(item.get("url") or ""), target)
+            # An incomplete root claim may not know its endpoint yet.  It is
+            # already scoped by the target-owned findings directory and must
+            # remain recoverable instead of disappearing from bootstrap.
+            or (
+                not str(item.get("url") or "").strip()
+                and bool(item.get("claim_id") or item.get("claim_source_file"))
+            )
+        )
     ]
-    return summarize_structured_findings(findings, findings_dir)
+    return summarize_structured_findings(
+        findings,
+        findings_dir,
+        target=target,
+        enforce_owner_provenance=True,
+    )
 
 
 def format_minutes(total_minutes: int | float) -> str:

@@ -125,6 +125,9 @@ VULN_CLASS_ALIASES = {
     "path_traversal": "Path",
     "directory-traversal": "Path",
     "directorytraversal": "Path",
+    # finding 可能使用连字符或下划线形式的上传类型名。
+    "file-upload": "Upload",
+    "file_upload": "Upload",
     # RCE umbrella
     "oscommand": "RCE",
     "os-command": "RCE",

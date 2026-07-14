@@ -2,21 +2,176 @@
 
 import json
 
+import pytest
+
 import validate
 from runtime_state import load_runtime_state
 
 
-def test_validate_prompt_helpers_use_defaults_on_eof(monkeypatch):
+def test_validate_prompt_helpers_fail_closed_on_eof(monkeypatch):
     def raise_eof(_prompt):
         raise EOFError
 
     monkeypatch.setattr("builtins.input", raise_eof)
 
-    assert validate.ask("Target", "target.local") == "target.local"
-    assert validate.ask("No default") == ""
-    assert validate.ask_yn("Continue?", default=False) is False
-    assert validate.ask_choice("Attack Vector", [("N", "Network"), ("A", "Adjacent")]) == "N"
-    assert validate.ask_choice("Integrity", [("H", "High"), ("L", "Low"), ("N", "None")], default="N") == "N"
+    with pytest.raises(validate.ValidationInputUnavailable):
+        validate.ask("Target", "target.local")
+    with pytest.raises(validate.ValidationInputUnavailable):
+        validate.ask_yn("Continue?", default=False)
+    with pytest.raises(validate.ValidationInputUnavailable):
+        validate.ask_choice("Attack Vector", [("N", "Network"), ("A", "Adjacent")])
+
+
+def _machine_decision(*, target: str, finding_id: str, endpoint: str, report_path: str, evidence_ref: str) -> dict:
+    questions = {
+        key: {"status": "pass", "basis": f"Replay evidence supports {key}."}
+        for key, _ in validate.SEVEN_QUESTION_DEFINITIONS
+    }
+    return {
+        "schema_version": validate.MACHINE_DECISION_SCHEMA_VERSION,
+        "target": target,
+        "finding_id": finding_id,
+        "endpoint": endpoint,
+        "vuln_class": "sqli",
+        "method": "GET",
+        "impact": "A controlled differential response exposes records outside the baseline result.",
+        "gates": {
+            key: {"passed": True, "notes": {"source": "raw-replay"}}
+            for key in validate.MACHINE_DECISION_GATE_KEYS
+        },
+        "seven_question_gate": {"questions": questions},
+        "cvss": {
+            "score": 8.8,
+            "vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:L/VA:N/SC:N/SI:N/SA:N",
+            "params": {"AV": "N", "AC": "L", "PR": "N", "VC": "H"},
+        },
+        "evidence": {
+            "summary": "Baseline and controlled variant response pair are stored at the linked artifact.",
+            "refs": [evidence_ref],
+        },
+        "report": {
+            "path": report_path,
+            "content": "# SQL injection evidence\n\nThe linked raw replay proves the differential impact.\n",
+        },
+    }
+
+
+def test_non_tty_validate_without_decision_fails_closed_before_state_write(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+
+    exit_code = validate.main([])
+
+    assert exit_code == 2
+    assert "non-TTY validation requires --decision-json" in capsys.readouterr().err
+    assert not (tmp_path / "findings").exists()
+    assert not (tmp_path / "state").exists()
+
+
+def test_non_tty_machine_decision_binds_canonical_finding_and_uses_owner(tmp_path, monkeypatch, capsys):
+    from finding_index import find_finding, upsert_finding, verify_finding_owner_provenance
+
+    target = "target.com"
+    findings_dir = tmp_path / "findings" / target
+    evidence_ref = tmp_path / "evidence" / target / "validation" / "raw-pair.json"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text('{"baseline":"one","variant":"many"}\n', encoding="utf-8")
+    created = upsert_finding(
+        findings_dir,
+        {
+            "id": "sqli_machine",
+            "type": "sqli",
+            "url": "https://target.com/rest/products/search?q=test",
+            "summary": "Candidate response difference.",
+            "source_file": str(evidence_ref),
+            "validation_status": "candidate",
+            "report_status": "not_generated",
+        },
+        target=target,
+    )
+    assert created["finding"]["validation_status"] == "candidate"
+
+    report_relative = "findings/target.com/validated/machine-report.md"
+    decision = _machine_decision(
+        target=target,
+        finding_id="sqli_machine",
+        endpoint="/rest/products/search?q=test",
+        report_path=report_relative,
+        evidence_ref=str(evidence_ref),
+    )
+    decision_path = tmp_path / "machine-decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+
+    exit_code = validate.main(
+        [
+            "--target",
+            target,
+            "--finding-id",
+            "sqli_machine",
+            "--decision-json",
+            str(decision_path),
+            "--json",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+    persisted = find_finding(findings_dir, "sqli_machine")
+    summary_path = tmp_path / report_relative.replace("machine-report.md", "validation-summary.json")
+
+    assert exit_code == 0
+    assert output["finding_id"] == "sqli_machine"
+    assert persisted is not None
+    assert persisted["validation_status"] == "validated"
+    assert verify_finding_owner_provenance(findings_dir, persisted, target=target)["valid"] is True
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["machine_decision"]["schema_version"] == 1
+    assert summary["machine_decision"]["evidence_refs"] == [str(evidence_ref)]
+
+
+def test_machine_decision_binding_error_has_no_new_validation_write(tmp_path, monkeypatch, capsys):
+    from finding_index import upsert_finding
+
+    target = "target.com"
+    findings_dir = tmp_path / "findings" / target
+    evidence_ref = tmp_path / "evidence" / target / "validation" / "raw-pair.json"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text("raw\n", encoding="utf-8")
+    upsert_finding(
+        findings_dir,
+        {
+            "id": "sqli_machine",
+            "type": "sqli",
+            "url": "https://target.com/rest/products/search?q=test",
+            "source_file": str(evidence_ref),
+            "validation_status": "candidate",
+        },
+        target=target,
+    )
+    decision = _machine_decision(
+        target=target,
+        finding_id="sqli_machine",
+        endpoint="/wrong-path",
+        report_path="findings/target.com/validated/should-not-exist.md",
+        evidence_ref=str(evidence_ref),
+    )
+    decision_path = tmp_path / "bad-machine-decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+
+    exit_code = validate.main(
+        [
+            "--target", target,
+            "--finding-id", "sqli_machine",
+            "--decision-json", str(decision_path),
+        ]
+    )
+
+    assert exit_code == 2
+    assert "decision.endpoint does not match" in capsys.readouterr().err
+    assert not (tmp_path / "findings" / target / "validated").exists()
+    assert not (tmp_path / "findings" / "last-validate.json").exists()
 
 
 def test_gate2_in_scope_is_target_driven_advisory(capsys):
@@ -117,6 +272,76 @@ def test_validation_summary_preserves_explicit_method(tmp_path):
     summary = validate.build_validation_summary(info, all_pass=True, report_path=report_path)
 
     assert summary["method"] == "POST"
+
+
+def test_generated_skeleton_separates_validation_evidence_from_report_readiness(tmp_path):
+    report_path = tmp_path / "findings" / "target-program-sqli" / "hackerone-report.md"
+    info = {
+        "target": "target-program",
+        "vuln_type": "SQLI",
+        "endpoint": "https://api.target.com/rest/products/search?q=test",
+        "impact": "The probe returns records outside the baseline result set.",
+        "cvss_score": 8.8,
+        "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:L/SC:N/SI:N/SA:N",
+    }
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text(validate.generate_report_skeleton(info), encoding="utf-8")
+
+    summary = validate.build_validation_summary(info, all_pass=True, report_path=report_path)
+
+    assert summary["validation_evidence_passed"] is True
+    assert summary["result"] == "confirmed"
+    assert summary["report_draft_status"] == "incomplete"
+    assert summary["report_draft"]["placeholder_count"] > 0
+    assert summary["report_ready"] is False
+    assert summary["all_gates_passed"] is False
+
+
+def test_validation_evidence_passed_keeps_durable_finding_and_queue_validated(tmp_path):
+    from action_queue import add_manual_action, load_queue
+    from evidence_ledger import load_entries
+
+    report_path = tmp_path / "findings" / "target.com-sqli" / "hackerone-report.md"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text("# Draft\n[INSERT raw request]\n", encoding="utf-8")
+    add_manual_action(
+        tmp_path,
+        target="target.com",
+        action_type="candidate-evidence-gap",
+        evidence="Candidate SQLi response difference on /rest/products/search.",
+        next_question="Does the response difference reproduce?",
+        action="Run /validate for /rest/products/search.",
+        command_hint="/validate sqli-search",
+        evidence_type="candidate-validation",
+    )
+    summary = {
+        "target": "target.com",
+        "endpoint": "https://target.com/rest/products/search?q=test",
+        "vuln_class": "sqli",
+        "result": "confirmed",
+        "validation_evidence_passed": True,
+        "four_validation_gates_passed": True,
+        "seven_question_gate_passed": True,
+        "seven_question_gate_decision": "pass",
+        "all_gates_passed": False,
+        "report_ready": False,
+        "report_path": str(report_path),
+        "report_draft": {"status": "incomplete", "placeholder_count": 1},
+    }
+    summary_path = report_path.parent / "validation-summary.json"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+    entries = load_entries(tmp_path, "target.com")
+    queue = load_queue(tmp_path, "target.com")
+    finding_payload = json.loads(
+        (tmp_path / "findings" / "target.com" / "findings.json").read_text(encoding="utf-8")
+    )
+
+    assert sync["ledger"]["result"] == "tested_finding"
+    assert entries[-1]["result"] == "tested_finding"
+    assert queue["actions"][0]["status"] == "validated"
+    assert finding_payload["findings"][0]["validation_status"] == "validated"
 
 
 def test_ensure_report_output_path_creates_explicit_output_parent(tmp_path):
@@ -574,6 +799,17 @@ def test_update_runtime_state_after_validate_tracks_progress(tmp_path, monkeypat
         ),
         encoding="utf-8",
     )
+    # This fixture represents a completed validation, so use the canonical
+    # owner to issue the final lifecycle mutation and its provenance event.
+    from finding_index import update_finding_status
+
+    updated = update_finding_status(
+        findings_dir,
+        "sqli_deadbeef",
+        validation_status="validated",
+        report_status="not_generated",
+    )
+    assert updated is not None
     summary = {
         "target": "target.com",
         "result": "confirmed",

@@ -8,6 +8,19 @@ import report_generator
 import validate
 
 
+def _record_owner_provenance(findings_dir: Path, finding_id: str) -> None:
+    """Make a fixture's lifecycle assertion originate from the canonical owner."""
+    payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    finding = next(item for item in payload["findings"] if item.get("id") == finding_id)
+    updated = finding_index.update_finding_status(
+        findings_dir,
+        finding_id,
+        validation_status=finding.get("validation_status", "unvalidated"),
+        report_status=finding.get("report_status", "not_generated"),
+    )
+    assert updated is not None
+
+
 def test_load_finding_index_migrates_legacy_list_without_losing_lifecycle_state(tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)
@@ -91,6 +104,86 @@ def test_upsert_finding_uses_semantic_identity_and_preserves_advanced_lifecycle(
     assert finding["report_id"] == "idor_001"
 
 
+def test_owner_mutation_provenance_round_trips_and_detects_direct_row_edit(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    result = finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "sqli-owner-event",
+            "type": "sqli",
+            "url": "https://example.com/rest/products/search?q=test",
+            "source_file": "evidence/example.com/validation/sqli/summary.json",
+            "validation_status": "validated",
+            "report_status": "not_generated",
+        },
+        target="example.com",
+    )
+    finding = result["finding"]
+    event_path = findings_dir / finding_index.MUTATION_EVENTS_FILENAME
+
+    verified = finding_index.verify_finding_owner_provenance(
+        findings_dir,
+        finding,
+        target="example.com",
+    )
+
+    assert event_path.is_file()
+    assert finding["owner_provenance"]["owner"] == finding_index.FINDING_OWNER
+    assert verified["valid"] is True
+    assert verified["operation"] == "upsert"
+
+    tampered = dict(finding)
+    tampered["summary"] = "direct JSON mutation after the owner event"
+    invalid = finding_index.verify_finding_owner_provenance(
+        findings_dir,
+        tampered,
+        target="example.com",
+    )
+    assert invalid["valid"] is False
+    assert invalid["reason"] == "row-fingerprint-mismatch"
+
+    forged_provenance = dict(finding)
+    forged_provenance["owner_provenance"] = dict(finding["owner_provenance"])
+    forged_provenance["owner_provenance"]["operation"] = "direct-json-edit"
+    invalid_provenance = finding_index.verify_finding_owner_provenance(
+        findings_dir,
+        forged_provenance,
+        target="example.com",
+    )
+
+    assert invalid_provenance["valid"] is False
+    assert invalid_provenance["reason"] == "operation-mismatch"
+
+
+def test_legacy_list_migration_records_owner_provenance(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "legacy-row",
+                    "type": "idor",
+                    "url": "https://example.com/api/orders/1",
+                    "validation_status": "validated",
+                    "report_status": "generated",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = finding_index.load_finding_index(findings_dir)
+    finding = payload["findings"][0]
+
+    assert finding_index.verify_finding_owner_provenance(
+        findings_dir,
+        finding,
+        target="example.com",
+    )["valid"] is True
+    assert finding["owner_provenance"]["operation"] == "legacy_migration"
+
+
 def test_upsert_findings_without_endpoints_do_not_collapse_by_type(tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
 
@@ -166,6 +259,142 @@ def test_build_finding_index_skips_off_target_urls(tmp_path):
     assert payload["total"] == 1
     assert payload["findings"][0]["url"] == "https://target.com/api/orders/123"
     assert all("github.com" not in item["url"] for item in payload["findings"])
+
+
+def test_root_json_claim_reconciles_only_as_incomplete_candidate(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "manual-sqli.json").write_text(
+        json.dumps(
+            {
+                "title": "SQL injection claim",
+                "severity": "critical",
+                "endpoint": "/rest/products/search",
+                "method": "GET",
+                "vuln_class": "SQLi",
+                "poc": "curl 'https://target.com/rest/products/search?q=...'",
+                "evidence": ["response looked different"],
+                "impact": "claimed database access",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    before = finding_index.list_root_finding_claims(findings_dir, target="target.com")
+    result = finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
+    after = finding_index.list_root_finding_claims(findings_dir, target="target.com")
+    payload = finding_index.load_finding_index(findings_dir)
+    finding = payload["findings"][0]
+
+    assert len(before) == 1
+    assert result["status"] == "updated"
+    assert result["created"] == 1
+    assert after == []
+    assert finding["id"] == before[0]["id"]
+    assert finding["claim_source_file"] == "manual-sqli.json"
+    assert finding["validation_status"] == "candidate"
+    assert finding["report_status"] == "not_generated"
+    assert finding["confidence"] == "needs_review"
+    assert finding["evidence_rubric"]["ready"] is False
+    assert finding["evidence_rubric"]["status"] == "needs-evidence"
+
+
+def test_root_json_claim_reconciliation_is_idempotent_and_ignores_summaries(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "manual-idor.json").write_text(
+        json.dumps(
+            {
+                "title": "IDOR claim",
+                "endpoint": "/api/orders/42",
+                "vuln_class": "IDOR",
+                "poc": "GET /api/orders/42",
+                "impact": "claimed private order data",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (findings_dir / "validation-summary.json").write_text(
+        json.dumps(
+            {
+                "target": "target.com",
+                "endpoint": "/api/orders/42",
+                "vuln_type": "IDOR",
+                "impact": "not a root claim",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
+    second = finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
+    payload = finding_index.load_finding_index(findings_dir)
+
+    assert first["created"] == 1
+    assert second["status"] == "noop"
+    assert second["created"] == 0
+    assert payload["total"] == 1
+
+
+def test_incomplete_root_json_claim_is_recoverable_without_fabricating_endpoint(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    claim_path = findings_dir / "jwt-unverified-signature.json"
+    claim_path.write_text(
+        json.dumps(
+            {
+                "title": "JWT authentication bypass",
+                "target": "target.com",
+                "vulnerability_class": "Authentication Bypass",
+                "severity": "critical",
+                "state": "validated",
+                "impact": "Forged token reaches the administrator view.",
+                "evidence": {"artifact": "evidence/target.com/jwt/admin.response.txt"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    claims = finding_index.list_root_finding_claims(findings_dir, target="target.com")
+    assert len(claims) == 1
+    assert claims[0]["url"] == ""
+    assert claims[0]["claim_status"] == "incomplete"
+    assert "endpoint" in claims[0]["incomplete_fields"]
+    assert claims[0]["claimed_validation_status"] == "validated"
+
+    result = finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
+    assert result["created"] == 1
+    persisted = finding_index.load_finding_index(findings_dir)["findings"][0]
+    assert persisted["url"] == ""
+    assert persisted["claim_source_file"] == "jwt-unverified-signature.json"
+    assert persisted["validation_status"] == "candidate"
+    assert persisted["evidence_rubric"]["ready"] is False
+
+
+def test_owner_mutation_keeps_legacy_state_aliases_in_sync(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    result = finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "legacy-status-row",
+            "url": "/admin",
+            "type": "auth_bypass",
+            "state": "candidate",
+            "status": "candidate",
+            "validation_status": "candidate",
+        },
+        target="target.com",
+    )
+    updated = finding_index.update_finding_status(
+        findings_dir,
+        "legacy-status-row",
+        validation_status="validated",
+    )
+
+    assert updated is not None
+    assert updated["validation_status"] == "validated"
+    assert updated["state"] == "validated"
+    assert updated["status"] == "validated"
 
 
 def test_write_finding_index_preserves_validation_and_report_state(tmp_path):
@@ -308,6 +537,7 @@ def test_report_generator_consumes_structured_findings(monkeypatch, tmp_path):
         ),
         encoding="utf-8",
     )
+    _record_owner_provenance(findings_dir, "sqli_abc123")
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
 
     total, index = report_generator.process_findings_dir(str(findings_dir))
@@ -358,6 +588,7 @@ def test_report_generator_preserves_jwt_structured_finding_type(monkeypatch, tmp
         ),
         encoding="utf-8",
     )
+    _record_owner_provenance(findings_dir, "jwt_alg_none_abc123")
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
 
     total, index = report_generator.process_findings_dir(str(findings_dir))
@@ -438,6 +669,8 @@ def test_report_generator_keeps_existing_generated_reports_in_index(monkeypatch,
         ),
         encoding="utf-8",
     )
+    _record_owner_provenance(findings_dir, "sqli_done")
+    _record_owner_provenance(findings_dir, "xss_new")
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
 
     total, index = report_generator.process_findings_dir(str(findings_dir))
@@ -614,6 +847,7 @@ def test_report_generator_uses_canonical_report_dir_for_url_target(monkeypatch, 
         ),
         encoding="utf-8",
     )
+    _record_owner_provenance(findings_dir, "xss_url_target")
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
 
     total, index = report_generator.process_findings_dir(str(findings_dir))
@@ -654,6 +888,7 @@ def test_report_generator_syncs_report_action_queue(monkeypatch, tmp_path):
         ),
         encoding="utf-8",
     )
+    _record_owner_provenance(findings_dir, "sqli_report_sync")
     queue_dir = tmp_path / "state" / "example.com"
     queue_dir.mkdir(parents=True)
     (queue_dir / "action_queue.json").write_text(
@@ -743,6 +978,7 @@ def test_report_generator_uses_validation_summary_for_auth_bypass_narrative(monk
         ),
         encoding="utf-8",
     )
+    _record_owner_provenance(findings_dir, "authz_abc123")
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
     monkeypatch.setattr(report_generator, "BASE_DIR", str(tmp_path))
 
@@ -822,6 +1058,7 @@ def test_report_generator_uses_write_sink_auth_bypass_narrative(monkeypatch, tmp
         ),
         encoding="utf-8",
     )
+    _record_owner_provenance(findings_dir, "authz_forged_review")
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
     monkeypatch.setattr(report_generator, "BASE_DIR", str(tmp_path))
 
@@ -885,6 +1122,8 @@ def test_report_generator_skips_unvalidated_and_already_reported_structured_find
         ),
         encoding="utf-8",
     )
+    _record_owner_provenance(findings_dir, "validated_pending")
+    _record_owner_provenance(findings_dir, "validated_done")
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
 
     total, index = report_generator.process_findings_dir(str(findings_dir))

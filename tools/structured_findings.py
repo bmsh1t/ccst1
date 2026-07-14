@@ -9,9 +9,11 @@ from urllib.parse import urlparse
 
 try:
     from evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
+    from finding_index import verify_finalized_finding_owner_provenance
     from target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - package import path
     from tools.evidence_rubric import compact_evidence_rubric, evaluate_candidate_evidence
+    from tools.finding_index import verify_finalized_finding_owner_provenance
     from tools.target_paths import canonical_target_value, target_storage_key
 
 
@@ -181,7 +183,12 @@ def _finding_type_aliases(value: str) -> set[str]:
     return aliases
 
 
-def _finalized_runner_candidate_keys(repo_root: Path, target_key: str) -> dict[str, set]:
+def _finalized_runner_candidate_keys(
+    repo_root: Path,
+    target_key: str,
+    *,
+    target: str,
+) -> dict[str, set]:
     """Load already closed finding keys so runner evidence stops resurfacing.
 
     This is only a state-closure filter: it does not decide whether a fresh runner
@@ -208,6 +215,16 @@ def _finalized_runner_candidate_keys(repo_root: Path, target_key: str) -> dict[s
         validation_status = str(item.get("validation_status") or "").strip().lower()
         report_status = str(item.get("report_status") or "").strip().lower()
         if validation_status != "rejected" and report_status != "generated":
+            continue
+        provenance = verify_finalized_finding_owner_provenance(
+            findings_path.parent,
+            item,
+            target=target,
+        )
+        # An edited JSON row must not silently suppress fresh runner evidence.
+        # Keep its raw candidate visible until an owner-backed lifecycle write
+        # actually closes the finding.
+        if not provenance.get("valid"):
             continue
 
         finding_id = str(item.get("id") or "").strip()
@@ -307,7 +324,11 @@ def load_validation_runner_candidate_pool(
     if not validation_dir.is_dir():
         return []
 
-    finalized = _finalized_runner_candidate_keys(repo, target_key)
+    finalized = _finalized_runner_candidate_keys(
+        repo,
+        target_key,
+        target=resolved_target,
+    )
     closed_by_ledger = _closed_ledger_runner_keys(repo, target_key)
     candidates: list[tuple[float, str, dict]] = []
     for path in validation_dir.glob("*/summary.json"):
@@ -379,6 +400,23 @@ def _validation_report_ready(finding: dict) -> bool | None:
     return bool(payload.get("all_gates_passed") or payload.get("seven_question_gate_passed"))
 
 
+def _validation_needs_draft_completion(finding: dict) -> bool:
+    """Return whether validation evidence passed but the generated draft is incomplete.
+
+    This is distinct from a failed evidence gate.  Sending it back through
+    `/validate` would make a completed replay look incomplete merely because a
+    report template still has `[INSERT ...]` placeholders.
+    """
+    payload, summary_present = _load_validation_summary_payload(finding)
+    if not summary_present or not payload:
+        return False
+    if payload.get("validation_evidence_passed") is not True:
+        return False
+    draft = payload.get("report_draft") if isinstance(payload.get("report_draft"), dict) else {}
+    status = str(draft.get("status") or payload.get("report_draft_status") or "").strip().lower()
+    return status == "incomplete"
+
+
 def _rubric_eval(finding: dict) -> dict:
     existing = finding.get("rubric") if isinstance(finding.get("rubric"), dict) else {}
     if existing:
@@ -424,7 +462,7 @@ def _is_actionable_validation_candidate(finding: dict) -> bool:
 def compact_structured_finding(finding: dict, findings_dir: Path) -> dict:
     """Return the compact structured finding shape used by resume/autopilot."""
     rubric = compact_evidence_rubric(_rubric_eval(finding))
-    return {
+    compact = {
         "id": finding.get("id", ""),
         "type": finding.get("type", ""),
         "severity": finding.get("severity", ""),
@@ -438,10 +476,73 @@ def compact_structured_finding(finding: dict, findings_dir: Path) -> dict:
         "rubric_status": rubric.get("status", ""),
         "missing_evidence": rubric.get("missing_labels", []),
     }
+    # Incomplete root claims intentionally have no fabricated URL.  Preserve
+    # their recovery identity and missing fields so Claude can collect the
+    # endpoint/evidence and checkpoint the same canonical candidate.
+    for key in (
+        "claim_id",
+        "claim_source_file",
+        "claim_target",
+        "claim_status",
+        "incomplete_fields",
+        "claimed_validation_status",
+        "claimed_report_status",
+    ):
+        value = finding.get(key)
+        if value not in (None, "", [], {}):
+            compact[key] = value
+    return compact
 
 
-def summarize_structured_findings(findings: list[dict], findings_dir: Path) -> dict:
-    """Build validation/report follow-up state from structured findings."""
+def _compact_draft_completion(finding: dict, findings_dir: Path) -> dict:
+    """Project the precise report-completion handoff without reopening evidence."""
+    compact = compact_structured_finding(finding, findings_dir)
+    payload, _ = _load_validation_summary_payload(finding)
+    draft = payload.get("report_draft") if isinstance(payload.get("report_draft"), dict) else {}
+    compact["report_draft_path"] = str(
+        finding.get("report_draft_path") or payload.get("report_path") or ""
+    )
+    compact["report_draft_status"] = str(
+        draft.get("status") or payload.get("report_draft_status") or "incomplete"
+    )
+    compact["report_draft_placeholder_count"] = int(draft.get("placeholder_count", 0) or 0)
+    return compact
+
+
+def _compact_owner_revalidation(
+    finding: dict,
+    findings_dir: Path,
+    provenance: dict,
+) -> dict:
+    """Project an untrusted finality claim as a candidate-only recovery action."""
+    compact = compact_structured_finding(finding, findings_dir)
+    compact["claimed_validation_status"] = compact.get("validation_status", "")
+    compact["claimed_report_status"] = compact.get("report_status", "")
+    compact["validation_status"] = "needs_owner_revalidation"
+    compact["report_status"] = "not_generated"
+    compact["lifecycle_status"] = "needs_owner_revalidation"
+    compact["provenance_reason"] = str(provenance.get("reason") or "owner-provenance-invalid")
+    compact["required_action"] = (
+        "replay locatable raw evidence, then use /validate with the canonical finding id "
+        "so finding_index records a new owner mutation"
+    )
+    return compact
+
+
+def summarize_structured_findings(
+    findings: list[dict],
+    findings_dir: Path,
+    *,
+    target: str | None = None,
+    enforce_owner_provenance: bool = False,
+) -> dict:
+    """Build validation/report follow-up state from structured findings.
+
+    Runtime readers enable ``enforce_owner_provenance`` so a direct JSON edit
+    that claims ``validated``/``generated`` is exposed as a candidate recovery
+    item, never as a report or closure handoff.  The default remains useful for
+    isolated pure-data callers that do not have an on-disk canonical index.
+    """
     valid_findings = [
         item for item in findings
         if isinstance(item, dict) and item.get("id")
@@ -450,13 +551,30 @@ def summarize_structured_findings(findings: list[dict], findings_dir: Path) -> d
         return {
             "total": 0,
             "pending_validation": 0,
+            "owner_revalidation_pending": 0,
+            "draft_completion_pending": 0,
             "validated_pending_report": 0,
             "reported": 0,
             "findings_dir": str(findings_dir),
         }
 
-    pending_validation = []
+    eligible_findings = []
+    owner_revalidation_pending: list[tuple[dict, dict]] = []
     for item in valid_findings:
+        if enforce_owner_provenance:
+            provenance = verify_finalized_finding_owner_provenance(
+                findings_dir,
+                item,
+                target=target,
+            )
+            if provenance.get("required") and not provenance.get("valid"):
+                owner_revalidation_pending.append((item, provenance))
+                continue
+        eligible_findings.append(item)
+
+    pending_validation = []
+    draft_completion_pending = []
+    for item in eligible_findings:
         validation_status = str(item.get("validation_status", "unvalidated") or "unvalidated")
         report_status = str(item.get("report_status", "not_generated") or "not_generated")
         if validation_status in {"unvalidated", "candidate", "partial", "needs_validation"}:
@@ -467,9 +585,12 @@ def summarize_structured_findings(findings: list[dict], findings_dir: Path) -> d
             and report_status != "generated"
             and _validation_report_ready(item) is False
         ):
-            pending_validation.append(item)
+            if _validation_needs_draft_completion(item):
+                draft_completion_pending.append(item)
+            else:
+                pending_validation.append(item)
     validated_pending_report = [
-        item for item in valid_findings
+        item for item in eligible_findings
         if (
             str(item.get("validation_status", "") or "") == "validated"
             and str(item.get("report_status", "not_generated") or "not_generated") != "generated"
@@ -477,17 +598,19 @@ def summarize_structured_findings(findings: list[dict], findings_dir: Path) -> d
         )
     ]
     reported = [
-        item for item in valid_findings
+        item for item in eligible_findings
         if str(item.get("report_status", "") or "") == "generated"
     ]
 
     pending_validation.sort(key=finding_rank_key, reverse=True)
+    owner_revalidation_pending.sort(key=lambda item: finding_rank_key(item[0]), reverse=True)
+    draft_completion_pending.sort(key=finding_rank_key, reverse=True)
     validated_pending_report.sort(key=finding_rank_key, reverse=True)
     actionable_pending_validation = [
         item for item in pending_validation
         if _is_actionable_validation_candidate(item)
     ]
-    evidence_gap_count = 0
+    evidence_gap_count = len(owner_revalidation_pending)
     secret_followup_count = 0
     for item in pending_validation:
         rubric = _rubric_eval(item)
@@ -499,6 +622,8 @@ def summarize_structured_findings(findings: list[dict], findings_dir: Path) -> d
     result = {
         "total": len(valid_findings),
         "pending_validation": len(pending_validation),
+        "owner_revalidation_pending": len(owner_revalidation_pending),
+        "draft_completion_pending": len(draft_completion_pending),
         "validated_pending_report": len(validated_pending_report),
         "reported": len(reported),
         "evidence_gap_count": evidence_gap_count,
@@ -507,6 +632,18 @@ def summarize_structured_findings(findings: list[dict], findings_dir: Path) -> d
     }
     if actionable_pending_validation:
         result["next_validation"] = compact_structured_finding(actionable_pending_validation[0], findings_dir)
+    if owner_revalidation_pending:
+        finding, provenance = owner_revalidation_pending[0]
+        result["next_owner_revalidation"] = _compact_owner_revalidation(
+            finding,
+            findings_dir,
+            provenance,
+        )
+    if draft_completion_pending:
+        result["next_draft_completion"] = _compact_draft_completion(
+            draft_completion_pending[0],
+            findings_dir,
+        )
     if validated_pending_report:
         result["next_report"] = compact_structured_finding(validated_pending_report[0], findings_dir)
     return result
@@ -529,11 +666,13 @@ def format_structured_findings_lines(
     if header and not inline_header:
         lines.append(f"{indent}{header}")
     summary = (
-        "total={total}, pending_validation={pending_validation}, "
+        "total={total}, pending_validation={pending_validation}, owner_revalidation_pending={owner_revalidation_pending}, draft_completion_pending={draft_completion_pending}, "
         "validated_pending_report={validated_pending_report}, reported={reported}, "
         "evidence_gaps={evidence_gap_count}".format(
             total=structured_findings.get("total", 0),
             pending_validation=structured_findings.get("pending_validation", 0),
+            owner_revalidation_pending=structured_findings.get("owner_revalidation_pending", 0),
+            draft_completion_pending=structured_findings.get("draft_completion_pending", 0),
             validated_pending_report=structured_findings.get("validated_pending_report", 0),
             reported=structured_findings.get("reported", 0),
             evidence_gap_count=structured_findings.get("evidence_gap_count", 0),
@@ -566,6 +705,19 @@ def format_structured_findings_lines(
             )
         )
 
+    next_owner_revalidation = structured_findings.get("next_owner_revalidation") or {}
+    if next_owner_revalidation:
+        lines.append(
+            "{indent}Owner revalidation: {id} claimed={validation}/{report} reason={reason}; "
+            "treat as candidate until /validate records owner provenance.".format(
+                indent=indent,
+                id=next_owner_revalidation.get("id", "-"),
+                validation=next_owner_revalidation.get("claimed_validation_status", "-"),
+                report=next_owner_revalidation.get("claimed_report_status", "-"),
+                reason=next_owner_revalidation.get("provenance_reason", "owner-provenance-invalid"),
+            )
+        )
+
     next_report = structured_findings.get("next_report") or {}
     if next_report:
         lines.append(
@@ -577,6 +729,17 @@ def format_structured_findings_lines(
                 confidence=next_report.get("confidence", "-"),
                 type=next_report.get("type", "-"),
                 url=next_report.get("url", ""),
+            )
+        )
+    next_draft_completion = structured_findings.get("next_draft_completion") or {}
+    if next_draft_completion:
+        lines.append(
+            "{indent}Report draft completion: {id} status={status} placeholders={count} path={path}".format(
+                indent=indent,
+                id=next_draft_completion.get("id", "-"),
+                status=next_draft_completion.get("report_draft_status", "incomplete"),
+                count=next_draft_completion.get("report_draft_placeholder_count", 0),
+                path=next_draft_completion.get("report_draft_path", ""),
             )
         )
     return lines

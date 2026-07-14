@@ -2,6 +2,7 @@
 
 import json
 
+import finding_index
 import resume as resume_tool
 from memory.hunt_journal import HuntJournal
 from memory.pattern_db import PatternDB
@@ -204,6 +205,14 @@ class TestResumeSummary:
             ),
             encoding="utf-8",
         )
+        # Lifecycle finality must be emitted by the canonical owner, not a fixture-only JSON edit.
+        updated = finding_index.update_finding_status(
+            findings_dir,
+            "mfa_report",
+            validation_status="validated",
+            report_status="not_generated",
+        )
+        assert updated is not None
         monkeypatch.setattr(resume_tool, "BASE_DIR", str(repo_root))
 
         summary = load_resume_summary(tmp_hunt_dir, "target.com")
@@ -218,6 +227,34 @@ class TestResumeSummary:
         assert "Structured Findings:" in output
         assert "Next validate: sqli_pending [high/confirmed] sqli https://api.target.com/search?q=1" in output
         assert "Next report: mfa_report [medium/high] mfa https://api.target.com/mfa" in output
+
+    def test_recovers_incomplete_root_claim_without_url(self, tmp_hunt_dir, sample_target_profile, monkeypatch, tmp_path):
+        save_target_profile(tmp_hunt_dir, sample_target_profile)
+        repo_root = tmp_path
+        findings_dir = repo_root / "findings" / "target.com"
+        findings_dir.mkdir(parents=True)
+        (findings_dir / "jwt-claim.json").write_text(
+            json.dumps(
+                {
+                    "title": "JWT authentication bypass",
+                    "target": "target.com",
+                    "vulnerability_class": "JWT",
+                    "impact": "Administrator view reached with a forged token.",
+                }
+            ),
+            encoding="utf-8",
+        )
+        finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
+        monkeypatch.setattr(resume_tool, "BASE_DIR", str(repo_root))
+
+        summary = load_resume_summary(tmp_hunt_dir, "target.com")
+
+        assert summary is not None
+        structured = summary["structured_findings"]
+        assert structured["pending_validation"] == 1
+        assert structured["next_validation"]["url"] == ""
+        assert structured["next_validation"]["claim_status"] == "incomplete"
+        assert "endpoint" in structured["next_validation"]["incomplete_fields"]
 
     def test_includes_runtime_state_and_recon_artifacts(self, tmp_hunt_dir, sample_target_profile, monkeypatch, tmp_path):
         save_target_profile(tmp_hunt_dir, sample_target_profile)

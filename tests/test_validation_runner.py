@@ -716,6 +716,12 @@ def test_runner_sync_does_not_downgrade_validated_finding(monkeypatch, tmp_path,
         ),
         encoding="utf-8",
     )
+    validation_runner.update_finding_status(
+        findings_dir,
+        "AUTHZ-VALIDATED",
+        validation_status="validated",
+        report_status="not_generated",
+    )
 
     monkeypatch.setattr(
         validation_runner,

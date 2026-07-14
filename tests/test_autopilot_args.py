@@ -32,6 +32,8 @@ EXPECTED_KEYS = [
     "checkpoint_trigger",
     "quick",
     "deep",
+    "max_lanes",
+    "invocation_batch",
     "recon_flags",
     "errors",
 ]
@@ -44,7 +46,7 @@ def test_parse_defaults_to_paranoid_and_accepts_flags_around_target():
 
     assert list(payload) == EXPECTED_KEYS
     assert payload == {
-        "schema_version": 2,
+        "schema_version": 3,
         "valid": True,
         "action": "continue",
         "argv": ["--quick", "https://Example.TEST/admin?x=1", "--deep", "--normal"],
@@ -62,6 +64,12 @@ def test_parse_defaults_to_paranoid_and_accepts_flags_around_target():
         "checkpoint_trigger": "checkpoint after each coherent evidence-lane batch",
         "quick": True,
         "deep": True,
+        "max_lanes": None,
+        "invocation_batch": {
+            "bounded": False,
+            "max_lanes": None,
+            "handoff": "normal_finish_condition",
+        },
         "recon_flags": ["--quick"],
         "errors": [],
     }
@@ -116,7 +124,7 @@ def test_repeated_core_flags_are_idempotent():
     assert payload["deep"] is True
 
 
-def test_auth_file_relative_path_and_full_six_token_core_invocation(tmp_path):
+def test_auth_file_relative_path_and_full_eight_token_core_invocation(tmp_path):
     auth_file = tmp_path / "private auth.json"
     auth_file.write_text('{"cookie":"session=example"}\n', encoding="utf-8")
 
@@ -128,6 +136,8 @@ def test_auth_file_relative_path_and_full_six_token_core_invocation(tmp_path):
             "--deep",
             "--auth-file",
             auth_file.name,
+            "--max-lanes",
+            "4",
         ],
         cwd=tmp_path,
     )
@@ -137,6 +147,12 @@ def test_auth_file_relative_path_and_full_six_token_core_invocation(tmp_path):
     assert shlex.split(payload["auth_file_shell"]) == [str(auth_file.resolve())]
     assert payload["hunt_auth_flags"] == ["--auth-file", str(auth_file.resolve())]
     assert payload["recon_flags"] == ["--quick"]
+    assert payload["max_lanes"] == 4
+    assert payload["invocation_batch"] == {
+        "bounded": True,
+        "max_lanes": 4,
+        "handoff": "checkpoint_and_handoff_after_max_lanes",
+    }
 
     overflow = autopilot_args.parse_autopilot_args(
         [*payload["argv"], "--quick"],
@@ -219,7 +235,10 @@ def test_missing_target_asks_without_continuing():
         (["--normal", "example.test", "--yolo"], ["cadence_conflict"]),
         (["one.test", "two.test"], ["multiple_targets"]),
         (
-            ["example.test", "--quick", "--deep", "--normal", "--quick", "--deep", "extra"],
+            [
+                "example.test", "--quick", "--deep", "--normal", "--quick", "--deep",
+                "--max-lanes", "2", "extra",
+            ],
             ["overflow", "multiple_targets"],
         ),
     ),
@@ -277,6 +296,32 @@ def test_json_cli_is_compact_stable_and_returns_zero(capsys):
     assert json.loads(output) == autopilot_args.parse_autopilot_args(
         ["example.test", "--normal"]
     )
+
+
+def test_deep_max_lanes_accepts_equal_form_and_rejects_invalid_boundaries():
+    bounded = autopilot_args.parse_autopilot_args(
+        ["example.test", "--deep", "--max-lanes=3", "--normal"]
+    )
+    no_deep = autopilot_args.parse_autopilot_args(
+        ["example.test", "--max-lanes", "3"]
+    )
+    zero = autopilot_args.parse_autopilot_args(
+        ["example.test", "--deep", "--max-lanes", "0"]
+    )
+    negative = autopilot_args.parse_autopilot_args(
+        ["example.test", "--deep", "--max-lanes", "-1"]
+    )
+    duplicate = autopilot_args.parse_autopilot_args(
+        ["example.test", "--deep", "--max-lanes", "2", "--max-lanes=3"]
+    )
+
+    assert bounded["valid"] is True
+    assert bounded["max_lanes"] == 3
+    assert bounded["invocation_batch"]["bounded"] is True
+    assert [item["code"] for item in no_deep["errors"]] == ["max_lanes_requires_deep"]
+    assert [item["code"] for item in zero["errors"]] == ["invalid_max_lanes"]
+    assert [item["code"] for item in negative["errors"]] == ["invalid_max_lanes"]
+    assert [item["code"] for item in duplicate["errors"]] == ["max_lanes_conflict"]
 
 
 @pytest.mark.parametrize(

@@ -8,18 +8,22 @@ HackerOne report.
 Usage:
   python3 tools/validate.py
   python3 tools/validate.py --output findings/myreport.md
+  python3 tools/validate.py --target target.com --finding-id sqli_abc \
+      --decision-json /tmp/validation-decision.json --json
 """
 
 import argparse
 import hashlib
 import json
 import os
+import re
 import ssl
 import sys
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Sequence
 from urllib.parse import urlparse
 
 try:
@@ -28,9 +32,9 @@ except ImportError:  # pragma: no cover - package import path
     from tools.finding_index import find_finding, load_finding_index, update_finding_status, upsert_finding
 
 try:
-    from target_paths import target_storage_key
+    from target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - package import path
-    from tools.target_paths import target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key
 
 try:
     from browser_evidence import (
@@ -104,6 +108,21 @@ SEVEN_QUESTION_DEFINITIONS = (
 )
 SEVEN_QUESTION_KEYS = tuple(key for key, _ in SEVEN_QUESTION_DEFINITIONS)
 SEVEN_QUESTION_STATUSES = {"pass", "fail", "partial", "chain_required", "unknown"}
+MACHINE_DECISION_SCHEMA_VERSION = 1
+MACHINE_DECISION_GATE_KEYS = ("gate1", "gate2", "gate3", "gate4")
+CVSS_PARAMETER_KEYS = ("AV", "AC", "AT", "PR", "UI", "VC", "VI", "VA", "SC", "SI", "SA")
+
+
+class ValidationInputUnavailable(RuntimeError):
+    """Raised when an interactive validation prompt cannot safely read input."""
+
+# A validation skeleton is useful working material, but it is not a
+# submission-ready report until its concrete evidence sections are filled.
+# Keep this intentionally narrow: ordinary Markdown brackets are valid prose.
+REPORT_DRAFT_PLACEHOLDER_RE = re.compile(
+    r"\[(?:insert|paste|fill(?:\s+in)?|step\s+\d+|describe|what\s+|attach|quantify|specific\b|explain|2-3\s+sentences)",
+    re.IGNORECASE,
+)
 
 
 def _normalize_seven_question_status(value, default: str = "unknown") -> str:
@@ -915,16 +934,20 @@ def ask(prompt: str, default: str = "") -> str:
             val = input(f"  {prompt} [{default}]: ").strip()
             return val if val else default
         return input(f"  {prompt}: ").strip()
-    except EOFError:
-        return default
+    except EOFError as exc:
+        raise ValidationInputUnavailable(
+            "interactive input ended; rerun from a TTY or provide --decision-json"
+        ) from exc
 
 
 def ask_yn(prompt: str, default: bool = True) -> bool:
     yn = "Y/n" if default else "y/N"
     try:
         val = input(f"  {prompt} [{yn}]: ").strip().lower()
-    except EOFError:
-        return default
+    except EOFError as exc:
+        raise ValidationInputUnavailable(
+            "interactive input ended; rerun from a TTY or provide --decision-json"
+        ) from exc
     if not val:
         return default
     return val in ("y", "yes")
@@ -940,8 +963,10 @@ def ask_choice(prompt: str, choices: list[tuple[str, str]], default: str = "") -
     while True:
         try:
             val = input(f"  Choice: ").strip().upper()
-        except EOFError:
-            return fallback
+        except EOFError as exc:
+            raise ValidationInputUnavailable(
+                "interactive input ended; rerun from a TTY or provide --decision-json"
+            ) from exc
         if not val and fallback:
             return fallback
         if val in valid:
@@ -1150,6 +1175,10 @@ def generate_report_skeleton(info: dict) -> str:
 
     return f"""# {vuln_type} on {endpoint} — [fill in specific impact]
 
+> **Draft status:** validation evidence may be complete, but this document is not
+> report-ready or submittable until all `[INSERT ...]`, `[PASTE ...]`, and other
+> bracketed evidence placeholders below are replaced with target-specific proof.
+
 **Program:** {target}
 **Severity:** {sev} ({score}) — {vector}
 **Date Found:** {date}
@@ -1261,6 +1290,51 @@ def normalize_http_method(value: str | None) -> str:
     return method or "GET"
 
 
+def inspect_report_draft(report_path: str | Path) -> dict:
+    """Return the report-draft completion state without interpreting evidence.
+
+    The four validation gates and the seven-question gate establish the
+    evidence decision.  This helper owns the separate document-completion
+    check so an untouched template cannot masquerade as submission-ready.
+    """
+    path = Path(report_path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {
+            "status": "not_written",
+            "path": str(path),
+            "placeholder_count": 0,
+            "placeholders": [],
+        }
+
+    matches = list(REPORT_DRAFT_PLACEHOLDER_RE.finditer(text))
+    placeholders = []
+    for match in matches[:8]:
+        line = text.count("\n", 0, match.start()) + 1
+        placeholders.append({"line": line, "token": match.group(0)[:80]})
+    return {
+        "status": "incomplete" if matches else "complete",
+        "path": str(path),
+        "placeholder_count": len(matches),
+        "placeholders": placeholders,
+    }
+
+
+def validation_evidence_passed(summary: dict) -> bool:
+    """Return whether evidence gates passed, distinct from report completion.
+
+    Older summaries only have the historical gate fields, so preserve their
+    meaning while new summaries make the distinction explicit.
+    """
+    explicit = summary.get("validation_evidence_passed")
+    if isinstance(explicit, bool):
+        return explicit
+    four = bool(summary.get("four_validation_gates_passed", summary.get("all_gates_passed")))
+    seven = bool(summary.get("seven_question_gate_passed", summary.get("all_gates_passed")))
+    return four and seven
+
+
 def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | Path) -> dict:
     """Build a compact JSON summary that /remember can import later."""
     vuln_class = (info.get("vuln_type") or "").strip().lower()
@@ -1274,14 +1348,19 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
             "gate4_pass": bool(all_pass),
         })
     seven_question_gate = build_seven_question_gate(gate_info)
-    report_ready = bool(all_pass and seven_question_gate.get("passed"))
+    evidence_passed = bool(all_pass and seven_question_gate.get("passed"))
+    report_draft = inspect_report_draft(report_path)
+    report_ready = bool(evidence_passed and report_draft.get("status") == "complete")
     summary = {
         "target": derive_validate_target(info.get("target", ""), info.get("endpoint", "")),
         "program": (info.get("target") or "").strip(),
         "endpoint": (info.get("endpoint") or "").strip(),
         "method": normalize_http_method(info.get("method")),
         "vuln_class": vuln_class,
-        "result": "confirmed" if report_ready else "partial",
+        # `confirmed` describes the validation evidence only.  The explicit
+        # report-readiness fields below prevent a template draft from being
+        # mistaken for a submit-ready finding.
+        "result": "confirmed" if evidence_passed else "partial",
         "severity": severity,
         "notes": (info.get("impact") or "").strip(),
         "impact": (info.get("impact") or "").strip(),
@@ -1290,6 +1369,10 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
         "all_gates_passed": report_ready,
         "four_validation_gates_passed": bool(all_pass),
         "seven_question_gate_passed": bool(seven_question_gate.get("passed")),
+        "validation_evidence_passed": evidence_passed,
+        "report_ready": report_ready,
+        "report_draft": report_draft,
+        "report_draft_status": str(report_draft.get("status") or "not_written"),
         "seven_question_gate_decision": seven_question_gate.get("decision", "needs_review"),
         "seven_question_gate": seven_question_gate,
         "report_path": str(report_path),
@@ -1333,6 +1416,21 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
             "summary": evidence_rubric.get("summary", ""),
         }
 
+    machine_decision = info.get("machine_decision")
+    if isinstance(machine_decision, dict) and machine_decision:
+        # Keep the auditable decision binding and evidence pointers, never the
+        # full report body. The body belongs only to the report draft path.
+        summary["machine_decision"] = {
+            "schema_version": int(machine_decision.get("schema_version", 0) or 0),
+            "source": str(machine_decision.get("source") or ""),
+            "evidence_summary": str(machine_decision.get("evidence_summary") or ""),
+            "evidence_refs": [
+                str(item)
+                for item in (machine_decision.get("evidence_refs") or [])
+                if str(item).strip()
+            ],
+        }
+
     return summary
 
 
@@ -1345,6 +1443,8 @@ def build_submission_notes(summary: dict) -> str:
     evidence = summary.get("browser_evidence") or {}
     evidence_path = evidence.get("summary_path") or evidence.get("dir") or "[attach raw request/response evidence]"
     scanner_path = summary.get("scanner_summary_path") or "[optional scanner summary path]"
+    draft = summary.get("report_draft") if isinstance(summary.get("report_draft"), dict) else {}
+    draft_status = str(draft.get("status") or summary.get("report_draft_status") or "unknown")
 
     return f"""# Submission Notes
 
@@ -1365,6 +1465,7 @@ def build_submission_notes(summary: dict) -> str:
 - [ ] 7-Question Gate: `{seven_gate}` (`{seven_decision}`)
 - [ ] Four validation gates: `{four_gates}`
 - [ ] Combined report-readiness gates: `{gates}`
+- [ ] Report draft completion: `{draft_status}`
 
 ## Submission checklist
 
@@ -1413,7 +1514,7 @@ def mark_finding_validated(findings_dir: str, finding_id: str, summary: dict, su
     """Best-effort update of findings.json after validation completes."""
     if not findings_dir or not finding_id:
         return
-    status = "validated" if summary.get("all_gates_passed") else "partial"
+    status = "validated" if validation_evidence_passed(summary) else "partial"
     update_finding_status(
         findings_dir,
         finding_id,
@@ -1512,7 +1613,7 @@ def upsert_ad_hoc_validated_finding(summary: dict, summary_path: str | Path, *, 
     repo = Path(repo_root) if repo_root is not None else BASE_DIR
     findings_dir = repo / "findings" / target_storage_key(target)
     finding_id = _finding_id_from_summary(summary)
-    all_pass = bool(summary.get("all_gates_passed"))
+    all_pass = validation_evidence_passed(summary)
     finding = {
         "id": finding_id,
         "type": str(summary.get("vuln_class") or "validation").strip().lower() or "validation",
@@ -1634,7 +1735,7 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
             object_scope="unknown",
             variant="baseline",
             source="validate",
-            result="tested_finding" if summary.get("all_gates_passed") else "candidate",
+            result="tested_finding" if validation_evidence_passed(summary) else "candidate",
             evidence_ref=str(summary_path),
             notes=f"/validate {summary.get('result', '')}: {summary.get('submission_notes_path', '')}",
         )
@@ -1668,7 +1769,7 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
                 repo,
                 target=target,
                 action_id=str(matched.get("id") or ""),
-                status="validated" if summary.get("all_gates_passed") else "candidate",
+                status="validated" if validation_evidence_passed(summary) else "candidate",
                 result=f"validation-summary={summary_path}",
                 notes=f"submission-notes={summary.get('submission_notes_path', '')}",
             )
@@ -1864,14 +1965,312 @@ def resolve_browser_evidence_for_validate(
     return load_last_browser_evidence(target, evidence_root=evidence_root)
 
 
+def _normalize_vuln_class(value: Any) -> str:
+    """Normalize one vulnerability-class binding without guessing its meaning."""
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower())
+    return normalized.strip("_")
+
+
+def _endpoint_path_query(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme or parsed.netloc:
+        path = parsed.path or "/"
+        return f"{path}?{parsed.query}" if parsed.query else path
+    return raw
+
+
+def _machine_endpoints_match(decision_endpoint: str, finding_endpoint: str) -> bool:
+    """Match exact URLs or a target-bound URL against its canonical path form."""
+    left = str(decision_endpoint or "").strip()
+    right = str(finding_endpoint or "").strip()
+    if not left or not right:
+        return False
+    if left.rstrip("/") == right.rstrip("/"):
+        return True
+    left_url = urlparse(left)
+    right_url = urlparse(right)
+    if (left_url.scheme or left_url.netloc) and (right_url.scheme or right_url.netloc):
+        return (
+            left_url.netloc.lower() == right_url.netloc.lower()
+            and _endpoint_path_query(left) == _endpoint_path_query(right)
+        )
+    return _endpoint_path_query(left) == _endpoint_path_query(right)
+
+
+def _required_text(value: Any, field: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"decision.{field} must be a non-empty string")
+    return text
+
+
+def _load_machine_decision(path: str) -> tuple[dict[str, Any], Path]:
+    """Load a strict machine validation decision without best-effort fallback."""
+    source = Path(path).expanduser().resolve()
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"unable to read decision JSON: {source}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid decision JSON: {source}: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("decision JSON must contain one object")
+    if payload.get("schema_version") != MACHINE_DECISION_SCHEMA_VERSION:
+        raise ValueError(
+            "decision.schema_version must be "
+            f"{MACHINE_DECISION_SCHEMA_VERSION}"
+        )
+    return payload, source
+
+
+def _resolve_machine_findings_dir(args: argparse.Namespace, decision_target: str) -> Path:
+    """Resolve the only canonical finding directory allowed for a decision."""
+    if not args.finding_id:
+        raise ValueError("--decision-json requires --finding-id")
+    if args.target:
+        supplied_target = canonical_target_value(args.target)
+        if supplied_target != decision_target:
+            raise ValueError(
+                "--target must match decision.target after canonical normalization"
+            )
+    if args.findings_dir:
+        root = Path(args.findings_dir).expanduser()
+        if not root.is_absolute():
+            root = (Path.cwd() / root).resolve()
+        return root
+    if not args.target:
+        raise ValueError("--decision-json requires --findings-dir or --target")
+    return BASE_DIR / "findings" / target_storage_key(decision_target)
+
+
+def _resolve_machine_evidence_refs(values: Any, *, repo_root: Path) -> list[str]:
+    """Require explicit, locatable raw-evidence pointers before mutation."""
+    if not isinstance(values, list) or not values:
+        raise ValueError("decision.evidence.refs must be a non-empty list")
+    resolved: list[str] = []
+    for value in values:
+        raw = _required_text(value, "evidence.refs[]")
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = repo_root / path
+        path = path.resolve()
+        if not path.is_file():
+            raise ValueError(f"decision evidence ref is not a readable file: {raw}")
+        resolved.append(str(path))
+    return resolved
+
+
+def _parse_machine_gates(raw: Any) -> tuple[dict[str, bool], dict[str, dict[str, Any]]]:
+    """Validate explicit four-gate decisions; no inferred/default confirmations."""
+    if not isinstance(raw, dict):
+        raise ValueError("decision.gates must be an object")
+    passed: dict[str, bool] = {}
+    notes: dict[str, dict[str, Any]] = {}
+    for key in MACHINE_DECISION_GATE_KEYS:
+        item = raw.get(key)
+        if not isinstance(item, dict) or not isinstance(item.get("passed"), bool):
+            raise ValueError(f"decision.gates.{key}.passed must be an explicit boolean")
+        raw_notes = item.get("notes", {})
+        if raw_notes is None:
+            raw_notes = {}
+        if not isinstance(raw_notes, dict):
+            raise ValueError(f"decision.gates.{key}.notes must be an object when present")
+        passed[key] = item["passed"]
+        notes[key] = dict(raw_notes)
+    return passed, notes
+
+
+def _parse_machine_seven_questions(raw: Any) -> dict[str, Any]:
+    """Require a complete Q1-Q7 machine judgment with an explicit basis per item."""
+    if not isinstance(raw, dict):
+        raise ValueError("decision.seven_question_gate must be an object")
+    values = raw.get("questions") if isinstance(raw.get("questions"), dict) else raw
+    if not isinstance(values, dict):
+        raise ValueError("decision.seven_question_gate.questions must be an object")
+
+    questions: dict[str, dict[str, Any]] = {}
+    for key, question in SEVEN_QUESTION_DEFINITIONS:
+        item = values.get(key)
+        if not isinstance(item, dict):
+            raise ValueError(f"decision.seven_question_gate.{key} must be an object")
+        raw_status = item.get("status")
+        status = _normalize_seven_question_status(raw_status)
+        if raw_status is None or status == "unknown" and str(raw_status).strip().lower() != "unknown":
+            raise ValueError(f"decision.seven_question_gate.{key}.status is invalid")
+        basis = str(item.get("basis") or item.get("reason") or item.get("evidence") or "").strip()
+        if not basis:
+            raise ValueError(f"decision.seven_question_gate.{key} requires a non-empty basis")
+        questions[key] = {
+            "status": status,
+            "basis": basis,
+            "blocker": str(item.get("blocker") or "").strip(),
+            "next_action": str(item.get("next_action") or "").strip(),
+        }
+    return {"source": "machine_decision", "questions": questions}
+
+
+def _parse_machine_cvss(raw: Any) -> tuple[float, str, dict[str, str]]:
+    """Validate an explicit CVSS decision without interactive score prompts."""
+    if not isinstance(raw, dict):
+        raise ValueError("decision.cvss must be an object")
+    score = raw.get("score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= float(score) <= 10:
+        raise ValueError("decision.cvss.score must be a number from 0 to 10")
+    vector = _required_text(raw.get("vector"), "cvss.vector")
+    params_raw = raw.get("params", {})
+    if not isinstance(params_raw, dict):
+        raise ValueError("decision.cvss.params must be an object when present")
+    params = {
+        key: str(params_raw.get(key) or "").strip()
+        for key in CVSS_PARAMETER_KEYS
+        if str(params_raw.get(key) or "").strip()
+    }
+    return float(score), vector, params
+
+
+def _resolve_machine_report(
+    raw: Any,
+    *,
+    findings_dir: Path,
+    repo_root: Path,
+) -> tuple[Path, str]:
+    """Resolve one explicit report payload under the bound finding directory."""
+    if not isinstance(raw, dict):
+        raise ValueError("decision.report must be an object")
+    report_path = Path(_required_text(raw.get("path"), "report.path")).expanduser()
+    if not report_path.is_absolute():
+        report_path = repo_root / report_path
+    report_path = report_path.resolve()
+    try:
+        report_path.relative_to(findings_dir.resolve())
+    except ValueError as exc:
+        raise ValueError("decision.report.path must stay under the bound findings directory") from exc
+    content = _required_text(raw.get("content"), "report.content")
+    return report_path, content
+
+
+def _build_machine_validation_input(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], dict[str, Any], Path, Path, str]:
+    """Validate every decision binding before any report/finding state is written."""
+    decision, decision_path = _load_machine_decision(args.decision_json)
+    decision_target = canonical_target_value(_required_text(decision.get("target"), "target"))
+    finding_id = _required_text(decision.get("finding_id"), "finding_id")
+    if finding_id != args.finding_id:
+        raise ValueError("decision.finding_id must exactly match --finding-id")
+    findings_dir = _resolve_machine_findings_dir(args, decision_target)
+    prefill = load_finding_prefill(str(findings_dir), finding_id)
+    if not prefill:
+        raise ValueError(f"finding id not found in findings.json: {finding_id}")
+    indexed_target = canonical_target_value(str(prefill.get("target") or ""))
+    if indexed_target != decision_target:
+        raise ValueError("decision.target does not match the canonical findings index target")
+
+    decision_endpoint = _required_text(decision.get("endpoint"), "endpoint")
+    if not _machine_endpoints_match(decision_endpoint, str(prefill.get("endpoint") or "")):
+        raise ValueError("decision.endpoint does not match the canonical finding endpoint")
+    decision_vuln_class = _normalize_vuln_class(_required_text(decision.get("vuln_class"), "vuln_class"))
+    indexed_vuln_class = _normalize_vuln_class(prefill.get("vuln_type"))
+    if not decision_vuln_class or decision_vuln_class != indexed_vuln_class:
+        raise ValueError("decision.vuln_class does not match the canonical finding class")
+
+    gate_passed, gate_notes = _parse_machine_gates(decision.get("gates"))
+    seven_questions = _parse_machine_seven_questions(decision.get("seven_question_gate"))
+    cvss_score, cvss_vector, cvss_params = _parse_machine_cvss(decision.get("cvss"))
+    impact = _required_text(decision.get("impact"), "impact")
+    evidence = decision.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("decision.evidence must be an object")
+    evidence_summary = _required_text(evidence.get("summary"), "evidence.summary")
+    evidence_refs = _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=BASE_DIR)
+    report_path, report_content = _resolve_machine_report(
+        decision.get("report"),
+        findings_dir=findings_dir,
+        repo_root=BASE_DIR,
+    )
+
+    info = {
+        "target": decision_target,
+        "vuln_type": str(prefill.get("vuln_type") or decision_vuln_class),
+        "endpoint": decision_endpoint,
+        "method": normalize_http_method(decision.get("method") or "GET"),
+        "impact": impact,
+        "cvss_score": cvss_score,
+        "cvss_vector": cvss_vector,
+        "cvss_params": cvss_params,
+        "finding_id": finding_id,
+        "finding_source_file": prefill.get("source_file", ""),
+        "finding_summary": prefill.get("summary", ""),
+        "evidence_rubric": prefill.get("rubric", {}),
+        "seven_question_gate": seven_questions,
+        "machine_decision": {
+            "schema_version": MACHINE_DECISION_SCHEMA_VERSION,
+            "source": str(decision_path),
+            "evidence_summary": evidence_summary,
+            "evidence_refs": evidence_refs,
+        },
+    }
+    for key in MACHINE_DECISION_GATE_KEYS:
+        info[f"{key}_pass"] = gate_passed[key]
+        info[f"{key}_notes"] = gate_notes[key]
+    return info, prefill, findings_dir, report_path, report_content
+
+
+def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
+    """Apply an explicit non-TTY validation decision through existing owners only."""
+    info, prefill, findings_dir, report_path, report_content = _build_machine_validation_input(args)
+    output_path = ensure_report_output_path(report_path)
+    output_path.write_text(report_content.rstrip() + "\n", encoding="utf-8")
+
+    all_pass = all(bool(info.get(f"{key}_pass")) for key in MACHINE_DECISION_GATE_KEYS)
+    summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
+    write_validation_summary(summary, output_path)
+    validation_sync = sync_validation_artifacts(summary, repo_root=BASE_DIR)
+    if validation_sync.get("status") == "updated":
+        summary["validation_sync"] = validation_sync
+        write_validation_summary(summary, output_path)
+    mark_finding_validated(
+        str(findings_dir),
+        str(prefill.get("finding_id") or ""),
+        summary,
+        output_path.parent / "validation-summary.json",
+    )
+    update_runtime_state_after_validate(summary, str(findings_dir))
+    return {
+        "status": "updated",
+        "finding_id": str(prefill.get("finding_id") or ""),
+        "findings_dir": str(findings_dir),
+        "report_path": str(output_path),
+        "summary_path": str(output_path.parent / "validation-summary.json"),
+        "result": str(summary.get("result") or ""),
+        "report_ready": bool(summary.get("report_ready")),
+        "validation_sync": validation_sync,
+    }
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Build the shared interactive/non-interactive validation CLI parser."""
     parser = argparse.ArgumentParser(description="Interactive bug validation assistant")
     parser.add_argument("--output",  default="", help="Output path for generated report skeleton")
     parser.add_argument("--program", default="", help="HackerOne program handle for dup check")
     parser.add_argument("--findings-dir", default="", help="Directory containing findings.json")
     parser.add_argument("--finding-id", default="", help="Prefill target/type/endpoint from findings.json")
+    parser.add_argument(
+        "--target",
+        default="",
+        help="Canonical target shortcut for --decision-json; resolves findings/<target-key>.",
+    )
+    parser.add_argument(
+        "--decision-json",
+        default="",
+        help="Explicit machine-readable non-TTY validation decision bound to --finding-id.",
+    )
+    parser.add_argument("--json", action="store_true", help="Emit machine validation result as JSON.")
     parser.add_argument("--method", default="GET", help="HTTP method used by the validated replay evidence")
     parser.add_argument("--browser-url", default="", help="Capture validate browser evidence for this URL")
     parser.add_argument(
@@ -1893,7 +2292,11 @@ def main():
         choices=["confirmed", "possible", "informational", "unknown"],
         help="Confidence level from the scanner handoff",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def _run_interactive_validation(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """Run the existing TTY flow after main has ruled out non-interactive use."""
 
     finding_prefill = {}
     if args.finding_id:
@@ -1973,7 +2376,10 @@ def main():
 
     print()
     if all_pass:
-        print(f"  {BOLD}{GREEN}All gates passed! This looks like a valid finding.{RESET}")
+        print(
+            f"  {BOLD}{GREEN}All validation gates passed.{RESET} "
+            "Evidence is validated; report readiness still requires a completed draft and raw proof."
+        )
     else:
         failed = [name for _, name, p in gates if not p]
         print(f"  {BOLD}{RED}Failed: {', '.join(failed)}{RESET}")
@@ -1981,7 +2387,7 @@ def main():
 
     if not all_pass:
         if not ask_yn("\nContinue to CVSS scoring anyway?", default=False):
-            sys.exit(0)
+            return 0
 
     # CVSS scoring
     cvss_score, cvss_vector, cvss_params = ask_cvss_score()
@@ -2071,13 +2477,50 @@ def main():
     update_runtime_state_after_validate(summary, args.findings_dir)
 
     print(f"  {BOLD}{GREEN}Report skeleton generated:{RESET} {output_path}")
+    if summary.get("validation_evidence_passed") and not summary.get("all_gates_passed"):
+        print(
+            f"  {YELLOW}Validation evidence passed, but the draft contains unresolved placeholders; "
+            "it is not report-ready yet.{RESET}"
+        )
     print(f"\n  {BOLD}Next steps:{RESET}")
     print(f"    1. Fill in the actual HTTP request + response in the PoC section")
     print(f"    2. Attach screenshots (naming: TARGET-VULN-TYPE-STEP-N.png)")
     print(f"    3. Replace all [bracketed] placeholders with specific details")
     print(f"    4. Run /bug-bounty-report for the submission checklist")
     print()
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Dispatch TTY prompts or a strict explicit non-TTY decision path."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.decision_json:
+            result = run_machine_validation(args)
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            else:
+                print(
+                    "machine validation updated "
+                    f"finding={result['finding_id']} report={result['report_path']} "
+                    f"result={result['result']}"
+                )
+            return 0
+        if args.target:
+            raise ValueError("--target is available only together with --decision-json")
+        if not sys.stdin.isatty():
+            raise ValidationInputUnavailable(
+                "non-TTY validation requires --decision-json; no state was written"
+            )
+        return _run_interactive_validation(args, parser)
+    except ValidationInputUnavailable as exc:
+        print(f"validate: {exc}", file=sys.stderr)
+        return 2
+    except (KeyError, OSError, ValueError) as exc:
+        print(f"validate: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

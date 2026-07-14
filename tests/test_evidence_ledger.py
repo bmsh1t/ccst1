@@ -43,6 +43,20 @@ def test_record_entry_writes_normalized_ledger_row(tmp_path):
     assert rows[0]["replayed"] is True
 
 
+def test_record_entry_normalizes_file_upload_alias(tmp_path):
+    entry = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="https://target.com/my-account/avatar",
+        method="POST",
+        vuln_class="file-upload",
+        result="tested_finding",
+        evidence_ref="evidence/target.com/validation/upload/summary.json",
+    )
+
+    assert entry["vuln_class"] == "Upload"
+
+
 def test_record_entry_preserves_spa_hash_route_endpoint(tmp_path):
     entry = record_entry(
         tmp_path,

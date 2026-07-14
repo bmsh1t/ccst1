@@ -1007,6 +1007,10 @@ class TestVulnClassNormalization:
                       "directory-traversal", "PATHTRAVERSAL", "LFI"):
             assert normalize_vuln_class(alias) == "Path", alias
 
+    def test_upload_aliases(self):
+        for alias in ("file-upload", "file_upload", "FILE-UPLOAD"):
+            assert normalize_vuln_class(alias) == "Upload", alias
+
     def test_rce_aliases(self):
         for alias in ("ssti", "deser", "deserialization", "oscommand",
                       "os-command", "cmdinjection", "cmd-injection",

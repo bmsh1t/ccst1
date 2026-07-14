@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FAKE_RESPONSE_TEXT = "runtime-probe-ok"
 DYNAMIC_ARGUMENT_COMMAND = (
     '!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- '
-    '"$0" "$1" "$2" "$3" "$4" "$5" "$6"`'
+    '"$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"`'
 )
 
 
@@ -284,6 +284,7 @@ def _parsed_bootstrap_contract(command_body: str) -> dict:
     (
         "example.test --normal",
         "--quick example.test --deep",
+        "example.test --deep --normal --max-lanes 2",
         "targets.txt --normal",
         "",
     ),
@@ -321,6 +322,12 @@ def test_real_claude_cli_expands_installed_autopilot_arguments(
     if bootstrap["action"] == "continue":
         assert bootstrap["capabilities"]["checked"] is True
         assert bootstrap["capabilities"]["status"] in {"ready", "degraded"}
+    if "--max-lanes" in arguments:
+        assert bootstrap["invocation_batch"] == {
+            "bounded": True,
+            "max_lanes": 2,
+            "handoff": "checkpoint_and_handoff_after_max_lanes",
+        }
 
 
 def test_real_claude_cli_expands_readable_batch_target(
@@ -342,11 +349,11 @@ def test_real_claude_cli_expands_readable_batch_target(
     assert parsed["cadence"] == "normal"
 
 
-def test_real_claude_cli_marks_seventh_argument_as_overflow(
+def test_real_claude_cli_marks_tenth_argument_as_overflow(
     run_staged_claude,
 ):
     payload = run_staged_claude(
-        "/autopilot example.test --quick --deep --normal --quick --deep --quick"
+        "/autopilot example.test --quick --deep --normal --quick --deep --quick --deep --quick"
     )
     command_body = next(
         text for text in _message_texts(payload) if text.startswith("# /autopilot")

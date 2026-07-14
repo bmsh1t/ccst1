@@ -3,6 +3,7 @@
 import json
 import time
 
+import finding_index
 from memory.hunt_journal import HuntJournal
 from memory.pattern_db import PatternDB
 from memory.schemas import make_journal_entry, make_pattern_entry
@@ -17,6 +18,19 @@ from autopilot_state import (
 from request_guard import record_request
 from runtime_state import runtime_phase_lock, update_runtime_state
 from target_paths import target_storage_key
+
+
+def _record_owner_provenance(findings_dir, finding_id: str) -> None:
+    """Turn a fixture's declared finality into a real owner mutation."""
+    payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    finding = next(item for item in payload["findings"] if item.get("id") == finding_id)
+    updated = finding_index.update_finding_status(
+        findings_dir,
+        finding_id,
+        validation_status=finding.get("validation_status", "unvalidated"),
+        report_status=finding.get("report_status", "not_generated"),
+    )
+    assert updated is not None
 
 
 class TestAutopilotState:
@@ -308,6 +322,94 @@ class TestAutopilotState:
         assert "Memory action queue:" in output
         assert "continue org API role diff" in output
 
+    def test_target_memory_validate_candidate_preempts_generic_resume_and_requires_artifact(self, tmp_path):
+        repo_root = tmp_path
+        memory_dir = repo_root / "hunt-memory"
+        (memory_dir / "targets").mkdir(parents=True)
+        save_target_profile(
+            memory_dir,
+            make_target_profile(
+                "target.com",
+                untested_endpoints=["/historical-resume"],
+                hunt_sessions=1,
+            ),
+        )
+        target_memory_path = repo_root / "memory" / "goals" / "targets" / "target.com.json"
+        target_memory_path.parent.mkdir(parents=True)
+        target_memory_path.write_text(
+            json.dumps(
+                {
+                    "target": "target.com",
+                    "next_actions": [
+                        {
+                            "text": (
+                                "Run /validate for SQLi candidate after comparing the raw response pair. "
+                                "Evidence=evidence/target.com/validation/sqli/raw-pair.json"
+                            )
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state_without_artifact = build_autopilot_state(
+            str(repo_root),
+            "target.com",
+            memory_dir=str(memory_dir),
+        )
+
+        assert state_without_artifact["memory_candidate_next"]["command_hint"] == "/validate"
+        assert state_without_artifact["memory_candidate_next"]["evidence_available"] is False
+        assert state_without_artifact["next_action"] == "collect_candidate_evidence"
+        assert state_without_artifact["next_action"] != "resume_untested"
+        assert (
+            _pick_next_action(
+                True,
+                {},
+                {"latest_session_summary": {"session_id": "old-session"}},
+                resume_targets=["/historical-resume"],
+                memory_candidate_next=state_without_artifact["memory_candidate_next"],
+            )
+            == "collect_candidate_evidence"
+        )
+
+        raw_evidence = repo_root / "evidence" / "target.com" / "validation" / "sqli" / "raw-pair.json"
+        raw_evidence.parent.mkdir(parents=True)
+        raw_evidence.write_text('{"baseline": 1, "probe": 56}\n', encoding="utf-8")
+
+        state_with_artifact = build_autopilot_state(
+            str(repo_root),
+            "target.com",
+            memory_dir=str(memory_dir),
+        )
+
+        assert state_with_artifact["memory_candidate_next"]["evidence_ref"].endswith("raw-pair.json")
+        assert state_with_artifact["memory_candidate_next"]["evidence_available"] is True
+        assert state_with_artifact["next_action"] == "validate_finding"
+
+    def test_fresh_recon_without_ranked_candidate_prepares_surface_context(self):
+        assert (
+            _pick_next_action(
+                True,
+                {"review_pool": [], "p1": []},
+                None,
+                fresh_recon_ready=True,
+            )
+            == "prepare_surface_context"
+        )
+
+    def test_validated_incomplete_draft_completes_without_revalidating(self):
+        assert (
+            _pick_next_action(
+                True,
+                {"review_pool": [], "p1": []},
+                None,
+                {"draft_completion_pending": 1},
+            )
+            == "complete_report_draft"
+        )
+
     def test_host_list_relative_target_uses_batch_handoff_not_aggregate_surface(self, tmp_path, monkeypatch):
         repo_root = tmp_path
         list_file = repo_root / "scope.txt"
@@ -451,6 +553,33 @@ class TestAutopilotState:
         assert _pick_next_action(True, {}, None, ready) == "validate_finding"
         assert _pick_next_action(True, {}, None, legacy) == "validate_finding"
 
+    def test_root_json_claim_is_read_only_candidate_evidence_handoff(self, tmp_path):
+        findings_dir = tmp_path / "findings" / "target.com"
+        findings_dir.mkdir(parents=True)
+        (findings_dir / "manual-claim.json").write_text(
+            json.dumps(
+                {
+                    "title": "Manual SQLi claim",
+                    "severity": "critical",
+                    "endpoint": "/rest/products/search",
+                    "vuln_class": "SQLi",
+                    "poc": "curl https://target.com/rest/products/search?q=...",
+                    "impact": "claimed database access",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(tmp_path), "target.com")
+        output = format_autopilot_state(state)
+
+        assert state["next_action"] == "collect_candidate_evidence"
+        assert state["root_finding_claim_next"]["claim_source_file"] == "manual-claim.json"
+        assert state["root_finding_claim_next"]["evidence_rubric"]["ready"] is False
+        assert not (findings_dir / "findings.json").exists()
+        assert "Unreconciled root finding claims (not validated):" in output
+        assert "Do not call it validated or report-ready from the claim alone." in output
+
     def test_wait_marker_preempts_missing_candidate_evidence(self):
         structured = {
             "next_validation": {
@@ -507,7 +636,6 @@ class TestAutopilotState:
             ),
             encoding="utf-8",
         )
-
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
         output = format_autopilot_state(state)
 
@@ -642,6 +770,7 @@ class TestAutopilotState:
             ),
             encoding="utf-8",
         )
+        _record_owner_provenance(findings_dir, "mfa_report")
 
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
         output = format_autopilot_state(state)
@@ -685,6 +814,7 @@ class TestAutopilotState:
             ),
             encoding="utf-8",
         )
+        _record_owner_provenance(findings_dir, "admin_config")
 
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
         output = format_autopilot_state(state)
@@ -735,6 +865,7 @@ class TestAutopilotState:
             ),
             encoding="utf-8",
         )
+        _record_owner_provenance(findings_dir, "mfa_report")
 
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
         output = format_autopilot_state(state)
@@ -888,6 +1019,7 @@ class TestAutopilotState:
             ),
             encoding="utf-8",
         )
+        _record_owner_provenance(findings_dir, "auth_bypass_feedbacks")
 
         memory_dir = tmp_path / "hunt-memory"
         (memory_dir / "targets").mkdir(parents=True)

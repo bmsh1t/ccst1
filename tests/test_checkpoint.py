@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 
 import checkpoint as checkpoint_module
-from action_queue import _checkpoint_item_to_action, _dedupe_key, save_queue
+import finding_index
+from action_queue import _checkpoint_item_to_action, _dedupe_key, load_queue, save_queue
 from checkpoint import (
     _build_next_action_queue,
     _align_decision_with_default_candidate,
@@ -73,6 +74,124 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     assert witness["context_pack"]["selected_skill"] == checkpoint["context_pack"]["selected_skill"]
 
 
+def test_checkpoint_cli_syncs_durable_action_queue_idempotently(tmp_path, capsys):
+    first_exit = checkpoint_module.main([
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        "target.com",
+        "--no-refresh-coverage",
+        "--json",
+    ])
+    first = json.loads(capsys.readouterr().out)
+    queue_path = tmp_path / "state" / "target.com" / "action_queue.json"
+    witness_path = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
+    first_queue = load_queue(tmp_path, "target.com")
+    witness = json.loads(witness_path.read_text(encoding="utf-8"))
+
+    assert first_exit == 0
+    assert queue_path.is_file()
+    assert first_queue["actions"]
+    assert first["action_queue_sync"]["path"] == str(queue_path)
+    assert first["action_queue_sync"]["stats"]["added"] >= 1
+    assert witness["action_queue"]["synchronized"] is True
+    assert witness["action_queue"]["path"] == "state/target.com/action_queue.json"
+
+    second_exit = checkpoint_module.main([
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        "target.com",
+        "--no-refresh-coverage",
+        "--json",
+    ])
+    second = json.loads(capsys.readouterr().out)
+    second_queue = load_queue(tmp_path, "target.com")
+
+    assert second_exit == 0
+    assert second["action_queue_sync"]["stats"]["added"] == 0
+    assert len(second_queue["actions"]) == len(first_queue["actions"])
+
+
+def test_checkpoint_cli_reconciles_root_json_claim_and_links_durable_actions(tmp_path, capsys):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "manual-sqli.json").write_text(
+        json.dumps(
+            {
+                "title": "Manual SQLi claim",
+                "severity": "critical",
+                "endpoint": "/rest/products/search",
+                "vuln_class": "SQLi",
+                "poc": "curl https://target.com/rest/products/search?q=...",
+                "impact": "claimed database access",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = checkpoint_module.main([
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        "target.com",
+        "--no-refresh-coverage",
+        "--json",
+    ])
+    checkpoint = json.loads(capsys.readouterr().out)
+    payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    finding = payload["findings"][0]
+    queue = load_queue(tmp_path, "target.com")
+
+    assert exit_code == 0
+    assert checkpoint["root_finding_claim_sync"]["status"] == "updated"
+    assert finding["validation_status"] == "candidate"
+    assert finding["evidence_rubric"]["ready"] is False
+    assert any(
+        (item.get("metadata") or {}).get("finding_id") == finding["id"]
+        for item in queue["actions"]
+    )
+
+
+def test_checkpoint_recovers_incomplete_root_claim_without_target_root_url(tmp_path, capsys):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "jwt-claim.json").write_text(
+        json.dumps(
+            {
+                "title": "JWT authentication bypass",
+                "target": "target.com",
+                "vulnerability_class": "JWT",
+                "impact": "Forged token reaches the administrator view.",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = checkpoint_module.main([
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        "target.com",
+        "--no-refresh-coverage",
+        "--json",
+    ])
+    checkpoint = json.loads(capsys.readouterr().out)
+    payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    finding = payload["findings"][0]
+    queue = load_queue(tmp_path, "target.com")
+
+    assert exit_code == 0
+    assert finding["url"] == ""
+    assert finding["claim_status"] == "incomplete"
+    assert "endpoint" in finding["incomplete_fields"]
+    assert checkpoint["structured_findings"]["pending_validation"] == 1
+    assert any(
+        (item.get("metadata") or {}).get("finding_id") == finding["id"]
+        for item in queue["actions"]
+    )
+
+
 def test_checkpoint_prioritizes_pending_validation(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)
@@ -92,7 +211,6 @@ def test_checkpoint_prioritizes_pending_validation(tmp_path):
         }),
         encoding="utf-8",
     )
-
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
     assert checkpoint["decision"] == "validate"
@@ -240,7 +358,6 @@ def test_checkpoint_displays_runner_candidates_as_advisory_evidence(tmp_path):
         ),
         encoding="utf-8",
     )
-
     checkpoint = build_checkpoint(tmp_path, target="target.com")
     output = format_checkpoint(checkpoint)
 
@@ -280,6 +397,12 @@ def test_checkpoint_ignores_off_target_direct_finding_followup(tmp_path):
         }),
         encoding="utf-8",
     )
+    finding_index.update_finding_status(
+        findings_dir,
+        "TARGET-AUTHZ",
+        validation_status="validated",
+        report_status="not_generated",
+    )
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
@@ -311,6 +434,12 @@ def test_checkpoint_keeps_report_queued_without_outranking_high_value_hunt(tmp_p
             ]
         }),
         encoding="utf-8",
+    )
+    finding_index.update_finding_status(
+        findings_dir,
+        "TARGET-AUTHZ",
+        validation_status="validated",
+        report_status="not_generated",
     )
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")

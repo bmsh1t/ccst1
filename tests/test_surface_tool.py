@@ -2,6 +2,7 @@
 
 import json
 
+import finding_index
 from memory.pattern_db import PatternDB
 from memory.schemas import make_pattern_entry
 from memory.target_profile import make_target_profile, save_target_profile
@@ -461,7 +462,6 @@ class TestSurfaceRanking:
             ),
             encoding="utf-8",
         )
-
         ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
         output = format_surface_output(ranked, "target.com")
         users_entry = next(
@@ -1017,7 +1017,6 @@ class TestSurfaceRanking:
             }) + "\n",
             encoding="utf-8",
         )
-
         ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
         output = format_surface_output(ranked, "target.com")
         workflow_leads = [
@@ -1080,6 +1079,12 @@ class TestSurfaceRanking:
             ),
             encoding="utf-8",
         )
+        finding_index.update_finding_status(
+            findings_dir,
+            "sqli_reported",
+            validation_status="validated",
+            report_status="generated",
+        )
 
         ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
         output = format_surface_output(ranked, "target.com")
@@ -1135,6 +1140,12 @@ class TestSurfaceRanking:
                 }
             ),
             encoding="utf-8",
+        )
+        finding_index.update_finding_status(
+            findings_dir,
+            "authz_reported",
+            validation_status="validated",
+            report_status="generated",
         )
 
         ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))

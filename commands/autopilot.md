@@ -1,18 +1,20 @@
 ---
-description: Expert Hunter AI-first autonomous hunt loop — recon/cache state, review surface evidence, enrich with browser/source/JS, hunt, validate candidates, report validated findings, and checkpoint useful memory. Usage: /autopilot target.com [--paranoid|--normal|--yolo|--quick|--deep] [--auth-file PATH] or /autopilot targets.txt
+description: Expert Hunter AI-first autonomous hunt loop — recon/cache state, review surface evidence, enrich with browser/source/JS, hunt, validate candidates, report validated findings, and checkpoint useful memory. Usage: /autopilot target.com [--paranoid|--normal|--yolo|--quick|--deep] [--max-lanes N] [--auth-file PATH] or /autopilot targets.txt
 allowed-tools: Bash
 ---
 # /autopilot
-Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6"`
-
+Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"`
 Obey bootstrap `action` before any other step: `ask_target` asks for the exact target;
 `stop_invalid_arguments` reports `arguments.errors`; `stop_runtime_drift` reports
 the compact runtime counts and stops. Only `continue` may act. Use
 `arguments.target_shell` for Bash, expand `arguments.hunt_auth_flags` (equivalently
 `--auth-file <arguments.auth_file_shell>`) on hunt/recon/scan when non-null, use `arguments.recon_flags` only on fresh/refresh recon, and obey
-the parsed cadence/quick/deep values exactly. `--quick` lowers recon cost but never
+the parsed cadence/quick/deep/max_lanes values exactly. `--quick` lowers recon cost but never
 skips browser/source/validation or implies completion; scanner quick remains a
-breadth sensor. `--deep` increases value-first depth without relaxing red lines.
+breadth sensor. `--deep` increases value-first depth without relaxing red lines. If
+`invocation_batch.bounded` is true, its `max_lanes` is a current-invocation boundary:
+after that many substantive lanes checkpoint, preserve the durable queue, give a handoff,
+and end; browser/source discoveries become next-invocation work, not lane N+1.
 On `continue`, treat `capabilities` as advisory: `session_managed` names are not availability claims; use MCP only when visible in this Claude session, otherwise follow a viable fallback/recommended path. Missing/degraded tools never block, trigger installation, request installation permission, or count as tested-clean; record material limits in the handoff.
 Expert Hunter Autopilot for Claude CLI. Claude is the hunter; tools are memory,
 evidence, replay, and summary aids.
@@ -51,8 +53,8 @@ cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> [--auth
 ```
 If state returns `wait_recon` / `wait_scan`, do not start that phase again;
 wait/poll, then rerun state before continuing. Runtime phase locks are the final
-duplicate-launch guard. `review_validation_candidate` reviews raw runner evidence before `/validate`; `resume_action_queue` executes its durable replay; `recon_no_live_hosts` records the offline blocker and never reruns automatically. Refresh recon only when missing, thin, stale, or contradicted by fresh evidence.
-`collect_candidate_evidence` consumes `state.structured_next.rubric`: execute its first bounded `next_actions` item (or record a precise blocker/downgrade), preserve the named `missing_labels` evidence, then rerun state. Do not call `/validate` until state returns `validate_finding`.
+duplicate-launch guard. `review_validation_candidate` reviews raw runner evidence before `/validate`; `resume_action_queue` executes its durable replay; `prepare_surface_context` runs cached `/surface` plus `context_pack`; `recon_no_live_hosts` records the offline blocker and never reruns automatically. Refresh recon only when missing, thin, stale, or contradicted by fresh evidence.
+`collect_candidate_evidence` consumes `state.structured_next.rubric.next_actions`, or `state.memory_candidate_next` only after its locatable `evidence_ref` is reviewed; otherwise collect raw request/response and never promote prose alone. If `state.root_claim_next` exists, it is an unvalidated root JSON claim: first run `/checkpoint` so `finding_index` reconciles it into the canonical candidate and durable queue, refresh state, then pass that canonical `structured_next.id` as `validation_runner.py ... --finding-id <id>` when a matching bounded runner captures raw proof. Preserve named `missing_labels`, then rerun state. Do not call `/validate` until state returns `validate_finding`. `complete_report_draft` fills its linked draft placeholders without reopening validated evidence.
 If `arguments.seed_url` is non-null, inspect `<seed_url_shell>` through browser/source/workflow evidence before historical focus or score hints, even for existing canonical target state.
 For a readable primary-domain list, the list context is recon/handoff only:
 1. Run `autopilot_state.py --target targets.txt` before batch recon.
@@ -123,14 +125,16 @@ wire-level absence.
 3. Build a surface/context evidence pack; AI chooses priority.
 4. Capture real browser/source/JS/API request shapes when they can change the next test; scanner quick is only a later breadth signal.
 5. Hunt one high-value hypothesis with MINIMAL PROOF; then attempt CHAIN EXPANSION through role/object/state/method/parser/cache/source/integration pivots.
-6. Promote Lead -> Signal -> Candidate -> Validated Finding only with replayable evidence and practical impact.
-7. REPORT/CHECKPOINT only after AI judges stronger validation/chain/coverage actions no longer outrank the pending report; never auto-submit.
+6. Promote Lead -> Signal -> Candidate -> Validated Finding only with replayable evidence and practical impact; only a same-target structured finding plus locatable raw request/response or `evidence_ref` may be called confirmed/validated. Canonical finding lifecycle writes go through `finding_index`/`/validate`, never direct `findings.json` edits; non-TTY `/validate` requires its explicit `--decision-json` contract.
+7. REPORT/CHECKPOINT only after AI judges stronger validation/chain/coverage actions no longer outrank the pending report; target-memory remains lead/candidate, and a draft with placeholders is not report-ready or submittable.
+### High-impact success handoff
+Treat reproduced exploit behavior or browser-observed impact as evidence, not a finding lifecycle transition. For RCE/SSRF/XXE/deserialization/upload/JWT lanes, preserve exact raw request/response or a locatable browser artifact; when no runner exists, write a target-owned root claim JSON (`title`, `target`, `vuln_class`/`type`, known `endpoint`/`path`, impact, evidence refs) and run `/checkpoint` so the owner creates the candidate/action.
+Missing endpoint data remains an explicit incomplete claim; never fabricate the target root as a URL. Refresh state, use the canonical ID for `/validate`, or close the action as blocked/dead-end; terminal prose alone is never confirmed/validated.
 ## Actionable Evidence Continuation Contract
-Claude must not turn an evidence-backed next step into a passive TODO. Use
-`cd -- <repo_root_shell> && python3 tools/action_queue.py ingest-checkpoint --target <target_shell>`,
-`cd -- <repo_root_shell> && python3 tools/action_queue.py next --target <target_shell>`, and
-`cd -- <repo_root_shell> && python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>`
-when a durable queue helps. Applies to known product/CMS/plugin/theme/library versions,
+Claude must not turn an evidence-backed next step into a passive TODO. `tools/checkpoint.py` automatically syncs its executable proposals through the action-queue owner; use
+`cd -- <repo_root_shell> && python3 tools/action_queue.py next --target <target_shell>` and
+`cd -- <repo_root_shell> && python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>`.
+Use `cd -- <repo_root_shell> && python3 tools/action_queue.py ingest-checkpoint --target <target_shell>` only for an explicit legacy/manual checkpoint recovery. Applies to known product/CMS/plugin/theme/library versions,
 exposed routes, authz/IDOR, SQLi/NoSQLi, SSRF, XXE, RCE/SSTI/command injection,
 parser/file/network/client/business lanes. Do not overfit this contract into a fixed checklist.
 When a primary lane is blocked, do not checkpoint/finish immediately if adjacent high-value lanes remain. Continue with the smallest applicable adjacent lane first, and only stop after the remaining high-value lanes are tested, blocked, dead-end, or not applicable.
@@ -154,7 +158,6 @@ must never block discovery, browser/JS/source enrichment, surface-review hunting
 or AI-generated chain pivots. Case state is not a scope gate, permission gate,
 bug-class selector, or IDOR-only workflow; AI override may pursue fresher
 business-impact evidence.
-
 Useful commands:
 
 ```bash
@@ -186,14 +189,12 @@ are not tested-clean. If unresolved action-gated leads remain, checkpoint instea
 of finishing.
 ## Next Action Consumption Loop
 Checkpoint and memory queues are candidate sets, not orders:
-
 ```bash
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell>
-cd -- <repo_root_shell> && python3 tools/action_queue.py ingest-checkpoint --target <target_shell>
+# normal checkpoint already synchronized the durable queue
 cd -- <repo_root_shell> && python3 tools/action_queue.py next --target <target_shell>
 cd -- <repo_root_shell> && python3 tools/action_queue.py summary --target <target_shell>
 ```
-
 Read `recommended_executable_action`, `next_action_queue`, and the Memory action queue.
 If coverage is near 0%, do not end with only a report suggestion, stale
 queue item, or scanner summary; generate/execute the smallest safe evidence step
@@ -220,7 +221,9 @@ This reference is advisory, not routing and not a state machine.
 `--deep` is a value-first comprehensive depth flag, not a checkpoint mode.
 Substantive actions are actions that add, confirm, disprove, block, or record
 target evidence; do not pad the run with repeated scans or cosmetic steps.
-
+With `--max-lanes N`, choose at most N named substantive lanes in this invocation;
+after lane N do not execute a newly discovered queue item. Run checkpoint (which syncs the
+queue), inspect the handoff, state the remaining next action, and finish naturally.
 Use `rules/hunting.md#high-intensity-hunting-posture` and the value-first
 coverage model. do not lock onto authz/IDOR or any other fixed favorite class;
 rotate by evidence across SQLi/NoSQLi, SSRF, XXE, RCE/SSTI/command injection,
@@ -228,7 +231,6 @@ unsafe deserialization, LFI/RFI/path traversal, upload/parser, OAuth/JWT/CSRF,
 XSS/DOM, race/state-machine, cloud/CI/CD/secret, business logic, and known
 software intelligence. Scanner-negative is only a signal to deepen manual/AI
 work.
-
 Deep Exhaustion Checklist: recon/state/surface consulted; browser/source/JS/API
 context used or ruled out; scanner leads manually followed; high-value workflow
 and crown-jewel hypotheses tried; coverage matrix rebuilt; Evidence Ledger /
@@ -267,8 +269,8 @@ Legacy-only `--parallel`, `--max-parallel`, `--parallel-hypotheses`, `--vision`,
 `--self-review`, and `--calibrate-patterns` are invalid inline; use `cd -- <repo_root_shell> && python3 agent.py --target <target_shell> ...`
 for those options; baseline local-agent runs use `cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> --agent`.
 ## Finish Condition
-Finish on evidence state, not a tool checklist:
-- `working_hypothesis` is resolved, killed, blocked, or promoted to Candidate / Validated Finding.
+Finish on evidence state, not a tool checklist: `working_hypothesis` is resolved, killed, blocked, or promoted to Candidate / Validated Finding.
+- If `invocation_batch.bounded` reached `max_lanes`, checkpoint/sync and terminal handoff override target-exhaustion bullets below; unresolved durable actions are intentional next-invocation work.
 - `oast_listen` is checked when blind/OAST testing was used.
 - No unresolved high-value action-gated scanner lead remains; otherwise checkpoint instead of finishing.
 - No unresolved AI-actionable high-value matrix gap remains after reviewing `cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>`, `cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell>`, checkpoint output, browser/source/JS evidence, and business context; raw matrix gaps are hints, not finish blockers, and absent or empty matrix is not proof of coverage.

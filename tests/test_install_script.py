@@ -25,6 +25,7 @@ def test_install_script_preserves_disabled_runtime_command_state(tmp_path):
         ["bash", str(REPO_ROOT / "install.sh")],
         cwd=REPO_ROOT,
         env=env,
+        stdin=subprocess.DEVNULL,
         text=True,
         capture_output=True,
         check=False,
@@ -49,6 +50,7 @@ def test_install_script_copies_shared_skill_markdown_files(tmp_path):
         ["bash", str(REPO_ROOT / "install.sh")],
         cwd=REPO_ROOT,
         env=env,
+        stdin=subprocess.DEVNULL,
         text=True,
         capture_output=True,
         check=False,
@@ -72,6 +74,7 @@ def test_install_script_recursively_copies_managed_skill_resources(tmp_path):
         ["bash", str(REPO_ROOT / "install.sh")],
         cwd=REPO_ROOT,
         env=env,
+        stdin=subprocess.DEVNULL,
         text=True,
         capture_output=True,
         check=False,
@@ -111,6 +114,7 @@ def test_install_script_produces_runtime_doctor_clean_tree(tmp_path):
         ["bash", str(REPO_ROOT / "install.sh")],
         cwd=REPO_ROOT,
         env=env,
+        stdin=subprocess.DEVNULL,
         text=True,
         capture_output=True,
         check=False,
@@ -130,3 +134,24 @@ def test_install_script_produces_runtime_doctor_clean_tree(tmp_path):
         and result["counts"]["extra"] == 0
         for result in payload["kinds"]
     )
+
+
+def test_install_script_skips_optional_mcp_prompts_without_a_tty(tmp_path):
+    """A staged/CI install must not block on an inherited controlling tty."""
+    home = tmp_path / "home"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "install.sh")],
+        cwd=REPO_ROOT,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Set up Burp MCP now? (y/N): n" in result.stdout

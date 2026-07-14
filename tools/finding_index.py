@@ -10,6 +10,7 @@ slightly different ways.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -20,11 +21,19 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.target_paths import url_belongs_to_target
+    from tools.evidence_rubric import rubric_for
+    from tools.target_paths import canonical_target_value, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
-    from target_paths import url_belongs_to_target
+    from evidence_rubric import rubric_for
+    from target_paths import canonical_target_value, url_belongs_to_target
 
 SCHEMA_VERSION = 1
+MUTATION_EVENT_SCHEMA_VERSION = 1
+MUTATION_EVENTS_FILENAME = "mutation-events.jsonl"
+OWNER_PROVENANCE_FIELD = "owner_provenance"
+FINDING_OWNER = "tools.finding_index"
+FINALIZED_VALIDATION_STATUSES = frozenset({"validated", "rejected"})
+FINALIZED_REPORT_STATUSES = frozenset({"generated", "reported"})
 URL_RE = re.compile(r"https?://[^\s|`>'\")]+")
 BRACKET_RE = re.compile(r"\[([^\]]+)\]")
 
@@ -102,11 +111,356 @@ PRESERVED_FINDING_FIELDS = {
     "report_file",
     "report_id",
     "queue_sync",
+    # 根目录的人工/AI finding claim 仍由本 owner 投影到 canonical index；重建
+    # scanner index 时不能丢失其可追溯来源和稳定 identity。
+    "claim_id",
+    "claim_source_file",
+    "claimed_severity",
+    "claim_target",
+    "claim_status",
+    "incomplete_fields",
+    "claimed_validation_status",
+    "claimed_report_status",
+}
+
+# 根目录 JSON 是 Claude/人工常见的临时落点，但它不是 canonical finding
+# lifecycle。以下文件是已有工具的摘要/索引，不能被误判为一个 claim。
+ROOT_CLAIM_EXCLUDED_FILES = {
+    "findings.json",
+    "validation-summary.json",
+    "last-validate.json",
+    "autopilot_run.json",
+    "run.json",
+    # Machine decision/output witnesses are validation inputs or derived
+    # pointers, not independent finding claims.
+    "machine-decision.json",
+    "validate-output.json",
+    "checkpoint_latest.json",
+    "last_checkpoint.json",
+    "autopilot_state.json",
+    "runtime_state.json",
+    "session.json",
+    "case_state.json",
+    "coverage_matrix.json",
+    "action_queue.json",
 }
 
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def mutation_events_path(findings_dir: str | Path) -> Path:
+    """Return the append-only owner-provenance path for one target index."""
+    return Path(findings_dir) / MUTATION_EVENTS_FILENAME
+
+
+def _canonical_target_or_raw(value: str | None) -> str:
+    """Normalize target identity where possible without hiding malformed legacy rows."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return canonical_target_value(raw)
+    except (TypeError, ValueError):
+        return raw
+
+
+def _finding_without_owner_provenance(finding: dict[str, Any]) -> dict[str, Any]:
+    """Return the canonical row shape used by provenance fingerprinting.
+
+    Caller-supplied provenance is deliberately not part of the canonical row
+    contract. Only this module can attach it after a successful owner mutation.
+    """
+    normalized = dict(finding)
+    normalized.pop(OWNER_PROVENANCE_FIELD, None)
+    return normalized
+
+
+def finding_row_fingerprint(finding: dict[str, Any]) -> str:
+    """Return a stable digest of a canonical row excluding owner metadata."""
+    serialized = json.dumps(
+        _finding_without_owner_provenance(finding),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def finding_evidence_summary(finding: dict[str, Any]) -> dict[str, str]:
+    """Project the bounded evidence pointers that make one mutation reviewable."""
+    fields = (
+        "source_file",
+        "claim_source_file",
+        "validation_summary",
+        "report_file",
+        "report_id",
+        "evidence_ref",
+        "raw_request_path",
+        "raw_response_path",
+    )
+    summary = {
+        field: str(finding.get(field) or "").strip()
+        for field in fields
+        if str(finding.get(field) or "").strip()
+    }
+    if not summary:
+        # Scanner/owner rows can legitimately have no linked artifact yet.
+        # Keep the event structurally reviewable without copying arbitrary PoC
+        # prose into the audit log.
+        summary["source"] = "canonical-finding-row"
+    return summary
+
+
+def _new_mutation_event_id(
+    *,
+    target: str,
+    finding_id: str,
+    operation: str,
+    fingerprint: str,
+    recorded_at: str,
+    ordinal: int,
+) -> str:
+    seed = "|".join((target, finding_id, operation, fingerprint, recorded_at, str(ordinal), str(os.getpid())))
+    return "fmut_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20]
+
+
+def _prepare_owner_provenance(
+    findings: list[dict[str, Any]],
+    *,
+    target: str,
+    operation: str,
+) -> list[dict[str, Any]]:
+    """Attach owner metadata to mutated rows and return their audit events.
+
+    The row mutation and event are intentionally built from the same stripped
+    snapshot. Consumers can therefore detect a later direct JSON edit without
+    inventing a second finding lifecycle or parsing caller-specific payloads.
+    """
+    resolved_target = _canonical_target_or_raw(target)
+    recorded_at = _now_utc()
+    events: list[dict[str, Any]] = []
+    for ordinal, finding in enumerate(findings, 1):
+        if not isinstance(finding, dict):
+            continue
+        finding.pop(OWNER_PROVENANCE_FIELD, None)
+        finding_id = str(finding.get("id") or "").strip()
+        if not finding_id:
+            continue
+        fingerprint = finding_row_fingerprint(finding)
+        evidence_summary = finding_evidence_summary(finding)
+        event_id = _new_mutation_event_id(
+            target=resolved_target,
+            finding_id=finding_id,
+            operation=operation,
+            fingerprint=fingerprint,
+            recorded_at=recorded_at,
+            ordinal=ordinal,
+        )
+        provenance = {
+            "event_id": event_id,
+            "owner": FINDING_OWNER,
+            "operation": operation,
+            "recorded_at": recorded_at,
+            "fingerprint": fingerprint,
+        }
+        finding[OWNER_PROVENANCE_FIELD] = provenance
+        events.append(
+            {
+                "schema_version": MUTATION_EVENT_SCHEMA_VERSION,
+                "event_id": event_id,
+                "recorded_at": recorded_at,
+                "owner": FINDING_OWNER,
+                "operation": operation,
+                "target": resolved_target,
+                "finding_id": finding_id,
+                "endpoint": str(finding.get("url") or finding.get("endpoint") or "").strip(),
+                "vuln_class": str(
+                    finding.get("vuln_class")
+                    or finding.get("type")
+                    or finding.get("category")
+                    or ""
+                ).strip(),
+                "validation_status": str(finding.get("validation_status") or "").strip(),
+                "report_status": str(finding.get("report_status") or "").strip(),
+                "evidence_summary": evidence_summary,
+                "finding_fingerprint": fingerprint,
+            }
+        )
+    return events
+
+
+def _append_mutation_events(path: Path, events: list[dict[str, Any]]) -> None:
+    """Append complete owner events with one locked, fsynced write sequence."""
+    if not events:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = "".join(
+        json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+        for event in events
+    ).encode("utf-8")
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            written = os.write(fd, encoded)
+            if written != len(encoded):
+                raise OSError(f"partial finding provenance write: {written}/{len(encoded)} bytes")
+            os.fsync(fd)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _write_payload_with_owner_provenance(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    findings_dir: Path,
+    target: str,
+    operation: str,
+    mutated_findings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Persist canonical JSON then append matching owner mutation events.
+
+    There is no cross-file transaction in this repository. The canonical index
+    remains the source of truth, while a provenance append failure is surfaced
+    to the caller and intentionally leaves a detectable runtime-invalid row.
+    Retrying the owner mutation repairs that state without an unsafe rollback.
+    """
+    events = _prepare_owner_provenance(
+        mutated_findings,
+        target=target,
+        operation=operation,
+    )
+    _write_finding_payload(path, payload)
+    _append_mutation_events(mutation_events_path(findings_dir), events)
+    return events
+
+
+def _load_mutation_events(findings_dir: str | Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """Read provenance events for verification; retain malformed-line diagnostics."""
+    path = mutation_events_path(findings_dir)
+    if not path.is_file():
+        return [], []
+    events: list[dict[str, Any]] = []
+    errors: list[str] = []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return [], [str(exc)]
+    for line_number, raw in enumerate(lines, 1):
+        if not raw.strip():
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            errors.append(f"line {line_number}: {exc.msg}")
+            continue
+        if not isinstance(event, dict):
+            errors.append(f"line {line_number}: event is not an object")
+            continue
+        events.append(event)
+    return events, errors
+
+
+def verify_finding_owner_provenance(
+    findings_dir: str | Path,
+    finding: dict[str, Any],
+    *,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Verify that one canonical row still matches a finding-index mutation event."""
+    if not isinstance(finding, dict):
+        return {"valid": False, "reason": "finding-not-object"}
+    provenance = finding.get(OWNER_PROVENANCE_FIELD)
+    if not isinstance(provenance, dict):
+        return {"valid": False, "reason": "missing-owner-provenance"}
+    event_id = str(provenance.get("event_id") or "").strip()
+    finding_id = str(finding.get("id") or "").strip()
+    if not event_id or not finding_id:
+        return {"valid": False, "reason": "missing-event-or-finding-id"}
+
+    events, parse_errors = _load_mutation_events(findings_dir)
+    event = next(
+        (item for item in events if str(item.get("event_id") or "") == event_id),
+        None,
+    )
+    if not event:
+        result = {"valid": False, "reason": "missing-mutation-event", "event_id": event_id}
+        if parse_errors:
+            result["event_log_errors"] = parse_errors[:3]
+        return result
+
+    expected_target = _canonical_target_or_raw(target or "")
+    event_target = _canonical_target_or_raw(str(event.get("target") or ""))
+    fingerprint = finding_row_fingerprint(finding)
+    evidence_summary = finding_evidence_summary(finding)
+    if str(provenance.get("owner") or "") != FINDING_OWNER or str(event.get("owner") or "") != FINDING_OWNER:
+        return {"valid": False, "reason": "unexpected-owner", "event_id": event_id}
+    if event.get("schema_version") != MUTATION_EVENT_SCHEMA_VERSION:
+        return {"valid": False, "reason": "unexpected-event-schema", "event_id": event_id}
+    if str(event.get("finding_id") or "") != finding_id:
+        return {"valid": False, "reason": "finding-id-mismatch", "event_id": event_id}
+    if expected_target and event_target != expected_target:
+        return {"valid": False, "reason": "target-mismatch", "event_id": event_id}
+    if str(provenance.get("operation") or "") != str(event.get("operation") or ""):
+        return {"valid": False, "reason": "operation-mismatch", "event_id": event_id}
+    if str(provenance.get("recorded_at") or "") != str(event.get("recorded_at") or ""):
+        return {"valid": False, "reason": "recorded-at-mismatch", "event_id": event_id}
+    if str(provenance.get("fingerprint") or "") != fingerprint:
+        return {"valid": False, "reason": "row-fingerprint-mismatch", "event_id": event_id}
+    if str(event.get("finding_fingerprint") or "") != fingerprint:
+        return {"valid": False, "reason": "event-fingerprint-mismatch", "event_id": event_id}
+    if event.get("evidence_summary") != evidence_summary:
+        return {"valid": False, "reason": "evidence-summary-mismatch", "event_id": event_id}
+    return {
+        "valid": True,
+        "event_id": event_id,
+        "operation": str(event.get("operation") or ""),
+        "evidence_summary": evidence_summary,
+    }
+
+
+def finding_requires_owner_provenance(finding: dict[str, Any]) -> bool:
+    """Return whether a row claims a lifecycle state that must be owner-backed.
+
+    Candidate and scanner rows can exist before the canonical owner has written
+    a lifecycle transition.  A row that claims validation/rejection or a
+    generated/reported report is different: consumers must be able to replay
+    the matching ``finding_index`` mutation before treating that claim as a
+    closure, report input, or suppression signal.
+    """
+    if not isinstance(finding, dict):
+        return False
+    validation_status = str(finding.get("validation_status") or "").strip().lower()
+    report_status = str(finding.get("report_status") or "").strip().lower()
+    return (
+        validation_status in FINALIZED_VALIDATION_STATUSES
+        or report_status in FINALIZED_REPORT_STATUSES
+    )
+
+
+def verify_finalized_finding_owner_provenance(
+    findings_dir: str | Path,
+    finding: dict[str, Any],
+    *,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Verify a lifecycle-final row, or mark non-final rows as not requiring it.
+
+    This is the shared consumer gate.  It lets state, report, and surface
+    readers use exactly the same definition instead of independently checking
+    the mutable status strings in ``findings.json``.
+    """
+    required = finding_requires_owner_provenance(finding)
+    if not required:
+        return {"required": False, "valid": True, "reason": "not-finalized"}
+    result = verify_finding_owner_provenance(findings_dir, finding, target=target)
+    return {"required": True, **result}
 
 
 def _line_count(path: Path) -> int:
@@ -221,6 +575,281 @@ def _is_target_owned_finding(finding: dict[str, Any], target: str) -> bool:
     return url_belongs_to_target(url, target)
 
 
+def _root_claim_id(relative_path: str) -> str:
+    """Return the stable canonical identity for one root-level claim artifact."""
+    digest = hashlib.sha1(f"root-finding-claim:{relative_path}".encode("utf-8")).hexdigest()[:12]
+    return f"claim_{digest}"
+
+
+def _claim_rubric(vuln_type: str) -> dict[str, Any]:
+    """Build an explicitly incomplete rubric for an unindexed claim.
+
+    A root JSON may contain a natural-language PoC or copied response snippets,
+    but it is not a linked raw request/response or `/validate` result.  Do not
+    feed those prose fields to the keyword rubric, otherwise self-described
+    evidence could accidentally become candidate-ready.
+    """
+    rubric = rubric_for(vuln_type)
+    missing = [
+        {"id": requirement.id, "label": requirement.label}
+        for requirement in rubric.requirements
+    ]
+    return {
+        "rubric_id": rubric.id,
+        "title": rubric.title,
+        "status": "needs-evidence",
+        "ready": False,
+        "score": 0,
+        "satisfied_count": 0,
+        "total": len(rubric.requirements),
+        "satisfied": [],
+        "missing": missing,
+        "missing_labels": [item["label"] for item in missing],
+        "next_actions": [requirement.next_action for requirement in rubric.requirements],
+        "strong_evidence": False,
+        "summary": (
+            f"{rubric.id}:needs-evidence score=0 satisfied=0/{len(rubric.requirements)} "
+            "(root JSON claim is not linked validation evidence)"
+        ),
+    }
+
+
+def _claim_value(payload: dict[str, Any], *keys: str) -> str:
+    """Read the first scalar claim field without copying arbitrary payload data."""
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, (str, int, float)) and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _claim_detail_present(payload: dict[str, Any]) -> bool:
+    """Return whether a JSON object contains a finding-shaped detail field."""
+    detail_keys = (
+        "poc",
+        "evidence",
+        "impact",
+        "reproduction",
+        "steps_to_reproduce",
+        "description",
+        "summary",
+        "proof",
+        "observed",
+        "exploit_steps",
+        "finding_summary",
+    )
+    return any(payload.get(key) not in (None, "", [], {}) for key in detail_keys)
+
+
+def _claim_type(value: str) -> str:
+    """Normalize a claim class while retaining unknown classes for review."""
+    return str(value or "unknown").strip().lower().replace("-", "_").replace(" ", "_") or "unknown"
+
+
+def _claim_incomplete_fields(title: str, endpoint: str, vuln_type: str, detail: bool) -> list[str]:
+    missing: list[str] = []
+    if not title:
+        missing.append("title")
+    if not endpoint:
+        missing.append("endpoint")
+    if not vuln_type:
+        missing.append("vuln_class")
+    if not detail:
+        missing.append("claim_detail")
+    return missing
+
+
+def _root_claim_from_json(
+    findings_dir: Path,
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    target: str,
+) -> dict[str, Any] | None:
+    """Normalize one direct root JSON claim without trusting its lifecycle labels.
+
+    Scanner projections live in typed subdirectories and are built by
+    :func:`build_finding_index`.  A standalone root JSON with a title, endpoint,
+    vulnerability class and reproduction/impact field instead represents a
+    human/AI claim that must first become a canonical ``candidate``.
+    """
+    if path.name in ROOT_CLAIM_EXCLUDED_FILES:
+        return None
+    if "findings" in payload or payload.get("kind") == "autopilot_checkpoint_witness":
+        return None
+
+    title = _claim_value(payload, "title", "name", "finding_title")
+    endpoint = _claim_value(payload, "url", "endpoint", "path", "route", "resource")
+    vuln_type = _claim_value(
+        payload,
+        "type",
+        "vuln_type",
+        "vuln_class",
+        "vulnerability_class",
+        "finding_type",
+        "category",
+    )
+    has_claim_detail = _claim_detail_present(payload)
+    incomplete_fields = _claim_incomplete_fields(title, endpoint, vuln_type, has_claim_detail)
+
+    # A malformed/partial claim is still a useful recovery object when it has
+    # at least one identity field plus evidence-shaped detail.  Do not accept
+    # arbitrary metadata JSON, and never substitute the target root for a
+    # missing endpoint.
+    identity_count = sum(bool(value) for value in (title, endpoint, vuln_type))
+    explicit_claim_state = any(
+        payload.get(key) not in (None, "", [], {})
+        for key in ("state", "status", "validation_status", "severity", "impact", "evidence")
+    )
+    if identity_count == 0 or (not has_claim_detail and not explicit_claim_state):
+        return None
+    if target and "//" in endpoint and not url_belongs_to_target(endpoint, target):
+        return None
+
+    relative_path = str(path.relative_to(findings_dir))
+    normalized_type = _claim_type(vuln_type)
+    declared_severity = str(payload.get("severity") or "medium").strip().lower() or "medium"
+    claim_id = _root_claim_id(relative_path)
+    claim_status = "incomplete" if incomplete_fields else "complete"
+    claimed_validation_status = _claim_value(payload, "validation_status", "state", "status")
+    claimed_report_status = _claim_value(payload, "report_status", "report_state")
+    claim_target = _claim_value(payload, "target", "host")
+    if claim_target and "//" in claim_target and target and not url_belongs_to_target(claim_target, target):
+        return None
+    return {
+        "id": claim_id,
+        "claim_id": claim_id,
+        "claim_source_file": relative_path,
+        # Keep an absolute artifact pointer for Claude's next evidence step;
+        # `claim_source_file` remains the stable, portable identity.
+        "source_file": str(path),
+        "type": normalized_type,
+        "category": normalized_type,
+        "vuln_class": vuln_type or normalized_type,
+        "title": title,
+        "summary": (
+            f"Unvalidated root JSON finding claim from {relative_path}. "
+            + (
+                "Missing: " + ", ".join(incomplete_fields) + ". "
+                if incomplete_fields
+                else ""
+            )
+            + "Its prose/PoC is not linked raw evidence or a /validate result."
+        ),
+        "url": endpoint,
+        "claim_target": claim_target,
+        "claim_status": claim_status,
+        "incomplete_fields": incomplete_fields,
+        "claimed_validation_status": claimed_validation_status,
+        "claimed_report_status": claimed_report_status,
+        "severity": declared_severity,
+        "claimed_severity": declared_severity,
+        "confidence": "needs_review",
+        "raw": f"root-finding-claim:{relative_path}",
+        "validation_status": "candidate",
+        "report_status": "not_generated",
+        "evidence_rubric": _claim_rubric(normalized_type),
+    }
+
+
+def list_root_finding_claims(
+    findings_dir: str | Path,
+    *,
+    target: str | None = None,
+    include_reconciled: bool = False,
+) -> list[dict[str, Any]]:
+    """Return direct root JSON claims not yet owned by ``findings.json``.
+
+    This is intentionally read-only so ``autopilot_state`` can surface an
+    interrupted/manual claim before any checkpoint is run.  The CLI checkpoint
+    calls :func:`reconcile_root_finding_claims` to persist the same projection.
+    """
+    root = Path(findings_dir)
+    if not root.is_dir():
+        return []
+    resolved_target = str(target or root.name)
+    canonical = _load_finding_payload(
+        root / "findings.json",
+        root,
+        target=resolved_target,
+        migrate_legacy=False,
+    )
+    reconciled_ids = {
+        str(item.get("claim_id") or item.get("id") or "")
+        for item in canonical.get("findings", [])
+        if isinstance(item, dict)
+    }
+    reconciled_sources = {
+        str(item.get("claim_source_file") or "")
+        for item in canonical.get("findings", [])
+        if isinstance(item, dict)
+    }
+
+    claims: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*.json")):
+        payload = _load_json_value(path)
+        if not isinstance(payload, dict):
+            continue
+        claim = _root_claim_from_json(root, path, payload, target=resolved_target)
+        if not claim:
+            continue
+        if not include_reconciled and (
+            claim["claim_id"] in reconciled_ids
+            or claim["claim_source_file"] in reconciled_sources
+        ):
+            continue
+        claims.append(claim)
+
+    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+    claims.sort(
+        key=lambda item: (
+            -severity_rank.get(str(item.get("severity") or "").lower(), 0),
+            str(item.get("claim_source_file") or ""),
+        )
+    )
+    return claims
+
+
+def reconcile_root_finding_claims(
+    findings_dir: str | Path,
+    *,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Persist direct root JSON claims through the canonical finding owner.
+
+    The operation is idempotent.  It intentionally creates only an
+    ``candidate`` with an explicitly incomplete evidence rubric; it never
+    upgrades a prose claim to ``validated`` or report-ready.
+    """
+    root = Path(findings_dir)
+    resolved_target = str(target or root.name)
+    claims = list_root_finding_claims(root, target=resolved_target)
+    if not claims:
+        return {
+            "status": "noop",
+            "claims": [],
+            "created": 0,
+            "updated": 0,
+            "path": str(root / "findings.json"),
+        }
+
+    result = upsert_findings(root, claims, target=resolved_target)
+    return {
+        "status": "updated",
+        "claims": [
+            {
+                "id": str(item.get("id") or ""),
+                "source_file": str(item.get("claim_source_file") or ""),
+            }
+            for item in result.get("findings", [])
+            if isinstance(item, dict)
+        ],
+        "created": int(result.get("created", 0) or 0),
+        "updated": int(result.get("updated", 0) or 0),
+        "path": str(result.get("path") or root / "findings.json"),
+    }
+
+
 def build_finding_index(findings_dir: str | Path, *, target: str | None = None) -> dict[str, Any]:
     """Build a structured index from category ``.txt`` artifacts."""
     root = Path(findings_dir)
@@ -313,6 +942,37 @@ def _generated_finding_id(finding: dict[str, Any]) -> str:
     return f"{prefix}_{digest}"
 
 
+def _legacy_lifecycle_status(validation_status: str) -> str:
+    """Map canonical validation state to the historical ``state/status`` value."""
+    value = str(validation_status or "").strip().lower()
+    if value == "validated":
+        return "validated"
+    if value == "rejected":
+        return "rejected"
+    if value in {"candidate", "partial", "needs_validation", "needs_owner_revalidation"}:
+        return "candidate"
+    return "unvalidated"
+
+
+def _sync_legacy_lifecycle_fields(finding: dict[str, Any]) -> dict[str, Any]:
+    """Keep legacy lifecycle aliases aligned when an owner mutation touches a row.
+
+    ``validation_status`` is the canonical field.  Some older runtime writers
+    also emit top-level ``state``/``status``; preserving those keys is useful for
+    compatibility, but leaving them stale creates contradictory operator views.
+    Only existing alias keys are projected so new rows do not silently acquire a
+    second lifecycle schema.
+    """
+    if "state" not in finding and "status" not in finding:
+        return finding
+    value = _legacy_lifecycle_status(str(finding.get("validation_status") or ""))
+    if "state" in finding:
+        finding["state"] = value
+    if "status" in finding:
+        finding["status"] = value
+    return finding
+
+
 def _normalize_finding(finding: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(finding)
     endpoint = str(normalized.get("url") or normalized.get("endpoint") or "").strip()
@@ -330,6 +990,7 @@ def _normalize_finding(finding: dict[str, Any]) -> dict[str, Any]:
     normalized["id"] = str(normalized.get("id") or _generated_finding_id(normalized))
     normalized.setdefault("validation_status", "unvalidated")
     normalized.setdefault("report_status", "not_generated")
+    _sync_legacy_lifecycle_fields(normalized)
     return normalized
 
 
@@ -374,6 +1035,9 @@ def _legacy_list_to_index(
         if not isinstance(raw, dict):
             continue
         finding = _normalize_finding(raw)
+        # Historical list payloads never had owner provenance. Ignore any
+        # ad-hoc field and mint it only through the migration owner write.
+        finding.pop(OWNER_PROVENANCE_FIELD, None)
         finding_id = str(finding["id"])
         existing_index = index_by_id.get(finding_id)
         if existing_index is None:
@@ -427,7 +1091,16 @@ def _load_finding_payload(
         return {}
     payload = _legacy_list_to_index(findings_dir, raw, target=target)
     if migrate_legacy:
-        _write_finding_payload(path, payload)
+        _write_payload_with_owner_provenance(
+            path,
+            payload,
+            findings_dir=findings_dir,
+            target=str(payload.get("target") or target or findings_dir.name),
+            operation="legacy_migration",
+            mutated_findings=[
+                item for item in payload.get("findings", []) if isinstance(item, dict)
+            ],
+        )
     return payload
 
 
@@ -537,7 +1210,21 @@ def write_finding_index(findings_dir: str | Path, *, target: str | None = None, 
     )
     _preserve_existing_finding_state(payload, existing)
     _refresh_finding_counts(payload)
-    _write_finding_payload(output_path, payload)
+    updated_at = _now_utc()
+    payload["updated_at"] = updated_at
+    mutated_findings = [
+        item for item in payload.get("findings", []) if isinstance(item, dict)
+    ]
+    for finding in mutated_findings:
+        finding["updated_at"] = updated_at
+    _write_payload_with_owner_provenance(
+        output_path,
+        payload,
+        findings_dir=root,
+        target=str(payload.get("target") or target or root.name),
+        operation="rebuild_index",
+        mutated_findings=mutated_findings,
+    )
     return payload
 
 
@@ -582,6 +1269,9 @@ def upsert_findings(
         if not isinstance(raw, dict):
             continue
         candidate = _normalize_finding(raw)
+        # A caller must not be able to forge owner provenance through an input
+        # row. Existing metadata is replaced below by this mutation's event.
+        candidate.pop(OWNER_PROVENANCE_FIELD, None)
         index = id_to_index.get(str(candidate.get("id") or ""))
         semantic_key = _finding_semantic_key(candidate)
         if index is None and semantic_key[0]:
@@ -607,7 +1297,14 @@ def upsert_findings(
 
     payload["updated_at"] = _now_utc()
     _refresh_finding_counts(payload)
-    _write_finding_payload(path, payload)
+    _write_payload_with_owner_provenance(
+        path,
+        payload,
+        findings_dir=root,
+        target=str(payload.get("target") or target or root.name),
+        operation="upsert",
+        mutated_findings=mutated,
+    )
     return {
         "created": created,
         "updated": updated,
@@ -653,9 +1350,12 @@ def update_finding_status(findings_dir: str | Path, finding_id: str, **updates: 
         if not isinstance(finding, dict) or finding.get("id") != finding_id:
             continue
         for key, value in updates.items():
+            if key == OWNER_PROVENANCE_FIELD:
+                continue
             if value in (None, ""):
                 continue
             finding[key] = value
+        _sync_legacy_lifecycle_fields(finding)
         finding["updated_at"] = _now_utc()
         updated_finding = finding
         break
@@ -664,7 +1364,14 @@ def update_finding_status(findings_dir: str | Path, finding_id: str, **updates: 
         return None
 
     _refresh_finding_counts(payload)
-    _write_finding_payload(path, payload)
+    _write_payload_with_owner_provenance(
+        path,
+        payload,
+        findings_dir=Path(findings_dir),
+        target=str(payload.get("target") or Path(findings_dir).name),
+        operation="status_update",
+        mutated_findings=[updated_finding],
+    )
     return updated_finding
 
 
