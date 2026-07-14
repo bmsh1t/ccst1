@@ -28,21 +28,22 @@ Run full validation on the current finding before writing a report.
 ## Outputs
 
 - Validation decision and reasoning
-- `validation-summary.json`
+- 当前 finding 独占的 `<artifact-key>.validation-summary.json`
 - Updated finding linkage/status when launched from `findings.json`
 - Updated runtime state so `/pickup` / `/surface` / autopilot know validation progress
 
 ## Artifacts Written
 
-- `findings/<target>/validation-summary.json` or equivalent report-local summary
-- `findings/last-validate.json`
+- 报告同目录的 `<artifact-key>.validation-summary.json`
+- 报告同目录的 `<artifact-key>.submission-notes.md`
+- `findings/last-validate.json`（仅为最近一次运行的 convenience pointer）
 - `findings/<target>/findings.json` status updates when applicable
 - `state/<target>/session.json`
 
 ## Resume Source
 
 - Structured finding linkage from `findings/<target>/findings.json`
-- Latest validation summary if this finding was already partially validated
+- canonical finding 行中 `validation_summary` 指向的摘要（如果该 finding 已部分验证）
 - PASS cases hand off to `/report`; non-PASS cases hand off back to hunt with a
   concrete next evidence step
 
@@ -69,7 +70,8 @@ reintroduce external scope/program confirmation for this run.
 4. Calculates and records validation context where applicable
 5. Outputs: PASS (write the report), KILL (do not report), or DOWNGRADE (impact not strong enough)
 
-`tools/validate.py` records the 7-Question Gate in `validation-summary.json`.
+`tools/validate.py` records the 7-Question Gate in the current finding's
+`<artifact-key>.validation-summary.json`.
 If Claude/operator already made an explicit Q1-Q7 judgment, save it as JSON and
 pass `--seven-question-json <file>`; otherwise the script stores a coarse
 `derived_from_4_gates` audit block so the report path remains reviewable.
@@ -104,7 +106,10 @@ row's `findings/<target>/` directory.
 The tool writes the summary, ledger/queue handoff and canonical status through
 their existing owners. `finding_index` also records a target-scoped owner
 mutation event, so a later runtime check can distinguish an owner mutation from
-an untracked JSON edit. Omit `--decision-json` only from a real TTY session;
+an untracked JSON edit. Each canonical row records the actual
+`validation_summary` path and its `validation_summary_sha256`; do not reconstruct
+the filename in a caller. `findings/last-validate.json` is only a latest pointer
+and is never canonical evidence. Omit `--decision-json` only from a real TTY session;
 non-TTY calls fail closed without creating report, finding, queue or runtime state.
 
 ## Browser-State Priority
@@ -136,8 +141,8 @@ rebuild it with:
 python3 tools/finding_index.py findings/target.com
 ```
 
-When validation finishes, `validation-summary.json` keeps the linkage back to
-the scanner candidate when available:
+When validation finishes, the returned per-finding validation summary keeps the
+linkage back to the scanner candidate when available:
 
 - `finding_id`
 - `finding_source_file`
@@ -147,8 +152,9 @@ This lets `/report`, `/remember --from-validate`, and later review steps trace
 the validated issue back to the original scanner evidence without reparsing the
 raw finding files.
 
-The matching item in `findings.json` is also updated with `validation_status`
-and `validation_summary` when validation was launched with `--finding-id`.
+The matching item in `findings.json` is also updated with `validation_status`,
+the exact `validation_summary` path, and its content digest when validation was
+launched with `--finding-id`.
 Subsequent `/surface` or direct `findings.json` review shows the
 validation/report status for each structured candidate.
 
@@ -159,7 +165,9 @@ Describe the finding when prompted. Include:
 - The target program
 - The exact request/response evidence if available
 
-If you already ran `/validate` and it passed, `/report` can use the latest validation summary as report context.
+If you already ran `/validate` and it passed, `/report` must use the selected
+finding's recorded summary path (or the path returned by that exact invocation),
+not a repo-global latest pointer from another finding.
 
 Optional deterministic replay/diff helpers live in `docs/evidence-runners.md`.
 Use them when they make evidence reproducible, but keep `/validate` as the

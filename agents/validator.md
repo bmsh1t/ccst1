@@ -55,15 +55,17 @@ notes."
 ## Artifacts Written
 
 - Indirectly, via `tools/validate.py`:
-  - `validation-summary.json`
-  - `findings/last-validate.json`
+  - report-local `<artifact-key>.validation-summary.json`
+  - report-local `<artifact-key>.submission-notes.md`
+  - `findings/last-validate.json` as a non-canonical latest pointer
   - `findings/<target>/findings.json` status updates
   - `state/<target>/session.json` validation progress updates
 
 ## Resume Source
 
 - The current Candidate evidence bundle
-- `findings/<target>/findings.json` + latest validation summary when present
+- `findings/<target>/findings.json` + that finding's recorded `validation_summary`
+  when present; never bind a different finding through `last-validate.json`
 - Hand off PASS cases to `/report`; hand off non-PASS cases back to hunt memory / next evidence step
 
 ## Scope

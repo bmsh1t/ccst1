@@ -19,14 +19,16 @@ Save a finding or successful pattern to persistent hunt memory.
 ```
 /remember                    # after finding something
 /remember --from-validate --target target.com
-/remember --from-validate --validate-json findings/target.com/validated/validation-summary.json
+/remember --from-validate --validate-json findings/target.com/validated/FINDING_ARTIFACT_KEY.validation-summary.json
 ```
 
 `--from-validate` is intentionally target-aware. When Claude Code is started in
 the repo root for a new target, do not blindly import the repo-global
 `findings/last-validate.json`; pass the current `--target` or a concrete
 `--validate-json` path so an older target's validation summary cannot be saved
-into the new target profile.
+into the new target profile. When a canonical finding exists, copy the exact
+`validation_summary` value from that row instead of reconstructing a fixed
+filename.
 
 ## Interactive Flow
 

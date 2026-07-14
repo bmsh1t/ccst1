@@ -246,7 +246,10 @@ targets/<target>/sessions/<session_id>/
 - CVSS 4.0 计算
 - HackerOne / Bugcrowd / Intigriti / Immunefi 风格报告模板
 - 从扫描结果批量生成报告草稿
-- 生成 `validation-summary.json`
+- 为每个 finding 生成独立的 `<artifact-key>.validation-summary.json` 和
+  `<artifact-key>.submission-notes.md`
+- canonical finding 保存实际 summary 路径与内容 digest；`findings/last-validate.json` 仅作
+  latest pointer
 - 在验证摘要中保留 scanner finding id、source file 和 finding summary
 - 从结构化 finding 生成报告时写入 Finding Reference 证据引用块
 - 验证和报告生成后回写 `findings.json` 中的 `validation_status` / `report_status`

@@ -57,10 +57,13 @@ python3 tools/coverage_matrix.py find-gaps --target <target>
 
 ```text
 findings/<target>/findings.json
-findings/<target>/validation-summary.json
+该 finding 行的 validation_summary 路径（通常为 report-local *.validation-summary.json）
 memory/goals/targets/<target>.json
 memory/goals/sessions/*.md
 ```
+
+`findings/last-validate.json` 仅表示最近一次运行，不得替代 selected finding 的 canonical
+artifact 绑定。
 
 不要默认读取大体积原始扫描日志、完整响应包、HTML dump、所有 JSONL 或无关历史会话。
 
