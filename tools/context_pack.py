@@ -33,6 +33,7 @@ try:
         load_validation_runner_candidate_pool,
     )
     from tools.surface import load_surface_context, rank_surface
+    from tools.surface_projection import load_surface_projection
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
@@ -48,6 +49,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_validation_runner_candidate_pool,
     )
     from surface import load_surface_context, rank_surface  # type: ignore
+    from surface_projection import load_surface_projection  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -898,6 +900,13 @@ def _safe_find_gaps(target: str, target_key: str, repo_root: Path) -> tuple[list
 
 def _surface_state(repo_root: Path, target: str, memory_dir: str | None) -> dict:
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
+    projection = load_surface_projection(
+        repo_root,
+        target,
+        memory_dir=resolved_memory_dir,
+    )
+    if projection.get("status") == "valid":
+        return dict(projection.get("surface") or {})
     context = load_surface_context(
         repo_root,
         target,

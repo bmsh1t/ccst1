@@ -11,7 +11,7 @@ from typing import Any, Sequence
 
 try:
     from tools.autopilot_args import parse_autopilot_args
-    from tools.autopilot_state import build_autopilot_state
+    from tools.autopilot_state import build_autopilot_bootstrap_state
     from tools.capability_profile import (
         build_capability_profile,
         unknown_capability_profile,
@@ -20,7 +20,7 @@ try:
     from tools.runtime_doctor import KIND_ORDER, compare_runtime
 except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直接执行
     from autopilot_args import parse_autopilot_args
-    from autopilot_state import build_autopilot_state
+    from autopilot_state import build_autopilot_bootstrap_state
     from capability_profile import build_capability_profile, unknown_capability_profile
     from runtime_config import is_ctf_mode_enabled
     from runtime_doctor import KIND_ORDER, compare_runtime
@@ -170,6 +170,8 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     memory_candidate_next = state.get("memory_candidate_next") or {}
     root_claim_next = state.get("root_finding_claim_next") or {}
     recon_artifacts = state.get("recon_artifacts") or {}
+    surface_projection = state.get("surface_projection") or {}
+    observation_inventory = state.get("observation_inventory") or {}
     batch = state.get("batch") or {}
 
     compact_batch: dict[str, Any] = {}
@@ -228,6 +230,27 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             else {}
         ),
         "batch": compact_batch,
+        "surface_projection": {
+            key: surface_projection[key]
+            for key in ("status", "reason", "path", "refresh_command")
+            if surface_projection.get(key) not in (None, "")
+        },
+        "observation_inventory": {
+            key: observation_inventory[key]
+            for key in (
+                "status",
+                "reason",
+                "needs_sync",
+                "total",
+                "present",
+                "untouched",
+                "reviewing",
+                "reviewed",
+                "parked",
+                "stale",
+            )
+            if key in observation_inventory
+        },
         "surface_candidates": [
             _compact_candidate(item)
             for item in (
@@ -293,7 +316,10 @@ def build_autopilot_bootstrap(
         payload["capabilities"] = unknown_capability_profile("profile-error")
 
     payload["ctf_mode"] = is_ctf_mode_enabled(resolved_repo)
-    state = build_autopilot_state(str(resolved_repo), str(arguments["target"]))
+    state = build_autopilot_bootstrap_state(
+        str(resolved_repo),
+        str(arguments["target"]),
+    )
     payload["state"] = compact_autopilot_state(state)
     payload["action"] = "continue"
     return payload

@@ -100,6 +100,13 @@ def _dedupe(items: list[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _contains_hint(text: str, token: str) -> bool:
+    """短缩写必须按 word/segment 边界匹配，避免 hostname/普通单词误命中。"""
+    if len(token) > 3:
+        return token in text
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", text))
+
+
 def classify_high_value_signal(*, path: str = "", query_keys: list[str] | None = None, item_type: str = "", evidence: str = "") -> HighValueSignal:
     """根据路径、参数、动作类型和证据，返回一个轻量高价值加分。
 
@@ -130,11 +137,11 @@ def classify_high_value_signal(*, path: str = "", query_keys: list[str] | None =
         add(2, "api", "api")
 
     for token in ("admin", "internal", "billing", "payment", "oauth", "saml", "webhook", "callback", "graphql", "upload", "export", "download", "tenant", "workspace", "account", "order", "secret", "ci", "cd"):
-        if token in lower_path:
+        if _contains_hint(lower_path, token):
             add(2, token, f"path:{token}")
             break
     for token in ("wordpress", "plugin", "theme", "cve", "advisory", "version", "affected", "reachable", "idor", "ssrf", "sqli", "rce", "upload", "oauth", "saml", "secret"):
-        if token in lower_evidence:
+        if _contains_hint(lower_evidence, token):
             add(2, token, f"evidence:{token}")
             break
 

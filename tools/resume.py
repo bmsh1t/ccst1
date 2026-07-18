@@ -49,10 +49,20 @@ _SESSION_SUMMARY_RE = re.compile(
 )
 
 
-def load_structured_finding_followup(base_dir: str | Path, target: str) -> dict:
-    """Load owner-verified validation/report follow-up state from findings.json."""
+def load_structured_finding_followup(
+    base_dir: str | Path,
+    target: str,
+    *,
+    migrate_legacy: bool = True,
+) -> dict:
+    """Load owner-verified validation/report follow-up state from findings.json.
+
+    ``migrate_legacy=False`` is reserved for strictly read-only projections such
+    as slash-command bootstrap.  Mutation owners can keep the historical
+    default and perform the canonical legacy migration when appropriate.
+    """
     findings_dir = Path(base_dir) / "findings" / target_storage_key(target)
-    payload = load_finding_index(findings_dir)
+    payload = load_finding_index(findings_dir, migrate_legacy=migrate_legacy)
     findings = [
         item for item in payload.get("findings", [])
         if isinstance(item, dict)

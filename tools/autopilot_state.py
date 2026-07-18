@@ -37,10 +37,14 @@ try:
     from tools.request_guard import load_guard_status
     from tools.resume import load_resume_summary, load_structured_finding_followup
     from tools.surface import load_surface_context, rank_surface
+    from tools.observation_inventory import peek_inventory_summary
+    from tools.surface_projection import load_surface_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
     from request_guard import load_guard_status
     from resume import load_resume_summary, load_structured_finding_followup
     from surface import load_surface_context, rank_surface
+    from observation_inventory import peek_inventory_summary  # type: ignore
+    from surface_projection import load_surface_projection  # type: ignore
 try:
     from tools.finding_index import (
         list_root_finding_claims,
@@ -48,6 +52,7 @@ try:
     )
     from tools.runtime_state import (
         inspect_recon_artifacts,
+        inspect_recon_artifacts_fast,
         load_runtime_state,
         runtime_phase_in_progress,
     )
@@ -70,6 +75,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from runtime_state import (  # type: ignore
         inspect_recon_artifacts,
+        inspect_recon_artifacts_fast,
         load_runtime_state,
         runtime_phase_in_progress,
     )
@@ -314,6 +320,7 @@ def _pick_next_action(
     memory_candidate_next: dict | None = None,
     root_finding_claim_next: dict | None = None,
     fresh_recon_ready: bool = False,
+    surface_context_required: bool = False,
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
@@ -370,7 +377,7 @@ def _pick_next_action(
 
     if ranked.get("review_pool") or ranked.get("p1"):
         return "hunt_p1"
-    if fresh_recon_ready:
+    if surface_context_required or fresh_recon_ready:
         return "prepare_surface_context"
     if resume_targets:
         return "resume_untested"
@@ -1286,36 +1293,44 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
     }
 
 
-def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = None) -> dict:
-    """Build a practical autopilot bootstrap state for a target."""
-    resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
-    resolved_target = canonical_target_value(target)
-    if classify_target(resolved_target)["kind"] == "list":
-        migrate_legacy_list_storage(repo_root, resolved_target)
-        return _build_batch_autopilot_state(repo_root, target, resolved_target)
-    resume_summary = load_resume_summary(resolved_memory_dir, target)
-    # autopilot_state 是启动态读取工具，不应改写 surface 的过滤日志。
-    surface_context = load_surface_context(
-        repo_root,
-        resolved_target,
-        memory_dir=resolved_memory_dir,
-        write_probe_log=False,
-    )
-    ranked = rank_surface(surface_context)
+def _load_autopilot_control_facts(
+    repo_root: str,
+    resolved_target: str,
+    resolved_memory_dir: str,
+    *,
+    fast_recon: bool,
+) -> dict:
+    """一次性读取 next-action 所需控制事实。
+
+    Bootstrap 使用 ``fast_recon=True``，因此这里只 stat recon artifact，且
+    finding reader 禁止 legacy migration。完整诊断路径复用同一事实集合，
+    但保留精确 recon 计数。
+    """
+    resume_summary = load_resume_summary(resolved_memory_dir, resolved_target)
     finalized_paths = _finalized_finding_paths(repo_root, resolved_target)
-    ranked_for_next = _filter_ranked_placeholders(ranked)
     guard_status = load_guard_status(resolved_memory_dir, resolved_target)
     tripped_hosts = [item for item in guard_status.get("hosts", []) if item.get("tripped")]
     repo_source_artifacts = list_repo_source_artifacts(repo_root, resolved_target)
     repo_source_available = bool(repo_source_artifacts)
-    repo_source_summary = load_repo_source_summary(repo_root, resolved_target) if repo_source_available else {}
-    structured_findings = load_structured_finding_followup(repo_root, resolved_target)
+    repo_source_summary = (
+        load_repo_source_summary(repo_root, resolved_target)
+        if repo_source_available
+        else {}
+    )
+    structured_findings = load_structured_finding_followup(
+        repo_root,
+        resolved_target,
+        migrate_legacy=False,
+    )
     root_finding_claims = list_root_finding_claims(
         Path(repo_root) / "findings" / target_storage_key(resolved_target),
         target=resolved_target,
     )
     root_finding_claim_next = root_finding_claims[0] if root_finding_claims else {}
-    validation_runner_candidates = load_validation_runner_candidate_pool(repo_root, resolved_target)
+    validation_runner_candidates = load_validation_runner_candidate_pool(
+        repo_root,
+        resolved_target,
+    )
     validation_runner_next = (
         validation_runner_candidates[0]
         if validation_runner_candidates
@@ -1323,7 +1338,11 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     )
     action_queue_next = _load_substantive_action_queue_next(repo_root, resolved_target)
     runtime_state = load_runtime_state(repo_root, resolved_target)
-    recon_artifacts = inspect_recon_artifacts(repo_root, resolved_target)
+    recon_artifacts = (
+        inspect_recon_artifacts_fast(repo_root, resolved_target)
+        if fast_recon
+        else inspect_recon_artifacts(repo_root, resolved_target)
+    )
     recon_in_progress = (
         _runtime_recon_in_progress(repo_root, resolved_target, runtime_state)
         and not bool(recon_artifacts.get("ready"))
@@ -1335,8 +1354,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         recon_in_progress=recon_in_progress,
     )
     target_goal_memory = load_target_goal_memory(repo_root, resolved_target)
-
-    has_recon = bool(ranked.get("available")) and bool(recon_artifacts.get("host_inventory_ready"))
+    has_recon = bool(recon_artifacts.get("host_inventory_ready"))
     has_memory = resume_summary is not None
     fresh_recon_ready = _fresh_recon_needs_surface_context(
         runtime_state,
@@ -1353,20 +1371,68 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         or (resume_summary or {}).get("recent_guard_blocks", [])
         or []
     )
-    # Build the legacy compatibility projection before choosing the next
-    # action.  Previously this happened afterwards, so visible `/validate`
-    # handoffs could never affect the authoritative state selection.
     memory_action_queue = _build_memory_action_queue(
         target_goal_memory,
         repo_root=repo_root,
     )
-    memory_candidate_next = _select_memory_candidate(memory_action_queue)
+    return {
+        "repo_root": repo_root,
+        "resolved_target": resolved_target,
+        "resolved_memory_dir": resolved_memory_dir,
+        "resume_summary": resume_summary,
+        "guard_status": guard_status,
+        "tripped_hosts": tripped_hosts,
+        "repo_source_artifacts": repo_source_artifacts,
+        "repo_source_available": repo_source_available,
+        "repo_source_summary": repo_source_summary,
+        "structured_findings": structured_findings,
+        "root_finding_claims": root_finding_claims,
+        "root_finding_claim_next": root_finding_claim_next,
+        "validation_runner_candidates": validation_runner_candidates,
+        "validation_runner_next": validation_runner_next,
+        "action_queue_next": action_queue_next,
+        "runtime_state": runtime_state,
+        "recon_artifacts": recon_artifacts,
+        "recon_in_progress": recon_in_progress,
+        "scan_in_progress": scan_in_progress,
+        "recon_completed_no_live_hosts": recon_completed_no_live_hosts,
+        "target_goal_memory": target_goal_memory,
+        "has_recon": has_recon,
+        "has_memory": has_memory,
+        "fresh_recon_ready": fresh_recon_ready,
+        "resume_targets": resume_targets,
+        "recent_guard_advisories": recent_guard_advisories,
+        "memory_action_queue": memory_action_queue,
+        "memory_candidate_next": _select_memory_candidate(memory_action_queue),
+    }
+
+
+def _build_domain_autopilot_state(
+    target: str,
+    facts: dict,
+    ranked: dict,
+    *,
+    observation_inventory: dict,
+    surface_projection: dict,
+    surface_context: dict | None = None,
+    surface_context_required: bool = False,
+    include_enrichment: bool = True,
+) -> dict:
+    """由共享控制事实和一个 surface 视图生成兼容 state。"""
+    resolved_target = str(facts["resolved_target"])
+    resolved_memory_dir = str(facts["resolved_memory_dir"])
+    ranked_for_next = _filter_ranked_placeholders(ranked)
+    resume_summary = facts.get("resume_summary")
+    has_recon = bool(facts.get("has_recon"))
+    guard_status = facts.get("guard_status") or {}
+    tripped_hosts = facts.get("tripped_hosts") or []
+    resume_targets = facts.get("resume_targets") or []
 
     tech_stack = []
     if resume_summary and resume_summary.get("tech_stack"):
         tech_stack = resume_summary["tech_stack"]
     elif has_recon:
-        review_pool = ranked.get("review_pool", []) or ranked.get("p1", [])
+        review_pool = ranked_for_next.get("review_pool", []) or ranked_for_next.get("p1", [])
         if review_pool:
             tech_stack = review_pool[0].get("tech_stack", [])
 
@@ -1374,26 +1440,33 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         has_recon,
         ranked_for_next,
         resume_summary,
-        structured_findings,
-        validation_runner_next,
-        action_queue_next,
+        facts.get("structured_findings"),
+        facts.get("validation_runner_next"),
+        facts.get("action_queue_next"),
         resume_targets=resume_targets,
-        recon_in_progress=recon_in_progress,
-        scan_in_progress=scan_in_progress,
-        recon_completed_no_live_hosts=recon_completed_no_live_hosts,
-        memory_candidate_next=memory_candidate_next,
-        root_finding_claim_next=root_finding_claim_next,
-        fresh_recon_ready=fresh_recon_ready,
+        recon_in_progress=bool(facts.get("recon_in_progress")),
+        scan_in_progress=bool(facts.get("scan_in_progress")),
+        recon_completed_no_live_hosts=bool(facts.get("recon_completed_no_live_hosts")),
+        memory_candidate_next=facts.get("memory_candidate_next"),
+        root_finding_claim_next=facts.get("root_finding_claim_next"),
+        # fresh-recon handoff only requests surface preparation while no exact
+        # projection exists. A valid empty/low-value projection is still a
+        # completed review, otherwise bootstrap can loop on refresh forever.
+        fresh_recon_ready=(
+            bool(facts.get("fresh_recon_ready"))
+            and surface_projection.get("status") != "valid"
+        ),
+        surface_context_required=surface_context_required,
     )
-    prefer_resume_targets = next_action == "continue_last_focus"
     surface_review_candidates = (
         _build_recommended_targets(
             _candidate_items_for_next_action(ranked_for_next, next_action),
             guard_status,
             resume_targets,
-            prefer_resume_targets=prefer_resume_targets,
+            prefer_resume_targets=next_action == "continue_last_focus",
         )
-        if has_recon else []
+        if has_recon
+        else []
     )
     guard_state = {
         "tracked_hosts": guard_status.get("tracked_hosts", 0),
@@ -1405,51 +1478,57 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         next_action = "guard_safe_pivot"
     pivot_hint = _build_pivot_hint(
         tripped_hosts=tripped_hosts,
-        recent_guard_advisories=recent_guard_advisories,
-        repo_source_summary=repo_source_summary,
+        recent_guard_advisories=facts.get("recent_guard_advisories") or [],
+        repo_source_summary=facts.get("repo_source_summary") or {},
     )
-    next_tool_hint, enrichment_hints = _build_enrichment_hints(
-        repo_root=repo_root,
-        resolved_target=resolved_target,
-        surface_context=surface_context,
-        ranked=ranked_for_next,
-        repo_source_available=repo_source_available,
-        next_action=next_action,
-    )
+    if include_enrichment:
+        next_tool_hint, enrichment_hints = _build_enrichment_hints(
+            repo_root=str(facts["repo_root"]),
+            resolved_target=resolved_target,
+            surface_context=surface_context or {},
+            ranked=ranked_for_next,
+            repo_source_available=bool(facts.get("repo_source_available")),
+            next_action=next_action,
+        )
+    else:
+        next_tool_hint, enrichment_hints = "", []
 
+    recon_completed_no_live_hosts = bool(facts.get("recon_completed_no_live_hosts"))
+    recent_guard_advisories = facts.get("recent_guard_advisories") or []
     return {
         "target": target,
         "resolved_target": resolved_target,
         "target_kind": classify_target(resolved_target)["kind"],
         "memory_dir": resolved_memory_dir,
         "has_recon": has_recon,
-        "has_memory": has_memory,
-        "repo_source_available": repo_source_available,
-        "repo_source_artifacts": repo_source_artifacts,
-        "repo_source_summary": repo_source_summary,
-        "runtime_state": runtime_state,
-        "recon_artifacts": recon_artifacts,
-        "recon_in_progress": recon_in_progress,
-        "scan_in_progress": scan_in_progress,
+        "has_memory": bool(facts.get("has_memory")),
+        "repo_source_available": bool(facts.get("repo_source_available")),
+        "repo_source_artifacts": facts.get("repo_source_artifacts") or [],
+        "repo_source_summary": facts.get("repo_source_summary") or {},
+        "runtime_state": facts.get("runtime_state") or {},
+        "recon_artifacts": facts.get("recon_artifacts") or {},
+        "recon_in_progress": bool(facts.get("recon_in_progress")),
+        "scan_in_progress": bool(facts.get("scan_in_progress")),
         "recon_completed_no_live_hosts": recon_completed_no_live_hosts,
-        "fresh_recon_ready": fresh_recon_ready,
+        "fresh_recon_ready": bool(facts.get("fresh_recon_ready")),
         "recon_blocker": (
             "recon completed with no live host inventory"
             if recon_completed_no_live_hosts
             else ""
         ),
-        "structured_findings": structured_findings,
-        "root_finding_claims": root_finding_claims,
-        "root_finding_claim_next": root_finding_claim_next,
-        "validation_runner_candidates": validation_runner_candidates,
-        "validation_runner_next": validation_runner_next,
-        "action_queue_next": action_queue_next,
-        "action_queue": {"next": action_queue_next},
-        "target_goal_memory": target_goal_memory,
-        "memory_candidate_next": memory_candidate_next,
+        "structured_findings": facts.get("structured_findings") or {},
+        "root_finding_claims": facts.get("root_finding_claims") or [],
+        "root_finding_claim_next": facts.get("root_finding_claim_next") or {},
+        "validation_runner_candidates": facts.get("validation_runner_candidates") or [],
+        "validation_runner_next": facts.get("validation_runner_next") or {},
+        "action_queue_next": facts.get("action_queue_next") or {},
+        "action_queue": {"next": facts.get("action_queue_next") or {}},
+        "target_goal_memory": facts.get("target_goal_memory") or {},
+        "memory_candidate_next": facts.get("memory_candidate_next") or {},
         "resume_summary": resume_summary,
         "surface": ranked_for_next if has_recon else None,
-        "observation_inventory": ranked.get("observation_inventory") or {},
+        "surface_projection": surface_projection,
+        "observation_inventory": observation_inventory,
         "guard_status": guard_state,
         "guard_hint": _build_guard_hint(guard_state, surface_review_candidates),
         "pivot_hint": pivot_hint,
@@ -1457,15 +1536,133 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "next_action": next_action,
         "next_tool_hint": next_tool_hint,
         "enrichment_hints": enrichment_hints,
-        "memory_action_queue": memory_action_queue,
+        "memory_action_queue": facts.get("memory_action_queue") or [],
         "resume_targets": resume_targets,
-        # AI-first field. `recommended_targets` remains a compatibility alias
-        # for older commands/tests that still expect the old key.
         "surface_review_candidates": surface_review_candidates,
         "recommended_targets": surface_review_candidates,
         "recent_guard_advisories": recent_guard_advisories[:3],
         "recent_guard_blocks": recent_guard_advisories[:3],
     }
+
+
+def build_autopilot_bootstrap_state(
+    repo_root: str,
+    target: str,
+    memory_dir: str | None = None,
+) -> dict:
+    """构建 slash expansion 专用的严格只读、bounded state。"""
+    resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
+    resolved_target = canonical_target_value(target)
+    if classify_target(resolved_target)["kind"] == "list":
+        # Bootstrap 不执行 legacy storage migration；显式 owner 命令负责迁移。
+        return _build_batch_autopilot_state(repo_root, target, resolved_target)
+
+    facts = _load_autopilot_control_facts(
+        repo_root,
+        resolved_target,
+        resolved_memory_dir,
+        fast_recon=True,
+    )
+    observation_inventory = peek_inventory_summary(repo_root, resolved_target)
+    projection = load_surface_projection(
+        repo_root,
+        resolved_target,
+        memory_dir=resolved_memory_dir,
+    )
+    if projection.get("status") == "valid":
+        ranked = dict(projection.get("surface") or {})
+        ranked["available"] = bool(facts.get("has_recon"))
+        ranked["target"] = resolved_target
+        ranked["runtime_state"] = facts.get("runtime_state") or {}
+        ranked["recon_artifacts"] = facts.get("recon_artifacts") or {}
+        ranked["observation_inventory"] = observation_inventory
+    else:
+        ranked = {
+            "available": bool(facts.get("has_recon")),
+            "target": resolved_target,
+            "runtime_state": facts.get("runtime_state") or {},
+            "recon_artifacts": facts.get("recon_artifacts") or {},
+            "observation_inventory": observation_inventory,
+            "p1": [],
+            "p2": [],
+            "review_pool": [],
+        }
+
+    return _build_domain_autopilot_state(
+        target,
+        facts,
+        ranked,
+        observation_inventory=observation_inventory,
+        surface_projection={
+            "status": str(projection.get("status") or "invalid"),
+            "reason": str(projection.get("reason") or ""),
+            "path": str(projection.get("path") or ""),
+            "refresh_command": f"python3 tools/surface.py --target {resolved_target} --refresh",
+        },
+        surface_context_required=(
+            bool(facts.get("has_recon")) and projection.get("status") != "valid"
+        ),
+        include_enrichment=False,
+    )
+
+
+def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = None) -> dict:
+    """Build a practical autopilot bootstrap state for a target."""
+    resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
+    resolved_target = canonical_target_value(target)
+    if classify_target(resolved_target)["kind"] == "list":
+        migrate_legacy_list_storage(repo_root, resolved_target)
+        return _build_batch_autopilot_state(repo_root, target, resolved_target)
+    facts = _load_autopilot_control_facts(
+        repo_root,
+        resolved_target,
+        resolved_memory_dir,
+        fast_recon=False,
+    )
+    projection = load_surface_projection(
+        repo_root,
+        resolved_target,
+        memory_dir=resolved_memory_dir,
+    )
+    if projection.get("status") == "valid":
+        # 完整诊断保留精确 recon metadata，但 surface 候选复用同一 exact-hit
+        # projection，避免 checkpoint/context-pack 在同一 fingerprint 上重排。
+        ranked = dict(projection.get("surface") or {})
+        ranked["available"] = bool(facts.get("has_recon"))
+        ranked["target"] = resolved_target
+        ranked["runtime_state"] = facts.get("runtime_state") or {}
+        ranked["recon_artifacts"] = facts.get("recon_artifacts") or {}
+        surface_context = {
+            "target": resolved_target,
+            "available": bool(facts.get("has_recon")),
+            "recon_dir": str(
+                Path(repo_root) / "recon" / target_storage_key(resolved_target)
+            ),
+            "hosts": {},
+            "js_endpoints": [],
+        }
+    else:
+        # Legacy/missing cache compatibility：显式 full state 仍可重建；slash
+        # bootstrap 永远不会走到这个无界 fallback。
+        surface_context = load_surface_context(
+            repo_root,
+            resolved_target,
+            memory_dir=resolved_memory_dir,
+            write_probe_log=False,
+        )
+        ranked = rank_surface(surface_context)
+    return _build_domain_autopilot_state(
+        target,
+        facts,
+        ranked,
+        observation_inventory=ranked.get("observation_inventory") or {},
+        surface_projection={
+            "status": str(projection.get("status") or "computed"),
+            "reason": str(projection.get("reason") or ""),
+            "path": str(projection.get("path") or ""),
+        },
+        surface_context=surface_context,
+    )
 
 
 def _format_durable_action_lines(item: dict) -> list[str]:

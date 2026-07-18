@@ -94,7 +94,10 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL surface from browser evidence |
 | `tools/hai_browser_recon.js` | Need browser-side recon snippet | Playwright recon helper script (JS) |
 | `tools/js_reader.py` | JS bundles cached | Prepare js-reader agent materials from cached JS |
-| `tools/surface.py` | Cached recon ready for review | Build AI-first attack-surface review pack with hunt-memory context; scores are advisory hints |
+| `tools/surface.py` | Cached recon ready for review | Fully stream/rank the exact target-owned surface, publish bounded AI-first review projection; scores/top-K are advisory hints |
+| `tools/surface_index.py` | Large URL corpus needs exact dedupe or long-tail paging | External-sort exact URL index with provenance union, lossless variants, shape/source/ownership cursor filters |
+| `tools/surface_projection.py` | Bootstrap/context consumers need a fast ranked view | Manifest-bound bounded cache; only exact hits are consumable, stale/missing remains explicit refresh work |
+| `tools/surface_finalizer.py` | Recon completed or derived surface needs recovery | Shared non-fatal recon post-processor for exact index, full streaming rank, inventory summary, and projection |
 | `tools/surface_js_intel.py` | After js-reader has run | Feed js-reader hypotheses into `surface.py` |
 | `tools/surface_source_intel.py` | After source_intel has run | Feed source-intel hypotheses into `surface.py` |
 | `tools/mindmap.py` | Choosing vuln class for a stack | Mermaid mind map + tech→vuln-class priority |
@@ -124,8 +127,8 @@ identity, and cloud signals without re-enumerating everything.
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/hunt.py` | Master hunt entrypoint (CLI) | Orchestrator — wraps recon/scan/agent/report flows |
-| `tools/autopilot_state.py` | Reading current autopilot state | Combine resume + surface context into one state view |
-| `tools/observation_inventory.py` | Recon has many observations or a target resumes across sessions | Persist neutral untouched/stale observations without choosing a vuln route or Skill |
+| `tools/autopilot_state.py` | Reading current autopilot state | Shared control facts plus compact read-only bootstrap/full diagnostic state; compact mode never ranks large surface bodies |
+| `tools/observation_inventory.py` | Large/resumed recon corpus | Persist neutral untouched/stale observations; stat-bound summary and revision cursor; never routes a Skill |
 | `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
 | `tools/target_case_state.py` | Multi-actor/object validation needs durable target state | Actor/session/object registry, multi-header auth session import, validation backlog next action |
 | `tools/case_state_seed.py` | Browser/recon/JS/source artifacts reveal object IDs but case state is empty | Suggest add-actor/add-object/add-backlog commands; no auto-write |

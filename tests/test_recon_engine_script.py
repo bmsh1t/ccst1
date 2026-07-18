@@ -190,6 +190,16 @@ def test_recon_engine_supports_primary_domain_batch_and_domain_waymore():
     assert 'log_warn "Skipping waymore for $TARGET_KIND target — historical URL collection expects a domain"' in text
 
 
+def test_recon_engine_runs_shared_nonfatal_surface_finalizer():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'tools/surface_finalizer.py' in text
+    assert 'if ! python3 "$BASE_DIR/tools/surface_finalizer.py"' in text
+    assert "raw recon remains complete" in text
+    assert "surface_finalize" in text
+
+
 def test_recon_engine_adds_project_aligned_exposure_candidate_correlation():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")

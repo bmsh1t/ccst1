@@ -6,6 +6,9 @@ import json
 import shlex
 
 from tools import autopilot_bootstrap
+from tools import autopilot_state as autopilot_state_module
+from tools.runtime_state import update_runtime_state
+from tools.surface_projection import build_surface_input_manifest, write_surface_projection
 
 
 def _capabilities(_repo_root):
@@ -76,7 +79,7 @@ def test_root_and_nested_cwd_produce_the_same_repo_runtime_and_state(monkeypatch
     nested.mkdir(parents=True)
     monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", _clean_runtime)
     monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", _capabilities)
-    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_state", _state)
+    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_bootstrap_state", _state)
     monkeypatch.setattr(autopilot_bootstrap, "is_ctf_mode_enabled", lambda _root: True)
 
     root_payload = autopilot_bootstrap.build_autopilot_bootstrap(
@@ -108,7 +111,7 @@ def test_invalid_arguments_stop_before_runtime_or_target_state(monkeypatch, tmp_
 
     monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", unexpected)
     monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", unexpected)
-    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_state", unexpected)
+    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_bootstrap_state", unexpected)
 
     payload = autopilot_bootstrap.build_autopilot_bootstrap(
         ["example.test", "--unknown"],
@@ -126,7 +129,7 @@ def test_invalid_arguments_stop_before_runtime_or_target_state(monkeypatch, tmp_
 def test_bootstrap_projects_bounded_deep_invocation_batch(monkeypatch, tmp_path):
     monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", _clean_runtime)
     monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", _capabilities)
-    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_state", _state)
+    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_bootstrap_state", _state)
 
     payload = autopilot_bootstrap.build_autopilot_bootstrap(
         ["example.test", "--deep", "--normal", "--max-lanes", "3"],
@@ -171,7 +174,7 @@ def test_runtime_drift_stops_before_target_state(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         autopilot_bootstrap,
-        "build_autopilot_state",
+        "build_autopilot_bootstrap_state",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("runtime drift must not read target state")
         ),
@@ -201,7 +204,7 @@ def test_bootstrap_state_is_compact_and_json_cli_is_single_line(monkeypatch, tmp
     monkeypatch.setattr(autopilot_bootstrap, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", _clean_runtime)
     monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", _capabilities)
-    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_state", _state)
+    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_bootstrap_state", _state)
 
     assert autopilot_bootstrap.main(["--json", "--", "example.test"]) == 0
     output = capsys.readouterr().out.strip()
@@ -237,7 +240,7 @@ def test_capability_profile_runs_after_runtime_and_before_target_state(monkeypat
 
     monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", runtime)
     monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", capabilities)
-    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_state", state)
+    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_bootstrap_state", state)
 
     payload = autopilot_bootstrap.build_autopilot_bootstrap(
         ["example.test"],
@@ -256,7 +259,7 @@ def test_capability_profile_failure_is_advisory(monkeypatch, tmp_path):
         "build_capability_profile",
         lambda _repo_root: (_ for _ in ()).throw(RuntimeError("probe failed")),
     )
-    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_state", _state)
+    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_bootstrap_state", _state)
 
     payload = autopilot_bootstrap.build_autopilot_bootstrap(
         ["example.test"],
@@ -408,3 +411,199 @@ def test_bootstrap_projects_recovery_and_draft_completion_handoffs():
     }
     encoded = json.dumps(compact)
     assert "do-not-project" not in encoded
+
+
+def _write_fast_recon(repo_root, target: str = "target.com"):
+    recon_dir = repo_root / "recon" / target
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir()
+    (recon_dir / "live" / "httpx_full.txt").write_text(
+        "https://api.target.com [200] [API] [Python] [100]\n",
+        encoding="utf-8",
+    )
+    (recon_dir / "urls" / "with_params.txt").write_text(
+        "https://api.target.com/orders?id=1\n",
+        encoding="utf-8",
+    )
+    return recon_dir
+
+
+def test_compact_state_never_calls_full_surface_or_full_recon_inspection(monkeypatch, tmp_path):
+    _write_fast_recon(tmp_path)
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "target.com",
+                "findings": [
+                    {
+                        "id": "candidate-1",
+                        "type": "idor",
+                        "url": "https://api.target.com/orders/1",
+                        "validation_status": "unvalidated",
+                        "report_status": "not_generated",
+                        "rubric": {"ready": False, "status": "needs-evidence"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("compact bootstrap must not enter the full surface path")
+
+    monkeypatch.setattr(autopilot_state_module, "load_surface_context", unexpected)
+    monkeypatch.setattr(autopilot_state_module, "rank_surface", unexpected)
+    monkeypatch.setattr(autopilot_state_module, "inspect_recon_artifacts", unexpected)
+
+    state = autopilot_state_module.build_autopilot_bootstrap_state(
+        str(tmp_path),
+        "target.com",
+        memory_dir=str(tmp_path / "hunt-memory"),
+    )
+
+    assert state["has_recon"] is True
+    assert state["next_action"] == "collect_candidate_evidence"
+    assert state["surface_projection"]["status"] == "missing"
+
+
+def test_compact_state_requires_projection_then_consumes_exact_hit(tmp_path):
+    _write_fast_recon(tmp_path)
+
+    missing = autopilot_state_module.build_autopilot_bootstrap_state(
+        str(tmp_path),
+        "target.com",
+        memory_dir=str(tmp_path / "hunt-memory"),
+    )
+    assert missing["next_action"] == "prepare_surface_context"
+    assert missing["surface_review_candidates"] == []
+
+    ranked = {
+        "available": True,
+        "target": "target.com",
+        "p1": [
+            {
+                "url": "https://api.target.com/orders?id=1",
+                "host": "api.target.com",
+                "score": 10,
+                "suggested": "compare owned object access",
+                "reasons": ["ID-bearing parameter"],
+            }
+        ],
+        "p2": [],
+        "review_pool": [
+            {
+                "url": "https://api.target.com/orders?id=1",
+                "host": "api.target.com",
+                "score": 10,
+                "suggested": "compare owned object access",
+                "review_reason": "top advisory score",
+            }
+        ],
+        "stats": {"total_candidates": 1, "p1": 1, "p2": 0, "review_pool": 1},
+    }
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", ranked, manifest=manifest)
+
+    hit = autopilot_state_module.build_autopilot_bootstrap_state(
+        str(tmp_path),
+        "target.com",
+        memory_dir=str(tmp_path / "hunt-memory"),
+    )
+    assert hit["surface_projection"]["status"] == "valid"
+    assert hit["next_action"] == "hunt_p1"
+    assert hit["surface_review_candidates"][0]["url"].endswith("orders?id=1")
+
+
+def test_exact_empty_projection_completes_fresh_recon_surface_handoff(tmp_path):
+    _write_fast_recon(tmp_path)
+    update_runtime_state(
+        tmp_path,
+        "target.com",
+        mode="recon_only",
+        last_executed_workflow="run_recon",
+    )
+    ranked = {
+        "available": True,
+        "target": "target.com",
+        "p1": [],
+        "p2": [],
+        "review_pool": [],
+        "stats": {"total_candidates": 1, "p1": 0, "p2": 0, "review_pool": 0},
+    }
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", ranked, manifest=manifest)
+
+    state = autopilot_state_module.build_autopilot_bootstrap_state(
+        str(tmp_path),
+        "target.com",
+        memory_dir=str(tmp_path / "hunt-memory"),
+    )
+
+    assert state["fresh_recon_ready"] is True
+    assert state["surface_projection"]["status"] == "valid"
+    assert state["next_action"] == "handoff"
+
+
+def test_priority_bootstrap_does_not_open_large_artifacts_or_write_target_state(tmp_path, monkeypatch):
+    recon_dir = _write_fast_recon(tmp_path)
+    with_params = recon_dir / "urls" / "with_params.txt"
+    with with_params.open("ab") as handle:
+        handle.truncate(32 * 1024 * 1024)
+    inventory = tmp_path / "state" / "target.com" / "observations.json"
+    inventory.parent.mkdir(parents=True)
+    with inventory.open("wb") as handle:
+        handle.truncate(64 * 1024 * 1024)
+
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "target.com",
+                "findings": [
+                    {
+                        "id": "candidate-large",
+                        "type": "idor",
+                        "url": "https://api.target.com/orders/1",
+                        "validation_status": "candidate",
+                        "report_status": "not_generated",
+                        "rubric": {"ready": False, "status": "needs-evidence"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = {
+        path.relative_to(tmp_path).as_posix(): (path.stat().st_size, path.stat().st_mtime_ns)
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    original_open = type(with_params).open
+
+    def guarded_open(self, mode="r", *args, **kwargs):
+        if self in {with_params, inventory} and "r" in mode:
+            raise AssertionError(f"bootstrap opened large artifact: {self}")
+        return original_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(type(with_params), "open", guarded_open)
+
+    state = autopilot_state_module.build_autopilot_bootstrap_state(
+        str(tmp_path),
+        "target.com",
+        memory_dir=str(tmp_path / "hunt-memory"),
+    )
+    after = {
+        path.relative_to(tmp_path).as_posix(): (path.stat().st_size, path.stat().st_mtime_ns)
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+
+    assert state["next_action"] == "collect_candidate_evidence"
+    assert state["observation_inventory"]["status"] == "summary_missing"
+    assert before == after

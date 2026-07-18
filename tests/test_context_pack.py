@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import context_pack as context_pack_module
 from context_pack import SKILL_PATHS, build_context_pack, format_context_pack
 from evidence_ledger import record_entry
+from surface_projection import build_surface_input_manifest, write_surface_projection
 
 
 def _seed_recon(repo_root: Path, target: str, urls: list[str]) -> None:
@@ -49,6 +51,43 @@ def _seed_target_memory(repo_root: Path, target: str, payload: dict) -> None:
 
 def _hint_paths(pack: dict) -> list[str]:
     return [item["path"] for item in pack.get("reference_hints", [])]
+
+
+def test_context_pack_reuses_exact_surface_projection(tmp_path, monkeypatch):
+    _seed_recon(
+        tmp_path,
+        "target.com",
+        ["https://api.target.com/admin/orders?account_id=1"],
+    )
+    ranked = {
+        "available": True,
+        "target": "target.com",
+        "p1": [
+            {
+                "url": "https://api.target.com/admin/orders?account_id=1",
+                "score": 12,
+                "reasons": ["projected candidate"],
+                "suggested": "review authorization boundary",
+            }
+        ],
+        "p2": [],
+        "review_pool": [],
+        "stats": {"total_candidates": 1, "p1": 1, "p2": 0, "review_pool": 0},
+    }
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", ranked, manifest=manifest)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("exact projection hit must not rebuild surface")
+
+    monkeypatch.setattr(context_pack_module, "load_surface_context", unexpected)
+    monkeypatch.setattr(context_pack_module, "rank_surface", unexpected)
+
+    pack = build_context_pack(tmp_path, target="target.com", focus="api authorization")
+
+    assert pack["source_summary"]["surface_available"] is True
+    assert pack["source_summary"]["p1"] == 1
+    assert any("admin/orders" in item for item in pack["evidence_anchors"])
 
 
 def test_context_pack_never_defaults_to_security_arsenal_skill():

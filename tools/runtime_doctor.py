@@ -14,6 +14,10 @@ RUNTIME_SUBDIRS = {
 }
 
 DISABLED_COMMAND_PREFIX = ".disabled."
+# `agents/`、`commands/` 中可能保留本地设计补丁；它们不是 Claude runtime
+# 可加载资产。只过滤 repo source，runtime 中曾被误同步的同名文件仍应显示
+# 为 extra，并可由 `--sync --prune` 清理。
+NON_RUNTIME_MARKDOWN_SUFFIXES = (".patch.md",)
 
 
 def _repo_root(path: str | Path | None = None) -> Path:
@@ -22,6 +26,12 @@ def _repo_root(path: str | Path | None = None) -> Path:
 
 def _runtime_root(path: str | Path | None = None) -> Path:
     return Path(path).expanduser().resolve() if path else (Path.home() / ".claude").resolve()
+
+
+def _is_runtime_markdown_source(path: Path) -> bool:
+    """排除明确的本地开发补丁，不隐藏普通 runtime Markdown。"""
+    name = path.name.lower()
+    return not any(name.endswith(suffix) for suffix in NON_RUNTIME_MARKDOWN_SUFFIXES)
 
 
 def _repo_files(repo_root: Path, kind: str) -> dict[str, Path]:
@@ -44,6 +54,7 @@ def _repo_files(repo_root: Path, kind: str) -> dict[str, Path]:
     return {
         path.name: path
         for path in sorted(base.glob("*.md"))
+        if _is_runtime_markdown_source(path)
     }
 
 

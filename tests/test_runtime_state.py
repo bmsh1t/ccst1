@@ -17,6 +17,7 @@ from runtime_state import (
     SCHEMA_VERSION,
     derive_state_view,
     inspect_recon_artifacts,
+    inspect_recon_artifacts_fast,
     load_runtime_state,
     runtime_phase_in_progress,
     runtime_phase_is_active,
@@ -306,6 +307,31 @@ def test_inspect_recon_artifacts_reports_ready_cache(tmp_path):
     assert payload["surface_inputs_ready"] is True
     assert payload["counts"]["hosts"] == 1
     assert payload["counts"]["api_urls"] == 1
+
+
+def test_fast_recon_inspection_uses_stat_presence_without_line_counts(tmp_path, monkeypatch):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir()
+    (recon_dir / "live" / "httpx_full.txt").write_text("https://target.com\n")
+    (recon_dir / "urls" / "with_params.txt").write_text(
+        "https://target.com/search?q=1\n"
+    )
+
+    monkeypatch.setattr(
+        "runtime_state._line_count",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fast inspection must not count lines")
+        ),
+    )
+
+    payload = inspect_recon_artifacts_fast(tmp_path, "target.com")
+
+    assert payload["ready"] is True
+    assert payload["surface_inputs_ready"] is True
+    assert payload["counts_exact"] is False
+    assert payload["counts"]["hosts"] is None
+    assert payload["counts"]["param_urls"] is None
 
 
 def test_inspect_recon_artifacts_counts_exposure_signals(tmp_path):

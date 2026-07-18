@@ -11,8 +11,12 @@ from tools.observation_inventory import (
     InventoryError,
     inventory_path,
     load_inventory,
+    observation_summary_path,
+    page_inventory,
+    peek_inventory_summary,
     summarize_inventory,
     sync_inventory,
+    sync_inventory_summary,
     touch_observation,
 )
 from tools.autopilot_state import build_autopilot_state, format_autopilot_state
@@ -184,3 +188,143 @@ def test_surface_reports_corrupt_inventory_instead_of_zeroing_it(tmp_path):
 
     assert ranked["observation_inventory"]["available"] is False
     assert "invalid observation inventory" in ranked["observation_inventory"]["error"]
+
+
+def test_summary_sidecar_hit_never_loads_monolithic_inventory(tmp_path, monkeypatch):
+    _write_recon(tmp_path, count=20)
+    payload = sync_inventory(tmp_path, "target.com")
+    summary_path = observation_summary_path(tmp_path, "target.com")
+    assert summary_path.is_file()
+
+    hit = peek_inventory_summary(tmp_path, "target.com")
+    assert hit["status"] == "valid"
+    assert hit["total"] == len(payload["observations"])
+
+    monkeypatch.setattr(
+        "tools.observation_inventory.load_inventory",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("valid summary hit must not load observations.json")
+        ),
+    )
+    fast = sync_inventory_summary(tmp_path, "target.com")
+    assert fast["status"] == "valid"
+    assert fast["total"] == hit["total"]
+
+
+def test_summary_sidecar_detects_source_body_and_corrupt_drift(tmp_path):
+    recon_dir, _ = _write_recon(tmp_path, count=2)
+    sync_inventory(tmp_path, "target.com")
+
+    with (recon_dir / "urls" / "all.txt").open("a", encoding="utf-8") as handle:
+        handle.write("https://api.target.com/source-change\n")
+    source_stale = peek_inventory_summary(tmp_path, "target.com")
+    assert source_stale["status"] == "stale"
+    assert source_stale["reason"] == "source-fingerprint-mismatch"
+    assert source_stale["total"] > 0
+
+    sync_inventory(tmp_path, "target.com")
+    body = inventory_path(tmp_path, "target.com")
+    body.write_text(body.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    body_stale = peek_inventory_summary(tmp_path, "target.com")
+    assert body_stale["status"] == "stale"
+    assert body_stale["reason"] == "inventory-binding-mismatch"
+
+    summary_path = observation_summary_path(tmp_path, "target.com")
+    summary_path.write_text("{broken", encoding="utf-8")
+    invalid = peek_inventory_summary(tmp_path, "target.com")
+    assert invalid["status"] == "invalid"
+    assert "invalid-json" in invalid["reason"]
+
+
+def test_touch_atomically_refreshes_summary_binding(tmp_path):
+    _write_recon(tmp_path, count=1)
+    payload = sync_inventory(tmp_path, "target.com")
+    observation_id = payload["observations"][0]["id"]
+    before = peek_inventory_summary(tmp_path, "target.com")
+
+    touch_observation(tmp_path, "target.com", observation_id, status="reviewing")
+
+    after = peek_inventory_summary(tmp_path, "target.com")
+    assert after["status"] == "valid"
+    assert after["reviewing"] == 1
+    assert after["inventory_binding"] != before["inventory_binding"]
+
+
+def test_explicit_sync_repairs_legacy_missing_summary_without_incrementing_seen_count(tmp_path):
+    _write_recon(tmp_path, count=2)
+    payload = sync_inventory(tmp_path, "target.com")
+    before_counts = {item["id"]: item["seen_count"] for item in payload["observations"]}
+    observation_summary_path(tmp_path, "target.com").unlink()
+
+    missing = peek_inventory_summary(tmp_path, "target.com")
+    assert missing["status"] == "summary_missing"
+    assert missing["needs_sync"] is True
+
+    repaired = sync_inventory_summary(tmp_path, "target.com")
+    after = load_inventory(tmp_path, "target.com")
+    assert repaired["status"] == "valid"
+    assert {item["id"]: item["seen_count"] for item in after["observations"]} == before_counts
+
+
+def test_page_cursor_reaches_each_matching_observation_once_without_mutation(tmp_path):
+    _write_recon(tmp_path, count=37)
+    payload = sync_inventory(tmp_path, "target.com")
+    body = inventory_path(tmp_path, "target.com")
+    original = body.read_bytes()
+    expected_ids = {
+        item["id"]
+        for item in payload["observations"]
+        if item["kind"] == "url" and "urls/all.txt" in item["sources"]
+    }
+
+    cursor = ""
+    seen = []
+    while True:
+        page = page_inventory(
+            tmp_path,
+            "target.com",
+            kind="url",
+            source="urls/all.txt",
+            limit=7,
+            cursor=cursor,
+        )
+        seen.extend(item["id"] for item in page["items"])
+        cursor = page["next_cursor"]
+        if not cursor:
+            assert page["remaining"] == 0
+            break
+
+    assert set(seen) == expected_ids
+    assert len(seen) == len(set(seen)) == len(expected_ids)
+    assert body.read_bytes() == original
+
+
+def test_page_cursor_rejects_filter_changes_and_stale_snapshot(tmp_path):
+    _write_recon(tmp_path, count=6)
+    payload = sync_inventory(tmp_path, "target.com")
+    first = page_inventory(tmp_path, "target.com", status="untouched", limit=2)
+    assert first["next_cursor"]
+
+    with pytest.raises(ValueError, match="filter mismatch"):
+        page_inventory(
+            tmp_path,
+            "target.com",
+            status="reviewed",
+            limit=2,
+            cursor=first["next_cursor"],
+        )
+
+    touch_observation(
+        tmp_path,
+        "target.com",
+        payload["observations"][-1]["id"],
+        status="reviewing",
+    )
+    with pytest.raises(InventoryError, match="snapshot changed"):
+        page_inventory(
+            tmp_path,
+            "target.com",
+            status="untouched",
+            limit=2,
+            cursor=first["next_cursor"],
+        )

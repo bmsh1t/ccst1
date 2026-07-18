@@ -21,7 +21,7 @@ evidence, replay, and summary aids.
 Execution contract: `/autopilot` runs inline in the current Claude session as the sole controller and does not create/resume legacy `agent_session.json`; specialists default to zero, and at most one bounded specialist may answer one evidence question without spawning agents, running full recon/scans, writing final closure, or controlling finish. After using one, this invocation cannot call a second specialist.
 ## Runtime Preflight
 The bootstrap already performed the startup sequence in this order: arguments,
-read-only runtime compare, advisory capability profile, then compact target state. Never repeat or bypass it; arguments/runtime remain the only blocking gates.
+read-only runtime compare, advisory capability profile, then compact target state. Never repeat or bypass it; arguments/runtime remain the only blocking gates. Compact state is a read-only control-plane projection: it may stat recon and read bounded manifest-bound summaries, but never scans `with_params.txt`, parses full `observations.json`, ranks surface, syncs inventory, or writes target state; only exact-hit `surface_projection` supplies ranked candidates, and missing/stale/invalid remains explicit work rather than no surface.
 Run every project command as `cd -- <repo_root_shell> && ...`; do not derive a
 second root from the current cwd. Runtime drift: show `/sync-check`, request
 explicit confirmation before any sync, and never sync automatically.
@@ -53,7 +53,7 @@ cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> [--auth
 ```
 If state returns `wait_recon` / `wait_scan`, do not start that phase again;
 wait/poll, then rerun state before continuing. Runtime phase locks are the final
-duplicate-launch guard. `review_validation_candidate` reviews raw runner evidence before `/validate`; `resume_action_queue` executes its durable replay; `prepare_surface_context` runs cached `/surface` plus `context_pack`; `recon_no_live_hosts` records the offline blocker and never reruns automatically. Refresh recon only when missing, thin, stale, or contradicted by fresh evidence.
+duplicate-launch guard. `review_validation_candidate` reviews raw runner evidence before `/validate`; `resume_action_queue` executes its durable replay; `prepare_surface_context` runs one explicit `surface.py --refresh`, verifies the new bounded projection, then loads `context_pack`; `recon_no_live_hosts` records the offline blocker and never reruns automatically. Refresh recon only when missing, thin, stale, or contradicted by fresh evidence. Recon completion normally builds the exact URL index and first projection once; finalizer failure preserves raw recon and leaves this explicit recovery action.
 `collect_candidate_evidence` consumes `state.structured_next.rubric.next_actions`, or `state.memory_candidate_next` only after its locatable `evidence_ref` is reviewed; otherwise collect raw request/response and never promote prose alone. If `state.root_claim_next` exists, it is an unvalidated root JSON claim: first run `/checkpoint` so `finding_index` reconciles it into the canonical candidate and durable queue, refresh state, then pass that canonical `structured_next.id` as `validation_runner.py ... --finding-id <id>` when a matching bounded runner captures raw proof. Preserve named `missing_labels`, then rerun state. Do not call `/validate` until state returns `validate_finding`. `complete_report_draft` fills its linked draft placeholders without reopening validated evidence.
 If `arguments.seed_url` is non-null, inspect `<seed_url_shell>` through browser/source/workflow evidence before historical focus or score hints, even for existing canonical target state.
 For a readable primary-domain list, the list context is recon/handoff only:
@@ -81,7 +81,7 @@ Checkpoint can emit target-memory write-back proposals:
 ```bash
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell>
 ```
-Review the proposal and apply target memory only when it is useful; stale/noisy state must not block recon, browser/source enrichment, AI-selected pivots, or a better live hypothesis. Observation inventory is a completeness reminder, not an execution queue: before declaring surface exhaustion, inspect its bounded untouched/stale summary or `/observations`; promote an item only when Claude can state the evidence question. Never route every untouched observation to a Skill or enqueue it automatically.
+Review the proposal and apply target memory only when it is useful; stale/noisy state must not block recon, browser/source enrichment, AI-selected pivots, or a better live hypothesis. Observation inventory is a completeness reminder, not an execution queue: before declaring surface exhaustion, inspect its bounded untouched/stale summary or page the long tail with `/observations`; promote an item only when Claude can state the evidence question. A top-K/review window or `remaining` count never closes the overflow, and only explicit observation `touch` changes lifecycle. Never route every untouched observation to a Skill or enqueue it automatically.
 ## Authorization Posture
 Treat the supplied target set as the active authorized execution set for this
 run. Do not pause for routine recon/scanning/hunting authorization re-checks.

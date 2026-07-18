@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import hashlib
+import heapq
 import json
 import os
 import tempfile
@@ -25,10 +27,13 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 
 SCHEMA_VERSION = 1
+SUMMARY_SCHEMA_VERSION = 1
+SUMMARY_KIND = "observation_inventory_summary"
 STALE_AFTER_SECONDS = 2 * 24 * 60 * 60
 ALLOWED_STATUSES = frozenset({"untouched", "reviewing", "reviewed", "parked"})
 DEFAULT_SAMPLE_LIMIT = 8
 MAX_LIST_LIMIT = 1000
+CURSOR_SCHEMA_VERSION = 1
 
 # 这里只描述事实来源，不携带漏洞类别或优先级。相同 observation 可来自多个文件，
 # 稳定 ID 会将其合并，同时保留全部 source artifact。
@@ -86,6 +91,17 @@ def inventory_path(repo_root: str | Path, target: str) -> Path:
     return Path(repo_root) / "state" / target_storage_key(resolved) / "observations.json"
 
 
+def observation_summary_path(repo_root: str | Path, target: str) -> Path:
+    """返回与 monolithic inventory 绑定的小型摘要 sidecar。"""
+    resolved = canonical_target_value(target)
+    return (
+        Path(repo_root)
+        / "state"
+        / target_storage_key(resolved)
+        / "observations-summary.json"
+    )
+
+
 def _empty_inventory(target: str) -> dict:
     resolved = canonical_target_value(target)
     return {
@@ -129,10 +145,11 @@ def load_inventory(repo_root: str | Path, target: str) -> dict:
     return _validate_inventory(payload, path)
 
 
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    """同目录临时文件 + replace，避免读者看到半截 JSON。"""
+def _write_json_atomic(path: Path, payload: dict) -> dict:
+    """同目录临时文件 + replace，并返回无需重读正文的内容绑定。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
+    digest = hashlib.sha256()
     try:
         with tempfile.NamedTemporaryFile(
             "w",
@@ -143,7 +160,12 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
             delete=False,
         ) as handle:
             temp_path = Path(handle.name)
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            encoder = json.JSONEncoder(ensure_ascii=False, indent=2)
+            for chunk in encoder.iterencode(payload):
+                handle.write(chunk)
+                digest.update(chunk.encode("utf-8"))
+            handle.write("\n")
+            digest.update(b"\n")
             handle.flush()
             os.fsync(handle.fileno())
         temp_path.replace(path)
@@ -154,6 +176,26 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
             except FileNotFoundError:
                 pass
         raise
+    stat = path.stat()
+    return {
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "sha256": digest.hexdigest(),
+    }
+
+
+def _file_binding(path: Path) -> dict:
+    """为显式 owner 修复生成正文 binding；bootstrap 不调用该函数。"""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    stat = path.stat()
+    return {
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "sha256": digest.hexdigest(),
+    }
 
 
 @contextmanager
@@ -234,6 +276,16 @@ def sync_inventory(
         files = _source_files(recon_dir)
         fingerprint = _source_fingerprint(files)
         if not force and payload.get("source_fingerprint") == fingerprint:
+            # Legacy inventory may predate the sidecar.  Explicit sync owns
+            # this repair; bootstrap/peek remains strictly read-only.
+            summary = peek_inventory_summary(repo, resolved)
+            if summary.get("status") != "valid" and path.is_file():
+                _write_inventory_summary(
+                    repo,
+                    resolved,
+                    payload,
+                    inventory_binding=_file_binding(path),
+                )
             return payload
 
         timestamp = now or _now_utc()
@@ -256,23 +308,25 @@ def sync_inventory(
         for observation_id, row in current.items():
             previous = existing.pop(observation_id, None)
             if previous is None:
-                item = {
-                    **row,
-                    "status": "untouched",
-                    "notes": "",
-                    "first_seen": timestamp,
-                    "last_seen": timestamp,
-                    "seen_count": 1,
-                    "present": True,
-                }
+                # 直接完善 current row，避免在 30 万 observation 上同时保留
+                # current dict 与一份完整复制。
+                row.update(
+                    {
+                        "status": "untouched",
+                        "notes": "",
+                        "first_seen": timestamp,
+                        "last_seen": timestamp,
+                        "seen_count": 1,
+                        "present": True,
+                    }
+                )
+                item = row
             else:
-                item = {
-                    **previous,
-                    **row,
-                    "last_seen": timestamp,
-                    "seen_count": int(previous.get("seen_count", 0) or 0) + 1,
-                    "present": True,
-                }
+                previous.update(row)
+                previous["last_seen"] = timestamp
+                previous["seen_count"] = int(previous.get("seen_count", 0) or 0) + 1
+                previous["present"] = True
+                item = previous
                 item.setdefault("status", "untouched")
                 item.setdefault("notes", "")
                 item.setdefault("first_seen", timestamp)
@@ -282,6 +336,8 @@ def sync_inventory(
             previous["present"] = False
             merged.append(previous)
 
+        current.clear()
+        existing.clear()
         merged.sort(key=lambda item: str(item.get("id") or ""))
         updated = {
             "schema_version": SCHEMA_VERSION,
@@ -291,7 +347,8 @@ def sync_inventory(
             "last_synced_at": timestamp,
             "observations": merged,
         }
-        _write_json_atomic(path, updated)
+        binding = _write_json_atomic(path, updated)
+        _write_inventory_summary(repo, resolved, updated, inventory_binding=binding)
         return updated
 
 
@@ -325,16 +382,24 @@ def summarize_inventory(
         if _is_stale(item, current_time, stale_after_seconds):
             stale_ids.add(str(item.get("id") or ""))
 
-    sample_candidates = [
-        item for item in observations
+    untouched_candidates = (
+        item
+        for item in observations
         if str(item.get("status") or "untouched") == "untouched"
-    ] or observations
-    neutral_order = sorted(
-        sample_candidates,
+    )
+    neutral_order = heapq.nsmallest(
+        max(0, sample_limit),
+        untouched_candidates,
         key=lambda item: (str(item.get("first_seen") or ""), str(item.get("id") or "")),
     )
+    if not neutral_order and observations:
+        neutral_order = heapq.nsmallest(
+            max(0, sample_limit),
+            observations,
+            key=lambda item: (str(item.get("first_seen") or ""), str(item.get("id") or "")),
+        )
     sample = []
-    for item in neutral_order[: max(0, sample_limit)]:
+    for item in neutral_order:
         observation_id = str(item.get("id") or "")
         sample.append(
             {
@@ -359,6 +424,187 @@ def summarize_inventory(
         "last_synced_at": str(payload.get("last_synced_at") or ""),
         "sample": sample,
     }
+
+
+def _summary_error(
+    repo_root: str | Path,
+    target: str,
+    *,
+    status: str,
+    reason: str,
+    previous: dict | None = None,
+) -> dict:
+    """保留旧计数用于诊断，但显式标记不可作为 fresh summary 消费。"""
+    resolved = canonical_target_value(target)
+    base = {
+        "available": False,
+        "status": status,
+        "reason": reason,
+        "path": str(inventory_path(repo_root, resolved)),
+        "summary_path": str(observation_summary_path(repo_root, resolved)),
+        "total": 0,
+        "present": 0,
+        "untouched": 0,
+        "reviewing": 0,
+        "reviewed": 0,
+        "parked": 0,
+        "stale": 0,
+        "last_synced_at": "",
+        "sample": [],
+        "inventory_binding": {},
+        "needs_sync": True,
+    }
+    if isinstance(previous, dict):
+        for key in (
+            "total",
+            "present",
+            "untouched",
+            "reviewing",
+            "reviewed",
+            "parked",
+            "stale",
+            "last_synced_at",
+            "sample",
+            "inventory_binding",
+        ):
+            if key in previous:
+                base[key] = previous[key]
+    return base
+
+
+def _write_inventory_summary(
+    repo_root: str | Path,
+    target: str,
+    payload: dict,
+    *,
+    inventory_binding: dict,
+) -> dict:
+    """在 canonical body 成功替换后发布带 binding 的小型摘要。"""
+    resolved = canonical_target_value(target)
+    summary = summarize_inventory(payload)
+    sidecar = {
+        "kind": SUMMARY_KIND,
+        "schema_version": SUMMARY_SCHEMA_VERSION,
+        "target": resolved,
+        "storage_key": target_storage_key(resolved),
+        "source_fingerprint": str(payload.get("source_fingerprint") or ""),
+        "inventory_binding": dict(inventory_binding),
+        "generated_at": _now_utc(),
+        "summary": summary,
+    }
+    _write_json_atomic(observation_summary_path(repo_root, resolved), sidecar)
+    return {
+        **summary,
+        "status": "valid",
+        "reason": "",
+        "summary_path": str(observation_summary_path(repo_root, resolved)),
+        "inventory_binding": dict(inventory_binding),
+    }
+
+
+def _binding_matches(path: Path, binding: dict) -> bool:
+    try:
+        stat = path.stat()
+        expected_size = int(binding.get("size", -1))
+        expected_mtime = int(binding.get("mtime_ns", -1))
+    except (OSError, TypeError, ValueError):
+        return False
+    return stat.st_size == expected_size and stat.st_mtime_ns == expected_mtime
+
+
+def peek_inventory_summary(repo_root: str | Path, target: str) -> dict:
+    """只读 sidecar + stat/source fingerprint；绝不解析 observations.json 正文。"""
+    resolved = canonical_target_value(target)
+    body_path = inventory_path(repo_root, resolved)
+    summary_path = observation_summary_path(repo_root, resolved)
+    if not summary_path.is_file():
+        status = "summary_missing" if body_path.is_file() else "missing"
+        return _summary_error(
+            repo_root,
+            resolved,
+            status=status,
+            reason="summary-sidecar-missing",
+        )
+    try:
+        sidecar = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return _summary_error(
+            repo_root,
+            resolved,
+            status="invalid",
+            reason=f"invalid-json: {exc}",
+        )
+    if not isinstance(sidecar, dict):
+        return _summary_error(repo_root, resolved, status="invalid", reason="root-not-object")
+    summary = sidecar.get("summary") if isinstance(sidecar.get("summary"), dict) else {}
+    if sidecar.get("kind") != SUMMARY_KIND or sidecar.get("schema_version") != SUMMARY_SCHEMA_VERSION:
+        return _summary_error(
+            repo_root,
+            resolved,
+            status="invalid",
+            reason="schema-mismatch",
+            previous=summary,
+        )
+    if sidecar.get("target") != resolved or sidecar.get("storage_key") != target_storage_key(resolved):
+        return _summary_error(
+            repo_root,
+            resolved,
+            status="invalid",
+            reason="target-mismatch",
+            previous=summary,
+        )
+    binding = sidecar.get("inventory_binding") if isinstance(sidecar.get("inventory_binding"), dict) else {}
+    projected = {
+        **summary,
+        "summary_path": str(summary_path),
+        "inventory_binding": binding,
+    }
+    if not body_path.is_file() or not _binding_matches(body_path, binding):
+        return _summary_error(
+            repo_root,
+            resolved,
+            status="stale",
+            reason="inventory-binding-mismatch",
+            previous=projected,
+        )
+    recon_dir = Path(repo_root) / "recon" / target_storage_key(resolved)
+    files = _source_files(recon_dir) if recon_dir.is_dir() else []
+    if str(sidecar.get("source_fingerprint") or "") != _source_fingerprint(files):
+        return _summary_error(
+            repo_root,
+            resolved,
+            status="stale",
+            reason="source-fingerprint-mismatch",
+            previous=projected,
+        )
+    return {
+        **projected,
+        "available": bool(summary.get("available")),
+        "status": "valid",
+        "reason": "",
+        "needs_sync": False,
+    }
+
+
+def sync_inventory_summary(
+    repo_root: str | Path,
+    target: str,
+    *,
+    force: bool = False,
+) -> dict:
+    """优先返回有效 sidecar；只有 explicit miss/stale 才执行完整 sync。"""
+    if not force:
+        cached = peek_inventory_summary(repo_root, target)
+        if cached.get("status") == "valid":
+            return cached
+    payload = sync_inventory(repo_root, target, force=force)
+    refreshed = peek_inventory_summary(repo_root, target)
+    if refreshed.get("status") != "valid":
+        raise InventoryError(
+            "observation summary unavailable after sync: "
+            f"{refreshed.get('status')} {refreshed.get('reason')}"
+        )
+    return refreshed
 
 
 def touch_observation(
@@ -392,7 +638,8 @@ def touch_observation(
             break
         if matched is None:
             raise KeyError(f"observation not found: {observation_id}")
-        _write_json_atomic(path, payload)
+        binding = _write_json_atomic(path, payload)
+        _write_inventory_summary(repo_root, target, payload, inventory_binding=binding)
         return matched
 
 
@@ -422,6 +669,143 @@ def _list_items(
     return items[:limit]
 
 
+def _load_inventory_snapshot(repo_root: str | Path, target: str) -> tuple[dict, str]:
+    """一次读取 inventory 正文并返回内容 revision，供 cursor 绑定快照。"""
+    path = inventory_path(repo_root, target)
+    if not path.is_file():
+        payload = _empty_inventory(target)
+        revision = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return payload, revision
+    try:
+        raw = path.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise InventoryError(f"invalid observation inventory at {path}: {exc}") from exc
+    return _validate_inventory(payload, path), hashlib.sha256(raw).hexdigest()
+
+
+def _cursor_filters(*, status: str, kind: str, source: str) -> dict:
+    return {
+        "status": str(status or "").strip().lower(),
+        "kind": str(kind or "").strip().lower(),
+        "source": str(source or "").strip(),
+    }
+
+
+def _encode_cursor(
+    *,
+    target: str,
+    revision: str,
+    filters: dict,
+    last_key: tuple[str, str],
+) -> str:
+    payload = {
+        "v": CURSOR_SCHEMA_VERSION,
+        "target": canonical_target_value(target),
+        "revision": revision,
+        "filters": filters,
+        "last": [last_key[0], last_key[1]],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return base64.urlsafe_b64encode(encoded.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> dict:
+    text = str(cursor or "").strip()
+    if not text:
+        return {}
+    try:
+        padding = "=" * (-len(text) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(text + padding))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid observation cursor") from exc
+    if not isinstance(payload, dict) or payload.get("v") != CURSOR_SCHEMA_VERSION:
+        raise ValueError("invalid observation cursor schema")
+    last = payload.get("last")
+    if not isinstance(last, list) or len(last) != 2 or not all(isinstance(item, str) for item in last):
+        raise ValueError("invalid observation cursor position")
+    if not isinstance(payload.get("filters"), dict):
+        raise ValueError("invalid observation cursor filters")
+    return payload
+
+
+def page_inventory(
+    repo_root: str | Path,
+    target: str,
+    *,
+    status: str = "",
+    kind: str = "",
+    source: str = "",
+    limit: int = 50,
+    cursor: str = "",
+) -> dict:
+    """在同一 inventory 快照上稳定分页，不修改 observation lifecycle。"""
+    if limit < 1 or limit > MAX_LIST_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_LIST_LIMIT}")
+    filters = _cursor_filters(status=status, kind=kind, source=source)
+    if filters["status"] and filters["status"] not in ALLOWED_STATUSES:
+        raise ValueError(f"invalid observation status: {status!r}")
+
+    payload, revision = _load_inventory_snapshot(repo_root, target)
+    decoded = _decode_cursor(cursor)
+    if decoded:
+        if decoded.get("target") != canonical_target_value(target):
+            raise ValueError("observation cursor target mismatch")
+        if decoded.get("filters") != filters:
+            raise ValueError("observation cursor filter mismatch")
+        if decoded.get("revision") != revision:
+            raise InventoryError("stale observation cursor: inventory snapshot changed")
+
+    matching = []
+    for item in payload.get("observations", []):
+        if not isinstance(item, dict):
+            continue
+        if filters["status"] and str(item.get("status") or "untouched").lower() != filters["status"]:
+            continue
+        if filters["kind"] and str(item.get("kind") or "").lower() != filters["kind"]:
+            continue
+        if filters["source"] and filters["source"] not in {
+            str(value) for value in (item.get("sources") or [])
+        }:
+            continue
+        matching.append(item)
+    matching.sort(key=lambda item: (str(item.get("first_seen") or ""), str(item.get("id") or "")))
+
+    start = 0
+    if decoded:
+        last_key = tuple(decoded["last"])
+        positions = [
+            index
+            for index, item in enumerate(matching)
+            if (str(item.get("first_seen") or ""), str(item.get("id") or "")) == last_key
+        ]
+        if len(positions) != 1:
+            raise ValueError("invalid observation cursor anchor")
+        start = positions[0] + 1
+
+    items = matching[start : start + limit]
+    consumed = start + len(items)
+    remaining = max(0, len(matching) - consumed)
+    next_cursor = ""
+    if items and remaining:
+        last = items[-1]
+        next_cursor = _encode_cursor(
+            target=target,
+            revision=revision,
+            filters=filters,
+            last_key=(str(last.get("first_seen") or ""), str(last.get("id") or "")),
+        )
+    return {
+        "snapshot_revision": revision,
+        "items": items,
+        "next_cursor": next_cursor,
+        "remaining": remaining,
+        "total_matching": len(matching),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Persist and inspect neutral recon observations")
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[1]))
@@ -440,6 +824,14 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("--stale", action="store_true")
     listing.add_argument("--limit", type=int, default=50)
 
+    page = sub.add_parser("page", help="page observations on one stable snapshot")
+    page.add_argument("--target", required=True)
+    page.add_argument("--status", choices=sorted(ALLOWED_STATUSES), default="")
+    page.add_argument("--kind", default="")
+    page.add_argument("--source", default="")
+    page.add_argument("--limit", type=int, default=50)
+    page.add_argument("--cursor", default="")
+
     touch = sub.add_parser("touch", help="update observation review lifecycle")
     touch.add_argument("--target", required=True)
     touch.add_argument("observation_id")
@@ -452,10 +844,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "sync":
-            payload = sync_inventory(args.repo_root, args.target, force=args.force)
-            output = summarize_inventory(payload)
+            output = sync_inventory_summary(args.repo_root, args.target, force=args.force)
         elif args.command == "summary":
-            output = summarize_inventory(load_inventory(args.repo_root, args.target))
+            output = peek_inventory_summary(args.repo_root, args.target)
         elif args.command == "list":
             payload = load_inventory(args.repo_root, args.target)
             output = _list_items(
@@ -463,6 +854,16 @@ def main(argv: list[str] | None = None) -> int:
                 status=args.status,
                 stale_only=args.stale,
                 limit=args.limit,
+            )
+        elif args.command == "page":
+            output = page_inventory(
+                args.repo_root,
+                args.target,
+                status=args.status,
+                kind=args.kind,
+                source=args.source,
+                limit=args.limit,
+                cursor=args.cursor,
             )
         else:
             output = touch_observation(

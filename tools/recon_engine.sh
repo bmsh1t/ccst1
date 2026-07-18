@@ -2638,6 +2638,26 @@ emit_claude_hint_actions \
 # ============================================================
 post_compress_raw_recon_urls "$RECON_DIR"
 
+# Surface index/projection 是可重建派生视图。收尾失败不能抹掉已完成的
+# recon artifact，也不能把本次 recon 伪装成 tested-clean；后续显式
+# `/surface --refresh` 可恢复。
+SURFACE_FINALIZER_STATUS="ok"
+if ! python3 "$BASE_DIR/tools/surface_finalizer.py" \
+    --repo-root "$BASE_DIR" \
+    --target "$TARGET" \
+    --json; then
+    SURFACE_FINALIZER_STATUS="failed"
+    log_warn "Surface finalizer failed; raw recon remains complete. Run python3 tools/surface.py --target $TARGET --refresh to retry."
+else
+    log_done "Surface exact index and bounded projection refreshed"
+fi
+record_recon_phase \
+    surface_finalize \
+    "$SURFACE_FINALIZER_STATUS" \
+    "state/${RECON_TARGET_KEY}/surface-projection.json" \
+    0 \
+    "derived cache only; failure is recoverable and does not close attack surface"
+
 # ============================================================
 # Summary
 # ============================================================

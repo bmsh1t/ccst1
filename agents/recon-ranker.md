@@ -35,6 +35,10 @@ You are an attack surface analyst. Given recon output, you produce an evidence r
 - `hunt-memory/patterns.jsonl`
 - Structured findings and local intel artifacts when present
 - Existing surface evidence helpers in the codebase instead of duplicated logic
+- `recon/<target>/surface/index.jsonl` and summary when their manifest is valid;
+  page the exact index for long-tail/shape review instead of loading all raw URLs
+- `state/<target>/surface-projection.json` and `observations-summary.json` only as
+  bounded derived views; missing/stale/invalid means refresh or unknown, never empty
 - `knowledge/index.md` and only the matching knowledge card(s) when the current
   evidence has a clear vuln-class shape
 
@@ -67,7 +71,11 @@ You are an attack surface analyst. Given recon output, you produce an evidence r
 3. 知识库：从 `knowledge/index.md` 选择最多 1-2 张知识卡，用来扩展测试角度。
 4. 检查：`rules/red-lines.md` 过滤掉 DDoS、高压流量、破坏性行为、修改/删除/破坏目标数据的测试。
 
-优先运行 `python3 tools/surface.py --target <target>` 获取合并证据包。脚本分数只是兼容性 hint，不替代 AI 判断；只有当输出缺少某个上下文时，才补充说明缺口。
+优先运行 `python3 tools/surface.py --target <target>` 获取合并证据包；需要强制重建派生索引/
+投影时使用 `--refresh`。脚本会对完整 exact、target-owned URL 流逐条评分，再只输出有界
+frontier。脚本分数和 top-K 都只是兼容性/注意力 hint，不替代 AI 判断，也不表示长尾已审阅。
+需要核对某个 shape/source 的完整 variant 时，用 `tools/surface_index.py page`，不要把整个索引
+注入上下文。
 
 ## Inputs
 
@@ -149,3 +157,9 @@ If no age signal is available, omit it from priority reasoning (don't guess).
 5. Admin panels are strong leads when exposure, role boundary, or reachable workflow evidence exists; auth-gated panels need creds/case-state before replay.
 6. If target memory marks a path as an active lead or next action, keep it visible even when deterministic score hints are only medium.
 7. If target memory marks a path as a dead end, downgrade it and explain what new evidence would justify reopening it.
+8. Exact URL identity is the only destructive dedupe boundary. Query value/order,
+   duplicate keys, encoding, scheme/port, path case, and trailing slash remain
+   distinct evidence; shape grouping is navigation only.
+9. Bounded P1/P2/Review output and overflow counts are not coverage closure. Page
+   the exact surface index or observation inventory when a long-tail question
+   matters, and never mutate observation lifecycle merely by reading it.

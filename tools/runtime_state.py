@@ -576,6 +576,113 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     }
 
 
+def _artifact_has_bytes(path: Path) -> bool:
+    """只通过 stat 判断 artifact 是否非空，供高频 bootstrap 使用。"""
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
+    """返回 bootstrap 所需的只读 recon metadata，不逐行扫描大型 artifact。
+
+    ``counts`` 在该视图中只表达已知的 0；非空文件用 ``None`` 表示“存在但精确行数未知”。
+    需要精确计数的诊断命令继续调用 :func:`inspect_recon_artifacts`。
+    """
+    repo = Path(repo_root)
+    storage_key = target_storage_key(target)
+    recon_dir = repo / "recon" / storage_key
+    findings_dir = repo / "findings" / storage_key
+    if not recon_dir.is_dir():
+        return {
+            "available": False,
+            "ready": False,
+            "host_inventory_ready": False,
+            "surface_inputs_ready": False,
+            "recon_dir": str(recon_dir),
+            "counts": {},
+            "counts_exact": False,
+            "missing": ["recon directory"],
+            "warnings": [],
+        }
+
+    paths = {
+        "hosts": recon_dir / "live" / "httpx_full.txt",
+        "api_urls": recon_dir / "urls" / "api_endpoints.txt",
+        "param_urls": recon_dir / "urls" / "with_params.txt",
+        "js_endpoints": recon_dir / "js" / "endpoints.txt",
+        "browser_xhr_urls": recon_dir / "browser" / "xhr_endpoints.txt",
+        "browser_api_urls": recon_dir / "browser" / "api_endpoints.txt",
+    }
+    present = {key: _artifact_has_bytes(path) for key, path in paths.items()}
+    counts = {key: (None if value else 0) for key, value in present.items()}
+
+    ffuf_ready = any(
+        _artifact_has_bytes(recon_dir / relative)
+        for relative in (
+            Path("dirs/ffuf_summary.json"),
+            Path("dirs/ffuf-results-summary.json"),
+        )
+    )
+    findings_ready = _artifact_has_bytes(findings_dir / "findings.json")
+    counts.update(
+        {
+            "ffuf_observations": None if ffuf_ready else 0,
+            "ffuf_legacy_raw_files": 0,
+            "structured_findings": None if findings_ready else 0,
+        }
+    )
+
+    exposure_paths = {
+        key: str(relative)
+        for key, relative in EXPOSURE_COUNT_PATHS.items()
+        if _artifact_has_bytes(recon_dir / relative)
+    }
+    infra_paths = {
+        key: str(relative)
+        for key, relative in INFRA_COUNT_PATHS.items()
+        if _artifact_has_bytes(recon_dir / relative)
+    }
+    for key in EXPOSURE_COUNT_PATHS:
+        counts[key] = None if key in exposure_paths else 0
+    for key in INFRA_COUNT_PATHS:
+        counts[key] = None if key in infra_paths else 0
+
+    host_inventory_ready = present["hosts"]
+    surface_inputs_ready = any(
+        present[key]
+        for key in (
+            "api_urls",
+            "param_urls",
+            "js_endpoints",
+            "browser_xhr_urls",
+            "browser_api_urls",
+        )
+    ) or ffuf_ready or findings_ready
+    missing = [] if host_inventory_ready else ["live/httpx_full.txt"]
+    warnings = []
+    if host_inventory_ready and not surface_inputs_ready:
+        warnings.append("no URL, JS, browser, or structured finding surface artifacts found yet")
+
+    return {
+        "available": True,
+        "ready": host_inventory_ready,
+        "host_inventory_ready": host_inventory_ready,
+        "surface_inputs_ready": surface_inputs_ready,
+        "recon_dir": str(recon_dir),
+        "counts": counts,
+        "counts_exact": False,
+        "exposure_ready": bool(exposure_paths),
+        "exposure_paths": exposure_paths,
+        "infra_ready": bool(infra_paths),
+        "infra_paths": infra_paths,
+        "ffuf_needs_summary": False,
+        "missing": missing,
+        "warnings": warnings,
+    }
+
+
 def runtime_wait_action(
     repo_root: str | Path,
     target: str,
