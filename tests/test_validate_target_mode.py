@@ -130,6 +130,72 @@ def test_non_tty_machine_decision_binds_canonical_finding_and_uses_owner(tmp_pat
     assert summary["machine_decision"]["evidence_refs"] == [str(evidence_ref)]
 
 
+def test_machine_validation_preserves_root_claim_class_in_ledger_and_reconcile(tmp_path, monkeypatch, capsys):
+    from evidence_ledger import load_entries
+    from finding_index import find_finding, reconcile_root_finding_claims
+
+    target = "target.com"
+    findings_dir = tmp_path / "findings" / target
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "jwt-claim.json").write_text(
+        json.dumps(
+            {
+                "kind": "finding_claim",
+                "schema_version": 1,
+                "title": "JWT verification claim",
+                "endpoint": "/admin",
+                "type": "authentication-bypass",
+                "vuln_class": "JWT",
+                "impact": "A forged token reaches an administrator-only action.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    reconcile_root_finding_claims(findings_dir, target=target)
+    finding_id = json.loads(
+        (findings_dir / "findings.json").read_text(encoding="utf-8")
+    )["findings"][0]["id"]
+
+    evidence_ref = tmp_path / "evidence" / target / "validation" / "raw-pair.json"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text('{"baseline":"denied","variant":"allowed"}\n', encoding="utf-8")
+    decision = _machine_decision(
+        target=target,
+        finding_id=finding_id,
+        endpoint="/admin",
+        report_path=f"findings/{target}/machine-report.md",
+        evidence_ref=str(evidence_ref),
+    )
+    decision["vuln_class"] = "authentication-bypass"
+    decision_path = tmp_path / "machine-decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+
+    exit_code = validate.main(
+        [
+            "--target",
+            target,
+            "--finding-id",
+            finding_id,
+            "--decision-json",
+            str(decision_path),
+            "--json",
+        ]
+    )
+    capsys.readouterr()
+    persisted = find_finding(findings_dir, finding_id)
+    entries = load_entries(tmp_path, target)
+    replay = reconcile_root_finding_claims(findings_dir, target=target)
+
+    assert exit_code == 0
+    assert persisted is not None
+    assert persisted["validation_status"] == "validated"
+    assert persisted["vuln_class"] == "JWT"
+    assert entries[-1]["vuln_class"] == "JWT"
+    assert replay["status"] == "noop"
+
+
 def test_machine_decision_binding_error_has_no_new_validation_write(tmp_path, monkeypatch, capsys):
     from finding_index import upsert_finding
 
@@ -1094,6 +1160,41 @@ def test_sync_validation_artifacts_linked_finding_does_not_create_duplicate(tmp_
     payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
     assert sync["finding_index"]["status"] == "skipped"
     assert len(payload["findings"]) == 1
+
+
+def test_sync_validation_artifacts_linked_finding_uses_canonical_ledger_class(tmp_path):
+    from evidence_ledger import load_entries
+    from finding_index import upsert_finding
+
+    target = "target.com"
+    findings_dir = tmp_path / "findings" / target
+    upsert_finding(
+        findings_dir,
+        {
+            "id": "jwt_authentication_bypass",
+            "type": "authentication_bypass",
+            "vuln_class": "JWT",
+            "url": "https://target.com/admin",
+            "validation_status": "candidate",
+            "report_status": "not_generated",
+        },
+        target=target,
+    )
+    summary = {
+        "target": target,
+        "endpoint": "https://target.com/admin",
+        "vuln_class": "authentication_bypass",
+        "result": "confirmed",
+        "all_gates_passed": True,
+        "finding_id": "jwt_authentication_bypass",
+        "report_path": str(tmp_path / "findings" / target / "validated" / "report.md"),
+    }
+
+    sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+    entries = load_entries(tmp_path, target)
+
+    assert sync["ledger"]["status"] == "updated"
+    assert entries[-1]["vuln_class"] == "JWT"
 
 
 def test_sync_validation_artifacts_partial_keeps_queue_candidate(tmp_path):

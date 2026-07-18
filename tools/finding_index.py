@@ -153,6 +153,17 @@ ROOT_CLAIM_EXCLUDED_FILES = {
     "action_queue.json",
 }
 
+# 每个 finding 的 validation summary 按 ``<artifact-key>.validation-summary.json``
+# 命名。它们是 /validate 生成的 lifecycle artifact，不是待归档的人工/AI claim。
+ROOT_CLAIM_EXCLUDED_SUFFIXES = (
+    ".validation-summary.json",
+)
+
+
+def _is_root_claim_excluded_file(path: Path) -> bool:
+    """判断根目录 JSON 是否为生成的非 claim artifact。"""
+    return path.name in ROOT_CLAIM_EXCLUDED_FILES or path.name.endswith(ROOT_CLAIM_EXCLUDED_SUFFIXES)
+
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -804,7 +815,7 @@ def _root_claim_from_json(
     vulnerability class and reproduction/impact field instead represents a
     human/AI claim that must first become a canonical ``candidate``.
     """
-    if path.name in ROOT_CLAIM_EXCLUDED_FILES:
+    if _is_root_claim_excluded_file(path):
         return None
     if "findings" in payload or payload.get("kind") == "autopilot_checkpoint_witness":
         return None
@@ -826,6 +837,15 @@ def _root_claim_from_json(
         "vuln_type",
         "vuln_class",
         "vulnerability_class",
+        "finding_type",
+        "category",
+    )
+    declared_vuln_class = _claim_value(
+        payload,
+        "vuln_class",
+        "vulnerability_class",
+        "vuln_type",
+        "type",
         "finding_type",
         "category",
     )
@@ -871,7 +891,7 @@ def _root_claim_from_json(
         "source_file": str(path),
         "type": normalized_type,
         "category": normalized_type,
-        "vuln_class": vuln_type or normalized_type,
+        "vuln_class": declared_vuln_class or vuln_type or normalized_type,
         "title": title,
         "summary": (
             f"Unvalidated root JSON finding claim from {relative_path}. "

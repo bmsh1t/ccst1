@@ -416,6 +416,60 @@ def test_root_json_claim_reconciliation_is_idempotent_and_ignores_summaries(tmp_
     assert payload["total"] == 1
 
 
+def test_root_claim_reconciliation_ignores_per_finding_validation_summary(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "jwt-claim.json").write_text(
+        json.dumps(
+            {
+                "kind": "finding_claim",
+                "schema_version": 1,
+                "title": "JWT verification claim",
+                "endpoint": "/admin",
+                "type": "authentication-bypass",
+                "vuln_class": "JWT",
+                "impact": "A forged token reaches an administrator-only action.",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
+    original = finding_index.load_finding_index(findings_dir)["findings"][0]
+    finding_index.update_finding_status(
+        findings_dir,
+        original["id"],
+        validation_status="validated",
+        report_status="not_generated",
+    )
+    before = finding_index.find_finding(findings_dir, original["id"])
+    assert before is not None
+
+    (findings_dir / f"{original['id']}-a1b2c3d4.validation-summary.json").write_text(
+        json.dumps(
+            {
+                "target": "target.com",
+                "endpoint": "/admin",
+                "vuln_class": "authentication_bypass",
+                "impact": "Validation evidence for the linked finding.",
+                "finding_id": original["id"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = finding_index.reconcile_root_finding_claims(findings_dir, target="target.com")
+    after = finding_index.find_finding(findings_dir, original["id"])
+
+    assert finding_index.list_root_finding_claims(findings_dir, target="target.com") == []
+    assert result["status"] == "noop"
+    assert after is not None
+    assert after["validation_status"] == "validated"
+    assert after["vuln_class"] == before["vuln_class"] == "JWT"
+    assert after["evidence_rubric"] == before["evidence_rubric"]
+    assert after["claim_sources"] == before["claim_sources"]
+
+
 def test_incomplete_root_json_claim_is_recoverable_without_fabricating_endpoint(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)

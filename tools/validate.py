@@ -1735,6 +1735,52 @@ def _validation_action_matches(action: dict, summary: dict) -> bool:
     return False
 
 
+def _validation_ledger_vuln_class(summary: dict, repo: Path) -> str:
+    """优先从关联的 canonical finding 解析 ledger taxonomy。"""
+    requested = str(summary.get("vuln_class") or "validation").strip()
+    target = str(summary.get("target") or "").strip()
+    finding_id = str(summary.get("finding_id") or "").strip()
+    candidates: list[str] = []
+
+    if target and finding_id:
+        try:
+            try:
+                from finding_index import find_finding
+            except ImportError:  # pragma: no cover - package import path
+                from tools.finding_index import find_finding
+
+            finding = find_finding(
+                repo / "findings" / target_storage_key(target),
+                finding_id,
+                migrate_legacy=False,
+            )
+        except (OSError, ValueError, KeyError):
+            finding = None
+        if isinstance(finding, dict):
+            candidates.extend(
+                str(finding.get(key) or "").strip()
+                for key in ("vuln_class", "type")
+            )
+
+    candidates.append(requested)
+    try:
+        try:
+            from coverage_matrix import normalize_vuln_class
+        except ImportError:  # pragma: no cover - package import path
+            from tools.coverage_matrix import normalize_vuln_class
+
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                return normalize_vuln_class(candidate)
+            except ValueError:
+                continue
+    except ImportError:  # pragma: no cover - module path failure falls back to ledger owner
+        pass
+    return requested
+
+
 def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = None) -> dict:
     """Best-effort write-back from /validate into evidence ledger and action queue.
 
@@ -1766,7 +1812,7 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
             target=target,
             endpoint=endpoint,
             method=_validation_method_from_summary(summary, repo),
-            vuln_class=str(summary.get("vuln_class") or "validation"),
+            vuln_class=_validation_ledger_vuln_class(summary, repo),
             workflow="validate",
             actor="owner",
             object_scope="unknown",
