@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -80,6 +82,11 @@ def _empty_state(target: str) -> dict[str, Any]:
 
 def _ensure_shape(state: dict[str, Any], target: str) -> dict[str, Any]:
     resolved = canonical_target_value(target)
+    schema_version = state.get("schema_version", SCHEMA_VERSION)
+    if schema_version != SCHEMA_VERSION:
+        raise ValueError(
+            f"target case state schema_version must be {SCHEMA_VERSION}, got {schema_version!r}"
+        )
     state.setdefault("schema_version", SCHEMA_VERSION)
     state["target"] = state.get("target") or resolved
     state["target_key"] = state.get("target_key") or target_storage_key(resolved)
@@ -92,8 +99,12 @@ def _ensure_shape(state: dict[str, Any], target: str) -> dict[str, Any]:
         ("hypotheses", []),
         ("validation_backlog", []),
     ):
-        if not isinstance(state.get(key), type(default)):
+        if key not in state:
             state[key] = default
+        elif not isinstance(state.get(key), type(default)):
+            raise ValueError(
+                f"target case state field {key!r} must be {type(default).__name__}"
+            )
     for session in state["sessions"].values():
         if not isinstance(session, dict):
             continue
@@ -114,10 +125,12 @@ def load_case_state(repo_root: str | Path, target: str) -> dict[str, Any]:
         return _empty_state(target)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _empty_state(target)
+    except OSError as exc:
+        raise ValueError(f"unable to read target case state {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid target case state JSON {path}: {exc.msg}") from exc
     if not isinstance(payload, dict):
-        return _empty_state(target)
+        raise ValueError(f"target case state {path} must contain one object")
     return _ensure_shape(payload, target)
 
 
@@ -127,7 +140,28 @@ def save_case_state(repo_root: str | Path, target: str, state: dict[str, Any]) -
     state["updated_at"] = now_utc()
     path = case_state_path(repo_root, target)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
     return path
 
 
@@ -750,7 +784,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run_command(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     repo_root = Path(args.repo_root)
     if args.cmd == "summary":
@@ -835,6 +869,14 @@ def main(argv: list[str] | None = None) -> int:
     else:  # pragma: no cover - argparse guards this
         raise ValueError(f"unknown command: {args.cmd}")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _run_command(argv)
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"target case state command failed: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

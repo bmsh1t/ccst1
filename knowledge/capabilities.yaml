@@ -277,6 +277,30 @@ capabilities:
       - hidden-auth-param
       - login-branch
       - auth-state-machine
+  - id: odata-query-boundaries
+    kind: card
+    file: knowledge/cards/odata-query-boundaries.md
+    layer: reference
+    load: signal-only
+    purpose: validate
+    triggers:
+      - odata
+      - odata-filter
+      - odata-expand
+      - odata-batch
+      - odata-metadata
+  - id: ldap-xpath-query-boundaries
+    kind: card
+    file: knowledge/cards/ldap-xpath-query-boundaries.md
+    layer: reference
+    load: signal-only
+    purpose: validate
+    triggers:
+      - ldap-injection
+      - ldap-filter
+      - ldap-dn
+      - xpath-injection
+      - directory-query
   - id: coverage-prompts
     kind: card
     file: knowledge/cards/coverage-prompts.md
@@ -301,6 +325,9 @@ capabilities:
       - runner
       - oidc
       - workflow-trigger
+      - dependency-confusion
+      - public-registry
+      - sbom
   - id: cloud-control-plane-pivots
     kind: card
     file: knowledge/cards/cloud-control-plane-pivots.md
@@ -314,6 +341,30 @@ capabilities:
       - rbac
       - service-account
       - artifact-deploy
+  - id: grpc-api-boundaries
+    kind: card
+    file: knowledge/cards/grpc-api-boundaries.md
+    layer: reference
+    load: signal-only
+    purpose: validate
+    triggers:
+      - grpc
+      - grpc-web
+      - grpc-reflection
+      - protobuf
+      - rpc-gateway
+  - id: k8s-control-plane-boundaries
+    kind: card
+    file: knowledge/cards/k8s-control-plane-boundaries.md
+    layer: reference
+    load: signal-only
+    purpose: validate
+    triggers:
+      - kubernetes
+      - kubelet
+      - rbac
+      - kubernetes-service-account
+      - nodes-proxy
   - id: dns-email-trust-boundaries
     kind: card
     file: knowledge/cards/dns-email-trust-boundaries.md
@@ -436,6 +487,18 @@ capabilities:
       - sanitizer
       - parser-differential
       - mxss
+  - id: cloud-cognito-identity-pool
+    kind: card
+    file: knowledge/cards/cloud-cognito-identity-pool.md
+    layer: case-router
+    load: on-demand
+    purpose: connector
+    triggers:
+      - cognito
+      - identity-pool
+      - unauth-role
+      - get-credentials-for-identity
+      - cognito-sts
   - id: cli-argument-injection
     kind: card
     file: knowledge/cards/cli-argument-injection.md

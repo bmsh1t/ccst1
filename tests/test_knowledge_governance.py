@@ -170,14 +170,6 @@ def test_active_source_refs_match_pre_migration_baseline() -> None:
     assert len(set(observed_ids)) == 206
     for card_path in (_repo_root() / "knowledge" / "cards").glob("*.md"):
         assert "source_report_ids:" not in card_path.read_text(encoding="utf-8")
-    for card_id, entry in ((item["id"], item) for item in registry.by_kind("card")):
-        if entry.get("layer") == "case-router":
-            parsed = parse_knowledge_document(
-                (_repo_root() / entry["file"]).read_text(encoding="utf-8")
-            )
-            assert parsed.metadata is not None
-            assert parse_source_refs(parsed.metadata, source_path=entry["file"])
-
     cloud = next(item for item in registry.by_kind("card") if item["id"] == "cloud-control-plane-pivots")
     assert cloud["layer"] == "reference"
     assert cloud["load"] == "signal-only"
@@ -221,6 +213,15 @@ def test_capability_registry_enforces_layer_and_loading_contracts():
     assert len(core_cards) <= contracts["max_core_cards"]
     assert len(default_cards) <= contracts["default_cards_max"]
     assert all(item.get("load") == "on-demand" for item in card_caps if item.get("layer") == "case-router")
+
+
+def test_case_router_is_not_bound_to_hackerone_case_corpus():
+    """case-router 是加载/路由层；案例来源只对已有蒸馏卡按需保留。"""
+    registry = {Path(item["file"]).name: item for item in _card_capabilities()}
+
+    assert registry["cloud-cognito-identity-pool.md"]["layer"] == "case-router"
+    assert registry["cloud-cognito-identity-pool.md"]["load"] == "on-demand"
+    assert _card_source_refs("cloud-cognito-identity-pool.md") == ()
 
 
 def test_payload_packs_and_playbooks_remain_gated_non_card_capabilities():
@@ -268,7 +269,8 @@ def test_knowledge_index_preserves_card_layering_contract():
     assert "最多 1 张 core card" in index
     assert "最多 1 个 payload pack 或 playbook（仅验证阶段 gated）" in index
     assert "## 核心决策知识卡" in index
-    assert "## 蒸馏 Router 知识卡" in index
+    assert "## 按需 Router 知识卡" in index
+    assert "case-router 与 HackerOne 或任何单一案例库无绑定" in index
     assert "## 已折叠吸收 / 归档的蒸馏笔记" in index
     assert "knowledge/archive/distilled/" in index
     assert "## 深度附录 / Payload Packs" in index

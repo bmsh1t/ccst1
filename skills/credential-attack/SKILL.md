@@ -137,7 +137,7 @@ The **most dangerous** command. Real auth attempts against live accounts. Read [
 
 1. **Typed-hostname confirmation** — you must type the target hostname back. Defeats wrong-target slips.
 2. **Lockout warning** — calculates per-user failed-attempt count from `--passes` size, warns if it exceeds typical thresholds.
-3. **Audit log JSONL** — every attempt appended to `recon/<host>/spray/attempts-<ts>.jsonl`. **Passwords logged as SHA-256 prefix only, never plaintext.**
+3. **Audit log JSONL** — built-in HTTP/OAuth handlers record every request attempt；O365/Okta record every TREVOR emitted event in `recon/<host>/spray/attempts-<ts>.jsonl`. **Passwords are never stored in plaintext；only a SHA-256 prefix is kept when the event can be associated with a passlist value. TREVOR token/session/Authorization values are also redacted.**
 4. **Spray order** — `pass[i] × all_users` per round. Each user sees at most 1 failed attempt per round, well under typical 5-10 lockout threshold.
 
 ---
@@ -155,6 +155,18 @@ Default rate-limit: `--delay 1800 --jitter 60` (30 min/round + ±60s).
 | Custom apps | usually 5-10 per hour | varies wildly |
 
 A spray with default delay tries 1 password per user per 30 min — keeps every user at 0 strikes within any sliding window.
+
+限速判断不能只看 429。对自有/测试账号做有界 preflight 时，记录 known-good before/after control：
+
+| Defense state | 关键证据 | 处理 |
+|---|---|---|
+| Hard lockout | 少量失败后，原本正确的 control 也失败 | 立即停止并记录账号锁定 |
+| Explicit throttle | 429、Retry-After、稳定延迟阶跃 | 按服务端窗口停止/降速 |
+| CAPTCHA / step-up | 200/401 body 切换到验证码或额外 challenge | 停止自动尝试，记录状态机变化 |
+| Shadow throttle | status 看似不变，但 known-good 不再被处理或响应变成统一模板 | 按限速处理，不报告“无限速” |
+
+该分类只用于避免误判，不要求通过高频 burst 探测阈值；没有测试账号或 known-good control 时保持
+`unknown`，不要由“未见 429”推断防护缺失。
 
 **`--aggressive` (60s/10s) is fast spray:** use only when you intentionally accept lockout/rate-limit risk. Against O365, it almost certainly triggers smart lockout.
 
@@ -197,7 +209,16 @@ This is unambiguous; no regex needed.
 
 ### o365 / okta (TREVORspray)
 
-Output parsing. Less granular than our http-form / oauth handlers but well-tested upstream.
+通过 `tools/_spray_trevor.py` 把 TREVOR 输出转换为逐行合法、已脱敏的 emitted-event JSONL。
+它的粒度取决于上游实际输出，不等同于 built-in handler 的逐 HTTP attempt 日志。
+
+- Azure AD 先解析 `AADSTS`：区分 invalid user/password、locked、MFA、Conditional
+  Access、external auth、device required、consent 和 app/tenant configuration。
+- Okta 区分 invalid credentials、locked、MFA、password expired、valid session 和
+  rate limited。
+- token issued 只认响应 JSON 顶层 `access_token` key；嵌套 claims 或原始文本包含该词
+  不算成功。
+- 未识别输出保留 `classification=unknown`，不要根据单个关键词自行升级。
 
 ---
 

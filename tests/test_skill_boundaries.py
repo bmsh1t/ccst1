@@ -1,5 +1,7 @@
 """Regression tests for skill responsibility boundaries."""
 
+import math
+import re
 from pathlib import Path
 
 
@@ -30,6 +32,10 @@ def test_triage_validation_keeps_seven_question_gate_shape():
     assert "7-Question Gate" in text
     assert "### Q7b: Verify the identity boundary" in text
     assert "### Q8:" not in text
+    assert "Q1-Q5 failure, or Q7 with no valid chain path → **DO_NOT_REPORT**" in text
+    assert "Q6 proves only a lower impact → **DOWNGRADE**" in text
+    assert "Q7 has a concrete but unproven connector → **CHAIN_REQUIRED**" in text
+    assert "All required evidence passes → **REPORT**" in text
 
 
 def test_triage_validation_routes_chain_eligible_never_submit_items_by_precedence():
@@ -46,6 +52,102 @@ def test_triage_validation_routes_chain_eligible_never_submit_items_by_precedenc
     assert "concrete-but-unbuilt chain → CHAIN_REQUIRED" in text
     assert "bare primitive with no next hop" in text
     assert "DO_NOT_REPORT" in text
+
+
+def _cvss31_score(vector: str) -> float:
+    """按 CVSS 3.1 基础分公式计算 vector，避免文档分数与向量再次漂移。"""
+    metrics = dict(part.split(":", 1) for part in vector.split("/"))
+    scope_changed = metrics["S"] == "C"
+    weights = {
+        "AV": {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2},
+        "AC": {"L": 0.77, "H": 0.44},
+        "UI": {"N": 0.85, "R": 0.62},
+        "CIA": {"H": 0.56, "L": 0.22, "N": 0.0},
+    }
+    privilege_weights = (
+        {"N": 0.85, "L": 0.68, "H": 0.5}
+        if scope_changed
+        else {"N": 0.85, "L": 0.62, "H": 0.27}
+    )
+
+    confidentiality = weights["CIA"][metrics["C"]]
+    integrity = weights["CIA"][metrics["I"]]
+    availability = weights["CIA"][metrics["A"]]
+    impact_subscore = 1 - (
+        (1 - confidentiality) * (1 - integrity) * (1 - availability)
+    )
+    if scope_changed:
+        impact = 7.52 * (impact_subscore - 0.029) - 3.25 * (
+            impact_subscore - 0.02
+        ) ** 15
+    else:
+        impact = 6.42 * impact_subscore
+
+    if impact <= 0:
+        return 0.0
+    exploitability = (
+        8.22
+        * weights["AV"][metrics["AV"]]
+        * weights["AC"][metrics["AC"]]
+        * privilege_weights[metrics["PR"]]
+        * weights["UI"][metrics["UI"]]
+    )
+    raw_score = (
+        min(1.08 * (impact + exploitability), 10)
+        if scope_changed
+        else min(impact + exploitability, 10)
+    )
+    return math.ceil((raw_score - 1e-10) * 10) / 10
+
+
+def _cvss31_severity(score: float) -> str:
+    if score >= 9.0:
+        return "Critical"
+    if score >= 7.0:
+        return "High"
+    if score >= 4.0:
+        return "Medium"
+    if score > 0:
+        return "Low"
+    return "None"
+
+
+def test_triage_validation_cvss31_rows_match_vectors_and_severity():
+    text = (REPO_ROOT / "skills" / "triage-validation" / "SKILL.md").read_text(encoding="utf-8")
+    rows = re.findall(
+        r"^\| (?P<finding>[^|]+?) \| (?P<score>\d+\.\d) \| "
+        r"(?P<severity>Critical|High|Medium|Low) \| "
+        r"(?P<vector>AV:[^|]+?) \|$",
+        text,
+        flags=re.MULTILINE,
+    )
+
+    assert len(rows) == 9
+    for finding, documented_score, documented_severity, vector in rows:
+        calculated_score = _cvss31_score(vector.strip())
+        assert float(documented_score) == calculated_score, finding
+        assert documented_severity == _cvss31_severity(calculated_score), finding
+
+
+def test_triage_validation_keeps_preseverity_and_retraction_discipline():
+    skill = (REPO_ROOT / "skills" / "triage-validation" / "SKILL.md").read_text(encoding="utf-8")
+    command = (REPO_ROOT / "commands" / "validate.md").read_text(encoding="utf-8")
+
+    assert "## PRE-SEVERITY GATE" in skill
+    assert "Complete chain" in skill
+    assert "theoretical blast radius" in skill
+    assert "does not erase the Candidate or create Q8" in skill
+    assert "## RETRACTION DISCIPLINE" in skill
+    assert "validation_status=rejected" in skill
+    assert "disproving evidence" in skill
+    assert "skills/triage-validation/SKILL.md" in command
+    assert "PRE-SEVERITY GATE" in command
+    assert "RETRACTION DISCIPLINE" in command
+    assert "**REPORT:**" in command
+    assert "**CHAIN_REQUIRED:**" in command
+    assert "**DOWNGRADE:**" in command
+    assert "**DO_NOT_REPORT:**" in command
+    assert "**KILL:**" not in command
 
 
 def test_hidden_sqli_surfaces_are_part_of_skill_flow():

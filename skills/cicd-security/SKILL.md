@@ -256,18 +256,33 @@ uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 ```
 
 ### Dependency Confusion Attack
-1. Find `package.json` or `requirements.txt` that references internal packages
-2. Check if the internal package name is published on npm/PyPI
-3. Publish a malicious package with a higher version number
-4. Build server installs the public (malicious) one instead
+Dependency confusion 必须通过三段式证据门，不能由 public registry 404 单独成立：
+
+```text
+public registry miss
++ target build actually depends on the package
++ resolver/config can fall back to the public registry
+= dependency-confusion Candidate
+```
+
+1. 从 `package.json`、lockfile、requirements、构建日志、JS/source 或 SBOM 证明目标构建实际消费内部包。
+2. 记录 `.npmrc`、pip/Poetry/NuGet/Maven/Gradle 配置、scope/source priority 和 lock behavior，证明解析会回落公共 registry。
+3. public registry 404 只说明名称当前未注册；缺第 1 或第 2 项时保持 Lead/Informational。
+4. 在隔离 registry/fixture 中验证 re-resolution、版本优先级和构建消费，不用公开发布动作代替 resolver 证据。
 
 ### Detection
 ```bash
 # Find internal package names in config files
 grep -rn '"registry"' package.json .npmrc
 grep -rn 'index-url\|extra-index-url' requirements.txt pip.conf setup.py
-# Check if those package names exist on public registries
+# 二次证据：lockfile / build log / SBOM / image layer
+grep -rn 'resolved\|integrity\|version' package-lock.json yarn.lock pnpm-lock.yaml
+grep -rn 'SPDX\|CycloneDX\|bom-ref\|purl' .
+# Public registry 404 remains a Lead until dependency + fallback are both proven
 ```
+
+还应检查公共 Docker Hub/GHCR image layer 中的 package metadata，以及 SPDX/CycloneDX SBOM
+映射出的精确 package/version，再与 OSV/CVE 关联；这些证据能确认消费版本，但不能替代 public fallback。
 
 ---
 
@@ -283,7 +298,7 @@ grep -rn 'index-url\|extra-index-url' requirements.txt pip.conf setup.py
 | Unpinned action | `@main` / `@v1` tag | Low–Medium | 3.0–5.5 |
 | Artifact poisoning | Unsigned artifact download + exec | Medium | 5.5–7.0 |
 | `GITHUB_TOKEN` write abuse | Push to protected branch | Medium | 5.5–7.0 |
-| Dependency confusion | Internal pkg not on public registry | High | 7.5–9.0 |
+| Dependency confusion | Internal dependency + public fallback + public name available/missing | High | 7.5–9.0 |
 | `workflow_dispatch` injection | Unvalidated inputs in `run:` | Medium–High | 6.0–8.0 |
 
 ---

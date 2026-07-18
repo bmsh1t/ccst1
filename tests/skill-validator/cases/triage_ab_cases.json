@@ -53,7 +53,7 @@
       "scenario": "The fetch parameter reaches http://169.254.169.254/latest/meta-data/iam/security-credentials/ and the response body containing temporary IAM credentials is reflected back to the attacker. Reproduced with raw request/response.",
       "verdict": "REPORT",
       "severity": "Critical",
-      "rationale": "SSRF to cloud metadata with data returned; CVSS ~9.1 Critical."
+      "rationale": "SSRF to cloud metadata with data returned; the reference vector scores 10.0 Critical."
     },
     {
       "id": "T07",
@@ -93,7 +93,7 @@
       "scenario": "DELETE /api/documents/{id} succeeds against documents owned by other users; attacker (free account) can delete any user's documents. Proven with two accounts.",
       "verdict": "REPORT",
       "severity": "High",
-      "rationale": "IDOR write/delete any user; CVSS 7.5 High."
+      "rationale": "IDOR write/delete any user; the reference vector scores 8.1 High."
     },
     {
       "id": "T12",

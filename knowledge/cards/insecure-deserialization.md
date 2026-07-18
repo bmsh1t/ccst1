@@ -22,6 +22,8 @@ deep_refs:
 ## Quick Recall
 
 - 先识别格式和完整性保护：Java/PHP/Python/.NET/Node serialized blob、remember-me、session、state、ViewState、导入/导出对象。
+- ViewState 必须按“格式/页面绑定可识别 → MAC/签名/加密完整性 → 服务端真实消费或状态影响”三阶段判断；
+  `__VIEWSTATE` 存在、可解码或错误文案都不能单独证明可利用反序列化。
 - 反序列化错误、类名、类型栈、OAST callback、签名校验差异都是 sink 线索，不等于 RCE。
 - 有签名/加密时先测试 tamper 是否被拒绝，再考虑弱密钥、key reuse、算法或框架配置。
 - URLDNS/OAST 类 probe 可证明 Java 反序列化触发，但命令 gadget 需要单独证据和受控验证。
@@ -37,12 +39,16 @@ deep_refs:
 - Cookie、rememberMe、session、state、payload、object、data、ViewState、import/export 文件呈现序列化特征。
 - Java `rO0AB` / `AC ED 00 05`，PHP `O:<len>:"Class"`，Python pickle `gAS` / `80 04`，.NET ViewState/LosFormatter 等。
 - 响应或日志出现 ClassCast、InvalidClass、unserialize、pickle、BinaryFormatter、ObjectInputStream、MAC validation failed。
+- ASP.NET 页面包含 `__VIEWSTATE`、`__VIEWSTATEGENERATOR`、`__EVENTVALIDATION`、ViewState MAC/encryption
+  错误或跨节点/页面绑定差异。
 - 框架或依赖版本存在历史 gadget/签名配置问题。
 
 ## 思路分支
 
 - Format recognition：base64、gzip、URL-safe、hex、签名分段、加密外壳。
 - Integrity test：单字节 tamper、重放、过期、跨账号复制、签名错误差异。
+- ViewState gate：先确认页面/控件状态格式和 generator/user/page binding，再确认 MAC/签名/加密是否
+  稳定拒绝 tamper，最后用低影响字段、类型错误或 OAST 证明后端实际 deserialize/consume。
 - State tamper：对象字段可改时，优先测试 role、tenant、feature flag、price/quantity 等业务状态边界。
 - Type semantics：boolean/string/integer/null、数组/对象边界和 loose comparison 差异只证明类型语义，不直接等同于权限绕过。
 - Sink proof：类型错误、OAST callback、URLDNS、反序列化日志，证明服务端真的反序列化。
@@ -63,12 +69,15 @@ deep_refs:
 - 是否记录原始 blob、解码层级、签名段和绑定用户？
 - 是否区分“可解码”和“服务端会反序列化”？
 - Tamper 失败是完整性保护成功，还是格式/编码错误？
+- ViewState 是否只被框架解析并稳定拒绝，还是修改后真正进入控件状态、类型转换或 gadget sink？
 - 是否检查跨账号 replay、旧 token、remember-me 与 session 绑定差异？
 - 是否在命令 gadget 前确认框架、版本、classpath/gadget 可用性？
 
 ## 最小验证
 
 - 保存合法 blob baseline，做单字节 tamper 或无害字段变化，比较拒绝方式。
+- ViewState 保存同一页面的新鲜 baseline、generator/event-validation 和用户/session 绑定；分别测试
+  格式损坏与完整性损坏，只有出现真实消费/状态差异后才考虑更深验证。
 - 对 unsigned object，只改自有/测试对象中的低影响字段，证明服务端接受和业务边界。
 - 对 blind sink，用一次性 OAST token 或类型错误证明触发，不直接上命令 gadget。
 - Candidate 前需要格式证据、完整性结论、可 replay 请求和明确业务/RCE 影响路径。
@@ -77,6 +86,8 @@ deep_refs:
 
 - Base64 JSON 不等于反序列化漏洞。
 - 看到 serialized magic bytes 不代表可篡改；签名和用户绑定可能完整。
+- `__VIEWSTATE` 可见、base64 可解码、MAC error 或跨节点偶发错误都不等于可利用；缺少 tamper 接受、
+  sink 或状态影响时保持格式/配置 Signal。
 - OAST callback 只证明 sink，不证明命令执行。
 - Gadget 工具失败不代表没有漏洞；也可能是 classpath、签名或触发路径不匹配。
 

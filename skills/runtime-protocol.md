@@ -91,6 +91,11 @@ boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -
 
 - 先有目标证据，再读取 `rules/playbook-router.md`、具体知识卡或项目内 `deep_refs`。
 - 只借鉴边界识别、pattern map、chain shape、bypass 思维和 primitive 建模。
+- 框架信号仍回到现有 owner：`/_next/image` 路由 SSRF fetch gate，`/_next/data` 路由 IDOR actor/object
+  diff，Actuator 路由管理响应形态，ViewState 路由完整性/真实消费，legacy auth 路由策略差异；
+  不因技术栈名称加载整套框架 Skill。
+- OData 与 LDAP/XPath 只有出现协议、operator、错误或 source 证据时才加载专项 reference 卡；
+  metadata、HTTP 200、格式识别或 parser error 单独只能是 Signal。
 - 不照搬 CTF 的 flag 路径、admin-bot 前提、DoS/ReDoS、持久 shell、批量读取、
   破坏性 payload 或宽泛 payload spray。
 - 每个链式假设必须写成 `Evidence / Primitive / Connector / Impact hypothesis /
@@ -145,6 +150,9 @@ knowledge/index.md
 - 上传执行 / 受控 RCE：`knowledge/cards/upload-to-execution.md`, `knowledge/cards/controlled-rce-impact.md`
 - Node / prototype pollution / VM sink：`knowledge/cards/node-prototype-pollution.md`
 - Race / 并发状态差异：`knowledge/cards/race-conditions.md`
+- gRPC / gRPC-Web / gateway：`knowledge/cards/grpc-api-boundaries.md`
+- Cognito Identity Pool / 匿名 STS：`knowledge/cards/cloud-cognito-identity-pool.md`
+- Kubernetes API / kubelet / RBAC：`knowledge/cards/k8s-control-plane-boundaries.md`
 - 覆盖缺口：`knowledge/cards/coverage-prompts.md`
 - 连续低价值方向：`knowledge/cards/dead-ends.md`
 

@@ -121,8 +121,8 @@ def test_current_knowledge_repository_has_no_blocking_errors() -> None:
     report = audit_repository()
 
     assert report.errors == 0
-    assert report.capabilities == 54
-    assert report.documents == 52
+    assert report.capabilities == 59
+    assert report.documents == 57
     assert report.warnings == 0
 
 
@@ -252,13 +252,14 @@ def test_malformed_registry_fails_without_traceback(tmp_path: Path, capsys) -> N
     assert "Traceback" not in output
 
 
-def test_case_router_requires_structured_source_refs(tmp_path: Path) -> None:
+def test_case_router_allows_empty_optional_source_refs(tmp_path: Path) -> None:
     registry = _base_registry(_card(layer="case-router", load="on-demand"))
-    _write_repo(tmp_path, registry, card_text=_v2_card())
+    _write_repo(tmp_path, registry, card_text=_v2_card(source_refs=[]))
 
     report = audit_repository(tmp_path)
 
-    assert "source-refs-required" in _codes(report)
+    assert "source-refs-required" not in _codes(report)
+    assert report.errors == 0
 
 
 def test_legacy_source_footer_is_blocking_for_active_cards(tmp_path: Path) -> None:

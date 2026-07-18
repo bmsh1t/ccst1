@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
+
 import target_case_state
 
 
@@ -54,6 +56,75 @@ def test_empty_state_initializes_shape(tmp_path):
     assert state["sessions"] == {}
     assert state["objects"] == {}
     assert state["validation_backlog"] == []
+
+
+def test_existing_corrupt_state_fails_instead_of_resetting_to_empty(tmp_path):
+    path = target_case_state.case_state_path(tmp_path, TARGET)
+    path.parent.mkdir(parents=True)
+    path.write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid target case state JSON"):
+        target_case_state.load_case_state(tmp_path, TARGET)
+
+
+def test_cli_reports_corrupt_state_with_stable_exit(tmp_path, capsys):
+    path = target_case_state.case_state_path(tmp_path, TARGET)
+    path.parent.mkdir(parents=True)
+    path.write_text("{broken", encoding="utf-8")
+
+    rc = target_case_state.main([
+        "summary",
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        TARGET,
+        "--json",
+    ])
+    captured = capsys.readouterr()
+
+    assert rc == 2
+    assert captured.out == ""
+    assert "target case state command failed" in captured.err
+    assert str(path) in captured.err
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        ([], "must contain one object"),
+        ({"schema_version": 2}, "schema_version must be 1"),
+        ({"schema_version": 1, "actors": []}, "field 'actors' must be dict"),
+    ],
+)
+def test_existing_invalid_state_shape_fails_explicitly(tmp_path, payload, message):
+    path = target_case_state.case_state_path(tmp_path, TARGET)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        target_case_state.load_case_state(tmp_path, TARGET)
+
+
+def test_atomic_save_failure_preserves_previous_case_state(tmp_path, monkeypatch):
+    _build_idor_state(tmp_path)
+    path = target_case_state.case_state_path(tmp_path, TARGET)
+    previous = path.read_bytes()
+    state = target_case_state.load_case_state(tmp_path, TARGET)
+    state["actors"]["user_a"]["label"] = "changed"
+    original_replace = Path.replace
+
+    def fail_case_state_replace(self, target):
+        if Path(target) == path:
+            raise OSError("synthetic replace failure")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_case_state_replace)
+
+    with pytest.raises(OSError, match="synthetic replace failure"):
+        target_case_state.save_case_state(tmp_path, TARGET, state)
+
+    assert path.read_bytes() == previous
+    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
 
 
 def test_add_actor_session_object_and_summary(tmp_path):

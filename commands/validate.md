@@ -10,7 +10,7 @@ Run full validation on the current finding before writing a report.
 
 - A Lead/Signal has become a real Candidate
 - You are preparing to write or queue a report
-- You need a strict PASS / KILL / DOWNGRADE decision instead of more exploration
+- You need a strict REPORT / CHAIN_REQUIRED / DOWNGRADE / DO_NOT_REPORT decision instead of more exploration
 
 ## Do Not Use When
 
@@ -64,11 +64,15 @@ reintroduce external scope/program confirmation for this run.
 
 ## What This Does
 
-1. Runs the 7-Question Gate (one wrong answer = reject the report path)
+1. Runs the 7-Question Gate and routes each non-pass by its meaning
 2. Checks against the always-rejected list
 3. Runs 4 pre-submission gates
 4. Calculates and records validation context where applicable
-5. Outputs: PASS (write the report), KILL (do not report), or DOWNGRADE (impact not strong enough)
+5. Outputs: REPORT, CHAIN_REQUIRED, DOWNGRADE, or DO_NOT_REPORT
+
+Before deciding, load `skills/triage-validation/SKILL.md` and treat its Q7
+precedence, PRE-SEVERITY GATE, and RETRACTION DISCIPLINE as authoritative. The
+condensed checklist below must not override those rules.
 
 `tools/validate.py` records the 7-Question Gate in the current finding's
 `<artifact-key>.validation-summary.json`.
@@ -196,7 +200,9 @@ backlog, state the AI override and continue with the stronger proof path.
 
 ## The 7-Question Gate
 
-Answer each. ONE wrong answer = STOP the report path.
+Answer each. A non-pass stops the current claim; apply the authoritative routing
+rules from `skills/triage-validation/SKILL.md` instead of collapsing every
+outcome into a generic failure.
 
 ### Q1: Can I demonstrate this step-by-step RIGHT NOW?
 
@@ -297,9 +303,11 @@ If no chain → do not report it. If chain confirmed → report the proven chain
 
 ## Output
 
-**PASS:** "All 7 questions pass. All 4 gates pass. Proceed to /report."
+**REPORT:** "All 7 questions pass. All 4 gates pass. Proceed to /report."
 
-**KILL:** "Q[N] fails because [reason]. Do not report this candidate. Reason: [explanation]. Move on or demote with the next evidence action."
+**CHAIN_REQUIRED:** "Q7 has a concrete connector, but the end-to-end chain is not yet proven. Keep the Candidate and collect [exact missing evidence]."
+
+**DO_NOT_REPORT:** "Q[N] fails because [reason]. Do not report this candidate. Move on or demote only with a concrete next evidence action."
 
 **DOWNGRADE:** "Q6 only shows technical possibility. Downgrade from High to Medium. Requires showing actual data exfil in PoC."
 

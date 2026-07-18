@@ -52,7 +52,7 @@ rate/lockout review, audit log, and stop-on-hit discipline.
 
 1. **Typed-hostname confirmation** — Pre-flight prints the target hostname and requires you to type it back. Prevents spraying the wrong target.
 2. **Lockout warning** — Calculates per-user failed-attempt count from your `--passes` size and warns if it exceeds typical lockout thresholds.
-3. **Audit log** — Every attempt is appended to `recon/<host>/spray/attempts-<timestamp>.jsonl`. Format: `{ts, round, user, pwd_sha256_prefix, status_code, looks_like_success, duration_ms}`. **Passwords are never logged in plaintext** — only their SHA-256 prefix.
+3. **Audit log** — Built-in HTTP/OAuth handlers append every request attempt；O365/Okta append every TREVOR emitted event to `recon/<host>/spray/attempts-<timestamp>.jsonl`. **Passwords are never logged in plaintext** — only a SHA-256 prefix when the emitted line can be associated with a passlist value；token/session/Authorization values in TREVOR raw output are also redacted.
 4. **Spray order** — `pass[i] × all_users` per round (NOT brute-per-user). Each account sees at most 1 failed attempt per round.
 
 ## Spray order example (3 users × 3 passwords)
@@ -90,6 +90,21 @@ If you get false positives, supply `--fail-regex` (e.g. `--fail-regex "Invalid|i
 HTTP 200 response with `"access_token"` field in JSON body → success.
 HTTP 4xx (typically 400 invalid_grant / 401) → fail.
 
+## Result classification (o365 / okta)
+
+TREVOR 输出先转换为结构化 emitted-event JSONL，再按身份提供方分类。它的粒度取决于
+TREVOR 实际输出，不宣称每个网络请求都有一条事件。
+
+- Azure AD：优先解析 `AADSTS` code。`50034`=invalid user，`50126`=invalid
+  password/user exists，`50053`=locked，`53003`=valid password + Conditional
+  Access，`50076/50079`=valid password + MFA，`50158`=external auth，`530003`=device
+  required，`65001`=consent required，`700016/90002`=app/tenant configuration。
+- Okta：识别 `E0000004`、`E0000119`/`LOCKED_OUT`、`MFA_REQUIRED`、
+  `PASSWORD_EXPIRED`、`SUCCESS + sessionToken`、`E0000047`/HTTP 429。
+- 只有响应 JSON 的顶层 `access_token` key 才标记 token issued；claims 或原始文本包含
+  `access_token` 不算成功。
+- 未识别输出保留为 `unknown`，供后续人工/AI 复核。
+
 ## Pre-flight output (what you see before any HTTP)
 
 ```
@@ -125,9 +140,17 @@ The flag is a deliberate friction point.
 
 ## Audit log format
 
+Built-in HTTP/OAuth 每次请求一行：
+
 ```json
 {"ts":"2026-05-27T22:00:01Z","round":1,"user":"alice","pwd_sha256_prefix":"a3f2b8e1c0d4","status_code":401,"looks_like_success":false,"duration_ms":320}
 {"ts":"2026-05-27T22:00:02Z","round":1,"user":"bob","pwd_sha256_prefix":"a3f2b8e1c0d4","status_code":302,"redirect_to":"/dashboard","looks_like_success":true,"duration_ms":410}
+```
+
+O365/Okta 每条 TREVOR emitted event 一行：
+
+```json
+{"schema_version":1,"ts":"2026-07-18T12:00:00Z","mode":"o365","tool":"trevorspray","event":"attempt_result","user":"alice@example.test","classification":"valid_password_mfa","credential_valid":true,"token_issued":false,"aadsts_code":"50076","pwd_sha256_prefix":"a3f2b8e1c0d4","raw":"..."}
 ```
 
 ## Pipeline position

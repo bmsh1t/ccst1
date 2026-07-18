@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import checkpoint as checkpoint_module
 import finding_index
 from action_queue import _checkpoint_item_to_action, _dedupe_key, load_queue, save_queue
@@ -72,6 +74,15 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     assert checkpoint["runtime_witness"]["path"] == "state/target.com/checkpoint_latest.json"
     assert witness["kind"] == "autopilot_checkpoint_witness"
     assert witness["context_pack"]["selected_skill"] == checkpoint["context_pack"]["selected_skill"]
+
+
+def test_checkpoint_fails_explicitly_on_corrupt_case_state(tmp_path):
+    path = tmp_path / "state" / "target.com" / "case_state.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid target case state JSON"):
+        build_checkpoint(tmp_path, target="target.com")
 
 
 def test_checkpoint_cli_syncs_durable_action_queue_idempotently(tmp_path, capsys):

@@ -1,12 +1,13 @@
 ---
 name: triage-validation
-description: Finding validation before writing any report — 7-Question Gate (all 7 questions), 4 pre-submission gates, always-rejected list, conditionally valid with chain table, CVSS 3.1 quick reference, severity decision guide, report title formula, 60-second pre-submit checklist. Use BEFORE writing any report. One wrong answer = reject the report path, then demote to Lead/Signal only when a concrete next evidence action remains. Saves N/A ratio without erasing exploration context.
+description: Finding validation before writing any report — 7-Question Gate (all 7 questions), 4 pre-submission gates, always-rejected list, conditionally valid with chain table, CVSS 3.1 quick reference, severity decision guide, report title formula, 60-second pre-submit checklist. Use BEFORE writing any report. Route complete evidence to REPORT, missing connectors to CHAIN_REQUIRED, impact-only gaps to DOWNGRADE, and failed reportability gates to DO_NOT_REPORT without erasing exploration context.
 ---
 
 # TRIAGE & VALIDATION
 
-One wrong answer = STOP the report path. Do not submit. Move on or demote to
-Lead/Signal only when a concrete next evidence action remains.
+Any non-pass stops the current claimed report or severity. Route it explicitly
+to CHAIN_REQUIRED, DOWNGRADE, or DO_NOT_REPORT; keep a Lead/Signal only when a
+concrete next evidence action remains.
 
 ## 四层记忆接入
 
@@ -34,8 +35,9 @@ Lead -> Signal -> Candidate -> Validated Finding -> Report
   seeds.
 - `/triage` and `/validate` act on Candidates and decide whether they become
   Validated Findings.
-- A failed gate means **do not report**. It does not mean every underlying
-  lead, hypothesis, or chain seed must be deleted from hunt notes.
+- A failed reportability gate means **do not report** the current claim. A Q6
+  proof gap may instead downgrade the demonstrated primitive, and a Q7 chain
+  gap may remain CHAIN_REQUIRED.
 - Chain seeds on the never-submit list stay chain candidates when there is a
   specific next hop to prove.
 
@@ -43,7 +45,12 @@ Lead -> Signal -> Candidate -> Validated Finding -> Report
 
 ## THE 7-QUESTION GATE
 
-Ask IN ORDER. One wrong answer = STOP the report path immediately.
+Ask IN ORDER. A non-pass stops the current claim, then routes by meaning:
+
+- Q1-Q5 failure, or Q7 with no valid chain path → **DO_NOT_REPORT**.
+- Q6 proves only a lower impact → **DOWNGRADE** to that demonstrated impact.
+- Q7 has a concrete but unproven connector → **CHAIN_REQUIRED**.
+- All required evidence passes → **REPORT**.
 
 ---
 
@@ -275,14 +282,14 @@ Build the chain first, prove it works end to end, THEN report.
 | Finding | Score | Severity | Vector |
 |---|---|---|---|
 | IDOR read PII, any user, auth required | 6.5 | Medium | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N |
-| IDOR write/delete, any user | 7.5 | High | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N |
+| IDOR write/delete, any user | 8.1 | High | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N |
 | Auth bypass → admin panel | 9.8 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H |
-| Stored XSS → cookie theft, stored | 8.8 | High | AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:N |
-| SQLi → full DB dump | 8.6 | High | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N |
-| SSRF → cloud metadata | 9.1 | Critical | AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N |
-| Race → double spend | 7.5 | High | AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:N |
-| GraphQL auth bypass | 8.7 | High | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N |
-| JWT none algorithm | 9.1 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H |
+| Stored XSS → cookie theft, stored | 8.5 | High | AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:N |
+| SQLi → full DB dump | 9.1 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N |
+| SSRF → cloud metadata | 10.0 | Critical | AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N |
+| Race → double spend | 6.8 | Medium | AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:N |
+| GraphQL auth bypass | 8.1 | High | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N |
+| JWT none algorithm | 9.8 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H |
 
 ### Metric Quick Guide
 
@@ -301,6 +308,39 @@ Build the chain first, prove it works end to end, THEN report.
 | Crashes service | A | High (H) |
 | Affects only app | S | Unchanged (U) |
 | Affects browser/OS/cloud | S | Changed (C) |
+
+---
+
+## PRE-SEVERITY GATE
+
+Before assigning **High** or **Critical**, record all four:
+
+1. **Complete chain** — attacker precondition → primitive → connector → final outcome.
+2. **Concrete outcome** — exact affected identity, data, privilege, money, or system control.
+3. **Repeatability** — reproduce from a fresh session/state and preserve the replay evidence.
+4. **Remaining boundary** — state what is still untested, assumed, environment-specific, or role-dependent.
+
+Route incomplete claims without inventing a new gate status:
+
+- A missing connector required to make the primitive reportable → **CHAIN_REQUIRED**.
+- A valid primitive whose claimed impact is not yet proven → **DOWNGRADE** to the demonstrated outcome.
+- A bug-class name, scanner severity, theoretical blast radius, or unbuilt chain never justifies High/Critical by itself.
+
+This calibrates severity after Q1-Q7; it does not erase the Candidate or create Q8.
+
+---
+
+## RETRACTION DISCIPLINE
+
+If later replay disproves a report-ready or validated Candidate:
+
+1. Preserve the original signal, request, response, and evidence references; do not overwrite or delete them.
+2. Attach the disproving evidence and the exact control/test difference, including identities, sessions, and relevant state.
+3. Record the false-positive cause and decision date in the validation evidence.
+4. Use the canonical finding owner to set `validation_status=rejected`; retain the prior validation summary, digest, and owner provenance.
+5. Reopen only when new evidence directly addresses the recorded cause, and link the old and new evidence.
+
+Retraction is an auditable correction, not silent removal of an inconvenient result.
 
 ---
 

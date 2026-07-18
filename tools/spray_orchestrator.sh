@@ -15,7 +15,7 @@
 # Hard guards:
 #   - Operational risk reminder + typed-hostname confirmation (defeats wrong-target slips)
 #   - Lockout warning + 'yes' confirmation (defeats casual launch)
-#   - All attempts written to audit log JSONL
+#   - Built-in attempts and TREVOR emitted events written to audit log JSONL
 #   - Default delay 1800s + 60s jitter (--aggressive for 60s/10s)
 #
 # Usage:
@@ -186,6 +186,7 @@ export SPRAY_CONTINUE_ON_HIT="$CONTINUE_ON_HIT"
 export SPRAY_TARGET_URL="$TARGET_URL"
 export SPRAY_USERS_FILE="$USERS_FILE"
 export SPRAY_PASSES_FILE="$PASSES_FILE"
+export SPRAY_MODE="$MODE"
 
 # Dispatch
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -213,15 +214,9 @@ case "$MODE" in
             exit 1
         fi
         log_warn "Dispatching to TREVORspray (its own rate-limit/SSH-proxy machinery)"
-        log_warn "Per-attempt audit log uses TREVOR output parsing — less granular than http-form mode"
-        # TREVOR uses --delay in minutes for some modules, seconds for others.
-        # Pass our seconds-based delay through; TREVOR will interpret.
-        trevorspray --users "$USERS_FILE" --passlist "$PASSES_FILE" \
-            --url "$TARGET_URL" \
-            --delay "$((DELAY / 60))" \
-            --jitter "$JITTER" \
-            $([ "$CONTINUE_ON_HIT" = true ] || echo "--no-loot")  \
-            2>&1 | tee -a "$AUDIT_LOG"
+        log_warn "Audit log records structured TREVOR emitted events; granularity depends on upstream output"
+        export SPRAY_TREVOR_BIN="$(command -v trevorspray)"
+        python3 "$SCRIPT_DIR/_spray_trevor.py"
         ;;
 esac
 

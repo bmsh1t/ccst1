@@ -75,7 +75,7 @@ gains:
    CVSS reference table the model over-rates "read any user's PII" to High. The
    skill's `IDOR read PII, auth required = 6.5 Medium` row corrects it.
 2. **T11 severity (IDOR delete): baseline Critical → correct High.** Same
-   over-rating pattern; skill's `IDOR write/delete = 7.5 High` row corrects it.
+   over-rating pattern; skill's `IDOR write/delete = 8.1 High` row corrects it.
 3. **T05 verdict (SSRF DNS-only): baseline CHAIN_REQUIRED → correct
    DO_NOT_REPORT.** This is the most debatable case. Baseline reasoned "SSRF is
    always chain-eligible." The skill's Q7 precedence (`no concrete next hop →

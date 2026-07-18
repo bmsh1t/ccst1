@@ -80,8 +80,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
@@ -380,10 +382,14 @@ def load_matrix(target: str, repo_root: Path | str | None = None) -> dict:
         return _empty_matrix(target)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _empty_matrix(target)
-    if not isinstance(data, dict) or "endpoints" not in data:
-        return _empty_matrix(target)
+    except OSError as exc:
+        raise ValueError(f"unable to read coverage matrix {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid coverage matrix JSON {path}: {exc.msg}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"coverage matrix {path} must contain one object")
+    if not isinstance(data.get("endpoints"), list):
+        raise ValueError(f"coverage matrix {path} endpoints must be a list")
     return data
 
 
@@ -402,7 +408,28 @@ def save_matrix(target: str, matrix: dict, repo_root: Path | str | None = None) 
     matrix["summary"] = _compute_summary(matrix)
     path = _matrix_path(repo, target)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(matrix, indent=2), encoding="utf-8")
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(json.dumps(matrix, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
     return path
 
 
@@ -1440,7 +1467,7 @@ def _append_finding(
     }, target=canonical_target_value(target))
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run_command(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Coverage matrix for (endpoint x vuln_class) state."
     )
@@ -1548,6 +1575,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _run_command(argv)
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"coverage matrix command failed: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

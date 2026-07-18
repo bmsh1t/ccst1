@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-13T07:07:32Z",
+  "generated_at": "2026-07-18T17:23:04Z",
   "reviewer": "Codex",
   "model_profile": "claude-cli/static-review/2026-07-13",
   "dispositions": [
@@ -22,7 +22,8 @@
         "idor",
         "object-id",
         "tenant",
-        "actor-diff"
+        "actor-diff",
+        "nextjs-data"
       ],
       "source_refs_count": 7,
       "source_strength": "case-pointers",
@@ -108,7 +109,8 @@
         "account-recovery",
         "username-enumeration",
         "credential-attack",
-        "mfa"
+        "mfa",
+        "rate-limit-regime"
       ],
       "source_refs_count": 0,
       "source_strength": "none",
@@ -137,7 +139,9 @@
       "trigger_tags": [
         "hidden-auth-param",
         "login-branch",
-        "auth-state-machine"
+        "auth-state-machine",
+        "alternate-auth-surface",
+        "legacy-auth-surface"
       ],
       "source_refs_count": 0,
       "source_strength": "none",
@@ -277,7 +281,10 @@
         "jenkins",
         "runner",
         "oidc",
-        "workflow-trigger"
+        "workflow-trigger",
+        "dependency-confusion",
+        "public-registry",
+        "sbom"
       ],
       "source_refs_count": 0,
       "source_strength": "none",
@@ -325,6 +332,35 @@
       "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
     },
     {
+      "card_id": "cloud-cognito-identity-pool",
+      "card_path": "knowledge/cards/cloud-cognito-identity-pool.md",
+      "layer": "case-router",
+      "load": "on-demand",
+      "maturity": "draft",
+      "trigger_tags": [
+        "cognito",
+        "identity-pool",
+        "unauth-role",
+        "get-credentials-for-identity",
+        "cognito-sts"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡是 AWS Cognito Identity Pool 的按需 case-router，补充 `cloud-control-plane-pivots` 的产品边界。 它帮助 AI 从公开配置路由到身份、角色和权限证据，不把公开标识或 API 200 自动包装成云接管。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/cloud-cognito-identity-pool.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
       "card_id": "cloud-control-plane-pivots",
       "card_path": "knowledge/cards/cloud-control-plane-pivots.md",
       "layer": "reference",
@@ -341,7 +377,9 @@
       "source_refs_count": 0,
       "source_strength": "none",
       "unique_value": "把 SSRF/源码/CI 线索连接到 identity -> permission -> control-plane action",
-      "overlap_with": [],
+      "overlap_with": [
+        "k8s-control-plane-boundaries"
+      ],
       "ai_likely_known": "partial",
       "disposition": "keep-draft",
       "reason": "来源指针不足且当前是 reference/signal-only；保持 draft，不伪造 case-router 或 proven。",
@@ -562,6 +600,35 @@
       "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
     },
     {
+      "card_id": "grpc-api-boundaries",
+      "card_path": "knowledge/cards/grpc-api-boundaries.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "grpc",
+        "grpc-web",
+        "grpc-reflection",
+        "protobuf",
+        "rpc-gateway"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡补充 API/WebSocket/代理测试中的协议分支，帮助 AI 区分 transport 指纹、方法可达性、认证授权和 真实 RPC 影响。它不导入大规模 RPC fuzz 或 DoS 清单，也不替代 protobuf/schema 的目标特定分析。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/grpc-api-boundaries.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
       "card_id": "import-migration-trust",
       "card_path": "knowledge/cards/import-migration-trust.md",
       "layer": "case-router",
@@ -644,6 +711,66 @@
       "model_profile": "claude-cli/static-review/2026-07-13",
       "evidence_refs": [
         "knowledge/cards/insecure-deserialization.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "k8s-control-plane-boundaries",
+      "card_path": "knowledge/cards/k8s-control-plane-boundaries.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "kubernetes",
+        "kubelet",
+        "rbac",
+        "kubernetes-service-account",
+        "nodes-proxy"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡是精简边界卡，只连接 Web/配置泄露、workload identity 与 Kubernetes 控制面证据。它不维护 CVE、 容器逃逸或大规模集群枚举清单，也不把单个 API 200 推导为 cluster-admin。",
+      "overlap_with": [
+        "cloud-control-plane-pivots"
+      ],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/k8s-control-plane-boundaries.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "ldap-xpath-query-boundaries",
+      "card_path": "knowledge/cards/ldap-xpath-query-boundaries.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "ldap-injection",
+        "ldap-filter",
+        "ldap-dn",
+        "xpath-injection",
+        "directory-query"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡补充 SQLi/NoSQL 和隐藏认证路线之外的目录查询语义。它提供 query context、oracle 和误判边界， 不把 LDAP 后端指纹直接升级为注入，也不执行批量账号、组或属性枚举。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/ldap-xpath-query-boundaries.md"
       ],
       "ab_required": false,
       "ab_status": "not-required-static-review",
@@ -736,6 +863,35 @@
       "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
     },
     {
+      "card_id": "odata-query-boundaries",
+      "card_path": "knowledge/cards/odata-query-boundaries.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "odata",
+        "odata-filter",
+        "odata-expand",
+        "odata-batch",
+        "odata-metadata"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡补充普通 API/SQLi/IDOR 路线容易漏掉的 OData 语义边界。它帮助 AI 区分“查询语言正常工作”、 “字段/关系授权不一致”和“外层/内层 parser 策略不同”，不把 OData 当成普通 SQL 语法，也不接管 API、IDOR 或 SQLi 的 lifecycle。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/odata-query-boundaries.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
       "card_id": "path-allowlist-normalization",
       "card_path": "knowledge/cards/path-allowlist-normalization.md",
       "layer": "case-router",
@@ -773,7 +929,8 @@
         "management-path",
         "admin-path",
         "monitoring",
-        "naming-pattern"
+        "naming-pattern",
+        "spring-actuator"
       ],
       "source_refs_count": 0,
       "source_strength": "none",
@@ -1141,7 +1298,8 @@
         "url-fetch",
         "webhook",
         "import-url",
-        "server-side-fetch"
+        "server-side-fetch",
+        "nextjs-image-optimizer"
       ],
       "source_refs_count": 8,
       "source_strength": "case-pointers",

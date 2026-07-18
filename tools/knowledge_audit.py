@@ -802,14 +802,6 @@ def _audit_document(
                 source_error = True
                 _add(report, "error", "source-refs-invalid", file_path, str(exc))
                 source_refs = ()
-            if entry.get("layer") == "case-router" and not source_refs and not source_error:
-                _add(
-                    report,
-                    "error",
-                    "source-refs-required",
-                    file_path,
-                    "case-router card 必须至少包含一个 source_refs",
-                )
             if source_refs and source_mode != "off" and corpus_status.get("status") == "available":
                 # resolver 是案例存在性的唯一判断入口；audit 只把 dangling 结果变成硬门，
                 # 不把案例内容或工具结果升级成漏洞结论。

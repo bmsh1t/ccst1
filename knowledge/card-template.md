@@ -95,7 +95,7 @@ source_refs: []
 | `maturity` | `draft` / `tested` / `proven` |
 | `load_priority` | `low` / `medium` / `high` |
 | `deep_refs` | payload、playbook、长案例或项目内附录路径；不要指向本机绝对路径或未蒸馏原文 |
-| `source_refs` | 结构化、按需查询的来源；v1 使用 `corpus-report` + `hackerone-disclosed-reports` + 字符串 ID |
+| `source_refs` | 可选的结构化案例来源；现有 v1 case-corpus resolver 支持 `corpus-report` + `hackerone-disclosed-reports` + 字符串 ID，但它不是知识卡或 case-router 的准入条件 |
 | `updated` | 可选，最后人工维护日期 |
 
 只有存在已经核对的本地案例指针时，才把空列表替换为对象列表：
@@ -130,6 +130,8 @@ source_refs:
   不在知识卡里直接挂载本机绝对路径、整篇原文或一次性题解。
 - `source_refs` 是 active 卡的唯一案例来源权威；不要再添加 `source_report_ids` Markdown footer。
 - 没有真实来源时保持 `source_refs: []`，不得用示例数字、猜测 ID 或模型记忆填充来源。
+- `case-router` 表示按信号加载的路由层，与 HackerOne 或任何单一案例库无绑定；只有确实来自
+  当前 resolver 支持的案例 corpus 时才填写 `source_refs`。
 - active 卡的正式生命周期由 `knowledge/governance/events.jsonl` 维护；`maturity` 只表示
   证据强度，不能代替 `reviewed/retired/superseded/restored` 状态。
 - 不保存真实凭证、个人数据、客户数据或未经脱敏的响应正文。

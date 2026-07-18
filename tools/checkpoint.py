@@ -610,27 +610,25 @@ def _actor_gap_enrichment_proposal(evidence_summary: dict, case_state: dict | No
 def _case_state_summary(repo_root: Path | str, target: str) -> dict:
     """Load sanitized target case state summary for checkpoint routing.
 
-    这里故意吞掉 case_state 读取异常，避免 checkpoint 因可选运行态记忆损坏而整体失败。
+    缺失文件仍表示尚未建立 case state；已存在但损坏的状态必须向上报错，
+    避免 checkpoint 把丢失的 actor/session/object/backlog 误判为空状态。
     """
-    try:
-        payload = build_case_state_summary(repo_root, target)
-        state = load_case_state(repo_root, target)
-        objects = state.get("objects") if isinstance(state.get("objects"), dict) else {}
-        if isinstance(payload, dict):
-            payload["object_samples"] = [
-                {
-                    "object_ref": str(ref),
-                    "type": str(obj.get("type") or ""),
-                    "object_id": str(obj.get("object_id") or ""),
-                    "endpoint": str(obj.get("endpoint") or ""),
-                    "owner_actor": str(obj.get("owner_actor") or ""),
-                    "private_marker": str(obj.get("private_marker") or ""),
-                }
-                for ref, obj in list(objects.items())[:8]
-                if isinstance(obj, dict)
-            ]
-    except Exception:
-        return {}
+    payload = build_case_state_summary(repo_root, target)
+    state = load_case_state(repo_root, target)
+    objects = state.get("objects") if isinstance(state.get("objects"), dict) else {}
+    if isinstance(payload, dict):
+        payload["object_samples"] = [
+            {
+                "object_ref": str(ref),
+                "type": str(obj.get("type") or ""),
+                "object_id": str(obj.get("object_id") or ""),
+                "endpoint": str(obj.get("endpoint") or ""),
+                "owner_actor": str(obj.get("owner_actor") or ""),
+                "private_marker": str(obj.get("private_marker") or ""),
+            }
+            for ref, obj in list(objects.items())[:8]
+            if isinstance(obj, dict)
+        ]
     return payload if isinstance(payload, dict) else {}
 
 

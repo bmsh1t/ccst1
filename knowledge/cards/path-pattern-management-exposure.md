@@ -12,6 +12,7 @@ trigger_tags:
   - admin-path
   - monitoring
   - naming-pattern
+  - spring-actuator
 risk: medium
 maturity: draft
 load_priority: medium
@@ -25,6 +26,8 @@ deep_refs: []
 - 触发：路径、子域、静态资源或结构化记录显示管理/监控/配置命名规律。
 - 最小验证：从目标自身材料生成有界词表，只验证最像的兄弟路径和只读入口。
 - 证据门：记录可达性、认证要求、敏感字段或配置影响；secret 只保留最小证据。
+- Spring Actuator/management 路径返回 200 时，必须确认 content-type、响应结构或 heapdump 等真实
+  endpoint 形态，排除登录页、Whitelabel、SPA fallback 和统一错误页。
 - 停止：候选接近无边界爆破，或需要默认凭据、云资源枚举、真实数据/运维动作。
 
 ## 能力定位
@@ -45,6 +48,8 @@ deep_refs: []
 - 结构化源优先：同一信息如果同时存在 HTML、JSON、API、raw log、导出文件或统计接口，优先读取结构化/原始源，避免 HTML 截断、分页、懒加载或刷新不完整。
 - 真实记录反哺字典：从访问记录、接口统计、日志、配置、sitemap、source map、bundle manifest、错误报告等真实记录中提取路径和参数，再做二次目录/API 发现。
 - Secret-like 字段降级处理：`accesskey` 等字段只进入最小证据、归属判断和验证计划，不直接扩大到资源接管。
+- Response-shape gate：管理路径的 status 只表示路由可达；title、content-type、JSON key、链接结构、
+  文件 magic 和相邻 endpoint 一致性共同证明真实组件，不由 200/401/403 单点判断暴露。
 
 ## 候选形态示例
 
@@ -54,6 +59,8 @@ deep_refs: []
 - 环境/版本：`dev`、`test`、`stg`、`uat`、`prod`、`v1`、`v2`、`old`、`new`、`legacy`。
 - 后台/内部：`admin`、`manage`、`console`、`internal`、`ops`、`operator`、`portal`、`dashboard`。
 - 监控/任务：`metrics`、`health`、`logs`、`trace`、`job`、`task`、`scheduler`、`datasource`、`connection`、`monitor`。
+- Spring 管理面：`/actuator`、`/manage/actuator`、`/management/actuator`、`env`、`mappings`、
+  `configprops`、`heapdump`、Jolokia；这些是目标有 Spring 证据时的候选形态，不是固定扫描清单。
 - 兄弟命名：`app01/app02`、`api1/api2`、`data/manage-data`、`web/web-admin`、短码 + 数字或环境后缀。
 - 结构化源：`manifest.json`、`routes.json`、`asset-manifest.json`、`sitemap.xml`、统计 JSON、访问记录、导出 JSON、raw log。
 
@@ -74,6 +81,8 @@ deep_refs: []
 
 - 某个节点命中后，相邻路径像是短字符串、业务缩写、环境编号、部门代码、版本号、地区、租户或模块名组合。
 - 返回 200/301/302/401/403 的页面、接口或静态资源显示 monitor、admin、console、metrics、log、trace、config、health、stats、job、task、datasource 等关键词。
+- Spring/Java 指纹、`X-Application-Context`、Whitelabel、Actuator link JSON、Jolokia JSON 或 heapdump
+  content-type/magic 提示真实管理组件。
 - 登录页使用默认品牌、缺少验证码/锁定提示、错误信息稳定；这可以形成受控口令测试 lead，是否进入 credential lane 由当前 Skill / `/autopilot` 按 `rules/red-lines.md` 判断。
 - 只读结构化数据、访问记录、配置字段或日志里出现 `accesskey`、`secretKey`、`ak`、`sk`、`token`、`bucket`、`endpoint`、`region`、内部 API 路径。
 
@@ -90,6 +99,8 @@ deep_refs: []
 - 先从目标自身提取词表：路径分段、目录前缀/后缀、短码模式、文件名、API 前缀、参数名、JS 路由、历史 URL、结构化记录。
 - 对命名规律做有界生成：限制长度、字符集和候选数量，优先验证最像目标风格的兄弟目录。
 - 管理/监控/日志/统计/配置入口只先做安全识别：标题、版本、认证要求、只读页面、结构化数据、配置字段；口令测试作为受控 `/spray` 或 `credential-attack` 后续动作。
+- 对 Actuator 先比较不存在路径、`/actuator` root 和单个只读 endpoint；只有 actuator-shaped JSON、
+  endpoint link、heapdump 文件形态或目标特定管理数据才算真实暴露，HTML 登录/错误页保持 Signal。
 - 发现访问记录、统计接口、JSON/API/raw log/导出类结构化源时，优先提取路径和参数作为二次 recon 字典，不直接访问状态改变接口。
 - 发现 access key/secret/token 时，只记录来源、字段名、上下文和最小有效性验证计划；需要云资源枚举、导入第三方工具或接管资源时先停为 Candidate/blocked。
 
@@ -111,6 +122,8 @@ deep_refs: []
 ## 检查要求
 
 - 不把“存在登录页”直接当作漏洞；Candidate 需要可达性、认证缺陷、敏感信息泄露或配置影响证据。
+- 不把 Actuator/Jolokia 路径 200 直接当作管理面暴露；必须排除 Whitelabel、认证跳转、SPA fallback、
+  反向代理统一页和普通 health 文案。
 - 默认凭据检查必须低频、有限、可说明依据；如需扩大为口令爆破，必须切换到受控 `/spray` / `credential-attack` 流程。
 - Secret 候选只保留最小证据，避免保存完整密钥、批量导出资源或扩大影响。
 - 任何云、支付、生产服务器、CI/CD、部署和运维面操作必须先按 `rules/red-lines.md` 降级或停止。

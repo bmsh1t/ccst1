@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import coverage_matrix as coverage_matrix_module
 from coverage_matrix import (
     DEFAULT_MIN_WEIGHT,
     STATUS_VALUES,
@@ -71,6 +72,49 @@ class TestEmptyMatrix:
         m = load_matrix("ghost.com", repo_root=tmp_path)
         assert m["endpoints"] == []
         assert m["target"] == "ghost.com"
+
+    def test_load_existing_corrupt_matrix_fails_explicitly(self, tmp_path):
+        path = tmp_path / "evidence" / "x.com" / "coverage_matrix.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("{broken", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="invalid coverage matrix JSON"):
+            load_matrix("x.com", repo_root=tmp_path)
+
+    def test_cli_reports_corrupt_matrix_with_stable_exit(self, tmp_path, capsys):
+        path = tmp_path / "evidence" / "x.com" / "coverage_matrix.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("{broken", encoding="utf-8")
+
+        rc = coverage_matrix_module.main([
+            "find-gaps",
+            "--repo-root",
+            str(tmp_path),
+            "--target",
+            "x.com",
+        ])
+        captured = capsys.readouterr()
+
+        assert rc == 2
+        assert captured.out == ""
+        assert "coverage matrix command failed" in captured.err
+        assert str(path) in captured.err
+
+    @pytest.mark.parametrize(
+        "payload, message",
+        [
+            ([], "must contain one object"),
+            ({}, "endpoints must be a list"),
+            ({"endpoints": {}}, "endpoints must be a list"),
+        ],
+    )
+    def test_load_existing_invalid_matrix_shape_fails_explicitly(self, tmp_path, payload, message):
+        path = tmp_path / "evidence" / "x.com" / "coverage_matrix.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match=message):
+            load_matrix("x.com", repo_root=tmp_path)
 
 
 class TestCanonicalizeEndpoint:
@@ -171,6 +215,31 @@ class TestSaveLoadRoundTrip:
         assert loaded["summary"] == m["summary"]
         # last_updated was also refreshed in place
         assert m["last_updated"] == loaded["last_updated"]
+
+    def test_atomic_save_failure_preserves_previous_matrix(self, tmp_path, monkeypatch):
+        matrix = _empty_matrix("x.com")
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+        path = tmp_path / "evidence" / "x.com" / "coverage_matrix.json"
+        previous = path.read_bytes()
+        matrix["endpoints"].append({
+            "endpoint": "/api/private",
+            "weight": 5.0,
+            "cells": {"IDOR": {"status": "untested"}},
+        })
+        original_replace = Path.replace
+
+        def fail_matrix_replace(self, target):
+            if Path(target) == path:
+                raise OSError("synthetic replace failure")
+            return original_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", fail_matrix_replace)
+
+        with pytest.raises(OSError, match="synthetic replace failure"):
+            save_matrix("x.com", matrix, repo_root=tmp_path)
+
+        assert path.read_bytes() == previous
+        assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
 
 
 class TestRebuildMatrix:

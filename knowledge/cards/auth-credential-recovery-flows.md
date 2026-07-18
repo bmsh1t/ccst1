@@ -10,6 +10,7 @@ trigger_tags:
   - username-enumeration
   - credential-attack
   - mfa
+  - rate-limit-regime
 risk: medium
 maturity: draft
 load_priority: high
@@ -26,6 +27,8 @@ deep_refs:
 - 密码重置、邮箱验证、MFA、remember-me、账号锁定、用户名枚举和口令测试属于同一类认证状态机边界。
 - 典型候选：hidden `username` 可改、reset token 可跨账号复用、旧 token 未失效、Host/XFH 污染 reset link、错误响应暴露用户存在性。
 - 口令/OTP/remember-me 测试不是绝对禁用；但真实目标必须有目标依据、低频边界、锁定/限速观察、停止条件和当前流程选择。
+- “没有 429”不等于“没有限速”：区分硬锁定、显式 throttle、验证码/step-up 切换和 shadow throttle，
+  用测试账号的有界 known-good control 验证服务端是否仍处理请求。
 - Candidate 需要证明账号、session、token、MFA 或密码状态被错误绑定，或攻击者可进入目标账号。
 
 ## 能力定位
@@ -46,6 +49,8 @@ deep_refs:
 - Username enumeration：错误文案、状态码、长度、响应时间、锁定提示、邮件发送差异、MFA 分支差异。
 - Credential testing：默认凭据、已知弱口令、少量高依据用户名、remember-me cookie、离线 token cracking；按受控边界执行。
 - MFA/OTP：预认证 session、challengeId、用户绑定、重放、跳步、备用码、限速、账号锁定和渠道切换。
+- Rate-limit regime：同时观察 status/body/header/latency 和 known-good control；判断是账号锁定、
+  IP/设备 throttle、验证码/step-up 注入，还是请求被静默丢弃/返回 canned response。
 - Host/proxy connector：reset link、email verification、OAuth callback 或 absolute URL 生成受 Host/XFH 影响时，转 `proxy-cache-boundaries`。
 
 ## 技巧家族 / Payload 家族
@@ -55,6 +60,8 @@ deep_refs:
 - Error diff：存在/不存在用户、正确/错误密码、锁定/未锁定账号之间的 status、length、文案、时间和下一步页面差异。
 - Remember-me：cookie 是否为 `username:hash`、弱签名、可离线验证或只绑定用户名而不绑定设备/session。
 - Rate/lockout：观察阈值、冷却、IP/账号/用户名粒度；只做低频受控验证，不把锁定规避当默认动作。
+- Defense-state control：在测试账号上保存 run 前 known-good baseline，只做有界少量失败请求，再重放
+  known-good；正确值也失败或响应统一化时按 lockout/shadow throttle 处理，不继续扩大请求量。
 - MFA state：直接访问 post-MFA 页面、替换 challengeId/userId、重放已验证 challenge、切换 channel/provider。
 
 ## 补充 Checklist
@@ -64,6 +71,7 @@ deep_refs:
 - 提交阶段是否有可改 hidden identity 字段？
 - 是否比较了存在/不存在用户的响应差异和邮件发送差异？
 - 是否观察了限速、锁定、验证码、MFA challenge 和异常提示？
+- 是否用测试账号的 known-good before/after control 排除了 silent drop、canned response 和验证码分支？
 - 如果进入口令测试，是否有明确用户名来源、候选口令依据、低频边界、停止条件和日志记录？
 
 ## 最小验证
@@ -71,6 +79,8 @@ deep_refs:
 - Password reset：用自有/训练账号请求 token，单变量修改 hidden username/email 或 token，验证目标账号是否被重置。
 - Username enum：对少量存在/不存在候选做稳定对照，只记录差异，不批量枚举真实用户。
 - Credential test：仅在受控条件下用少量高依据候选；记录请求数、阈值、锁定迹象和停止条件。
+- Rate-limit classification：记录 known-good before、少量失败序列、known-good after；出现锁定、429/
+  Retry-After、延迟阶跃、验证码/step-up 或正确值不再被处理时停止并标注具体 defense state。
 - MFA：优先验证状态跳步、challenge 绑定和重放，不默认高频 OTP 枚举。
 
 ## 常见误判 / 死路
@@ -78,6 +88,8 @@ deep_refs:
 - 发送了 reset email 不等于漏洞；要证明 token/账号/session 绑定错误。
 - 用户名枚举本身通常低价值，除非能链到凭证攻击、MFA 绕过、账号锁定滥用或隐私影响。
 - 口令测试无结果不代表认证安全；回到恢复流程、remember-me、MFA 状态机和错误差异。
+- 没有 429、始终 200/401 或响应长度不变不能证明无限速；正确 control 失效可能是 shadow throttle，
+  页面切换可能是 CAPTCHA/step-up，二者都应停止而不是继续 brute。
 - Host header 反射在 reset link 中只是 Lead，必须证明可投递、可点击并导致 token 泄露或账号接管路径。
 
 ## 关联 Skills

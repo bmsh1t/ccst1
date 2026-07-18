@@ -10,6 +10,7 @@ trigger_tags:
   - object-id
   - tenant
   - actor-diff
+  - nextjs-data
 risk: medium
 maturity: draft
 load_priority: high
@@ -45,6 +46,9 @@ source_refs:
 - 触发：请求可控对象 ID，且存在多账号、角色或租户边界。
 - 最小验证：用 owner/peer 两个主体做单变量 ID 替换，保留可 replay 的 baseline。
 - 证据门：必须记录主体身份、对象归属、响应字段/数量或实际操作差异；前端隐藏不算越权。
+- 影响判断：先确认跨主体对象访问，再按证据区分单对象、多对象、集合/导出和跨租户范围。
+- Next.js `/_next/data/<build-id>/...json` 和 `__NEXT_DATA__` 只是数据入口；必须做 anonymous、owner、
+  peer/cross-tenant 的对象与字段差异，不能由 JSON 200 直接推导 IDOR。
 - 停止：没有可复现请求、服务端稳定拒绝，或继续验证会改变真实资源状态。
 
 ## 适用场景
@@ -60,6 +64,7 @@ source_refs:
 - 同一接口在不同角色下返回字段不同
 - JS 暴露 admin、export、invite、member、billing、share 等接口
 - 响应中包含 owner、tenant、org、role、permission、scope 等字段
+- Next.js 暴露 `/_next/data/<build-id>/<route>.json`、动态 route 参数或页面内 `__NEXT_DATA__`
 
 ## 发散问题
 
@@ -69,13 +74,18 @@ source_refs:
 - 只读接口和写操作是否使用不同鉴权路径？
 - 邀请、共享、转移类操作是否只校验发起人身份，没有校验目标对象归属？
 - 序列化、导出、脱敏是否是独立后处理阶段？是否存在跳过它、直接读到越界字段的路径？
+- `/_next/data` 与对应 HTML/API route 是否使用同一 session、对象绑定和字段脱敏逻辑？
 - 资源是否按非唯一标识（拼接名、标签集、邮箱）识别？能否构造碰撞接管他人对象？
 
 ## 推荐动作
 
 - 使用两个账号或两个组织做 role diff。
+- 对 `/_next/data` 保持 build-id/route 不变，分别比较 anonymous、owner、peer/cross-tenant；动态 ID
+  只替换一个对象变量，并和对应 HTML/API baseline 交叉确认。
 - 单次只替换一个变量，例如对象 ID、组织 ID 或路径层级。
 - 比较状态码、对象数量、敏感字段、错误信息和审计事件。
+- 按以下范围梯度选择下一步，只在证据支持时晋级：单个跨主体对象 -> 第二个对象 ->
+  列表/批量/导出 -> 跨租户或全局可达；未达到下一层时保留当前范围判断。
 - 优先验证读取类影响，再评估写操作，避免直接造成破坏性副作用。
 
 ## 关联 Skills
@@ -94,11 +104,14 @@ source_refs:
 ## 检查要求
 
 - 不能只凭前端隐藏按钮判断漏洞。
+- `/_next/data`、`__NEXT_DATA__` 或 prerender JSON 可读不等于越权；公开页面数据、构建 metadata 和
+  当前 owner 自身数据只能保持 Signal。
 - 验证工具的 `tested_clean` 只是执行层标签；若 raw response 暴露订单、发票、地址、
   支付等私有业务对象，AI 可基于业务语义升级为 Lead/Candidate，并补可发现性、
   对象归属和影响证据。
 - Candidate 前必须有可 replay 请求和权限差异证据。
-- 报告前必须能说明攻击者当前权限、受害对象、越权结果和实际影响。
+- 报告前必须能说明攻击者当前权限、受害对象、越权结果、数据敏感度和已证实影响范围；
+  可枚举性或全局影响不能只由顺序 ID 推测。
 
 ## 可晋升经验
 

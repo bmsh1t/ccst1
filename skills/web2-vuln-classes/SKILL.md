@@ -37,6 +37,7 @@ Load these cards through `context_pack.py`; do not read all of them manually.
 | Lane | Knowledge card |
 |---|---|
 | API testing / docs / parser/auth matrix | `knowledge/cards/api-testing-workflow.md` |
+| OData query / navigation / batch boundary | `knowledge/cards/odata-query-boundaries.md` |
 | IDOR / BOLA / object authorization | `knowledge/cards/api-idor.md` |
 | Business logic / state machine | `knowledge/cards/business-logic-state-machines.md` |
 | Auth / roles / org boundary | `knowledge/cards/auth-access.md` |
@@ -47,6 +48,7 @@ Load these cards through `context_pack.py`; do not read all of them manually.
 | GraphQL | `knowledge/cards/graphql.md` |
 | SQLi hidden surfaces | `knowledge/cards/sqli-hidden-surfaces.md` |
 | NoSQL query injection | `knowledge/cards/nosql-query-injection.md` |
+| LDAP filter / DN / XPath query boundary | `knowledge/cards/ldap-xpath-query-boundaries.md` |
 | SSRF URL fetch / internal impact | `knowledge/cards/ssrf-url-fetch.md`, `knowledge/cards/ssrf-internal-impact.md` |
 | Upload parser / upload execution | `knowledge/cards/upload-parser.md`, `knowledge/cards/upload-to-execution.md` |
 | Controlled RCE / SSTI / command injection | `knowledge/cards/controlled-rce-impact.md`, `knowledge/cards/server-side-template-injection.md` |
@@ -370,6 +372,22 @@ chain path, and reference routing.
 - Stop condition: no authenticated handshake, no controllable channel/object, Origin consistently rejected.
 - Chain path: CSWSH/WS BOLA -> private event/data/action leak.
 - Read if needed: `knowledge/cards/websocket-realtime-api.md`.
+
+### 23. gRPC / gRPC-Web / JSON Transcoding
+- Trigger: `application/grpc*`, grpc-status/trailers, protobuf、reflection、gRPC-Web、grpc-gateway。
+- First safe action: 保存 h2 headers/body/trailers；用不存在方法与合法方法+无效参数区分 transport 和 method reachability。
+- Evidence gate: status `0` 或稳定角色/对象差异产生非预期数据/状态影响；reflection/status `12` 单独只是 Signal。
+- Stop condition: 只有 service/schema、status `12/3` 或 edge 错误映射，没有身份/对象/状态差异。
+- Chain path: edge/backend metadata gap 或 gateway re-exposure -> RPC authz/object impact。
+- Read if needed: `knowledge/cards/grpc-api-boundaries.md`。
+
+### 24. Cognito / Kubernetes Cloud Identity Boundaries
+- Trigger: Cognito IdentityPoolId/unauth role/STS、Kubernetes API/kubelet/RBAC/service-account/nodes-proxy。
+- First safe action: 按 `公开标识 -> 身份 -> role/RBAC -> 单个 resource action -> read-back` 保存逐跳证据。
+- Evidence gate: Cognito 需匿名临时凭证+caller+非预期 IAM action；K8s 需当前 identity 的具体 verb/resource/subresource allow 与实际影响。
+- Stop condition: 只有 GetId/API 200、10255/read-only metadata、token 格式或 role 名称，没有实际权限证据。
+- Chain path: client/workload identity -> IAM/RBAC -> storage/API/deploy/kubelet control-plane impact。
+- Read if needed: `knowledge/cards/cloud-cognito-identity-pool.md`, `knowledge/cards/k8s-control-plane-boundaries.md`, `knowledge/cards/cloud-control-plane-pivots.md`。
 
 ## Global Stop Conditions
 

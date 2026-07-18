@@ -168,6 +168,24 @@ KNOWN_SKILL_OR_FOCUS = {
     "dom-xss",
     "websocket",
     "cswsh",
+    "grpc",
+    "grpc-web",
+    "protobuf",
+    "odata",
+    "ldap-injection",
+    "xpath-injection",
+    "nextjs-image",
+    "nextjs-data",
+    "spring-actuator",
+    "legacy-auth-surface",
+    "shadow-throttle",
+    "cognito",
+    "identity-pool",
+    "kubernetes",
+    "k8s",
+    "kubelet",
+    "rbac",
+    "dependency-confusion",
     "information-disclosure",
     "info-disclosure",
     "web-llm",
@@ -195,6 +213,7 @@ WEB2_VULN_FOCUS_RE = re.compile(
     r"race|rce|command[-_ ]?injection|ssti|template[-_ ]?injection|template[-_ ]?engine|render[-_ ]?template|erb|ruby[-_ ]?template|tornado[-_ ]?template|mako[-_ ]?template|handlebars[-_ ]?template|mustache[-_ ]?template|nunjucks[-_ ]?template|liquid[-_ ]?template|pug[-_ ]?template|jade[-_ ]?template|ejs[-_ ]?template|deserialization|deserialize|signed[-_ ]?object|viewstate|"
     r"host[-_ ]?header|proxy[-_ ]?trust|request[-_ ]?smuggling|http[-_ ]?smuggling|cache[-_ ]?poisoning|cache[-_ ]?deception|"
     r"cors|csrf|xsrf|xss|reflected[-_ ]?xss|stored[-_ ]?xss|client[-_ ]?xss|csp|content[-_ ]?security[-_ ]?policy|sandbox[-_ ]?escape|dangling[-_ ]?markup|open[-_ ]?redirect|client[-_ ]?side[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|clickjacking|dom[-_ ]?xss|dom|websocket|cswsh|"
+    r"grpc|grpc[-_ ]?web|protobuf|odata|ldap|xpath|next\.js|nextjs|_next|actuator|spring[-_ ]?boot|legacy[-_ ]?(?:auth|authentication)|shadow[-_ ]?throttle|cognito|identity[-_ ]?pool|kubernetes|k8s|kubelet|nodes?[/_-]?proxy|"
     r"signature[-_ ]?scope|view[-_ ]?differential|allowlist|whitelist|sanitizer|connection[-_ ]?string|runtime[-_ ]?primitive|stale[-_ ]?authz|connection[-_ ]?reuse|redirect[-_ ]?header|xs[-_ ]?leak|cli[-_ ]?argument|non[-_ ]?parameterizable|type[-_ ]?confusion|second[-_ ]?order|payment[-_ ]?logic|postmessage|render[-_ ]?pipeline|information[-_ ]?disclosure|info[-_ ]?disclosure|web[-_ ]?llm|llm|essential[-_ ]?skills|"
     r"node\.js|nodejs|express|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|"
     r"missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|param[-_ ]?discovery|"
@@ -319,6 +338,48 @@ COMMAND_INJECTION_RE = re.compile(
     re.I,
 )
 
+ODATA_BOUNDARY_RE = re.compile(
+    r"\b(?:odata|odata[-_ ]?version|dataserviceversion|odata[-_ ]?(?:filter|select|expand|batch|metadata))\b"
+    r"|(?<!\w)\$(?:metadata|filter|select|orderby|expand|batch|count|top|skip)\b",
+    re.I,
+)
+
+LDAP_XPATH_BOUNDARY_RE = re.compile(
+    r"\b(?:ldap[-_ ]?(?:injection|filter|dn|search|query|error)|xpath|xpath[-_ ]?injection|"
+    r"directory[-_ ]?query|rfc[-_ ]?4515|javax\.naming|"
+    r"system\.directoryservices|invalidsearchfilter)\b",
+    re.I,
+)
+
+NEXTJS_IMAGE_RE = re.compile(
+    r"/_next/image\b|\bnext(?:\.js|js)?[-_ ]?image[-_ ]?optimizer\b",
+    re.I,
+)
+
+NEXTJS_DATA_RE = re.compile(
+    r"/_next/data\b|__next_data__|\bnext(?:\.js|js)?[-_ ]?prerender(?:ed)?[-_ ]?json\b",
+    re.I,
+)
+
+ACTUATOR_MANAGEMENT_RE = re.compile(
+    r"(?:^|[/\s])actuator(?:[/\s]|$)|\b(?:whitelabel|"
+    r"x[-_ ]?application[-_ ]?context|jolokia|heapdump)\b",
+    re.I,
+)
+
+LEGACY_AUTH_SURFACE_RE = re.compile(
+    r"\b(?:legacy|alternate|native|sibling|mobile|old)[-_ ]?(?:auth|authentication|login)\b"
+    r"|\b(?:xml[-_ ]?rpc|xmlrpc|authentication\.asmx)\b",
+    re.I,
+)
+
+RATE_LIMIT_REGIME_RE = re.compile(
+    r"\b(?:rate[-_ ]?limit[-_ ]?regime|hard[-_ ]?lockout|explicit[-_ ]?throttle|"
+    r"shadow[-_ ]?throttle|silent[-_ ]?throttle|captcha[-_ ]?(?:injection|switch)|"
+    r"known[-_ ]?good[-_ ]?control)\b",
+    re.I,
+)
+
 CARD_PATHS = load_card_paths(BASE_DIR)
 
 
@@ -390,9 +451,19 @@ REFERENCE_PATHS = {
 }
 
 DISTILLED_TOKEN_TO_CARDS = (
+    (ODATA_BOUNDARY_RE, ("odata-query-boundaries",)),
+    (LDAP_XPATH_BOUNDARY_RE, ("ldap-xpath-query-boundaries",)),
+    (NEXTJS_IMAGE_RE, ("ssrf-url-fetch",)),
+    (NEXTJS_DATA_RE, ("api-idor", "information-disclosure-source-config")),
+    (ACTUATOR_MANAGEMENT_RE, ("path-pattern-management-exposure", "information-disclosure-source-config")),
+    (LEGACY_AUTH_SURFACE_RE, ("auth-hidden-switches", "auth-access")),
+    (RATE_LIMIT_REGIME_RE, ("auth-credential-recovery-flows", "auth-access")),
     (re.compile(r"\b(payment[-_ ]?(?:callback|webhook|notify)|callback[-_ ]?signature|webhook[-_ ]?signature|idempotenc(?:y|t)|replay[-_ ]?(?:window|nonce)|async[-_ ]?settlement)\b", re.I), ("payment-callback-idempotency",)),
     # OIDC 也常作为独立身份信号；只有同时出现 workflow/runner/deploy 边界时才路由到 CI/CD 卡。
-    (re.compile(r"(?:\b(ci[-_ ]?/?cd|cicd|github[-_ ]?actions|gitlab[-_ ]?ci|jenkins|self[-_ ]?hosted[-_ ]?runner|workflow[-_ ]?trigger|pull_request_target|artifact[-_ ]?deploy)\b|(?=.*\boidc\b)(?=.*\b(?:runner|workflow|artifact|deploy)\b))", re.I), ("cicd-trust-boundaries",)),
+    (re.compile(r"(?:\b(ci[-_ ]?/?cd|cicd|github[-_ ]?actions|gitlab[-_ ]?ci|jenkins|self[-_ ]?hosted[-_ ]?runner|workflow[-_ ]?trigger|pull_request_target|artifact[-_ ]?deploy|dependency[-_ ]?confusion|public[-_ ]?registry|cyclonedx|spdx|sbom)\b|(?=.*\boidc\b)(?=.*\b(?:runner|workflow|artifact|deploy)\b))", re.I), ("cicd-trust-boundaries",)),
+    (re.compile(r"\b(aws[-_ ]?cognito|cognito[-_ ]?identity|identity[-_ ]?pool|unauth(?:enticated)?[-_ ]?(?:identity|role)|get[-_ ]?credentials[-_ ]?for[-_ ]?identity)\b", re.I), ("cloud-cognito-identity-pool", "cloud-control-plane-pivots")),
+    (re.compile(r"\b(grpc|grpc[-_ ]?web|grpc[-_ ]?gateway|protobuf|proto3|server[-_ ]?reflection|json[-_ ]?transcoding)\b", re.I), ("grpc-api-boundaries",)),
+    (re.compile(r"\b(kubernetes|k8s|kubelet|self[-_ ]?subject[-_ ]?(?:rules|access)[-_ ]?review|nodes?[/_-]?proxy|projected[-_ ]?service[-_ ]?account)\b", re.I), ("k8s-control-plane-boundaries", "cloud-control-plane-pivots")),
     (re.compile(r"\b(cloud[-_ ]?control[-_ ]?plane|cloud[-_ ]?metadata|metadata[-_ ]?service|cloud[-_ ]?(?:iam|rbac)|service[-_ ]?account|workload[-_ ]?identity|assume[-_ ]?role|pass[-_ ]?role|control[-_ ]?plane)\b", re.I), ("cloud-control-plane-pivots",)),
     (re.compile(r"\b(subdomain[-_ ]?takeover|dangling[-_ ]?(?:dns|cname)|dns[-_ ]?trust|mx[-_ ]?record|email[-_ ]?spoof|spf|dkim|dmarc)\b", re.I), ("dns-email-trust-boundaries",)),
     (re.compile(r"\b(signature[-_ ]?scope[-_ ]?mismatch|signed bytes|consumption object|xsw|duplicate assertion)\b", re.I), ("signature-scope-mismatch",)),
@@ -436,7 +507,7 @@ TOKEN_TO_CARDS = (
     ),
     (
         re.compile(
-            r"\b(password[-_ ]?reset|forgot[-_ ]?password|account[-_ ]?recovery|reset[-_ ]?token|username[-_ ]?enum(?:eration)?|credential[-_ ]?attack|brute[-_ ]?force|lockout|stay[-_ ]?logged[-_ ]?in|remember[-_ ]?me|mfa|2fa|otp)\b",
+            r"\b(password[-_ ]?reset|forgot[-_ ]?password|account[-_ ]?recovery|reset[-_ ]?token|username[-_ ]?enum(?:eration)?|credential[-_ ]?attack|brute[-_ ]?force|lockout|shadow[-_ ]?throttle|silent[-_ ]?throttle|known[-_ ]?good[-_ ]?control|stay[-_ ]?logged[-_ ]?in|remember[-_ ]?me|mfa|2fa|otp)\b",
             re.I,
         ),
         ("auth-credential-recovery-flows", "auth-access"),
@@ -1979,11 +2050,23 @@ def _local_intel_hypothesis_seeds(local_intel: dict) -> list[str]:
 def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[str]:
     seeds: list[str] = []
     seeds.extend(_local_intel_hypothesis_seeds(local_intel))
+    if CARD_PATHS.get("odata-query-boundaries") in cards:
+        seeds.extend([
+            "OData 先区分 entity、field/projection、predicate/order、navigation 和 batch inner-operation 边界；`$metadata`、operator 可用或 HTTP 200 只算 query signal。",
+            "OData 最小验证保持自有对象和身份 baseline，每次只改变一个字段/relation/wrapper；只有受限字段、关联对象或 direct-vs-batch 策略产生稳定数据/状态差异才进入 Candidate。",
+        ])
+    if CARD_PATHS.get("ldap-xpath-query-boundaries") in cards:
+        seeds.extend([
+            "LDAP/XPath 先确认输入位于 search filter、DN、bind username 还是 XPath context；使用合法/明确 false/语法错误 control，不能由单次 500 或 wildcard 结果直接判注入。",
+            "区分 Active Directory 与普通 LDAP：AD `unicodePwd` 不可读取；Candidate 必须证明测试账号 session/身份改变或非预期目录对象/属性差异。",
+        ])
     if CARD_PATHS["api-idor"] in cards or re.search(r"\b(idor|tenant|org|accounts|user_id|account_id|order_id)\b", blob, re.I):
         seeds.extend([
             "对象/组织/租户 ID 是否只在前端约束，服务端是否重新绑定当前身份。",
             "export/download/report 类接口是否可通过 ID 或筛选条件读取其他主体数据。",
         ])
+        if NEXTJS_DATA_RE.search(blob):
+            seeds.append("Next.js `/_next/data` / `__NEXT_DATA__` 必须比较 anonymous、owner、peer/cross-tenant 的对象与字段；JSON 200、build metadata 或当前 owner 数据不等于 IDOR。")
     if CARD_PATHS["auth-access"] in cards:
         seeds.extend([
             "同一 endpoint 在匿名、普通用户、低权限成员、管理员之间是否只有 UI 差异而缺少服务端差异。",
@@ -1995,6 +2078,8 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "留意管理员预留特权参数或内部账号分支，例如 isAdmin/admin/source/provider/soap 这类目标相关 selector；它们是联想种子，不是固定字典。",
             "本 lane 先做自有/测试账号 baseline 与单变量隐藏参数差异；若登录成为主要突破口，按 red-lines 的自主选择条件切到 /spray 或 credential-attack 受控流程。",
         ])
+        if LEGACY_AUTH_SURFACE_RE.search(blob):
+            seeds.append("旧 REST/mobile/SOAP/XMLRPC/native auth 只在同一测试账号下比较 MFA、SSO、限速、session、role 策略；端点可达、200/401 或方法列表都不是绕过。")
     if CARD_PATHS["auth-sso-token-edge-cases"] in cards:
         seeds.extend([
             "JWT/OAuth/SAML/SSO 先保存合法流程 baseline，再做 decode、metadata、callback、state/nonce/PKCE、issuer/key source 和账号绑定的单变量差异；JWT key-source 探针要和 claim-only tamper 分离，分别验证 JWK/JKU/KID/alg confusion 是否改变服务端身份/权限。",
@@ -2006,6 +2091,8 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "密码重置/账号恢复先建 token->账号->session 绑定模型；检查 hidden username、reset token、邮箱链接、Host/XFH、旧 token 复用和跨账号提交。",
             "用户名枚举、口令/OTP/remember-me 测试不是绝对禁用，但必须有目标依据、低频边界、锁定/限速观察和停止条件；训练资源可完整验证。",
         ])
+        if RATE_LIMIT_REGIME_RE.search(blob):
+            seeds.append("限速按 hard lockout、explicit throttle、CAPTCHA/step-up、shadow throttle 分类；只用测试账号的有界 known-good before/after control，没有 429 不能推出无限速。")
     if CARD_PATHS["api-testing-workflow"] in cards:
         seeds.extend([
             "API testing 先把 docs/schema、JS/source、浏览器 XHR、mobile/旧版本和实际请求合并成 endpoint+method+auth matrix；不要只扫 `/api/` 路径。",
@@ -2026,11 +2113,28 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "CI/CD 按 untrusted input -> workflow context -> runner -> secret/OIDC -> artifact/deploy 画数据流；触发器、checkout ref、权限和环境保护必须逐跳有证据。",
             "配置/日志和 dummy marker 优先于执行未知 workflow；id-token、self-hosted runner 或未固定 action 只是信号，必须证明不可信输入到达高权限下游。",
+            "Dependency confusion 只有 public registry 状态、目标构建实际依赖和 resolver public fallback 三项齐全时才是 Candidate；404 单独保持 Lead。",
+            "可从 JS/lockfile/build log、Docker/GHCR image layer、SPDX/CycloneDX SBOM 交叉确认 package/version，但仍需独立证明 fallback。",
         ])
     if CARD_PATHS.get("cloud-control-plane-pivots") in cards:
         seeds.extend([
             "云控制面按入口->身份->权限->单个资源动作->影响分层；metadata、OIDC、service account 或 policy 名称不能替代 caller、资源和动作证据。",
             "先做授权环境 caller identity/describe 或 dry-run；create/update/delete、secret read、跨租户和持久化动作默认 blocked。",
+        ])
+    if CARD_PATHS.get("cloud-cognito-identity-pool") in cards:
+        seeds.extend([
+            "Cognito Identity Pool 先区分公开 IdentityPoolId、GetId、临时 STS 凭证、caller role 和实际 IAM action；GetId 200 单独不是漏洞。",
+            "只有匿名凭证、role identity、非预期资源权限和具体影响逐跳齐全时才进入 Candidate；凭证值不写入证据。",
+        ])
+    if CARD_PATHS.get("grpc-api-boundaries") in cards:
+        seeds.extend([
+            "gRPC 同时记录 HTTP/2 headers/trailers 与 grpc-status：12 只确认 transport，16/7 是 authn/authz，3 是参数可达，0 仍需对象/数据/状态影响。",
+            "比较 edge/backend metadata 与 gRPC-Web/gateway/transcoding 的身份、字段和对象授权差异；reflection 只算 schema enabler。",
+        ])
+    if CARD_PATHS.get("k8s-control-plane-boundaries") in cards:
+        seeds.extend([
+            "Kubernetes 先区分 API server、kubelet 10255/10250 和代理路径，再用 SelfSubjectRulesReview/AccessReview 确认具体 verb/resource/subresource。",
+            "namespace/API 200 或 service-account token 出现不等于 cluster-admin；检查 audience/expiry，并逐跳验证 nodes/proxy 到 kubelet 的权限链。",
         ])
     if CARD_PATHS.get("dns-email-trust-boundaries") in cards:
         seeds.extend([
@@ -2047,6 +2151,8 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "发现类 fuzz 先从目标已有路径、文件名、API 前缀、参数名、子域、静态资源等命名规律生成有界词表，再验证兄弟 surface；不要直接扩大到无边界通用字典。",
             "管理/监控/日志/统计/配置/记录类 surface 优先做只读识别和结构化记录提取；疑似 access key/secret 只记录最小证据与验证计划，不接管云资源或读取真实数据。",
         ])
+        if ACTUATOR_MANAGEMENT_RE.search(blob):
+            seeds.append("Actuator/Jolokia 路径 200 必须确认 actuator-shaped JSON、endpoint link、heapdump magic 或目标特定管理数据，并排除登录页、Whitelabel、SPA fallback 和统一错误页。")
     if CARD_PATHS["graphql"] in cards:
         seeds.extend([
             "GraphQL mutation / global ID / node 查询是否复用 REST 的对象权限缺口。",
@@ -2077,6 +2183,8 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "URL fetch、webhook、import callback、stock checker、预览/导入等是否存在 server-side fetch；先用合法 allowlisted URL 建 baseline，再比较响应体、状态码、错误和来源差异。",
         ])
+        if NEXTJS_IMAGE_RE.search(blob):
+            seeds.append("Next.js `/_next/image` 返回 200 只说明 optimizer 响应；用唯一 OAST callback、可解释 upstream 内容差异或单个内部资源证据证明 server-side fetch，400 常是 remotePatterns 正常拒绝。")
     if CARD_PATHS["ssrf-internal-impact"] in cards:
         seeds.extend([
             "SSRF 内部影响只在已证明 server-side fetch 后展开；优先单个明确内部目标的状态级证据，不做内网扫描。",
@@ -2102,6 +2210,8 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "可解码不等于漏洞；必须证明服务端接受修改后的对象、解析错误差异或 OAST/type-error sink。签名/加密 tamper 被拒绝时先收敛到完整性结论，不直接上 gadget 或会话伪造。",
             "数据类型篡改和应用功能 gadget 分开验证：boolean/string/integer/null 变化只看服务端类型语义差异；delete/read/write 等二阶功能要证明对象字段如何流入既有业务动作，先停在测试资源和原始请求/响应证据。",
         ])
+        if re.search(r"\bviewstate\b|__viewstate", blob, re.I):
+            seeds.append("ViewState 按格式/页面绑定识别 -> MAC/签名/加密完整性 -> 服务端真实消费/状态影响三阶段判断；可见、可解码或 MAC error 都不能单独证明可利用。")
     if CARD_PATHS["controlled-rce-impact"] in cards:
         seeds.extend([
             "RCE/命令执行/SSTI/反序列化先证明 primitive，再证明执行身份和影响边界；默认不写文件、不持久化、不批量读取。",
@@ -2214,6 +2324,10 @@ def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> li
         angles.append("从 REST IDOR 横向扩展到导出、报表、批量查询、成员管理和 invite 流程。")
     if CARD_PATHS["auth-hidden-switches"] in cards:
         angles.append("登录绕过无信号时，回到 JS/source/browser 找 sibling 登录端点、旧入口、移动端入口和隐藏认证分支选择器。")
+    if CARD_PATHS.get("odata-query-boundaries") in cards:
+        angles.append("OData 无直接结果时，回到 `$metadata`/service document 识别目标 entity、field、navigation 和 batch，再用 owner/peer 单变量对照。")
+    if CARD_PATHS.get("ldap-xpath-query-boundaries") in cards:
+        angles.append("LDAP/XPath 无稳定差异时，回到 source/error 确认 filter、DN 或 XPath context，并建立合法/false/语法错误 control。")
     if CARD_PATHS["auth-sso-token-edge-cases"] in cards:
         angles.append("SSO/token 无直接结果时，回到合法流程 baseline、issuer/JWKS metadata、callback 绑定、state/nonce/PKCE 和 account-linking 映射差异。")
     if CARD_PATHS["auth-credential-recovery-flows"] in cards:
@@ -2503,6 +2617,10 @@ def _ledger_vuln_classes(cards: list[str], blob: str) -> list[str]:
         classes.append("GraphQL")
     if CARD_PATHS["sqli-hidden-surfaces"] in cards or re.search(r"\b(sqli|sql[-_ ]?injection|hidden[-_ ]?param)\b", blob, re.I):
         classes.append("SQLi")
+    if CARD_PATHS.get("odata-query-boundaries") in cards:
+        classes.extend(["SQLi", "IDOR", "Authz"])
+    if CARD_PATHS.get("ldap-xpath-query-boundaries") in cards:
+        classes.extend(["SQLi", "Authz"])
     if CARD_PATHS["nosql-query-injection"] in cards or re.search(r"\b(nosql|no[-_ ]?sql[-_ ]?injection|mongo(?:db)?|operator[-_ ]?injection)\b", blob, re.I):
         classes.append("SQLi")
     if CARD_PATHS["xxe-xml-parser"] in cards or re.search(r"\b(xxe|xml[-_ ]?parser|xinclude|external[-_ ]?entit(?:y|ies))\b", blob, re.I):
