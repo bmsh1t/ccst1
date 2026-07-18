@@ -90,7 +90,7 @@ identity, and cloud signals without re-enumerating everything.
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/browser_evidence.py` | MCP unavailable or scriptable fallback needed | Capture minimal browser-state evidence via fallback browser automation |
+| `tools/browser_evidence.py` | Need structured browser-state evidence | Prefer agent-browser CLI for routine session/network/storage/HAR capture; Playwright CLI remains explicit/automatic fallback (verified with agent-browser 0.32.2; no startup install/probe) |
 | `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL surface from browser evidence |
 | `tools/hai_browser_recon.js` | Need browser-side recon snippet | Playwright recon helper script (JS) |
 | `tools/js_reader.py` | JS bundles cached | Prepare js-reader agent materials from cached JS |

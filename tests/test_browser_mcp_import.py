@@ -120,6 +120,33 @@ def test_normalize_mcp_network_accepts_har_entries():
     ]
 
 
+def test_normalize_mcp_network_accepts_agent_browser_data_envelope():
+    payload = {
+        "success": True,
+        "data": {
+            "requests": [
+                {
+                    "url": "https://target.local/api/export?format=csv",
+                    "method": "POST",
+                    "resourceType": "fetch",
+                    "status": 202,
+                }
+            ]
+        },
+        "error": None,
+    }
+
+    assert browser_mcp_import.normalize_mcp_network(payload) == [
+        {
+            "url": "https://target.local/api/export?format=csv",
+            "method": "POST",
+            "resourceType": "fetch",
+            "status": 202,
+            "postData": "",
+        }
+    ]
+
+
 def test_browser_mcp_import_accepts_raw_playwright_network_text(tmp_path):
     network_path = tmp_path / "network.txt"
     network_path.write_text(

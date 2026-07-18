@@ -107,9 +107,9 @@ when evidence supports it. State the reason, red-line status, next verification
 step, and stop condition. Tool recommendations are advisory, not hard rails.
 ## Browser / Source / JS Enrichment
 Prefer browser-state truth over guessed routes:
-1. chrome-devtools MCP for live browser/network/console evidence.
-2. playwright MCP for automated interaction and snapshots.
-3. `tools/browser_evidence.py` / `playwright-cli` only when MCP is unavailable or a scriptable fallback is needed.
+1. `tools/browser_evidence.py` with agent-browser CLI for routine automation, session reuse, snapshots, network, storage, and HAR evidence.
+2. chrome-devtools MCP for deep live DevTools/network/console debugging.
+3. playwright MCP or the explicit playwright-cli backend as compatibility fallbacks.
 4. Import useful MCP artifacts with `tools/browser_mcp_import.py` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` share the same browser-observed API surface.
 Use `cd -- <repo_root_shell> && python3 tools/js_reader.py --target <target_shell>` for JS materials and
 `cd -- <repo_root_shell> && python3 tools/source_intel.py --target <target_shell> [--repo-path <repo>]` for

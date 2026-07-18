@@ -351,10 +351,10 @@ P1 应优先体现：
 优先级：
 
 ```text
-1. chrome-devtools MCP：实时 network / console / request 证据
-2. playwright MCP：自动交互 / snapshot / 表单 / SPA 路由
-3. JSHook MCP：runtime JS hook / 浏览器端行为观察时按需调用
-4. browser_evidence.py / playwright-cli：MCP 不可用或需要脚本化 fallback 时使用
+1. browser_evidence.py / agent-browser CLI：常规自动交互、session、network、storage、HAR 和结构化证据
+2. chrome-devtools MCP：深度实时 DevTools / network / console / request 调试
+3. playwright MCP / CLI：兼容回退
+4. JSHook MCP：runtime JS hook / 浏览器端行为观察时按需调用
 ```
 
 MCP/browser 产物应导入：

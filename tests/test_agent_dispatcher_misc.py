@@ -104,8 +104,9 @@ def test_agent_system_mentions_intel_and_report_as_primary_workflows():
 def test_agent_system_prefers_browser_then_source_js_chain():
     system = agent._build_agent_system(autopilot_mode="normal")
 
-    assert "prefer MCP-first browser-state work" in system
-    assert "run_browser_probe as the playwright-cli fallback" in system
+    assert "agent-browser-first evidence lane" in system
+    assert "chrome-devtools MCP for deep live debugging" in system
+    assert "Playwright as compatibility fallback" in system
     assert "prefer run_source_intel first" in system
     assert "run_js_read/read_js_intel" in system
     assert "run_js_analysis as a deeper legacy follow-up" in system

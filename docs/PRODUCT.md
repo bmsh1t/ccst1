@@ -122,7 +122,7 @@ LOAD -> REVIEW EVIDENCE -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDI
 
 能力包括：
 
-- 在 Claude Code CLI 中优先使用 chrome-devtools MCP 采集实时浏览器/Network 证据，使用 playwright MCP 做自动交互和快照；`tools/browser_evidence.py` / `playwright-cli` 仅作为 MCP 不可用或需要脚本化 fallback 时使用
+- 在 Claude Code CLI 中优先通过 `tools/browser_evidence.py` 调用 agent-browser CLI 完成常规自动交互、session、快照、Network、Storage 和 HAR 取证；chrome-devtools MCP 用于深度实时 DevTools 调试，Playwright MCP/CLI 保留为兼容回退
 - 从浏览器真实请求中提取 XHR / API / GraphQL 端点和参数，回灌到 `recon/<target>/browser/`
 - 攻击面证据审阅会保留浏览器态发现的高价值接口，并把 GraphQL、导出、下载、管理、订单、用户、更新、删除、邀请等端点作为 advisory hints 交给 AI 判断
 - 从本地源码、前端 JS bundle 和 recon 产物中提取路由、GraphQL operation、对象 ID、租户/账号/角色边界和业务动作关键词
@@ -513,7 +513,7 @@ python3 tools/hunt.py --target target.com --agent --resume <session_id>
 ```text
 1. /recon target.com
 2. /hunt target.com, prioritize browser-state IDOR and business logic
-3. 使用 chrome-devtools MCP / playwright MCP 打开登录态页面并点击关键功能
+3. 使用 agent-browser 证据链打开登录态页面并点击关键功能；需要深度实时调试时使用 chrome-devtools MCP，Playwright 作为回退
 4. 读取 recon/<target>/browser/ 中的 XHR/API/GraphQL 与参数
 5. /surface target.com
 6. 对高分接口做账号 A/B、对象 ID、角色/租户边界和业务流验证

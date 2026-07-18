@@ -50,21 +50,23 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
         "checked": True,
         "status": "ready",
         "available": {
-            "browser": ["playwright-cli"],
+            "browser": ["agent-browser", "playwright-cli"],
             "recon": ["subfinder", "httpx", "katana", "gau", "waybackurls", "ffuf"],
             "scanner": ["nuclei"],
         },
         "session_managed": list(SESSION_MANAGED),
         "fallbacks": [
             "curl-native-http",
-            "browser-evidence-cli",
+            "agent-browser-evidence-cli",
+            "playwright-browser-evidence-cli",
             "source-js-enrichment",
         ],
         "missing_core": [],
         "missing_optional": [],
         "recommended_paths": [
+            "agent-browser-evidence-cli",
             "prefer-session-browser-mcp",
-            "browser-evidence-cli",
+            "playwright-browser-evidence-cli",
             "recon-engine-httpx",
             "scanner-native-plus-nuclei",
         ],
@@ -99,6 +101,7 @@ def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback
     assert profile["fallbacks"] == ["source-js-enrichment"]
     assert profile["missing_core"] == ["curl", "httpx"]
     assert profile["missing_optional"] == [
+        "agent-browser",
         "playwright-cli",
         "subfinder",
         "katana",
@@ -112,6 +115,22 @@ def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback
         "source-js-enrichment",
         "recon-source-js-only",
         "scanner-manual-evidence-only",
+    ]
+
+
+def test_playwright_only_profile_keeps_compatible_browser_fallback(tmp_path):
+    repo = _repo_with_helpers(tmp_path)
+
+    profile = build_capability_profile(
+        repo,
+        which=_which_with("curl", "httpx", "playwright-cli", "nuclei"),
+    )
+
+    assert profile["available"]["browser"] == ["playwright-cli"]
+    assert "playwright-browser-evidence-cli" in profile["fallbacks"]
+    assert profile["recommended_paths"][:2] == [
+        "prefer-session-browser-mcp",
+        "playwright-browser-evidence-cli",
     ]
 
 

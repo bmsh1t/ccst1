@@ -58,7 +58,7 @@ def _load_json(path: Path | None) -> object:
         return []
 
 
-def _request_items(payload: object) -> list[object]:
+def _request_items(payload: object, *, _allow_data_envelope: bool = True) -> list[object]:
     if isinstance(payload, list):
         return payload
     if not isinstance(payload, dict):
@@ -70,6 +70,12 @@ def _request_items(payload: object) -> list[object]:
     log = payload.get("log")
     if isinstance(log, dict) and isinstance(log.get("entries"), list):
         return log["entries"]
+    # agent-browser 的 JSON envelope 仅解一层 data，避免递归误读请求 body。
+    data = payload.get("data")
+    if _allow_data_envelope and isinstance(data, dict):
+        nested = _request_items(data, _allow_data_envelope=False)
+        if nested:
+            return nested
     for key in ("raw", "result"):
         value = payload.get(key)
         if isinstance(value, str):

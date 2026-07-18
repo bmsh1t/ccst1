@@ -538,10 +538,10 @@ _ALL_TOOL_SPECS: list[dict] = [
         "function": {
             "name": "run_browser_probe",
             "description": (
-                "Fallback browser capture via playwright-cli when MCP artifacts are unavailable; capture one browser-context page and feed observed XHR/API/GraphQL "
+                "Structured browser capture through the agent-browser-first evidence lane; capture one browser-context page and feed observed XHR/API/GraphQL "
                 "requests plus params into recon/<target>/browser. Use for login/register/dashboard/app/portal, "
-                "SPA, XHR, GraphQL, or account-gated surfaces. Prefer chrome-devtools/playwright MCP plus "
-                "tools/browser_mcp_import.py for live browser work when available before reducing the target to curl-only testing."
+                "SPA, XHR, GraphQL, or account-gated surfaces. Use chrome-devtools MCP for deep live debugging, "
+                "Playwright as compatibility fallback, and tools/browser_mcp_import.py for externally captured artifacts before reducing the target to curl-only testing."
             ),
             "parameters": {
                 "type": "object",
@@ -553,7 +553,7 @@ _ALL_TOOL_SPECS: list[dict] = [
                     },
                     "session": {
                         "type": "string",
-                        "description": "Optional playwright-cli session name to reuse authenticated browser state.",
+                        "description": "Optional named browser session to reuse authenticated browser state.",
                         "default": "",
                     },
                 },
@@ -3269,7 +3269,7 @@ def _build_agent_system(
         "< 30 days). If absent or stale, spend up to 15 minutes producing it\n"
         "from these sources (all free text answers — never enumerate from a\n"
         "fixed taxonomy):\n"
-        "  - the live homepage (use playwright-cli when available for vision)\n"
+        "  - the live homepage (use the agent-browser-first evidence lane when available for vision)\n"
         "  - any visible pricing page\n"
         "  - the most recent changelog / blog / status / what's-new entry\n"
         "  - openapi.json or /api/docs if discoverable\n"
@@ -3312,7 +3312,7 @@ CORE RULES:
 7. Prioritize by impact: CMS exploits > RCE > SQLi > IDOR/auth bypass > secrets > info.
 8. If Drupal or WordPress is detected → run_cms_exploit immediately. If any stack is clearly identified, prefer run_intel for the primary /intel workflow; run_cve_hunt is the legacy compatibility path.
 9. If Java/Tomcat/JBoss/Spring is detected → run_rce_scan + run_post_param_discovery.
-10. If login/register/dashboard/app/portal, SPA/XHR/GraphQL, or account-gated surface is present → prefer MCP-first browser-state work (chrome-devtools MCP live network, playwright MCP automation/snapshots, import via tools/browser_mcp_import.py); use run_browser_probe as the playwright-cli fallback, then read_browser_surface/read_surface_summary before reducing the surface to curl-only tests.
+10. If login/register/dashboard/app/portal, SPA/XHR/GraphQL, or account-gated surface is present → use run_browser_probe through the agent-browser-first evidence lane for routine session/network/storage/HAR capture; use chrome-devtools MCP for deep live debugging, Playwright as compatibility fallback, and tools/browser_mcp_import.py for external artifacts, then read_browser_surface/read_surface_summary before reducing the surface to curl-only tests.
 11. If cached JS, browser, or repo-source artifacts exist → prefer run_source_intel first, then run_js_read/read_js_intel before repeating broad scanners. Use run_js_analysis as a deeper legacy follow-up when you specifically need direct JS-body extraction or secret-heavy review. If secrets/tokens/config leaks are plausible, add run_secret_hunt.
 12. If ranked workflow leads already exist → read_surface_summary and spend at least one focused step on the best lead before defaulting back to another broad scanner pass. Demoted/manual-review leads are not final rejections; treat them as reversible secondary-sweep candidates when they may hide secret, supply-chain, or chain-pivot evidence.
 13. Do not get trapped in enrichment-only loops: after one or two focused lead-driven attempts, either promote/demote the lead with evidence and widen back into the next best active lane.

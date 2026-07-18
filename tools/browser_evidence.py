@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Fallback capture of minimal browser-state evidence through playwright-cli.
-
-Primary browser-state work should use chrome-devtools/playwright MCP when
-available, then import MCP artifacts through tools/browser_mcp_import.py. This
-module remains the scriptable fallback for CI, headless environments, and cases
-where MCP is unavailable.
-"""
+"""通过 agent-browser 或 playwright-cli 采集统一的浏览器态证据。"""
 
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_EVIDENCE_ROOT = BASE_DIR / "evidence"
 DEFAULT_RECON_ROOT = BASE_DIR / "recon"
+AGENT_BROWSER_BIN = "agent-browser"
 PLAYWRIGHT_BIN = "playwright-cli"
+SUPPORTED_BACKENDS = (AGENT_BROWSER_BIN, PLAYWRIGHT_BIN)
+
+Which = Callable[[str], str | None]
 
 
 def _now_utc() -> str:
@@ -50,25 +50,37 @@ def _target_key(target: str) -> str:
 
 
 def _session_key(target: str) -> str:
-    """Return a playwright-cli session-safe key independent from disk storage."""
-    return _safe_part(target.replace("/", "_"), "unknown-target")
+    """返回独立于磁盘 key 的稳定浏览器 session 名片段。"""
+    return _safe_part(target.replace("/", "_"), "unknown-target")[:64]
 
 
 def default_browser_session(target: str) -> str:
-    """Return a stable playwright-cli session name for a target."""
+    """返回目标级稳定浏览器 session 名。"""
     return f"browser-{_session_key(target)}"
 
 
-def _run_cli(args: list[str], *, session: str, timeout: int) -> dict:
-    cmd = [PLAYWRIGHT_BIN, f"-s={session}", *args]
-    env = os.environ.copy()
-    # Codex / CI sandboxes can make ~/.cache read-only. Playwright CLI allows
-    # its daemon/session files to be redirected without changing browser
-    # binaries, so keep automation reproducible in a writable temp location.
-    if not env.get("PLAYWRIGHT_DAEMON_SESSION_DIR"):
-        daemon_dir = Path(tempfile.gettempdir()) / "ccst-playwright-daemon"
-        daemon_dir.mkdir(parents=True, exist_ok=True)
-        env["PLAYWRIGHT_DAEMON_SESSION_DIR"] = str(daemon_dir)
+def resolve_browser_backend(backend: str = "auto", *, which: Which = shutil.which) -> str:
+    """解析单次 capture 使用的 backend；选择后不再中途切换。"""
+    normalized = str(backend or "auto").strip().lower()
+    if normalized in SUPPORTED_BACKENDS:
+        return normalized
+    if normalized != "auto":
+        raise ValueError(f"Unsupported browser backend: {backend}")
+    for candidate in SUPPORTED_BACKENDS:
+        if which(candidate):
+            return candidate
+    raise RuntimeError("No supported browser backend found: agent-browser or playwright-cli")
+
+
+def _run_subprocess(
+    cmd: list[str],
+    *,
+    name: str,
+    timeout: int,
+    env: dict[str, str],
+    require_json_success: bool = False,
+) -> dict:
+    """运行浏览器 CLI，并把进程和 JSON 协议错误统一成 step。"""
     try:
         completed = subprocess.run(
             cmd,
@@ -80,11 +92,19 @@ def _run_cli(args: list[str], *, session: str, timeout: int) -> dict:
         )
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
+        success = completed.returncode == 0
+        if require_json_success:
+            envelope = _parse_jsonish(stdout)
+            protocol_success = isinstance(envelope, dict) and envelope.get("success") is True
+            success = success and protocol_success
+            if isinstance(envelope, dict) and not protocol_success and not stderr:
+                error = envelope.get("error")
+                stderr = str(error or "Invalid agent-browser JSON response")
         return {
-            "name": " ".join(args),
+            "name": name,
             "cmd": cmd,
             "returncode": completed.returncode,
-            "success": completed.returncode == 0,
+            "success": success,
             "stdout": stdout,
             "stderr": stderr,
             "stdout_bytes": len(stdout.encode("utf-8", errors="replace")),
@@ -92,7 +112,7 @@ def _run_cli(args: list[str], *, session: str, timeout: int) -> dict:
         }
     except Exception as exc:
         return {
-            "name": " ".join(args),
+            "name": name,
             "cmd": cmd,
             "returncode": None,
             "success": False,
@@ -101,6 +121,34 @@ def _run_cli(args: list[str], *, session: str, timeout: int) -> dict:
             "stdout_bytes": 0,
             "stderr_bytes": len(str(exc).encode("utf-8", errors="replace")),
         }
+
+
+def _run_playwright_cli(args: list[str], *, session: str, timeout: int) -> dict:
+    cmd = [PLAYWRIGHT_BIN, f"-s={session}", *args]
+    env = os.environ.copy()
+    # Codex/CI 可能把 ~/.cache 设为只读，因此只重定向 daemon/session 运行文件。
+    if not env.get("PLAYWRIGHT_DAEMON_SESSION_DIR"):
+        daemon_dir = Path(tempfile.gettempdir()) / "ccst-playwright-daemon"
+        daemon_dir.mkdir(parents=True, exist_ok=True)
+        env["PLAYWRIGHT_DAEMON_SESSION_DIR"] = str(daemon_dir)
+    return _run_subprocess(cmd, name=" ".join(args), timeout=timeout, env=env)
+
+
+def _run_agent_browser_cli(args: list[str], *, session: str, timeout: int) -> dict:
+    cmd = [AGENT_BROWSER_BIN, "--session", session, "--json", *args]
+    env = os.environ.copy()
+    # 默认 /run/user/<uid> 在部分 CLI sandbox 中只读；短路径同时避免 Unix socket 超长。
+    if not env.get("AGENT_BROWSER_SOCKET_DIR"):
+        socket_dir = Path(tempfile.gettempdir()) / "ccst-ab"
+        socket_dir.mkdir(parents=True, exist_ok=True)
+        env["AGENT_BROWSER_SOCKET_DIR"] = str(socket_dir)
+    return _run_subprocess(
+        cmd,
+        name=" ".join(args),
+        timeout=timeout,
+        env=env,
+        require_json_success=True,
+    )
 
 
 def _compact_step(step: dict) -> dict:
@@ -178,13 +226,265 @@ def _record_existing_file(path: Path, key: str, artifacts: dict) -> None:
         artifacts[key] = str(path)
 
 
+def _record_agent_raw(
+    capture_dir: Path,
+    stem: str,
+    step: dict,
+    artifacts: dict[str, str],
+) -> object:
+    """保存 agent-browser 原始 envelope，失败响应也保留。"""
+    payload = _parse_jsonish(step.get("stdout", ""))
+    if payload == [] and not step.get("stdout"):
+        payload = {
+            "success": False,
+            "data": None,
+            "error": step.get("stderr", "") or "No JSON response",
+        }
+    path = capture_dir / f"{stem}.raw.json"
+    _write_json(path, payload)
+    artifacts[f"{stem.replace('-', '_')}_raw_json"] = str(path)
+    return payload
+
+
+def _agent_data(envelope: object) -> object:
+    if isinstance(envelope, dict):
+        return envelope.get("data")
+    return None
+
+
+def _agent_storage_values(payload: object) -> object:
+    """去掉 agent-browser storage 响应中的 lifecycle 包装，仅保留键值。"""
+    if isinstance(payload, dict):
+        for key in ("data", "storage"):
+            value = payload.get(key)
+            if isinstance(value, (dict, list)):
+                return value
+    return payload if payload is not None else {}
+
+
+def _step_error(step: dict) -> str:
+    return str(step.get("stderr", "") or "").strip()
+
+
+def _capture_playwright_backend(
+    *,
+    url: str,
+    session_name: str,
+    capture_dir: Path,
+    timeout: int,
+    capture_screenshot: bool,
+) -> dict:
+    """执行原有 playwright-cli 协议，不改变命令和 artifact 语义。"""
+    steps: list[dict] = []
+    artifacts: dict[str, str] = {}
+    counts = {"requests": 0, "console": 0}
+
+    goto_step = _run_playwright_cli(["goto", url], session=session_name, timeout=timeout)
+    steps.append(goto_step)
+    navigation_steps = [goto_step]
+    if not goto_step["success"]:
+        open_step = _run_playwright_cli(["open", url], session=session_name, timeout=timeout)
+        steps.append(open_step)
+        navigation_steps.append(open_step)
+
+    snapshot_step = _run_playwright_cli(["--raw", "snapshot"], session=session_name, timeout=timeout)
+    steps.append(snapshot_step)
+    _record_text_artifact(capture_dir, "snapshot.txt", snapshot_step, artifacts)
+
+    requests_step = _run_playwright_cli(["--raw", "requests"], session=session_name, timeout=timeout)
+    steps.append(requests_step)
+    counts["requests"] = _record_json_artifact(capture_dir, "requests.json", requests_step, artifacts)
+
+    console_step = _run_playwright_cli(["--raw", "console"], session=session_name, timeout=timeout)
+    steps.append(console_step)
+    counts["console"] = _record_json_artifact(capture_dir, "console.json", console_step, artifacts)
+
+    cookies_step = _run_playwright_cli(["--raw", "cookie-list"], session=session_name, timeout=timeout)
+    steps.append(cookies_step)
+    _record_json_artifact(capture_dir, "cookies.json", cookies_step, artifacts)
+
+    local_step = _run_playwright_cli(["--raw", "localstorage-list"], session=session_name, timeout=timeout)
+    session_step = _run_playwright_cli(["--raw", "sessionstorage-list"], session=session_name, timeout=timeout)
+    steps.extend([local_step, session_step])
+    _record_storage(capture_dir, local_step, session_step, artifacts)
+
+    state_path = capture_dir / "state.json"
+    state_step = _run_playwright_cli(["state-save", str(state_path)], session=session_name, timeout=timeout)
+    steps.append(state_step)
+    _record_existing_file(state_path, "state_json", artifacts)
+
+    if capture_screenshot:
+        screenshot_path = capture_dir / "screenshot.png"
+        screenshot_step = _run_playwright_cli(
+            ["screenshot", f"--filename={screenshot_path}"],
+            session=session_name,
+            timeout=timeout,
+        )
+        steps.append(screenshot_step)
+        _record_existing_file(screenshot_path, "screenshot_png", artifacts)
+
+    success = any(step["success"] for step in navigation_steps)
+    error = "" if success else next((_step_error(step) for step in navigation_steps if _step_error(step)), "")
+    return {"steps": steps, "artifacts": artifacts, "counts": counts, "success": success, "error": error}
+
+
+def _capture_agent_browser_backend(
+    *,
+    url: str,
+    session_name: str,
+    capture_dir: Path,
+    timeout: int,
+    capture_screenshot: bool,
+) -> dict:
+    """执行 agent-browser 结构化采集，并保留 raw envelope 与规范化 artifact。"""
+    steps: list[dict] = []
+    artifacts: dict[str, str] = {}
+    counts = {"requests": 0, "console": 0}
+
+    open_step = _run_agent_browser_cli(["open"], session=session_name, timeout=timeout)
+    steps.append(open_step)
+    _record_agent_raw(capture_dir, "open", open_step, artifacts)
+
+    # 命名 session 会跨 capture 保留日志；导航前清空，避免把旧页面请求归到本次 URL。
+    requests_clear_step = _run_agent_browser_cli(
+        ["network", "requests", "--clear"],
+        session=session_name,
+        timeout=timeout,
+    )
+    steps.append(requests_clear_step)
+    _record_agent_raw(capture_dir, "requests-clear", requests_clear_step, artifacts)
+
+    console_clear_step = _run_agent_browser_cli(["console", "--clear"], session=session_name, timeout=timeout)
+    steps.append(console_clear_step)
+    _record_agent_raw(capture_dir, "console-clear", console_clear_step, artifacts)
+
+    har_start_step = _run_agent_browser_cli(
+        ["network", "har", "start"],
+        session=session_name,
+        timeout=timeout,
+    )
+    steps.append(har_start_step)
+    _record_agent_raw(capture_dir, "har-start", har_start_step, artifacts)
+
+    navigate_step = _run_agent_browser_cli(["navigate", url], session=session_name, timeout=timeout)
+    steps.append(navigate_step)
+    _record_agent_raw(capture_dir, "navigate", navigate_step, artifacts)
+
+    snapshot_step = _run_agent_browser_cli(["snapshot"], session=session_name, timeout=timeout)
+    steps.append(snapshot_step)
+    snapshot_envelope = _record_agent_raw(capture_dir, "snapshot", snapshot_step, artifacts)
+    if snapshot_step["success"]:
+        snapshot_data = _agent_data(snapshot_envelope)
+        snapshot_text = snapshot_data.get("snapshot", "") if isinstance(snapshot_data, dict) else ""
+        if not isinstance(snapshot_text, str) or not snapshot_text:
+            snapshot_text = json.dumps(snapshot_data, ensure_ascii=False, indent=2)
+        snapshot_path = capture_dir / "snapshot.txt"
+        snapshot_path.write_text(snapshot_text, encoding="utf-8")
+        artifacts["snapshot_txt"] = str(snapshot_path)
+
+    requests_step = _run_agent_browser_cli(["network", "requests"], session=session_name, timeout=timeout)
+    steps.append(requests_step)
+    requests_envelope = _record_agent_raw(capture_dir, "requests", requests_step, artifacts)
+    if requests_step["success"]:
+        requests_data = _agent_data(requests_envelope)
+        if isinstance(requests_data, dict) and isinstance(requests_data.get("requests"), list):
+            request_items = requests_data["requests"]
+        elif isinstance(requests_data, list):
+            request_items = requests_data
+        else:
+            request_items = []
+        requests_path = capture_dir / "requests.json"
+        _write_json(requests_path, {"requests": request_items, "source": AGENT_BROWSER_BIN})
+        artifacts["requests_json"] = str(requests_path)
+        counts["requests"] = len(request_items)
+
+    console_step = _run_agent_browser_cli(["console"], session=session_name, timeout=timeout)
+    steps.append(console_step)
+    console_envelope = _record_agent_raw(capture_dir, "console", console_step, artifacts)
+    if console_step["success"]:
+        console_data = _agent_data(console_envelope)
+        console_payload = console_data.get("messages", []) if isinstance(console_data, dict) else console_data
+        console_path = capture_dir / "console.json"
+        _write_json(console_path, console_payload if console_payload is not None else [])
+        artifacts["console_json"] = str(console_path)
+        counts["console"] = _count_items(console_data)
+
+    cookies_step = _run_agent_browser_cli(["cookies", "get"], session=session_name, timeout=timeout)
+    steps.append(cookies_step)
+    cookies_envelope = _record_agent_raw(capture_dir, "cookies", cookies_step, artifacts)
+    if cookies_step["success"]:
+        cookies_data = _agent_data(cookies_envelope)
+        cookies_payload = cookies_data.get("cookies", []) if isinstance(cookies_data, dict) else cookies_data
+        cookies_path = capture_dir / "cookies.json"
+        _write_json(cookies_path, cookies_payload if cookies_payload is not None else [])
+        artifacts["cookies_json"] = str(cookies_path)
+
+    local_step = _run_agent_browser_cli(["storage", "local"], session=session_name, timeout=timeout)
+    session_step = _run_agent_browser_cli(["storage", "session"], session=session_name, timeout=timeout)
+    steps.extend([local_step, session_step])
+    local_envelope = _record_agent_raw(capture_dir, "local-storage", local_step, artifacts)
+    session_envelope = _record_agent_raw(capture_dir, "session-storage", session_step, artifacts)
+    if local_step["success"] or session_step["success"]:
+        storage_payload = {
+            "localStorage": _agent_storage_values(_agent_data(local_envelope)) if local_step["success"] else {},
+            "sessionStorage": _agent_storage_values(_agent_data(session_envelope)) if session_step["success"] else {},
+        }
+        storage_path = capture_dir / "storage.json"
+        _write_json(storage_path, storage_payload)
+        artifacts["storage_json"] = str(storage_path)
+
+    state_path = capture_dir / "state.json"
+    state_step = _run_agent_browser_cli(["state", "save", str(state_path)], session=session_name, timeout=timeout)
+    steps.append(state_step)
+    _record_agent_raw(capture_dir, "state", state_step, artifacts)
+    _record_existing_file(state_path, "state_json", artifacts)
+
+    core_steps = [
+        open_step,
+        requests_clear_step,
+        console_clear_step,
+        navigate_step,
+        snapshot_step,
+        requests_step,
+        console_step,
+        cookies_step,
+        local_step,
+        session_step,
+        state_step,
+    ]
+    if capture_screenshot:
+        screenshot_path = capture_dir / "screenshot.png"
+        screenshot_step = _run_agent_browser_cli(
+            ["screenshot", str(screenshot_path)],
+            session=session_name,
+            timeout=timeout,
+        )
+        steps.append(screenshot_step)
+        _record_agent_raw(capture_dir, "screenshot", screenshot_step, artifacts)
+        _record_existing_file(screenshot_path, "screenshot_png", artifacts)
+        core_steps.append(screenshot_step)
+
+    har_path = capture_dir / "network.har"
+    har_stop_step = _run_agent_browser_cli(
+        ["network", "har", "stop", str(har_path)],
+        session=session_name,
+        timeout=timeout,
+    )
+    steps.append(har_stop_step)
+    _record_agent_raw(capture_dir, "har-stop", har_stop_step, artifacts)
+    if har_start_step["success"] and har_stop_step["success"]:
+        _record_existing_file(har_path, "network_har", artifacts)
+
+    success = all(step["success"] for step in core_steps)
+    error = "" if success else next((_step_error(step) for step in core_steps if _step_error(step)), "")
+    return {"steps": steps, "artifacts": artifacts, "counts": counts, "success": success, "error": error}
+
+
 def _derive_recon_root(evidence_root: Path) -> Path:
     """Return the recon root paired with the selected evidence root."""
     if evidence_root == DEFAULT_EVIDENCE_ROOT:
         return DEFAULT_RECON_ROOT
-    if evidence_root.name == "evidence":
-        return evidence_root.parent / "recon"
-    return DEFAULT_RECON_ROOT
+    return evidence_root.parent / "recon"
 
 
 def _write_browser_surface(
@@ -205,6 +505,7 @@ def _write_browser_surface(
         requests_path=artifacts.get("requests_json", ""),
         snapshot_path=artifacts.get("snapshot_txt", ""),
         capture_dir=str(capture_dir),
+        merge_existing=True,
     )
     # Refresh the per-page JS map after every capture so /surface and /hunt
     # can answer "which page loads this JS file?" without re-visiting.
@@ -230,8 +531,10 @@ def capture_browser_evidence(
     evidence_root: str | Path | None = None,
     timeout: int = 30,
     capture_screenshot: bool = False,
+    backend: str = "auto",
 ) -> dict:
-    """Capture minimal browser evidence for one URL without closing the session."""
+    """为一个 URL 采集浏览器证据，完成后保持命名 session 打开。"""
+    selected_backend = resolve_browser_backend(backend)
     target_name = _target_key(target)
     safe_label = _safe_part(label, "capture")
     session_name = session.strip() or default_browser_session(target)
@@ -240,23 +543,26 @@ def capture_browser_evidence(
     capture_dir = browser_root / f"{_timestamp_slug()}-{safe_label}"
     capture_dir.mkdir(parents=True, exist_ok=True)
 
-    steps: list[dict] = []
-    artifacts: dict[str, str] = {}
-    counts = {"requests": 0, "console": 0}
+    if selected_backend == AGENT_BROWSER_BIN:
+        result = _capture_agent_browser_backend(
+            url=url,
+            session_name=session_name,
+            capture_dir=capture_dir,
+            timeout=timeout,
+            capture_screenshot=capture_screenshot,
+        )
+    else:
+        result = _capture_playwright_backend(
+            url=url,
+            session_name=session_name,
+            capture_dir=capture_dir,
+            timeout=timeout,
+            capture_screenshot=capture_screenshot,
+        )
 
-    # Prefer an existing named session; create/open one if it is not active yet.
-    goto_step = _run_cli(["goto", url], session=session_name, timeout=timeout)
-    steps.append(goto_step)
-    if not goto_step["success"]:
-        steps.append(_run_cli(["open", url], session=session_name, timeout=timeout))
-
-    snapshot_step = _run_cli(["--raw", "snapshot"], session=session_name, timeout=timeout)
-    steps.append(snapshot_step)
-    _record_text_artifact(capture_dir, "snapshot.txt", snapshot_step, artifacts)
-
-    requests_step = _run_cli(["--raw", "requests"], session=session_name, timeout=timeout)
-    steps.append(requests_step)
-    counts["requests"] = _record_json_artifact(capture_dir, "requests.json", requests_step, artifacts)
+    steps = result["steps"]
+    artifacts = result["artifacts"]
+    counts = result["counts"]
     browser_surface = _write_browser_surface(
         target_name=target_name,
         evidence_root=root,
@@ -269,34 +575,6 @@ def capture_browser_evidence(
         counts["browser_api_endpoints"] = int(browser_counts.get("api_endpoints", 0) or 0)
         counts["browser_params"] = int(browser_counts.get("browser_params", 0) or 0)
 
-    console_step = _run_cli(["--raw", "console"], session=session_name, timeout=timeout)
-    steps.append(console_step)
-    counts["console"] = _record_json_artifact(capture_dir, "console.json", console_step, artifacts)
-
-    cookies_step = _run_cli(["--raw", "cookie-list"], session=session_name, timeout=timeout)
-    steps.append(cookies_step)
-    _record_json_artifact(capture_dir, "cookies.json", cookies_step, artifacts)
-
-    local_step = _run_cli(["--raw", "localstorage-list"], session=session_name, timeout=timeout)
-    session_step = _run_cli(["--raw", "sessionstorage-list"], session=session_name, timeout=timeout)
-    steps.extend([local_step, session_step])
-    _record_storage(capture_dir, local_step, session_step, artifacts)
-
-    state_path = capture_dir / "state.json"
-    state_step = _run_cli(["state-save", str(state_path)], session=session_name, timeout=timeout)
-    steps.append(state_step)
-    _record_existing_file(state_path, "state_json", artifacts)
-
-    if capture_screenshot:
-        screenshot_path = capture_dir / "screenshot.png"
-        screenshot_step = _run_cli(
-            ["screenshot", f"--filename={screenshot_path}"],
-            session=session_name,
-            timeout=timeout,
-        )
-        steps.append(screenshot_step)
-        _record_existing_file(screenshot_path, "screenshot_png", artifacts)
-
     summary_path = capture_dir / "summary.json"
     pointer_path = browser_root / "last-capture.json"
     summary = {
@@ -305,21 +583,31 @@ def capture_browser_evidence(
         "url": url,
         "session": session_name,
         "label": safe_label,
+        "capture_backend": selected_backend,
         "captured_at": _now_utc(),
         "evidence_dir": str(capture_dir),
         "summary_path": str(summary_path),
         "pointer_path": str(pointer_path),
-        "success": any(step["success"] for step in steps[:2]),
+        "success": bool(result["success"]),
         "capture_screenshot": bool(capture_screenshot),
         "counts": counts,
         "artifacts": artifacts,
         "browser_surface": browser_surface,
         "steps": [_compact_step(step) for step in steps],
     }
+    if result.get("error"):
+        summary["error"] = result["error"]
     _write_json(summary_path, summary)
 
     pointer = compact_browser_evidence(summary)
-    pointer.update({"target": target, "target_key": target_name, "label": safe_label})
+    pointer.update(
+        {
+            "target": target,
+            "target_key": target_name,
+            "label": safe_label,
+            "capture_backend": selected_backend,
+        }
+    )
     _write_json(pointer_path, pointer)
     return summary
 
@@ -351,6 +639,7 @@ def compact_browser_evidence(summary: dict | str | Path | None) -> dict:
         "summary_path": payload.get("summary_path") or payload.get("summary") or "",
         "session": payload.get("session") or "",
         "url": payload.get("url") or "",
+        "capture_backend": payload.get("capture_backend") or "",
         "request_count": int(counts.get("requests", payload.get("request_count", 0)) or 0),
         "console_count": int(counts.get("console", payload.get("console_count", 0)) or 0),
         "screenshot_path": artifacts.get("screenshot_png") or payload.get("screenshot_path") or "",

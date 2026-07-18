@@ -36,3 +36,40 @@ def test_browser_surface_parses_playwright_cli_raw_requests(tmp_path):
     assert (browser_dir / "browser_params.txt").read_text(encoding="utf-8").splitlines() == [
         "https://app.target.com/api/me?account_id=123 :: account_id",
     ]
+
+
+def test_browser_surface_parses_agent_browser_data_envelope(tmp_path):
+    requests_path = tmp_path / "requests.json"
+    requests_path.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "data": {
+                    "requests": [
+                        {
+                            "url": "https://target.local/api/orders?id=123",
+                            "method": "GET",
+                            "resourceType": "xhr",
+                        }
+                    ]
+                },
+                "error": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = browser_surface.write_browser_surface(
+        recon_root=tmp_path / "recon",
+        target_key="target.local",
+        requests_path=requests_path,
+    )
+
+    browser_dir = tmp_path / "recon" / "target.local" / "browser"
+    assert summary["counts"]["requests"] == 1
+    assert (browser_dir / "xhr_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
+        "https://target.local/api/orders?id=123"
+    ]
+    assert (browser_dir / "browser_params.txt").read_text(encoding="utf-8").splitlines() == [
+        "https://target.local/api/orders?id=123 :: id"
+    ]

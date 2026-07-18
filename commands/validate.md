@@ -121,9 +121,9 @@ non-TTY calls fail closed without creating report, finding, queue or runtime sta
 During validation, prove that a real user can reproduce the behavior in the
 current state:
 
-- Prefer chrome-devtools MCP for live browser/network evidence.
-- Prefer playwright MCP for automated interaction and snapshots.
-- Use `tools/browser_evidence.py` / `playwright-cli` only when MCP is unavailable or a scriptable fallback is needed.
+- Prefer `tools/browser_evidence.py` with agent-browser CLI for routine reproduction, session reuse, snapshots, network, storage, and HAR evidence.
+- Use chrome-devtools MCP for deep live DevTools/network/console debugging.
+- Use playwright MCP or the explicit playwright-cli backend as compatibility fallbacks.
 - Import useful MCP artifacts with `tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `/surface`, `/checkpoint`, `/autopilot`, and validation summaries reuse the same observed API surface.
 - Exact non-browser requests can use `curl` / `urllib` / local helpers for lightweight replay.
 - Burp/Caido history is auxiliary replay and comparison context; missing Burp/Caido should not block validation.

@@ -2450,7 +2450,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--browser-session",
         default="",
-        help="Optional playwright-cli session name for fallback browser evidence when MCP artifacts are unavailable",
+        help="Optional named browser session reused by the selected browser evidence backend",
     )
     parser.add_argument("--browser-evidence-dir", default="", help="Attach an existing browser evidence capture directory")
     parser.add_argument("--browser-screenshot", action="store_true", help="Also capture screenshot.png with browser evidence")

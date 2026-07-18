@@ -13,7 +13,7 @@ MAX_LIST_ITEMS = 16
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 TOOL_REGISTRY: dict[str, tuple[str, ...]] = {
-    "browser": ("playwright-cli",),
+    "browser": ("agent-browser", "playwright-cli"),
     "recon": ("subfinder", "httpx", "katana", "gau", "waybackurls", "ffuf"),
     "scanner": ("nuclei",),
 }
@@ -76,10 +76,9 @@ def build_capability_profile(
         "tools/source_intel.py",
         "tools/js_reader.py",
     )
-    browser_cli_ready = (
-        "playwright-cli" in available["browser"]
-        and _helpers_exist(resolved_repo, "tools/browser_evidence.py")
-    )
+    browser_evidence_ready = _helpers_exist(resolved_repo, "tools/browser_evidence.py")
+    agent_browser_ready = "agent-browser" in available["browser"] and browser_evidence_ready
+    playwright_ready = "playwright-cli" in available["browser"] and browser_evidence_ready
 
     missing_core: list[str] = []
     if not curl_available:
@@ -94,14 +93,19 @@ def build_capability_profile(
     fallbacks: list[str] = []
     if curl_available and local_pipeline_ready:
         fallbacks.append("curl-native-http")
-    if browser_cli_ready:
-        fallbacks.append("browser-evidence-cli")
+    if agent_browser_ready:
+        fallbacks.append("agent-browser-evidence-cli")
+    if playwright_ready:
+        fallbacks.append("playwright-browser-evidence-cli")
     if source_js_ready:
         fallbacks.append("source-js-enrichment")
 
-    recommended_paths = ["prefer-session-browser-mcp"]
-    if browser_cli_ready:
-        recommended_paths.append("browser-evidence-cli")
+    recommended_paths = []
+    if agent_browser_ready:
+        recommended_paths.append("agent-browser-evidence-cli")
+    recommended_paths.append("prefer-session-browser-mcp")
+    if playwright_ready:
+        recommended_paths.append("playwright-browser-evidence-cli")
     elif source_js_ready:
         recommended_paths.append("source-js-enrichment")
 

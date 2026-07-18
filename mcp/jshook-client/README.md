@@ -17,8 +17,8 @@ surface when a target needs deeper browser runtime inspection, such as:
 
 This is an optional external Claude MCP capability. It does **not**
 automatically integrate with `/recon`, `/surface`, `/autopilot`, or `agent.py`.
-Use it when chrome-devtools MCP or playwright MCP shows that runtime JS behavior
-is the next useful evidence source.
+Use it when agent-browser evidence, chrome-devtools MCP, or Playwright shows
+that runtime JS behavior is the next useful evidence source.
 
 ## Setup
 
@@ -67,8 +67,8 @@ with your local JSHook MCP server entrypoint.
 
 ### 4. Suggested project workflow
 
-1. Use chrome-devtools MCP for live network/console evidence when available.
-2. Use playwright MCP for automated interaction and snapshots.
+1. Use the agent-browser-backed browser evidence lane for routine automation and structured capture.
+2. Use chrome-devtools MCP for deep live DevTools/network/console debugging and Playwright as fallback.
 3. Use JSHook MCP when runtime JavaScript hooks can answer a specific question
    better than plain network capture.
 4. Export or summarize useful artifacts into `recon/<target>/browser/` when

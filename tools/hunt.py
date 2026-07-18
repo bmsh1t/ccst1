@@ -1979,7 +1979,7 @@ def read_browser_surface(domain):
     if not os.path.isdir(browser_dir):
         return (
             f"No browser surface artifacts found for {domain}. Import MCP artifacts with "
-            "tools/browser_mcp_import.py, or run run_browser_probe as the playwright-cli fallback."
+            "tools/browser_mcp_import.py, or run run_browser_probe through the agent-browser-first evidence lane."
         )
 
     summary_path = os.path.join(browser_dir, "summary.json")
@@ -2374,7 +2374,7 @@ Examples:
     parser.add_argument(
         "--browser-session",
         default="",
-        help="Optional playwright-cli session name for fallback browser evidence when MCP artifacts are unavailable",
+        help="Optional named browser session reused by the selected browser evidence backend",
     )
     parser.add_argument("--browser-screenshot", action="store_true", help="Also capture screenshot.png with browser evidence")
     parser.add_argument("--report-only", action="store_true", help="Only generate reports")

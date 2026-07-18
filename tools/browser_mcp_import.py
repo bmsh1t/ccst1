@@ -90,7 +90,7 @@ def _load_network_payload(path: str | Path | None) -> Any:
         return {"raw": text}
 
 
-def _json_items(payload: Any) -> list[Any]:
+def _json_items(payload: Any, *, _allow_data_envelope: bool = True) -> list[Any]:
     """Return request/console item arrays from common MCP JSON shapes."""
     if isinstance(payload, list):
         return payload
@@ -103,6 +103,12 @@ def _json_items(payload: Any) -> list[Any]:
     log = payload.get("log")
     if isinstance(log, dict) and isinstance(log.get("entries"), list):
         return log["entries"]
+    # agent-browser 的 JSON envelope 仅解一层 data，避免递归误读请求 body。
+    data = payload.get("data")
+    if _allow_data_envelope and isinstance(data, dict):
+        nested = _json_items(data, _allow_data_envelope=False)
+        if nested:
+            return nested
     for key in ("raw", "result"):
         value = payload.get(key)
         if isinstance(value, str):

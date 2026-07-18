@@ -38,11 +38,12 @@ In Claude Code CLI, this skill owns bulk Web2 recon. Continue to prefer
 pipelines such as `httpx`, `katana`, `gau`, `waybackurls`, `ffuf`, and
 JS/parameter extraction by default.
 
-- Use the `playwright-cli` skill for targeted browser-state exploration: web
-  access, login state, SPA/XHR/GraphQL behavior, browser storage, DOM state,
-  and page interaction testing.
-- Do not treat `playwright-cli` as the bulk recon engine. It should run after
-  recon identifies a high-value entry point, to reproduce real frontend
+- Use `tools/browser_evidence.py` with agent-browser CLI for targeted
+  browser-state exploration: web access, login state, SPA/XHR/GraphQL behavior,
+  browser storage, DOM state, HAR, and page interaction testing. Use
+  chrome-devtools MCP for deep live debugging and Playwright as fallback.
+- Do not treat any browser backend as the bulk recon engine. It should run
+  after recon identifies a high-value entry point, to reproduce real frontend
   behavior and extract stateful requests.
 - For lightweight API replay that does not need browser state, fall back to
   `curl` / `urllib` / local helpers. Burp/Caido proxy history is auxiliary
@@ -583,12 +584,13 @@ Run gf patterns and the interesting-params grep above.
 
 ### Minutes 25-30: Manual Exploration
 
-In Claude Code CLI, prefer `playwright-cli` to open and interact with the
-target page. If Burp/Caido is configured, you may also proxy traffic to retain
-history as auxiliary evidence:
+In Claude Code CLI, prefer the agent-browser-backed `tools/browser_evidence.py`
+lane to open and interact with the target page; use chrome-devtools MCP for deep
+live debugging and Playwright as fallback. If Burp/Caido is configured, you may
+also proxy traffic to retain history as auxiliary evidence:
 1. Register an account
 2. Perform main user actions (create/read/update/delete resources)
-3. Note all API calls from `playwright-cli requests` output or Burp/Caido history
+3. Note all API calls from browser network evidence or Burp/Caido history
 4. Look for endpoints not in your URL list
 
 ### After 30 min: Prioritize
