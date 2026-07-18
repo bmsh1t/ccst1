@@ -892,6 +892,49 @@ def test_report_generator_preserves_jwt_structured_finding_type(monkeypatch, tmp
     assert updated_index["findings"][0]["report_id"] == "jwt_001"
 
 
+def test_report_generator_maps_canonical_authentication_bypass_type(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "example.com",
+                "total": 1,
+                "findings": [
+                    {
+                        "id": "auth_bypass_canonical_abc123",
+                        "type": "authentication_bypass",
+                        "category": "authentication_bypass",
+                        "title": "JWT subject claim accepted without verification",
+                        "summary": "A regular session reaches an administrator-only action.",
+                        "url": "https://example.com/admin",
+                        "severity": "high",
+                        "confidence": "confirmed",
+                        "validation_status": "validated",
+                        "report_status": "not_generated",
+                        "source_file": "evidence/example.com/validation/browser-proof.json",
+                        "raw": "validated browser baseline and variant",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _record_owner_provenance(findings_dir, "auth_bypass_canonical_abc123")
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+
+    assert total == 1
+    assert index[0]["type"] == "auth_bypass"
+    report_path = Path(index[0]["file"])
+    assert report_path.name == "auth_bypass_001.md"
+    assert "Authentication/Authorization Bypass" in report_path.read_text(encoding="utf-8")
+    updated_index = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    assert updated_index["findings"][0]["report_id"] == "auth_bypass_001"
+
+
 def test_report_generator_keeps_existing_generated_reports_in_index(monkeypatch, tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)

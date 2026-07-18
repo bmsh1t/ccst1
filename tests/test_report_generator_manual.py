@@ -93,6 +93,35 @@ def test_report_includes_validation_gate_status(tmp_path):
     assert "**Combined Report Readiness:** `PASS`" in content
 
 
+@pytest.mark.parametrize(
+    ("raw_type", "template_type", "title", "cwe"),
+    [
+        ("remote_code_execution", "rce", "Remote Code Execution on example.com", "CWE-78"),
+        ("unsafe_deserialization", "deserialization", "Unsafe Deserialization on example.com", "CWE-502"),
+        ("xml_external_entity", "xxe", "XML External Entity Injection on example.com", "CWE-611"),
+        ("path_traversal", "path_traversal", "Path Traversal on example.com", "CWE-22"),
+    ],
+)
+def test_structured_report_vulnerability_aliases_select_template_and_file_prefix(
+    tmp_path, raw_type, template_type, title, cwe
+):
+    finding = {
+        "id": f"{template_type}_finding",
+        "type": raw_type,
+        "url": "https://example.com/api/resource",
+        "raw": "Validated differential evidence.",
+    }
+
+    resolved_type = report_generator._report_vuln_type(finding)
+    content, generated_title = report_generator.generate_report(finding, resolved_type, "example.com")
+    report_id = report_generator._next_report_id(resolved_type, finding, tmp_path, {})
+
+    assert resolved_type == template_type
+    assert report_id == f"{template_type}_001"
+    assert generated_title == title
+    assert cwe in content
+
+
 def test_structured_report_generation_rejects_failed_seven_question_gate(tmp_path):
     summary_path = tmp_path / "validation-summary.json"
     summary_path.write_text(

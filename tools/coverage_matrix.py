@@ -117,6 +117,18 @@ VULN_CLASSES = (
 VULN_CLASS_ALIASES = {
     # Case-insensitive matches for the canonical names
     **{vc.lower(): vc for vc in VULN_CLASSES},
+    # finding_index 的流程类型归入授权覆盖面；具体 JWT/SAML 等显式 vuln_class 优先。
+    "auth_bypass": "Authz",
+    "auth-bypass": "Authz",
+    "authentication_bypass": "Authz",
+    "authentication-bypass": "Authz",
+    "authorization_bypass": "Authz",
+    "authorization-bypass": "Authz",
+    "business_logic": "Authz",
+    "business-logic": "Authz",
+    "businesslogic": "Authz",
+    "mfa": "Authz",
+    "saml": "Authz",
     # Path traversal family
     "lfi": "Path",
     "rfi": "Path",

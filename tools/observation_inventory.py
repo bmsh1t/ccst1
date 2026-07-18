@@ -33,7 +33,8 @@ STALE_AFTER_SECONDS = 2 * 24 * 60 * 60
 ALLOWED_STATUSES = frozenset({"untouched", "reviewing", "reviewed", "parked"})
 DEFAULT_SAMPLE_LIMIT = 8
 MAX_LIST_LIMIT = 1000
-CURSOR_SCHEMA_VERSION = 1
+CURSOR_SCHEMA_VERSION = 2
+PAGE_ORDER_FIRST_SEEN_ID = "first_seen_id"
 
 # 这里只描述事实来源，不携带漏洞类别或优先级。相同 observation 可来自多个文件，
 # 稳定 ID 会将其合并，同时保留全部 source artifact。
@@ -110,6 +111,7 @@ def _empty_inventory(target: str) -> dict:
         "storage_key": target_storage_key(resolved),
         "source_fingerprint": "",
         "last_synced_at": "",
+        "page_order": PAGE_ORDER_FIRST_SEEN_ID,
         "observations": [],
     }
 
@@ -121,16 +123,23 @@ def _validate_inventory(payload: object, path: Path) -> dict:
     if not isinstance(observations, list):
         raise InventoryError(f"invalid observation inventory at {path}: observations must be a list")
     for index, item in enumerate(observations):
-        if not isinstance(item, dict) or not str(item.get("id") or "").strip():
-            raise InventoryError(
-                f"invalid observation inventory at {path}: observations[{index}] lacks a stable id"
-            )
-        status = str(item.get("status") or "untouched")
-        if status not in ALLOWED_STATUSES:
-            raise InventoryError(
-                f"invalid observation inventory at {path}: observations[{index}] has status {status!r}"
-            )
+        _validate_observation_item(item, path, index=index)
     return payload
+
+
+def _validate_observation_item(item: object, path: Path, *, index: int | None = None) -> dict:
+    """校验单条 observation，供完整与流式读取复用。"""
+    location = f"observations[{index}]" if index is not None else "observation row"
+    if not isinstance(item, dict) or not str(item.get("id") or "").strip():
+        raise InventoryError(
+            f"invalid observation inventory at {path}: {location} lacks a stable id"
+        )
+    status = str(item.get("status") or "untouched")
+    if status not in ALLOWED_STATUSES:
+        raise InventoryError(
+            f"invalid observation inventory at {path}: {location} has status {status!r}"
+        )
+    return item
 
 
 def load_inventory(repo_root: str | Path, target: str) -> dict:
@@ -180,6 +189,9 @@ def _write_json_atomic(path: Path, payload: dict) -> dict:
     return {
         "size": int(stat.st_size),
         "mtime_ns": int(stat.st_mtime_ns),
+        "ctime_ns": int(stat.st_ctime_ns),
+        "st_dev": int(stat.st_dev),
+        "st_ino": int(stat.st_ino),
         "sha256": digest.hexdigest(),
     }
 
@@ -194,6 +206,9 @@ def _file_binding(path: Path) -> dict:
     return {
         "size": int(stat.st_size),
         "mtime_ns": int(stat.st_mtime_ns),
+        "ctime_ns": int(stat.st_ctime_ns),
+        "st_dev": int(stat.st_dev),
+        "st_ino": int(stat.st_ino),
         "sha256": digest.hexdigest(),
     }
 
@@ -221,12 +236,15 @@ def _source_files(recon_dir: Path) -> list[tuple[str, Path, Path]]:
 
 
 def _source_fingerprint(files: list[tuple[str, Path, Path]]) -> str:
-    """使用 path/size/mtime 判断 recon artifact 是否发生变化。"""
+    """使用 path/stat identity 判断 recon artifact 是否发生变化。"""
     digest = hashlib.sha256()
     for kind, relative_path, path in files:
         stat = path.stat()
         digest.update(
-            f"{kind}\0{relative_path.as_posix()}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode()
+            (
+                f"{kind}\0{relative_path.as_posix()}\0{stat.st_size}\0{stat.st_mtime_ns}"
+                f"\0{stat.st_ctime_ns}\0{stat.st_dev}\0{stat.st_ino}\n"
+            ).encode()
         )
     return digest.hexdigest()
 
@@ -276,6 +294,14 @@ def sync_inventory(
         files = _source_files(recon_dir)
         fingerprint = _source_fingerprint(files)
         if not force and payload.get("source_fingerprint") == fingerprint:
+            if payload.get("page_order") != PAGE_ORDER_FIRST_SEEN_ID:
+                # owner 路径负责把 legacy body 升级成可流式分页的稳定物理顺序；
+                # 仅排序/补元数据，不增加 seen_count。
+                payload["page_order"] = PAGE_ORDER_FIRST_SEEN_ID
+                payload["observations"].sort(key=_page_sort_key)
+                binding = _write_json_atomic(path, payload)
+                _write_inventory_summary(repo, resolved, payload, inventory_binding=binding)
+                return payload
             # Legacy inventory may predate the sidecar.  Explicit sync owns
             # this repair; bootstrap/peek remains strictly read-only.
             summary = peek_inventory_summary(repo, resolved)
@@ -338,13 +364,14 @@ def sync_inventory(
 
         current.clear()
         existing.clear()
-        merged.sort(key=lambda item: str(item.get("id") or ""))
+        merged.sort(key=_page_sort_key)
         updated = {
             "schema_version": SCHEMA_VERSION,
             "target": resolved,
             "storage_key": target_storage_key(resolved),
             "source_fingerprint": fingerprint,
             "last_synced_at": timestamp,
+            "page_order": PAGE_ORDER_FIRST_SEEN_ID,
             "observations": merged,
         }
         binding = _write_json_atomic(path, updated)
@@ -359,6 +386,11 @@ def _is_stale(item: dict, now: datetime, stale_after_seconds: int) -> bool:
     if first_seen is None:
         return False
     return (now - first_seen).total_seconds() >= stale_after_seconds
+
+
+def _page_sort_key(item: dict) -> tuple[str, str]:
+    """owner 写入的 observation 物理顺序，也是 page 的稳定顺序。"""
+    return str(item.get("first_seen") or ""), str(item.get("id") or "")
 
 
 def summarize_inventory(
@@ -488,6 +520,7 @@ def _write_inventory_summary(
         "target": resolved,
         "storage_key": target_storage_key(resolved),
         "source_fingerprint": str(payload.get("source_fingerprint") or ""),
+        "page_order": str(payload.get("page_order") or ""),
         "inventory_binding": dict(inventory_binding),
         "generated_at": _now_utc(),
         "summary": summary,
@@ -507,9 +540,18 @@ def _binding_matches(path: Path, binding: dict) -> bool:
         stat = path.stat()
         expected_size = int(binding.get("size", -1))
         expected_mtime = int(binding.get("mtime_ns", -1))
+        expected_ctime = int(binding.get("ctime_ns", -1))
+        expected_dev = int(binding.get("st_dev", -1))
+        expected_ino = int(binding.get("st_ino", -1))
     except (OSError, TypeError, ValueError):
         return False
-    return stat.st_size == expected_size and stat.st_mtime_ns == expected_mtime
+    return (
+        stat.st_size == expected_size
+        and stat.st_mtime_ns == expected_mtime
+        and stat.st_ctime_ns == expected_ctime
+        and stat.st_dev == expected_dev
+        and stat.st_ino == expected_ino
+    )
 
 
 def peek_inventory_summary(repo_root: str | Path, target: str) -> dict:
@@ -558,6 +600,7 @@ def peek_inventory_summary(repo_root: str | Path, target: str) -> dict:
         **summary,
         "summary_path": str(summary_path),
         "inventory_binding": binding,
+        "page_order": str(sidecar.get("page_order") or ""),
     }
     if not body_path.is_file() or not _binding_matches(body_path, binding):
         return _summary_error(
@@ -638,6 +681,8 @@ def touch_observation(
             break
         if matched is None:
             raise KeyError(f"observation not found: {observation_id}")
+        payload["page_order"] = PAGE_ORDER_FIRST_SEEN_ID
+        payload["observations"].sort(key=_page_sort_key)
         binding = _write_json_atomic(path, payload)
         _write_inventory_summary(repo_root, target, payload, inventory_binding=binding)
         return matched
@@ -694,20 +739,48 @@ def _cursor_filters(*, status: str, kind: str, source: str) -> dict:
     }
 
 
+def _matches_page_filters(item: dict, filters: dict) -> bool:
+    if filters["status"] and str(item.get("status") or "untouched").lower() != filters["status"]:
+        return False
+    if filters["kind"] and str(item.get("kind") or "").lower() != filters["kind"]:
+        return False
+    if filters["source"] and filters["source"] not in {
+        str(value) for value in (item.get("sources") or [])
+    }:
+        return False
+    return True
+
+
 def _encode_cursor(
     *,
     target: str,
     revision: str,
     filters: dict,
-    last_key: tuple[str, str],
+    mode: str,
+    offset: int = 0,
+    remaining: int = 0,
+    total_matching: int = 0,
+    last_key: tuple[str, str] | None = None,
 ) -> str:
     payload = {
         "v": CURSOR_SCHEMA_VERSION,
         "target": canonical_target_value(target),
         "revision": revision,
         "filters": filters,
-        "last": [last_key[0], last_key[1]],
+        "mode": mode,
     }
+    if mode == "stream":
+        payload.update(
+            {
+                "offset": offset,
+                "remaining": remaining,
+                "total_matching": total_matching,
+            }
+        )
+    elif mode == "legacy" and last_key is not None:
+        payload["last"] = [last_key[0], last_key[1]]
+    else:  # pragma: no cover - 仅供内部调用，避免生成不能消费的 cursor
+        raise ValueError("invalid observation cursor mode")
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return base64.urlsafe_b64encode(encoded.encode("utf-8")).decode("ascii").rstrip("=")
 
@@ -723,12 +796,212 @@ def _decode_cursor(cursor: str) -> dict:
         raise ValueError("invalid observation cursor") from exc
     if not isinstance(payload, dict) or payload.get("v") != CURSOR_SCHEMA_VERSION:
         raise ValueError("invalid observation cursor schema")
-    last = payload.get("last")
-    if not isinstance(last, list) or len(last) != 2 or not all(isinstance(item, str) for item in last):
-        raise ValueError("invalid observation cursor position")
     if not isinstance(payload.get("filters"), dict):
         raise ValueError("invalid observation cursor filters")
+    mode = payload.get("mode")
+    if mode == "stream":
+        try:
+            offset = int(payload.get("offset", -1))
+            remaining = int(payload.get("remaining", -1))
+            total_matching = int(payload.get("total_matching", -1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid observation cursor position") from exc
+        if offset < 0 or remaining < 0 or total_matching < remaining:
+            raise ValueError("invalid observation cursor position")
+        payload["offset"] = offset
+        payload["remaining"] = remaining
+        payload["total_matching"] = total_matching
+    elif mode == "legacy":
+        last = payload.get("last")
+        if not isinstance(last, list) or len(last) != 2 or not all(isinstance(item, str) for item in last):
+            raise ValueError("invalid observation cursor position")
+    else:
+        raise ValueError("invalid observation cursor mode")
     return payload
+
+
+def _iter_ordered_inventory_rows(path: Path, *, offset: int | None = None) -> Iterator[tuple[dict, int, int]]:
+    """流式读取 owner 写入的 pretty JSON observation array，并保留 byte offset。
+
+    ``observations.json`` 仍是唯一的正文事实。这里依赖 owner 的稳定 JSON 编码，
+    只在 sidecar 已确认 binding 与 ``page_order`` 时使用；任意 legacy/未知编码都由
+    page 的兼容路径完整读取，避免读路径自行重写目标状态。
+    """
+    with path.open("rb") as handle:
+        if offset is None:
+            for raw in handle:
+                if raw.strip() == b'"observations": [':
+                    break
+            else:
+                raise InventoryError(f"invalid observation inventory at {path}: observations array missing")
+        else:
+            handle.seek(offset)
+
+        while True:
+            row_start = handle.tell()
+            first = handle.readline()
+            if not first:
+                raise InventoryError(f"invalid observation inventory at {path}: observations array unterminated")
+            stripped = first.strip()
+            if not stripped:
+                continue
+            if stripped in {b"]", b"],"}:
+                return
+            if not stripped.startswith(b"{"):
+                raise InventoryError(f"invalid observation inventory at {path}: malformed observation row")
+
+            chunks = [first]
+            depth = 0
+            in_string = False
+            escaped = False
+            while True:
+                for byte in chunks[-1]:
+                    if in_string:
+                        if escaped:
+                            escaped = False
+                        elif byte == ord("\\"):
+                            escaped = True
+                        elif byte == ord('"'):
+                            in_string = False
+                    elif byte == ord('"'):
+                        in_string = True
+                    elif byte == ord("{"):
+                        depth += 1
+                    elif byte == ord("}"):
+                        depth -= 1
+                if depth == 0 and not in_string:
+                    break
+                next_line = handle.readline()
+                if not next_line:
+                    raise InventoryError(f"invalid observation inventory at {path}: observation row unterminated")
+                chunks.append(next_line)
+
+            serialized = b"".join(chunks).strip()
+            if serialized.endswith(b","):
+                serialized = serialized[:-1]
+            try:
+                item = json.loads(serialized)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise InventoryError(f"invalid observation inventory at {path}: malformed observation row") from exc
+            yield _validate_observation_item(item, path), row_start, handle.tell()
+
+
+def _streaming_page(
+    repo_root: str | Path,
+    target: str,
+    *,
+    filters: dict,
+    limit: int,
+    summary: dict,
+    decoded: dict | None,
+) -> dict:
+    """首次完整流式计数，后续 cursor 仅扫描到下一页所需的 observation。"""
+    binding = summary.get("inventory_binding") if isinstance(summary.get("inventory_binding"), dict) else {}
+    revision = str(binding.get("sha256") or "")
+    path = inventory_path(repo_root, target)
+    if not revision or not path.is_file():
+        raise InventoryError("observation pagination requires a bound inventory summary")
+
+    if decoded:
+        if decoded.get("revision") != revision:
+            raise InventoryError("stale observation cursor: inventory snapshot changed")
+        prior_remaining = int(decoded["remaining"])
+        total_matching = int(decoded["total_matching"])
+        wanted = min(limit, prior_remaining)
+        items = []
+        next_offset = int(decoded["offset"])
+        for item, _row_start, after_row in _iter_ordered_inventory_rows(path, offset=next_offset):
+            if not _matches_page_filters(item, filters):
+                continue
+            items.append(item)
+            next_offset = after_row
+            if len(items) == wanted:
+                break
+        if len(items) != wanted:
+            raise InventoryError("stale observation cursor: inventory page no longer matches snapshot")
+        remaining = prior_remaining - len(items)
+    else:
+        items = []
+        next_offset = 0
+        total_matching = 0
+        for item, _row_start, after_row in _iter_ordered_inventory_rows(path):
+            if not _matches_page_filters(item, filters):
+                continue
+            total_matching += 1
+            if len(items) < limit:
+                items.append(item)
+                next_offset = after_row
+        remaining = total_matching - len(items)
+
+    next_cursor = ""
+    if items and remaining:
+        next_cursor = _encode_cursor(
+            target=target,
+            revision=revision,
+            filters=filters,
+            mode="stream",
+            offset=next_offset,
+            remaining=remaining,
+            total_matching=total_matching,
+        )
+    return {
+        "snapshot_revision": revision,
+        "items": items,
+        "next_cursor": next_cursor,
+        "remaining": remaining,
+        "total_matching": total_matching,
+    }
+
+
+def _legacy_page(
+    repo_root: str | Path,
+    target: str,
+    *,
+    filters: dict,
+    limit: int,
+    decoded: dict | None,
+) -> dict:
+    """兼容旧正文：保留既有完整读取/排序语义，绝不在 page 路径升级文件。"""
+    payload, revision = _load_inventory_snapshot(repo_root, target)
+    if decoded and decoded.get("revision") != revision:
+        raise InventoryError("stale observation cursor: inventory snapshot changed")
+
+    matching = [
+        item
+        for item in payload.get("observations", [])
+        if isinstance(item, dict) and _matches_page_filters(item, filters)
+    ]
+    matching.sort(key=_page_sort_key)
+    start = 0
+    if decoded:
+        last_key = tuple(decoded["last"])
+        positions = [
+            index
+            for index, item in enumerate(matching)
+            if _page_sort_key(item) == last_key
+        ]
+        if len(positions) != 1:
+            raise ValueError("invalid observation cursor anchor")
+        start = positions[0] + 1
+
+    items = matching[start : start + limit]
+    remaining = max(0, len(matching) - start - len(items))
+    next_cursor = ""
+    if items and remaining:
+        next_cursor = _encode_cursor(
+            target=target,
+            revision=revision,
+            filters=filters,
+            mode="legacy",
+            last_key=_page_sort_key(items[-1]),
+        )
+    return {
+        "snapshot_revision": revision,
+        "items": items,
+        "next_cursor": next_cursor,
+        "remaining": remaining,
+        "total_matching": len(matching),
+    }
 
 
 def page_inventory(
@@ -748,62 +1021,55 @@ def page_inventory(
     if filters["status"] and filters["status"] not in ALLOWED_STATUSES:
         raise ValueError(f"invalid observation status: {status!r}")
 
-    payload, revision = _load_inventory_snapshot(repo_root, target)
     decoded = _decode_cursor(cursor)
     if decoded:
         if decoded.get("target") != canonical_target_value(target):
             raise ValueError("observation cursor target mismatch")
         if decoded.get("filters") != filters:
             raise ValueError("observation cursor filter mismatch")
-        if decoded.get("revision") != revision:
-            raise InventoryError("stale observation cursor: inventory snapshot changed")
 
-    matching = []
-    for item in payload.get("observations", []):
-        if not isinstance(item, dict):
-            continue
-        if filters["status"] and str(item.get("status") or "untouched").lower() != filters["status"]:
-            continue
-        if filters["kind"] and str(item.get("kind") or "").lower() != filters["kind"]:
-            continue
-        if filters["source"] and filters["source"] not in {
-            str(value) for value in (item.get("sources") or [])
-        }:
-            continue
-        matching.append(item)
-    matching.sort(key=lambda item: (str(item.get("first_seen") or ""), str(item.get("id") or "")))
-
-    start = 0
-    if decoded:
-        last_key = tuple(decoded["last"])
-        positions = [
-            index
-            for index, item in enumerate(matching)
-            if (str(item.get("first_seen") or ""), str(item.get("id") or "")) == last_key
-        ]
-        if len(positions) != 1:
-            raise ValueError("invalid observation cursor anchor")
-        start = positions[0] + 1
-
-    items = matching[start : start + limit]
-    consumed = start + len(items)
-    remaining = max(0, len(matching) - consumed)
-    next_cursor = ""
-    if items and remaining:
-        last = items[-1]
-        next_cursor = _encode_cursor(
-            target=target,
-            revision=revision,
+    if decoded and decoded.get("mode") == "legacy":
+        return _legacy_page(
+            repo_root,
+            target,
             filters=filters,
-            last_key=(str(last.get("first_seen") or ""), str(last.get("id") or "")),
+            limit=limit,
+            decoded=decoded,
         )
-    return {
-        "snapshot_revision": revision,
-        "items": items,
-        "next_cursor": next_cursor,
-        "remaining": remaining,
-        "total_matching": len(matching),
-    }
+
+    summary = peek_inventory_summary(repo_root, target)
+    has_streaming_owner_body = (
+        summary.get("status") == "valid"
+        and summary.get("page_order") == PAGE_ORDER_FIRST_SEEN_ID
+        and bool((summary.get("inventory_binding") or {}).get("sha256"))
+    )
+    if decoded and decoded.get("mode") == "stream":
+        if not has_streaming_owner_body:
+            raise InventoryError("stale observation cursor: inventory snapshot changed")
+        return _streaming_page(
+            repo_root,
+            target,
+            filters=filters,
+            limit=limit,
+            summary=summary,
+            decoded=decoded,
+        )
+    if has_streaming_owner_body:
+        return _streaming_page(
+            repo_root,
+            target,
+            filters=filters,
+            limit=limit,
+            summary=summary,
+            decoded=None,
+        )
+    return _legacy_page(
+        repo_root,
+        target,
+        filters=filters,
+        limit=limit,
+        decoded=None,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

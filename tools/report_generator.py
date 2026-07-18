@@ -331,6 +331,121 @@ VULN_TEMPLATES = {
 }
 
 VULN_TEMPLATES.update({
+    "rce": {
+        "title": "Remote Code Execution on {domain}",
+        "severity": "critical",
+        "impact": (
+            "An attacker can execute attacker-controlled code or commands on the affected server. "
+            "This can lead to service takeover, data theft, lateral movement, or complete compromise of "
+            "the application environment."
+        ),
+        "remediation": (
+            "1. Remove direct execution of user-controlled input\n"
+            "2. Use fixed command allowlists and safe process APIs where execution is unavoidable\n"
+            "3. Run application services with least privilege\n"
+            "4. Add regression tests for the affected input and execution path"
+        ),
+        "cwe": "CWE-78",
+        "references": ["https://owasp.org/www-community/attacks/Command_Injection"],
+    },
+    "deserialization": {
+        "title": "Unsafe Deserialization on {domain}",
+        "severity": "critical",
+        "impact": (
+            "Attacker-controlled serialized data is processed by an unsafe deserializer. Depending on the "
+            "available gadget chains and application behavior, this can lead to code execution, privilege "
+            "escalation, or tampering with trusted application state."
+        ),
+        "remediation": (
+            "1. Do not deserialize untrusted native object formats\n"
+            "2. Use data-only formats with strict schemas\n"
+            "3. Authenticate and integrity-protect any serialized state\n"
+            "4. Apply allowlists and update vulnerable serialization libraries"
+        ),
+        "cwe": "CWE-502",
+        "references": ["https://owasp.org/www-community/vulnerabilities/Deserialization_of_untrusted_data"],
+    },
+    "xxe": {
+        "title": "XML External Entity Injection on {domain}",
+        "severity": "high",
+        "impact": (
+            "An attacker can cause the XML parser to resolve external entities. This may expose local files, "
+            "reach internal services, or enable denial of service depending on parser and network settings."
+        ),
+        "remediation": (
+            "1. Disable DTDs and external entity resolution\n"
+            "2. Use hardened XML parser settings for every parser instance\n"
+            "3. Prefer data formats that do not support external entities\n"
+            "4. Add parser configuration regression tests"
+        ),
+        "cwe": "CWE-611",
+        "references": ["https://owasp.org/www-community/vulnerabilities/XML_External_Entity_(XXE)_Processing"],
+    },
+    "path_traversal": {
+        "title": "Path Traversal on {domain}",
+        "severity": "high",
+        "impact": (
+            "An attacker can influence a filesystem path outside the intended directory. This may expose "
+            "sensitive files, alter application data, or create a path to server-side code execution."
+        ),
+        "remediation": (
+            "1. Resolve paths against a fixed base directory\n"
+            "2. Reject traversal sequences and absolute paths after canonicalization\n"
+            "3. Use opaque server-side file identifiers instead of user-supplied paths\n"
+            "4. Test encoded and platform-specific path variants"
+        ),
+        "cwe": "CWE-22",
+        "references": ["https://owasp.org/www-community/attacks/Path_Traversal"],
+    },
+    "csrf": {
+        "title": "Cross-Site Request Forgery on {domain}",
+        "severity": "medium",
+        "impact": (
+            "A third-party site can cause an authenticated browser to perform an unintended state-changing "
+            "request. Impact depends on the protected action and may include account or data changes."
+        ),
+        "remediation": (
+            "1. Require server-validated, session-bound anti-CSRF tokens\n"
+            "2. Enforce SameSite cookies where compatible\n"
+            "3. Validate Origin or Referer on sensitive requests\n"
+            "4. Require re-authentication for high-impact actions"
+        ),
+        "cwe": "CWE-352",
+        "references": ["https://owasp.org/www-community/attacks/csrf"],
+    },
+    "business_logic": {
+        "title": "Business Logic Flaw on {domain}",
+        "severity": "high",
+        "impact": (
+            "An attacker can violate an intended workflow or business invariant. Depending on the affected "
+            "operation, this can enable unauthorized state changes, financial loss, or access beyond the "
+            "intended product rules."
+        ),
+        "remediation": (
+            "1. Enforce workflow invariants server-side\n"
+            "2. Validate state transitions, ownership, and limits on every request\n"
+            "3. Make sensitive operations idempotent where appropriate\n"
+            "4. Add end-to-end tests for invalid transition sequences"
+        ),
+        "cwe": "CWE-840",
+        "references": ["https://cwe.mitre.org/data/definitions/840.html"],
+    },
+    "race": {
+        "title": "Race Condition on {domain}",
+        "severity": "high",
+        "impact": (
+            "Concurrent requests can violate an intended state transition or limit. This may lead to duplicate "
+            "actions, inconsistent records, unauthorized balances, or bypassed business controls."
+        ),
+        "remediation": (
+            "1. Make the state transition atomic in the authoritative datastore\n"
+            "2. Use transactions, conditional updates, or locking for contested resources\n"
+            "3. Enforce idempotency keys for repeatable operations\n"
+            "4. Add concurrent-request regression tests"
+        ),
+        "cwe": "CWE-362",
+        "references": ["https://cwe.mitre.org/data/definitions/362.html"],
+    },
     "sqli": {
         "title": "SQL Injection on {domain}",
         "severity": "high",
@@ -431,6 +546,37 @@ VULN_TEMPLATES.update({
         ],
     },
 })
+
+# finding_index 使用 ``authentication_bypass`` 作为 canonical type，而报告模板沿用
+# 历史 ``auth_bypass`` key。报告生成是 finding lifecycle 的消费者，必须在这里显式
+# 归一，避免有效 finding 被错误落到 misconfig 模板。
+REPORT_VULN_TYPE_ALIASES = {
+    "authentication_bypass": "auth_bypass",
+    "auth_bypass": "auth_bypass",
+    "authorization_bypass": "auth_bypass",
+    "remote_code_execution": "rce",
+    "command_injection": "rce",
+    "os_command_injection": "rce",
+    "unsafe_deserialization": "deserialization",
+    "deserialisation": "deserialization",
+    "xml_external_entity": "xxe",
+    "xml_injection": "xxe",
+    "pathtraversal": "path_traversal",
+    "directory_traversal": "path_traversal",
+    "lfi": "path_traversal",
+    "rfi": "path_traversal",
+    "xsrf": "csrf",
+    "race_condition": "race",
+    "toctou": "race",
+}
+
+
+def _report_vuln_type(finding):
+    """将结构化 finding 类型归一为受支持的报告模板类型。"""
+    raw_type = str(finding.get("type") or finding.get("category") or "misconfig").strip()
+    normalized = raw_type.lower().replace("-", "_")
+    normalized = REPORT_VULN_TYPE_ALIASES.get(normalized, normalized)
+    return normalized if normalized in VULN_TEMPLATES else "misconfig"
 
 
 def parse_nuclei_line(line):
@@ -990,9 +1136,7 @@ def process_findings_dir(findings_dir):
         ]
         for finding in reportable_findings:
 
-            vuln_type = finding.get("type") or finding.get("category") or "misconfig"
-            if vuln_type not in VULN_TEMPLATES:
-                vuln_type = "misconfig"
+            vuln_type = _report_vuln_type(finding)
 
             report_content, title = generate_report(finding, vuln_type, target_name)
 

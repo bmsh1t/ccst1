@@ -408,3 +408,15 @@ def test_shape_cursor_pages_every_raw_variant_and_rejects_filter_change(tmp_path
             cursor=first["next_cursor"],
             source="api",
         )
+
+
+def test_filtered_final_surface_page_does_not_emit_empty_follow_up_cursor(tmp_path):
+    _write_inputs(tmp_path)
+    build_surface_index(tmp_path, "target.com")
+
+    page = page_surface_index(tmp_path, "target.com", source="scanner", limit=1)
+
+    assert [item["url"] for item in page["items"]] == [
+        "https://api.target.com/orders?id=1"
+    ]
+    assert page["next_cursor"] == ""

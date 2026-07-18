@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -19,6 +20,7 @@ from tools.observation_inventory import (
     sync_inventory_summary,
     touch_observation,
 )
+from tools import observation_inventory
 from tools.autopilot_state import build_autopilot_state, format_autopilot_state
 from tools.checkpoint import build_checkpoint
 from tools.surface import load_surface_context, rank_surface
@@ -296,7 +298,77 @@ def test_page_cursor_reaches_each_matching_observation_once_without_mutation(tmp
 
     assert set(seen) == expected_ids
     assert len(seen) == len(set(seen)) == len(expected_ids)
-    assert body.read_bytes() == original
+    assert body.read_bytes() == original  # page 读取不触碰 lifecycle 或 canonical body。
+
+
+def test_page_cursor_streams_later_pages_without_snapshot_reload(tmp_path, monkeypatch):
+    _write_recon(tmp_path, count=420)
+    payload = sync_inventory(tmp_path, "target.com")
+    expected_ids = [
+        item["id"]
+        for item in payload["observations"]
+        if item["kind"] == "url" and "urls/all.txt" in item["sources"]
+    ]
+
+    first = page_inventory(tmp_path, "target.com", kind="url", source="urls/all.txt", limit=9)
+    assert first["next_cursor"]
+
+    monkeypatch.setattr(
+        observation_inventory,
+        "_load_inventory_snapshot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ordered cursor must not reload the complete inventory")
+        ),
+    )
+    seen = [item["id"] for item in first["items"]]
+    cursor = first["next_cursor"]
+    while cursor:
+        page = page_inventory(
+            tmp_path,
+            "target.com",
+            kind="url",
+            source="urls/all.txt",
+            limit=9,
+            cursor=cursor,
+        )
+        seen.extend(item["id"] for item in page["items"])
+        cursor = page["next_cursor"]
+
+    assert seen == expected_ids
+
+
+def test_page_legacy_body_falls_back_without_rewriting_target_state(tmp_path):
+    _write_recon(tmp_path, count=12)
+    payload = sync_inventory(tmp_path, "target.com")
+    payload.pop("page_order")
+    body = inventory_path(tmp_path, "target.com")
+    body.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    original = body.read_bytes()
+
+    page = page_inventory(tmp_path, "target.com", limit=4)
+
+    assert len(page["items"]) == 4
+    assert page["next_cursor"]
+    assert body.read_bytes() == original  # page 读取不触碰 lifecycle 或 canonical body。
+
+
+def test_summary_rejects_same_size_mtime_replacement_via_ctime(tmp_path):
+    _write_recon(tmp_path, count=2)
+    sync_inventory(tmp_path, "target.com")
+    body = inventory_path(tmp_path, "target.com")
+    before = body.stat()
+    replacement = body.read_text(encoding="utf-8").replace("untouched", "reviewing", 1)
+    replacement_path = body.with_name(f".{body.name}.replacement")
+    replacement_path.write_text(replacement, encoding="utf-8")
+    os.utime(replacement_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    replacement_path.replace(body)
+
+    assert body.stat().st_ino != before.st_ino
+
+    summary = peek_inventory_summary(tmp_path, "target.com")
+
+    assert summary["status"] == "stale"
+    assert summary["reason"] == "inventory-binding-mismatch"
 
 
 def test_page_cursor_rejects_filter_changes_and_stale_snapshot(tmp_path):

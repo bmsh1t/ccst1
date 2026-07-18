@@ -117,6 +117,9 @@ def build_surface_index_input_manifest(repo_root: str | Path, target: str) -> di
                 "exists": exists,
                 "size": int(stat.st_size) if stat else 0,
                 "mtime_ns": int(stat.st_mtime_ns) if stat else 0,
+                "ctime_ns": int(stat.st_ctime_ns) if stat else 0,
+                "st_dev": int(stat.st_dev) if stat else 0,
+                "st_ino": int(stat.st_ino) if stat else 0,
             }
         )
     encoded = json.dumps(items, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -326,6 +329,9 @@ def _file_binding(path: Path) -> dict:
     return {
         "size": int(stat.st_size),
         "mtime_ns": int(stat.st_mtime_ns),
+        "ctime_ns": int(stat.st_ctime_ns),
+        "st_dev": int(stat.st_dev),
+        "st_ino": int(stat.st_ino),
         "sha256": digest.hexdigest(),
     }
 
@@ -336,6 +342,9 @@ def _binding_matches(path: Path, binding: dict) -> bool:
         return (
             stat.st_size == int(binding.get("size", -1))
             and stat.st_mtime_ns == int(binding.get("mtime_ns", -1))
+            and stat.st_ctime_ns == int(binding.get("ctime_ns", -1))
+            and stat.st_dev == int(binding.get("st_dev", -1))
+            and stat.st_ino == int(binding.get("st_ino", -1))
         )
     except (OSError, TypeError, ValueError):
         return False
@@ -692,6 +701,7 @@ def page_surface_index(
     with path.open("rb") as handle:
         handle.seek(offset)
         while len(items) < limit:
+            row_start = handle.tell()
             raw = handle.readline()
             if not raw:
                 break
@@ -711,7 +721,33 @@ def page_surface_index(
                 continue
             items.append(item)
 
-    has_more = next_offset < path.stat().st_size
+        # byte EOF 不能代表还有符合过滤条件的行。仅向前探测到第一条匹配项，
+        # cursor 直接指向该行，避免最后一页返回一个空的 follow-up page。
+        has_more = False
+        while True:
+            row_start = handle.tell()
+            raw = handle.readline()
+            if not raw:
+                break
+            scanned += 1
+            try:
+                item = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise SurfaceIndexError(
+                    f"invalid surface index row near byte {handle.tell()}: {exc}"
+                ) from exc
+            if filters["shape_id"] and str(item.get("shape_id") or "") != filters["shape_id"]:
+                continue
+            if filters["source"] and filters["source"] not in {
+                str(value) for value in (item.get("sources") or [])
+            }:
+                continue
+            if filters["target_owned"] is not None and bool(item.get("target_owned")) != filters["target_owned"]:
+                continue
+            next_offset = row_start
+            has_more = True
+            break
+
     return {
         "index_revision": revision,
         "items": items,

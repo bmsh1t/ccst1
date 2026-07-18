@@ -58,6 +58,7 @@ LEGACY_RUNTIME_HINT = (
     "Use `python3 agent.py --target <target> ...` for legacy local-agent flags; "
     "`python3 tools/hunt.py --target <target> --agent` remains the baseline entry."
 )
+DYNAMIC_SHELL_FALLBACKS = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
 
 
 def cadence_from_namespace(namespace: Namespace | Any) -> str:
@@ -76,8 +77,21 @@ def _error(code: str, message: str, **details: Any) -> dict[str, Any]:
 
 
 def _effective_argv(argv: Sequence[str]) -> list[str]:
-    """移除 Claude 为未使用 positional slots 注入的空字符串。"""
-    return [str(token) for token in argv if str(token).strip()]
+    """归一 Claude dynamic command 的未使用 positional slots。"""
+    effective = [str(token) for token in argv if str(token).strip()]
+
+    # 无 slash 参数时，Claude CLI 的 dynamic command 会把执行 shell 作为 `$0` 传入。
+    # 它不是用户 target；仅接受绝对、可执行的已知 shell，避免吞掉普通单词或列表文件。
+    if len(effective) == 1:
+        candidate = Path(effective[0])
+        if (
+            candidate.is_absolute()
+            and candidate.name in DYNAMIC_SHELL_FALLBACKS
+            and candidate.is_file()
+            and os.access(candidate, os.X_OK)
+        ):
+            return []
+    return effective
 
 
 def _legacy_flag_name(token: str) -> str | None:

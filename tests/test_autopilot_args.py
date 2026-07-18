@@ -219,6 +219,18 @@ def test_empty_claude_placeholder_slots_do_not_count_as_arguments():
     assert payload["argv"] == ["example.test", "--deep"]
 
 
+def test_dynamic_command_shell_fallback_is_not_treated_as_target(tmp_path):
+    shell_fallback = tmp_path / "zsh"
+    shell_fallback.write_text("#!/bin/sh\n", encoding="utf-8")
+    shell_fallback.chmod(0o755)
+
+    payload = autopilot_args.parse_autopilot_args([str(shell_fallback)])
+
+    assert payload["argv"] == []
+    assert payload["action"] == "ask_target"
+    assert [error["code"] for error in payload["errors"]] == ["missing_target"]
+
+
 def test_missing_target_asks_without_continuing():
     payload = autopilot_args.parse_autopilot_args(["--quick", "--deep"])
 

@@ -1197,6 +1197,39 @@ def test_sync_validation_artifacts_linked_finding_uses_canonical_ledger_class(tm
     assert entries[-1]["vuln_class"] == "JWT"
 
 
+def test_sync_validation_artifacts_authentication_bypass_defaults_to_authz(tmp_path):
+    from evidence_ledger import load_entries
+    from finding_index import upsert_finding
+
+    target = "target.com"
+    upsert_finding(
+        tmp_path / "findings" / target,
+        {
+            "id": "authentication_bypass_without_subtype",
+            "type": "authentication_bypass",
+            "url": "https://target.com/admin",
+            "validation_status": "candidate",
+            "report_status": "not_generated",
+        },
+        target=target,
+    )
+    summary = {
+        "target": target,
+        "endpoint": "https://target.com/admin",
+        "vuln_class": "authentication_bypass",
+        "result": "confirmed",
+        "all_gates_passed": True,
+        "finding_id": "authentication_bypass_without_subtype",
+        "report_path": str(tmp_path / "findings" / target / "validated" / "report.md"),
+    }
+
+    sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+    entries = load_entries(tmp_path, target)
+
+    assert sync["ledger"]["status"] == "updated"
+    assert entries[-1]["vuln_class"] == "Authz"
+
+
 def test_sync_validation_artifacts_partial_keeps_queue_candidate(tmp_path):
     from action_queue import add_manual_action, load_queue
     from evidence_ledger import load_entries

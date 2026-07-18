@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -60,6 +61,28 @@ def test_projection_exact_manifest_hit_and_source_change_stale(tmp_path):
     assert stale["status"] == "stale"
     assert stale["surface"] == {}
     assert stale["reason"] == "input-manifest-mismatch"
+
+
+def test_projection_manifest_rejects_same_size_mtime_restored_replacement(tmp_path):
+    recon_dir = _write_surface_inputs(tmp_path)
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", _ranked(), manifest=manifest)
+    source = recon_dir / "urls" / "with_params.txt"
+    before = source.stat()
+    replacement = source.read_text(encoding="utf-8").replace("id=1", "id=2")
+    replacement_path = source.with_name(".with_params.replacement")
+    replacement_path.write_text(replacement, encoding="utf-8")
+    os.utime(replacement_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    replacement_path.replace(source)
+
+    refreshed = build_surface_input_manifest(tmp_path, "target.com")
+    before_item = next(item for item in manifest["items"] if item["path"].endswith("with_params.txt"))
+    after_item = next(item for item in refreshed["items"] if item["path"].endswith("with_params.txt"))
+    assert after_item["size"] == before_item["size"]
+    assert after_item["mtime_ns"] == before_item["mtime_ns"]
+    assert after_item["st_ino"] != before_item["st_ino"]
+    assert refreshed["fingerprint"] != manifest["fingerprint"]
+    assert load_surface_projection(tmp_path, "target.com")["status"] == "stale"
 
 
 def test_projection_missing_corrupt_and_target_mismatch_are_not_consumed(tmp_path):

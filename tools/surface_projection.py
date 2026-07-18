@@ -123,6 +123,9 @@ def build_surface_input_manifest(
                     "kind": "dir" if path.is_dir() else "file",
                     "size": int(stat.st_size),
                     "mtime_ns": int(stat.st_mtime_ns),
+                    "ctime_ns": int(stat.st_ctime_ns),
+                    "st_dev": int(stat.st_dev),
+                    "st_ino": int(stat.st_ino),
                 }
             )
     items.sort(key=lambda item: (item["path"], item["kind"]))
