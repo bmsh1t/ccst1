@@ -730,44 +730,73 @@ def fetch_nvd_for_components(
     fetched_at_values: list[str] = []
     for component in queries:
         cpe_name = str(component.get("nvd_cpe") or "").strip()
-        query = (
-            {"cpeName": cpe_name, "resultsPerPage": 20}
-            if cpe_name
-            else {"keywordSearch": component["nvd_keyword"], "resultsPerPage": 20}
-        )
-        url = f"{NVD_CVE_URL}?{urllib.parse.urlencode(query)}"
-        try:
-            result = cached_json_request(
-                repo_root,
-                source="nvd",
-                query=query,
-                ttl_seconds=ttl_seconds,
-                request=lambda request_url=url: _require_object_collection(
-                    fetcher(request_url, timeout=25),
+        base_query = {"cpeName": cpe_name} if cpe_name else {
+            "keywordSearch": component["nvd_keyword"]
+        }
+        start_index = 0
+        while True:
+            query = {**base_query, "resultsPerPage": 2000, "startIndex": start_index}
+            url = f"{NVD_CVE_URL}?{urllib.parse.urlencode(query)}"
+            try:
+                result = cached_json_request(
+                    repo_root,
                     source="nvd",
-                    field="vulnerabilities",
-                ),
-                validate=lambda payload: _require_object_collection(
-                    payload,
-                    source="nvd",
-                    field="vulnerabilities",
-                ),
-                now=now,
-            )
-        except IntelSourceError as exc:
-            errors.append(f"{component['name']}@{component.get('version') or '?'}: {exc}")
-            continue
-        cached_count += int(result["cached"])
-        stale_count += int(result["stale"])
-        fetched_at_values.append(str(result["fetched_at"]))
-        if result["error"]:
-            errors.append(f"{component['name']}@{component.get('version') or '?'}: {result['error']}")
-        payload = result["data"] if isinstance(result["data"], dict) else {}
-        for raw in payload.get("vulnerabilities") or []:
-            if isinstance(raw, dict):
-                item = _nvd_item(raw, component, result["fetched_at"])
-                if item is not None:
-                    items.append(item)
+                    query=query,
+                    ttl_seconds=ttl_seconds,
+                    request=lambda request_url=url: _require_object_collection(
+                        fetcher(request_url, timeout=25),
+                        source="nvd",
+                        field="vulnerabilities",
+                    ),
+                    validate=lambda payload: _require_object_collection(
+                        payload,
+                        source="nvd",
+                        field="vulnerabilities",
+                    ),
+                    now=now,
+                )
+            except IntelSourceError as exc:
+                errors.append(f"{component['name']}@{component.get('version') or '?'}: {exc}")
+                break
+            cached_count += int(result["cached"])
+            stale_count += int(result["stale"])
+            fetched_at_values.append(str(result["fetched_at"]))
+            if result["error"]:
+                errors.append(
+                    f"{component['name']}@{component.get('version') or '?'}: {result['error']}"
+                )
+            payload = result["data"] if isinstance(result["data"], dict) else {}
+            page = payload.get("vulnerabilities") or []
+            for raw in page:
+                if isinstance(raw, dict):
+                    item = _nvd_item(raw, component, result["fetched_at"])
+                    if item is not None:
+                        items.append(item)
+
+            try:
+                total_results = int(payload.get("totalResults"))
+            except (TypeError, ValueError):
+                total_results = start_index + len(page)
+            try:
+                response_start = int(payload.get("startIndex", start_index))
+            except (TypeError, ValueError):
+                response_start = start_index
+            if response_start != start_index:
+                partial_reasons.append(
+                    f"NVD pagination start mismatch for {component['name']}: "
+                    f"requested {start_index}, received {response_start}"
+                )
+                break
+            next_index = start_index + len(page)
+            if next_index >= total_results:
+                break
+            if not page:
+                partial_reasons.append(
+                    f"NVD pagination stopped early for {component['name']}: "
+                    f"received {next_index} of {total_results} results"
+                )
+                break
+            start_index = next_index
 
     return _source_envelope(
         "nvd",

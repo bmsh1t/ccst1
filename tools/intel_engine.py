@@ -857,7 +857,12 @@ def prioritize_advisories(advisories: list[dict], memory: dict, *, now: datetime
     for advisory in advisories:
         item = dict(advisory)
         identifiers = _identifiers(item)
-        item["already_tested"] = bool(identifiers & tested_cves)
+        component = item.get("component") if isinstance(item.get("component"), dict) else {}
+        # 旧 target memory 只记录 CVE，无法证明测试的是当前组件版本。版本化
+        # advisory 由 action queue 的 component/version disposition 负责闭环。
+        item["already_tested"] = bool(identifiers & tested_cves) and not str(
+            component.get("version") or ""
+        ).strip()
         score, reasons = score_advisory(item, now=now)
         item["score_hint"] = score
         item["score_reasons"] = reasons

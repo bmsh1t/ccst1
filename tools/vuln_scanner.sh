@@ -263,12 +263,37 @@ PY
 }
 
 mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,metasploit,manual_review,.tmp}
+NUCLEI_FAILURE_MARKER="$FINDINGS_DIR/.tmp/nuclei_failed"
+
+mark_nuclei_failure() {
+    local rc="$1"
+    printf 'exit=%s\n' "$rc" >> "$NUCLEI_FAILURE_MARKER"
+    log_warn "Nuclei lane failed (exit=$rc); scan remains incomplete"
+}
+
+run_nuclei() {
+    local rc=0
+    nuclei "$@" || rc=$?
+    [ "$rc" -eq 0 ] || mark_nuclei_failure "$rc"
+    return 0
+}
+
+run_nuclei_timeout() {
+    local limit="$1"
+    shift
+    local rc=0
+    timeout --preserve-status "$limit" nuclei "$@" || rc=$?
+    [ "$rc" -eq 0 ] || mark_nuclei_failure "$rc"
+    return 0
+}
+
 # summary 只代表本轮正常完成；在任何可能中止的扫描工作前清除上一轮摘要。
 rm -f \
     "$FINDINGS_DIR/summary.txt" \
     "$FINDINGS_DIR/summary.json" \
     "$FINDINGS_DIR/.summary.txt.tmp" \
-    "$FINDINGS_DIR/.summary.json.tmp"
+    "$FINDINGS_DIR/.summary.json.tmp" \
+    "$NUCLEI_FAILURE_MARKER"
 : > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
 : > "$FINDINGS_DIR/manual_review/open_200_api.txt"
 : > "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
@@ -880,7 +905,7 @@ if ! skip_has sqli; then
 
     if command -v nuclei &>/dev/null; then
         log_step "Running nuclei SQLi templates..."
-        nuclei -l "$ORDERED_SCAN" \
+        run_nuclei -l "$ORDERED_SCAN" \
             -tags sqli \
             -severity medium,high,critical \
             -silent \
@@ -994,7 +1019,7 @@ PY
     # Nuclei XSS templates
     if command -v nuclei &>/dev/null; then
         log_step "Running nuclei XSS templates..."
-        cat "$LIVE_URLS" | nuclei \
+        cat "$LIVE_URLS" | run_nuclei \
             -tags xss \
             -severity low,medium,high,critical \
             -silent \
@@ -1075,7 +1100,7 @@ fi
 # Nuclei takeover templates
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     log_step "Running nuclei takeover templates..."
-    cat "$LIVE_URLS" | nuclei \
+    cat "$LIVE_URLS" | run_nuclei \
         -tags takeover \
         -silent \
         -rate-limit "$RATE_LIMIT" \
@@ -1099,7 +1124,7 @@ log_info "Check 3: Misconfigurations"
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     # CORS misconfigurations
     log_step "Checking CORS misconfigurations..."
-    cat "$LIVE_URLS" | nuclei \
+    cat "$LIVE_URLS" | run_nuclei \
         -tags cors \
         -silent \
         -rate-limit "$RATE_LIMIT" \
@@ -1110,7 +1135,7 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
 
     # Security headers
     log_step "Checking security headers..."
-    cat "$LIVE_URLS" | nuclei \
+    cat "$LIVE_URLS" | run_nuclei \
         -tags headers,missing-headers \
         -severity medium,high,critical \
         -silent \
@@ -1122,7 +1147,7 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
 
     # General misconfigurations
     log_step "Running misconfiguration templates..."
-    cat "$LIVE_URLS" | nuclei \
+    cat "$LIVE_URLS" | run_nuclei \
         -tags misconfig \
         -severity medium,high,critical \
         -silent \
@@ -1148,7 +1173,7 @@ log_info "Check 4: Sensitive Data Exposure"
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     # Exposed files (.git, .env, backups, etc.)
     log_step "Checking for exposed files (.git, .env, backups)..."
-    cat "$LIVE_URLS" | nuclei \
+    cat "$LIVE_URLS" | run_nuclei \
         -tags exposure,file \
         -severity low,medium,high,critical \
         -silent \
@@ -1160,7 +1185,7 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
 
     # Exposed panels (admin, debug, etc.)
     log_step "Checking for exposed panels..."
-    cat "$LIVE_URLS" | nuclei \
+    cat "$LIVE_URLS" | run_nuclei \
         -tags panel,login \
         -severity medium,high,critical \
         -silent \
@@ -1172,7 +1197,7 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
 
     # Technology detection & default credentials
     log_step "Checking for default credentials..."
-    cat "$LIVE_URLS" | nuclei \
+    cat "$LIVE_URLS" | run_nuclei \
         -tags default-login \
         -severity high,critical \
         -silent \
@@ -1221,7 +1246,7 @@ log_info "Check 5: SSRF Detection"
 
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     log_step "Running nuclei SSRF templates..."
-    cat "$LIVE_URLS" | nuclei \
+    cat "$LIVE_URLS" | run_nuclei \
         -tags ssrf \
         -severity medium,high,critical \
         -silent \
@@ -1261,7 +1286,7 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
         CVE_TIMEOUT="${BB_CVE_TIMEOUT:-600}"
     fi
     log_step "Running nuclei CVE templates (max ${CVE_TIMEOUT}s)..."
-    timeout --preserve-status "$CVE_TIMEOUT" nuclei \
+    run_nuclei_timeout "$CVE_TIMEOUT" \
         -l "$LIVE_URLS" \
         -tags cve \
         -severity medium,high,critical \
@@ -1286,7 +1311,7 @@ log_info "Check 7: Open Redirects"
 
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     log_step "Running nuclei redirect templates..."
-    cat "$LIVE_URLS" | nuclei \
+    cat "$LIVE_URLS" | run_nuclei \
         -tags redirect \
         -severity low,medium,high \
         -silent \
@@ -1643,6 +1668,11 @@ FINDING_SUMMARY_TMP="$FINDINGS_DIR/.summary.txt.tmp"
 FINDING_SUMMARY_JSON_TMP="$FINDINGS_DIR/.summary.json.tmp"
 FINDING_INDEX_JSON="$FINDINGS_DIR/findings.json"
 
+if [ -s "$NUCLEI_FAILURE_MARKER" ]; then
+    log_err "One or more Nuclei lanes failed; scan remains incomplete"
+    exit 1
+fi
+
 {
     echo "============================================="
     echo "  Vulnerability Scan Summary — $TARGET"
@@ -1681,21 +1711,23 @@ FINDING_INDEX_JSON="$FINDINGS_DIR/findings.json"
     done
 } > "$FINDING_SUMMARY_TMP"
 
+if python3 "$BASE_DIR/tools/finding_index.py" "$FINDINGS_DIR" --target "$TARGET" --output "$FINDING_INDEX_JSON" >/dev/null; then
+    log_done "Structured findings: $FINDING_INDEX_JSON"
+else
+    rm -f "$FINDING_SUMMARY_TMP" "$FINDING_SUMMARY_JSON_TMP"
+    log_err "Unable to write structured findings index; scan remains incomplete"
+    exit 1
+fi
+
 if write_summary_json "$FINDING_SUMMARY_JSON_TMP"; then
     mv "$FINDING_SUMMARY_TMP" "$FINDING_SUMMARY"
-    # JSON 是 completion marker，必须最后发布。
+    # JSON 是 completion marker，必须在 canonical finding index 后发布。
     mv "$FINDING_SUMMARY_JSON_TMP" "$FINDING_SUMMARY_JSON"
     log_done "Structured summary: $FINDING_SUMMARY_JSON"
 else
     rm -f "$FINDING_SUMMARY_TMP" "$FINDING_SUMMARY_JSON_TMP"
     log_err "Unable to write structured summary JSON; scan remains incomplete"
     exit 1
-fi
-
-if python3 "$BASE_DIR/tools/finding_index.py" "$FINDINGS_DIR" --target "$TARGET" --output "$FINDING_INDEX_JSON" >/dev/null; then
-    log_done "Structured findings: $FINDING_INDEX_JSON"
-else
-    log_warn "Unable to write structured findings index"
 fi
 
 # scanner_pass.json — records which (endpoint, vuln_class) pairs this run

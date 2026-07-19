@@ -383,6 +383,42 @@ def test_nvd_component_limit_is_explicit_partial_coverage(tmp_path):
     assert "queried 2 of 3" in result["error"]
 
 
+def test_nvd_fetches_all_reported_pages(tmp_path):
+    starts = []
+
+    def fetcher(url, **_kwargs):
+        query = intel_sources.urllib.parse.parse_qs(
+            intel_sources.urllib.parse.urlparse(url).query
+        )
+        start = int(query.get("startIndex", ["0"])[0])
+        starts.append(start)
+        rows = [
+            {"cve": {"id": f"CVE-2026-{index:04d}"}}
+            for index in range(start + 1, min(start + 2, 3) + 1)
+        ]
+        return {
+            "totalResults": 3,
+            "startIndex": start,
+            "resultsPerPage": 2,
+            "vulnerabilities": rows,
+        }
+
+    result = intel_sources.fetch_nvd_for_components(
+        [_component(name="Product", version="1.0")],
+        tmp_path,
+        fetcher=fetcher,
+        now=NOW,
+    )
+
+    assert starts == [0, 2]
+    assert result["status"] == "ok"
+    assert [item["id"] for item in result["items"]] == [
+        "CVE-2026-0001",
+        "CVE-2026-0002",
+        "CVE-2026-0003",
+    ]
+
+
 def test_cache_refreshes_after_ttl(tmp_path):
     calls = []
 

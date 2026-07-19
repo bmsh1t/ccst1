@@ -361,6 +361,88 @@ def test_vuln_scanner_publishes_summary_json_only_after_success(tmp_path):
     assert not (findings_dir / ".summary.json.tmp").exists()
 
 
+def test_vuln_scanner_keeps_scan_incomplete_when_nuclei_fails(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    recon_dir = tmp_path / "recon" / "nuclei-failure.example"
+    live_dir = recon_dir / "live"
+    findings_dir = tmp_path / "findings"
+    shim_dir = tmp_path / "bin"
+    live_dir.mkdir(parents=True)
+    shim_dir.mkdir()
+    (live_dir / "urls.txt").write_text("https://127.0.0.1:9\n", encoding="utf-8")
+    nuclei_shim = shim_dir / "nuclei"
+    nuclei_shim.write_text("#!/bin/sh\nexit 124\n", encoding="utf-8")
+    nuclei_shim.chmod(0o755)
+
+    env = os.environ.copy()
+    env["FINDINGS_OUT_DIR"] = str(findings_dir)
+    env["BB_CVE_TIMEOUT"] = "1"
+    env["PATH"] = f"{shim_dir}:/usr/bin:/bin"
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(script),
+            str(recon_dir),
+            "--quick",
+            "--skip",
+            _skip_modules_except("cves"),
+        ],
+        cwd=script.resolve().parent.parent,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Nuclei lane failed" in result.stdout
+    assert "scan remains incomplete" in result.stdout
+    assert not (findings_dir / "summary.json").exists()
+
+
+def test_vuln_scanner_requires_finding_index_before_completion(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    recon_dir = tmp_path / "recon" / "index-failure.example"
+    live_dir = recon_dir / "live"
+    findings_dir = tmp_path / "findings"
+    shim_dir = tmp_path / "bin"
+    live_dir.mkdir(parents=True)
+    shim_dir.mkdir()
+    (live_dir / "urls.txt").write_text("https://127.0.0.1:9\n", encoding="utf-8")
+
+    real_python = shutil.which("python3")
+    assert real_python
+    python_shim = shim_dir / "python3"
+    python_shim.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  */tools/finding_index.py) exit 17 ;;\n"
+        "esac\n"
+        f'exec "{real_python}" "$@"\n',
+        encoding="utf-8",
+    )
+    python_shim.chmod(0o755)
+
+    env = os.environ.copy()
+    env["FINDINGS_OUT_DIR"] = str(findings_dir)
+    env["PATH"] = f"{shim_dir}:/usr/bin:/bin"
+
+    result = subprocess.run(
+        ["bash", str(script), str(recon_dir), "--quick", "--skip", "all"],
+        cwd=script.resolve().parent.parent,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Unable to write structured findings index; scan remains incomplete" in result.stdout
+    assert not (findings_dir / "summary.txt").exists()
+    assert not (findings_dir / "summary.json").exists()
+
+
 def test_vuln_scanner_skips_xss_by_default(tmp_path):
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     recon_dir = tmp_path / "recon" / "example.com"

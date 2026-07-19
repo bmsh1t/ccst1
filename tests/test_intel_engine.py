@@ -600,6 +600,32 @@ class TestStandaloneTechResolution:
 
 class TestIntelV2Pipeline:
 
+    def test_coarse_cve_memory_does_not_close_a_versioned_advisory(self):
+        advisory = {
+            "id": "CVE-2026-63030",
+            "aliases": ["CVE-2026-63030"],
+            "component": {"name": "givewp", "version": "4.16.3"},
+            "applicability": "affected",
+            "severity": "CRITICAL",
+            "published": "2026-07-18T00:00:00Z",
+        }
+
+        result = intel_engine.prioritize_advisories(
+            [advisory],
+            {"tested_cves": ["CVE-2026-63030"]},
+            now=datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc),
+        )
+
+        assert result["advisories"][0]["already_tested"] is False
+        assert result["advisories"][0] not in result["info"]
+
+        advisory["component"]["version"] = ""
+        legacy_result = intel_engine.prioritize_advisories(
+            [advisory],
+            {"tested_cves": ["CVE-2026-63030"]},
+        )
+        assert legacy_result["advisories"][0]["already_tested"] is True
+
     def test_build_merges_sources_enriches_and_repeats_without_duplicates(self, tmp_path):
         live = tmp_path / "recon" / "target.com" / "live"
         live.mkdir(parents=True)
