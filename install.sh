@@ -78,6 +78,9 @@ mkdir -p "${AGENTS_DIR}"
 
 for agent_file in "${SCRIPT_DIR}"/agents/*.md; do
     agent_name=$(basename "$agent_file")
+    case "${agent_name}" in
+        *.patch.md) continue ;;
+    esac
     cp "$agent_file" "${AGENTS_DIR}/${agent_name}"
     echo "✓ Installed agent: ${agent_name}"
 done

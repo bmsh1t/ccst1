@@ -23,7 +23,11 @@ from tests._agent_test_helpers import (
 
 
 def _list_agent_md_files() -> list[str]:
-    files = sorted(p.name for p in AGENTS_DIR.glob("*.md"))
+    files = sorted(
+        p.name
+        for p in AGENTS_DIR.glob("*.md")
+        if not p.name.lower().endswith(".patch.md")
+    )
     return files
 
 
