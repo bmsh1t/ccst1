@@ -757,6 +757,47 @@ class TestIntelV2Pipeline:
         assert merged[0]["aliases"] == ["CVE-2026-0002", "GHSA-TEST-0002"]
         assert len(merged[0]["source_refs"]) == 3
 
+    def test_kev_only_fortinet_advisory_is_added_before_nvd_enrichment(self):
+        component = {
+            "name": "fortios",
+            "display_name": "FortiOS",
+            "version": "7.2.8",
+            "host": "fortinet",
+            "source": "declared_tech_stack",
+        }
+        kev = {
+            "source": "kev",
+            "fetched_at": "2026-07-16T00:00:00Z",
+            "items": {
+                "CVE-2026-39808": {
+                    "cveID": "CVE-2026-39808",
+                    "vendorProject": "Fortinet",
+                    "product": "FortiSandbox",
+                    "dateAdded": "2026-07-16",
+                    "shortDescription": "Fortinet FortiSandbox OS command injection",
+                    "notes": "https://fortiguard.fortinet.com/psirt/FG-IR-26-100",
+                },
+                "CVE-2026-99999": {
+                    "cveID": "CVE-2026-99999",
+                    "vendorProject": "Other Vendor",
+                    "product": "Other Product",
+                },
+            },
+        }
+
+        candidates = intel_engine.merge_kev_only_advisories([], kev, [component])
+        enriched = intel_engine.enrich_advisories(
+            candidates,
+            kev,
+            {"items": {"CVE-2026-39808": {"score": 0.42, "percentile": 0.8}}},
+        )
+
+        assert [item["id"] for item in candidates] == ["CVE-2026-39808"]
+        assert enriched[0]["kev"] is True
+        assert enriched[0]["epss"] == 0.42
+        assert enriched[0]["kev_only"] is True
+        assert enriched[0]["component"]["name"] == "fortios"
+
     def test_local_nuclei_signal_enriches_matching_cve_without_creating_finding(self, tmp_path):
         findings_dir = tmp_path / "findings" / "target.com"
         findings_dir.mkdir(parents=True)

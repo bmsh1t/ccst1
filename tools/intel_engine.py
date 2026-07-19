@@ -2,7 +2,7 @@
 """目标级 Intel v2：组件版本、advisory 新鲜度、适用性与可追溯投影。
 
 `/intel` 通过本模块读取统一技术清单，查询 OSV/GitHub Advisory/NVD，使用
-CISA KEV、EPSS 和已有本地 CVE template 信号富化，最后原子发布
+CISA KEV（包括 NVD 尚未返回的 KEV-only CVE）、EPSS 和已有本地 CVE template 信号富化，最后原子发布
 `recon/<target>/intel.json`。分数只用于 review 顺序，不创建 finding。
 """
 
@@ -638,6 +638,91 @@ def merge_advisory_items(source_envelopes: list[dict]) -> list[dict]:
     )
 
 
+def _kev_label(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _kev_matches_component(kev_item: dict, component: dict) -> bool:
+    """将 KEV vendor/product 绑定到已观测或声明的组件，避免全目录污染。"""
+    vendor = _kev_label(kev_item.get("vendorProject"))
+    product = _kev_label(kev_item.get("product"))
+    labels = {
+        _kev_label(component.get("name")),
+        _kev_label(component.get("display_name")),
+    }
+    labels.discard("")
+    if not labels:
+        return False
+    if any(
+        vendor == label or (len(label) >= 5 and (vendor in label or label in vendor))
+        for label in labels
+    ):
+        return True
+    # Fortinet product names share the `Forti*` family prefix (FortiOS,
+    # FortiGate, FortiSandbox, ...), while KEV stores vendor and product apart.
+    if vendor == "fortinet" and any(label.startswith("forti") for label in labels):
+        return True
+    return bool(
+        product
+        and any(
+            product == label or (len(label) >= 5 and (product in label or label in product))
+            for label in labels
+        )
+    )
+
+
+def merge_kev_only_advisories(
+    advisories: list[dict],
+    kev: dict,
+    components: list[dict],
+) -> list[dict]:
+    """把官方 NVD 尚未返回、但 KEV 已收录的目标组件 CVE 变成 advisory lead。"""
+    existing = set()
+    for advisory in advisories:
+        existing.update(_identifiers(advisory))
+    items = kev.get("items") if isinstance(kev.get("items"), dict) else {}
+    candidates: list[dict] = []
+    for cve_id, raw in items.items():
+        if not isinstance(raw, dict):
+            continue
+        identifier = str(cve_id or raw.get("cveID") or "").strip().upper()
+        if not identifier or identifier in existing:
+            continue
+        component = next(
+            (item for item in components if _kev_matches_component(raw, item)),
+            None,
+        )
+        if component is None:
+            continue
+        summary = str(raw.get("shortDescription") or raw.get("vulnerabilityName") or "").strip()
+        notes = str(raw.get("notes") or "").strip()
+        candidates.append({
+            "id": identifier,
+            "aliases": [identifier],
+            "source": "kev",
+            "component": dict(component),
+            "applicability": "unknown",
+            "severity": "UNKNOWN",
+            "cvss": None,
+            "summary": summary[:500],
+            "published": str(raw.get("dateAdded") or "").strip(),
+            "modified": "",
+            "fixed_versions": [],
+            "affected_ranges": [],
+            "poc_available": False,
+            "kev_only": True,
+            "source_refs": [{
+                "source": "kev",
+                "id": identifier,
+                "url": f"https://nvd.nist.gov/vuln/detail/{identifier}",
+                "references": [notes] if notes else [],
+                "fetched_at": str(kev.get("fetched_at") or ""),
+            }],
+        })
+        existing.add(identifier)
+    return candidates
+
+
 _CVE_ID_RE = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE)
 
 
@@ -1079,17 +1164,20 @@ def build_target_intel(
     official_source_envelopes = fetch_advisory_sources(
         components, repo_root, fetcher=fetcher, now=now
     )
+    kev = fetch_kev(repo_root, fetcher=fetcher, now=now)
     web_projection = load_web_intel_projection(repo_root, resolved_target, now=now)
     web_source = build_web_intel_source(web_projection, components)
     source_envelopes = [*official_source_envelopes, web_source]
     advisories = merge_advisory_items(source_envelopes)
+    kev_only = merge_kev_only_advisories(advisories, kev, components)
+    if kev_only:
+        advisories = merge_advisory_items([{"items": advisories}, {"items": kev_only}])
     intel_gaps = _web_intel_gap_projection(
         components,
         official_source_envelopes,
         advisories,
         web_projection,
     )
-    kev = fetch_kev(repo_root, fetcher=fetcher, now=now)
     cve_ids = [
         value
         for advisory in advisories
