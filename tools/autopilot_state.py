@@ -24,6 +24,10 @@ try:
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import load_queue, select_next_action
 try:
+    from tools.intel_continuation import apply_intel_continuation, inspect_intel_continuation
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from intel_continuation import apply_intel_continuation, inspect_intel_continuation  # type: ignore
+try:
     from tools.repo_source_artifacts import (
         list_repo_source_artifacts,
         load_repo_source_summary,
@@ -406,6 +410,9 @@ def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
         "complete_report_draft",
         "recon_no_live_hosts",
         "report_finding",
+        "run_intel",
+        "collect_web_intel",
+        "test_advisory_applicability",
     }:
         return False
     tracked = int(guard_status.get("tracked_hosts", 0) or 0)
@@ -535,6 +542,31 @@ def _describe_next_step(state: dict) -> str:
             "recon completed with no live hosts; review cached infra/exposure/offline evidence "
             "and record the blocker. Explicit refresh, stale artifacts, or contradictory fresh "
             "evidence is required; do not rerun recon automatically."
+        )
+    if action == "run_intel":
+        continuation = state.get("intel_continuation") or {}
+        return (
+            "run /intel for the current software/service inventory before continuing generic "
+            f"hunting; reason: {continuation.get('reason', 'Intel artifact is missing or stale')}."
+        )
+    if action == "collect_web_intel":
+        continuation = state.get("intel_continuation") or {}
+        recommended = continuation.get("recommended") or []
+        subject = str((recommended[0] if recommended else {}).get("subject") or "the top Intel gap")
+        return (
+            f"collect and record provider-neutral Web Intel for {subject}; verify selected source "
+            "bodies, then rerun /intel so the bounded claim projection is merged."
+        )
+    if action == "test_advisory_applicability":
+        advisory = (state.get("intel_continuation") or {}).get("advisory") or {}
+        component = advisory.get("component") if isinstance(advisory.get("component"), dict) else {}
+        return (
+            "test target reachability and version applicability for {id} on {name}@{version}; "
+            "preserve raw evidence and resolve the durable action before moving on."
+        ).format(
+            id=advisory.get("id", "the top advisory"),
+            name=component.get("name", "component"),
+            version=component.get("version") or "unknown",
         )
     if action == "report_finding":
         followup = (state.get("structured_findings") or {}).get("next_report") or {}
@@ -916,6 +948,9 @@ def _build_enrichment_hints(
         "complete_report_draft",
         "recon_no_live_hosts",
         "report_finding",
+        "run_intel",
+        "collect_web_intel",
+        "test_advisory_applicability",
     }:
         return "", []
 
@@ -1375,6 +1410,7 @@ def _load_autopilot_control_facts(
         target_goal_memory,
         repo_root=repo_root,
     )
+    intel_continuation = inspect_intel_continuation(repo_root, resolved_target)
     return {
         "repo_root": repo_root,
         "resolved_target": resolved_target,
@@ -1404,6 +1440,7 @@ def _load_autopilot_control_facts(
         "recent_guard_advisories": recent_guard_advisories,
         "memory_action_queue": memory_action_queue,
         "memory_candidate_next": _select_memory_candidate(memory_action_queue),
+        "intel_continuation": intel_continuation,
     }
 
 
@@ -1436,7 +1473,7 @@ def _build_domain_autopilot_state(
         if review_pool:
             tech_stack = review_pool[0].get("tech_stack", [])
 
-    next_action = _pick_next_action(
+    primary_next_action = _pick_next_action(
         has_recon,
         ranked_for_next,
         resume_summary,
@@ -1458,6 +1495,8 @@ def _build_domain_autopilot_state(
         ),
         surface_context_required=surface_context_required,
     )
+    intel_continuation = facts.get("intel_continuation") or {}
+    next_action = apply_intel_continuation(primary_next_action, intel_continuation)
     surface_review_candidates = (
         _build_recommended_targets(
             _candidate_items_for_next_action(ranked_for_next, next_action),
@@ -1465,7 +1504,11 @@ def _build_domain_autopilot_state(
             resume_targets,
             prefer_resume_targets=next_action == "continue_last_focus",
         )
-        if has_recon
+        if has_recon and next_action not in {
+            "run_intel",
+            "collect_web_intel",
+            "test_advisory_applicability",
+        }
         else []
     )
     guard_state = {
@@ -1492,6 +1535,12 @@ def _build_domain_autopilot_state(
         )
     else:
         next_tool_hint, enrichment_hints = "", []
+    if next_action in {"run_intel", "collect_web_intel", "test_advisory_applicability"}:
+        next_tool_hint = next_action
+        enrichment_hints = [{
+            "tool": next_action,
+            "reason": str(intel_continuation.get("reason") or "software intelligence continuation"),
+        }]
 
     recon_completed_no_live_hosts = bool(facts.get("recon_completed_no_live_hosts"))
     recent_guard_advisories = facts.get("recent_guard_advisories") or []
@@ -1534,6 +1583,8 @@ def _build_domain_autopilot_state(
         "pivot_hint": pivot_hint,
         "tech_stack": tech_stack,
         "next_action": next_action,
+        "primary_next_action": primary_next_action,
+        "intel_continuation": intel_continuation,
         "next_tool_hint": next_tool_hint,
         "enrichment_hints": enrichment_hints,
         "memory_action_queue": facts.get("memory_action_queue") or [],

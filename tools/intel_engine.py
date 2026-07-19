@@ -30,7 +30,13 @@ SHARED_TOOLS_DIR = os.environ.get(
 from learn import severity_order
 try:
     from tools.intel_artifact import INTEL_SCHEMA_VERSION, IntelArtifactError, write_intel_artifact
-    from tools.intel_sources import fetch_advisory_sources, fetch_epss, fetch_json, fetch_kev
+    from tools.intel_sources import (
+        build_component_queries,
+        fetch_advisory_sources,
+        fetch_epss,
+        fetch_json,
+        fetch_kev,
+    )
     from tools.intelligence_extractor import merge_managed_section
     from tools.target_paths import canonical_target_value, target_storage_key
     from tools.technology_inventory import (
@@ -39,9 +45,16 @@ try:
         split_component_label,
         TechnologyInventoryError,
     )
+    from tools.web_intel_artifact import build_web_intel_source, load_web_intel_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
     from intel_artifact import INTEL_SCHEMA_VERSION, IntelArtifactError, write_intel_artifact  # type: ignore
-    from intel_sources import fetch_advisory_sources, fetch_epss, fetch_json, fetch_kev  # type: ignore
+    from intel_sources import (  # type: ignore
+        build_component_queries,
+        fetch_advisory_sources,
+        fetch_epss,
+        fetch_json,
+        fetch_kev,
+    )
     from intelligence_extractor import merge_managed_section  # type: ignore
     from target_paths import canonical_target_value, target_storage_key
     from technology_inventory import (  # type: ignore
@@ -50,6 +63,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_or_build_inventory,
         split_component_label,
     )
+    from web_intel_artifact import build_web_intel_source, load_web_intel_projection  # type: ignore
 
 # ─── Color codes ─────────────────────────────────────────────────────────────
 RED    = "\033[91m"
@@ -445,10 +459,24 @@ def _merge_unique_strings(*groups: object) -> list[str]:
     return result
 
 
+def _merge_unique_values(*groups: object) -> list:
+    """合并 JSON scalar 列表并保留原始类型，供端口等结构化字段使用。"""
+    result = []
+    seen = set()
+    for group in groups:
+        for value in group if isinstance(group, list) else []:
+            key = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            if key not in seen:
+                seen.add(key)
+                result.append(value)
+    return result
+
+
 def _merge_component(left: dict, right: dict) -> dict:
     merged = {**left, **{key: value for key, value in right.items() if value not in (None, "", [], {})}}
-    merged["hosts"] = _merge_unique_strings(left.get("hosts"), right.get("hosts"))
-    merged["urls"] = _merge_unique_strings(left.get("urls"), right.get("urls"))
+    for field in ("hosts", "urls", "protocols", "cpes"):
+        merged[field] = _merge_unique_strings(left.get(field), right.get(field))
+    merged["ports"] = _merge_unique_values(left.get("ports"), right.get("ports"))
     return merged
 
 
@@ -914,6 +942,8 @@ def _merge_components(primary: list[dict], fallback: list[dict]) -> list[dict]:
             name,
             version,
             str(item.get("host") or "").strip(),
+            str(item.get("protocol") or "").strip(),
+            int(item.get("port") or 0),
         )
         if not key[0] or key in seen:
             continue
@@ -940,6 +970,85 @@ def _coverage_status(sources: list[dict]) -> str:
     return "error"
 
 
+def _web_intel_gap_projection(
+    components: list[dict],
+    official_sources: list[dict],
+    advisories: list[dict],
+    web_projection: dict,
+) -> dict:
+    """给 Autopilot 提供 bounded Web 补缺理由，不创建 executable action。"""
+    official_statuses = {
+        str(source.get("status") or "")
+        for source in official_sources
+        if source.get("source") in {"osv", "github_advisory", "nvd"}
+    }
+    advisory_components = {
+        (
+            str((item.get("component") or {}).get("name") or "").strip().lower(),
+            str((item.get("component") or {}).get("version") or "").strip(),
+        )
+        for item in advisories
+        if isinstance(item, dict) and isinstance(item.get("component"), dict)
+    }
+    covered_subjects = {
+        str(item or "").strip().lower()
+        for item in web_projection.get("covered_subjects") or []
+        if str(item or "").strip()
+    }
+    blocked_subjects = {
+        str(item or "").strip().lower()
+        for item in web_projection.get("blocked_subjects") or []
+        if str(item or "").strip()
+    }
+    recommended = []
+    blocked = []
+    for component in build_component_queries(components):
+        name = str(component.get("name") or "").strip().lower()
+        version = str(component.get("version") or "").strip()
+        if not name or (name, version) in advisory_components:
+            continue
+        if not (
+            version
+            or component.get("allow_nvd_without_version")
+            or component.get("nvd_cpe")
+        ):
+            continue
+        subject = f"{name}@{version}" if version else name
+        if subject in covered_subjects or name in covered_subjects:
+            continue
+        if subject in blocked_subjects or name in blocked_subjects:
+            blocked.append({
+                "subject": subject,
+                "component": name,
+                "version": version,
+                "reason": "an unexpired Web Intel query is blocked or failed",
+            })
+            continue
+        reasons = ["official sources returned no advisory for this observed asset"]
+        if official_statuses & {"partial", "error", "unavailable"}:
+            reasons.append("one or more official sources are degraded")
+        recommended.append({
+            "subject": subject,
+            "component": name,
+            "version": version,
+            "intent": "component_advisory",
+            "query": " ".join(
+                item for item in (component.get("display_name") or name, version, "vulnerability advisory")
+                if str(item or "").strip()
+            ),
+            "reasons": reasons,
+        })
+        if len(recommended) >= 8:
+            break
+    return {
+        "web_search_recommended": bool(recommended),
+        "recommended": recommended,
+        "blocked": blocked[:8],
+        "official_statuses": sorted(official_statuses),
+        "web_intel_status": str(web_projection.get("status") or "missing"),
+    }
+
+
 def build_target_intel(
     repo_root: str | Path,
     target: str,
@@ -962,8 +1071,19 @@ def build_target_intel(
         list(inventory.get("components") or []),
         _synthetic_components(techs, resolved_target),
     )
-    source_envelopes = fetch_advisory_sources(components, repo_root, fetcher=fetcher, now=now)
+    official_source_envelopes = fetch_advisory_sources(
+        components, repo_root, fetcher=fetcher, now=now
+    )
+    web_projection = load_web_intel_projection(repo_root, resolved_target, now=now)
+    web_source = build_web_intel_source(web_projection, components)
+    source_envelopes = [*official_source_envelopes, web_source]
     advisories = merge_advisory_items(source_envelopes)
+    intel_gaps = _web_intel_gap_projection(
+        components,
+        official_source_envelopes,
+        advisories,
+        web_projection,
+    )
     kev = fetch_kev(repo_root, fetcher=fetcher, now=now)
     cve_ids = [
         value
@@ -994,11 +1114,23 @@ def build_target_intel(
             "status": inventory.get("status", "unavailable"),
             "generated_at": inventory.get("generated_at", ""),
             "source": inventory.get("source", {}),
+            "sources": inventory.get("sources", []),
+            "fingerprint": inventory.get("fingerprint", ""),
             "components": components,
             "hosts": inventory.get("hosts", []),
             "stats": inventory.get("stats", {}),
         },
         "sources": [_source_status(source) for source in source_envelopes],
+        "web_intel": {
+            "status": web_projection.get("status", "missing"),
+            "path": web_projection.get("path", ""),
+            "fingerprint": web_projection.get("fingerprint", ""),
+            "covered_subjects": web_projection.get("covered_subjects", []),
+            "blocked_subjects": web_projection.get("blocked_subjects", []),
+            "stats": web_projection.get("stats", {}),
+            "error": web_projection.get("error", ""),
+        },
+        "intel_gaps": intel_gaps,
         "advisories": advisories,
         "critical": prioritized["critical"],
         "high": prioritized["high"],

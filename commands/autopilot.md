@@ -34,7 +34,7 @@ Super-pentester priority: business impact > workflow evidence > crown-jewel hypo
 Before unusual/non-default helpers, scan `docs/tool-index.md` once per session.
 Canonical runtime references: `skills/runtime-protocol.md`, `rules/red-lines.md`,
 `rules/coverage-gate.md`, `rules/hunting.md`, `rules/tool-ai-boundary.md`, `knowledge/index.md`,
-`tools/action_queue.py`, `tools/coverage_matrix.py`, `tools/evidence_ledger.py`, `tools/observation_inventory.py`, and `docs/evidence-runners.md`. These are navigation aids, not a state machine.
+`tools/action_queue.py`, `tools/coverage_matrix.py`, `tools/evidence_ledger.py`, `tools/observation_inventory.py`, `rules/web-intel.md`, and `docs/evidence-runners.md`. These are navigation aids, not a state machine.
 ## Four-Layer Automation
 Four-layer memory is the external brain, not the steering wheel:
 ```text
@@ -147,9 +147,9 @@ When a primary lane is blocked, do not checkpoint/finish immediately if adjacent
 ## Known Software Intelligence Lane
 This is one specialization of the Actionable Evidence Continuation Contract:
 when a concrete product/plugin/theme/library/version appears, it must not stop
-at "needs CVE lookup." Use `cd -- <repo_root_shell> && python3 tools/intel_engine.py --target <target_shell>`
-and `cd -- <repo_root_shell> && python3 tools/cve_hunter.py <target_shell>`. Start with the schema-v2 Intel artifact: OSV exact package/version, GitHub Advisory/NVD fallback, CISA KEV, batched EPSS, local Nuclei evidence, source status, and applicability. Also check NVD, GitHub Advisory, WPScan/vulnerability DB, vendor changelog, and reachability (for example,
-WordPress Tribe Events 6.16.3) before recording tested/dead-end/blocked/lead/signal/candidate.
+at "needs CVE lookup." This also covers identified network services. Run `cd -- <repo_root_shell> && python3 tools/intel_engine.py --target <target_shell>`
+and `cd -- <repo_root_shell> && python3 tools/cve_hunter.py <target_shell>`. For `next_action=run_intel`, run Intel then refresh state; for `collect_web_intel`, verify source bodies, record `tools/web_intel_artifact.py`, then rerun Intel; for `test_advisory_applicability`, add one durable action whose evidence names the advisory, component, and observed version, then test reachability/version evidence before resolving it. Start with schema-v2 OSV exact package/version, GitHub Advisory/NVD, CISA KEV, batched EPSS, local Nuclei, source status, and applicability; provider failure is blocked/handoff, never clean.
+Also check NVD, GitHub Advisory, WPScan/vulnerability DB, vendor changelog, and reachability (for example, WordPress Tribe Events 6.16.3) before recording tested/dead-end/blocked/lead/signal/candidate.
 ## Case-State First, Not Case-State Only
 If checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer
 it before generic coverage gaps because actor/session/object continuity is high

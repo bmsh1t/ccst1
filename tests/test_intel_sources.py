@@ -47,6 +47,45 @@ def test_unknown_versioned_component_gets_nvd_fallback_without_fake_package_mapp
     assert "osv_ecosystem" not in queries[0]
 
 
+def test_network_service_uses_cpe_and_unknown_port_is_not_queryable(tmp_path):
+    service = {
+        "name": "openssh",
+        "display_name": "OpenSSH",
+        "version": "9.1",
+        "host": "svc.target.test",
+        "kind": "network_service",
+        "port": 22,
+        "protocol": "tcp",
+        "cpe": "cpe:2.3:a:openbsd:openssh:9.1:*:*:*:*:*:*:*",
+    }
+    unknown = {
+        "name": "redis",
+        "display_name": "redis",
+        "version": "",
+        "host": "svc.target.test",
+        "kind": "unknown_service",
+        "port": 6379,
+        "protocol": "tcp",
+    }
+    queries = intel_sources.build_component_queries([service, unknown])
+    assert len(queries) == 1
+    assert queries[0]["name"] == "openssh"
+    assert queries[0]["ports"] == [22]
+    assert queries[0]["nvd_cpe"].startswith("cpe:2.3:a:openbsd:openssh:9.1")
+
+    urls = []
+    result = intel_sources.fetch_nvd_for_components(
+        [service, unknown],
+        tmp_path,
+        fetcher=lambda url, **_kwargs: urls.append(url) or {"vulnerabilities": []},
+        now=NOW,
+    )
+    assert result["status"] == "ok"
+    assert len(urls) == 1
+    assert "cpeName=" in urls[0]
+    assert "6379" not in urls[0]
+
+
 def test_osv_exact_version_is_affected_and_cached(tmp_path):
     calls = []
 

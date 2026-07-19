@@ -16,8 +16,9 @@
 | `tools/cloud_recon.sh` | Target brand likely owns buckets | S3/Azure/GCP discovery + CloudFlare origin reveal |
 | `tools/cve_hunter.py` | After httpx tech detection | Match detected stack against public CVE DBs |
 | `tools/cve_scan.sh` | Pre-engagement nuclei sweep | Fast nuclei pass scoped to known CVE templates |
-| `tools/intel_engine.py` | Concrete component/version needs current applicability review | `/intel` owner — OSV/GHSA/NVD + KEV/EPSS, local CVE-template signals, atomic `intel.json` |
-| `tools/technology_inventory.py` | Multiple consumers need reliable httpx tech/version data | Shared JSONL/text parser and atomic component inventory owner |
+| `tools/intel_engine.py` | Versioned component/service review | `/intel` owner — OSV/GHSA/NVD, KEV/EPSS, local signals, atomic `intel.json` |
+| `tools/technology_inventory.py` | Multiple consumers need reliable httpx/Nmap tech, version, service, or CPE data | Shared JSONL/text/Nmap parser and atomic component inventory owner |
+| `tools/web_intel_artifact.py` | Official-source gap | Verified Web Intel recorder: TTL, source groups, atomic index |
 | `tools/learn.py` | Legacy tech-stack research | Compatibility backend; not the schema-v2 Intel artifact owner |
 | `tools/scope_checker.py` | Verifying target classification | Deterministic host/URL classifier against active target set |
 | `tools/target_paths.py` | Computing per-target storage keys | Normalize target string for `recon/`/`findings/` directories |
@@ -156,7 +157,7 @@ identity, and cloud signals without re-enumerating everything.
 | Concrete signal plus unresolved next verification question | smallest safe lookup/replay/diff/enrichment/probe, then checkpoint state |
 | Need to remember user_a/user_b sessions, owned objects, private markers, or IDOR backlog | `target_case_state.py summary/next` |
 | `/orders/123`, `/invoices/42`, `/addresses/7`, `account_id`, `tenantId` appears in cached artifacts | `case_state_seed.py --target <target> --json`, then review suggested commands |
-| Concrete CMS/plugin/theme/library version observed | `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, `/scan-cves` |
+| Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, `/scan-cves` |
 | 401/403 on interesting endpoint | `bypass_403.sh` |
 | Multiple session files in `.private/` | `role_diff.py` |
 | Two account creds + numeric IDs | `role_diff.py`, then `h1_idor_scanner.py` |
@@ -175,7 +176,7 @@ identity, and cloud signals without re-enumerating everything.
 | Live URLs but no params | `param_discovery.sh` |
 | JS bundles cached | `js_reader.py` (then `js-reader` agent) |
 | Recon done, want broad active | `vuln_scanner.sh` |
-| Tech stack identified, need CVEs | `cve_hunter.py` |
+| Tech stack or identified network service needs CVE applicability | `/intel` → `intel_engine.py`; `cve_hunter.py` is compatibility-only |
 | Dashboard / SPA target | `browser_evidence.py` → `browser_surface.py` |
 | Switching back to old target | `resume.py` |
 | Want to remember a pattern | `remember.py` |

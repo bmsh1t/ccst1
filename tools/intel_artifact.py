@@ -148,6 +148,9 @@ def project_intel_review_items(items: list[dict], *, limit: int = REVIEW_ITEM_LI
                 "display_name": component.get("display_name", ""),
                 "version": component.get("version", ""),
                 "hosts": _bounded_list(component.get("hosts"), 5),
+                "ports": _bounded_list(component.get("ports"), 8),
+                "protocols": _bounded_list(component.get("protocols"), 8),
+                "cpes": _bounded_list(component.get("cpes"), 5),
             },
             "applicability": item.get("applicability", "unknown"),
             "severity": item.get("severity", "UNKNOWN"),
@@ -158,6 +161,7 @@ def project_intel_review_items(items: list[dict], *, limit: int = REVIEW_ITEM_LI
             "epss": item.get("epss"),
             "source_names": _bounded_list(item.get("source_names"), 8),
             "source_refs": source_refs[:8],
+            "already_tested": bool(item.get("already_tested")),
         })
     return projected
 

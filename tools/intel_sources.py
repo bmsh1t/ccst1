@@ -269,6 +269,9 @@ def build_component_queries(components: list[dict]) -> list[dict]:
     """把 host 级组件观测折叠为目标级 package/product query。"""
     grouped: dict[tuple[str, str], dict] = {}
     for component in components:
+        # 只有端口或通用 service 名称时先做版本/产品发现，不能按端口猜 CVE。
+        if component.get("kind") == "unknown_service":
+            continue
         name = str(component.get("name") or "").strip().lower()
         version = str(component.get("version") or "").strip()
         if not name:
@@ -282,9 +285,16 @@ def build_component_queries(components: list[dict]) -> list[dict]:
             "urls": [],
             **_mapping_for_name(name),
         })
+        kind = str(component.get("kind") or "").strip()
+        if kind == "network_service":
+            # Nmap 已给出产品身份时允许 product-level 回退；没有 product 的
+            # unknown_service 已在上方排除。
+            item["allow_nvd_without_version"] = True
         if version and not item.get("nvd_keyword"):
             # 未登记生态映射的新组件仍可做保守的 NVD product fallback；
             # 没有版本时不自动放宽，避免 CDN/header 标签制造大量关键词噪声。
+            item["nvd_keyword"] = item["display_name"]
+        elif kind == "network_service" and not item.get("nvd_keyword"):
             item["nvd_keyword"] = item["display_name"]
         host = str(component.get("host") or "").strip()
         url = str(component.get("url") or "").strip()
@@ -292,6 +302,20 @@ def build_component_queries(components: list[dict]) -> list[dict]:
             item["hosts"].append(host)
         if url and url not in item["urls"]:
             item["urls"].append(url)
+        try:
+            port = int(component.get("port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if port and port not in item.get("ports", []):
+            item.setdefault("ports", []).append(port)
+        protocol = str(component.get("protocol") or "").strip().lower()
+        if protocol and protocol not in item.get("protocols", []):
+            item.setdefault("protocols", []).append(protocol)
+        cpe = str(component.get("cpe") or "").strip()
+        if cpe and cpe not in item.get("cpes", []):
+            item.setdefault("cpes", []).append(cpe)
+        if cpe.startswith("cpe:2.3:"):
+            item["nvd_cpe"] = cpe
     return list(grouped.values())
 
 
@@ -328,6 +352,9 @@ def _component_ref(component: dict) -> dict:
         "ecosystem": component.get("osv_ecosystem") or component.get("github_ecosystem") or "",
         "hosts": list(component.get("hosts") or []),
         "urls": list(component.get("urls") or []),
+        "ports": list(component.get("ports") or []),
+        "protocols": list(component.get("protocols") or []),
+        "cpes": list(component.get("cpes") or []),
     }
 
 
@@ -683,7 +710,8 @@ def fetch_nvd_for_components(
     eligible_queries = []
     for item in build_component_queries(components):
         keyword = str(item.get("nvd_keyword") or "").strip()
-        if not keyword:
+        cpe_name = str(item.get("nvd_cpe") or "").strip()
+        if not keyword and not cpe_name:
             continue
         if not item.get("version") and not item.get("allow_nvd_without_version"):
             continue
@@ -701,8 +729,12 @@ def fetch_nvd_for_components(
     stale_count = 0
     fetched_at_values: list[str] = []
     for component in queries:
-        keyword = component["nvd_keyword"]
-        query = {"keywordSearch": keyword, "resultsPerPage": 20}
+        cpe_name = str(component.get("nvd_cpe") or "").strip()
+        query = (
+            {"cpeName": cpe_name, "resultsPerPage": 20}
+            if cpe_name
+            else {"keywordSearch": component["nvd_keyword"], "resultsPerPage": 20}
+        )
         url = f"{NVD_CVE_URL}?{urllib.parse.urlencode(query)}"
         try:
             result = cached_json_request(

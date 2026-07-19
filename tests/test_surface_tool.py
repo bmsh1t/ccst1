@@ -1411,13 +1411,21 @@ class TestSurfaceRanking:
             "aliases": ["CVE-2026-1000"],
             "source": "github_advisory",
             "source_names": ["github_advisory", "nvd"],
-            "component": {"name": "express", "version": "5.1.0"},
+            "component": {
+                "name": "express",
+                "version": "5.1.0",
+                "hosts": ["api.target.com"],
+                "ports": [443],
+                "protocols": ["tcp"],
+                "cpes": ["cpe:2.3:a:example:express:5.1.0:*:*:*:*:*:*:*"],
+            },
             "applicability": "affected",
             "severity": "HIGH",
             "summary": "OAuth redirect_uri validation bypass",
             "score_hint": 92,
             "kev": True,
             "epss": 0.88,
+            "already_tested": True,
             "source_refs": [],
         }
         (recon_dir / "intel.json").write_text(json.dumps({
@@ -1450,6 +1458,9 @@ class TestSurfaceRanking:
         }]
         assert context["intel_signals"][0]["kev"] is True
         assert context["intel"]["review_items"][0]["id"] == "CVE-2026-1000"
+        assert context["intel"]["review_items"][0]["component"]["ports"] == [443]
+        assert context["intel"]["review_items"][0]["component"]["protocols"] == ["tcp"]
+        assert context["intel"]["review_items"][0]["already_tested"] is True
         assert ranked["intel"]["signal_count"] == 1
         assert "Artifact status: ready; coverage: partial" in output
         assert "Degraded source: nvd [error]" in output

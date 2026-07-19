@@ -12,6 +12,8 @@ from tools.technology_inventory import (
     load_or_build_inventory_for_recon_dir,
     parse_httpx_json_line,
     parse_httpx_text_line,
+    parse_nmap_normal_text,
+    parse_nmap_xml_text,
     read_inventory,
 )
 
@@ -168,3 +170,105 @@ def test_invalid_inventory_schema_fails_fast(tmp_path):
     path.write_text('{"schema_version": 999, "components": [], "hosts": []}', encoding="utf-8")
     with pytest.raises(TechnologyInventoryError, match="unsupported"):
         read_inventory(path)
+
+
+def test_nmap_xml_preserves_product_version_cpe_and_unknown_service():
+    observations = parse_nmap_xml_text(
+        """<?xml version="1.0"?>
+<nmaprun><host><status state="up"/><address addr="192.0.2.10" addrtype="ipv4"/>
+<hostnames><hostname name="svc.target.test"/></hostnames><ports>
+<port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH" version="9.1"><cpe>cpe:2.3:a:openbsd:openssh:9.1:*:*:*:*:*:*:*</cpe></service></port>
+<port protocol="tcp" portid="6379"><state state="open"/><service name="redis"/></port>
+<port protocol="tcp" portid="25"><state state="closed"/><service name="smtp" product="Postfix"/></port>
+</ports></host></nmaprun>""",
+        evidence_ref="recon/target.test/ports/nmap_results.xml",
+    )
+
+    assert len(observations) == 1
+    components = observations[0]["components"]
+    assert components[0]["name"] == "openssh"
+    assert components[0]["version"] == "9.1"
+    assert components[0]["port"] == 22
+    assert components[0]["kind"] == "network_service"
+    assert components[0]["cpe"].startswith("cpe:2.3:a:openbsd:openssh:9.1")
+    assert components[1]["name"] == "redis"
+    assert components[1]["kind"] == "unknown_service"
+    assert components[1]["confidence"] == "low"
+
+
+def test_nmap_cpe_without_product_is_still_identified_service():
+    observations = parse_nmap_xml_text(
+        """<nmaprun><host><status state="up"/><address addr="192.0.2.10"/><ports>
+<port protocol="tcp" portid="22"><state state="open"/><service name="ssh"><cpe>cpe:2.3:a:openbsd:openssh:9.1:*:*:*:*:*:*:*</cpe></service></port>
+</ports></host></nmaprun>"""
+    )
+
+    component = observations[0]["components"][0]
+    assert component["name"] == "openssh"
+    assert component["kind"] == "network_service"
+    assert component["confidence"] == "high"
+
+
+def test_nmap_cpe_22_without_product_preserves_product_and_version():
+    observations = parse_nmap_xml_text(
+        """<nmaprun><host><status state="up"/><address addr="192.0.2.10"/><ports>
+<port protocol="tcp" portid="22"><state state="open"/><service name="ssh"><cpe>cpe:/a:openbsd:openssh:9.1</cpe></service></port>
+</ports></host></nmaprun>"""
+    )
+
+    component = observations[0]["components"][0]
+    assert component["name"] == "openssh"
+    assert component["version"] == "9.1"
+    assert component["kind"] == "network_service"
+
+
+def test_nmap_normal_parser_does_not_infer_product_from_open_port():
+    observations = parse_nmap_normal_text(
+        """Nmap scan report for mail.target.test (192.0.2.20)
+PORT    STATE SERVICE VERSION
+22/tcp  open  ssh     OpenSSH 8.9p1 Ubuntu
+3306/tcp open mysql
+""",
+        evidence_ref="nmap_results.txt",
+    )
+
+    components = observations[0]["components"]
+    assert components[0]["display_name"] == "OpenSSH"
+    assert components[0]["version"] == "8.9p1"
+    assert components[1]["display_name"] == "mysql"
+    assert components[1]["kind"] == "unknown_service"
+
+
+def test_inventory_merges_httpx_and_nmap_and_rebuilds_on_service_change(tmp_path):
+    recon = tmp_path / "recon" / "target.test"
+    live = recon / "live"
+    ports = recon / "ports"
+    live.mkdir(parents=True)
+    ports.mkdir(parents=True)
+    (live / "httpx_full.txt").write_text(
+        "https://target.test [200] [100] [Target] [WordPress:6.7.1]\n",
+        encoding="utf-8",
+    )
+    nmap = ports / "nmap_results.xml"
+    nmap.write_text(
+        """<nmaprun><host><status state="up"/><address addr="192.0.2.10"/><ports>
+<port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH" version="9.1"/></port>
+</ports></host></nmaprun>""",
+        encoding="utf-8",
+    )
+
+    first = load_or_build_inventory(tmp_path, "target.test")
+    assert [item["format"] for item in first["sources"]] == ["text", "nmap_xml"]
+    assert {(item["name"], item["version"]) for item in first["components"]} == {
+        ("wordpress", "6.7.1"),
+        ("openssh", "9.1"),
+    }
+    assert first["stats"]["service_count"] == 1
+    fingerprint = first["fingerprint"]
+
+    nmap.write_text(nmap.read_text(encoding="utf-8").replace("9.1", "9.2"), encoding="utf-8")
+    second = load_or_build_inventory(tmp_path, "target.test")
+    assert ("openssh", "9.2") in {
+        (item["name"], item["version"]) for item in second["components"]
+    }
+    assert second["fingerprint"] != fingerprint

@@ -29,7 +29,9 @@ workflow rather than the component advisory artifact.
 ## What This Does
 
 - Rebuilds `recon/<target>/live/technology_inventory.json` from httpx JSONL or
-  legacy text, preserving observed component versions and host/URL evidence.
+  legacy text plus Nmap service/version/CPE artifacts, preserving observed
+  component versions, ports, protocols, and host/URL evidence. A port without
+  product identity is retained as an inventory observation but is not queried as a CVE.
 - Queries exact package/version data from OSV where an ecosystem mapping exists,
   supplements it with GitHub Advisory, and uses NVD as a keyword fallback.
 - Enriches matching CVEs with CISA KEV and batched EPSS data. Existing canonical
@@ -39,6 +41,9 @@ workflow rather than the component advisory artifact.
 - Mines cached recon / JS / source artifacts for emails, internal hostnames, webhook URL patterns, secret prefixes, customer mentions, internal API paths, and employee handles.
 - Atomically publishes schema-v2 `recon/<target>/intel.json`, then `/surface`
   consumes it through the shared Intel decoder.
+- When official sources leave a bounded gap, `/autopilot` may collect verified
+  Web Intel through `tools/web_intel_artifact.py`; search snippets alone never
+  become advisory evidence. The recorder writes `evidence/<target>/web-intel/`.
 - Appends identity/source context to `evidence/<target>/intelligence.md` and
   identity hints under `evidence/<target>/identity_intel/`.
 
@@ -55,6 +60,25 @@ workflow rather than the component advisory artifact.
   results. If every advisory source is unavailable or fails, `intel.json` is still
   published with the source states and the CLI exits non-zero.
 - `--json` writes only valid JSON to stdout; progress and diagnostics use stderr.
+- `affected`, `likely`, `unknown`, and `not_affected` are applicability states,
+  not finding lifecycle states. A Web claim must match the observed component
+  name/version before it can be merged; a version mismatch stays `unknown`.
+
+## Autopilot Continuation
+
+When compact state returns `run_intel`, run `/intel` and refresh state. When it
+returns `collect_web_intel`, use the bounded `recommended` query, verify the
+source body, then record a provider-neutral JSON payload:
+
+```bash
+python3 tools/web_intel_artifact.py record --target TARGET --input WEB_INTEL.json
+python3 tools/intel_engine.py --target TARGET
+```
+
+When it returns `test_advisory_applicability`, add the advisory to the existing
+`action_queue`, perform the smallest safe reachability/version check, preserve
+raw evidence, and resolve the same action. A blocked provider or unavailable
+source is recorded as `blocked`/handoff; it is never treated as clean.
 
 ## How To Use The Output
 

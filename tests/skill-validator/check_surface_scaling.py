@@ -147,6 +147,7 @@ def _worker(mode: str, repo: Path, target: str, tail: str = "") -> dict:
         state = build_autopilot_bootstrap_state(str(repo), target)
         payload = {
             "next_action": state.get("next_action"),
+            "primary_next_action": state.get("primary_next_action"),
             "projection_status": (state.get("surface_projection") or {}).get("status"),
             "has_recon": bool(state.get("has_recon")),
         }
@@ -302,7 +303,11 @@ def _validate(
             failures.append("complete observation inventory lost indexed URL identities")
         if cold.get("observation_untouched") != cold.get("observation_total"):
             failures.append("surface refresh mutated untouched observation lifecycle")
-        if warm.get("projection_status") != "valid" or warm.get("next_action") != "hunt_p1":
+        if (
+            warm.get("projection_status") != "valid"
+            or warm.get("primary_next_action") != "hunt_p1"
+            or warm.get("next_action") != "run_intel"
+        ):
             failures.append("warm bootstrap did not consume exact projection")
         if warm.get("seconds", 999) > max_bootstrap_seconds:
             failures.append("warm bootstrap exceeded time budget")

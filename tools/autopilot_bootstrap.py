@@ -141,6 +141,72 @@ def _compact_candidate(item: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _compact_intel_continuation(value: object) -> dict[str, Any]:
+    """保留执行 Intel 下一步所需的最小事实，不注入完整 advisory。"""
+    continuation = value if isinstance(value, dict) else {}
+    recommended = []
+    for item in continuation.get("recommended") or []:
+        if not isinstance(item, dict):
+            continue
+        recommended.append({
+            "subject": str(item.get("subject") or ""),
+            "intent": str(item.get("intent") or ""),
+            "query": str(item.get("query") or ""),
+            "reasons": [
+                str(reason)
+                for reason in (item.get("reasons") or [])[:3]
+                if str(reason).strip()
+            ],
+        })
+        if len(recommended) >= 3:
+            break
+
+    raw_advisory = continuation.get("advisory")
+    advisory = raw_advisory if isinstance(raw_advisory, dict) else {}
+    raw_component = advisory.get("component")
+    component = raw_component if isinstance(raw_component, dict) else {}
+    source_refs = [
+        {
+            key: ref[key]
+            for key in ("source", "id", "url")
+            if ref.get(key) not in (None, "")
+        }
+        for ref in (advisory.get("source_refs") or [])[:3]
+        if isinstance(ref, dict)
+    ]
+    compact_advisory = {}
+    if advisory:
+        compact_advisory = {
+            "id": str(advisory.get("id") or ""),
+            "aliases": list(advisory.get("aliases") or [])[:5],
+            "component": {
+                "name": str(component.get("name") or ""),
+                "version": str(component.get("version") or ""),
+                "hosts": list(component.get("hosts") or [])[:3],
+                "ports": list(component.get("ports") or [])[:5],
+            },
+            "applicability": str(advisory.get("applicability") or "unknown"),
+            "severity": str(advisory.get("severity") or "UNKNOWN"),
+            "score_hint": advisory.get("score_hint", 0),
+            "source_refs": source_refs,
+        }
+    return {
+        "action": str(continuation.get("action") or "complete"),
+        "reason": str(continuation.get("reason") or ""),
+        "recommended": recommended,
+        "blocked": [
+            {
+                key: item[key]
+                for key in ("subject", "component", "version", "reason")
+                if item.get(key) not in (None, "")
+            }
+            for item in (continuation.get("blocked") or [])[:3]
+            if isinstance(item, dict)
+        ],
+        "advisory": compact_advisory,
+    }
+
+
 def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     """生成仅供 startup 路由使用的有界 state 视图。"""
     next_action = str(state.get("next_action") or "")
@@ -173,6 +239,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     surface_projection = state.get("surface_projection") or {}
     observation_inventory = state.get("observation_inventory") or {}
     batch = state.get("batch") or {}
+    intel_continuation = _compact_intel_continuation(state.get("intel_continuation"))
 
     compact_batch: dict[str, Any] = {}
     if batch:
@@ -230,6 +297,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             else {}
         ),
         "batch": compact_batch,
+        "intel_continuation": intel_continuation,
         "surface_projection": {
             key: surface_projection[key]
             for key in ("status", "reason", "path", "refresh_command")

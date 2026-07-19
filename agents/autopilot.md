@@ -144,7 +144,7 @@ For byte-exact work, use `tools/smuggling_executor.py --variant <variant>` to in
 
 ## Known Software Intelligence Lane
 
-If a concrete product/plugin/theme/library and version appears, do not leave "needs CVE lookup" as a final state. Query CVE/advisory sources, map affected/fixed ranges, confirm route/precondition reachability, and record the result as `tested`, `dead-end`, `blocked`, `lead`, `signal`, or `candidate`.
+If a concrete product/plugin/theme/library and version appears, do not leave "needs CVE lookup" as a final state. Identified network services follow the same lane. Run `/intel`/`tools/intel_engine.py`, then refresh state: `run_intel` must complete before generic hunting, `collect_web_intel` records verified bodies through `tools/web_intel_artifact.py`, and `test_advisory_applicability` adds one durable action before the smallest reachability/version test. Query CVE/advisory sources, map affected/fixed ranges, and record `tested`, `dead-end`, `blocked`, `lead`, `signal`, or `candidate`; provider failure is a blocked handoff, never clean.
 
 ## State Model
 

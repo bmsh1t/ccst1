@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import intel_engine
+from tools.web_intel_artifact import record_web_intel
 import intelligence_extractor
 from intel_engine import load_memory_context, prioritize_intel
 from tools.intel_sources import IntelSourceError
@@ -743,3 +744,142 @@ class TestIntelV2Pipeline:
         assert payload["advisories"] == []
         assert {source["status"] for source in payload["sources"][:3]} == {"error"}
         assert (tmp_path / "recon" / "target.com" / "intel.json").is_file()
+
+    def test_web_intel_fills_official_zero_result_without_creating_finding(self, tmp_path):
+        live = tmp_path / "recon" / "target.com" / "live"
+        live.mkdir(parents=True)
+        (live / "httpx_full.txt").write_text(
+            "https://target.com [200] [1234] [Target] [GiveWP:4.16.3]\n",
+            encoding="utf-8",
+        )
+
+        def empty_fetcher(url, **_kwargs):
+            if "services.nvd.nist.gov" in url:
+                return {"vulnerabilities": []}
+            if "cisa.gov" in url:
+                return {"vulnerabilities": []}
+            if "api.first.org" in url:
+                return {"data": []}
+            if "api.github.com" in url:
+                return []
+            if "api.osv.dev" in url:
+                return {"vulns": []}
+            raise AssertionError(url)
+
+        first = intel_engine.build_target_intel(
+            tmp_path,
+            "target.com",
+            techs=[],
+            memory={"tested_cves": [], "patterns": [], "tested_endpoints": []},
+            fetcher=empty_fetcher,
+            include_identity=False,
+        )
+        assert first["advisories"] == []
+        assert first["intel_gaps"]["web_search_recommended"] is True
+        assert first["intel_gaps"]["recommended"][0]["subject"] == "givewp@4.16.3"
+
+        record_web_intel(tmp_path, "target.com", {
+            "target": "target.com",
+            "subject": "givewp@4.16.3",
+            "intent": "component_advisory",
+            "query": "GiveWP 4.16.3 vulnerability advisory",
+            "provider": "claude-web-search",
+            "status": "ok",
+            "results": [{
+                "url": "https://vendor.test/givewp-advisory",
+                "source_tier": "A",
+                "independent_source_group": "vendor-givewp-2026",
+                "body_verified": True,
+                "claims": [{
+                    "identifiers": ["CVE-2026-63030"],
+                    "component": {"name": "givewp", "version": "4.16.3"},
+                    "applicability": "affected",
+                    "severity": "critical",
+                    "summary": "Vendor-confirmed issue",
+                }],
+            }],
+        })
+        second = intel_engine.build_target_intel(
+            tmp_path,
+            "target.com",
+            techs=[],
+            memory={"tested_cves": [], "patterns": [], "tested_endpoints": []},
+            fetcher=empty_fetcher,
+            include_identity=False,
+        )
+
+        assert [item["id"] for item in second["advisories"]] == ["CVE-2026-63030"]
+        assert second["advisories"][0]["applicability"] == "affected"
+        assert second["advisories"][0]["source_names"] == ["web_intel"]
+        assert second["intel_gaps"]["web_search_recommended"] is False
+        assert not (tmp_path / "findings" / "target.com" / "findings.json").exists()
+
+    def test_web_intel_gap_is_scoped_to_component_version(self):
+        gaps = intel_engine._web_intel_gap_projection(
+            [
+                {
+                    "name": "givewp",
+                    "display_name": "GiveWP",
+                    "version": "4.16.2",
+                    "kind": "web_component",
+                },
+                {
+                    "name": "givewp",
+                    "display_name": "GiveWP",
+                    "version": "4.16.3",
+                    "kind": "web_component",
+                },
+            ],
+            [{"source": "nvd", "status": "ok"}],
+            [{"component": {"name": "givewp", "version": "4.16.2"}}],
+            {"covered_subjects": [], "blocked_subjects": [], "status": "missing"},
+        )
+
+        assert [item["subject"] for item in gaps["recommended"]] == ["givewp@4.16.3"]
+
+    def test_blocked_web_intel_is_preserved_as_gap_not_clean_result(self, tmp_path):
+        live = tmp_path / "recon" / "target.com" / "live"
+        live.mkdir(parents=True)
+        (live / "httpx_full.txt").write_text(
+            "https://target.com [200] [1234] [Target] [GiveWP:4.16.3]\n",
+            encoding="utf-8",
+        )
+        record_web_intel(tmp_path, "target.com", {
+            "target": "target.com",
+            "subject": "givewp@4.16.3",
+            "intent": "component_advisory",
+            "query": "GiveWP 4.16.3 vulnerability advisory",
+            "provider": "unavailable-provider",
+            "status": "blocked",
+            "error": "provider unavailable",
+            "results": [],
+        })
+
+        def empty_fetcher(url, **_kwargs):
+            if "services.nvd.nist.gov" in url:
+                return {"vulnerabilities": []}
+            if "cisa.gov" in url:
+                return {"vulnerabilities": []}
+            if "api.first.org" in url:
+                return {"data": []}
+            if "api.github.com" in url:
+                return []
+            if "api.osv.dev" in url:
+                return {"vulns": []}
+            raise AssertionError(url)
+
+        payload = intel_engine.build_target_intel(
+            tmp_path,
+            "target.com",
+            techs=[],
+            memory={"tested_cves": [], "patterns": [], "tested_endpoints": []},
+            fetcher=empty_fetcher,
+            include_identity=False,
+        )
+
+        web_source = next(item for item in payload["sources"] if item["source"] == "web_intel")
+        assert web_source["status"] == "unavailable"
+        assert payload["web_intel"]["status"] == "blocked"
+        assert payload["intel_gaps"]["web_search_recommended"] is False
+        assert payload["intel_gaps"]["blocked"][0]["subject"] == "givewp@4.16.3"
+        assert payload["advisories"] == []

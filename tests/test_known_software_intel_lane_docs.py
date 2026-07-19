@@ -32,6 +32,10 @@ def test_autopilot_requires_known_software_intelligence_lane():
     assert "NVD, GitHub Advisory, WPScan/vulnerability DB" in text
     assert "vendor changelog" in text
     assert "WordPress Tribe Events 6.16.3" in text
+    assert "identified network services" in text
+    assert "collect_web_intel" in text
+    assert "test_advisory_applicability" in text
+    assert "tools/web_intel_artifact.py" in text
 
 
 def test_autopilot_agent_inherits_known_software_lane():
@@ -50,6 +54,9 @@ def test_autopilot_agent_inherits_known_software_lane():
     assert "concrete product/plugin/theme/library and version" in flat
     assert "Query CVE/advisory sources" in text
     assert 'do not leave "needs CVE lookup" as a final state.' in text
+    assert "identified network services follow the same lane" in text.lower()
+    assert "collect_web_intel" in text
+    assert "test_advisory_applicability" in text
 
 
 def test_coverage_gate_blocks_unresolved_component_versions():

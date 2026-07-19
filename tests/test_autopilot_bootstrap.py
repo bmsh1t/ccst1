@@ -9,6 +9,7 @@ from tools import autopilot_bootstrap
 from tools import autopilot_state as autopilot_state_module
 from tools.runtime_state import update_runtime_state
 from tools.surface_projection import build_surface_input_manifest, write_surface_projection
+from tools.technology_inventory import load_or_build_inventory
 
 
 def _capabilities(_repo_root):
@@ -333,6 +334,63 @@ def test_bootstrap_projects_only_bounded_candidate_rubric():
     assert "do-not-project" not in encoded
 
 
+def test_bootstrap_projects_bounded_intel_continuation_details():
+    state = _state("/tmp/repo", "example.test")
+    state["next_action"] = "collect_web_intel"
+    state["intel_continuation"] = {
+        "action": "collect_web_intel",
+        "reason": "official sources returned no advisory",
+        "recommended": [
+            {
+                "subject": f"component-{index}@1.0",
+                "intent": "component_advisory",
+                "query": f"component-{index} 1.0 vulnerability advisory",
+                "reasons": ["zero result", "degraded source", "recent component", "drop"],
+                "raw_results": ["do-not-project"] * 20,
+            }
+            for index in range(8)
+        ],
+        "blocked": [{
+            "subject": "blocked@1.0",
+            "component": "blocked",
+            "version": "1.0",
+            "reason": "provider unavailable",
+            "raw": "do-not-project",
+        }],
+        "advisory": {
+            "id": "CVE-2026-63030",
+            "aliases": ["CVE-2026-63030", "GHSA-AAAA-BBBB-CCCC"],
+            "component": {
+                "name": "givewp",
+                "version": "4.16.3",
+                "hosts": ["example.test"],
+                "ports": [443],
+                "cpes": ["do-not-project"],
+            },
+            "applicability": "affected",
+            "severity": "CRITICAL",
+            "score_hint": 100,
+            "source_refs": [{
+                "source": "web_intel",
+                "url": "https://vendor.test/advisory",
+                "body": "do-not-project",
+            }],
+            "summary": "do-not-project",
+        },
+    }
+
+    compact = autopilot_bootstrap.compact_autopilot_state(state)
+
+    continuation = compact["intel_continuation"]
+    assert continuation["action"] == "collect_web_intel"
+    assert len(continuation["recommended"]) == 3
+    assert len(continuation["recommended"][0]["reasons"]) == 3
+    assert continuation["blocked"][0]["subject"] == "blocked@1.0"
+    assert continuation["advisory"]["id"] == "CVE-2026-63030"
+    encoded = json.dumps(continuation)
+    assert "do-not-project" not in encoded
+
+
 def test_bootstrap_projects_recovery_and_draft_completion_handoffs():
     state = _state("/tmp/repo", "example.test")
     state["next_action"] = "prepare_surface_context"
@@ -546,6 +604,37 @@ def test_exact_empty_projection_completes_fresh_recon_surface_handoff(tmp_path):
     assert state["fresh_recon_ready"] is True
     assert state["surface_projection"]["status"] == "valid"
     assert state["next_action"] == "handoff"
+
+
+def test_compact_state_routes_persisted_software_inventory_to_intel(tmp_path):
+    _write_fast_recon(tmp_path)
+    load_or_build_inventory(tmp_path, "target.com")
+    ranked = {
+        "available": True,
+        "target": "target.com",
+        "p1": [{
+            "url": "https://api.target.com/orders?id=1",
+            "host": "api.target.com",
+            "score": 10,
+            "suggested": "review object access",
+        }],
+        "p2": [],
+        "review_pool": [],
+        "stats": {"total_candidates": 1, "p1": 1, "p2": 0, "review_pool": 0},
+    }
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", ranked, manifest=manifest)
+
+    state = autopilot_state_module.build_autopilot_bootstrap_state(
+        str(tmp_path),
+        "target.com",
+        memory_dir=str(tmp_path / "hunt-memory"),
+    )
+
+    assert state["primary_next_action"] == "hunt_p1"
+    assert state["next_action"] == "run_intel"
+    assert state["next_tool_hint"] == "run_intel"
+    assert "Intel v2 has not processed" in state["intel_continuation"]["reason"]
 
 
 def test_priority_bootstrap_does_not_open_large_artifacts_or_write_target_state(tmp_path, monkeypatch):

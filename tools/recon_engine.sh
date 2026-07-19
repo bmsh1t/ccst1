@@ -1482,13 +1482,15 @@ elif command -v nmap &>/dev/null; then
         log_step "Running nmap (top 1000 ports) on $TARGET..."
         nmap -sV --top-ports 1000 -T4 --open "$TARGET" \
             -oN "$RECON_DIR/ports/nmap_results.txt" \
-            -oG "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null || true
+            -oG "$RECON_DIR/ports/nmap_greppable.txt" \
+            -oX "$RECON_DIR/ports/nmap_results.xml" 2>/dev/null || true
         log_done "Nmap scan complete"
     elif [ -s "$DISCOVERY_HOSTS_FILE" ]; then
         log_step "Running nmap (top 1000 ports) on discovery host list..."
         nmap -sV --top-ports 1000 -T4 --open -iL "$DISCOVERY_HOSTS_FILE" \
             -oN "$RECON_DIR/ports/nmap_results.txt" \
-            -oG "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null || true
+            -oG "$RECON_DIR/ports/nmap_greppable.txt" \
+            -oX "$RECON_DIR/ports/nmap_results.xml" 2>/dev/null || true
         log_done "Nmap scan complete"
     else
         log_warn "Discovery host list is empty — skipping port scan"
