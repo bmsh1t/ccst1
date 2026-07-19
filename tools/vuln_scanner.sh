@@ -264,7 +264,11 @@ PY
 
 mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,metasploit,manual_review,.tmp}
 # summary 只代表本轮正常完成；在任何可能中止的扫描工作前清除上一轮摘要。
-rm -f "$FINDINGS_DIR/summary.txt" "$FINDINGS_DIR/summary.json"
+rm -f \
+    "$FINDINGS_DIR/summary.txt" \
+    "$FINDINGS_DIR/summary.json" \
+    "$FINDINGS_DIR/.summary.txt.tmp" \
+    "$FINDINGS_DIR/.summary.json.tmp"
 : > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
 : > "$FINDINGS_DIR/manual_review/open_200_api.txt"
 : > "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
@@ -1635,6 +1639,8 @@ log_info "Consolidating findings..."
 TOTAL_FINDINGS=0
 FINDING_SUMMARY="$FINDINGS_DIR/summary.txt"
 FINDING_SUMMARY_JSON="$FINDINGS_DIR/summary.json"
+FINDING_SUMMARY_TMP="$FINDINGS_DIR/.summary.txt.tmp"
+FINDING_SUMMARY_JSON_TMP="$FINDINGS_DIR/.summary.json.tmp"
 FINDING_INDEX_JSON="$FINDINGS_DIR/findings.json"
 
 {
@@ -1673,12 +1679,17 @@ FINDING_INDEX_JSON="$FINDINGS_DIR/findings.json"
     for file in "$FINDINGS_DIR"/*/manual*.txt "$FINDINGS_DIR/manual_review/"*.txt; do
         [ -f "$file" ] && [ -s "$file" ] && echo "    - $file ($(wc -l < "$file" | tr -d ' ') items)"
     done
-} > "$FINDING_SUMMARY"
+} > "$FINDING_SUMMARY_TMP"
 
-if write_summary_json "$FINDING_SUMMARY_JSON"; then
+if write_summary_json "$FINDING_SUMMARY_JSON_TMP"; then
+    mv "$FINDING_SUMMARY_TMP" "$FINDING_SUMMARY"
+    # JSON 是 completion marker，必须最后发布。
+    mv "$FINDING_SUMMARY_JSON_TMP" "$FINDING_SUMMARY_JSON"
     log_done "Structured summary: $FINDING_SUMMARY_JSON"
 else
-    log_warn "Unable to write structured summary JSON"
+    rm -f "$FINDING_SUMMARY_TMP" "$FINDING_SUMMARY_JSON_TMP"
+    log_err "Unable to write structured summary JSON; scan remains incomplete"
+    exit 1
 fi
 
 if python3 "$BASE_DIR/tools/finding_index.py" "$FINDINGS_DIR" --target "$TARGET" --output "$FINDING_INDEX_JSON" >/dev/null; then
