@@ -189,6 +189,48 @@ def test_high_value_advisory_triggers_applicability_and_final_queue_closes_it(tm
     assert inspect_intel_continuation(tmp_path, "target.test", now=NOW)["action"] == "complete"
 
 
+def test_high_value_advisory_preempts_web_intel_gap(tmp_path):
+    _prepare_inventory(tmp_path)
+    _write_intel(tmp_path, _intel(
+        advisories=[_advisory()],
+        gaps={
+            "web_search_recommended": True,
+            "recommended": [{
+                "subject": "other-plugin@1.0",
+                "component": "other-plugin",
+                "version": "1.0",
+                "query": "other-plugin 1.0 vulnerability advisory",
+            }],
+            "blocked": [],
+        },
+    ))
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "test_advisory_applicability"
+    assert state["advisory"]["id"] == "CVE-2026-63030"
+
+
+def test_critical_advisory_precedes_higher_score_high_advisory(tmp_path):
+    _prepare_inventory(tmp_path)
+    critical = _advisory()
+    critical["id"] = "CVE-2026-11111"
+    critical["aliases"] = ["CVE-2026-11111"]
+    critical["severity"] = "CRITICAL"
+    critical["score_hint"] = 50
+    high = _advisory()
+    high["id"] = "CVE-2026-22222"
+    high["aliases"] = ["CVE-2026-22222"]
+    high["severity"] = "HIGH"
+    high["score_hint"] = 100
+    _write_intel(tmp_path, _intel(advisories=[high, critical]))
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "test_advisory_applicability"
+    assert state["advisory"]["id"] == "CVE-2026-11111"
+
+
 def test_final_disposition_for_old_component_version_does_not_close_new_version(tmp_path):
     _prepare_inventory(tmp_path)
     _write_intel(tmp_path, _intel(advisories=[_advisory()]))

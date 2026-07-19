@@ -279,6 +279,61 @@ def test_next_blocks_when_peer_session_missing(tmp_path):
     assert next_item["command"] == ""
 
 
+def test_next_prefers_ready_item_over_higher_priority_missing_evidence(tmp_path):
+    target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="marker-replay",
+        priority="critical",
+    )
+    ready = target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="marker-replay",
+        endpoint=f"{TARGET}/api/ready",
+        priority="high",
+    )
+
+    next_item = target_case_state.next_action(tmp_path, TARGET)
+
+    assert next_item["backlog_id"] == ready["id"]
+    assert next_item["ready"] is True
+    assert next_item["next_action"] == "run_validation_runner"
+
+
+def test_candidate_routes_to_enrichment_without_replay(tmp_path):
+    candidate = target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="marker-replay",
+        endpoint=f"{TARGET}/api/candidate",
+        priority="critical",
+        status="candidate",
+    )
+
+    next_item = target_case_state.next_action(tmp_path, TARGET)
+
+    assert next_item["backlog_id"] == candidate["id"]
+    assert next_item["ready"] is False
+    assert next_item["next_action"] == "enrich_case_state"
+    assert next_item["command"] == ""
+    assert next_item["redacted_command"] == ""
+    assert "evidence enrichment" in next_item["why_now"]
+    assert "set backlog" in next_item["write_back"]
+    assert "to running before replay" in next_item["write_back"]
+
+    target_case_state.complete_backlog(
+        tmp_path,
+        TARGET,
+        backlog_id=candidate["id"],
+        result="running",
+        notes="new evidence was added",
+    )
+    resumed = target_case_state.next_action(tmp_path, TARGET)
+    assert resumed["ready"] is True
+    assert resumed["next_action"] == "run_validation_runner"
+
+
 def test_next_allows_replay_without_private_marker_as_optional_gap(tmp_path):
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
     target_case_state.add_actor(tmp_path, TARGET, actor="user_b", role="user")

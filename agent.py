@@ -2511,6 +2511,7 @@ class ToolDispatcher:
             techs=techs,
             memory=memory,
             program=program,
+            include_identity=False,
         )
         return format_output(domain, intel)
 

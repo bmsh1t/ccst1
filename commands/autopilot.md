@@ -43,7 +43,7 @@ target memory / target case state -> skill routing -> knowledge cards -> checks
 Every invocation is state-first: bootstrap `ctf_mode` and compact `state`, plus advisory `capabilities`, are the
 only initial inputs. Branch only after that state read; after a long phase, refresh with:
 ```bash
-cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
 # next_action=run_recon: launch once; append --quick only when requested
 cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only [--quick]
 # usable cache: inspect surface/context before a later quick scan
@@ -57,9 +57,9 @@ duplicate-launch guard. `review_validation_candidate` reviews raw runner evidenc
 `collect_candidate_evidence` consumes `state.structured_next.rubric.next_actions`, or `state.memory_candidate_next` only after its locatable `evidence_ref` is reviewed; otherwise collect raw request/response and never promote prose alone. If `state.root_claim_next` exists, it is an unvalidated root JSON claim: first run `/checkpoint` so `finding_index` reconciles it into the canonical candidate and durable queue, refresh state, then pass that canonical `structured_next.id` as `validation_runner.py ... --finding-id <id>` when a matching bounded runner captures raw proof. Preserve named `missing_labels`, then rerun state. Do not call `/validate` until state returns `validate_finding`. `complete_report_draft` fills its linked draft placeholders without reopening validated evidence.
 If `arguments.seed_url` is non-null, inspect `<seed_url_shell>` through browser/source/workflow evidence before historical focus or score hints, even for existing canonical target state.
 For a readable primary-domain list, the list context is recon/handoff only:
-1. Run `autopilot_state.py --target targets.txt` before batch recon.
+1. Run `autopilot_state.py --target targets.txt --bounded` before batch recon.
 2. Run `hunt.py --target targets.txt --recon-only` only when state says `run_batch_recon`; append `--quick` only when requested, and never scan the list/index. `invalid_batch_target` / `batch_failed` stop without automatic retry.
-3. Read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed domain, then rerun `autopilot_state.py --target <domain>`.
+3. Read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed domain, then rerun `autopilot_state.py --target <domain> --bounded`.
 4. Only the selected domain may enter surface/context/browser/scan/hunt; do not aggregate active work across the batch.
 For existing single targets, run a closed-state sanity check before executing a historical `continue_last_focus`, resume target, or `/surface` score hint:
 ```bash

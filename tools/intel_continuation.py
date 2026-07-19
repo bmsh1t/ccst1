@@ -36,6 +36,8 @@ GENERIC_ACTIONS = {
     "handoff",
 }
 INTEL_REFRESH_TTL_SECONDS = DEFAULT_COMPONENT_TTL_SECONDS
+_SEVERITY_RANK = {"UNKNOWN": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+_APPLICABILITY_RANK = {"unknown": 0, "likely": 1, "affected": 2}
 
 
 def _mtime_ns(path: Path) -> int:
@@ -269,14 +271,6 @@ def inspect_intel_continuation(
     gaps = intel.get("intel_gaps") if isinstance(intel.get("intel_gaps"), dict) else {}
     recommended = [item for item in gaps.get("recommended") or [] if isinstance(item, dict)]
     blocked = [item for item in gaps.get("blocked") or [] if isinstance(item, dict)]
-    if gaps.get("web_search_recommended") and recommended:
-        return {
-            **base,
-            "action": "collect_web_intel",
-            "reason": "official advisory sources left a bounded software intelligence gap",
-            "recommended": recommended[:8],
-        }
-
     final_dispositions = _final_queue_dispositions(repo, resolved_target)
     candidates = [
         item for item in intel.get("advisories") or []
@@ -286,6 +280,8 @@ def inspect_intel_continuation(
     ]
     candidates.sort(
         key=lambda item: (
+            -_SEVERITY_RANK.get(str(item.get("severity") or "UNKNOWN").upper(), 0),
+            -_APPLICABILITY_RANK.get(str(item.get("applicability") or "unknown").lower(), 0),
             -_score_hint(item),
             str(item.get("id") or ""),
         )
@@ -311,6 +307,14 @@ def inspect_intel_continuation(
                 "score_hint": selected.get("score_hint", 0),
                 "source_refs": list(selected.get("source_refs") or [])[:5],
             },
+        }
+    # Web Intel 只补充官方源没有覆盖的内容，不能抢占已有高危/受影响 advisory。
+    if gaps.get("web_search_recommended") and recommended:
+        return {
+            **base,
+            "action": "collect_web_intel",
+            "reason": "official advisory sources left a bounded software intelligence gap",
+            "recommended": recommended[:8],
         }
     if blocked:
         return {

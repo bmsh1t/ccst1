@@ -272,3 +272,42 @@ def test_inventory_merges_httpx_and_nmap_and_rebuilds_on_service_change(tmp_path
         (item["name"], item["version"]) for item in second["components"]
     }
     assert second["fingerprint"] != fingerprint
+
+
+def test_invalid_nmap_xml_falls_back_to_normal_output(tmp_path):
+    recon = tmp_path / "recon" / "target.test"
+    ports = recon / "ports"
+    ports.mkdir(parents=True)
+    (ports / "nmap_results.xml").write_text("<broken", encoding="utf-8")
+    (ports / "nmap_results.txt").write_text(
+        """Nmap scan report for svc.target.test (192.0.2.20)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.2
+""",
+        encoding="utf-8",
+    )
+
+    inventory = load_or_build_inventory(tmp_path, "target.test")
+
+    assert [item["format"] for item in inventory["sources"]] == ["nmap_normal"]
+    assert [(item["name"], item["version"]) for item in inventory["components"]] == [
+        ("openssh", "9.2")
+    ]
+
+
+def test_empty_nmap_xml_and_normal_fall_back_to_greppable(tmp_path):
+    recon = tmp_path / "recon" / "target.test"
+    ports = recon / "ports"
+    ports.mkdir(parents=True)
+    (ports / "nmap_results.xml").write_text("<nmaprun></nmaprun>\n", encoding="utf-8")
+    (ports / "nmap_results.txt").write_text("Nmap done.\n", encoding="utf-8")
+    (ports / "nmap_greppable.txt").write_text(
+        "Host: 192.0.2.30 (db.target.test)\tPorts: 5432/open/tcp//postgresql//PostgreSQL 16.1/\n",
+        encoding="utf-8",
+    )
+
+    inventory = load_or_build_inventory(tmp_path, "target.test")
+
+    assert [item["format"] for item in inventory["sources"]] == ["nmap_greppable"]
+    assert inventory["components"][0]["name"] == "postgresql"
+    assert inventory["components"][0]["version"] == "16.1"

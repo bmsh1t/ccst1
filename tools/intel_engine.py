@@ -1294,6 +1294,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--memory-dir", default="", help="Path to hunt-memory directory")
     parser.add_argument("--repo-root", default=REPO_ROOT, help="Repository root for target artifacts")
     parser.add_argument("--json", action="store_true", help="Output as JSON instead of formatted text")
+    parser.add_argument(
+        "--with-identity",
+        action="store_true",
+        help="Run optional email/leak identity enrichment after advisory processing",
+    )
     return parser
 
 
@@ -1350,6 +1355,7 @@ def main(argv: list[str] | None = None) -> int:
             techs=techs,
             memory=memory,
             program=args.program,
+            include_identity=args.with_identity,
         )
     except (OSError, ValueError, TechnologyInventoryError, IntelArtifactError) as exc:
         return _emit_cli_error(

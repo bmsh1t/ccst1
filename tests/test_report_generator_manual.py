@@ -170,3 +170,30 @@ def test_structured_report_generation_rejects_runner_summary_without_report_gate
     }
 
     assert report_generator._is_reportable_structured_finding(finding) is False
+
+
+def test_legacy_incremental_reports_use_unique_ids_without_overwrite(monkeypatch, tmp_path):
+    findings_dir = tmp_path / "findings" / "target.test"
+    sqli_dir = findings_dir / "sqli"
+    sqli_dir.mkdir(parents=True)
+    (sqli_dir / "nuclei.txt").write_text(
+        "[sqli] [http] [high] https://target.test/search?q=test\n",
+        encoding="utf-8",
+    )
+    reports_root = tmp_path / "reports"
+    report_dir = reports_root / "target.test"
+    report_dir.mkdir(parents=True)
+    original = report_dir / "sqli_001.md"
+    original.write_text("historical report\n", encoding="utf-8")
+
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(reports_root))
+    monkeypatch.setattr(
+        report_generator,
+        "load_finding_index",
+        lambda _path: {"target": "target.test", "findings": []},
+    )
+
+    report_generator.process_findings_dir(str(findings_dir))
+
+    assert original.read_text(encoding="utf-8") == "historical report\n"
+    assert (report_dir / "sqli_002.md").is_file()

@@ -1657,8 +1657,16 @@ def build_autopilot_bootstrap_state(
     )
 
 
-def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = None) -> dict:
-    """Build a practical autopilot bootstrap state for a target."""
+def build_autopilot_state(
+    repo_root: str,
+    target: str,
+    memory_dir: str | None = None,
+    *,
+    bounded: bool = False,
+) -> dict:
+    """Build an autopilot state; bounded mode never rebuilds the full surface."""
+    if bounded:
+        return build_autopilot_bootstrap_state(repo_root, target, memory_dir=memory_dir)
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
     resolved_target = canonical_target_value(target)
     if classify_target(resolved_target)["kind"] == "list":
@@ -2165,10 +2173,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build combined autopilot state for a target")
     parser.add_argument("--target", required=True, help="Target domain")
     parser.add_argument("--memory-dir", default="", help="Optional hunt-memory directory")
+    parser.add_argument(
+        "--bounded",
+        action="store_true",
+        help="Consume only compact projections and bounded control-plane state",
+    )
     parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args()
 
-    state = build_autopilot_state(BASE_DIR, args.target, memory_dir=args.memory_dir or None)
+    state = build_autopilot_state(
+        BASE_DIR,
+        args.target,
+        memory_dir=args.memory_dir or None,
+        bounded=args.bounded,
+    )
     if args.json:
         print(json.dumps(state, indent=2))
         return

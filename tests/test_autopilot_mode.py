@@ -1246,6 +1246,7 @@ def test_autopilot_command_md_bootstraps_state_first_then_branches():
     assert "python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only" in text
     assert "Branch only after that state read" in text
     assert "python3 tools/autopilot_state.py --target <target_shell>" in text
+    assert "python3 tools/autopilot_state.py --target <target_shell> --bounded" in text
     assert "python3 tools/context_pack.py --target <target_shell>" in text
     assert "bootstrap `ctf_mode` and compact `state`" in text
     assert text.index("python3 tools/autopilot_state.py --target <target_shell>") < text.index("python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only")

@@ -576,6 +576,24 @@ def test_compact_state_requires_projection_then_consumes_exact_hit(tmp_path):
     assert hit["surface_review_candidates"][0]["url"].endswith("orders?id=1")
 
 
+def test_bounded_full_state_entry_never_falls_back_to_surface_ranking(tmp_path, monkeypatch):
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("bounded state must not load or rank the full surface")
+
+    monkeypatch.setattr(autopilot_state_module, "load_surface_context", unexpected)
+    monkeypatch.setattr(autopilot_state_module, "rank_surface", unexpected)
+
+    state = autopilot_state_module.build_autopilot_state(
+        str(tmp_path),
+        "target.com",
+        memory_dir=str(tmp_path / "hunt-memory"),
+        bounded=True,
+    )
+
+    assert state["target"] == "target.com"
+    assert state["surface_projection"]["status"] == "missing"
+
+
 def test_exact_empty_projection_completes_fresh_recon_surface_handoff(tmp_path):
     _write_fast_recon(tmp_path)
     update_runtime_state(

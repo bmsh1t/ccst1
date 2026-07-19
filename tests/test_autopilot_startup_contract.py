@@ -57,14 +57,14 @@ def test_slash_command_limits_batch_to_recon_and_single_domain_handoff():
 
     assert "the list context is recon/handoff only" in text
     assert "never scan the list/index" in text
-    assert "select one completed domain, then rerun `autopilot_state.py --target <domain>`" in text
+    assert "select one completed domain, then rerun `autopilot_state.py --target <domain> --bounded`" in text
     assert "Only the selected domain may enter surface/context/browser/scan/hunt" in text
 
 
 def test_optional_agent_uses_the_same_state_first_contract():
     text = " ".join(_read("agents/autopilot.md").split())
 
-    assert "run `python3 tools/autopilot_state.py --target <target>` exactly once before choosing fresh, existing, or batch behavior" in text
+    assert "run `python3 tools/autopilot_state.py --target <target> --bounded` exactly once before choosing fresh, existing, or batch behavior" in text
     assert "Never scan or actively hunt the batch index" in text
     assert "Runtime phase locks are the final duplicate-launch guard" in text
 

@@ -369,10 +369,50 @@ class TestIdentityIntel:
 
 class TestStandaloneTechResolution:
 
+    @pytest.mark.parametrize(
+        ("extra_args", "expected"),
+        [([], False), (["--with-identity"], True)],
+    )
+    def test_main_makes_identity_intel_explicit(self, monkeypatch, capsys, extra_args, expected):
+        captured = {}
+
+        def fake_build(
+            repo_root,
+            target,
+            *,
+            techs,
+            memory,
+            program="",
+            include_identity=False,
+        ):
+            captured["include_identity"] = include_identity
+            return {
+                "schema_version": 2,
+                "target": target,
+                "coverage_status": "ready",
+                "inventory": {"components": []},
+                "sources": [],
+                "advisories": [],
+                "critical": [],
+                "high": [],
+                "info": [],
+                "identity_intel": {},
+                "total": 0,
+            }
+
+        monkeypatch.setattr(intel_engine, "build_target_intel", fake_build)
+        monkeypatch.setattr(intel_engine, "format_output", lambda *_args: "ok")
+
+        result = intel_engine.main(["--target", "target.com", "--tech", "flask", *extra_args])
+
+        assert result == 0
+        assert captured["include_identity"] is expected
+        capsys.readouterr()
+
     def test_main_uses_memory_tech_when_cli_missing(self, memory_dir, monkeypatch, capsys):
         captured = {}
 
-        def fake_build(repo_root, target, *, techs, memory, program=""):
+        def fake_build(repo_root, target, *, techs, memory, program="", include_identity=False):
             captured["repo_root"] = repo_root
             captured["target"] = target
             captured["techs"] = list(techs)
@@ -415,7 +455,7 @@ class TestStandaloneTechResolution:
             "resolve_tech_stack",
             lambda target, techs, memory, **_kwargs: ["flask"],
         )
-        def fake_build(repo_root, target, *, techs, memory, program=""):
+        def fake_build(repo_root, target, *, techs, memory, program="", include_identity=False):
             captured["build_target"] = target
             return {
                 "schema_version": 2,
@@ -458,7 +498,7 @@ class TestStandaloneTechResolution:
             encoding="utf-8",
         )
 
-        def fake_build(repo_root, target, *, techs, memory, program=""):
+        def fake_build(repo_root, target, *, techs, memory, program="", include_identity=False):
             captured["techs"] = list(techs)
             return {
                 "schema_version": 2,

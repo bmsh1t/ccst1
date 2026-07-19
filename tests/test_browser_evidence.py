@@ -427,3 +427,48 @@ def test_agent_browser_core_protocol_failure_marks_capture_failed_without_backen
     assert summary["success"] is False
     assert summary["error"] == "request protocol failed"
     assert all(cmd[0] == "agent-browser" for cmd in calls)
+
+
+def test_agent_browser_optional_artifact_failure_keeps_core_capture(monkeypatch, tmp_path):
+    def fake_run(cmd, capture_output, text, timeout, check, env=None):
+        args = cmd[4:]
+        if args in (["cookies", "get"], ["storage", "local"], ["storage", "session"]):
+            return SimpleNamespace(
+                returncode=1,
+                stdout=json.dumps({"success": False, "data": None, "error": "optional denied"}),
+                stderr="optional denied",
+            )
+        if args[:2] == ["state", "save"] or (args and args[0] == "screenshot"):
+            return SimpleNamespace(
+                returncode=1,
+                stdout=json.dumps({"success": False, "data": None, "error": "artifact unavailable"}),
+                stderr="artifact unavailable",
+            )
+        if args == ["snapshot"]:
+            data = {"snapshot": "heading \"Target\""}
+        elif args == ["network", "requests"]:
+            data = {"requests": [{"url": "https://target.local/api", "method": "GET"}]}
+        elif args == ["console"]:
+            data = {"messages": []}
+        else:
+            data = {}
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"success": True, "data": data, "error": None}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
+
+    summary = browser_evidence.capture_browser_evidence(
+        "target.local",
+        "https://target.local/",
+        evidence_root=tmp_path / "evidence",
+        backend="agent-browser",
+        capture_screenshot=True,
+    )
+
+    assert summary["success"] is True
+    assert summary.get("error", "") == ""
+    assert len(summary["warnings"]) >= 5
+    assert any(item["step"].startswith("cookies get") for item in summary["warnings"])

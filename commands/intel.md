@@ -37,7 +37,8 @@ workflow rather than the component advisory artifact.
 - Enriches matching CVEs with CISA KEV and batched EPSS data. Existing canonical
   Nuclei/CVE findings may add a local template signal; `/intel` does not run the
   template or create a finding.
-- Runs lightweight identity intel when tools exist: `emailfinder` and `LeakSearch` via the shared Osmedeus-compatible tools directory or PATH.
+- Runs optional identity intel only with `tools/intel_engine.py --with-identity`:
+  `emailfinder` and `LeakSearch` via the shared Osmedeus-compatible tools directory or PATH.
 - Mines cached recon / JS / source artifacts for emails, internal hostnames, webhook URL patterns, secret prefixes, customer mentions, internal API paths, and employee handles.
 - Atomically publishes schema-v2 `recon/<target>/intel.json`, then `/surface`
   consumes it through the shared Intel decoder.

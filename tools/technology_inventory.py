@@ -542,7 +542,13 @@ def _select_inventory_sources(recon_dir: Path) -> list[tuple[Path, str]]:
         selected.append((httpx_path, httpx_format))
     for relative, source_format in NMAP_CANDIDATES:
         candidate = recon_dir / relative
-        if candidate.is_file() and candidate.stat().st_size > 0:
+        if not candidate.is_file() or candidate.stat().st_size <= 0:
+            continue
+        try:
+            observations, _errors = _source_observations(candidate, source_format)
+        except (OSError, TechnologyInventoryError):
+            continue
+        if observations:
             selected.append((candidate, source_format))
             break
     return selected

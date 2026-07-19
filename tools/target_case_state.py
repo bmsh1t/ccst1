@@ -584,16 +584,27 @@ def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
     for item in active:
         score, missing, details = _score_backlog_item(state, item)
         ranked.append((score, missing, details, item))
-    ranked.sort(key=lambda row: row[0], reverse=True)
+    # 可执行项优先；candidate 即使已有部分证据也必须先补证据，避免同一 replay
+    # 在没有新上下文时被反复执行。
+    ranked.sort(
+        key=lambda row: (
+            not (not row[1] and str(row[3].get("status") or "pending") != "candidate"),
+            -row[0],
+        )
+    )
     score, missing, details, item = ranked[0]
-    ready = not missing
+    ready = not missing and str(item.get("status") or "pending") != "candidate"
     target_value = state.get("target") or canonical_target_value(target)
     runner = item.get("runner")
     if runner == "idor-actor-pair":
-        command = _build_idor_actor_pair_command(target_value, item, details, redact=False) if not missing else ""
-        redacted_command = _build_idor_actor_pair_command(target_value, item, details, redact=True) if details.get("endpoint") else ""
+        command = _build_idor_actor_pair_command(target_value, item, details, redact=False) if ready else ""
+        redacted_command = (
+            _build_idor_actor_pair_command(target_value, item, details, redact=True)
+            if ready and details.get("endpoint")
+            else ""
+        )
     else:
-        command = _build_generic_command(target_value, item, details) if not missing else ""
+        command = _build_generic_command(target_value, item, details) if ready else ""
         redacted_command = command
     obj = details.get("object") or {}
     hypothesis = (
@@ -618,7 +629,9 @@ def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
         "hypothesis": hypothesis,
         "chain_context": _chain_context(state, item, details),
         "why_now": (
-            "highest-ranked active backlog by priority, impact, readiness, chain potential, and risk cost"
+            "ready validation first; candidate backlog is routed to evidence enrichment before any replay"
+            if str(item.get("status") or "pending") == "candidate"
+            else "highest-ranked ready backlog by priority, impact, chain potential, and risk cost"
         ),
         "endpoint": details.get("endpoint") or item.get("endpoint") or "",
         "owner_actor": details.get("owner_actor") or item.get("owner_actor") or "",
@@ -637,7 +650,11 @@ def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
         "downgrade_rule": "peer denied or response lacks owner-private marker",
         "stop_condition": item.get("stop_condition") or "peer 403/404 or no owner-private marker",
         "chain_extensions_if_blocked": extensions,
-        "write_back": f"complete-backlog {item.get('id')} with tested_finding/tested_clean/candidate",
+        "write_back": (
+            f"after adding new evidence, set backlog {item.get('id')} to running before replay"
+            if str(item.get("status") or "pending") == "candidate"
+            else f"complete-backlog {item.get('id')} with tested_finding/tested_clean/candidate"
+        ),
     }
 
 

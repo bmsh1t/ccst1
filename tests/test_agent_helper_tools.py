@@ -226,9 +226,18 @@ def test_dispatch_run_intel_uses_recon_tech_fallback(monkeypatch, tmp_hunt_dir, 
 
     captured = {}
 
-    def fake_build_target_intel(repo_root, target, *, techs, memory, program=""):
+    def fake_build_target_intel(
+        repo_root,
+        target,
+        *,
+        techs,
+        memory,
+        program="",
+        include_identity=True,
+    ):
         captured["repo_root"] = str(repo_root)
         captured["techs"] = list(techs)
+        captured["include_identity"] = include_identity
         payload = {
             "schema_version": 2,
             "target": target,
@@ -274,6 +283,7 @@ def test_dispatch_run_intel_uses_recon_tech_fallback(monkeypatch, tmp_hunt_dir, 
     assert "next.js" in captured["techs"]
     assert "graphql" in captured["techs"]
     assert captured["repo_root"] == str(tmp_path)
+    assert captured["include_identity"] is False
     assert "INTEL: target.com" in output
     assert "CVE-2026-0001" in output
     intel_json = tmp_path / "recon" / domain / "intel.json"

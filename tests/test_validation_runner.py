@@ -83,6 +83,7 @@ def test_authz_public_exposure_without_sensitive_marker_is_clean(monkeypatch, tm
     )
 
     assert summary["result"] == "tested_clean"
+    assert summary["markers"] == []
     assert summary["candidate_ready"] is False
 
 
@@ -518,6 +519,42 @@ def test_authz_role_replay_owner_failure_overrides_rubric_to_dead_end(monkeypatc
     assert summary["evidence_rubric"]["status"] == "dead-end"
     assert summary["evidence_rubric"]["score"] == 0
     assert summary["evidence_rubric"]["missing"] == ["owner_baseline_success"]
+
+
+def test_authz_role_replay_requires_public_marker_in_every_repeat(monkeypatch, tmp_path):
+    anonymous_round = 0
+    sensitive = json.dumps({
+        "note": (
+            'wallet seed phrase: '
+            '"purpose betray marriage blame crunch monitor spin slide donate sport lift clutch"'
+        )
+    })
+
+    def fake_request_once(**kwargs):
+        nonlocal anonymous_round
+        if not kwargs.get("headers"):
+            anonymous_round += 1
+            body = '{"ok":true}' if anonymous_round == 1 else sensitive
+            return _fake_response(kwargs["url"], body=body)
+        return _fake_response(kwargs["url"], body='{"ok":true}')
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+
+    summary = validation_runner.run_authz_role_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/api/data",
+        owner_headers={"Authorization": "Bearer owner"},
+        peer_headers={"Authorization": "Bearer peer"},
+        finding_id="AUTHZ-REPEAT-MARKER",
+        repeat=2,
+    )
+
+    assert summary["candidate_ready"] is False
+    assert summary["result"] == "tested_clean"
+    assert summary["marker_sources"]["body"] == []
+    assert len(summary["marker_sources_by_round"]) == 2
+    assert "secret-like" in summary["marker_sources_by_round"][1]["body"]
 
 
 def test_authz_role_replay_candidate_reopens_previous_tested_queue_action(monkeypatch, tmp_path, capsys):

@@ -325,7 +325,20 @@ def _capture_playwright_backend(
 
     success = any(step["success"] for step in navigation_steps)
     error = "" if success else next((_step_error(step) for step in navigation_steps if _step_error(step)), "")
-    return {"steps": steps, "artifacts": artifacts, "counts": counts, "success": success, "error": error}
+    core_ids = {id(step) for step in navigation_steps}
+    warnings = [
+        {"step": step.get("name", ""), "error": _step_error(step) or "optional artifact unavailable"}
+        for step in steps
+        if id(step) not in core_ids and not step.get("success")
+    ]
+    return {
+        "steps": steps,
+        "artifacts": artifacts,
+        "counts": counts,
+        "success": success,
+        "error": error,
+        "warnings": warnings,
+    }
 
 
 def _capture_agent_browser_backend(
@@ -439,19 +452,7 @@ def _capture_agent_browser_backend(
     _record_agent_raw(capture_dir, "state", state_step, artifacts)
     _record_existing_file(state_path, "state_json", artifacts)
 
-    core_steps = [
-        open_step,
-        requests_clear_step,
-        console_clear_step,
-        navigate_step,
-        snapshot_step,
-        requests_step,
-        console_step,
-        cookies_step,
-        local_step,
-        session_step,
-        state_step,
-    ]
+    core_steps = [open_step, navigate_step, snapshot_step, requests_step, console_step]
     if capture_screenshot:
         screenshot_path = capture_dir / "screenshot.png"
         screenshot_step = _run_agent_browser_cli(
@@ -462,7 +463,6 @@ def _capture_agent_browser_backend(
         steps.append(screenshot_step)
         _record_agent_raw(capture_dir, "screenshot", screenshot_step, artifacts)
         _record_existing_file(screenshot_path, "screenshot_png", artifacts)
-        core_steps.append(screenshot_step)
 
     har_path = capture_dir / "network.har"
     har_stop_step = _run_agent_browser_cli(
@@ -477,7 +477,20 @@ def _capture_agent_browser_backend(
 
     success = all(step["success"] for step in core_steps)
     error = "" if success else next((_step_error(step) for step in core_steps if _step_error(step)), "")
-    return {"steps": steps, "artifacts": artifacts, "counts": counts, "success": success, "error": error}
+    core_ids = {id(step) for step in core_steps}
+    warnings = [
+        {"step": step.get("name", ""), "error": _step_error(step) or "optional artifact unavailable"}
+        for step in steps
+        if id(step) not in core_ids and not step.get("success")
+    ]
+    return {
+        "steps": steps,
+        "artifacts": artifacts,
+        "counts": counts,
+        "success": success,
+        "error": error,
+        "warnings": warnings,
+    }
 
 
 def _derive_recon_root(evidence_root: Path) -> Path:
@@ -594,6 +607,7 @@ def capture_browser_evidence(
         "artifacts": artifacts,
         "browser_surface": browser_surface,
         "steps": [_compact_step(step) for step in steps],
+        "warnings": result.get("warnings", []),
     }
     if result.get("error"):
         summary["error"] = result["error"]

@@ -1685,7 +1685,7 @@ def run_authz_role_replay(
     bundle = _bundle_dir(repo_root, target, finding_id)
     repeat = max(1, int(repeat or 1))
     runs: list[dict[str, Any]] = []
-    public_marker_sources: dict[str, list[str]] = {"url": [], "body": []}
+    marker_sources_by_round: list[dict[str, list[str]]] = []
     authenticated_exposure_checks: list[dict[str, Any]] = []
 
     for idx in range(1, repeat + 1):
@@ -1702,7 +1702,7 @@ def run_authz_role_replay(
             anon_resp = bundle / f"{prefix}anonymous.response.txt"
             _write_text(anon_req, anonymous["request_text"])
             _write_text(anon_resp, anonymous["response_text"])
-            public_marker_sources = public_exposure_marker_sources(url, anonymous["body"])
+            marker_sources_by_round.append(public_exposure_marker_sources(url, anonymous["body"]))
         owner_req = bundle / f"{prefix}owner.request.txt"
         owner_resp = bundle / f"{prefix}owner.response.txt"
         peer_req = bundle / f"{prefix}peer.request.txt"
@@ -1766,11 +1766,28 @@ def run_authz_role_replay(
             "anonymous_owner_diff": anonymous_owner_diff,
         })
 
-    markers = sorted(set(public_marker_sources.get("url", [])) | set(public_marker_sources.get("body", [])))
+    # Finding-grade marker 必须在每一轮都出现；不能让最后一轮覆盖前一轮缺失。
+    public_marker_sources = {
+        key: sorted(
+            set.intersection(
+                *(set(round_sources.get(key, [])) for round_sources in marker_sources_by_round)
+            )
+        )
+        if marker_sources_by_round
+        else []
+        for key in ("url", "body")
+    }
+    markers = sorted(
+        set(public_marker_sources.get("url", []))
+        | set(public_marker_sources.get("body", []))
+    )
     public_ready = (
         include_anonymous
         and all(bool(run["anonymous_success"]) for run in runs)
-        and public_exposure_candidate_ready(runs[0]["anonymous_status"], public_marker_sources)
+        and all(
+            public_exposure_candidate_ready(run["anonymous_status"], round_sources)
+            for run, round_sources in zip(runs, marker_sources_by_round)
+        )
     )
     owner_success_all = all(bool(run["owner_success"]) for run in runs)
     role_diff_any = any(bool(run["owner_peer_material_diff"]) for run in runs)
@@ -1939,6 +1956,7 @@ def run_authz_role_replay(
         "candidate_ready": candidate_ready,
         "markers": markers,
         "marker_sources": public_marker_sources,
+        "marker_sources_by_round": marker_sources_by_round,
         "authenticated_exposure": authenticated_exposure_summary,
         "object_specific_peer_denied": bool(object_specific_peer_denied),
         "case_state_ref": case_state_ref or {},

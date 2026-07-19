@@ -1182,6 +1182,7 @@ def process_findings_dir(findings_dir):
 
         return write_report_index(report_dir, target_name, total_reports, report_index)
 
+    occupied_report_ids = _occupied_report_ids([], report_dir)
     for subdir, vuln_type in dir_type_map.items():
         subdir_path = os.path.join(findings_dir, subdir)
         if not os.path.isdir(subdir_path):
@@ -1214,11 +1215,20 @@ def process_findings_dir(findings_dir):
                 # Generate report
                 report_content, title = generate_report(finding, vuln_type, target_name)
 
-                # Save report
-                report_id = f"{vuln_type}_{i+1:03d}"
-                report_file = os.path.join(report_dir, f"{report_id}.md")
-                with open(report_file, "w") as rf:
-                    rf.write(report_content)
+                # Legacy 输入没有 finding ID，仍使用全局占用集合和排他创建，
+                # 让增量运行永远分配新 ID，不覆盖历史报告。
+                while True:
+                    report_id = _next_report_id(
+                        vuln_type, finding, report_dir, occupied_report_ids
+                    )
+                    report_file = os.path.join(report_dir, f"{report_id}.md")
+                    try:
+                        with Path(report_file).open("x", encoding="utf-8") as rf:
+                            rf.write(report_content)
+                        break
+                    except FileExistsError:
+                        occupied_report_ids[report_id] = ""
+                occupied_report_ids[report_id] = ""
 
                 total_reports += 1
                 report_index.append({
