@@ -10,14 +10,17 @@ Usage:
 """
 
 import argparse
-import json
 import os
 import re
 import sys
-from datetime import datetime
 
+from intel_engine import build_target_intel
 from runtime_exec import run_shell_command_split
 from target_paths import target_storage_key
+from technology_inventory import (
+    load_or_build_inventory_for_recon_dir,
+    parse_httpx_json_line,
+)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FINDINGS_DIR = os.path.join(BASE_DIR, "findings")
@@ -35,31 +38,31 @@ def detect_technologies(domain, recon_dir=None):
 
     # Method 1: Check httpx output from recon
     if recon_dir:
-        httpx_file = os.path.join(recon_dir, "live", "httpx_full.txt")
-        if os.path.exists(httpx_file):
-            with open(httpx_file) as f:
-                for line in f:
-                    # httpx outputs tech in brackets: [tech1,tech2]
-                    tech_match = re.findall(r'\[([^\]]+)\]', line)
-                    for match in tech_match:
-                        for t in match.split(","):
-                            t = t.strip()
-                            if t and not t.isdigit() and len(t) > 1:
-                                techs[t.lower()] = techs.get(t.lower(), 0) + 1
+        inventory = load_or_build_inventory_for_recon_dir(recon_dir, target=domain)
+        for component in inventory.get("components") or []:
+            label = str(component.get("name") or "").strip()
+            version = str(component.get("version") or "").strip()
+            if label:
+                tech_key = f"{label}:{version}" if version else label
+                techs[tech_key] = techs.get(tech_key, 0) + 1
 
     # Method 2: Direct httpx probe
     if not techs:
         success, output = run_cmd(
-            f'echo "{domain}" | httpx -silent -tech-detect -status-code 2>/dev/null',
+            f'echo "{domain}" | httpx -silent -json -tech-detect -status-code 2>/dev/null',
             timeout=30
         )
         if success and output:
-            tech_match = re.findall(r'\[([^\]]+)\]', output)
-            for match in tech_match:
-                for t in match.split(","):
-                    t = t.strip()
-                    if t and not t.isdigit() and len(t) > 1:
-                        techs[t.lower()] = 1
+            for line in output.splitlines():
+                parsed = parse_httpx_json_line(line)
+                if parsed is None:
+                    continue
+                for component in parsed.get("components") or []:
+                    label = str(component.get("name") or "").strip()
+                    version = str(component.get("version") or "").strip()
+                    if label:
+                        tech_key = f"{label}:{version}" if version else label
+                        techs[tech_key] = 1
 
     # Method 3: Manual header analysis
     success, output = run_cmd(
@@ -130,83 +133,6 @@ def detect_technologies(domain, recon_dir=None):
         print("    [!] No technologies detected")
 
     return techs
-
-
-def search_cves(tech_name, max_results=10):
-    """Search for CVEs related to a technology using public APIs."""
-    cves = []
-
-    # Clean up tech name for search
-    search_term = re.sub(r'[/.]', ' ', tech_name).strip()
-
-    # Method 1: NVD API (NIST)
-    print(f"    [>] Searching CVEs for: {tech_name}...")
-    try:
-        success, output = run_cmd(
-            f'curl -s "https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch={search_term}&resultsPerPage={max_results}" --max-time 15',
-            timeout=20
-        )
-        if success and output:
-            data = json.loads(output)
-            for vuln in data.get("vulnerabilities", []):
-                cve_data = vuln.get("cve", {})
-                cve_id = cve_data.get("id", "")
-                descriptions = cve_data.get("descriptions", [])
-                desc = ""
-                for d in descriptions:
-                    if d.get("lang") == "en":
-                        desc = d.get("value", "")
-                        break
-
-                # Get CVSS score
-                metrics = cve_data.get("metrics", {})
-                cvss_score = 0
-                severity = "unknown"
-                for metric_key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
-                    metric_list = metrics.get(metric_key, [])
-                    if metric_list:
-                        cvss_data = metric_list[0].get("cvssData", {})
-                        cvss_score = cvss_data.get("baseScore", 0)
-                        severity = cvss_data.get("baseSeverity", "UNKNOWN").lower()
-                        break
-
-                if cve_id:
-                    cves.append({
-                        "id": cve_id,
-                        "description": desc[:200],
-                        "cvss_score": cvss_score,
-                        "severity": severity,
-                        "technology": tech_name
-                    })
-    except (json.JSONDecodeError, Exception):
-        pass
-
-    # Method 2: cve.circl.lu API (fallback)
-    if not cves:
-        try:
-            success, output = run_cmd(
-                f'curl -s "https://cve.circl.lu/api/search/{search_term}" --max-time 15',
-                timeout=20
-            )
-            if success and output:
-                data = json.loads(output)
-                if isinstance(data, dict):
-                    data = data.get("results", data.get("data", []))
-                if isinstance(data, list):
-                    for item in data[:max_results]:
-                        cve_id = item.get("id", item.get("cve_id", ""))
-                        if cve_id:
-                            cves.append({
-                                "id": cve_id,
-                                "description": item.get("summary", "")[:200],
-                                "cvss_score": item.get("cvss", 0),
-                                "severity": "high" if float(item.get("cvss", 0) or 0) >= 7 else "medium",
-                                "technology": tech_name
-                            })
-        except (json.JSONDecodeError, Exception):
-            pass
-
-    return cves
 
 
 def run_nuclei_cve_scan(domain, recon_dir=None):
@@ -298,29 +224,36 @@ def hunt_cves(domain, recon_dir=None):
     # Step 1: Detect technologies
     techs = detect_technologies(domain, recon_dir)
 
-    # Step 2: Search CVE databases for each technology
+    # Step 2: 复用 Intel v2 owner；本兼容入口不再维护第二套 CVE API/parser。
     all_cves = []
     if techs:
-        print(f"\n[*] Searching CVE databases for {len(techs)} technologies...")
-        for tech in techs:
-            cves = search_cves(tech, max_results=5)
-            if cves:
-                all_cves.extend(cves)
-                for cve in cves:
-                    severity_str = f"[{cve['severity'].upper()}]" if cve['severity'] != 'unknown' else ""
-                    print(f"    {cve['id']} {severity_str} CVSS:{cve['cvss_score']} — {cve['description'][:80]}...")
-
-        # Save CVE search results
-        if all_cves:
-            cve_file = os.path.join(findings_dir, "cve_database_matches.json")
-            with open(cve_file, "w") as f:
-                json.dump({
-                    "target": domain,
-                    "scan_date": datetime.now().isoformat(),
-                    "technologies_detected": list(techs.keys()),
-                    "cves_found": all_cves
-                }, f, indent=2)
-            print(f"\n    [+] Saved {len(all_cves)} CVE matches to {cve_file}")
+        print(f"\n[*] Building Intel v2 for {len(techs)} technologies...")
+        intel = build_target_intel(
+            BASE_DIR,
+            domain,
+            techs=list(techs.keys()),
+            memory={"tested_cves": [], "tested_endpoints": [], "patterns": []},
+            include_identity=False,
+        )
+        for advisory in intel.get("advisories") or []:
+            component = advisory.get("component") if isinstance(advisory.get("component"), dict) else {}
+            cve = {
+                "id": advisory.get("id", ""),
+                "description": str(advisory.get("summary") or "")[:200],
+                "cvss_score": advisory.get("cvss") or 0,
+                "severity": str(advisory.get("severity") or "unknown").lower(),
+                "technology": component.get("name", ""),
+                "applicability": advisory.get("applicability", "unknown"),
+                "kev": bool(advisory.get("kev")),
+                "epss": advisory.get("epss"),
+            }
+            all_cves.append(cve)
+            severity_str = f"[{cve['severity'].upper()}]" if cve["severity"] != "unknown" else ""
+            print(
+                f"    {cve['id']} {severity_str} CVSS:{cve['cvss_score']} "
+                f"applicability={cve['applicability']} — {cve['description'][:80]}..."
+            )
+        print(f"    [+] Intel artifact: recon/{target_storage_key(domain)}/intel.json")
 
     # Step 3: Run nuclei CVE detection
     nuclei_findings = run_nuclei_cve_scan(domain, recon_dir)

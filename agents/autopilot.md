@@ -134,7 +134,7 @@ Choose tools from evidence shape:
   When chrome-devtools/playwright evidence leaves a specific runtime JavaScript question unresolved, JSHook MCP can be used as an optional follow-up evidence source.
 - Source/route/auth logic: `python3 tools/source_intel.py --target <target> [--repo-path <repo>]`.
 - JS bundles: `python3 tools/js_reader.py --target <target>` plus semantic JS review.
-- Known component/version: `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, vendor advisories, NVD/GHSA/WPScan-style sources, nuclei template names.
+- Known component/version: `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, OSV exact-version results, vendor advisories, NVD/GHSA/WPScan-style sources, CISA KEV, EPSS, and local nuclei template names. Treat `applicability`, source failure/staleness, and route reachability as separate evidence gates.
 - Broad coverage: scanner quick after AI surface review on fresh targets, scanner-full only for deeper coverage or explicit user request; scanner output is advisory lead source, not the hunt brain.
 - After `run_vuln_scan`, call `read_surface_summary` / `/surface` again and inspect action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact; weak template hits are `lead`, stable diffs are `signal`, exact request/response plus practical impact is `candidate`. Side-effectful scanner templates were skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` was set, so they are not tested-clean. It does not restrict safe observed-method replay. Also perform one secondary sweep on demoted public-metadata leads such as `standard_public_metadata.txt`; they may be reversible chain/secret intel when unusual fields appear, not final rejects.
 - Exact requests: curl/local helpers when browser state is not needed.

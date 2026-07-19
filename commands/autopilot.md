@@ -148,7 +148,7 @@ When a primary lane is blocked, do not checkpoint/finish immediately if adjacent
 This is one specialization of the Actionable Evidence Continuation Contract:
 when a concrete product/plugin/theme/library/version appears, it must not stop
 at "needs CVE lookup." Use `cd -- <repo_root_shell> && python3 tools/intel_engine.py --target <target_shell>`
-and `cd -- <repo_root_shell> && python3 tools/cve_hunter.py <target_shell>`, then check NVD, GitHub Advisory, WPScan/vulnerability DB, vendor changelog, and reachability (for example,
+and `cd -- <repo_root_shell> && python3 tools/cve_hunter.py <target_shell>`. Start with the schema-v2 Intel artifact: OSV exact package/version, GitHub Advisory/NVD fallback, CISA KEV, batched EPSS, local Nuclei evidence, source status, and applicability. Also check NVD, GitHub Advisory, WPScan/vulnerability DB, vendor changelog, and reachability (for example,
 WordPress Tribe Events 6.16.3) before recording tested/dead-end/blocked/lead/signal/candidate.
 ## Case-State First, Not Case-State Only
 If checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer

@@ -592,31 +592,15 @@ def render_disclosed_patterns_md(
 
 
 def _load_tech_stack_hint(repo_root: Path, target: str) -> list[str]:
-    """Best-effort tech stack extraction from cached recon httpx output."""
-    httpx_path = repo_root / "recon" / target / "live" / "httpx_full.txt"
-    if not httpx_path.is_file():
-        return []
     try:
-        text = httpx_path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
+        from tools.technology_inventory import component_labels, load_or_build_inventory
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from technology_inventory import component_labels, load_or_build_inventory
+    try:
+        inventory = load_or_build_inventory(repo_root, target)
+    except (OSError, ValueError):
         return []
-    seen: set[str] = set()
-    techs: list[str] = []
-    for line in text.splitlines():
-        if "[" not in line or "]" not in line:
-            continue
-        for chunk in line.split("["):
-            chunk = chunk.strip().rstrip("]")
-            if "," in chunk and "://" not in chunk:
-                for raw in chunk.split(","):
-                    name = raw.strip().lower()
-                    if not name or len(name) > 30 or name in seen:
-                        continue
-                    if any(c.isdigit() for c in name) and "/" in name:
-                        continue
-                    seen.add(name)
-                    techs.append(name)
-    return techs[:10]
+    return component_labels(inventory, include_versions=False, limit=10)
 
 
 def write_disclosed_patterns(

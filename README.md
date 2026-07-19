@@ -117,7 +117,7 @@ claude                          # Start Claude Code from this repo root
 ```bash
 /autopilot target.com --normal  # Full autonomous hunt loop
 /autopilot target.com --deep --normal --max-lanes 4  # Bounded deep invocation, then durable handoff
-/intel target.com               # Fetch CVE + disclosure intel
+/intel target.com               # Component/version advisories + KEV/EPSS
 /pickup target.com              # Pick up where you left off
 ```
 
@@ -310,7 +310,7 @@ Use this Core 4 when you want a clear Claude Code CLI loop from attack-surface d
 | `/surface target.com` | AI Review Pool with advisory evidence from recon + memory |
 | `/pickup target.com` | Continue previous hunt — shows what's untested |
 | `/remember` | Save finding or pattern to persistent memory |
-| `/intel target.com` | CVEs + disclosures cross-referenced with your hunt history |
+| `/intel target.com` | Version-aware OSV/GHSA/NVD advisories enriched by KEV/EPSS and local evidence |
 | `/sync-check` | Check whether repo commands/agents/skills match the installed Claude runtime |
 | `/memory-gc` | Report or rotate oversized hunt-memory JSONL files |
 
@@ -492,11 +492,15 @@ For Claude Code CLI browser-state work, prefer the agent-browser-backed `tools/b
 <summary><b>On-Demand Intel</b> — <code>/intel</code></summary>
 <br>
 
-Wraps `learn.py` + HackerOne MCP + hunt memory:
-- Flags **untested CVEs** matching the target's tech stack
-- Shows **new endpoints** not in your tested list
-- Surfaces **cross-target patterns** from your own hunt history
-- Prioritizes: CRITICAL untested > HIGH untested > already tested
+Builds a normalized component inventory, then publishes schema-v2
+`recon/<target>/intel.json`:
+- OSV exact package/version queries where ecosystem identity is known
+- GitHub Advisory plus NVD fallback, with explicit applicability states
+- CISA KEV, batched EPSS, public-reference POC hints, and existing local CVE-template signals
+- Memory-aware advisory review order; results remain hypotheses until normal validation
+
+Disclosed-report transfer remains available through `tools/disclosure_search.py`
+and the `disclosed-researcher` workflow instead of being mixed into the Intel artifact.
 
 </details>
 
@@ -585,8 +589,9 @@ Wraps `learn.py` + HackerOne MCP + hunt memory:
 | `hunt.py` | Master orchestrator — chains recon, scan, report |
 | `recon_engine.sh` | Subdomain enum + DNS + live hosts + URL crawl |
 | `cf_solver.py` | Optional manual Cloudflare challenge clearance helper; not auto-run |
-| `learn.py` | CVE + disclosure intel from NVD, GitHub Advisory, HackerOne |
-| `intel_engine.py` | Memory-aware intel wrapper (learn.py + HackerOne MCP + memory) |
+| `learn.py` | Legacy tech research compatibility backend |
+| `technology_inventory.py` | Shared httpx JSONL/text component and version inventory owner |
+| `intel_engine.py` | Intel v2 owner: OSV/GHSA/NVD + KEV/EPSS + atomic Surface-consumable artifact |
 | `validate.py` | 4-gate validation — target context, impact, dedup, CVSS |
 | `report_generator.py` | H1/Bugcrowd/Intigriti report output |
 | `scope_checker.py` | Deterministic target matching with anchored suffix matching |

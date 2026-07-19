@@ -1391,6 +1391,167 @@ class TestSurfaceRanking:
         assert "Local intel signals: 1" in output
         assert "oauth [HIGH]" in output
 
+    def test_v2_intel_projection_preserves_coverage_and_degraded_sources(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [1000] [API] [Express]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/oauth/callback?redirect_uri=https://client.test/cb\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        advisory = {
+            "id": "CVE-2026-1000",
+            "aliases": ["CVE-2026-1000"],
+            "source": "github_advisory",
+            "source_names": ["github_advisory", "nvd"],
+            "component": {"name": "express", "version": "5.1.0"},
+            "applicability": "affected",
+            "severity": "HIGH",
+            "summary": "OAuth redirect_uri validation bypass",
+            "score_hint": 92,
+            "kev": True,
+            "epss": 0.88,
+            "source_refs": [],
+        }
+        (recon_dir / "intel.json").write_text(json.dumps({
+            "schema_version": 2,
+            "target": "target.com",
+            "generated_at": "2026-07-19T00:00:00Z",
+            "coverage_status": "partial",
+            "inventory": {"status": "ready", "components": [], "hosts": [], "stats": {}},
+            "sources": [
+                {"source": "github_advisory", "status": "ok", "fetched_at": "2026-07-19T00:00:00Z"},
+                {"source": "nvd", "status": "error", "fetched_at": "2026-07-19T00:00:00Z", "error": "rate limited"},
+            ],
+            "advisories": [advisory],
+            "critical": [advisory],
+            "high": [],
+            "info": [],
+        }), encoding="utf-8")
+
+        context = load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+        ranked = rank_surface(context)
+        output = format_surface_output(ranked, "target.com")
+
+        assert context["intel"]["status"] == "ready"
+        assert context["intel"]["coverage_status"] == "partial"
+        assert context["intel"]["degraded_sources"] == [{
+            "source": "nvd",
+            "status": "error",
+            "error": "rate limited",
+            "stale": False,
+        }]
+        assert context["intel_signals"][0]["kev"] is True
+        assert context["intel"]["review_items"][0]["id"] == "CVE-2026-1000"
+        assert ranked["intel"]["signal_count"] == 1
+        assert "Artifact status: ready; coverage: partial" in output
+        assert "Degraded source: nvd [error]" in output
+        assert "Advisory review: CVE-2026-1000 [HIGH/affected] score=92" in output
+
+    def test_generic_high_score_advisory_remains_visible_without_class_keyword(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://app.target.com [200] [1000] [App] [Next.js:15.2.1]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://app.target.com/health\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        advisory = {
+            "id": "CVE-2026-2000",
+            "aliases": ["CVE-2026-2000"],
+            "source_names": ["osv", "nvd"],
+            "component": {"name": "next.js", "version": "15.2.1"},
+            "applicability": "affected",
+            "severity": "CRITICAL",
+            "summary": "Remote code execution in image optimizer",
+            "score_hint": 140,
+            "score_reasons": ["applicability=affected", "CISA KEV"],
+            "kev": True,
+            "epss": 0.95,
+            "source_refs": [],
+        }
+        (recon_dir / "intel.json").write_text(json.dumps({
+            "schema_version": 2,
+            "target": "target.com",
+            "generated_at": "2026-07-19T00:00:00Z",
+            "coverage_status": "ready",
+            "inventory": {"status": "ready", "components": [], "hosts": [], "stats": {}},
+            "sources": [{
+                "source": "osv",
+                "status": "ok",
+                "fetched_at": "2026-07-19T00:00:00Z",
+            }],
+            "advisories": [advisory],
+            "critical": [advisory],
+            "high": [],
+            "info": [],
+        }), encoding="utf-8")
+
+        context = load_surface_context(
+            repo_root,
+            "target.com",
+            memory_dir=repo_root / "hunt-memory",
+        )
+        output = format_surface_output(rank_surface(context), "target.com")
+
+        assert context["intel_signals"] == []
+        assert context["intel"]["review_item_count"] == 1
+        assert "Advisory review: CVE-2026-2000 [CRITICAL/affected] score=140" in output
+
+    def test_invalid_intel_artifact_is_not_projected_as_clean(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://target.com [200] [1000] [Target] [nginx]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "intel.json").write_text("{broken", encoding="utf-8")
+
+        context = load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+        ranked = rank_surface(context)
+        output = format_surface_output(ranked, "target.com")
+
+        assert context["intel"]["status"] == "invalid"
+        assert context["intel"]["coverage_status"] == "error"
+        assert ranked["intel"]["signal_count"] == 0
+        assert "Artifact status: invalid; coverage: error" in output
+        assert "Intel artifact error:" in output
+
+    def test_unknown_intel_schema_is_invalid_not_empty_legacy(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://target.com [200] [1000] [Target] [nginx]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "intel.json").write_text(
+            json.dumps({"schema_version": 999, "critical": [], "high": [], "info": []}),
+            encoding="utf-8",
+        )
+
+        context = load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+
+        assert context["intel"]["status"] == "invalid"
+        assert "unsupported intel artifact schema" in context["intel"]["error"]
+
     def test_format_missing_recon(self):
         output = format_surface_output({"available": False}, "missing.com")
         assert "No recon data found for missing.com." in output

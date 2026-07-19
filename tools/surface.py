@@ -34,6 +34,7 @@ try:
         load_finding_index,
         verify_finalized_finding_owner_provenance,
     )
+    from tools.intel_artifact import load_intel_projection
     from tools.observation_inventory import (
         InventoryError,
         inventory_path,
@@ -59,6 +60,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     from action_queue import load_queue as load_action_queue  # type: ignore
     from attack_probe_filter import filter_attack_probes, is_attack_probe, sanitize_attack_probe_url
     from finding_index import load_finding_index, verify_finalized_finding_owner_provenance
+    from intel_artifact import load_intel_projection
     from observation_inventory import (  # type: ignore
         InventoryError,
         inventory_path,
@@ -644,40 +646,39 @@ def _build_evidence_convergence_leads(
     return leads[:5]
 
 
-def _read_httpx_hosts(recon_dir: Path) -> tuple[dict[str, dict], set[str]]:
-    """Parse live/httpx_full.txt into host metadata and 403-only hosts."""
-    httpx_path = recon_dir / "live" / "httpx_full.txt"
+def _read_httpx_hosts(recon_dir: Path, target: str = "") -> tuple[dict[str, dict], set[str]]:
+    """从共享组件清单读取 host metadata 与 403-only hosts。"""
     hosts = {}
     status403 = set()
-    if not httpx_path.is_file():
-        return hosts, status403
+    try:
+        from tools.technology_inventory import load_or_build_inventory_for_recon_dir
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from technology_inventory import load_or_build_inventory_for_recon_dir
 
-    with open(httpx_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split()
-            if not parts:
-                continue
-            url = parts[0]
-            parsed = urlparse(url)
-            host = parsed.netloc or parsed.path
-            matches = re.findall(r"\[([^\]]+)\]", line)
-            status = matches[0] if len(matches) >= 1 else ""
-            title = matches[1] if len(matches) >= 2 else ""
-            techs = []
-            if len(matches) >= 3:
-                techs = [item.strip().lower() for item in matches[2].split(",") if item.strip()]
-            hosts[host] = {
-                "url": url,
-                "host": host,
-                "status": status,
-                "title": title,
-                "tech_stack": techs,
-            }
-            if status == "403":
-                status403.add(host)
+    inventory = load_or_build_inventory_for_recon_dir(recon_dir, target=target)
+    if inventory.get("status") != "ready":
+        return hosts, status403
+    for item in inventory.get("hosts") or []:
+        host = str(item.get("host") or "").strip()
+        if not host:
+            continue
+        techs = []
+        seen = set()
+        for component in item.get("components") or []:
+            name = str(component.get("name") or "").strip()
+            if name and name not in seen:
+                seen.add(name)
+                techs.append(name)
+        status = str(item.get("status") or "").strip()
+        hosts[host] = {
+            "url": str(item.get("url") or "").strip(),
+            "host": host,
+            "status": status,
+            "title": str(item.get("title") or "").strip(),
+            "tech_stack": techs,
+        }
+        if status == "403":
+            status403.add(host)
     return hosts, status403
 
 
@@ -968,34 +969,33 @@ def _build_ffuf_review_candidates(
     return result
 
 
-def _load_intel_signals(recon_dir: Path) -> list[dict]:
-    """Load local /intel output and reduce it to deterministic keyword signals."""
-    intel_items = []
-    intel_json = recon_dir / "intel.json"
-    if intel_json.is_file():
-        try:
-            payload = json.loads(intel_json.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-
-        for bucket in ("critical", "high", "info"):
-            for item in payload.get(bucket, []) if isinstance(payload, dict) else []:
-                if isinstance(item, dict):
-                    intel_items.append(item)
-
-    intel_md = recon_dir / "intel.md"
-    if intel_md.is_file():
-        text = intel_md.read_text(encoding="utf-8", errors="replace")
-        for line in text.splitlines():
-            if "|" in line or line.startswith(("[", "-", "  ")):
-                intel_items.append({"summary": line, "severity": "INFO", "source": "intel.md"})
-
+def _load_intel_context(recon_dir: Path) -> dict:
+    """通过 artifact owner 读取 Intel，并投影为 Surface 信号与覆盖状态。"""
+    projection = load_intel_projection(recon_dir)
+    review_items = [
+        item for item in projection.get("review_items") or [] if isinstance(item, dict)
+    ]
     signals = []
     seen = set()
-    for item in intel_items:
+    for item in review_items:
+        if not isinstance(item, dict) or item.get("applicability") == "not_affected":
+            continue
+        component = item.get("component") if isinstance(item.get("component"), dict) else {}
         haystack = " ".join(
             str(item.get(key, ""))
-            for key in ("id", "source", "tech", "severity", "summary", "note")
+            for key in (
+                "id",
+                "source",
+                "source_names",
+                "tech",
+                "severity",
+                "summary",
+                "note",
+                "applicability",
+            )
+        ).lower()
+        haystack += " " + " ".join(
+            str(component.get(key, "")) for key in ("name", "display_name", "version")
         ).lower()
         for vuln_class, keywords in INTEL_KEYWORDS.items():
             if any(keyword in haystack for keyword in keywords):
@@ -1004,15 +1004,42 @@ def _load_intel_signals(recon_dir: Path) -> list[dict]:
                 if key in seen:
                     continue
                 seen.add(key)
+                source_names = item.get("source_names") if isinstance(item.get("source_names"), list) else []
                 signals.append({
                     "class": vuln_class,
                     "severity": severity,
-                    "source": item.get("source", "intel"),
+                    "source": ",".join(str(value) for value in source_names if value)
+                    or item.get("source", "intel"),
                     "id": item.get("id", ""),
                     "summary": item.get("summary", ""),
+                    "applicability": item.get("applicability", "unknown"),
+                    "score_hint": item.get("score_hint", 0),
+                    "kev": bool(item.get("kev")),
+                    "epss": item.get("epss"),
                 })
-
-    return signals
+    sources = [item for item in projection.get("sources") or [] if isinstance(item, dict)]
+    degraded_sources = [
+        {
+            "source": item.get("source", ""),
+            "status": item.get("status", "unknown"),
+            "error": item.get("error", ""),
+            "stale": bool(item.get("stale")),
+        }
+        for item in sources
+        if item.get("status") != "ok"
+    ]
+    return {
+        "status": projection.get("status", "invalid"),
+        "coverage_status": projection.get("coverage_status", "error"),
+        "path": projection.get("path", ""),
+        "error": projection.get("error", ""),
+        "sources": sources,
+        "degraded_sources": degraded_sources,
+        "review_items": review_items,
+        "review_item_count": len(review_items),
+        "signals": signals,
+        "signal_count": len(signals),
+    }
 
 
 def _intel_signal_matches(signal: dict, raw_url: str, path: str, query_keys: list[str], tech_stack: list[str]) -> bool:
@@ -1290,7 +1317,7 @@ def load_surface_context(
             "target_goal_memory": target_goal_memory,
         }
 
-    hosts, status403_hosts = _read_httpx_hosts(recon_dir)
+    hosts, status403_hosts = _read_httpx_hosts(recon_dir, target)
     surface_index_status = load_surface_index_status(repo_root, target)
     use_surface_index = surface_index_status.get("status") == "valid"
     # Payload-marker handling: never lose the endpoint/parameter surface during
@@ -1349,7 +1376,8 @@ def load_surface_context(
     ]
     ledger_entries = load_evidence_ledger_entries(repo_root, target)
     action_queue_entries = load_action_queue(repo_root, target).get("actions", [])
-    intel_signals = _load_intel_signals(recon_dir)
+    intel_context = _load_intel_context(recon_dir)
+    intel_signals = intel_context["signals"]
     ffuf_summary = ReconAdapter(recon_dir).get_ffuf_summary()
     js_intel = load_js_intel_hypotheses(findings_dir)
     source_intel = load_source_intel_hypotheses(findings_dir)
@@ -1415,6 +1443,7 @@ def load_surface_context(
         "ledger_entries": ledger_entries,
         "action_queue_entries": action_queue_entries if isinstance(action_queue_entries, list) else [],
         "intel_signals": intel_signals,
+        "intel": intel_context,
         "ffuf_summary": ffuf_summary,
         "js_intel": js_intel,
         "source_intel": source_intel,
@@ -2105,6 +2134,10 @@ def rank_surface(context: dict) -> dict:
                     "source": signal.get("source", ""),
                     "id": signal.get("id", ""),
                     "summary": signal.get("summary", ""),
+                    "applicability": signal.get("applicability", "unknown"),
+                    "score_hint": signal.get("score_hint", 0),
+                    "kev": bool(signal.get("kev")),
+                    "epss": signal.get("epss"),
                 }
                 for signal in matching_intel[:5]
             ]
@@ -2224,6 +2257,7 @@ def rank_surface(context: dict) -> dict:
             "finding_count": len(context.get("scanner_findings", [])),
         },
         "intel": {
+            **(context.get("intel") or {}),
             "signal_count": len(context.get("intel_signals", [])),
         },
         "ffuf": ffuf_summary,
@@ -2548,7 +2582,37 @@ def format_surface_output(ranked: dict, target: str) -> str:
         lines.append("- No structured scanner candidates yet.")
 
     lines.extend(["", "Intel Signals:"])
-    intel_count = ranked.get("intel", {}).get("signal_count", 0)
+    intel_meta = ranked.get("intel", {})
+    intel_status = intel_meta.get("status", "missing")
+    intel_coverage = intel_meta.get("coverage_status", "missing")
+    lines.append(f"- Artifact status: {intel_status}; coverage: {intel_coverage}")
+    if intel_meta.get("error"):
+        lines.append(f"- Intel artifact error: {str(intel_meta['error'])[:240]}")
+    for source in intel_meta.get("degraded_sources", [])[:5]:
+        detail = f" — {str(source.get('error') or '')[:180]}" if source.get("error") else ""
+        lines.append(
+            f"- Degraded source: {source.get('source', '-')} "
+            f"[{source.get('status', 'unknown')}]{detail}"
+        )
+    review_items = intel_meta.get("review_items", [])
+    if review_items:
+        lines.append(f"- Advisory review items: {len(review_items)}")
+        for advisory in review_items[:5]:
+            component = (
+                advisory.get("component")
+                if isinstance(advisory.get("component"), dict)
+                else {}
+            )
+            component_name = str(
+                component.get("display_name") or component.get("name") or "unknown"
+            )
+            version = str(component.get("version") or "unknown")
+            lines.append(
+                f"- Advisory review: {advisory.get('id', '-')} "
+                f"[{advisory.get('severity', '-')}/{advisory.get('applicability', 'unknown')}] "
+                f"score={advisory.get('score_hint', 0)} component={component_name}@{version}"
+            )
+    intel_count = intel_meta.get("signal_count", 0)
     if intel_count:
         lines.append(f"- Local intel signals: {intel_count}")
         shown = 0

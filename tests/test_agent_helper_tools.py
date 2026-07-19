@@ -226,37 +226,54 @@ def test_dispatch_run_intel_uses_recon_tech_fallback(monkeypatch, tmp_hunt_dir, 
 
     captured = {}
 
-    def fake_fetch_all_intel(techs, target, program=""):
-        captured["techs"] = techs
-        return [
-            {
+    def fake_build_target_intel(repo_root, target, *, techs, memory, program=""):
+        captured["repo_root"] = str(repo_root)
+        captured["techs"] = list(techs)
+        payload = {
+            "schema_version": 2,
+            "target": target,
+            "generated_at": "2026-07-19T00:00:00Z",
+            "coverage_status": "ready",
+            "inventory": {"status": "ready", "components": [], "hosts": [], "stats": {}},
+            "sources": [],
+            "advisories": [{
                 "id": "CVE-2026-0001",
-                "source": "NVD",
-                "tech": "nextjs",
+                "aliases": ["CVE-2026-0001"],
+                "component": {"name": "next.js", "version": "15.2.1"},
+                "applicability": "affected",
                 "severity": "CRITICAL",
                 "summary": "Test CVE",
-                "published": "2026-04-01T00:00:00Z",
-            }
-        ]
+                "score_hint": 100,
+                "source_refs": [],
+            }],
+            "critical": [{
+                "id": "CVE-2026-0001",
+                "aliases": ["CVE-2026-0001"],
+                "component": {"name": "next.js", "version": "15.2.1"},
+                "applicability": "affected",
+                "severity": "CRITICAL",
+                "summary": "Test CVE",
+                "score_hint": 100,
+                "source_refs": [],
+            }],
+            "high": [],
+            "info": [],
+            "memory_context": {},
+            "identity_intel": {},
+            "total": 1,
+            "stats": {"component_count": 1, "advisory_count": 1},
+        }
+        intel_engine.write_intel_artifact(repo_root, target, payload)
+        return payload
 
-    monkeypatch.setattr(intel_engine, "fetch_all_intel", fake_fetch_all_intel)
-    monkeypatch.setattr(
-        intel_engine,
-        "run_identity_intel",
-        lambda target: {
-            "emailfinder_status": "missing",
-            "leaksearch_status": "missing",
-            "email_count": 0,
-            "leak_line_count": 0,
-            "artifact_dir": str(tmp_path / "evidence" / target / "identity_intel"),
-        },
-    )
+    monkeypatch.setattr(intel_engine, "build_target_intel", fake_build_target_intel)
 
     dispatcher = _build_dispatcher(domain, tmp_path / "agent_session.json")
     output = dispatcher.dispatch("run_intel", {"memory_dir": str(tmp_hunt_dir)})
 
     assert "next.js" in captured["techs"]
     assert "graphql" in captured["techs"]
+    assert captured["repo_root"] == str(tmp_path)
     assert "INTEL: target.com" in output
     assert "CVE-2026-0001" in output
     intel_json = tmp_path / "recon" / domain / "intel.json"

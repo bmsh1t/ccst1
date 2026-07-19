@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 import intel_engine
 import intelligence_extractor
 from intel_engine import load_memory_context, prioritize_intel
+from tools.intel_sources import IntelSourceError
 
 
 @pytest.fixture
@@ -369,37 +371,36 @@ class TestStandaloneTechResolution:
     def test_main_uses_memory_tech_when_cli_missing(self, memory_dir, monkeypatch, capsys):
         captured = {}
 
-        def fake_fetch(techs, target, program=""):
-            captured["techs"] = list(techs)
+        def fake_build(repo_root, target, *, techs, memory, program=""):
+            captured["repo_root"] = repo_root
             captured["target"] = target
-            return []
-
-        monkeypatch.setattr(intel_engine, "fetch_all_intel", fake_fetch)
-        monkeypatch.setattr(
-            intel_engine,
-            "prioritize_intel",
-            lambda results, memory: {
+            captured["techs"] = list(techs)
+            return {
+                "schema_version": 2,
+                "target": target,
+                "coverage_status": "ready",
+                "inventory": {"components": []},
+                "sources": [],
+                "advisories": [],
                 "critical": [],
                 "high": [],
                 "info": [],
                 "memory_context": {"tech_stack": memory.get("tech_stack", [])},
-                "total": len(results),
-            },
-        )
+                "identity_intel": {},
+                "total": 0,
+            }
+
+        monkeypatch.setattr(intel_engine, "build_target_intel", fake_build)
         monkeypatch.setattr(intel_engine, "format_output", lambda target, intel: f"OK:{target}")
-        monkeypatch.setattr(intel_engine, "run_identity_intel", lambda target: {"emailfinder_status": "missing"})
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            ["intel_engine.py", "--target", "target.com", "--memory-dir", str(memory_dir)],
-        )
+        result = intel_engine.main(["--target", "target.com", "--memory-dir", str(memory_dir)])
 
-        intel_engine.main()
-
-        out = capsys.readouterr().out
+        captured_io = capsys.readouterr()
+        out = captured_io.out
+        assert result == 0
         assert captured["target"] == "target.com"
         assert captured["techs"] == ["nextjs", "graphql", "postgresql"]
-        assert "Tech:" in out
+        assert out.strip() == "OK:target.com"
+        assert "target=target.com" in captured_io.err
 
     def test_main_canonicalizes_url_target_for_all_consumers(self, tmp_path, monkeypatch, capsys):
         captured = {}
@@ -408,36 +409,41 @@ class TestStandaloneTechResolution:
             "load_memory_context",
             lambda memory_dir, target: captured.setdefault("memory_target", target) or {},
         )
-        monkeypatch.setattr(intel_engine, "resolve_tech_stack", lambda target, techs, memory: ["flask"])
         monkeypatch.setattr(
             intel_engine,
-            "fetch_all_intel",
-            lambda techs, target, program="": captured.setdefault("fetch_target", target) or [],
+            "resolve_tech_stack",
+            lambda target, techs, memory, **_kwargs: ["flask"],
         )
-        monkeypatch.setattr(
-            intel_engine,
-            "prioritize_intel",
-            lambda results, memory: {"critical": [], "high": [], "info": [], "total": 0},
-        )
-        monkeypatch.setattr(
-            intel_engine,
-            "run_identity_intel",
-            lambda target: captured.setdefault("identity_target", target) or {},
-        )
-        monkeypatch.setattr(intel_engine, "format_output", lambda target, intel: f"OK:{target}")
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            ["intel_engine.py", "--target", "http://127.0.0.1:3002/#/login", "--tech", "flask"],
-        )
+        def fake_build(repo_root, target, *, techs, memory, program=""):
+            captured["build_target"] = target
+            return {
+                "schema_version": 2,
+                "target": target,
+                "coverage_status": "ready",
+                "inventory": {"components": []},
+                "sources": [],
+                "advisories": [],
+                "critical": [],
+                "high": [],
+                "info": [],
+                "identity_intel": {},
+                "total": 0,
+            }
 
-        intel_engine.main()
+        monkeypatch.setattr(intel_engine, "build_target_intel", fake_build)
+        monkeypatch.setattr(intel_engine, "format_output", lambda target, intel: f"OK:{target}")
+        result = intel_engine.main([
+            "--target",
+            "http://127.0.0.1:3002/#/login",
+            "--tech",
+            "flask",
+        ])
 
         assert captured == {
             "memory_target": "127.0.0.1:3002",
-            "fetch_target": "127.0.0.1:3002",
-            "identity_target": "127.0.0.1:3002",
+            "build_target": "127.0.0.1:3002",
         }
+        assert result == 0
         assert "OK:127.0.0.1:3002" in capsys.readouterr().out
 
     def test_main_uses_recon_tech_when_memory_empty(self, tmp_path, monkeypatch, capsys):
@@ -451,50 +457,289 @@ class TestStandaloneTechResolution:
             encoding="utf-8",
         )
 
-        def fake_fetch(techs, target, program=""):
+        def fake_build(repo_root, target, *, techs, memory, program=""):
             captured["techs"] = list(techs)
-            return []
-
-        monkeypatch.setattr(intel_engine, "fetch_all_intel", fake_fetch)
-        monkeypatch.setattr(
-            intel_engine,
-            "prioritize_intel",
-            lambda results, memory: {
+            return {
+                "schema_version": 2,
+                "target": target,
+                "coverage_status": "ready",
+                "inventory": {"components": []},
+                "sources": [],
+                "advisories": [],
                 "critical": [],
                 "high": [],
                 "info": [],
                 "memory_context": {"tech_stack": memory.get("tech_stack", [])},
-                "total": len(results),
-            },
-        )
-        monkeypatch.setattr(intel_engine, "format_output", lambda target, intel: f"OK:{target}")
-        monkeypatch.setattr(intel_engine, "run_identity_intel", lambda target: {"emailfinder_status": "missing"})
-        monkeypatch.setattr(intel_engine, "REPO_ROOT", str(tmp_path), raising=False)
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            ["intel_engine.py", "--target", "target.com", "--memory-dir", str(memory_dir)],
-        )
+                "identity_intel": {},
+                "total": 0,
+            }
 
-        intel_engine.main()
+        monkeypatch.setattr(intel_engine, "build_target_intel", fake_build)
+        monkeypatch.setattr(intel_engine, "format_output", lambda target, intel: f"OK:{target}")
+        monkeypatch.setattr(intel_engine, "REPO_ROOT", str(tmp_path), raising=False)
+        result = intel_engine.main(["--target", "target.com", "--memory-dir", str(memory_dir)])
 
         out = capsys.readouterr().out
+        assert result == 0
         assert captured["techs"] == ["nextjs", "graphql", "cloudflare"]
-        assert "Tech:" in out
+        assert out.strip() == "OK:target.com"
 
     def test_main_exits_when_no_tech_available(self, tmp_path, monkeypatch, capsys):
         memory_dir = tmp_path / "hunt-memory"
         (memory_dir / "targets").mkdir(parents=True)
         monkeypatch.setattr(intel_engine, "REPO_ROOT", str(tmp_path), raising=False)
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            ["intel_engine.py", "--target", "target.com", "--memory-dir", str(memory_dir)],
+        result = intel_engine.main(["--target", "target.com", "--memory-dir", str(memory_dir)])
+
+        captured = capsys.readouterr()
+        assert result == 1
+        assert captured.out == ""
+        assert "no technology components available" in captured.err
+
+    def test_json_error_path_is_still_valid_json(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(intel_engine, "REPO_ROOT", str(tmp_path), raising=False)
+
+        result = intel_engine.main([
+            "--target",
+            "target.com",
+            "--repo-root",
+            str(tmp_path),
+            "--json",
+        ])
+
+        captured = capsys.readouterr()
+        assert result == 1
+        assert json.loads(captured.out)["status"] == "error"
+        assert "intel error:" in captured.err
+
+    def test_json_mode_emits_only_machine_json(self, monkeypatch, capsys):
+        payload = {
+            "schema_version": 2,
+            "target": "target.com",
+            "coverage_status": "partial",
+            "inventory": {"components": []},
+            "sources": [],
+            "advisories": [],
+            "critical": [],
+            "high": [],
+            "info": [],
+            "identity_intel": {},
+            "total": 0,
+        }
+        monkeypatch.setattr(intel_engine, "build_target_intel", lambda *_args, **_kwargs: payload)
+
+        result = intel_engine.main(["--target", "target.com", "--tech", "next.js", "--json"])
+
+        captured = capsys.readouterr()
+        assert result == 0
+        assert json.loads(captured.out) == payload
+        assert "intel: target=target.com" in captured.err
+
+    def test_json_mode_returns_nonzero_for_full_source_failure(self, monkeypatch, capsys):
+        payload = {
+            "schema_version": 2,
+            "target": "target.com",
+            "coverage_status": "error",
+            "inventory": {"components": []},
+            "sources": [{"source": "osv", "status": "error", "error": "offline"}],
+            "advisories": [],
+            "critical": [],
+            "high": [],
+            "info": [],
+            "identity_intel": {},
+            "total": 0,
+        }
+        monkeypatch.setattr(intel_engine, "build_target_intel", lambda *_args, **_kwargs: payload)
+
+        result = intel_engine.main(["--target", "target.com", "--tech", "next.js", "--json"])
+
+        captured = capsys.readouterr()
+        assert result == 2
+        assert json.loads(captured.out)["coverage_status"] == "error"
+
+
+class TestIntelV2Pipeline:
+
+    def test_build_merges_sources_enriches_and_repeats_without_duplicates(self, tmp_path):
+        live = tmp_path / "recon" / "target.com" / "live"
+        live.mkdir(parents=True)
+        (live / "httpx_full.txt").write_text(
+            "https://target.com [200] [1234] [Target] [Next.js:15.2.1]\n",
+            encoding="utf-8",
+        )
+        now = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
+
+        def fetcher(url, **kwargs):
+            if "api.osv.dev" in url:
+                return {"vulns": [{
+                    "id": "GHSA-test-0001",
+                    "aliases": ["CVE-2026-0001"],
+                    "summary": "Middleware authorization bypass",
+                    "published": "2026-07-18T00:00:00Z",
+                    "modified": "2026-07-19T00:00:00Z",
+                    "database_specific": {"severity": "HIGH"},
+                    "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "15.2.2"}]}]}],
+                    "references": [{"url": "https://github.com/advisories/GHSA-test-0001"}],
+                }]}
+            if "api.github.com" in url:
+                return [{
+                    "ghsa_id": "GHSA-test-0001",
+                    "cve_id": "CVE-2026-0001",
+                    "severity": "critical",
+                    "summary": "Middleware authorization bypass",
+                    "published_at": "2026-07-18T00:00:00Z",
+                    "updated_at": "2026-07-19T00:00:00Z",
+                    "cvss": {"score": 9.8},
+                    "identifiers": [
+                        {"type": "GHSA", "value": "GHSA-test-0001"},
+                        {"type": "CVE", "value": "CVE-2026-0001"},
+                    ],
+                    "vulnerabilities": [{
+                        "vulnerable_version_range": "< 15.2.2",
+                        "first_patched_version": {"identifier": "15.2.2"},
+                    }],
+                    "html_url": "https://github.com/advisories/GHSA-test-0001",
+                }]
+            if "services.nvd.nist.gov" in url:
+                return {"vulnerabilities": [{"cve": {
+                    "id": "CVE-2026-0001",
+                    "published": "2026-07-18T00:00:00Z",
+                    "lastModified": "2026-07-19T00:00:00Z",
+                    "descriptions": [{"lang": "en", "value": "Middleware authorization bypass"}],
+                    "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 9.8, "baseSeverity": "CRITICAL"}}]},
+                }}]}
+            if "cisa.gov" in url:
+                return {"vulnerabilities": [{"cveID": "CVE-2026-0001", "dateAdded": "2026-07-19"}]}
+            if "api.first.org" in url:
+                return {"data": [{
+                    "cve": "CVE-2026-0001",
+                    "epss": "0.91",
+                    "percentile": "0.99",
+                    "date": "2026-07-19",
+                }]}
+            raise AssertionError(url)
+
+        first = intel_engine.build_target_intel(
+            tmp_path,
+            "target.com",
+            techs=[],
+            memory={"tested_cves": [], "patterns": [], "tested_endpoints": []},
+            fetcher=fetcher,
+            include_identity=False,
+            now=now,
+        )
+        second = intel_engine.build_target_intel(
+            tmp_path,
+            "target.com",
+            techs=[],
+            memory={"tested_cves": [], "patterns": [], "tested_endpoints": []},
+            fetcher=fetcher,
+            include_identity=False,
+            now=now,
         )
 
-        with pytest.raises(SystemExit) as exc:
-            intel_engine.main()
+        assert first["coverage_status"] == "ready"
+        assert first["stats"]["component_count"] == 1
+        assert len(first["advisories"]) == 1
+        assert [item["id"] for item in second["advisories"]] == ["CVE-2026-0001"]
+        advisory = first["advisories"][0]
+        assert advisory["id"] == "CVE-2026-0001"
+        assert advisory["applicability"] == "affected"
+        assert advisory["score_hint"] >= 90
+        assert advisory["score_reasons"]
+        assert advisory["kev"] is True
+        assert advisory["epss"] == 0.91
+        assert {ref["source"] for ref in advisory["source_refs"]} == {
+            "osv",
+            "github_advisory",
+            "nvd",
+        }
+        artifact = json.loads(
+            (tmp_path / "recon" / "target.com" / "intel.json").read_text(encoding="utf-8")
+        )
+        assert artifact == second
+        assert artifact["advisories"][0]["score_hint"] == advisory["score_hint"]
 
-        out = capsys.readouterr().out
-        assert exc.value.code == 1
-        assert "No tech stack specified" in out
+    def test_alias_bridge_merges_previously_separate_identifiers(self):
+        component = {"name": "next.js", "version": "15.2.1"}
+        merged = intel_engine.merge_advisory_items([
+            {"items": [{
+                "id": "GHSA-test-0002",
+                "aliases": [],
+                "source": "osv",
+                "component": component,
+                "source_refs": [{"source": "osv", "id": "GHSA-test-0002", "url": "osv"}],
+            }]},
+            {"items": [{
+                "id": "CVE-2026-0002",
+                "aliases": [],
+                "source": "nvd",
+                "component": component,
+                "source_refs": [{"source": "nvd", "id": "CVE-2026-0002", "url": "nvd"}],
+            }]},
+            {"items": [{
+                "id": "GHSA-test-0002",
+                "aliases": ["CVE-2026-0002"],
+                "source": "github_advisory",
+                "component": component,
+                "source_refs": [{"source": "github_advisory", "id": "GHSA-test-0002", "url": "gh"}],
+            }]},
+        ])
+
+        assert len(merged) == 1
+        assert merged[0]["id"] == "CVE-2026-0002"
+        assert merged[0]["aliases"] == ["CVE-2026-0002", "GHSA-TEST-0002"]
+        assert len(merged[0]["source_refs"]) == 3
+
+    def test_local_nuclei_signal_enriches_matching_cve_without_creating_finding(self, tmp_path):
+        findings_dir = tmp_path / "findings" / "target.com"
+        findings_dir.mkdir(parents=True)
+        findings_path = findings_dir / "findings.json"
+        original = {
+            "schema_version": 1,
+            "target": "target.com",
+            "findings": [{
+                "id": "scan-1",
+                "template_id": "CVE-2026-0003",
+                "source_file": "findings/target.com/cve/nuclei.txt",
+                "validation_status": "unvalidated",
+            }],
+        }
+        findings_path.write_text(json.dumps(original), encoding="utf-8")
+
+        local = intel_engine.load_local_advisory_signals(tmp_path, "target.com")
+        enriched = intel_engine.enrich_advisories(
+            [{"id": "CVE-2026-0003", "aliases": ["CVE-2026-0003"]}],
+            {"items": {}},
+            {"items": {}},
+            local,
+        )
+
+        assert local["status"] == "ok"
+        assert enriched[0]["nuclei_templates"] == ["CVE-2026-0003"]
+        assert enriched[0]["local_evidence_refs"][0]["finding_id"] == "scan-1"
+        assert json.loads(findings_path.read_text(encoding="utf-8")) == original
+
+    def test_all_advisory_sources_fail_but_artifact_is_published(self, tmp_path):
+        live = tmp_path / "recon" / "target.com" / "live"
+        live.mkdir(parents=True)
+        (live / "httpx_full.txt").write_text(
+            "https://target.com [200] [1234] [Target] [Next.js:15.2.1]\n",
+            encoding="utf-8",
+        )
+
+        def failing_fetcher(*_args, **_kwargs):
+            raise IntelSourceError("offline")
+
+        payload = intel_engine.build_target_intel(
+            tmp_path,
+            "target.com",
+            techs=[],
+            memory={"tested_cves": [], "patterns": [], "tested_endpoints": []},
+            fetcher=failing_fetcher,
+            include_identity=False,
+        )
+
+        assert payload["coverage_status"] == "error"
+        assert payload["advisories"] == []
+        assert {source["status"] for source in payload["sources"][:3]} == {"error"}
+        assert (tmp_path / "recon" / "target.com" / "intel.json").is_file()

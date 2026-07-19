@@ -768,27 +768,20 @@ def _extract_recon_candidates(domain):
 
 
 def _extract_recon_tech_stack(domain, limit=12):
-    """Collect a normalized tech stack from recon/live/httpx_full.txt."""
-    httpx_path = _first_existing_path(_recon_file_candidates(domain, "live/httpx_full.txt"))
-    if not httpx_path or not os.path.isfile(httpx_path):
-        return []
+    """从共享组件清单读取目标级技术名称。"""
+    try:
+        from tools.technology_inventory import (
+            component_labels,
+            load_or_build_inventory_for_recon_dir,
+        )
+    except ImportError:  # pragma: no cover - top-level tools/ execution
+        from technology_inventory import component_labels, load_or_build_inventory_for_recon_dir
 
-    techs = []
-    with open(httpx_path, encoding="utf-8") as f:
-        for line in f:
-            matches = re.findall(r"\[([^\]]+)\]", line)
-            if len(matches) < 3:
-                continue
-
-            for tech in matches[2].split(","):
-                normalized = tech.strip().lower()
-                if normalized and not normalized.isdigit():
-                    techs.append(normalized)
-
-            if len(techs) >= limit:
-                break
-
-    return _dedupe_keep_order(techs)[:limit]
+    inventory = load_or_build_inventory_for_recon_dir(
+        _resolve_recon_dir(domain),
+        target=domain,
+    )
+    return component_labels(inventory, include_versions=False, limit=limit)
 
 
 def _load_report_findings(domain):

@@ -575,7 +575,7 @@ Token / Meme coin 风险扫描：
 | `/remember` | 将发现、端点、技术栈和成功模式写入记忆 |
 | `/pickup` | 续接历史目标 |
 | `/autopilot` | 运行自治测试循环 |
-| `/intel` | 拉取 CVE、披露报告和本地记忆情报 |
+| `/intel` | 按组件/版本生成 OSV/GHSA/NVD advisory，并用 KEV/EPSS 和本地证据富化 |
 | `/source-hunt` | 扫描源码泄露和 CI/CD 风险 |
 | `/chain` | 辅助构造 A→B→C 漏洞链 |
 | `/web3-audit` | 智能合约审计辅助 |
@@ -637,7 +637,8 @@ Token / Meme coin 风险扫描：
 | `tools/observation_inventory.py` | 完整中性 observation owner、轻量 summary sidecar 与 revision-bound page/cursor |
 | `tools/resume.py` | 历史目标续接摘要 |
 | `tools/remember.py` | 发现与模式记忆写入 |
-| `tools/intel_engine.py` | 情报聚合 |
+| `tools/technology_inventory.py` | 统一解析 httpx 组件/版本并发布派生清单 |
+| `tools/intel_engine.py` | Intel v2 聚合、适用性、优先级提示和原子 artifact 发布 |
 | `tools/validate.py` | 发现验证与 CVSS 4.0 |
 | `tools/report_generator.py` | 报告生成 |
 | `tools/token_scanner.py` | Token 风险扫描 |

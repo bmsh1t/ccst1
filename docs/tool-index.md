@@ -16,8 +16,9 @@
 | `tools/cloud_recon.sh` | Target brand likely owns buckets | S3/Azure/GCP discovery + CloudFlare origin reveal |
 | `tools/cve_hunter.py` | After httpx tech detection | Match detected stack against public CVE DBs |
 | `tools/cve_scan.sh` | Pre-engagement nuclei sweep | Fast nuclei pass scoped to known CVE templates |
-| `tools/intel_engine.py` | Need CVE+disclosure intel pre-attack | `/intel` backend — fetches advisories and disclosed reports |
-| `tools/learn.py` | Tech stack research | Compat backend used by `/intel`; gathers attack-class context |
+| `tools/intel_engine.py` | Concrete component/version needs current applicability review | `/intel` owner — OSV/GHSA/NVD + KEV/EPSS, local CVE-template signals, atomic `intel.json` |
+| `tools/technology_inventory.py` | Multiple consumers need reliable httpx tech/version data | Shared JSONL/text parser and atomic component inventory owner |
+| `tools/learn.py` | Legacy tech-stack research | Compatibility backend; not the schema-v2 Intel artifact owner |
 | `tools/scope_checker.py` | Verifying target classification | Deterministic host/URL classifier against active target set |
 | `tools/target_paths.py` | Computing per-target storage keys | Normalize target string for `recon/`/`findings/` directories |
 | `tools/target_selector.py` | Pulling H1 public program info | Query HackerOne directory API for public programs |

@@ -2477,22 +2477,24 @@ class ToolDispatcher:
 
     def _run_intel(self, domain: str, tech: str = "", program: str = "", memory_dir: str = "") -> str:
         from tools.intel_engine import (
-            fetch_all_intel,
+            build_target_intel,
             format_output,
             load_memory_context,
-            prioritize_intel,
-            run_identity_intel,
         )
+        from tools.technology_inventory import component_labels, load_or_build_inventory
 
         resolved_memory_dir = self._resolve_memory_dir(memory_dir)
         memory = load_memory_context(resolved_memory_dir, domain)
+        h = _h()
+        repo_root = Path(h.RECON_DIR).parent
 
         techs = [item.strip().lower() for item in tech.split(",") if item.strip()]
         for item in memory.get("tech_stack", []):
             normalized = str(item).strip().lower()
             if normalized and normalized not in techs:
                 techs.append(normalized)
-        for item in _h()._extract_recon_tech_stack(domain, limit=12):
+        inventory = load_or_build_inventory(repo_root, domain)
+        for item in component_labels(inventory, include_versions=True, limit=12):
             normalized = str(item).strip().lower()
             if normalized and normalized not in techs:
                 techs.append(normalized)
@@ -2503,30 +2505,14 @@ class ToolDispatcher:
                 f"Run read_recon_summary or pass tech explicitly before run_intel."
             )
 
-        results = fetch_all_intel(techs, domain, program)
-        intel = prioritize_intel(results, memory)
-        intel["identity_intel"] = run_identity_intel(domain)
-        self._write_intel_artifact(domain, intel)
+        intel = build_target_intel(
+            repo_root,
+            domain,
+            techs=techs,
+            memory=memory,
+            program=program,
+        )
         return format_output(domain, intel)
-
-    def _write_intel_artifact(self, domain: str, intel: dict) -> None:
-        """Persist structured /intel output for later surface reranking."""
-        h = _h()
-        recon_dir = h._resolve_recon_dir(domain)
-        try:
-            os.makedirs(recon_dir, exist_ok=True)
-            payload = {
-                "target": domain,
-                "generated_at": datetime.now().astimezone().isoformat(),
-                **intel,
-            }
-            Path(os.path.join(recon_dir, "intel.json")).write_text(
-                json.dumps(payload, indent=2),
-                encoding="utf-8",
-            )
-        except Exception:
-            # Intel persistence is an optimization for rerank; do not fail the hunt.
-            return
 
     def _remember_finding(
         self,
