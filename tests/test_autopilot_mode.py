@@ -1470,3 +1470,29 @@ def test_autopilot_agent_md_bootstraps_state_first_without_coverage_first():
     assert "python3 tools/coverage_matrix.py find-gaps --target <target>" not in four_layer
     assert "python3 tools/checkpoint.py --target <target>" not in four_layer
     assert "do not let them drive first contact" in four_layer
+
+
+def test_autopilot_prompts_keep_broad_scanner_bounded_without_limiting_ai():
+    """常规 scanner 使用有界 owner，长尾与专项能力仍由 AI 按证据展开。"""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    for relative_path in ("commands/autopilot.md", "agents/autopilot.md"):
+        text = (root / relative_path).read_text(encoding="utf-8")
+        flat = " ".join(text.split())
+        assert "rules/hunting.md#broad-scanner-input-and-completion-contract" in text
+        assert "tools/hunt.py --target <target_shell> --scan-only --quick" in text
+        assert "never feed raw historical corpora directly to general nuclei" in flat
+        assert "not repeated because Deep mode or raw URL volume is large" in flat
+        assert "Bounded Surface is the default window, not an AI capability limit" in flat
+        assert "targeted lists/templates" in flat
+        assert "killed/stopped/timeout/non-zero is incomplete" in flat
+
+    hunting = (root / "rules/hunting.md").read_text(encoding="utf-8")
+    assert "urls/all.txt" in hunting
+    assert "all_historical.txt" in hunting
+    assert "gau、wayback、waymore" in hunting
+    assert "Surface page/source/shape" in hunting
+    assert "targeted templates" in hunting
+    assert "input 正常走到 consolidation" in hunting
+    assert "不得解释为零发现或 scanner complete" in hunting

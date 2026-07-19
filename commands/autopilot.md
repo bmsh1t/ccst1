@@ -29,7 +29,7 @@ explicit confirmation before any sync, and never sync automatically.
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
 existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
 ```
-Super-pentester priority: business impact > workflow evidence > crown-jewel hypothesis > scanner/coverage hints. Scanner quick is a breadth sensor and advisory lead source; scanner-negative is not completion.
+Super-pentester priority: business impact > workflow evidence > crown-jewel hypothesis > scanner/coverage hints. Scanner quick is a breadth sensor and advisory lead source; scanner-negative is not completion. Broad scanner execution follows `rules/hunting.md#broad-scanner-input-and-completion-contract`: use `tools/hunt.py --target <target_shell> --scan-only --quick` for the normal breadth pass; never feed raw historical corpora directly to general nuclei. A successful quick pass is not repeated because Deep mode or raw URL volume is large. Bounded Surface is the default window, not an AI capability limit: page/search raw evidence or build evidence-driven targeted lists/templates when needed. killed/stopped/timeout/non-zero is incomplete, never zero findings or scanner complete.
 ## Tool Index
 Before unusual/non-default helpers, scan `docs/tool-index.md` once per session.
 Canonical runtime references: `skills/runtime-protocol.md`, `rules/red-lines.md`,

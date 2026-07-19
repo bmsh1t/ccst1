@@ -287,6 +287,21 @@ and bounded replay/diff. Use AI reasoning for hypothesis generation, surface
 selection, cross-evidence links, validation design, and promotion/demotion.
 Scanner and replay output is evidence, not an attack-surface verdict.
 
+### Broad scanner input and completion contract
+
+- 常规 broad breadth 只通过
+  `python3 tools/hunt.py --target <target_shell> --scan-only --quick` 进入现有
+  scanner owner 和单 target runtime lock。
+- `urls/all.txt`、`all_historical.txt`、gau、wayback、waymore 等 raw corpus 是完整
+  证据语料，不是通用 nuclei 的默认输入。已成功完成的 quick breadth 不因 Deep
+  模式、raw URL 数量或空结果而重复执行。
+- bounded Surface/projection 只是默认消费窗口，不是 AI 能力上限。需要长尾证据时，
+  可按 Surface page/source/shape 分页、用 `rg` 查询 raw artifact，或根据具体组件、
+  CVE、路径、参数和行为证据构造专项列表并运行 targeted templates。
+- `summary.json` 只证明本轮选定的 live/priority scanner input 正常走到 consolidation；
+  不表示历史 URL 全量扫描、tested-clean、目标安全或攻击面耗尽。
+  killed/stopped/timeout/non-zero 都是 incomplete，不得解释为零发现或 scanner complete。
+
 ## 7. IMPACT-FIRST HUNTING
 
 Ask: "What's the worst thing that could happen if auth was broken here?"

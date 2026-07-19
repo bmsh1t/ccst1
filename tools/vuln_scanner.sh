@@ -263,6 +263,8 @@ PY
 }
 
 mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,metasploit,manual_review,.tmp}
+# summary 只代表本轮正常完成；在任何可能中止的扫描工作前清除上一轮摘要。
+rm -f "$FINDINGS_DIR/summary.txt" "$FINDINGS_DIR/summary.json"
 : > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
 : > "$FINDINGS_DIR/manual_review/open_200_api.txt"
 : > "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
@@ -307,6 +309,7 @@ from pathlib import Path
 
 target, session_id, scan_mode, recon_dir, findings_dir, skip_checks, live_count, ordered_scan, output_path = sys.argv[1:]
 findings_root = Path(findings_dir)
+recon_root = Path(recon_dir)
 ordered_scan_path = Path(ordered_scan)
 
 categories = [
@@ -403,6 +406,9 @@ summary = {
     "mode": scan_mode,
     "recon_dir": recon_dir,
     "findings_dir": findings_dir,
+    "input_contract": "live-priority-targets",
+    "raw_url_count": count_lines(recon_root / "urls" / "all.txt"),
+    "parameter_url_count": count_lines(recon_root / "urls" / "with_params.txt"),
     "live_count": int(live_count or 0),
     "ordered_scan_count": count_lines(ordered_scan_path),
     "ordered_scan_file": str(ordered_scan_path),

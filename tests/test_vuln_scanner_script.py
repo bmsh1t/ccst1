@@ -214,6 +214,9 @@ def test_vuln_scanner_writes_structured_summary_json(tmp_path):
     assert summary["schema_version"] == 1
     assert summary["target"] == "example.com"
     assert summary["mode"] == "quick"
+    assert summary["input_contract"] == "live-priority-targets"
+    assert summary["raw_url_count"] == 0
+    assert summary["parameter_url_count"] == 0
     assert summary["live_count"] == 1
     assert summary["ordered_scan_count"] == 1
     assert summary["skipped_checks"] == ["all"]
@@ -226,6 +229,89 @@ def test_vuln_scanner_writes_structured_summary_json(tmp_path):
     assert index["target"] == "example.com"
     assert index["total"] == 0
     assert index["findings"] == []
+
+
+def test_vuln_scanner_keeps_historical_corpus_out_of_ordered_scan(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    recon_dir = tmp_path / "recon" / "large.example"
+    live_dir = recon_dir / "live"
+    urls_dir = recon_dir / "urls"
+    priority_dir = recon_dir / "priority"
+    findings_dir = tmp_path / "findings"
+    live_dir.mkdir(parents=True)
+    urls_dir.mkdir()
+    priority_dir.mkdir()
+
+    (live_dir / "urls.txt").write_text(
+        "https://127.0.0.1:10\nhttps://127.0.0.1:11\n",
+        encoding="utf-8",
+    )
+    (priority_dir / "critical_hosts.txt").write_text(
+        "https://127.0.0.1:9\nhttps://127.0.0.1:10\n",
+        encoding="utf-8",
+    )
+    raw_urls = "".join(
+        f"https://large.example/archive/{index}?id={index}\n"
+        for index in range(19_000)
+    )
+    (urls_dir / "all.txt").write_text(raw_urls, encoding="utf-8")
+    (urls_dir / "with_params.txt").write_text(
+        "https://large.example/a?id=1\n"
+        "https://large.example/a?id=2\n"
+        "https://large.example/a?id=2&id=1\n"
+        "https://large.example/a?id=1&id=2\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["FINDINGS_OUT_DIR"] = str(findings_dir)
+    env["PATH"] = "/usr/bin:/bin"
+
+    result = subprocess.run(
+        ["bash", str(script), str(recon_dir), "--quick", "--skip", "all"],
+        cwd=script.resolve().parent.parent,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    summary = json.loads((findings_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["input_contract"] == "live-priority-targets"
+    assert summary["raw_url_count"] == 19_000
+    assert summary["parameter_url_count"] == 4
+    assert summary["ordered_scan_count"] == 3
+    assert len((urls_dir / "all.txt").read_text(encoding="utf-8").splitlines()) == 19_000
+
+
+def test_vuln_scanner_clears_stale_summary_before_early_exit(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    recon_dir = tmp_path / "recon" / "missing-live.example"
+    findings_dir = tmp_path / "findings"
+    recon_dir.mkdir(parents=True)
+    findings_dir.mkdir()
+    (findings_dir / "summary.txt").write_text("stale\n", encoding="utf-8")
+    (findings_dir / "summary.json").write_text('{"stale": true}\n', encoding="utf-8")
+    (findings_dir / "findings.json").write_text('{"preserve": true}\n', encoding="utf-8")
+
+    env = os.environ.copy()
+    env["FINDINGS_OUT_DIR"] = str(findings_dir)
+    env["PATH"] = "/usr/bin:/bin"
+
+    result = subprocess.run(
+        ["bash", str(script), str(recon_dir), "--quick", "--skip", "all"],
+        cwd=script.resolve().parent.parent,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not (findings_dir / "summary.txt").exists()
+    assert not (findings_dir / "summary.json").exists()
+    assert (findings_dir / "findings.json").is_file()
 
 
 def test_vuln_scanner_skips_xss_by_default(tmp_path):
