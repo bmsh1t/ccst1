@@ -13,14 +13,22 @@ try:
     from tools.intel_artifact import IntelArtifactError, read_intel_artifact
     from tools.intel_sources import DEFAULT_COMPONENT_TTL_SECONDS
     from tools.target_paths import canonical_target_value, target_storage_key
-    from tools.technology_inventory import TechnologyInventoryError, read_inventory
+    from tools.technology_inventory import (
+        TechnologyInventoryError,
+        inventory_source_binding_matches,
+        read_inventory,
+    )
     from tools.web_intel_artifact import load_web_intel_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import FINAL_STATUSES, load_queue  # type: ignore
     from intel_artifact import IntelArtifactError, read_intel_artifact  # type: ignore
     from intel_sources import DEFAULT_COMPONENT_TTL_SECONDS  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
-    from technology_inventory import TechnologyInventoryError, read_inventory  # type: ignore
+    from technology_inventory import (  # type: ignore
+        TechnologyInventoryError,
+        inventory_source_binding_matches,
+        read_inventory,
+    )
     from web_intel_artifact import load_web_intel_projection  # type: ignore
 
 
@@ -67,14 +75,18 @@ def _score_hint(item: dict) -> int:
         return 0
 
 
-def _final_queue_dispositions(repo_root: str | Path, target: str) -> dict[str, list[str]]:
-    dispositions: dict[str, list[str]] = {}
+def _final_queue_dispositions(repo_root: str | Path, target: str) -> dict[str, list[dict]]:
+    dispositions: dict[str, list[dict]] = {}
     try:
         queue = load_queue(repo_root, target)
     except ValueError:
         return dispositions
     for item in queue.get("actions") or []:
-        if not isinstance(item, dict) or str(item.get("status") or "") not in FINAL_STATUSES:
+        if (
+            not isinstance(item, dict)
+            or str(item.get("status") or "") not in FINAL_STATUSES
+            or str(item.get("type") or "") != "intel-advisory"
+        ):
             continue
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         material = json.dumps(
@@ -87,8 +99,9 @@ def _final_queue_dispositions(repo_root: str | Path, target: str) -> dict[str, l
             },
             ensure_ascii=False,
         )
+        disposition = {"metadata": metadata, "material": material.lower()}
         for match in _IDENTIFIER_RE.finditer(material):
-            dispositions.setdefault(match.group(0).upper(), []).append(material.lower())
+            dispositions.setdefault(match.group(0).upper(), []).append(disposition)
     return dispositions
 
 
@@ -101,33 +114,111 @@ def _advisory_identifiers(item: dict) -> set[str]:
     }
 
 
-def _has_final_disposition(item: dict, dispositions: dict[str, list[str]]) -> bool:
-    """同一 advisory 只有在观测版本也一致时才复用既有终态。"""
+def _strict_token_present(material: str, value: str) -> bool:
+    """匹配完整组件/版本 token，避免 `1.2` 命中 `1.20`。"""
+    token = str(value or "").strip().lower()
+    if not token:
+        return False
+    return bool(
+        re.search(
+            rf"(?<![a-z0-9._+~-]){re.escape(token)}(?![a-z0-9._+~-])",
+            material,
+        )
+    )
+
+
+def _metadata_disposition_matches(item: dict, metadata: dict) -> bool | None:
+    """返回结构化 binding 的匹配结果；无 binding 字段时交给 legacy 文本。"""
+    component_binding = metadata.get("component")
+    has_binding = any(
+        key in metadata
+        for key in (
+            "advisory_id",
+            "component",
+            "component_name",
+            "version",
+            "component_version",
+        )
+    )
+    if not has_binding:
+        return None
+
+    if isinstance(component_binding, dict):
+        bound_name = str(
+            component_binding.get("name") or component_binding.get("display_name") or ""
+        ).strip().lower()
+        has_version = "version" in component_binding or "version" in metadata
+        bound_version = str(
+            component_binding.get("version")
+            if "version" in component_binding
+            else metadata.get("version") or ""
+        ).strip().lower()
+    else:
+        bound_name = str(
+            metadata.get("component_name") or component_binding or ""
+        ).strip().lower()
+        has_version = "version" in metadata or "component_version" in metadata
+        bound_version = str(
+            metadata.get("version")
+            if "version" in metadata
+            else metadata.get("component_version") or ""
+        ).strip().lower()
+
+    advisory_id = str(metadata.get("advisory_id") or "").strip().upper()
+    component = item.get("component") if isinstance(item.get("component"), dict) else {}
+    expected_name = str(component.get("name") or "").strip().lower()
+    expected_version = str(component.get("version") or "").strip().lower()
+    return bool(
+        advisory_id in _advisory_identifiers(item)
+        and bound_name
+        and bound_name == expected_name
+        and has_version
+        and bound_version == expected_version
+    )
+
+
+def _legacy_disposition_matches(item: dict, material: str) -> bool:
     component = item.get("component") if isinstance(item.get("component"), dict) else {}
     name = str(component.get("name") or "").strip().lower()
     version = str(component.get("version") or "").strip().lower()
+    if not name or not _strict_token_present(material, name):
+        return False
+    if version:
+        return _strict_token_present(material, version)
+    unknown_markers = (
+        f"{name}@unknown",
+        f"{name} version unknown",
+        f"{name} unknown version",
+    )
+    return any(marker in material for marker in unknown_markers)
+
+
+def _has_final_disposition(item: dict, dispositions: dict[str, list[dict]]) -> bool:
+    """同一 advisory 只有在观测版本也一致时才复用既有终态。"""
     for identifier in _advisory_identifiers(item):
-        for material in dispositions.get(identifier, []):
-            if version and version in material:
+        for disposition in dispositions.get(identifier, []):
+            metadata = (
+                disposition.get("metadata")
+                if isinstance(disposition.get("metadata"), dict)
+                else {}
+            )
+            metadata_match = _metadata_disposition_matches(item, metadata)
+            if metadata_match is True:
                 return True
-            if not version and name and any(
-                marker in material
-                for marker in (
-                    f"{name}@unknown",
-                    f"{name} version unknown",
-                    f"{name} unknown version",
-                )
+            if metadata_match is None and _legacy_disposition_matches(
+                item,
+                str(disposition.get("material") or ""),
             ):
                 return True
     return False
 
 
-def _bound_inventory_paths(repo: Path, inventory: dict) -> list[Path]:
+def _bound_inventory_sources(repo: Path, inventory: dict) -> list[tuple[dict, Path]]:
     """只检查 owner 实际绑定的 raw 输入，避免兼容副本制造刷新循环。"""
     sources = inventory.get("sources") if isinstance(inventory.get("sources"), list) else []
     if not sources and isinstance(inventory.get("source"), dict):
         sources = [inventory["source"]]
-    paths = []
+    bound_sources = []
     for source in sources:
         if not isinstance(source, dict):
             continue
@@ -135,8 +226,9 @@ def _bound_inventory_paths(repo: Path, inventory: dict) -> list[Path]:
         if not raw_value:
             continue
         raw_path = Path(raw_value)
-        paths.append(raw_path if raw_path.is_absolute() else repo / raw_path)
-    return paths
+        resolved_path = raw_path if raw_path.is_absolute() else repo / raw_path
+        bound_sources.append((source, resolved_path))
+    return bound_sources
 
 
 def _high_value_advisory(item: dict) -> bool:
@@ -188,7 +280,8 @@ def inspect_intel_continuation(
             "reason": f"technology inventory is invalid: {exc}",
         }
     inventory_mtime = _mtime_ns(inventory_path)
-    bound_paths = _bound_inventory_paths(repo, current_inventory)
+    bound_sources = _bound_inventory_sources(repo, current_inventory)
+    bound_paths = [path for _binding, path in bound_sources]
     if any(not path.is_file() for path in bound_paths):
         return {
             **base,
@@ -200,6 +293,15 @@ def inspect_intel_continuation(
             **base,
             "action": "run_intel",
             "reason": "software/service observations are newer than the unified inventory",
+        }
+    if any(
+        not inventory_source_binding_matches(binding, path)
+        for binding, path in bound_sources
+    ):
+        return {
+            **base,
+            "action": "run_intel",
+            "reason": "software/service observation binding changed since the unified inventory",
         }
     if not intel_path.is_file():
         return {

@@ -774,6 +774,14 @@ def _binding_matches(binding: dict, path: Path, source_format: str) -> bool:
     return binding.get("sha256") == _source_binding(path, source_format).get("sha256")
 
 
+def inventory_source_binding_matches(binding: dict, path: str | Path) -> bool:
+    """校验 inventory 中的一条 raw source binding 是否仍精确命中。"""
+    source_format = str(binding.get("format") or "")
+    if source_format not in SOURCE_FORMATS:
+        return False
+    return _binding_matches(binding, Path(path), source_format)
+
+
 def _source_manifest_matches(payload: dict, sources: list[tuple[Path, str]]) -> bool:
     bindings = payload.get("sources") if isinstance(payload.get("sources"), list) else []
     if not bindings and isinstance(payload.get("source"), dict) and payload.get("source"):

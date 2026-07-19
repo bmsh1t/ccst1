@@ -15,6 +15,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -25,6 +26,7 @@ DEFAULT_COMPONENT_TTL_SECONDS = 6 * 60 * 60
 DEFAULT_KEV_TTL_SECONDS = 6 * 60 * 60
 DEFAULT_EPSS_TTL_SECONDS = 24 * 60 * 60
 EPSS_BATCH_SIZE = 100
+DEFAULT_COMPONENT_CONCURRENCY = 4
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 GITHUB_ADVISORY_URL = "https://api.github.com/advisories"
@@ -38,6 +40,22 @@ class IntelSourceError(RuntimeError):
 
 
 JsonFetcher = Callable[..., object]
+
+
+def _map_queries_in_order(
+    queries: list[dict],
+    worker: Callable[[dict], tuple[dict, dict | None, str]],
+    *,
+    max_workers: int,
+) -> list[tuple[dict, dict | None, str]]:
+    """有界并发执行独立 query，并保持输入顺序供稳定合并。"""
+    if not queries:
+        return []
+    worker_count = max(1, min(int(max_workers), len(queries)))
+    if worker_count == 1:
+        return [worker(query) for query in queries]
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        return list(executor.map(worker, queries))
 
 
 PACKAGE_MAPPINGS: dict[str, dict] = {
@@ -440,9 +458,11 @@ def fetch_osv_for_components(
     fetcher: JsonFetcher = fetch_json,
     ttl_seconds: int = DEFAULT_COMPONENT_TTL_SECONDS,
     now: datetime | None = None,
+    max_workers: int = DEFAULT_COMPONENT_CONCURRENCY,
 ) -> dict:
+    component_queries = build_component_queries(components)
     queries = [
-        item for item in build_component_queries(components)
+        item for item in component_queries
         if item.get("package") and item.get("osv_ecosystem") and item.get("version")
     ]
     items: list[dict] = []
@@ -450,7 +470,8 @@ def fetch_osv_for_components(
     cached_count = 0
     stale_count = 0
     fetched_at_values: list[str] = []
-    for component in queries:
+
+    def fetch_component(component: dict) -> tuple[dict, dict | None, str]:
         request_body = {
             "package": {
                 "name": component["package"],
@@ -477,7 +498,16 @@ def fetch_osv_for_components(
                 now=now,
             )
         except IntelSourceError as exc:
-            errors.append(f"{component['name']}@{component['version']}: {exc}")
+            return component, None, f"{component['name']}@{component['version']}: {exc}"
+        return component, result, ""
+
+    for component, result, error in _map_queries_in_order(
+        queries,
+        fetch_component,
+        max_workers=max_workers,
+    ):
+        if error or result is None:
+            errors.append(error)
             continue
         cached_count += int(result["cached"])
         stale_count += int(result["stale"])
@@ -493,7 +523,7 @@ def fetch_osv_for_components(
         "osv",
         items,
         eligible=len(queries),
-        total_components=len(build_component_queries(components)),
+        total_components=len(component_queries),
         errors=errors,
         cached_count=cached_count,
         stale_count=stale_count,
@@ -571,9 +601,11 @@ def fetch_github_advisories_for_components(
     fetcher: JsonFetcher = fetch_json,
     ttl_seconds: int = DEFAULT_COMPONENT_TTL_SECONDS,
     now: datetime | None = None,
+    max_workers: int = DEFAULT_COMPONENT_CONCURRENCY,
 ) -> dict:
+    component_queries = build_component_queries(components)
     queries = [
-        item for item in build_component_queries(components)
+        item for item in component_queries
         if item.get("package") and item.get("github_ecosystem")
     ]
     items: list[dict] = []
@@ -581,7 +613,8 @@ def fetch_github_advisories_for_components(
     cached_count = 0
     stale_count = 0
     fetched_at_values: list[str] = []
-    for component in queries:
+
+    def fetch_component(component: dict) -> tuple[dict, dict | None, str]:
         affects = component["package"]
         if component.get("version"):
             affects += f"@{component['version']}"
@@ -613,7 +646,20 @@ def fetch_github_advisories_for_components(
                 now=now,
             )
         except IntelSourceError as exc:
-            errors.append(f"{component['name']}@{component.get('version') or '?'}: {exc}")
+            return (
+                component,
+                None,
+                f"{component['name']}@{component.get('version') or '?'}: {exc}",
+            )
+        return component, result, ""
+
+    for component, result, error in _map_queries_in_order(
+        queries,
+        fetch_component,
+        max_workers=max_workers,
+    ):
+        if error or result is None:
+            errors.append(error)
             continue
         cached_count += int(result["cached"])
         stale_count += int(result["stale"])
@@ -629,7 +675,7 @@ def fetch_github_advisories_for_components(
         "github_advisory",
         items,
         eligible=len(queries),
-        total_components=len(build_component_queries(components)),
+        total_components=len(component_queries),
         errors=errors,
         cached_count=cached_count,
         stale_count=stale_count,

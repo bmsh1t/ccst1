@@ -4,7 +4,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
-from tools.action_queue import add_manual_action, resolve_action
+from tools.action_queue import add_manual_action, resolve_action, save_queue
 from tools.intel_artifact import write_intel_artifact
 from tools.intel_continuation import apply_intel_continuation, inspect_intel_continuation
 from tools.technology_inventory import load_or_build_inventory
@@ -255,6 +255,117 @@ def test_final_disposition_for_old_component_version_does_not_close_new_version(
     assert state["advisory"]["component"]["version"] == "4.16.3"
 
 
+def test_unrelated_final_action_does_not_close_advisory(tmp_path):
+    _prepare_inventory(tmp_path)
+    _write_intel(tmp_path, _intel(advisories=[_advisory()]))
+    added = add_manual_action(
+        tmp_path,
+        target="target.test",
+        action_type="validation",
+        evidence="CVE-2026-63030 reviewed against GiveWP 4.16.3",
+        next_question="Does an unrelated validation close Intel?",
+        action="Validate another hypothesis",
+    )
+    resolve_action(
+        tmp_path,
+        target="target.test",
+        action_id=added["queue"]["actions"][0]["id"],
+        status="tested",
+        result="Unrelated validation completed",
+    )
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "test_advisory_applicability"
+
+
+def test_legacy_disposition_uses_exact_version_boundary(tmp_path):
+    _prepare_inventory(tmp_path)
+    advisory = _advisory()
+    advisory["component"]["version"] = "1.2"
+    _write_intel(tmp_path, _intel(advisories=[advisory]))
+    added = add_manual_action(
+        tmp_path,
+        target="target.test",
+        action_type="intel-advisory",
+        evidence="CVE-2026-63030 reviewed against GiveWP 1.20",
+        next_question="Is the other version reachable?",
+        action="Test CVE-2026-63030 applicability on GiveWP 1.20",
+    )
+    resolve_action(
+        tmp_path,
+        target="target.test",
+        action_id=added["queue"]["actions"][0]["id"],
+        status="tested",
+        result="GiveWP 1.20 route not reachable",
+    )
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "test_advisory_applicability"
+    assert state["advisory"]["component"]["version"] == "1.2"
+
+
+def test_exact_advisory_metadata_closes_without_legacy_text_binding(tmp_path):
+    _prepare_inventory(tmp_path)
+    _write_intel(tmp_path, _intel(advisories=[_advisory()]))
+    added = add_manual_action(
+        tmp_path,
+        target="target.test",
+        action_type="intel-advisory",
+        evidence="Structured advisory review",
+        next_question="Is the exact bound advisory resolved?",
+        action="Record the bound advisory result",
+    )
+    action = added["queue"]["actions"][0]
+    action["metadata"] = {
+        "advisory_id": "CVE-2026-63030",
+        "component": "givewp",
+        "version": "4.16.3",
+    }
+    save_queue(tmp_path, "target.test", added["queue"])
+    resolve_action(
+        tmp_path,
+        target="target.test",
+        action_id=action["id"],
+        status="tested",
+        result="Bound advisory route not reachable",
+    )
+
+    assert inspect_intel_continuation(tmp_path, "target.test", now=NOW)["action"] == "complete"
+
+
+def test_mismatched_advisory_metadata_does_not_fall_back_to_matching_text(tmp_path):
+    _prepare_inventory(tmp_path)
+    _write_intel(tmp_path, _intel(advisories=[_advisory()]))
+    added = add_manual_action(
+        tmp_path,
+        target="target.test",
+        action_type="intel-advisory",
+        evidence="CVE-2026-63030 reviewed against GiveWP 4.16.3",
+        next_question="Does stale metadata override matching legacy text?",
+        action="Test CVE-2026-63030 applicability on GiveWP 4.16.3",
+    )
+    action = added["queue"]["actions"][0]
+    action["metadata"] = {
+        "advisory_id": "CVE-2026-63030",
+        "component": "givewp",
+        "version": "4.16.2",
+    }
+    save_queue(tmp_path, "target.test", added["queue"])
+    resolve_action(
+        tmp_path,
+        target="target.test",
+        action_id=action["id"],
+        status="tested",
+        result="Legacy text matches, structured version does not",
+    )
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "test_advisory_applicability"
+
+
 def test_unknown_version_requires_explicit_unknown_version_disposition(tmp_path):
     _prepare_inventory(tmp_path)
     advisory = _advisory()
@@ -339,6 +450,22 @@ def test_bound_inventory_source_change_or_removal_reopens_intel(tmp_path):
 
     assert missing["action"] == "run_intel"
     assert "source is missing" in missing["reason"]
+
+
+def test_same_size_source_replacement_with_restored_mtime_reopens_intel(tmp_path):
+    _recon, raw, _inventory = _prepare_inventory(tmp_path)
+    _write_intel(tmp_path, _intel())
+    original = raw.stat()
+    original_bytes = raw.read_bytes()
+    replacement = original_bytes.replace(b"4.16.3", b"4.16.4")
+    assert len(replacement) == len(original_bytes)
+    raw.write_bytes(replacement)
+    os.utime(raw, ns=(original.st_atime_ns, original.st_mtime_ns))
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "run_intel"
+    assert "binding changed" in state["reason"]
 
 
 def test_expired_intel_reopens_refresh(tmp_path):

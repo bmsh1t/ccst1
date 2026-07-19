@@ -1,6 +1,8 @@
 """Intel v2 远端来源、缓存与批量富化回归。"""
 
 import json
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from tools import intel_sources
@@ -177,6 +179,67 @@ def test_successful_empty_query_plus_failure_is_partial_not_error(tmp_path):
     assert result["status"] == "partial"
     assert result["items"] == []
     assert result["stats"]["attempted_queries"] == 2
+
+
+def test_osv_and_github_component_requests_are_bounded_concurrent_and_ordered(tmp_path):
+    components = [
+        _component(name=name, version="1.0")
+        for name in ("next.js", "django", "flask", "react", "express")
+    ]
+
+    def run(source):
+        lock = threading.Lock()
+        active = 0
+        peak = 0
+
+        def fetcher(url, **kwargs):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                time.sleep(0.03)
+                if source == "osv":
+                    package = kwargs["body"]["package"]["name"]
+                    return {"vulns": [{"id": f"OSV-{package}"}]}
+                affects = intel_sources.urllib.parse.parse_qs(
+                    intel_sources.urllib.parse.urlparse(url).query
+                )["affects"][0]
+                package = affects.split("@", 1)[0]
+                return [{"ghsa_id": f"GHSA-{package}"}]
+            finally:
+                with lock:
+                    active -= 1
+
+        if source == "osv":
+            result = intel_sources.fetch_osv_for_components(
+                components,
+                tmp_path / source,
+                fetcher=fetcher,
+                now=NOW,
+                max_workers=2,
+            )
+        else:
+            result = intel_sources.fetch_github_advisories_for_components(
+                components,
+                tmp_path / source,
+                fetcher=fetcher,
+                now=NOW,
+                max_workers=2,
+            )
+        return result, peak
+
+    osv, osv_peak = run("osv")
+    github, github_peak = run("github")
+
+    assert 1 < osv_peak <= 2
+    assert 1 < github_peak <= 2
+    assert [item["component"]["name"] for item in osv["items"]] == [
+        "next.js", "django", "flask", "react", "express",
+    ]
+    assert [item["component"]["name"] for item in github["items"]] == [
+        "next.js", "django", "flask", "react", "express",
+    ]
 
 
 def test_bad_response_shape_is_source_error_and_not_cached(tmp_path):
