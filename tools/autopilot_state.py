@@ -1037,6 +1037,27 @@ def _memory_action_hint(text: str) -> str:
     return "execute smallest safe evidence-producing step"
 
 
+_NUCLEI_ACTION_RE = re.compile(r"\bnuclei\b", re.IGNORECASE)
+_RAW_NUCLEI_CORPUS_RE = re.compile(
+    r"(?:"
+    r"\ball_historical\.txt\b|"
+    r"\ball\.txt\b|"
+    r"\bwith_params\.txt\b|"
+    r"\b(?:gau|wayback|waymore)(?:urls)?\.txt\b|"
+    r"\b(?:raw|historical)\s+(?:urls?|corpus|archive)\b|"
+    r"\b(?:gau|wayback|waymore)\s+urls?\b|"
+    r"历史\s*(?:URL|url|链接|语料|全集)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _memory_nuclei_action_requires_replan(text: str) -> bool:
+    """识别违反 broad-scanner 输入契约的旧 Nuclei 建议。"""
+    value = str(text or "")
+    return bool(_NUCLEI_ACTION_RE.search(value) and _RAW_NUCLEI_CORPUS_RE.search(value))
+
+
 _MEMORY_EVIDENCE_REF_RE = re.compile(
     r"\b(?:evidence(?:_ref)?|raw_(?:request|response|artifact)(?:_path)?)\s*[:=]\s*([^\s,;]+)",
     re.IGNORECASE,
@@ -1095,6 +1116,18 @@ def _build_memory_action_queue(
             "action": text,
             "command_hint": _memory_action_hint(text),
         }
+        if _memory_nuclei_action_requires_replan(text):
+            entry.update(
+                {
+                    "status": "requires_replan",
+                    "executable": False,
+                    "command_hint": (
+                        "use tools/hunt.py --target <target> --scan-only --quick for broad coverage, "
+                        "or build an evidence-driven targeted list with explicit tags/templates"
+                    ),
+                    "replan_reason": "raw historical URL corpora are not general Nuclei inputs",
+                }
+            )
         if evidence_ref:
             entry["evidence_ref"] = evidence_ref
             entry["evidence_available"] = _memory_evidence_available(repo_root, evidence_ref)
@@ -1112,6 +1145,8 @@ def _select_memory_candidate(memory_action_queue: list[dict]) -> dict:
     synchronisation existed.
     """
     for item in memory_action_queue:
+        if item.get("executable") is False:
+            continue
         if str(item.get("command_hint") or "") == "/validate":
             return item
     return {}
@@ -1890,9 +1925,15 @@ def format_autopilot_state(state: dict) -> str:
         if memory_action_queue:
             lines.append("Memory action queue:")
             for item in memory_action_queue[:5]:
+                contract = ""
+                if item.get("status"):
+                    contract = (
+                        f" | status: {item.get('status')}"
+                        f" | executable: {str(item.get('executable', True)).lower()}"
+                    )
                 lines.append(
                     f"- {item.get('id', '-')}: {item.get('action', '')} "
-                    f"| hint: {item.get('command_hint', '')}"
+                    f"| hint: {item.get('command_hint', '')}{contract}"
                 )
         memory_candidate = state.get("memory_candidate_next") or {}
         if memory_candidate:
@@ -1972,9 +2013,15 @@ def format_autopilot_state(state: dict) -> str:
     if memory_action_queue:
         lines.append("Memory action queue:")
         for item in memory_action_queue[:5]:
+            contract = ""
+            if item.get("status"):
+                contract = (
+                    f" | status: {item.get('status')}"
+                    f" | executable: {str(item.get('executable', True)).lower()}"
+                )
             lines.append(
                 f"- {item.get('id', '-')}: {item.get('action', '')} "
-                f"| hint: {item.get('command_hint', '')}"
+                f"| hint: {item.get('command_hint', '')}{contract}"
             )
     memory_candidate = state.get("memory_candidate_next") or {}
     if memory_candidate:

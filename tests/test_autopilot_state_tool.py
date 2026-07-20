@@ -322,6 +322,50 @@ class TestAutopilotState:
         assert "Memory action queue:" in output
         assert "continue org API role diff" in output
 
+    def test_legacy_raw_corpus_nuclei_action_requires_replan_without_memory_mutation(self, tmp_path):
+        repo_root = tmp_path
+        target_memory_path = repo_root / "memory" / "goals" / "targets" / "target.com.json"
+        target_memory_path.parent.mkdir(parents=True)
+        target_memory_path.write_text(
+            json.dumps(
+                {
+                    "target": "target.com",
+                    "next_actions": [
+                        {"text": "Run /validate after nuclei on 19K wayback URLs"},
+                        {"text": "Run nuclei -l all.txt -severity high,critical"},
+                        {
+                            "text": (
+                                "Run nuclei -tags cve -id CVE-2026-1234 against "
+                                "https://app.target.com/admin"
+                            )
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        original_bytes = target_memory_path.read_bytes()
+
+        state = build_autopilot_state(
+            str(repo_root),
+            "target.com",
+            memory_dir=str(repo_root / "hunt-memory"),
+        )
+        output = format_autopilot_state(state)
+
+        stale, stale_file, targeted = state["memory_action_queue"]
+        assert stale["action"] == "Run /validate after nuclei on 19K wayback URLs"
+        for item in (stale, stale_file):
+            assert item["status"] == "requires_replan"
+            assert item["executable"] is False
+            assert "scan-only --quick" in item["command_hint"]
+        assert state["memory_candidate_next"] == {}
+        assert targeted.get("status") is None
+        assert targeted.get("executable", True) is True
+        assert target_memory_path.read_bytes() == original_bytes
+        assert "status: requires_replan" in output
+        assert "executable: false" in output
+
     def test_target_memory_validate_candidate_preempts_generic_resume_and_requires_artifact(self, tmp_path):
         repo_root = tmp_path
         memory_dir = repo_root / "hunt-memory"
