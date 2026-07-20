@@ -1497,3 +1497,17 @@ def test_autopilot_prompts_keep_broad_scanner_bounded_without_limiting_ai():
     assert "targeted templates" in hunting
     assert "input 正常走到 consolidation" in hunting
     assert "不得解释为零发现或 scanner complete" in hunting
+
+
+def test_autopilot_prompts_separate_runner_replay_from_final_validation():
+    """证据 runner 与最终 validate 必须保持两条不可混用的 CLI 契约。"""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    for relative_path in ("commands/autopilot.md", "agents/autopilot.md"):
+        text = (root / relative_path).read_text(encoding="utf-8")
+        assert "python3 tools/validation_runner.py <lane> --target" in text
+        assert "its first positional argument is `<lane>`" in text
+        assert "`validation_runner.py` never accepts `--decision-json`" in text
+        assert "python3 tools/validate.py --target" in text
+        assert "`--decision-json` is a JSON file path, never inline JSON" in text
