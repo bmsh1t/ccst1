@@ -1478,7 +1478,14 @@
         "rag",
         "tool-call",
         "invisible-unicode",
-        "unicode-tag"
+        "unicode-tag",
+        "agent-attack-chain",
+        "tool-description-drift",
+        "rug-pull",
+        "shadow-tool",
+        "schema-drift",
+        "cross-session-memory",
+        "multi-agent-impersonation"
       ],
       "source_refs_count": 1,
       "source_strength": "case-pointers",

@@ -1030,6 +1030,48 @@ def test_explicit_web_llm_focus_without_recon_routes_to_llm_card(tmp_path):
     assert any("Web LLM" in seed or "工具" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_agent_lifecycle_signals_route_to_web_llm_card(tmp_path):
+    signals = (
+        "MCP tool description changed",
+        "agent rug-pull observed",
+        "shadow_tool conflict",
+        "tool schema drift",
+        "cross-session-memory propagation",
+        "multi agent impersonation",
+    )
+
+    for signal in signals:
+        pack = build_context_pack(tmp_path, target="target.com", focus=f"API testing {signal}")
+        assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md", signal
+        assert pack["knowledge_cards"][0] == "knowledge/cards/web-llm-tool-chains.md", signal
+        assert "rules/playbook-router.md" in pack["required_checks"], signal
+        assert any("基础设施" in seed and "影响" in seed for seed in pack["hypothesis_seeds"]), signal
+
+
+def test_target_memory_agent_signal_routes_without_explicit_focus(tmp_path):
+    _seed_target_memory(
+        tmp_path,
+        "target.com",
+        {"active_leads": [{"text": "Observed cross-session memory propagation between agents"}]},
+    )
+
+    pack = build_context_pack(tmp_path, target="target.com")
+
+    assert pack["knowledge_cards"][0] == "knowledge/cards/web-llm-tool-chains.md"
+
+
+def test_broad_agent_signal_words_do_not_route_to_web_llm_card(tmp_path):
+    for focus in (
+        "OpenAPI schema drift",
+        "database server schema drift",
+        "crypto rug pull",
+        "session memory cache",
+        "shadow DOM component",
+    ):
+        pack = build_context_pack(tmp_path, target="target.com", focus=focus)
+        assert "knowledge/cards/web-llm-tool-chains.md" not in pack["knowledge_cards"], focus
+
+
 def test_unprotected_admin_access_control_prioritizes_auth_access(tmp_path):
     pack = build_context_pack(
         tmp_path,

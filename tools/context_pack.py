@@ -198,6 +198,35 @@ KNOWN_SKILL_OR_FOCUS = {
     "dead-end",
 }
 
+WEB_LLM_AGENT_SIGNAL_PATTERN = (
+    r"web[-_ ]?llm|llm|prompt[-_ ]?injection|indirect[-_ ]?prompt|rag|"
+    r"agent[-_ ]?tool|tool[-_ ]?call|model[-_ ]?context|agent[-_ ]?attack[-_ ]?chain|"
+    r"tool[-_ ]?descriptions?[-_ ]?(?:change(?:d)?|drift)|shadow[-_ ]?tool|"
+    r"cross[-_ ]?session[-_ ]?memory|"
+    r"multi[-_ ]?agent[-_ ]?impersonation"
+)
+WEB_LLM_AGENT_SIGNAL_RE = re.compile(rf"\b(?:{WEB_LLM_AGENT_SIGNAL_PATTERN})\b", re.I)
+WEB_LLM_AGENT_AMBIGUOUS_RE = re.compile(r"\b(?:rug[-_ ]?pull|schema[-_ ]?drift)\b", re.I)
+WEB_LLM_AGENT_CONTEXT_RE = re.compile(
+    r"\b(?:agent|mcp|tool|function[-_ ]?call|model|llm)\b",
+    re.I,
+)
+
+
+def _has_web_llm_agent_signal(text: str) -> bool:
+    """宽泛的 rug/schema 术语必须同时具备 Agent/工具上下文。"""
+
+    return bool(
+        text
+        and (
+            WEB_LLM_AGENT_SIGNAL_RE.search(text)
+            or (
+                WEB_LLM_AGENT_AMBIGUOUS_RE.search(text)
+                and WEB_LLM_AGENT_CONTEXT_RE.search(text)
+            )
+        )
+    )
+
 WEB2_VULN_FOCUS_RE = re.compile(
     r"\b("
     r"api[-_ ]?testing|api[-_ ]?test|business[-_ ]?logic|logic[-_ ]?flaws?|state[-_ ]?machine|workflow[-_ ]?validation|client[-_ ]?side[-_ ]?controls|"
@@ -214,7 +243,8 @@ WEB2_VULN_FOCUS_RE = re.compile(
     r"host[-_ ]?header|proxy[-_ ]?trust|request[-_ ]?smuggling|http[-_ ]?smuggling|cache[-_ ]?poisoning|cache[-_ ]?deception|"
     r"cors|csrf|xsrf|xss|reflected[-_ ]?xss|stored[-_ ]?xss|client[-_ ]?xss|csp|content[-_ ]?security[-_ ]?policy|sandbox[-_ ]?escape|dangling[-_ ]?markup|open[-_ ]?redirect|client[-_ ]?side[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|clickjacking|dom[-_ ]?xss|dom|websocket|cswsh|"
     r"grpc|grpc[-_ ]?web|protobuf|odata|ldap|xpath|next\.js|nextjs|_next|actuator|spring[-_ ]?boot|legacy[-_ ]?(?:auth|authentication)|shadow[-_ ]?throttle|cognito|identity[-_ ]?pool|kubernetes|k8s|kubelet|nodes?[/_-]?proxy|"
-    r"signature[-_ ]?scope|view[-_ ]?differential|allowlist|whitelist|sanitizer|connection[-_ ]?string|runtime[-_ ]?primitive|stale[-_ ]?authz|connection[-_ ]?reuse|redirect[-_ ]?header|xs[-_ ]?leak|cli[-_ ]?argument|non[-_ ]?parameterizable|type[-_ ]?confusion|second[-_ ]?order|payment[-_ ]?logic|postmessage|render[-_ ]?pipeline|information[-_ ]?disclosure|info[-_ ]?disclosure|web[-_ ]?llm|llm|essential[-_ ]?skills|"
+    r"signature[-_ ]?scope|view[-_ ]?differential|allowlist|whitelist|sanitizer|connection[-_ ]?string|runtime[-_ ]?primitive|stale[-_ ]?authz|connection[-_ ]?reuse|redirect[-_ ]?header|xs[-_ ]?leak|cli[-_ ]?argument|non[-_ ]?parameterizable|type[-_ ]?confusion|second[-_ ]?order|payment[-_ ]?logic|postmessage|render[-_ ]?pipeline|information[-_ ]?disclosure|info[-_ ]?disclosure|"
+    rf"{WEB_LLM_AGENT_SIGNAL_PATTERN}|essential[-_ ]?skills|"
     r"node\.js|nodejs|express|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|"
     r"missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|param[-_ ]?discovery|"
     r"path[-_ ]?pattern|management[-_ ]?exposure|admin[-_ ]?panel"
@@ -621,10 +651,7 @@ TOKEN_TO_CARDS = (
         ("information-disclosure-source-config",),
     ),
     (
-        re.compile(
-            r"\b(web[-_ ]?llm|llm|prompt[-_ ]?injection|indirect[-_ ]?prompt|rag|agent[-_ ]?tool|tool[-_ ]?call|model[-_ ]?context)\b",
-            re.I,
-        ),
+        WEB_LLM_AGENT_SIGNAL_RE,
         ("web-llm-tool-chains",),
     ),
     (
@@ -1107,7 +1134,7 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
         return "web2-recon", "用户 focus 指向 recon，需要先补攻击面输入再进入漏洞验证。"
     if "web2-vuln-classes" in focus_l:
         return "web2-vuln-classes", "用户 focus 指向 Web2 漏洞类别验证。"
-    if WEB2_VULN_FOCUS_RE.search(focus_l):
+    if WEB2_VULN_FOCUS_RE.search(focus_l) or _has_web_llm_agent_signal(focus):
         return "web2-vuln-classes", "用户 focus 已指向具体 Web2 漏洞类别，本轮直接进入验证路径。"
     if not ranked.get("available"):
         return "web2-recon", "本地 recon/surface 缓存不足，先补最小攻击面上下文。"
@@ -1251,7 +1278,7 @@ def _has_upload_execution_signal(text: str) -> bool:
 
 def _cards_from_focus(focus: str) -> list[str]:
     focus_l = focus.lower()
-    cards: list[str] = []
+    cards = ["web-llm-tool-chains"] if _has_web_llm_agent_signal(focus) else []
     for pattern, names in DISTILLED_TOKEN_TO_CARDS:
         if pattern.search(focus):
             cards.extend(names)
@@ -1469,14 +1496,6 @@ def _cards_from_focus(focus: str) -> list[str]:
         or "debug" in focus_l
     ):
         cards.append("information-disclosure-source-config")
-    if (
-        re.search(r"\bweb[-_ ]?llm\b", focus_l)
-        or re.search(r"\bllm\b", focus_l)
-        or re.search(r"\bprompt[-_ ]?injection\b", focus_l)
-        or re.search(r"\brag\b", focus_l)
-        or re.search(r"\bagent[-_ ]?tool\b", focus_l)
-    ):
-        cards.append("web-llm-tool-chains")
     if "essential-skills" in focus_l:
         cards.append("coverage-prompts")
     if re.search(r"\brce\b", focus_l) or COMMAND_INJECTION_RE.search(focus) or "shell-primitive" in focus_l:
@@ -1525,7 +1544,11 @@ def _select_cards_and_deferred(
     if not cards:
         cards.append("coverage-prompts")
     focus_l = focus.lower()
-    priority: list[str] = []
+    priority = (
+        ["web-llm-tool-chains"]
+        if _has_web_llm_agent_signal(f"{focus}\n{blob}")
+        else []
+    )
     api_business_logic_signal = _has_api_business_logic_signal(f"{focus}\n{blob}")
     browser_boundary_signal = _has_browser_client_boundary_signal(f"{focus}\n{blob}")
     websocket_realtime_signal = _has_websocket_realtime_signal(f"{focus}\n{blob}")
@@ -1797,13 +1820,6 @@ def _select_cards_and_deferred(
     ):
         priority.append("information-disclosure-source-config")
     if (
-        "web-llm" in focus_l
-        or "llm" in focus_l
-        or "prompt-injection" in focus_l
-        or re.search(r"\b(web[-_ ]?llm|llm|prompt[-_ ]?injection|indirect[-_ ]?prompt|rag|agent[-_ ]?tool|tool[-_ ]?call|model[-_ ]?context)\b", blob, re.I)
-    ):
-        priority.append("web-llm-tool-chains")
-    if (
         re.search(r"\b(?:node\.js|nodejs)\b", focus_l)
         or re.search(r"\bexpress\b", focus_l)
         or "prototype-pollution" in focus_l
@@ -1853,7 +1869,7 @@ def _required_checks(skill: str, blob: str) -> list[str]:
     ]
     if skill == "triage-validation":
         checks.append("rules/reporting.md")
-    if re.search(r"\b(jwt|oauth|graphql|api[-_ ]?testing|api[-_ ]?test|business[-_ ]?logic|logic[-_ ]?flaws?|state[-_ ]?machine|workflow[-_ ]?validation|password[-_ ]?reset|forgot[-_ ]?password|account[-_ ]?recovery|username[-_ ]?enum(?:eration)?|credential[-_ ]?attack|brute[-_ ]?force|lockout|access[-_ ]?control|method[-_ ]?based[-_ ]?access|referer[-_ ]?based[-_ ]?access|url[-_ ]?based[-_ ]?access|ssrf|upload|url[-_ ]?fetch|webhook|xxe|xml[-_ ]?parser|path[-_ ]?traversal|lfi|file[-_ ]?read|ssti|deserialization|deserialize|nosql|host[-_ ]?header|request[-_ ]?smuggling|cache[-_ ]?(?:poisoning|deception)|cors|csrf|clickjacking|open[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|xss|csp|content[-_ ]?security[-_ ]?policy|dom[-_ ]?xss|websocket|information[-_ ]?disclosure|web[-_ ]?llm)\b", blob, re.I):
+    if re.search(r"\b(jwt|oauth|graphql|api[-_ ]?testing|api[-_ ]?test|business[-_ ]?logic|logic[-_ ]?flaws?|state[-_ ]?machine|workflow[-_ ]?validation|password[-_ ]?reset|forgot[-_ ]?password|account[-_ ]?recovery|username[-_ ]?enum(?:eration)?|credential[-_ ]?attack|brute[-_ ]?force|lockout|access[-_ ]?control|method[-_ ]?based[-_ ]?access|referer[-_ ]?based[-_ ]?access|url[-_ ]?based[-_ ]?access|ssrf|upload|url[-_ ]?fetch|webhook|xxe|xml[-_ ]?parser|path[-_ ]?traversal|lfi|file[-_ ]?read|ssti|deserialization|deserialize|nosql|host[-_ ]?header|request[-_ ]?smuggling|cache[-_ ]?(?:poisoning|deception)|cors|csrf|clickjacking|open[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|xss|csp|content[-_ ]?security[-_ ]?policy|dom[-_ ]?xss|websocket|information[-_ ]?disclosure|web[-_ ]?llm)\b", blob, re.I) or _has_web_llm_agent_signal(blob):
         checks.append("rules/playbook-router.md")
     return _dedupe(checks)
 
@@ -2284,6 +2300,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
     if CARD_PATHS["web-llm-tool-chains"] in cards:
         seeds.extend([
             "Web LLM 先枚举模型可见上下文、可调用工具、数据源和权限边界；prompt injection 需要证明越权读、工具调用或业务动作影响。",
+            "Agent 覆盖按基础设施、感知、规划、记忆、行动、影响六阶段检查；阶段缺口只生成 evidence-driven next action，不能直接当成 finding。",
         ])
     if CARD_PATHS["node-prototype-pollution"] in cards:
         seeds.extend([

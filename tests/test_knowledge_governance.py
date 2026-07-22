@@ -215,6 +215,31 @@ def test_capability_registry_enforces_layer_and_loading_contracts():
     assert all(item.get("load") == "on-demand" for item in card_caps if item.get("layer") == "case-router")
 
 
+def test_web_llm_agent_signal_metadata_matches_registry_and_review():
+    expected = {
+        "agent-attack-chain",
+        "tool-description-drift",
+        "rug-pull",
+        "shadow-tool",
+        "schema-drift",
+        "cross-session-memory",
+        "multi-agent-impersonation",
+    }
+    registry = {item["id"]: item for item in _card_capabilities()}
+    document = parse_knowledge_document(
+        (_repo_root() / "knowledge/cards/web-llm-tool-chains.md").read_text(encoding="utf-8")
+    )
+    matrix = json.loads(
+        (_repo_root() / "knowledge/governance/value-review.json").read_text(encoding="utf-8")
+    )
+    review = next(item for item in matrix["cards"] if item["card_id"] == "web-llm-tool-chains")
+
+    assert document.metadata is not None
+    assert expected <= set(registry["web-llm-tool-chains"]["triggers"])
+    assert expected <= set(document.metadata["trigger_tags"])
+    assert expected <= set(review["trigger_tags"])
+
+
 def test_case_router_is_not_bound_to_hackerone_case_corpus():
     """case-router 是加载/路由层；案例来源只对已有蒸馏卡按需保留。"""
     registry = {Path(item["file"]).name: item for item in _card_capabilities()}

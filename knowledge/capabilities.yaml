@@ -459,6 +459,13 @@ capabilities:
       - rag
       - tool-call
       - prompt-injection
+      - agent-attack-chain
+      - tool-description-drift
+      - rug-pull
+      - shadow-tool
+      - schema-drift
+      - cross-session-memory
+      - multi-agent-impersonation
       - invisible-unicode
       - unicode-tag
   - id: websocket-realtime-api
