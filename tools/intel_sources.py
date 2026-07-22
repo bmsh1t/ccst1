@@ -10,11 +10,14 @@ import hashlib
 import json
 import os
 import re
+import signal
 import ssl
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +30,9 @@ DEFAULT_KEV_TTL_SECONDS = 6 * 60 * 60
 DEFAULT_EPSS_TTL_SECONDS = 24 * 60 * 60
 EPSS_BATCH_SIZE = 100
 DEFAULT_COMPONENT_CONCURRENCY = 4
+DEFAULT_NVD_MAX_SECONDS = 120.0
+DEFAULT_NVD_REQUEST_MAX_SECONDS = 25.0
+DEFAULT_NVD_RESULTS_PER_PAGE = 200
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 GITHUB_ADVISORY_URL = "https://api.github.com/advisories"
@@ -40,6 +46,29 @@ class IntelSourceError(RuntimeError):
 
 
 JsonFetcher = Callable[..., object]
+
+
+def _call_with_wall_timeout(call: Callable[[], object], seconds: float) -> object:
+    """在 POSIX 主线程中限制一次阻塞调用的真实墙钟时间。"""
+    try:
+        previous_timer = signal.getitimer(signal.ITIMER_REAL)
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        if previous_timer[0] > 0:
+            return call()
+
+        def _raise_timeout(_signum, _frame):
+            raise TimeoutError(f"wall-clock timeout after {seconds:g}s")
+
+        signal.signal(signal.SIGALRM, _raise_timeout)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+    except (AttributeError, ValueError):
+        return call()
+
+    try:
+        return call()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def _map_queries_in_order(
@@ -700,6 +729,77 @@ def _nvd_cvss(cve: dict) -> tuple[float | None, str]:
     return None, "UNKNOWN"
 
 
+_NVD_BRANCH_BEFORE_RE = re.compile(
+    r"\b(?P<branch>\d+(?:\.\d+){1,2})\.[xX*]\s+"
+    r"(?:versions?\s+)?(?:before|prior\s+to)\s+v?"
+    r"(?P<fixed>\d+(?:\.\d+){1,3})\b",
+    re.IGNORECASE,
+)
+_STRICT_NUMERIC_VERSION_RE = re.compile(r"^\d+(?:\.\d+){1,3}$")
+
+
+def _nvd_summary_version_boundary(summary: str, component: dict) -> dict:
+    """从明确的 NVD 英文摘要中提取保守的数字分支边界。"""
+    text = str(summary or "").strip()
+    labels = {
+        str(component.get(key) or "").strip()
+        for key in ("name", "display_name", "nvd_keyword")
+        if str(component.get(key) or "").strip()
+    }
+    if not text or not labels:
+        return {"applicability": "unknown", "fixed_versions": [], "affected_ranges": []}
+
+    boundaries = []
+    for sentence in re.split(r"(?<=[.!?;])\s+", text):
+        if not any(
+            re.match(
+                rf"^\s*(?:the\s+)?{re.escape(label)}"
+                r"(?:\s+(?:core|versions?|releases?))?\s+(?=\d)",
+                sentence,
+                re.IGNORECASE,
+            )
+            for label in labels
+        ):
+            continue
+        for match in _NVD_BRANCH_BEFORE_RE.finditer(sentence):
+            branch = match.group("branch")
+            fixed = match.group("fixed")
+            branch_parts = tuple(int(value) for value in branch.split("."))
+            fixed_parts = tuple(int(value) for value in fixed.split("."))
+            if fixed_parts[:len(branch_parts)] != branch_parts:
+                continue
+            boundaries.append({
+                "type": "NVD_DESCRIPTION",
+                "source": "nvd_description",
+                "branch": f"{branch}.x",
+                "fixed": fixed,
+            })
+
+    fixed_versions = list(dict.fromkeys(item["fixed"] for item in boundaries))
+    observed = str(component.get("version") or "").strip()
+    if not boundaries or not _STRICT_NUMERIC_VERSION_RE.fullmatch(observed):
+        return {
+            "applicability": "unknown",
+            "fixed_versions": fixed_versions,
+            "affected_ranges": boundaries,
+        }
+
+    observed_parts = tuple(int(value) for value in observed.split("."))
+    matching = []
+    for boundary in boundaries:
+        branch_parts = tuple(int(value) for value in boundary["branch"][:-2].split("."))
+        fixed_parts = tuple(int(value) for value in boundary["fixed"].split("."))
+        if observed_parts[:len(branch_parts)] != branch_parts or len(observed_parts) != len(fixed_parts):
+            continue
+        matching.append("affected" if observed_parts < fixed_parts else "not_affected")
+    applicability = matching[0] if matching and len(set(matching)) == 1 else "unknown"
+    return {
+        "applicability": applicability,
+        "fixed_versions": fixed_versions,
+        "affected_ranges": boundaries,
+    }
+
+
 def _nvd_item(raw: dict, component: dict, fetched_at: str) -> dict | None:
     cve = raw.get("cve") if isinstance(raw.get("cve"), dict) else raw
     if not isinstance(cve, dict):
@@ -718,19 +818,25 @@ def _nvd_item(raw: dict, component: dict, fetched_at: str) -> dict | None:
         for item in cve.get("references") or []
         if isinstance(item, dict) and str(item.get("url") or "").strip()
     ]
+    configurations = cve.get("configurations") or []
+    summary_boundary = (
+        _nvd_summary_version_boundary(summary, component)
+        if not configurations
+        else {"applicability": "unknown", "fixed_versions": [], "affected_ranges": configurations}
+    )
     return {
         "id": cve_id,
         "aliases": [cve_id],
         "source": "nvd",
         "component": _component_ref(component),
-        "applicability": "unknown",
+        "applicability": summary_boundary["applicability"],
         "severity": severity,
         "cvss": cvss,
         "summary": summary[:500],
         "published": str(cve.get("published") or ""),
         "modified": str(cve.get("lastModified") or ""),
-        "fixed_versions": [],
-        "affected_ranges": cve.get("configurations") or [],
+        "fixed_versions": summary_boundary["fixed_versions"],
+        "affected_ranges": summary_boundary["affected_ranges"],
         "poc_available": any(_reference_has_poc_signal(url) for url in references),
         "source_refs": [{
             "source": "nvd",
@@ -750,9 +856,12 @@ def fetch_nvd_for_components(
     ttl_seconds: int = DEFAULT_COMPONENT_TTL_SECONDS,
     now: datetime | None = None,
     max_components: int = 20,
+    max_seconds: float = DEFAULT_NVD_MAX_SECONDS,
 ) -> dict:
     if max_components < 1:
         raise ValueError("max_components must be >= 1")
+    if max_seconds <= 0:
+        raise ValueError("max_seconds must be > 0")
     eligible_queries = []
     for item in build_component_queries(components):
         keyword = str(item.get("nvd_keyword") or "").strip()
@@ -774,81 +883,135 @@ def fetch_nvd_for_components(
     cached_count = 0
     stale_count = 0
     fetched_at_values: list[str] = []
+    attempted_queries = 0
+    deadline = time.monotonic() + max_seconds
+    stop_nvd = False
+    api_key = os.environ.get("NVD_API_KEY", "").strip()
+    pending = deque()
     for component in queries:
         cpe_name = str(component.get("nvd_cpe") or "").strip()
         base_query = {"cpeName": cpe_name} if cpe_name else {
             "keywordSearch": component["nvd_keyword"]
         }
-        start_index = 0
-        while True:
-            query = {**base_query, "resultsPerPage": 2000, "startIndex": start_index}
-            url = f"{NVD_CVE_URL}?{urllib.parse.urlencode(query)}"
-            try:
-                result = cached_json_request(
-                    repo_root,
-                    source="nvd",
-                    query=query,
-                    ttl_seconds=ttl_seconds,
-                    request=lambda request_url=url: _require_object_collection(
-                        fetcher(request_url, timeout=25),
-                        source="nvd",
-                        field="vulnerabilities",
-                    ),
-                    validate=lambda payload: _require_object_collection(
-                        payload,
-                        source="nvd",
-                        field="vulnerabilities",
-                    ),
-                    now=now,
-                )
-            except IntelSourceError as exc:
-                errors.append(f"{component['name']}@{component.get('version') or '?'}: {exc}")
-                break
-            cached_count += int(result["cached"])
-            stale_count += int(result["stale"])
-            fetched_at_values.append(str(result["fetched_at"]))
-            if result["error"]:
-                errors.append(
-                    f"{component['name']}@{component.get('version') or '?'}: {result['error']}"
-                )
-            payload = result["data"] if isinstance(result["data"], dict) else {}
-            page = payload.get("vulnerabilities") or []
-            for raw in page:
-                if isinstance(raw, dict):
-                    item = _nvd_item(raw, component, result["fetched_at"])
-                    if item is not None:
-                        items.append(item)
+        pending.append((component, base_query, 0))
 
-            try:
-                total_results = int(payload.get("totalResults"))
-            except (TypeError, ValueError):
-                total_results = start_index + len(page)
-            try:
-                response_start = int(payload.get("startIndex", start_index))
-            except (TypeError, ValueError):
-                response_start = start_index
-            if response_start != start_index:
+    while pending and not stop_nvd:
+        component, base_query, start_index = pending.popleft()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            partial_reasons.append(
+                f"NVD time budget exhausted after {max_seconds:g}s; "
+                "preserved cached/fetched pages for the next run"
+            )
+            break
+        if start_index == 0:
+            attempted_queries += 1
+        query = {
+            **base_query,
+            "resultsPerPage": DEFAULT_NVD_RESULTS_PER_PAGE,
+            "startIndex": start_index,
+        }
+        url = f"{NVD_CVE_URL}?{urllib.parse.urlencode(query)}"
+        request_timeout = max(
+            0.01,
+            min(DEFAULT_NVD_REQUEST_MAX_SECONDS, remaining),
+        )
+        try:
+            result = cached_json_request(
+                repo_root,
+                source="nvd",
+                query=query,
+                ttl_seconds=ttl_seconds,
+                request=lambda request_url=url: _require_object_collection(
+                    _call_with_wall_timeout(
+                        lambda: fetcher(
+                            request_url,
+                            timeout=request_timeout,
+                            headers={"apiKey": api_key} if api_key else None,
+                        ),
+                        request_timeout,
+                    ),
+                    source="nvd",
+                    field="vulnerabilities",
+                ),
+                validate=lambda payload: _require_object_collection(
+                    payload,
+                    source="nvd",
+                    field="vulnerabilities",
+                ),
+                now=now,
+            )
+        except IntelSourceError as exc:
+            detail = f"{component['name']}@{component.get('version') or '?'}: {exc}"
+            if re.search(r"\bHTTP (?:403|429)\b", str(exc)):
+                partial_reasons.append(f"NVD rate limit stopped remaining queries: {detail}")
+                stop_nvd = True
+            elif "wall-clock timeout" in str(exc):
+                partial_reasons.append(f"NVD request timeout; continuing other components: {detail}")
+            else:
+                errors.append(detail)
+            continue
+        cached_count += int(result["cached"])
+        stale_count += int(result["stale"])
+        fetched_at_values.append(str(result["fetched_at"]))
+        if result["error"]:
+            detail = (
+                f"{component['name']}@{component.get('version') or '?'}: "
+                f"{result['error']}"
+            )
+            if re.search(r"\bHTTP (?:403|429)\b", str(result["error"])):
                 partial_reasons.append(
-                    f"NVD pagination start mismatch for {component['name']}: "
-                    f"requested {start_index}, received {response_start}"
+                    f"NVD rate limit stopped remaining queries: {detail}"
                 )
-                break
-            next_index = start_index + len(page)
-            if next_index >= total_results:
-                break
-            if not page:
+                stop_nvd = True
+            elif "wall-clock timeout" in str(result["error"]):
                 partial_reasons.append(
-                    f"NVD pagination stopped early for {component['name']}: "
-                    f"received {next_index} of {total_results} results"
+                    f"NVD request timeout; continuing other components: {detail}"
                 )
-                break
-            start_index = next_index
+            else:
+                errors.append(detail)
+        payload = result["data"] if isinstance(result["data"], dict) else {}
+        page = payload.get("vulnerabilities") or []
+        for raw in page:
+            if isinstance(raw, dict):
+                item = _nvd_item(raw, component, result["fetched_at"])
+                if item is not None:
+                    items.append(item)
+
+        # stale cache 已保留可用页，但限流后不能继续分页或查询其它组件。
+        if stop_nvd:
+            break
+
+        try:
+            total_results = int(payload.get("totalResults"))
+        except (TypeError, ValueError):
+            total_results = start_index + len(page)
+        try:
+            response_start = int(payload.get("startIndex", start_index))
+        except (TypeError, ValueError):
+            response_start = start_index
+        if response_start != start_index:
+            partial_reasons.append(
+                f"NVD pagination start mismatch for {component['name']}: "
+                f"requested {start_index}, received {response_start}"
+            )
+            continue
+        next_index = start_index + len(page)
+        if next_index >= total_results:
+            continue
+        if not page:
+            partial_reasons.append(
+                f"NVD pagination stopped early for {component['name']}: "
+                f"received {next_index} of {total_results} results"
+            )
+            continue
+        pending.append((component, base_query, next_index))
 
     return _source_envelope(
         "nvd",
         items,
         eligible=len(eligible_queries),
-        attempted=len(queries),
+        attempted=attempted_queries,
         total_components=len(build_component_queries(components)),
         errors=errors,
         partial_reasons=partial_reasons,

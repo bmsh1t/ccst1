@@ -410,6 +410,77 @@ def test_github_and_nvd_projection_keep_applicability_distinction(tmp_path):
     assert nvd["items"][0]["applicability"] == "unknown"
 
 
+def _nvd_wordpress_item(version: str, summary: str):
+    return intel_sources._nvd_item(
+        {
+            "cve": {
+                "id": "CVE-2026-63030",
+                "descriptions": [{"lang": "en", "value": summary}],
+            }
+        },
+        {
+            "name": "wordpress",
+            "display_name": "WordPress",
+            "version": version,
+            "hosts": ["target.test"],
+        },
+        "2026-07-21T00:00:00Z",
+    )
+
+
+def test_nvd_summary_boundary_marks_observed_branch_affected_or_fixed():
+    summary = (
+        "WordPress 6.9.x before 6.9.5 and 7.0.x before 7.0.2 is affected "
+        "by REST API route confusion."
+    )
+
+    affected = _nvd_wordpress_item("6.9.4", summary)
+    fixed = _nvd_wordpress_item("6.9.5", summary)
+    other_branch = _nvd_wordpress_item("7.0.1", summary)
+
+    assert affected["applicability"] == "affected"
+    assert fixed["applicability"] == "not_affected"
+    assert other_branch["applicability"] == "affected"
+    assert affected["fixed_versions"] == ["6.9.5", "7.0.2"]
+    assert [item["branch"] for item in affected["affected_ranges"]] == ["6.9.x", "7.0.x"]
+
+
+def test_nvd_summary_boundary_keeps_ambiguous_inputs_unknown():
+    summary = "WordPress 6.9.x before 6.9.5 is affected."
+
+    assert _nvd_wordpress_item("6.8.9", summary)["applicability"] == "unknown"
+    assert _nvd_wordpress_item("6.9.5-beta1", summary)["applicability"] == "unknown"
+    unrelated = _nvd_wordpress_item("6.9.4", "AnotherCMS 6.9.x before 6.9.5 is affected.")
+    assert unrelated["applicability"] == "unknown"
+    assert unrelated["fixed_versions"] == []
+    plugin = _nvd_wordpress_item(
+        "6.9.4",
+        "Example Forms plugin for WordPress 6.9.x before 6.9.5 is affected.",
+    )
+    assert plugin["applicability"] == "unknown"
+
+
+def test_nvd_structured_configurations_are_not_overridden_by_summary_parser():
+    item = intel_sources._nvd_item(
+        {
+            "cve": {
+                "id": "CVE-2026-0007",
+                "descriptions": [{
+                    "lang": "en",
+                    "value": "WordPress 6.9.x before 6.9.5 is affected.",
+                }],
+                "configurations": [{"nodes": [{"negate": False}]}],
+            }
+        },
+        {"name": "wordpress", "display_name": "WordPress", "version": "6.9.4"},
+        "2026-07-21T00:00:00Z",
+    )
+
+    assert item["applicability"] == "unknown"
+    assert item["fixed_versions"] == []
+    assert item["affected_ranges"] == [{"nodes": [{"negate": False}]}]
+
+
 def test_github_package_without_observed_version_stays_unknown(tmp_path):
     result = intel_sources.fetch_github_advisories_for_components(
         [_component(version="")],
@@ -480,6 +551,225 @@ def test_nvd_fetches_all_reported_pages(tmp_path):
         "CVE-2026-0002",
         "CVE-2026-0003",
     ]
+
+
+def test_nvd_paginates_components_round_robin_with_bounded_pages(tmp_path):
+    calls = []
+
+    def fetcher(url, **_kwargs):
+        query = intel_sources.urllib.parse.parse_qs(
+            intel_sources.urllib.parse.urlparse(url).query
+        )
+        keyword = query["keywordSearch"][0]
+        start = int(query["startIndex"][0])
+        calls.append((keyword, start, int(query["resultsPerPage"][0])))
+        return {
+            "totalResults": 2,
+            "startIndex": start,
+            "vulnerabilities": [{"cve": {"id": f"CVE-2026-{keyword[-3:]}-{start}"}}],
+        }
+
+    result = intel_sources.fetch_nvd_for_components(
+        [
+            _component(name="Product One", version="1.0"),
+            _component(name="Product Two", version="2.0"),
+        ],
+        tmp_path,
+        fetcher=fetcher,
+        now=NOW,
+    )
+
+    assert calls == [
+        ("Product One", 0, 200),
+        ("Product Two", 0, 200),
+        ("Product One", 1, 200),
+        ("Product Two", 1, 200),
+    ]
+    assert result["status"] == "ok"
+    assert result["stats"]["attempted_queries"] == 2
+
+
+def test_nvd_request_wall_timeout_continues_other_components(tmp_path, monkeypatch):
+    monkeypatch.setattr(intel_sources, "DEFAULT_NVD_REQUEST_MAX_SECONDS", 0.05)
+    calls = []
+
+    def fetcher(url, **_kwargs):
+        query = intel_sources.urllib.parse.parse_qs(
+            intel_sources.urllib.parse.urlparse(url).query
+        )
+        keyword = query["keywordSearch"][0]
+        calls.append(keyword)
+        if keyword == "Product One":
+            time.sleep(0.2)
+        return {"vulnerabilities": []}
+
+    started = time.monotonic()
+    result = intel_sources.fetch_nvd_for_components(
+        [
+            _component(name="Product One", version="1.0"),
+            _component(name="Product Two", version="2.0"),
+        ],
+        tmp_path,
+        fetcher=fetcher,
+        max_seconds=1,
+        now=NOW,
+    )
+
+    assert time.monotonic() - started < 0.15
+    assert calls == ["Product One", "Product Two"]
+    assert result["status"] == "partial"
+    assert result["stats"]["attempted_queries"] == 2
+    assert "request timeout; continuing other components" in result["error"]
+
+
+def test_nvd_time_budget_preserves_fetched_pages_as_partial(tmp_path, monkeypatch):
+    ticks = iter([0.0, 0.0, 121.0])
+    monkeypatch.setattr(intel_sources.time, "monotonic", lambda: next(ticks))
+    calls = []
+
+    def fetcher(url, **kwargs):
+        calls.append((url, kwargs))
+        return {
+            "totalResults": 2001,
+            "startIndex": 0,
+            "vulnerabilities": [{"cve": {"id": "CVE-2026-0001"}}],
+        }
+
+    result = intel_sources.fetch_nvd_for_components(
+        [_component(name="Product", version="1.0")],
+        tmp_path,
+        fetcher=fetcher,
+        now=NOW,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1]["timeout"] == 25.0
+    assert result["status"] == "partial"
+    assert [item["id"] for item in result["items"]] == ["CVE-2026-0001"]
+    assert "time budget exhausted after 120s" in result["error"]
+
+
+def test_nvd_next_run_reuses_cached_page_and_continues_pagination(tmp_path, monkeypatch):
+    calls = []
+
+    def fetcher(url, **_kwargs):
+        query = intel_sources.urllib.parse.parse_qs(
+            intel_sources.urllib.parse.urlparse(url).query
+        )
+        start = int(query["startIndex"][0])
+        calls.append(start)
+        return {
+            "totalResults": 2,
+            "startIndex": start,
+            "vulnerabilities": [{"cve": {"id": f"CVE-2026-000{start + 1}"}}],
+        }
+
+    first_ticks = iter([0.0, 0.0, 2.0])
+    monkeypatch.setattr(intel_sources.time, "monotonic", lambda: next(first_ticks))
+    first = intel_sources.fetch_nvd_for_components(
+        [_component(name="Product", version="1.0")],
+        tmp_path,
+        fetcher=fetcher,
+        max_seconds=1,
+        now=NOW,
+    )
+
+    second_ticks = iter([10.0, 10.0, 10.0])
+    monkeypatch.setattr(intel_sources.time, "monotonic", lambda: next(second_ticks))
+    second = intel_sources.fetch_nvd_for_components(
+        [_component(name="Product", version="1.0")],
+        tmp_path,
+        fetcher=fetcher,
+        max_seconds=1,
+        now=NOW,
+    )
+
+    assert first["status"] == "partial"
+    assert calls == [0, 1]
+    assert second["status"] == "ok"
+    assert second["stats"]["cached_queries"] == 1
+    assert [item["id"] for item in second["items"]] == [
+        "CVE-2026-0001",
+        "CVE-2026-0002",
+    ]
+
+
+def test_nvd_api_key_is_request_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("NVD_API_KEY", "secret-test-key")
+    calls = []
+
+    result = intel_sources.fetch_nvd_for_components(
+        [_component(name="Product", version="1.0")],
+        tmp_path,
+        fetcher=lambda url, **kwargs: calls.append((url, kwargs)) or {"vulnerabilities": []},
+        now=NOW,
+    )
+
+    assert result["status"] == "ok"
+    assert calls[0][1]["headers"] == {"apiKey": "secret-test-key"}
+    assert "secret-test-key" not in json.dumps(result)
+    cache_files = list((tmp_path / "state" / "intel-cache" / "nvd").glob("*.json"))
+    assert len(cache_files) == 1
+    assert "secret-test-key" not in cache_files[0].read_text(encoding="utf-8")
+
+
+def test_nvd_rate_limit_stops_remaining_components_as_partial(tmp_path):
+    for status_code in (403, 429):
+        calls = []
+
+        def fetcher(url, **_kwargs):
+            calls.append(url)
+            raise intel_sources.IntelSourceError(f"HTTP {status_code} retry-after=30")
+
+        result = intel_sources.fetch_nvd_for_components(
+            [
+                _component(name="Product One", version="1.0"),
+                _component(name="Product Two", version="2.0"),
+            ],
+            tmp_path / str(status_code),
+            fetcher=fetcher,
+            now=NOW,
+        )
+
+        assert len(calls) == 1
+        assert result["status"] == "partial"
+        assert result["stats"]["attempted_queries"] == 1
+        assert "rate limit stopped remaining queries" in result["error"]
+
+
+def test_nvd_rate_limit_with_stale_cache_stops_remaining_components(tmp_path):
+    first = _component(name="Product One", version="1.0")
+    cached = intel_sources.fetch_nvd_for_components(
+        [first],
+        tmp_path,
+        fetcher=lambda _url, **_kwargs: {
+            "vulnerabilities": [{"cve": {"id": "CVE-2026-0001"}}],
+        },
+        ttl_seconds=1,
+        now=NOW,
+    )
+    assert cached["status"] == "ok"
+
+    calls = []
+
+    def rate_limited(url, **_kwargs):
+        calls.append(url)
+        raise intel_sources.IntelSourceError("HTTP 429 retry-after=30")
+
+    result = intel_sources.fetch_nvd_for_components(
+        [first, _component(name="Product Two", version="2.0")],
+        tmp_path,
+        fetcher=rate_limited,
+        ttl_seconds=1,
+        now=NOW + timedelta(seconds=2),
+    )
+
+    assert len(calls) == 1
+    assert result["status"] == "partial"
+    assert result["stale"] is True
+    assert result["stats"]["attempted_queries"] == 1
+    assert [item["id"] for item in result["items"]] == ["CVE-2026-0001"]
+    assert "rate limit stopped remaining queries" in result["error"]
 
 
 def test_cache_refreshes_after_ttl(tmp_path):
