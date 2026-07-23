@@ -10,6 +10,18 @@
   "ffuf_threads": 40,
   "interactsh_server": "oast.pro",
 
+  "_resin_comment": "Optional Resin egress endpoint. Only connection facts live here (host/port/token/platform). Mode (rotate/sticky) and Account are chosen per task — see docs/resin-proxy.md. Do not hardcode mode in config. Put real values only in local config.json (gitignored).",
+  "resin": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 2260,
+    "auth_version": "V1",
+    "proxy_token": "YOUR_RESIN_PROXY_TOKEN",
+    "platform": "Default",
+    "no_proxy": "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+    "probe_url": "https://api.ipify.org"
+  },
+
   "_cf_solver_comment": "Optional manual Cloudflare challenge clearance helper. Not auto-run by /autopilot. Set api_key in local config.json or TWOCAPTCHA_API_KEY; headful=true requires a desktop browser.",
   "cf_solver": {
     "service": "2captcha",
