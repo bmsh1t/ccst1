@@ -120,7 +120,7 @@ class TestSpawnAndIsolation:
         )
         scratch = Path(handle.scratch_dir)
         assert scratch.exists()
-        assert scratch.name == "sibling-w1"
+        assert scratch.name.startswith("sibling-w1-")
         assert scratch.parent.name == "workers"
         assert scratch.parent.parent.name == target
         # Pre-created files
@@ -131,6 +131,17 @@ class TestSpawnAndIsolation:
         seed_payload = json.loads((scratch / "seed.json").read_text())
         assert seed_payload["worker_id"] == "w1"
         assert seed_payload["seed_finding"]["endpoint"] == "/api/v1/orders/123"
+
+    def test_repeated_worker_id_keeps_prior_scratch(self, fake_repo, monkeypatch):
+        repo, target = fake_repo
+        _patch_base_dir(monkeypatch, repo)
+        seed = {"id": "f-1", "endpoint": "/api/v1/orders/123", "vuln_class": "IDOR"}
+        first = pw.spawn_sibling_worker(seed, "w1", target, repo_root=repo, auto_start=False)
+        second = pw.spawn_sibling_worker(seed, "w1", target, repo_root=repo, auto_start=False)
+
+        assert first.scratch_dir != second.scratch_dir
+        assert Path(first.scratch_dir).is_dir()
+        assert Path(second.scratch_dir).is_dir()
 
     def test_hypothesis_worker_creates_hypothesis_md(self, fake_repo, monkeypatch):
         repo, target = fake_repo

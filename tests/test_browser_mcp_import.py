@@ -68,24 +68,26 @@ def test_browser_mcp_import_writes_surface_and_evidence(tmp_path):
     assert summary["counts"]["browser_api_endpoints"] == 2
     assert summary["counts"]["browser_params"] == 5
     assert (capture_dir / "requests.json").is_file()
-    assert (capture_dir / "snapshot.txt").read_text(encoding="utf-8") == '<form action="/login" method="post"></form>'
-    assert (capture_dir / "screenshot.png").read_bytes() == b"fake-png"
+    assert '<form action="/login" method="POST">' in (capture_dir / "snapshot.txt").read_text(encoding="utf-8")
+    assert Path(summary["artifacts"]["snapshot_private_txt"]).read_text(encoding="utf-8") == '<form action="/login" method="post"></form>'
+    assert Path(summary["artifacts"]["screenshot_png"]).read_bytes() == b"fake-png"
+    assert not (capture_dir / "screenshot.png").exists()
     assert pointer_path.is_file()
 
     assert (recon_browser / "xhr_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
-        "https://target.local/api/me?account_id=123",
+        "https://target.local/api/me?account_id=",
         "https://target.local/graphql",
     ]
     assert (recon_browser / "api_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
-        "https://target.local/api/me?account_id=123",
+        "https://target.local/api/me?account_id=",
         "https://target.local/graphql",
     ]
     assert (recon_browser / "browser_params.txt").read_text(encoding="utf-8").splitlines() == [
-        "https://target.local/api/me?account_id=123 :: account_id",
+        "https://target.local/api/me?account_id= :: account_id",
         "https://target.local/graphql :: id",
         "https://target.local/graphql :: query",
         "https://target.local/graphql :: variables",
-        "https://target.local/static/app.js?v=1 :: v",
+        "https://target.local/static/app.js?v= :: v",
     ]
     forms = json.loads((recon_browser / "forms.json").read_text(encoding="utf-8"))
     assert forms["forms"] == [{"action": "/login", "method": "POST"}]
@@ -171,12 +173,12 @@ def test_browser_mcp_import_accepts_raw_playwright_network_text(tmp_path):
     assert summary["counts"]["requests"] == 2
     assert (recon_browser / "xhr_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
         "http://127.0.0.1:3002/rest/products/search?q=",
-        "http://127.0.0.1:3002/socket.io/?EIO=4&transport=polling",
+        "http://127.0.0.1:3002/socket.io/?EIO=&transport=",
     ]
     assert (recon_browser / "browser_params.txt").read_text(encoding="utf-8").splitlines() == [
         "http://127.0.0.1:3002/rest/products/search?q= :: q",
-        "http://127.0.0.1:3002/socket.io/?EIO=4&transport=polling :: EIO",
-        "http://127.0.0.1:3002/socket.io/?EIO=4&transport=polling :: transport",
+        "http://127.0.0.1:3002/socket.io/?EIO=&transport= :: EIO",
+        "http://127.0.0.1:3002/socket.io/?EIO=&transport= :: transport",
     ]
 
 
@@ -225,3 +227,39 @@ def test_browser_mcp_import_merges_incremental_surface_instead_of_erasing(tmp_pa
         "http://127.0.0.1:3002/rest/track-order/abc :: id",
         "http://127.0.0.1:3002/rest/products/search?q= :: q",
     ]
+
+
+def test_browser_mcp_import_keeps_secret_values_private(tmp_path):
+    secret = "SECRET_MCP_FIXTURE"
+    network_path = tmp_path / "network.json"
+    network_path.write_text(
+        json.dumps([{"url": f"https://target.local/api?token={secret}", "postData": secret}]),
+        encoding="utf-8",
+    )
+    console_path = tmp_path / "console.json"
+    console_path.write_text(json.dumps([{"type": "log", "text": secret}]), encoding="utf-8")
+    screenshot_path = tmp_path / "shot.png"
+    screenshot_path.write_bytes(secret.encode())
+
+    summary = browser_mcp_import.import_mcp_browser_evidence(
+        target="target.local",
+        url=f"https://target.local/app?token={secret}",
+        network_path=network_path,
+        console_path=console_path,
+        screenshot_path=screenshot_path,
+        evidence_root=tmp_path / "evidence",
+        recon_root=tmp_path / "recon",
+    )
+
+    public_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (tmp_path / "evidence").rglob("*")
+        if path.is_file()
+    )
+    private_dir = Path(summary["artifacts"]["network_private_json"]).parent
+    private_bytes = b"\n".join(path.read_bytes() for path in private_dir.rglob("*") if path.is_file())
+
+    assert secret not in public_text
+    assert secret.encode() in private_bytes
+    assert private_dir.stat().st_mode & 0o777 == 0o700
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in private_dir.rglob("*") if path.is_file())

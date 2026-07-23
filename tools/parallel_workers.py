@@ -36,10 +36,11 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import shutil
+import re
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -162,16 +163,23 @@ def coerce_max_parallel(requested: int, mode: str) -> int:
 def _scratch_dir_for(target: str, kind: str, worker_id: str, repo_root: Path) -> Path:
     """Build the per-worker scratch dir path.
 
-    Layout: evidence/<target>/workers/<kind>-<worker_id>/
+    Layout: evidence/<target>/workers/<kind>-<worker_id>-<run-id>/
     """
-    return repo_root / "evidence" / target_storage_key(target) / "workers" / f"{kind}-{worker_id}"
+    safe_worker_id = re.sub(r"[^A-Za-z0-9._-]+", "_", str(worker_id or "worker")).strip("._-")
+    safe_worker_id = safe_worker_id[:80] or "worker"
+    run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}-{uuid.uuid4().hex[:8]}"
+    return (
+        repo_root
+        / "evidence"
+        / target_storage_key(target)
+        / "workers"
+        / f"{kind}-{safe_worker_id}-{run_id}"
+    )
 
 
 def _prepare_scratch(scratch_dir: Path) -> None:
-    """Create empty scratch dir, removing any prior contents."""
-    if scratch_dir.exists():
-        shutil.rmtree(scratch_dir)
-    scratch_dir.mkdir(parents=True, exist_ok=True)
+    """创建排他的 worker scratch，历史运行永不删除。"""
+    scratch_dir.mkdir(parents=True, exist_ok=False)
     # Pre-create empty files so consumers can read them safely.
     (scratch_dir / "attempts.jsonl").touch()
     (scratch_dir / "findings.json").write_text("[]", encoding="utf-8")

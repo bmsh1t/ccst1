@@ -161,6 +161,7 @@ BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # Auth-aware hunting: load BBHUNT_AUTH_HEADERS into BB_AUTH_ARGS.
 # shellcheck source=tools/_auth_helper.sh
 . "$(dirname "$0")/_auth_helper.sh"
+BB_ANON_AUTH_ARGS=()
 
 if [ "$(basename "$(dirname "$RECON_DIR")")" = "sessions" ]; then
     SESSION_ID=$(basename "$RECON_DIR")
@@ -171,6 +172,42 @@ else
     TARGET=$(basename "$RECON_DIR")
     DEFAULT_FINDINGS_DIR="$BASE_DIR/findings/$TARGET"
 fi
+
+# direct scanner 通过 recon manifest 恢复原始 target，避免把目录 storage key
+# 当作认证边界；缺少 manifest 时才回退到目录名。
+SCANNER_AUTH_TARGET="$(python3 - "$RECON_DIR/recon_manifest.jsonl" "$TARGET" <<'PY' 2>/dev/null || printf '%s\n' "$TARGET"
+import json
+import sys
+from pathlib import Path
+
+manifest = Path(sys.argv[1])
+fallback = sys.argv[2]
+target = ""
+try:
+    with manifest.open(encoding="utf-8", errors="replace") as handle:
+        for raw in handle:
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            target = str(row.get("target") or "").strip()
+            if target:
+                break
+except OSError:
+    pass
+print(target or fallback)
+PY
+)"
+if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "scan" ] || [ "${BBHUNT_RUNTIME_LOCK_TARGET:-}" != "$SCANNER_AUTH_TARGET" ]; then
+    PHASE_ARGS=("$RECON_DIR")
+    [ -z "$QUICK_MODE" ] || PHASE_ARGS+=("$QUICK_MODE")
+    [ -z "$FULL_MODE" ] || PHASE_ARGS+=("$FULL_MODE")
+    [ -z "$USER_SKIP_CHECKS" ] || PHASE_ARGS+=("--skip" "$USER_SKIP_CHECKS")
+    exec python3 "$BASE_DIR/tools/runtime_phase_exec.py" \
+        --repo-root "$BASE_DIR" --target "$SCANNER_AUTH_TARGET" --phase scan -- \
+        bash "$BASE_DIR/tools/vuln_scanner.sh" "${PHASE_ARGS[@]}"
+fi
+bb_auth_bind_target "$SCANNER_AUTH_TARGET"
 
 FINDINGS_DIR="${FINDINGS_OUT_DIR:-$DEFAULT_FINDINGS_DIR}"
 THREADS="${BB_SCAN_THREADS:-10}"
@@ -273,7 +310,11 @@ mark_nuclei_failure() {
 
 run_nuclei() {
     local rc=0
-    nuclei "$@" || rc=$?
+    if bb_auth_active; then
+        nuclei -fhr "$@" || rc=$?
+    else
+        nuclei "$@" || rc=$?
+    fi
     [ "$rc" -eq 0 ] || mark_nuclei_failure "$rc"
     return 0
 }
@@ -282,7 +323,11 @@ run_nuclei_timeout() {
     local limit="$1"
     shift
     local rc=0
-    timeout --preserve-status "$limit" nuclei "$@" || rc=$?
+    if bb_auth_active; then
+        timeout --preserve-status "$limit" nuclei -fhr "$@" || rc=$?
+    else
+        timeout --preserve-status "$limit" nuclei "$@" || rc=$?
+    fi
     [ "$rc" -eq 0 ] || mark_nuclei_failure "$rc"
     return 0
 }
@@ -813,6 +858,20 @@ if [ ! -s "$ORDERED_SCAN" ]; then
     exit 1
 fi
 
+if bb_auth_active; then
+    AUTH_LIVE_URLS="$FINDINGS_DIR/.tmp/live_urls.auth-scope.txt"
+    AUTH_ORDERED_SCAN="$FINDINGS_DIR/.tmp/ordered_scan.auth-scope.txt"
+    bb_auth_filter_file "$LIVE_URLS" "$AUTH_LIVE_URLS"
+    bb_auth_filter_file "$ORDERED_SCAN" "$AUTH_ORDERED_SCAN"
+    if [ ! -s "$AUTH_ORDERED_SCAN" ]; then
+        log_err "Auth session has no target-owned scan URL for $SCANNER_AUTH_TARGET"
+        exit 1
+    fi
+    LIVE_URLS="$AUTH_LIVE_URLS"
+    ORDERED_SCAN="$AUTH_ORDERED_SCAN"
+    LIVE_COUNT=$(wc -l < "$LIVE_URLS" 2>/dev/null || echo 0)
+fi
+
 # ============================================================
 # Noise filter prep: SPA fingerprints + dedup'd PARAM_URLS
 # ============================================================
@@ -845,6 +904,18 @@ filter_target_urls_copy "$RECON_DIR/urls/api_endpoints.txt" "$API_ENDPOINTS_FILT
 filter_target_urls_copy "$RECON_DIR/urls/sensitive_paths.txt" "$SENSITIVE_PATHS_FILTERED" "" "sensitive_paths"
 # Always keep PARAM_URLS readable downstream even if filter produced empty file.
 [ -f "$PARAM_URLS" ] || cp "$PARAM_URLS_RAW" "$PARAM_URLS" 2>/dev/null || : > "$PARAM_URLS"
+
+if bb_auth_active; then
+    AUTH_PARAM_URLS="$FINDINGS_DIR/.tmp/with_params.auth-scope.txt"
+    AUTH_API_ENDPOINTS="$FINDINGS_DIR/.tmp/api_endpoints.auth-scope.txt"
+    AUTH_SENSITIVE_PATHS="$FINDINGS_DIR/.tmp/sensitive_paths.auth-scope.txt"
+    bb_auth_filter_file "$PARAM_URLS" "$AUTH_PARAM_URLS"
+    bb_auth_filter_file "$API_ENDPOINTS_FILTERED" "$AUTH_API_ENDPOINTS"
+    bb_auth_filter_file "$SENSITIVE_PATHS_FILTERED" "$AUTH_SENSITIVE_PATHS"
+    PARAM_URLS="$AUTH_PARAM_URLS"
+    API_ENDPOINTS_FILTERED="$AUTH_API_ENDPOINTS"
+    SENSITIVE_PATHS_FILTERED="$AUTH_SENSITIVE_PATHS"
+fi
 
 # ============================================================
 # Check 0: Upload Surface Discovery
@@ -1373,8 +1444,8 @@ if ! skip_has auth_bypass && [ -s "$API_ENDPOINTS_FILTERED" ]; then
     log_step "Testing API endpoints for unauthenticated access..."
     : > "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"
     while IFS= read -r api_url; do
-        STATUS=$(curl -s "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$api_url" 2>/dev/null || echo "000")
-        BODY=$(curl -s "${BB_AUTH_ARGS[@]}" --max-time 5 "$api_url" 2>/dev/null || true)
+        STATUS=$(curl -s "${BB_ANON_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$api_url" 2>/dev/null || echo "000")
+        BODY=$(curl -s "${BB_ANON_AUTH_ARGS[@]}" --max-time 5 "$api_url" 2>/dev/null || true)
         BODY_SIZE=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
         # Flag endpoints returning 200 with substantial body (not just error pages)
         if [ "$STATUS" = "200" ] && [ "$BODY_SIZE" -gt 500 ]; then

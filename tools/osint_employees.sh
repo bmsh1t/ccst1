@@ -46,9 +46,25 @@ if [ -z "$TARGET" ]; then
     exit 1
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TARGET_KEY="$(PYTHONPATH="$(dirname "$SCRIPT_DIR")" python3 - "$TARGET" <<'PY'
+import sys
+from tools.target_paths import target_storage_key
+print(target_storage_key(sys.argv[1]))
+PY
+)"
+TARGET_HOST="$(python3 - "$TARGET" <<'PY'
+import sys
+from urllib.parse import urlparse
+value = sys.argv[1]
+parsed = urlparse(value if '://' in value else '//' + value)
+print((parsed.hostname or value).lower())
+PY
+)"
+
 # Default company name = capitalize first label of domain (e.g., twilio.com -> Twilio)
 if [ -z "$COMPANY" ]; then
-    COMPANY="$(echo "$TARGET" | sed -E 's/^(www\.)?([^.]+)\..*/\2/' | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
+    COMPANY="$(echo "$TARGET_HOST" | sed -E 's/^(www\.)?([^.]+)\..*/\2/' | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
 fi
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -57,26 +73,42 @@ log_warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 log_err()  { echo -e "${RED}[-]${NC} $1"; }
 
 _have() { command -v "$1" >/dev/null 2>&1; }
+_resolve_exec() {
+    local explicit="$1" command_name="$2" fallback="$3"
+    if [ -n "$explicit" ] && [ -x "$explicit" ]; then printf '%s\n' "$explicit"
+    elif _have "$command_name"; then command -v "$command_name"
+    elif [ -x "$fallback" ]; then printf '%s\n' "$fallback"
+    fi
+}
+_resolve_file() {
+    local explicit="$1" fallback="$2"
+    if [ -n "$explicit" ] && [ -f "$explicit" ]; then printf '%s\n' "$explicit"
+    elif [ -f "$fallback" ]; then printf '%s\n' "$fallback"
+    fi
+}
 
-EXT_DIR="${HOME}/.local/share/bug-bounty/credential-attack"
+THEHARVESTER_BIN="$(_resolve_exec "${THEHARVESTER_BIN:-}" theHarvester "$HOME/Tools/theHarvester/bin/theHarvester")"
+USERNAME_ANARCHY_BIN="$(_resolve_exec "${USERNAME_ANARCHY_BIN:-}" username-anarchy "$HOME/Tools/username-anarchy/username-anarchy")"
+PYDICTOR_BIN="$(_resolve_file "${PYDICTOR_BIN:-}" "$HOME/Tools/pydictor/pydictor.py")"
+CROSSLINKED_BIN="$(_resolve_exec "${CROSSLINKED_BIN:-}" crosslinked "$HOME/.local/bin/crosslinked")"
 
 # Dependency check
 MISSING=()
-_have theHarvester || MISSING+=("theHarvester")
-[ -f "$EXT_DIR/username-anarchy/username-anarchy" ] || MISSING+=("username-anarchy")
+[ -n "$THEHARVESTER_BIN" ] || MISSING+=("theHarvester")
+[ -n "$USERNAME_ANARCHY_BIN" ] || MISSING+=("username-anarchy")
 if [ "$WITH_LINKEDIN" = true ]; then
-    _have crosslinked || MISSING+=("CrossLinked (run: pipx install crosslinked)")
+    [ -n "$CROSSLINKED_BIN" ] || MISSING+=("CrossLinked")
 fi
 if [ "$WITH_SOCIAL" = true ]; then
-    [ -f "$EXT_DIR/pydictor/pydictor.py" ] || MISSING+=("pydictor")
+    [ -n "$PYDICTOR_BIN" ] || MISSING+=("pydictor")
 fi
 if [ ${#MISSING[@]} -gt 0 ]; then
     log_err "Missing tools: ${MISSING[*]}"
-    log_err "Install: ./install_tools.sh --with-credential-attack"
+    log_err "Expose them through PATH or install them under \$HOME/Tools; this command does not auto-install."
     exit 1
 fi
 
-OUT_DIR="recon/${TARGET}/osint"
+OUT_DIR="recon/${TARGET_KEY}/osint"
 mkdir -p "$OUT_DIR"
 HARVESTER_OUT="$OUT_DIR/theharvester"
 EMAILS="$OUT_DIR/emails.txt"
@@ -86,7 +118,7 @@ PERSONAL_PW="$OUT_DIR/personal-passwords.txt"
 
 echo ""
 echo "============================================="
-echo "  OSINT Employees — $TARGET"
+echo "  OSINT Employees — $TARGET_HOST"
 echo "============================================="
 echo "  Company:     $COMPANY"
 echo "  Sources:     $SOURCES"
@@ -97,7 +129,7 @@ echo "============================================="
 # Step 1: theHarvester (writes JSON to cwd, so we cd into OUT_DIR first)
 log_ok "Step 1: theHarvester (limit=$LIMIT, sources=$SOURCES)"
 HARVESTER_BASENAME="theharvester"
-if ! (cd "$OUT_DIR" && theHarvester -d "$TARGET" -b "$SOURCES" -l "$LIMIT" -q -f "$HARVESTER_BASENAME") >/dev/null 2>&1; then
+if ! (cd "$OUT_DIR" && "$THEHARVESTER_BIN" -d "$TARGET_HOST" -b "$SOURCES" -l "$LIMIT" -q -f "$HARVESTER_BASENAME") >/dev/null 2>&1; then
     log_warn "theHarvester exited non-zero (some sources may have rate-limited)"
 fi
 
@@ -136,7 +168,7 @@ log_ok "Derived $NAME_COUNT_BEFORE names from email patterns"
 if [ "$WITH_LINKEDIN" = true ]; then
     log_ok "Step 3: CrossLinked LinkedIn search for '$COMPANY'"
     CL_OUT="$OUT_DIR/crosslinked_names"
-    if crosslinked \
+    if "$CROSSLINKED_BIN" \
             -f '{first} {last}' \
             -o "$CL_OUT" \
             "$COMPANY" 2>&1 | tail -5; then
@@ -156,7 +188,7 @@ fi
 # Step 4: username-anarchy expansion
 if [ -s "$NAMES" ]; then
     log_ok "Step 4: username-anarchy permutations"
-    "$EXT_DIR/username-anarchy/username-anarchy" -i "$NAMES" 2>/dev/null \
+    "$USERNAME_ANARCHY_BIN" -i "$NAMES" 2>/dev/null \
         | sort -u > "$USERNAMES"
     USERNAME_COUNT=$(wc -l < "$USERNAMES" | tr -d ' ')
     log_ok "Generated $USERNAME_COUNT username permutations -> $USERNAMES"
@@ -171,7 +203,7 @@ if [ "$WITH_SOCIAL" = true ] && [ -s "$NAMES" ]; then
     log_ok "Step 5: pydictor personal-password candidates"
     # Use first-name list as base, --extend adds common variations (year, !, 123)
     awk '{print tolower($1)}' "$NAMES" | sort -u > "$OUT_DIR/firstnames-lower.txt"
-    if python3 "$EXT_DIR/pydictor/pydictor.py" \
+    if python3 "$PYDICTOR_BIN" \
             -extend "$OUT_DIR/firstnames-lower.txt" \
             --level 3 \
             -o "$OUT_DIR/pydictor_raw" >/dev/null 2>&1; then
@@ -191,7 +223,7 @@ echo ""
 echo "============================================="
 echo "  Summary"
 echo "============================================="
-printf "  %-12s %s\n" "Target:" "$TARGET"
+printf "  %-12s %s\n" "Target:" "$TARGET_HOST"
 printf "  %-12s %d emails        %s\n" "Emails:" "$EMAIL_COUNT" "$EMAILS"
 printf "  %-12s %d names         %s\n" "Names:" "$(wc -l < "$NAMES" | tr -d ' ')" "$NAMES"
 printf "  %-12s %d permutations  %s\n" "Usernames:" "$USERNAME_COUNT" "$USERNAMES"
@@ -201,7 +233,6 @@ fi
 echo ""
 echo "  Next steps:"
 echo "    - Manually review $NAMES — drop obvious false positives"
-echo "    - Combine with /wordlist-gen and /breach-check output before controlled /spray:"
-echo "        cat $USERNAMES > users.txt"
-echo "        cat recon/${TARGET}/wordlists/ranked.txt $PERSONAL_PW > passes.txt"
+echo "    - Keep confirmed and inferred users separate in the Credential Lane decision package"
+echo "    - Use /wordlist-gen and /breach-check, then let AI write spray-shortlist.txt"
 echo "============================================="

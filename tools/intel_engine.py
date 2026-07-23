@@ -37,7 +37,7 @@ try:
         fetch_json,
         fetch_kev,
     )
-    from tools.intelligence_extractor import merge_managed_section
+    from tools.intelligence_extractor import merge_managed_section, write_intelligence
     from tools.target_paths import canonical_target_value, target_storage_key
     from tools.technology_inventory import (
         component_labels,
@@ -55,7 +55,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         fetch_json,
         fetch_kev,
     )
-    from intelligence_extractor import merge_managed_section  # type: ignore
+    from intelligence_extractor import merge_managed_section, write_intelligence  # type: ignore
     from target_paths import canonical_target_value, target_storage_key
     from technology_inventory import (  # type: ignore
         TechnologyInventoryError,
@@ -1156,6 +1156,15 @@ def build_target_intel(
     _ = program
     resolved_target = canonical_target_value(target)
     identity_runner = identity_runner or run_identity_intel
+    try:
+        local_path = write_intelligence(resolved_target, repo_root)
+        try:
+            local_ref = str(local_path.relative_to(Path(repo_root)))
+        except ValueError:
+            local_ref = str(local_path)
+        local_intelligence = {"status": "ok", "path": local_ref}
+    except Exception as exc:  # 本地提取失败不应抹掉 advisory 结果。
+        local_intelligence = {"status": "error", "error": str(exc)}
     inventory = load_or_build_inventory(repo_root, resolved_target)
     components = _merge_components(
         list(inventory.get("components") or []),
@@ -1229,6 +1238,7 @@ def build_target_intel(
         "high": prioritized["high"],
         "info": prioritized["info"],
         "memory_context": _memory_projection(memory),
+        "local_intelligence": local_intelligence,
         "identity_intel": identity,
         "total": len(advisories),
         "stats": {
@@ -1266,6 +1276,11 @@ def format_output(target: str, intel: dict) -> str:
         if name:
             component_labels_display.append(f"{name}@{version}" if version else name)
     lines.append(f"Coverage: {coverage}")
+    local_intelligence = intel.get("local_intelligence") or {}
+    if local_intelligence:
+        local_status = str(local_intelligence.get("status") or "unknown")
+        local_detail = str(local_intelligence.get("path") or local_intelligence.get("error") or "")
+        lines.append(f"Local intelligence: {local_status}" + (f" ({local_detail})" if local_detail else ""))
     if component_labels_display:
         lines.append(f"Components: {', '.join(component_labels_display)}")
 

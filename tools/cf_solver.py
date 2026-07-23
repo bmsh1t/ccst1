@@ -12,11 +12,11 @@ the tool exits with code 2 and tells the operator to use a manual cf_clearance.
 Usage:
   python3 tools/cf_solver.py --target https://example.com/
   python3 tools/cf_solver.py --target URL --tier 1|2
-  python3 tools/cf_solver.py --target URL --export-env    # prints export BBHUNT_AUTH_HEADERS=...
+  python3 tools/cf_solver.py --target URL --export-env    # prints a source command for private auth.env
   python3 tools/cf_solver.py --target URL --dry-run       # detect tier + check balance, no solve
 
 Output:
-  Default: writes recon/<target>/cf_cookies.txt + prints usage hint.
+  Default: writes `.private/cf/<target>/` and a public reference marker under recon/.
   --export-env: prints `export BBHUNT_AUTH_HEADERS='...'` for shell sourcing.
 
 Exit codes:
@@ -33,11 +33,17 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_PATH = BASE_DIR / "config.json"
+
+try:
+    from tools.private_artifacts import private_artifact_dir, write_private_text
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from private_artifacts import private_artifact_dir, write_private_text  # type: ignore
 
 # cf_clearance is UA-bound — the exact UA used to solve MUST be sent with every
 # subsequent request carrying that cookie, or CF re-challenges. Pin it as a
@@ -242,9 +248,9 @@ def solve_tier2(solver, url: str, headful: bool) -> dict | None:
             return None
         token = res.get("code") if isinstance(res, dict) else None
         if not token:
-            print(f"[!] unexpected solver response: {res}", file=sys.stderr)
+            print("[!] unexpected solver response: missing token", file=sys.stderr)
             return None
-        print(f"[+] token obtained (first 40): {token[:40]}...")
+        print("[+] token obtained (value redacted)")
 
         # Feed token back via CF's own callback
         try:
@@ -328,8 +334,13 @@ def check_cookie(target: str) -> bool | None:
     import subprocess
 
     recon_dir = BASE_DIR / "recon" / target_storage_key(target)
-    cookie_path = recon_dir / "cf_cookies.txt"
-    ua_path = recon_dir / "cf_ua.txt"
+    private_dir = private_artifact_dir(BASE_DIR, "cf", target_storage_key(target))
+    cookie_path = private_dir / "cf_cookies.txt"
+    ua_path = private_dir / "cf_ua.txt"
+    if not cookie_path.exists():
+        # 兼容迁移前的本地文件；新写入永远进入 `.private`。
+        cookie_path = recon_dir / "cf_cookies.txt"
+        ua_path = recon_dir / "cf_ua.txt"
     if not cookie_path.exists():
         return None
     cookie = cookie_path.read_text(encoding="utf-8").strip()
@@ -362,20 +373,26 @@ def write_output(cookies: list[dict], target: str, export_env: bool) -> str:
     # Pair the UA with the cookie — cf_clearance is UA-bound, so downstream
     # tools MUST send the exact UA the solver used or CF re-challenges.
     auth_headers = f"Cookie: {pairs}\nUser-Agent: {CF_UA}"
-    if export_env:
-        # _auth_helper.sh reads BBHUNT_AUTH_HEADERS (newline-separated headers).
-        # Emit one export line so the operator can `eval` or `source` it.
-        print(f"export BBHUNT_AUTH_HEADERS={auth_headers!r}")
-        return auth_headers
+    target_key = target_storage_key(target)
+    private_dir = private_artifact_dir(BASE_DIR, "cf", target_key)
+    cookie_path = write_private_text(private_dir / "cf_cookies.txt", pairs + "\n")
+    ua_path = write_private_text(private_dir / "cf_ua.txt", CF_UA + "\n")
+    env_path = write_private_text(
+        private_dir / "auth.env",
+        f"export BBHUNT_AUTH_HEADERS={shlex.quote(auth_headers)}\n",
+    )
     out_dir = BASE_DIR / "recon" / target_storage_key(target)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "cf_cookies.txt").write_text(pairs + "\n", encoding="utf-8")
-    # Write the paired UA next to the cookie so recon/scan can pick it up
-    # without the operator re-typing it. Both files must travel together.
-    (out_dir / "cf_ua.txt").write_text(CF_UA + "\n", encoding="utf-8")
-    print(f"[+] cookies written to {out_dir / 'cf_cookies.txt'}")
-    print(f"[+] paired UA written to {out_dir / 'cf_ua.txt'}")
-    print(f"[*] enable in recon: export BBHUNT_AUTH_HEADERS={auth_headers!r}")
+    marker_path = out_dir / "cf_cookies.txt"
+    marker_path.write_text(f"private_ref={cookie_path.relative_to(BASE_DIR)}\n", encoding="utf-8")
+    (out_dir / "cf_ua.txt").write_text(
+        f"private_ref={ua_path.relative_to(BASE_DIR)}\n",
+        encoding="utf-8",
+    )
+    print(f"[+] Cloudflare auth material written to {private_dir}")
+    print(f"[*] enable in recon: source {shlex.quote(str(env_path))}")
+    if export_env:
+        print(f"source {shlex.quote(str(env_path))}")
     return auth_headers
 
 
@@ -383,7 +400,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Cloudflare bypass solver (2Captcha + Playwright)")
     ap.add_argument("--target", required=True, help="target URL (https://...)")
     ap.add_argument("--tier", type=int, choices=[1, 2], help="force tier 1 (widget) or 2 (managed)")
-    ap.add_argument("--export-env", action="store_true", help="print `export BBHUNT_AUTH_HEADERS=...`")
+    ap.add_argument("--export-env", action="store_true", help="print a source command for private auth.env")
     ap.add_argument("--dry-run", action="store_true", help="detect tier + check balance, no solve")
     ap.add_argument(
         "--check",

@@ -303,8 +303,11 @@ STATIC_ASSET_ROOT_SEGMENTS = {
     "fonts", "i18n", "locales", "favicon",
 }
 PUBLIC_METADATA_EXACT_PATHS = {
+    "/__/firebase/init.json",
     "/.well-known/security.txt",
     "/.well-known/openid-configuration",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-protected-resource",
     "/.well-known/jwks",
     "/.well-known/jwks.json",
     "/.well-known/csaf/provider-metadata.json",

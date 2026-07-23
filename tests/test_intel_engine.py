@@ -234,6 +234,78 @@ class TestPrioritizeIntel:
         assert intel["total"] == 3
 
 
+@pytest.mark.parametrize("local_failure", [False, True])
+def test_build_target_intel_refreshes_local_intelligence_without_hiding_advisories(
+    tmp_path,
+    monkeypatch,
+    local_failure,
+):
+    def fake_local(target, repo_root):
+        if local_failure:
+            raise OSError("local extraction failed")
+        return Path(repo_root) / "evidence" / target / "intelligence.md"
+
+    monkeypatch.setattr(intel_engine, "write_intelligence", fake_local)
+    monkeypatch.setattr(
+        intel_engine,
+        "load_or_build_inventory",
+        lambda *_args, **_kwargs: {
+            "status": "ready",
+            "components": [],
+            "hosts": [],
+            "sources": [],
+            "source": {},
+            "stats": {},
+        },
+    )
+    monkeypatch.setattr(
+        intel_engine,
+        "fetch_advisory_sources",
+        lambda *_args, **_kwargs: [{"source": "osv", "status": "ok", "items": []}],
+    )
+    monkeypatch.setattr(
+        intel_engine,
+        "fetch_kev",
+        lambda *_args, **_kwargs: {"source": "cisa_kev", "status": "ok", "items": []},
+    )
+    monkeypatch.setattr(
+        intel_engine,
+        "fetch_epss",
+        lambda *_args, **_kwargs: {"source": "epss", "status": "ok", "items": []},
+    )
+    monkeypatch.setattr(
+        intel_engine,
+        "load_local_advisory_signals",
+        lambda *_args, **_kwargs: {"source": "local", "status": "ok", "items": []},
+    )
+    monkeypatch.setattr(
+        intel_engine,
+        "load_web_intel_projection",
+        lambda *_args, **_kwargs: {"status": "missing", "results": []},
+    )
+    monkeypatch.setattr(intel_engine, "write_intel_artifact", lambda *_args, **_kwargs: None)
+
+    payload = intel_engine.build_target_intel(
+        tmp_path,
+        "target.com",
+        techs=[],
+        memory={"tested_cves": [], "patterns": [], "tested_endpoints": []},
+        include_identity=False,
+    )
+
+    assert payload["coverage_status"] == "ready"
+    if local_failure:
+        assert payload["local_intelligence"] == {
+            "status": "error",
+            "error": "local extraction failed",
+        }
+    else:
+        assert payload["local_intelligence"] == {
+            "status": "ok",
+            "path": "evidence/target.com/intelligence.md",
+        }
+
+
 class TestIdentityIntel:
 
     def test_resolve_emailfinder_prefers_shared_tools_dir(self, tmp_path, monkeypatch):

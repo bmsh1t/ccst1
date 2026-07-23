@@ -1,67 +1,18 @@
 ---
-description: Gather employee names + email patterns for credential-prep and identity-surface analysis. Pipeline theHarvester (search engines + CT logs) -> derive names from email local-parts -> username-anarchy expansion. LinkedIn search is opt-in via --with-linkedin. Output -> recon/<target>/osint/. Usage /osint-employees <target.com> [--with-linkedin] [--with-pydictor-social]
+description: 收集公开邮箱/姓名并生成用户名候选；已知用户名时可跳过。Usage /osint-employees <target> [--with-linkedin] [--with-pydictor-social]
 ---
 
 # /osint-employees
 
-Gather employee names and email patterns for credential-prep and identity-surface analysis. Read-only OSINT — no auth probing.
+未知用户名时运行：
 
-## Usage
-
-```
-/osint-employees target.com
-/osint-employees target.com --with-linkedin                    # add CrossLinked LinkedIn search
-/osint-employees target.com --with-pydictor-social             # add personal-style password candidates
-/osint-employees target.com --company "Acme Corp"              # override auto-detected company name
-/osint-employees target.com --sources duckduckgo,crtsh --limit 200
+```bash
+tools/osint_employees.sh target.com
 ```
 
-## Pipeline
+流程：theHarvester → 邮箱 local-part 姓名 → username-anarchy；可选 CrossLinked 和姓名 pydictor。工具发现顺序为显式环境变量、`$PATH`、`$HOME/Tools`，不会自动安装。
 
-1. **theHarvester** — emails + names from search engines + CT logs
-   - Default sources: `duckduckgo,brave,yahoo,mojeek,crtsh,certspotter,hackertarget,otx`
-   - All free, no API keys required, no LinkedIn-specific scraping
-2. **Derive names** from email local-parts (`john.smith@x.com` → `John Smith`)
-   - Ambiguous patterns (`jsmith@x.com`) are skipped — not enough signal
-3. **(opt) CrossLinked** — LinkedIn employee names via Google/Bing dorks
-   - `--with-linkedin` opts in
-   - Uses search engines only; no LinkedIn auth required
-4. **username-anarchy** — expand "First Last" into 32+ username permutations
-   - `john`, `j.smith`, `jsmith`, `smithj`, `js`, `john.smith`, etc.
-5. **(opt) pydictor --extend** — personal-style password candidates
-   - `--with-pydictor-social` opts in
-   - Generates `firstname2025!`, `firstname123` style mutations
+输出位于 canonical `recon/<target-key>/osint/`：`emails.txt`、`employee-names.txt`、
+`usernames.txt` 及可选 `personal-passwords.txt`；URL、域名和 host:port 与其他 target 工具共用 key。
 
-## Output
-
-```
-recon/<target>/osint/
-├── theharvester.json      # raw theHarvester output
-├── emails.txt             # extracted emails (unique)
-├── employee-names.txt     # "First Last" per line
-├── usernames.txt          # all username permutations
-└── (personal-passwords.txt if --with-pydictor-social)
-```
-
-## Why opt-in for LinkedIn
-
-CrossLinked queries Google/Bing for `site:linkedin.com "Company Name"` — public search, no LinkedIn auth required. Use `--with-linkedin` deliberately because it increases identity-noise and can produce stale names.
-
-## Why the default is conservative
-
-For mature targets the default sources may return very few emails — that is still useful signal. Add `--with-linkedin` only when you intentionally want LinkedIn-derived public-search names.
-
-## What this does NOT do
-
-- **No LinkedIn auth scraping** — LinkedInDumper was intentionally excluded from PR #1 (requires LinkedIn account, OPSEC cost).
-- **No paid OSINT** — DeHashed, IntelX, Shodan, Censys all skipped (no API key required by default).
-- **No spray execution** — this command only prepares OSINT artifacts. `/spray` remains a separate controlled command with pre-flight confirmation.
-- **No automatic live attempt** — `usernames.txt` and `wordlists/ranked.txt` are kept separate until operator or `/autopilot` selects the credential lane.
-
-## Dependencies
-
-Install once: `./install_tools.sh --with-credential-attack`
-
-## Underlying tool
-
-`tools/osint_employees.sh <target> [flags]` — call directly if you prefer a non-slash interface.
+如果已提供经过审阅的 users file，Credential Lane 直接使用它，跳过本步骤；已确认用户名和推断用户名必须在 decision package 中分开计数。该命令只准备候选，不触发 live 认证。

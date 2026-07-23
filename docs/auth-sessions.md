@@ -58,7 +58,10 @@ code = receiver.poll_code(email, timeout=120)
 Keep this as account setup / case-state enrichment, not a credential attack. Use
 only lab or target-owned test accounts, keep receiver config and resulting
 sessions out of git, then store the final Cookie/Bearer/CSRF headers in
-`.private/<target>.json` or `state/<target_key>/case_state.json`.
+`.private/<target>.json` or via `target_case_state.py add-session`. The public
+`state/<target_key>/case_state.json` keeps only session metadata and a
+`.private/case-state/...` reference; validation loads the private headers through
+the same case-state owner.
 
 
 ## What gets auth'd
@@ -94,7 +97,7 @@ All `tools/hunt.py` runs accept:
 --bearer 'eyJ...'             # shorthand for Authorization: Bearer ...
 --api-key 'k'                 # shorthand for X-API-Key: header
 --auth-file PATH              # JSON or .env file
---auth-from-env               # explicit opt-in (auto-detected if any env var set)
+--auth-from-env               # 显式合并环境；没有其它认证参数时会自动读取环境
 ```
 
 `scripts/full_hunt.sh` keeps its existing `--cookie` / `--token` flags. They

@@ -1,80 +1,33 @@
 ---
-description: Generate a company-specific credential-prep wordlist for review or explicitly triggered controlled spray workflows. Crawls the target website with cewler, dedups + length-filters, then applies hashcat rules to produce a ranked candidate list. Output -> recon/<target>/wordlists/. Usage /wordlist-gen <target> [--depth N] [--mode minimal|balanced|aggressive]
+description: 生成目标相关的凭据候选池；cewler 原词、Hashcat 规则和品牌 pydictor 变异分层落盘，不执行 Spray。Usage /wordlist-gen <target> [--mode minimal|balanced|aggressive]
 ---
 
 # /wordlist-gen
 
-Generate a company-specific password wordlist by crawling the target website and applying hashcat mutation rules.
-
-## Usage
-
-```
-/wordlist-gen target.com
-/wordlist-gen target.com --depth 3
-/wordlist-gen target.com --mode aggressive       # 52k rules, for offline cracking only
-/wordlist-gen target.com --filter loose          # keep raw cewler tokens (CSS/URL slugs)
-/wordlist-gen target.com --min-len 6 --rate 3    # slower, longer-min crawl
-```
-
-## Pipeline
-
-1. **cewler** crawls `https://<target>` (depth 2 by default, lowercase, polite rate limit) → `from-website.txt`
-2. Awk dedup + filter → `cleaned.txt`
-   - **strict** (default): start with letter, alphanum only, max 14 chars, drops 10+ char mixed tokens (kills API key examples, CSS colors, URL slugs)
-   - **loose**: only length + printable filter (cewler raw)
-3. **hashcat --stdout -r <rules>** applies password mutations (l33t, case, year suffix, exclamation, digit append) → `ranked.txt`
-
-## Modes
-
-| Mode | Rule file | Rules | Use case |
-|---|---|---|---|
-| `minimal` | `top10_2025.rule` | ~10 | Cautious controlled spray prep — minimum noise per base word |
-| `balanced` *(default)* | `best66.rule` | ~66 | Standard prep — best signal/cost ratio |
-| `aggressive` | `OneRuleToRuleThemAll.rule` | 52,014 | **Offline cracking only** — too many candidates for spray |
-
-## Output
-
-```
-recon/<target>/wordlists/
-├── from-website.txt   # raw cewler output
-├── cleaned.txt        # dedup + length-filtered
-└── ranked.txt         # final spray candidates (use this)
-```
-
-## Example
+生成供 AI 审阅的候选池，不生成可直接 live 的密码清单。
 
 ```bash
-$ /wordlist-gen quotes.toscrape.com --mode minimal
-[+] Step 1/3: crawling https://quotes.toscrape.com (depth=2, min-len=5, rate=5/s)
-[+] Crawled 3199 raw words
-[+] Step 2/3: dedup + length filter (5-20 chars, printable ASCII)
-[+] Cleaned -> 3159 unique words
-[+] Step 3/3: applying rules (top10_2025.rule)
-[+] Final wordlist: 31182 candidates
+tools/wordlist_engine.sh target.com --filter strict --mode balanced
 ```
 
-Sample mutations for the word "absurd":
-```
-absurdist        absurdist!       absurdist1       absurdist123
-absurdist2025    Absurdist        ABSURDIST        absurdistabsurdist
-```
+## 数据流
 
-## Why this beats generic wordlists
+1. cewler → `from-website.txt`。
+2. 稳定去重和长度过滤 → `cleaned.txt`。
+3. Hashcat 对 cleaned 原词批量变异 → `website-hashcat.txt`。
+4. pydictor 只扩展域名品牌词 → `brand-pydictor.txt`。
+5. 按“品牌定向 → cleaned 原词 → Hashcat 变异”稳定 exact 去重 → `candidate-pool.txt`。
 
-Generic password lists are noisy and easy to detect; target-specific vocabulary produces better candidates for review or carefully controlled testing. Company-specific wordlists succeed because employees pick passwords from their own world: product names, office cities, internal project codes, founder surnames. cewler harvests exactly those terms from the public website.
+`ranked.txt` 是兼容 alias，含义同 candidate pool；不得直接交给 live `/spray`。
 
-## Dependencies
+## 模式
 
-Install once: `./install_tools.sh --with-credential-attack`
+| 模式 | Hashcat rule | 用途 |
+|---|---|---|
+| minimal | `top10_2025.rule` | 小型候选池 |
+| balanced | `best66.rule` | 默认 |
+| aggressive | `OneRuleToRuleThemStill.rule` | 仅离线候选准备 |
 
-The script checks for `cewler` and `hashcat` and exits with a helpful hint if missing.
+工具发现顺序：显式环境变量 → `$PATH` → `$HOME/Tools`。单个来源缺失时保留其他来源；所有来源均为空才失败。不自动安装工具。
 
-## What this does NOT do
-
-- **No HIBP filtering** — PR #4 will add `tools/breach_checker.py` to rank by leak prevalence.
-- **No OSINT input** — PR #3 will feed employee names, birthdays, and project codes via pydictor.
-- **No spray execution** — this command only prepares wordlists. `/spray` remains a separate controlled command with pre-flight confirmation.
-
-## Underlying tool
-
-`tools/wordlist_engine.sh <target> [flags]` — call directly if you prefer a non-slash interface.
+下一步：`/breach-check candidate-pool.txt --with-counts`，再由 AI 结合目标证据生成有限的 `spray-shortlist.txt`。

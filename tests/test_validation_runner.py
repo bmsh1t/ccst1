@@ -50,15 +50,15 @@ def test_authz_public_exposure_creates_bundle_and_ledger(monkeypatch, tmp_path):
     )
 
     key = _target_key("https://target.test")
-    bundle = tmp_path / "evidence" / key / "validation" / "AUTHZ-1"
+    bundle = (tmp_path / summary["summary_path"]).parent
     ledger = tmp_path / "memory" / "evidence" / key / "ledger.jsonl"
     assert summary["result"] == "tested_finding"
     assert summary["candidate_ready"] is True
     assert "admin" in summary["markers"]
     assert "configuration" in summary["markers"]
     assert "oauth" in summary["markers"]
-    assert (bundle / "baseline.request.txt").is_file()
-    assert (bundle / "baseline.response.txt").is_file()
+    assert (tmp_path / summary["artifacts"]["baseline_request"]).is_file()
+    assert (tmp_path / summary["artifacts"]["baseline_response"]).is_file()
     assert (bundle / "summary.json").is_file()
     assert ledger.is_file()
     entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
@@ -626,6 +626,106 @@ def test_authz_role_replay_candidate_reopens_previous_tested_queue_action(monkey
     assert summary["sync"]["action_queue"]["candidate_followup"]["patched"] is True
 
 
+def test_runner_queue_sync_prefers_exact_finding_id_over_legacy_url(tmp_path):
+    target = "https://target.test"
+    url = "https://target.test/api/Users"
+    key = _target_key(target)
+    queue_dir = tmp_path / "state" / key
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": target,
+                "actions": [
+                    {
+                        "id": "AQ-EXACT",
+                        "status": "queued",
+                        "type": "ranked-surface",
+                        "metadata": {"finding_id": "F-EXACT", "url": "https://target.test/other"},
+                    },
+                    {
+                        "id": "AQ-LEGACY",
+                        "status": "queued",
+                        "type": "ranked-surface",
+                        "action": f"Replay {url} and classify it.",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    synced = validation_runner._sync_action_queue(
+        {"target": target, "finding_id": "F-EXACT", "url": url, "result": "tested_clean"},
+        repo_root=tmp_path,
+    )
+    queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
+    statuses = {item["id"]: item["status"] for item in queue["actions"]}
+
+    assert synced["status"] == "updated"
+    assert synced["id"] == "AQ-EXACT"
+    assert synced["match_kind"] == "finding_id"
+    assert statuses == {"AQ-EXACT": "tested", "AQ-LEGACY": "queued"}
+
+
+def test_runner_queue_sync_refuses_ambiguous_legacy_marker(tmp_path):
+    target = "https://target.test"
+    url = "https://target.test/api/Users"
+    key = _target_key(target)
+    queue_dir = tmp_path / "state" / key
+    queue_dir.mkdir(parents=True)
+    actions = [
+        {"id": "AQ-ONE", "status": "queued", "type": "ranked-surface", "action": f"Replay {url}."},
+        {"id": "AQ-TWO", "status": "queued", "type": "coverage-gap", "evidence": f"Observed {url}."},
+    ]
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps({"schema_version": 1, "target": target, "actions": actions}),
+        encoding="utf-8",
+    )
+
+    synced = validation_runner._sync_action_queue(
+        {"target": target, "url": url, "result": "tested_clean"},
+        repo_root=tmp_path,
+    )
+    queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
+
+    assert synced == {
+        "status": "ambiguous",
+        "reason": "multiple legacy_marker queue actions match runner output",
+        "ids": ["AQ-ONE", "AQ-TWO"],
+    }
+    assert [item["status"] for item in queue["actions"]] == ["queued", "queued"]
+
+
+def test_queue_endpoint_match_normalizes_trailing_slash_without_path_suffix_match():
+    exact = {
+        "id": "AQ-EXACT",
+        "status": "queued",
+        "type": "validation",
+        "metadata": {"endpoint": "/api/Users"},
+    }
+    legacy_suffix = {
+        "id": "AQ-SUFFIX",
+        "status": "queued",
+        "type": "validation",
+        "action": "Replay /v1/api/Users and classify it.",
+    }
+    matches, match_kind = validation_runner._select_queue_actions_for_summary(
+        {"actions": [exact, legacy_suffix]},
+        {"url": "https://target.test/api/Users/"},
+        "tested",
+    )
+
+    assert [item["id"] for item in matches] == ["AQ-EXACT"]
+    assert match_kind == "endpoint"
+    assert validation_runner._action_matches_legacy_marker(
+        legacy_suffix,
+        ["/api/Users"],
+    ) is False
+
+
 def test_authz_public_exposure_cli_syncs_finding_and_action_queue(monkeypatch, tmp_path, capsys):
     target = "https://target.test"
     url = "https://target.test/rest/admin/application-configuration"
@@ -1015,7 +1115,7 @@ def test_authz_public_exposure_cli_reuses_existing_url_finding_without_id(monkey
     assert findings["findings"][0]["validation_status"] == "candidate"
 
 
-def test_authz_public_exposure_sync_closes_duplicate_validation_actions(monkeypatch, tmp_path, capsys):
+def test_authz_public_exposure_sync_refuses_ambiguous_validation_actions(monkeypatch, tmp_path, capsys):
     target = "https://target.test"
     url = "https://target.test/api/Feedbacks"
     key = _target_key(target)
@@ -1086,9 +1186,9 @@ def test_authz_public_exposure_sync_closes_duplicate_validation_actions(monkeypa
     queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
 
     assert rc == 0
-    assert summary["sync"]["action_queue"]["updated_count"] == 2
+    assert summary["sync"]["action_queue"]["status"] == "ambiguous"
     assert set(summary["sync"]["action_queue"]["ids"]) == {"AQ-0001", "AQ-0002"}
-    assert {item["status"] for item in queue["actions"]} == {"candidate"}
+    assert {item["status"] for item in queue["actions"]} == {"queued"}
 
 
 def test_authz_public_exposure_cli_syncs_ranked_surface_action(monkeypatch, tmp_path, capsys):
@@ -1195,14 +1295,14 @@ def test_sqli_result_diff_creates_diff_bundle_and_ledger(monkeypatch, tmp_path):
     )
 
     key = _target_key("https://target.test")
-    bundle = tmp_path / "evidence" / key / "validation" / "SQLI-1"
+    bundle = (tmp_path / summary["summary_path"]).parent
     ledger = tmp_path / "memory" / "evidence" / key / "ledger.jsonl"
     assert summary["result"] == "tested_finding"
     assert summary["candidate_ready"] is True
     assert summary["repeat"] == 2
     assert all(run["diff"]["changed"]["json_count"] for run in summary["runs"])
-    assert (bundle / "1.baseline.request.txt").is_file()
-    assert (bundle / "1.variant.response.txt").is_file()
+    assert (tmp_path / summary["runs"][0]["artifacts"]["baseline_request"]).is_file()
+    assert (tmp_path / summary["runs"][0]["artifacts"]["variant_response"]).is_file()
     assert (bundle / "diff.json").is_file()
     entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
     assert entry["endpoint"] == "/rest/products/search"
@@ -1316,14 +1416,14 @@ def test_marker_replay_creates_bundle_and_ledger(monkeypatch, tmp_path):
     )
 
     key = _target_key("https://target.test")
-    bundle = tmp_path / "evidence" / key / "validation" / "RCE-MARKER-1"
+    bundle = (tmp_path / summary["summary_path"]).parent
     ledger = tmp_path / "memory" / "evidence" / key / "ledger.jsonl"
     assert summary["lane"] == "marker_replay"
     assert summary["result"] == "tested_finding"
     assert summary["candidate_ready"] is True
     assert all(run["marker_found"] for run in summary["runs"])
-    assert (bundle / "1.request.txt").is_file()
-    assert (bundle / "2.response.txt").is_file()
+    assert (tmp_path / summary["runs"][0]["artifacts"]["request"]).is_file()
+    assert (tmp_path / summary["runs"][1]["artifacts"]["response"]).is_file()
     assert (bundle / "summary.json").is_file()
     entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
     assert entry["vuln_class"] == "RCE"
@@ -1374,14 +1474,14 @@ def test_idor_actor_pair_marker_finding_creates_diff_and_ledger(monkeypatch, tmp
     )
 
     key = _target_key("https://target.test")
-    bundle = tmp_path / "evidence" / key / "validation" / "IDOR-PAIR-1"
+    bundle = (tmp_path / summary["summary_path"]).parent
     ledger = tmp_path / "memory" / "evidence" / key / "ledger.jsonl"
     assert summary["lane"] == "idor_actor_pair"
     assert summary["result"] == "tested_finding"
     assert summary["candidate_ready"] is True
     assert all(run["strong_access"] for run in summary["runs"])
-    assert (bundle / "1.owner.request.txt").is_file()
-    assert (bundle / "2.peer.response.txt").is_file()
+    assert (tmp_path / summary["runs"][0]["artifacts"]["owner_request"]).is_file()
+    assert (tmp_path / summary["runs"][1]["artifacts"]["peer_response"]).is_file()
     assert (bundle / "diff.json").is_file()
     entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
     assert entry["vuln_class"] == "IDOR"
@@ -1665,7 +1765,9 @@ def test_idor_actor_pair_from_case_state_cli_resolves_headers_and_object(monkeyp
     assert rc == 0
     assert summary["result"] == "tested_finding"
     assert summary["url"] == "https://target.test/api/orders/123"
-    assert summary["expect_marker"] == "victim@example.test"
+    assert summary["expect_marker_sha256"] == validation_runner.hashlib.sha256(
+        b"victim@example.test"
+    ).hexdigest()
     assert summary["case_state_ref"]["backlog_id"] == "val_001"
     assert summary["case_state_ref"]["owner_session_id"] == "sess_user_a"
     assert summary["case_state_ref"]["peer_session_id"] == "sess_user_b"
@@ -1774,10 +1876,138 @@ def test_idor_skeleton_writes_required_actor_pair_artifacts(tmp_path):
         finding_id="IDOR-1",
     )
 
-    bundle = tmp_path / "evidence" / _target_key("https://target.test") / "validation" / "IDOR-1"
+    bundle = (tmp_path / summary["summary_path"]).parent
     assert summary["lane"] == "idor_actor_pair_skeleton"
     assert summary["candidate_ready"] is False
     assert "owner_baseline_request" in summary["required_artifacts"]
     assert "peer_variant_response" in summary["required_artifacts"]
     assert (bundle / "README.md").is_file()
     assert (bundle / "summary.json").is_file()
+    assert ".private/validation" in summary["required_artifacts"]["owner_baseline_request"]
+
+
+def test_request_once_rejects_off_target_before_open(monkeypatch):
+    called = False
+
+    def fail_if_called(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("network opener must not be built")
+
+    monkeypatch.setattr(validation_runner.urllib.request, "build_opener", fail_if_called)
+    with pytest.raises(ValueError, match="outside target scope"):
+        validation_runner.request_once(
+            target="target.test",
+            url="https://other.test/api",
+        )
+    assert called is False
+
+
+def test_redirect_handler_rejects_off_target_redirect():
+    handler = validation_runner._TargetRedirectHandler("target.test")
+    with pytest.raises(ValueError, match="redirect left target scope"):
+        handler.redirect_request(None, None, 302, "Found", {}, "https://other.test/callback?token=secret")
+
+
+def test_request_once_bounds_response_and_records_hash(monkeypatch):
+    class FakeResponse:
+        status = 200
+        reason = "OK"
+        headers = {"Content-Type": "text/plain", "Content-Length": "6"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, amount):
+            assert amount == 5
+            return b"abcde"
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            return FakeResponse()
+
+    monkeypatch.setattr(validation_runner.urllib.request, "build_opener", lambda *args: FakeOpener())
+    response = validation_runner.request_once(
+        target="target.test",
+        url="https://target.test/api",
+        max_body_bytes=4,
+    )
+    snapshot = validation_runner._response_snapshot(response)
+
+    assert response["body"] == "abcd"
+    assert response["body_retained_bytes"] == 4
+    assert response["body_observed_bytes"] == 6
+    assert response["body_truncated"] is True
+    assert snapshot["body_truncated"] is True
+    assert snapshot["body_sha256"] == validation_runner.hashlib.sha256(b"abcd").hexdigest()
+    assert "body_preview" not in snapshot
+
+
+def test_state_changing_without_redline_fails_before_request(monkeypatch, tmp_path):
+    called = False
+
+    def fake_request_once(**kwargs):
+        nonlocal called
+        called = True
+        return _fake_response(kwargs["url"], body="MARKER")
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    with pytest.raises(ValueError, match="requires --redline-checked"):
+        validation_runner.run_marker_replay(
+            repo_root=tmp_path,
+            target="target.test",
+            url="https://target.test/submit",
+            expect_marker="MARKER",
+            method="POST",
+            state_changing=True,
+            redline_checked=False,
+        )
+    assert called is False
+
+
+def test_post_defaults_to_unknown_state_and_private_unique_runs(monkeypatch, tmp_path):
+    secret = "SECRET_VALIDATION_FIXTURE"
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body=f"result={secret}"),
+    )
+
+    summaries = [
+        validation_runner.run_marker_replay(
+            repo_root=tmp_path,
+            target="target.test",
+            url=f"https://target.test/submit?token={secret}",
+            expect_marker=secret,
+            method="POST",
+            headers={"Authorization": f"Bearer {secret}"},
+            body=secret,
+            finding_id="MARKER-PRIVATE",
+            no_ledger=True,
+        )
+        for _ in range(2)
+    ]
+
+    assert summaries[0]["summary_path"] != summaries[1]["summary_path"]
+    assert all(item["state_changing"] is None for item in summaries)
+    assert all(item["redline_checked"] is False for item in summaries)
+    public_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (tmp_path / "evidence").rglob("*")
+        if path.is_file()
+    )
+    private_files = [path for path in (tmp_path / ".private").rglob("*") if path.is_file()]
+    private_bytes = b"\n".join(path.read_bytes() for path in private_files)
+
+    assert secret not in public_text
+    assert secret.encode() in private_bytes
+    assert private_files
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in private_files)
+    assert all(
+        path.stat().st_mode & 0o777 == 0o700
+        for path in (tmp_path / ".private").rglob("*")
+        if path.is_dir()
+    )

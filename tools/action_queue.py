@@ -8,6 +8,7 @@ keep executing instead of ending on natural-language TODOs.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import sys
 import tempfile
 import urllib.parse
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -79,6 +81,19 @@ def queue_path(repo_root: Path | str, target: str) -> Path:
     repo = Path(repo_root)
     resolved = canonical_target_value(target)
     return repo / "state" / target_storage_key(resolved) / "action_queue.json"
+
+
+@contextmanager
+def queue_mutation_lock(repo_root: Path | str, target: str):
+    """串行化同一 target 的完整 action queue read-modify-write。"""
+    path = queue_path(repo_root, target).parent / "locks" / "action_queue.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _empty_queue(target: str) -> dict:
@@ -717,7 +732,6 @@ def add_manual_action(
     safety: str = "non_destructive",
     stop_condition: str = DEFAULT_STOP_CONDITION,
 ) -> dict:
-    queue = load_queue(repo_root, target)
     built = build_action(
         target=target,
         action_type=action_type,
@@ -731,8 +745,10 @@ def add_manual_action(
         safety=safety,
         stop_condition=stop_condition,
     )
-    stats = upsert_actions(queue, [built])
-    path = save_queue(repo_root, target, queue)
+    with queue_mutation_lock(repo_root, target):
+        queue = load_queue(repo_root, target)
+        stats = upsert_actions(queue, [built])
+        path = save_queue(repo_root, target, queue)
     return {"path": str(path), "stats": stats, "queue": queue}
 
 
@@ -744,30 +760,27 @@ def ingest_checkpoint(repo_root: Path | str, target: str, *, checkpoint: dict | 
             from checkpoint import build_checkpoint  # type: ignore
         checkpoint = build_checkpoint(repo_root, target=target)
 
-    queue = load_queue(repo_root, target)
-    current_runtime_wait = runtime_wait_action(repo_root, target)
-    runtime_wait_projection = current_runtime_wait in {"wait_recon", "wait_scan"} or str(
-        checkpoint.get("decision") or checkpoint.get("next_action") or ""
-    ) in {
-        "wait_recon",
-        "wait_scan",
-    }
     actions = [
         _checkpoint_item_to_action(target, item)
         for item in checkpoint.get("next_action_queue", []) or []
         if isinstance(item, dict)
     ]
-    stats = upsert_actions(queue, actions)
-    if runtime_wait_projection:
-        # wait_* 是临时执行态，不代表旧 action 过时；不要因为 checkpoint
-        # 暂时输出空队列就把可恢复的验证/报告/深挖项标成 n/a。
-        stats["retired_stale"] = 0
-        stats["retired_superseded"] = 0
-    else:
-        stats["retired_stale"] = _retire_stale_checkpoint_actions(queue, actions)
-        stats["retired_superseded"] = _retire_superseded_candidate_actions(queue)
-    queue["actions"].sort(key=_action_sort_key)
-    path = save_queue(repo_root, target, queue)
+    with queue_mutation_lock(repo_root, target):
+        queue = load_queue(repo_root, target)
+        current_runtime_wait = runtime_wait_action(repo_root, target)
+        runtime_wait_projection = current_runtime_wait in {"wait_recon", "wait_scan"} or str(
+            checkpoint.get("decision") or checkpoint.get("next_action") or ""
+        ) in {"wait_recon", "wait_scan"}
+        stats = upsert_actions(queue, actions)
+        if runtime_wait_projection:
+            # wait_* 是临时执行态，不代表旧 action 过时。
+            stats["retired_stale"] = 0
+            stats["retired_superseded"] = 0
+        else:
+            stats["retired_stale"] = _retire_stale_checkpoint_actions(queue, actions)
+            stats["retired_superseded"] = _retire_superseded_candidate_actions(queue)
+        queue["actions"].sort(key=_action_sort_key)
+        path = save_queue(repo_root, target, queue)
     return {
         "path": str(path),
         "target": canonical_target_value(target),
@@ -871,7 +884,33 @@ def resolve_action(
     result: str = "",
     notes: str = "",
 ) -> dict:
-    queue = load_queue(repo_root, target)
+    with queue_mutation_lock(repo_root, target):
+        queue = load_queue(repo_root, target)
+        response = _resolve_action_in_queue(
+            repo_root,
+            target=target,
+            queue=queue,
+            action_id=action_id,
+            status=status,
+            result=result,
+            notes=notes,
+        )
+        path = save_queue(repo_root, target, queue)
+        response["path"] = str(path)
+        return response
+
+
+def _resolve_action_in_queue(
+    repo_root: Path | str,
+    *,
+    target: str,
+    queue: dict,
+    action_id: str,
+    status: str,
+    result: str = "",
+    notes: str = "",
+) -> dict:
+    """在调用方已持有 queue lock 时修改一个 action。"""
     normalized = _normalize_status(status)
     for item in queue.get("actions", []):
         if not isinstance(item, dict):
@@ -888,9 +927,7 @@ def resolve_action(
         coverage_update = _sync_coverage_matrix_for_action(repo_root, target, item, normalized)
         unsafe_review_update = _sync_unsafe_skipped_review_for_action(repo_root, target, item, normalized)
         queue["actions"].sort(key=_action_sort_key)
-        path = save_queue(repo_root, target, queue)
         response = {
-            "path": str(path),
             "id": action_id,
             "previous_status": previous,
             "status": normalized,

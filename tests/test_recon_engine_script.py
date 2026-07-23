@@ -15,7 +15,7 @@ def test_recon_engine_guards_common_set_e_pitfalls():
     assert '"$HTTPX_BIN" -l "$HTTPX_INPUT_FILE"' in text
     assert "resolve_pd_httpx()" in text
     assert 'FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))' in text
-    assert 'CONTENT_TYPE=$(curl -sI "${BB_AUTH_ARGS[@]}" --max-time 5 "${base_url}${path}" 2>/dev/null | grep -i content-type | head -1 || true)' in text
+    assert 'CONTENT_TYPE=$(curl -sI "${BB_URL_AUTH_ARGS[@]}" --max-time 5 "${base_url}${path}" 2>/dev/null | grep -i content-type | head -1 || true)' in text
     assert "for host in network.hosts():" in text
     assert "if count >= limit:" in text
     assert 'if [ "$TARGET_KIND" = "domain" ]; then' in text
@@ -41,8 +41,13 @@ def test_recon_engine_supports_auth_session_env():
     assert "prepare_wafw00f_headers_file()" in text
     assert 'WAFW00F_HEADER_ARGS=(-H "$WAFW00F_HEADERS_FILE")' in text
     assert 'bb_auth_active && bb_auth_banner' in text
+    assert 'bb_auth_bind_target "$TARGET"' in text
     assert '"${BB_AUTH_ARGS[@]}"' in text
-    assert 'curl -s "${BB_AUTH_ARGS[@]}" --max-time 10 "$js_url"' in text
+    assert 'bb_auth_args_for_url "$js_url"' in text
+    assert 'curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url"' in text
+    assert "-follow-host-redirects" in text
+    assert "-follow-redirects" not in text
+    assert "-dr -fs rdn -do" in text
     assert 'ffuf -u "${url}/FUZZ"' in text
 
 
@@ -224,7 +229,15 @@ def test_recon_engine_adds_project_aligned_exposure_candidate_correlation():
     assert '$SHARED_TOOLS_DIR/SwaggerSpy/swaggerspy.py' in text
     assert '$SHARED_TOOLS_DIR/SwaggerSpy/venv/bin/python3' in text
     assert "phase                api_leak_detection" in text
+    assert 'log_info "Phase 6.7.6: OpenAPI Semantic Extraction"' in text
+    assert 'python3 "$BASE_DIR/tools/openapi_semantics.py"' in text
+    assert '--max-platform-hosts "$OPENAPI_PLATFORM_HOST_BUDGET"' in text
+    assert "phase                  openapi_semantics" in text
+    assert "raw API candidates remain available" in text
     assert 'log_info "Phase 6.8: Identity and Cloud Intel"' in text
+    assert text.index('log_info "Phase 6.7.5: API Candidate Validation"') < text.index(
+        'log_info "Phase 6.7.6: OpenAPI Semantic Extraction"'
+    ) < text.index('log_info "Phase 6.8: Identity and Cloud Intel"')
     assert 'EMAILFINDER_SCRIPT="$SHARED_TOOLS_DIR/emailfinder/emailfinder.py"' in text
     assert 'run_with_timeout 120 python3 "$EMAILFINDER_SCRIPT" -d "$TARGET"' in text
     assert 'LEAKSEARCH_SCRIPT="$SHARED_TOOLS_DIR/LeakSearch/LeakSearch.py"' in text
@@ -426,6 +439,7 @@ def test_recon_engine_hint_phases_cover_key_pipeline_stages():
         "phase                config_exposure",
         "phase                exposure_candidates",
         "phase                api_leak_detection",
+        "phase                  openapi_semantics",
         "phase                identity_cloud_intel",
         "phase                param_disco",
         "phase                cicd",

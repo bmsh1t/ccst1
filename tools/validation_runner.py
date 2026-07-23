@@ -17,12 +17,14 @@ AI 仍负责选择 hypothesis、解释业务影响、决定是否升级/降级�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,8 +36,9 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.action_queue import (
         ACTIVE_STATUSES,
+        _resolve_action_in_queue,
         load_queue,
-        resolve_action,
+        queue_mutation_lock,
         save_queue,
         select_next_action,
         summarize_queue,
@@ -54,13 +57,16 @@ try:
         public_exposure_markers as shared_public_exposure_markers,
     )
     from tools.response_diff import diff_responses, snapshot_response
+    from tools.browser_surface import public_url_shape
+    from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
     from tools.target_case_state import complete_backlog, load_case_state
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES,
+        _resolve_action_in_queue,
         load_queue,
-        resolve_action,
+        queue_mutation_lock,
         save_queue,
         select_next_action,
         summarize_queue,
@@ -79,12 +85,15 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         public_exposure_markers as shared_public_exposure_markers,
     )
     from response_diff import diff_responses, snapshot_response  # type: ignore
+    from browser_surface import public_url_shape  # type: ignore
+    from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
     from target_case_state import complete_backlog, load_case_state  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
 
 SCHEMA_VERSION = 1
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "POST"}
+MAX_RESPONSE_BYTES = 1024 * 1024
 SQLI_PROBE_RE = re.compile(
     r"('|--|/\*|\*/|;|\)\)|\b(?:or|and|union|select|where|from|sleep|benchmark|"
     r"waitfor|pg_sleep|information_schema|null|true|false)\b|\$(?:ne|gt|regex|where)\b|\{\s*\"?\$)",
@@ -139,6 +148,11 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _run_id() -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"{stamp}-{uuid.uuid4().hex[:8]}"
+
+
 def _safe_id(value: str, default: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._:-]+", "_", str(value or "").strip()).strip("._-")
     return cleaned[:120] or default
@@ -153,7 +167,22 @@ def _default_finding_id(lane: str, url: str) -> str:
 
 def _bundle_dir(repo_root: Path, target: str, finding_id: str) -> Path:
     target_key = target_storage_key(canonical_target_value(target))
-    return repo_root / "evidence" / target_key / "validation" / _safe_id(finding_id, "finding")
+    path = (
+        repo_root
+        / "evidence"
+        / target_key
+        / "validation"
+        / _safe_id(finding_id, "finding")
+        / _run_id()
+    )
+    path.mkdir(parents=True, exist_ok=False)
+    return path
+
+
+def _private_bundle_dir(repo_root: Path, target: str, bundle: Path) -> Path:
+    target_key = target_storage_key(canonical_target_value(target))
+    relative = bundle.relative_to(repo_root / "evidence" / target_key / "validation")
+    return private_artifact_dir(repo_root, "validation", target_key, str(relative))
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -382,15 +411,19 @@ def _endpoint_markers(url: str) -> list[str]:
     return [item for item in markers if item]
 
 
-def _queue_action_matches_summary(action: dict[str, Any], summary: dict[str, Any]) -> bool:
-    """Match active action-queue validation items to a runner result.
+def _normalized_endpoint_identity(value: str) -> str:
+    """将完整 URL 和相对 endpoint 归一为用于精确匹配的路径身份。"""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urllib.parse.urlparse(raw)
+    if (parsed.scheme and parsed.netloc) or raw.startswith("/"):
+        path = (parsed.path or "/").rstrip("/") or "/"
+        return f"{path}?{parsed.query}" if parsed.query else path
+    return raw
 
-    The queue may have been created from checkpoint prose, so matching must work
-    even when the only stable identifier is the finding id embedded in text.
-    """
-    finding_id = str(summary.get("finding_id") or "").strip()
-    markers = _endpoint_markers(str(summary.get("url") or summary.get("endpoint") or ""))
-    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+
+def _summary_backlog_id(summary: dict[str, Any]) -> str:
     case_state_ref = summary.get("case_state_ref") if isinstance(summary.get("case_state_ref"), dict) else {}
     case_state_write_back = (
         summary.get("case_state_write_back")
@@ -402,30 +435,128 @@ def _queue_action_matches_summary(action: dict[str, Any], summary: dict[str, Any
         or case_state_write_back.get("id")
         or ""
     ).strip()
-    if backlog_id and str(metadata.get("backlog_id") or "").strip() == backlog_id:
-        return True
-    haystack = " ".join(
-        str(value or "")
-        for value in (
-            action.get("id"),
-            action.get("source_id"),
-            action.get("type"),
-            action.get("evidence"),
-            action.get("next_question"),
-            action.get("action"),
-            action.get("command_hint"),
-            metadata.get("finding_id"),
-            metadata.get("endpoint"),
-            metadata.get("url"),
-            metadata.get("backlog_id"),
-        )
+    return backlog_id
+
+
+def _action_metadata(action: dict[str, Any]) -> dict[str, Any]:
+    return action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+
+
+def _action_matches_backlog(action: dict[str, Any], backlog_id: str) -> bool:
+    if not backlog_id:
+        return False
+    metadata = _action_metadata(action)
+    return backlog_id in {
+        str(action.get("id") or "").strip(),
+        str(action.get("source_id") or "").strip(),
+        str(metadata.get("backlog_id") or "").strip(),
+    }
+
+
+def _action_matches_finding(action: dict[str, Any], finding_id: str) -> bool:
+    if not finding_id:
+        return False
+    metadata = _action_metadata(action)
+    return finding_id in {
+        str(action.get("id") or "").strip(),
+        str(action.get("source_id") or "").strip(),
+        str(metadata.get("finding_id") or "").strip(),
+    }
+
+
+def _action_matches_endpoint(action: dict[str, Any], endpoint: str) -> bool:
+    if not endpoint:
+        return False
+    metadata = _action_metadata(action)
+    return endpoint in {
+        _normalized_endpoint_identity(str(metadata.get("endpoint") or "")),
+        _normalized_endpoint_identity(str(metadata.get("url") or "")),
+    }
+
+
+def _legacy_marker_match(value: str, marker: str) -> bool:
+    """仅接受完整 marker，避免 `/users` 关闭 `/users-admin`。"""
+    if not marker:
+        return False
+    start = 0
+    while True:
+        index = value.find(marker, start)
+        if index < 0:
+            return False
+        if index:
+            previous = value[index - 1]
+            blocked = "._~%-/" if marker.startswith("/") else "._~%-"
+            if previous.isalnum() or previous in blocked:
+                start = index + 1
+                continue
+        suffix = value[index + len(marker):]
+        if not suffix or suffix[0].isspace() or suffix[0] in ",;:)]}\"'`":
+            return True
+        if suffix[0] == "." and (len(suffix) == 1 or suffix[1].isspace()):
+            return True
+        start = index + 1
+
+
+def _action_matches_legacy_marker(action: dict[str, Any], markers: list[str]) -> bool:
+    if str(action.get("type") or "").lower() not in {
+        "validation", "candidate-evidence-gap", "ranked-surface", "surface-review", "coverage-gap",
+    }:
+        return False
+    haystack = "\n".join(
+        str(action.get(field) or "")
+        for field in ("evidence", "next_question", "action", "command_hint")
     )
-    if finding_id and finding_id in haystack:
-        return True
-    action_type = str(action.get("type") or "").lower()
-    if action_type in {"validation", "candidate-evidence-gap", "ranked-surface", "surface-review", "coverage-gap"}:
-        return any(marker and marker in haystack for marker in markers)
-    return False
+    return any(_legacy_marker_match(haystack, marker) for marker in markers)
+
+
+def _queue_action_matches_summary(action: dict[str, Any], summary: dict[str, Any]) -> bool:
+    """兼容旧调用方的单条匹配判断；自动 closure 使用下方的分级选择。"""
+    backlog_id = _summary_backlog_id(summary)
+    finding_id = str(summary.get("finding_id") or "").strip()
+    endpoint = _normalized_endpoint_identity(str(summary.get("url") or summary.get("endpoint") or ""))
+    markers = _endpoint_markers(str(summary.get("url") or summary.get("endpoint") or ""))
+    if finding_id:
+        markers.append(finding_id)
+    return (
+        _action_matches_backlog(action, backlog_id)
+        or _action_matches_finding(action, finding_id)
+        or _action_matches_endpoint(action, endpoint)
+        or _action_matches_legacy_marker(action, markers)
+    )
+
+
+def _select_queue_actions_for_summary(
+    queue: dict[str, Any],
+    summary: dict[str, Any],
+    queue_status: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """按 backlog、finding、endpoint、legacy 的顺序选择唯一可关闭 action。"""
+    backlog_id = _summary_backlog_id(summary)
+    finding_id = str(summary.get("finding_id") or "").strip()
+    endpoint = _normalized_endpoint_identity(str(summary.get("url") or summary.get("endpoint") or ""))
+    markers = _endpoint_markers(str(summary.get("url") or summary.get("endpoint") or ""))
+    if finding_id:
+        markers.append(finding_id)
+    matchers = (
+        ("backlog_id", lambda action: _action_matches_backlog(action, backlog_id)),
+        ("finding_id", lambda action: _action_matches_finding(action, finding_id)),
+        ("endpoint", lambda action: _action_matches_endpoint(action, endpoint)),
+        ("legacy_marker", lambda action: _action_matches_legacy_marker(action, markers)),
+    )
+    actions = [item for item in queue.get("actions", []) if isinstance(item, dict)]
+    for match_kind, matcher in matchers:
+        matched = [item for item in actions if matcher(item)]
+        active = [item for item in matched if str(item.get("status") or "queued") in ACTIVE_STATUSES]
+        if active:
+            return active, match_kind
+        final = [
+            item for item in matched
+            if queue_status in QUEUE_UPGRADE_TARGET_STATUSES
+            and str(item.get("status") or "") in QUEUE_UPGRADABLE_FINAL_STATUSES
+        ]
+        if final:
+            return final, match_kind
+    return [], ""
 
 
 def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
@@ -651,8 +782,30 @@ def _patch_candidate_queue_followup(
     summary: dict[str, Any],
 ) -> dict[str, Any]:
     """把已匹配 action 改写为 candidate-evidence-gap 并保存。"""
+    with queue_mutation_lock(repo_root, target):
+        queue = load_queue(repo_root, target)
+        response = _patch_candidate_queue_followup_in_queue(
+            queue,
+            action_id=action_id,
+            summary=summary,
+        )
+        if not response["patched"]:
+            return response
+        path = save_queue(repo_root, target, queue)
+        response["path"] = str(path)
+        response["next"] = select_next_action(queue)
+        response["summary"] = summarize_queue(queue)
+        return response
+
+
+def _patch_candidate_queue_followup_in_queue(
+    queue: dict[str, Any],
+    *,
+    action_id: str,
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    """在已持有 queue lock 的调用方内写入 candidate 后续动作。"""
     followup = _candidate_queue_followup(summary)
-    queue = load_queue(repo_root, target)
     patched = False
     for action in queue.get("actions", []):
         if not isinstance(action, dict):
@@ -670,13 +823,7 @@ def _patch_candidate_queue_followup(
         break
     if not patched:
         return {"patched": False}
-    path = save_queue(repo_root, target, queue)
-    return {
-        "patched": True,
-        "path": str(path),
-        "next": select_next_action(queue),
-        "summary": summarize_queue(queue),
-    }
+    return {"patched": True}
 
 
 def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
@@ -686,60 +833,47 @@ def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str,
     if not target or not queue_status:
         return {"status": "skipped", "reason": "missing target or non-final runner result"}
 
-    queue = load_queue(repo_root, target)
-    matches: list[dict[str, Any]] = []
-    final_upgrade_matches: list[dict[str, Any]] = []
-    for action in queue.get("actions", []):
-        if not isinstance(action, dict):
-            continue
-        status = str(action.get("status") or "queued")
-        if not _queue_action_matches_summary(action, summary):
-            continue
-        if status in ACTIVE_STATUSES:
-            matches.append(action)
-            continue
-        if (
-            queue_status in QUEUE_UPGRADE_TARGET_STATUSES
-            and status in QUEUE_UPGRADABLE_FINAL_STATUSES
-        ):
-            final_upgrade_matches.append(action)
-    if not matches:
-        matches = final_upgrade_matches
-    if not matches:
-        return {"status": "skipped", "reason": "no matching active or upgradable action"}
+    with queue_mutation_lock(repo_root, target):
+        queue = load_queue(repo_root, target)
+        matches, match_kind = _select_queue_actions_for_summary(queue, summary, queue_status)
+        if not matches:
+            return {"status": "skipped", "reason": "no matching active or upgradable action"}
+        if len(matches) > 1:
+            return {
+                "status": "ambiguous",
+                "reason": f"multiple {match_kind} queue actions match runner output",
+                "ids": [str(item.get("id") or "") for item in matches if item.get("id")],
+            }
 
-    summary_ref = str(summary.get("summary_path") or "")
-    resolved_items = []
-    for matched in matches:
-        resolved = resolve_action(
+        matched = matches[0]
+        summary_ref = str(summary.get("summary_path") or "")
+        resolved = _resolve_action_in_queue(
             repo_root,
             target=target,
+            queue=queue,
             action_id=str(matched.get("id") or ""),
             status=queue_status,
             result=f"validation-runner-result={result}; summary={summary_ref}",
             notes=f"runner={summary.get('lane', '')}",
         )
-        resolved_items.append(resolved)
-    first = resolved_items[0]
-    response = {
-        "status": "updated",
-        "id": first.get("id", ""),
-        "ids": [str(item.get("id") or "") for item in resolved_items if item.get("id")],
-        "updated_count": len(resolved_items),
-        "action_status": first.get("status", ""),
-    }
-    if queue_status == "candidate" and response["ids"]:
-        patches = [
-            _patch_candidate_queue_followup(
-                repo_root,
-                target=target,
-                action_id=action_id,
+        response = {
+            "status": "updated",
+            "id": resolved.get("id", ""),
+            "ids": [str(resolved.get("id") or "")],
+            "updated_count": 1,
+            "action_status": resolved.get("status", ""),
+            "match_kind": match_kind,
+        }
+        if queue_status == "candidate":
+            patch = _patch_candidate_queue_followup_in_queue(
+                queue,
+                action_id=str(resolved.get("id") or ""),
                 summary=summary,
             )
-            for action_id in response["ids"]
-        ]
-        response["candidate_followup"] = patches[0] if len(patches) == 1 else patches
-    return response
+            response["candidate_followup"] = patch
+        path = save_queue(repo_root, target, queue)
+        response["path"] = str(path)
+        return response
 
 
 def sync_runner_artifacts(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
@@ -800,28 +934,54 @@ def _format_response(status: int, reason: str, headers: dict[str, str], body: st
     return "\n".join(lines)
 
 
+class _TargetRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, target: str) -> None:
+        self.target = target
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        if not url_belongs_to_target(newurl, self.target):
+            raise ValueError(f"validation redirect left target scope: {public_url_shape(newurl)}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _read_bounded(response: Any, limit: int) -> tuple[bytes, int, bool]:
+    raw = response.read(limit + 1)
+    observed = len(raw)
+    content_length = str(response.headers.get("Content-Length") or "").strip()
+    if content_length.isdigit():
+        observed = max(observed, int(content_length))
+    return raw[:limit], observed, len(raw) > limit or observed > limit
+
+
 def request_once(
     *,
+    target: str,
     url: str,
     method: str = "GET",
     headers: dict[str, str] | None = None,
     body: str = "",
     timeout: int = 10,
+    max_body_bytes: int = MAX_RESPONSE_BYTES,
 ) -> dict[str, Any]:
     """Replay one HTTP request and return raw evidence fields."""
+    if not url_belongs_to_target(url, target):
+        raise ValueError(f"validation URL is outside target scope: {public_url_shape(url)}")
+    if max_body_bytes < 1:
+        raise ValueError("max_body_bytes must be positive")
     method_u = str(method or "GET").upper()
     headers = dict(headers or {})
     data = body.encode("utf-8") if body else None
     request = urllib.request.Request(url, data=data, headers=headers, method=method_u)
     request_text = _format_request(method_u, url, headers, body)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read()
+        opener = urllib.request.build_opener(_TargetRedirectHandler(target))
+        with opener.open(request, timeout=timeout) as response:
+            raw, observed_bytes, truncated = _read_bounded(response, max_body_bytes)
             status = int(response.status)
             reason = str(response.reason or "")
             response_headers = {str(k): str(v) for k, v in response.headers.items()}
     except urllib.error.HTTPError as exc:
-        raw = exc.read()
+        raw, observed_bytes, truncated = _read_bounded(exc, max_body_bytes)
         status = int(exc.code)
         reason = str(exc.reason or "")
         response_headers = {str(k): str(v) for k, v in exc.headers.items()}
@@ -834,8 +994,55 @@ def request_once(
         "reason": reason,
         "headers": response_headers,
         "body": body_text,
+        "body_retained_bytes": len(raw),
+        "body_observed_bytes": observed_bytes,
+        "body_truncated": truncated,
+        "body_sha256": hashlib.sha256(raw).hexdigest(),
         "response_text": _format_response(status, reason, response_headers, body_text),
     }
+
+
+def _validate_request_facts(state_changing: bool | None, redline_checked: bool) -> None:
+    if state_changing is True and not redline_checked:
+        raise ValueError("state-changing validation requires --redline-checked before any request")
+
+
+def _write_raw_http(
+    private_dir: Path,
+    prefix: str,
+    response: dict[str, Any],
+    repo_root: Path,
+) -> dict[str, str]:
+    request_path = write_private_text(private_dir / f"{prefix}request.txt", response["request_text"])
+    response_path = write_private_text(private_dir / f"{prefix}response.txt", response["response_text"])
+    return {
+        "request": _rel(request_path, repo_root),
+        "response": _rel(response_path, repo_root),
+    }
+
+
+def _response_snapshot(response: dict[str, Any]) -> dict[str, Any]:
+    return snapshot_response(
+        response["status"],
+        response["headers"],
+        response["body"],
+        truncated=bool(response.get("body_truncated")),
+        observed_bytes=int(response.get("body_observed_bytes", 0) or 0),
+    )
+
+
+def _response_diff(baseline: dict[str, Any], variant: dict[str, Any]) -> dict[str, Any]:
+    payload = diff_responses(
+        baseline_status=baseline["status"],
+        baseline_headers=baseline["headers"],
+        baseline_body=baseline["body"],
+        variant_status=variant["status"],
+        variant_headers=variant["headers"],
+        variant_body=variant["body"],
+    )
+    payload["baseline"] = _response_snapshot(baseline)
+    payload["variant"] = _response_snapshot(variant)
+    return payload
 
 
 def public_exposure_markers(url: str, body: str) -> list[str]:
@@ -1278,7 +1485,7 @@ def _record_ledger_if_needed(
     return record_entry(
         repo_root,
         target=target,
-        endpoint=endpoint,
+        endpoint=public_url_shape(endpoint),
         method=method,
         vuln_class=vuln_class,
         actor=actor,
@@ -1288,7 +1495,7 @@ def _record_ledger_if_needed(
         result=result,
         browser_observed=browser_observed,
         replayed=True,
-        state_changing=bool(state_changing) if state_changing is not None else method.upper() not in SAFE_METHODS,
+        state_changing=state_changing,
         redline_checked=redline_checked,
         evidence_ref=evidence_ref,
         notes=notes,
@@ -1307,14 +1514,22 @@ def run_authz_public_exposure(
     finding_id: str = "",
     no_ledger: bool = False,
     browser_observed: bool = False,
+    state_changing: bool | None = None,
+    redline_checked: bool = False,
 ) -> dict[str, Any]:
+    _validate_request_facts(state_changing, redline_checked)
     finding_id = finding_id or _default_finding_id("authz-public-exposure", url)
     bundle = _bundle_dir(repo_root, target, finding_id)
-    response = request_once(url=url, method=method, headers=headers, body=body, timeout=timeout)
-    request_path = bundle / "baseline.request.txt"
-    response_path = bundle / "baseline.response.txt"
-    _write_text(request_path, response["request_text"])
-    _write_text(response_path, response["response_text"])
+    private_bundle = _private_bundle_dir(repo_root, target, bundle)
+    response = request_once(
+        target=target,
+        url=url,
+        method=method,
+        headers=headers,
+        body=body,
+        timeout=timeout,
+    )
+    raw_artifacts = _write_raw_http(private_bundle, "baseline.", response, repo_root)
 
     marker_sources = public_exposure_marker_sources(url, response["body"])
     markers = sorted(set(marker_sources["url"]) | set(marker_sources["body"]))
@@ -1323,9 +1538,9 @@ def run_authz_public_exposure(
     impact_text = _public_exposure_impact_text(markers) if candidate_ready else ""
     finding = {
         "type": "auth_bypass",
-        "url": url,
+        "url": public_url_shape(url),
         "summary": (
-            f"{response['status']} {len(response['body'])} {url} "
+            f"{response['status']} {len(response['body'])} {public_url_shape(url)} "
             f"markers={','.join(markers)} unauthenticated public exposure {impact_text}".strip()
         ),
         "raw": f"anonymous replay returned {response['status']} with markers {markers}; {impact_text}".strip(),
@@ -1349,7 +1564,7 @@ def run_authz_public_exposure(
             ],
             "summary": "authz:tested-clean score=0 missing=body-backed sensitive/admin/config marker",
         })
-    evidence_ref = _rel(response_path, repo_root)
+    evidence_ref = raw_artifacts["response"]
     notes = (
         f"Validation runner authz-public-exposure: anonymous {method.upper()} returned "
         f"{response['status']} with markers={markers or []}."
@@ -1369,7 +1584,8 @@ def run_authz_public_exposure(
         evidence_ref=evidence_ref,
         notes=notes,
         browser_observed=browser_observed,
-        redline_checked=True,
+        redline_checked=redline_checked,
+        state_changing=state_changing,
     )
 
     summary = {
@@ -1377,17 +1593,19 @@ def run_authz_public_exposure(
         "lane": "authz_public_exposure",
         "target": canonical_target_value(target),
         "finding_id": finding_id,
-        "url": url,
+        "url": public_url_shape(url),
         "method": method.upper(),
         "generated_at": now_utc(),
         "result": result,
         "candidate_ready": candidate_ready,
         "markers": markers,
         "marker_sources": marker_sources,
-        "baseline": snapshot_response(response["status"], response["headers"], response["body"]),
+        "baseline": _response_snapshot(response),
+        "state_changing": state_changing,
+        "redline_checked": redline_checked,
         "artifacts": {
-            "baseline_request": _rel(request_path, repo_root),
-            "baseline_response": _rel(response_path, repo_root),
+            "baseline_request": raw_artifacts["request"],
+            "baseline_response": raw_artifacts["response"],
         },
         "evidence_rubric": rubric,
         "ledger_record": ledger,
@@ -1657,8 +1875,8 @@ def run_authz_role_replay(
     repeat: int = 1,
     no_ledger: bool = False,
     browser_observed: bool = False,
-    state_changing: bool = False,
-    redline_checked: bool = True,
+    state_changing: bool | None = None,
+    redline_checked: bool = False,
     case_state_ref: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Replay one surface as anonymous/owner/peer without claiming object IDOR.
@@ -1668,6 +1886,7 @@ def run_authz_role_replay(
     anonymous sensitive exposure promotes directly to ``tested_finding``.
     """
     method_u = method.upper()
+    _validate_request_facts(state_changing, redline_checked)
     owner_headers = dict(owner_headers or {})
     peer_headers = dict(peer_headers or {})
     peer_body = owner_body if peer_body is None else peer_body
@@ -1683,6 +1902,7 @@ def run_authz_role_replay(
 
     finding_id = finding_id or _default_finding_id("authz-role-replay", url)
     bundle = _bundle_dir(repo_root, target, finding_id)
+    private_bundle = _private_bundle_dir(repo_root, target, bundle)
     repeat = max(1, int(repeat or 1))
     runs: list[dict[str, Any]] = []
     marker_sources_by_round: list[dict[str, list[str]]] = []
@@ -1691,44 +1911,40 @@ def run_authz_role_replay(
     for idx in range(1, repeat + 1):
         prefix = "" if repeat == 1 else f"{idx}."
         anonymous = (
-            request_once(url=url, method=method_u, headers={}, body="", timeout=timeout)
+            request_once(target=target, url=url, method=method_u, headers={}, body="", timeout=timeout)
             if include_anonymous else None
         )
-        owner = request_once(url=url, method=method_u, headers=owner_headers, body=owner_body, timeout=timeout)
-        peer = request_once(url=url, method=method_u, headers=peer_headers, body=peer_body, timeout=timeout)
+        owner = request_once(
+            target=target,
+            url=url,
+            method=method_u,
+            headers=owner_headers,
+            body=owner_body,
+            timeout=timeout,
+        )
+        peer = request_once(
+            target=target,
+            url=url,
+            method=method_u,
+            headers=peer_headers,
+            body=peer_body,
+            timeout=timeout,
+        )
 
         if anonymous is not None:
-            anon_req = bundle / f"{prefix}anonymous.request.txt"
-            anon_resp = bundle / f"{prefix}anonymous.response.txt"
-            _write_text(anon_req, anonymous["request_text"])
-            _write_text(anon_resp, anonymous["response_text"])
-            marker_sources_by_round.append(public_exposure_marker_sources(url, anonymous["body"]))
-        owner_req = bundle / f"{prefix}owner.request.txt"
-        owner_resp = bundle / f"{prefix}owner.response.txt"
-        peer_req = bundle / f"{prefix}peer.request.txt"
-        peer_resp = bundle / f"{prefix}peer.response.txt"
-        _write_text(owner_req, owner["request_text"])
-        _write_text(owner_resp, owner["response_text"])
-        _write_text(peer_req, peer["request_text"])
-        _write_text(peer_resp, peer["response_text"])
-
-        owner_peer_diff = diff_responses(
-            baseline_status=owner["status"],
-            baseline_headers=owner["headers"],
-            baseline_body=owner["body"],
-            variant_status=peer["status"],
-            variant_headers=peer["headers"],
-            variant_body=peer["body"],
-        )
-        anonymous_owner_diff = (
-            diff_responses(
-                baseline_status=anonymous["status"],
-                baseline_headers=anonymous["headers"],
-                baseline_body=anonymous["body"],
-                variant_status=owner["status"],
-                variant_headers=owner["headers"],
-                variant_body=owner["body"],
+            anon_artifacts = _write_raw_http(
+                private_bundle,
+                f"{prefix}anonymous.",
+                anonymous,
+                repo_root,
             )
+            marker_sources_by_round.append(public_exposure_marker_sources(url, anonymous["body"]))
+        owner_artifacts = _write_raw_http(private_bundle, f"{prefix}owner.", owner, repo_root)
+        peer_artifacts = _write_raw_http(private_bundle, f"{prefix}peer.", peer, repo_root)
+
+        owner_peer_diff = _response_diff(owner, peer)
+        anonymous_owner_diff = (
+            _response_diff(anonymous, owner)
             if anonymous is not None else {}
         )
         authenticated_exposure = _authenticated_broad_exposure_evidence(
@@ -1740,7 +1956,7 @@ def run_authz_role_replay(
         authenticated_exposure_checks.append(authenticated_exposure)
         runs.append({
             "iteration": idx,
-            "url": url,
+            "url": public_url_shape(url),
             "method": method_u,
             "anonymous_status": anonymous["status"] if anonymous is not None else None,
             "owner_status": owner["status"],
@@ -1754,13 +1970,13 @@ def run_authz_role_replay(
             "authenticated_exposure_candidate": bool(authenticated_exposure.get("candidate")),
             "artifacts": {
                 **({
-                    "anonymous_request": _rel(anon_req, repo_root),
-                    "anonymous_response": _rel(anon_resp, repo_root),
+                    "anonymous_request": anon_artifacts["request"],
+                    "anonymous_response": anon_artifacts["response"],
                 } if anonymous is not None else {}),
-                "owner_request": _rel(owner_req, repo_root),
-                "owner_response": _rel(owner_resp, repo_root),
-                "peer_request": _rel(peer_req, repo_root),
-                "peer_response": _rel(peer_resp, repo_root),
+                "owner_request": owner_artifacts["request"],
+                "owner_response": owner_artifacts["response"],
+                "peer_request": peer_artifacts["request"],
+                "peer_response": peer_artifacts["response"],
             },
             "owner_peer_diff": owner_peer_diff,
             "anonymous_owner_diff": anonymous_owner_diff,
@@ -1838,7 +2054,7 @@ def run_authz_role_replay(
     })
     finding = {
         "type": "auth_bypass",
-        "url": url,
+        "url": public_url_shape(url),
         "summary": (
             f"authz role replay result={result}; repeat={repeat}; "
             f"anonymous_statuses={[run['anonymous_status'] for run in runs]}; "
@@ -1949,11 +2165,13 @@ def run_authz_role_replay(
         "lane": "authz_role_replay",
         "target": canonical_target_value(target),
         "finding_id": finding_id,
-        "url": url,
+        "url": public_url_shape(url),
         "method": method_u,
         "generated_at": now_utc(),
         "result": result,
         "candidate_ready": candidate_ready,
+        "state_changing": state_changing,
+        "redline_checked": redline_checked,
         "markers": markers,
         "marker_sources": public_marker_sources,
         "marker_sources_by_round": marker_sources_by_round,
@@ -2014,31 +2232,35 @@ def run_sqli_result_diff(
         raise ValueError("sqli-result-diff v1 supports GET query parameters only")
     finding_id = finding_id or _default_finding_id("sqli-result-diff", url)
     bundle = _bundle_dir(repo_root, target, finding_id)
+    private_bundle = _private_bundle_dir(repo_root, target, bundle)
     repeat = max(1, int(repeat or 1))
     baseline_url = _replace_query_param(url, param, baseline_value)
     variant_url = _replace_query_param(url, param, variant_value)
+    write_private_json(
+        private_bundle / "inputs.json",
+        {"url": url, "param": param, "baseline_value": baseline_value, "variant_value": variant_value},
+    )
     runs: list[dict[str, Any]] = []
 
     for idx in range(1, repeat + 1):
-        base = request_once(url=baseline_url, method=method, headers=headers, timeout=timeout)
-        variant = request_once(url=variant_url, method=method, headers=headers, timeout=timeout)
-        prefix = "" if repeat == 1 else f"{idx}."
-        base_req = bundle / f"{prefix}baseline.request.txt"
-        base_resp = bundle / f"{prefix}baseline.response.txt"
-        var_req = bundle / f"{prefix}variant.request.txt"
-        var_resp = bundle / f"{prefix}variant.response.txt"
-        _write_text(base_req, base["request_text"])
-        _write_text(base_resp, base["response_text"])
-        _write_text(var_req, variant["request_text"])
-        _write_text(var_resp, variant["response_text"])
-        diff = diff_responses(
-            baseline_status=base["status"],
-            baseline_headers=base["headers"],
-            baseline_body=base["body"],
-            variant_status=variant["status"],
-            variant_headers=variant["headers"],
-            variant_body=variant["body"],
+        base = request_once(
+            target=target,
+            url=baseline_url,
+            method=method,
+            headers=headers,
+            timeout=timeout,
         )
+        variant = request_once(
+            target=target,
+            url=variant_url,
+            method=method,
+            headers=headers,
+            timeout=timeout,
+        )
+        prefix = "" if repeat == 1 else f"{idx}."
+        base_artifacts = _write_raw_http(private_bundle, f"{prefix}baseline.", base, repo_root)
+        variant_artifacts = _write_raw_http(private_bundle, f"{prefix}variant.", variant, repo_root)
+        diff = _response_diff(base, variant)
         sqli_evidence = _sqli_run_evidence(
             variant_value=variant_value,
             baseline_body=base["body"],
@@ -2047,13 +2269,13 @@ def run_sqli_result_diff(
         )
         runs.append({
             "iteration": idx,
-            "baseline_url": baseline_url,
-            "variant_url": variant_url,
+            "baseline_url": public_url_shape(baseline_url),
+            "variant_url": public_url_shape(variant_url),
             "artifacts": {
-                "baseline_request": _rel(base_req, repo_root),
-                "baseline_response": _rel(base_resp, repo_root),
-                "variant_request": _rel(var_req, repo_root),
-                "variant_response": _rel(var_resp, repo_root),
+                "baseline_request": base_artifacts["request"],
+                "baseline_response": base_artifacts["response"],
+                "variant_request": variant_artifacts["request"],
+                "variant_response": variant_artifacts["response"],
             },
             **diff,
             "sqli_evidence": sqli_evidence,
@@ -2083,7 +2305,7 @@ def run_sqli_result_diff(
     ])
     finding = {
         "type": "sqli",
-        "url": url,
+        "url": public_url_shape(url),
         "summary": (
             f"baseline vs single-variable perturbation on {param}; "
             f"stable differential={all(material)}; strong SQLi evidence={candidate_ready}; "
@@ -2142,14 +2364,18 @@ def run_sqli_result_diff(
         "lane": "sqli_result_diff",
         "target": canonical_target_value(target),
         "finding_id": finding_id,
-        "url": url,
+        "url": public_url_shape(url),
         "method": method.upper(),
         "param": param,
-        "baseline_value": baseline_value,
-        "variant_value": variant_value,
+        "baseline_value_length": len(baseline_value.encode("utf-8", errors="replace")),
+        "baseline_value_sha256": hashlib.sha256(baseline_value.encode("utf-8", errors="replace")).hexdigest(),
+        "variant_value_length": len(variant_value.encode("utf-8", errors="replace")),
+        "variant_value_sha256": hashlib.sha256(variant_value.encode("utf-8", errors="replace")).hexdigest(),
         "generated_at": now_utc(),
         "result": result,
         "candidate_ready": candidate_ready,
+        "state_changing": False,
+        "redline_checked": True,
         "probe_shape": probe_shape,
         "sqli_evidence": {
             "strong": candidate_ready,
@@ -2188,8 +2414,8 @@ def run_marker_replay(
     vuln_class: str = "RCE",
     no_ledger: bool = False,
     browser_observed: bool = False,
-    state_changing: bool = False,
-    redline_checked: bool = True,
+    state_changing: bool | None = None,
+    redline_checked: bool = False,
 ) -> dict[str, Any]:
     """Replay an exact request and require an inert marker in every response.
 
@@ -2200,38 +2426,45 @@ def run_marker_replay(
     marker = str(expect_marker or "")
     if not marker:
         raise ValueError("expect_marker is required")
+    _validate_request_facts(state_changing, redline_checked)
     finding_id = finding_id or _default_finding_id("marker-replay", url)
     bundle = _bundle_dir(repo_root, target, finding_id)
+    private_bundle = _private_bundle_dir(repo_root, target, bundle)
+    write_private_json(private_bundle / "inputs.json", {"url": url, "expect_marker": marker})
     repeat = max(1, int(repeat or 1))
     method_u = method.upper()
     runs: list[dict[str, Any]] = []
 
     for idx in range(1, repeat + 1):
-        response = request_once(url=url, method=method_u, headers=headers, body=body, timeout=timeout)
+        response = request_once(
+            target=target,
+            url=url,
+            method=method_u,
+            headers=headers,
+            body=body,
+            timeout=timeout,
+        )
         prefix = "" if repeat == 1 else f"{idx}."
-        request_path = bundle / f"{prefix}request.txt"
-        response_path = bundle / f"{prefix}response.txt"
-        _write_text(request_path, response["request_text"])
-        _write_text(response_path, response["response_text"])
+        raw_artifacts = _write_raw_http(private_bundle, prefix, response, repo_root)
         marker_found = marker in response["body"]
         runs.append({
             "iteration": idx,
-            "url": url,
+            "url": public_url_shape(url),
             "method": method_u,
             "status": response["status"],
             "marker_found": marker_found,
             "artifacts": {
-                "request": _rel(request_path, repo_root),
-                "response": _rel(response_path, repo_root),
+                "request": raw_artifacts["request"],
+                "response": raw_artifacts["response"],
             },
-            "snapshot": snapshot_response(response["status"], response["headers"], response["body"]),
+            "snapshot": _response_snapshot(response),
         })
 
     candidate_ready = all(bool(run["marker_found"]) for run in runs)
     result = "tested_finding" if candidate_ready else "tested_clean"
     finding = {
         "type": vuln_class,
-        "url": url,
+        "url": public_url_shape(url),
         "summary": (
             f"exact marker replay for {vuln_class}; marker_present={candidate_ready}; "
             f"repeat={repeat}; method={method_u}"
@@ -2273,13 +2506,16 @@ def run_marker_replay(
         "lane": "marker_replay",
         "target": canonical_target_value(target),
         "finding_id": finding_id,
-        "url": url,
+        "url": public_url_shape(url),
         "method": method_u,
         "vuln_class": vuln_class,
         "generated_at": now_utc(),
         "result": result,
         "candidate_ready": candidate_ready,
-        "expect_marker": marker,
+        "expect_marker_length": len(marker.encode("utf-8", errors="replace")),
+        "expect_marker_sha256": hashlib.sha256(marker.encode("utf-8", errors="replace")).hexdigest(),
+        "state_changing": state_changing,
+        "redline_checked": redline_checked,
         "repeat": repeat,
         "runs": runs,
         "evidence_rubric": rubric,
@@ -2312,8 +2548,8 @@ def run_idor_actor_pair(
     repeat: int = 1,
     no_ledger: bool = False,
     browser_observed: bool = False,
-    state_changing: bool = False,
-    redline_checked: bool = True,
+    state_changing: bool | None = None,
+    redline_checked: bool = False,
     case_state_ref: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Replay the same object/action as owner and peer, then preserve the diff.
@@ -2333,6 +2569,7 @@ def run_idor_actor_pair(
     peer_headers = dict(peer_headers or {})
     peer_url = peer_url or url
     peer_body = owner_body if peer_body is None else peer_body
+    _validate_request_facts(state_changing, redline_checked)
     if not _actor_context_differs(
         url=url,
         peer_url=peer_url,
@@ -2345,30 +2582,36 @@ def run_idor_actor_pair(
 
     finding_id = finding_id or _default_finding_id("idor-actor-pair", url)
     bundle = _bundle_dir(repo_root, target, finding_id)
+    private_bundle = _private_bundle_dir(repo_root, target, bundle)
     repeat = max(1, int(repeat or 1))
     marker = str(expect_marker or "")
+    write_private_json(
+        private_bundle / "inputs.json",
+        {"url": url, "peer_url": peer_url, "expect_marker": marker},
+    )
     runs: list[dict[str, Any]] = []
 
     for idx in range(1, repeat + 1):
-        owner = request_once(url=url, method=method_u, headers=owner_headers, body=owner_body, timeout=timeout)
-        peer = request_once(url=peer_url, method=method_u, headers=peer_headers, body=peer_body, timeout=timeout)
-        prefix = "" if repeat == 1 else f"{idx}."
-        owner_req = bundle / f"{prefix}owner.request.txt"
-        owner_resp = bundle / f"{prefix}owner.response.txt"
-        peer_req = bundle / f"{prefix}peer.request.txt"
-        peer_resp = bundle / f"{prefix}peer.response.txt"
-        _write_text(owner_req, owner["request_text"])
-        _write_text(owner_resp, owner["response_text"])
-        _write_text(peer_req, peer["request_text"])
-        _write_text(peer_resp, peer["response_text"])
-        diff = diff_responses(
-            baseline_status=owner["status"],
-            baseline_headers=owner["headers"],
-            baseline_body=owner["body"],
-            variant_status=peer["status"],
-            variant_headers=peer["headers"],
-            variant_body=peer["body"],
+        owner = request_once(
+            target=target,
+            url=url,
+            method=method_u,
+            headers=owner_headers,
+            body=owner_body,
+            timeout=timeout,
         )
+        peer = request_once(
+            target=target,
+            url=peer_url,
+            method=method_u,
+            headers=peer_headers,
+            body=peer_body,
+            timeout=timeout,
+        )
+        prefix = "" if repeat == 1 else f"{idx}."
+        owner_artifacts = _write_raw_http(private_bundle, f"{prefix}owner.", owner, repo_root)
+        peer_artifacts = _write_raw_http(private_bundle, f"{prefix}peer.", peer, repo_root)
+        diff = _response_diff(owner, peer)
         marker_found = bool(marker and marker in peer["body"])
         exact_body_match = owner["body"] == peer["body"] and len(str(peer["body"] or "").strip()) >= 20
         private_body_match = _private_body_match(owner["body"], peer["body"])
@@ -2379,8 +2622,8 @@ def run_idor_actor_pair(
         ambiguous_access = owner_success and peer_success and not strong_access
         runs.append({
             "iteration": idx,
-            "owner_url": url,
-            "peer_url": peer_url,
+            "owner_url": public_url_shape(url),
+            "peer_url": public_url_shape(peer_url),
             "method": method_u,
             "owner_status": owner["status"],
             "peer_status": peer["status"],
@@ -2393,10 +2636,10 @@ def run_idor_actor_pair(
             "strong_access": strong_access,
             "ambiguous_access": ambiguous_access,
             "artifacts": {
-                "owner_request": _rel(owner_req, repo_root),
-                "owner_response": _rel(owner_resp, repo_root),
-                "peer_request": _rel(peer_req, repo_root),
-                "peer_response": _rel(peer_resp, repo_root),
+                "owner_request": owner_artifacts["request"],
+                "owner_response": owner_artifacts["response"],
+                "peer_request": peer_artifacts["request"],
+                "peer_response": peer_artifacts["response"],
             },
             **diff,
         })
@@ -2418,7 +2661,7 @@ def run_idor_actor_pair(
     _write_json(diff_path, {"runs": runs})
     finding = {
         "type": "idor",
-        "url": url,
+        "url": public_url_shape(url),
         "summary": (
             f"owner vs peer replay result={result}; repeat={repeat}; "
             f"peer_statuses={[run['peer_status'] for run in runs]}"
@@ -2486,13 +2729,16 @@ def run_idor_actor_pair(
         "lane": "idor_actor_pair",
         "target": canonical_target_value(target),
         "finding_id": finding_id,
-        "url": url,
-        "peer_url": peer_url,
+        "url": public_url_shape(url),
+        "peer_url": public_url_shape(peer_url),
         "method": method_u,
         "generated_at": now_utc(),
         "result": result,
         "candidate_ready": candidate_ready,
-        "expect_marker": marker,
+        "expect_marker_length": len(marker.encode("utf-8", errors="replace")),
+        "expect_marker_sha256": hashlib.sha256(marker.encode("utf-8", errors="replace")).hexdigest(),
+        "state_changing": state_changing,
+        "redline_checked": redline_checked,
         "case_state_ref": case_state_ref or {},
         "repeat": repeat,
         "runs": runs,
@@ -2520,20 +2766,21 @@ def run_idor_skeleton(
 ) -> dict[str, Any]:
     finding_id = finding_id or _default_finding_id("idor-skeleton", endpoint)
     bundle = _bundle_dir(repo_root, target, finding_id)
+    private_bundle = _private_bundle_dir(repo_root, target, bundle)
     skeleton = {
         "schema_version": SCHEMA_VERSION,
         "lane": "idor_actor_pair_skeleton",
         "target": canonical_target_value(target),
         "finding_id": finding_id,
-        "endpoint": endpoint,
+        "endpoint": public_url_shape(endpoint),
         "generated_at": now_utc(),
         "result": "skeleton",
         "candidate_ready": False,
         "required_artifacts": {
-            "owner_baseline_request": _rel(bundle / "owner.baseline.request.txt", repo_root),
-            "owner_baseline_response": _rel(bundle / "owner.baseline.response.txt", repo_root),
-            "peer_variant_request": _rel(bundle / "peer.variant.request.txt", repo_root),
-            "peer_variant_response": _rel(bundle / "peer.variant.response.txt", repo_root),
+            "owner_baseline_request": _rel(private_bundle / "owner.baseline.request.txt", repo_root),
+            "owner_baseline_response": _rel(private_bundle / "owner.baseline.response.txt", repo_root),
+            "peer_variant_request": _rel(private_bundle / "peer.variant.request.txt", repo_root),
+            "peer_variant_response": _rel(private_bundle / "peer.variant.response.txt", repo_root),
             "diff": _rel(bundle / "diff.json", repo_root),
         },
         "ai_next": {
@@ -2564,6 +2811,13 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--repo-root", default=str(BASE_DIR))
         p.add_argument("--no-sync", action="store_true", help="Do not sync runner result into findings/action_queue state")
 
+    def add_request_facts(p: argparse.ArgumentParser) -> None:
+        group = p.add_mutually_exclusive_group()
+        group.add_argument("--state-changing", dest="state_changing", action="store_true")
+        group.add_argument("--no-state-changing", dest="state_changing", action="store_false")
+        p.set_defaults(state_changing=None)
+        p.add_argument("--redline-checked", action="store_true", default=False)
+
     authz = sub.add_parser("authz-public-exposure", help="Validate anonymous public admin/config exposure")
     add_common(authz)
     authz.add_argument("--url", required=True)
@@ -2573,6 +2827,7 @@ def build_parser() -> argparse.ArgumentParser:
     authz.add_argument("--timeout", type=int, default=10)
     authz.add_argument("--browser-observed", action="store_true")
     authz.add_argument("--no-ledger", action="store_true")
+    add_request_facts(authz)
 
     authz_role = sub.add_parser("authz-role-replay", help="Replay anonymous/owner/peer actor contexts on one surface")
     add_common(authz_role)
@@ -2590,8 +2845,7 @@ def build_parser() -> argparse.ArgumentParser:
     authz_role.add_argument("--repeat", type=int, default=1)
     authz_role.add_argument("--no-anonymous", action="store_true")
     authz_role.add_argument("--browser-observed", action="store_true")
-    authz_role.add_argument("--state-changing", action="store_true")
-    authz_role.add_argument("--redline-checked", action="store_true", default=True)
+    add_request_facts(authz_role)
     authz_role.add_argument("--no-ledger", action="store_true")
 
     sqli = sub.add_parser("sqli-result-diff", help="Validate read-only SQLi-style result differential")
@@ -2618,8 +2872,7 @@ def build_parser() -> argparse.ArgumentParser:
     marker.add_argument("--repeat", type=int, default=1)
     marker.add_argument("--vuln-class", default="RCE")
     marker.add_argument("--browser-observed", action="store_true")
-    marker.add_argument("--state-changing", action="store_true")
-    marker.add_argument("--redline-checked", action="store_true", default=True)
+    add_request_facts(marker)
     marker.add_argument("--no-ledger", action="store_true")
 
     idor_pair = sub.add_parser("idor-actor-pair", help="Replay owner vs peer actor pair and diff responses")
@@ -2641,8 +2894,7 @@ def build_parser() -> argparse.ArgumentParser:
     idor_pair.add_argument("--timeout", type=int, default=10)
     idor_pair.add_argument("--repeat", type=int, default=1)
     idor_pair.add_argument("--browser-observed", action="store_true")
-    idor_pair.add_argument("--state-changing", action="store_true")
-    idor_pair.add_argument("--redline-checked", action="store_true", default=True)
+    add_request_facts(idor_pair)
     idor_pair.add_argument("--no-ledger", action="store_true")
     idor_pair.add_argument("--complete-case-state", action="store_true", help="Write result back to case_state backlog after replay")
 
@@ -2667,6 +2919,8 @@ def main(argv: list[str] | None = None) -> int:
             finding_id=args.finding_id,
             no_ledger=args.no_ledger,
             browser_observed=args.browser_observed,
+            state_changing=args.state_changing,
+            redline_checked=args.redline_checked,
         )
     elif args.lane == "authz-role-replay":
         owner_body = args.body if args.owner_body is None else args.owner_body

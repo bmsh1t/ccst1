@@ -7,6 +7,9 @@ description: Draft a submission-ready vulnerability report from validated eviden
 Generate an editable, submission-ready report draft from validated evidence.
 
 This is the preferred primary reporting workflow; legacy report-generation entrypoints are compatibility paths only.
+The generator rejects statusless structured rows and raw legacy scanner files by
+default. `--allow-legacy-drafts` is an explicit compatibility path; those drafts
+do not update canonical finding or action-queue lifecycle state.
 
 ## Pre-Conditions
 

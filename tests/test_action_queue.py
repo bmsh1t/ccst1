@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -65,6 +67,40 @@ def test_ingest_checkpoint_persists_and_prioritizes(tmp_path):
     queue = load_queue(tmp_path, "target.com")
     assert summarize_queue(queue)["active"] == 2
     assert (tmp_path / "state" / "target.com" / "action_queue.json").is_file()
+
+
+def test_concurrent_manual_actions_do_not_lose_updates(tmp_path):
+    code = """
+import sys
+from tools.action_queue import add_manual_action
+
+root, evidence = sys.argv[1:]
+add_manual_action(
+    root,
+    target="target.com",
+    action_type="manual-check",
+    evidence=evidence,
+    next_question=f"review {evidence}",
+    action=f"run {evidence}",
+)
+"""
+    repo_root = Path(__file__).resolve().parents[1]
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", code, str(tmp_path), evidence],
+            cwd=repo_root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for evidence in ("first", "second")
+    ]
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stdout + stderr
+
+    queue = load_queue(tmp_path, "target.com")
+    assert {item["evidence"] for item in queue["actions"]} == {"first", "second"}
 
 
 def test_target_next_honors_scan_wait_marker_without_deleting_queue(tmp_path):

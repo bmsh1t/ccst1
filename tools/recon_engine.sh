@@ -294,6 +294,11 @@ TARGET="${1:?Usage: $0 <target-domain|ip|cidr|list-file> [--quick]}"
 QUICK_MODE="${2:-}"
 BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "recon" ] || [ "${BBHUNT_RUNTIME_LOCK_TARGET:-}" != "$TARGET" ]; then
+    exec python3 "$BASE_DIR/tools/runtime_phase_exec.py" \
+        --repo-root "$BASE_DIR" --target "$TARGET" --phase recon -- \
+        bash "$SCRIPT_PATH" "$TARGET" "$QUICK_MODE"
+fi
 # 与 Osmedeus 01-osint.yaml 的 `toolsDir` 对齐：默认共用 $HOME/Tools。
 # 可用 BBHUNT_TOOLS_DIR 或 OSMEDEUS_TOOLS_DIR 显式覆盖，便于多套工具目录共存。
 SHARED_TOOLS_DIR="${BBHUNT_TOOLS_DIR:-${OSMEDEUS_TOOLS_DIR:-$HOME/Tools}}"
@@ -302,6 +307,7 @@ SHARED_TOOLS_DIR="${BBHUNT_TOOLS_DIR:-${OSMEDEUS_TOOLS_DIR:-$HOME/Tools}}"
 # BB_AUTH_ARGS=(-H 'Name: value' ...). Empty session = no-op.
 # shellcheck source=tools/_auth_helper.sh
 . "$(dirname "$0")/_auth_helper.sh"
+bb_auth_bind_target "$TARGET"
 trap cleanup_auth_tmpfiles EXIT
 
 # Prefer Go-installed/security-tool bins over similarly named package-manager CLIs.
@@ -924,7 +930,8 @@ touch "$RECON_DIR/subdomains/all.txt" \
 ensure_explicit_port_seed_live() {
     if [ ! -s "$RECON_DIR/live/urls.txt" ] && [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ] && [ -n "$TARGET_HTTP_SEED" ]; then
         local seed_http_code
-        seed_http_code="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' "${BB_AUTH_ARGS[@]}" --max-time 5 "$TARGET_HTTP_SEED" 2>/dev/null || true)"
+        bb_auth_args_for_url "$TARGET_HTTP_SEED"
+        seed_http_code="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' "${BB_URL_AUTH_ARGS[@]}" --max-time 5 "$TARGET_HTTP_SEED" 2>/dev/null || true)"
         if [[ "$seed_http_code" =~ ^(2|3)[0-9][0-9]$ ]] || [ "$seed_http_code" = "401" ] || [ "$seed_http_code" = "403" ]; then
             printf '%s\n' "$TARGET_HTTP_SEED" > "$RECON_DIR/live/urls.txt"
             printf '%s\n' "$TARGET_HTTP_SEED" > "$RECON_DIR/live/seed_urls.txt"
@@ -1119,7 +1126,7 @@ elif [ -n "$HTTPX_BIN" ]; then
         -title \
         -tech-detect \
         -content-length \
-        -follow-redirects \
+        -follow-host-redirects \
         -threads "$THREADS" \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
@@ -1193,10 +1200,12 @@ if command -v wafw00f &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     WAFW00F_JSON_FILE="$RECON_DIR/live/wafw00f.json"
     WAFW00F_HITS_FILE="$RECON_DIR/live/wafw00f_hits.txt"
     WAFW00F_HEADER_ARGS=()
+    WAFW00F_REDIRECT_ARGS=()
 
     head -"$WAFW00F_MAX_TARGETS" "$RECON_DIR/live/urls.txt" > "$WAFW00F_TARGETS_FILE"
     if prepare_wafw00f_headers_file; then
         WAFW00F_HEADER_ARGS=(-H "$WAFW00F_HEADERS_FILE")
+        WAFW00F_REDIRECT_ARGS=(-r)
     fi
 
     log_step "Running wafw00f (top $WAFW00F_MAX_TARGETS live hosts)..."
@@ -1206,6 +1215,7 @@ if command -v wafw00f &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
         -f json \
         --no-colors \
         -T "$WAFW00F_HTTP_TIMEOUT" \
+        "${WAFW00F_REDIRECT_ARGS[@]}" \
         "${WAFW00F_HEADER_ARGS[@]}" \
         >/dev/null 2>&1; then
         WAFW00F_STATUS="ok"
@@ -1303,7 +1313,8 @@ elif command -v unwaf &>/dev/null; then
             head -1 "$RECON_DIR/live/urls.txt" > "$RECON_DIR/live/unwaf_source_url.txt"
             UNWAF_SOURCE_URL="$(head -1 "$RECON_DIR/live/unwaf_source_url.txt" 2>/dev/null || true)"
             if [ -n "$UNWAF_SOURCE_URL" ]; then
-                curl -sL "${BB_AUTH_ARGS[@]}" --max-time 15 "$UNWAF_SOURCE_URL" -o "$UNWAF_SOURCE_FILE" 2>/dev/null || true
+                bb_auth_args_for_url "$UNWAF_SOURCE_URL"
+                curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 15 "$UNWAF_SOURCE_URL" -o "$UNWAF_SOURCE_FILE" 2>/dev/null || true
                 [ -s "$UNWAF_SOURCE_FILE" ] && UNWAF_SOURCE_ARGS=(-s "$UNWAF_SOURCE_FILE")
             fi
         fi
@@ -1589,7 +1600,7 @@ if command -v katana &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     [ -n "${KATANA_PARALLELISM:-}" ] && KATANA_PERF_ARGS+=(-p "$KATANA_PARALLELISM")
     timeout 300 katana \
         -list "$RECON_DIR/urls/katana_targets.txt" \
-        -d 3 -jc -kf all -silent \
+        -d 3 -jc -kf all -silent -dr -fs rdn -do \
         "${KATANA_PERF_ARGS[@]}" \
         "${BB_AUTH_ARGS[@]}" \
         -o "$RECON_DIR/urls/katana.txt" 2>/dev/null || true
@@ -1751,7 +1762,8 @@ if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
     LINKFINDER_BIN="$(resolve_linkfinder_path || true)"
 
     head -50 "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
-        curl -s "${BB_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
+        bb_auth_args_for_url "$js_url"
+        curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
             sed -nE 's/.*["'"'"']([a-zA-Z0-9_/.-]*(\/[a-zA-Z0-9_/.-]+)+)["'"'"'].*/\1/p' \
             >> "$RECON_DIR/js/endpoints_raw.txt" 2>/dev/null || true
     done
@@ -1762,7 +1774,8 @@ if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
 
         # Extract potential secrets from JS
         head -50 "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
-            curl -s "${BB_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
+            bb_auth_args_for_url "$js_url"
+            curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
                 grep -oiE '([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)["'\''[:space:]]*[:=]["'\''[:space:]]*["'\'' ]?([A-Za-z0-9_./+=:-]{8,})' \
                 >> "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null || true
         done
@@ -1778,7 +1791,8 @@ if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
         : > "$RECON_DIR/js/linkfinder_raw.txt"
         head -"$LINKFINDER_MAX_JS" "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
             tmp_js="$(mktemp "${TMPDIR:-/tmp}/bbhunt-linkfinder.XXXXXX.js")"
-            if curl -s "${BB_AUTH_ARGS[@]}" --max-time 15 "$js_url" -o "$tmp_js" 2>/dev/null && [ -s "$tmp_js" ]; then
+            bb_auth_args_for_url "$js_url"
+            if curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 15 "$js_url" -o "$tmp_js" 2>/dev/null && [ -s "$tmp_js" ]; then
                 if [ "${LINKFINDER_BIN##*.}" = "py" ]; then
                     python3 "$LINKFINDER_BIN" -i "$tmp_js" -o cli 2>/dev/null || true
                 else
@@ -1886,6 +1900,7 @@ if [ -n "$WORDLIST" ]; then
 
     while IFS= read -r url && [ "$FFUF_ATTEMPTED" -lt "$MAX_FUZZ" ]; do
         [ -n "$url" ] || continue
+        bb_auth_args_for_url "$url"
         FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))
         FFUF_FILTER_ARGS=()
         FFUF_CONTROL_WORDLIST_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf-control-words.XXXXXX")"
@@ -1900,7 +1915,7 @@ if [ -n "$WORDLIST" ]; then
             -t 1 \
             -rate "$RATE_LIMIT" \
             -timeout 10 \
-            "${BB_AUTH_ARGS[@]}" \
+            "${BB_URL_AUTH_ARGS[@]}" \
             > "$FFUF_CONTROL_RUN_TMP" 2>> "$FFUF_LOG"; then
             cat "$FFUF_CONTROL_RUN_TMP" >> "$FFUF_CONTROL_TMP"
             if ! SPA_FALLBACK_SIZE="$(python3 "$BASE_DIR/tools/recon_adapter.py" \
@@ -1937,7 +1952,7 @@ if [ -n "$WORDLIST" ]; then
                 -t "$THREADS" \
                 -rate "$RATE_LIMIT" \
                 -timeout 10 \
-                "${BB_AUTH_ARGS[@]}" \
+                "${BB_URL_AUTH_ARGS[@]}" \
                 -s -json 2>> "$FFUF_LOG" | gzip -c >> "$FFUF_RESULT_TMP"; then
                 FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + 1))
             else
@@ -1953,7 +1968,7 @@ if [ -n "$WORDLIST" ]; then
                 -t "$THREADS" \
                 -rate "$RATE_LIMIT" \
                 -timeout 10 \
-                "${BB_AUTH_ARGS[@]}" \
+                "${BB_URL_AUTH_ARGS[@]}" \
                 -s -json >> "$FFUF_RESULT_TMP" 2>> "$FFUF_LOG"; then
                 FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + 1))
             else
@@ -2084,9 +2099,10 @@ if [ -s "$RECON_DIR/live/urls.txt" ]; then
 
     while IFS= read -r base_url; do
         for path in "${CONFIG_PATHS[@]}"; do
-            STATUS=$(curl -s "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "${base_url}${path}" 2>/dev/null || echo "000")
+            bb_auth_args_for_url "${base_url}${path}"
+            STATUS=$(curl -s "${BB_URL_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "${base_url}${path}" 2>/dev/null || echo "000")
             if [ "$STATUS" = "200" ]; then
-                CONTENT_TYPE=$(curl -sI "${BB_AUTH_ARGS[@]}" --max-time 5 "${base_url}${path}" 2>/dev/null | grep -i content-type | head -1 || true)
+                CONTENT_TYPE=$(curl -sI "${BB_URL_AUTH_ARGS[@]}" --max-time 5 "${base_url}${path}" 2>/dev/null | grep -i content-type | head -1 || true)
                 # Only flag if it returns JS/JSON/text (not HTML error pages)
                 if echo "$CONTENT_TYPE" | grep -qiE '(javascript|json|text/plain)'; then
                     echo "[EXPOSED] ${base_url}${path}" >> "$RECON_DIR/exposure/config_files.txt"
@@ -2400,6 +2416,56 @@ record_recon_phase \
     "recon/${RECON_TARGET_KEY}/exposure/*.validated" \
     "$API_VALIDATED_TOTAL" \
     "validated files are denoised views; original candidates are preserved"
+
+# ============================================================
+# Phase 6.7.6: OpenAPI Semantic Extraction
+# ============================================================
+echo ""
+log_info "Phase 6.7.6: OpenAPI Semantic Extraction"
+
+OPENAPI_SEMANTIC_STATUS="failed"
+OPENAPI_OPERATION_COUNT=0
+OPENAPI_AUTH_BOUNDARY_COUNT=0
+OPENAPI_PLATFORM_METADATA_COUNT=0
+OPENAPI_PLATFORM_HOST_BUDGET="${BBHUNT_OPENAPI_MAX_PLATFORM_HOSTS:-20}"
+
+if python3 "$BASE_DIR/tools/openapi_semantics.py" \
+    --repo-root "$BASE_DIR" \
+    --target "$TARGET" \
+    --max-platform-hosts "$OPENAPI_PLATFORM_HOST_BUDGET" \
+    >> "$RECON_DIR/logs/denoising.log" 2>&1; then
+    OPENAPI_SEMANTIC_STATUS="$(python3 - "$RECON_DIR/api_specs/summary.json" <<'PY' 2>/dev/null || printf 'partial\n'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(payload.get("status") or "partial")
+PY
+)"
+    OPENAPI_OPERATION_COUNT=$(wc -l < "$RECON_DIR/api_specs/operations.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
+    OPENAPI_AUTH_BOUNDARY_COUNT=$(wc -l < "$RECON_DIR/api_specs/auth_boundary_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
+    OPENAPI_PLATFORM_METADATA_COUNT=$(wc -l < "$RECON_DIR/api_specs/platform_metadata.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
+    log_done "OpenAPI operations: $OPENAPI_OPERATION_COUNT; auth boundaries: $OPENAPI_AUTH_BOUNDARY_COUNT"
+else
+    log_warn "OpenAPI semantic extraction failed — raw API candidates remain available"
+fi
+
+record_recon_phase \
+    openapi_semantics \
+    "$OPENAPI_SEMANTIC_STATUS" \
+    "recon/${RECON_TARGET_KEY}/api_specs/summary.json" \
+    "$OPENAPI_OPERATION_COUNT" \
+    "schema declarations are discovery facts; runtime auth evidence remains required"
+emit_claude_hint \
+    phase                  openapi_semantics \
+    status                 "$OPENAPI_SEMANTIC_STATUS" \
+    operations             "$OPENAPI_OPERATION_COUNT" \
+    auth_boundaries        "$OPENAPI_AUTH_BOUNDARY_COUNT" \
+    platform_metadata      "$OPENAPI_PLATFORM_METADATA_COUNT"
+emit_claude_hint_actions \
+    "review recon/${RECON_TARGET_KEY}/api_specs/auth_boundary_candidates.jsonl and select high-value operations" \
+    "capture anonymous baseline plus controlled auth/role/object differences before promoting a finding"
 
 # ============================================================
 # Phase 6.8: Identity and Cloud Intel

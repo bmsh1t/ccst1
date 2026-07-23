@@ -2,6 +2,7 @@
 """通过 agent-browser 或 playwright-cli 采集统一的浏览器态证据。"""
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -10,6 +11,23 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+
+try:
+    from tools.browser_surface import public_request_payload, public_url_shape
+    from tools.private_artifacts import (
+        private_artifact_dir,
+        secure_file,
+        write_private_json,
+        write_private_text,
+    )
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from browser_surface import public_request_payload, public_url_shape  # type: ignore
+    from private_artifacts import (  # type: ignore
+        private_artifact_dir,
+        secure_file,
+        write_private_json,
+        write_private_text,
+    )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_EVIDENCE_ROOT = BASE_DIR / "evidence"
@@ -26,7 +44,7 @@ def _now_utc() -> str:
 
 
 def _timestamp_slug() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def _safe_part(value: str, default: str) -> str:
@@ -152,14 +170,13 @@ def _run_agent_browser_cli(args: list[str], *, session: str, timeout: int) -> di
 
 
 def _compact_step(step: dict) -> dict:
+    name = re.sub(r"https?://\S+", "<url>", str(step.get("name") or ""))
     return {
-        "name": step["name"],
-        "cmd": step["cmd"],
+        "name": name,
         "returncode": step["returncode"],
         "success": step["success"],
         "stdout_bytes": step["stdout_bytes"],
         "stderr_bytes": step["stderr_bytes"],
-        "stderr_preview": step["stderr"][:300],
     }
 
 
@@ -191,43 +208,87 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _record_text_artifact(capture_dir: Path, filename: str, step: dict, artifacts: dict) -> None:
+def snapshot_shape(raw: str) -> str:
+    """公共 snapshot 仅保留哈希/长度和 form 形状。"""
+    text = str(raw or "")
+    forms = []
+    for match in re.finditer(r"<form\b(?P<attrs>[^>]*)>", text, re.I):
+        attrs = match.group("attrs")
+        action = next(iter(re.findall(r"action=[\"']([^\"']+)[\"']", attrs, re.I)), "")
+        method = next(iter(re.findall(r"method=[\"']([^\"']+)[\"']", attrs, re.I)), "GET")
+        action_path = re.sub(r"\?.*$", "", action)
+        forms.append(f'<form action="{action_path}" method="{method.upper()}">')
+    digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+    header = f"snapshot_bytes={len(text.encode('utf-8', errors='replace'))}\nsnapshot_sha256={digest}\n"
+    return header + (("\n".join(forms) + "\n") if forms else "")
+
+
+def console_shape(payload: object) -> dict:
+    items = payload if isinstance(payload, list) else []
+    return {
+        "count": len(items),
+        "types": sorted({str(item.get("type") or "") for item in items if isinstance(item, dict)}),
+        "sha256": hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _record_snapshot_artifact(
+    capture_dir: Path,
+    private_dir: Path,
+    step: dict,
+    artifacts: dict,
+) -> None:
     if not step["success"]:
         return
-    path = capture_dir / filename
-    path.write_text(step["stdout"], encoding="utf-8")
-    artifacts[filename.replace(".", "_")] = str(path)
+    raw_path = write_private_text(private_dir / "snapshot.txt", step["stdout"])
+    path = capture_dir / "snapshot.txt"
+    path.write_text(snapshot_shape(step["stdout"]), encoding="utf-8")
+    artifacts["snapshot_txt"] = str(path)
+    artifacts["snapshot_private_txt"] = str(raw_path)
 
 
-def _record_json_artifact(capture_dir: Path, filename: str, step: dict, artifacts: dict) -> int:
+def _record_requests_artifact(
+    capture_dir: Path,
+    private_dir: Path,
+    step: dict,
+    artifacts: dict,
+    *,
+    source: str,
+) -> int:
     if not step["success"]:
         return 0
     payload = _parse_jsonish(step["stdout"])
-    path = capture_dir / filename
-    _write_json(path, payload)
-    artifacts[filename.replace(".", "_")] = str(path)
+    raw_path = write_private_json(private_dir / "requests.raw.json", payload)
+    public_payload = public_request_payload(payload, source=source)
+    path = capture_dir / "requests.json"
+    _write_json(path, public_payload)
+    artifacts["requests_json"] = str(path)
+    artifacts["requests_private_json"] = str(raw_path)
     return _count_items(payload)
 
 
-def _record_storage(capture_dir: Path, local_step: dict, session_step: dict, artifacts: dict) -> None:
+def _record_storage(private_dir: Path, local_step: dict, session_step: dict, artifacts: dict) -> None:
     if not local_step["success"] and not session_step["success"]:
         return
     payload = {
         "localStorage": _parse_jsonish(local_step["stdout"]) if local_step["success"] else [],
         "sessionStorage": _parse_jsonish(session_step["stdout"]) if session_step["success"] else [],
     }
-    path = capture_dir / "storage.json"
-    _write_json(path, payload)
+    path = write_private_json(private_dir / "storage.json", payload)
     artifacts["storage_json"] = str(path)
 
 
 def _record_existing_file(path: Path, key: str, artifacts: dict) -> None:
     if path.is_file():
+        secure_file(path)
+        os.chmod(path, 0o600)
         artifacts[key] = str(path)
 
 
 def _record_agent_raw(
-    capture_dir: Path,
+    private_dir: Path,
     stem: str,
     step: dict,
     artifacts: dict[str, str],
@@ -240,8 +301,7 @@ def _record_agent_raw(
             "data": None,
             "error": step.get("stderr", "") or "No JSON response",
         }
-    path = capture_dir / f"{stem}.raw.json"
-    _write_json(path, payload)
+    path = write_private_json(private_dir / f"{stem}.raw.json", payload)
     artifacts[f"{stem.replace('-', '_')}_raw_json"] = str(path)
     return payload
 
@@ -266,11 +326,21 @@ def _step_error(step: dict) -> str:
     return str(step.get("stderr", "") or "").strip()
 
 
+def _error_shape(raw: str) -> str:
+    """公共摘要只记录错误大小与摘要，原文随完整 step 存入私有目录。"""
+    value = str(raw or "").strip()
+    if not value:
+        return "browser step failed"
+    encoded = value.encode("utf-8", errors="replace")
+    return f"browser step failed (bytes={len(encoded)}, sha256={hashlib.sha256(encoded).hexdigest()})"
+
+
 def _capture_playwright_backend(
     *,
     url: str,
     session_name: str,
     capture_dir: Path,
+    private_dir: Path,
     timeout: int,
     capture_screenshot: bool,
 ) -> dict:
@@ -289,32 +359,49 @@ def _capture_playwright_backend(
 
     snapshot_step = _run_playwright_cli(["--raw", "snapshot"], session=session_name, timeout=timeout)
     steps.append(snapshot_step)
-    _record_text_artifact(capture_dir, "snapshot.txt", snapshot_step, artifacts)
+    _record_snapshot_artifact(capture_dir, private_dir, snapshot_step, artifacts)
 
     requests_step = _run_playwright_cli(["--raw", "requests"], session=session_name, timeout=timeout)
     steps.append(requests_step)
-    counts["requests"] = _record_json_artifact(capture_dir, "requests.json", requests_step, artifacts)
+    counts["requests"] = _record_requests_artifact(
+        capture_dir,
+        private_dir,
+        requests_step,
+        artifacts,
+        source=PLAYWRIGHT_BIN,
+    )
 
     console_step = _run_playwright_cli(["--raw", "console"], session=session_name, timeout=timeout)
     steps.append(console_step)
-    counts["console"] = _record_json_artifact(capture_dir, "console.json", console_step, artifacts)
+    if console_step["success"]:
+        console_payload = _parse_jsonish(console_step["stdout"])
+        artifacts["console_private_json"] = str(
+            write_private_json(private_dir / "console.raw.json", console_payload)
+        )
+        console_path = capture_dir / "console.json"
+        _write_json(console_path, console_shape(console_payload))
+        artifacts["console_json"] = str(console_path)
+        counts["console"] = _count_items(console_payload)
 
     cookies_step = _run_playwright_cli(["--raw", "cookie-list"], session=session_name, timeout=timeout)
     steps.append(cookies_step)
-    _record_json_artifact(capture_dir, "cookies.json", cookies_step, artifacts)
+    if cookies_step["success"]:
+        artifacts["cookies_json"] = str(
+            write_private_json(private_dir / "cookies.json", _parse_jsonish(cookies_step["stdout"]))
+        )
 
     local_step = _run_playwright_cli(["--raw", "localstorage-list"], session=session_name, timeout=timeout)
     session_step = _run_playwright_cli(["--raw", "sessionstorage-list"], session=session_name, timeout=timeout)
     steps.extend([local_step, session_step])
-    _record_storage(capture_dir, local_step, session_step, artifacts)
+    _record_storage(private_dir, local_step, session_step, artifacts)
 
-    state_path = capture_dir / "state.json"
+    state_path = private_dir / "state.json"
     state_step = _run_playwright_cli(["state-save", str(state_path)], session=session_name, timeout=timeout)
     steps.append(state_step)
     _record_existing_file(state_path, "state_json", artifacts)
 
     if capture_screenshot:
-        screenshot_path = capture_dir / "screenshot.png"
+        screenshot_path = private_dir / "screenshot.png"
         screenshot_step = _run_playwright_cli(
             ["screenshot", f"--filename={screenshot_path}"],
             session=session_name,
@@ -324,10 +411,12 @@ def _capture_playwright_backend(
         _record_existing_file(screenshot_path, "screenshot_png", artifacts)
 
     success = any(step["success"] for step in navigation_steps)
-    error = "" if success else next((_step_error(step) for step in navigation_steps if _step_error(step)), "")
+    error = "" if success else _error_shape(
+        next((_step_error(step) for step in navigation_steps if _step_error(step)), "")
+    )
     core_ids = {id(step) for step in navigation_steps}
     warnings = [
-        {"step": step.get("name", ""), "error": _step_error(step) or "optional artifact unavailable"}
+        {"step": _compact_step(step)["name"], "error": _error_shape(_step_error(step))}
         for step in steps
         if id(step) not in core_ids and not step.get("success")
     ]
@@ -346,6 +435,7 @@ def _capture_agent_browser_backend(
     url: str,
     session_name: str,
     capture_dir: Path,
+    private_dir: Path,
     timeout: int,
     capture_screenshot: bool,
 ) -> dict:
@@ -356,7 +446,7 @@ def _capture_agent_browser_backend(
 
     open_step = _run_agent_browser_cli(["open"], session=session_name, timeout=timeout)
     steps.append(open_step)
-    _record_agent_raw(capture_dir, "open", open_step, artifacts)
+    _record_agent_raw(private_dir, "open", open_step, artifacts)
 
     # 命名 session 会跨 capture 保留日志；导航前清空，避免把旧页面请求归到本次 URL。
     requests_clear_step = _run_agent_browser_cli(
@@ -365,11 +455,11 @@ def _capture_agent_browser_backend(
         timeout=timeout,
     )
     steps.append(requests_clear_step)
-    _record_agent_raw(capture_dir, "requests-clear", requests_clear_step, artifacts)
+    _record_agent_raw(private_dir, "requests-clear", requests_clear_step, artifacts)
 
     console_clear_step = _run_agent_browser_cli(["console", "--clear"], session=session_name, timeout=timeout)
     steps.append(console_clear_step)
-    _record_agent_raw(capture_dir, "console-clear", console_clear_step, artifacts)
+    _record_agent_raw(private_dir, "console-clear", console_clear_step, artifacts)
 
     har_start_step = _run_agent_browser_cli(
         ["network", "har", "start"],
@@ -377,27 +467,29 @@ def _capture_agent_browser_backend(
         timeout=timeout,
     )
     steps.append(har_start_step)
-    _record_agent_raw(capture_dir, "har-start", har_start_step, artifacts)
+    _record_agent_raw(private_dir, "har-start", har_start_step, artifacts)
 
     navigate_step = _run_agent_browser_cli(["navigate", url], session=session_name, timeout=timeout)
     steps.append(navigate_step)
-    _record_agent_raw(capture_dir, "navigate", navigate_step, artifacts)
+    _record_agent_raw(private_dir, "navigate", navigate_step, artifacts)
 
     snapshot_step = _run_agent_browser_cli(["snapshot"], session=session_name, timeout=timeout)
     steps.append(snapshot_step)
-    snapshot_envelope = _record_agent_raw(capture_dir, "snapshot", snapshot_step, artifacts)
+    snapshot_envelope = _record_agent_raw(private_dir, "snapshot", snapshot_step, artifacts)
     if snapshot_step["success"]:
         snapshot_data = _agent_data(snapshot_envelope)
         snapshot_text = snapshot_data.get("snapshot", "") if isinstance(snapshot_data, dict) else ""
         if not isinstance(snapshot_text, str) or not snapshot_text:
             snapshot_text = json.dumps(snapshot_data, ensure_ascii=False, indent=2)
+        raw_snapshot = write_private_text(private_dir / "snapshot.txt", snapshot_text)
         snapshot_path = capture_dir / "snapshot.txt"
-        snapshot_path.write_text(snapshot_text, encoding="utf-8")
+        snapshot_path.write_text(snapshot_shape(snapshot_text), encoding="utf-8")
         artifacts["snapshot_txt"] = str(snapshot_path)
+        artifacts["snapshot_private_txt"] = str(raw_snapshot)
 
     requests_step = _run_agent_browser_cli(["network", "requests"], session=session_name, timeout=timeout)
     steps.append(requests_step)
-    requests_envelope = _record_agent_raw(capture_dir, "requests", requests_step, artifacts)
+    requests_envelope = _record_agent_raw(private_dir, "requests", requests_step, artifacts)
     if requests_step["success"]:
         requests_data = _agent_data(requests_envelope)
         if isinstance(requests_data, dict) and isinstance(requests_data.get("requests"), list):
@@ -407,79 +499,85 @@ def _capture_agent_browser_backend(
         else:
             request_items = []
         requests_path = capture_dir / "requests.json"
-        _write_json(requests_path, {"requests": request_items, "source": AGENT_BROWSER_BIN})
+        _write_json(
+            requests_path,
+            public_request_payload({"requests": request_items}, source=AGENT_BROWSER_BIN),
+        )
         artifacts["requests_json"] = str(requests_path)
         counts["requests"] = len(request_items)
 
     console_step = _run_agent_browser_cli(["console"], session=session_name, timeout=timeout)
     steps.append(console_step)
-    console_envelope = _record_agent_raw(capture_dir, "console", console_step, artifacts)
+    console_envelope = _record_agent_raw(private_dir, "console", console_step, artifacts)
     if console_step["success"]:
         console_data = _agent_data(console_envelope)
         console_payload = console_data.get("messages", []) if isinstance(console_data, dict) else console_data
         console_path = capture_dir / "console.json"
-        _write_json(console_path, console_payload if console_payload is not None else [])
+        _write_json(console_path, console_shape(console_payload))
         artifacts["console_json"] = str(console_path)
         counts["console"] = _count_items(console_data)
 
     cookies_step = _run_agent_browser_cli(["cookies", "get"], session=session_name, timeout=timeout)
     steps.append(cookies_step)
-    cookies_envelope = _record_agent_raw(capture_dir, "cookies", cookies_step, artifacts)
+    cookies_envelope = _record_agent_raw(private_dir, "cookies", cookies_step, artifacts)
     if cookies_step["success"]:
         cookies_data = _agent_data(cookies_envelope)
         cookies_payload = cookies_data.get("cookies", []) if isinstance(cookies_data, dict) else cookies_data
-        cookies_path = capture_dir / "cookies.json"
-        _write_json(cookies_path, cookies_payload if cookies_payload is not None else [])
+        cookies_path = write_private_json(
+            private_dir / "cookies.json",
+            cookies_payload if cookies_payload is not None else [],
+        )
         artifacts["cookies_json"] = str(cookies_path)
 
     local_step = _run_agent_browser_cli(["storage", "local"], session=session_name, timeout=timeout)
     session_step = _run_agent_browser_cli(["storage", "session"], session=session_name, timeout=timeout)
     steps.extend([local_step, session_step])
-    local_envelope = _record_agent_raw(capture_dir, "local-storage", local_step, artifacts)
-    session_envelope = _record_agent_raw(capture_dir, "session-storage", session_step, artifacts)
+    local_envelope = _record_agent_raw(private_dir, "local-storage", local_step, artifacts)
+    session_envelope = _record_agent_raw(private_dir, "session-storage", session_step, artifacts)
     if local_step["success"] or session_step["success"]:
         storage_payload = {
             "localStorage": _agent_storage_values(_agent_data(local_envelope)) if local_step["success"] else {},
             "sessionStorage": _agent_storage_values(_agent_data(session_envelope)) if session_step["success"] else {},
         }
-        storage_path = capture_dir / "storage.json"
-        _write_json(storage_path, storage_payload)
+        storage_path = write_private_json(private_dir / "storage.json", storage_payload)
         artifacts["storage_json"] = str(storage_path)
 
-    state_path = capture_dir / "state.json"
+    state_path = private_dir / "state.json"
     state_step = _run_agent_browser_cli(["state", "save", str(state_path)], session=session_name, timeout=timeout)
     steps.append(state_step)
-    _record_agent_raw(capture_dir, "state", state_step, artifacts)
+    _record_agent_raw(private_dir, "state", state_step, artifacts)
     _record_existing_file(state_path, "state_json", artifacts)
 
     core_steps = [open_step, navigate_step, snapshot_step, requests_step, console_step]
     if capture_screenshot:
-        screenshot_path = capture_dir / "screenshot.png"
+        screenshot_path = private_dir / "screenshot.png"
         screenshot_step = _run_agent_browser_cli(
             ["screenshot", str(screenshot_path)],
             session=session_name,
             timeout=timeout,
         )
         steps.append(screenshot_step)
-        _record_agent_raw(capture_dir, "screenshot", screenshot_step, artifacts)
+        _record_agent_raw(private_dir, "screenshot", screenshot_step, artifacts)
         _record_existing_file(screenshot_path, "screenshot_png", artifacts)
 
-    har_path = capture_dir / "network.har"
+    har_path = private_dir / "network.har"
     har_stop_step = _run_agent_browser_cli(
         ["network", "har", "stop", str(har_path)],
         session=session_name,
         timeout=timeout,
     )
     steps.append(har_stop_step)
-    _record_agent_raw(capture_dir, "har-stop", har_stop_step, artifacts)
+    _record_agent_raw(private_dir, "har-stop", har_stop_step, artifacts)
     if har_start_step["success"] and har_stop_step["success"]:
         _record_existing_file(har_path, "network_har", artifacts)
 
     success = all(step["success"] for step in core_steps)
-    error = "" if success else next((_step_error(step) for step in core_steps if _step_error(step)), "")
+    error = "" if success else _error_shape(
+        next((_step_error(step) for step in core_steps if _step_error(step)), "")
+    )
     core_ids = {id(step) for step in core_steps}
     warnings = [
-        {"step": step.get("name", ""), "error": _step_error(step) or "optional artifact unavailable"}
+        {"step": _compact_step(step)["name"], "error": _error_shape(_step_error(step))}
         for step in steps
         if id(step) not in core_ids and not step.get("success")
     ]
@@ -553,14 +651,17 @@ def capture_browser_evidence(
     session_name = session.strip() or default_browser_session(target)
     root = Path(evidence_root) if evidence_root else DEFAULT_EVIDENCE_ROOT
     browser_root = root / target_name / "browser"
-    capture_dir = browser_root / f"{_timestamp_slug()}-{safe_label}"
-    capture_dir.mkdir(parents=True, exist_ok=True)
+    run_id = f"{_timestamp_slug()}-{safe_label}"
+    capture_dir = browser_root / run_id
+    capture_dir.mkdir(parents=True, exist_ok=False)
+    private_dir = private_artifact_dir(root.parent, "browser", target_name, run_id)
 
     if selected_backend == AGENT_BROWSER_BIN:
         result = _capture_agent_browser_backend(
             url=url,
             session_name=session_name,
             capture_dir=capture_dir,
+            private_dir=private_dir,
             timeout=timeout,
             capture_screenshot=capture_screenshot,
         )
@@ -569,11 +670,13 @@ def capture_browser_evidence(
             url=url,
             session_name=session_name,
             capture_dir=capture_dir,
+            private_dir=private_dir,
             timeout=timeout,
             capture_screenshot=capture_screenshot,
         )
 
     steps = result["steps"]
+    write_private_json(private_dir / "steps.json", steps)
     artifacts = result["artifacts"]
     counts = result["counts"]
     browser_surface = _write_browser_surface(
@@ -593,7 +696,7 @@ def capture_browser_evidence(
     summary = {
         "target": target,
         "target_key": target_name,
-        "url": url,
+        "url": public_url_shape(url),
         "session": session_name,
         "label": safe_label,
         "capture_backend": selected_backend,

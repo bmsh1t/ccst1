@@ -1503,6 +1503,7 @@ class TestAutopilotState:
         (recon_dir / "exposure" / "api_leaks").mkdir(parents=True)
         (recon_dir / "exposure" / "identity_intel").mkdir(parents=True)
         (recon_dir / "exposure" / "cloud").mkdir(parents=True)
+        (recon_dir / "api_specs").mkdir(parents=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "https://api.target.com [200] [API] [Next.js] [1000]\n",
             encoding="utf-8",
@@ -1531,6 +1532,26 @@ class TestAutopilotState:
         )
         (recon_dir / "exposure" / "api_leaks" / "postman_leaks.txt").write_text(
             "postman collection: target\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "api_specs" / "spec_urls.txt").write_text(
+            "https://api.target.com/openapi.json\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "api_specs" / "operations.jsonl").write_text(
+            '{"method":"GET","url":"https://api.target.com/users"}\n',
+            encoding="utf-8",
+        )
+        (recon_dir / "api_specs" / "public_operations.txt").write_text(
+            "GET\thttps://api.target.com/health\texplicit_public\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "api_specs" / "auth_boundary_candidates.jsonl").write_text(
+            '{"method":"GET","url":"https://api.target.com/users"}\n',
+            encoding="utf-8",
+        )
+        (recon_dir / "api_specs" / "platform_metadata.jsonl").write_text(
+            '{"kind":"oauth_authorization_server"}\n',
             encoding="utf-8",
         )
         (recon_dir / "exposure" / "cloud_storage_candidates.txt").write_text(
@@ -1564,9 +1585,11 @@ class TestAutopilotState:
         assert state["recon_artifacts"]["counts"]["identity_emails"] == 2
         assert "Exposure signals:" in output
         assert "- API docs: 1" in output
+        assert "- OpenAPI semantics: specs=1, operations=1, public_or_optional=1, auth_boundaries=1, platform_metadata=1" in output
         assert "- API leaks: candidates=1, swagger=1, postman=1, postleaks=0, verified_secrets=1" in output
         assert "- Identity/cloud intel: emails=2, LeakSearch=1, cloud_enum=1" in output
         assert "Next exposure review:" in output
+        assert "recon/target.com/api_specs/summary.md" in output
         assert "recon/target.com/exposure/api_doc_candidates.txt" in output
         assert "recon/target.com/exposure/api_leak_trufflehog_verified.jsonl" in output
         assert "recon/target.com/exposure/identity_intel/summary.md" in output

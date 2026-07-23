@@ -88,6 +88,67 @@ def test_cli_reports_corrupt_state_with_stable_exit(tmp_path, capsys):
     assert str(path) in captured.err
 
 
+def test_add_session_cli_redacts_auth_material_from_stdout(tmp_path, capsys):
+    target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
+    secret = "SECRET_CASE_SESSION"
+
+    rc = target_case_state.main([
+        "add-session",
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        TARGET,
+        "--session",
+        "sess_a",
+        "--actor",
+        "user_a",
+        "--bearer",
+        secret,
+    ])
+
+    output = capsys.readouterr().out
+    assert rc == 0
+    assert secret not in output
+    assert "<redacted>" in output
+    assert secret in target_case_state.load_case_state(tmp_path, TARGET)["sessions"]["sess_a"]["headers"]["Authorization"]
+
+
+def test_case_state_public_file_contains_private_ref_only(tmp_path):
+    target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
+    target_case_state.add_session(
+        tmp_path,
+        TARGET,
+        session="sess_a",
+        actor="user_a",
+        kind="bearer",
+        header_value="Bearer SECRET_CASE",
+        validity="valid",
+    )
+
+    public_path = target_case_state.case_state_path(tmp_path, TARGET)
+    public_text = public_path.read_text(encoding="utf-8")
+    assert "SECRET_CASE" not in public_text
+    payload = json.loads(public_text)
+    session = payload["sessions"]["sess_a"]
+    assert session["private_ref"].startswith(".private/case-state/")
+    private_path = tmp_path / session["private_ref"]
+    assert "SECRET_CASE" in private_path.read_text(encoding="utf-8")
+    assert private_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_case_state_mutations_keep_concurrent_actor_updates(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    def add(index):
+        return target_case_state.add_actor(tmp_path, TARGET, actor=f"user_{index}", role="user")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(add, range(16)))
+
+    state = target_case_state.load_case_state(tmp_path, TARGET)
+    assert set(state["actors"]) == {f"user_{index}" for index in range(16)}
+
+
 @pytest.mark.parametrize(
     "payload, message",
     [

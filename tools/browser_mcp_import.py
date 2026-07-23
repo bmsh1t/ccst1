@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,12 +23,29 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.browser_evidence import compact_browser_evidence
-    from tools.browser_surface import build_page_js_map, write_browser_surface
+    from tools.browser_evidence import compact_browser_evidence, console_shape, snapshot_shape
+    from tools.browser_surface import (
+        build_page_js_map,
+        public_request_payload,
+        public_url_shape,
+        write_browser_surface,
+    )
+    from tools.private_artifacts import copy_private_file, private_artifact_dir, write_private_json, write_private_text
     from tools.target_paths import target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from browser_evidence import compact_browser_evidence  # type: ignore
-    from browser_surface import build_page_js_map, write_browser_surface  # type: ignore
+    from browser_evidence import compact_browser_evidence, console_shape, snapshot_shape  # type: ignore
+    from browser_surface import (  # type: ignore
+        build_page_js_map,
+        public_request_payload,
+        public_url_shape,
+        write_browser_surface,
+    )
+    from private_artifacts import (  # type: ignore
+        copy_private_file,
+        private_artifact_dir,
+        write_private_json,
+        write_private_text,
+    )
     from target_paths import target_storage_key  # type: ignore
 
 
@@ -53,7 +69,7 @@ def _now_utc() -> str:
 
 
 def _timestamp_slug() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def _safe_label(value: str, default: str = "mcp") -> str:
@@ -211,28 +227,6 @@ def normalize_mcp_network(payload: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def _copy_text_artifact(source: str | Path | None, destination: Path) -> str:
-    if not source:
-        return ""
-    src = Path(source)
-    if not src.is_file():
-        return ""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(src.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
-    return str(destination)
-
-
-def _copy_binary_artifact(source: str | Path | None, destination: Path) -> str:
-    if not source:
-        return ""
-    src = Path(source)
-    if not src.is_file():
-        return ""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, destination)
-    return str(destination)
-
-
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -255,29 +249,45 @@ def import_mcp_browser_evidence(
     target_key = target_storage_key(target)
     safe_label = _safe_label(label, "mcp")
     root = Path(evidence_root)
-    capture_dir = root / target_key / "browser" / f"{_timestamp_slug()}-{safe_label}"
-    capture_dir.mkdir(parents=True, exist_ok=True)
+    run_id = f"{_timestamp_slug()}-{safe_label}"
+    capture_dir = root / target_key / "browser" / run_id
+    capture_dir.mkdir(parents=True, exist_ok=False)
+    private_dir = private_artifact_dir(root.parent, "browser", target_key, run_id)
 
     artifacts: dict[str, str] = {}
     network_payload = _load_network_payload(network_path)
+    artifacts["network_private_json"] = str(
+        write_private_json(private_dir / "network.raw.json", network_payload)
+    )
     requests = normalize_mcp_network(network_payload)
     requests_file = capture_dir / "requests.json"
-    _write_json(requests_file, {"requests": requests, "source": source})
+    _write_json(requests_file, public_request_payload({"requests": requests}, source=source))
     artifacts["requests_json"] = str(requests_file)
 
-    copied_snapshot = _copy_text_artifact(snapshot_path, capture_dir / "snapshot.txt")
-    if copied_snapshot:
+    copied_snapshot = ""
+    if snapshot_path and Path(snapshot_path).is_file():
+        raw_snapshot = Path(snapshot_path).read_text(encoding="utf-8", errors="replace")
+        artifacts["snapshot_private_txt"] = str(
+            write_private_text(private_dir / "snapshot.txt", raw_snapshot)
+        )
+        public_snapshot = capture_dir / "snapshot.txt"
+        public_snapshot.write_text(snapshot_shape(raw_snapshot), encoding="utf-8")
+        copied_snapshot = str(public_snapshot)
         artifacts["snapshot_txt"] = copied_snapshot
 
     console_payload = _load_json(console_path)
     console_items = _json_items(console_payload)
     if console_path:
+        artifacts["console_private_json"] = str(
+            write_private_json(private_dir / "console.raw.json", console_payload)
+        )
         console_file = capture_dir / "console.json"
-        _write_json(console_file, console_items if console_items else console_payload)
+        _write_json(console_file, console_shape(console_items if console_items else console_payload))
         artifacts["console_json"] = str(console_file)
 
-    copied_screenshot = _copy_binary_artifact(screenshot_path, capture_dir / "screenshot.png")
-    if copied_screenshot:
+    copied_screenshot = ""
+    if screenshot_path and Path(screenshot_path).is_file():
+        copied_screenshot = str(copy_private_file(screenshot_path, private_dir / "screenshot.png"))
         artifacts["screenshot_png"] = copied_screenshot
 
     browser_surface = write_browser_surface(
@@ -300,7 +310,7 @@ def import_mcp_browser_evidence(
     summary = {
         "target": target,
         "target_key": target_key,
-        "url": url,
+        "url": public_url_shape(url),
         "session": "",
         "label": safe_label,
         "capture_backend": source,

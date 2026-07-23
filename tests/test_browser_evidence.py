@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import browser_evidence
 import pytest
+from tools.browser_surface import public_url_shape
 
 
 def test_resolve_browser_backend_prefers_agent_browser_then_playwright():
@@ -102,15 +103,15 @@ def test_capture_browser_evidence_writes_summary_and_last_pointer(monkeypatch, t
 
     recon_browser = tmp_path / "recon" / "target.local" / "browser"
     assert (recon_browser / "xhr_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
-        "https://target.local/api/me?account_id=123",
+        "https://target.local/api/me?account_id=",
         "https://target.local/graphql",
     ]
     assert (recon_browser / "api_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
-        "https://target.local/api/me?account_id=123",
+        "https://target.local/api/me?account_id=",
         "https://target.local/graphql",
     ]
     assert (recon_browser / "browser_params.txt").read_text(encoding="utf-8").splitlines() == [
-        "https://target.local/api/me?account_id=123 :: account_id",
+        "https://target.local/api/me?account_id= :: account_id",
         "https://target.local/graphql :: user_id",
         "https://target.local/graphql :: query",
     ]
@@ -301,8 +302,10 @@ def test_capture_browser_evidence_agent_browser_writes_raw_and_normalized_artifa
         )
     )
     normalized_requests = json.loads((capture_dir / "requests.json").read_text(encoding="utf-8"))
-    raw_requests = json.loads((capture_dir / "requests.raw.json").read_text(encoding="utf-8"))
-    storage = json.loads((capture_dir / "storage.json").read_text(encoding="utf-8"))
+    raw_requests_path = Path(summary["artifacts"]["requests_raw_json"])
+    raw_requests = json.loads(raw_requests_path.read_text(encoding="utf-8"))
+    storage_path = Path(summary["artifacts"]["storage_json"])
+    storage = json.loads(storage_path.read_text(encoding="utf-8"))
 
     assert summary["success"] is True
     assert summary["capture_backend"] == "agent-browser"
@@ -311,16 +314,24 @@ def test_capture_browser_evidence_agent_browser_writes_raw_and_normalized_artifa
     assert summary["counts"]["browser_xhr_endpoints"] == 2
     assert summary["counts"]["browser_params"] == 3
     assert pointer["capture_backend"] == "agent-browser"
-    assert normalized_requests == {"requests": requests, "source": "agent-browser"}
+    assert normalized_requests["source"] == "agent-browser"
+    assert normalized_requests["requests"][0]["url"] == "https://target.local/api/me?account_id="
+    assert normalized_requests["requests"][1]["postData"]["parameter_names"] == ["id", "query"]
+    assert normalized_requests["requests"][1]["postData"]["graphql_operations"] == ["User"]
+    assert normalized_requests["requests"][1]["postData"]["graphql_variables"] == ["id"]
     assert raw_requests["data"]["requests"] == requests
-    assert (capture_dir / "snapshot.txt").read_text(encoding="utf-8") == 'heading "Dashboard"'
+    assert "snapshot_sha256=" in (capture_dir / "snapshot.txt").read_text(encoding="utf-8")
+    assert Path(summary["artifacts"]["snapshot_private_txt"]).read_text(encoding="utf-8") == 'heading "Dashboard"'
     assert storage == {
         "localStorage": {"theme": "dark"},
         "sessionStorage": {"step": "1"},
     }
-    assert (capture_dir / "state.json").is_file()
-    assert (capture_dir / "screenshot.png").read_bytes() == b"fake-png"
-    assert (capture_dir / "network.har").is_file()
+    assert Path(summary["artifacts"]["state_json"]).is_file()
+    assert Path(summary["artifacts"]["screenshot_png"]).read_bytes() == b"fake-png"
+    assert Path(summary["artifacts"]["network_har"]).is_file()
+    assert not (capture_dir / "state.json").exists()
+    assert not (capture_dir / "screenshot.png").exists()
+    assert not (capture_dir / "network.har").exists()
     assert summary["artifacts"]["requests_raw_json"].endswith("requests.raw.json")
     assert summary["artifacts"]["network_har"].endswith("network.har")
 
@@ -425,7 +436,7 @@ def test_agent_browser_core_protocol_failure_marks_capture_failed_without_backen
     )
 
     assert summary["success"] is False
-    assert summary["error"] == "request protocol failed"
+    assert summary["error"].startswith("browser step failed (bytes=23, sha256=")
     assert all(cmd[0] == "agent-browser" for cmd in calls)
 
 
@@ -472,3 +483,59 @@ def test_agent_browser_optional_artifact_failure_keeps_core_capture(monkeypatch,
     assert summary.get("error", "") == ""
     assert len(summary["warnings"]) >= 5
     assert any(item["step"].startswith("cookies get") for item in summary["warnings"])
+
+
+def test_browser_secret_values_only_exist_in_private_artifacts(monkeypatch, tmp_path):
+    secret = "SECRET_BROWSER_FIXTURE"
+
+    def fake_run(cmd, capture_output, text, timeout, check, env=None):
+        if "requests" in cmd:
+            stdout = json.dumps(
+                [{"url": f"https://target.local/api?token={secret}", "method": "POST", "postData": secret}]
+            )
+        elif "cookie-list" in cmd:
+            stdout = json.dumps([{"name": "sid", "value": secret}])
+        elif "localstorage-list" in cmd:
+            stdout = json.dumps({"token": secret})
+        elif "snapshot" in cmd:
+            stdout = f'<form action="/submit?token={secret}" method="post">{secret}</form>'
+        elif "state-save" in cmd:
+            Path(cmd[-1]).write_text(json.dumps({"token": secret}), encoding="utf-8")
+            stdout = ""
+        else:
+            stdout = "[]"
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
+    summary = browser_evidence.capture_browser_evidence(
+        "target.local",
+        f"https://target.local/app?token={secret}",
+        evidence_root=tmp_path / "evidence",
+        backend="playwright-cli",
+    )
+
+    public_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (tmp_path / "evidence").rglob("*")
+        if path.is_file()
+    )
+    private_dir = Path(summary["artifacts"]["state_json"]).parent
+    private_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in private_dir.rglob("*")
+        if path.is_file()
+    )
+
+    assert secret not in public_text
+    assert secret in private_text
+    assert private_dir.stat().st_mode & 0o777 == 0o700
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in private_dir.rglob("*") if path.is_file())
+
+
+def test_public_url_shape_removes_userinfo_and_fragment_secret():
+    shaped = public_url_shape(
+        "https://user:pass@example.com/callback?code=VALUE#access_token=FRAGMENT_SECRET"
+    )
+    assert shaped == "https://example.com/callback?code="
+    assert "pass" not in shaped
+    assert "FRAGMENT_SECRET" not in shaped

@@ -350,6 +350,9 @@ class TestRebuildMatrix:
         _seed_recon(tmp_path, "x.com", [
             "https://x.com/assets/public/images/logo.png",
             "https://x.com/.well-known/csaf/provider-metadata.json",
+            "https://x.com/__/firebase/init.json",
+            "https://x.com/.well-known/oauth-authorization-server",
+            "https://x.com/.well-known/oauth-protected-resource",
             "https://x.com/rest/admin/application-configuration",
         ])
 
@@ -368,11 +371,22 @@ class TestRebuildMatrix:
         assert metadata_ep["weight"] == 0.0
         assert {cell["status"] for cell in metadata_ep["cells"].values()} == {"untested"}
 
+        for endpoint in (
+            "/__/firebase/init.json",
+            "/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-protected-resource",
+        ):
+            assert "public_metadata_path" in by_endpoint[endpoint]["auto_hints"]
+            assert by_endpoint[endpoint]["weight"] == 0.0
+
         save_matrix("x.com", matrix, repo_root=tmp_path)
         gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
         gap_endpoints = {gap["endpoint"] for gap in gaps}
         assert "/assets/public/images/logo.png" not in gap_endpoints
         assert "/.well-known/csaf/provider-metadata.json" not in gap_endpoints
+        assert "/__/firebase/init.json" not in gap_endpoints
+        assert "/.well-known/oauth-authorization-server" not in gap_endpoints
+        assert "/.well-known/oauth-protected-resource" not in gap_endpoints
 
     def test_route_prefix_like_endpoint_stays_visible_for_ai_judgement(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [

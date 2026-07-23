@@ -16,6 +16,7 @@ import json
 import os
 import re
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,18 @@ ROOT_CLAIM_KIND = "finding_claim"
 ROOT_CLAIM_SCHEMA_VERSION = 1
 URL_RE = re.compile(r"https?://[^\s|`>'\")]+")
 BRACKET_RE = re.compile(r"\[([^\]]+)\]")
+SOURCE_CODE_SUFFIXES = frozenset({
+    ".c", ".cc", ".cpp", ".cs", ".go", ".h", ".hpp", ".java", ".js",
+    ".jsx", ".kt", ".kts", ".php", ".py", ".rb", ".rs", ".scala",
+    ".swift", ".ts", ".tsx", ".vue",
+})
+SOURCE_GUARD_SHAPE_RE = re.compile(
+    r"(?:\b(?:if|unless|assert|raise|throw|return|continue|break|deny|forbid|"
+    r"authorize|permission|require|ensure|guard|abort|panic)\b|"
+    r"\b(?:contains|includes|has_permission|can_[a-z0-9_]*|is_allowed)\s*\()",
+    re.IGNORECASE,
+)
+SOURCE_COMMENT_PREFIXES = ("#", "//", "/*", "*", "<!--")
 
 CATEGORY_TYPE_MAP = {
     "upload": "upload",
@@ -174,6 +187,20 @@ def mutation_events_path(findings_dir: str | Path) -> Path:
     return Path(findings_dir) / MUTATION_EVENTS_FILENAME
 
 
+@contextmanager
+def finding_mutation_lock(findings_dir: str | Path):
+    """串行化单 target canonical findings 的完整 read-modify-write。"""
+    root = Path(findings_dir)
+    lock_path = root / ".locks" / "findings.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _canonical_target_or_raw(value: str | None) -> str:
     """Normalize target identity where possible without hiding malformed legacy rows."""
     raw = str(value or "").strip()
@@ -258,6 +285,95 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _is_source_backed_finding(finding: dict[str, Any]) -> bool:
+    """判断 finding 的原始来源是否为可执行源码，而不是证据 artifact。"""
+    raw = str(finding.get("source_file") or "").strip()
+    if not raw:
+        return False
+    normalized = raw.removeprefix("repo:").split("#", 1)[0]
+    return Path(normalized).suffix.lower() in SOURCE_CODE_SUFFIXES
+
+
+def _resolve_source_guard_path(findings_dir: str | Path, value: Any) -> Path:
+    """解析 validation summary 中的源码引用，不依赖调用方当前目录。"""
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("source rejection requires source_guard.source_file")
+    normalized = raw.removeprefix("repo:")
+    path = Path(normalized).expanduser()
+    if path.is_absolute():
+        candidates = [path]
+    else:
+        target_dir = Path(findings_dir).resolve()
+        repo_root = target_dir.parent.parent if target_dir.parent.name == "findings" else target_dir
+        candidates = [repo_root / path, target_dir / path]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    raise ValueError(f"source rejection guard file is not readable: {raw}")
+
+
+def _verify_source_rejection_summary(
+    findings_dir: str | Path,
+    finding: dict[str, Any],
+    updates: dict[str, Any],
+) -> None:
+    """在源码 finding 进入 rejected 前确定性验证 guard 引用。
+
+    这里只验证引用真实性，不推断 guard 是否支配危险路径；后者仍由验证流程负责。
+    """
+    if not _is_source_backed_finding(finding):
+        return
+
+    summary_value = str(updates.get("validation_summary") or "").strip()
+    if not summary_value:
+        raise ValueError("source rejection requires a new validation_summary")
+    summary_path = _resolve_finding_artifact_path(findings_dir, summary_value)
+    if summary_path is None or not summary_path.is_file():
+        raise ValueError(f"source rejection validation summary is not readable: {summary_value}")
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"unable to read source rejection summary: {summary_path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid source rejection summary: {summary_path}: {exc.msg}") from exc
+    if not isinstance(summary, dict) or str(summary.get("result") or "").strip().lower() != "rejected":
+        raise ValueError("source rejection validation summary must set result=rejected")
+
+    guard = summary.get("source_guard")
+    if not isinstance(guard, dict):
+        raise ValueError("source rejection validation summary requires source_guard")
+    source_path = _resolve_source_guard_path(
+        findings_dir,
+        guard.get("source_file") or guard.get("file"),
+    )
+    if source_path.suffix.lower() not in SOURCE_CODE_SUFFIXES:
+        raise ValueError("source rejection guard must cite a supported source-code file")
+
+    line_number = guard.get("line_number")
+    if isinstance(line_number, bool) or not isinstance(line_number, int) or line_number < 1:
+        raise ValueError("source rejection source_guard.line_number must be a positive integer")
+    quote = str(guard.get("quote") or "").strip()
+    if not quote:
+        raise ValueError("source rejection source_guard.quote must be non-empty")
+    if not SOURCE_GUARD_SHAPE_RE.search(quote):
+        raise ValueError("source rejection quote does not have guard shape")
+
+    try:
+        lines = source_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        raise ValueError(f"unable to read source rejection guard file: {source_path}: {exc}") from exc
+    if line_number > len(lines):
+        raise ValueError("source rejection source_guard.line_number is outside the source file")
+    source_line = lines[line_number - 1]
+    if source_line.lstrip().startswith(SOURCE_COMMENT_PREFIXES):
+        raise ValueError("source rejection guard points to a comment, not executable source")
+    normalized_quote = re.sub(r"\s+", "", quote).lower()
+    normalized_line = re.sub(r"\s+", "", source_line).lower()
+    if not normalized_line.startswith(normalized_quote):
+        raise ValueError("source rejection guard quote does not match the cited source line")
 
 
 def _attach_validation_summary_digest(
@@ -1444,7 +1560,7 @@ def _refresh_finding_counts(payload: dict[str, Any]) -> None:
     }
 
 
-def write_finding_index(findings_dir: str | Path, *, target: str | None = None, output: str | Path | None = None) -> dict[str, Any]:
+def _write_finding_index_unlocked(findings_dir: str | Path, *, target: str | None = None, output: str | Path | None = None) -> dict[str, Any]:
     root = Path(findings_dir)
     payload = build_finding_index(root, target=target)
     output_path = Path(output) if output else root / "findings.json"
@@ -1474,6 +1590,11 @@ def write_finding_index(findings_dir: str | Path, *, target: str | None = None, 
     return payload
 
 
+def write_finding_index(findings_dir: str | Path, *, target: str | None = None, output: str | Path | None = None) -> dict[str, Any]:
+    with finding_mutation_lock(findings_dir):
+        return _write_finding_index_unlocked(findings_dir, target=target, output=output)
+
+
 def load_finding_index(
     findings_dir: str | Path,
     *,
@@ -1481,10 +1602,13 @@ def load_finding_index(
 ) -> dict[str, Any]:
     root = Path(findings_dir)
     path = root / "findings.json"
-    return _load_finding_payload(path, root, migrate_legacy=migrate_legacy)
+    if not migrate_legacy:
+        return _load_finding_payload(path, root, migrate_legacy=False)
+    with finding_mutation_lock(root):
+        return _load_finding_payload(path, root, migrate_legacy=True)
 
 
-def upsert_findings(
+def _upsert_findings_unlocked(
     findings_dir: str | Path,
     findings: list[dict[str, Any]],
     *,
@@ -1493,7 +1617,7 @@ def upsert_findings(
     """Create or merge target findings through the canonical mutation boundary."""
     root = Path(findings_dir)
     path = root / "findings.json"
-    payload = load_finding_index(root) or _empty_finding_index(root, target=target)
+    payload = load_finding_index(root, migrate_legacy=False) or _empty_finding_index(root, target=target)
     if target:
         payload["target"] = target
     payload.setdefault("schema_version", SCHEMA_VERSION)
@@ -1569,6 +1693,16 @@ def upsert_findings(
     }
 
 
+def upsert_findings(
+    findings_dir: str | Path,
+    findings: list[dict[str, Any]],
+    *,
+    target: str | None = None,
+) -> dict[str, Any]:
+    with finding_mutation_lock(findings_dir):
+        return _upsert_findings_unlocked(findings_dir, findings, target=target)
+
+
 def upsert_finding(
     findings_dir: str | Path,
     finding: dict[str, Any],
@@ -1598,10 +1732,10 @@ def find_finding(
     return None
 
 
-def update_finding_status(findings_dir: str | Path, finding_id: str, **updates: Any) -> dict[str, Any] | None:
+def _update_finding_status_unlocked(findings_dir: str | Path, finding_id: str, **updates: Any) -> dict[str, Any] | None:
     """Update one finding in findings.json and return the updated finding."""
     path = Path(findings_dir) / "findings.json"
-    payload = load_finding_index(findings_dir)
+    payload = load_finding_index(findings_dir, migrate_legacy=False)
     if not payload:
         return None
 
@@ -1609,13 +1743,15 @@ def update_finding_status(findings_dir: str | Path, finding_id: str, **updates: 
     for finding in payload.get("findings", []):
         if not isinstance(finding, dict) or finding.get("id") != finding_id:
             continue
+        requested_validation = str(updates.get("validation_status") or "").strip().lower()
+        if requested_validation == "rejected":
+            _verify_source_rejection_summary(findings_dir, finding, updates)
         for key, value in updates.items():
             if key == OWNER_PROVENANCE_FIELD:
                 continue
             if value in (None, ""):
                 continue
             finding[key] = value
-        requested_validation = str(updates.get("validation_status") or "").strip().lower()
         requested_report = str(updates.get("report_status") or "").strip().lower()
         if requested_validation in FINALIZED_VALIDATION_STATUSES:
             finding.pop("claimed_validation_status", None)
@@ -1641,6 +1777,11 @@ def update_finding_status(findings_dir: str | Path, finding_id: str, **updates: 
         mutated_findings=[updated_finding],
     )
     return updated_finding
+
+
+def update_finding_status(findings_dir: str | Path, finding_id: str, **updates: Any) -> dict[str, Any] | None:
+    with finding_mutation_lock(findings_dir):
+        return _update_finding_status_unlocked(findings_dir, finding_id, **updates)
 
 
 def format_finding_index(payload: dict[str, Any], *, limit: int = 8) -> str:

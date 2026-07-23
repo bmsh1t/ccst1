@@ -277,9 +277,11 @@ def _resolve_ctf_mode(explicit: bool | None = None) -> bool:
     return is_ctf_mode_enabled(Path(__file__).resolve().parent, explicit=explicit)
 
 
-def _apply_hunt_auth_session(session: AuthSession | None) -> AuthSession:
+def _apply_hunt_auth_session(session: AuthSession | None, target: str = "") -> AuthSession:
     """Sync direct agent CLI auth state into the hunt bridge and subprocess env."""
     resolved = session or AuthSession()
+    if target:
+        resolved.bind_target(target)
     resolved.export_to_env(os.environ)
     _h()._module._AUTH_SESSION = None if resolved.is_empty() else resolved
     return resolved
@@ -4291,7 +4293,7 @@ Examples:
     )
     add_cli_args(parser, include_cookie=False)
     args = parser.parse_args()
-    auth_session = _apply_hunt_auth_session(session_from_args(args))
+    auth_session = _apply_hunt_auth_session(session_from_args(args), args.target or "")
     autopilot_mode = _resolve_cli_autopilot_mode(args)
     ctf_mode = _resolve_ctf_mode()
 

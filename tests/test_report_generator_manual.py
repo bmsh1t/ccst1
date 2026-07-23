@@ -63,6 +63,39 @@ def test_manual_mode_requires_type_and_url(monkeypatch, capsys):
     assert "Manual mode requires --type and --url" in output.out
 
 
+def test_report_queue_match_does_not_confuse_prefix_finding_ids():
+    action = {
+        "id": "action-1",
+        "status": "queued",
+        "type": "report",
+        "evidence": "Generate report for F-10",
+        "metadata": {"finding_id": "F-10"},
+    }
+    assert report_generator._report_action_matches(action, {"id": "F-1"}, "") is False
+
+
+def test_report_queue_sync_refuses_ambiguous_exact_identity(monkeypatch):
+    actions = [
+        {
+            "id": f"action-{index}",
+            "status": "queued",
+            "type": "report",
+            "metadata": {"finding_id": "F-1"},
+        }
+        for index in (1, 2)
+    ]
+    monkeypatch.setattr(report_generator, "load_queue", lambda *_args: {"actions": actions})
+
+    result = report_generator.sync_report_action_queue(
+        "example.test",
+        {"id": "F-1", "url": "https://example.test/api"},
+        "reports/F-1.md",
+    )
+
+    assert result["status"] == "ambiguous"
+    assert result["ids"] == ["action-1", "action-2"]
+
+
 def test_report_includes_validation_gate_status(tmp_path):
     summary_path = tmp_path / "validation-summary.json"
     summary_path.write_text(
@@ -193,7 +226,7 @@ def test_legacy_incremental_reports_use_unique_ids_without_overwrite(monkeypatch
         lambda _path: {"target": "target.test", "findings": []},
     )
 
-    report_generator.process_findings_dir(str(findings_dir))
+    report_generator.process_findings_dir(str(findings_dir), allow_legacy_drafts=True)
 
     assert original.read_text(encoding="utf-8") == "historical report\n"
     assert (report_dir / "sqli_002.md").is_file()

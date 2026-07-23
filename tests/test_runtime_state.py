@@ -5,8 +5,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import runtime_phase_exec
 
 from tools.recon_adapter import ReconAdapter
 
@@ -125,6 +127,46 @@ def test_runtime_phase_lock_rejects_unknown_phase(tmp_path):
     with pytest.raises(ValueError, match="unsupported runtime phase"):
         with runtime_phase_lock(tmp_path, "target.com", "report"):
             pass
+
+
+def test_direct_phase_runner_returns_busy_without_starting_child(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        runtime_phase_exec.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("child must not start")),
+    )
+
+    with runtime_phase_lock(tmp_path, "target.com", "recon"):
+        assert runtime_phase_exec.run_phase_command(
+            tmp_path,
+            "target.com",
+            "recon",
+            ["ignored"],
+        ) == 75
+
+
+def test_direct_phase_runner_marks_child_lock_ownership(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(command, *, env, check):
+        captured.update({"command": command, "env": env, "check": check})
+        return SimpleNamespace(returncode=17)
+
+    monkeypatch.setattr(runtime_phase_exec.subprocess, "run", fake_run)
+    code = runtime_phase_exec.run_phase_command(
+        tmp_path,
+        "target.com",
+        "scan",
+        ["scanner", "--quick"],
+    )
+
+    assert code == 17
+    assert captured["command"] == ["scanner", "--quick"]
+    assert captured["env"]["BBHUNT_RUNTIME_PHASE_LOCKED"] == "scan"
+    assert captured["env"]["BBHUNT_RUNTIME_LOCK_TARGET"] == "target.com"
+    state = load_runtime_state(tmp_path, "target.com")
+    assert state["mode"] == "scan_failed"
+    assert state["last_executed_workflow"] == "run_vuln_scan_failed"
 
 
 def test_runtime_phase_liveness_requires_running_marker_and_held_lock(tmp_path):
@@ -342,6 +384,7 @@ def test_inspect_recon_artifacts_counts_exposure_signals(tmp_path):
     (recon_dir / "exposure" / "api_leaks").mkdir(parents=True)
     (recon_dir / "exposure" / "identity_intel").mkdir(parents=True)
     (recon_dir / "exposure" / "cloud").mkdir(parents=True)
+    (recon_dir / "api_specs").mkdir(parents=True)
 
     (recon_dir / "live" / "httpx_full.txt").write_text(
         "https://api.target.com [200] [API] [Next.js] [1000]\n",
@@ -368,6 +411,26 @@ def test_inspect_recon_artifacts_counts_exposure_signals(tmp_path):
         "https://api.target.com/admin/openapi.yaml\n",
         encoding="utf-8",
     )
+    (recon_dir / "api_specs" / "spec_urls.txt").write_text(
+        "https://api.target.com/openapi.json\n",
+        encoding="utf-8",
+    )
+    (recon_dir / "api_specs" / "operations.jsonl").write_text(
+        '{"method":"GET","url":"https://api.target.com/users"}\n',
+        encoding="utf-8",
+    )
+    (recon_dir / "api_specs" / "public_operations.txt").write_text(
+        "GET\thttps://api.target.com/health\texplicit_public\n",
+        encoding="utf-8",
+    )
+    (recon_dir / "api_specs" / "auth_boundary_candidates.jsonl").write_text(
+        '{"method":"GET","url":"https://api.target.com/users"}\n',
+        encoding="utf-8",
+    )
+    (recon_dir / "api_specs" / "platform_metadata.jsonl").write_text(
+        '{"kind":"oauth_authorization_server"}\n',
+        encoding="utf-8",
+    )
     (recon_dir / "exposure" / "cloud_storage_candidates.txt").write_text(
         "https://target.s3.amazonaws.com/private/\n",
         encoding="utf-8",
@@ -392,12 +455,18 @@ def test_inspect_recon_artifacts_counts_exposure_signals(tmp_path):
     assert payload["counts"]["api_leak_candidates"] == 1
     assert payload["counts"]["verified_secrets"] == 1
     assert payload["counts"]["swagger_leaks"] == 1
+    assert payload["counts"]["openapi_specs"] == 1
+    assert payload["counts"]["openapi_operations"] == 1
+    assert payload["counts"]["openapi_public_operations"] == 1
+    assert payload["counts"]["openapi_auth_boundary_candidates"] == 1
+    assert payload["counts"]["platform_metadata"] == 1
     assert payload["counts"]["cloud_storage_candidates"] == 1
     assert payload["counts"]["identity_emails"] == 2
     assert payload["counts"]["leaksearch_hits"] == 1
     assert payload["counts"]["cloud_enum_hits"] == 1
     assert payload["exposure_paths"]["api_doc_candidates"] == "exposure/api_doc_candidates.txt"
     assert payload["exposure_paths"]["verified_secrets"] == "exposure/api_leak_trufflehog_verified.jsonl"
+    assert payload["exposure_paths"]["openapi_operations"] == "api_specs/operations.jsonl"
 
 
 def test_inspect_recon_artifacts_warns_on_surface_gaps(tmp_path):

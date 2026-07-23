@@ -244,16 +244,10 @@ cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell>
 cd -- <repo_root_shell> && python3 tools/action_queue.py summary --target <target_shell>
 ```
 ## Credential Lane
-Credential testing is controlled and evidence-driven, not a default brute-force
-habit and not an absolute red line. Use it only with a concrete login endpoint,
-success/failure signal, username source, bounded target-derived password set,
-rate/lockout discipline, audit log, and stop-on-hit behavior. If registration
-for a self-owned lab/authorized test account needs email verification, the local
-helper `/root/tool/aitool/zocom/mail_receiver.py` may be used as setup aid; store
-only final auth headers in `.private/` or case_state. If hygiene is missing,
-record a next action instead of launching guesses or silently dropping the lane.
+Credential testing is controlled and evidence-driven, not a default brute-force habit or absolute red line. Require a concrete login endpoint, success/failure signal, reviewed usernames, an AI-produced finite `spray-shortlist.txt`, rate/lockout discipline, input-bound dry-run, audit, and stop-on-hit. Candidate pools and login discovery are not live inputs; known usernames may skip OSINT, while inferred and confirmed identities remain separate.
+If self-owned lab/authorized test account registration needs email verification, `/root/tool/aitool/zocom/mail_receiver.py` may be used as a setup aid; store only final auth headers in `.private/` or through `target_case_state.py add-session` (which writes a private reference, never header values to public case state). If hygiene is missing, record a next action instead of launching guesses or dropping the lane.
 `/autopilot` may select this lane when evidence supports it; Password brute force, default credential checks, and password spray are not absolute red lines, and it
-is not a requirement that every other lane fails first.
+is not a requirement that every other lane fails first. Unattended live execution must carry matching `--preflight`; summaries return to the existing queue/memory/finding flow, not a new Credential state owner.
 ## Live-Action Boundaries
 Canonical source: `rules/red-lines.md`. Never auto-submit reports. Avoid concrete
 destructive, irreversible, high-pressure, persistent-payload, real-money,

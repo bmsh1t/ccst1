@@ -37,6 +37,7 @@ manual review lane.
 |---|---|---|
 | `waymore` historical URLs | `recon/<target>/urls/waymore.txt` | Merge mentally with `urls/all.txt`; prioritize old API/admin/export paths that no longer appear in current crawl |
 | API doc grep (`swagger/openapi/redoc/postman/graphql`) | `recon/<target>/exposure/api_doc_candidates.txt` | Read first; API docs often reveal auth model, hidden operations, object IDs, and GraphQL/OIDC surface |
+| `tools/openapi_semantics.py` | `api_specs/*`, `urls/api_endpoints.txt` | Review semantic auth boundaries; declarations remain leads, not findings |
 | API leak consolidation | `recon/<target>/exposure/api_leak_candidates.txt` | Review before scanner breadth; imported Postman/OpenAPI candidates can drive exact endpoint probes |
 | `porch-pirate` Postman search | `recon/<target>/exposure/api_leaks/postman_leaks.txt` | Look for workspace/collection URLs, environment names, tokens, and non-production API hosts |
 | `postleaksNg` | `recon/<target>/exposure/api_leaks/postleaks_urls.txt`, `postleaksNg.log`, `postleaksNg/` | Extract collection/spec URLs; feed interesting files into `/secrets-hunt --filesystem recon/<target>/exposure/api_leaks/` when non-empty |
@@ -46,6 +47,9 @@ manual review lane.
 | `LeakSearch` | `recon/<target>/exposure/identity_intel/leaksearch.txt`, `summary.md` | Attribute hits to the target; use as identity/intel leads, not automatic login attempts |
 | `cloud_enum` | `recon/<target>/exposure/cloud/cloud_enum.txt`, `cloud_enum.log` | Treat as candidate cloud ownership evidence; pivot to `/cloud-recon` or minimal ownership checks |
 | Batch ranking | `recon/<list-stem>/surface_ranking.txt`, `ai_handoff.md`, `high_value_targets.json` | Pick completed domains with concrete signals; never hunt `recon/<list-stem>/` as a target |
+
+OpenAPI metadata probing defaults to 20 live origins. Set
+`BBHUNT_OPENAPI_MAX_PLATFORM_HOSTS=0` for no host limit.
 
 Runtime readers also surface these counters through `tools/runtime_state.py` and
 `tools/autopilot_state.py`, so `/autopilot` and `/surface` can notice exposure,
@@ -113,10 +117,10 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/auth_session.py` | Carrying auth across recon/scan/replay | Auth-session helpers; produces `BBHUNT_*` headers |
 | `tools/_auth_helper.sh` | Shell scripts sourcing auth env | Reads `BBHUNT_AUTH_HEADERS` into `BB_AUTH_ARGS=(-H ...)` |
 | `tools/credential_store.py` | Loading `.env` secrets without leaking | Bounded credential loader |
-| `tools/wordlist_engine.sh` | Manual credential-prep wordlist needed | cewler + hashcat rules into `recon/<target>/wordlists/` |
+| `tools/wordlist_engine.sh` | Credential candidate pool needed | cewler + Hashcat + brand pydictor; pool is not live input |
 | `tools/osint_employees.sh` | Identity surface / username candidates needed | theHarvester + username-anarchy into `recon/<target>/osint/` |
-| `tools/breach_checker.py` | Rank prepared password candidates | HIBP k-anonymity counts; sends SHA-1 prefixes only |
-| `tools/spray_orchestrator.sh` ⚠️ controlled | Credential lane selected after prep | typed-hostname + lockout pre-flight; audit JSONL; stop-on-hit |
+| `tools/breach_checker.py` | Enrich prepared password candidates | HIBP sweet/zero/common/unknown buckets; sends SHA-1 prefixes only |
+| `tools/spray_orchestrator.sh` ⚠️ controlled | Credential lane selected after AI shortlist | input-bound dry-run; request spec; unified audit/stop/resume; private evidence |
 
 ## 6. OAST / async (Blind vulnerabilities)
 
@@ -132,7 +136,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/autopilot_state.py` | Reading current autopilot state | Shared control facts plus compact read-only bootstrap/full diagnostic state; compact mode never ranks large surface bodies |
 | `tools/observation_inventory.py` | Large/resumed recon corpus | Persist neutral untouched/stale observations; stat-bound summary and revision cursor; never routes a Skill |
 | `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |
-| `tools/target_case_state.py` | Multi-actor/object validation needs durable target state | Actor/session/object registry, multi-header auth session import, validation backlog next action |
+| `tools/target_case_state.py` | Multi-actor/object validation state | Actor/session/object registry; private auth refs; next validation |
 | `tools/case_state_seed.py` | Browser/recon/JS/source artifacts reveal object IDs but case state is empty | Suggest add-actor/add-object/add-backlog commands; no auto-write |
 | `tools/coverage_matrix.py` | Checking high-value untested cells | Endpoint × vuln-class matrix; emits auto-hints and lets Claude mark endpoint kind |
 | `tools/resume.py` | Continuing previous target work | `/pickup` backend — summarize prior session+untested endpoints |

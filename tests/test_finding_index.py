@@ -1,9 +1,12 @@
 """Tests for structured scanner finding index."""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import finding_index
+import pytest
 import report_generator
 import validate
 
@@ -105,6 +108,43 @@ def test_upsert_finding_uses_semantic_identity_and_preserves_advanced_lifecycle(
     assert finding["validation_status"] == "validated"
     assert finding["report_status"] == "generated"
     assert finding["report_id"] == "idor_001"
+
+
+def test_concurrent_finding_upserts_do_not_lose_updates(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    code = """
+import sys
+from tools.finding_index import upsert_finding
+
+root, finding_id = sys.argv[1:]
+upsert_finding(
+    root,
+    {
+        "id": finding_id,
+        "url": f"https://target.com/{finding_id}",
+        "type": "exposure",
+        "severity": "medium",
+    },
+    target="target.com",
+)
+"""
+    repo_root = Path(__file__).resolve().parents[1]
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", code, str(findings_dir), finding_id],
+            cwd=repo_root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for finding_id in ("F-ONE", "F-TWO")
+    ]
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stdout + stderr
+
+    payload = finding_index.load_finding_index(findings_dir)
+    assert {item["id"] for item in payload["findings"]} == {"F-ONE", "F-TWO"}
 
 
 def test_owner_mutation_provenance_round_trips_and_detects_direct_row_edit(tmp_path):
@@ -1471,7 +1511,7 @@ def test_report_generator_skips_unvalidated_and_already_reported_structured_find
     }
 
 
-def test_report_generator_keeps_statusless_structured_findings_reportable_for_compat(
+def test_report_generator_requires_explicit_compat_for_statusless_structured_findings(
     monkeypatch,
     tmp_path,
 ):
@@ -1500,8 +1540,19 @@ def test_report_generator_keeps_statusless_structured_findings_reportable_for_co
 
     total, index = report_generator.process_findings_dir(str(findings_dir))
 
+    assert total == 0
+    assert index == []
+
+    total, index = report_generator.process_findings_dir(
+        str(findings_dir),
+        allow_legacy_drafts=True,
+    )
+
     assert total == 1
     assert index[0]["finding_id"] == "legacy_no_status"
+    assert index[0]["canonical_lifecycle"] is False
+    persisted = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    assert "report_status" not in persisted["findings"][0]
 
 
 def test_validate_prefill_loads_finding_candidate(tmp_path):
@@ -1582,3 +1633,180 @@ def test_validate_prefill_uses_runner_evidence_rubric(tmp_path, monkeypatch):
     assert prefill["rubric"]["rubric_id"] == "sqli"
     assert prefill["rubric"]["status"] == "candidate-ready"
     assert prefill["rubric"]["score"] == 100
+
+
+def _seed_source_rejection(tmp_path: Path) -> tuple[Path, Path, Path]:
+    source_path = tmp_path / "target-source" / "handlers.py"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "def read_order(actor, owner_id):\n"
+        "    if actor.id != owner_id:\n"
+        "        raise PermissionError('forbidden')\n",
+        encoding="utf-8",
+    )
+    findings_dir = tmp_path / "findings" / "target.com"
+    finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "source-idor-order",
+            "type": "idor",
+            "url": "https://target.com/api/orders/1",
+            "source_file": str(source_path),
+            "line_number": 1,
+            "validation_status": "candidate",
+        },
+        target="target.com",
+    )
+    summary_path = tmp_path / "evidence" / "target.com" / "source-refutation.json"
+    summary_path.parent.mkdir(parents=True)
+    return findings_dir, source_path, summary_path
+
+
+def test_source_finding_rejection_requires_a_real_guard_reference(tmp_path):
+    findings_dir, source_path, summary_path = _seed_source_rejection(tmp_path)
+    summary_path.write_text(
+        json.dumps(
+            {
+                "result": "rejected",
+                "source_guard": {
+                    "source_file": str(source_path),
+                    "line_number": 2,
+                    "quote": "if actor.id != owner_id:",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    updated = finding_index.update_finding_status(
+        findings_dir,
+        "source-idor-order",
+        validation_status="rejected",
+        validation_summary=str(summary_path),
+    )
+
+    assert updated is not None
+    assert updated["validation_status"] == "rejected"
+    assert updated["validation_summary"] == str(summary_path)
+    assert updated["validation_summary_sha256"]
+    assert finding_index.verify_finding_owner_provenance(
+        findings_dir,
+        updated,
+        target="target.com",
+    )["valid"] is True
+
+
+@pytest.mark.parametrize(
+    ("guard", "message"),
+    [
+        (
+            {"source_file": "missing.py", "line_number": 2, "quote": "if actor.id != owner_id:"},
+            "guard file is not readable",
+        ),
+        (
+            {"line_number": 99, "quote": "if actor.id != owner_id:"},
+            "outside the source file",
+        ),
+        (
+            {"line_number": 2, "quote": "if actor.is_admin:"},
+            "does not match the cited source line",
+        ),
+        (
+            {"line_number": 2, "quote": "actor.id"},
+            "does not have guard shape",
+        ),
+    ],
+)
+def test_source_finding_rejection_fails_before_owner_write(tmp_path, guard, message):
+    findings_dir, source_path, summary_path = _seed_source_rejection(tmp_path)
+    guard = dict(guard)
+    guard.setdefault("source_file", str(source_path))
+    summary_path.write_text(
+        json.dumps({"result": "rejected", "source_guard": guard}),
+        encoding="utf-8",
+    )
+    finding_before = (findings_dir / "findings.json").read_bytes()
+    events_before = (findings_dir / "mutation-events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match=message):
+        finding_index.update_finding_status(
+            findings_dir,
+            "source-idor-order",
+            validation_status="rejected",
+            validation_summary=str(summary_path),
+        )
+
+    assert (findings_dir / "findings.json").read_bytes() == finding_before
+    assert (findings_dir / "mutation-events.jsonl").read_bytes() == events_before
+
+
+def test_source_finding_rejection_requires_a_new_validation_summary(tmp_path):
+    findings_dir, _, _ = _seed_source_rejection(tmp_path)
+
+    with pytest.raises(ValueError, match="requires a new validation_summary"):
+        finding_index.update_finding_status(
+            findings_dir,
+            "source-idor-order",
+            validation_status="rejected",
+        )
+
+    persisted = finding_index.find_finding(findings_dir, "source-idor-order")
+    assert persisted is not None
+    assert persisted["validation_status"] == "candidate"
+
+
+@pytest.mark.parametrize(
+    ("source_line", "message"),
+    [
+        ("# if actor.id != owner_id:\n", "points to a comment"),
+        ('message = "if actor.id != owner_id:"\n', "does not match the cited source line"),
+    ],
+)
+def test_source_finding_rejection_does_not_accept_comment_or_string(tmp_path, source_line, message):
+    findings_dir, source_path, summary_path = _seed_source_rejection(tmp_path)
+    source_path.write_text(source_line, encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(
+            {
+                "result": "rejected",
+                "source_guard": {
+                    "source_file": str(source_path),
+                    "line_number": 1,
+                    "quote": "if actor.id != owner_id:",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        finding_index.update_finding_status(
+            findings_dir,
+            "source-idor-order",
+            validation_status="rejected",
+            validation_summary=str(summary_path),
+        )
+
+
+def test_non_source_finding_rejection_remains_compatible(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "http-candidate",
+            "type": "sqli",
+            "url": "https://target.com/search?q=x",
+            "source_file": "evidence/target.com/raw-pair.json",
+            "validation_status": "candidate",
+        },
+        target="target.com",
+    )
+
+    updated = finding_index.update_finding_status(
+        findings_dir,
+        "http-candidate",
+        validation_status="rejected",
+    )
+
+    assert updated is not None
+    assert updated["validation_status"] == "rejected"

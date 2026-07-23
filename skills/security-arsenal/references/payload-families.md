@@ -2,6 +2,13 @@
 
 Payloads here are conditional probe shapes. Do not fire every row. Select the smallest low-impact probe that matches the evidenced parser or feature, save the raw request/response, and stop when the next step would require destructive execution, bulk traffic, or real-user impact without current-turn authorization.
 
+## 状态型链路连续性
+
+对于 leak -> use、login -> token -> action、多轮 oracle、连接绑定协议和浏览器工作流，
+所有相互依赖的步骤必须保持在同一进程、socket 或 browser context。只有前一步导出完整
+session state、后一步显式恢复时，才可以拆分执行。默认把新的 shell/tool 调用视为新进程；
+不得假设内存 token、连接、cookie jar、nonce、oracle 轮次或 heap/protocol state 会跨调用保留。
+
 ## SSTI Probe Ladder
 
 | Probe shape | Expected signal | Notes |

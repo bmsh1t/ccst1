@@ -93,9 +93,12 @@ def test_vuln_scanner_supports_auth_session_env():
 
     assert "_auth_helper.sh" in text
     assert 'bb_auth_active && bb_auth_banner' in text
+    assert 'bb_auth_bind_target "$SCANNER_AUTH_TARGET"' in text
+    assert 'bb_auth_filter_file "$ORDERED_SCAN" "$AUTH_ORDERED_SCAN"' in text
     assert '"${BB_AUTH_ARGS[@]}"' in text
     assert 'nuclei -l "$ORDERED_SCAN"' in text
     assert 'curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null --max-time 20 "$url"' in text
+    assert 'nuclei -fhr "$@"' in text
 
 
 def test_vuln_scanner_auth_bypass_lane_uses_public_exposure_classifier():
@@ -105,6 +108,8 @@ def test_vuln_scanner_auth_bypass_lane_uses_public_exposure_classifier():
     assert 'public_exposure_signals.py' in text
     assert '--authz-candidate' in text
     assert ': > "$FINDINGS_DIR/auth_bypass/unauth_api_access.txt"' in text
+    assert 'curl -s "${BB_ANON_AUTH_ARGS[@]}" -o /dev/null' in text
+    assert 'curl -s "${BB_ANON_AUTH_ARGS[@]}" --max-time 5 "$api_url"' in text
 
 
 def test_vuln_scanner_sensitive_path_lane_clears_output_and_skips_standard_public_metadata():

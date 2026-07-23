@@ -1,5 +1,10 @@
 # Target Case State v1 规划
 
+> 本文保留 v1 的历史字段说明；当前实现不会把认证头写入公共
+> `state/<target_key>/case_state.json`。`add-session` 将头值写入
+> `.private/case-state/<target_key>/sessions/`，公共 session 只保留 metadata 与
+> `private_ref`，验证器通过 `load_case_state()` 读取内存态。
+
 ## 1. 目标
 
 把项目从“发现 endpoint 后临时重新思考怎么验证”，升级为：

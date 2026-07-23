@@ -11,7 +11,6 @@ advisory/hypothesis input, not a validated finding.
 ## Run This (the only required step)
 
 ```bash
-python3 tools/intelligence_extractor.py target.com
 python3 tools/intel_engine.py --target target.com
 ```
 
@@ -39,7 +38,7 @@ workflow rather than the component advisory artifact.
   template or create a finding.
 - Runs optional identity intel only with `tools/intel_engine.py --with-identity`:
   `emailfinder` and `LeakSearch` via the shared Osmedeus-compatible tools directory or PATH.
-- Mines cached recon / JS / source artifacts for emails, internal hostnames, webhook URL patterns, secret prefixes, customer mentions, internal API paths, and employee handles.
+- In the same main invocation, mines cached recon / JS / source artifacts for emails, internal hostnames, webhook URL patterns, secret prefixes, customer mentions, internal API paths, and employee handles; `local_intelligence` records `ok` or a diagnostic `error` without hiding advisory results.
 - Atomically publishes schema-v2 `recon/<target>/intel.json`, then `/surface`
   consumes it through the shared Intel decoder.
 - When official sources leave a bounded gap, `/autopilot` may collect verified

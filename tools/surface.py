@@ -190,6 +190,11 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
     postman = _count_recon_artifact(recon_artifacts, "postman_leaks")
     postleaks = _count_recon_artifact(recon_artifacts, "postleaks_urls")
     swagger = _count_recon_artifact(recon_artifacts, "swagger_leaks")
+    openapi_specs = _count_recon_artifact(recon_artifacts, "openapi_specs")
+    openapi_operations = _count_recon_artifact(recon_artifacts, "openapi_operations")
+    openapi_public = _count_recon_artifact(recon_artifacts, "openapi_public_operations")
+    openapi_auth = _count_recon_artifact(recon_artifacts, "openapi_auth_boundary_candidates")
+    platform_metadata = _count_recon_artifact(recon_artifacts, "platform_metadata")
     config = _count_recon_artifact(recon_artifacts, "config_exposures")
     cloud = _count_recon_artifact(recon_artifacts, "cloud_storage_candidates")
     s3 = _count_recon_artifact(recon_artifacts, "s3_bucket_candidates")
@@ -215,6 +220,42 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "evidence": f"{verified} verified line(s)",
         })
 
+    if openapi_operations > 0 or openapi_auth > 0 or platform_metadata > 0:
+        semantic_artifact = (
+            "auth_boundary_candidates.jsonl" if openapi_auth > 0
+            else "operations.jsonl" if openapi_operations > 0
+            else "platform_metadata.jsonl"
+        )
+        if openapi_operations > 0 or openapi_auth > 0:
+            semantic_next_action = (
+                f"review recon/{storage_key}/api_specs/{semantic_artifact} and select high-value "
+                "operations for anonymous baseline plus controlled authentication, role, and "
+                "object differential evidence"
+            )
+        else:
+            semantic_next_action = (
+                f"review recon/{storage_key}/api_specs/platform_metadata.jsonl and use advertised "
+                "authorization servers or endpoints to form scoped authentication hypotheses"
+            )
+        leads.append({
+            "source": "recon_exposure",
+            "title": (
+                "OpenAPI operations and authentication declarations extracted"
+                if openapi_operations > 0 or openapi_auth > 0
+                else "Platform authentication metadata extracted"
+            ),
+            "category": "openapi-semantics",
+            "priority": "high" if openapi_auth > 0 else "medium",
+            "artifact": f"recon/{storage_key}/api_specs/{semantic_artifact}",
+            "next_action": semantic_next_action,
+            "rationale": (
+                f"specs={openapi_specs}, operations={openapi_operations}, public_or_optional={openapi_public}, "
+                f"auth_boundaries={openapi_auth}, platform_metadata={platform_metadata}; "
+                "schema declarations are discovery facts, not proof of authorization behavior."
+            ),
+            "evidence": f"{openapi_operations + platform_metadata} structured discovery fact(s)",
+        })
+
     if api_leaks > 0 or postman > 0 or postleaks > 0 or swagger > 0:
         leads.append({
             "source": "recon_exposure",
@@ -232,7 +273,7 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "evidence": f"{api_leaks + postman + postleaks + swagger} exposure line(s)",
         })
 
-    if api_docs > 0:
+    if api_docs > 0 and openapi_operations == 0:
         leads.append({
             "source": "recon_exposure",
             "title": "OpenAPI/Swagger/API documentation candidates discovered",

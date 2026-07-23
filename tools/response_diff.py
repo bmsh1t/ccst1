@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import json
-import re
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -57,25 +57,33 @@ def _json_field_set(parsed: Any) -> list[str]:
     return sorted(keys)
 
 
-def _body_preview(body: str, limit: int = 240) -> str:
-    text = re.sub(r"\s+", " ", str(body or "")).strip()
-    return text[:limit]
-
-
-def snapshot_response(status: int, headers: dict[str, str] | None, body: str) -> dict[str, Any]:
+def snapshot_response(
+    status: int,
+    headers: dict[str, str] | None,
+    body: str,
+    *,
+    truncated: bool = False,
+    observed_bytes: int | None = None,
+) -> dict[str, Any]:
     """Return a JSON-safe response snapshot."""
     parsed = _parse_json(body)
     content_type = ""
     if headers:
         content_type = headers.get("content-type") or headers.get("Content-Type") or ""
+    encoded = (body or "").encode("utf-8", errors="replace")
+    retained_bytes = len(encoded)
     return {
         "status": int(status or 0),
         "content_type": content_type,
-        "body_length": len((body or "").encode("utf-8", errors="replace")),
+        "body_length": retained_bytes,
+        "body_retained_bytes": retained_bytes,
+        "body_observed_bytes": max(retained_bytes, int(observed_bytes or 0)),
+        "body_truncated": bool(truncated),
+        "body_sha256": hashlib.sha256(encoded).hexdigest(),
+        "body_sha256_scope": "retained",
         "json_valid": parsed is not None,
         "json_count": _json_count(parsed),
         "json_fields": _json_field_set(parsed),
-        "body_preview": _body_preview(body),
     }
 
 

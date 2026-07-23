@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
+from urllib.parse import urlencode, urlunparse
 
 API_RE = re.compile(r"(/api/|/v\d+(?:/|$)|/graphql\b|/rest/|/rpc/)", re.I)
 HIGH_SIGNAL_PARAM_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]{0,80}$")
@@ -149,6 +151,12 @@ def _parse_raw_request_line(line: str) -> dict:
 
 def _body_param_keys(body: object) -> list[str]:
     if isinstance(body, dict):
+        if body.get("kind") == "request-body-shape":
+            return _dedupe_keep_order([
+                *[str(item) for item in body.get("parameter_names", []) or []],
+                *[str(item) for item in body.get("graphql_variables", []) or []],
+                *(["query"] if body.get("graphql_operations") else []),
+            ])
         keys: list[str] = []
         for key, value in body.items():
             if key in {"text", "raw"} and isinstance(value, str):
@@ -179,9 +187,94 @@ def _body_param_keys(body: object) -> list[str]:
         parsed = None
     if parsed is not None:
         return _body_param_keys(parsed)
-    keys = [key for key, _ in parse_qsl(raw, keep_blank_values=True)]
+    # 无分隔符的纯文本 body 可能本身就是 token，不能把它误当作参数名公开。
+    keys = [key for key, _ in parse_qsl(raw, keep_blank_values=True)] if "=" in raw else []
     keys.extend(re.findall(r'["\']([A-Za-z_][A-Za-z0-9_.:-]{0,80})["\']\s*:', raw))
     return keys
+
+
+def public_url_shape(url: str) -> str:
+    """保留 URL 路由和参数顺序/重复名，移除值、userinfo 与 fragment。"""
+    parsed = urlparse(str(url or ""))
+    netloc = parsed.netloc
+    if parsed.username is not None or parsed.password is not None:
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        host = parsed.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = f"{host}:{port}" if port is not None else host
+    query = parsed.query
+    if query:
+        names = [name for name, _value in parse_qsl(query, keep_blank_values=True)]
+        query = urlencode([(name, "") for name in names], doseq=True)
+    return urlunparse(parsed._replace(netloc=netloc, query=query, fragment=""))
+
+
+def _body_shape(body: object) -> dict:
+    """把请求 body 压缩为参数与 GraphQL 操作形状，不保留值。"""
+    if body in (None, "", [], {}):
+        return {
+            "kind": "request-body-shape",
+            "parameter_names": [],
+            "graphql_operations": [],
+            "graphql_variables": [],
+            "body_bytes": 0,
+            "body_sha256": "",
+        }
+    if isinstance(body, str):
+        raw = body
+    else:
+        raw = json.dumps(body, ensure_ascii=False, sort_keys=True)
+    operations = _dedupe_keep_order(
+        match.group(2) or match.group(1)
+        for match in re.finditer(
+            r"\b(query|mutation|subscription)(?:\s+([A-Za-z_][A-Za-z0-9_]*))?\s*(?=[{(])",
+            raw,
+        )
+    )
+    variables = _dedupe_keep_order(re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", raw))
+    return {
+        "kind": "request-body-shape",
+        "parameter_names": _dedupe_keep_order(_body_param_keys(body)),
+        "graphql_operations": operations,
+        "graphql_variables": variables,
+        "body_bytes": len(raw.encode("utf-8", errors="replace")),
+        "body_sha256": hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest(),
+    }
+
+
+def public_request_shape(item: object) -> dict:
+    """返回可进入公共 evidence/surface 的请求形状。"""
+    parsed = _parse_request_item(item)
+    if not parsed.get("url"):
+        return {}
+    raw_url = str(parsed["url"])
+    status = item.get("status", "") if isinstance(item, dict) else ""
+    if isinstance(item, dict) and isinstance(item.get("response"), dict):
+        status = item["response"].get("status", status)
+    return {
+        "url": public_url_shape(raw_url),
+        "url_sha256": hashlib.sha256(raw_url.encode("utf-8", errors="replace")).hexdigest(),
+        "method": parsed.get("method", "GET"),
+        "resourceType": parsed.get("resource_type", ""),
+        "status": status,
+        "postData": _body_shape(parsed.get("body", "")),
+    }
+
+
+def public_request_shapes(items: list[object]) -> list[dict]:
+    return [shape for item in items if (shape := public_request_shape(item))]
+
+
+def public_request_payload(payload: object, *, source: str = "") -> dict:
+    """把常见浏览器 envelope 变为统一公共请求列表。"""
+    return {
+        "requests": public_request_shapes(_request_items(payload)),
+        "source": source,
+    }
 
 
 def _param_lines(url: str, body: object) -> list[str]:

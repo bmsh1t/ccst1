@@ -4,7 +4,9 @@ import base64
 import json
 import os
 import sys
+import threading
 import types
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import hunt
@@ -187,8 +189,19 @@ def test_fetch_url_raw_merges_auth_headers(monkeypatch):
         }
         return FakeResponse()
 
-    monkeypatch.setattr(hunt, "_AUTH_SESSION", AuthSession(["Authorization: Bearer secret-token"]))
-    monkeypatch.setattr(hunt, "urlopen", fake_urlopen)
+    class FakeOpener:
+        def open(self, request, **kwargs):
+            return fake_urlopen(request, **kwargs)
+
+    monkeypatch.setattr(
+        hunt,
+        "_AUTH_SESSION",
+        AuthSession(
+            ["Authorization: Bearer secret-token"],
+            target="example.com",
+        ),
+    )
+    monkeypatch.setattr(hunt, "build_opener", lambda *_handlers: FakeOpener())
 
     status, body, headers = hunt._fetch_url_raw(
         "https://api.example.com/v1/users/1",
@@ -200,6 +213,69 @@ def test_fetch_url_raw_merges_auth_headers(monkeypatch):
     assert headers == {}
     assert captured["headers"]["authorization"] == "Bearer secret-token"
     assert captured["headers"]["x-test"] == "1"
+
+
+def test_fetch_url_raw_strips_auth_on_cross_target_redirect(monkeypatch):
+    observed = {"first": "", "redirected": ""}
+
+    class RedirectedHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            observed["redirected"] = self.headers.get("Authorization", "")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *_args):
+            return
+
+    class InitialHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            observed["first"] = self.headers.get("Authorization", "")
+            self.send_response(302)
+            self.send_header(
+                "Location",
+                f"http://127.0.0.1:{redirected.server_port}/final",
+            )
+            self.end_headers()
+
+        def log_message(self, *_args):
+            return
+
+    try:
+        redirected = ThreadingHTTPServer(("127.0.0.1", 0), RedirectedHandler)
+        initial = ThreadingHTTPServer(("127.0.0.1", 0), InitialHandler)
+    except PermissionError:
+        if "redirected" in locals():
+            redirected.server_close()
+        pytest.skip("sandbox forbids creating a local listening socket")
+    threads = [
+        threading.Thread(target=server.serve_forever, daemon=True)
+        for server in (initial, redirected)
+    ]
+    for thread in threads:
+        thread.start()
+
+    try:
+        monkeypatch.setattr(
+            hunt,
+            "_AUTH_SESSION",
+            AuthSession(
+                ["Authorization: Bearer secret-token"],
+                target=f"127.0.0.1:{initial.server_port}",
+            ),
+        )
+        status, body, _headers = hunt._fetch_url_raw(
+            f"http://127.0.0.1:{initial.server_port}/start"
+        )
+    finally:
+        initial.shutdown()
+        redirected.shutdown()
+        initial.server_close()
+        redirected.server_close()
+
+    assert (status, body) == (200, "ok")
+    assert observed["first"] == "Bearer secret-token"
+    assert observed["redirected"] == ""
 
 
 def test_fetch_url_returns_none_when_request_guard_returns_disallow(monkeypatch):

@@ -778,6 +778,11 @@ EXPOSURE_SUMMARY_KEYS = (
     "postman_leaks",
     "postleaks_urls",
     "swagger_leaks",
+    "openapi_specs",
+    "openapi_operations",
+    "openapi_public_operations",
+    "openapi_auth_boundary_candidates",
+    "platform_metadata",
     "cloud_storage_candidates",
     "s3_bucket_candidates",
     "external_service_hosts",
@@ -811,6 +816,17 @@ def _exposure_review_paths(target: str, recon_artifacts: dict) -> list[str]:
         if condition:
             review.append(f"recon/{storage_key}/{relative_path}")
 
+    add_if(
+        any(
+            _count_value(counts, key) > 0
+            for key in (
+                "openapi_operations",
+                "openapi_auth_boundary_candidates",
+                "platform_metadata",
+            )
+        ),
+        "api_specs/summary.md",
+    )
     add_if(
         _count_value(counts, "api_doc_candidates") > 0,
         "exposure/api_doc_candidates.txt",
@@ -868,6 +884,14 @@ def _format_exposure_signal_lines(target: str, recon_artifacts: dict) -> list[st
     counts = recon_artifacts.get("counts") or {}
     lines = ["Exposure signals:"]
     lines.append(f"- API docs: {_count_value(counts, 'api_doc_candidates')}")
+    lines.append(
+        "- OpenAPI semantics: "
+        f"specs={_count_value(counts, 'openapi_specs')}, "
+        f"operations={_count_value(counts, 'openapi_operations')}, "
+        f"public_or_optional={_count_value(counts, 'openapi_public_operations')}, "
+        f"auth_boundaries={_count_value(counts, 'openapi_auth_boundary_candidates')}, "
+        f"platform_metadata={_count_value(counts, 'platform_metadata')}"
+    )
     lines.append(
         "- API leaks: "
         f"candidates={_count_value(counts, 'api_leak_candidates')}, "

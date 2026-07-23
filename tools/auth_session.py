@@ -21,11 +21,19 @@ import json
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlparse
+
+try:
+    from tools.target_paths import canonical_target_value, url_belongs_to_target
+except ImportError:  # 兼容 python3 tools/auth_session.py
+    from target_paths import canonical_target_value, url_belongs_to_target
 
 _HEADER_RE = re.compile(r"^([A-Za-z0-9!#$%&'*+\-.^_`|~]+)\s*:\s*(.+)$")
 
 ENV_HEADERS = "BBHUNT_AUTH_HEADERS"
 ENV_SESSION_ID = "BBHUNT_SESSION_ID"
+ENV_TARGET = "BBHUNT_AUTH_TARGET"
+ENV_ORIGINS = "BBHUNT_AUTH_ORIGINS"
 
 ENV_HEADER_IN = "BBHUNT_AUTH_HEADER"
 ENV_COOKIE = "BBHUNT_COOKIE"
@@ -33,13 +41,73 @@ ENV_BEARER = "BBHUNT_BEARER"
 ENV_API_KEY = "BBHUNT_API_KEY"
 
 
-class AuthSession:
-    """A bag of HTTP auth headers with a stable, hashed session_id."""
+def _normalize_origin(value: str) -> str:
+    """把显式白名单项规范化为 scheme://host:port。"""
+    candidate = (value or "").strip()
+    if not candidate or "://" not in candidate:
+        return ""
+    try:
+        parsed = urlparse(candidate)
+        port = parsed.port
+    except ValueError:
+        return ""
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower().strip(".")
+    if scheme not in {"http", "https"} or not host:
+        return ""
+    default_port = 443 if scheme == "https" else 80
+    rendered_host = f"[{host}]" if ":" in host else host
+    return f"{scheme}://{rendered_host}:{port or default_port}"
 
-    def __init__(self, headers: list[str] | None = None):
+
+class AuthSession:
+    """带 target scope 的 HTTP 认证头集合。"""
+
+    def __init__(
+        self,
+        headers: list[str] | None = None,
+        *,
+        target: str = "",
+        allowed_origins: list[str] | None = None,
+    ):
         self._headers: list[str] = []
+        self._target = canonical_target_value(target)
+        self._allowed_origins: list[str] = []
+        for origin in allowed_origins or []:
+            normalized = _normalize_origin(origin)
+            if normalized and normalized not in self._allowed_origins:
+                self._allowed_origins.append(normalized)
         for header in headers or []:
             self.add_header(header)
+
+    def bind_target(self, target: str) -> "AuthSession":
+        """绑定本次运行目标；跨目标时丢弃认证并按 anonymous 继续。"""
+        requested = canonical_target_value(target)
+        if self._target and requested and self._target != requested:
+            # 认证材料不能从一个目标迁移到另一个目标；与 Shell helper 保持同一契约。
+            self._headers.clear()
+            self._allowed_origins.clear()
+        if requested:
+            self._target = requested
+        return self
+
+    def target(self) -> str:
+        return self._target
+
+    def allowed_origins(self) -> list[str]:
+        return list(self._allowed_origins)
+
+    def allows_url(self, url: str) -> bool:
+        """仅允许 target-owned URL 或显式列出的 Origin 使用认证。"""
+        candidate = (url or "").strip()
+        if not candidate:
+            return False
+        if candidate.startswith("/"):
+            return bool(self._target)
+        normalized_origin = _normalize_origin(candidate)
+        if normalized_origin and normalized_origin in self._allowed_origins:
+            return True
+        return bool(self._target) and url_belongs_to_target(candidate, self._target)
 
     def add_header(self, raw: str) -> None:
         """Add a 'Name: value' header. Reject malformed or CRLF-tainted input."""
@@ -81,7 +149,14 @@ class AuthSession:
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "AuthSession":
         env = env if env is not None else os.environ
-        session = cls()
+        origins = re.split(r"[\n,]", env.get(ENV_ORIGINS, ""))
+        session = cls(target=env.get(ENV_TARGET, ""), allowed_origins=origins)
+        exported = env.get(ENV_HEADERS, "")
+        if exported:
+            for line in exported.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    session.add_header(line)
         raw = env.get(ENV_HEADER_IN, "")
         if raw:
             for line in raw.splitlines():
@@ -115,6 +190,12 @@ class AuthSession:
                 return session
             if not isinstance(data, dict):
                 raise ValueError(f"auth file {file_path}: top level must be object or array")
+
+            session.bind_target(str(data.get("target") or ""))
+            for origin in data.get("allowed_origins", []) or []:
+                normalized = _normalize_origin(str(origin))
+                if normalized and normalized not in session._allowed_origins:
+                    session._allowed_origins.append(normalized)
 
             for header in data.get("headers", []) or []:
                 session.add_header(header)
@@ -158,8 +239,14 @@ class AuthSession:
         """Merge env + file + explicit args. Explicit wins on name collisions."""
         session = cls.from_env(env)
         if file:
-            for header in cls.from_file(file).headers_list():
+            file_session = cls.from_file(file)
+            for header in file_session.headers_list():
                 session.add_header(header)
+            if not session._target and file_session._target:
+                session._target = file_session._target
+            for origin in file_session._allowed_origins:
+                if origin not in session._allowed_origins:
+                    session._allowed_origins.append(origin)
         for header in headers or []:
             session.add_header(header)
         if cookie:
@@ -183,12 +270,26 @@ class AuthSession:
             headers[name.strip()] = value.strip()
         return headers
 
+    def headers_for_url(self, url: str) -> dict[str, str]:
+        """返回 URL 可用的认证头；未绑定或目标外 URL 返回空集合。"""
+        return self.headers_dict() if self.allows_url(url) else {}
+
     def curl_args(self) -> list[str]:
         """Return args as `-H value` pairs for subprocess callers."""
         args: list[str] = []
         for header in self._headers:
             args.extend(["-H", header])
         return args
+
+    def curl_args_for_url(self, url: str) -> list[str]:
+        """返回 URL 可用的 curl `-H` 参数。"""
+        if not self.allows_url(url):
+            return []
+        return self.curl_args()
+
+    def sensitive_header_names(self) -> set[str]:
+        """返回 redirect 时必须按 scope 剥离的头名。"""
+        return {header.partition(":")[0].strip().lower() for header in self._headers}
 
     def session_id(self) -> str:
         """Stable 12-char hex hash of canonical headers. Empty session → ''."""
@@ -201,10 +302,15 @@ class AuthSession:
         """Return env vars to pass to subprocesses."""
         if self.is_empty():
             return {}
-        return {
+        overlay = {
             ENV_HEADERS: "\n".join(self._headers),
             ENV_SESSION_ID: self.session_id(),
         }
+        if self._target:
+            overlay[ENV_TARGET] = self._target
+        if self._allowed_origins:
+            overlay[ENV_ORIGINS] = "\n".join(self._allowed_origins)
+        return overlay
 
     def export_to_env(self, env: dict[str, str] | None = None) -> None:
         """Mutate an env mapping in place, clearing stale auth vars when empty."""
@@ -215,6 +321,8 @@ class AuthSession:
         else:
             target_env.pop(ENV_HEADERS, None)
             target_env.pop(ENV_SESSION_ID, None)
+            target_env.pop(ENV_TARGET, None)
+            target_env.pop(ENV_ORIGINS, None)
 
     def redacted(self) -> dict[str, str]:
         """Human-safe view: show header names with masked values."""
@@ -234,7 +342,8 @@ class AuthSession:
         if self.is_empty():
             return "auth: none (anonymous)"
         names = sorted({header.partition(":")[0].strip() for header in self._headers})
-        return f"auth: session={self.session_id()} headers=[{', '.join(names)}]"
+        scope = self._target or "unbound"
+        return f"auth: session={self.session_id()} scope={scope} headers=[{', '.join(names)}]"
 
     def __repr__(self) -> str:
         return f"AuthSession(session_id={self.session_id()!r}, n_headers={len(self._headers)})"
@@ -281,7 +390,7 @@ def add_cli_args(parser, *, include_cookie: bool = True) -> None:
         action="store_true",
         help=(
             f"Pick up auth from env vars ({ENV_HEADER_IN}, {ENV_COOKIE}, "
-            f"{ENV_BEARER}, {ENV_API_KEY}). Implied if any are already set."
+            f"{ENV_BEARER}, {ENV_API_KEY}). Used automatically only when no explicit auth source is supplied."
         ),
     )
 
@@ -289,9 +398,25 @@ def add_cli_args(parser, *, include_cookie: bool = True) -> None:
 def session_from_args(args, env: dict[str, str] | None = None) -> AuthSession:
     """Build an AuthSession from an argparse namespace."""
     env = env if env is not None else os.environ
+    explicit_source = bool(
+        getattr(args, "auth_file", None)
+        or getattr(args, "auth_header", [])
+        or getattr(args, "cookie", None)
+        or getattr(args, "bearer", None)
+        or getattr(args, "api_key", None)
+    )
     env_arg = env if (
         getattr(args, "auth_from_env", False)
-        or any(env.get(key) for key in (ENV_HEADER_IN, ENV_COOKIE, ENV_BEARER, ENV_API_KEY))
+        or (not explicit_source and any(
+            env.get(key)
+            for key in (
+                ENV_HEADERS,
+                ENV_HEADER_IN,
+                ENV_COOKIE,
+                ENV_BEARER,
+                ENV_API_KEY,
+            )
+        ))
     ) else {}
     return AuthSession.from_sources(
         env=env_arg,

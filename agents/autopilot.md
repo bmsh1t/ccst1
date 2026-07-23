@@ -63,7 +63,7 @@ Only add heavier state tools when they directly change the next action: `target_
 These tools are memory and execution aids, not a pre-flight checklist. Empty/stale/noisy/low-value state must not block fresh recon, broad scan, browser/source enrichment, or AI-generated pivots. If checkpoint/action_queue show no executable next action, `continue_last_focus`, resume targets, and `/surface` score hints are historical context, not commands; re-open only when fresh browser/source/JS/recon evidence or business context contradicts closure. Before executing historical focus on an existing target, do that closed-state sanity check without making checkpoint the first-contact steering wheel.
 
 - Skills route through `skills/runtime-protocol.md`.
-- Target case state stores actors, sessions, objects, private markers, hypotheses, and validation backlog under `state/<target_key>/case_state.json`.
+- Target case state stores actors, session metadata, objects, private markers, hypotheses, and validation backlog under `state/<target_key>/case_state.json`; session headers are private artifacts referenced from that file.
 - `case_state_seed.py` suggests add-actor/add-object/add-backlog commands from cached object-like endpoints; it does not auto-write.
 - Knowledge cards come from `knowledge/index.md`; load only matching cards and `reference_hints` from context-pack when evidence needs on-demand references.
 - Red-line, coverage, and tool/AI boundary semantics live in `rules/red-lines.md`, `rules/coverage-gate.md`, `rules/hunting.md`, and `rules/tool-ai-boundary.md`.
@@ -182,10 +182,9 @@ Deep mode:
 Deep mode never overrides Live-Action Boundaries: irreversible lifecycle writes, real money movement, bulk external sends, report submission, active stored XSS payload submission, and destructive mutations still require explicit current-turn operator intent. Method is a signal, not the boundary: browser-observed POST, GraphQL read queries, search/filter POSTs, preview/validate-only flows, and test-owned reversible actions can be valid evidence paths.
 
 ## Credential Lane
-
 Password brute force, default credential checks, and password spray are not absolute red lines. Credential testing is a controlled high-risk lane when bounded and evidence-driven.
-
-`/autopilot` may select `/wordlist-gen -> /breach-check -> /osint-employees -> /spray` when it is a high-value route for current evidence; this is not a requirement that every other lane fails first. Require concrete login endpoint, success/failure signal, username source, bounded target-derived password set, rate/lockout discipline, audit log, and stop-on-hit.
+`/autopilot` may select Credential Lane when it is a high-value route for current evidence; this is not a requirement that every other lane fails first. Require a concrete login endpoint, observed protocol, success/failure signal, reviewed username source, AI-produced finite `spray-shortlist.txt`, rate/lockout discipline, input-bound dry-run preflight, audit log, and stop-on-hit. Known usernames may skip OSINT; inferred and confirmed identities remain separate. Never pass `candidate-pool.txt` or its `ranked.txt` compatibility alias directly to live `/spray`.
+The deterministic sequence is candidate preparation/enrichment → AI shortlist → mode/request-spec decision → zero-network dry-run → explicit preflight-bound live execution. A normal OIDC login does not prove password grant support. Valid, ambiguous, guarded, interrupted, and error summaries return to the existing target memory/action queue/finding lifecycle; do not create a second Credential state machine or equate a credential hit with report-ready impact.
 
 If self-owned lab/authorized account setup needs email verification, use `/root/tool/aitool/zocom/mail_receiver.py` as optional setup aid and store only final auth headers in `.private/` or case_state. If execution hygiene is missing, write a target-memory next action instead of silently dropping the lane or launching guesses.
 

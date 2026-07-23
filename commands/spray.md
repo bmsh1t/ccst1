@@ -1,173 +1,100 @@
 ---
-description: Controlled password spray runner with hard operational guards — typed-hostname confirmation, lockout warning, audit log. Modes: http-form (custom login page), oauth (password grant), o365 + okta (via TREVORspray). Default delay 30min/round + 60s jitter. Usage /spray <url> --mode <mode> --users <file> --passes <file>
+description: Controlled credential spray with input-bound dry-run, explicit HTTP signals, unified audit, stop reasons, private evidence, and resume. Modes http-form/oauth/o365/okta.
 ---
 
 # /spray
 
-Controlled credential spray against an authentication endpoint. `/autopilot`
-may select this lane when credential access is a reasonable breakthrough path,
-but the guardrails here still apply: concrete target, dry-run/pre-flight,
-rate/lockout review, audit log, and stop-on-hit discipline.
+Controlled credential spray。`/autopilot` 仅在登录价值、用户名来源、AI shortlist、成功/失败信号和锁定条件均有证据时选择本 lane；发现登录页本身不触发 Spray。
 
-## Modes
+## 基本流程
 
-| Mode | Use case | Engine |
-|---|---|---|
-| `http-form` | Custom login page (POST username/password) | Built-in Python + urllib |
-| `oauth` | OAuth password grant (`grant_type=password`) | Built-in Python + urllib |
-| `o365` | Microsoft 365 / Azure AD | `trevorspray` |
-| `okta` | Okta SSO | `trevorspray` |
+```bash
+# 1. 零认证请求，生成 input-bound preflight
+tools/spray_orchestrator.sh https://target.test/login \
+  --mode http-form --users users.txt --passes spray-shortlist.txt \
+  --request-spec request.json --dry-run
 
-## Usage
+# 2. 无人值守 live 必须显式携带上一步文件
+tools/spray_orchestrator.sh https://target.test/login \
+  --mode http-form --users users.txt --passes spray-shortlist.txt \
+  --request-spec request.json --preflight recon/<key>/spray/preflight-<id>.json \
+  --i-understand
 
-```
-# HTTP form (simplest)
-/spray https://target.com/login --mode http-form \
-    --users users.txt --passes ranked.txt
-
-# HTTP form with CSRF token extraction
-/spray https://target.com/login --mode http-form \
-    --users users.txt --passes ranked.txt \
-    --post-data "user={USER}&pass={PASS}&_token={CSRF}" \
-    --csrf-extract 'name="_token" value="([^"]+)"' \
-    --success-regex "Welcome" \
-    --fail-regex "Invalid credentials"
-
-# OAuth password grant
-/spray https://target.com/oauth/token --mode oauth \
-    --users users.txt --passes ranked.txt \
-    --oauth-client-id mobile-app \
-    --oauth-scope "openid profile"
-
-# Microsoft 365 (TREVORspray)
-/spray https://login.microsoftonline.com --mode o365 \
-    --users users.txt --passes ranked.txt
-
-# Dry-run (pre-flight only, no real attempts)
-/spray https://target.com/login --mode http-form \
-    --users users.txt --passes ranked.txt --dry-run
+# 3. 中断后使用原输入恢复
+tools/spray_orchestrator.sh https://target.test/login \
+  --mode http-form --users users.txt --passes spray-shortlist.txt \
+  --request-spec request.json --resume recon/<key>/spray/<run-id> --i-understand
 ```
 
-## Hard guards (cannot be bypassed)
+`--i-understand` 只跳过交互提示；URL、输入、mode contract、preflight binding、停止和证据规则仍执行。交互 live 保留兼容，但同样应先 dry-run。
 
-1. **Typed-hostname confirmation** — Pre-flight prints the target hostname and requires you to type it back. Prevents spraying the wrong target.
-2. **Lockout warning** — Calculates per-user failed-attempt count from your `--passes` size and warns if it exceeds typical lockout thresholds.
-3. **Audit log** — Built-in HTTP/OAuth handlers append every request attempt；O365/Okta append every TREVOR emitted event to `recon/<host>/spray/attempts-<timestamp>.jsonl`. **Passwords are never logged in plaintext** — only a SHA-256 prefix when the emitted line can be associated with a passlist value；token/session/Authorization values in TREVOR raw output are also redacted.
-4. **Spray order** — `pass[i] × all_users` per round (NOT brute-per-user). Each account sees at most 1 failed attempt per round.
+`spray-shortlist.txt` 与同目录 `spray-shortlist.jsonl` 均须为 `0600`。JSONL 顺序与密码一致，
+每行包含 `schema_version=1`、`pwd_sha256_prefix`、`source`、`hibp_count`、`hibp_bucket`、
+`reason`。入口拒绝 candidate pool/ranked alias、缺失 metadata 或摘要漂移。
 
-## Spray order example (3 users × 3 passwords)
+## 模式
 
-```
-Round 1:  Password1!  → alice, bob, charlie    [delay]
-Round 2:  Welcome2025 → alice, bob, charlie    [delay]
-Round 3:  Summer2024  → alice, bob, charlie
-```
+| 模式 | 契约 |
+|---|---|
+| http-form | form/JSON/GraphQL request spec，per-user CookieJar，per-attempt CSRF |
+| oauth | 仅适用于已观察到 password grant 的端点；非空顶层 `access_token` 才成功 |
+| o365 | TREVORspray `msol` module |
+| okta | TREVORspray `okta` module |
 
-If `--continue-on-hit` is NOT set, spray stops at the first valid credentials.
+HTTP/OAuth 默认验证 TLS。自签名环境可显式使用 `--insecure`，该选项会进入 preflight binding；
+O365/Okta 不接受此参数。
 
-## Rate limiting
-
-| Flag | Default | Effect |
-|---|---|---|
-| `--delay <sec>` | 1800 (30 min) | Sleep between rounds |
-| `--jitter <sec>` | 60 | Random ±jitter added to each delay |
-| `--aggressive` | off | Sets delay=60, jitter=10 (fast spray — use only when you intentionally accept the lockout/rate-limit risk) |
-
-For Microsoft 365 / Azure AD smart lockout: defaults are designed to stay well under the 10-min sliding window threshold. **Do not use `--aggressive` against O365** unless you've cleared it with the program.
-
-## Success detection (http-form mode)
-
-The script checks these in order:
-1. `--success-regex` matches response body → success
-2. `--fail-regex` set + body does NOT match → success
-3. HTTP redirect (3xx) to a path that is NOT the login page → success (heuristic)
-4. None of the above → not success
-
-If you get false positives, supply `--fail-regex` (e.g. `--fail-regex "Invalid|incorrect|wrong password"`) to anchor detection.
-
-## Success detection (oauth mode)
-
-HTTP 200 response with `"access_token"` field in JSON body → success.
-HTTP 4xx (typically 400 invalid_grant / 401) → fail.
-
-## Result classification (o365 / okta)
-
-TREVOR 输出先转换为结构化 emitted-event JSONL，再按身份提供方分类。它的粒度取决于
-TREVOR 实际输出，不宣称每个网络请求都有一条事件。
-
-- Azure AD：优先解析 `AADSTS` code。`50034`=invalid user，`50126`=invalid
-  password/user exists，`50053`=locked，`53003`=valid password + Conditional
-  Access，`50076/50079`=valid password + MFA，`50158`=external auth，`530003`=device
-  required，`65001`=consent required，`700016/90002`=app/tenant configuration。
-- Okta：识别 `E0000004`、`E0000119`/`LOCKED_OUT`、`MFA_REQUIRED`、
-  `PASSWORD_EXPIRED`、`SUCCESS + sessionToken`、`E0000047`/HTTP 429。
-- 只有响应 JSON 的顶层 `access_token` key 才标记 token issued；claims 或原始文本包含
-  `access_token` 不算成功。
-- 未识别输出保留为 `unknown`，供后续人工/AI 复核。
-
-## Pre-flight output (what you see before any HTTP)
-
-```
-=============================================
-  SPRAY PRE-FLIGHT — target.com
-=============================================
-  Target URL:        https://target.com/login
-  Mode:              http-form
-  Users file:        users.txt (50 entries)
-  Passes file:       ranked.txt (10 entries)
-  Total attempts:    500
-  Rounds:            10
-  Delay/round:       1800s + 60s jitter
-  Est. duration:     ~5h
-=============================================
-
-[!] OPERATIONAL RISK REMINDER
-[!] This sends live authentication attempts and can trigger lockouts/rate limits...
-Type the target hostname (target.com) to confirm: _
-
-[!] LOCKOUT WARNING
-[!] Per-user failed attempts (this run):  10
-[!] Estimated accounts likely to be locked: ~80% of 50 = 40
-Type 'yes' to proceed (anything else aborts): _
-```
-
-## Skipping confirmations
-
-`--i-understand` skips both prompts. Use it only after a clean dry-run and when
-the active run has already selected the controlled credential lane, confirmed
-the exact target host, and intentionally accepts the lockout/rate-limit risk.
-The flag is a deliberate friction point.
-
-## Audit log format
-
-Built-in HTTP/OAuth 每次请求一行：
+## HTTP request spec
 
 ```json
-{"ts":"2026-05-27T22:00:01Z","round":1,"user":"alice","pwd_sha256_prefix":"a3f2b8e1c0d4","status_code":401,"looks_like_success":false,"duration_ms":320}
-{"ts":"2026-05-27T22:00:02Z","round":1,"user":"bob","pwd_sha256_prefix":"a3f2b8e1c0d4","status_code":302,"redirect_to":"/dashboard","looks_like_success":true,"duration_ms":410}
+{
+  "schema_version": 1,
+  "method": "POST",
+  "url": "https://target.test/login",
+  "headers": {"Accept": "application/json"},
+  "body_format": "form",
+  "body": {"username": "{USER}", "password": "{PASS}", "_token": "{CSRF}"},
+  "csrf": {
+    "url": "https://target.test/login",
+    "regex": "name=\"_token\" value=\"([^\"]+)\"",
+    "refresh": "per-attempt"
+  },
+  "success": {"body_regex": "Welcome", "redirect_regex": "^/dashboard", "cookie_name": "session"},
+  "failure": {"body_regex": "Invalid credentials"},
+  "guard": {"body_regex": "captcha|account locked", "status_codes": [429, 503]}
+}
 ```
 
-O365/Okta 每条 TREVOR emitted event 一行：
+`body_format` 支持 `form|json`，body 可嵌套 JSON；结构化编码保证密码中的 `&`、`+`、引号不破坏请求。允许 `{USER}/{USERNAME}`、`{PASS}/{PASSWORD}`、`{CSRF}`，未知 placeholder 在 dry-run 失败。
 
-```json
-{"schema_version":1,"ts":"2026-07-18T12:00:00Z","mode":"o365","tool":"trevorspray","event":"attempt_result","user":"alice@example.test","classification":"valid_password_mfa","credential_valid":true,"token_issued":false,"aadsts_code":"50076","pwd_sha256_prefix":"a3f2b8e1c0d4","raw":"..."}
+旧 `--post-data/--csrf-extract/--success-regex/--fail-regex` 仍可用并投影到同一内部模型。request spec 与旧 form flags 不可混用。
+
+## 判定与停止
+
+- HTTP：`invalid_credentials`、`ambiguous_candidate`、`valid_session`、`rate_limited`、`guarded`、`network_error`。
+- failure regex 消失只产生 `ambiguous_candidate` 并停止，不直接声明有效凭据。
+- OAuth：非空顶层 token 才是 `valid_token`；429/503、provider error 和无 token 200 分开处理。
+- OAuth 只有 `invalid_grant` 表示凭据无效；`invalid_client`、`invalid_request`、401 等配置或策略错误保持 ambiguous 并停止。
+- 默认第一个明确 valid 停止；首个 rate-limit/guard/ambiguous 停止；连续 3 次网络错误停止。
+- 顺序固定为 `password → all users`；`--delay/--jitter` 表示账号轮次间隔。TREVOR adapter 按用户名数换算为每请求间隔。
+
+## 证据
+
+```text
+recon/<target-key>/spray/<run-id>/
+├── run.json
+├── attempts.jsonl
+└── summary.json
+
+.private/spray/<target-key>/<run-id>/
+├── response-*.json
+└── trevor-home/
 ```
 
-## Pipeline position
+普通证据只保存密码 hash prefix 和脱敏分类；token、session、响应正文及 TREVOR 明文历史只进入 0600/0700 的 `.private`。四种模式共享 `schema_version=1`、run ID、classification、stop reason 和完成 marker。输入 digest 变化时 preflight/resume fail-fast。
 
-```
-/wordlist-gen <target>        -> ranked.txt
-/breach-check ranked.txt      -> ranked-ranked.txt (HIBP-validated)
-/osint-employees <target>     -> usernames.txt
-/spray <login> --users usernames.txt --passes ranked-ranked.txt
-```
+TREVOR live 使用 private 目录内的去重 users/passwords 副本，保证实际输入和 preflight 一致。
+`--resume` 只接受无 summary、`interrupted` 或 `error` run；completed、valid、ambiguous、
+guarded、rate-limited 和 locked 必须重新生成 preflight。并发 resume 会被 run lock 拒绝。
 
-## Dependencies
-
-- Built-in modes (http-form, oauth): pure Python 3.9+ stdlib
-- TREVOR modes (o365, okta): `trevorspray` from `./install_tools.sh --with-credential-attack`
-- typed-hostname confirmation and lockout estimation are built into `tools/spray_orchestrator.sh`
-
-## Underlying tool
-
-`tools/spray_orchestrator.sh <url> --mode ... --users ... --passes ...`
+命中凭据不自动成为 finding；后续仍通过既有认证后验证流程证明影响。

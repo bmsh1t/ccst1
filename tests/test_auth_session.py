@@ -2,6 +2,8 @@
 
 import argparse
 import os
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +14,9 @@ from tools.auth_session import (
     ENV_COOKIE,
     ENV_HEADER_IN,
     ENV_HEADERS,
+    ENV_ORIGINS,
     ENV_SESSION_ID,
+    ENV_TARGET,
     add_cli_args,
     session_from_args,
 )
@@ -134,10 +138,86 @@ class TestOutput:
         assert env[ENV_SESSION_ID] == session.session_id()
 
     def test_export_to_env_clears_stale_values_when_empty(self):
-        env = {ENV_HEADERS: "stale", ENV_SESSION_ID: "stale"}
+        env = {
+            ENV_HEADERS: "stale",
+            ENV_SESSION_ID: "stale",
+            ENV_TARGET: "stale.example",
+            ENV_ORIGINS: "https://stale.example",
+        }
         AuthSession().export_to_env(env)
         assert ENV_HEADERS not in env
         assert ENV_SESSION_ID not in env
+        assert ENV_TARGET not in env
+        assert ENV_ORIGINS not in env
+
+
+class TestTargetScope:
+
+    def test_unbound_session_never_returns_auth_for_url(self):
+        session = AuthSession(["Authorization: Bearer secret"])
+        assert session.headers_for_url("https://example.com/api") == {}
+
+    def test_target_and_subdomains_receive_auth_but_external_url_does_not(self):
+        session = AuthSession(["Cookie: s=1"], target="example.com")
+        assert session.headers_for_url("https://api.example.com/me") == {"Cookie": "s=1"}
+        assert session.headers_for_url("https://example.net/me") == {}
+
+    def test_rebinding_to_another_target_drops_headers_and_origins(self):
+        session = AuthSession(
+            ["Authorization: Bearer secret"],
+            target="first.example",
+            allowed_origins=["https://identity.example"],
+        )
+        session.bind_target("second.example")
+        assert session.is_empty()
+        assert session.headers_for_url("https://second.example/api") == {}
+        assert session.headers_for_url("https://identity.example/token") == {}
+        assert session.target() == "second.example"
+
+    def test_explicit_origin_is_exact_and_survives_env_round_trip(self):
+        session = AuthSession(
+            ["X-API-Key: secret"],
+            target="example.com",
+            allowed_origins=["https://identity.example.net"],
+        )
+        env = {}
+        session.export_to_env(env)
+        restored = AuthSession.from_env(env)
+
+        assert env[ENV_TARGET] == "example.com"
+        assert env[ENV_ORIGINS] == "https://identity.example.net:443"
+        assert restored.headers_for_url("https://identity.example.net/token") == {
+            "X-API-Key": "secret"
+        }
+        assert restored.headers_for_url("http://identity.example.net/token") == {}
+        assert restored.headers_for_url("https://sub.identity.example.net/token") == {}
+
+    def test_shell_helper_drops_auth_when_rebound_to_another_target(self):
+        helper = Path(__file__).resolve().parents[1] / "tools" / "_auth_helper.sh"
+        env = os.environ.copy()
+        env.update({
+            ENV_HEADERS: "Authorization: Bearer secret",
+            ENV_SESSION_ID: "session-one",
+            ENV_TARGET: "first.example",
+        })
+
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                '. "$1"; bb_auth_bind_target second.example; '
+                'printf "%s|%s" "${#BB_AUTH_ARGS[@]}" "$BBHUNT_AUTH_TARGET"',
+                "bash",
+                str(helper),
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "0|second.example"
 
 
 class TestSecrets:
@@ -200,6 +280,15 @@ class TestCliArgs:
         args = self._parser().parse_args([])
         session = session_from_args(args, env={ENV_COOKIE: "session=abc"})
         assert session.headers_dict() == {"Cookie": "session=abc"}
+
+    def test_explicit_source_does_not_merge_stale_env_without_opt_in(self):
+        args = self._parser().parse_args(["--bearer", "fresh"])
+        session = session_from_args(
+            args,
+            env={ENV_HEADERS: "X-Stale: old", ENV_COOKIE: "stale=1"},
+        )
+
+        assert session.headers_dict() == {"Authorization": "Bearer fresh"}
 
     def test_existing_cookie_arg_can_be_reused_when_group_omits_cookie(self):
         parser = self._parser(include_cookie=False)

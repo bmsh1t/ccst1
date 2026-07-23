@@ -34,7 +34,7 @@ from contextlib import ExitStack
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener, urlopen
 
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(TOOLS_DIR)
@@ -117,12 +117,37 @@ def _active_auth_session() -> AuthSession:
     return AuthSession.from_env(os.environ)
 
 
-def _merge_auth_headers(headers: dict[str, str] | None = None) -> dict[str, str]:
-    """Merge auth-session headers with per-request headers."""
-    merged = _active_auth_session().headers_dict()
+def _merge_auth_headers(url: str, headers: dict[str, str] | None = None) -> dict[str, str]:
+    """按目标边界合并认证头与单次请求头。"""
+    merged = _active_auth_session().headers_for_url(url)
     if headers:
         merged.update(headers)
     return merged
+
+
+class _ScopedAuthRedirectHandler(HTTPRedirectHandler):
+    """跨目标 redirect 时剥离本次认证 session 的敏感头。"""
+
+    def __init__(self, session: AuthSession):
+        super().__init__()
+        self._session = session
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None or self._session.allows_url(newurl):
+            return redirected
+
+        sensitive = self._session.sensitive_header_names() | {
+            "authorization",
+            "cookie",
+            "proxy-authorization",
+            "x-api-key",
+        }
+        for mapping in (redirected.headers, redirected.unredirected_hdrs):
+            for name in list(mapping):
+                if name.lower() in sensitive:
+                    del mapping[name]
+        return redirected
 
 
 def _log_legacy_path_hint(kind: str, preferred_command: str) -> None:
@@ -359,9 +384,18 @@ def _guard_scope_domains(target):
 
 def _fetch_url_raw(url, *, headers=None, timeout=10, method="GET"):
     """Fetch a URL and return (status, body, headers dict)."""
-    request = Request(url, headers=_merge_auth_headers(headers), method=method)
+    session = _active_auth_session()
+    request = Request(url, headers=_merge_auth_headers(url, headers), method=method)
     try:
-        with urlopen(request, timeout=timeout, context=URL_SSL_CTX) as response:
+        if session.is_empty():
+            response_context = urlopen(request, timeout=timeout, context=URL_SSL_CTX)
+        else:
+            opener = build_opener(
+                HTTPSHandler(context=URL_SSL_CTX),
+                _ScopedAuthRedirectHandler(session),
+            )
+            response_context = opener.open(request, timeout=timeout)
+        with response_context as response:
             body = response.read().decode("utf-8", errors="replace")
             return response.getcode(), body, dict(response.headers.items())
     except HTTPError as exc:
@@ -1108,6 +1142,8 @@ def run_recon(domain, quick=False):
     try:
         child_env = os.environ.copy()
         _active_auth_session().export_to_env(child_env)
+        child_env["BBHUNT_RUNTIME_PHASE_LOCKED"] = "recon"
+        child_env["BBHUNT_RUNTIME_LOCK_TARGET"] = normalized_target
         proc = subprocess.Popen(
             f'bash "{script}" "{normalized_target}" {quick_flag}',
             shell=True, cwd=BASE_DIR, env=child_env, start_new_session=True
@@ -1159,6 +1195,8 @@ def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
     try:
         child_env = os.environ.copy()
         _active_auth_session().export_to_env(child_env)
+        child_env["BBHUNT_RUNTIME_PHASE_LOCKED"] = "scan"
+        child_env["BBHUNT_RUNTIME_LOCK_TARGET"] = classify_target(domain)["target"]
         proc = subprocess.Popen(
             cmd,
             shell=True, cwd=BASE_DIR, env=child_env, start_new_session=True
@@ -2301,6 +2339,8 @@ def hunt_target(
     """Run one target pipeline while preventing duplicate long phases."""
     target_info = classify_target(domain)
     canonical_target = target_info["target"]
+    if not _active_auth_session().is_empty():
+        _active_auth_session().bind_target(canonical_target)
     phases = []
     if target_info["kind"] == "list":
         if not scan_only:
@@ -2409,7 +2449,7 @@ Examples:
     mode_group.add_argument("--yolo", action="store_true", help="Keep moving with minimal checkpoints")
     args = parser.parse_args()
     global _AUTH_SESSION
-    _AUTH_SESSION = session_from_args(args)
+    _AUTH_SESSION = session_from_args(args).bind_target(args.target or "")
     _AUTH_SESSION.export_to_env(os.environ)
     autopilot_mode = resolve_autopilot_mode(args)
     config = load_config()

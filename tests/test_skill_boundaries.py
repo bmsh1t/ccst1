@@ -140,6 +140,8 @@ def test_triage_validation_keeps_preseverity_and_retraction_discipline():
     assert "## RETRACTION DISCIPLINE" in skill
     assert "validation_status=rejected" in skill
     assert "disproving evidence" in skill
+    assert "source_guard" in skill
+    assert "单行精确 `quote`" in skill
     assert "skills/triage-validation/SKILL.md" in command
     assert "PRE-SEVERITY GATE" in command
     assert "RETRACTION DISCIPLINE" in command
@@ -148,6 +150,17 @@ def test_triage_validation_keeps_preseverity_and_retraction_discipline():
     assert "**DOWNGRADE:**" in command
     assert "**DO_NOT_REPORT:**" in command
     assert "**KILL:**" not in command
+
+
+def test_payload_reference_requires_stateful_chain_continuity():
+    reference = (
+        REPO_ROOT / "skills" / "security-arsenal" / "references" / "payload-families.md"
+    ).read_text(encoding="utf-8")
+
+    assert "## 状态型链路连续性" in reference
+    assert "leak -> use" in reference
+    assert "同一进程" in reference
+    assert "显式恢复" in reference
 
 
 def test_hidden_sqli_surfaces_are_part_of_skill_flow():

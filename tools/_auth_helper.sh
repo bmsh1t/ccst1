@@ -17,7 +17,10 @@
 }
 
 BB_AUTH_ARGS=()
+BB_URL_AUTH_ARGS=()
 BB_AUTH_SESSION_ID="${BBHUNT_SESSION_ID:-}"
+BB_AUTH_SOURCE_TARGET="${BBHUNT_AUTH_TARGET:-}"
+BB_AUTH_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [ -n "${BBHUNT_AUTH_HEADERS:-}" ]; then
     while IFS= read -r _bb_header; do
@@ -52,4 +55,84 @@ bb_auth_banner() {
 
 bb_auth_active() {
     [ "${#BB_AUTH_ARGS[@]}" -gt 0 ]
+}
+
+bb_auth_bind_target() {
+    local requested_target="${1:-}"
+    if bb_auth_active && [ -n "$BB_AUTH_SOURCE_TARGET" ] && [ -n "$requested_target" ]; then
+        if ! PYTHONPATH="$BB_AUTH_BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+            python3 - "$BB_AUTH_SOURCE_TARGET" "$requested_target" <<'PY' >/dev/null 2>&1
+import sys
+
+from tools.target_paths import canonical_target_value
+
+try:
+    same = canonical_target_value(sys.argv[1]) == canonical_target_value(sys.argv[2])
+except (TypeError, ValueError):
+    same = False
+raise SystemExit(0 if same else 1)
+PY
+        then
+            BB_AUTH_ARGS=()
+            BB_AUTH_SESSION_ID=""
+            unset BBHUNT_AUTH_HEADERS BBHUNT_SESSION_ID BBHUNT_AUTH_ORIGINS
+            unset BBHUNT_AUTH_HEADER BBHUNT_COOKIE BBHUNT_BEARER BBHUNT_API_KEY
+        fi
+    fi
+    BB_AUTH_SOURCE_TARGET="$requested_target"
+    BBHUNT_AUTH_TARGET="$requested_target"
+    export BBHUNT_AUTH_TARGET
+}
+
+bb_auth_url_allowed() {
+    local url="${1:-}"
+    bb_auth_active || return 1
+    [ -n "$url" ] || return 1
+    PYTHONPATH="$BB_AUTH_BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 - "$url" <<'PY' >/dev/null 2>&1
+import os
+import sys
+
+from tools.auth_session import AuthSession
+
+raise SystemExit(0 if AuthSession.from_env(os.environ).allows_url(sys.argv[1]) else 1)
+PY
+}
+
+bb_auth_args_for_url() {
+    BB_URL_AUTH_ARGS=()
+    if bb_auth_url_allowed "${1:-}"; then
+        BB_URL_AUTH_ARGS=("${BB_AUTH_ARGS[@]}")
+    fi
+}
+
+bb_auth_filter_file() {
+    local input_file="$1"
+    local output_file="$2"
+    : > "$output_file"
+    [ -s "$input_file" ] || return 0
+    if ! bb_auth_active; then
+        cp "$input_file" "$output_file"
+        return 0
+    fi
+
+    PYTHONPATH="$BB_AUTH_BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 - "$input_file" "$output_file" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+from tools.auth_session import AuthSession
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+session = AuthSession.from_env(os.environ)
+with source.open(encoding="utf-8", errors="replace") as reader, destination.open(
+    "w", encoding="utf-8"
+) as writer:
+    for raw in reader:
+        value = raw.strip()
+        if value and session.allows_url(value):
+            writer.write(value + "\n")
+PY
 }

@@ -10,11 +10,15 @@ action for Claude to reason about and execute through validation_runner.
 from __future__ import annotations
 
 import argparse
+import copy
+import fcntl
+import hashlib
 import json
 import os
 import shlex
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,9 +29,11 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.auth_session import AuthSession
+    from tools.private_artifacts import private_artifact_dir, write_private_json
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from auth_session import AuthSession  # type: ignore
+    from private_artifacts import private_artifact_dir, write_private_json  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -61,6 +67,59 @@ def now_utc() -> str:
 def case_state_path(repo_root: str | Path, target: str) -> Path:
     resolved = canonical_target_value(target)
     return Path(repo_root) / "state" / target_storage_key(resolved) / "case_state.json"
+
+
+@contextmanager
+def case_state_mutation_lock(repo_root: str | Path, target: str):
+    """串行化同一目标的完整 case-state read-modify-write。"""
+    lock_path = case_state_path(repo_root, target).parent / "locks" / "case_state.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _session_private_path(
+    repo_root: str | Path,
+    target: str,
+    session_id: str,
+    content_digest: str = "",
+) -> Path:
+    target_key = target_storage_key(canonical_target_value(target))
+    directory = private_artifact_dir(repo_root, "case-state", target_key, "sessions")
+    session_digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:20]
+    suffix = f"-{content_digest[:16]}" if content_digest else ""
+    return directory / f"{session_digest}{suffix}.json"
+
+
+def _load_private_session(
+    repo_root: str | Path,
+    target: str,
+    session_id: str,
+    session: dict[str, Any],
+) -> None:
+    ref = str(session.get("private_ref") or "").strip()
+    if not ref:
+        return
+    expected = _session_private_path(repo_root, target, session_id)
+    path = Path(repo_root) / ref
+    if path.resolve().parent != expected.resolve().parent or not path.name.startswith(expected.stem + "-"):
+        raise ValueError(f"invalid case-state private_ref for session {session_id}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"unable to read private case-state session {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid private case-state session JSON {path}: {exc.msg}") from exc
+    if not isinstance(payload, dict) or payload.get("session_id") != session_id:
+        raise ValueError(f"private case-state session identity mismatch: {path}")
+    headers = payload.get("headers") if isinstance(payload.get("headers"), dict) else {}
+    session["headers"] = _normalize_headers({str(k): str(v) for k, v in headers.items()})
+    session["header_name"] = str(payload.get("header_name") or "")
+    session["header_value"] = str(payload.get("header_value") or "")
 
 
 def _empty_state(target: str) -> dict[str, Any]:
@@ -131,7 +190,11 @@ def load_case_state(repo_root: str | Path, target: str) -> dict[str, Any]:
         raise ValueError(f"invalid target case state JSON {path}: {exc.msg}") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"target case state {path} must contain one object")
-    return _ensure_shape(payload, target)
+    state = _ensure_shape(payload, target)
+    for session_id, session in state.get("sessions", {}).items():
+        if isinstance(session, dict):
+            _load_private_session(repo_root, target, str(session_id), session)
+    return state
 
 
 def save_case_state(repo_root: str | Path, target: str, state: dict[str, Any]) -> Path:
@@ -140,6 +203,35 @@ def save_case_state(repo_root: str | Path, target: str, state: dict[str, Any]) -
     state["updated_at"] = now_utc()
     path = case_state_path(repo_root, target)
     path.parent.mkdir(parents=True, exist_ok=True)
+    public_state = copy.deepcopy(state)
+    for session_id, session in list(state.get("sessions", {}).items()):
+        if not isinstance(session, dict):
+            continue
+        headers = session.get("headers") if isinstance(session.get("headers"), dict) else {}
+        header_name = str(session.get("header_name") or "").strip()
+        header_value = str(session.get("header_value") or "").strip()
+        if not headers and header_name and header_value:
+            headers = {header_name: header_value}
+        if headers:
+            private_payload = {
+                "schema_version": SCHEMA_VERSION,
+                "session_id": str(session_id),
+                "actor": str(session.get("actor") or ""),
+                "kind": str(session.get("kind") or "unknown"),
+                "header_name": header_name,
+                "header_value": header_value,
+                "headers": {str(k): str(v) for k, v in headers.items()},
+            }
+            content_digest = hashlib.sha256(
+                json.dumps(private_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            private_path = _session_private_path(repo_root, target, str(session_id), content_digest)
+            write_private_json(private_path, private_payload)
+            public_session = public_state["sessions"][session_id]
+            public_session["private_ref"] = private_path.relative_to(Path(repo_root)).as_posix()
+            public_session.pop("header_name", None)
+            public_session.pop("header_value", None)
+            public_session.pop("headers", None)
     temp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -151,7 +243,7 @@ def save_case_state(repo_root: str | Path, target: str, state: dict[str, Any]) -
             delete=False,
         ) as handle:
             temp_path = Path(handle.name)
-            handle.write(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            handle.write(json.dumps(public_state, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
         temp_path.replace(path)
@@ -163,6 +255,15 @@ def save_case_state(repo_root: str | Path, target: str, state: dict[str, Any]) -
                 pass
         raise
     return path
+
+
+def _mutate_case_state(repo_root: str | Path, target: str, mutation):
+    """在目标锁内完成一次完整的状态读改写。"""
+    with case_state_mutation_lock(repo_root, target):
+        state = load_case_state(repo_root, target)
+        result = mutation(state)
+        save_case_state(repo_root, target, state)
+        return result
 
 
 def _require_non_empty(value: str, field: str) -> str:
@@ -229,22 +330,22 @@ def add_actor(
     label: str = "",
     notes: str = "",
 ) -> dict[str, Any]:
-    state = load_case_state(repo_root, target)
     actor_id = _require_non_empty(actor, "actor")
     role_value = str(role or "unknown").strip() or "unknown"
     if role_value not in ACTOR_ROLES:
         raise ValueError(f"unknown role: {role_value}. Allowed: {', '.join(sorted(ACTOR_ROLES))}")
-    ts = now_utc()
-    current = state["actors"].get(actor_id, {})
-    state["actors"][actor_id] = {
-        "role": role_value,
-        "label": str(label or current.get("label", "") or ""),
-        "notes": str(notes or current.get("notes", "") or ""),
-        "created_at": current.get("created_at") or ts,
-        "last_seen": ts,
-    }
-    save_case_state(repo_root, target, state)
-    return state["actors"][actor_id]
+    def mutate(state):
+        ts = now_utc()
+        current = state["actors"].get(actor_id, {})
+        state["actors"][actor_id] = {
+            "role": role_value,
+            "label": str(label or current.get("label", "") or ""),
+            "notes": str(notes or current.get("notes", "") or ""),
+            "created_at": current.get("created_at") or ts,
+            "last_seen": ts,
+        }
+        return state["actors"][actor_id]
+    return _mutate_case_state(repo_root, target, mutate)
 
 
 def add_session(
@@ -261,49 +362,49 @@ def add_session(
     validity: str = "unknown",
     notes: str = "",
 ) -> dict[str, Any]:
-    state = load_case_state(repo_root, target)
     session_id = _require_non_empty(session, "session")
     actor_id = _require_non_empty(actor, "actor")
-    if actor_id not in state["actors"]:
-        raise ValueError(f"actor does not exist: {actor_id}")
-    current = state["sessions"].get(session_id, {})
-    current_headers = current.get("headers") if isinstance(current.get("headers"), dict) else {}
-    header_map = _normalize_headers({str(k): str(v) for k, v in current_headers.items()})
     kind_hint = str(kind or "unknown").strip() or "unknown"
-    if not header_name and kind_hint == "bearer":
-        header_name = "Authorization"
-    if not header_name and kind_hint == "cookie":
-        header_name = "Cookie"
-    incoming_headers = _normalize_headers(headers)
-    header_map.update(incoming_headers)
-    if header_value:
+    def mutate(state):
+        nonlocal header_name
+        if actor_id not in state["actors"]:
+            raise ValueError(f"actor does not exist: {actor_id}")
+        current = state["sessions"].get(session_id, {})
+        current_headers = current.get("headers") if isinstance(current.get("headers"), dict) else {}
+        header_map = _normalize_headers({str(k): str(v) for k, v in current_headers.items()})
         if not header_name and kind_hint == "bearer":
             header_name = "Authorization"
         if not header_name and kind_hint == "cookie":
             header_name = "Cookie"
-        header_map.update(_normalize_headers({header_name or "Authorization": header_value}))
-    elif header_name and current.get("header_value"):
-        header_map.update(_normalize_headers({header_name: str(current.get("header_value"))}))
-    header_name_value, header_value_value = _primary_header(header_map)
-    kind_value = _infer_session_kind(kind, header_map)
-    if kind_value not in SESSION_KINDS:
-        raise ValueError(f"unknown session kind: {kind_value}. Allowed: {', '.join(sorted(SESSION_KINDS))}")
-    ts = now_utc()
-    state["sessions"][session_id] = {
-        "actor": actor_id,
-        "kind": kind_value,
-        "header_name": header_name_value,
-        "header_value": header_value_value,
-        "headers": header_map,
-        "source": str(source or current.get("source", "manual") or "manual"),
-        "validity": str(validity or current.get("validity", "unknown") or "unknown"),
-        "last_checked": current.get("last_checked", ""),
-        "notes": str(notes or current.get("notes", "") or ""),
-        "created_at": current.get("created_at") or ts,
-        "last_seen": ts,
-    }
-    save_case_state(repo_root, target, state)
-    return state["sessions"][session_id]
+        header_map.update(_normalize_headers(headers))
+        if header_value:
+            if not header_name and kind_hint == "bearer":
+                header_name = "Authorization"
+            if not header_name and kind_hint == "cookie":
+                header_name = "Cookie"
+            header_map.update(_normalize_headers({header_name or "Authorization": header_value}))
+        elif header_name and current.get("header_value"):
+            header_map.update(_normalize_headers({header_name: str(current.get("header_value"))}))
+        header_name_value, header_value_value = _primary_header(header_map)
+        kind_value = _infer_session_kind(kind, header_map)
+        if kind_value not in SESSION_KINDS:
+            raise ValueError(f"unknown session kind: {kind_value}. Allowed: {', '.join(sorted(SESSION_KINDS))}")
+        ts = now_utc()
+        state["sessions"][session_id] = {
+            "actor": actor_id,
+            "kind": kind_value,
+            "header_name": header_name_value,
+            "header_value": header_value_value,
+            "headers": header_map,
+            "source": str(source or current.get("source", "manual") or "manual"),
+            "validity": str(validity or current.get("validity", "unknown") or "unknown"),
+            "last_checked": current.get("last_checked", ""),
+            "notes": str(notes or current.get("notes", "") or ""),
+            "created_at": current.get("created_at") or ts,
+            "last_seen": ts,
+        }
+        return state["sessions"][session_id]
+    return _mutate_case_state(repo_root, target, mutate)
 
 
 def add_object(
@@ -319,25 +420,26 @@ def add_object(
     status: str = "active",
     notes: str = "",
 ) -> dict[str, Any]:
-    state = load_case_state(repo_root, target)
     ref = _require_non_empty(object_ref, "object")
-    if owner_actor and owner_actor not in state["actors"]:
-        raise ValueError(f"owner actor does not exist: {owner_actor}")
-    ts = now_utc()
-    current = state["objects"].get(ref, {})
-    state["objects"][ref] = {
-        "type": _require_non_empty(object_type, "type"),
-        "object_id": str(object_id or current.get("object_id", "") or ""),
-        "owner_actor": str(owner_actor or current.get("owner_actor", "") or ""),
-        "endpoint": str(endpoint or current.get("endpoint", "") or ""),
-        "private_marker": str(private_marker or current.get("private_marker", "") or ""),
-        "status": str(status or current.get("status", "active") or "active"),
-        "notes": str(notes or current.get("notes", "") or ""),
-        "created_at": current.get("created_at") or ts,
-        "last_seen": ts,
-    }
-    save_case_state(repo_root, target, state)
-    return state["objects"][ref]
+    type_value = _require_non_empty(object_type, "type")
+    def mutate(state):
+        if owner_actor and owner_actor not in state["actors"]:
+            raise ValueError(f"owner actor does not exist: {owner_actor}")
+        ts = now_utc()
+        current = state["objects"].get(ref, {})
+        state["objects"][ref] = {
+            "type": type_value,
+            "object_id": str(object_id or current.get("object_id", "") or ""),
+            "owner_actor": str(owner_actor or current.get("owner_actor", "") or ""),
+            "endpoint": str(endpoint or current.get("endpoint", "") or ""),
+            "private_marker": str(private_marker or current.get("private_marker", "") or ""),
+            "status": str(status or current.get("status", "active") or "active"),
+            "notes": str(notes or current.get("notes", "") or ""),
+            "created_at": current.get("created_at") or ts,
+            "last_seen": ts,
+        }
+        return state["objects"][ref]
+    return _mutate_case_state(repo_root, target, mutate)
 
 
 def add_hypothesis(
@@ -353,27 +455,28 @@ def add_hypothesis(
     status: str = "open",
     hypothesis_id: str = "",
 ) -> dict[str, Any]:
-    state = load_case_state(repo_root, target)
     actors = actors or []
-    for actor in actors:
-        if actor not in state["actors"]:
-            raise ValueError(f"actor does not exist: {actor}")
-    if object_ref and object_ref not in state["objects"]:
-        raise ValueError(f"object_ref does not exist: {object_ref}")
-    record = {
-        "id": hypothesis_id or _next_id(state["hypotheses"], "hyp_"),
-        "vuln_class": _require_non_empty(vuln_class, "vuln_class"),
-        "endpoint": str(endpoint or ""),
-        "object_ref": str(object_ref or ""),
-        "actors": list(actors),
-        "status": str(status or "open"),
-        "why_now": str(why_now or ""),
-        "next_action": str(next_action or ""),
-        "created_at": now_utc(),
-    }
-    state["hypotheses"].append(record)
-    save_case_state(repo_root, target, state)
-    return record
+    vuln_class_value = _require_non_empty(vuln_class, "vuln_class")
+    def mutate(state):
+        for actor in actors:
+            if actor not in state["actors"]:
+                raise ValueError(f"actor does not exist: {actor}")
+        if object_ref and object_ref not in state["objects"]:
+            raise ValueError(f"object_ref does not exist: {object_ref}")
+        record = {
+            "id": hypothesis_id or _next_id(state["hypotheses"], "hyp_"),
+            "vuln_class": vuln_class_value,
+            "endpoint": str(endpoint or ""),
+            "object_ref": str(object_ref or ""),
+            "actors": list(actors),
+            "status": str(status or "open"),
+            "why_now": str(why_now or ""),
+            "next_action": str(next_action or ""),
+            "created_at": now_utc(),
+        }
+        state["hypotheses"].append(record)
+        return record
+    return _mutate_case_state(repo_root, target, mutate)
 
 
 def add_backlog(
@@ -392,32 +495,33 @@ def add_backlog(
     status: str = "pending",
     backlog_id: str = "",
 ) -> dict[str, Any]:
-    state = load_case_state(repo_root, target)
-    for actor in (owner_actor, peer_actor):
-        if actor and actor not in state["actors"]:
-            raise ValueError(f"actor does not exist: {actor}")
-    if object_ref and object_ref not in state["objects"]:
-        raise ValueError(f"object_ref does not exist: {object_ref}")
     status_value = str(status or "pending")
     if status_value not in BACKLOG_STATUSES:
         raise ValueError(f"unknown backlog status: {status_value}")
-    record = {
-        "id": backlog_id or _next_id(state["validation_backlog"], "val_"),
-        "runner": _require_non_empty(runner, "runner"),
-        "endpoint": str(endpoint or ""),
-        "owner_actor": str(owner_actor or ""),
-        "peer_actor": str(peer_actor or ""),
-        "object_ref": str(object_ref or ""),
-        "status": status_value,
-        "priority": str(priority or "medium"),
-        "required_evidence": list(required_evidence or []),
-        "stop_condition": str(stop_condition or ""),
-        "chain_extensions_if_blocked": list(chain_extensions_if_blocked or []),
-        "created_at": now_utc(),
-    }
-    state["validation_backlog"].append(record)
-    save_case_state(repo_root, target, state)
-    return record
+    runner_value = _require_non_empty(runner, "runner")
+    def mutate(state):
+        for actor in (owner_actor, peer_actor):
+            if actor and actor not in state["actors"]:
+                raise ValueError(f"actor does not exist: {actor}")
+        if object_ref and object_ref not in state["objects"]:
+            raise ValueError(f"object_ref does not exist: {object_ref}")
+        record = {
+            "id": backlog_id or _next_id(state["validation_backlog"], "val_"),
+            "runner": runner_value,
+            "endpoint": str(endpoint or ""),
+            "owner_actor": str(owner_actor or ""),
+            "peer_actor": str(peer_actor or ""),
+            "object_ref": str(object_ref or ""),
+            "status": status_value,
+            "priority": str(priority or "medium"),
+            "required_evidence": list(required_evidence or []),
+            "stop_condition": str(stop_condition or ""),
+            "chain_extensions_if_blocked": list(chain_extensions_if_blocked or []),
+            "created_at": now_utc(),
+        }
+        state["validation_backlog"].append(record)
+        return record
+    return _mutate_case_state(repo_root, target, mutate)
 
 
 def _session_for_actor(state: dict[str, Any], actor: str) -> tuple[str, dict[str, Any]] | tuple[None, None]:
@@ -669,16 +773,16 @@ def complete_backlog(
 ) -> dict[str, Any]:
     if result not in BACKLOG_STATUSES:
         raise ValueError(f"unknown result/status: {result}")
-    state = load_case_state(repo_root, target)
-    for item in state.get("validation_backlog", []):
-        if item.get("id") == backlog_id:
-            item["status"] = result
-            item["evidence_ref"] = str(evidence_ref or item.get("evidence_ref", "") or "")
-            item["notes"] = str(notes or item.get("notes", "") or "")
-            item["completed_at"] = now_utc()
-            save_case_state(repo_root, target, state)
-            return item
-    raise ValueError(f"backlog id not found: {backlog_id}")
+    def mutate(state):
+        for item in state.get("validation_backlog", []):
+            if item.get("id") == backlog_id:
+                item["status"] = result
+                item["evidence_ref"] = str(evidence_ref or item.get("evidence_ref", "") or "")
+                item["notes"] = str(notes or item.get("notes", "") or "")
+                item["completed_at"] = now_utc()
+                return item
+        raise ValueError(f"backlog id not found: {backlog_id}")
+    return _mutate_case_state(repo_root, target, mutate)
 
 
 def summary(repo_root: str | Path, target: str) -> dict[str, Any]:
@@ -701,7 +805,19 @@ def summary(repo_root: str | Path, target: str) -> dict[str, Any]:
 
 
 def _print_json(payload: Any) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    def redact(value: Any, key: str = "") -> Any:
+        normalized = key.lower().replace("-", "_")
+        if normalized in {"header_value", "cookie", "bearer", "api_key", "private_marker"}:
+            return "<redacted>" if value not in (None, "") else value
+        if normalized == "headers" and isinstance(value, dict):
+            return {str(name): "<redacted>" for name in value}
+        if isinstance(value, dict):
+            return {str(name): redact(item, str(name)) for name, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item, key) for item in value]
+        return value
+
+    print(json.dumps(redact(payload), ensure_ascii=False, indent=2, sort_keys=True))
 
 
 def _print_summary(payload: dict[str, Any]) -> None:
@@ -811,6 +927,7 @@ def _run_command(argv: list[str] | None = None) -> int:
         _print_json(add_actor(repo_root, args.target, actor=args.actor, role=args.role, label=args.label, notes=args.notes))
     elif args.cmd == "add-session":
         imported_headers = AuthSession.from_sources(
+            env={},
             file=args.auth_file or None,
             headers=args.header,
             cookie=args.cookie or None,

@@ -564,6 +564,94 @@ class TestSurfaceRanking:
         for item in ranked["p1"] + ranked["p2"]:
             assert all(part["source"] != "recon_exposure" for part in item.get("score_breakdown", []))
 
+    def test_openapi_semantics_becomes_one_soft_workflow_lead(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "exposure").mkdir(parents=True)
+        (recon_dir / "api_specs").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [FastAPI] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/users\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        (recon_dir / "exposure" / "api_doc_candidates.txt").write_text(
+            "https://api.target.com/openapi.json\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "api_specs" / "spec_urls.txt").write_text(
+            "https://api.target.com/openapi.json\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "api_specs" / "operations.jsonl").write_text(
+            '{"method":"GET","url":"https://api.target.com/users"}\n',
+            encoding="utf-8",
+        )
+        (recon_dir / "api_specs" / "public_operations.txt").write_text(
+            "GET\thttps://api.target.com/health\texplicit_public\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "api_specs" / "auth_boundary_candidates.jsonl").write_text(
+            '{"method":"GET","url":"https://api.target.com/users"}\n',
+            encoding="utf-8",
+        )
+        (recon_dir / "api_specs" / "platform_metadata.jsonl").write_text(
+            '{"kind":"oauth_authorization_server"}\n',
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
+        output = format_surface_output(ranked, "target.com")
+        workflow_leads = [
+            json.loads(item) if isinstance(item, str) else item
+            for item in ranked["workflow_leads"]
+        ]
+        semantic_leads = [item for item in workflow_leads if item["category"] == "openapi-semantics"]
+
+        assert len(semantic_leads) == 1
+        assert semantic_leads[0]["priority"] == "high"
+        assert "anonymous baseline plus controlled authentication" in semantic_leads[0]["next_action"]
+        assert not any(item["category"] == "api-docs" for item in workflow_leads)
+        assert "[high] openapi-semantics" in output
+        for item in ranked["p1"] + ranked["p2"]:
+            assert all(part["source"] != "recon_exposure" for part in item.get("score_breakdown", []))
+
+    def test_platform_metadata_only_lead_points_to_nonempty_artifact(self, tmp_path):
+        recon_dir = tmp_path / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "api_specs").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://target.com [200] [App] [nginx] [100]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text("", encoding="utf-8")
+        (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        (recon_dir / "api_specs" / "platform_metadata.jsonl").write_text(
+            '{"kind":"oauth_authorization_server"}\n',
+            encoding="utf-8",
+        )
+
+        ranked = rank_surface(load_surface_context(tmp_path, "target.com", memory_dir=tmp_path / "hunt-memory"))
+        lead = next(
+            json.loads(item) if isinstance(item, str) else item
+            for item in ranked["workflow_leads"]
+            if (json.loads(item) if isinstance(item, str) else item)["category"] == "openapi-semantics"
+        )
+
+        assert lead["priority"] == "medium"
+        assert lead["artifact"] == "recon/target.com/api_specs/platform_metadata.jsonl"
+        assert "advertised authorization servers" in lead["next_action"]
+
     def test_unsafe_skipped_artifact_becomes_workflow_lead(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"

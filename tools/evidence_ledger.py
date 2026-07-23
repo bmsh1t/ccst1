@@ -239,7 +239,7 @@ def record_entry(
     result: str = "lead",
     browser_observed: bool = False,
     replayed: bool = False,
-    state_changing: bool = False,
+    state_changing: bool | None = False,
     redline_checked: bool = False,
     evidence_ref: str = "",
     notes: str = "",
@@ -269,7 +269,11 @@ def record_entry(
         "result": normalized_result,
         "browser_observed": bool(browser_observed),
         "replayed": bool(replayed),
-        "state_changing": bool(state_changing or method_u not in SAFE_METHODS),
+        "state_changing": (
+            None
+            if state_changing is None
+            else bool(state_changing or method_u not in SAFE_METHODS)
+        ),
         "redline_checked": bool(redline_checked),
         "evidence_ref": str(evidence_ref or "").strip(),
         "notes": str(notes or "").strip(),

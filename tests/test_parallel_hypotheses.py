@@ -54,9 +54,10 @@ class TestPerWorkerScratch:
             repo_root=repo,
             auto_start=False,
         )
-        # Per B12a R2: evidence/<target>/workers/hypothesis-<slot>/
+        # Per B12a R2: evidence/<target>/workers/hypothesis-<slot>-<run-id>/
         rel = Path(h.scratch_dir).relative_to(repo)
-        assert rel.parts == ("evidence", "x.com", "workers", "hypothesis-h1")
+        assert rel.parts[:3] == ("evidence", "x.com", "workers")
+        assert rel.parts[3].startswith("hypothesis-h1-")
         # hypothesis.md exists
         assert (Path(h.scratch_dir) / "hypothesis.md").exists()
         # Standard B6 layout files

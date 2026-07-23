@@ -16,6 +16,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:
     from action_queue import ACTIVE_STATUSES, load_queue, resolve_action
@@ -40,10 +41,44 @@ REPORTS_DIR = os.path.join(BASE_DIR, "reports")
 
 def _report_action_matches(action, finding, report_file):
     """Return whether an active queue item represents this generated report."""
+    return _report_action_match_kind(action, finding, report_file) is not None
+
+
+def _legacy_token_match(token: str, haystack: str) -> bool:
+    if not token:
+        return False
+    return re.search(rf"(?<![A-Za-z0-9_-]){re.escape(token)}(?![A-Za-z0-9_-])", haystack) is not None
+
+
+def _endpoint_identity(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme and parsed.netloc:
+        path = parsed.path or "/"
+        return f"{path}?{parsed.query}" if parsed.query else path
+    return raw
+
+
+def _report_action_match_kind(action, finding, report_file):
+    """Return exact/legacy match rank; never infer identity from a loose substring."""
     finding_id = str(finding.get("id") or "").strip()
     url = str(finding.get("url") or "").strip()
     report_file = str(report_file or "").strip()
     metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    exact_finding = {
+        str(action.get("id") or "").strip(),
+        str(action.get("source_id") or "").strip(),
+        str(metadata.get("finding_id") or "").strip(),
+    }
+    if finding_id and finding_id in exact_finding:
+        return "exact_finding"
+    if report_file and str(metadata.get("report_file") or "").strip() == report_file:
+        return "exact_report_file"
+    metadata_endpoint = str(metadata.get("url") or metadata.get("endpoint") or "").strip()
+    if url and metadata_endpoint and _endpoint_identity(metadata_endpoint) == _endpoint_identity(url):
+        return "exact_endpoint"
     haystack = " ".join(
         str(value or "")
         for value in (
@@ -56,14 +91,18 @@ def _report_action_matches(action, finding, report_file):
             action.get("command_hint"),
             metadata.get("finding_id"),
             metadata.get("url"),
+            metadata.get("endpoint"),
             metadata.get("report_file"),
         )
     )
-    if finding_id and finding_id in haystack:
-        return True
+    if finding_id and _legacy_token_match(finding_id, haystack):
+        return "legacy_finding"
     if str(action.get("type") or "").lower() == "report":
-        return bool((url and url in haystack) or (report_file and report_file in haystack))
-    return False
+        if report_file and _legacy_token_match(report_file, haystack):
+            return "legacy_report_file"
+        if url and _legacy_token_match(url, haystack):
+            return "legacy_endpoint"
+    return None
 
 
 def sync_report_action_queue(target_name, finding, report_file):
@@ -71,17 +110,34 @@ def sync_report_action_queue(target_name, finding, report_file):
     try:
         repo_root = Path(BASE_DIR)
         queue = load_queue(repo_root, str(target_name or ""))
-        matched = None
+        matches = []
         for action in queue.get("actions", []):
             if not isinstance(action, dict):
                 continue
             if str(action.get("status") or "queued") not in ACTIVE_STATUSES:
                 continue
-            if _report_action_matches(action, finding, report_file):
-                matched = action
-                break
-        if not matched:
+            kind = _report_action_match_kind(action, finding, report_file)
+            if kind:
+                matches.append((kind, action))
+        if not matches:
             return {"status": "skipped", "reason": "no matching active report action"}
+        rank = {
+            "exact_finding": 0,
+            "exact_report_file": 1,
+            "exact_endpoint": 2,
+            "legacy_finding": 3,
+            "legacy_report_file": 4,
+            "legacy_endpoint": 5,
+        }
+        best_rank = min(rank[kind] for kind, _action in matches)
+        best = [(kind, action) for kind, action in matches if rank[kind] == best_rank]
+        if len(best) != 1:
+            return {
+                "status": "ambiguous",
+                "reason": "multiple report actions match the same identity",
+                "ids": [str(action.get("id") or "") for _kind, action in best],
+            }
+        match_kind, matched = best[0]
         resolved = resolve_action(
             repo_root,
             target=str(target_name or ""),
@@ -94,6 +150,7 @@ def sync_report_action_queue(target_name, finding, report_file):
             "status": "updated",
             "id": resolved.get("id", ""),
             "action_status": resolved.get("status", ""),
+            "match_kind": match_kind,
         }
     except Exception as exc:  # pragma: no cover - queue sync must not block reports
         return {"status": "error", "error": str(exc)}
@@ -956,6 +1013,7 @@ def _is_reportable_structured_finding(
     *,
     findings_dir: str | os.PathLike | None = None,
     target: str | None = None,
+    allow_legacy_draft: bool = False,
 ):
     """Return whether a structured finding should enter auto-report generation."""
     if not isinstance(finding, dict) or not finding.get("url"):
@@ -964,28 +1022,24 @@ def _is_reportable_structured_finding(
     validation_status = str(finding.get("validation_status", "") or "").strip().lower()
     report_status = str(finding.get("report_status", "") or "").strip().lower()
 
-    # Backward compatibility: older structured findings may not carry validation
-    # state yet; keep them reportable instead of breaking historical workflows.
-    if validation_status and validation_status != "validated":
+    if validation_status != "validated":
+        return bool(allow_legacy_draft and not validation_status and report_status != "generated")
+    if report_status == "generated":
         return False
-    if validation_status == "validated":
-        # A direct JSON edit is not enough to enter report generation.  The
-        # report writer is a lifecycle consumer, so require the same owner
-        # provenance that runtime state and checkpoint use.
-        if not findings_dir:
-            return False
-        provenance = verify_finalized_finding_owner_provenance(
-            findings_dir,
-            finding,
-            target=target,
-        )
-        if not provenance.get("valid"):
-            return False
+    # A direct JSON edit is not enough to enter report generation.  The
+    # report writer is a lifecycle consumer, so require the same owner
+    # provenance that runtime state and checkpoint use.
+    if not findings_dir:
+        return False
+    provenance = verify_finalized_finding_owner_provenance(
+        findings_dir,
+        finding,
+        target=target,
+    )
+    if not provenance.get("valid"):
+        return False
     validation = _load_validation_summary(finding)
     if _validation_summary_is_report_ready(finding, validation) is False:
-        return False
-
-    if report_status == "generated":
         return False
 
     return True
@@ -1082,7 +1136,7 @@ def _create_or_reuse_report(report_file, report_content, finding):
         raise
 
 
-def process_findings_dir(findings_dir):
+def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
     """Process all findings in a directory and generate reports."""
     structured_index = load_finding_index(findings_dir)
     target_name = _report_target_name(structured_index, findings_dir)
@@ -1132,6 +1186,7 @@ def process_findings_dir(findings_dir):
                 finding,
                 findings_dir=findings_dir,
                 target=provenance_target,
+                allow_legacy_draft=allow_legacy_drafts,
             )
         ]
         for finding in reportable_findings:
@@ -1156,7 +1211,8 @@ def process_findings_dir(findings_dir):
                     occupied_report_ids[report_id] = ""
             occupied_report_ids[report_id] = str(finding.get("id") or "")
 
-            if finding.get("id"):
+            legacy_draft = not str(finding.get("validation_status") or "").strip()
+            if finding.get("id") and not legacy_draft:
                 update_finding_status(
                     findings_dir,
                     finding.get("id", ""),
@@ -1164,7 +1220,11 @@ def process_findings_dir(findings_dir):
                     report_file=report_file,
                     report_id=report_id,
                 )
-            queue_sync = sync_report_action_queue(target_name, finding, report_file)
+            queue_sync = (
+                {"status": "skipped", "reason": "legacy compatibility draft"}
+                if legacy_draft
+                else sync_report_action_queue(target_name, finding, report_file)
+            )
 
             total_reports += 1
             report_index.append({
@@ -1178,8 +1238,12 @@ def process_findings_dir(findings_dir):
                 "source_file": finding.get("source_file", ""),
                 "confidence": finding.get("confidence", ""),
                 "queue_sync": queue_sync,
+                "canonical_lifecycle": not legacy_draft,
             })
 
+        return write_report_index(report_dir, target_name, total_reports, report_index)
+
+    if not allow_legacy_drafts:
         return write_report_index(report_dir, target_name, total_reports, report_index)
 
     occupied_report_ids = _occupied_report_ids([], report_dir)
@@ -1395,6 +1459,11 @@ def main():
     parser.add_argument("--param", type=str, help="Affected parameter (for manual reports)")
     parser.add_argument("--evidence", type=str, help="Evidence/PoC text (for manual reports)")
     parser.add_argument("--poc-images", type=str, nargs="+", help="PoC screenshot PNG files to attach")
+    parser.add_argument(
+        "--allow-legacy-drafts",
+        action="store_true",
+        help="Generate non-canonical drafts from statusless structured or raw legacy findings",
+    )
     args = parser.parse_args()
 
     print("=============================================")
@@ -1422,7 +1491,10 @@ def main():
         print(f"[-] Not a directory: {args.findings_dir}")
         sys.exit(1)
 
-    total, index = process_findings_dir(args.findings_dir)
+    total, index = process_findings_dir(
+        args.findings_dir,
+        allow_legacy_drafts=args.allow_legacy_drafts,
+    )
 
     print(f"\n[+] Generated {total} reports")
     if index:
