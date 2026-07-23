@@ -328,6 +328,18 @@ capabilities:
       - dependency-confusion
       - public-registry
       - sbom
+  - id: public-package-artifact-intelligence
+    kind: card
+    file: knowledge/cards/public-package-artifact-intelligence.md
+    layer: reference
+    load: signal-only
+    purpose: route
+    triggers:
+      - package-registry
+      - package-history
+      - published-artifact
+      - container-image
+      - historical-release
   - id: cloud-control-plane-pivots
     kind: card
     file: knowledge/cards/cloud-control-plane-pivots.md

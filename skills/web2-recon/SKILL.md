@@ -234,6 +234,22 @@ python3 ~/tools/LinkFinder/linkfinder.py -i "https://target.com" -d -o cli
 deactivate
 ```
 
+### 可选：公开包与历史发布物
+
+只在官方源码/文档、lockfile/SBOM、JS、镜像引用或已有 package namespace 信号出现时启用；它不是每个目标默认必跑的 Recon 步骤。先确认 namespace、package/image 与目标的直接归属，名字相似或普通第三方依赖不足以触发。
+
+在本轮 timebox 内只选择少量代表发布物，例如首版、上一个 major、迁移前后版本和最新版。对每个样本保存生态、包名/镜像名、版本或 tag、发布时间、来源 URL、digest/SHA-256 和扫描范围。归档只解压并静态审查，不安装包、不执行 lifecycle script、不运行镜像、不发布或接管 namespace。
+
+本地已解压目录复用现有 Source Hunt：
+
+```bash
+python3 tools/source_hunt.py --target TARGET --repo-path /path/to/extracted-artifact
+```
+
+输出只作为现有 Lead/Candidate 的补充证据：记录证据路径、最小脱敏片段、归属依据、价值、下一步和停止条件。真实 secret 值只进入现有 triage；dependency confusion 仍要求实际依赖、public fallback 和 namespace 状态三项证据。公开包版本不代表目标已部署，只有目标侧直接观测到精确组件/版本后才交给 `/intel`。
+
+达到代表版本范围、来源无法确认、结果仅重复低信号文件或下一步需要执行未知代码时停止。详细判断门见 `knowledge/cards/public-package-artifact-intelligence.md`。
+
 ### Missing Parameter Signal / Target-Specific Params
 
 当任意页面、接口、历史记录、source、schema、浏览器流量或静态资源显示

@@ -186,6 +186,11 @@ KNOWN_SKILL_OR_FOCUS = {
     "kubelet",
     "rbac",
     "dependency-confusion",
+    "package-registry",
+    "package-history",
+    "published-artifact",
+    "container-image",
+    "historical-release",
     "information-disclosure",
     "info-disclosure",
     "web-llm",
@@ -410,6 +415,17 @@ RATE_LIMIT_REGIME_RE = re.compile(
     re.I,
 )
 
+PUBLIC_PACKAGE_ARTIFACT_RE = re.compile(
+    r"\b(?:package[-_ ]?registry|package[-_ ]?history|published[-_ ]?(?:package|artifact)|"
+    r"registry[-_ ]?artifact|historical[-_ ]?release|container[-_ ]?image[-_ ]?history|"
+    r"historical[-_ ]?container[-_ ]?image)\b"
+    r"|\b(?:npm|pypi|rubygems|nuget|maven|packagist|crates\.io|docker[-_ ]?hub|ghcr)\b"
+    r"[\s\S]{0,120}\b(?:package|registry|release|version|tarball|wheel|image|layer)\b"
+    r"|\b(?:package|registry|release|version|tarball|wheel|image|layer)\b"
+    r"[\s\S]{0,120}\b(?:npm|pypi|rubygems|nuget|maven|packagist|crates\.io|docker[-_ ]?hub|ghcr)\b",
+    re.I,
+)
+
 CARD_PATHS = load_card_paths(BASE_DIR)
 
 
@@ -483,6 +499,7 @@ REFERENCE_PATHS = {
 DISTILLED_TOKEN_TO_CARDS = (
     (ODATA_BOUNDARY_RE, ("odata-query-boundaries",)),
     (LDAP_XPATH_BOUNDARY_RE, ("ldap-xpath-query-boundaries",)),
+    (PUBLIC_PACKAGE_ARTIFACT_RE, ("public-package-artifact-intelligence",)),
     (NEXTJS_IMAGE_RE, ("ssrf-url-fetch",)),
     (NEXTJS_DATA_RE, ("api-idor", "information-disclosure-source-config")),
     (ACTUATOR_MANAGEMENT_RE, ("path-pattern-management-exposure", "information-disclosure-source-config")),
@@ -1132,6 +1149,8 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
         return "triage-validation", "已有 candidate / validation 信号，本轮优先把候选证据过验证门。"
     if "web2-recon" in focus_l or "recon" == focus_l.strip():
         return "web2-recon", "用户 focus 指向 recon，需要先补攻击面输入再进入漏洞验证。"
+    if PUBLIC_PACKAGE_ARTIFACT_RE.search(focus) or PUBLIC_PACKAGE_ARTIFACT_RE.search(blob):
+        return "web2-recon", "公开包或历史发布物信号明确，先走有界 Recon 情报分支。"
     if "web2-vuln-classes" in focus_l:
         return "web2-vuln-classes", "用户 focus 指向 Web2 漏洞类别验证。"
     if WEB2_VULN_FOCUS_RE.search(focus_l) or _has_web_llm_agent_signal(focus):
@@ -1842,6 +1861,8 @@ def _select_cards_and_deferred(
             cards = focus_cards[:2]
         elif skill == "web2-vuln-classes" and len(cards) >= 2:
             cards = cards[:2]
+        elif len(focus_cards) >= 2:
+            cards = focus_cards[:2]
         else:
             cards = _dedupe((cards[:1] if cards else []) + ["coverage-prompts"])
     candidate_paths = [CARD_PATHS[name] for name in _dedupe(cards) if name in CARD_PATHS]
@@ -2131,6 +2152,12 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "配置/日志和 dummy marker 优先于执行未知 workflow；id-token、self-hosted runner 或未固定 action 只是信号，必须证明不可信输入到达高权限下游。",
             "Dependency confusion 只有 public registry 状态、目标构建实际依赖和 resolver public fallback 三项齐全时才是 Candidate；404 单独保持 Lead。",
             "可从 JS/lockfile/build log、Docker/GHCR image layer、SPDX/CycloneDX SBOM 交叉确认 package/version，但仍需独立证明 fallback。",
+        ])
+    if CARD_PATHS.get("public-package-artifact-intelligence") in cards:
+        seeds.extend([
+            "公开包/镜像先用官方链接、publisher、仓库 metadata 或目标直接引用确认归属；同名包、相似组织名和第三方依赖只算弱信号。",
+            "历史发布物只选首版、上一个 major、迁移边界和最新版等代表样本，记录来源、版本、发布时间与 digest/SHA-256；仅解压做静态审查，不安装、执行 lifecycle script 或运行镜像。",
+            "公开包版本只形成 Candidate 线索；必须在真实目标直接观测到精确组件/版本后才交给 /intel，静态 secret 命中继续走现有 triage。",
         ])
     if CARD_PATHS.get("cloud-control-plane-pivots") in cards:
         seeds.extend([

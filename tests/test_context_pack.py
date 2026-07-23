@@ -1338,3 +1338,47 @@ def test_distilled_knowledge_cards_route_from_explicit_focus_without_recon(tmp_p
     for focus, expected_card in cases:
         pack = build_context_pack(tmp_path, target="target.com", focus=focus)
         assert pack["knowledge_cards"][0] == expected_card
+
+
+def test_public_package_history_routes_to_bounded_recon_intelligence(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="npm package history published artifact",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-recon/SKILL.md"
+    assert "knowledge/cards/public-package-artifact-intelligence.md" in pack["knowledge_cards"]
+    assert any("digest/SHA-256" in seed and "不安装" in seed for seed in pack["hypothesis_seeds"])
+    assert any("真实目标" in seed and "/intel" in seed for seed in pack["hypothesis_seeds"])
+
+
+def test_container_image_history_routes_to_public_artifact_card(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="GHCR container image history and layer versions",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-recon/SKILL.md"
+    assert "knowledge/cards/public-package-artifact-intelligence.md" in pack["knowledge_cards"]
+
+
+def test_dependency_confusion_keeps_ci_cd_and_artifact_cards(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="dependency confusion npm public registry package history",
+    )
+
+    all_cards = pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+    assert "knowledge/cards/public-package-artifact-intelligence.md" in all_cards
+    assert "knowledge/cards/cicd-trust-boundaries.md" in all_cards
+
+
+def test_bare_package_build_and_image_do_not_route_to_public_artifact_card(tmp_path):
+    for focus in ("package", "build", "image"):
+        pack = build_context_pack(tmp_path, target="target.com", focus=focus)
+        all_cards = pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+
+        assert "knowledge/cards/public-package-artifact-intelligence.md" not in all_cards
