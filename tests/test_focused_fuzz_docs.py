@@ -73,3 +73,34 @@ def test_autopilot_entries_keep_focused_fuzz_ai_selected_and_non_automatic():
         assert "recon/<target_key>/focused_fuzz/<run_id>/" in normalized
         assert "target_memory.py lead/dead-end" in normalized
         assert "never auto-expand surface, queue, or coverage" in normalized
+        assert "same-target seeds expose a naming dialect" in normalized
+        assert "random-miss response groups" in normalized
+        assert "next bounded round" in normalized
+        assert "route existence remains a signal, not a vulnerability candidate" in normalized
+
+
+def test_target_dialect_is_evidence_linked_bounded_and_feedback_driven():
+    skill = _read("skills/web2-recon/SKILL.md")
+    card = _read("knowledge/cards/path-pattern-management-exposure.md")
+    combined = skill + "\n" + card
+    normalized_skill = " ".join(skill.split())
+
+    for marker in (
+        "seed_refs",
+        "transformation",
+        "rationale",
+        "auth_context",
+        "naming_profile.json",
+        "candidates.jsonl",
+        "随机 miss",
+        "405/`Allow`",
+        "SPA/soft-404",
+        "登录跳转",
+        "WAF",
+        "不设置全局轮数上限",
+    ):
+        assert marker in combined
+
+    assert "模型自报数字置信度" in combined
+    assert "路由差异只形成 Signal" in skill
+    assert "不拥有 finding、Surface、queue、coverage 或 target-memory 状态" in normalized_skill

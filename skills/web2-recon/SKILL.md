@@ -267,12 +267,53 @@ Focused fuzz 是 AI 显式选择的 discovery action。仅当 browser/JS/source/
 GraphQL/recon/history 已支持一个具体 URL 或 request template，且它比当前 replay、authz、
 object、workflow 等路线更有价值时执行。每次运行前必须由 AI：
 
-1. 从真实路径分段、参数、API 名词/动词、XHR、source route、schema 和 sibling 命名规律
-   生成有界、去重的 `wordlist.txt`；不得机械合并整份通用大字典。
-2. 绑定一个明确的 `FUZZ` 位置、认证上下文、证据来源、请求率和停止条件；不同 template
+1. 从同一目标的真实路径分段、参数、API 名词/动词、XHR、source route、schema 和 sibling
+   命名规律建立目标命名画像；孤立缩写只保留为假设，不把模型解释当事实。
+2. 为候选绑定 `seed_refs`、`transformation`、`rationale` 和来源强弱；确定性槽位转换与 AI
+   语义扩写分开记录，禁止使用模型自报数字置信度代替证据。
+3. 生成有界、去重的 `wordlist.txt`；不得机械合并整份通用大字典。
+4. 绑定一个明确的 `FUZZ` 位置、认证上下文、证据来源、请求率和停止条件；不同 template
    或认证形态使用不同 run。
-3. 设置随机 miss/control 或显式 matcher/filter 来解释 SPA/WAF/fallback 差异；工具只保存
+5. 设置随机 miss/control 或显式 matcher/filter 来解释 SPA/WAF/fallback 差异；工具只保存
    事实，不替 AI 判断命中价值。
+
+当本轮实际使用目标方言推导时，在现有 run 目录保存两个 run-local 证据附件；它们不拥有
+finding、Surface、queue、coverage 或 target-memory 状态：
+
+`naming_profile.json` 的字段只填写当前证据实际支持的维度：
+
+```json
+{
+  "schema_version": 1,
+  "surface": "path",
+  "template": "https://HOST/api/FUZZ",
+  "method": "<observed-method>",
+  "auth_context": "<anonymous-or-session-label>",
+  "seed_refs": ["<artifact-ref>"],
+  "syntax": {
+    "separators": ["<observed>"],
+    "case_style": ["<observed>"],
+    "slots": ["<observed-slot>"]
+  },
+  "hypotheses": [{
+    "transformation": "<rule>",
+    "seed_refs": ["<ref>"],
+    "evidence_grade": "<same-target-multiple|same-target-single|generic-supplement>",
+    "rationale": "<why-test>"
+  }],
+  "stop_condition": "<condition>"
+}
+```
+
+`auth_context` 只记录匿名/会话标签或证据引用，不保存 token、cookie 或其他凭据值。
+
+```jsonl
+{"schema_version":1,"candidate":"<value>","seed_refs":["<ref>"],"transformation":"<rule>","rationale":"<why-test>","evidence_grade":"<grade>"}
+```
+
+上面是 `candidates.jsonl` 的单行形态；`wordlist.txt` 只是候选去重后的执行投影。候选附件
+不记录 `validated`/finding 状态，完整观察仍以 FFUF raw/summary 为准。没有使用目标方言推导的
+旧 run 或普通 Focused FFUF run 不要求补这两个附件。
 
 每次 focused run 使用隔离目录，不覆盖 baseline，也不写入 `urls/all.txt`、surface、
 action queue 或 coverage：
@@ -280,7 +321,7 @@ action queue 或 coverage：
 ```bash
 RUN_DIR='recon/<target_key>/focused_fuzz/20260710-api-v2-sibling-routes'
 mkdir -p "$RUN_DIR/dirs"
-# 将 AI 从当前证据选择、去重后的有限候选写入 "$RUN_DIR/wordlist.txt"
+# 方言推导时先保存 naming_profile.json/candidates.jsonl，再将去重投影写入 wordlist.txt
 
 set -o pipefail
 if ffuf -u 'https://target.com/api/v2/FUZZ' \
@@ -338,6 +379,13 @@ python3 tools/recon_adapter.py --recon-dir "$RUN_DIR" \
   --read-ffuf --offset 0 --limit 100
 ```
 
+把 ReconAdapter summary 的 status、length、words、lines、content-type、control match、响应
+签名，以及有界 observation 页里的 redirect 作为第一层 Route Oracle。只对少量差异组做同方法、
+同认证语义的重复只读 replay，
+比较普通 404、405/`Allow`、框架错误、SPA/soft-404、登录跳转、统一网关页和 WAF 页面。
+路由差异只形成 Signal；不得因收到 200/401/403/405 就自动晋升 Candidate，也不自动轮询
+可能改变状态的 HTTP 方法。
+
 复核时以结果 URL、响应特征和保存的 `wordlist.txt` 为完整证据链，不单独依赖 raw
 `input.FUZZ`；FFUF 可能对该字段编码，`-ac` 校准值也可能影响它。
 
@@ -352,6 +400,9 @@ python3 tools/target_memory.py dead-end \
   "Focused fuzz scope: <template + evidence>; artifact: $RUN_DIR/dirs/ffuf_results.jsonl.gz; result: <why no useful signal>" \
   --target target.com
 ```
+
+候选与随机 miss 同质时降低对应转换并停止当前轮；稳定的不同错误族、方法差异或同词根多点
+信号可以支持下一轮有界扩写。每轮结束后根据新证据重新决定继续或停止，不设置全局轮数上限。
 
 候选进入具体漏洞验证 lane 后，再按该 lane 的 Evidence Ledger 契约保存 replay 证据。
 

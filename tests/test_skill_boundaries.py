@@ -296,7 +296,8 @@ def test_path_pattern_management_exposure_is_part_of_skill_flow():
     assert "context-pack path-pattern" in methodology
     assert "## 候选形态示例" in card
     assert "manifest.json" in card
-    assert "data/manage-data" in card
+    assert "<service><separator><region><separator><cluster>" in card
+    assert "seed_refs" in card
     assert "不是固定字典" in card
 
 
