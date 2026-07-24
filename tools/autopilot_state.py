@@ -786,6 +786,8 @@ EXPOSURE_SUMMARY_KEYS = (
     "cloud_storage_candidates",
     "s3_bucket_candidates",
     "external_service_hosts",
+    "host_pivot_candidates",
+    "ai_asset_candidates",
     "identity_emails",
     "leaksearch_hits",
     "cloud_enum_hits",
@@ -846,6 +848,14 @@ def _exposure_review_paths(target: str, recon_artifacts: dict) -> list[str]:
     add_if(
         _count_value(counts, "verified_secrets") > 0,
         "exposure/api_leak_trufflehog_verified.jsonl",
+    )
+    add_if(
+        _count_value(counts, "host_pivot_candidates") > 0,
+        "exposure/host_pivot_candidates.jsonl",
+    )
+    add_if(
+        _count_value(counts, "ai_asset_candidates") > 0,
+        "exposure/ai_asset_candidates.jsonl",
     )
     add_if(
         _count_value(counts, "config_exposures") > 0,
@@ -912,6 +922,11 @@ def _format_exposure_signal_lines(target: str, recon_artifacts: dict) -> list[st
         f"emails={_count_value(counts, 'identity_emails')}, "
         f"LeakSearch={_count_value(counts, 'leaksearch_hits')}, "
         f"cloud_enum={_count_value(counts, 'cloud_enum_hits')}"
+    )
+    lines.append(
+        "- Routing candidates: "
+        f"host_pivot={_count_value(counts, 'host_pivot_candidates')}, "
+        f"ai_asset={_count_value(counts, 'ai_asset_candidates')}"
     )
 
     review_paths = _exposure_review_paths(target, recon_artifacts)

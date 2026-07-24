@@ -177,6 +177,7 @@ def _dedupe_key(action: dict) -> str:
         action.get("next_question", ""),
         action.get("action", ""),
         action.get("command_hint", ""),
+        metadata.get("generation", ""),
         metadata.get("endpoint", ""),
         metadata.get("vuln_class", ""),
     ]
@@ -650,6 +651,61 @@ def upsert_actions(queue: dict, actions: list[dict]) -> dict:
     return stats
 
 
+def upsert_generated_action(queue: dict, action: dict) -> dict:
+    """同一生成源只保留一个 queued 动作；新一代证据可越过旧终态。"""
+    source = str(action.get("source") or "")
+    source_id = str(action.get("source_id") or "")
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    generation = str(metadata.get("generation") or "")
+    if not source or not source_id or not generation:
+        return upsert_actions(queue, [action])
+
+    matches = [
+        item
+        for item in queue.get("actions", [])
+        if isinstance(item, dict)
+        and str(item.get("source") or "") == source
+        and str(item.get("source_id") or "") == source_id
+    ]
+    for existing in matches:
+        existing_metadata = (
+            existing.get("metadata")
+            if isinstance(existing.get("metadata"), dict)
+            else {}
+        )
+        if (
+            _is_final_action(existing)
+            and str(existing_metadata.get("generation") or "") == generation
+        ):
+            return {"added": 0, "updated": 0, "skipped_final": 1}
+
+    queued = next(
+        (item for item in matches if str(item.get("status") or "") == "queued"),
+        None,
+    )
+    if queued is not None:
+        preserved = {
+            key: queued.get(key)
+            for key in ("id", "status", "attempts", "created_at", "result", "notes")
+        }
+        queued.clear()
+        queued.update(action)
+        queued.update(
+            {
+                key: value
+                for key, value in preserved.items()
+                if value not in (None, "")
+            }
+        )
+        queued["dedupe_key"] = _dedupe_key(queued)
+        queued["updated_at"] = now_utc()
+        queue["actions"].sort(key=_action_sort_key)
+        queue["updated_at"] = now_utc()
+        return {"added": 0, "updated": 1, "skipped_final": 0}
+
+    return upsert_actions(queue, [action])
+
+
 def _retire_stale_checkpoint_actions(queue: dict, fresh_actions: list[dict]) -> int:
     """Retire queued/running checkpoint TODOs that disappeared from the latest checkpoint.
 
@@ -729,6 +785,9 @@ def add_manual_action(
     priority: int = 50,
     command_hint: str = "",
     evidence_type: str = "manual",
+    source: str = "manual",
+    source_id: str = "",
+    generation: str = "",
     safety: str = "non_destructive",
     stop_condition: str = DEFAULT_STOP_CONDITION,
 ) -> dict:
@@ -741,13 +800,19 @@ def add_manual_action(
         priority=priority,
         command_hint=command_hint,
         evidence_type=evidence_type,
-        source="manual",
+        source=source,
+        source_id=source_id,
         safety=safety,
         stop_condition=stop_condition,
+        metadata={"generation": generation} if generation else None,
     )
     with queue_mutation_lock(repo_root, target):
         queue = load_queue(repo_root, target)
-        stats = upsert_actions(queue, [built])
+        stats = (
+            upsert_generated_action(queue, built)
+            if generation
+            else upsert_actions(queue, [built])
+        )
         path = save_queue(repo_root, target, queue)
     return {"path": str(path), "stats": stats, "queue": queue}
 
@@ -1032,6 +1097,9 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--target", required=True)
     add.add_argument("--type", default="next-action")
     add.add_argument("--evidence-type", default="manual")
+    add.add_argument("--source", default="manual")
+    add.add_argument("--source-id", default="")
+    add.add_argument("--generation", default="")
     add.add_argument("--evidence", required=True)
     add.add_argument("--next-question", required=True)
     add.add_argument("--action", required=True)
@@ -1090,6 +1158,9 @@ def main(argv: list[str] | None = None) -> int:
                 target=args.target,
                 action_type=args.type,
                 evidence_type=args.evidence_type,
+                source=args.source,
+                source_id=args.source_id,
+                generation=args.generation,
                 evidence=args.evidence,
                 next_question=args.next_question,
                 action=args.action,

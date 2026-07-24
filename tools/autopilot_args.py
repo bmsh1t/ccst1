@@ -412,7 +412,9 @@ def parse_autopilot_args(
                 else "normal_finish_condition"
             ),
         },
-        "recon_flags": ["--quick"] if quick else [],
+        # quick 只降低初始 Recon 成本；同时出现 quick+deep 时仍由 quick 控制
+        # Recon，而 deep 继续控制后续 Autopilot 深度。
+        "recon_flags": ["--quick"] if quick else ["--deep"] if deep else [],
         "errors": errors,
     }
 

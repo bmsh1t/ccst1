@@ -75,6 +75,23 @@ def test_sync_dedupes_sources_and_preserves_review_state(tmp_path):
     assert any(item["value"].endswith("/new") for item in refreshed["observations"])
 
 
+def test_sync_merges_subdomain_collector_provenance(tmp_path):
+    recon_dir, _urls = _write_recon(tmp_path, count=1)
+    (recon_dir / "subdomains").mkdir()
+    (recon_dir / "subdomains" / "all.txt").write_text("api.target.com\n", encoding="utf-8")
+    (recon_dir / "subdomains" / "subfinder.txt").write_text("api.target.com\n", encoding="utf-8")
+    (recon_dir / "subdomains" / "crtsh.txt").write_text("api.target.com\n", encoding="utf-8")
+
+    payload = sync_inventory(tmp_path, "target.com")
+    item = next(row for row in payload["observations"] if row["value"] == "api.target.com")
+
+    assert item["sources"] == [
+        "subdomains/all.txt",
+        "subdomains/subfinder.txt",
+        "subdomains/crtsh.txt",
+    ]
+
+
 def test_summary_exposes_stale_and_bounded_neutral_samples(tmp_path):
     _write_recon(tmp_path, count=24)
     payload = sync_inventory(tmp_path, "target.com")

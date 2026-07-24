@@ -217,6 +217,7 @@ def test_empty_claude_placeholder_slots_do_not_count_as_arguments():
 
     assert payload["valid"] is True
     assert payload["argv"] == ["example.test", "--deep"]
+    assert payload["recon_flags"] == ["--deep"]
 
 
 def test_dynamic_command_shell_fallback_is_not_treated_as_target(tmp_path):

@@ -1117,7 +1117,7 @@ def select_targets(top_n=10):
     return []
 
 
-def run_recon(domain, quick=False):
+def run_recon(domain, quick=False, deep=False):
     """Run recon engine on a classified target."""
     target_info = classify_target(domain)
     normalized_target = target_info["target"]
@@ -1136,7 +1136,7 @@ def run_recon(domain, quick=False):
         log("info", f"Target type: {target_info['kind'].upper()} — subdomain enum skipped")
     log("info", f"Running recon on {normalized_target}...")
     script = os.path.join(TOOLS_DIR, "recon_engine.sh")
-    quick_flag = "--quick" if quick else ""
+    recon_flag = "--quick" if quick else "--deep" if deep else "--normal"
 
     # Run with live output
     try:
@@ -1145,12 +1145,12 @@ def run_recon(domain, quick=False):
         child_env["BBHUNT_RUNTIME_PHASE_LOCKED"] = "recon"
         child_env["BBHUNT_RUNTIME_LOCK_TARGET"] = normalized_target
         proc = subprocess.Popen(
-            f'bash "{script}" "{normalized_target}" {quick_flag}',
+            f'bash "{script}" "{normalized_target}" {recon_flag}',
             shell=True, cwd=BASE_DIR, env=child_env, start_new_session=True
         )
-        timeout = 1800
+        timeout = 1800 if quick else 14400 if deep else 7200
         if target_info["kind"] == "list":
-            per_target = 900 if quick else 1800
+            per_target = 900 if quick else 14400 if deep else 7200
             timeout = max(1800, min(43200, per_target * max(list_count, 1)))
         proc.wait(timeout=timeout)
         success = proc.returncode == 0
@@ -2098,6 +2098,7 @@ def _run_classic_enrichment_hints(
 def _hunt_target_impl(
     domain,
     quick=False,
+    deep=False,
     recon_only=False,
     scan_only=False,
     cve_hunt=False,
@@ -2145,7 +2146,10 @@ def _hunt_target_impl(
 
     if not scan_only:
         try:
-            result["recon"] = run_recon(canonical_target, quick=quick)
+            if deep:
+                result["recon"] = run_recon(canonical_target, quick=quick, deep=True)
+            else:
+                result["recon"] = run_recon(canonical_target, quick=quick)
         except Exception:
             if recon_only:
                 # recon phase 已经退出（异常也是退出）。先覆盖 running marker，
@@ -2325,6 +2329,7 @@ def _hunt_target_impl(
 def hunt_target(
     domain,
     quick=False,
+    deep=False,
     recon_only=False,
     scan_only=False,
     cve_hunt=False,
@@ -2361,6 +2366,7 @@ def hunt_target(
         return _hunt_target_impl(
             canonical_target,
             quick=quick,
+            deep=deep,
             recon_only=recon_only,
             scan_only=scan_only,
             cve_hunt=cve_hunt,
@@ -2438,8 +2444,8 @@ Examples:
         action="store_true",
         help=(
             "Deep high-impact mode for the legacy --agent runtime; classic "
-            "recon/scan commands accept it for CLI compatibility but do not "
-            "change scan behavior"
+            "recon runs also execute the full deep-JS path while scanner "
+            "behavior remains unchanged"
         ),
     )
     add_cli_args(parser, include_cookie=False)
@@ -2548,6 +2554,7 @@ Examples:
             result = hunt_target(
                 args.target,
                 quick=args.quick,
+                deep=args.deep,
                 recon_only=args.recon_only,
                 scan_only=args.scan_only,
                 cve_hunt=args.cve_hunt,
@@ -2596,6 +2603,7 @@ Examples:
             result = hunt_target(
                 primary_domain,
                 quick=args.quick,
+                deep=args.deep,
                 scanner_full=args.scanner_full,
                 scanner_skip=args.scanner_skip,
             )

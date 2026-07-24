@@ -106,6 +106,11 @@ def _compact_candidate(item: dict[str, Any]) -> dict[str, Any]:
         "lifecycle_status",
         "provenance_reason",
         "required_action",
+        "source",
+        "category",
+        "artifact",
+        "next_action",
+        "rationale",
     )
     compact = {
         key: item[key]
@@ -240,6 +245,14 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     observation_inventory = state.get("observation_inventory") or {}
     batch = state.get("batch") or {}
     intel_continuation = _compact_intel_continuation(state.get("intel_continuation"))
+    workflow_leads = []
+    for raw in ((state.get("surface") or {}).get("workflow_leads") or [])[:3]:
+        try:
+            item = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            workflow_leads.append(_compact_candidate(item))
 
     compact_batch: dict[str, Any] = {}
     if batch:
@@ -328,6 +341,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             )[:5]
             if isinstance(item, dict)
         ],
+        "workflow_leads": workflow_leads,
     }
 
 

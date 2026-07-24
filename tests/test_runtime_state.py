@@ -351,6 +351,24 @@ def test_inspect_recon_artifacts_reports_ready_cache(tmp_path):
     assert payload["counts"]["api_urls"] == 1
 
 
+def test_normal_recon_js_inventory_is_a_surface_input(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir()
+    (recon_dir / "live" / "httpx_full.txt").write_text("https://target.com\n")
+    (recon_dir / "urls" / "js_files.txt").write_text(
+        "https://target.com/static/app.js\n"
+    )
+
+    exact = inspect_recon_artifacts(tmp_path, "target.com")
+    fast = inspect_recon_artifacts_fast(tmp_path, "target.com")
+
+    assert exact["counts"]["js_files"] == 1
+    assert exact["surface_inputs_ready"] is True
+    assert fast["counts"]["js_files"] is None
+    assert fast["surface_inputs_ready"] is True
+
+
 def test_fast_recon_inspection_uses_stat_presence_without_line_counts(tmp_path, monkeypatch):
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)

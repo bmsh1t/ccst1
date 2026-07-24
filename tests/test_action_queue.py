@@ -526,6 +526,41 @@ def test_resolve_final_action_prevents_readding_same_todo(tmp_path):
     assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "coverage-gap"
 
 
+def test_generated_action_updates_queued_generation_and_reopens_after_final(tmp_path):
+    common = {
+        "target": "target.com",
+        "action_type": "deep-js-review",
+        "evidence": "recon/target.com/js/deep_candidates.txt",
+        "next_question": "Which high-value bundles need review?",
+        "action": "Review bounded deep-JS candidates",
+        "source": "recon",
+        "source_id": "deep-js-review",
+    }
+
+    first = add_manual_action(tmp_path, generation="gen-1", **common)
+    updated = add_manual_action(tmp_path, generation="gen-2", **common)
+    queue = load_queue(tmp_path, "target.com")
+
+    assert first["stats"]["added"] == 1
+    assert updated["stats"]["updated"] == 1
+    assert len(queue["actions"]) == 1
+    assert queue["actions"][0]["metadata"]["generation"] == "gen-2"
+
+    resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=queue["actions"][0]["id"],
+        status="tested",
+        result="Reviewed the selected bundles.",
+    )
+    same = add_manual_action(tmp_path, generation="gen-2", **common)
+    newer = add_manual_action(tmp_path, generation="gen-3", **common)
+
+    assert same["stats"]["skipped_final"] == 1
+    assert newer["stats"]["added"] == 1
+    assert summarize_queue(load_queue(tmp_path, "target.com"))["active"] == 1
+
+
 def test_ingest_checkpoint_retires_stale_checkpoint_queued_actions(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
     refreshed = {

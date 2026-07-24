@@ -30,6 +30,12 @@ Full asset discovery from nothing to a prioritized URL list ready for hunting.
 This skill is the longer playbook for running the pipeline, manual follow-up,
 and prioritization after the first pass.
 
+Profile contract: `/recon` and fresh `/autopilot` use normal Recon by default;
+raw hosts/URLs/JS remain lossless, while deep JS becomes an Action Queue lane.
+`recon_engine.sh TARGET` stays full for direct compatibility, and explicit
+`--deep` restores the complete deep-JS path. Host/SNI and AI/LLM baseline only
+creates evidence-backed candidates; Autopilot decides whether to validate them.
+
 ---
 
 ## CLAUDE CODE CLI TOOL PRIORITY

@@ -95,12 +95,44 @@ def test_run_recon_passes_ip_target_to_subprocess(monkeypatch):
 
     assert hunt.run_recon("1.2.3.4") is True
     assert '"1.2.3.4"' in captured["cmd"]
+    assert "--normal" in captured["cmd"]
     assert captured["shell"] is True
     assert captured["cwd"] == hunt.BASE_DIR
     assert captured["start_new_session"] is True
-    assert captured["timeout"] == 1800
+    assert captured["timeout"] == 7200
     assert captured["env"]["BBHUNT_AUTH_HEADERS"] == "Cookie: session=abc"
     assert captured["env"]["BBHUNT_SESSION_ID"] == hunt._AUTH_SESSION.session_id()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected", "unexpected", "expected_timeout"),
+    [
+        ({"quick": True}, "--quick", "--deep", 1800),
+        ({"deep": True}, "--deep", "--quick", 14400),
+        ({"quick": True, "deep": True}, "--quick", "--deep", 1800),
+    ],
+)
+def test_run_recon_selects_explicit_profile(
+    monkeypatch, kwargs, expected, unexpected, expected_timeout
+):
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            captured["timeout"] = timeout
+            return 0
+
+    def fake_popen(cmd, **_kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(hunt.subprocess, "Popen", fake_popen)
+    assert hunt.run_recon("example.com", **kwargs) is True
+    assert expected in captured["cmd"]
+    assert unexpected not in captured["cmd"]
+    assert captured["timeout"] == expected_timeout
 
 
 def test_run_recon_kills_process_group_when_wait_times_out(monkeypatch):
@@ -145,7 +177,7 @@ def test_recon_engine_dispatches_primary_domain_list_batch():
 
     assert "run_domain_list_batch()" in recon_engine
     assert 'if [ -f "$TARGET" ] && [ -r "$TARGET" ]; then' in recon_engine
-    assert 'run_domain_list_batch "$TARGET" "$QUICK_MODE"' in recon_engine
+    assert 'run_domain_list_batch "$TARGET" "$RECON_MODE_FLAG"' in recon_engine
     assert "batch_manifest.jsonl" in recon_engine
     assert "batch_summary.md" in recon_engine
     assert "ai_handoff.md" in recon_engine
@@ -155,7 +187,7 @@ def test_recon_engine_dispatches_primary_domain_list_batch():
     assert "grouped_links" in recon_engine
     assert "BBHUNT_BATCH_SIZE" in recon_engine
     assert "BBHUNT_BATCH_RESET" in recon_engine
-    assert 'bash "$SCRIPT_PATH" "$batch_target" "$quick_mode" </dev/null' in recon_engine
+    assert 'bash "$SCRIPT_PATH" "$batch_target" "$mode_flag" </dev/null' in recon_engine
     assert "phase                batch_recon" in recon_engine
     assert 'TARGET_KIND="list"' not in recon_engine
     assert "Domain-list target" not in recon_engine

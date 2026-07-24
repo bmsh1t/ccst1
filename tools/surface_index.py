@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gzip
 import hashlib
 import heapq
 import json
@@ -37,6 +38,11 @@ MAX_PAGE_LIMIT = 1000
 CURSOR_SCHEMA_VERSION = 1
 
 URL_ARTIFACT_SPECS = (
+    ("gau", Path("urls/gau.txt")),
+    ("wayback", Path("urls/wayback.txt")),
+    ("waymore", Path("urls/waymore.txt")),
+    ("katana", Path("urls/katana.txt")),
+    ("js_inventory", Path("urls/js_files.txt")),
     ("api", Path("urls/api_endpoints.txt")),
     ("param", Path("urls/with_params.txt")),
     ("browser_xhr", Path("browser/xhr_endpoints.txt")),
@@ -84,7 +90,10 @@ def _input_paths(repo_root: Path, target: str) -> list[tuple[str, Path]]:
     key = target_storage_key(target)
     recon_dir = repo_root / "recon" / key
     findings = repo_root / "findings" / key / "findings.json"
-    paths = [(label, recon_dir / relative) for label, relative in URL_ARTIFACT_SPECS]
+    paths = [
+        (label, _artifact_path(recon_dir, relative))
+        for label, relative in URL_ARTIFACT_SPECS
+    ]
     paths.extend(
         [
             ("js", recon_dir / JS_ENDPOINT_PATH),
@@ -133,10 +142,20 @@ def build_surface_index_input_manifest(repo_root: str | Path, target: str) -> di
     }
 
 
+def _artifact_path(recon_dir: Path, relative: Path) -> Path:
+    """优先读取本轮明文 artifact，否则读取 post-run gzip 归档。"""
+    plain = recon_dir / relative
+    compressed = plain.with_name(plain.name + ".gz")
+    if plain.is_file() and (plain.stat().st_size > 0 or not compressed.is_file()):
+        return plain
+    return compressed if compressed.is_file() else plain
+
+
 def _iter_lines(path: Path) -> Iterator[str]:
     if not path.is_file():
         return
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
+    opener = gzip.open if path.name.endswith(".gz") else Path.open
+    with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
         for raw in handle:
             value = " ".join(raw.strip().splitlines())
             if value and not value.startswith("#"):
@@ -183,7 +202,7 @@ def _source_iterators(repo_root: Path, target: str) -> list[tuple[str, Iterable[
     key = target_storage_key(target)
     recon_dir = repo_root / "recon" / key
     sources: list[tuple[str, Iterable[str]]] = [
-        (label, _iter_lines(recon_dir / relative))
+        (label, _iter_lines(_artifact_path(recon_dir, relative)))
         for label, relative in URL_ARTIFACT_SPECS
     ]
     # 与 legacy rank_surface 的 first-seen 顺序保持一致：scanner 先于 JS。

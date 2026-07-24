@@ -44,8 +44,8 @@ Every invocation is state-first: bootstrap `ctf_mode` and compact `state`, plus 
 only initial inputs. Branch only after that state read; after a long phase, refresh with:
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
-# next_action=run_recon: launch once; append --quick only when requested
-cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only [--quick]
+# next_action=run_recon: launch once; expand arguments.recon_flags exactly
+cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only [--quick|--deep]
 # usable cache: inspect surface/context before a later quick scan
 cd -- <repo_root_shell> && python3 tools/surface.py --target <target_shell>
 cd -- <repo_root_shell> && python3 tools/context_pack.py --target <target_shell> && python3 tools/observation_inventory.py summary --target <target_shell>
@@ -58,7 +58,7 @@ duplicate-launch guard. `review_validation_candidate` reviews raw runner evidenc
 If `arguments.seed_url` is non-null, inspect `<seed_url_shell>` through browser/source/workflow evidence before historical focus or score hints, even for existing canonical target state.
 For a readable primary-domain list, the list context is recon/handoff only:
 1. Run `autopilot_state.py --target targets.txt --bounded` before batch recon.
-2. Run `hunt.py --target targets.txt --recon-only` only when state says `run_batch_recon`; append `--quick` only when requested, and never scan the list/index. `invalid_batch_target` / `batch_failed` stop without automatic retry.
+2. Run `hunt.py --target targets.txt --recon-only` only when state says `run_batch_recon`; expand `arguments.recon_flags` exactly, and never scan the list/index. `invalid_batch_target` / `batch_failed` stop without automatic retry.
 3. Read `recon/<list-stem>/ai_handoff.md` and `surface_ranking.txt`, select one completed domain, then rerun `autopilot_state.py --target <domain> --bounded`.
 4. Only the selected domain may enter surface/context/browser/scan/hunt; do not aggregate active work across the batch.
 For existing single targets, run a closed-state sanity check before executing a historical `continue_last_focus`, resume target, or `/surface` score hint:

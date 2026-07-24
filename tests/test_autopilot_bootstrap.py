@@ -334,6 +334,39 @@ def test_bootstrap_projects_only_bounded_candidate_rubric():
     assert "do-not-project" not in encoded
 
 
+def test_compact_bootstrap_preserves_bounded_workflow_leads():
+    state = _state("/tmp/repo", "example.test")
+    state["surface"] = {
+        "workflow_leads": [
+            json.dumps(
+                {
+                    "source": "recon_routing_candidate",
+                    "category": "host-pivot",
+                    "priority": "high",
+                    "title": "Host pivot evidence is available",
+                    "artifact": "recon/example.test/exposure/host_pivot_candidates.jsonl",
+                    "next_action": "review with a default-vhost control",
+                    "raw_rows": ["do-not-project"] * 100,
+                }
+            )
+        ]
+    }
+
+    compact = autopilot_bootstrap.compact_autopilot_state(state)
+
+    assert compact["workflow_leads"] == [
+        {
+            "source": "recon_routing_candidate",
+            "category": "host-pivot",
+            "priority": "high",
+            "title": "Host pivot evidence is available",
+            "artifact": "recon/example.test/exposure/host_pivot_candidates.jsonl",
+            "next_action": "review with a default-vhost control",
+        }
+    ]
+    assert "do-not-project" not in json.dumps(compact)
+
+
 def test_bootstrap_projects_bounded_intel_continuation_details():
     state = _state("/tmp/repo", "example.test")
     state["next_action"] = "collect_web_intel"

@@ -41,6 +41,11 @@ PAGE_ORDER_FIRST_SEEN_ID = "first_seen_id"
 ARTIFACT_SPECS = (
     ("host", Path("subdomains/all.txt")),
     ("host", Path("subdomains/resolved.txt")),
+    ("host", Path("subdomains/subfinder.txt")),
+    ("host", Path("subdomains/assetfinder.txt")),
+    ("host", Path("subdomains/amass.txt")),
+    ("host", Path("subdomains/crtsh.txt")),
+    ("host", Path("subdomains/wayback_subs.txt")),
     ("url", Path("live/urls.txt")),
     ("host-observation", Path("live/httpx_full.txt")),
     ("url", Path("urls/all.txt")),

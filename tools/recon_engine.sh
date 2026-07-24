@@ -2,7 +2,7 @@
 # =============================================================================
 # Enhanced Recon Engine
 # Full reconnaissance pipeline for target-driven penetration testing
-# Usage: ./recon_engine.sh <target-domain|ip|cidr|list-file> [--quick]
+# Usage: ./recon_engine.sh <target-domain|ip|cidr|list-file> [--quick|--normal|--deep|--full]
 # =============================================================================
 
 set -euo pipefail
@@ -82,13 +82,13 @@ record_recon_phase() {
 
     # Manifest 是阶段账本，不做价值判断；用于让 Claude 区分“无结果”和“未运行/跳过”。
     [ -n "${RECON_MANIFEST:-}" ] || return 0
-    python3 - "$RECON_MANIFEST" "$TARGET" "${RECON_TARGET_KEY:-}" "$QUICK_MODE" \
+    python3 - "$RECON_MANIFEST" "$TARGET" "${RECON_TARGET_KEY:-}" "$RECON_PROFILE" \
         "$phase" "$status" "$artifact" "$count" "$note" <<'PY' || true
 import json
 import sys
 from datetime import datetime, timezone
 
-manifest, target, target_key, quick_mode, phase, status, artifact, count, note = sys.argv[1:]
+manifest, target, target_key, profile, phase, status, artifact, count, note = sys.argv[1:]
 try:
     count_value = int(str(count).strip() or "0")
 except ValueError:
@@ -98,11 +98,46 @@ record = {
     "record_type": "recon_phase",
     "target": target,
     "target_key": target_key,
-    "mode": "quick" if quick_mode == "--quick" else "full",
+    "mode": profile,
     "phase": phase,
     "status": status,
     "artifact": artifact,
     "count": count_value,
+    "note": note,
+    "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+}
+with open(manifest, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+PY
+}
+
+record_recon_collector() {
+    local collector="$1"
+    local status="$2"
+    local artifact="$3"
+    local count="$4"
+    local duration="$5"
+    local note="${6:-}"
+
+    [ -n "${RECON_MANIFEST:-}" ] || return 0
+    python3 - "$RECON_MANIFEST" "$TARGET" "${RECON_TARGET_KEY:-}" "$RECON_PROFILE" \
+        "$collector" "$status" "$artifact" "$count" "$duration" "$note" <<'PY' || true
+import json
+import sys
+from datetime import datetime, timezone
+
+manifest, target, target_key, profile, collector, status, artifact, count, duration, note = sys.argv[1:]
+record = {
+    "schema_version": 1,
+    "record_type": "recon_collector",
+    "target": target,
+    "target_key": target_key,
+    "mode": profile,
+    "collector": collector,
+    "status": status,
+    "artifact": artifact,
+    "count": int(count or 0),
+    "duration_seconds": int(duration or 0),
     "note": note,
     "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
 }
@@ -144,6 +179,143 @@ run_with_timeout() {
     else
         "$@"
     fi
+}
+
+COLLECTOR_PIDS=()
+COLLECTOR_NAMES=()
+COLLECTOR_ARTIFACTS=()
+COLLECTOR_ARTIFACT_LABELS=()
+COLLECTOR_META_FILES=()
+
+artifact_line_count() {
+    local artifact="$1"
+    local count
+    if [ -s "$artifact" ] || { [ -f "$artifact" ] && [ ! -f "${artifact}.gz" ]; }; then
+        wc -l < "$artifact" 2>/dev/null | tr -d ' '
+    elif [ -f "${artifact}.gz" ]; then
+        count=$(gzip -cd "${artifact}.gz" 2>/dev/null | wc -l | tr -d ' ' || true)
+        printf '%s\n' "${count:-0}"
+    else
+        printf '0\n'
+    fi
+}
+
+append_artifact() {
+    local artifact="$1"
+    if [ -s "$artifact" ]; then
+        cat "$artifact"
+    elif [ -s "${artifact}.gz" ]; then
+        gzip -cd "${artifact}.gz" 2>/dev/null || true
+    fi
+}
+
+run_collector_task() {
+    local artifact="$1"
+    local meta_file="$2"
+    shift 2
+    local started rc status note duration temp_artifact merged_artifact
+    started=$(date +%s)
+    mkdir -p "$(dirname "$artifact")" "$(dirname "$meta_file")"
+    temp_artifact="$(mktemp "$(dirname "$artifact")/.${artifact##*/}.collector.XXXXXX")"
+    set +e
+    "$@" "$temp_artifact"
+    rc=$?
+    set -e
+    duration=$(( $(date +%s) - started ))
+
+    case "$rc" in
+        0)
+            mv -f "$temp_artifact" "$artifact"
+            rm -f "${artifact}.gz"
+            status="ok"
+            note=""
+            ;;
+        3)
+            rm -f "$temp_artifact"
+            [ ! -s "${artifact}.gz" ] || rm -f "$artifact"
+            status="unavailable"
+            note="required tool unavailable; prior artifact preserved"
+            ;;
+        4)
+            rm -f "$temp_artifact"
+            [ ! -s "${artifact}.gz" ] || rm -f "$artifact"
+            status="skipped"
+            note="not applicable for this target/profile; prior artifact preserved"
+            ;;
+        124)
+            merged_artifact="${temp_artifact}.merged"
+            { append_artifact "$artifact"; cat "$temp_artifact"; } \
+                | awk 'NF && !seen[$0]++' > "$merged_artifact"
+            mv -f "$merged_artifact" "$artifact"
+            rm -f "$temp_artifact" "${artifact}.gz"
+            status="partial"
+            note="collector timed out; prior and partial artifacts preserved"
+            ;;
+        *)
+            if [ -s "$temp_artifact" ]; then
+                merged_artifact="${temp_artifact}.merged"
+                { append_artifact "$artifact"; cat "$temp_artifact"; } \
+                    | awk 'NF && !seen[$0]++' > "$merged_artifact"
+                mv -f "$merged_artifact" "$artifact"
+                rm -f "$temp_artifact" "${artifact}.gz"
+                status="partial"
+                note="collector exited $rc; prior and partial artifacts preserved"
+            else
+                rm -f "$temp_artifact"
+                [ ! -s "${artifact}.gz" ] || rm -f "$artifact"
+                status="error"
+                note="collector exited $rc without new results; prior artifact preserved"
+            fi
+            ;;
+    esac
+    printf '%s\t%s\t%s\n' "$status" "$duration" "$note" > "$meta_file"
+}
+
+start_collector() {
+    local name="$1"
+    local artifact="$2"
+    local artifact_label="$3"
+    shift 3
+    local meta_file="$RECON_DIR/logs/collectors/${name}.status"
+    mkdir -p "$(dirname "$meta_file")"
+    : > "$meta_file"
+    log_step "Starting $name collector..."
+    run_collector_task "$artifact" "$meta_file" "$@" &
+    COLLECTOR_PIDS+=("$!")
+    COLLECTOR_NAMES+=("$name")
+    COLLECTOR_ARTIFACTS+=("$artifact")
+    COLLECTOR_ARTIFACT_LABELS+=("$artifact_label")
+    COLLECTOR_META_FILES+=("$meta_file")
+}
+
+wait_collector_group() {
+    local index pid name artifact artifact_label meta_file status duration note count
+    for index in "${!COLLECTOR_PIDS[@]}"; do
+        pid="${COLLECTOR_PIDS[$index]}"
+        name="${COLLECTOR_NAMES[$index]}"
+        artifact="${COLLECTOR_ARTIFACTS[$index]}"
+        artifact_label="${COLLECTOR_ARTIFACT_LABELS[$index]}"
+        meta_file="${COLLECTOR_META_FILES[$index]}"
+        wait "$pid" || true
+        status="error"
+        duration=0
+        note="collector ended without status metadata"
+        if [ -s "$meta_file" ]; then
+            IFS=$'\t' read -r status duration note < "$meta_file" || true
+        fi
+        count=$(artifact_line_count "$artifact" || echo 0)
+        record_recon_collector "$name" "$status" "$artifact_label" "$count" "$duration" "$note"
+        if [ "$status" = "ok" ]; then
+            log_done "$name: $count result(s) in ${duration}s"
+        else
+            log_warn "$name: $status (${note:-no detail})"
+        fi
+    done
+    COLLECTOR_PIDS=()
+    COLLECTOR_NAMES=()
+    COLLECTOR_ARTIFACTS=()
+    COLLECTOR_ARTIFACT_LABELS=()
+    COLLECTOR_META_FILES=()
 }
 
 env_truthy() {
@@ -290,14 +462,42 @@ resolve_linkfinder_path() {
     return 1
 }
 
-TARGET="${1:?Usage: $0 <target-domain|ip|cidr|list-file> [--quick]}"
-QUICK_MODE="${2:-}"
+TARGET="${1:?Usage: $0 <target-domain|ip|cidr|list-file> [--quick|--normal|--deep|--full]}"
+RECON_MODE_FLAG="${2:-}"
+case "$RECON_MODE_FLAG" in
+    ""|--full)
+        RECON_PROFILE="full"
+        QUICK_MODE=""
+        ;;
+    --quick)
+        RECON_PROFILE="quick"
+        QUICK_MODE="--quick"
+        ;;
+    --normal)
+        RECON_PROFILE="normal"
+        QUICK_MODE=""
+        ;;
+    --deep)
+        RECON_PROFILE="deep"
+        QUICK_MODE=""
+        ;;
+    *)
+        log_err "Unknown recon profile: $RECON_MODE_FLAG"
+        exit 2
+        ;;
+esac
+RECON_STARTED_EPOCH=$(date +%s)
+RECON_SOFT_BUDGET_SECONDS="${BBHUNT_RECON_SOFT_BUDGET_SECONDS:-1800}"
+if ! [[ "$RECON_SOFT_BUDGET_SECONDS" =~ ^[0-9]+$ ]]; then
+    log_err "Invalid BBHUNT_RECON_SOFT_BUDGET_SECONDS=$RECON_SOFT_BUDGET_SECONDS"
+    exit 2
+fi
 BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "recon" ] || [ "${BBHUNT_RUNTIME_LOCK_TARGET:-}" != "$TARGET" ]; then
     exec python3 "$BASE_DIR/tools/runtime_phase_exec.py" \
         --repo-root "$BASE_DIR" --target "$TARGET" --phase recon -- \
-        bash "$SCRIPT_PATH" "$TARGET" "$QUICK_MODE"
+        bash "$SCRIPT_PATH" "$TARGET" "$RECON_MODE_FLAG"
 fi
 # 与 Osmedeus 01-osint.yaml 的 `toolsDir` 对齐：默认共用 $HOME/Tools。
 # 可用 BBHUNT_TOOLS_DIR 或 OSMEDEUS_TOOLS_DIR 显式覆盖，便于多套工具目录共存。
@@ -315,7 +515,7 @@ export PATH="$HOME/.local/bin:$HOME/go/bin:$SHARED_TOOLS_DIR/bin:/opt/homebrew/b
 
 run_domain_list_batch() {
     local list_file="$1"
-    local quick_mode="${2:-}"
+    local mode_flag="${2:-}"
     local batch_name batch_key batch_dir targets_file manifest completed_file failed_file summary_file
     local high_value_file ranking_file ai_handoff_file target_links_file
     local pending_file run_targets_file processed_file batch_size_raw batch_size batch_reset chunk_mode
@@ -431,7 +631,7 @@ PY
         [ "$batch_reset" -eq 1 ] && echo "  Reset: enabled"
     fi
     echo "  Output index: $batch_dir/"
-    echo "  Mode: $([ "$quick_mode" = "--quick" ] && echo "Quick" || echo "Full")"
+    echo "  Mode: ${mode_flag:---full}"
     echo "  Time: $(date)"
     echo "============================================="
     echo ""
@@ -450,7 +650,7 @@ PY
         # Do not let child recon processes inherit the batch stdin stream;
         # otherwise tools that read from stdin can consume the remaining
         # while-read targets and make large batches stop after the first item.
-        if bash "$SCRIPT_PATH" "$batch_target" "$quick_mode" </dev/null; then
+        if bash "$SCRIPT_PATH" "$batch_target" "$mode_flag" </dev/null; then
             status="ok"
             exit_code=0
             ok_count=$((ok_count + 1))
@@ -688,7 +888,7 @@ PY
         echo "# Recon Batch Summary — $batch_key"
         echo ""
         echo "- Source: \`$list_file\`"
-        echo "- Mode: $([ "$quick_mode" = "--quick" ] && echo "Quick" || echo "Full")"
+        echo "- Mode: ${mode_flag:---full}"
         echo "- Total targets: $total"
         echo "- Batch size: $batch_size_label"
         echo "- Processed this run: $processed_this_run"
@@ -762,7 +962,7 @@ PY
 }
 
 if [ -f "$TARGET" ] && [ -r "$TARGET" ]; then
-    run_domain_list_batch "$TARGET" "$QUICK_MODE"
+    run_domain_list_batch "$TARGET" "$RECON_MODE_FLAG"
     exit $?
 fi
 
@@ -882,6 +1082,7 @@ touch "$RECON_DIR/subdomains/all.txt" \
       "$RECON_DIR/js/endpoints.txt" \
       "$RECON_DIR/js/potential_secrets.txt" \
       "$RECON_DIR/js/linkfinder_endpoints.txt" \
+      "$RECON_DIR/js/deep_candidates.txt" \
       "$RECON_DIR/params/unique_params.txt" \
       "$RECON_DIR/params/interesting_params.txt" \
       "$RECON_DIR/exposure/config_files.txt" \
@@ -890,7 +1091,9 @@ touch "$RECON_DIR/subdomains/all.txt" \
       "$RECON_DIR/exposure/api_leak_trufflehog_verified.jsonl" \
       "$RECON_DIR/exposure/cloud_storage_candidates.txt" \
       "$RECON_DIR/exposure/s3_bucket_candidates.txt" \
-      "$RECON_DIR/exposure/external_service_hosts.txt"
+      "$RECON_DIR/exposure/external_service_hosts.txt" \
+      "$RECON_DIR/exposure/host_pivot_candidates.jsonl" \
+      "$RECON_DIR/exposure/ai_asset_candidates.jsonl"
 
 # Clear regenerated summary files so reruns cannot inherit stale counters.
 : > "$RECON_DIR/live/httpx_full.txt"
@@ -906,10 +1109,6 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/ports/open_ports.txt"
 : > "$RECON_DIR/ports/open_ports_naabu.txt"
 : > "$RECON_DIR/ports/open_ports_all.txt"
-: > "$RECON_DIR/urls/gau.txt"
-: > "$RECON_DIR/urls/wayback.txt"
-: > "$RECON_DIR/urls/waymore.txt"
-: > "$RECON_DIR/urls/katana.txt"
 : > "$RECON_DIR/urls/katana_targets.txt"
 : > "$RECON_DIR/urls/all.txt"
 : > "$RECON_DIR/urls/all_filtered.txt"
@@ -940,11 +1139,125 @@ ensure_explicit_port_seed_live() {
     fi
 }
 
+collect_subfinder() {
+    local output="$1"
+    command -v subfinder >/dev/null 2>&1 || return 3
+    run_with_timeout 180 subfinder -d "$TARGET" -silent -all -t "${SUBFINDER_THREADS:-50}" \
+        -o "$output" \
+        2> "$RECON_DIR/logs/subfinder.log"
+}
+
+collect_assetfinder() {
+    local output="$1"
+    command -v assetfinder >/dev/null 2>&1 || return 3
+    local raw="$RECON_DIR/logs/assetfinder.raw"
+    run_with_timeout 120 assetfinder --subs-only "$TARGET" \
+        > "$raw" 2> "$RECON_DIR/logs/assetfinder.log"
+    local rc=$?
+    tr '[:upper:]' '[:lower:]' < "$raw" \
+        | sed 's/^\*\.//' \
+        | awk 'NF' \
+        | sort -u > "$output" || true
+    rm -f "$raw"
+    return "$rc"
+}
+
+collect_amass() {
+    local output="$1"
+    [ "$RECON_PROFILE" != "quick" ] || return 4
+    command -v amass >/dev/null 2>&1 || return 3
+    run_with_timeout 300 amass enum -passive -d "$TARGET" \
+        -o "$output" \
+        2> "$RECON_DIR/logs/amass.log"
+}
+
+collect_crtsh() {
+    local output="$1"
+    curl -sS --max-time 20 "https://crt.sh/?q=%25.$TARGET&output=json" \
+        2> "$RECON_DIR/logs/crtsh.log" \
+        | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    names = set()
+    for entry in data:
+        for name in entry.get('name_value', '').split('\\n'):
+            name = name.strip().lower()
+            if name and '*' not in name and name.endswith('.$TARGET'):
+                names.add(name)
+            elif name and '*' not in name and '.' in name:
+                names.add(name)
+    for name in sorted(names):
+        print(name)
+except (TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(2)
+" > "$output"
+}
+
+collect_wayback_subdomains() {
+    local output="$1"
+    curl -sS --max-time 20 \
+        "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=original&collapse=urlkey" \
+        2> "$RECON_DIR/logs/wayback_subdomains.log" \
+        | sed -nE "s|.*://([a-zA-Z0-9._-]+\.$TARGET).*|\1|p" \
+        | sort -u > "$output"
+}
+
+collect_gau_urls() {
+    local output="$1"
+    [ "$TARGET_KIND" = "domain" ] || return 4
+    command -v gau >/dev/null 2>&1 || return 3
+    printf '%s\n' "$TARGET" \
+        | run_with_timeout 180 gau --threads "${GAU_THREADS:-20}" \
+            --o "$output" \
+            2> "$RECON_DIR/logs/gau.log"
+}
+
+collect_wayback_urls() {
+    local output="$1"
+    [ "$TARGET_KIND" = "domain" ] || return 4
+    command -v gau >/dev/null 2>&1 && return 4
+    curl -sS --max-time 60 \
+        "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=original&collapse=urlkey&limit=5000" \
+        > "$output" \
+        2> "$RECON_DIR/logs/wayback_urls.log"
+}
+
+collect_waymore_urls() {
+    local output="$1"
+    [ "$TARGET_KIND" = "domain" ] || return 4
+    command -v waymore >/dev/null 2>&1 || return 3
+    run_with_timeout 240 waymore \
+        -i "$TARGET" \
+        -mode U \
+        -oU "$output" \
+        -ow \
+        -lcc 1 \
+        2> "$RECON_DIR/logs/waymore.log"
+}
+
+collect_katana_urls() {
+    local output="$1"
+    command -v katana >/dev/null 2>&1 || return 3
+    [ -s "$RECON_DIR/live/urls.txt" ] || return 4
+    head -50 "$RECON_DIR/live/urls.txt" > "$RECON_DIR/urls/katana_targets.txt"
+    local perf_args=()
+    [ -n "${KATANA_CONCURRENCY:-}" ] && perf_args+=(-c "$KATANA_CONCURRENCY")
+    [ -n "${KATANA_PARALLELISM:-}" ] && perf_args+=(-p "$KATANA_PARALLELISM")
+    run_with_timeout 300 katana \
+        -list "$RECON_DIR/urls/katana_targets.txt" \
+        -d 3 -jc -kf all -silent -dr -fs rdn -do \
+        "${perf_args[@]}" \
+        "${BB_AUTH_ARGS[@]}" \
+        -o "$output" \
+        2> "$RECON_DIR/logs/katana.log"
+}
+
 echo "============================================="
 echo "  Recon Engine — $TARGET"
 echo "  Output: $RECON_DIR/"
 echo "  Target kind: $TARGET_KIND"
-echo "  Mode: $([ "$QUICK_MODE" = "--quick" ] && echo "Quick" || echo "Full")"
+echo "  Mode: $RECON_PROFILE"
 echo "  Time: $(date)"
 bb_auth_active && bb_auth_banner
 echo "============================================="
@@ -962,69 +1275,25 @@ record_recon_phase \
 log_info "Phase 1: Subdomain Enumeration"
 
 if [ "$TARGET_KIND" = "domain" ]; then
-    # Subfinder (passive, fast)
-    if command -v subfinder &>/dev/null; then
-        log_step "Running subfinder..."
-        subfinder -d "$TARGET" -silent -all -t "${SUBFINDER_THREADS:-50}" -o "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || true
-        log_done "subfinder: $(wc -l < "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || echo 0) subdomains"
-    else
-        log_warn "subfinder not installed — skipping"
-    fi
+    start_collector subfinder "$RECON_DIR/subdomains/subfinder.txt" \
+        "recon/${RECON_TARGET_KEY}/subdomains/subfinder.txt" collect_subfinder
+    start_collector assetfinder "$RECON_DIR/subdomains/assetfinder.txt" \
+        "recon/${RECON_TARGET_KEY}/subdomains/assetfinder.txt" collect_assetfinder
+    start_collector amass "$RECON_DIR/subdomains/amass.txt" \
+        "recon/${RECON_TARGET_KEY}/subdomains/amass.txt" collect_amass
+    start_collector crtsh "$RECON_DIR/subdomains/crtsh.txt" \
+        "recon/${RECON_TARGET_KEY}/subdomains/crtsh.txt" collect_crtsh
+    start_collector wayback_subdomains "$RECON_DIR/subdomains/wayback_subs.txt" \
+        "recon/${RECON_TARGET_KEY}/subdomains/wayback_subs.txt" collect_wayback_subdomains
+    wait_collector_group
 
-    # assetfinder (passive, fast)
-    if command -v assetfinder &>/dev/null; then
-        log_step "Running assetfinder..."
-        assetfinder --subs-only "$TARGET" 2>/dev/null \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed 's/^\*\.//' \
-            | awk 'NF' \
-            | sort -u > "$RECON_DIR/subdomains/assetfinder.txt" || true
-        log_done "assetfinder: $(wc -l < "$RECON_DIR/subdomains/assetfinder.txt" 2>/dev/null || echo 0) subdomains"
-    else
-        log_warn "assetfinder not installed — skipping"
-    fi
-
-    # Amass (passive)
-    if command -v amass &>/dev/null && [ "$QUICK_MODE" != "--quick" ]; then
-        log_step "Running amass (passive)..."
-        amass enum -passive -d "$TARGET" -o "$RECON_DIR/subdomains/amass.txt" 2>/dev/null || true
-        # Ensure amass output file exists even if amass failed
-        [ ! -f "$RECON_DIR/subdomains/amass.txt" ] && touch "$RECON_DIR/subdomains/amass.txt"
-        log_done "amass: $(wc -l < "$RECON_DIR/subdomains/amass.txt" 2>/dev/null || echo 0) subdomains"
-    else
-        [ "$QUICK_MODE" = "--quick" ] && log_warn "Skipping amass (quick mode)"
-    fi
-
-    # crt.sh (certificate transparency)
-    log_step "Querying crt.sh..."
-    curl -s --max-time 20 "https://crt.sh/?q=%25.$TARGET&output=json" 2>/dev/null \
-        | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    names = set()
-    for entry in data:
-        for name in entry.get('name_value', '').split('\n'):
-            name = name.strip().lower()
-            if name and '*' not in name and name.endswith('.$TARGET'):
-                names.add(name)
-            elif name and '*' not in name and '.' in name:
-                names.add(name)
-    for n in sorted(names):
-        print(n)
-except: pass
-" > "$RECON_DIR/subdomains/crtsh.txt" 2>/dev/null || true
-    log_done "crt.sh: $(wc -l < "$RECON_DIR/subdomains/crtsh.txt" 2>/dev/null || echo 0) subdomains"
-
-    # Wayback subdomains
-    log_step "Querying Wayback Machine for subdomains..."
-    curl -s --max-time 20 "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=original&collapse=urlkey" 2>/dev/null \
-        | sed -nE "s|.*://([a-zA-Z0-9._-]+\.$TARGET).*|\1|p" \
-        | sort -u > "$RECON_DIR/subdomains/wayback_subs.txt" 2>/dev/null || true
-    log_done "wayback: $(wc -l < "$RECON_DIR/subdomains/wayback_subs.txt" 2>/dev/null || echo 0) subdomains"
-
-    # Merge and deduplicate all subdomains
-    cat "$RECON_DIR/subdomains/"*.txt 2>/dev/null | sort -u > "$RECON_DIR/subdomains/all.txt" || true
+    cat \
+        "$RECON_DIR/subdomains/subfinder.txt" \
+        "$RECON_DIR/subdomains/assetfinder.txt" \
+        "$RECON_DIR/subdomains/amass.txt" \
+        "$RECON_DIR/subdomains/crtsh.txt" \
+        "$RECON_DIR/subdomains/wayback_subs.txt" \
+        2>/dev/null | awk 'NF' | sort -u > "$RECON_DIR/subdomains/all.txt" || true
     TOTAL_SUBS=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)
     log_ok "Total unique subdomains: $TOTAL_SUBS"
 elif [ "$TARGET_KIND" = "url" ]; then
@@ -1550,62 +1819,18 @@ emit_claude_hint_actions \
 echo ""
 log_info "Phase 4: URL Collection"
 
-# GAU - Get All URLs (wayback, commoncrawl, otx, urlscan).
-# Archive sources are domain-keyed; for IP/CIDR targets they either error
-# out or hang on external lookups. Skip gracefully to keep IP/local-lab runs
-# fast and offline.
-if [ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]; then
-    log_warn "Skipping gau/wayback for $TARGET_KIND target — historical URL archives are domain-keyed"
-elif command -v gau &>/dev/null; then
-    log_step "Running gau (historical URLs)..."
-    echo "$TARGET" | gau --threads "${GAU_THREADS:-20}" --o "$RECON_DIR/urls/gau.txt" 2>/dev/null || \
-    echo "$TARGET" | gau > "$RECON_DIR/urls/gau.txt" 2>/dev/null || true
-    log_done "gau: $(wc -l < "$RECON_DIR/urls/gau.txt" 2>/dev/null || echo 0) URLs"
-else
-    log_warn "gau not installed — using wayback fallback"
-    curl -s --max-time 30 "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=original&collapse=urlkey&limit=5000" \
-        > "$RECON_DIR/urls/wayback.txt" 2>/dev/null || true
-    log_done "wayback: $(wc -l < "$RECON_DIR/urls/wayback.txt" 2>/dev/null || echo 0) URLs"
-fi
+start_collector gau "$RECON_DIR/urls/gau.txt" \
+    "recon/${RECON_TARGET_KEY}/urls/gau.txt" collect_gau_urls
+start_collector wayback_urls "$RECON_DIR/urls/wayback.txt" \
+    "recon/${RECON_TARGET_KEY}/urls/wayback.txt" collect_wayback_urls
+start_collector waymore "$RECON_DIR/urls/waymore.txt" \
+    "recon/${RECON_TARGET_KEY}/urls/waymore.txt" collect_waymore_urls
+wait_collector_group
 
-# waymore — additional historical URL collection across multiple archives.
-WAYMORE_INPUT=""
-[ "$TARGET_KIND" = "domain" ] && WAYMORE_INPUT="$TARGET"
-
-if [ -n "$WAYMORE_INPUT" ] && command -v waymore &>/dev/null; then
-    log_step "Running waymore (historical URLs)..."
-    waymore \
-        -i "$WAYMORE_INPUT" \
-        -mode U \
-        -oU "$RECON_DIR/urls/waymore.txt" \
-        -ow \
-        -lcc 1 \
-        2>/dev/null || true
-    log_done "waymore: $(wc -l < "$RECON_DIR/urls/waymore.txt" 2>/dev/null || echo 0) URLs"
-elif [ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]; then
-    log_warn "Skipping waymore for $TARGET_KIND target — historical URL collection expects a domain"
-elif [ -n "$WAYMORE_INPUT" ]; then
-    log_warn "waymore not installed — skipping historical URL collection"
-else
-    log_warn "Skipping waymore — no compatible input prepared"
-fi
-
-# katana — active crawl on live hosts (5 min cap prevents infinite crawl on
-# content-heavy sites like news/video/infinite-calendar portals).
-if command -v katana &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
-    log_step "Running katana (active crawl, 5min cap, top 50 hosts)..."
-    head -50 "$RECON_DIR/live/urls.txt" > "$RECON_DIR/urls/katana_targets.txt"
-    KATANA_PERF_ARGS=()
-    [ -n "${KATANA_CONCURRENCY:-}" ] && KATANA_PERF_ARGS+=(-c "$KATANA_CONCURRENCY")
-    [ -n "${KATANA_PARALLELISM:-}" ] && KATANA_PERF_ARGS+=(-p "$KATANA_PARALLELISM")
-    timeout 300 katana \
-        -list "$RECON_DIR/urls/katana_targets.txt" \
-        -d 3 -jc -kf all -silent -dr -fs rdn -do \
-        "${KATANA_PERF_ARGS[@]}" \
-        "${BB_AUTH_ARGS[@]}" \
-        -o "$RECON_DIR/urls/katana.txt" 2>/dev/null || true
-    log_done "katana: $(wc -l < "$RECON_DIR/urls/katana.txt" 2>/dev/null || echo 0) URLs"
-fi
+# katana 依赖 live hosts，因此只能在被动 URL collector 之后运行。
+start_collector katana "$RECON_DIR/urls/katana.txt" \
+    "recon/${RECON_TARGET_KEY}/urls/katana.txt" collect_katana_urls
+wait_collector_group
 
 # Merge only primary collector outputs. Do not glob every urls/*.txt here:
 # derived files from previous runs (with_params/js/api/_filtered) must not feed
@@ -1614,7 +1839,7 @@ fi
     [ -s "$RECON_DIR/live/urls.txt" ] && cat "$RECON_DIR/live/urls.txt"
     [ -s "$RECON_DIR/live/seed_urls.txt" ] && cat "$RECON_DIR/live/seed_urls.txt"
     for url_source in gau wayback waymore katana; do
-        [ -s "$RECON_DIR/urls/${url_source}.txt" ] && cat "$RECON_DIR/urls/${url_source}.txt"
+        append_artifact "$RECON_DIR/urls/${url_source}.txt"
     done
 } 2>/dev/null | sort -u > "$RECON_DIR/urls/all.txt" 2>/dev/null || true
 log_done "Total unique URLs: $(wc -l < "$RECON_DIR/urls/all.txt" 2>/dev/null || echo 0)"
@@ -1754,73 +1979,128 @@ build_filtered_first_backstop \
     "$RECON_DIR/urls/js_files.txt" \
     "$JS_FILES_FOR_ANALYSIS"
 JS_ANALYSIS_STATUS="skipped"
+JS_CANDIDATE_BUILD_STATUS="skipped"
+JS_DEEP_CANDIDATES=0
+JS_DEEP_GENERATION=""
 
 if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
-    JS_ANALYSIS_STATUS="ok"
-    log_step "Extracting endpoints from JS files (top 50)..."
     mkdir -p "$RECON_DIR/js"
-    LINKFINDER_BIN="$(resolve_linkfinder_path || true)"
+    if python3 "$BASE_DIR/tools/recon_candidates.py" \
+        --js-input "$JS_FILES_FOR_ANALYSIS" \
+        --js-output "$RECON_DIR/js/deep_candidates.txt" \
+        --js-limit "${BBHUNT_RECON_JS_CANDIDATE_LIMIT:-800}" \
+        > "$RECON_DIR/logs/js_deep_candidates.json" 2>&1; then
+        JS_CANDIDATE_BUILD_STATUS="ok"
+        JS_DEEP_CANDIDATES=$(wc -l < "$RECON_DIR/js/deep_candidates.txt" 2>/dev/null | tr -d ' ' || echo 0)
+        JS_DEEP_GENERATION=$(python3 - "$RECON_DIR/js/deep_candidates.txt" <<'PY'
+import hashlib
+import sys
 
-    head -50 "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
-        bb_auth_args_for_url "$js_url"
-        curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
-            sed -nE 's/.*["'"'"']([a-zA-Z0-9_/.-]*(\/[a-zA-Z0-9_/.-]+)+)["'"'"'].*/\1/p' \
-            >> "$RECON_DIR/js/endpoints_raw.txt" 2>/dev/null || true
-    done
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+PY
+)
+    else
+        JS_CANDIDATE_BUILD_STATUS="partial"
+        log_warn "Deep-JS candidate view failed; complete JS inventory and prior candidate artifact were preserved"
+    fi
 
-    if [ -f "$RECON_DIR/js/endpoints_raw.txt" ]; then
-        sort -u "$RECON_DIR/js/endpoints_raw.txt" > "$RECON_DIR/js/endpoints.txt"
-        log_done "JS endpoints: $(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null || echo 0)"
+    if [ "$RECON_PROFILE" = "normal" ]; then
+        JS_ANALYSIS_STATUS="deferred"
+        log_done "Normal profile indexed JS inventory; deep analysis deferred to Action Queue"
+        if [ "$JS_CANDIDATE_BUILD_STATUS" != "ok" ]; then
+            JS_ANALYSIS_STATUS="partial"
+        elif [ "$JS_DEEP_CANDIDATES" -gt 0 ] && ! python3 "$BASE_DIR/tools/action_queue.py" --repo-root "$BASE_DIR" add \
+            --target "$TARGET" \
+            --type "deep-js-review" \
+            --evidence-type "recon-artifact" \
+            --evidence "recon/${RECON_TARGET_KEY}/js/deep_candidates.txt" \
+            --source "recon" \
+            --source-id "deep-js-review" \
+            --generation "$JS_DEEP_GENERATION" \
+            --next-question "Which JS bundles expose high-value API, auth, source-map, upload, payment, or dynamic-signature behavior?" \
+            --action "Review deep JS candidates selected from the complete JS inventory" \
+            --priority 58 \
+            --command-hint "/js-read $TARGET" \
+            --stop-condition "Resolve only after selected high-value bundles are analyzed, or record an explicit blocked/deferred reason." \
+            > "$RECON_DIR/logs/deep_js_action_queue.log" 2>&1; then
+            JS_ANALYSIS_STATUS="partial"
+            log_warn "Deep-JS candidates were preserved, but Action Queue update failed"
+        fi
+    else
+        JS_ANALYSIS_STATUS="ok"
+        log_step "Extracting endpoints from JS files (top 50)..."
+        LINKFINDER_BIN="$(resolve_linkfinder_path || true)"
 
-        # Extract potential secrets from JS
         head -50 "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
             bb_auth_args_for_url "$js_url"
             curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
-                grep -oiE '([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)["'\''[:space:]]*[:=]["'\''[:space:]]*["'\'' ]?([A-Za-z0-9_./+=:-]{8,})' \
-                >> "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null || true
+                sed -nE 's/.*["'"'"']([a-zA-Z0-9_/.-]*(\/[a-zA-Z0-9_/.-]+)+)["'"'"'].*/\1/p' \
+                >> "$RECON_DIR/js/endpoints_raw.txt" 2>/dev/null || true
         done
-        if [ -s "$RECON_DIR/js/potential_secrets.txt" ]; then
-            sort -u "$RECON_DIR/js/potential_secrets.txt" -o "$RECON_DIR/js/potential_secrets.txt"
-            log_warn "Potential secrets found in JS: $(wc -l < "$RECON_DIR/js/potential_secrets.txt")"
-        fi
-    fi
 
-    if [ -n "$LINKFINDER_BIN" ]; then
-        LINKFINDER_MAX_JS=$([ "$QUICK_MODE" = "--quick" ] && echo 10 || echo 25)
-        log_step "Running LinkFinder on top $LINKFINDER_MAX_JS JS files..."
-        : > "$RECON_DIR/js/linkfinder_raw.txt"
-        head -"$LINKFINDER_MAX_JS" "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
-            tmp_js="$(mktemp "${TMPDIR:-/tmp}/bbhunt-linkfinder.XXXXXX.js")"
-            bb_auth_args_for_url "$js_url"
-            if curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 15 "$js_url" -o "$tmp_js" 2>/dev/null && [ -s "$tmp_js" ]; then
-                if [ "${LINKFINDER_BIN##*.}" = "py" ]; then
-                    python3 "$LINKFINDER_BIN" -i "$tmp_js" -o cli 2>/dev/null || true
-                else
-                    "$LINKFINDER_BIN" -i "$tmp_js" -o cli 2>/dev/null || true
-                fi
+        if [ -f "$RECON_DIR/js/endpoints_raw.txt" ]; then
+            sort -u "$RECON_DIR/js/endpoints_raw.txt" > "$RECON_DIR/js/endpoints.txt"
+            log_done "JS endpoints: $(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null || echo 0)"
+
+            # Extract potential secrets from JS
+            head -50 "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
+                bb_auth_args_for_url "$js_url"
+                curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
+                    grep -oiE '([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)["'\''[:space:]]*[:=]["'\''[:space:]]*["'\'' ]?([A-Za-z0-9_./+=:-]{8,})' \
+                    >> "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null || true
+            done
+            if [ -s "$RECON_DIR/js/potential_secrets.txt" ]; then
+                sort -u "$RECON_DIR/js/potential_secrets.txt" -o "$RECON_DIR/js/potential_secrets.txt"
+                log_warn "Potential secrets found in JS: $(wc -l < "$RECON_DIR/js/potential_secrets.txt")"
             fi
-            rm -f "$tmp_js"
-        done > "$RECON_DIR/js/linkfinder_raw.txt"
-        sed '/^[[:space:]]*$/d' "$RECON_DIR/js/linkfinder_raw.txt" | sort -u > "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null || true
-        log_done "LinkFinder endpoints: $(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null || echo 0)"
-    else
-        log_warn "LinkFinder not installed — skipping JS endpoint extraction"
+        fi
+
+        if [ -n "$LINKFINDER_BIN" ]; then
+            LINKFINDER_MAX_JS=$([ "$QUICK_MODE" = "--quick" ] && echo 10 || echo 25)
+            log_step "Running LinkFinder on top $LINKFINDER_MAX_JS JS files..."
+            : > "$RECON_DIR/js/linkfinder_raw.txt"
+            head -"$LINKFINDER_MAX_JS" "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
+                tmp_js="$(mktemp "${TMPDIR:-/tmp}/bbhunt-linkfinder.XXXXXX.js")"
+                bb_auth_args_for_url "$js_url"
+                if curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 15 "$js_url" -o "$tmp_js" 2>/dev/null && [ -s "$tmp_js" ]; then
+                    if [ "${LINKFINDER_BIN##*.}" = "py" ]; then
+                        python3 "$LINKFINDER_BIN" -i "$tmp_js" -o cli 2>/dev/null || true
+                    else
+                        "$LINKFINDER_BIN" -i "$tmp_js" -o cli 2>/dev/null || true
+                    fi
+                fi
+                rm -f "$tmp_js"
+            done > "$RECON_DIR/js/linkfinder_raw.txt"
+            sed '/^[[:space:]]*$/d' "$RECON_DIR/js/linkfinder_raw.txt" | sort -u > "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null || true
+            log_done "LinkFinder endpoints: $(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null || echo 0)"
+        else
+            log_warn "LinkFinder not installed — skipping JS endpoint extraction"
+        fi
+        [ "$JS_CANDIDATE_BUILD_STATUS" = "ok" ] || JS_ANALYSIS_STATUS="partial"
     fi
 else
-    log_warn "No JS files found — skipping JS analysis"
+    log_warn "No current JS files found — skipping JS analysis; prior candidate artifact remains available to existing queue history"
 fi
 
 JS_ENDPOINTS=$(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null | tr -d ' ' || echo 0)
 JS_SECRETS=$(wc -l < "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null | tr -d ' ' || echo 0)
 JS_LINKFINDER=$(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null | tr -d ' ' || echo 0)
+JS_MANIFEST_COUNT="$JS_ENDPOINTS"
+[ "$RECON_PROFILE" != "normal" ] || JS_MANIFEST_COUNT="$JS_DEEP_CANDIDATES"
 record_recon_phase \
     js_analysis \
     "$JS_ANALYSIS_STATUS" \
-    "recon/${RECON_TARGET_KEY}/js/endpoints.txt" \
-    "$JS_ENDPOINTS" \
-    "JS input uses filtered-first ordering plus raw js_files.txt backstop"
+    "recon/${RECON_TARGET_KEY}/js/$([ "$RECON_PROFILE" = "normal" ] && echo deep_candidates.txt || echo endpoints.txt)" \
+    "$JS_MANIFEST_COUNT" \
+    "all JS URLs remain in urls/js_files.txt; candidate_view=${JS_CANDIDATE_BUILD_STATUS}; limit=${BBHUNT_RECON_JS_CANDIDATE_LIMIT:-800}; normal defers deep analysis without closing coverage"
 emit_claude_hint \
     phase                  js_analysis \
+    profile                "$RECON_PROFILE" \
+    deep_candidates        "$JS_DEEP_CANDIDATES" \
     endpoints_extracted    "$JS_ENDPOINTS" \
     linkfinder_endpoints   "$JS_LINKFINDER" \
     unverified_secret_strings "$JS_SECRETS" \
@@ -2702,6 +2982,34 @@ emit_claude_hint_actions \
     "if no GitHub orgs were auto-detected, leave CI/CD as no cached signal rather than tested clean"
 
 # ============================================================
+# Routing candidates: existing evidence only, no new requests
+# ============================================================
+ROUTING_CANDIDATE_STATUS="ok"
+if ! python3 "$BASE_DIR/tools/recon_candidates.py" \
+    --repo-root "$BASE_DIR" \
+    --target "$TARGET" \
+    > "$RECON_DIR/logs/recon_candidates.json" 2>&1; then
+    ROUTING_CANDIDATE_STATUS="partial"
+    log_warn "Host/AI routing candidate generation failed; raw recon remains available"
+fi
+HOST_PIVOT_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/host_pivot_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
+AI_ASSET_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/ai_asset_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
+record_recon_phase \
+    routing_candidates \
+    "$ROUTING_CANDIDATE_STATUS" \
+    "recon/${RECON_TARGET_KEY}/exposure/" \
+    "$((HOST_PIVOT_CANDIDATES + AI_ASSET_CANDIDATES))" \
+    "builds evidence-backed candidates only; Host/SNI/VirtualHost and AI behavior validation remain Autopilot lanes"
+emit_claude_hint \
+    phase                 routing_candidates \
+    host_pivot_candidates "$HOST_PIVOT_CANDIDATES" \
+    ai_asset_candidates   "$AI_ASSET_CANDIDATES" \
+    active_probing        "false"
+emit_claude_hint_actions \
+    "review Host pivot candidates only with default-vhost/CDN/error-page controls" \
+    "route AI candidates through web-llm-tool-chains before behavioral validation"
+
+# ============================================================
 # Optional post-run storage guard
 # ============================================================
 post_compress_raw_recon_urls "$RECON_DIR"
@@ -2725,6 +3033,22 @@ record_recon_phase \
     "state/${RECON_TARGET_KEY}/surface-projection.json" \
     0 \
     "derived cache only; failure is recoverable and does not close attack surface"
+
+RECON_ELAPSED_SECONDS=$(( $(date +%s) - RECON_STARTED_EPOCH ))
+RECON_BUDGET_STATUS="ok"
+[ "$RECON_ELAPSED_SECONDS" -gt "$RECON_SOFT_BUDGET_SECONDS" ] && RECON_BUDGET_STATUS="partial"
+record_recon_phase \
+    run_budget \
+    "$RECON_BUDGET_STATUS" \
+    "recon/${RECON_TARGET_KEY}/recon_manifest.jsonl" \
+    0 \
+    "elapsed_seconds=${RECON_ELAPSED_SECONDS}; soft_budget_seconds=${RECON_SOFT_BUDGET_SECONDS}; soft target never deletes raw surface"
+emit_claude_hint \
+    phase               run_budget \
+    profile             "$RECON_PROFILE" \
+    elapsed_seconds     "$RECON_ELAPSED_SECONDS" \
+    soft_budget_seconds "$RECON_SOFT_BUDGET_SECONDS" \
+    soft_budget_status  "$RECON_BUDGET_STATUS"
 
 # ============================================================
 # Summary

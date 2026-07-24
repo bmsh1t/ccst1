@@ -199,6 +199,8 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
     cloud = _count_recon_artifact(recon_artifacts, "cloud_storage_candidates")
     s3 = _count_recon_artifact(recon_artifacts, "s3_bucket_candidates")
     external_hosts = _count_recon_artifact(recon_artifacts, "external_service_hosts")
+    host_pivots = _count_recon_artifact(recon_artifacts, "host_pivot_candidates")
+    ai_assets = _count_recon_artifact(recon_artifacts, "ai_asset_candidates")
     emails = _count_recon_artifact(recon_artifacts, "identity_emails")
     leaksearch = _count_recon_artifact(recon_artifacts, "leaksearch_hits")
     cloud_enum = _count_recon_artifact(recon_artifacts, "cloud_enum_hits")
@@ -319,6 +321,43 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
                 "use these to focus hypotheses rather than to force a live exploit path."
             ),
             "evidence": f"{emails + leaksearch + cloud_enum} signal line(s)",
+        })
+
+    if host_pivots > 0:
+        leads.append({
+            "source": "recon_routing_candidate",
+            "title": "Host/SNI/VirtualHost pivot evidence is available",
+            "category": "host-pivot",
+            "priority": "high",
+            "artifact": f"recon/{storage_key}/exposure/host_pivot_candidates.jsonl",
+            "next_action": (
+                f"review recon/{storage_key}/exposure/host_pivot_candidates.jsonl; select only "
+                "evidence-backed Host Header, SNI, or VirtualHost differentials and keep a "
+                "default-vhost/CDN/error-page control"
+            ),
+            "rationale": (
+                f"{host_pivots} low-cost candidate(s) were derived from existing origin, shared-IP, "
+                "CNAME, or certificate facts; no active pivot has been validated yet."
+            ),
+            "evidence": f"{host_pivots} candidate row(s)",
+        })
+
+    if ai_assets > 0:
+        leads.append({
+            "source": "recon_routing_candidate",
+            "title": "AI/LLM application or service candidates are available",
+            "category": "ai-asset",
+            "priority": "high",
+            "artifact": f"recon/{storage_key}/exposure/ai_asset_candidates.jsonl",
+            "next_action": (
+                f"review recon/{storage_key}/exposure/ai_asset_candidates.jsonl and route selected "
+                "Chat/RAG/model/API/upload/tool-use evidence through web-llm-tool-chains"
+            ),
+            "rationale": (
+                f"{ai_assets} title/tech/path/schema/browser/source candidate(s) were observed; "
+                "product strings and status codes are discovery facts, not vulnerability proof."
+            ),
+            "evidence": f"{ai_assets} candidate row(s)",
         })
 
     return leads
@@ -2445,7 +2484,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
         lines.append("Recon Cache:")
         lines.append(
             f"- Hosts: {counts.get('hosts', 0)}, "
-            f"surface inputs: {counts.get('api_urls', 0) + counts.get('param_urls', 0) + counts.get('js_endpoints', 0) + counts.get('browser_xhr_urls', 0) + counts.get('browser_api_urls', 0) + counts.get('ffuf_observations', 0)}, "
+            f"surface inputs: {counts.get('api_urls', 0) + counts.get('param_urls', 0) + counts.get('js_files', 0) + counts.get('js_endpoints', 0) + counts.get('browser_xhr_urls', 0) + counts.get('browser_api_urls', 0) + counts.get('ffuf_observations', 0)}, "
             f"structured findings: {counts.get('structured_findings', 0)}, "
             f"ports: {counts.get('open_ports', 0)}, "
             f"waf: {counts.get('waf_hits', 0)}, "

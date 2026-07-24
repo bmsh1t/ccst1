@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import random
 
@@ -77,6 +78,37 @@ def test_exact_duplicates_merge_provenance_while_all_variants_remain(tmp_path):
     assert result["summary"]["duplicate_key_urls"] == 2
     assert result["summary"]["encoded_query_urls"] == 2
     assert result["summary"]["non_default_port_urls"] == 1
+
+
+def test_collector_sources_and_gzip_merge_exact_url_provenance(tmp_path):
+    recon, base, _variants = _write_inputs(tmp_path)
+    (recon / "urls" / "gau.txt").write_text(base + "\n", encoding="utf-8")
+    with gzip.open(recon / "urls" / "waymore.txt.gz", "wt", encoding="utf-8") as handle:
+        handle.write(base + "\n")
+    (recon / "urls" / "js_files.txt").write_text(
+        "https://api.target.com/static/app.js\n",
+        encoding="utf-8",
+    )
+
+    build_surface_index(tmp_path, "target.com")
+    rows = {item["url"]: item for item in iter_surface_index(tmp_path, "target.com")}
+
+    assert {"gau", "waymore", "api", "param", "browser_xhr", "scanner"}.issubset(
+        rows[base]["sources"]
+    )
+    assert rows["https://api.target.com/static/app.js"]["sources"] == ["js_inventory"]
+
+
+def test_empty_plain_collector_does_not_hide_existing_gzip_archive(tmp_path):
+    recon, base, _variants = _write_inputs(tmp_path)
+    (recon / "urls" / "gau.txt").write_text("", encoding="utf-8")
+    with gzip.open(recon / "urls" / "gau.txt.gz", "wt", encoding="utf-8") as handle:
+        handle.write(base + "\n")
+
+    build_surface_index(tmp_path, "target.com")
+    rows = {item["url"]: item for item in iter_surface_index(tmp_path, "target.com")}
+
+    assert "gau" in rows[base]["sources"]
 
 
 def test_shape_groups_query_order_without_deleting_raw_identity(tmp_path):

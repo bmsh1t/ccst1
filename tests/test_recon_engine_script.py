@@ -1,5 +1,7 @@
 """Regression tests for recon_engine.sh shell pitfalls."""
 
+import gzip
+import subprocess
 from pathlib import Path
 
 
@@ -11,7 +13,9 @@ def test_recon_engine_guards_common_set_e_pitfalls():
     assert 'TARGET_KIND="domain"' in text
     assert 'TARGET_KIND="ip"' in text
     assert 'TARGET_KIND="cidr"' in text
-    assert 'cat "$RECON_DIR/subdomains/"*.txt 2>/dev/null | sort -u > "$RECON_DIR/subdomains/all.txt" || true' in text
+    assert '"$RECON_DIR/subdomains/subfinder.txt" \\' in text
+    assert '"$RECON_DIR/subdomains/wayback_subs.txt" \\' in text
+    assert "2>/dev/null | awk 'NF' | sort -u > \"$RECON_DIR/subdomains/all.txt\" || true" in text
     assert '"$HTTPX_BIN" -l "$HTTPX_INPUT_FILE"' in text
     assert "resolve_pd_httpx()" in text
     assert 'FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))' in text
@@ -29,7 +33,7 @@ def test_recon_engine_has_timeout_compat_helper():
     assert "timeout_bin()" in text
     assert "gtimeout" in text
     assert "run_with_timeout()" in text
-    assert "run_with_timeout 300 amass enum -passive" not in text
+    assert "run_with_timeout 300 amass enum -passive" in text
     assert 'NAABU_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 120 || echo 300)' not in text
 
 
@@ -90,14 +94,10 @@ def test_recon_engine_preserves_host_port_lab_url_seed():
     assert 'TARGET_HTTP_SEED="http://$TARGET"' in text
     assert 'TARGET_EXPLICIT_PORT="$TARGET_PORT_PART"' in text
     assert 'log_ok "URL target prepared for probing: 1 URL"' in text
-    assert '[ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]' in text
     assert 'Skipping broad naabu scan for exact URL/explicit-port target' in text
     assert 'Skipping broad nmap scan for exact URL/explicit-port target' in text
     assert 'open_ports_explicit.txt' in text
-    assert '[ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]' in text
-    assert '[ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]' in text
-    assert '[ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]' in text
-    assert '[ "$TARGET_KIND" = "ip" ] || [ "$TARGET_KIND" = "cidr" ] || [ "$TARGET_KIND" = "url" ]' in text
+    assert text.count('[ "$TARGET_KIND" = "domain" ] || return 4') >= 3
     assert 'printf \'%s\\n\' "$TARGET_HTTP_SEED" > "$RECON_DIR/live/seed_urls.txt"' in text
     assert "seed_http_code=" in text
     assert "curl --noproxy '*' -sS -o /dev/null -w '%{http_code}'" in text
@@ -160,7 +160,7 @@ def test_recon_engine_supports_primary_domain_batch_and_domain_waymore():
     assert 'export PATH="$HOME/.local/bin:$HOME/go/bin:$SHARED_TOOLS_DIR/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"' in text
     assert "run_domain_list_batch()" in text
     assert 'if [ -f "$TARGET" ] && [ -r "$TARGET" ]; then' in text
-    assert 'run_domain_list_batch "$TARGET" "$QUICK_MODE"' in text
+    assert 'run_domain_list_batch "$TARGET" "$RECON_MODE_FLAG"' in text
     assert "from tools.target_paths import migrate_legacy_list_storage, target_storage_key" in text
     assert "migrate_legacy_list_storage(base_dir, target)" in text
     assert 'batch_manifest.jsonl' in text
@@ -177,7 +177,7 @@ def test_recon_engine_supports_primary_domain_batch_and_domain_waymore():
     assert "BBHUNT_BATCH_RESET" in text
     assert 'pending_targets.txt' in text
     assert 'current_batch_targets.txt' in text
-    assert 'bash "$SCRIPT_PATH" "$batch_target" "$quick_mode" </dev/null' in text
+    assert 'bash "$SCRIPT_PATH" "$batch_target" "$mode_flag" </dev/null' in text
     assert 'grep -Fvx -f "$processed_file" "$targets_file"' in text
     assert 'head -n "$batch_size" "$pending_file" > "$run_targets_file"' in text
     assert 'echo "- Remaining: $remaining_total"' in text
@@ -188,11 +188,10 @@ def test_recon_engine_supports_primary_domain_batch_and_domain_waymore():
     assert 'note                 "targets.txt is treated as a primary-domain batch; each target has its own recon/<domain>/"' in text
     assert 'TARGET_KIND="list"' not in text
     assert "Domain-list target" not in text
-    assert '[ "$TARGET_KIND" = "domain" ] && WAYMORE_INPUT="$TARGET"' in text
-    assert 'log_step "Running waymore (historical URLs)..."' in text
-    assert 'waymore \\' in text
-    assert '-oU "$RECON_DIR/urls/waymore.txt"' in text
-    assert 'log_warn "Skipping waymore for $TARGET_KIND target — historical URL collection expects a domain"' in text
+    assert "collect_waymore_urls()" in text
+    assert 'run_with_timeout 240 waymore \\' in text
+    assert '-oU "$output"' in text
+    assert 'start_collector waymore "$RECON_DIR/urls/waymore.txt"' in text
 
 
 def test_recon_engine_runs_shared_nonfatal_surface_finalizer():
@@ -296,6 +295,107 @@ def test_recon_engine_records_phase_manifest_without_value_judgment():
     assert "raw all.txt remains the lossless backstop" in text
 
 
+def test_recon_engine_profiles_collectors_and_normal_js_handoff():
+    text = (Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'RECON_MODE_FLAG="${2:-}"' in text
+    for flag in ("--quick", "--normal", "--deep", "--full"):
+        assert flag in text
+    assert '"schema_version": 1' in text
+    assert '"record_type": "recon_collector"' in text
+    assert "start_collector()" in text
+    assert "wait_collector_group()" in text
+    assert 'temp_artifact="$(mktemp' in text
+    assert 'prior artifact preserved' in text
+    assert 'gzip -cd "${artifact}.gz"' in text
+    assert ': > "$meta_file"' in text
+    for source in ("gau", "wayback", "waymore", "katana"):
+        assert f': > "$RECON_DIR/urls/{source}.txt"' not in text
+    assert ': > "$RECON_DIR/js/deep_candidates.txt"' not in text
+    assert 'if [ "$RECON_PROFILE" = "normal" ]; then' in text
+    assert '"$RECON_DIR/js/deep_candidates.txt"' in text
+    assert 'JS_MANIFEST_COUNT="$JS_DEEP_CANDIDATES"' in text
+    assert 'tools/action_queue.py" --repo-root "$BASE_DIR" add' in text
+    assert 'python3 "$BASE_DIR/tools/recon_candidates.py"' in text
+
+
+def test_collector_runtime_preserves_plain_and_gzip_artifacts_by_exit_status(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    prefix = script.read_text(encoding="utf-8").split('TARGET="${1:?', 1)[0]
+    harness = tmp_path / "collector-functions.sh"
+    harness.write_text(prefix, encoding="utf-8")
+    recon_dir = tmp_path / "recon"
+    (recon_dir / "logs").mkdir(parents=True)
+    (recon_dir / "urls").mkdir()
+
+    def collector(name: str, body: str, code: int) -> Path:
+        path = tmp_path / name
+        path.write_text(
+            "#!/usr/bin/env bash\nset -eu\n" + body + f"\nexit {code}\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+        return path
+
+    timeout_collector = collector("timeout.sh", 'printf "new\\n" > "$1"', 124)
+    unavailable_collector = collector("unavailable.sh", ":", 3)
+    error_collector = collector("error.sh", ":", 1)
+    success_collector = collector("success.sh", 'printf "fresh\\n" > "$1"', 0)
+
+    gau = recon_dir / "urls" / "gau.txt"
+    with gzip.open(str(gau) + ".gz", "wt", encoding="utf-8") as handle:
+        handle.write("old\n")
+    wayback = recon_dir / "urls" / "wayback.txt"
+    with gzip.open(str(wayback) + ".gz", "wt", encoding="utf-8") as handle:
+        handle.write("historic\n")
+    waymore = recon_dir / "urls" / "waymore.txt"
+    waymore.write_text("keep\n", encoding="utf-8")
+    katana = recon_dir / "urls" / "katana.txt"
+    katana.write_text("replace\n", encoding="utf-8")
+
+    subprocess.run(
+        [
+            "bash",
+            "-c",
+            """
+source "$1"
+RECON_DIR="$2"
+RECON_MANIFEST=""
+TARGET="target.com"
+RECON_PROFILE="normal"
+RECON_TARGET_KEY="target.com"
+run_collector_task "$RECON_DIR/urls/gau.txt" "$RECON_DIR/logs/gau.status" "$3"
+run_collector_task "$RECON_DIR/urls/wayback.txt" "$RECON_DIR/logs/wayback.status" "$4"
+run_collector_task "$RECON_DIR/urls/waymore.txt" "$RECON_DIR/logs/waymore.status" "$5"
+run_collector_task "$RECON_DIR/urls/katana.txt" "$RECON_DIR/logs/katana.status" "$6"
+""",
+            "bash",
+            str(harness),
+            str(recon_dir),
+            str(timeout_collector),
+            str(unavailable_collector),
+            str(error_collector),
+            str(success_collector),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert gau.read_text(encoding="utf-8").splitlines() == ["old", "new"]
+    assert not Path(str(gau) + ".gz").exists()
+    assert (recon_dir / "logs" / "gau.status").read_text().startswith("partial\t")
+    assert not wayback.exists()
+    assert Path(str(wayback) + ".gz").exists()
+    assert (recon_dir / "logs" / "wayback.status").read_text().startswith("unavailable\t")
+    assert waymore.read_text(encoding="utf-8") == "keep\n"
+    assert (recon_dir / "logs" / "waymore.status").read_text().startswith("error\t")
+    assert katana.read_text(encoding="utf-8") == "fresh\n"
+    assert (recon_dir / "logs" / "katana.status").read_text().startswith("ok\t")
+
+
 def test_recon_engine_defaults_to_post_run_raw_url_compression():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
@@ -375,23 +475,16 @@ def test_recon_engine_supports_naabu_and_linkfinder():
     assert 'LinkFinder endpoints: $(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt"' in text
 
 
-def test_recon_engine_caps_katana_at_5min_and_leaves_amass_uncapped():
-    """katana is wrapped in `timeout 300` (cherry-pick of upstream 2a826ad)
-    to prevent infinite crawl on content-heavy sites. amass remains uncapped
-    because its own passive mode is internally bounded."""
+def test_recon_engine_caps_katana_and_amass_collectors():
+    """Active crawl and passive amass both have independent hard timeouts."""
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
 
-    assert 'log_step "Running amass (passive)..."' in text
-    assert 'amass enum -passive -d "$TARGET" -o "$RECON_DIR/subdomains/amass.txt"' in text
-    assert 'timeout 300 amass' not in text
-    assert 'run_with_timeout 300 amass enum -passive' not in text
+    assert 'collect_amass()' in text
+    assert 'run_with_timeout 300 amass enum -passive -d "$TARGET"' in text
 
-    # katana invocation MUST be wrapped in `timeout 300` going forward.
-    assert 'log_step "Running katana (active crawl, 5min cap, top 50 hosts)..."' in text
-    assert 'timeout 300 katana \\' in text
-    # Unwrapped katana invocation must NOT remain.
-    assert text.count('    katana \\') == 0 or 'timeout 300 katana \\' in text
+    assert 'collect_katana_urls()' in text
+    assert 'run_with_timeout 300 katana \\' in text
 
 
 def test_recon_engine_defines_claude_hint_emitter():
