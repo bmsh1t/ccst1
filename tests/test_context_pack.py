@@ -251,6 +251,79 @@ def test_access_control_method_focus_routes_to_auth_access_card(tmp_path):
     assert "rules/playbook-router.md" in pack["required_checks"]
 
 
+def test_presigned_url_routes_to_existing_authz_cards_and_capability_gate(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="S3 presigned upload URL object tenant method expiry content-type",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == [
+        "knowledge/cards/api-idor.md",
+        "knowledge/cards/auth-access.md",
+    ]
+    assert any(
+        "bearer capability" in seed
+        and "owner/peer" in seed
+        and "修改已签名 query" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
+    assert "rules/playbook-router.md" in pack["required_checks"]
+
+
+def test_observability_ids_route_to_idor_without_becoming_idor_evidence(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="Jaeger OpenTelemetry trace ID exposes order object identifier",
+    )
+    all_cards = pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert "knowledge/cards/api-idor.md" in all_cards
+    assert "knowledge/cards/information-disclosure-source-config.md" in all_cards
+    assert "knowledge/cards/path-pattern-management-exposure.md" in all_cards
+    assert any(
+        "只是 ID 来源" in seed and "owner/peer actor-object replay" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
+    assert "rules/playbook-router.md" in pack["required_checks"]
+
+
+def test_opa_cedar_routes_to_existing_authz_cards_and_pdp_pep_gate(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="OPA Cedar authorization policy decision enforcement PDP PEP tenant",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["knowledge_cards"] == [
+        "knowledge/cards/auth-access.md",
+        "knowledge/cards/api-idor.md",
+    ]
+    assert any(
+        "PDP" in seed and "PEP" in seed and "具体未授权数据或状态影响" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
+    assert "rules/playbook-router.md" in pack["required_checks"]
+
+
+def test_broad_signed_trace_and_policy_words_do_not_trigger_api_authz_refinements(tmp_path):
+    cases = (
+        ("signed payload", ("knowledge/cards/api-idor.md", "knowledge/cards/auth-access.md")),
+        ("trace", ("knowledge/cards/api-idor.md",)),
+        ("policy decision", ("knowledge/cards/api-idor.md", "knowledge/cards/auth-access.md")),
+        ("cedar tree", ("knowledge/cards/api-idor.md", "knowledge/cards/auth-access.md")),
+    )
+    for focus, forbidden_cards in cases:
+        pack = build_context_pack(tmp_path, target="target.com", focus=focus)
+        all_cards = pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+
+        assert not any(card in all_cards for card in forbidden_cards), focus
+
+
 def test_missing_parameter_focus_routes_to_discovery_card(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/search/records",
@@ -1382,3 +1455,90 @@ def test_bare_package_build_and_image_do_not_route_to_public_artifact_card(tmp_p
         all_cards = pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
 
         assert "knowledge/cards/public-package-artifact-intelligence.md" not in all_cards
+
+
+def test_js_runtime_signature_signals_route_to_bounded_recon_branch(tmp_path):
+    signals = (
+        "js reverse request chain",
+        "frontend signature reconstruction",
+        "request initiator and local JS rebuild",
+        "browser runtime hook for encrypted parameter",
+        "first divergence in client request generation",
+    )
+
+    for focus in signals:
+        pack = build_context_pack(tmp_path, target="target.com", focus=focus)
+        assert pack["selected_skill"] == "skills/web2-recon/SKILL.md", focus
+        assert pack["knowledge_cards"][0] == (
+            "knowledge/cards/js-runtime-signature-reconstruction.md"
+        ), focus
+        assert any("first divergence" in seed for seed in pack["hypothesis_seeds"]), focus
+
+
+def test_js_runtime_signature_broad_words_do_not_route_new_card(tmp_path):
+    for focus in (
+        "signature",
+        "encryption",
+        "hook",
+        "browser " + ("x" * 121) + " runtime hook",
+    ):
+        pack = build_context_pack(tmp_path, target="target.com", focus=focus)
+        all_cards = pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+        assert "knowledge/cards/js-runtime-signature-reconstruction.md" not in all_cards
+
+
+def test_custom_protocol_signals_route_to_bounded_recon_branch(tmp_path):
+    signals = (
+        "custom binary protocol frame recovery",
+        "protocol reverse and message dictionary",
+        "PCAP framing with opcode and checksum",
+        "MessagePack length prefix and state recovery",
+        "private RPC TLV endian field",
+    )
+
+    for focus in signals:
+        pack = build_context_pack(tmp_path, target="target.com", focus=focus)
+        assert pack["selected_skill"] == "skills/web2-recon/SKILL.md", focus
+        assert pack["knowledge_cards"][0] == (
+            "knowledge/cards/custom-protocol-state-recovery.md"
+        ), focus
+        assert any("TCP segmentation" in seed for seed in pack["hypothesis_seeds"]), focus
+
+
+def test_custom_protocol_broad_words_do_not_route_new_card(tmp_path):
+    for focus in (
+        "pcap",
+        "protobuf",
+        "state machine",
+        "handshake",
+        "pcap " + ("x" * 121) + " opcode",
+    ):
+        pack = build_context_pack(tmp_path, target="target.com", focus=focus)
+        all_cards = pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+        assert "knowledge/cards/custom-protocol-state-recovery.md" not in all_cards
+
+
+def test_custom_protocol_keeps_grpc_and_websocket_specialized_cards(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="custom binary protocol frame layout with gRPC protobuf and WebSocket",
+    )
+
+    all_cards = pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+    assert "knowledge/cards/custom-protocol-state-recovery.md" in all_cards
+    assert "knowledge/cards/grpc-api-boundaries.md" in all_cards
+    assert "knowledge/cards/websocket-realtime-api.md" in all_cards
+
+
+def test_target_memory_runtime_signal_routes_without_explicit_focus(tmp_path):
+    _seed_target_memory(
+        tmp_path,
+        "target.com",
+        {"active_leads": [{"text": "request initiator captured; local JS rebuild pending"}]},
+    )
+
+    pack = build_context_pack(tmp_path, target="target.com")
+
+    assert pack["selected_skill"] == "skills/web2-recon/SKILL.md"
+    assert "knowledge/cards/js-runtime-signature-reconstruction.md" in pack["knowledge_cards"]

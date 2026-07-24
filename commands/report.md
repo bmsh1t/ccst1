@@ -1,5 +1,5 @@
 ---
-description: Draft a submission-ready vulnerability report from validated evidence. Supports H1/Bugcrowd/Intigriti/Immunefi styles, CVSS 4.0, PoC, and impact. Run /validate first. Usage: /report
+description: Draft a validated bounty submission, local write-up, or formal penetration-test report. Supports evidence traceability, CVSS, retest, and closeout. Run /validate first. Usage: /report
 ---
 
 # /report
@@ -64,6 +64,40 @@ write-up should show:
 Use local write-up language by default; switch to a bounty-platform
 submission format only when the user explicitly requests that format.
 
+## Formal Penetration-Test Delivery
+
+When the requested deliverable is a formal engagement report, keep the same
+validated finding lifecycle and render an engagement-level document with:
+
+1. Executive Summary
+2. Scope
+3. Limitations
+4. Assumptions
+5. Methodology and Coverage
+6. Attack Chains
+7. Technical Findings
+8. Retest and Closeout
+9. Evidence Manifest
+10. Strategic Recommendations
+
+Do not create a second report status or copy evidence into a new store. Build
+the report from the existing target scope, finding index, Evidence Ledger,
+validation summaries, target memory, and report index. State exact in-scope and
+excluded assets, testing window, access/credential assumptions, unavailable or
+blocked coverage, and residual uncertainty.
+
+Attack-chain narratives must reference the validated finding IDs and evidence
+artifacts for every step; do not turn an unvalidated lead into a chain link.
+Retest/closeout records the UTC retest time, tested version/environment, result
+(`fixed`, `partially_fixed`, `not_fixed`, or `not_retested`), residual risk, and
+supporting artifact references without changing the canonical finding status.
+
+The Evidence Manifest lists the existing artifact path, UTC capture time,
+collector/source, purpose, and SHA-256. Redact credentials, session material,
+tokens, PII, and unrelated customer data in the delivered copy while retaining
+traceability to the controlled original. Never place raw secrets in the report
+or hash manifest.
+
 ## Usage
 
 ```
@@ -71,7 +105,7 @@ submission format only when the user explicitly requests that format.
 ```
 
 Provide when prompted:
-- Platform (HackerOne / Bugcrowd / Intigriti / Immunefi)
+- Delivery format (formal penetration test / local write-up / HackerOne / Bugcrowd / Intigriti / Immunefi)
 - Bug class
 - Affected endpoint
 - Your two test accounts and their IDs

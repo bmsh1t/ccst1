@@ -1,11 +1,63 @@
 ---
 name: report-writing
-description: Bug bounty report writing for H1/Bugcrowd/Intigriti/Immunefi — report templates, human tone guidelines, impact-first writing, CVSS 3.1 scoring, title formula, impact statement formula, severity decision guide, downgrade counters, pre-submit checklist. Use after validating a finding and before submitting. Never use "could potentially" — prove it or don't report.
+description: Validated vulnerability reporting for formal penetration tests and H1/Bugcrowd/Intigriti/Immunefi submissions. Covers evidence traceability, attack chains, retest/closeout, impact-first writing, CVSS, and pre-delivery checks. Use after validating findings. Never use theoretical impact language.
 ---
 
 # REPORT WRITING
 
 Impact-first. Human tone. No theoretical language. Triagers are people.
+
+---
+
+## FORMAL PENETRATION-TEST REPORT
+
+Use this branch when the requested deliverable is an engagement report rather
+than a single bounty submission. Reuse the canonical finding index, Evidence
+Ledger, validation summaries, target memory, and report index; do not create a
+second finding/report lifecycle or duplicate evidence state.
+
+```markdown
+# [Engagement Name] Penetration Test Report
+
+## Executive Summary
+[Objectives, demonstrated business impact, overall risk, and current posture.]
+
+## Scope
+[In-scope assets, applications, APIs, roles, testing window, and explicit exclusions.]
+
+## Limitations
+[Unavailable accounts, blocked paths, time/environment constraints, and untested coverage.]
+
+## Assumptions
+[Provided access, test data, architecture facts, and dependencies accepted for this assessment.]
+
+## Methodology and Coverage
+[Phases performed and evidence-backed coverage; do not imply exhaustive testing.]
+
+## Attack Chains
+[Ordered validated finding IDs, preconditions, transitions, evidence references, and combined impact.]
+
+## Technical Findings
+[One section per validated finding: evidence, reproduction, impact, severity, and remediation.]
+
+## Retest and Closeout
+[UTC time, version/environment, fixed/partially_fixed/not_fixed/not_retested, residual risk, artifact refs.]
+
+## Evidence Manifest
+[Artifact path, UTC capture time, collector/source, purpose, SHA-256, and redaction note.]
+
+## Strategic Recommendations
+[Prioritized systemic controls derived from demonstrated root causes.]
+```
+
+### Formal delivery rules
+
+- Scope, Limitations, and Assumptions are factual engagement boundaries, not boilerplate.
+- Every attack-chain step references a validated finding ID and existing artifact; a Lead/Signal is not a chain link.
+- Retest results describe the observed closeout outcome without inventing a new canonical finding status.
+- Evidence custody uses existing artifact paths, UTC timestamps, collector/source, and SHA-256 hashes.
+- Delivered evidence is minimized and redacted for credentials, tokens, session material, PII, and unrelated customer data; never place raw secrets in the report or manifest.
+- Preserve traceability to controlled originals instead of copying evidence into a second store.
 
 ---
 

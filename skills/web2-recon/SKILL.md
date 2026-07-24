@@ -234,6 +234,31 @@ python3 ~/tools/LinkFinder/linkfinder.py -i "https://target.com" -d -o cli
 deactivate
 ```
 
+### 可选：动态 JS 请求签名链重建
+
+只在已观察到目标请求、脚本/initiator、运行时参数，或 JS/browser/client 语境中的动态签名、加密参数和 runtime hook 信号时启用。默认 timebox 为 30 分钟；裸 `signature`、`encryption` 或 `hook` 不触发。
+
+```text
+Observe  -> 固定正常请求、initiator、脚本 URL/hash 和入口候选
+Capture  -> 用当前可用 browser/DevTools 能力做最小断点、hook 或运行时采样
+Rebuild  -> 只按已观测的输入、调用顺序和依赖建立本地复现
+Patch    -> 每轮只补一个有证据的环境缺口，记录 first divergence 是否前移
+DeepDive -> 稳定复现后才做 AST/去混淆或下游安全语义验证
+```
+
+输出写入现有 Lead/Candidate 证据：request shape、script/hash、call chain、sample I/O、环境依赖、重建状态、证据路径、next action 和 stop condition。连续两轮 first divergence 未前移且没有新运行时证据时停止；稳定输出只作为签名范围、认证、对象或业务差异验证的输入。详细门见 `knowledge/cards/js-runtime-signature-reconstruction.md`。
+
+### 可选：自定义协议帧与状态恢复
+
+只在有 provenance 的 PCAP/PCAPNG、代理导出、客户端日志、原始帧、source 或二进制，并出现明确 framing/message/state 信号时启用。默认 timebox 为 45 分钟；裸 `pcap`、`protobuf`、`state machine` 或 `handshake` 不触发。
+
+```text
+capture -> TCP stream 重组 -> framing -> message dictionary -> state machine
+        -> 同类/异类消息 + truncated/invalid controls -> harmless replay
+```
+
+先保存 hash、会话、方向、时序和 transport，再区分 TCP segmentation/reassembly 与应用帧，逐步验证 magic、length/endian、TLV、opcode、sequence、checksum/CRC、compression/encryption。输出仍进入现有 evidence/Lead/Candidate；只有多份消息和 negative controls 都能稳定解码、且动作无副作用时才做最小 replay。gRPC/WebSocket 分别转现有专卡。详细门见 `knowledge/cards/custom-protocol-state-recovery.md`。
+
 ### 可选：公开包与历史发布物
 
 只在官方源码/文档、lockfile/SBOM、JS、镜像引用或已有 package namespace 信号出现时启用；它不是每个目标默认必跑的 Recon 步骤。先确认 namespace、package/image 与目标的直接归属，名字相似或普通第三方依赖不足以触发。

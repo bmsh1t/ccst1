@@ -171,6 +171,10 @@ KNOWN_SKILL_OR_FOCUS = {
     "grpc",
     "grpc-web",
     "protobuf",
+    "js-reverse",
+    "client-signature",
+    "custom-binary-protocol",
+    "protocol-reverse",
     "odata",
     "ldap-injection",
     "xpath-injection",
@@ -426,6 +430,59 @@ PUBLIC_PACKAGE_ARTIFACT_RE = re.compile(
     re.I,
 )
 
+JS_RUNTIME_SIGNATURE_RE = re.compile(
+    r"\b(?:js|javascript)[-_ ]?reverse(?:[-_ ]?engineering)?\b|"
+    r"\b(?:client|frontend)[-_ ]?signature\b|"
+    r"\brequest[-_ ]?initiator\b|\bfirst[-_ ]?divergence\b|"
+    r"\blocal[-_ ]?js[-_ ]?rebuild\b|"
+    r"\b(?:js|javascript|browser|client|frontend)\b[\s\S]{0,120}"
+    r"\b(?:encrypted[-_ ]?(?:param(?:eter)?|payload)|runtime[-_ ]?(?:hook|sampling|capture)|"
+    r"environment[-_ ]?patch|signature[-_ ]?(?:reconstruction|rebuild))\b|"
+    r"\b(?:encrypted[-_ ]?(?:param(?:eter)?|payload)|runtime[-_ ]?(?:hook|sampling|capture)|"
+    r"environment[-_ ]?patch|signature[-_ ]?(?:reconstruction|rebuild))\b[\s\S]{0,120}"
+    r"\b(?:js|javascript|browser|client|frontend)\b",
+    re.I,
+)
+
+CUSTOM_PROTOCOL_STATE_RE = re.compile(
+    r"\b(?:custom[-_ ]?binary[-_ ]?protocol|protocol[-_ ]?reverse|binary[-_ ]?frames?|"
+    r"frame[-_ ]?layout|message[-_ ]?dictionary)\b|"
+    r"\b(?:pcap(?:ng)?|tshark|wireshark|messagepack|flatbuffers?|mqtt|private[-_ ]?rpc)\b"
+    r"[\s\S]{0,120}\b(?:framing|opcode|tlv|length[-_ ]?(?:prefix|field)|endian(?:ness)?|"
+    r"checksum|crc|state[-_ ]?(?:recovery|transition))\b|"
+    r"\b(?:framing|opcode|tlv|length[-_ ]?(?:prefix|field)|endian(?:ness)?|checksum|crc|"
+    r"state[-_ ]?(?:recovery|transition))\b[\s\S]{0,120}"
+    r"\b(?:pcap(?:ng)?|tshark|wireshark|messagepack|flatbuffers?|mqtt|private[-_ ]?rpc)\b",
+    re.I,
+)
+
+PRESIGNED_URL_CAPABILITY_RE = re.compile(
+    r"\b(?:pre[-_ ]?signed|presigned|signed)[-_ ]?(?:url|download|upload)\b|"
+    r"\b(?:s3|blob|object[-_ ]?storage)\b[\s\S]{0,120}"
+    r"\b(?:presign(?:ed)?|signed[-_ ]?(?:url|download|upload))\b",
+    re.I,
+)
+
+OBSERVABILITY_TRACE_RE = re.compile(
+    r"\b(?:zipkin|jaeger|open[-_ ]?telemetry|opentelemetry|otel|"
+    r"distributed[-_ ]?trac(?:e|ing)|trace[-_ ]?id|span[-_ ]?id)\b",
+    re.I,
+)
+
+EXTERNAL_AUTHZ_POLICY_RE = re.compile(
+    r"\b(?:open[-_ ]?policy[-_ ]?agent|opa|cedar)\b[\s\S]{0,120}"
+    r"\b(?:authz|authori[sz]ation|policy|decision|enforcement|pdp|pep)\b|"
+    r"\b(?:authz|authori[sz]ation|policy|decision|enforcement|pdp|pep)\b"
+    r"[\s\S]{0,120}\b(?:open[-_ ]?policy[-_ ]?agent|opa|cedar)\b",
+    re.I,
+)
+
+API_AUTHZ_REFINEMENT_RES = (
+    PRESIGNED_URL_CAPABILITY_RE,
+    OBSERVABILITY_TRACE_RE,
+    EXTERNAL_AUTHZ_POLICY_RE,
+)
+
 CARD_PATHS = load_card_paths(BASE_DIR)
 
 
@@ -497,6 +554,14 @@ REFERENCE_PATHS = {
 }
 
 DISTILLED_TOKEN_TO_CARDS = (
+    (JS_RUNTIME_SIGNATURE_RE, ("js-runtime-signature-reconstruction",)),
+    (CUSTOM_PROTOCOL_STATE_RE, ("custom-protocol-state-recovery",)),
+    (PRESIGNED_URL_CAPABILITY_RE, ("api-idor", "auth-access")),
+    (
+        OBSERVABILITY_TRACE_RE,
+        ("api-idor", "information-disclosure-source-config", "path-pattern-management-exposure"),
+    ),
+    (EXTERNAL_AUTHZ_POLICY_RE, ("auth-access", "api-idor")),
     (ODATA_BOUNDARY_RE, ("odata-query-boundaries",)),
     (LDAP_XPATH_BOUNDARY_RE, ("ldap-xpath-query-boundaries",)),
     (PUBLIC_PACKAGE_ARTIFACT_RE, ("public-package-artifact-intelligence",)),
@@ -1147,6 +1212,16 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
         or has_candidate
     ):
         return "triage-validation", "已有 candidate / validation 信号，本轮优先把候选证据过验证门。"
+    if JS_RUNTIME_SIGNATURE_RE.search(focus) or CUSTOM_PROTOCOL_STATE_RE.search(focus):
+        return "web2-recon", "用户 focus 指向运行时请求链或自定义协议恢复，先走有界 Recon 证据分支。"
+    if not focus.strip() and (
+        JS_RUNTIME_SIGNATURE_RE.search(blob) or CUSTOM_PROTOCOL_STATE_RE.search(blob)
+    ):
+        return "web2-recon", "目标证据出现运行时请求链或自定义协议信号，先补齐可复核的 Recon 输入。"
+    if any(pattern.search(focus) for pattern in API_AUTHZ_REFINEMENT_RES):
+        return "web2-vuln-classes", "用户 focus 指向 API capability、observability 标识或外部授权边界。"
+    if not focus.strip() and any(pattern.search(blob) for pattern in API_AUTHZ_REFINEMENT_RES):
+        return "web2-vuln-classes", "目标证据出现 API capability、observability 标识或外部授权边界。"
     if "web2-recon" in focus_l or "recon" == focus_l.strip():
         return "web2-recon", "用户 focus 指向 recon，需要先补攻击面输入再进入漏洞验证。"
     if PUBLIC_PACKAGE_ARTIFACT_RE.search(focus) or PUBLIC_PACKAGE_ARTIFACT_RE.search(blob):
@@ -1856,7 +1931,9 @@ def _select_cards_and_deferred(
     if not priority and re.search(r"\b(graphql|gql|mutation|subscription|introspection|global[_-]?id)\b", blob, re.I):
         priority.append("graphql")
     cards = _dedupe(focus_cards + priority + cards)
+    preserved_deferred: list[str] = []
     if not ranked.get("available"):
+        before_fallback = cards
         if skill == "web2-vuln-classes" and focus_cards:
             cards = focus_cards[:2]
         elif skill == "web2-vuln-classes" and len(cards) >= 2:
@@ -1865,8 +1942,15 @@ def _select_cards_and_deferred(
             cards = focus_cards[:2]
         else:
             cards = _dedupe((cards[:1] if cards else []) + ["coverage-prompts"])
+        preserved_deferred = [name for name in before_fallback if name not in cards]
     candidate_paths = [CARD_PATHS[name] for name in _dedupe(cards) if name in CARD_PATHS]
-    return _budget_knowledge_cards(candidate_paths, repo_root)
+    selected, deferred = _budget_knowledge_cards(candidate_paths, repo_root)
+    deferred.extend(
+        CARD_PATHS[name]
+        for name in preserved_deferred
+        if name in CARD_PATHS and CARD_PATHS[name] not in selected + deferred
+    )
+    return selected, deferred
 
 
 def _select_cards(
@@ -1890,7 +1974,11 @@ def _required_checks(skill: str, blob: str) -> list[str]:
     ]
     if skill == "triage-validation":
         checks.append("rules/reporting.md")
-    if re.search(r"\b(jwt|oauth|graphql|api[-_ ]?testing|api[-_ ]?test|business[-_ ]?logic|logic[-_ ]?flaws?|state[-_ ]?machine|workflow[-_ ]?validation|password[-_ ]?reset|forgot[-_ ]?password|account[-_ ]?recovery|username[-_ ]?enum(?:eration)?|credential[-_ ]?attack|brute[-_ ]?force|lockout|access[-_ ]?control|method[-_ ]?based[-_ ]?access|referer[-_ ]?based[-_ ]?access|url[-_ ]?based[-_ ]?access|ssrf|upload|url[-_ ]?fetch|webhook|xxe|xml[-_ ]?parser|path[-_ ]?traversal|lfi|file[-_ ]?read|ssti|deserialization|deserialize|nosql|host[-_ ]?header|request[-_ ]?smuggling|cache[-_ ]?(?:poisoning|deception)|cors|csrf|clickjacking|open[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|xss|csp|content[-_ ]?security[-_ ]?policy|dom[-_ ]?xss|websocket|information[-_ ]?disclosure|web[-_ ]?llm)\b", blob, re.I) or _has_web_llm_agent_signal(blob):
+    if (
+        re.search(r"\b(jwt|oauth|graphql|api[-_ ]?testing|api[-_ ]?test|business[-_ ]?logic|logic[-_ ]?flaws?|state[-_ ]?machine|workflow[-_ ]?validation|password[-_ ]?reset|forgot[-_ ]?password|account[-_ ]?recovery|username[-_ ]?enum(?:eration)?|credential[-_ ]?attack|brute[-_ ]?force|lockout|access[-_ ]?control|method[-_ ]?based[-_ ]?access|referer[-_ ]?based[-_ ]?access|url[-_ ]?based[-_ ]?access|ssrf|upload|url[-_ ]?fetch|webhook|xxe|xml[-_ ]?parser|path[-_ ]?traversal|lfi|file[-_ ]?read|ssti|deserialization|deserialize|nosql|host[-_ ]?header|request[-_ ]?smuggling|cache[-_ ]?(?:poisoning|deception)|cors|csrf|clickjacking|open[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|xss|csp|content[-_ ]?security[-_ ]?policy|dom[-_ ]?xss|websocket|information[-_ ]?disclosure|web[-_ ]?llm)\b", blob, re.I)
+        or any(pattern.search(blob) for pattern in API_AUTHZ_REFINEMENT_RES)
+        or _has_web_llm_agent_signal(blob)
+    ):
         checks.append("rules/playbook-router.md")
     return _dedupe(checks)
 
@@ -2102,6 +2190,14 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "对象/组织/租户 ID 是否只在前端约束，服务端是否重新绑定当前身份。",
             "export/download/report 类接口是否可通过 ID 或筛选条件读取其他主体数据。",
         ])
+        if PRESIGNED_URL_CAPABILITY_RE.search(blob):
+            seeds.append(
+                "Presigned URL 是 bearer capability：用分别签发的 owner/peer、对象/租户、method、expiry 和上传 key/size/content-type 做矩阵；修改已签名 query 后被拒绝不是主要授权证据。"
+            )
+        if OBSERVABILITY_TRACE_RE.search(blob):
+            seeds.append(
+                "Zipkin/Jaeger/OpenTelemetry 的 trace/object identifier 只是 ID 来源；IDOR 必须另做 owner/peer actor-object replay，trace 中敏感内容按信息泄露单独判断。"
+            )
         if NEXTJS_DATA_RE.search(blob):
             seeds.append("Next.js `/_next/data` / `__NEXT_DATA__` 必须比较 anonymous、owner、peer/cross-tenant 的对象与字段；JSON 200、build metadata 或当前 owner 数据不等于 IDOR。")
     if CARD_PATHS["auth-access"] in cards:
@@ -2109,6 +2205,10 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "同一 endpoint 在匿名、普通用户、低权限成员、管理员之间是否只有 UI 差异而缺少服务端差异。",
             "访问控制要对比 method/path/header 维度：GET vs POST、X-HTTP-Method-Override、X-Original-URL/X-Rewrite-URL、Referer 和直接 API/raw replay；浏览器 fetch 不能设置受限头时不要据此停止。",
         ])
+        if EXTERNAL_AUTHZ_POLICY_RE.search(blob):
+            seeds.append(
+                "OPA/Cedar 要逐跳对照 PDP 输入与 PEP 实际执行，检查 actor/action/object/tenant 缺失、gateway/backend/worker、policy/cache stale 和 canonicalization；Candidate 必须有具体未授权数据或状态影响。"
+            )
     if CARD_PATHS["auth-hidden-switches"] in cards:
         seeds.extend([
             "登录接口是否存在 UI 未传但后端读取的隐藏认证参数、模式、来源、渠道、provider 或 feature flag，能切换认证分支。",
@@ -2158,6 +2258,16 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "公开包/镜像先用官方链接、publisher、仓库 metadata 或目标直接引用确认归属；同名包、相似组织名和第三方依赖只算弱信号。",
             "历史发布物只选首版、上一个 major、迁移边界和最新版等代表样本，记录来源、版本、发布时间与 digest/SHA-256；仅解压做静态审查，不安装、执行 lifecycle script 或运行镜像。",
             "公开包版本只形成 Candidate 线索；必须在真实目标直接观测到精确组件/版本后才交给 /intel，静态 secret 命中继续走现有 triage。",
+        ])
+    if CARD_PATHS.get("js-runtime-signature-reconstruction") in cards:
+        seeds.extend([
+            "动态 JS 请求链先固定正常请求、request initiator、脚本 URL/hash 和运行时样本，再按 Observe -> Capture -> Rebuild -> Patch -> DeepDive 收敛；不要先模拟整个浏览器环境。",
+            "本地重建每次只补一个已观测的环境缺口，并记录 first divergence 是否前移；稳定 sample I/O 只是下游签名、认证或业务差异验证的输入，不直接构成漏洞结论。",
+        ])
+    if CARD_PATHS.get("custom-protocol-state-recovery") in cards:
+        seeds.extend([
+            "自定义协议先保存 capture provenance、hash、会话、方向和时序，区分 TCP segmentation/reassembly 与应用帧，再恢复 framing、message dictionary 和状态转换。",
+            "只有多份同类/异类消息及 truncated/invalid controls 都能稳定解码，且 replay 动作无副作用时才做最小回放；gRPC/WebSocket 继续交给现有专卡。",
         ])
     if CARD_PATHS.get("cloud-control-plane-pivots") in cards:
         seeds.extend([

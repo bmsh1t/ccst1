@@ -340,6 +340,30 @@ capabilities:
       - published-artifact
       - container-image
       - historical-release
+  - id: js-runtime-signature-reconstruction
+    kind: card
+    file: knowledge/cards/js-runtime-signature-reconstruction.md
+    layer: reference
+    load: signal-only
+    purpose: route
+    triggers:
+      - js-reverse
+      - client-signature
+      - request-initiator
+      - runtime-hook
+      - first-divergence
+  - id: custom-protocol-state-recovery
+    kind: card
+    file: knowledge/cards/custom-protocol-state-recovery.md
+    layer: reference
+    load: signal-only
+    purpose: route
+    triggers:
+      - custom-binary-protocol
+      - protocol-reverse
+      - binary-frame
+      - message-dictionary
+      - state-recovery
   - id: cloud-control-plane-pivots
     kind: card
     file: knowledge/cards/cloud-control-plane-pivots.md

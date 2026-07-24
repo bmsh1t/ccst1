@@ -121,8 +121,8 @@ def test_current_knowledge_repository_has_no_blocking_errors() -> None:
     report = audit_repository()
 
     assert report.errors == 0
-    assert report.capabilities == 60
-    assert report.documents == 58
+    assert report.capabilities == 62
+    assert report.documents == 60
     assert report.warnings == 0
 
 

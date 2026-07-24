@@ -49,6 +49,28 @@ def test_report_doc_marks_legacy_report_entrypoints_as_compatibility_paths_only(
     assert "all_gates_passed: true" in content
 
 
+def test_report_docs_support_formal_pentest_delivery_without_new_state():
+    command = " ".join(_read("commands/report.md").lower().split())
+    skill = " ".join(_read("skills/report-writing/SKILL.md").lower().split())
+
+    for expected in (
+        "scope",
+        "limitations",
+        "assumptions",
+        "attack chains",
+        "retest and closeout",
+        "evidence manifest",
+        "sha-256",
+    ):
+        assert expected in command
+        assert expected in skill
+
+    assert "do not create a second report status" in command
+    assert "do not create a second finding/report lifecycle" in skill
+    assert "redact" in command
+    assert "redacted" in skill
+
+
 def test_claude_code_target_isolation_docs_prevent_inherited_scanner_skips():
     content = _read(
         "CLAUDE.md",

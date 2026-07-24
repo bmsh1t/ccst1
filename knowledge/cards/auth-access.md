@@ -80,6 +80,8 @@ source_refs:
 - 登录后 API 返回的权限字段和前端展示不一致
 - 邀请、账号合并、邮箱验证、SSO 回调、token 刷新流程复杂
 - 管理接口或敏感操作只在某个 method、Referer、路径前缀、header 或前端路由下被拦截
+- 使用 OPA、Cedar 或外部授权服务，且 gateway/backend/worker 可能在不同位置决策或执行
+- 使用 presigned URL / signed download / signed upload 作为临时访问 capability
 
 ## 发散问题
 
@@ -95,6 +97,10 @@ source_refs:
 - Referer-based access：后端是否只检查 `Referer` 来判断请求来自管理页或同站页面？
 - 如果浏览器态 `fetch` 无法伪造受限头（如 `Referer`），是否已经切到 raw replay、Burp、curl 或 Playwright request 层复测？
 - 登录接口是否存在 UI 未传但后端读取的隐藏认证参数或认证源切换开关？如果有，转读 `knowledge/cards/auth-hidden-switches.md`。
+- OPA/Cedar 的 policy decision point 收到了哪些 actor/action/object/tenant 输入，实际 enforcement point
+  是否执行了同一决策？gateway、backend、async worker、cache 是否使用一致的身份与 canonical object？
+- policy/version/cache 更新后，旧 decision、旧 session 或异步任务是否继续保留已撤销权限？
+- Presigned URL 的 capability 是否按预期绑定 method、对象、租户、expiry，以及上传 key/size/content-type？
 
 ## 推荐动作
 
@@ -105,6 +111,12 @@ source_refs:
 - 对管理/角色接口做 method/path/header 矩阵：GET/POST/PUT/PATCH、query vs body、Referer、有无 X-Original-URL/X-Rewrite-URL、method override；一次只改一个边界。
 - URL-based access 最小验证：先记录直接访问敏感路径的拒绝基线，再把内部路径放入 `X-Original-URL` / `X-Rewrite-URL`，必要时把操作参数保留在外层 URL（如 `/?username=...` + `X-Original-URL: /admin/delete`），只比较一个路由边界。
 - Referer-based access 最小验证：用同一个低权限 session 对比无 `Referer` 与可信 `Referer` 的 raw replay；不要因为浏览器 `fetch` 不能设置 `Referer` 就判定不可利用。
+- OPA/Cedar 最小验证：保存 gateway/backend/worker 的同一业务请求 baseline，每次只改变 actor、action、
+  object、tenant 或路径 canonicalization 中一个维度；对比 policy decision、实际数据/状态和审计记录。
+- 检查 decision cache/policy version 时使用权限变更前后同一请求做有界 replay，区分 stale token、stale
+  decision 和 PEP 未执行；没有未授权数据/状态影响时保持 Signal/Lead。
+- Presigned URL 作为 bearer capability 单独建矩阵；签名 query mutation 只验证完整性，不替代对象、租户、
+  method、expiry、撤权契约或上传限制的授权验证。
 
 ## 关联 Skills
 
@@ -125,6 +137,10 @@ source_refs:
 
 - Candidate 前必须证明当前攻击者身份能触达不应触达的资源或操作。
 - Method-based Candidate 必须证明低权限身份用替代 method/path/header 完成了原本只有高权限可执行的操作，或读取了不应读取的数据。
+- OPA/Cedar Candidate 必须证明 PDP 输入缺失、PDP/PEP 不一致、cache/policy stale 或 canonicalization
+  差异导致具体未授权数据读取或状态改变；policy 文本、decision log 差异或单次 allow 本身不足。
+- Presigned URL Candidate 必须证明 capability 违反目标预期边界；标准 bearer URL 在登出后继续有效不自动
+  等于授权缺陷，除非存在明确撤销/会话绑定契约。
 - 涉及账号绑定、邀请、SSO 时必须说明攻击前置条件。
 - 任何会改变账号、订单、钱包、支付、消息状态的动作都必须遵守红线规则。
 

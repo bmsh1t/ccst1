@@ -49,6 +49,10 @@ source_refs:
 - 影响判断：先确认跨主体对象访问，再按证据区分单对象、多对象、集合/导出和跨租户范围。
 - Next.js `/_next/data/<build-id>/...json` 和 `__NEXT_DATA__` 只是数据入口；必须做 anonymous、owner、
   peer/cross-tenant 的对象与字段差异，不能由 JSON 200 直接推导 IDOR。
+- Presigned URL 是 capability bearer：验证对象/租户、HTTP method、过期时间和重放边界，不能把修改
+  已签名 query 后被拒绝当作主要授权测试。
+- Zipkin、Jaeger、OpenTelemetry trace 中的对象 ID 只是对象标识来源；必须另做 owner/peer replay
+  才能证明 IDOR，trace 本身暴露敏感内容则单独按信息泄露判断。
 - 停止：没有可复现请求、服务端稳定拒绝，或继续验证会改变真实资源状态。
 
 ## 适用场景
@@ -76,6 +80,9 @@ source_refs:
 - 序列化、导出、脱敏是否是独立后处理阶段？是否存在跳过它、直接读到越界字段的路径？
 - `/_next/data` 与对应 HTML/API route 是否使用同一 session、对象绑定和字段脱敏逻辑？
 - 资源是否按非唯一标识（拼接名、标签集、邮箱）识别？能否构造碰撞接管他人对象？
+- Presigned URL 是否绑定正确对象、租户、method、有效期、上传 key/size/content-type？在登出、撤权、
+  对象转移或租户变更后重放时，实际契约是否要求失效？
+- Trace/observability 暴露的对象 ID 能否在独立的低权限主体请求中读取或修改非所属对象？
 
 ## 推荐动作
 
@@ -87,6 +94,11 @@ source_refs:
 - 按以下范围梯度选择下一步，只在证据支持时晋级：单个跨主体对象 -> 第二个对象 ->
   列表/批量/导出 -> 跨租户或全局可达；未达到下一层时保留当前范围判断。
 - 优先验证读取类影响，再评估写操作，避免直接造成破坏性副作用。
+- Presigned URL 使用分别签发的 owner/peer、对象、method 和时间边界样本做矩阵；下载与上传分开，
+  上传额外比较服务端实际落点、key prefix、size/content-type 限制和 read-back。不要以篡改签名覆盖的
+  query 参数为主路径，因为签名失败只能证明完整性校验存在。
+- 从 Zipkin/Jaeger/OpenTelemetry 只提取最小必要对象标识，再用独立 actor-object replay 验证授权；
+  不把 trace UI 可达、trace ID 可猜或单次 200 直接升级为 IDOR。
 
 ## 关联 Skills
 
@@ -110,6 +122,10 @@ source_refs:
   支付等私有业务对象，AI 可基于业务语义升级为 Lead/Candidate，并补可发现性、
   对象归属和影响证据。
 - Candidate 前必须有可 replay 请求和权限差异证据。
+- Presigned URL Candidate 必须证明 capability 超出预期对象、租户、method、时间或上传约束，并产生
+  未授权数据/状态影响；仅“登出后仍可用”需先核对该 capability 的撤销契约。
+- Observability 标识 Candidate 必须有独立 owner/peer 权限差异；trace 中 token、PII、请求体或内部地址
+  的暴露属于 information-disclosure 证据，不能替代对象授权证明。
 - 报告前必须能说明攻击者当前权限、受害对象、越权结果、数据敏感度和已证实影响范围；
   可枚举性或全局影响不能只由顺序 ID 推测。
 
