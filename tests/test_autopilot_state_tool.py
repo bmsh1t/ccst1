@@ -11,6 +11,7 @@ from memory.target_profile import make_target_profile, save_target_profile
 from autopilot_state import (
     _build_recommended_targets,
     _filter_ranked_placeholders,
+    _is_substantive_queue_action,
     _pick_next_action,
     build_autopilot_state,
     format_autopilot_state,
@@ -31,6 +32,23 @@ def _record_owner_provenance(findings_dir, finding_id: str) -> None:
         report_status=finding.get("report_status", "not_generated"),
     )
     assert updated is not None
+
+
+def test_browser_context_discovery_queue_item_is_substantive():
+    assert _is_substantive_queue_action(
+        {
+            "status": "queued",
+            "source": "browser-context-discovery",
+            "evidence_type": "browser-context-discovery",
+        }
+    )
+    assert not _is_substantive_queue_action(
+        {
+            "status": "queued",
+            "source": "browser-context-discovery",
+            "evidence_type": "generic",
+        }
+    )
 
 
 class TestAutopilotState:
@@ -756,6 +774,51 @@ class TestAutopilotState:
 
         assert state["action_queue_next"] == {}
         assert state["next_action"] == "run_recon"
+
+    def test_advisory_item_does_not_hide_lower_priority_substantive_action(
+        self, tmp_path
+    ):
+        queue_dir = tmp_path / "state" / "target.com"
+        queue_dir.mkdir(parents=True)
+        (queue_dir / "action_queue.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target": "target.com",
+                    "actions": [
+                        {
+                            "id": "AQ-0001",
+                            "target": "target.com",
+                            "status": "queued",
+                            "type": "manual-review",
+                            "priority": 90,
+                            "action": "Review a generic advisory.",
+                            "command_hint": "choose a route",
+                        },
+                        {
+                            "id": "AQ-0002",
+                            "target": "target.com",
+                            "status": "queued",
+                            "type": "browser-context-discovery",
+                            "priority": 78,
+                            "source": "browser-context-discovery",
+                            "evidence_type": "browser-context-discovery",
+                            "action": "Review the captured browser delta.",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(
+            str(tmp_path),
+            "target.com",
+            memory_dir=str(tmp_path / "hunt-memory"),
+        )
+
+        assert state["action_queue_next"]["id"] == "AQ-0002"
+        assert state["next_action"] == "resume_action_queue"
 
     def test_completed_recon_without_live_hosts_is_terminal(self, tmp_path):
         recon_dir = tmp_path / "recon" / "target.com"

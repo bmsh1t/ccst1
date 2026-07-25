@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Callable
+
+try:
+    from tools.browser_evidence import find_browser_executable
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from browser_evidence import find_browser_executable  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -51,23 +55,24 @@ def _helpers_exist(repo_root: Path, *relative_paths: str) -> bool:
 def build_capability_profile(
     repo_root: str | Path | None = None,
     *,
-    which: Which = shutil.which,
+    which: Which | None = None,
 ) -> dict:
     """只读检查固定核心工具，不执行版本 probe、网络请求或实际扫描。"""
     resolved_repo = Path(repo_root or REPO_ROOT).resolve()
+    resolver = which or find_browser_executable
     available: dict[str, list[str]] = {}
     missing_optional: list[str] = []
 
     for category, tools in TOOL_REGISTRY.items():
         category_available = []
         for tool in tools:
-            if which(tool):
+            if resolver(tool):
                 category_available.append(tool)
             elif tool not in CORE_EXTERNAL_TOOLS:
                 missing_optional.append(tool)
         available[category] = _bounded(category_available)
 
-    curl_available = bool(which("curl"))
+    curl_available = bool(resolver("curl"))
     recon_engine_ready = _helpers_exist(resolved_repo, "tools/recon_engine.sh")
     scanner_engine_ready = _helpers_exist(resolved_repo, "tools/vuln_scanner.sh")
     local_pipeline_ready = recon_engine_ready and scanner_engine_ready

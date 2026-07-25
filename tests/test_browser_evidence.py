@@ -539,3 +539,160 @@ def test_public_url_shape_removes_userinfo_and_fragment_secret():
     assert shaped == "https://example.com/callback?code="
     assert "pass" not in shaped
     assert "FRAGMENT_SECRET" not in shaped
+
+
+def test_find_agent_browser_executable_falls_back_to_nvm_without_hardcoded_version(tmp_path):
+    binary = tmp_path / "nvm" / "versions" / "node" / "v24.18.0" / "bin" / "agent-browser"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    found = browser_evidence.find_browser_executable(
+        "agent-browser",
+        which=lambda _tool: None,
+        environ={"NVM_DIR": str(tmp_path / "nvm")},
+    )
+
+    assert found == str(binary)
+
+
+def test_agent_browser_explicit_binary_is_executed(monkeypatch, tmp_path):
+    binary = tmp_path / "agent-browser-custom"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"success": True, "data": {}, "error": None}),
+            stderr="",
+        )
+
+    monkeypatch.setenv("AGENT_BROWSER_BIN", str(binary))
+    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
+
+    step = browser_evidence._run_agent_browser_cli(
+        ["snapshot"],
+        session="explicit-bin",
+        timeout=5,
+    )
+
+    assert step["success"] is True
+    assert calls[0][0] == str(binary)
+
+
+def test_focused_discovery_reuses_session_scopes_candidates_and_queues_high_value_delta(monkeypatch, tmp_path):
+    evidence_root = tmp_path / "evidence"
+    recon_browser = tmp_path / "recon" / "target.local" / "browser"
+    prior_capture = evidence_root / "target.local" / "browser" / "old"
+    prior_capture.mkdir(parents=True)
+    (prior_capture / "snapshot.txt").write_text(
+        browser_evidence.snapshot_shape("SPA fallback"),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_capture(target, url, *, session, label, evidence_root, **_kwargs):
+        calls.append({"target": target, "url": url, "session": session, "label": label})
+        capture_dir = Path(evidence_root) / "target.local" / "browser" / label
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = capture_dir / "snapshot.txt"
+        if url.endswith("/workflow"):
+            snapshot_path.write_text(browser_evidence.snapshot_shape("admin dashboard"), encoding="utf-8")
+            recon_browser.mkdir(parents=True, exist_ok=True)
+            (recon_browser / "xhr_endpoints.txt").write_text(
+                "https://target.local/api/admin?token=\n",
+                encoding="utf-8",
+            )
+            (recon_browser / "api_endpoints.txt").write_text(
+                "https://target.local/api/admin?token=\n",
+                encoding="utf-8",
+            )
+            (recon_browser / "browser_params.txt").write_text(
+                "https://target.local/api/admin?token= :: token\n",
+                encoding="utf-8",
+            )
+            (recon_browser / "page_js_map.json").write_text(
+                json.dumps(
+                    {
+                        "pages": {},
+                        "js_index": {
+                            "https://target.local/static/admin-lazy.mjs": [
+                                "https://target.local/workflow"
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+        else:
+            snapshot_path.write_text(browser_evidence.snapshot_shape("SPA fallback"), encoding="utf-8")
+        return {
+            "success": True,
+            "evidence_dir": str(capture_dir),
+            "summary_path": str(capture_dir / "summary.json"),
+            "session": session,
+            "url": browser_evidence.public_url_shape(url),
+            "capture_backend": "agent-browser",
+            "counts": {"requests": 1, "console": 0},
+            "artifacts": {"snapshot_txt": str(snapshot_path)},
+        }
+
+    monkeypatch.setattr(browser_evidence, "capture_browser_evidence", fake_capture)
+    result = browser_evidence.capture_focused_browser_discovery(
+        "target.local",
+        [
+            "https://target.local/workflow",
+            "https://target.local/admin-fallback",
+            "https://outside.local/admin",
+        ],
+        evidence_root=evidence_root,
+        repo_root=tmp_path,
+        backend="agent-browser",
+    )
+
+    assert [call["url"] for call in calls] == [
+        "https://target.local/workflow",
+        "https://target.local/admin-fallback",
+    ]
+    assert {call["session"] for call in calls} == {"browser-target.local"}
+    assert result["status"] == "partial"
+    assert result["high_value_count"] == 1
+    assert result["captures"][0]["actionable"] is True
+    assert result["captures"][0]["new_surface"]["api_endpoints"] == [
+        "https://target.local/api/admin?token="
+    ]
+    assert result["captures"][0]["new_surface"]["js_files"] == [
+        "https://target.local/static/admin-lazy.mjs"
+    ]
+    assert result["captures"][1]["fallback_like"] is True
+    assert result["captures"][1]["actionable"] is False
+    assert result["skipped"] == [{"url": "https://outside.local/admin", "reason": "off_target"}]
+    assert "token=" in json.dumps(result)
+    assert "outside.local" in json.dumps(result)
+
+    queue = json.loads((tmp_path / "state" / "target.local" / "action_queue.json").read_text())
+    action = queue["actions"][0]
+    assert action["source"] == "browser-context-discovery"
+    assert action["evidence_type"] == "browser-context-discovery"
+    assert result["artifact"] in action["evidence"]
+
+    later = browser_evidence.capture_focused_browser_discovery(
+        "target.local",
+        [],
+        evidence_root=evidence_root,
+        repo_root=tmp_path,
+        backend="agent-browser",
+    )
+    unchanged = json.loads(
+        (tmp_path / "state" / "target.local" / "action_queue.json").read_text()
+    )["actions"][0]
+    latest = json.loads((recon_browser / "context_discovery.json").read_text())
+
+    assert later["artifact"] != result["artifact"]
+    assert Path(result["artifact"]).is_file()
+    assert result["artifact"] in unchanged["evidence"]
+    assert later["artifact"] not in unchanged["evidence"]
+    assert latest["artifact"] == later["artifact"]

@@ -6,6 +6,33 @@ description: Prepare cached JS materials and run the js-reader agent to produce 
 
 Convert cached JavaScript from `/recon` into LLM-derived hunting leads.
 
+## Optional chunk recovery
+
+Do not run Packer-InfoFinder merely because JS files or deep candidates exist.
+When browser/source/local-JS evidence shows a webpack runtime, dynamic import,
+chunk map, source map, unreadable minified entry, or a missing lazy chunk, run
+one evidence-bound lane before preparing materials:
+
+```bash
+# 已定位 1-5 个入口 bundle：上游 -j 模式
+python3 tools/deep_js_packer.py --target target.com --mode bundle \
+  --signal webpack-runtime \
+  --evidence-ref recon/target.com/js_dump/runtime.js \
+  --url https://target.com/assets/runtime.js
+
+# 高价值 SPA 的 JS inventory 不完整：上游 -u --finder 模式
+python3 tools/deep_js_packer.py --target target.com --mode page \
+  --signal dynamic-import \
+  --evidence-ref recon/target.com/browser/network.jsonl \
+  --url https://target.com/app
+```
+
+Use `--browser` in page mode only when runtime dynamic loading was observed and
+static page parsing did not expose the script. The adapter runs anonymously,
+keeps target scope, and writes recovered files under
+`recon/<target>/js_dump/packer/`; a partial/unavailable result leaves the
+existing `deep-js-review` action unresolved.
+
 ## Run This (the only required step)
 
 ```bash

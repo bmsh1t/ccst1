@@ -48,6 +48,9 @@ JS/parameter extraction by default.
   browser-state exploration: web access, login state, SPA/XHR/GraphQL behavior,
   browser storage, DOM state, HAR, and page interaction testing. Use
   chrome-devtools MCP for deep live debugging and Playwright as fallback.
+- After a browser workflow changes context, `tools/browser_evidence.py focused-discovery`
+  may visit a few explicit, AI-selected same-target candidates in that named session.
+  It is a focused evidence lane, never a replacement for URL collection or a raw-corpus fuzzer.
 - Do not treat any browser backend as the bulk recon engine. It should run
   after recon identifies a high-value entry point, to reproduce real frontend
   behavior and extract stateful requests.
@@ -226,19 +229,40 @@ done
 deactivate
 ```
 
-### LinkFinder (Endpoints hidden in JS)
+### xnLinkFinder（deep/full 的 JS 链接分析）
 
 ```bash
-source ~/tools/LinkFinder/.venv/bin/activate
-
-# Single JS file
-python3 ~/tools/LinkFinder/linkfinder.py -i "https://target.com/app.js" -o cli
-
-# All pages (crawls JS from HTML)
-python3 ~/tools/LinkFinder/linkfinder.py -i "https://target.com" -d -o cli
-
-deactivate
+xnLinkFinder \
+  -sf recon/target.com/js/xnlinkfinder_scope.txt \
+  -d 1 -p 5 -rl 50 -t 10 -mtl 10 -all -o cli \
+  < recon/target.com/js/xnlinkfinder_targets.txt
 ```
+
+`normal` 不运行递归链接分析。`deep/full` 优先运行 xnLinkFinder；缺工具、执行失败或存在
+认证 header 时回退逐 URL LinkFinder，避免把同一组认证信息发送到错误 origin。xnLinkFinder v8.2
+在非 TTY 环境必须从 stdin 读取目标；`-all` 避免非常见 TLD 的范围内链接被默认规则过滤，
+输出仍由 `-sf` 限定。IP 或单标签 scope 会成功返回但过滤全部链接，因此也走 LinkFinder 回退。
+
+### Packer-InfoFinder（证据触发的异步 chunk 恢复）
+
+它不是 Recon profile 的默认步骤。仅在 browser/source/local JS 已出现 webpack runtime、dynamic import、
+chunk map、source map、不可读的压缩入口或缺失 lazy chunk 时调用：
+
+```bash
+# 已知高价值 bundle：使用上游 -j
+python3 tools/deep_js_packer.py --target target.com --mode bundle \
+  --signal webpack-runtime --evidence-ref recon/target.com/js_dump/runtime.js \
+  --url https://target.com/assets/runtime.js
+
+# 高价值应用入口的 JS inventory 不完整：使用上游 -u --finder
+python3 tools/deep_js_packer.py --target target.com --mode page \
+  --signal dynamic-import --evidence-ref recon/target.com/browser/network.jsonl \
+  --url https://target.com/app
+```
+
+`--browser` 只用于已观察到运行时动态加载且静态页面未暴露脚本的 page lane。适配器匿名、限速、
+限制 target scope，并将恢复文件发布到 `js_dump/packer/`，继续交给 `/js-read` 与现有 secrets lane；
+上游 HTML/SQLite 只作为原始 artifact，不直接生成 finding。
 
 ### 可选：动态 JS 请求签名链重建
 

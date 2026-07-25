@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """通过 agent-browser 或 playwright-cli 采集统一的浏览器态证据。"""
 
+import argparse
 import json
 import hashlib
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+from urllib.parse import parse_qsl, urlparse
 
 try:
     from tools.browser_surface import public_request_payload, public_url_shape
@@ -35,6 +38,7 @@ DEFAULT_RECON_ROOT = BASE_DIR / "recon"
 AGENT_BROWSER_BIN = "agent-browser"
 PLAYWRIGHT_BIN = "playwright-cli"
 SUPPORTED_BACKENDS = (AGENT_BROWSER_BIN, PLAYWRIGHT_BIN)
+DEFAULT_FOCUSED_DISCOVERY_LIMIT = 8
 
 Which = Callable[[str], str | None]
 
@@ -77,15 +81,63 @@ def default_browser_session(target: str) -> str:
     return f"browser-{_session_key(target)}"
 
 
-def resolve_browser_backend(backend: str = "auto", *, which: Which = shutil.which) -> str:
+def find_browser_executable(
+    tool: str,
+    *,
+    which: Which = shutil.which,
+    environ: dict[str, str] | None = None,
+) -> str:
+    """查找浏览器 CLI，并兼容未写入当前 PATH 的 NVM 全局安装。"""
+    env = environ if environ is not None else os.environ
+    name = str(tool or "").strip()
+    if not name:
+        return ""
+
+    # 显式配置优先，避免猜测用户安装在多个 Node 版本中的哪一份二进制。
+    if name == AGENT_BROWSER_BIN:
+        configured = str(env.get("AGENT_BROWSER_BIN") or "").strip()
+        if configured:
+            configured_path = Path(configured).expanduser()
+            if configured_path.is_file() and os.access(configured_path, os.X_OK):
+                return str(configured_path)
+            configured_found = which(configured)
+            if configured_found:
+                return configured_found
+
+    found = which(name)
+    if found:
+        return found
+    if name != AGENT_BROWSER_BIN:
+        return ""
+
+    # Codex/CI 的非交互 shell 常常没有 source nvm.sh。只在 PATH 查找失败时
+    # 扫描 NVM 的有限安装目录，不写环境、不执行版本探测，也不固定 Node 版本。
+    nvm_dir = Path(str(env.get("NVM_DIR") or Path.home() / ".nvm")).expanduser()
+    nvm_bin_value = str(env.get("NVM_BIN") or "").strip()
+    nvm_bin = Path(nvm_bin_value).expanduser() if nvm_bin_value else None
+    candidates = [nvm_bin / name] if nvm_bin else []
+    candidates.extend(nvm_dir.glob(f"versions/node/*/bin/{name}"))
+    executable_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.is_file() and os.access(candidate, os.X_OK)
+    ]
+    if not executable_candidates:
+        return ""
+    executable_candidates.sort(key=lambda candidate: candidate.stat().st_mtime, reverse=True)
+    return str(executable_candidates[0])
+
+
+def resolve_browser_backend(backend: str = "auto", *, which: Which | None = None) -> str:
     """解析单次 capture 使用的 backend；选择后不再中途切换。"""
     normalized = str(backend or "auto").strip().lower()
     if normalized in SUPPORTED_BACKENDS:
         return normalized
     if normalized != "auto":
         raise ValueError(f"Unsupported browser backend: {backend}")
+    resolver = which or find_browser_executable
     for candidate in SUPPORTED_BACKENDS:
-        if which(candidate):
+        if resolver(candidate):
             return candidate
     raise RuntimeError("No supported browser backend found: agent-browser or playwright-cli")
 
@@ -153,8 +205,17 @@ def _run_playwright_cli(args: list[str], *, session: str, timeout: int) -> dict:
 
 
 def _run_agent_browser_cli(args: list[str], *, session: str, timeout: int) -> dict:
-    cmd = [AGENT_BROWSER_BIN, "--session", session, "--json", *args]
     env = os.environ.copy()
+    executable = find_browser_executable(AGENT_BROWSER_BIN)
+    command = executable if env.get("AGENT_BROWSER_BIN", "").strip() else AGENT_BROWSER_BIN
+    cmd = [command, "--session", session, "--json", *args]
+    if executable:
+        # 保持 CLI 命令名稳定，测试和上游 session protocol 不需要知道 NVM 版本；
+        # 仅为子进程补足实际二进制所在目录。
+        binary_dir = str(Path(executable).parent)
+        current_path = env.get("PATH", "")
+        if binary_dir not in current_path.split(os.pathsep):
+            env["PATH"] = f"{binary_dir}{os.pathsep}{current_path}" if current_path else binary_dir
     # 默认 /run/user/<uid> 在部分 CLI sandbox 中只读；短路径同时避免 Unix socket 超长。
     if not env.get("AGENT_BROWSER_SOCKET_DIR"):
         socket_dir = Path(tempfile.gettempdir()) / "ccst-ab"
@@ -729,6 +790,318 @@ def capture_browser_evidence(
     return summary
 
 
+def _read_browser_lines(path: Path) -> set[str]:
+    try:
+        return {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+    except OSError:
+        return set()
+
+
+def _browser_surface_sets(recon_root: Path, target_key: str) -> dict[str, set[str]]:
+    try:
+        from tools.browser_surface import load_page_js_map
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from browser_surface import load_page_js_map  # type: ignore
+
+    browser_dir = recon_root / target_key / "browser"
+    page_js_map = load_page_js_map(recon_root, target_key)
+    js_index = page_js_map.get("js_index") if isinstance(page_js_map, dict) else {}
+    return {
+        "xhr_endpoints": _read_browser_lines(browser_dir / "xhr_endpoints.txt"),
+        "api_endpoints": _read_browser_lines(browser_dir / "api_endpoints.txt"),
+        "browser_params": _read_browser_lines(browser_dir / "browser_params.txt"),
+        "js_files": set(js_index) if isinstance(js_index, dict) else set(),
+    }
+
+
+def _snapshot_sha256(path: str | Path) -> str:
+    try:
+        content = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    match = re.search(r"^snapshot_sha256=([0-9a-f]{64})$", content, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def _known_snapshot_hashes(browser_root: Path) -> set[str]:
+    return {
+        digest
+        for path in browser_root.glob("*/snapshot.txt")
+        if (digest := _snapshot_sha256(path))
+    }
+
+
+def _line_url(value: str) -> str:
+    return str(value or "").split(" :: ", 1)[0].strip()
+
+
+def _target_owned_surface_lines(lines: set[str], target: str) -> list[str]:
+    try:
+        from tools.target_paths import url_belongs_to_target
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from target_paths import url_belongs_to_target  # type: ignore
+
+    return sorted(line for line in lines if url_belongs_to_target(_line_url(line), target))
+
+
+def _focused_candidate_reason(target: str, url: str) -> str:
+    parsed = urlparse(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return "invalid_url"
+    try:
+        from tools.target_paths import url_belongs_to_target
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from target_paths import url_belongs_to_target  # type: ignore
+    if not url_belongs_to_target(url, target):
+        return "off_target"
+    return ""
+
+
+def _focused_signal(url: str, *, extra_query_keys: list[str] | None = None):
+    try:
+        from tools.high_value_signals import classify_high_value_signal
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from high_value_signals import classify_high_value_signal  # type: ignore
+
+    parsed = urlparse(url)
+    return classify_high_value_signal(
+        path=parsed.path or "/",
+        query_keys=[
+            *[key for key, _value in parse_qsl(parsed.query, keep_blank_values=True)],
+            *(extra_query_keys or []),
+        ],
+        evidence="browser context discovery",
+    )
+
+
+def _focused_discovery_signal(url: str, new_surface: dict[str, list[str]]) -> dict:
+    """合并入口与浏览器新观察到的 endpoint/参数软信号。"""
+    signals = [_focused_signal(url)]
+    for kind, lines in new_surface.items():
+        for line in lines:
+            endpoint = _line_url(line)
+            param_name = line.split(" :: ", 1)[1] if kind == "browser_params" and " :: " in line else ""
+            signals.append(_focused_signal(endpoint, extra_query_keys=[param_name] if param_name else []))
+
+    classes: list[str] = []
+    reasons: list[str] = []
+    for signal in signals:
+        classes.extend(signal.classes)
+        reasons.extend(signal.reasons)
+    return {
+        "score": max((signal.score for signal in signals), default=0),
+        "classes": list(dict.fromkeys(classes)),
+        "reasons": list(dict.fromkeys(reasons)),
+    }
+
+
+def _enqueue_focused_discovery_action(
+    *,
+    repo_root: Path,
+    target: str,
+    artifact_path: Path,
+    actionable: list[dict],
+) -> dict:
+    """把高价值浏览器发现汇入既有队列，不创建新的状态 owner。"""
+    try:
+        from tools.action_queue import add_manual_action
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from action_queue import add_manual_action  # type: ignore
+
+    generation = hashlib.sha256(
+        json.dumps(
+            [
+                {
+                    "url": item.get("url", ""),
+                    "snapshot_sha256": item.get("snapshot_sha256", ""),
+                    "new_surface": item.get("new_surface", {}),
+                }
+                for item in actionable
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    queued = add_manual_action(
+        repo_root,
+        target=target,
+        action_type="browser-context-discovery",
+        evidence=(
+            f"{len(actionable)} browser-context capture(s) exposed high-value, "
+            f"non-fallback target surface; review {artifact_path}."
+        ),
+        next_question=(
+            "Which newly observed target-owned route or parameter warrants the smallest "
+            "independent replay while preserving the browser session as evidence?"
+        ),
+        action=(
+            "Review the browser-context discovery artifact, then replay only one "
+            "evidence-backed target-owned endpoint or workflow step."
+        ),
+        priority=78,
+        evidence_type="browser-context-discovery",
+        source="browser-context-discovery",
+        source_id="browser-context-discovery",
+        generation=generation,
+        safety="non_destructive",
+        stop_condition=(
+            "record the selected route as tested, dead-end, blocked, lead, signal, "
+            "candidate, or validated before selecting another lane"
+        ),
+    )
+    return {"path": queued["path"], "stats": queued["stats"]}
+
+
+def capture_focused_browser_discovery(
+    target: str,
+    urls: list[str],
+    *,
+    session: str = "",
+    evidence_root: str | Path | None = None,
+    timeout: int = 30,
+    max_urls: int = DEFAULT_FOCUSED_DISCOVERY_LIMIT,
+    backend: str = "auto",
+    repo_root: str | Path | None = None,
+    enqueue: bool = True,
+) -> dict:
+    """在持久浏览器上下文中有界访问 AI 选定的同目标路径。
+
+    输入不会从原始 URL corpus 自动扩张；调用方必须明确提供候选。每个候选复用
+    同一 session，并把浏览器观察到的 API/参数增量保留在既有 browser surface。
+    """
+    if max_urls < 1:
+        raise ValueError("max_urls must be at least 1")
+    if timeout < 1:
+        raise ValueError("timeout must be at least 1 second")
+
+    target_name = _target_key(target)
+    root = Path(evidence_root) if evidence_root else DEFAULT_EVIDENCE_ROOT
+    recon_root = _derive_recon_root(root)
+    browser_root = root / target_name / "browser"
+    recon_browser_root = recon_root / target_name / "browser"
+    output_path = recon_browser_root / "context_discovery" / f"{_timestamp_slug()}.json"
+    latest_path = recon_browser_root / "context_discovery.json"
+    session_name = session.strip() or default_browser_session(target)
+
+    selected: list[str] = []
+    skipped: list[dict] = []
+    seen: set[str] = set()
+    for raw_url in urls:
+        url = str(raw_url or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        reason = _focused_candidate_reason(target, url)
+        if reason:
+            skipped.append({"url": public_url_shape(url), "reason": reason})
+            continue
+        if len(selected) >= max_urls:
+            skipped.append({"url": public_url_shape(url), "reason": "budget_exhausted"})
+            continue
+        selected.append(url)
+
+    snapshot_hashes = _known_snapshot_hashes(browser_root)
+    known_surface = _browser_surface_sets(recon_root, target_name)
+    captures: list[dict] = []
+    actionable: list[dict] = []
+    successful = 0
+
+    for index, url in enumerate(selected, 1):
+        before = {kind: set(values) for kind, values in known_surface.items()}
+        try:
+            summary = capture_browser_evidence(
+                target,
+                url,
+                session=session_name,
+                label=f"focused-{index}",
+                evidence_root=root,
+                timeout=timeout,
+                backend=backend,
+            )
+        except Exception as exc:
+            captures.append({
+                "url": public_url_shape(url),
+                "status": "error",
+                "error": _error_shape(str(exc)),
+                "new_surface": {},
+                "actionable": False,
+            })
+            continue
+
+        if summary.get("success"):
+            successful += 1
+        after = _browser_surface_sets(recon_root, target_name)
+        new_surface = {
+            kind: _target_owned_surface_lines(after[kind] - before[kind], target)
+            for kind in before
+        }
+        known_surface = after
+        artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+        snapshot_hash = _snapshot_sha256(artifacts.get("snapshot_txt", ""))
+        fallback_like = bool(snapshot_hash and snapshot_hash in snapshot_hashes)
+        if snapshot_hash:
+            snapshot_hashes.add(snapshot_hash)
+        signal = _focused_discovery_signal(url, new_surface)
+        novelty = any(new_surface.values())
+        is_actionable = bool(
+            summary.get("success")
+            and signal["score"] > 0
+            and (novelty or (bool(snapshot_hash) and not fallback_like))
+        )
+        capture = {
+            "url": public_url_shape(url),
+            "status": "ok" if summary.get("success") else "error",
+            "capture": compact_browser_evidence(summary),
+            "snapshot_sha256": snapshot_hash,
+            "fallback_like": fallback_like if snapshot_hash else None,
+            "new_surface": new_surface,
+            "high_value": signal,
+            "actionable": is_actionable,
+        }
+        captures.append(capture)
+        if is_actionable:
+            actionable.append(capture)
+
+    if not selected:
+        status = "skipped"
+    elif successful == len(selected) and not skipped:
+        status = "ok"
+    elif successful:
+        status = "partial"
+    else:
+        status = "error"
+    result = {
+        "schema_version": 1,
+        "target": target,
+        "target_key": target_name,
+        "generated_at": _now_utc(),
+        "status": status,
+        "session": session_name,
+        "capture_backend": backend,
+        "requested_count": len(urls),
+        "selected_count": len(selected),
+        "successful_count": successful,
+        "high_value_count": len(actionable),
+        "artifact": str(output_path),
+        "latest_pointer": str(latest_path),
+        "captures": captures,
+        "skipped": skipped,
+    }
+    _write_json(output_path, result)
+    _write_json(latest_path, result)
+    if enqueue and actionable:
+        queue = _enqueue_focused_discovery_action(
+            repo_root=Path(repo_root) if repo_root else BASE_DIR,
+            target=target,
+            artifact_path=output_path,
+            actionable=actionable,
+        )
+        result["action_queue"] = queue
+        _write_json(output_path, result)
+        _write_json(latest_path, result)
+    return result
+
+
 def _read_summary_from_path(path: str | Path) -> dict:
     candidate = Path(path)
     summary_path = candidate / "summary.json" if candidate.is_dir() else candidate
@@ -791,3 +1164,72 @@ def load_last_browser_evidence(target: str, *, evidence_root: str | Path | None 
     if summary_path:
         return compact_browser_evidence(summary_path)
     return compact_browser_evidence(pointer)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Capture browser evidence with agent-browser first.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    capture = sub.add_parser("capture", help="Capture one URL into the shared browser evidence/surface contract.")
+    capture.add_argument("--target", required=True)
+    capture.add_argument("--url", required=True)
+    capture.add_argument("--session", default="")
+    capture.add_argument("--label", default="capture")
+    capture.add_argument("--evidence-root", default=str(DEFAULT_EVIDENCE_ROOT))
+    capture.add_argument("--timeout", type=int, default=30)
+    capture.add_argument("--backend", choices=("auto", *SUPPORTED_BACKENDS), default="auto")
+    capture.add_argument("--screenshot", action="store_true")
+
+    focused = sub.add_parser(
+        "focused-discovery",
+        help="Visit explicit, target-owned high-value candidates in one persistent browser session.",
+    )
+    focused.add_argument("--target", required=True)
+    focused.add_argument("--url", action="append", required=True, help="Repeat for each AI-selected candidate URL.")
+    focused.add_argument("--session", default="")
+    focused.add_argument("--evidence-root", default=str(DEFAULT_EVIDENCE_ROOT))
+    focused.add_argument("--repo-root", default=str(BASE_DIR))
+    focused.add_argument("--timeout", type=int, default=30)
+    focused.add_argument("--max-urls", type=int, default=DEFAULT_FOCUSED_DISCOVERY_LIMIT)
+    focused.add_argument("--backend", choices=("auto", *SUPPORTED_BACKENDS), default="auto")
+    focused.add_argument("--no-enqueue", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        if args.command == "capture":
+            payload = capture_browser_evidence(
+                args.target,
+                args.url,
+                session=args.session,
+                label=args.label,
+                evidence_root=args.evidence_root,
+                timeout=args.timeout,
+                capture_screenshot=args.screenshot,
+                backend=args.backend,
+            )
+            print(json.dumps(compact_browser_evidence(payload), ensure_ascii=False, indent=2))
+            return 0 if payload.get("success") else 1
+
+        payload = capture_focused_browser_discovery(
+            args.target,
+            args.url,
+            session=args.session,
+            evidence_root=args.evidence_root,
+            timeout=args.timeout,
+            max_urls=args.max_urls,
+            backend=args.backend,
+            repo_root=args.repo_root,
+            enqueue=not args.no_enqueue,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0 if payload["status"] in {"ok", "partial", "skipped"} else 1
+    except (ValueError, RuntimeError) as exc:
+        print(f"browser evidence error: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI entrypoint
+    raise SystemExit(main())

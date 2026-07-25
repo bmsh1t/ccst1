@@ -33,7 +33,7 @@ bash tools/recon_engine.sh target.com                              # direct full
 ```
 
 `hunt.py --recon-only` 默认使用 normal profile：完整保留 raw surface，只把逐 bundle
-正则提取、secret grep 和 LinkFinder 交给 Surface/Action Queue。裸
+正则提取、secret grep 和递归 JS 链接分析交给 Surface/Action Queue。裸
 `recon_engine.sh TARGET` 保持原 full 行为；Source Map、AST/去混淆和动态签名重建继续由
 后续 `/js-read` 深度 lane 按证据选择。
 
@@ -77,7 +77,7 @@ The integrated `tools/recon_engine.sh` path may run, when available:
 - URL collection: `katana`, `gau`, `waymore`
 - URL denoising: non-destructive `_filtered` URL views plus `urls/filter.log`; raw `urls/all.txt` is preserved
 - Storage guard: large raw collector source files (`katana`/`gau`/`waymore`/`wayback`) are gzip-compressed after `all.txt` and `_filtered` files are built; set `BBHUNT_RECON_POST_COMPRESS=0` to keep source `.txt` files
-- JS/API extraction: normal 保留完整 JS inventory 并生成多类别有界 `js/deep_candidates.txt`；full/deep 执行既有 JS endpoints、potential secrets 和 LinkFinder；所有 profile 都保留 raw backstop
+- JS/API extraction: normal 保留完整 JS inventory 并生成多类别有界 `js/deep_candidates.txt`；full/deep 优先使用有界、限速、scope-filtered 的 xnLinkFinder，失败、不兼容 scope 或认证上下文回退逐 URL LinkFinder；所有 profile 都保留 raw backstop
 - bounded directory/parameter fuzzing and config discovery with timeout guards
 - exposure candidates: API docs, config files, cloud storage, S3 buckets, third-party hosted assets
 - routing candidates: 从已有 origin/shared-IP/CNAME/certificate（若 artifact 已包含）及 path/schema 事实生成 Host/SNI 与 AI/LLM 中性候选，不在 Recon 中主动验证

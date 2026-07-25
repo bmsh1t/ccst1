@@ -1,8 +1,11 @@
 """Regression tests for recon_engine.sh shell pitfalls."""
 
 import gzip
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 def test_recon_engine_guards_common_set_e_pitfalls():
@@ -460,7 +463,7 @@ def test_recon_engine_supports_unwaf_origin_discovery():
     assert 'unwaf_skipped' in text
 
 
-def test_recon_engine_supports_naabu_and_linkfinder():
+def test_recon_engine_supports_naabu_and_xnlinkfinder_fallback():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
 
@@ -469,10 +472,171 @@ def test_recon_engine_supports_naabu_and_linkfinder():
     assert 'run_with_timeout "$NAABU_RUN_TIMEOUT" naabu \\' not in text
     assert '-list "$NAABU_TARGETS_FILE" \\' in text
     assert 'sed -nE \'s|.*:([0-9]+)$|\\1/open|p\' "$NAABU_OUTPUT_FILE"' in text
-    assert 'LINKFINDER_BIN="$(resolve_linkfinder_path || true)"' in text
-    assert 'python3 "$LINKFINDER_BIN" -i "$tmp_js" -o cli' in text
-    assert '"$LINKFINDER_BIN" -i "$tmp_js" -o cli' in text
-    assert 'LinkFinder endpoints: $(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt"' in text
+    assert "resolve_xnlinkfinder_path()" in text
+    assert 'XNLINKFINDER_BIN="$(resolve_xnlinkfinder_path || true)"' in text
+    assert 'run_xnlinkfinder \\' in text
+    assert '-sf "$scope_file"' in text
+    assert '-d 1' in text
+    assert '-rl "$RATE_LIMIT"' in text
+    assert '-all' in text
+    assert '< "$input_file" > "$raw_output"' in text
+    assert 'url_belongs_to_target(value, target)' in text
+    assert '-i "$input_file"' not in text
+    assert 'ip_address(host)' in text
+    assert 'source == targets and (' in text
+    assert 'not url_belongs_to_target(candidate_url, target)' in text
+    assert 'if [ "$RECON_PROFILE" != "quick" ] && [ -n "$XNLINKFINDER_BIN" ] && [ -s "$XNLINKFINDER_SCOPE" ] && ! bb_auth_active; then' in text
+    assert 'Authenticated JS keeps per-URL header isolation via legacy LinkFinder' in text
+    assert 'xnLinkFinder failed — falling back to legacy LinkFinder' in text
+    assert 'JS_ANALYSIS_STATUS="partial"\n                log_warn "xnLinkFinder failed' in text
+    assert 'run_legacy_linkfinder \\' in text
+    assert 'done >> "$output_file"' in text
+    assert 'xnLinkFinder scope generation failed — falling back to legacy LinkFinder' in text
+    assert 'JS_LINK_ANALYZER="unavailable"' in text
+    assert 'candidate_view=${JS_CANDIDATE_BUILD_STATUS}; link_analyzer=${JS_LINK_ANALYZER}' in text
+    assert 'python3 "$linkfinder_bin" -i "$tmp_js" -o cli' in text
+    assert '"$linkfinder_bin" -i "$tmp_js" -o cli' in text
+    assert 'link_analyzer          "$JS_LINK_ANALYZER"' in text
+
+
+@pytest.mark.parametrize("fake_exit", [0, 7])
+def test_xnlinkfinder_reads_non_tty_targets_from_stdin(
+    tmp_path: Path, fake_exit: int
+):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    prefix, marker, _ = script.read_text(encoding="utf-8").partition('\nTARGET="${1:?Usage:')
+    assert marker
+    functions = tmp_path / "recon_functions.sh"
+    functions.write_text(prefix, encoding="utf-8")
+
+    fake = tmp_path / "xnLinkFinder"
+    fake.write_text(
+        """#!/bin/bash
+printf '%s\\n' "$@" > "$CAPTURE_ARGS"
+cat > "$CAPTURE_STDIN"
+printf '/api/v1/orders\\n'
+printf 'https://app.example.test/api/v1/users\\n'
+printf 'https://example.test.evil.invalid/steal\\n'
+exit "$FAKE_EXIT"
+""",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+    targets = tmp_path / "targets.txt"
+    targets.write_text("https://app.example.test/a.js\nhttps://api.example.test/b.js\n", encoding="utf-8")
+    scope = tmp_path / "scope.txt"
+    scope.write_text("example.test\n", encoding="utf-8")
+    output = tmp_path / "endpoints.txt"
+    args = tmp_path / "args.txt"
+    stdin = tmp_path / "stdin.txt"
+    recon_dir = tmp_path / "recon"
+    (recon_dir / "logs").mkdir(parents=True)
+
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; status=0; run_xnlinkfinder "$2" "$3" "$4" "$5" "$6" || status=$?; exit "$status"',
+            "_",
+            str(functions),
+            str(fake),
+            str(targets),
+            str(scope),
+            str(output),
+            "example.test",
+        ],
+        env={
+            **os.environ,
+            "CAPTURE_ARGS": str(args),
+            "CAPTURE_STDIN": str(stdin),
+            "RATE_LIMIT": "7",
+            "RECON_DIR": str(recon_dir),
+            "BASE_DIR": str(script.parent.parent),
+            "FAKE_EXIT": str(fake_exit),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == fake_exit, completed.stderr
+    assert stdin.read_bytes() == targets.read_bytes()
+    captured_args = args.read_text(encoding="utf-8").splitlines()
+    assert captured_args[captured_args.index("-sf") + 1] == str(scope)
+    assert captured_args[captured_args.index("-d") + 1] == "1"
+    assert captured_args[captured_args.index("-rl") + 1] == "7"
+    assert "-all" in captured_args
+    assert "-i" not in captured_args
+    assert output.read_text(encoding="utf-8") == (
+        "/api/v1/orders\nhttps://app.example.test/api/v1/users\n"
+    )
+
+
+def test_xnlinkfinder_scope_forces_legacy_fallback_for_ip_input(tmp_path: Path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    marker = 'python3 - "$BASE_DIR" "$TARGET" "$XNLINKFINDER_TARGETS" "$RECON_DIR/subdomains/all.txt" "$XNLINKFINDER_SCOPE" <<\'PY\'\n'
+    _, found, tail = text.partition(marker)
+    code, end, _ = tail.partition("\nPY\n")
+    assert found and end
+
+    targets = tmp_path / "targets.txt"
+    targets.write_text("https://app.example.test/a.js\nhttp://127.0.0.1/b.js\n", encoding="utf-8")
+    subdomains = tmp_path / "subdomains.txt"
+    subdomains.write_text("app.example.test\n", encoding="utf-8")
+    scope = tmp_path / "scope.txt"
+    completed = subprocess.run(
+        [
+            "python3",
+            "-",
+            str(script.parent.parent),
+            "example.test",
+            str(targets),
+            str(subdomains),
+            str(scope),
+        ],
+        input=code,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert scope.read_text(encoding="utf-8") == ""
+
+
+def test_xnlinkfinder_scope_forces_legacy_fallback_for_port_target(tmp_path: Path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    marker = 'python3 - "$BASE_DIR" "$TARGET" "$XNLINKFINDER_TARGETS" "$RECON_DIR/subdomains/all.txt" "$XNLINKFINDER_SCOPE" <<\'PY\'\n'
+    _, found, tail = text.partition(marker)
+    code, end, _ = tail.partition("\nPY\n")
+    assert found and end
+
+    targets = tmp_path / "targets.txt"
+    targets.write_text("https://app.example.test:8443/a.js\n", encoding="utf-8")
+    subdomains = tmp_path / "subdomains.txt"
+    subdomains.write_text("app.example.test\n", encoding="utf-8")
+    scope = tmp_path / "scope.txt"
+    completed = subprocess.run(
+        [
+            "python3",
+            "-",
+            str(script.parent.parent),
+            "example.test:8443",
+            str(targets),
+            str(subdomains),
+            str(scope),
+        ],
+        input=code,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert scope.read_text(encoding="utf-8") == ""
 
 
 def test_recon_engine_caps_katana_and_amass_collectors():
@@ -552,5 +716,9 @@ def test_recon_engine_hint_blocks_include_next_actions_lists():
     assert "emit_claude_hint_actions()" in text
     # No remaining single-value next_priority_action in actual emit calls
     # (the comment in the header is fine).
-    emit_lines = [l for l in text.splitlines() if l.strip().startswith("next_priority_action")]
+    emit_lines = [
+        line
+        for line in text.splitlines()
+        if line.strip().startswith("next_priority_action")
+    ]
     assert not emit_lines, f"stale next_priority_action in emit calls: {emit_lines[:3]}"

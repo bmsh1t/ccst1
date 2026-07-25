@@ -20,9 +20,9 @@ if TOOLS_DIR not in sys.path:
 
 from memory.target_profile import default_memory_dir
 try:
-    from tools.action_queue import load_queue, select_next_action
+    from tools.action_queue import ACTIVE_STATUSES, load_queue, select_next_action
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from action_queue import load_queue, select_next_action
+    from action_queue import ACTIVE_STATUSES, load_queue, select_next_action
 try:
     from tools.intel_continuation import apply_intel_continuation, inspect_intel_continuation
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -1196,6 +1196,14 @@ def _is_substantive_queue_action(item: dict) -> bool:
     status = str(item.get("status") or "queued").strip().lower()
     if status in {"running", "signal", "candidate"}:
         return True
+    # focused-discovery 已经完成浏览器访问并生成 target-owned 增量证据；它不是
+    # 泛化的 surface TODO，必须让 Autopilot 先审阅并选择最小 replay。
+    if (
+        status == "queued"
+        and str(item.get("source") or "") == "browser-context-discovery"
+        and str(item.get("evidence_type") or "") == "browser-context-discovery"
+    ):
+        return True
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     command = " ".join(
         str(value or "").strip()
@@ -1209,10 +1217,18 @@ def _is_substantive_queue_action(item: dict) -> bool:
 
 def _load_substantive_action_queue_next(repo_root: str, target: str) -> dict:
     """复用 action_queue 的公开 selector，不复制其排序与去重规则。"""
-    selected = select_next_action(load_queue(repo_root, target))
-    if not isinstance(selected, dict) or not _is_substantive_queue_action(selected):
-        return {}
-    return selected
+    queue = load_queue(repo_root, target)
+    queue["actions"] = [
+        item
+        for item in queue.get("actions", [])
+        if isinstance(item, dict)
+        and (
+            str(item.get("status") or "queued") not in ACTIVE_STATUSES
+            or _is_substantive_queue_action(item)
+        )
+    ]
+    selected = select_next_action(queue)
+    return selected if isinstance(selected, dict) else {}
 
 
 def _recon_completed_without_live_hosts(

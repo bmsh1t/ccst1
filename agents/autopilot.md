@@ -125,16 +125,16 @@ Business / Workflow Read: after fresh recon starts, write or refresh `evidence/<
 ## Tool Routing
 
 Choose tools from evidence shape:
-
 - Browser/app/XHR/auth state:
   1. Prefer `tools/browser_evidence.py` with agent-browser CLI for routine automation, session reuse, snapshots, network, storage, and HAR evidence.
   2. Use chrome-devtools MCP for deep live DevTools/network/console debugging.
   3. Use playwright MCP or the explicit playwright-cli backend as compatibility fallbacks.
   4. Import MCP artifacts with `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` keep using the same browser-observed API surface. Replay API/XHR directly after capture.
   Reuse an existing browser/page/tab when it already represents the needed actor/session/origin; prefer opening a new tab/page over a new browser process.
+  When browser interaction changes the route context and a few concrete same-target paths need the same session, use `python3 tools/browser_evidence.py focused-discovery --target <target> --url <candidate> ...`. Supply only AI-selected candidates, not a raw corpus; the lane retains network/API/JS deltas and queues only high-value captures with a non-repeated page shape. Browser storage is evidence, not automatic authorization proof or a write target.
   When chrome-devtools/playwright evidence leaves a specific runtime JavaScript question unresolved, JSHook MCP can be used as an optional follow-up evidence source.
 - Source/route/auth logic: `python3 tools/source_intel.py --target <target> [--repo-path <repo>]`.
-- JS bundles: `python3 tools/js_reader.py --target <target>` plus semantic JS review.
+- JS bundles: with concrete webpack/dynamic-import/chunk-map/source-map/missing-chunk evidence, call `python3 tools/deep_js_packer.py ...` on 1-5 bundles or one high-value app entry, then `python3 tools/js_reader.py --target <target>`; JS count alone is not a trigger and partial/unavailable remains unresolved.
 - Known component/version: `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, OSV exact-version results, vendor advisories, NVD/GHSA/WPScan-style sources, CISA KEV, EPSS, and local nuclei template names. Treat `applicability`, source failure/staleness, and route reachability as separate evidence gates.
 - Broad coverage: scanner quick after AI surface review on fresh targets, scanner-full only for deeper coverage or explicit user request; scanner output is advisory lead source, not the hunt brain.
 - After `run_vuln_scan`, call `read_surface_summary` / `/surface` again and inspect action-gated scanner leads / the legacy `unsafe_skipped.txt` artifact; weak template hits are `lead`, stable diffs are `signal`, exact request/response plus practical impact is `candidate`. Side-effectful scanner templates were skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1` was set, so they are not tested-clean. It does not restrict safe observed-method replay. Also perform one secondary sweep on demoted public-metadata leads such as `standard_public_metadata.txt`; they may be reversible chain/secret intel when unusual fields appear, not final rejects.

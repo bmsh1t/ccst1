@@ -97,9 +97,10 @@ identity, and cloud signals without re-enumerating everything.
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/browser_evidence.py` | Need structured browser-state evidence | Prefer agent-browser for session/network/storage/HAR capture; Playwright CLI is the fallback |
+| `tools/browser_evidence.py` | Need browser evidence or a few same-session candidates | agent-browser first; focused mode reuses Surface/Action Queue |
 | `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL surface from browser evidence |
 | `tools/hai_browser_recon.js` | Need browser-side recon snippet | Playwright recon helper script (JS) |
+| `tools/deep_js_packer.py` | Concrete webpack/chunk/source-map signal | Evidence-gated Packer bundle/page recovery into existing JS artifacts |
 | `tools/js_reader.py` | JS bundles cached | Prepare js-reader agent materials from cached JS |
 | `tools/surface.py` | Cached recon ready for review | Fully stream/rank the exact target-owned surface, publish bounded AI-first review projection; scores/top-K are advisory hints |
 | `tools/surface_index.py` | Large URL corpus needs exact dedupe or long-tail paging | External-sort exact URL index with provenance union, lossless variants, shape/source/ownership cursor filters |
@@ -179,10 +180,11 @@ identity, and cloud signals without re-enumerating everything.
 | Identity/cloud intel from recon has hits | review `exposure/identity_intel/summary.md` and `exposure/cloud/cloud_enum.txt`, then pivot to `/intel` or `/cloud-recon` |
 | `subdomains/all.txt` ready | `takeover_scanner.sh` |
 | Live URLs but no params | `param_discovery.sh` |
-| JS bundles cached | `js_reader.py` (then `js-reader` agent) |
+| Concrete webpack/chunk/source-map signal | `deep_js_packer.py`, then `js_reader.py` |
+| JS bundles cached without recovery evidence | `js_reader.py` (then `js-reader` agent) |
 | Recon done, want broad active | `vuln_scanner.sh` |
 | Tech stack or identified network service needs CVE applicability | `/intel` → `intel_engine.py`; `cve_hunter.py` is compatibility-only |
-| Dashboard / SPA target | `browser_evidence.py` → `browser_surface.py` |
+| Dashboard / SPA target | `browser_evidence.py` → `browser_surface.py`; use `focused-discovery` only after a browser workflow exposes concrete same-session route candidates |
 | Switching back to old target | `resume.py` |
 | Want to remember a pattern | `remember.py` |
 | Login surface + need credential prep | `/wordlist-gen`, `/osint-employees`, `/breach-check` |

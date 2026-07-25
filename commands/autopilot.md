@@ -112,10 +112,15 @@ Prefer browser-state truth over guessed routes:
 2. chrome-devtools MCP for deep live DevTools/network/console debugging.
 3. playwright MCP or the explicit playwright-cli backend as compatibility fallbacks.
 4. Import useful MCP artifacts with `tools/browser_mcp_import.py` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` share the same browser-observed API surface.
+When browser interaction changes application context, use `python3 tools/browser_evidence.py focused-discovery --target <target_shell> --url <candidate-url> ...` for a few explicit AI-selected same-target candidates in the existing named session. Never feed raw URL corpora into this lane. It preserves the browser delta and creates an Action Queue item only for high-value, non-repeated page-shape evidence; storage values remain evidence rather than an automatic write instruction or authorization conclusion.
 Use `cd -- <repo_root_shell> && python3 tools/js_reader.py --target <target_shell>` for JS materials and
 `cd -- <repo_root_shell> && python3 tools/source_intel.py --target <target_shell> [--repo-path <repo>]` for
 source/route/auth logic. AI should turn these hints into concrete replay drafts,
 not just tool rankings.
+When browser/source/local-JS evidence shows a webpack runtime, dynamic import,
+chunk/source map, unreadable minified entry, or missing lazy chunk, Autopilot may run `tools/deep_js_packer.py` before `js_reader.py`: bundle mode for 1-5 known entries, or page mode (`-u --finder` upstream) only for an incomplete high-value SPA inventory.
+JS volume, `deep_candidates.txt` alone, or a scanner-negative is not a trigger;
+preserve partial/unavailable as unresolved work.
 For byte-exact HTTP/cache/smuggling/desync work, use
 `tools/sender_semantics.py --require <capabilities>` and
 `tools/smuggling_executor.py --variant <variant>`; browser evidence cannot prove
@@ -209,7 +214,7 @@ This reference is advisory, not routing and not a state machine.
 | Question | Cheap route |
 |---|---|
 | What surface matters most? | AI review over `/surface` evidence pack; `recon-ranker` may assist |
-| JS secrets/endpoints/sinks? | `js-reader` Task + `tools/js_reader.py` |
+| JS secrets/endpoints/sinks? | evidence-gated `tools/deep_js_packer.py` when chunk recovery is needed, then `js-reader` + `tools/js_reader.py` |
 | Candidate evidence enough? | `validator` Task + `/validate` |
 | A -> B chain fit? | `chain-builder` Task |
 | Report ready? | `report-writer` Task |

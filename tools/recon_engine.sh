@@ -462,6 +462,104 @@ resolve_linkfinder_path() {
     return 1
 }
 
+resolve_xnlinkfinder_path() {
+    local cand
+    for cand in \
+        "$(command -v xnLinkFinder 2>/dev/null || true)" \
+        "$HOME/.local/bin/xnLinkFinder" \
+        "$SHARED_TOOLS_DIR/xnLinkFinder/xnLinkFinder.py"; do
+        [ -z "$cand" ] && continue
+        [ -f "$cand" ] || [ -x "$cand" ] || continue
+        printf '%s\n' "$cand"
+        return 0
+    done
+    return 1
+}
+
+run_legacy_linkfinder() {
+    local input_file="$1"
+    local max_js="$2"
+    local output_file="$3"
+    local linkfinder_bin js_url tmp_js
+
+    linkfinder_bin="$(resolve_linkfinder_path || true)"
+    [ -n "$linkfinder_bin" ] || return 3
+    head -"$max_js" "$input_file" | while IFS= read -r js_url; do
+        tmp_js="$(mktemp "${TMPDIR:-/tmp}/bbhunt-linkfinder.XXXXXX.js")"
+        bb_auth_args_for_url "$js_url"
+        if curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 15 "$js_url" -o "$tmp_js" 2>/dev/null && [ -s "$tmp_js" ]; then
+            if [ "${linkfinder_bin##*.}" = "py" ]; then
+                python3 "$linkfinder_bin" -i "$tmp_js" -o cli 2>/dev/null || true
+            else
+                "$linkfinder_bin" -i "$tmp_js" -o cli 2>/dev/null || true
+            fi
+        fi
+        rm -f "$tmp_js"
+    done >> "$output_file"
+}
+
+run_xnlinkfinder() {
+    local xnlinkfinder_bin="$1"
+    local input_file="$2"
+    local scope_file="$3"
+    local output_file="$4"
+    local target="$5"
+    local raw_output command_status filter_status=0
+    local command=(
+        -sf "$scope_file"
+        # xnLinkFinder 的 depth=1 只请求显式输入；depth>1 才递归请求发现的链接。
+        -d 1
+        -p 5
+        -rl "$RATE_LIMIT"
+        -t 10
+        -r 0
+        -mrs 20
+        -mtl 10
+        -s429
+        -s403
+        -sTO
+        -sCE
+        -op /dev/null
+        -nb
+        -all
+        -o cli
+    )
+
+    raw_output="$(mktemp "${TMPDIR:-/tmp}/bbhunt-xnlinkfinder.XXXXXX")"
+    if [ "${xnlinkfinder_bin##*.}" = "py" ]; then
+        run_with_timeout 660 python3 "$xnlinkfinder_bin" "${command[@]}" < "$input_file" > "$raw_output" 2>> "$RECON_DIR/logs/xnlinkfinder.log"
+    else
+        run_with_timeout 660 "$xnlinkfinder_bin" "${command[@]}" < "$input_file" > "$raw_output" 2>> "$RECON_DIR/logs/xnlinkfinder.log"
+    fi
+    command_status=$?
+    if [ -s "$raw_output" ]; then
+        python3 - "$BASE_DIR" "$target" "$raw_output" "$output_file" <<'PY'
+from pathlib import Path
+import sys
+
+base_dir, target, source, output = sys.argv[1:]
+sys.path.insert(0, base_dir)
+from tools.target_paths import url_belongs_to_target
+
+kept = []
+for raw in Path(source).read_text(encoding="utf-8", errors="replace").splitlines():
+    value = raw.strip()
+    if not value:
+        continue
+    network_url = value.lower().startswith(("http://", "https://", "//"))
+    if not network_url or url_belongs_to_target(value, target):
+        kept.append(value)
+with Path(output).open("a", encoding="utf-8") as handle:
+    if kept:
+        handle.write("\n".join(kept) + "\n")
+PY
+        filter_status=$?
+    fi
+    rm -f "$raw_output"
+    [ "$filter_status" -eq 0 ] || return "$filter_status"
+    return "$command_status"
+}
+
 TARGET="${1:?Usage: $0 <target-domain|ip|cidr|list-file> [--quick|--normal|--deep|--full]}"
 RECON_MODE_FLAG="${2:-}"
 case "$RECON_MODE_FLAG" in
@@ -1982,6 +2080,7 @@ JS_ANALYSIS_STATUS="skipped"
 JS_CANDIDATE_BUILD_STATUS="skipped"
 JS_DEEP_CANDIDATES=0
 JS_DEEP_GENERATION=""
+JS_LINK_ANALYZER="none"
 
 if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
     mkdir -p "$RECON_DIR/js"
@@ -2033,7 +2132,6 @@ PY
     else
         JS_ANALYSIS_STATUS="ok"
         log_step "Extracting endpoints from JS files (top 50)..."
-        LINKFINDER_BIN="$(resolve_linkfinder_path || true)"
 
         head -50 "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
             bb_auth_args_for_url "$js_url"
@@ -2059,27 +2157,109 @@ PY
             fi
         fi
 
-        if [ -n "$LINKFINDER_BIN" ]; then
-            LINKFINDER_MAX_JS=$([ "$QUICK_MODE" = "--quick" ] && echo 10 || echo 25)
-            log_step "Running LinkFinder on top $LINKFINDER_MAX_JS JS files..."
-            : > "$RECON_DIR/js/linkfinder_raw.txt"
-            head -"$LINKFINDER_MAX_JS" "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
-                tmp_js="$(mktemp "${TMPDIR:-/tmp}/bbhunt-linkfinder.XXXXXX.js")"
-                bb_auth_args_for_url "$js_url"
-                if curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 15 "$js_url" -o "$tmp_js" 2>/dev/null && [ -s "$tmp_js" ]; then
-                    if [ "${LINKFINDER_BIN##*.}" = "py" ]; then
-                        python3 "$LINKFINDER_BIN" -i "$tmp_js" -o cli 2>/dev/null || true
-                    else
-                        "$LINKFINDER_BIN" -i "$tmp_js" -o cli 2>/dev/null || true
-                    fi
-                fi
-                rm -f "$tmp_js"
-            done > "$RECON_DIR/js/linkfinder_raw.txt"
-            sed '/^[[:space:]]*$/d' "$RECON_DIR/js/linkfinder_raw.txt" | sort -u > "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null || true
-            log_done "LinkFinder endpoints: $(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null || echo 0)"
-        else
-            log_warn "LinkFinder not installed — skipping JS endpoint extraction"
+        LINKFINDER_MAX_JS=$([ "$QUICK_MODE" = "--quick" ] && echo 10 || echo 25)
+        XNLINKFINDER_BIN="$(resolve_xnlinkfinder_path || true)"
+        XNLINKFINDER_TARGETS="$RECON_DIR/js/xnlinkfinder_targets.txt"
+        XNLINKFINDER_SCOPE="$RECON_DIR/js/xnlinkfinder_scope.txt"
+        : > "$RECON_DIR/js/linkfinder_raw.txt"
+        head -"$LINKFINDER_MAX_JS" "$JS_FILES_FOR_ANALYSIS" > "$XNLINKFINDER_TARGETS"
+        if ! python3 - "$BASE_DIR" "$TARGET" "$XNLINKFINDER_TARGETS" "$RECON_DIR/subdomains/all.txt" "$XNLINKFINDER_SCOPE" <<'PY'
+from ipaddress import ip_address
+from pathlib import Path
+from urllib.parse import urlparse
+import sys
+
+base_dir, target, targets_raw, subdomains_raw, output_raw = sys.argv[1:]
+sys.path.insert(0, base_dir)
+from tools.target_paths import canonical_target_value, classify_target, url_belongs_to_target
+
+targets, subdomains, output = map(Path, (targets_raw, subdomains_raw, output_raw))
+hosts = set()
+
+def xnlinkfinder_scope_compatible(host):
+    if "." not in host:
+        return False
+    try:
+        ip_address(host)
+    except ValueError:
+        return True
+    return False
+
+target_info = classify_target(canonical_target_value(target))
+target_parsed = urlparse(f"//{target_info['target']}")
+try:
+    target_port = target_parsed.port
+except ValueError:
+    target_port = None
+# xnLinkFinder scope 只表达域名，不能保持 IP、单标签、列表或显式端口边界。
+if (
+    target_info["kind"] != "domain"
+    or target_port is not None
+    or not xnlinkfinder_scope_compatible((target_parsed.hostname or "").lower())
+):
+    output.write_text("", encoding="utf-8")
+    raise SystemExit(0)
+
+for source in (targets, subdomains):
+    if not source.is_file():
+        continue
+    for raw in source.read_text(encoding="utf-8", errors="replace").splitlines():
+        value = raw.strip().split()[0] if raw.strip() else ""
+        if not value:
+            continue
+        parsed = urlparse(value if "://" in value else f"//{value}")
+        host = (parsed.hostname or "").lower().strip(".")
+        compatible = xnlinkfinder_scope_compatible(host)
+        candidate_url = value if "://" in value else f"https://{host}/"
+        # 输入本身不会被 -sf 阻止请求；任何越界、IP 或单标签输入都整批回退。
+        if source == targets and (
+            not compatible or not url_belongs_to_target(candidate_url, target)
+        ):
+            output.write_text("", encoding="utf-8")
+            raise SystemExit(0)
+        if compatible and url_belongs_to_target(candidate_url, target):
+            hosts.add(host)
+output.write_text(("\n".join(sorted(hosts)) + "\n") if hosts else "", encoding="utf-8")
+PY
+        then
+            : > "$XNLINKFINDER_SCOPE"
+            JS_ANALYSIS_STATUS="partial"
+            log_warn "xnLinkFinder scope generation failed — falling back to legacy LinkFinder"
         fi
+
+        if [ "$RECON_PROFILE" != "quick" ] && [ -n "$XNLINKFINDER_BIN" ] && [ -s "$XNLINKFINDER_SCOPE" ] && ! bb_auth_active; then
+            log_step "Running xnLinkFinder depth 1 on top $LINKFINDER_MAX_JS JS files..."
+            if run_xnlinkfinder \
+                "$XNLINKFINDER_BIN" \
+                "$XNLINKFINDER_TARGETS" \
+                "$XNLINKFINDER_SCOPE" \
+                "$RECON_DIR/js/linkfinder_raw.txt" \
+                "$TARGET"; then
+                JS_LINK_ANALYZER="xnLinkFinder"
+            else
+                JS_ANALYSIS_STATUS="partial"
+                log_warn "xnLinkFinder failed — falling back to legacy LinkFinder"
+            fi
+        elif bb_auth_active; then
+            log_info "Authenticated JS keeps per-URL header isolation via legacy LinkFinder"
+        fi
+
+        if [ "$JS_LINK_ANALYZER" = "none" ]; then
+            log_step "Running legacy LinkFinder on top $LINKFINDER_MAX_JS JS files..."
+            if run_legacy_linkfinder \
+                "$JS_FILES_FOR_ANALYSIS" \
+                "$LINKFINDER_MAX_JS" \
+                "$RECON_DIR/js/linkfinder_raw.txt"; then
+                JS_LINK_ANALYZER="LinkFinder"
+            else
+                JS_LINK_ANALYZER="unavailable"
+                JS_ANALYSIS_STATUS="partial"
+                log_warn "xnLinkFinder/LinkFinder unavailable — skipping recursive JS endpoint extraction"
+            fi
+        fi
+
+        sed '/^[[:space:]]*$/d' "$RECON_DIR/js/linkfinder_raw.txt" | sort -u > "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null || true
+        log_done "$JS_LINK_ANALYZER endpoints: $(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null || echo 0)"
         [ "$JS_CANDIDATE_BUILD_STATUS" = "ok" ] || JS_ANALYSIS_STATUS="partial"
     fi
 else
@@ -2096,12 +2276,13 @@ record_recon_phase \
     "$JS_ANALYSIS_STATUS" \
     "recon/${RECON_TARGET_KEY}/js/$([ "$RECON_PROFILE" = "normal" ] && echo deep_candidates.txt || echo endpoints.txt)" \
     "$JS_MANIFEST_COUNT" \
-    "all JS URLs remain in urls/js_files.txt; candidate_view=${JS_CANDIDATE_BUILD_STATUS}; limit=${BBHUNT_RECON_JS_CANDIDATE_LIMIT:-800}; normal defers deep analysis without closing coverage"
+    "all JS URLs remain in urls/js_files.txt; candidate_view=${JS_CANDIDATE_BUILD_STATUS}; link_analyzer=${JS_LINK_ANALYZER}; limit=${BBHUNT_RECON_JS_CANDIDATE_LIMIT:-800}; normal defers deep analysis without closing coverage"
 emit_claude_hint \
     phase                  js_analysis \
     profile                "$RECON_PROFILE" \
     deep_candidates        "$JS_DEEP_CANDIDATES" \
     endpoints_extracted    "$JS_ENDPOINTS" \
+    link_analyzer          "$JS_LINK_ANALYZER" \
     linkfinder_endpoints   "$JS_LINKFINDER" \
     unverified_secret_strings "$JS_SECRETS" \
     secrets_verified       "false (regex-grep only; not interactsh-verified)"

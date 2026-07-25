@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,6 +29,7 @@ BASE_DIR = TOOLS_DIR.parent
 
 DEFAULT_MAX_FILES = 50
 DEFAULT_MAX_FILE_BYTES = 200 * 1024  # 200 KB
+READABLE_SOURCE_SUFFIXES = {".js", ".mjs", ".cjs", ".map", ".ts", ".tsx", ".vue"}
 
 VENDOR_PATTERNS = (
     "react", "react-dom", "vue", "angular", "lodash", "moment", "jquery",
@@ -59,12 +59,21 @@ def _list_cached_js_paths(target: str, repo_root: Path) -> list[Path]:
     artifacts instead.
     """
     target_dir = repo_root / "recon" / target
+    packer_dir = target_dir / "js_dump" / "packer"
     candidates: list[Path] = []
     for sub in ("js_dump", "js/files", "js_files", "katana_js", "js/dump"):
         p = target_dir / sub
         if p.is_dir():
-            candidates.extend(sorted(p.rglob("*.js")))
-    return candidates
+            candidates.extend(
+                path
+                for path in sorted(p.rglob("*"))
+                if path.is_file() and path.suffix.lower() in READABLE_SOURCE_SUFFIXES
+            )
+    # 动态恢复文件是本轮新增证据，不能被旧缓存先占满读取预算。
+    return sorted(
+        candidates,
+        key=lambda path: (not path.is_relative_to(packer_dir), str(path)),
+    )
 
 
 def _load_source_intel_hypothesis(target: str, repo_root: Path) -> dict | None:

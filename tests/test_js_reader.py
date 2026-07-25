@@ -127,6 +127,22 @@ def test_max_files_cap_is_respected(repo_root: Path) -> None:
     assert result["selected_count"] == 5
 
 
+def test_recovered_packer_source_precedes_old_cache_at_file_cap(
+    repo_root: Path,
+) -> None:
+    target = "packer-priority.app"
+    base = repo_root / "recon" / target / "js_dump"
+    for i in range(DEFAULT_MAX_FILES):
+        _write(base / f"old_{i:02d}.js", f"// old {i}\n")
+    _write(base / "packer" / "files" / "recovered.mjs", "export const fresh = true;\n")
+
+    result = prepare_materials(target, repo_root=repo_root)
+
+    selected = [item["path"] for item in result["materials"]["selected_js_files"]]
+    assert len(selected) == DEFAULT_MAX_FILES
+    assert selected[0].endswith("/packer/files/recovered.mjs")
+
+
 def test_loads_source_intel_when_present(repo_root: Path) -> None:
     target = "intel.app"
     _write(repo_root / "recon" / target / "js_dump" / "app.js")
