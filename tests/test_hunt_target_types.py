@@ -87,11 +87,13 @@ def test_run_recon_passes_ip_target_to_subprocess(monkeypatch):
         captured["shell"] = shell
         captured["cwd"] = cwd
         captured["start_new_session"] = kwargs.get("start_new_session")
+        captured["pass_fds"] = kwargs.get("pass_fds")
         captured["env"] = kwargs.get("env")
         return FakeProc()
 
     monkeypatch.setattr(hunt.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(hunt, "_AUTH_SESSION", hunt.AuthSession(["Cookie: session=abc"]))
+    monkeypatch.setattr(hunt, "_RUNTIME_PHASE_LOCK_FDS", (101, 102))
 
     assert hunt.run_recon("1.2.3.4") is True
     assert '"1.2.3.4"' in captured["cmd"]
@@ -99,6 +101,9 @@ def test_run_recon_passes_ip_target_to_subprocess(monkeypatch):
     assert captured["shell"] is True
     assert captured["cwd"] == hunt.BASE_DIR
     assert captured["start_new_session"] is True
+    assert captured["env"]["BBHUNT_RUNTIME_PHASE_LOCKED"] == "recon"
+    assert captured["env"]["BBHUNT_RUNTIME_LOCK_TARGET"] == "1.2.3.4"
+    assert captured["pass_fds"] == (101, 102)
     assert captured["timeout"] == 7200
     assert captured["env"]["BBHUNT_AUTH_HEADERS"] == "Cookie: session=abc"
     assert captured["env"]["BBHUNT_SESSION_ID"] == hunt._AUTH_SESSION.session_id()
@@ -284,56 +289,6 @@ def test_hunt_target_uses_canonical_cidr_across_followup_paths(monkeypatch):
         "reports": [],
     }
     assert result["reports"] == 0
-
-
-def test_hunt_target_captures_browser_evidence_when_url_provided(monkeypatch):
-    captured = {}
-
-    monkeypatch.setattr(hunt, "run_recon", lambda target, quick=False: True)
-    monkeypatch.setattr(hunt, "run_vuln_scan", lambda target, **_kwargs: True)
-    monkeypatch.setattr(hunt, "generate_reports", lambda target: 0)
-    monkeypatch.setattr(hunt, "_update_target_profile", lambda target, **_kwargs: None)
-    monkeypatch.setattr(hunt, "_auto_log_session_summary", lambda target, **_kwargs: None)
-
-    def fake_capture(target, browser_url="", browser_session="", capture_screenshot=False):
-        captured["target"] = target
-        captured["url"] = browser_url
-        captured["session"] = browser_session
-        captured["capture_screenshot"] = capture_screenshot
-        return {"dir": "/tmp/evidence/target.local/browser/cap", "url": browser_url}
-
-    monkeypatch.setattr(hunt, "_capture_browser_evidence_for_hunt", fake_capture)
-
-    result = hunt.hunt_target(
-        "target.local",
-        browser_url="https://target.local/app",
-        browser_session="reuse-me",
-    )
-
-    assert captured == {
-        "target": "target.local",
-        "url": "https://target.local/app",
-        "session": "reuse-me",
-        "capture_screenshot": False,
-    }
-    assert result["browser_evidence"]["dir"].endswith("/browser/cap")
-
-
-def test_hunt_target_does_not_touch_browser_helper_without_url(monkeypatch):
-    monkeypatch.setattr(hunt, "run_recon", lambda target, quick=False: True)
-    monkeypatch.setattr(hunt, "run_vuln_scan", lambda target, **_kwargs: True)
-    monkeypatch.setattr(hunt, "generate_reports", lambda target: 0)
-    monkeypatch.setattr(hunt, "_update_target_profile", lambda target, **_kwargs: None)
-    monkeypatch.setattr(hunt, "_auto_log_session_summary", lambda target, **_kwargs: None)
-
-    def fail_capture(*_args, **_kwargs):
-        raise AssertionError("browser helper must not run without --browser-url")
-
-    monkeypatch.setattr(hunt, "_capture_browser_evidence_for_hunt", fail_capture)
-
-    result = hunt.hunt_target("target.local")
-
-    assert "browser_evidence" not in result
 
 
 def test_run_vuln_scan_uses_cidr_storage_dir(monkeypatch, tmp_path):

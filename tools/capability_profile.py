@@ -3,13 +3,9 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Callable
-
-try:
-    from tools.browser_evidence import find_browser_executable
-except ImportError:  # pragma: no cover - direct tools/ execution
-    from browser_evidence import find_browser_executable  # type: ignore
 
 
 SCHEMA_VERSION = 1
@@ -17,7 +13,8 @@ MAX_LIST_ITEMS = 16
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 TOOL_REGISTRY: dict[str, tuple[str, ...]] = {
-    "browser": ("agent-browser", "playwright-cli"),
+    # 浏览器执行由 Claude 会话中的 MCP 管理，不再探测本地浏览器 CLI。
+    "browser": (),
     "recon": ("subfinder", "httpx", "katana", "gau", "waybackurls", "ffuf"),
     "scanner": ("nuclei",),
 }
@@ -59,7 +56,7 @@ def build_capability_profile(
 ) -> dict:
     """只读检查固定核心工具，不执行版本 probe、网络请求或实际扫描。"""
     resolved_repo = Path(repo_root or REPO_ROOT).resolve()
-    resolver = which or find_browser_executable
+    resolver = which or shutil.which
     available: dict[str, list[str]] = {}
     missing_optional: list[str] = []
 
@@ -81,9 +78,7 @@ def build_capability_profile(
         "tools/source_intel.py",
         "tools/js_reader.py",
     )
-    browser_evidence_ready = _helpers_exist(resolved_repo, "tools/browser_evidence.py")
-    agent_browser_ready = "agent-browser" in available["browser"] and browser_evidence_ready
-    playwright_ready = "playwright-cli" in available["browser"] and browser_evidence_ready
+    browser_mcp_import_ready = _helpers_exist(resolved_repo, "tools/browser_mcp_import.py")
 
     missing_core: list[str] = []
     if not curl_available:
@@ -98,19 +93,15 @@ def build_capability_profile(
     fallbacks: list[str] = []
     if curl_available and local_pipeline_ready:
         fallbacks.append("curl-native-http")
-    if agent_browser_ready:
-        fallbacks.append("agent-browser-evidence-cli")
-    if playwright_ready:
-        fallbacks.append("playwright-browser-evidence-cli")
+    if browser_mcp_import_ready:
+        fallbacks.append("browser-mcp-evidence-import")
     if source_js_ready:
         fallbacks.append("source-js-enrichment")
 
     recommended_paths = []
-    if agent_browser_ready:
-        recommended_paths.append("agent-browser-evidence-cli")
     recommended_paths.append("prefer-session-browser-mcp")
-    if playwright_ready:
-        recommended_paths.append("playwright-browser-evidence-cli")
+    if browser_mcp_import_ready:
+        recommended_paths.append("browser-mcp-evidence-import")
     elif source_js_ready:
         recommended_paths.append("source-js-enrichment")
 

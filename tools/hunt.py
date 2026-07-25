@@ -71,6 +71,8 @@ HUNT_MEMORY_DIR = default_memory_dir(BASE_DIR)
 URL_SSL_CTX = ssl._create_unverified_context()
 _SEEN_GUARD_BLOCKS: set[tuple[str, str, str, str, str]] = set()
 _AUTH_SESSION: AuthSession | None = None
+# CLI 编排是单线程的；实际 recon/scan 子进程继承这些 fd，父进程退出时锁仍有效。
+_RUNTIME_PHASE_LOCK_FDS: tuple[int, ...] = ()
 
 
 def resolve_autopilot_mode(args) -> str:
@@ -955,7 +957,6 @@ def _persist_runtime_state(
     zero_day=False,
     ctf_mode=False,
     enrichment_tools=None,
-    browser_evidence=False,
 ):
     """Persist lightweight target runtime state for resume/autopilot consumers."""
     try:
@@ -980,7 +981,6 @@ def _persist_runtime_state(
             zero_day=bool(zero_day),
             ctf_mode=bool(ctf_mode),
             enrichment_tools=list(enrichment_tools or []),
-            browser_evidence_ready=bool(browser_evidence),
             pending_validation=int(structured.get("pending_validation", 0) or 0),
             validated_pending_report=int(structured.get("validated_pending_report", 0) or 0),
         )
@@ -1146,7 +1146,11 @@ def run_recon(domain, quick=False, deep=False):
         child_env["BBHUNT_RUNTIME_LOCK_TARGET"] = normalized_target
         proc = subprocess.Popen(
             f'bash "{script}" "{normalized_target}" {recon_flag}',
-            shell=True, cwd=BASE_DIR, env=child_env, start_new_session=True
+            shell=True,
+            cwd=BASE_DIR,
+            env=child_env,
+            start_new_session=True,
+            pass_fds=_RUNTIME_PHASE_LOCK_FDS,
         )
         timeout = 1800 if quick else 14400 if deep else 7200
         if target_info["kind"] == "list":
@@ -1199,7 +1203,11 @@ def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
         child_env["BBHUNT_RUNTIME_LOCK_TARGET"] = classify_target(domain)["target"]
         proc = subprocess.Popen(
             cmd,
-            shell=True, cwd=BASE_DIR, env=child_env, start_new_session=True
+            shell=True,
+            cwd=BASE_DIR,
+            env=child_env,
+            start_new_session=True,
+            pass_fds=_RUNTIME_PHASE_LOCK_FDS,
         )
         proc.wait(timeout=1800)
         return proc.returncode == 0
@@ -1877,11 +1885,6 @@ def print_dashboard(results):
               f"Reports: {r.get('reports', 0)}")
         if r.get("autopilot_mode"):
             print(f"       Autopilot mode: {r['autopilot_mode']}")
-        browser_evidence = r.get("browser_evidence") or {}
-        if browser_evidence.get("dir"):
-            print(f"       Browser evidence: {browser_evidence['dir']}")
-        elif browser_evidence.get("error"):
-            print(f"       Browser evidence: capture failed ({browser_evidence['error']})")
         total_findings += r.get("findings", 0)
         total_reports += r.get("reports", 0)
 
@@ -1935,82 +1938,13 @@ def run_zero_day_fuzzer(domain, deep=False):
         return False
 
 
-def _choose_browser_probe_url(domain):
-    """Pick one cached URL that benefits from a browser-context probe."""
-    urls = _dedupe_keep_order(
-        _collect_all_urls(domain)
-        + _collect_live_urls(domain)
-        + _collect_api_endpoints(domain)
-    )
-    candidates = [
-        url for url in urls
-        if url.startswith(("http://", "https://"))
-        and not re.search(r"\.(?:js|css|png|jpe?g|gif|svg|ico|woff2?)(?:\?|$)", url, re.I)
-    ]
-    if not candidates:
-        return ""
-
-    def score(url):
-        lower = url.lower()
-        value = 0
-        for token in ("login", "register", "dashboard", "portal", "app", "account", "admin"):
-            if token in lower:
-                value += 5
-        if re.search(r"(/api/|/graphql|/rest/|/v\d+/)", lower):
-            value += 2
-        if "?" in lower:
-            value += 1
-        return value
-
-    return sorted(candidates, key=score, reverse=True)[0]
-
-
-def _capture_browser_evidence_for_hunt(domain, browser_url="", browser_session="", capture_screenshot=False):
-    """Capture browser-state evidence on demand without blocking the hunt lane."""
-    if not browser_url:
-        return {}
-
-    try:
-        from browser_evidence import capture_browser_evidence, compact_browser_evidence
-    except ImportError:  # pragma: no cover - package import path
-        from tools.browser_evidence import capture_browser_evidence, compact_browser_evidence
-
-    try:
-        summary = capture_browser_evidence(
-            domain,
-            browser_url,
-            session=browser_session,
-            label="hunt",
-            evidence_root=os.path.join(BASE_DIR, "evidence"),
-            capture_screenshot=capture_screenshot,
-        )
-    except Exception as exc:
-        log("warn", f"Browser evidence capture failed for {browser_url}: {exc}")
-        return {"url": browser_url, "error": str(exc)}
-
-    linkage = compact_browser_evidence(summary)
-    if linkage.get("dir"):
-        log("ok", f"Browser evidence captured: {linkage['dir']}")
-    return linkage
-
-
-def run_browser_probe(domain, url="", session=""):
-    """Capture one browser-context probe and feed observed requests into recon/browser."""
-    target_url = url or _choose_browser_probe_url(domain)
-    if not target_url:
-        log("warn", f"No browser probe URL found for {domain}; run recon or pass url explicitly.")
-        return False
-    linkage = _capture_browser_evidence_for_hunt(domain, target_url, session)
-    return bool(linkage.get("dir") and not linkage.get("error"))
-
-
 def read_browser_surface(domain):
     """Read browser-observed recon surface for a target."""
     browser_dir = os.path.join(_resolve_recon_dir(domain), "browser")
     if not os.path.isdir(browser_dir):
         return (
             f"No browser surface artifacts found for {domain}. Import MCP artifacts with "
-            "tools/browser_mcp_import.py, or run run_browser_probe through the agent-browser-first evidence lane."
+            "tools/browser_mcp_import.py after Chrome DevTools or Playwright MCP capture."
         )
 
     summary_path = os.path.join(browser_dir, "summary.json")
@@ -2057,9 +1991,6 @@ def _load_classic_autopilot_state(target: str) -> dict:
 
 def _run_classic_enrichment_hints(
     target: str,
-    *,
-    browser_url: str = "",
-    browser_session: str = "",
 ) -> list[str]:
     """Consume runtime enrichment hints before the classic scanner lane."""
     state = _load_classic_autopilot_state(target)
@@ -2078,9 +2009,7 @@ def _run_classic_enrichment_hints(
     executed = []
     for tool_name in ordered_tools:
         ok = False
-        if tool_name == "run_browser_probe":
-            ok = run_browser_probe(target, url=browser_url, session=browser_session)
-        elif tool_name == "run_source_intel":
+        if tool_name == "run_source_intel":
             ok = run_source_intel(target)
         elif tool_name == "run_js_read":
             ok = run_js_read(target)
@@ -2105,9 +2034,6 @@ def _hunt_target_impl(
     zero_day=False,
     scanner_full=False,
     scanner_skip="",
-    browser_url="",
-    browser_session="",
-    browser_screenshot=False,
     ctf_mode=False,
 ):
     """Run the full hunt pipeline on a single canonical target."""
@@ -2172,7 +2098,7 @@ def _hunt_target_impl(
         return _batch_recon_result(canonical_target, result["recon"], started, ctf_mode=ctf_mode)
 
     if recon_only:
-        # phase 退出后立即覆盖 running marker；后续 profile/browser 失败也不会
+        # phase 退出后立即覆盖 running marker；后续 profile 更新失败也不会
         # 让 `run_recon_started` 误导下一轮 autopilot。
         _persist_runtime_state(
             canonical_target,
@@ -2193,35 +2119,21 @@ def _hunt_target_impl(
             cve_hunt=False,
             zero_day=False,
         )
-        if browser_url:
-            browser_evidence = _capture_browser_evidence_for_hunt(
-                canonical_target,
-                browser_url=browser_url,
-                browser_session=browser_session,
-                capture_screenshot=browser_screenshot,
-            )
-            if browser_evidence:
-                result["browser_evidence"] = browser_evidence
         _persist_runtime_state(
             canonical_target,
             mode="recon_only",
             current_stage="recon",
-            last_completed_step="capture_browser_evidence" if result.get("browser_evidence") else "run_recon",
+            last_completed_step="run_recon",
             recon_completed=result["recon"],
             scan_completed=False,
             reports_generated=0,
             ctf_mode=ctf_mode,
-            browser_evidence=bool(result.get("browser_evidence")),
         )
         return result
 
     recon_available = result["recon"] or os.path.isdir(_resolve_recon_dir(canonical_target))
     if not scan_only and recon_available:
-        result["enrichment"] = _run_classic_enrichment_hints(
-            canonical_target,
-            browser_url=browser_url,
-            browser_session=browser_session,
-        )
+        result["enrichment"] = _run_classic_enrichment_hints(canonical_target)
 
     _persist_runtime_state(
         canonical_target,
@@ -2259,7 +2171,7 @@ def _hunt_target_impl(
         )
         raise
 
-    # phase 退出后立即覆盖 running marker；后续 CVE/zero-day/browser/profile
+    # phase 退出后立即覆盖 running marker；后续 CVE/zero-day/profile
     # 失败也不会把 `run_scan_started` 留给下一轮 autopilot。
     _persist_runtime_state(
         canonical_target,
@@ -2299,20 +2211,11 @@ def _hunt_target_impl(
         zero_day=zero_day,
     )
 
-    if browser_url:
-        browser_evidence = _capture_browser_evidence_for_hunt(
-            canonical_target,
-            browser_url=browser_url,
-            browser_session=browser_session,
-            capture_screenshot=browser_screenshot,
-        )
-        if browser_evidence:
-            result["browser_evidence"] = browser_evidence
     _persist_runtime_state(
         canonical_target,
         mode="scan_only" if scan_only else ("quick" if quick else "full"),
         current_stage="report" if result["reports"] else "scan",
-        last_completed_step="capture_browser_evidence" if result.get("browser_evidence") else "run_vuln_scan",
+        last_completed_step="run_vuln_scan",
         recon_completed=recon_available,
         scan_completed=result["scan"],
         reports_generated=result["reports"],
@@ -2320,7 +2223,6 @@ def _hunt_target_impl(
         zero_day=zero_day,
         ctf_mode=ctf_mode,
         enrichment_tools=result.get("enrichment", []),
-        browser_evidence=bool(result.get("browser_evidence")),
     )
 
     return result
@@ -2336,12 +2238,10 @@ def hunt_target(
     zero_day=False,
     scanner_full=False,
     scanner_skip="",
-    browser_url="",
-    browser_session="",
-    browser_screenshot=False,
     ctf_mode=False,
 ):
     """Run one target pipeline while preventing duplicate long phases."""
+    global _RUNTIME_PHASE_LOCK_FDS
     target_info = classify_target(domain)
     canonical_target = target_info["target"]
     if not _active_auth_session().is_empty():
@@ -2361,23 +2261,29 @@ def hunt_target(
 
     repo_root = os.path.dirname(os.path.abspath(RECON_DIR))
     with ExitStack() as stack:
+        lock_fds = []
         for phase in phases:
-            stack.enter_context(runtime_phase_lock(repo_root, canonical_target, phase))
-        return _hunt_target_impl(
-            canonical_target,
-            quick=quick,
-            deep=deep,
-            recon_only=recon_only,
-            scan_only=scan_only,
-            cve_hunt=cve_hunt,
-            zero_day=zero_day,
-            scanner_full=scanner_full,
-            scanner_skip=scanner_skip,
-            browser_url=browser_url,
-            browser_session=browser_session,
-            browser_screenshot=browser_screenshot,
-            ctf_mode=ctf_mode,
-        )
+            _lock_path, lock_fd = stack.enter_context(
+                runtime_phase_lock(repo_root, canonical_target, phase, include_fd=True)
+            )
+            lock_fds.append(lock_fd)
+        previous_lock_fds = _RUNTIME_PHASE_LOCK_FDS
+        _RUNTIME_PHASE_LOCK_FDS = tuple(lock_fds)
+        try:
+            return _hunt_target_impl(
+                canonical_target,
+                quick=quick,
+                deep=deep,
+                recon_only=recon_only,
+                scan_only=scan_only,
+                cve_hunt=cve_hunt,
+                zero_day=zero_day,
+                scanner_full=scanner_full,
+                scanner_skip=scanner_skip,
+                ctf_mode=ctf_mode,
+            )
+        finally:
+            _RUNTIME_PHASE_LOCK_FDS = previous_lock_fds
 
 
 def main():
@@ -2409,13 +2315,6 @@ Examples:
             "and this value is never inherited across targets/sessions"
         ),
     )
-    parser.add_argument("--browser-url", default="", help="Capture minimal browser evidence for this URL")
-    parser.add_argument(
-        "--browser-session",
-        default="",
-        help="Optional named browser session reused by the selected browser evidence backend",
-    )
-    parser.add_argument("--browser-screenshot", action="store_true", help="Also capture screenshot.png with browser evidence")
     parser.add_argument("--report-only", action="store_true", help="Only generate reports")
     parser.add_argument("--status", action="store_true", help="Show pipeline status")
     parser.add_argument("--setup-wordlists", action="store_true", help="Download wordlists")
@@ -2561,9 +2460,6 @@ Examples:
                 zero_day=args.zero_day,
                 scanner_full=args.scanner_full,
                 scanner_skip=args.scanner_skip,
-                browser_url=args.browser_url,
-                browser_session=args.browser_session,
-                browser_screenshot=args.browser_screenshot,
                 ctf_mode=ctf_mode,
             )
         except RuntimePhaseBusy as exc:

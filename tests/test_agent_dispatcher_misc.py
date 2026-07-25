@@ -91,7 +91,8 @@ def test_agent_system_mentions_intel_and_report_as_primary_workflows():
 
     assert "run_intel" in system
     assert "run_source_intel" in system
-    assert "run_browser_probe" in system
+    assert "Chrome DevTools MCP" in system
+    assert "Playwright MCP" in system
     assert "/intel" in system
     assert "primary /report reporting workflow" in system
     assert "generate_reports before finish" in system
@@ -101,19 +102,19 @@ def test_agent_system_mentions_intel_and_report_as_primary_workflows():
     assert "compatibility" in system.lower()
 
 
-def test_agent_system_prefers_browser_then_source_js_chain():
+def test_agent_system_prefers_mcp_browser_then_source_js_chain():
     system = agent._build_agent_system(autopilot_mode="normal")
 
-    assert "agent-browser-first evidence lane" in system
-    assert "chrome-devtools MCP for deep live debugging" in system
-    assert "Playwright as compatibility fallback" in system
+    assert "Chrome DevTools MCP" in system
+    assert "Playwright MCP" in system
+    assert "tools/browser_mcp_import.py" in system
     assert "prefer run_source_intel first" in system
     assert "run_js_read/read_js_intel" in system
     assert "run_js_analysis as a deeper legacy follow-up" in system
 
 
 def test_new_browser_and_source_tools_are_exposed():
-    assert "run_browser_probe" in agent.TOOL_NAMES
+    assert "run_browser_probe" not in agent.TOOL_NAMES
     assert "read_browser_surface" in agent.TOOL_NAMES
     assert "run_source_intel" in agent.TOOL_NAMES
     assert "read_source_intel" in agent.TOOL_NAMES
@@ -121,33 +122,21 @@ def test_new_browser_and_source_tools_are_exposed():
     assert "read_js_intel" in agent.TOOL_NAMES
 
 
-def test_dispatch_browser_probe_and_source_intel(monkeypatch, tmp_path):
+def test_dispatch_source_intel(monkeypatch, tmp_path):
     dispatcher = _build_dispatcher(tmp_path)
     hunt = agent._h()
     seen = {}
-
-    def fake_browser_probe(domain, url="", session=""):
-        seen["browser"] = (domain, url, session)
-        return True
 
     def fake_source_intel(domain, repo_path="", repo_url=""):
         seen["source"] = (domain, repo_path, repo_url)
         return True
 
-    monkeypatch.setattr(hunt, "run_browser_probe", fake_browser_probe)
-    monkeypatch.setattr(hunt, "read_browser_surface", lambda domain: f"BROWSER SURFACE: {domain}")
     monkeypatch.setattr(hunt, "run_source_intel", fake_source_intel)
     monkeypatch.setattr(hunt, "read_source_intel", lambda domain: f"Source Intelligence Summary {domain}")
 
-    browser_output = dispatcher.dispatch(
-        "run_browser_probe",
-        {"url": "https://target.com/app", "session": "auth-session"},
-    )
     source_output = dispatcher.dispatch("run_source_intel", {"repo_path": "/tmp/repo"})
 
-    assert seen["browser"] == ("target.com", "https://target.com/app", "auth-session")
     assert seen["source"] == ("target.com", "/tmp/repo", "")
-    assert "BROWSER SURFACE: target.com" in browser_output
     assert "Source Intelligence Summary target.com" in source_output
 
 

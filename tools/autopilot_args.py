@@ -46,11 +46,9 @@ LEGACY_BOOLEAN_FLAGS = {
     "--parallel",
     "--parallel-hypotheses",
     "--self-review",
-    "--vision",
 }
 LEGACY_VALUE_FLAGS = {
     "--max-parallel",
-    "--max-screenshots",
     "--resume",
     "--worker-timeout-secs",
 }

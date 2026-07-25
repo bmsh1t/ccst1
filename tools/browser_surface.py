@@ -72,7 +72,7 @@ def _request_items(payload: object, *, _allow_data_envelope: bool = True) -> lis
     log = payload.get("log")
     if isinstance(log, dict) and isinstance(log.get("entries"), list):
         return log["entries"]
-    # agent-browser 的 JSON envelope 仅解一层 data，避免递归误读请求 body。
+    # MCP 包装层仅解一层 data，避免递归误读请求 body。
     data = payload.get("data")
     if _allow_data_envelope and isinstance(data, dict):
         nested = _request_items(data, _allow_data_envelope=False)

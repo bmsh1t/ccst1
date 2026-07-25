@@ -1943,11 +1943,9 @@ def _next_proposals(
             ranked_surface_added += 1
     if deferred_role_ranked:
         proposals.append(_case_state_acquisition_proposal(deferred_role_ranked, clean_authz_baselines))
-    # Keep a slightly wider queue window. Secondary-sweep and coverage items can
-    # be final-state filtered after queue construction; if we truncate too early
-    # the next fresh ranked surface disappears and /autopilot hands off while
-    # P1 surface remains.
-    return _dedupe(proposals)[:8]
+    # 先按 action 类型保留代表，再填满窗口；同类 finding/runner 条目不能把
+    # coverage、actor 或 ranked-surface 永久挤出 durable queue。
+    return _bounded_next_proposals(proposals, target)
 
 
 def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
@@ -2007,8 +2005,8 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         return "evidence-convergence", 98, "focused replay with browser/JS/source evidence"
     if "secret verification lane" in lowered:
         return "secret-verification", 86, "python3 tools/secret_triage.py --file findings/<target>/exposure/repo_secrets.json"
-    if "run enrichment run_browser_probe" in lowered:
-        return "browser-enrichment", 70, "browser/playwright probe, then /surface"
+    if "collect_browser_mcp_evidence" in lowered:
+        return "browser-enrichment", 70, "Chrome DevTools/Playwright MCP capture, import artifacts, then /surface"
     if "run enrichment run_source_intel" in lowered:
         return "source-enrichment", 70, "python3 tools/source_intel.py"
     if "run enrichment run_js_read" in lowered:
@@ -2018,6 +2016,34 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
     if "continue top ranked surface" in lowered:
         return "ranked-surface", 70, "AI reviews ranked surface evidence, then chooses the exact lane"
     return "next-action", 50, "execute the smallest safe evidence-producing step"
+
+
+def _bounded_next_proposals(
+    proposals: list[str],
+    target: str,
+    limit: int = 8,
+) -> list[str]:
+    """保留 action 类型多样性，再用既有优先级填充固定窗口。"""
+    deduped = _dedupe(proposals)
+    classified = [
+        (index, proposal, *_classify_next_action(proposal, target)[:2])
+        for index, proposal in enumerate(deduped)
+    ]
+    first_by_type: dict[str, tuple[int, str, str, int]] = {}
+    for item in classified:
+        first_by_type.setdefault(item[2], item)
+
+    representatives = sorted(
+        first_by_type.values(),
+        key=lambda item: (-item[3], item[0]),
+    )[:limit]
+    selected = {item[0] for item in representatives}
+    if len(selected) < limit:
+        for item in sorted(classified, key=lambda value: (-value[3], value[0])):
+            selected.add(item[0])
+            if len(selected) >= limit:
+                break
+    return [proposal for index, proposal in enumerate(deduped) if index in selected]
 
 
 def _extract_action_metadata(text: str) -> dict:

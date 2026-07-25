@@ -27,7 +27,7 @@ For target `<target>` with storage key `<target_key>`:
 2. **At least one action is executable**
    - `action_queue.json` must contain at least one item whose `action`,
      `command_hint`, or `recommended_executable_action` is a script/command,
-     for example `python3 tools/...`, `curl`, `playwright-cli`, `ffuf`, or
+     for example `python3 tools/...`, `curl`, `ffuf`, or
      `semgrep`.
    - Natural-language TODOs alone do not pass.
 

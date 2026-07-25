@@ -1201,9 +1201,9 @@ class TestAutopilotState:
 
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
 
-        assert state["next_tool_hint"] == "run_browser_probe"
+        assert state["next_tool_hint"] == "collect_browser_mcp_evidence"
         assert [item["tool"] for item in state["enrichment_hints"]] == [
-            "run_browser_probe",
+            "collect_browser_mcp_evidence",
             "run_source_intel",
             "run_js_read",
         ]
@@ -1215,11 +1215,11 @@ class TestAutopilotState:
             "has_memory": True,
             "tech_stack": ["next.js", "graphql"],
             "next_action": "hunt_p1",
-            "next_tool_hint": "run_browser_probe",
+            "next_tool_hint": "collect_browser_mcp_evidence",
             "enrichment_hints": [
                 {
-                    "tool": "run_browser_probe",
-                    "reason": "app-like or GraphQL surface signals were detected, but no browser-observed surface exists yet",
+                    "tool": "collect_browser_mcp_evidence",
+                    "reason": "app-like or GraphQL surface signals were detected; use Chrome DevTools or Playwright MCP, then import the observed artifacts",
                 },
                 {
                     "tool": "run_js_read",
@@ -1233,9 +1233,9 @@ class TestAutopilotState:
             "recommended_targets": [],
         })
 
-        assert "Next tool hint: run_browser_probe" in output
+        assert "Next tool hint: collect_browser_mcp_evidence" in output
         assert "Enrichment hints:" in output
-        assert "- run_browser_probe: app-like or GraphQL surface signals were detected" in output
+        assert "- collect_browser_mcp_evidence: app-like or GraphQL surface signals were detected" in output
         assert "- run_js_read: cached JS artifacts exist" in output
 
     def test_format_autopilot_state_shows_workflow_leads(self):

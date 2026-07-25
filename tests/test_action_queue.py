@@ -467,13 +467,29 @@ def test_ingest_checkpoint_preserves_structured_metadata(tmp_path):
 
 def test_ingest_checkpoint_dedupes_active_actions(tmp_path):
     first = ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
+    queue_path = tmp_path / "state" / "target.com" / "action_queue.json"
+    first_inode = queue_path.stat().st_ino
     second = ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
 
     assert first["stats"]["added"] == 2
     assert second["stats"]["added"] == 0
-    assert second["stats"]["updated"] == 2
+    assert second["stats"]["updated"] == 0
+    assert queue_path.stat().st_ino == first_inode
     assert {item["id"] for item in load_queue(tmp_path, "target.com")["actions"]} == {"AQ-0001", "AQ-0002"}
     assert select_next_action(load_queue(tmp_path, "target.com"))["id"] == "AQ-0002"
+
+
+def test_checkpoint_metadata_only_update_is_persisted(tmp_path):
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
+    refreshed = _checkpoint()
+    refreshed["next_action_queue"][0]["metadata"]["validation_path"] = "focused replay"
+
+    result = ingest_checkpoint(tmp_path, "target.com", checkpoint=refreshed)
+
+    assert result["stats"]["updated"] == 1
+    queue = load_queue(tmp_path, "target.com")
+    coverage = next(item for item in queue["actions"] if item["type"] == "coverage-gap")
+    assert coverage["metadata"]["validation_path"] == "focused replay"
 
 
 def test_checkpoint_reingest_can_clear_stale_redline_flag(tmp_path):

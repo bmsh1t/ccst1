@@ -136,10 +136,16 @@ def classify_high_value_signal(*, path: str = "", query_keys: list[str] | None =
     if lower_path.startswith("/api/") or re.search(r"/api/v\d+/", lower_path):
         add(2, "api", "api")
 
-    for token in ("admin", "internal", "billing", "payment", "oauth", "saml", "webhook", "callback", "graphql", "upload", "export", "download", "tenant", "workspace", "account", "order", "secret", "ci", "cd"):
-        if _contains_hint(lower_path, token):
-            add(2, token, f"path:{token}")
-            break
+    path_hints = [
+        token
+        for token in ("admin", "internal", "billing", "payment", "oauth", "saml", "webhook", "callback", "graphql", "upload", "export", "download", "tenant", "workspace", "account", "order", "secret", "ci", "cd")
+        if _contains_hint(lower_path, token)
+    ]
+    if path_hints:
+        # 分数仍只计算一次，但保留全部类别，供 bounded Surface 做类别代表保留。
+        add(2, path_hints[0], f"path:{path_hints[0]}")
+        classes.extend(path_hints[1:])
+        reasons.extend(f"path:{token}" for token in path_hints[1:])
     for token in ("wordpress", "plugin", "theme", "cve", "advisory", "version", "affected", "reachable", "idor", "ssrf", "sqli", "rce", "upload", "oauth", "saml", "secret"):
         if _contains_hint(lower_evidence, token):
             add(2, token, f"evidence:{token}")

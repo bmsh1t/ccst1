@@ -100,6 +100,7 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 | `knowledge/cards/websocket-realtime-api.md` | WebSocket、CSWSH、订阅/发布和消息级权限 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/information-disclosure-source-config.md` | Debug、source map、备份、配置和源码泄露的影响链 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/public-package-artifact-intelligence.md` | 公开包仓库、容器和历史发布物的归属、provenance 与只读静态审查 | `web2-recon`, `cicd-security` |
+| `knowledge/cards/wordpress-surface-intelligence.md` | WordPress 插件/主题 inventory、版本适用性与 REST/AJAX/XML-RPC 权限边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/js-runtime-signature-reconstruction.md` | 从请求 initiator 和运行时样本重建动态 JS 签名链，并以 first divergence 驱动最小环境补丁 | `web2-recon` |
 | `knowledge/cards/custom-protocol-state-recovery.md` | 从 PCAP/log/source 恢复自定义协议 framing、消息字典和可验证状态转换 | `web2-recon` |
 | `knowledge/cards/web-llm-tool-chains.md` | Web LLM、prompt injection、RAG 和工具调用边界 | `web2-vuln-classes`, `triage-validation` |

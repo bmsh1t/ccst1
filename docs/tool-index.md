@@ -15,7 +15,7 @@
 | `tools/recon_adapter.py` | Reading recon output programmatically | Unified reader for `recon/<target>/`; streams and pages compact FFUF evidence without loading full artifacts |
 | `tools/recon_candidates.py` | Bounded Recon routing views | Builds JS, Host/SNI, AI/LLM, and generic asset-relation candidates from cached or normalized observations |
 | `tools/cloud_recon.sh` | Target brand likely owns buckets | S3/Azure/GCP discovery + CloudFlare origin reveal |
-| `tools/cve_hunter.py` | After httpx tech detection | Match detected stack against public CVE DBs |
+| `tools/cve_hunter.py` | Explicit compatibility CVE-template probe | Rebuild Intel v2, then run the legacy Nuclei CVE pass; do not pair with default `/intel` |
 | `tools/cve_scan.sh` | Pre-engagement nuclei sweep | Fast nuclei pass scoped to known CVE templates |
 | `tools/intel_engine.py` | Versioned component/service review | `/intel` owner — OSV/GHSA/NVD, KEV/EPSS, local signals, atomic `intel.json` |
 | `tools/technology_inventory.py` | Multiple consumers need reliable httpx/Nmap tech, version, service, or CPE data | Shared JSONL/text/Nmap parser and atomic component inventory owner |
@@ -98,7 +98,8 @@ identity, and cloud signals without re-enumerating everything.
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/browser_evidence.py` | Need browser evidence or a few same-session candidates | agent-browser first; focused mode reuses Surface/Action Queue |
+| `tools/browser_evidence.py` | MCP browser evidence already imported | Compact linkage and last-capture lookup only; it does not launch a browser |
+| `tools/browser_mcp_import.py` | Chrome DevTools/Playwright MCP artifacts ready | Normalize MCP network/snapshot/console/screenshot evidence into browser surface |
 | `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL surface from browser evidence |
 | `tools/hai_browser_recon.js` | Need browser-side recon snippet | Playwright recon helper script (JS) |
 | `tools/deep_js_packer.py` | Concrete webpack/chunk/source-map signal | Evidence-gated Packer bundle/page recovery into existing JS artifacts |
@@ -164,7 +165,7 @@ identity, and cloud signals without re-enumerating everything.
 | Concrete signal plus unresolved next verification question | smallest safe lookup/replay/diff/enrichment/probe, then checkpoint state |
 | Need to remember user_a/user_b sessions, owned objects, private markers, or IDOR backlog | `target_case_state.py summary/next` |
 | `/orders/123`, `/invoices/42`, `/addresses/7`, `account_id`, `tenantId` appears in cached artifacts | `case_state_seed.py --target <target> --json`, then review suggested commands |
-| Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, `/scan-cves` |
+| Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel` → `tools/intel_engine.py`; add `/scan-cves` only after AI selects a reachable advisory |
 | 401/403 on interesting endpoint | `bypass_403.sh` |
 | Multiple session files in `.private/` | `role_diff.py` |
 | Two account creds + numeric IDs | `role_diff.py`, then `h1_idor_scanner.py` |
@@ -185,7 +186,7 @@ identity, and cloud signals without re-enumerating everything.
 | JS bundles cached without recovery evidence | `js_reader.py` (then `js-reader` agent) |
 | Recon done, want broad active | `vuln_scanner.sh` |
 | Tech stack or identified network service needs CVE applicability | `/intel` → `intel_engine.py`; `cve_hunter.py` is compatibility-only |
-| Dashboard / SPA target | `browser_evidence.py` → `browser_surface.py`; use `focused-discovery` only after a browser workflow exposes concrete same-session route candidates |
+| Dashboard / SPA target | Chrome DevTools/Playwright MCP → `browser_mcp_import.py` → `browser_surface.py` |
 | Switching back to old target | `resume.py` |
 | Want to remember a pattern | `remember.py` |
 | Login surface + need credential prep | `/wordlist-gen`, `/osint-employees`, `/breach-check` |

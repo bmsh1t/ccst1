@@ -129,6 +129,30 @@ def test_runtime_phase_lock_rejects_unknown_phase(tmp_path):
             pass
 
 
+def test_runtime_phase_lock_remains_held_by_inheriting_child(tmp_path):
+    """父调用方释放上下文后，实际长任务继承的 fd 仍必须维持 flock。"""
+    child = None
+    try:
+        with runtime_phase_lock(
+            tmp_path,
+            "target.com",
+            "recon",
+            include_fd=True,
+        ) as (_lock_path, lock_fd):
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                pass_fds=(lock_fd,),
+            )
+
+        assert runtime_phase_is_active(tmp_path, "target.com", "recon") is True
+    finally:
+        if child is not None:
+            child.terminate()
+            child.wait(timeout=5)
+
+    assert runtime_phase_is_active(tmp_path, "target.com", "recon") is False
+
+
 def test_direct_phase_runner_returns_busy_without_starting_child(tmp_path, monkeypatch):
     monkeypatch.setattr(
         runtime_phase_exec.subprocess,

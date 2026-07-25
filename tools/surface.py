@@ -853,6 +853,17 @@ BROWSER_VALUE_KEYWORDS = (
 )
 
 REVIEW_POOL_LIMIT = 16
+REVIEW_SIGNAL_GROUPS = (
+    ("auth", frozenset({"auth", "oauth", "saml", "secret"})),
+    ("admin", frozenset({"admin", "internal"})),
+    ("payment", frozenset({"billing", "payment"})),
+    ("upload", frozenset({"upload"})),
+    ("api", frozenset({"api"})),
+    ("graphql", frozenset({"graphql", "websocket"})),
+    ("file", frozenset({"file", "export", "download"})),
+    ("server-side", frozenset({"server-side", "callback", "webhook"})),
+    ("object", frozenset({"id-ref", "sequential", "tenant", "workspace", "account", "order"})),
+)
 
 
 def _add_score_breakdown(
@@ -966,6 +977,44 @@ def _has_actionable_review_evidence(item: dict) -> bool:
     return False
 
 
+def _review_signal_groups(item: dict) -> tuple[str, ...]:
+    """返回候选覆盖的高价值业务类别，不改变原始 URL identity。"""
+    raw_url = str(item.get("url") or "").strip()
+    parsed = urlparse(raw_url)
+    path = parsed.path or "/"
+    query_keys = [key.lower() for key in re.findall(r"[?&]([^=&]+)=", raw_url)]
+    evidence = " ".join(
+        str(value or "")
+        for value in (item.get("suggested"), *(item.get("reasons") or []))
+    )
+    classes = set(
+        classify_high_value_signal(
+            path=path,
+            query_keys=query_keys,
+            evidence=evidence,
+        ).classes
+    )
+    return tuple(
+        group
+        for group, members in REVIEW_SIGNAL_GROUPS
+        if classes.intersection(members)
+    )
+
+
+def _category_review_reason(item: dict, groups: tuple[str, ...]) -> str:
+    if item.get("evidence_convergence"):
+        return "cross-evidence convergence"
+    if item.get("browser_observed"):
+        return "browser-observed API/workflow"
+    if item.get("js_intel_observed") or item.get("source_intel_observed"):
+        return "JS/source-inferred surface"
+    if item.get("scanner_findings"):
+        return "scanner lead requiring AI triage"
+    if item.get("target_memory_hits"):
+        return "target-memory continuation"
+    return "high-value category: " + "/".join(groups[:4])
+
+
 def _build_review_pool(
     candidates: list[dict],
     ffuf_candidates: list[dict] | None = None,
@@ -982,6 +1031,15 @@ def _build_review_pool(
     pool: list[dict] = []
     seen: set[str] = set()
     unresolved = [item for item in candidates if not _is_final_surface_item(item)]
+
+    # 先保留各业务类别的最高分代表，避免大量同源 search/facet 路径占满 16 条。
+    represented_groups: set[str] = set()
+    for item in unresolved:
+        groups = _review_signal_groups(item)
+        if not groups or represented_groups.issuperset(groups):
+            continue
+        _add_review_item(pool, seen, item, _category_review_reason(item, groups))
+        represented_groups.update(groups)
 
     for item in unresolved:
         if item.get("evidence_convergence"):
@@ -1607,6 +1665,10 @@ class _SurfaceCandidateFrontiers:
                 "actionable",
             )
         }
+        self.categories = {
+            name: _BoundedCandidateFrontier(1)
+            for name, _members in REVIEW_SIGNAL_GROUPS
+        }
         self.ffuf_urls = ffuf_urls
         self.ffuf_matches: dict[str, tuple[int, dict]] = {}
 
@@ -1630,13 +1692,15 @@ class _SurfaceCandidateFrontiers:
             self.review["target_memory"].add(item, sequence)
         if _has_actionable_review_evidence(item):
             self.review["actionable"].add(item, sequence)
+        for category in _review_signal_groups(item):
+            self.categories[category].add(item, sequence)
         url = str(item.get("url") or "")
         if url in self.ffuf_urls:
             self.ffuf_matches[url] = (sequence, item)
 
     def review_candidates(self) -> list[dict]:
         by_url: dict[str, tuple[int, dict]] = {}
-        frontiers = [*self.review.values(), self.overall]
+        frontiers = [*self.review.values(), *self.categories.values(), self.overall]
         for frontier in frontiers:
             for sequence, item in frontier.values():
                 url = str(item.get("url") or "")

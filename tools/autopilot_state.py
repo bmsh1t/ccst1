@@ -739,7 +739,7 @@ def _has_any_artifact(*paths: str) -> bool:
     return False
 
 
-def _has_browser_probe_signal(surface_context: dict, ranked: dict) -> bool:
+def _has_browser_mcp_signal(surface_context: dict, ranked: dict) -> bool:
     """Return whether cached recon looks app-like enough to justify browser probing."""
     titles = [
         str(item.get("title", "") or "").lower()
@@ -1037,10 +1037,10 @@ def _build_enrichment_hints(
         next_tool_hint = hints[0]["tool"] if hints else ""
         return next_tool_hint, hints
 
-    if not browser_ready and _has_browser_probe_signal(surface_context, ranked):
+    if not browser_ready and _has_browser_mcp_signal(surface_context, ranked):
         hints.append({
-            "tool": "run_browser_probe",
-            "reason": "app-like or GraphQL surface signals were detected, but no browser-observed surface exists yet",
+            "tool": "collect_browser_mcp_evidence",
+            "reason": "app-like or GraphQL surface signals were detected; use Chrome DevTools or Playwright MCP, then import the observed artifacts",
         })
     if repo_source_available and not source_intel_ready:
         hints.append({
@@ -1224,7 +1224,7 @@ def _is_substantive_queue_action(item: dict) -> bool:
             metadata.get("replay_draft"),
         )
     ).strip()
-    return command.startswith(("python3 ", "/validate ", "curl ", "playwright-cli "))
+    return command.startswith(("python3 ", "/validate ", "curl "))
 
 
 def _load_substantive_action_queue_next(repo_root: str, target: str) -> dict:

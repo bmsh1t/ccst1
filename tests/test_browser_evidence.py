@@ -1,698 +1,99 @@
-"""Regression tests for minimal browser evidence capture."""
+"""浏览器 MCP 证据摘要辅助函数回归测试。"""
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
-import browser_evidence
-import pytest
-from tools.browser_surface import public_url_shape
+from tools import browser_evidence
 
 
-def test_resolve_browser_backend_prefers_agent_browser_then_playwright():
-    both = lambda tool: f"/fixture/{tool}" if tool in {"agent-browser", "playwright-cli"} else None
-    playwright_only = lambda tool: f"/fixture/{tool}" if tool == "playwright-cli" else None
-
-    assert browser_evidence.resolve_browser_backend("auto", which=both) == "agent-browser"
-    assert browser_evidence.resolve_browser_backend("auto", which=playwright_only) == "playwright-cli"
-
-
-def test_resolve_browser_backend_reports_missing_and_invalid_backends():
-    with pytest.raises(RuntimeError, match="agent-browser.*playwright-cli"):
-        browser_evidence.resolve_browser_backend("auto", which=lambda _tool: None)
-    with pytest.raises(ValueError, match="Unsupported browser backend"):
-        browser_evidence.resolve_browser_backend("selenium")
-
-
-def test_capture_browser_evidence_writes_summary_and_last_pointer(monkeypatch, tmp_path):
-    calls = []
-    envs = []
-
-    def fake_run(cmd, capture_output, text, timeout, check, env=None):
-        calls.append(cmd)
-        envs.append(env or {})
-        stdout = ""
-        if "requests" in cmd:
-            stdout = json.dumps(
-                {
-                    "requests": [
-                        {
-                            "url": "https://target.local/api/me?account_id=123",
-                            "method": "GET",
-                            "resourceType": "xhr",
-                        },
-                        {
-                            "request": {
-                                "url": "https://target.local/graphql",
-                                "method": "POST",
-                                "postData": {"text": '{"query":"mutation Invite($user_id:ID!){invite(user_id:$user_id){id}}"}'},
-                            },
-                            "type": "fetch",
-                        },
-                        "https://target.local/static/app.js",
-                    ]
-                }
-            )
-        elif "console" in cmd:
-            stdout = json.dumps([{"type": "log", "text": "ready"}])
-        elif "cookie-list" in cmd:
-            stdout = json.dumps([{"name": "sid", "value": "redacted"}])
-        elif "localstorage-list" in cmd:
-            stdout = json.dumps({"theme": "dark"})
-        elif "sessionstorage-list" in cmd:
-            stdout = json.dumps({"step": "1"})
-        elif "snapshot" in cmd:
-            stdout = "Page URL: https://target.local/app\nSnapshot: ok\n"
-        elif "state-save" in cmd:
-            Path(cmd[-1]).write_text(json.dumps({"cookies": []}), encoding="utf-8")
-        elif "screenshot" in cmd:
-            filename_arg = next(item for item in cmd if item.startswith("--filename="))
-            Path(filename_arg.split("=", 1)[1]).write_bytes(b"fake-png")
-        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
-
-    summary = browser_evidence.capture_browser_evidence(
-        "target.local",
-        "https://target.local/app",
-        label="unit",
-        evidence_root=tmp_path / "evidence",
-        backend="playwright-cli",
-    )
-
-    summary_path = Path(summary["summary_path"])
-    pointer_path = tmp_path / "evidence" / "target.local" / "browser" / "last-capture.json"
-    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-
-    assert summary_path.is_file()
-    assert pointer_path.is_file()
-    assert saved_summary["counts"]["requests"] == 3
-    assert saved_summary["counts"]["console"] == 1
-    assert saved_summary["counts"]["browser_xhr_endpoints"] == 2
-    assert saved_summary["counts"]["browser_api_endpoints"] == 2
-    assert saved_summary["counts"]["browser_params"] == 3
-    assert saved_summary["capture_backend"] == "playwright-cli"
-    assert saved_summary["artifacts"]["snapshot_txt"].endswith("snapshot.txt")
-    assert saved_summary["capture_screenshot"] is False
-    assert "screenshot_png" not in saved_summary["artifacts"]
-    assert saved_summary["browser_surface"]["counts"]["xhr_endpoints"] == 2
-    assert pointer["summary_path"] == str(summary_path)
-    assert pointer["request_count"] == 3
-    assert pointer["browser_api_count"] == 2
-
-    recon_browser = tmp_path / "recon" / "target.local" / "browser"
-    assert (recon_browser / "xhr_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
-        "https://target.local/api/me?account_id=",
-        "https://target.local/graphql",
-    ]
-    assert (recon_browser / "api_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
-        "https://target.local/api/me?account_id=",
-        "https://target.local/graphql",
-    ]
-    assert (recon_browser / "browser_params.txt").read_text(encoding="utf-8").splitlines() == [
-        "https://target.local/api/me?account_id= :: account_id",
-        "https://target.local/graphql :: user_id",
-        "https://target.local/graphql :: query",
-    ]
-    assert json.loads((recon_browser / "forms.json").read_text(encoding="utf-8"))["status"] == "placeholder"
-
-    command_args = [cmd[2:] for cmd in calls]
-    assert ["goto", "https://target.local/app"] in command_args
-    assert ["--raw", "snapshot"] in command_args
-    assert ["--raw", "requests"] in command_args
-    assert ["--raw", "console"] in command_args
-    assert any(args[0] == "state-save" and args[1].endswith("state.json") for args in command_args)
-    assert all(env.get("PLAYWRIGHT_DAEMON_SESSION_DIR") for env in envs)
-    assert not any(
-        args[0] == "screenshot" and args[1].startswith("--filename=") and args[1].endswith("screenshot.png")
-        for args in command_args
-    )
-
-
-def test_capture_browser_evidence_can_capture_screenshot_when_requested(monkeypatch, tmp_path):
-    calls = []
-
-    def fake_run(cmd, capture_output, text, timeout, check, env=None):
-        calls.append(cmd)
-        if "state-save" in cmd:
-            Path(cmd[-1]).write_text(json.dumps({"cookies": []}), encoding="utf-8")
-        if "screenshot" in cmd:
-            filename_arg = next(item for item in cmd if item.startswith("--filename="))
-            Path(filename_arg.split("=", 1)[1]).write_bytes(b"fake-png")
-        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
-
-    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
-
-    summary = browser_evidence.capture_browser_evidence(
-        "target.local",
-        "https://target.local/app",
-        label="unit",
-        evidence_root=tmp_path / "evidence",
-        capture_screenshot=True,
-        backend="playwright-cli",
-    )
-
-    command_args = [cmd[2:] for cmd in calls]
-    assert summary["capture_screenshot"] is True
-    assert summary["artifacts"]["screenshot_png"].endswith("screenshot.png")
-    assert any(
-        args[0] == "screenshot" and args[1].startswith("--filename=") and args[1].endswith("screenshot.png")
-        for args in command_args
-    )
-
-
-def test_load_last_browser_evidence_returns_compact_linkage(monkeypatch, tmp_path):
-    monkeypatch.setattr(browser_evidence.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="[]", stderr=""))
-
-    summary = browser_evidence.capture_browser_evidence(
-        "target.local",
-        "https://target.local/",
-        label="last",
-        evidence_root=tmp_path / "evidence",
-        backend="playwright-cli",
-    )
-
-    linkage = browser_evidence.load_last_browser_evidence(
-        "target.local",
-        evidence_root=tmp_path / "evidence",
-    )
-
-    assert linkage["dir"] == summary["evidence_dir"]
-    assert linkage["summary_path"] == summary["summary_path"]
-    assert linkage["url"] == "https://target.local/"
-
-
-def test_capture_browser_evidence_url_target_uses_canonical_storage_key(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        browser_evidence.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="[]", stderr=""),
-    )
-
-    summary = browser_evidence.capture_browser_evidence(
-        "http://127.0.0.1:3002",
-        "http://127.0.0.1:3002/",
-        label="url-target",
-        evidence_root=tmp_path / "evidence",
-        backend="playwright-cli",
-    )
-
-    target_key = "127.0.0.1:3002"
-    assert summary["target_key"] == target_key
-    assert summary["session"] == "browser-http___127.0.0.1_3002"
-    assert Path(summary["evidence_dir"]).is_relative_to(tmp_path / "evidence" / target_key / "browser")
-    assert (tmp_path / "evidence" / target_key / "browser" / "last-capture.json").is_file()
-    assert (tmp_path / "recon" / target_key / "browser" / "summary.json").is_file()
-    assert not (tmp_path / "evidence" / "http___127.0.0.1_3002").exists()
-
-    linkage = browser_evidence.load_last_browser_evidence(
-        "http://127.0.0.1:3002",
-        evidence_root=tmp_path / "evidence",
-    )
-    assert linkage["summary_path"] == summary["summary_path"]
-
-
-def test_custom_evidence_root_keeps_recon_in_the_same_staging_parent(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        browser_evidence.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="[]", stderr=""),
-    )
-    monkeypatch.setattr(browser_evidence, "DEFAULT_RECON_ROOT", tmp_path / "unexpected-default")
-
-    browser_evidence.capture_browser_evidence(
-        "target.local",
-        "https://target.local/",
-        evidence_root=tmp_path / "custom-evidence",
-        backend="playwright-cli",
-    )
-
-    assert (tmp_path / "recon" / "target.local" / "browser" / "summary.json").is_file()
-    assert not (tmp_path / "unexpected-default").exists()
-
-
-def test_capture_browser_evidence_agent_browser_writes_raw_and_normalized_artifacts(monkeypatch, tmp_path):
-    calls = []
-    envs = []
-
-    requests = [
-        {
-            "url": "https://target.local/api/me?account_id=123",
-            "method": "GET",
-            "resourceType": "xhr",
-            "status": 200,
-        },
-        {
-            "url": "https://target.local/graphql",
-            "method": "POST",
-            "resourceType": "fetch",
-            "postData": {"query": "query User($id: ID!){user(id:$id){id}}"},
-            "status": 200,
-        },
-    ]
-
-    def fake_run(cmd, capture_output, text, timeout, check, env=None):
-        calls.append(cmd)
-        envs.append(env or {})
-        args = cmd[4:]
-        data = {}
-        if args == ["snapshot"]:
-            data = {"snapshot": "heading \"Dashboard\"", "refs": {}}
-        elif args == ["network", "requests"]:
-            data = {"requests": requests}
-        elif args == ["console"]:
-            data = {"messages": [{"type": "log", "text": "ready"}]}
-        elif args == ["cookies", "get"]:
-            data = {"cookies": [{"name": "sid", "value": "redacted"}]}
-        elif args == ["storage", "local"]:
-            data = {"storage": {"theme": "dark"}}
-        elif args == ["storage", "session"]:
-            data = {"storage": {"step": "1"}}
-        elif args[:2] == ["state", "save"]:
-            Path(args[-1]).write_text(json.dumps({"cookies": []}), encoding="utf-8")
-            data = {"saved": True, "path": args[-1]}
-        elif args and args[0] == "screenshot":
-            Path(args[-1]).write_bytes(b"fake-png")
-            data = {"path": args[-1]}
-        elif args[:3] == ["network", "har", "stop"]:
-            Path(args[-1]).write_text(json.dumps({"log": {"entries": []}}), encoding="utf-8")
-            data = {"path": args[-1]}
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps({"success": True, "data": data, "error": None}),
-            stderr="",
-        )
-
-    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
-
-    summary = browser_evidence.capture_browser_evidence(
-        "target.local",
-        "https://target.local/app",
-        label="agent",
-        evidence_root=tmp_path / "evidence",
-        capture_screenshot=True,
-        backend="agent-browser",
-    )
-
-    capture_dir = Path(summary["evidence_dir"])
-    pointer = json.loads(
-        (tmp_path / "evidence" / "target.local" / "browser" / "last-capture.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    normalized_requests = json.loads((capture_dir / "requests.json").read_text(encoding="utf-8"))
-    raw_requests_path = Path(summary["artifacts"]["requests_raw_json"])
-    raw_requests = json.loads(raw_requests_path.read_text(encoding="utf-8"))
-    storage_path = Path(summary["artifacts"]["storage_json"])
-    storage = json.loads(storage_path.read_text(encoding="utf-8"))
-
-    assert summary["success"] is True
-    assert summary["capture_backend"] == "agent-browser"
-    assert summary["counts"]["requests"] == 2
-    assert summary["counts"]["console"] == 1
-    assert summary["counts"]["browser_xhr_endpoints"] == 2
-    assert summary["counts"]["browser_params"] == 3
-    assert pointer["capture_backend"] == "agent-browser"
-    assert normalized_requests["source"] == "agent-browser"
-    assert normalized_requests["requests"][0]["url"] == "https://target.local/api/me?account_id="
-    assert normalized_requests["requests"][1]["postData"]["parameter_names"] == ["id", "query"]
-    assert normalized_requests["requests"][1]["postData"]["graphql_operations"] == ["User"]
-    assert normalized_requests["requests"][1]["postData"]["graphql_variables"] == ["id"]
-    assert raw_requests["data"]["requests"] == requests
-    assert "snapshot_sha256=" in (capture_dir / "snapshot.txt").read_text(encoding="utf-8")
-    assert Path(summary["artifacts"]["snapshot_private_txt"]).read_text(encoding="utf-8") == 'heading "Dashboard"'
-    assert storage == {
-        "localStorage": {"theme": "dark"},
-        "sessionStorage": {"step": "1"},
-    }
-    assert Path(summary["artifacts"]["state_json"]).is_file()
-    assert Path(summary["artifacts"]["screenshot_png"]).read_bytes() == b"fake-png"
-    assert Path(summary["artifacts"]["network_har"]).is_file()
-    assert not (capture_dir / "state.json").exists()
-    assert not (capture_dir / "screenshot.png").exists()
-    assert not (capture_dir / "network.har").exists()
-    assert summary["artifacts"]["requests_raw_json"].endswith("requests.raw.json")
-    assert summary["artifacts"]["network_har"].endswith("network.har")
-
-    command_args = [cmd[4:] for cmd in calls]
-    assert command_args[:5] == [
-        ["open"],
-        ["network", "requests", "--clear"],
-        ["console", "--clear"],
-        ["network", "har", "start"],
-        ["navigate", "https://target.local/app"],
-    ]
-    assert ["network", "requests"] in command_args
-    assert ["cookies", "get"] in command_args
-    assert ["storage", "local"] in command_args
-    assert ["storage", "session"] in command_args
-    assert all(cmd[0] == "agent-browser" for cmd in calls)
-    assert all(env.get("AGENT_BROWSER_SOCKET_DIR") for env in envs)
-
-
-def test_agent_browser_har_failure_keeps_basic_capture_and_does_not_switch_backend(monkeypatch, tmp_path):
-    calls = []
-
-    def fake_run(cmd, capture_output, text, timeout, check, env=None):
-        calls.append(cmd)
-        args = cmd[4:]
-        if args == ["network", "har", "start"]:
-            return SimpleNamespace(
-                returncode=1,
-                stdout=json.dumps({"success": False, "data": None, "error": "HAR unavailable"}),
-                stderr="HAR unavailable",
-            )
-        if args[:3] == ["network", "har", "stop"]:
-            Path(args[-1]).write_text('{"log":{"entries":[]}}', encoding="utf-8")
-            data = {"path": args[-1]}
-        elif args == ["network", "requests"]:
-            data = {"requests": [{"url": "https://target.local/api/health", "method": "GET"}]}
-        elif args == ["snapshot"]:
-            data = {"snapshot": "heading \"Health\""}
-        elif args == ["console"]:
-            data = {"messages": []}
-        elif args[:2] == ["state", "save"]:
-            Path(args[-1]).write_text("{}", encoding="utf-8")
-            data = {"saved": True}
-        else:
-            data = {}
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps({"success": True, "data": data, "error": None}),
-            stderr="",
-        )
-
-    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
-
-    summary = browser_evidence.capture_browser_evidence(
-        "target.local",
-        "https://target.local/health",
-        evidence_root=tmp_path / "evidence",
-        backend="agent-browser",
-    )
-
-    assert summary["success"] is True
-    assert summary["capture_backend"] == "agent-browser"
-    assert "network_har" not in summary["artifacts"]
-    assert len([step for step in summary["steps"] if step["name"].startswith("network har") and not step["success"]]) == 1
-    assert all(cmd[0] == "agent-browser" for cmd in calls)
-
-
-def test_agent_browser_core_protocol_failure_marks_capture_failed_without_backend_switch(monkeypatch, tmp_path):
-    calls = []
-
-    def fake_run(cmd, capture_output, text, timeout, check, env=None):
-        calls.append(cmd)
-        args = cmd[4:]
-        if args == ["network", "requests"]:
-            return SimpleNamespace(
-                returncode=1,
-                stdout=json.dumps({"success": False, "data": None, "error": "request protocol failed"}),
-                stderr="",
-            )
-        if args == ["snapshot"]:
-            data = {"snapshot": "heading \"Target\""}
-        elif args == ["console"]:
-            data = {"messages": []}
-        elif args[:2] == ["state", "save"]:
-            Path(args[-1]).write_text("{}", encoding="utf-8")
-            data = {"saved": True}
-        else:
-            data = {}
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps({"success": True, "data": data, "error": None}),
-            stderr="",
-        )
-
-    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
-
-    summary = browser_evidence.capture_browser_evidence(
-        "target.local",
-        "https://target.local/",
-        evidence_root=tmp_path / "evidence",
-        backend="agent-browser",
-    )
-
-    assert summary["success"] is False
-    assert summary["error"].startswith("browser step failed (bytes=23, sha256=")
-    assert all(cmd[0] == "agent-browser" for cmd in calls)
-
-
-def test_agent_browser_optional_artifact_failure_keeps_core_capture(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, timeout, check, env=None):
-        args = cmd[4:]
-        if args in (["cookies", "get"], ["storage", "local"], ["storage", "session"]):
-            return SimpleNamespace(
-                returncode=1,
-                stdout=json.dumps({"success": False, "data": None, "error": "optional denied"}),
-                stderr="optional denied",
-            )
-        if args[:2] == ["state", "save"] or (args and args[0] == "screenshot"):
-            return SimpleNamespace(
-                returncode=1,
-                stdout=json.dumps({"success": False, "data": None, "error": "artifact unavailable"}),
-                stderr="artifact unavailable",
-            )
-        if args == ["snapshot"]:
-            data = {"snapshot": "heading \"Target\""}
-        elif args == ["network", "requests"]:
-            data = {"requests": [{"url": "https://target.local/api", "method": "GET"}]}
-        elif args == ["console"]:
-            data = {"messages": []}
-        else:
-            data = {}
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps({"success": True, "data": data, "error": None}),
-            stderr="",
-        )
-
-    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
-
-    summary = browser_evidence.capture_browser_evidence(
-        "target.local",
-        "https://target.local/",
-        evidence_root=tmp_path / "evidence",
-        backend="agent-browser",
-        capture_screenshot=True,
-    )
-
-    assert summary["success"] is True
-    assert summary.get("error", "") == ""
-    assert len(summary["warnings"]) >= 5
-    assert any(item["step"].startswith("cookies get") for item in summary["warnings"])
-
-
-def test_browser_secret_values_only_exist_in_private_artifacts(monkeypatch, tmp_path):
+def test_snapshot_shape_keeps_form_shape_without_secret_body():
     secret = "SECRET_BROWSER_FIXTURE"
-
-    def fake_run(cmd, capture_output, text, timeout, check, env=None):
-        if "requests" in cmd:
-            stdout = json.dumps(
-                [{"url": f"https://target.local/api?token={secret}", "method": "POST", "postData": secret}]
-            )
-        elif "cookie-list" in cmd:
-            stdout = json.dumps([{"name": "sid", "value": secret}])
-        elif "localstorage-list" in cmd:
-            stdout = json.dumps({"token": secret})
-        elif "snapshot" in cmd:
-            stdout = f'<form action="/submit?token={secret}" method="post">{secret}</form>'
-        elif "state-save" in cmd:
-            Path(cmd[-1]).write_text(json.dumps({"token": secret}), encoding="utf-8")
-            stdout = ""
-        else:
-            stdout = "[]"
-        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
-    summary = browser_evidence.capture_browser_evidence(
-        "target.local",
-        f"https://target.local/app?token={secret}",
-        evidence_root=tmp_path / "evidence",
-        backend="playwright-cli",
+    shaped = browser_evidence.snapshot_shape(
+        f'<form action="/submit?token={secret}" method="post">{secret}</form>'
     )
 
-    public_text = "\n".join(
-        path.read_text(encoding="utf-8", errors="ignore")
-        for path in (tmp_path / "evidence").rglob("*")
-        if path.is_file()
-    )
-    private_dir = Path(summary["artifacts"]["state_json"]).parent
-    private_text = "\n".join(
-        path.read_text(encoding="utf-8", errors="ignore")
-        for path in private_dir.rglob("*")
-        if path.is_file()
-    )
-
-    assert secret not in public_text
-    assert secret in private_text
-    assert private_dir.stat().st_mode & 0o777 == 0o700
-    assert all(path.stat().st_mode & 0o777 == 0o600 for path in private_dir.rglob("*") if path.is_file())
+    assert 'form action="/submit" method="POST"' in shaped
+    assert "snapshot_sha256=" in shaped
+    assert secret not in shaped
 
 
-def test_public_url_shape_removes_userinfo_and_fragment_secret():
-    shaped = public_url_shape(
-        "https://user:pass@example.com/callback?code=VALUE#access_token=FRAGMENT_SECRET"
-    )
-    assert shaped == "https://example.com/callback?code="
-    assert "pass" not in shaped
-    assert "FRAGMENT_SECRET" not in shaped
+def test_console_shape_only_keeps_count_types_and_digest():
+    payload = [
+        {"type": "log", "text": "sensitive body"},
+        {"type": "error", "text": "another body"},
+    ]
+
+    shaped = browser_evidence.console_shape(payload)
+
+    assert shaped["count"] == 2
+    assert shaped["types"] == ["error", "log"]
+    assert len(shaped["sha256"]) == 64
+    assert "sensitive body" not in json.dumps(shaped)
 
 
-def test_find_agent_browser_executable_falls_back_to_nvm_without_hardcoded_version(tmp_path):
-    binary = tmp_path / "nvm" / "versions" / "node" / "v24.18.0" / "bin" / "agent-browser"
-    binary.parent.mkdir(parents=True)
-    binary.write_text("#!/bin/sh\n", encoding="utf-8")
-    binary.chmod(0o755)
-
-    found = browser_evidence.find_browser_executable(
-        "agent-browser",
-        which=lambda _tool: None,
-        environ={"NVM_DIR": str(tmp_path / "nvm")},
-    )
-
-    assert found == str(binary)
-
-
-def test_agent_browser_explicit_binary_is_executed(monkeypatch, tmp_path):
-    binary = tmp_path / "agent-browser-custom"
-    binary.write_text("#!/bin/sh\n", encoding="utf-8")
-    binary.chmod(0o755)
-    calls = []
-
-    def fake_run(cmd, **_kwargs):
-        calls.append(cmd)
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps({"success": True, "data": {}, "error": None}),
-            stderr="",
-        )
-
-    monkeypatch.setenv("AGENT_BROWSER_BIN", str(binary))
-    monkeypatch.setattr(browser_evidence.subprocess, "run", fake_run)
-
-    step = browser_evidence._run_agent_browser_cli(
-        ["snapshot"],
-        session="explicit-bin",
-        timeout=5,
-    )
-
-    assert step["success"] is True
-    assert calls[0][0] == str(binary)
-
-
-def test_focused_discovery_reuses_session_scopes_candidates_and_queues_high_value_delta(monkeypatch, tmp_path):
-    evidence_root = tmp_path / "evidence"
-    recon_browser = tmp_path / "recon" / "target.local" / "browser"
-    prior_capture = evidence_root / "target.local" / "browser" / "old"
-    prior_capture.mkdir(parents=True)
-    (prior_capture / "snapshot.txt").write_text(
-        browser_evidence.snapshot_shape("SPA fallback"),
+def test_compact_browser_evidence_reads_mcp_summary_directory(tmp_path):
+    capture_dir = tmp_path / "capture"
+    capture_dir.mkdir()
+    summary_path = capture_dir / "summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "evidence_dir": str(capture_dir),
+                "summary_path": str(summary_path),
+                "capture_backend": "chrome-devtools-mcp",
+                "url": "https://target.local/app",
+                "counts": {"requests": 3, "console": 1},
+                "browser_surface": {
+                    "counts": {"xhr_endpoints": 2, "api_endpoints": 1, "browser_params": 4},
+                    "artifacts": {"summary": "/tmp/browser-summary.json"},
+                },
+            }
+        ),
         encoding="utf-8",
     )
-    calls = []
 
-    def fake_capture(target, url, *, session, label, evidence_root, **_kwargs):
-        calls.append({"target": target, "url": url, "session": session, "label": label})
-        capture_dir = Path(evidence_root) / "target.local" / "browser" / label
-        capture_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_path = capture_dir / "snapshot.txt"
-        if url.endswith("/workflow"):
-            snapshot_path.write_text(browser_evidence.snapshot_shape("admin dashboard"), encoding="utf-8")
-            recon_browser.mkdir(parents=True, exist_ok=True)
-            (recon_browser / "xhr_endpoints.txt").write_text(
-                "https://target.local/api/admin?token=\n",
-                encoding="utf-8",
-            )
-            (recon_browser / "api_endpoints.txt").write_text(
-                "https://target.local/api/admin?token=\n",
-                encoding="utf-8",
-            )
-            (recon_browser / "browser_params.txt").write_text(
-                "https://target.local/api/admin?token= :: token\n",
-                encoding="utf-8",
-            )
-            (recon_browser / "page_js_map.json").write_text(
-                json.dumps(
-                    {
-                        "pages": {},
-                        "js_index": {
-                            "https://target.local/static/admin-lazy.mjs": [
-                                "https://target.local/workflow"
-                            ]
-                        },
-                    }
-                ),
-                encoding="utf-8",
-            )
-        else:
-            snapshot_path.write_text(browser_evidence.snapshot_shape("SPA fallback"), encoding="utf-8")
-        return {
-            "success": True,
-            "evidence_dir": str(capture_dir),
-            "summary_path": str(capture_dir / "summary.json"),
-            "session": session,
-            "url": browser_evidence.public_url_shape(url),
-            "capture_backend": "agent-browser",
-            "counts": {"requests": 1, "console": 0},
-            "artifacts": {"snapshot_txt": str(snapshot_path)},
-        }
+    compact = browser_evidence.compact_browser_evidence(capture_dir)
 
-    monkeypatch.setattr(browser_evidence, "capture_browser_evidence", fake_capture)
-    result = browser_evidence.capture_focused_browser_discovery(
-        "target.local",
-        [
-            "https://target.local/workflow",
-            "https://target.local/admin-fallback",
-            "https://outside.local/admin",
-        ],
-        evidence_root=evidence_root,
-        repo_root=tmp_path,
-        backend="agent-browser",
+    assert compact["capture_backend"] == "chrome-devtools-mcp"
+    assert compact["request_count"] == 3
+    assert compact["browser_xhr_count"] == 2
+    assert compact["browser_param_count"] == 4
+
+
+def test_load_last_browser_evidence_follows_pointer(tmp_path):
+    browser_dir = tmp_path / "target.local" / "browser"
+    capture_dir = browser_dir / "capture"
+    capture_dir.mkdir(parents=True)
+    summary_path = capture_dir / "summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "evidence_dir": str(capture_dir),
+                "summary_path": str(summary_path),
+                "capture_backend": "playwright-mcp",
+                "counts": {"requests": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (browser_dir / "last-capture.json").write_text(
+        json.dumps({"summary_path": str(summary_path)}),
+        encoding="utf-8",
     )
 
-    assert [call["url"] for call in calls] == [
-        "https://target.local/workflow",
-        "https://target.local/admin-fallback",
-    ]
-    assert {call["session"] for call in calls} == {"browser-target.local"}
-    assert result["status"] == "partial"
-    assert result["high_value_count"] == 1
-    assert result["captures"][0]["actionable"] is True
-    assert result["captures"][0]["new_surface"]["api_endpoints"] == [
-        "https://target.local/api/admin?token="
-    ]
-    assert result["captures"][0]["new_surface"]["js_files"] == [
-        "https://target.local/static/admin-lazy.mjs"
-    ]
-    assert result["captures"][1]["fallback_like"] is True
-    assert result["captures"][1]["actionable"] is False
-    assert result["skipped"] == [{"url": "https://outside.local/admin", "reason": "off_target"}]
-    assert "token=" in json.dumps(result)
-    assert "outside.local" in json.dumps(result)
-
-    queue = json.loads((tmp_path / "state" / "target.local" / "action_queue.json").read_text())
-    action = queue["actions"][0]
-    assert action["source"] == "browser-context-discovery"
-    assert action["evidence_type"] == "browser-context-discovery"
-    assert result["artifact"] in action["evidence"]
-
-    later = browser_evidence.capture_focused_browser_discovery(
+    compact = browser_evidence.load_last_browser_evidence(
         "target.local",
-        [],
-        evidence_root=evidence_root,
-        repo_root=tmp_path,
-        backend="agent-browser",
+        evidence_root=tmp_path,
     )
-    unchanged = json.loads(
-        (tmp_path / "state" / "target.local" / "action_queue.json").read_text()
-    )["actions"][0]
-    latest = json.loads((recon_browser / "context_discovery.json").read_text())
 
-    assert later["artifact"] != result["artifact"]
-    assert Path(result["artifact"]).is_file()
-    assert result["artifact"] in unchanged["evidence"]
-    assert later["artifact"] not in unchanged["evidence"]
-    assert latest["artifact"] == later["artifact"]
+    assert compact["capture_backend"] == "playwright-mcp"
+    assert compact["request_count"] == 1
+
+
+def test_compact_browser_evidence_returns_empty_for_missing_or_invalid(tmp_path):
+    invalid = tmp_path / "summary.json"
+    invalid.write_text("not json", encoding="utf-8")
+
+    assert browser_evidence.compact_browser_evidence(None) == {}
+    assert browser_evidence.compact_browser_evidence(invalid) == {}
+    assert browser_evidence.load_last_browser_evidence("missing.local", evidence_root=tmp_path) == {}

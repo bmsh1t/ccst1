@@ -8,6 +8,7 @@ keep executing instead of ending on natural-language TODOs.
 from __future__ import annotations
 
 import argparse
+import copy
 import fcntl
 import json
 import os
@@ -132,9 +133,31 @@ def load_queue(repo_root: Path | str, target: str) -> dict:
     return payload
 
 
+def _semantic_action(value: Any) -> Any:
+    if isinstance(value, dict):
+        return copy.deepcopy({key: item for key, item in value.items() if key != "updated_at"})
+    return value
+
+
+def _semantic_queue_value(value: Any) -> Any:
+    """只忽略 queue/action 自身时间戳，保留 metadata 内的证据字段。"""
+    if not isinstance(value, dict):
+        return value
+    semantic = {key: item for key, item in value.items() if key != "updated_at"}
+    semantic["actions"] = [_semantic_action(action) for action in value.get("actions", [])]
+    return semantic
+
+
 def save_queue(repo_root: Path | str, target: str, queue: dict) -> Path:
     path = queue_path(repo_root, target)
     queue["target"] = canonical_target_value(target)
+    if path.is_file():
+        existing = load_queue(repo_root, target)
+        if _semantic_queue_value(existing) == _semantic_queue_value(queue):
+            # 保留磁盘字节和调用方内存视图，避免无变化 sync 打 stale Surface。
+            queue.clear()
+            queue.update(existing)
+            return path
     queue["updated_at"] = now_utc()
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
@@ -607,6 +630,7 @@ def upsert_actions(queue: dict, actions: list[dict]) -> dict:
             if _is_final_action(existing):
                 stats["skipped_final"] += 1
                 continue
+            before = _semantic_action(existing)
             if _is_runner_only_validated(existing):
                 existing["status"] = str(action.get("status") or "queued")
                 previous_result = str(existing.get("result") or "").strip()
@@ -636,8 +660,9 @@ def upsert_actions(queue: dict, actions: list[dict]) -> dict:
                 metadata = existing.setdefault("metadata", {})
                 if isinstance(metadata, dict):
                     metadata.update({k: v for k, v in action["metadata"].items() if k not in metadata})
-            existing["updated_at"] = now_utc()
-            stats["updated"] += 1
+            if _semantic_action(existing) != before:
+                existing["updated_at"] = now_utc()
+                stats["updated"] += 1
             continue
 
         action["id"] = _next_id(queue.setdefault("actions", []))
@@ -647,7 +672,8 @@ def upsert_actions(queue: dict, actions: list[dict]) -> dict:
         stats["added"] += 1
 
     queue["actions"].sort(key=_action_sort_key)
-    queue["updated_at"] = now_utc()
+    if stats["added"] or stats["updated"]:
+        queue["updated_at"] = now_utc()
     return stats
 
 

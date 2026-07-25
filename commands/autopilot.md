@@ -152,8 +152,8 @@ When a primary lane is blocked, do not checkpoint/finish immediately if adjacent
 This is one specialization of the Actionable Evidence Continuation Contract:
 when a concrete product/plugin/theme/library/version appears, it must not stop
 at "needs CVE lookup." This also covers identified network services. Run `cd -- <repo_root_shell> && python3 tools/intel_engine.py --target <target_shell>`
-and `cd -- <repo_root_shell> && python3 tools/cve_hunter.py <target_shell>`. For `next_action=run_intel`, run Intel then refresh state; for `collect_web_intel`, verify source bodies, record `tools/web_intel_artifact.py`, then rerun Intel; for `test_advisory_applicability`, add one durable action whose evidence names the advisory, component, and observed version, then test reachability/version evidence before resolving it. Start with schema-v2 OSV exact package/version, GitHub Advisory/NVD, CISA KEV, batched EPSS, local Nuclei, source status, and applicability; provider failure is blocked/handoff, never clean.
-Also check NVD, GitHub Advisory, WPScan/vulnerability DB, vendor changelog, and reachability (for example, WordPress Tribe Events 6.16.3) before recording tested/dead-end/blocked/lead/signal/candidate.
+once, then refresh state. Do not also run `tools/cve_hunter.py` in this default lane because that compatibility entry rebuilds the same Intel artifact. Invoke `/scan-cves`, `tools/cve_scan.sh`, or the compatibility hunter only when AI explicitly selects a reachable advisory for an active CVE-template probe. For `next_action=run_intel`, run Intel then refresh state; for `collect_web_intel`, verify source bodies, record `tools/web_intel_artifact.py`, then rerun Intel; for `test_advisory_applicability`, add one durable action whose evidence names the advisory, component, and observed version, then test reachability/version evidence before resolving it. Start with schema-v2 OSV exact package/version, GitHub Advisory/NVD, CISA KEV, batched EPSS, local Nuclei, source status, and applicability; provider failure is blocked/handoff, never clean.
+Also check NVD, GitHub Advisory, WPScan/vulnerability DB, vendor changelog, and reachability (for example, WordPress Tribe Events 6.16.3) before recording tested/dead-end/blocked/lead/signal/candidate. 对已确认且高价值的 WordPress 目标，只有插件/主题版本或历史漏洞覆盖存在缺口时才按需运行 `wpscan --url <target-url> --format json --output recon/<target-key>/intel/wpscan.json --no-banner --no-update --enumerate p,t --detection-mode mixed --max-threads 2 --request-timeout 10 --connect-timeout 5 --api-token "$WPSCAN_API_TOKEN"`；它不属于默认 Recon，不传用户枚举或 password-attack 参数。WPScan 命中、残留静态文件、`wp-json` 或单个 200 仅为 Lead；先确认启用组件、精确版本、受影响范围和可达路由，再进入现有 `/intel`、Action Queue 与最小验证。
 ## Case-State First, Not Case-State Only
 If checkpoint exposes `case-state-validation` or `case-state-enrichment`, prefer
 it before generic coverage gaps because actor/session/object continuity is high
@@ -263,7 +263,7 @@ Red-line checks are narrow safety checks, not broad workflow blockers. Controlle
 credential testing and OAST are not red lines when bounded; active stored XSS payload,
 actions that change real account or permission state, or trigger CI/CD/deployment
 side effects require explicit current-turn intent.
-Legacy-only `--parallel`, `--max-parallel`, `--parallel-hypotheses`, `--vision`,
+Legacy-only `--parallel`, `--max-parallel`, `--parallel-hypotheses`,
 `--self-review`, and `--calibrate-patterns` are invalid inline; use `cd -- <repo_root_shell> && python3 agent.py --target <target_shell> ...`
 for those options; baseline local-agent runs use `cd -- <repo_root_shell> && python3 tools/hunt.py --target <target_shell> --agent`.
 ## Finish Condition

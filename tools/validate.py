@@ -38,13 +38,11 @@ except ImportError:  # pragma: no cover - package import path
 
 try:
     from browser_evidence import (
-        capture_browser_evidence,
         compact_browser_evidence,
         load_last_browser_evidence,
     )
 except ImportError:  # pragma: no cover - package import path
     from tools.browser_evidence import (
-        capture_browser_evidence,
         compact_browser_evidence,
         load_last_browser_evidence,
     )
@@ -2036,27 +2034,10 @@ def load_finding_prefill(
 def resolve_browser_evidence_for_validate(
     target: str,
     *,
-    browser_url: str = "",
-    browser_session: str = "",
     browser_evidence_dir: str = "",
-    browser_screenshot: bool = False,
 ) -> dict:
-    """Resolve compact browser evidence linkage for validation summary."""
+    """关联已由 Chrome DevTools/Playwright MCP 导入的浏览器证据。"""
     evidence_root = BASE_DIR / "evidence"
-    if browser_url:
-        try:
-            summary = capture_browser_evidence(
-                target,
-                browser_url,
-                session=browser_session,
-                label="validate",
-                evidence_root=evidence_root,
-                capture_screenshot=browser_screenshot,
-            )
-        except Exception as exc:
-            return {"url": browser_url, "error": str(exc)}
-        return compact_browser_evidence(summary)
-
     if browser_evidence_dir:
         return compact_browser_evidence(browser_evidence_dir)
 
@@ -2446,14 +2427,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", action="store_true", help="Emit machine validation result as JSON.")
     parser.add_argument("--method", default="GET", help="HTTP method used by the validated replay evidence")
-    parser.add_argument("--browser-url", default="", help="Capture validate browser evidence for this URL")
     parser.add_argument(
-        "--browser-session",
+        "--browser-evidence-dir",
         default="",
-        help="Optional named browser session reused by the selected browser evidence backend",
+        help="Attach browser evidence previously imported from Chrome DevTools/Playwright MCP",
     )
-    parser.add_argument("--browser-evidence-dir", default="", help="Attach an existing browser evidence capture directory")
-    parser.add_argument("--browser-screenshot", action="store_true", help="Also capture screenshot.png with browser evidence")
     parser.add_argument("--scanner-summary", default="", help="Attach tools/vuln_scanner.sh summary.json to validation-summary.json")
     parser.add_argument(
         "--seven-question-json",
@@ -2595,20 +2573,15 @@ def _run_interactive_validation(args: argparse.Namespace, parser: argparse.Argum
         info["scanner_summary"] = scanner_summary
     if args.scanner_confidence != "unknown":
         info["scanner_confidence"] = args.scanner_confidence
-    browser_target = derive_validate_target(target_program, args.browser_url or endpoint)
+    browser_target = derive_validate_target(target_program, endpoint)
     browser_evidence = resolve_browser_evidence_for_validate(
         browser_target,
-        browser_url=args.browser_url,
-        browser_session=args.browser_session,
         browser_evidence_dir=args.browser_evidence_dir,
-        browser_screenshot=args.browser_screenshot,
     )
     if browser_evidence:
         info["browser_evidence"] = browser_evidence
         if browser_evidence.get("dir"):
             print(f"  Browser evidence linked: {browser_evidence['dir']}")
-        elif browser_evidence.get("error"):
-            print(f"  {YELLOW}Browser evidence capture failed:{RESET} {browser_evidence['error']}")
     if finding_prefill:
         info.update({
             "finding_id": finding_prefill.get("finding_id", ""),

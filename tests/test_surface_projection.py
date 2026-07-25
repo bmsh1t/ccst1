@@ -8,6 +8,7 @@ import os
 import pytest
 
 from tools import surface as surface_module
+from tools.action_queue import ingest_checkpoint, load_queue, save_queue
 from tools.surface_index import SurfaceIndexError
 from tools.surface_projection import (
     build_surface_input_manifest,
@@ -61,6 +62,35 @@ def test_projection_exact_manifest_hit_and_source_change_stale(tmp_path):
     assert stale["status"] == "stale"
     assert stale["surface"] == {}
     assert stale["reason"] == "input-manifest-mismatch"
+
+
+def test_empty_checkpoint_sync_keeps_valid_projection(tmp_path):
+    _write_surface_inputs(tmp_path)
+    queue_path = save_queue(
+        tmp_path,
+        "target.com",
+        load_queue(tmp_path, "target.com"),
+    )
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", _ranked(), manifest=manifest)
+    queue_inode = queue_path.stat().st_ino
+
+    result = ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={"next_action_queue": []},
+    )
+
+    assert result["stats"] == {
+        "added": 0,
+        "updated": 0,
+        "skipped_final": 0,
+        "retired_stale": 0,
+        "retired_superseded": 0,
+    }
+    assert queue_path.stat().st_ino == queue_inode
+    assert (tmp_path / "findings" / "target.com" / ".locks" / "findings.lock").is_file()
+    assert load_surface_projection(tmp_path, "target.com")["status"] == "valid"
 
 
 def test_projection_ignores_recon_finalize_manifest(tmp_path):

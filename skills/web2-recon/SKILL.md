@@ -44,13 +44,12 @@ In Claude Code CLI, this skill owns bulk Web2 recon. Continue to prefer
 pipelines such as `httpx`, `katana`, `gau`, `waybackurls`, `ffuf`, and
 JS/parameter extraction by default.
 
-- Use `tools/browser_evidence.py` with agent-browser CLI for targeted
-  browser-state exploration: web access, login state, SPA/XHR/GraphQL behavior,
-  browser storage, DOM state, HAR, and page interaction testing. Use
-  chrome-devtools MCP for deep live debugging and Playwright as fallback.
-- After a browser workflow changes context, `tools/browser_evidence.py focused-discovery`
-  may visit a few explicit, AI-selected same-target candidates in that named session.
-  It is a focused evidence lane, never a replacement for URL collection or a raw-corpus fuzzer.
+- Use chrome-devtools MCP for deep live DevTools, Network, Console, DOM, performance,
+  and runtime inspection. Use Playwright MCP for page interaction, login state,
+  forms, screenshots, and multi-actor workflows.
+- After a browser workflow changes context, visit only a few explicit,
+  AI-selected same-target candidates in that MCP session and import useful
+  artifacts through `tools/browser_mcp_import.py`.
 - Do not treat any browser backend as the bulk recon engine. It should run
   after recon identifies a high-value entry point, to reproduce real frontend
   behavior and extract stateful requests.
@@ -706,9 +705,9 @@ Run gf patterns and the interesting-params grep above.
 
 ### Minutes 25-30: Manual Exploration
 
-In Claude Code CLI, prefer the agent-browser-backed `tools/browser_evidence.py`
-lane to open and interact with the target page; use chrome-devtools MCP for deep
-live debugging and Playwright as fallback. If Burp/Caido is configured, you may
+In Claude Code CLI, use chrome-devtools MCP for deep live debugging and
+Playwright MCP for page interaction/session workflows. Import useful artifacts
+with `tools/browser_mcp_import.py`. If Burp/Caido is configured, you may
 also proxy traffic to retain history as auxiliary evidence:
 1. Register an account
 2. Perform main user actions (create/read/update/delete resources)

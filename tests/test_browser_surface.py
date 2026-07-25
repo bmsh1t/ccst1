@@ -38,7 +38,7 @@ def test_browser_surface_parses_playwright_cli_raw_requests(tmp_path):
     ]
 
 
-def test_browser_surface_parses_agent_browser_data_envelope(tmp_path):
+def test_browser_surface_parses_wrapped_mcp_data_envelope(tmp_path):
     requests_path = tmp_path / "requests.json"
     requests_path.write_text(
         json.dumps(

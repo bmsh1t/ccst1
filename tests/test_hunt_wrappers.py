@@ -504,35 +504,6 @@ def test_run_repo_source_hunt_delegates_to_source_hunt(monkeypatch):
     assert called["allow_large_repo"] is True
 
 
-def test_run_browser_probe_picks_cached_app_url(monkeypatch, tmp_path):
-    domain = "example.com"
-    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
-    recon_dir = Path(hunt._resolve_recon_dir(domain)) / "urls"
-    recon_dir.mkdir(parents=True)
-    (recon_dir / "all.txt").write_text(
-        "https://example.com/static/app.js\nhttps://example.com/dashboard\n",
-        encoding="utf-8",
-    )
-    called = {}
-
-    def fake_capture(target, browser_url="", browser_session="", capture_screenshot=False):
-        called["target"] = target
-        called["url"] = browser_url
-        called["session"] = browser_session
-        called["capture_screenshot"] = capture_screenshot
-        return {"dir": "/tmp/evidence"}
-
-    monkeypatch.setattr(hunt, "_capture_browser_evidence_for_hunt", fake_capture)
-
-    assert hunt.run_browser_probe(domain, session="logged-in") is True
-    assert called == {
-        "target": domain,
-        "url": "https://example.com/dashboard",
-        "session": "logged-in",
-        "capture_screenshot": False,
-    }
-
-
 def test_run_source_intel_wrapper_writes_and_reads_summary(monkeypatch, tmp_path):
     domain = "example.com"
     monkeypatch.setattr(hunt, "BASE_DIR", str(tmp_path))
@@ -709,28 +680,26 @@ def test_classic_hunt_target_consumes_runtime_enrichment_hints_before_scan(monke
     monkeypatch.setattr(hunt, "generate_reports", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("reports must be explicit")))
     monkeypatch.setattr(hunt, "_update_target_profile", lambda *args, **kwargs: None)
     monkeypatch.setattr(hunt, "_auto_log_session_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(hunt, "run_browser_probe", lambda target, url="", session="": calls.append(("browser", target, url, session)) or True)
     monkeypatch.setattr(hunt, "run_source_intel", lambda target, repo_path="", repo_url="": calls.append(("source", target, repo_path, repo_url)) or True)
     monkeypatch.setattr(hunt, "run_js_read", lambda target: calls.append(("js", target)) or True)
     monkeypatch.setattr(
         hunt,
         "_load_classic_autopilot_state",
         lambda target: {
-            "next_tool_hint": "run_browser_probe",
+            "next_tool_hint": "collect_browser_mcp_evidence",
             "enrichment_hints": [
-                {"tool": "run_browser_probe", "reason": "app-like surface present"},
+                {"tool": "collect_browser_mcp_evidence", "reason": "app-like surface present"},
                 {"tool": "run_source_intel", "reason": "repo source artifacts exist"},
                 {"tool": "run_js_read", "reason": "cached JS artifacts exist"},
             ],
         },
     )
 
-    result = hunt.hunt_target(domain, browser_url="https://example.com/app", browser_session="reuse-me")
+    result = hunt.hunt_target(domain)
 
-    assert result["enrichment"] == ["run_browser_probe", "run_source_intel", "run_js_read"]
+    assert result["enrichment"] == ["run_source_intel", "run_js_read"]
     assert calls == [
         ("recon", domain),
-        ("browser", domain, "https://example.com/app", "reuse-me"),
         ("source", domain, "", ""),
         ("js", domain),
         ("scan", domain),

@@ -191,7 +191,13 @@ class RuntimePhaseBusy(RuntimeError):
 
 
 @contextmanager
-def runtime_phase_lock(repo_root: str | Path, target: str, phase: str):
+def runtime_phase_lock(
+    repo_root: str | Path,
+    target: str,
+    phase: str,
+    *,
+    include_fd: bool = False,
+):
     """Hold a non-blocking process lock for one long-running target phase.
 
     The lock is acquired before a caller writes its running marker. `flock`
@@ -229,10 +235,15 @@ def runtime_phase_lock(repo_root: str | Path, target: str, phase: str):
         )
         handle.flush()
         os.fsync(handle.fileno())
-        yield lock_path
+        # hunt.py 会把 fd 显式传给实际长任务。这样调用父进程被终止后，
+        # recon/scan 仍持有同一 flock，不会出现“任务还在跑但锁已释放”。
+        yield (lock_path, handle.fileno()) if include_fd else lock_path
     finally:
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            # 显式 LOCK_UN 会同时释放子进程继承的同一 open-file-description。
+            # include_fd 路径只关闭父 fd，让锁随最后一个实际持有者退出。
+            if not include_fd:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
 

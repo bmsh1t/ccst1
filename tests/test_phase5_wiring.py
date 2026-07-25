@@ -7,7 +7,7 @@ covers only the wire-up contract:
 
   R1 sibling parallel       — agent.py reads args.parallel
   R2 hypothesis fleet       — agent.py reads args.parallel_hypotheses
-  R3 vision write           — run_vision_probe dispatcher branch + gating
+  R3 browser screenshot     — imported MCP screenshot read path
   R4 self-review            — pre-finish hook reads args.self_review
   R5 calibration write      — validate.py records outcome per /validate
 """
@@ -381,100 +381,29 @@ class TestR2HypothesisWiring:
 
 
 class TestR3VisionWiring:
-    """Wire-up for run_vision_probe dispatcher tool."""
+    """MCP 截图只读能力接入 legacy dispatcher。"""
 
-    def _make_dispatcher(self, *, vision_enabled, model_id, max_screenshots=5):
+    def test_read_browser_screenshot_returns_latest_import(self, monkeypatch):
         from agent import HuntMemory, ToolDispatcher
-        memory = HuntMemory(session_file="/tmp/__pytest_session.json")
-        return ToolDispatcher(
-            "x.com", memory,
-            vision_enabled=vision_enabled,
-            max_screenshots=max_screenshots,
-            model_id=model_id,
+        from tools import vision_browser
+
+        monkeypatch.setattr(
+            vision_browser,
+            "list_screenshots",
+            lambda _target: [
+                {"seq": 1, "screenshot_path": "/tmp/first.png", "dom_path": ""},
+                {"seq": 2, "screenshot_path": "/tmp/latest.png", "dom_path": "/tmp/snapshot.txt"},
+            ],
         )
+        dispatcher = ToolDispatcher("x.com", HuntMemory(session_file="/tmp/__pytest_session.json"))
 
-    def test_dispatcher_init_accepts_vision_kwargs(self):
-        d = self._make_dispatcher(vision_enabled=True, model_id="claude-opus-4-7")
-        assert d.vision_enabled is True
-        assert d.max_screenshots == 5
-        assert d.model_id == "claude-opus-4-7"
+        output = dispatcher.dispatch("read_browser_screenshot", {})
+        payload = json.loads(output.split("\n\n[", 1)[0])
 
-    def test_dispatcher_init_default_vision_off(self):
-        from agent import HuntMemory, ToolDispatcher
-        memory = HuntMemory(session_file="/tmp/__pytest_session.json")
-        d = ToolDispatcher("x.com", memory)
-        assert d.vision_enabled is False
-
-    def test_run_vision_probe_rejects_when_flag_off(self, monkeypatch):
-        d = self._make_dispatcher(vision_enabled=False, model_id="claude-opus-4-7")
-        out = d.dispatch("run_vision_probe", {"url": "https://x/"})
-        assert "disabled" in out
-        assert "--vision" in out
-
-    def test_run_vision_probe_rejects_when_model_text_only(self):
-        d = self._make_dispatcher(vision_enabled=True, model_id="qwen2.5:32b")
-        out = d.dispatch("run_vision_probe", {"url": "https://x/"})
-        assert "disabled" in out
-
-    def test_run_vision_probe_rejects_when_url_missing(self):
-        d = self._make_dispatcher(vision_enabled=True, model_id="claude-opus-4-7")
-        out = d.dispatch("run_vision_probe", {})
-        assert "url is required" in out
-
-    def test_run_vision_probe_calls_capture(self, monkeypatch, tmp_path):
-        d = self._make_dispatcher(vision_enabled=True, model_id="claude-opus-4-7",
-                                  max_screenshots=7)
-        calls: list[dict] = []
-
-        def fake_capture(target, url, *, label="vision", max_screenshots=5, **kw):
-            calls.append({
-                "target": target,
-                "url": url,
-                "label": label,
-                "max_screenshots": max_screenshots,
-            })
-            return {
-                "screenshot_seq": 4,
-                "screenshot_path": str(tmp_path / "screenshot_4.png"),
-                "dom_path": str(tmp_path / "dom_4.html"),
-                "capped": False,
-            }
-
-        import tools.vision_browser as vb
-        monkeypatch.setattr(vb, "capture_with_screenshot_sequence", fake_capture)
-        out = d.dispatch("run_vision_probe", {"url": "https://x/login", "label": "login"})
-        assert len(calls) == 1
-        assert calls[0]["url"] == "https://x/login"
-        assert calls[0]["label"] == "login"
-        assert calls[0]["max_screenshots"] == 7
-        # Dispatcher appends "[<name> completed in ...]"; parse the JSON head.
-        head = out.split("\n\n[", 1)[0]
-        payload = json.loads(head)
-        assert payload["screenshot_seq"] == 4
-        assert payload["capped"] is False
-
-    def test_run_vision_probe_propagates_capped(self, monkeypatch):
-        d = self._make_dispatcher(vision_enabled=True, model_id="claude-opus-4-7")
-
-        import tools.vision_browser as vb
-        monkeypatch.setattr(vb, "capture_with_screenshot_sequence",
-                            lambda *a, **k: {"screenshot_seq": 11,
-                                              "screenshot_path": "",
-                                              "dom_path": "",
-                                              "capped": True})
-        out = d.dispatch("run_vision_probe", {"url": "https://x/"})
-        head = out.split("\n\n[", 1)[0]
-        payload = json.loads(head)
-        assert payload["capped"] is True
-
-    def test_run_vision_probe_in_tool_specs_after_read_browser_screenshot(self):
-        # Tool spec list contains both
+        assert payload["seq"] == 2
+        assert payload["screenshot_path"] == "/tmp/latest.png"
         import agent
-        names = [s["function"]["name"] for s in agent._ALL_TOOL_SPECS]
-        assert "read_browser_screenshot" in names
-        assert "run_vision_probe" in names
-        # run_vision_probe is in the dispatcher-only set
-        assert "run_vision_probe" in agent._DISPATCHER_ONLY_TOOLS
+        assert "run_vision_probe" not in agent.TOOL_NAMES
 
 
 class TestR4SelfReviewWiring:

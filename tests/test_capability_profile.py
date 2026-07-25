@@ -19,7 +19,7 @@ HELPERS = (
     "tools/vuln_scanner.sh",
     "tools/source_intel.py",
     "tools/js_reader.py",
-    "tools/browser_evidence.py",
+    "tools/browser_mcp_import.py",
 )
 
 
@@ -50,23 +50,21 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
         "checked": True,
         "status": "ready",
         "available": {
-            "browser": ["agent-browser", "playwright-cli"],
+            "browser": [],
             "recon": ["subfinder", "httpx", "katana", "gau", "waybackurls", "ffuf"],
             "scanner": ["nuclei"],
         },
         "session_managed": list(SESSION_MANAGED),
         "fallbacks": [
             "curl-native-http",
-            "agent-browser-evidence-cli",
-            "playwright-browser-evidence-cli",
+            "browser-mcp-evidence-import",
             "source-js-enrichment",
         ],
         "missing_core": [],
         "missing_optional": [],
         "recommended_paths": [
-            "agent-browser-evidence-cli",
             "prefer-session-browser-mcp",
-            "playwright-browser-evidence-cli",
+            "browser-mcp-evidence-import",
             "recon-engine-httpx",
             "scanner-native-plus-nuclei",
         ],
@@ -98,11 +96,9 @@ def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback
         "scanner": [],
     }
     assert profile["session_managed"] == list(SESSION_MANAGED)
-    assert profile["fallbacks"] == ["source-js-enrichment"]
+    assert profile["fallbacks"] == ["browser-mcp-evidence-import", "source-js-enrichment"]
     assert profile["missing_core"] == ["curl", "httpx"]
     assert profile["missing_optional"] == [
-        "agent-browser",
-        "playwright-cli",
         "subfinder",
         "katana",
         "gau",
@@ -112,25 +108,25 @@ def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback
     ]
     assert profile["recommended_paths"] == [
         "prefer-session-browser-mcp",
-        "source-js-enrichment",
+        "browser-mcp-evidence-import",
         "recon-source-js-only",
         "scanner-manual-evidence-only",
     ]
 
 
-def test_playwright_only_profile_keeps_compatible_browser_fallback(tmp_path):
+def test_browser_cli_presence_does_not_change_mcp_only_profile(tmp_path):
     repo = _repo_with_helpers(tmp_path)
 
     profile = build_capability_profile(
         repo,
-        which=_which_with("curl", "httpx", "playwright-cli", "nuclei"),
+        which=_which_with("curl", "httpx", "nuclei"),
     )
 
-    assert profile["available"]["browser"] == ["playwright-cli"]
-    assert "playwright-browser-evidence-cli" in profile["fallbacks"]
+    assert profile["available"]["browser"] == []
+    assert "browser-mcp-evidence-import" in profile["fallbacks"]
     assert profile["recommended_paths"][:2] == [
         "prefer-session-browser-mcp",
-        "playwright-browser-evidence-cli",
+        "browser-mcp-evidence-import",
     ]
 
 
@@ -142,7 +138,7 @@ def test_fallbacks_require_their_local_helpers(tmp_path):
 
     profile = build_capability_profile(
         repo,
-        which=_which_with("curl", "httpx", "playwright-cli", "nuclei"),
+        which=_which_with("curl", "httpx", "nuclei"),
     )
 
     assert profile["status"] == "degraded"

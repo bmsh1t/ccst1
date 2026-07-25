@@ -28,7 +28,8 @@ def test_autopilot_requires_known_software_intelligence_lane():
     assert 'must not stop at "needs CVE lookup."' in flat
     assert "one specialization of the Actionable Evidence Continuation Contract" in flat
     assert "python3 tools/intel_engine.py --target <target_shell>" in text
-    assert "python3 tools/cve_hunter.py <target_shell>" in text
+    assert "Do not also run `tools/cve_hunter.py` in this default lane" in text
+    assert "only when AI explicitly selects a reachable advisory" in text
     assert "NVD, GitHub Advisory, WPScan/vulnerability DB" in text
     assert "vendor changelog" in text
     assert "WordPress Tribe Events 6.16.3" in text
@@ -59,6 +60,21 @@ def test_autopilot_agent_inherits_known_software_lane():
     assert "test_advisory_applicability" in text
 
 
+def test_wordpress_wpscan_is_explicitly_on_demand_and_bounded():
+    command = _read("commands/autopilot.md")
+    agent = _read("agents/autopilot.md")
+    card = _read("knowledge/cards/wordpress-surface-intelligence.md")
+
+    for text in (command, agent, card):
+        assert "WPSCAN_API_TOKEN" in text
+        assert "--enumerate p,t" in text
+        assert "--no-update" in text
+    assert "不属于默认 Recon" in command
+    assert "not default Recon" in agent
+    assert "--password-attack" not in command
+    assert "WPScan 命中、文件存在或 HTTP 200 不证明" in card
+
+
 def test_coverage_gate_blocks_unresolved_component_versions():
     text = _read("rules/coverage-gate.md")
 
@@ -77,4 +93,4 @@ def test_tool_index_routes_component_versions_to_intel_tools():
     assert "Concrete signal plus unresolved next verification question" in text
     assert "`tools/action_queue.py`" in text
     assert "Concrete CMS/plugin/theme/library version observed" in text
-    assert "`/intel`, `tools/intel_engine.py`, `tools/cve_hunter.py`, `/scan-cves`" in text
+    assert "`/intel` → `tools/intel_engine.py`; add `/scan-cves` only after AI selects a reachable advisory" in text

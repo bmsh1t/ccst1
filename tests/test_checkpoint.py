@@ -12,6 +12,7 @@ import finding_index
 from action_queue import _checkpoint_item_to_action, _dedupe_key, load_queue, save_queue
 from checkpoint import (
     _build_next_action_queue,
+    _bounded_next_proposals,
     _align_decision_with_default_candidate,
     _coverage_gap_validation_path,
     _decide,
@@ -74,6 +75,24 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     assert checkpoint["runtime_witness"]["path"] == "state/target.com/checkpoint_latest.json"
     assert witness["kind"] == "autopilot_checkpoint_witness"
     assert witness["context_pack"]["selected_skill"] == checkpoint["context_pack"]["selected_skill"]
+
+
+def test_bounded_proposals_preserve_lane_types_before_duplicate_fill():
+    proposals = [
+        f"Candidate evidence gap for finding F-{index} on /items/{index}: fill evidence."
+        for index in range(8)
+    ] + [
+        "Cover high-value matrix gap: /admin x Authz (weight=5).",
+        "Cover actor matrix gap: /orders/1 x IDOR with peer/other/id_swap expected=deny status=missing.",
+        "Review surface candidate https://target.com/payments: inspect workflow.",
+    ]
+
+    bounded = _bounded_next_proposals(proposals, "target.com")
+
+    assert len(bounded) == 8
+    assert any(item.startswith("Cover high-value matrix gap:") for item in bounded)
+    assert any(item.startswith("Cover actor matrix gap:") for item in bounded)
+    assert any(item.startswith("Review surface candidate ") for item in bounded)
 
 
 def test_checkpoint_fails_explicitly_on_corrupt_case_state(tmp_path):

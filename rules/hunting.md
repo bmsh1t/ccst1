@@ -68,12 +68,11 @@ Core discipline:
 
 Browser-state work:
 
-1. Prefer `tools/browser_evidence.py` with agent-browser CLI for routine
-   automation, session reuse, snapshots, network, storage, and HAR evidence.
-2. Use chrome-devtools MCP for deep live DevTools/network/console debugging.
-3. Use playwright MCP or the explicit playwright-cli backend as compatibility
-   fallbacks.
-4. Import MCP artifacts with
+1. Use chrome-devtools MCP for deep live DevTools, Network, Console, DOM,
+   performance, and runtime inspection.
+2. Use Playwright MCP for page interaction, authenticated sessions, forms,
+   screenshots, and multi-actor workflows.
+3. Import MCP artifacts with
    `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>`
    so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot`
    can continue using the same browser-observed API surface.

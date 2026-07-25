@@ -93,7 +93,6 @@ class _HuntCompat:
         "read_source_intel": "read_source_intel",
         "run_js_read": "run_js_read",
         "read_js_intel": "read_js_intel",
-        "run_browser_probe": "run_browser_probe",
         "read_browser_surface": "read_browser_surface",
         "run_param_discovery": "run_param_discovery",
         "run_post_param_discovery": "run_post_param_discovery",
@@ -538,38 +537,10 @@ _ALL_TOOL_SPECS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "run_browser_probe",
-            "description": (
-                "Structured browser capture through the agent-browser-first evidence lane; capture one browser-context page and feed observed XHR/API/GraphQL "
-                "requests plus params into recon/<target>/browser. Use for login/register/dashboard/app/portal, "
-                "SPA, XHR, GraphQL, or account-gated surfaces. Use chrome-devtools MCP for deep live debugging, "
-                "Playwright as compatibility fallback, and tools/browser_mcp_import.py for externally captured artifacts before reducing the target to curl-only testing."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "Optional URL to open; if empty, choose a cached login/app/dashboard/live URL.",
-                        "default": "",
-                    },
-                    "session": {
-                        "type": "string",
-                        "description": "Optional named browser session to reuse authenticated browser state.",
-                        "default": "",
-                    },
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "read_browser_surface",
             "description": (
                 "Read browser-observed XHR/API endpoints and parameters from recon/<target>/browser. "
-                "Use after run_browser_probe or before surface ranking when browser artifacts already exist."
+                "Use after Chrome DevTools/Playwright MCP artifacts have been imported, or before surface ranking when browser artifacts already exist."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
@@ -716,7 +687,7 @@ _ALL_TOOL_SPECS: list[dict] = [
                 "Node+Mongo; GraphQL probe fires on `query`-shaped fields targeting /graphql. "
                 "Auto-loads endpoints from recon/<t>/browser/xhr_endpoints.txt and "
                 "findings/<t>/js_intel/hypotheses.json. "
-                "Use AFTER run_browser_probe or run_js_read have populated POST endpoint "
+                "Use AFTER imported browser MCP evidence or run_js_read has populated POST endpoint "
                 "candidates, OR when a confirmed/suspected POST endpoint needs targeted testing "
                 "(e.g. login, mutation, importer, webhook). Fast (~30s for 50 endpoints) — "
                 "preferred over run_sqlmap_targeted for REST APIs with JSON bodies."
@@ -896,10 +867,9 @@ _ALL_TOOL_SPECS: list[dict] = [
         "function": {
             "name": "read_browser_screenshot",
             "description": (
-                "(B12b) Return the most recent vision-captured screenshot "
-                "for this target as a path. Only meaningful when --vision is "
-                "set AND the active model supports image input. Vision-capable "
-                "models can then inspect the visible layout for clickable "
+                "Return the most recent Chrome DevTools/Playwright MCP screenshot "
+                "imported for this target. Vision-capable models can inspect "
+                "the visible layout for clickable "
                 "elements not represented in the DOM, overlay-hidden inputs, "
                 "or visual-only state."
             ),
@@ -912,35 +882,6 @@ _ALL_TOOL_SPECS: list[dict] = [
                     },
                 },
                 "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_vision_probe",
-            "description": (
-                "(P5-W1 R3) Capture a fresh sequence-tagged screenshot of a "
-                "URL via Playwright and persist screenshot_{seq}.png + "
-                "dom_{seq}.html under evidence/<target>/browser/. Only "
-                "exposed when --vision is set AND the active model supports "
-                "image input. Use this when you need a NEW screenshot of a "
-                "page; use read_browser_screenshot to recall the latest one."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "Absolute URL of the page to capture.",
-                    },
-                    "label": {
-                        "type": "string",
-                        "description": "Optional human-readable label folded into the evidence dir name.",
-                        "default": "vision",
-                    },
-                },
-                "required": ["url"],
             },
         },
     },
@@ -1279,7 +1220,6 @@ _DISPATCHER_ONLY_TOOLS = {
     "update_working_memory",
     "pattern_calibration_summary",
     "read_browser_screenshot",
-    "run_vision_probe",
     "run_sibling_probe",
     "run_hypothesis_fleet",
     "run_self_review",
@@ -1294,7 +1234,6 @@ _FINISH_FLOOR_PROGRESS_TOOLS = {
     "run_repo_source_hunt",
     "run_source_intel",
     "run_js_read",
-    "run_browser_probe",
     "run_param_discovery",
     "run_post_param_discovery",
     "run_api_fuzz",
@@ -1448,7 +1387,7 @@ def _phase_flags(completed_steps: list[str]) -> dict[str, bool]:
         "js_analysis": "run_js_analysis" in completed,
         "secret_hunt": "run_secret_hunt" in completed,
         "source_intel": "run_source_intel" in completed,
-        "browser_probe": "run_browser_probe" in completed,
+        "browser_surface_read": "read_browser_surface" in completed,
         "param_discovery": "run_param_discovery" in completed,
         "post_param_discovery": "run_post_param_discovery" in completed,
         "api_fuzz": "run_api_fuzz" in completed,
@@ -1618,8 +1557,6 @@ class ToolDispatcher:
     def __init__(self, domain: str, memory: HuntMemory,
                  scope_lock: bool = False, max_urls: int = 100,
                  default_cookies: str = "", quick_mode: bool = False,
-                 vision_enabled: bool = False, max_screenshots: int = 5,
-                 model_id: str = "",
                  parallel_enabled: bool = False, max_parallel: int = 3,
                  worker_timeout_secs: int = 300,
                  parallel_hypotheses: bool = False,
@@ -1633,10 +1570,6 @@ class ToolDispatcher:
         self.max_urls        = max_urls
         self.default_cookies = default_cookies
         self.quick_mode      = quick_mode
-        # (P5-W1 R3) vision write-path gating context
-        self.vision_enabled  = bool(vision_enabled)
-        self.max_screenshots = int(max_screenshots or 5)
-        self.model_id        = str(model_id or "")
         # (P5-W1 R1/R2/R4) parallel + self-review wiring context
         self.parallel_enabled       = bool(parallel_enabled)
         self.parallel_hypotheses    = bool(parallel_hypotheses)
@@ -1725,16 +1658,6 @@ class ToolDispatcher:
 
             elif name == "read_js_intel":
                 obs = h.read_js_intel(domain)
-
-            elif name == "run_browser_probe":
-                ok = h.run_browser_probe(
-                    domain,
-                    url=str(args.get("url", "")),
-                    session=str(args.get("session", "")),
-                )
-                obs = h.read_browser_surface(domain)
-                if not ok:
-                    obs = "run_browser_probe: no browser capture was created.\n" + obs
 
             elif name == "read_browser_surface":
                 obs = h.read_browser_surface(domain)
@@ -1827,13 +1750,6 @@ class ToolDispatcher:
                 obs = self._read_browser_screenshot(
                     domain,
                     seq=args.get("seq"),
-                )
-
-            elif name == "run_vision_probe":
-                obs = self._run_vision_probe(
-                    domain,
-                    url=str(args.get("url", "")),
-                    label=str(args.get("label", "vision")),
                 )
 
             elif name == "run_sibling_probe":
@@ -2169,14 +2085,14 @@ class ToolDispatcher:
         return json.dumps(payload, indent=2)
 
     def _read_browser_screenshot(self, domain: str, seq=None) -> str:
-        """Return latest vision-captured screenshot path for the target (B12b).
+        """Return an imported MCP screenshot path for the target.
 
         Backs the `read_browser_screenshot` dispatcher tool. Returns a JSON
         payload with the screenshot path + correlated DOM path; the caller
         (vision-capable LLM) is responsible for loading the image.
         """
         try:
-            from tools.vision_browser import find_latest_screenshot, list_screenshots
+            from tools.vision_browser import list_screenshots
         except Exception as exc:
             return f"vision_browser unavailable: {exc}"
         try:
@@ -2186,16 +2102,12 @@ class ToolDispatcher:
                     if r["seq"] == int(seq):
                         return json.dumps(r, indent=2)
                 return json.dumps({"error": f"no screenshot with seq={seq}"}, indent=2)
-            latest = find_latest_screenshot(domain)
-            if latest is None:
-                return json.dumps({"error": "no screenshots captured yet; run a vision probe first"}, indent=2)
-            seq_match = re.search(r"screenshot_(\d+)\.png$", latest.name)
-            seq_num = int(seq_match.group(1)) if seq_match else 0
-            dom = latest.parent / f"dom_{seq_num}.html"
+            rows = list_screenshots(domain)
+            if not rows:
+                return json.dumps({"error": "no imported MCP screenshots exist yet"}, indent=2)
+            latest = rows[-1]
             return json.dumps({
-                "seq": seq_num,
-                "screenshot_path": str(latest),
-                "dom_path": str(dom) if dom.exists() else "",
+                **latest,
                 "hint": (
                     "Inspect the visible layout for clickable elements not "
                     "represented in the DOM, overlay-hidden inputs, or "
@@ -2204,54 +2116,6 @@ class ToolDispatcher:
             }, indent=2)
         except Exception as exc:
             return f"read_browser_screenshot error: {exc}"
-
-    def _run_vision_probe(self, domain: str, url: str = "", label: str = "vision") -> str:
-        """Capture a fresh sequence-tagged screenshot (P5-W1 R3).
-
-        Hard-gated: refuses to run unless --vision is set AND the active
-        model is on the vision allowlist. Returns JSON with screenshot_path,
-        dom_path, screenshot_seq, capped flag.
-        """
-        try:
-            from tools.vision_browser import (
-                capture_with_screenshot_sequence,
-                should_expose_vision_tool,
-            )
-        except Exception as exc:
-            return f"vision_browser unavailable: {exc}"
-
-        if not should_expose_vision_tool(
-            vision_enabled=self.vision_enabled,
-            model_name=self.model_id,
-        ):
-            return json.dumps({
-                "error": (
-                    "run_vision_probe disabled: requires --vision flag AND a "
-                    "vision-capable model"
-                ),
-                "vision_flag": bool(self.vision_enabled),
-                "model_id": self.model_id,
-            }, indent=2)
-
-        if not url:
-            return json.dumps({"error": "url is required"}, indent=2)
-
-        try:
-            out = capture_with_screenshot_sequence(
-                target=domain,
-                url=url,
-                label=label,
-                max_screenshots=self.max_screenshots,
-            )
-            # Trim raw capture detail to keep tool return compact for LLMs.
-            return json.dumps({
-                "screenshot_seq": out.get("screenshot_seq"),
-                "screenshot_path": out.get("screenshot_path", ""),
-                "dom_path": out.get("dom_path", ""),
-                "capped": bool(out.get("capped")),
-            }, indent=2)
-        except Exception as exc:
-            return f"run_vision_probe error: {exc}"
 
     def _run_sibling_probe(self, domain: str, seed_findings) -> str:
         """Expand seed findings into sibling probes (P5-W1 R1).
@@ -3258,7 +3122,7 @@ def _build_agent_system(
         "< 30 days). If absent or stale, spend up to 15 minutes producing it\n"
         "from these sources (all free text answers — never enumerate from a\n"
         "fixed taxonomy):\n"
-        "  - the live homepage (use the agent-browser-first evidence lane when available for vision)\n"
+        "  - the live homepage (use Chrome DevTools or Playwright MCP when browser vision is needed)\n"
         "  - any visible pricing page\n"
         "  - the most recent changelog / blog / status / what's-new entry\n"
         "  - openapi.json or /api/docs if discoverable\n"
@@ -3301,12 +3165,12 @@ CORE RULES:
 7. Prioritize by impact: CMS exploits > RCE > SQLi > IDOR/auth bypass > secrets > info.
 8. If Drupal or WordPress is detected → run_cms_exploit immediately. If any stack is clearly identified, prefer run_intel for the primary /intel workflow; run_cve_hunt is the legacy compatibility path.
 9. If Java/Tomcat/JBoss/Spring is detected → run_rce_scan + run_post_param_discovery.
-10. If login/register/dashboard/app/portal, SPA/XHR/GraphQL, or account-gated surface is present → use run_browser_probe through the agent-browser-first evidence lane for routine session/network/storage/HAR capture; use chrome-devtools MCP for deep live debugging, Playwright as compatibility fallback, and tools/browser_mcp_import.py for external artifacts, then read_browser_surface/read_surface_summary before reducing the surface to curl-only tests.
+10. If login/register/dashboard/app/portal, SPA/XHR/GraphQL, or account-gated surface is present → use Chrome DevTools MCP for deep Network/Console/runtime inspection or Playwright MCP for interaction and session workflows, import useful artifacts with tools/browser_mcp_import.py, then read_browser_surface/read_surface_summary before reducing the surface to curl-only tests.
 11. If cached JS, browser, or repo-source artifacts exist → prefer run_source_intel first, then run_js_read/read_js_intel before repeating broad scanners. Use run_js_analysis as a deeper legacy follow-up when you specifically need direct JS-body extraction or secret-heavy review. If secrets/tokens/config leaks are plausible, add run_secret_hunt.
 12. If ranked workflow leads already exist → read_surface_summary and spend at least one focused step on the best lead before defaulting back to another broad scanner pass. Demoted/manual-review leads are not final rejections; treat them as reversible secondary-sweep candidates when they may hide secret, supply-chain, or chain-pivot evidence.
 13. Do not get trapped in enrichment-only loops: after one or two focused lead-driven attempts, either promote/demote the lead with evidence and widen back into the next best active lane.
 14. If API endpoints or numeric-object URLs exist → run_api_fuzz. If authenticated surfaces exist → run_cors_check.
-15. If parameterized URLs found → run_param_discovery and run_sqlmap_targeted. Use run_sqlmap_on_file for specific raw requests. For POST JSON endpoints discovered via browser_probe or js_read (REST APIs, GraphQL, login/auth/import/mutation paths), prefer run_json_inject_probe — it is surgical (≈30s for 50 endpoints), AI-callable, and tests 8 payload classes (sqli auth-bypass/error/time, ssti, cmd-injection, open-redirect, path-traversal, xss) with 3-stage detection.
+15. If parameterized URLs found → run_param_discovery and run_sqlmap_targeted. Use run_sqlmap_on_file for specific raw requests. For POST JSON endpoints discovered through imported browser MCP evidence or js_read (REST APIs, GraphQL, login/auth/import/mutation paths), prefer run_json_inject_probe — it is surgical (≈30s for 50 endpoints), AI-callable, and tests 8 payload classes (sqli auth-bypass/error/time, ssti, cmd-injection, open-redirect, path-traversal, xss) with 3-stage detection.
 16. If JWT tokens appear in recon data → run_jwt_audit.
 17. When standard scans have plateaued but attack surface remains, use run_zero_day_fuzzer.
 18. For the primary /report reporting workflow, generate reports with generate_reports before finish when findings or useful artifacts exist; generate_reports is the compatibility path behind /report.
@@ -4081,8 +3945,6 @@ def run_agent_hunt(
     resume_session_id: str | None = None,
     autopilot_mode: str = "paranoid",
     ctf_mode: bool | None = None,
-    vision_enabled: bool = False,
-    max_screenshots: int = 5,
     parallel_enabled: bool = False,
     max_parallel: int = 3,
     worker_timeout_secs: int = 300,
@@ -4152,9 +4014,6 @@ def run_agent_hunt(
         max_urls=max_urls,
         default_cookies=cookies,
         quick_mode=quick,
-        vision_enabled=vision_enabled,
-        max_screenshots=max_screenshots,
-        model_id=str(model or ""),
         parallel_enabled=parallel_enabled,
         max_parallel=max_parallel,
         worker_timeout_secs=worker_timeout_secs,
@@ -4280,17 +4139,6 @@ Examples:
         action="store_true",
         help="(B12a) Fan out viable hypothesis candidates to workers in parallel",
     )
-    parser.add_argument(
-        "--vision",
-        action="store_true",
-        help="(B12b) Capture playwright screenshots and expose read_browser_screenshot",
-    )
-    parser.add_argument(
-        "--max-screenshots",
-        type=int,
-        default=5,
-        help="(B12b) Cap screenshots per page navigation (default 5)",
-    )
     add_cli_args(parser, include_cookie=False)
     args = parser.parse_args()
     auth_session = _apply_hunt_auth_session(session_from_args(args), args.target or "")
@@ -4343,8 +4191,6 @@ Examples:
             autopilot_mode=autopilot_mode,
             ctf_mode=ctf_mode,
             deep_mode=bool(getattr(args, "deep", False)),
-            vision_enabled=bool(getattr(args, "vision", False)),
-            max_screenshots=int(getattr(args, "max_screenshots", 5)),
             parallel_enabled=bool(getattr(args, "parallel", False)),
             max_parallel=int(getattr(args, "max_parallel", 3)),
             worker_timeout_secs=int(getattr(args, "worker_timeout_secs", 300)),

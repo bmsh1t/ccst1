@@ -21,7 +21,6 @@ def test_agent_only_exposes_wired_and_dispatcher_tools():
         "update_working_memory",
         "pattern_calibration_summary",
         "read_browser_screenshot",
-        "run_vision_probe",
         "run_sibling_probe",
         "run_hypothesis_fleet",
         "run_self_review",

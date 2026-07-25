@@ -56,6 +56,10 @@ def _iter_tree_entries(root: Path, *, skip_parts: frozenset[str] = frozenset()) 
     """按稳定顺序枚举目录和普通文件，只读取 metadata，不打开文件正文。"""
     if not root.exists():
         return
+    if root.is_dir() and skip_parts:
+        # 仅含 owner 控制目录的根等价于无业务输入，不能因首次建锁而进入 manifest。
+        if not any(child.name not in skip_parts for child in root.iterdir()):
+            return
     yield root
     if not root.is_dir():
         return
@@ -79,7 +83,8 @@ def _manifest_roots(
     storage_key = target_storage_key(target)
     roots: list[tuple[Path, frozenset[str]]] = [
         (repo_root / "recon" / storage_key, _GENERATED_RECON_PARTS),
-        (repo_root / "findings" / storage_key, frozenset()),
+        # owner 锁只承载并发控制；首次创建不能让业务输入 projection 失效。
+        (repo_root / "findings" / storage_key, frozenset({".locks"})),
         (repo_root / "memory" / "evidence" / storage_key, frozenset()),
         (repo_root / "memory" / "goals" / "targets" / f"{storage_key}.json", frozenset()),
         (repo_root / "memory" / "goals" / "active.json", frozenset()),

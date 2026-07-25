@@ -340,6 +340,21 @@ capabilities:
       - published-artifact
       - container-image
       - historical-release
+  - id: wordpress-surface-intelligence
+    kind: card
+    file: knowledge/cards/wordpress-surface-intelligence.md
+    layer: reference
+    load: signal-only
+    purpose: route
+    triggers:
+      - wordpress
+      - wp-json
+      - wp-content
+      - wp-admin
+      - admin-ajax
+      - xmlrpc
+      - wordpress-plugin
+      - wordpress-theme
   - id: js-runtime-signature-reconstruction
     kind: card
     file: knowledge/cards/js-runtime-signature-reconstruction.md

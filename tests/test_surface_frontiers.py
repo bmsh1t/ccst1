@@ -71,3 +71,36 @@ def test_frontier_keeps_first_seen_order_for_equal_scores():
     assert [item["url"] for _sequence, item in frontiers.p1.values()] == [
         item["url"] for item in candidates[:8]
     ]
+
+
+def test_review_pool_reserves_high_value_categories_before_source_flood():
+    noisy = [
+        {
+            "url": f"https://target.com/search?page={index}",
+            "score": 20 - index,
+            "evidence_convergence": ["browser", "js"],
+            "score_breakdown": [],
+        }
+        for index in range(20)
+    ]
+    critical = {
+        "url": "https://target.com/admin/payments/upload?account_id=1",
+        "score": 100,
+        "score_breakdown": [{"source": "attack_value", "score": 20}],
+    }
+
+    pool = _build_review_pool([*noisy, critical])
+
+    assert len(pool) == 16
+    assert critical["url"] in [item["url"] for item in pool]
+    selected = next(item for item in pool if item["url"] == critical["url"])
+    assert selected["review_reason"] == "high-value category: admin/payment/upload/file"
+
+    frontiers = _SurfaceCandidateFrontiers(set())
+    for sequence, item in enumerate(noisy):
+        frontiers.add(item, sequence)
+    low_score_category = {**critical, "score": -10}
+    frontiers.add(low_score_category, len(noisy))
+
+    bounded_pool = _build_review_pool(frontiers.review_candidates())
+    assert low_score_category["url"] in [item["url"] for item in bounded_pool]

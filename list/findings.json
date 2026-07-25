@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-13T23:18:54.308032Z",
+  "target": "127.0.0.1:3106",
+  "findings_dir": "list",
+  "total": 0,
+  "counts": {
+    "severity": {},
+    "type": {},
+    "confidence": {}
+  },
+  "artifacts": {
+    "summary_json": "",
+    "summary_txt": ""
+  },
+  "findings": [],
+  "updated_at": "2026-07-13T23:18:54.308120Z"
+}

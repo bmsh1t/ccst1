@@ -61,11 +61,11 @@ report too early.
 
 The default priority is:
 
-- For web navigation, authenticated browser state, SPA/XHR/GraphQL behavior,
-  browser storage (`cookies`, `localStorage`, `sessionStorage`), and page
-  interaction testing: prefer the installed `playwright-cli` skill.
+- For web navigation, authenticated browser state, forms, screenshots, and
+  multi-role interaction: use Playwright MCP. Use Chrome DevTools MCP for
+  Network, Console, DOM, performance, and runtime debugging.
 - For bulk recon: keep using the `/recon` pipeline behind `httpx`, `katana`,
-  `gau`, `waybackurls`, and similar tools. Do not use `playwright-cli` as the
+  `gau`, `waybackurls`, and similar tools. Do not use browser MCP as the
   main bulk recon engine.
 - For lightweight API replay: once a request is already narrowed down to a
   precise HTTP exchange that does not depend on browser state, use `curl`,
@@ -166,10 +166,9 @@ on the full chat transcript being preserved.
 
 ### Do I need Burp or Caido installed?
 
-No. Without MCP, authenticated browser state, SPA/XHR/GraphQL flows, browser
-storage, and page interaction testing should still go through the installed
-`playwright-cli` skill first. Only lightweight stateless API replay should fall
-back to `curl`, local scripts, or manually pasted requests and responses.
+No. Chrome DevTools and Playwright MCP are the browser-state paths. If neither
+is available, preserve the gap and limit fallback to lightweight stateless API
+replay through `curl`, local scripts, or manually pasted requests and responses.
 
 Once Burp or Caido MCP is configured, Claude Code can read proxy history,
 replay requests, and use captured traffic as validation context.

@@ -18,7 +18,7 @@ def _capabilities(_repo_root):
         "checked": True,
         "status": "ready",
         "available": {
-            "browser": ["playwright-cli"],
+            "browser": [],
             "recon": ["httpx"],
             "scanner": ["nuclei"],
         },

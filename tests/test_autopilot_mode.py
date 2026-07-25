@@ -71,11 +71,11 @@ def test_build_agent_bootstrap_context_surfaces_guard_guidance(monkeypatch):
 
     fake_state = {
         "next_action": "hunt_p1",
-        "next_tool_hint": "run_browser_probe",
+        "next_tool_hint": "collect_browser_mcp_evidence",
         "enrichment_hints": [
             {
-                "tool": "run_browser_probe",
-                "reason": "app-like or GraphQL surface signals were detected, but no browser-observed surface exists yet",
+                "tool": "collect_browser_mcp_evidence",
+                "reason": "app-like or GraphQL surface signals were detected; use Chrome DevTools or Playwright MCP, then import the observed artifacts",
             }
         ],
         "guard_hint": (
@@ -107,7 +107,7 @@ def test_build_agent_bootstrap_context_surfaces_guard_guidance(monkeypatch):
 
     output = agent._build_agent_bootstrap_context("target.com", repo_root="/tmp/repo", memory_dir="/tmp/memory")
 
-    assert "Next tool hint: run_browser_probe" in output
+    assert "Next tool hint: collect_browser_mcp_evidence" in output
     assert "Enrichment hints:" in output
     assert "Guard hint:" in output
     assert "Cooling hosts: api.target.com (25.0s)" in output
@@ -322,23 +322,19 @@ def test_active_bootstrap_context_only_applies_on_first_step(tmp_path):
     assert agent._active_bootstrap_context(memory) == ""
 
 
-def test_bootstrap_tool_hint_only_applies_on_first_step(tmp_path):
+def test_bootstrap_tool_hint_does_not_dispatch_session_managed_mcp_action(tmp_path):
     memory = agent.HuntMemory(str(tmp_path / "agent-session.json"))
     memory.bootstrap_state = {
-        "next_tool_hint": "run_browser_probe",
+        "next_tool_hint": "collect_browser_mcp_evidence",
         "enrichment_hints": [
             {
-                "tool": "run_browser_probe",
-                "reason": "app-like or GraphQL surface signals were detected, but no browser-observed surface exists yet",
+                "tool": "collect_browser_mcp_evidence",
+                "reason": "use Chrome DevTools or Playwright MCP, then import the observed artifacts",
             }
         ],
     }
 
-    hint = agent._bootstrap_tool_hint(memory)
-    assert hint == {
-        "tool": "run_browser_probe",
-        "reason": "app-like or GraphQL surface signals were detected, but no browser-observed surface exists yet",
-    }
+    assert agent._bootstrap_tool_hint(memory) == {}
 
     memory.step_count = 1
     assert agent._bootstrap_tool_hint(memory) == {}
@@ -419,10 +415,10 @@ def test_finish_floor_progress_count_ignores_read_only_and_bookkeeping_steps():
         "check_tools",
         "run_recon",
         "run_source_intel",
-        "run_browser_probe",
+        "collect_browser_mcp_evidence",
     ]
 
-    assert agent._finish_floor_progress_count(completed_steps) == 3
+    assert agent._finish_floor_progress_count(completed_steps) == 2
 
 
 def test_react_agent_step_prioritizes_bootstrap_tool_hint(monkeypatch, tmp_path):

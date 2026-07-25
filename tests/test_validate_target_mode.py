@@ -952,46 +952,6 @@ def test_validate_browser_evidence_resolver_uses_last_capture(tmp_path, monkeypa
     assert linkage["request_count"] == 2
 
 
-def test_validate_browser_evidence_resolver_captures_explicit_url(monkeypatch):
-    captured = {}
-
-    def fake_capture(target, browser_url, *, session="", label="", evidence_root=None, capture_screenshot=False):
-        captured.update(
-            {
-                "target": target,
-                "url": browser_url,
-                "session": session,
-                "label": label,
-                "evidence_root": str(evidence_root),
-                "capture_screenshot": capture_screenshot,
-            }
-        )
-        return {
-            "evidence_dir": "/tmp/evidence/target.local/browser/20260508T000000Z-validate",
-            "summary_path": "/tmp/evidence/target.local/browser/20260508T000000Z-validate/summary.json",
-            "session": session,
-            "url": browser_url,
-            "counts": {"requests": 1, "console": 0},
-        }
-
-    monkeypatch.setattr(validate, "capture_browser_evidence", fake_capture)
-
-    linkage = validate.resolve_browser_evidence_for_validate(
-        "target.local",
-        browser_url="https://target.local/profile",
-        browser_session="reuse-me",
-    )
-
-    assert captured["target"] == "target.local"
-    assert captured["url"] == "https://target.local/profile"
-    assert captured["session"] == "reuse-me"
-    assert captured["label"] == "validate"
-    assert captured["evidence_root"].endswith("/evidence")
-    assert captured["capture_screenshot"] is False
-    assert linkage["request_count"] == 1
-
-
-
 def test_sync_validation_artifacts_records_ledger_and_resolves_queue(tmp_path):
     from action_queue import add_manual_action, load_queue
     from evidence_ledger import load_entries

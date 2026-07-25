@@ -50,7 +50,7 @@ RAW_EVIDENCE_CONTAINER_FIELDS = (
     "oast_log",
 )
 EXECUTABLE_RE = re.compile(
-    r"(^|\s)(python3?|node|npm|npx|bash|sh|curl|playwright-cli|smart-search|ffuf|nuclei|semgrep)\b"
+    r"(^|\s)(python3?|node|npm|npx|bash|sh|curl|smart-search|ffuf|nuclei|semgrep)\b"
     r"|tools/[A-Za-z0-9_./-]+\.py\b"
     r"|python3?\s+tools/",
     re.IGNORECASE,

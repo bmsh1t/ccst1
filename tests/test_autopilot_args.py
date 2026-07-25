@@ -269,11 +269,9 @@ def test_invalid_core_arguments_stop_before_runtime_actions(argv, expected_codes
     (
         ["--parallel"],
         ["--parallel-hypotheses"],
-        ["--vision"],
         ["--self-review"],
         ["--calibrate-patterns"],
         ["--max-parallel", "4"],
-        ["--max-screenshots=4"],
         ["--worker-timeout-secs", "60"],
         ["--resume", "latest"],
         ["--agent"],
