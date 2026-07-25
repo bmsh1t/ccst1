@@ -201,6 +201,7 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
     external_hosts = _count_recon_artifact(recon_artifacts, "external_service_hosts")
     host_pivots = _count_recon_artifact(recon_artifacts, "host_pivot_candidates")
     ai_assets = _count_recon_artifact(recon_artifacts, "ai_asset_candidates")
+    asset_relations = _count_recon_artifact(recon_artifacts, "asset_relation_candidates")
     emails = _count_recon_artifact(recon_artifacts, "identity_emails")
     leaksearch = _count_recon_artifact(recon_artifacts, "leaksearch_hits")
     cloud_enum = _count_recon_artifact(recon_artifacts, "cloud_enum_hits")
@@ -358,6 +359,26 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
                 "product strings and status codes are discovery facts, not vulnerability proof."
             ),
             "evidence": f"{ai_assets} candidate row(s)",
+        })
+
+    if asset_relations > 0:
+        leads.append({
+            "source": "recon_routing_candidate",
+            "title": "External asset relationship candidates are available",
+            "category": "asset-relation",
+            "priority": "medium",
+            "artifact": f"recon/{storage_key}/exposure/asset_relation_candidates.jsonl",
+            "next_action": (
+                f"review recon/{storage_key}/exposure/asset_relation_candidates.jsonl; prioritize "
+                "multi-source or high-confidence relationships, then promote only target-owned or "
+                "explicitly supplied assets into active Recon/Surface work"
+            ),
+            "rationale": (
+                f"{asset_relations} normalized relationship candidate(s) were derived from external "
+                "registries, RDAP/WHOIS, certificate transparency, passive DNS, ASN/BGP, fingerprints, "
+                "or public supplier records; association is context, not scope or vulnerability proof."
+            ),
+            "evidence": f"{asset_relations} candidate row(s)",
         })
 
     return leads

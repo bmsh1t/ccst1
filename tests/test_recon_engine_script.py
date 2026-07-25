@@ -322,6 +322,8 @@ def test_recon_engine_profiles_collectors_and_normal_js_handoff():
     assert 'JS_MANIFEST_COUNT="$JS_DEEP_CANDIDATES"' in text
     assert 'tools/action_queue.py" --repo-root "$BASE_DIR" add' in text
     assert 'python3 "$BASE_DIR/tools/recon_candidates.py"' in text
+    assert '"$RECON_DIR/exposure/asset_relation_candidates.jsonl"' in text
+    assert 'asset_relation_candidates  "$ASSET_RELATION_CANDIDATES"' in text
 
 
 def test_collector_runtime_preserves_plain_and_gzip_artifacts_by_exit_status(tmp_path):

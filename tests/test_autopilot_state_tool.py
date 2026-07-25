@@ -51,6 +51,18 @@ def test_browser_context_discovery_queue_item_is_substantive():
     )
 
 
+def test_deep_js_review_queue_item_is_substantive():
+    action = {
+        "status": "queued",
+        "type": "deep-js-review",
+        "evidence_type": "recon-artifact",
+        "command_hint": "/js-read target.com",
+    }
+
+    assert _is_substantive_queue_action(action)
+    assert not _is_substantive_queue_action({**action, "evidence_type": "generic"})
+
+
 class TestAutopilotState:
 
     def test_batch_state_selects_only_completed_domain_handoff(self, tmp_path):

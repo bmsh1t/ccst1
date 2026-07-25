@@ -526,6 +526,12 @@ class TestSurfaceRanking:
             "https://target.s3.amazonaws.com/private/\n",
             encoding="utf-8",
         )
+        (recon_dir / "exposure" / "asset_relation_candidates.jsonl").write_text(
+            '{"schema_version":1,"kind":"asset-relation-candidate","asset_type":"domain",'
+            '"value":"edge.target.net","relation":"certificate-san","related":["target.com"],'
+            '"sources":["certificate-transparency"],"confidence":"medium"}\n',
+            encoding="utf-8",
+        )
         (recon_dir / "exposure" / "identity_intel" / "emails.txt").write_text(
             "admin@target.com\nops@target.com\n",
             encoding="utf-8",
@@ -561,8 +567,12 @@ class TestSurfaceRanking:
         assert "[high] api-docs: OpenAPI/Swagger/API documentation candidates discovered" in output
         assert "[medium] config-cloud: Config/cloud exposure candidates discovered" in output
         assert "[medium] identity-cloud: Identity/cloud intel signals discovered" in output
+        assert "asset-relation" in categories
         for item in ranked["p1"] + ranked["p2"]:
-            assert all(part["source"] != "recon_exposure" for part in item.get("score_breakdown", []))
+            assert all(
+                part["source"] not in {"recon_exposure", "recon_routing_candidate"}
+                for part in item.get("score_breakdown", [])
+            )
 
     def test_openapi_semantics_becomes_one_soft_workflow_lead(self, tmp_path):
         repo_root = tmp_path

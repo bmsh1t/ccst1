@@ -80,7 +80,7 @@ The integrated `tools/recon_engine.sh` path may run, when available:
 - JS/API extraction: normal 保留完整 JS inventory 并生成多类别有界 `js/deep_candidates.txt`；full/deep 优先使用有界、限速、scope-filtered 的 xnLinkFinder，失败、不兼容 scope 或认证上下文回退逐 URL LinkFinder；所有 profile 都保留 raw backstop
 - bounded directory/parameter fuzzing and config discovery with timeout guards
 - exposure candidates: API docs, config files, cloud storage, S3 buckets, third-party hosted assets
-- routing candidates: 从已有 origin/shared-IP/CNAME/certificate（若 artifact 已包含）及 path/schema 事实生成 Host/SNI 与 AI/LLM 中性候选，不在 Recon 中主动验证
+- routing candidates: 从已有 origin/shared-IP/CNAME/certificate（若 artifact 已包含）、path/schema 事实及可选通用资产关系 observation 生成 Host/SNI、AI/LLM 与外部资产关系中性候选，不在 Recon 中主动验证
 - API leak detection: `porch-pirate`, `postleaksNg`, Osmedeus `SwaggerSpy`, plus bounded `trufflehog` verified-secret pass
 - identity/cloud intel: `emailfinder`, `LeakSearch`, `cloud_enum`
 - CI/CD hints when repo/workflow artifacts are available
@@ -126,10 +126,41 @@ recon/<target>/
     ├── external_service_hosts.txt
     ├── host_pivot_candidates.jsonl
     ├── ai_asset_candidates.jsonl
+    ├── asset_relation_observations.jsonl  # optional normalized input
+    ├── asset_relation_candidates.jsonl    # derived projection
     ├── identity_intel/
     ├── cloud/
     └── api_leaks/
 ```
+
+### Optional generic asset-relation intake
+
+External tools or AI may normalize public asset facts into JSONL and reuse the
+existing Recon → Surface → Checkpoint → Action Queue path:
+
+```bash
+python3 tools/recon_candidates.py \
+  --repo-root . \
+  --target TARGET \
+  --asset-input INPUT.jsonl
+```
+
+Required fields are `schema_version`, `kind`, `asset_type`, `value`, `relation`,
+and `source`; `related`, `signals`, `source_ref`, `confidence`, and UTC
+`observed_at` are optional:
+
+```json
+{"schema_version":1,"kind":"asset-relation-observation","asset_type":"domain","value":"ASSET","relation":"certificate-san","related":["TARGET"],"source":"certificate-transparency","source_ref":"SOURCE_REF","confidence":"high","observed_at":"2026-01-01T00:00:00Z"}
+```
+
+Supported sources are intentionally generic: corporate registries/LEI,
+RDAP/WHOIS, certificate transparency, passive DNS, ASN/BGP, TLS/HTTP
+fingerprints, and public supplier records. The importer does not call these
+services. Invalid rows are summarized in the CLI result; raw input remains the
+caller’s evidence. The derived view defaults to the 5,000 strongest
+confidence/provenance candidates (`--asset-limit` may lower it); the raw JSONL
+remains complete. Relationship candidates are context only and never expand
+target scope automatically.
 
 For list input:
 

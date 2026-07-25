@@ -454,6 +454,7 @@ EXPOSURE_COUNT_PATHS = {
     "external_service_hosts": Path("exposure/external_service_hosts.txt"),
     "host_pivot_candidates": Path("exposure/host_pivot_candidates.jsonl"),
     "ai_asset_candidates": Path("exposure/ai_asset_candidates.jsonl"),
+    "asset_relation_candidates": Path("exposure/asset_relation_candidates.jsonl"),
     "identity_emails": Path("exposure/identity_intel/emails.txt"),
     "leaksearch_hits": Path("exposure/identity_intel/leaksearch.txt"),
     "cloud_enum_hits": Path("exposure/cloud/cloud_enum.txt"),

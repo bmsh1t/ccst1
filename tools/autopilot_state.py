@@ -1204,6 +1204,18 @@ def _is_substantive_queue_action(item: dict) -> bool:
         and str(item.get("evidence_type") or "") == "browser-context-discovery"
     ):
         return True
+    # Normal Recon 会把完整 JS inventory 压成 bounded deep_candidates，并将
+    # 深析交给 `/js-read`。这是已有 recon-artifact，不应被 fresh recon 过滤掉。
+    action_type = str(item.get("type") or item.get("action_type") or "").strip()
+    evidence_type = str(item.get("evidence_type") or "").strip()
+    command_hint = str(item.get("command_hint") or "").strip()
+    if (
+        status == "queued"
+        and action_type == "deep-js-review"
+        and evidence_type == "recon-artifact"
+        and command_hint.startswith("/js-read ")
+    ):
+        return True
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     command = " ".join(
         str(value or "").strip()

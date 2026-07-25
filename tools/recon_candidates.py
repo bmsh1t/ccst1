@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从现有 Recon artifact 生成有界 JS、Host 与 AI 中性路由候选。"""
+"""从现有 Recon artifact 生成有界 JS、Host、AI 与资产关系中性候选。"""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ import heapq
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 from collections import defaultdict
+from datetime import datetime, timezone
 from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -24,6 +26,13 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 SCHEMA_VERSION = 1
 DEFAULT_JS_CANDIDATE_LIMIT = 800
+ASSET_RELATION_INPUT_PATH = Path("exposure/asset_relation_observations.jsonl")
+ASSET_RELATION_OUTPUT_PATH = Path("exposure/asset_relation_candidates.jsonl")
+ASSET_RELATION_WARNING_LIMIT = 10
+MAX_ASSET_RELATION_LINE_BYTES = 1_000_000
+MAX_ASSET_RELATION_LIST_ITEMS = 256
+DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT = 5000
+CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
 IP_RE = re.compile(r"(?<![0-9.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9.])")
 KEY_VALUE_RE = re.compile(r"\b(ip|cname|subject_cn|subject_an|san)=([^\]\s,;]+)", re.IGNORECASE)
 AI_SIGNAL_RE = re.compile(
@@ -216,6 +225,191 @@ def _valid_ip(value: str) -> str:
         return ""
 
 
+def _asset_text(value: object, field: str, *, max_length: int) -> str:
+    """校验外部 observation 的短文本字段，避免把大段原始响应带入候选。"""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    normalized = " ".join(value.strip().splitlines())
+    if not normalized:
+        raise ValueError(f"{field} must not be empty")
+    if len(normalized) > max_length:
+        raise ValueError(f"{field} exceeds {max_length} characters")
+    return normalized
+
+
+def _asset_text_list(value: object, field: str, *, max_length: int) -> list[str]:
+    if value is None:
+        return []
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, list):
+        raise ValueError(f"{field} must be a string or list of strings")
+    normalized = sorted({_asset_text(item, field, max_length=max_length) for item in items})
+    if len(normalized) > MAX_ASSET_RELATION_LIST_ITEMS:
+        raise ValueError(f"{field} exceeds {MAX_ASSET_RELATION_LIST_ITEMS} items")
+    return normalized
+
+
+def _asset_observed_at(value: object) -> str:
+    if value in (None, ""):
+        return ""
+    text = _asset_text(value, "observed_at", max_length=64)
+    try:
+        parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    except ValueError as exc:
+        raise ValueError("observed_at must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("observed_at must include a timezone")
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_asset_relation_observation(payload: object) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("record must be a JSON object")
+    if payload.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(f"schema_version must be {SCHEMA_VERSION}")
+    if payload.get("kind") != "asset-relation-observation":
+        raise ValueError("kind must be asset-relation-observation")
+
+    confidence = str(payload.get("confidence") or "low").strip().lower()
+    if confidence not in CONFIDENCE_RANK:
+        raise ValueError("confidence must be low, medium, or high")
+    source_ref = ""
+    if payload.get("source_ref") not in (None, ""):
+        source_ref = _asset_text(payload.get("source_ref"), "source_ref", max_length=4096)
+
+    return {
+        "asset_type": _asset_text(payload.get("asset_type"), "asset_type", max_length=128).lower(),
+        "value": _asset_text(payload.get("value"), "value", max_length=4096),
+        "relation": _asset_text(payload.get("relation"), "relation", max_length=128).lower(),
+        "related": _asset_text_list(payload.get("related"), "related", max_length=4096),
+        "signals": _asset_text_list(payload.get("signals"), "signals", max_length=128),
+        "source": _asset_text(payload.get("source"), "source", max_length=128).lower(),
+        "source_ref": source_ref,
+        "confidence": confidence,
+        "observed_at": _asset_observed_at(payload.get("observed_at")),
+    }
+
+
+def _asset_relation_candidates(
+    source: Path,
+    *,
+    limit: int = DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT,
+) -> tuple[list[dict], dict]:
+    """流式合并 observation；完整原始输入保留，候选只发布固定上限。"""
+    if limit < 1:
+        raise ValueError("asset relation candidate limit must be positive")
+    stats = {"input_count": 0, "invalid_count": 0, "warnings": [], "unique_count": 0}
+    if not source.is_file():
+        return [], stats
+
+    def _candidate_key(observation: dict) -> str:
+        return "\x1f".join(
+            (observation["asset_type"], observation["value"], observation["relation"])
+        )
+
+    def _merge(existing: dict | None, observation: dict) -> dict:
+        row = existing or {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "asset-relation-candidate",
+            "asset_type": observation["asset_type"],
+            "value": observation["value"],
+            "relation": observation["relation"],
+            "related": [],
+            "signals": [],
+            "sources": [],
+            "source_refs": [],
+            "confidence": "low",
+        }
+        row["related"] = sorted(set(row["related"]) | set(observation["related"]))[
+            :MAX_ASSET_RELATION_LIST_ITEMS
+        ]
+        row["signals"] = sorted(set(row["signals"]) | set(observation["signals"]))[
+            :MAX_ASSET_RELATION_LIST_ITEMS
+        ]
+        row["sources"] = sorted(set(row["sources"]) | {observation["source"]})[
+            :MAX_ASSET_RELATION_LIST_ITEMS
+        ]
+        if observation["source_ref"]:
+            row["source_refs"] = sorted(
+                set(row["source_refs"]) | {observation["source_ref"]}
+            )[:MAX_ASSET_RELATION_LIST_ITEMS]
+        if CONFIDENCE_RANK[observation["confidence"]] > CONFIDENCE_RANK[row["confidence"]]:
+            row["confidence"] = observation["confidence"]
+        if observation["observed_at"] > str(row.get("observed_at") or ""):
+            row["observed_at"] = observation["observed_at"]
+        return row
+
+    def _score(row: dict) -> int:
+        # 高置信度优先，其次多来源/多信号；同分由稳定 key 决定。
+        return (
+            CONFIDENCE_RANK[row["confidence"]] * 1_000_000
+            + len(row["sources"]) * 10_000
+            + len(row["source_refs"]) * 1_000
+            + len(row["signals"]) * 100
+            + len(row["related"])
+        )
+
+    with tempfile.TemporaryDirectory(prefix="asset-relations-") as temp_dir:
+        database = Path(temp_dir) / "aggregate.sqlite3"
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "CREATE TABLE candidates (key TEXT PRIMARY KEY, payload TEXT NOT NULL, score INTEGER NOT NULL)"
+            )
+            connection.execute("BEGIN")
+            with source.open("rb") as handle:
+                line_number = 0
+                while True:
+                    raw = handle.readline(MAX_ASSET_RELATION_LINE_BYTES + 1)
+                    if not raw:
+                        break
+                    line_number += 1
+                    oversized = len(raw) > MAX_ASSET_RELATION_LINE_BYTES
+                    if oversized and not raw.endswith(b"\n"):
+                        while True:
+                            chunk = handle.readline(MAX_ASSET_RELATION_LINE_BYTES + 1)
+                            if not chunk or chunk.endswith(b"\n"):
+                                break
+                    text = "" if oversized else raw.decode("utf-8", errors="replace").strip()
+                    if not text and not oversized:
+                        continue
+                    stats["input_count"] += 1
+                    try:
+                        if oversized:
+                            raise ValueError("record exceeds 1000000 bytes")
+                        observation = _normalize_asset_relation_observation(json.loads(text))
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        stats["invalid_count"] += 1
+                        if len(stats["warnings"]) < ASSET_RELATION_WARNING_LIMIT:
+                            stats["warnings"].append(f"line {line_number}: {exc}")
+                        continue
+
+                    key = _candidate_key(observation)
+                    existing_row = connection.execute(
+                        "SELECT payload FROM candidates WHERE key = ?", (key,)
+                    ).fetchone()
+                    row = _merge(
+                        json.loads(existing_row[0]) if existing_row else None,
+                        observation,
+                    )
+                    connection.execute(
+                        "INSERT OR REPLACE INTO candidates(key, payload, score) VALUES (?, ?, ?)",
+                        (key, json.dumps(row, ensure_ascii=False, sort_keys=True), _score(row)),
+                    )
+            connection.commit()
+            stats["unique_count"] = int(
+                connection.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
+            )
+            rows = [
+                json.loads(payload)
+                for (payload,) in connection.execute(
+                    "SELECT payload FROM candidates ORDER BY score DESC, key ASC LIMIT ?",
+                    (limit,),
+                )
+            ]
+    stats["truncated"] = stats["unique_count"] > len(rows)
+    return rows, stats
+
+
 def _host_candidates(recon_dir: Path) -> list[dict]:
     rows: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -306,39 +500,71 @@ def _ai_candidates(recon_dir: Path) -> list[dict]:
     return list(merged.values())
 
 
-def build_recon_candidates(repo_root: str | Path, target: str) -> dict:
+def build_recon_candidates(
+    repo_root: str | Path,
+    target: str,
+    *,
+    asset_input: str | Path | None = None,
+    asset_limit: int = DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT,
+) -> dict:
     resolved = canonical_target_value(target)
     recon_dir = Path(repo_root) / "recon" / target_storage_key(resolved)
     if not recon_dir.is_dir():
         raise FileNotFoundError(f"recon directory missing: {recon_dir}")
 
+    exposure_dir = recon_dir / "exposure"
     host_rows = _host_candidates(recon_dir)
     ai_rows = _ai_candidates(recon_dir)
-    exposure_dir = recon_dir / "exposure"
+    asset_input_path = Path(asset_input) if asset_input else recon_dir / ASSET_RELATION_INPUT_PATH
+    asset_rows, asset_stats = _asset_relation_candidates(asset_input_path, limit=asset_limit)
     host_path = exposure_dir / "host_pivot_candidates.jsonl"
     ai_path = exposure_dir / "ai_asset_candidates.jsonl"
+    asset_path = recon_dir / ASSET_RELATION_OUTPUT_PATH
     _write_jsonl_atomic(host_path, host_rows)
     _write_jsonl_atomic(ai_path, ai_rows)
+    _write_jsonl_atomic(asset_path, asset_rows)
     return {
         "target": resolved,
         "host_pivot_candidates": len(host_rows),
         "ai_asset_candidates": len(ai_rows),
+        "asset_relation_candidates": len(asset_rows),
+        "asset_relation_observations": asset_stats["input_count"],
+        "asset_relation_invalid": asset_stats["invalid_count"],
+        "asset_relation_unique": asset_stats["unique_count"],
+        "asset_relation_truncated": asset_stats.get("truncated", False),
+        "asset_relation_warnings": asset_stats["warnings"],
         "host_path": str(host_path),
         "ai_path": str(ai_path),
+        "asset_input_path": str(asset_input_path),
+        "asset_path": str(asset_path),
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build bounded JS/Host/AI recon routing candidates")
+    parser = argparse.ArgumentParser(
+        description="Build bounded JS/Host/AI and generic asset-relation recon candidates"
+    )
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[1]))
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--target")
     mode.add_argument("--js-input")
+    parser.add_argument(
+        "--asset-input",
+        help="Optional normalized asset-relation observation JSONL for --target mode",
+    )
+    parser.add_argument(
+        "--asset-limit",
+        type=int,
+        default=DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT,
+        help="Maximum derived asset-relation candidates to publish",
+    )
     parser.add_argument("--js-output")
     parser.add_argument("--js-limit", type=int, default=DEFAULT_JS_CANDIDATE_LIMIT)
     args = parser.parse_args(argv)
     try:
         if args.js_input:
+            if args.asset_input:
+                raise ValueError("--asset-input is only supported with --target")
             if not args.js_output:
                 raise ValueError("--js-output is required with --js-input")
             payload = build_js_deep_candidates(
@@ -347,8 +573,13 @@ def main(argv: list[str] | None = None) -> int:
                 limit=args.js_limit,
             )
         else:
-            payload = build_recon_candidates(args.repo_root, str(args.target))
-    except (OSError, ValueError) as exc:
+            payload = build_recon_candidates(
+                args.repo_root,
+                str(args.target),
+                asset_input=args.asset_input,
+                asset_limit=args.asset_limit,
+            )
+    except (OSError, ValueError, sqlite3.Error) as exc:
         print(f"recon_candidates: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))

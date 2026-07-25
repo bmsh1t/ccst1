@@ -13,7 +13,7 @@
 | `tools/recon_engine.sh` | New target / stale recon / primary-domain batch | Expanded pipeline: batch→subdomain→probe→ports→urls→js→fuzz→config→API-leak→identity/cloud→params→cicd |
 | `tools/cf_solver.py` ⚠️ manual-only | Operator-approved Cloudflare challenge clearance | Optional 2Captcha+Playwright helper; writes cf_clearance headers for recon reuse |
 | `tools/recon_adapter.py` | Reading recon output programmatically | Unified reader for `recon/<target>/`; streams and pages compact FFUF evidence without loading full artifacts |
-| `tools/recon_candidates.py` | Bounded Recon routing views | Builds JS, Host/SNI, and AI/LLM candidates from cached artifacts only |
+| `tools/recon_candidates.py` | Bounded Recon routing views | Builds JS, Host/SNI, AI/LLM, and generic asset-relation candidates from cached or normalized observations |
 | `tools/cloud_recon.sh` | Target brand likely owns buckets | S3/Azure/GCP discovery + CloudFlare origin reveal |
 | `tools/cve_hunter.py` | After httpx tech detection | Match detected stack against public CVE DBs |
 | `tools/cve_scan.sh` | Pre-engagement nuclei sweep | Fast nuclei pass scoped to known CVE templates |
@@ -47,6 +47,7 @@ manual review lane.
 | `emailfinder` | `recon/<target>/exposure/identity_intel/emails.txt` | Seed tenant, reset-flow, invite, SSO, and username-format hypotheses |
 | `LeakSearch` | `recon/<target>/exposure/identity_intel/leaksearch.txt`, `summary.md` | Attribute hits to the target; use as identity/intel leads, not automatic login attempts |
 | `cloud_enum` | `recon/<target>/exposure/cloud/cloud_enum.txt`, `cloud_enum.log` | Treat as candidate cloud ownership evidence; pivot to `/cloud-recon` or minimal ownership checks |
+| Generic asset relation intake | `recon/<target>/exposure/asset_relation_observations.jsonl`, `asset_relation_candidates.jsonl` | Normalize registry/RDAP/CT/passive-DNS/ASN/fingerprint/supplier facts; review multi-source or high-confidence relations without expanding scope automatically |
 | Batch ranking | `recon/<list-stem>/surface_ranking.txt`, `ai_handoff.md`, `high_value_targets.json` | Pick completed domains with concrete signals; never hunt `recon/<list-stem>/` as a target |
 
 OpenAPI metadata probing defaults to 20 live origins. Set

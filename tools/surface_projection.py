@@ -25,8 +25,10 @@ SCHEMA_VERSION = 1
 PROJECTION_KIND = "surface_projection"
 MANIFEST_KIND = "surface_input_manifest"
 
-# 这些目录由本模块自身生成，不能反过来参与输入 fingerprint。
-_GENERATED_RECON_PARTS = frozenset({"surface"})
+# 这些目录/控制文件由 Recon 收尾阶段生成，不能反过来参与输入 fingerprint。
+# `recon_manifest.jsonl` 在 projection 发布后写入，若纳入指纹会让刚发布的
+# projection 立即变 stale；原始 surface artifact 仍完整保留。
+_GENERATED_RECON_PARTS = frozenset({"surface", "recon_manifest.jsonl"})
 
 
 def _now_utc() -> str:
@@ -102,7 +104,7 @@ def build_surface_input_manifest(
     *,
     memory_dir: str | Path | None = None,
 ) -> dict:
-    """构建只含 path/stat 的稳定输入 manifest，不读取大型 artifact 正文。"""
+    """构建稳定输入 manifest；目录只记结构，普通文件记录 metadata。"""
     repo = Path(repo_root).resolve()
     resolved = canonical_target_value(target)
     items: list[dict] = []
@@ -113,21 +115,23 @@ def build_surface_input_manifest(
             if label in seen:
                 continue
             seen.add(label)
-            try:
-                stat = path.stat()
-            except OSError as exc:
-                raise OSError(f"cannot stat surface input {path}: {exc}") from exc
-            items.append(
-                {
-                    "path": label,
-                    "kind": "dir" if path.is_dir() else "file",
-                    "size": int(stat.st_size),
-                    "mtime_ns": int(stat.st_mtime_ns),
-                    "ctime_ns": int(stat.st_ctime_ns),
-                    "st_dev": int(stat.st_dev),
-                    "st_ino": int(stat.st_ino),
-                }
-            )
+            is_dir = path.is_dir()
+            item = {"path": label, "kind": "dir" if is_dir else "file"}
+            if not is_dir:
+                try:
+                    stat = path.stat()
+                except OSError as exc:
+                    raise OSError(f"cannot stat surface input {path}: {exc}") from exc
+                item.update(
+                    {
+                        "size": int(stat.st_size),
+                        "mtime_ns": int(stat.st_mtime_ns),
+                        "ctime_ns": int(stat.st_ctime_ns),
+                        "st_dev": int(stat.st_dev),
+                        "st_ino": int(stat.st_ino),
+                    }
+                )
+            items.append(item)
     items.sort(key=lambda item: (item["path"], item["kind"]))
     encoded = json.dumps(items, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return {

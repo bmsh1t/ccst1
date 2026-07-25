@@ -1191,7 +1191,8 @@ touch "$RECON_DIR/subdomains/all.txt" \
       "$RECON_DIR/exposure/s3_bucket_candidates.txt" \
       "$RECON_DIR/exposure/external_service_hosts.txt" \
       "$RECON_DIR/exposure/host_pivot_candidates.jsonl" \
-      "$RECON_DIR/exposure/ai_asset_candidates.jsonl"
+      "$RECON_DIR/exposure/ai_asset_candidates.jsonl" \
+      "$RECON_DIR/exposure/asset_relation_candidates.jsonl"
 
 # Clear regenerated summary files so reruns cannot inherit stale counters.
 : > "$RECON_DIR/live/httpx_full.txt"
@@ -3171,24 +3172,27 @@ if ! python3 "$BASE_DIR/tools/recon_candidates.py" \
     --target "$TARGET" \
     > "$RECON_DIR/logs/recon_candidates.json" 2>&1; then
     ROUTING_CANDIDATE_STATUS="partial"
-    log_warn "Host/AI routing candidate generation failed; raw recon remains available"
+    log_warn "Host/AI/asset-relation candidate generation failed; raw recon remains available"
 fi
 HOST_PIVOT_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/host_pivot_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
 AI_ASSET_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/ai_asset_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
+ASSET_RELATION_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/asset_relation_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
 record_recon_phase \
     routing_candidates \
     "$ROUTING_CANDIDATE_STATUS" \
     "recon/${RECON_TARGET_KEY}/exposure/" \
-    "$((HOST_PIVOT_CANDIDATES + AI_ASSET_CANDIDATES))" \
-    "builds evidence-backed candidates only; Host/SNI/VirtualHost and AI behavior validation remain Autopilot lanes"
+    "$((HOST_PIVOT_CANDIDATES + AI_ASSET_CANDIDATES + ASSET_RELATION_CANDIDATES))" \
+    "builds evidence-backed candidates only; Host/SNI, AI behavior, and external asset relationships remain Autopilot review lanes"
 emit_claude_hint \
-    phase                 routing_candidates \
-    host_pivot_candidates "$HOST_PIVOT_CANDIDATES" \
-    ai_asset_candidates   "$AI_ASSET_CANDIDATES" \
-    active_probing        "false"
+    phase                      routing_candidates \
+    host_pivot_candidates      "$HOST_PIVOT_CANDIDATES" \
+    ai_asset_candidates        "$AI_ASSET_CANDIDATES" \
+    asset_relation_candidates  "$ASSET_RELATION_CANDIDATES" \
+    active_probing             "false"
 emit_claude_hint_actions \
     "review Host pivot candidates only with default-vhost/CDN/error-page controls" \
-    "route AI candidates through web-llm-tool-chains before behavioral validation"
+    "route AI candidates through web-llm-tool-chains before behavioral validation" \
+    "review external asset relationships as provenance-backed context; do not treat association as target scope"
 
 # ============================================================
 # Optional post-run storage guard
