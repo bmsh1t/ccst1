@@ -1,6 +1,9 @@
 ---
 description: Expert Hunter AI-first autonomous hunt loop — recon/cache state, review surface evidence, enrich with browser/source/JS, hunt, validate candidates, report validated findings, and checkpoint useful memory. Usage: /autopilot target.com [--paranoid|--normal|--yolo|--quick|--deep] [--max-lanes N] [--auth-file PATH] or /autopilot targets.txt
-allowed-tools: Bash
+allowed-tools:
+  - Bash
+  - "mcp__Playwright__*"
+  - "mcp__chrome-devtools__*"
 ---
 # /autopilot
 Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"`
@@ -108,15 +111,10 @@ when evidence supports it. State the reason, red-line status, next verification
 step, and stop condition. Tool recommendations are advisory, not hard rails.
 ## Browser / Source / JS Enrichment
 Prefer browser-state truth over guessed routes:
-1. `tools/browser_evidence.py` with agent-browser CLI for routine automation, session reuse, snapshots, network, storage, and HAR evidence.
-2. chrome-devtools MCP for deep live DevTools/network/console debugging.
-3. playwright MCP or the explicit playwright-cli backend as compatibility fallbacks.
-4. Import useful MCP artifacts with `tools/browser_mcp_import.py` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` share the same browser-observed API surface.
-When browser interaction changes application context, use `python3 tools/browser_evidence.py focused-discovery --target <target_shell> --url <candidate-url> ...` for a few explicit AI-selected same-target candidates in the existing named session. Never feed raw URL corpora into this lane. It preserves the browser delta and creates an Action Queue item only for high-value, non-repeated page-shape evidence; storage values remain evidence rather than an automatic write instruction or authorization conclusion.
-Use `cd -- <repo_root_shell> && python3 tools/js_reader.py --target <target_shell>` for JS materials and
-`cd -- <repo_root_shell> && python3 tools/source_intel.py --target <target_shell> [--repo-path <repo>]` for
-source/route/auth logic. AI should turn these hints into concrete replay drafts,
-not just tool rankings.
+1. Use chrome-devtools MCP for deep live DevTools, Network, Console, DOM, performance, and runtime inspection; its native `filePath` outputs may persist snapshot/evaluate/screenshot or single-request evidence.
+2. Use Playwright MCP for page interaction, authenticated sessions, forms, screenshots, and multi-actor workflows. Persist `browser_network_requests`, `browser_console_messages`, `browser_snapshot`, `browser_evaluate`, and `browser_take_screenshot` with native `filename` parameters; do not copy tool-response bodies through the model.
+3. Reuse the current page/session, visit at most 8 explicit AI-selected same-target candidates, write one path-only capture manifest, and run `cd -- <repo_root_shell> && python3 tools/browser_mcp_import.py --target <target_shell> --focused-manifest <manifest-json>`; never feed this lane a raw URL corpus. Missing Network/Console/state is partial/blocked rather than clean; page-visible storage may be private evidence, but incomplete HttpOnly state is not complete actor proof. Then refresh with `python3 tools/surface.py --target <target_shell> --refresh` and `/checkpoint`; only high-value new target-owned deltas enter the existing Action Queue. Do not restore a second browser queue or CLI backend.
+Use `cd -- <repo_root_shell> && python3 tools/js_reader.py --target <target_shell>` for JS materials and `cd -- <repo_root_shell> && python3 tools/source_intel.py --target <target_shell> [--repo-path <repo>]` for source/route/auth logic. AI should turn these hints into concrete replay drafts, not just tool rankings.
 When browser/source/local-JS evidence shows a webpack runtime, dynamic import,
 chunk/source map, unreadable minified entry, or missing lazy chunk, Autopilot may run `tools/deep_js_packer.py` before `js_reader.py`: bundle mode for 1-5 known entries, or page mode (`-u --finder` upstream) only for an incomplete high-value SPA inventory.
 JS volume, `deep_candidates.txt` alone, or a scanner-negative is not a trigger;

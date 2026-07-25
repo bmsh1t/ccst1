@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 import browser_mcp_import
+from tools.action_queue import load_queue
+from tools import vision_browser
 
 
 def test_browser_mcp_import_writes_surface_and_evidence(tmp_path):
@@ -73,6 +75,12 @@ def test_browser_mcp_import_writes_surface_and_evidence(tmp_path):
     assert Path(summary["artifacts"]["screenshot_png"]).read_bytes() == b"fake-png"
     assert not (capture_dir / "screenshot.png").exists()
     assert pointer_path.is_file()
+    screenshots = vision_browser.list_screenshots(
+        "target.local",
+        evidence_root=tmp_path / "evidence",
+    )
+    assert screenshots[0]["screenshot_path"] == summary["artifacts"]["screenshot_png"]
+    assert screenshots[0]["dom_path"] == summary["artifacts"]["snapshot_private_txt"]
 
     assert (recon_browser / "xhr_endpoints.txt").read_text(encoding="utf-8").splitlines() == [
         "https://target.local/api/me?account_id=",
@@ -122,7 +130,7 @@ def test_normalize_mcp_network_accepts_har_entries():
     ]
 
 
-def test_normalize_mcp_network_accepts_agent_browser_data_envelope():
+def test_normalize_mcp_network_accepts_wrapped_mcp_data_envelope():
     payload = {
         "success": True,
         "data": {
@@ -147,6 +155,193 @@ def test_normalize_mcp_network_accepts_agent_browser_data_envelope():
             "postData": "",
         }
     ]
+
+
+def test_browser_mcp_import_accepts_current_chrome_devtools_envelopes(tmp_path):
+    network_path = tmp_path / "network.json"
+    network_path.write_text(
+        json.dumps(
+            {
+                "networkRequests": [
+                    {
+                        "requestId": 1,
+                        "method": "GET",
+                        "url": "https://target.local/api/admin/export?account_id=42",
+                        "status": "200",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    console_path = tmp_path / "console.json"
+    console_path.write_text(
+        json.dumps({"consoleMessages": [{"type": "info", "text": "ready", "id": 1}]}),
+        encoding="utf-8",
+    )
+
+    summary = browser_mcp_import.import_mcp_browser_evidence(
+        target="target.local",
+        url="https://target.local/app",
+        network_path=network_path,
+        console_path=console_path,
+        evidence_root=tmp_path / "evidence",
+        recon_root=tmp_path / "recon",
+        source="chrome-devtools-mcp",
+    )
+
+    assert summary["status"] == "ok"
+    assert summary["counts"]["requests"] == 1
+    assert summary["counts"]["console"] == 1
+    assert (tmp_path / "recon/target.local/browser/api_endpoints.txt").read_text(
+        encoding="utf-8"
+    ).splitlines() == ["https://target.local/api/admin/export?account_id="]
+
+
+def test_browser_mcp_import_keeps_raw_console_and_state_private(tmp_path):
+    secret = "PRIVATE_BROWSER_STATE"
+    network_path = tmp_path / "network.log"
+    network_path.write_text(
+        "1. [GET] https://target.local/api/me => [200] OK\n",
+        encoding="utf-8",
+    )
+    console_path = tmp_path / "console.log"
+    console_path.write_text(
+        f"Total messages: 2 (Errors: 1, Warnings: 0)\n\n[info] ready\n[error] {secret}\n",
+        encoding="utf-8",
+    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({"cookie": secret, "localStorage": {"token": secret}}),
+        encoding="utf-8",
+    )
+
+    summary = browser_mcp_import.import_mcp_browser_evidence(
+        target="target.local",
+        url="https://target.local/app",
+        network_path=network_path,
+        console_path=console_path,
+        state_path=state_path,
+        evidence_root=tmp_path / "evidence",
+        recon_root=tmp_path / "recon",
+    )
+
+    public_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (tmp_path / "evidence").rglob("*")
+        if path.is_file()
+    )
+    private_meta = summary["private_artifacts"]["browser_state"]
+    assert summary["counts"]["console"] == 2
+    assert private_meta["bytes"] > 0
+    assert len(private_meta["sha256"]) == 64
+    assert secret not in public_text
+    assert secret in Path(private_meta["path"]).read_text(encoding="utf-8")
+
+
+def test_focused_manifest_is_bounded_target_owned_and_queue_idempotent(tmp_path):
+    secret = "FOCUSED_PRIVATE_STATE"
+
+    def write_capture(name, request_url, snapshot_text):
+        network = tmp_path / f"{name}-network.log"
+        snapshot = tmp_path / f"{name}-snapshot.md"
+        network.write_text(f"1. [GET] {request_url} => [200] OK\n", encoding="utf-8")
+        snapshot.write_text(snapshot_text, encoding="utf-8")
+        return network, snapshot
+
+    high_network, high_snapshot = write_capture(
+        "high",
+        "https://target.local/api/admin/export?account_id=42",
+        "admin export view",
+    )
+    high_network.write_text(
+        high_network.read_text(encoding="utf-8")
+        + "2. [GET] https://target.local/static/admin.js => [200] OK\n",
+        encoding="utf-8",
+    )
+    low_network, low_snapshot = write_capture(
+        "low",
+        "https://target.local/marketing",
+        "marketing view",
+    )
+    extra_network, extra_snapshot = write_capture(
+        "extra",
+        "https://target.local/api/orders/7",
+        "order view",
+    )
+    state_path = tmp_path / "high-state.json"
+    state_path.write_text(json.dumps({"token": secret}), encoding="utf-8")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "target": "target.local",
+                "captures": [
+                    {
+                        "url": "https://target.local/admin",
+                        "source": "playwright-mcp",
+                        "network": str(high_network),
+                        "snapshot": str(high_snapshot),
+                        "state": str(state_path),
+                    },
+                    {
+                        "url": "https://off-target.local/admin",
+                        "network": str(high_network),
+                    },
+                    {
+                        "url": "file:///tmp/not-target-owned",
+                        "network": str(high_network),
+                    },
+                    {
+                        "url": "https://target.local/marketing",
+                        "network": str(low_network),
+                        "snapshot": str(low_snapshot),
+                    },
+                    {
+                        "url": "https://target.local/orders/7",
+                        "network": str(extra_network),
+                        "snapshot": str(extra_snapshot),
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    common = {
+        "target": "target.local",
+        "manifest_path": manifest_path,
+        "max_urls": 2,
+        "evidence_root": tmp_path / "evidence",
+        "recon_root": tmp_path / "recon",
+        "repo_root": tmp_path,
+    }
+    first = browser_mcp_import.import_focused_mcp_manifest(**common)
+    second = browser_mcp_import.import_focused_mcp_manifest(**common)
+    queue = load_queue(tmp_path, "target.local")
+
+    assert first["counts"] == {"selected": 2, "successful": 2, "actionable": 1, "skipped": 3}
+    assert {item["reason"] for item in first["skipped"]} == {
+        "invalid_url",
+        "off_target",
+        "budget_exhausted",
+    }
+    assert first["captures"][0]["actionable"] is True
+    assert first["captures"][0]["new_surface"]["js_files"] == [
+        "https://target.local/static/admin.js"
+    ]
+    assert first["captures"][1]["actionable"] is False
+    assert second["counts"]["actionable"] == 0
+    assert len(queue["actions"]) == 1
+    assert queue["actions"][0]["source"] == "browser-context-discovery"
+
+    public_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for root in (tmp_path / "evidence", tmp_path / "recon", tmp_path / "state")
+        for path in root.rglob("*")
+        if path.is_file()
+    )
+    assert secret not in public_text
 
 
 def test_browser_mcp_import_accepts_raw_playwright_network_text(tmp_path):
@@ -180,6 +375,37 @@ def test_browser_mcp_import_accepts_raw_playwright_network_text(tmp_path):
         "http://127.0.0.1:3002/socket.io/?EIO=&transport= :: EIO",
         "http://127.0.0.1:3002/socket.io/?EIO=&transport= :: transport",
     ]
+
+
+def test_browser_mcp_import_falls_back_to_har_when_network_file_is_missing(tmp_path):
+    har_path = tmp_path / "network.har"
+    har_path.write_text(
+        json.dumps(
+            {
+                "log": {
+                    "entries": [
+                        {
+                            "request": {"url": "https://target.local/api/me", "method": "GET"},
+                            "response": {"status": 200},
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = browser_mcp_import.import_mcp_browser_evidence(
+        target="target.local",
+        network_path=tmp_path / "missing-network.json",
+        har_path=har_path,
+        evidence_root=tmp_path / "evidence",
+        recon_root=tmp_path / "recon",
+    )
+
+    assert summary["status"] == "ok"
+    assert summary["counts"]["requests"] == 1
+    assert Path(summary["private_artifacts"]["network_har"]["path"]).read_bytes() == har_path.read_bytes()
 
 
 def test_browser_mcp_import_merges_incremental_surface_instead_of_erasing(tmp_path):

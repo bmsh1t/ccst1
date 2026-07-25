@@ -126,12 +126,10 @@ Business / Workflow Read: after fresh recon starts, write or refresh `evidence/<
 
 Choose tools from evidence shape:
 - Browser/app/XHR/auth state:
-  1. Prefer `tools/browser_evidence.py` with agent-browser CLI for routine automation, session reuse, snapshots, network, storage, and HAR evidence.
-  2. Use chrome-devtools MCP for deep live DevTools/network/console debugging.
-  3. Use playwright MCP or the explicit playwright-cli backend as compatibility fallbacks.
-  4. Import MCP artifacts with `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>` so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot` keep using the same browser-observed API surface. Replay API/XHR directly after capture.
-  Reuse an existing browser/page/tab when it already represents the needed actor/session/origin; prefer opening a new tab/page over a new browser process.
-  When browser interaction changes the route context and a few concrete same-target paths need the same session, use `python3 tools/browser_evidence.py focused-discovery --target <target> --url <candidate> ...`. Supply only AI-selected candidates, not a raw corpus; the lane retains network/API/JS deltas and queues only high-value captures with a non-repeated page shape. Browser storage is evidence, not automatic authorization proof or a write target.
+  1. Use chrome-devtools MCP for deep live DevTools, Network, Console, DOM, performance, and runtime inspection.
+  2. Use Playwright MCP for page interaction and file-backed capture. Persist network, console, snapshot, evaluate/state, and screenshot with native `filename` parameters instead of copying MCP response bodies through the model.
+  3. Reuse the current actor/session, visit at most 8 AI-selected same-target paths, write a path-only manifest, and call `python3 tools/browser_mcp_import.py --target <target> --focused-manifest <manifest-json>`. The importer owns private archival, Surface delta, snapshot dedupe, and generation-based Action Queue continuation.
+  Chrome DevTools MCP may use native `filePath` outputs for deep diagnosis. Missing/unpersisted Network, Console, or complete HttpOnly state is partial/blocked, never tested-clean. Then run `tools/surface.py --target <target> --refresh` and `/checkpoint`. Do not create a second browser queue or restore a CLI browser backend.
   When chrome-devtools/playwright evidence leaves a specific runtime JavaScript question unresolved, JSHook MCP can be used as an optional follow-up evidence source.
 - Source/route/auth logic: `python3 tools/source_intel.py --target <target> [--repo-path <repo>]`.
 - JS bundles: with concrete webpack/dynamic-import/chunk-map/source-map/missing-chunk evidence, call `python3 tools/deep_js_packer.py ...` on 1-5 bundles or one high-value app entry, then `python3 tools/js_reader.py --target <target>`; JS count alone is not a trigger and partial/unavailable remains unresolved.

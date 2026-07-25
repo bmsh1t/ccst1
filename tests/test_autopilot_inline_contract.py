@@ -26,7 +26,10 @@ def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
     text = _read("commands/autopilot.md")
     normalized = " ".join(text.split())
 
-    assert 'allowed-tools: Bash' in text
+    assert 'allowed-tools:' in text
+    assert '- Bash' in text
+    assert 'mcp__Playwright__*' in text
+    assert 'mcp__chrome-devtools__*' in text
     assert 'tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"' in text
     assert "git rev-parse --show-toplevel" in text
     assert "Authoritative bootstrap contract (do not reinterpret)" in normalized

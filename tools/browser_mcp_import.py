@@ -11,12 +11,16 @@ browser_surface 索引。
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlparse
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
@@ -26,16 +30,18 @@ try:
     from tools.browser_evidence import compact_browser_evidence, console_shape, snapshot_shape
     from tools.browser_surface import (
         build_page_js_map,
+        load_page_js_map,
         public_request_payload,
         public_url_shape,
         write_browser_surface,
     )
     from tools.private_artifacts import copy_private_file, private_artifact_dir, write_private_json, write_private_text
-    from tools.target_paths import target_storage_key
+    from tools.target_paths import target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from browser_evidence import compact_browser_evidence, console_shape, snapshot_shape  # type: ignore
     from browser_surface import (  # type: ignore
         build_page_js_map,
+        load_page_js_map,
         public_request_payload,
         public_url_shape,
         write_browser_surface,
@@ -46,11 +52,12 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         write_private_json,
         write_private_text,
     )
-    from target_paths import target_storage_key  # type: ignore
+    from target_paths import target_storage_key, url_belongs_to_target  # type: ignore
 
 
 DEFAULT_EVIDENCE_ROOT = BASE_DIR / "evidence"
 DEFAULT_RECON_ROOT = BASE_DIR / "recon"
+DEFAULT_FOCUSED_LIMIT = 8
 RAW_REQUEST_RE = re.compile(
     r"""
     ^\s*
@@ -77,18 +84,6 @@ def _safe_label(value: str, default: str = "mcp") -> str:
     return cleaned.strip("._-")[:80] or default
 
 
-def _load_json(path: str | Path | None) -> Any:
-    if not path:
-        return []
-    candidate = Path(path)
-    if not candidate.is_file():
-        return []
-    try:
-        return json.loads(candidate.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-
-
 def _load_network_payload(path: str | Path | None) -> Any:
     """Load MCP network output, accepting both JSON and raw text listings."""
     if not path:
@@ -112,14 +107,23 @@ def _json_items(payload: Any, *, _allow_data_envelope: bool = True) -> list[Any]
         return payload
     if not isinstance(payload, dict):
         return []
-    for key in ("requests", "items", "entries", "messages", "network", "data"):
+    for key in (
+        "requests",
+        "networkRequests",
+        "consoleMessages",
+        "items",
+        "entries",
+        "messages",
+        "network",
+        "data",
+    ):
         value = payload.get(key)
         if isinstance(value, list):
             return value
     log = payload.get("log")
     if isinstance(log, dict) and isinstance(log.get("entries"), list):
         return log["entries"]
-    # agent-browser 的 JSON envelope 仅解一层 data，避免递归误读请求 body。
+    # MCP 包装层仅解一层 data，避免递归误读请求 body。
     data = payload.get("data")
     if _allow_data_envelope and isinstance(data, dict):
         nested = _json_items(data, _allow_data_envelope=False)
@@ -147,6 +151,63 @@ def _raw_request_items(raw: str) -> list[dict[str, Any]]:
             item["status"] = int(match.group("status"))
         items.append(item)
     return items
+
+
+def _load_console_payload(path: str | Path | None) -> tuple[Any, str]:
+    """读取 console 文件，同时保留需要进入私有证据层的原文。"""
+    if not path:
+        return [], ""
+    candidate = Path(path)
+    if not candidate.is_file():
+        return [], ""
+    try:
+        raw = candidate.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [], ""
+    try:
+        return json.loads(raw), raw
+    except json.JSONDecodeError:
+        return {"raw": raw}, raw
+
+
+def _console_items(payload: Any) -> list[dict[str, Any]]:
+    raw = payload.get("raw") if isinstance(payload, dict) else ""
+    items = [] if isinstance(raw, str) else _json_items(payload)
+    if items:
+        return [item for item in items if isinstance(item, dict)]
+    if not isinstance(raw, str):
+        return []
+    parsed = []
+    for line in raw.splitlines():
+        text = line.strip()
+        if not text or text.lower().startswith(("total messages:", "returning ", "note:")):
+            continue
+        match = re.match(r"^\[?(error|warning|warn|info|debug|log)\]?[:\s-]+", text, re.I)
+        level = (match.group(1).lower() if match else "log").replace("warn", "warning")
+        parsed.append({"type": level, "text": text})
+    return parsed
+
+
+def _private_file_meta(path: Path) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "path": str(path),
+        "bytes": path.stat().st_size,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def _archive_private_artifact(
+    source: str | Path | None,
+    destination: Path,
+) -> dict[str, Any]:
+    if not source or not Path(source).is_file():
+        return {}
+    copied = copy_private_file(source, destination)
+    return _private_file_meta(copied)
 
 
 def _first_string(*values: Any) -> str:
@@ -229,7 +290,20 @@ def normalize_mcp_network(payload: Any) -> list[dict[str, Any]]:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def import_mcp_browser_evidence(
@@ -240,6 +314,11 @@ def import_mcp_browser_evidence(
     snapshot_path: str | Path | None = None,
     console_path: str | Path | None = None,
     screenshot_path: str | Path | None = None,
+    cookies_path: str | Path | None = None,
+    local_storage_path: str | Path | None = None,
+    session_storage_path: str | Path | None = None,
+    state_path: str | Path | None = None,
+    har_path: str | Path | None = None,
     label: str = "mcp",
     evidence_root: str | Path = DEFAULT_EVIDENCE_ROOT,
     recon_root: str | Path = DEFAULT_RECON_ROOT,
@@ -248,6 +327,7 @@ def import_mcp_browser_evidence(
     """Create an evidence capture from MCP-exported browser artifacts."""
     target_key = target_storage_key(target)
     safe_label = _safe_label(label, "mcp")
+    safe_source = _safe_label(source, "mcp")
     root = Path(evidence_root)
     run_id = f"{_timestamp_slug()}-{safe_label}"
     capture_dir = root / target_key / "browser" / run_id
@@ -255,13 +335,15 @@ def import_mcp_browser_evidence(
     private_dir = private_artifact_dir(root.parent, "browser", target_key, run_id)
 
     artifacts: dict[str, str] = {}
-    network_payload = _load_network_payload(network_path)
+    network_payload = _load_network_payload(network_path or har_path)
+    requests = normalize_mcp_network(network_payload)
+    if not requests and har_path and str(har_path) != str(network_path):
+        requests = normalize_mcp_network(_load_network_payload(har_path))
     artifacts["network_private_json"] = str(
         write_private_json(private_dir / "network.raw.json", network_payload)
     )
-    requests = normalize_mcp_network(network_payload)
     requests_file = capture_dir / "requests.json"
-    _write_json(requests_file, public_request_payload({"requests": requests}, source=source))
+    _write_json(requests_file, public_request_payload({"requests": requests}, source=safe_source))
     artifacts["requests_json"] = str(requests_file)
 
     copied_snapshot = ""
@@ -275,20 +357,33 @@ def import_mcp_browser_evidence(
         copied_snapshot = str(public_snapshot)
         artifacts["snapshot_txt"] = copied_snapshot
 
-    console_payload = _load_json(console_path)
-    console_items = _json_items(console_payload)
-    if console_path:
-        artifacts["console_private_json"] = str(
-            write_private_json(private_dir / "console.raw.json", console_payload)
+    console_payload, raw_console = _load_console_payload(console_path)
+    console_items = _console_items(console_payload)
+    if console_path and Path(console_path).is_file():
+        artifacts["console_private"] = str(
+            write_private_text(private_dir / "console.raw.txt", raw_console)
         )
         console_file = capture_dir / "console.json"
-        _write_json(console_file, console_shape(console_items if console_items else console_payload))
+        _write_json(console_file, console_shape(console_items))
         artifacts["console_json"] = str(console_file)
 
     copied_screenshot = ""
     if screenshot_path and Path(screenshot_path).is_file():
         copied_screenshot = str(copy_private_file(screenshot_path, private_dir / "screenshot.png"))
         artifacts["screenshot_png"] = copied_screenshot
+
+    private_artifacts = {}
+    for name, source_path, filename in (
+        ("cookies", cookies_path, "cookies.json"),
+        ("local_storage", local_storage_path, "local-storage.json"),
+        ("session_storage", session_storage_path, "session-storage.json"),
+        ("browser_state", state_path, "state.json"),
+        ("network_har", har_path, "network.har"),
+    ):
+        meta = _archive_private_artifact(source_path, private_dir / filename)
+        if meta:
+            private_artifacts[name] = meta
+            artifacts[f"{name}_private"] = str(meta["path"])
 
     browser_surface = write_browser_surface(
         recon_root=recon_root,
@@ -298,27 +393,27 @@ def import_mcp_browser_evidence(
         capture_dir=str(capture_dir),
         merge_existing=True,
     )
-    # 与 browser_evidence.py 保持同一副作用：每次导入都刷新 page→JS 映射。
-    try:
-        build_page_js_map(evidence_root=root, recon_root=recon_root, target_key=target_key)
-    except (OSError, json.JSONDecodeError):  # pragma: no cover - 防御损坏的历史 capture
-        pass
-
     summary_path = capture_dir / "summary.json"
     pointer_path = root / target_key / "browser" / "last-capture.json"
     browser_counts = browser_surface.get("counts") if isinstance(browser_surface, dict) else {}
+    has_core_network = bool(requests)
+    has_any_artifact = bool(
+        requests or copied_snapshot or console_items or copied_screenshot or private_artifacts
+    )
     summary = {
+        "schema_version": 1,
         "target": target,
         "target_key": target_key,
         "url": public_url_shape(url),
         "session": "",
         "label": safe_label,
-        "capture_backend": source,
+        "capture_backend": safe_source,
         "captured_at": _now_utc(),
         "evidence_dir": str(capture_dir),
         "summary_path": str(summary_path),
         "pointer_path": str(pointer_path),
-        "success": bool(requests or copied_snapshot or console_items or copied_screenshot),
+        "success": has_any_artifact,
+        "status": "ok" if has_core_network else ("partial" if has_any_artifact else "error"),
         "counts": {
             "requests": len(requests),
             "console": len(console_items),
@@ -327,33 +422,400 @@ def import_mcp_browser_evidence(
             "browser_params": int(browser_counts.get("browser_params", 0) or 0),
         },
         "artifacts": artifacts,
+        "private_artifacts": private_artifacts,
         "browser_surface": browser_surface,
     }
     _write_json(summary_path, summary)
+    # page→JS builder discovers captures by summary.json, so refresh only after publishing it.
+    try:
+        build_page_js_map(evidence_root=root, recon_root=recon_root, target_key=target_key)
+    except (OSError, json.JSONDecodeError):  # pragma: no cover - 防御损坏的历史 capture
+        pass
 
     pointer = compact_browser_evidence(summary)
-    pointer.update({"target": target, "target_key": target_key, "label": safe_label, "capture_backend": source})
+    pointer.update(
+        {"target": target, "target_key": target_key, "label": safe_label, "capture_backend": safe_source}
+    )
     _write_json(pointer_path, pointer)
     return summary
+
+
+def _read_lines(path: Path) -> set[str]:
+    try:
+        return {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+    except OSError:
+        return set()
+
+
+def _browser_surface_sets(recon_root: Path, target_key: str) -> dict[str, set[str]]:
+    browser_dir = recon_root / target_key / "browser"
+    page_js_map = load_page_js_map(recon_root, target_key)
+    js_index = page_js_map.get("js_index") if isinstance(page_js_map, dict) else {}
+    return {
+        "xhr_endpoints": _read_lines(browser_dir / "xhr_endpoints.txt"),
+        "api_endpoints": _read_lines(browser_dir / "api_endpoints.txt"),
+        "browser_params": _read_lines(browser_dir / "browser_params.txt"),
+        "js_files": set(js_index) if isinstance(js_index, dict) else set(),
+    }
+
+
+def _line_url(value: str) -> str:
+    return str(value or "").split(" :: ", 1)[0].strip()
+
+
+def _target_owned_delta(
+    before: dict[str, set[str]],
+    after: dict[str, set[str]],
+    target: str,
+) -> dict[str, list[str]]:
+    return {
+        kind: sorted(
+            line
+            for line in after.get(kind, set()) - before.get(kind, set())
+            if url_belongs_to_target(_line_url(line), target)
+        )
+        for kind in before
+    }
+
+
+def _snapshot_digest(path: str | Path | None) -> str:
+    if not path:
+        return ""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    match = re.search(r"^snapshot_sha256=([0-9a-f]{64})$", text, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def _known_snapshot_hashes(browser_root: Path) -> set[str]:
+    return {
+        digest
+        for path in browser_root.glob("*/snapshot.txt")
+        if (digest := _snapshot_digest(path))
+    }
+
+
+def _focused_signal(url: str, delta: dict[str, list[str]]) -> dict[str, Any]:
+    try:
+        from tools.high_value_signals import classify_high_value_signal
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from high_value_signals import classify_high_value_signal  # type: ignore
+
+    candidates = [(url, [])]
+    for kind, lines in delta.items():
+        for line in lines:
+            key = line.split(" :: ", 1)[1] if kind == "browser_params" and " :: " in line else ""
+            candidates.append((_line_url(line), [key] if key else []))
+    signals = []
+    for candidate, extra_keys in candidates:
+        parsed = urlparse(candidate)
+        signals.append(
+            classify_high_value_signal(
+                path=parsed.path or "/",
+                query_keys=[
+                    *[key for key, _value in parse_qsl(parsed.query, keep_blank_values=True)],
+                    *extra_keys,
+                ],
+                evidence="browser context discovery",
+            )
+        )
+    return {
+        "score": max((signal.score for signal in signals), default=0),
+        "classes": list(dict.fromkeys(value for signal in signals for value in signal.classes)),
+        "reasons": list(dict.fromkeys(value for signal in signals for value in signal.reasons)),
+    }
+
+
+def _resolve_manifest_artifact(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    path = Path(value.strip()).expanduser()
+    return str(path if path.is_absolute() else BASE_DIR / path)
+
+
+def _load_focused_manifest(path: str | Path) -> dict[str, Any]:
+    candidate = Path(path)
+    try:
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"focused manifest is unreadable: {candidate}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"focused manifest is invalid JSON: {candidate}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("captures"), list):
+        raise ValueError("focused manifest must be an object with a captures array")
+    return payload
+
+
+def _enqueue_focused_action(
+    repo_root: Path,
+    target: str,
+    artifact_path: Path,
+    actionable: list[dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        from tools.action_queue import add_manual_action
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from action_queue import add_manual_action  # type: ignore
+
+    generation = hashlib.sha256(
+        json.dumps(
+            [
+                {
+                    "url": item.get("url", ""),
+                    "snapshot_sha256": item.get("snapshot_sha256", ""),
+                    "new_surface": item.get("new_surface", {}),
+                }
+                for item in actionable
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    result = add_manual_action(
+        repo_root,
+        target=target,
+        action_type="browser-context-discovery",
+        evidence=(
+            f"{len(actionable)} MCP browser capture(s) exposed high-value, "
+            f"target-owned surface; review {artifact_path}."
+        ),
+        next_question=(
+            "Which newly observed route or parameter warrants the smallest independent replay?"
+        ),
+        action="Review the browser context delta, then replay one evidence-backed endpoint.",
+        priority=78,
+        evidence_type="browser-context-discovery",
+        source="browser-context-discovery",
+        source_id="browser-context-discovery",
+        generation=generation,
+        safety="non_destructive",
+        stop_condition=(
+            "record tested, dead-end, blocked, lead, signal, candidate, or validated before another lane"
+        ),
+    )
+    return {"path": result["path"], "stats": result["stats"]}
+
+
+def import_focused_mcp_manifest(
+    *,
+    target: str,
+    manifest_path: str | Path,
+    max_urls: int = DEFAULT_FOCUSED_LIMIT,
+    evidence_root: str | Path = DEFAULT_EVIDENCE_ROOT,
+    recon_root: str | Path = DEFAULT_RECON_ROOT,
+    repo_root: str | Path = BASE_DIR,
+    enqueue: bool = True,
+) -> dict[str, Any]:
+    """批量导入 MCP 已落盘的少量同目标证据，并只入队高价值新差分。"""
+    if max_urls < 1:
+        raise ValueError("max_urls must be at least 1")
+    manifest = _load_focused_manifest(manifest_path)
+    manifest_target = str(manifest.get("target") or "").strip()
+    if manifest_target and target_storage_key(manifest_target) != target_storage_key(target):
+        raise ValueError("focused manifest target does not match --target")
+
+    selected = []
+    skipped = []
+    seen = set()
+    for raw in manifest["captures"]:
+        if not isinstance(raw, dict):
+            skipped.append({"url": "", "reason": "invalid_capture"})
+            continue
+        url = str(raw.get("url") or "").strip()
+        if not url:
+            skipped.append({"url": "", "reason": "invalid_url"})
+            continue
+        if url in seen:
+            skipped.append({"url": public_url_shape(url), "reason": "duplicate"})
+            continue
+        seen.add(url)
+        parsed_url = urlparse(url)
+        if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.netloc:
+            skipped.append({"url": public_url_shape(url), "reason": "invalid_url"})
+            continue
+        if not url_belongs_to_target(url, target):
+            skipped.append({"url": public_url_shape(url), "reason": "off_target"})
+            continue
+        if len(selected) >= max_urls:
+            skipped.append({"url": public_url_shape(url), "reason": "budget_exhausted"})
+            continue
+        selected.append((url, raw))
+
+    evidence = Path(evidence_root)
+    recon = Path(recon_root)
+    target_key = target_storage_key(target)
+    browser_root = evidence / target_key / "browser"
+    known_hashes = _known_snapshot_hashes(browser_root)
+    known_surface = _browser_surface_sets(recon, target_key)
+    captures = []
+    actionable = []
+    successful = 0
+    complete = 0
+
+    for index, (url, item) in enumerate(selected, 1):
+        paths = {
+            key: _resolve_manifest_artifact(item.get(key))
+            for key in (
+                "network",
+                "snapshot",
+                "console",
+                "screenshot",
+                "cookies",
+                "local_storage",
+                "session_storage",
+                "state",
+                "har",
+            )
+        }
+        missing = sorted(key for key, value in paths.items() if value and not Path(value).is_file())
+        if not paths["network"] and not paths["har"]:
+            missing.insert(0, "network")
+        before = {kind: set(values) for kind, values in known_surface.items()}
+        try:
+            summary = import_mcp_browser_evidence(
+                target=target,
+                url=url,
+                network_path=paths["network"],
+                snapshot_path=paths["snapshot"],
+                console_path=paths["console"],
+                screenshot_path=paths["screenshot"],
+                cookies_path=paths["cookies"],
+                local_storage_path=paths["local_storage"],
+                session_storage_path=paths["session_storage"],
+                state_path=paths["state"],
+                har_path=paths["har"],
+                label=f"focused-{index}",
+                evidence_root=evidence,
+                recon_root=recon,
+                source=str(item.get("source") or "mcp"),
+            )
+        except (OSError, ValueError) as exc:
+            captures.append(
+                {
+                    "url": public_url_shape(url),
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                    "new_surface": {},
+                    "actionable": False,
+                }
+            )
+            continue
+
+        if summary.get("success"):
+            successful += 1
+        if summary.get("status") == "ok":
+            complete += 1
+        after = _browser_surface_sets(recon, target_key)
+        delta = _target_owned_delta(before, after, target)
+        known_surface = after
+        artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+        snapshot_hash = _snapshot_digest(artifacts.get("snapshot_txt"))
+        repeated_shape = bool(snapshot_hash and snapshot_hash in known_hashes)
+        if snapshot_hash:
+            known_hashes.add(snapshot_hash)
+        signal = _focused_signal(url, delta)
+        is_actionable = bool(
+            summary.get("success")
+            and signal["score"] > 0
+            and (any(delta.values()) or (snapshot_hash and not repeated_shape))
+        )
+        capture = {
+            "url": public_url_shape(url),
+            "status": summary.get("status", "error"),
+            "capture": compact_browser_evidence(summary),
+            "missing_artifacts": missing,
+            "snapshot_sha256": snapshot_hash,
+            "repeated_shape": repeated_shape if snapshot_hash else None,
+            "new_surface": delta,
+            "high_value": signal,
+            "actionable": is_actionable,
+        }
+        captures.append(capture)
+        if is_actionable:
+            actionable.append(capture)
+
+    if not selected:
+        status = "skipped"
+    elif complete == len(selected) and not skipped:
+        status = "ok"
+    elif successful:
+        status = "partial"
+    else:
+        status = "error"
+    output_dir = recon / target_key / "browser" / "context_discovery"
+    output_path = output_dir / f"{_timestamp_slug()}.json"
+    latest_path = output_dir.parent / "context_discovery.json"
+    result = {
+        "schema_version": 1,
+        "target": target,
+        "target_key": target_key,
+        "generated_at": _now_utc(),
+        "status": status,
+        "budget": max_urls,
+        "captures": captures,
+        "skipped": skipped,
+        "counts": {
+            "selected": len(selected),
+            "successful": successful,
+            "actionable": len(actionable),
+            "skipped": len(skipped),
+        },
+        "artifact": str(output_path),
+    }
+    _write_json(output_path, result)
+    _write_json(latest_path, result)
+    if enqueue and actionable:
+        result["queue"] = _enqueue_focused_action(
+            Path(repo_root), target, output_path, actionable
+        )
+        _write_json(output_path, result)
+        _write_json(latest_path, result)
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Import chrome-devtools/playwright MCP artifacts as browser evidence")
     parser.add_argument("--target", required=True, help="Target name/URL used for canonical evidence storage")
     parser.add_argument("--url", default="", help="Page URL observed by MCP")
-    parser.add_argument("--network-json", required=True, help="JSON file exported from MCP network request list")
+    parser.add_argument("--network-json", default="", help="JSON/text file exported from MCP network request list")
     parser.add_argument("--snapshot", default="", help="Optional MCP snapshot/DOM text file")
-    parser.add_argument("--console-json", default="", help="Optional MCP console messages JSON file")
+    parser.add_argument("--console-json", default="", help="Optional MCP console messages JSON/text file")
     parser.add_argument("--screenshot", default="", help="Optional MCP screenshot path")
+    parser.add_argument("--cookies", default="", help="Optional cookie artifact kept private")
+    parser.add_argument("--local-storage", default="", help="Optional localStorage artifact kept private")
+    parser.add_argument("--session-storage", default="", help="Optional sessionStorage artifact kept private")
+    parser.add_argument("--state", default="", help="Optional browser state artifact kept private")
+    parser.add_argument("--har", default="", help="Optional HAR artifact kept private; also used as network input when needed")
+    parser.add_argument("--focused-manifest", default="", help="Import a bounded file-backed MCP capture manifest")
+    parser.add_argument("--max-urls", type=int, default=DEFAULT_FOCUSED_LIMIT, help="Focused manifest URL budget")
+    parser.add_argument("--no-enqueue", action="store_true", help="Do not add focused high-value deltas to Action Queue")
     parser.add_argument("--label", default="mcp", help="Capture label suffix")
     parser.add_argument("--source", default="mcp", help="Source label, e.g. chrome-devtools-mcp or playwright-mcp")
     parser.add_argument("--evidence-root", default=str(DEFAULT_EVIDENCE_ROOT), help="Evidence root directory")
     parser.add_argument("--recon-root", default=str(DEFAULT_RECON_ROOT), help="Recon root directory")
+    parser.add_argument("--repo-root", default=str(BASE_DIR), help="Repository root used by the existing Action Queue owner")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.focused_manifest:
+        result = import_focused_mcp_manifest(
+            target=args.target,
+            manifest_path=args.focused_manifest,
+            max_urls=args.max_urls,
+            evidence_root=args.evidence_root,
+            recon_root=args.recon_root,
+            repo_root=args.repo_root,
+            enqueue=not args.no_enqueue,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if not args.network_json and not args.har:
+        parser.error("one of --network-json, --har, or --focused-manifest is required")
     summary = import_mcp_browser_evidence(
         target=args.target,
         url=args.url,
@@ -361,6 +823,11 @@ def main(argv: list[str] | None = None) -> int:
         snapshot_path=args.snapshot,
         console_path=args.console_json,
         screenshot_path=args.screenshot,
+        cookies_path=args.cookies,
+        local_storage_path=args.local_storage,
+        session_storage_path=args.session_storage,
+        state_path=args.state,
+        har_path=args.har,
         label=args.label,
         evidence_root=args.evidence_root,
         recon_root=args.recon_root,
