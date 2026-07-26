@@ -39,7 +39,7 @@ try:
     from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
     from tools.closure_resolver import ClosureResolver
-    from tools.finding_index import reconcile_root_finding_claims
+    from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import load_case_state, summary as build_case_state_summary
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -60,7 +60,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
     from closure_resolver import ClosureResolver  # type: ignore
-    from finding_index import reconcile_root_finding_claims  # type: ignore
+    from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import load_case_state, summary as build_case_state_summary  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
@@ -188,6 +188,41 @@ def sync_checkpoint_action_queue(
         else str(witness["path"]),
     }
     return result
+
+
+def _append_root_claim_queue_items(checkpoint: dict, claims: list[dict], target: str) -> None:
+    """Keep every reconciled root claim recoverable through the durable queue."""
+    queue = checkpoint.get("next_action_queue")
+    if not isinstance(queue, list):
+        return
+    queued_ids = {
+        str((item.get("metadata") or {}).get("finding_id") or "")
+        for item in queue
+        if isinstance(item, dict) and isinstance(item.get("metadata"), dict)
+    }
+    for claim in claims:
+        finding_id = str(claim.get("id") or "").strip()
+        if not finding_id or finding_id in queued_ids:
+            continue
+        source_file = str(claim.get("claim_source_file") or "root JSON claim").strip()
+        location = str(claim.get("url") or source_file).strip()
+        missing = ", ".join(str(item) for item in (claim.get("incomplete_fields") or []) if str(item).strip())
+        queue.extend(
+            _build_next_action_queue(
+                [
+                    "Candidate evidence gap for finding {id} on {location}: root JSON claim "
+                    "from {source} needs locatable raw evidence{missing}. Then rerun /validate "
+                    "with the canonical finding id.".format(
+                        id=finding_id,
+                        location=location,
+                        source=source_file,
+                        missing=f"; missing={missing}" if missing else "",
+                    )
+                ],
+                target,
+            )
+        )
+        queued_ids.add(finding_id)
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -3085,6 +3120,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"checkpoint state build failed: {exc}", file=sys.stderr)
         return 2
     checkpoint["root_finding_claim_sync"] = claim_sync
+    root_claims = list_root_finding_claims(
+        repo / "findings" / target_storage_key(resolved_target),
+        target=resolved_target,
+        include_reconciled=True,
+    )
+    _append_root_claim_queue_items(checkpoint, root_claims, resolved_target)
     try:
         sync_checkpoint_action_queue(repo, checkpoint)
     except (OSError, ValueError, KeyError) as exc:

@@ -70,6 +70,40 @@ def test_bounded_deep_invocation_handoffs_instead_of_expanding_new_lanes():
     assert "checkpoint/sync durable queue" in agent
 
 
+def test_browser_first_use_probe_retries_only_transient_session_failures():
+    command = " ".join(_read("commands/autopilot.md").split()).lower()
+
+    assert "browser actions use only visible playwright/chrome mcp" in command
+    assert "never run `agent-browser` or `playwright-cli` through bash" in command
+    assert "first use" in command
+    assert "harmless page-list/session probe" in command
+    assert "retry once" in command
+    assert "timeout, disconnect, or closed-context errors" in command
+    assert "missing/configuration/permission/protocol errors do not retry" in command
+    assert "checkpoint the blocker in the existing action queue" in command
+    assert "pivot to js/source/api evidence" in command
+    assert "next invocation, after repair, or on explicit operator retry" in command
+
+
+def test_incomplete_durable_state_is_handoff_not_target_exhaustion():
+    command = " ".join(_read("commands/autopilot.md").split()).lower()
+
+    assert "active durable work, pending validation/report" in command
+    assert "partial browser/source/intel, or untouched high-value work" in command
+    assert "`handoff/partial`" in command
+    assert "never `finish/complete/exhausted`" in command
+    assert "passing `check_autopilot_run.py` proves state-chain integrity, not target exhaustion" in command
+
+
+def test_failed_sources_and_tools_are_suppressed_within_one_invocation():
+    command = " ".join(_read("commands/autopilot.md").split()).lower()
+
+    assert "within one invocation, do not rerun the same failed source/tool" in command
+    assert "preserve cached/stale evidence as partial/blocked" in command
+    assert "tools/external_arsenal.sh --versions" in command
+    assert "diagnostics-only, never startup" in command
+
+
 def test_optional_autopilot_agent_is_not_the_slash_command_backend():
     text = _read("agents/autopilot.md")
     normalized = " ".join(text.split())

@@ -73,7 +73,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/repo_ci_scan.py` | Cloned repo present | YAML-based CI workflow danger pattern check |
 | `tools/repo_secret_scan.py` | Cloned repo present | Filesystem high-signal secret regex sweep |
 | `tools/repo_source_artifacts.py` | After source_hunt run | Persist source-hunt artifacts in findings/ |
-| `tools/external_arsenal.sh` | Bootstrapping a fresh box | Detect installed bug-bounty tools + install hints |
+| `tools/external_arsenal.sh` | Bootstrapping or diagnosing a box | Detect tools, install hints, and explicit `--versions` smoke |
 
 ## 3. Vuln & Bug-class testers
 

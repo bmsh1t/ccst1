@@ -8,6 +8,8 @@
 #
 # Usage:
 #   ./tools/external_arsenal.sh                # status table
+#   ./tools/external_arsenal.sh --versions     # core tool version smoke
+#   ./tools/external_arsenal.sh --version nuclei
 #   ./tools/external_arsenal.sh --install-hint <tool>
 #   . ./tools/external_arsenal.sh && _have nuclei && nuclei ...
 # =============================================================================
@@ -142,10 +144,53 @@ _install_hint() {
   return 1
 }
 
+VERSION_SMOKE_TOOLS=(subfinder httpx katana gau waybackurls ffuf nuclei curl)
+
+_version_arg() {
+  case "$1" in
+    subfinder|httpx|katana|nuclei) printf '%s\n' '-version' ;;
+    gau|curl) printf '%s\n' '--version' ;;
+    ffuf) printf '%s\n' '-V' ;;
+    *) return 1 ;;
+  esac
+}
+
+_print_version() {
+  local tool="$1" path arg output first
+  if ! path=$(command -v "$tool" 2>/dev/null); then
+    printf '%-18s %-12s %s\n' "$tool" "MISSING" "not on PATH"
+    return 1
+  fi
+  if ! arg=$(_version_arg "$tool"); then
+    printf '%-18s %-12s %s\n' "$tool" "UNSUPPORTED" "$path"
+    return 0
+  fi
+  if output=$("$path" "$arg" 2>&1); then
+    first=${output%%$'\n'*}
+    printf '%-18s %-12s %s\n' "$tool" "OK" "${first:-no version output}"
+    return 0
+  fi
+  first=${output%%$'\n'*}
+  printf '%-18s %-12s %s\n' "$tool" "ERROR" "${first:-version command failed}"
+  return 1
+}
+
+_print_versions() {
+  local tool failed=0
+  printf '\n%-18s %-12s %s\n' "TOOL" "STATUS" "VERSION"
+  printf '%-18s %-12s %s\n' "----" "------" "-------"
+  for tool in "${VERSION_SMOKE_TOOLS[@]}"; do
+    _print_version "$tool" || failed=1
+  done
+  return "$failed"
+}
+
 # Only run main when executed directly, not when sourced.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     --install-hint) shift; _install_hint "${1:?tool name required}" ;;
+    --version) shift; _print_version "${1:?tool name required}" ;;
+    --versions) shift; _print_versions ;;
     --have) shift; _have "${1:?tool name required}" && echo yes || { echo no; exit 1; } ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) _print_status ;;

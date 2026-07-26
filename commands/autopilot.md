@@ -10,17 +10,17 @@ allowed-tools:
 Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"`
 Formal arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep] [--max-lanes N] [--auth-file PATH]`, or one readable primary-domain list.
 ## Runtime Preflight
-Obey bootstrap `action` before any other step. `ask_target` asks for the exact
-target; `stop_invalid_arguments` reports `arguments.errors`;
-`stop_runtime_drift` reports compact runtime counts, points to `/sync-check`,
-requests explicit confirmation before any sync, and stops. Never sync
-automatically. Only `continue` may act.
-The bootstrap already ran arguments, read-only runtime compare, advisory
-capability profile, then compact target state. Arguments/runtime remain the only
-blocking gates. Treat `capabilities` as advisory: `session_managed` names are not
-availability claims; use MCP only when visible in this Claude session and use a
-listed fallback otherwise. Missing/degraded tools never block, trigger
-installation or request it, count as tested-clean, or hide material limits in the handoff.
+Obey bootstrap `action` before any other step. `ask_target` asks for the exact target;
+`stop_invalid_arguments` reports `arguments.errors`; `stop_runtime_drift` reports compact
+runtime counts, points to `/sync-check`, requests explicit confirmation before any sync,
+and stops. Never sync automatically. Only `continue` may act.
+The bootstrap already ran arguments, read-only runtime compare, advisory capability profile,
+then compact target state. Arguments/runtime remain the only blocking gates. Treat
+`capabilities` as advisory: `session_managed` names are not availability claims; use MCP
+only when visible in this Claude session and use a listed fallback otherwise. Missing/degraded
+tools never block, trigger installation or request it, count as tested-clean, or hide material
+limits in the handoff. Within one invocation, do not rerun the same failed source/tool; preserve
+cached/stale evidence as partial/blocked. `tools/external_arsenal.sh --versions` is diagnostics-only, never startup.
 Run project commands as `cd -- <repo_root_shell> && ...`. Use
 `arguments.target_shell`, expand `arguments.hunt_auth_flags` (or
 `--auth-file <arguments.auth_file_shell>`) only when present, and apply
@@ -28,9 +28,9 @@ Run project commands as `cd -- <repo_root_shell> && ...`. Use
 `quick`, `deep`, and `invocation_batch` exactly. `--quick` lowers recon cost;
 never skips browser/source/validation or implies completion. `arguments.seed_url` is an
 exact first-contact browser/source/workflow seed for the canonical target.
-Treat the supplied target set as the active execution target set; `ctf_mode` is
-the authoritative lab target record. External policy is advisory audit/replay
-context. Do not require public-program, written-permission, or ownership-confirmation.
+Treat the supplied target set as the active execution target set; `ctf_mode` is the
+authoritative lab target record. External policy is advisory audit/replay context;
+do not require public-program, written-permission, or ownership-confirmation.
 `/autopilot` runs inline in the current Claude session as the sole controller
 and does not create/resume legacy `agent_session.json`; specialists default to
 zero. At most one bounded specialist may be invoked through Claude Code's `Agent`
@@ -41,12 +41,11 @@ run full recon/scans, write final closure, or control finish. After using one, t
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
 existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
 ```
-Every invocation is state-first. Bootstrap `ctf_mode`, compact `state`, and
-advisory `capabilities` are the only initial inputs. Branch only after that state
-read; missing/stale/invalid is work, not no surface. State tools are not a
-pre-flight checklist. For each iteration: consume structured `next_action` and the durable Action
-Queue, choose one smallest evidence-producing action, execute it, write evidence,
-then refresh bounded state before choosing again:
+Every invocation is state-first. Bootstrap `ctf_mode`, compact `state`, and advisory
+`capabilities` are the only initial inputs. Branch only after that state read;
+missing/stale/invalid is work, not no surface. State tools are not a pre-flight checklist.
+For each iteration: consume structured `next_action` and the durable Action Queue, choose
+one smallest evidence-producing action, execute it, write evidence, then refresh bounded state before choosing again:
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
 ```
@@ -77,11 +76,10 @@ the canonical candidate and queue action, refresh, then use the canonical ID.
 Matching deterministic replay follows `docs/evidence-runners.md` and
 `python3 tools/validation_runner.py <lane> --target <target_shell> ...`; its first
 positional argument is `<lane>` and it never accepts `--decision-json`.
-For a readable primary-domain list, the list context is recon/handoff only.
-Run batch recon only for `run_batch_recon`; never scan the list/index. Stop on
-`invalid_batch_target` or `batch_failed`. From the completed-domain handoff,
-select one completed domain, then rerun `autopilot_state.py --target <domain>
---bounded`. Only the selected domain may enter surface/context/browser/scan/hunt.
+For a readable primary-domain list, the list context is recon/handoff only; run batch recon
+only for `run_batch_recon`; never scan the list/index. Stop on `invalid_batch_target`
+or `batch_failed`; otherwise select one completed domain, then rerun
+`autopilot_state.py --target <domain> --bounded`. Only the selected domain may enter surface/context/browser/scan/hunt.
 ## Execution Invariants
 Expert Hunter Autopilot is AI-first: Claude judges priority, impact, chain fit,
 promotion, reopen, and finish. Tools preserve schema, raw evidence, replay,
@@ -120,21 +118,21 @@ Before unusual helpers, scan `docs/tool-index.md` once. Canonical contracts are
   weak; turn concrete signals into minimal proof; validate Candidates with the
   evidence rubric. AI override may skip, reorder, combine, or invent a better
   evidence action, with reason, red-line status, stop condition, and write-back.
-- Browser/source/JS: prefer browser-state truth. Use visible Playwright MCP or
-  chrome-devtools MCP, persist native file artifacts, and import through
-  `tools/browser_mcp_import.py` (`--auth-required` for authenticated captures);
-  missing Network/state is partial/blocked. Use
-  `tools/source_intel.py` and `tools/js_reader.py`. Run `tools/deep_js_packer.py`
-  only for concrete runtime/chunk/source-map evidence; JS volume alone is not a
-  trigger and partial/unavailable stays open.
-- Known software: a concrete product/component/service version triggers
-  `tools/intel_engine.py`, then a state refresh. AI must select a reachable
-  advisory before a targeted probe. WordPress detail and bounded on-demand
-  WPScan ownership live in `knowledge/cards/wordpress-surface-intelligence.md`.
-- Case state: case-state-validation or case-state-enrichment is high-value continuity, but
-  Case-State First, Not Case-State Only. It is not a scope gate or bug-class
-  selector; stale or missing state cannot block fresher evidence or AI override.
-  Use `tools/target_case_state.py`, `tools/case_state_seed.py`, and matching runners.
+- Browser/source/JS: browser actions use only visible Playwright/Chrome MCP. Never
+  run `agent-browser` or `playwright-cli` through Bash. First use: harmless page-list/session probe;
+  retry once only for timeout, disconnect, or closed-context errors. Missing/configuration/permission/protocol
+  errors do not retry. After a second failure, checkpoint the blocker in the existing
+  Action Queue, pivot to JS/source/API evidence, and probe again only next invocation,
+  after repair, or on explicit operator retry. On success import native artifacts via
+  `tools/browser_mcp_import.py` (`--auth-required` for authenticated captures).
+  Missing Network/state stays partial. Use `tools/source_intel.py`/`tools/js_reader.py`;
+  `tools/deep_js_packer.py` requires concrete runtime/chunk/source-map evidence; JS volume alone is not a trigger.
+  partial/unavailable stays open.
+- Known software: concrete version -> `tools/intel_engine.py`; AI must select a reachable
+  advisory before targeted probe; refresh state. WordPress/WPScan: `knowledge/cards/wordpress-surface-intelligence.md`.
+- Case state: case-state-validation and case-state-enrichment are high-value continuity;
+  Case-State First, Not Case-State Only: not a scope gate or bug-class selector. Stale/missing
+  cannot block fresh evidence/AI override; use `tools/target_case_state.py`, `tools/case_state_seed.py`, and runners.
 - Credential Lane: `/autopilot` may select the controlled
   `skills/credential-attack/` flow when login value, reviewed identities,
   lockout/rate, shortlist, dry-run/preflight, audit, and stop-on-hit gates exist.
@@ -174,7 +172,9 @@ when used; resolve or record high-value action-gated scanner leads; review matri
 `python3 tools/coverage_matrix.py rebuild --target <target_shell>` then `python3 tools/coverage_matrix.py find-gaps --target <target_shell>`; an
 absent or empty matrix never proof of coverage; consult available
 `evidence/<target>/intelligence.md`, browser, JS, source, and exposure evidence.
-A pending report is a closure asset, not a stop signal. If useful work remains,
-checkpoint and preserve it through the existing Action Queue instead of passive TODOs.
+A pending report is a closure asset, not a stop signal. Active durable work, pending
+validation/report, partial browser/source/intel, or untouched high-value work means `handoff/partial`;
+never `finish/complete/exhausted`. Checkpoint it in the existing Action Queue instead of passive TODOs.
+Passing `check_autopilot_run.py` proves state-chain integrity, not target exhaustion.
 End with target, mode, strongest evidence, findings/candidates, blockers/dead ends, and next best action. If the bounded invocation reached `max_lanes`, its
 terminal handoff overrides target exhaustion; unresolved durable work is expected.

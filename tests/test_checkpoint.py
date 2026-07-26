@@ -14,6 +14,7 @@ from checkpoint import (
     _build_next_action_queue,
     _bounded_next_proposals,
     _align_decision_with_default_candidate,
+    _actor_gap_enrichment_proposal,
     _coverage_gap_validation_path,
     _decide,
     _dead_end_proposals,
@@ -27,6 +28,7 @@ from checkpoint import (
     apply_target_memory,
     build_checkpoint,
     format_checkpoint,
+    sync_checkpoint_action_queue,
 )
 from evidence_ledger import record_entry
 from runtime_state import runtime_phase_lock, update_runtime_state
@@ -145,6 +147,47 @@ def test_checkpoint_cli_syncs_durable_action_queue_idempotently(tmp_path, capsys
     assert len(second_queue["actions"]) == len(first_queue["actions"])
 
 
+def test_repeated_auth_prerequisite_handoff_keeps_one_queue_action(tmp_path):
+    proposal = _actor_gap_enrichment_proposal(
+        {
+            "actor_matrix": {
+                "gaps": [{
+                    "endpoint": "/api/orders/123",
+                    "vuln_class": "IDOR",
+                    "actor": "peer",
+                    "object_scope": "other_object_same_org",
+                    "variant": "id_swap",
+                    "status": "missing",
+                }]
+            }
+        },
+        {"actors": 0, "sessions": 0, "objects": 0},
+    )
+    checkpoint = {
+        "target": "target.com",
+        "context_pack": {},
+        "next_action_queue": _build_next_action_queue([proposal], "target.com"),
+    }
+
+    first = sync_checkpoint_action_queue(tmp_path, checkpoint)
+    queue_path = tmp_path / "state" / "target.com" / "action_queue.json"
+    first_bytes = queue_path.read_bytes()
+    first_queue = load_queue(tmp_path, "target.com")
+    second = sync_checkpoint_action_queue(tmp_path, checkpoint)
+    second_queue = load_queue(tmp_path, "target.com")
+
+    assert first["stats"]["added"] == 1
+    assert second["stats"]["added"] == 0
+    assert queue_path.read_bytes() == first_bytes
+    assert len(second_queue["actions"]) == len(first_queue["actions"]) == 1
+    assert second_queue["actions"][0]["type"] == "case-state-enrichment"
+    assert second_queue["actions"][0]["metadata"]["missing_evidence"] == [
+        "second actor",
+        "peer/second session",
+        "business object",
+    ]
+
+
 def test_checkpoint_cli_fails_fast_without_overwriting_corrupt_action_queue(tmp_path, capsys):
     queue_path = tmp_path / "state" / "target.com" / "action_queue.json"
     queue_path.parent.mkdir(parents=True)
@@ -207,6 +250,54 @@ def test_checkpoint_cli_reconciles_root_json_claim_and_links_durable_actions(tmp
         (item.get("metadata") or {}).get("finding_id") == finding["id"]
         for item in queue["actions"]
     )
+
+
+def test_checkpoint_keeps_every_reconciled_root_claim_in_the_durable_queue(tmp_path, capsys):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    for name, endpoint, vuln_class in (
+        ("claim-sqli.json", "/rest/products/search", "SQLi"),
+        ("claim-authz.json", "/rest/admin/config", "Authz"),
+        ("claim-upload.json", "/file-upload", "Upload"),
+    ):
+        (findings_dir / name).write_text(
+            json.dumps(
+                {
+                    "title": name,
+                    "endpoint": endpoint,
+                    "vuln_class": vuln_class,
+                    "poc": "candidate replay",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    first_exit = checkpoint_module.main([
+        "--repo-root", str(tmp_path), "--target", "target.com", "--no-refresh-coverage", "--json",
+    ])
+    capsys.readouterr()
+    findings = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))["findings"]
+    expected_ids = {item["id"] for item in findings}
+    first_queue = load_queue(tmp_path, "target.com")
+    first_ids = {
+        str((item.get("metadata") or {}).get("finding_id") or "")
+        for item in first_queue["actions"]
+    }
+
+    second_exit = checkpoint_module.main([
+        "--repo-root", str(tmp_path), "--target", "target.com", "--no-refresh-coverage", "--json",
+    ])
+    capsys.readouterr()
+    second_queue = load_queue(tmp_path, "target.com")
+    second_ids = {
+        str((item.get("metadata") or {}).get("finding_id") or "")
+        for item in second_queue["actions"]
+    }
+
+    assert first_exit == second_exit == 0
+    assert expected_ids <= first_ids
+    assert expected_ids <= second_ids
+    assert len(second_queue["actions"]) == len(first_queue["actions"])
 
 
 def test_checkpoint_recovers_incomplete_root_claim_without_target_root_url(tmp_path, capsys):

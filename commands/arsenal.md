@@ -1,5 +1,5 @@
 ---
-description: Show which external bug-bounty tools are installed on this machine and print install hints for the missing ones. Curated from high-signal repos. Use to bootstrap a fresh box or audit which optional capabilities are wired in. Usage: /arsenal | /arsenal <tool-name>
+description: Show installed external tools, version smoke, and install hints. Usage: /arsenal | /arsenal --versions | /arsenal <tool-name>
 ---
 
 # /arsenal
@@ -10,6 +10,7 @@ Inspect the external tool inventory used by this plugin.
 
 ```
 /arsenal                       # full status table (installed vs missing)
+/arsenal --versions            # read-only core tool version smoke
 /arsenal nuclei                # show install hint for a single tool
 ```
 
@@ -43,3 +44,6 @@ if _have nuclei; then nuclei -l hosts.txt -severity high; fi
 
 Use `_have <tool>` rather than `command -v` so the install-hint table stays the
 single source of truth for what is and isn't wired in.
+
+Version smoke is diagnostic-only and never runs during `/autopilot` bootstrap.
+It executes only known read-only version flags and reports unsupported tools without guessing.
