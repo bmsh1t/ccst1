@@ -481,6 +481,54 @@ class TestAutopilotState:
         assert state_with_artifact["memory_candidate_next"]["evidence_available"] is True
         assert state_with_artifact["next_action"] == "validate_finding"
 
+    def test_legacy_memory_narrative_cannot_preempt_report_closure(self, tmp_path):
+        target_memory_path = tmp_path / "memory" / "goals" / "targets" / "target.com.json"
+        target_memory_path.parent.mkdir(parents=True)
+        target_memory_path.write_text(
+            json.dumps(
+                {
+                    "target": "target.com",
+                    "next_actions": [
+                        {"text": "Please validate the report narrative next session."},
+                        {"text": "Validated finding needs report reconciliation."},
+                        {"text": "Review validation notes next session."},
+                        {"text": "/validated findings are only a handoff summary."},
+                        {"text": "/validate-later is not the validation command."},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(tmp_path), "target.com")
+
+        assert state["memory_candidate_next"] == {}
+        assert len(state["memory_action_queue"]) == 5
+        assert all(item["command_hint"] != "/validate" for item in state["memory_action_queue"])
+        assert state["next_action"] == "run_recon"
+
+        legacy_candidate = {"command_hint": "/validate", "evidence_available": False}
+        assert (
+            _pick_next_action(
+                True,
+                {},
+                None,
+                {"draft_completion_pending": 1},
+                memory_candidate_next=legacy_candidate,
+            )
+            == "complete_report_draft"
+        )
+        assert (
+            _pick_next_action(
+                True,
+                {},
+                None,
+                {"validated_pending_report": 1},
+                memory_candidate_next=legacy_candidate,
+            )
+            == "report_finding"
+        )
+
     def test_fresh_recon_without_ranked_candidate_prepares_surface_context(self):
         assert (
             _pick_next_action(

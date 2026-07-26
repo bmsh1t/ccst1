@@ -361,7 +361,12 @@ def _pick_next_action(
         return "review_validation_candidate"
     if action_queue_next:
         return "resume_action_queue"
-    if memory_candidate_next:
+    # Legacy target-memory is only a recovery bridge.  Canonical report
+    # closure must remain reachable once live/resume work above is exhausted.
+    if memory_candidate_next and not (
+        structured_findings.get("draft_completion_pending")
+        or structured_findings.get("validated_pending_report")
+    ):
         # target memory 是兼容层，不是 durable owner。没有可定位原始证据时，
         # 它只能把下一会话带回补证据动作，不能直接把 prose 提升为 finding。
         if bool(memory_candidate_next.get("evidence_available")):
@@ -1064,7 +1069,10 @@ def _build_enrichment_hints(
 
 def _memory_action_hint(text: str) -> str:
     lowered = str(text or "").lower()
-    if "/validate" in lowered or "validate" in lowered:
+    # This is a legacy command parser, not a fuzzy intent classifier:
+    # `/validated` and prose such as "validation" must stay in the visible
+    # memory queue without becoming candidate-evidence work.
+    if re.search(r"(?<!\w)/validate(?![\w-])", lowered):
         return "/validate"
     if "/report" in lowered or "report" in lowered:
         return "/report"
