@@ -285,7 +285,13 @@ class TestQuestionToToolDiscoverability:
 
     def test_autopilot_md_has_fresh_code_row(self):
         md = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
-        assert "tools/fresh_code.py" in md
+        intel = (REPO_ROOT / "commands" / "intel.md").read_text(encoding="utf-8")
+        tool_index = (REPO_ROOT / "docs" / "tool-index.md").read_text(encoding="utf-8")
+
+        assert "Question -> Tool Reference" not in md
+        assert "docs/tool-index.md" in md
+        assert "tools/fresh_code.py" in tool_index
+        assert "tools/fresh_code.py" in intel
 
     def test_intel_md_documents_tool_without_auto_run(self):
         md = (REPO_ROOT / "commands" / "intel.md").read_text(encoding="utf-8")

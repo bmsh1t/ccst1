@@ -57,6 +57,7 @@ try:
     from tools.runtime_state import (
         inspect_recon_artifacts,
         inspect_recon_artifacts_fast,
+        inspect_browser_evidence,
         load_runtime_state,
         runtime_phase_in_progress,
     )
@@ -80,6 +81,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from runtime_state import (  # type: ignore
         inspect_recon_artifacts,
         inspect_recon_artifacts_fast,
+        inspect_browser_evidence,
         load_runtime_state,
         runtime_phase_in_progress,
     )
@@ -972,6 +974,7 @@ def _build_enrichment_hints(
     ranked: dict,
     repo_source_available: bool,
     next_action: str,
+    browser_evidence: dict | None = None,
 ) -> tuple[str, list[dict]]:
     """Suggest the most useful enrichment tool before widening generic hunting."""
     if next_action in {
@@ -997,11 +1000,8 @@ def _build_enrichment_hints(
     recon_dir = os.path.join(repo_root, "recon", storage_key)
     findings_dir = os.path.join(repo_root, "findings", storage_key)
 
-    browser_ready = _has_any_artifact(
-        os.path.join(recon_dir, "browser", "summary.json"),
-        os.path.join(recon_dir, "browser", "xhr_endpoints.txt"),
-        os.path.join(recon_dir, "browser", "api_endpoints.txt"),
-    )
+    browser_evidence = browser_evidence or inspect_browser_evidence(repo_root, resolved_target)
+    browser_ready = bool(browser_evidence.get("ready"))
     js_intel_ready = _has_any_artifact(
         os.path.join(findings_dir, "js_intel", "materials.json"),
         os.path.join(findings_dir, "js_intel", "materials_summary.md"),
@@ -1038,9 +1038,14 @@ def _build_enrichment_hints(
         return next_tool_hint, hints
 
     if not browser_ready and _has_browser_mcp_signal(surface_context, ranked):
+        reason = (
+            "authenticated browser capture is missing persisted state; recapture Network and complete state"
+            if browser_evidence.get("auth_required") and browser_evidence.get("auth_state") != "present"
+            else "app-like or GraphQL surface signals were detected; use Chrome DevTools or Playwright MCP, then import the observed artifacts"
+        )
         hints.append({
             "tool": "collect_browser_mcp_evidence",
-            "reason": "app-like or GraphQL surface signals were detected; use Chrome DevTools or Playwright MCP, then import the observed artifacts",
+            "reason": reason,
         })
     if repo_source_available and not source_intel_ready:
         hints.append({
@@ -1209,6 +1214,19 @@ def _is_substantive_queue_action(item: dict) -> bool:
     action_type = str(item.get("type") or item.get("action_type") or "").strip()
     evidence_type = str(item.get("evidence_type") or "").strip()
     command_hint = str(item.get("command_hint") or "").strip()
+    if status == "queued" and action_type in {
+        "candidate-evidence-gap",
+        "actor-gap",
+        "coverage-gap",
+        "action-gated-review",
+        "browser-enrichment",
+    }:
+        return True
+    if status == "queued" and action_type in {"surface-review", "ranked-surface"}:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        return "validation_runner.py" in " ".join(
+            (command_hint, str(metadata.get("replay_draft") or ""))
+        )
     if (
         status == "queued"
         and action_type == "deep-js-review"
@@ -1252,8 +1270,20 @@ def _recon_completed_without_live_hosts(
     """识别已退出 recon 长阶段、但没有 HTTP live inventory 的终态。"""
     if recon_in_progress:
         return False
-    if not recon_artifacts.get("available") or recon_artifacts.get("host_inventory_ready"):
+    if (
+        not recon_artifacts.get("available")
+        or recon_artifacts.get("host_inventory_ready")
+        or recon_artifacts.get("surface_inputs_ready")
+    ):
         return False
+    probe = recon_artifacts.get("http_probe") or {}
+    if probe.get("outcome") != "success_zero":
+        # Legacy fixtures predating recon_manifest had no probe outcome. Keep
+        # their explicit completed breadcrumb compatible; a present manifest
+        # with missing/skipped/failed probing is never terminal.
+        manifest = Path(str(recon_artifacts.get("recon_dir") or "")) / "recon_manifest.jsonl"
+        if probe.get("outcome") != "missing" or manifest.exists():
+            return False
     workflow = str(runtime_state.get("last_executed_workflow") or "").strip()
     # 没有完成 breadcrumb 时仍允许首次/损坏缓存执行一次 recon；所有 started
     # marker 都由 runtime gate 负责，不能误判成完成。
@@ -1491,7 +1521,7 @@ def _load_autopilot_control_facts(
         recon_in_progress=recon_in_progress,
     )
     target_goal_memory = load_target_goal_memory(repo_root, resolved_target)
-    has_recon = bool(recon_artifacts.get("host_inventory_ready"))
+    has_recon = bool(recon_artifacts.get("ready"))
     has_memory = resume_summary is not None
     fresh_recon_ready = _fresh_recon_needs_surface_context(
         runtime_state,
@@ -1513,6 +1543,7 @@ def _load_autopilot_control_facts(
         repo_root=repo_root,
     )
     intel_continuation = inspect_intel_continuation(repo_root, resolved_target)
+    browser_evidence = inspect_browser_evidence(repo_root, resolved_target)
     return {
         "repo_root": repo_root,
         "resolved_target": resolved_target,
@@ -1543,6 +1574,7 @@ def _load_autopilot_control_facts(
         "memory_action_queue": memory_action_queue,
         "memory_candidate_next": _select_memory_candidate(memory_action_queue),
         "intel_continuation": intel_continuation,
+        "browser_evidence": browser_evidence,
     }
 
 
@@ -1634,6 +1666,7 @@ def _build_domain_autopilot_state(
             ranked=ranked_for_next,
             repo_source_available=bool(facts.get("repo_source_available")),
             next_action=next_action,
+            browser_evidence=facts.get("browser_evidence") or {},
         )
     else:
         next_tool_hint, enrichment_hints = "", []
@@ -1656,6 +1689,7 @@ def _build_domain_autopilot_state(
         "repo_source_available": bool(facts.get("repo_source_available")),
         "repo_source_artifacts": facts.get("repo_source_artifacts") or [],
         "repo_source_summary": facts.get("repo_source_summary") or {},
+        "browser_evidence": facts.get("browser_evidence") or {},
         "runtime_state": facts.get("runtime_state") or {},
         "recon_artifacts": facts.get("recon_artifacts") or {},
         "recon_in_progress": bool(facts.get("recon_in_progress")),
@@ -2118,13 +2152,27 @@ def format_autopilot_state(state: dict) -> str:
     if recon_artifacts.get("available"):
         warnings = recon_artifacts.get("warnings") or []
         counts = recon_artifacts.get("counts") or {}
+        surface_counts = [
+            counts.get(key)
+            for key in (
+                "api_urls",
+                "param_urls",
+                "js_endpoints",
+                "browser_xhr_urls",
+                "browser_api_urls",
+            )
+        ]
+        surface_count = "?" if any(value is None for value in surface_counts) else sum(surface_counts)
+        def display_count(key: str) -> object:
+            return "?" if counts.get(key) is None else counts.get(key, 0)
+
         lines.append(
             "Recon cache: "
-            f"hosts={counts.get('hosts', 0)}, "
-            f"surface={counts.get('api_urls', 0) + counts.get('param_urls', 0) + counts.get('js_endpoints', 0) + counts.get('browser_xhr_urls', 0) + counts.get('browser_api_urls', 0)}, "
-            f"ports={counts.get('open_ports', 0)}, "
-            f"waf={counts.get('waf_hits', 0)}, "
-            f"origin={counts.get('origin_candidates', 0)}"
+            f"hosts={display_count('hosts')}, "
+            f"surface={surface_count}, "
+            f"ports={display_count('open_ports')}, "
+            f"waf={display_count('waf_hits')}, "
+            f"origin={display_count('origin_candidates')}"
         )
         if warnings:
             lines.append(f"Recon warning: {warnings[0]}")

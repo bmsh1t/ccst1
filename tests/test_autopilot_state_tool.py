@@ -64,6 +64,25 @@ def test_deep_js_review_queue_item_is_substantive():
 
 
 class TestAutopilotState:
+    def test_bounded_recon_counts_render_unknown_without_crashing(self, tmp_path):
+        recon_dir = tmp_path / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir()
+        (recon_dir / "live" / "httpx_full.txt").write_text("https://target.com\n")
+        (recon_dir / "urls" / "with_params.txt").write_text(
+            "https://target.com/search?q=1\n"
+        )
+
+        state = build_autopilot_state(
+            str(tmp_path),
+            "target.com",
+            memory_dir=str(tmp_path / "hunt-memory"),
+            bounded=True,
+        )
+
+        assert state["recon_artifacts"]["counts"]["hosts"] is None
+        assert "Recon cache: hosts=?, surface=?" in format_autopilot_state(state)
+
 
     def test_batch_state_selects_only_completed_domain_handoff(self, tmp_path):
         scope = tmp_path / "targets.txt"
@@ -755,6 +774,37 @@ class TestAutopilotState:
         assert state["next_action"] == "resume_action_queue"
         assert "resume durable action AQ-0001" in output
 
+    def test_queued_evidence_actions_reach_action_queue_next(self, tmp_path):
+        for index, action_type in enumerate((
+            "candidate-evidence-gap",
+            "actor-gap",
+            "coverage-gap",
+            "action-gated-review",
+            "browser-enrichment",
+        ), 1):
+            target = f"case{index}.target"
+            queue_dir = tmp_path / "state" / target
+            queue_dir.mkdir(parents=True)
+            (queue_dir / "action_queue.json").write_text(json.dumps({
+                "schema_version": 1,
+                "target": target,
+                "actions": [{
+                    "id": "AQ-0001",
+                    "status": "queued",
+                    "type": action_type,
+                    "priority": 90,
+                    "action": f"Execute {action_type} from existing evidence.",
+                    "command_hint": "review the linked evidence",
+                }],
+            }))
+
+            state = build_autopilot_state(
+                str(tmp_path), target, memory_dir=str(tmp_path / "hunt-memory")
+            )
+
+            assert state["action_queue_next"]["type"] == action_type
+            assert state["next_action"] == "resume_action_queue"
+
     def test_advisory_queue_item_does_not_preempt_fresh_recon(self, tmp_path):
         queue_dir = tmp_path / "state" / "target.com"
         queue_dir.mkdir(parents=True)
@@ -782,6 +832,29 @@ class TestAutopilotState:
             str(tmp_path),
             "target.com",
             memory_dir=str(tmp_path / "hunt-memory"),
+        )
+
+        assert state["action_queue_next"] == {}
+        assert state["next_action"] == "run_recon"
+
+    def test_generic_surface_command_does_not_preempt_fresh_recon(self, tmp_path):
+        queue_dir = tmp_path / "state" / "target.com"
+        queue_dir.mkdir(parents=True)
+        (queue_dir / "action_queue.json").write_text(json.dumps({
+            "schema_version": 1,
+            "target": "target.com",
+            "actions": [{
+                "id": "AQ-0001",
+                "status": "queued",
+                "type": "surface-review",
+                "priority": 99,
+                "action": "Refresh the generic surface review.",
+                "command_hint": "python3 tools/surface.py --target target.com",
+            }],
+        }))
+
+        state = build_autopilot_state(
+            str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory")
         )
 
         assert state["action_queue_next"] == {}
@@ -864,6 +937,58 @@ class TestAutopilotState:
         assert inventory["total"] >= 1
         assert inventory["untouched"] >= 1
         assert "Observation inventory: total=" in output
+
+    def test_incomplete_http_probing_is_not_no_live_terminal(self, tmp_path):
+        for index, (status, note) in enumerate((
+            ("skipped", "httpx missing"),
+            ("partial", "httpx timed out"),
+            ("failed", "httpx failed"),
+        ), 1):
+            target = f"probe{index}.target"
+            recon_dir = tmp_path / "recon" / target
+            (recon_dir / "live").mkdir(parents=True)
+            (recon_dir / "live" / "httpx_full.txt").write_text("")
+            (recon_dir / "recon_manifest.jsonl").write_text(json.dumps({
+                "record_type": "recon_phase",
+                "phase": "http_probing",
+                "status": status,
+                "count": 0,
+                "note": note,
+            }) + "\n")
+            update_runtime_state(
+                tmp_path, target, mode="recon_only", last_executed_workflow="run_recon"
+            )
+
+            state = build_autopilot_state(
+                str(tmp_path), target, memory_dir=str(tmp_path / "hunt-memory")
+            )
+
+            assert state["recon_completed_no_live_hosts"] is False
+            assert state["next_action"] == "run_recon"
+
+    def test_zero_live_hosts_with_historical_surface_is_not_terminal(self, tmp_path):
+        recon_dir = tmp_path / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir()
+        (recon_dir / "live" / "httpx_full.txt").write_text("")
+        (recon_dir / "urls" / "all.txt").write_text("https://target.com/api/history\n")
+        (recon_dir / "recon_manifest.jsonl").write_text(json.dumps({
+            "record_type": "recon_phase",
+            "phase": "http_probing",
+            "status": "ok",
+            "count": 0,
+        }) + "\n")
+        update_runtime_state(
+            tmp_path, "target.com", mode="recon_only", last_executed_workflow="run_recon"
+        )
+
+        state = build_autopilot_state(
+            str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory")
+        )
+
+        assert state["has_recon"] is True
+        assert state["recon_completed_no_live_hosts"] is False
+        assert state["next_action"] != "recon_no_live_hosts"
 
     def test_missing_recon_precedes_validated_structured_finding_report(self, tmp_path):
         repo_root = tmp_path

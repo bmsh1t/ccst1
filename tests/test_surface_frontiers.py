@@ -104,3 +104,15 @@ def test_review_pool_reserves_high_value_categories_before_source_flood():
 
     bounded_pool = _build_review_pool(frontiers.review_candidates())
     assert low_score_category["url"] in [item["url"] for item in bounded_pool]
+
+
+def test_review_pool_labels_dom_surface_as_client_side_before_incidental_file_words():
+    item = {
+        "url": "https://target.com/reflected/url/css_import?q=a",
+        "score": 4,
+        "score_breakdown": [{"source": "attack_value", "score": 2}],
+    }
+
+    selected = _build_review_pool([item])[0]
+
+    assert selected["review_reason"] == "high-value category: client-side/file"

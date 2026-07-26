@@ -1,8 +1,10 @@
 """Regression tests for recon_engine.sh shell pitfalls."""
 
 import gzip
+import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,10 +25,95 @@ def test_recon_engine_guards_common_set_e_pitfalls():
     assert "resolve_pd_httpx()" in text
     assert 'FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))' in text
     assert 'CONTENT_TYPE=$(curl -sI "${BB_URL_AUTH_ARGS[@]}" --max-time 5 "${base_url}${path}" 2>/dev/null | grep -i content-type | head -1 || true)' in text
-    assert "for host in network.hosts():" in text
-    assert "if count >= limit:" in text
+    assert "count = min(limit, total - offset)" in text
+    assert "first_host + offset + index" in text
     assert 'if [ "$TARGET_KIND" = "domain" ]; then' in text
     assert '-iL "$DISCOVERY_HOSTS_FILE"' in text
+
+
+def test_recon_engine_records_bounded_cidr_continuation():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'CIDR_LIMIT=4096' in text
+    assert 'CIDR_OFFSET="${BBHUNT_CIDR_OFFSET:-0}"' in text
+    assert 'CIDR_PAGE_FILE="$RECON_DIR/live/cidr_pages/${CIDR_OFFSET}.txt"' in text
+    assert 'CIDR_REMAINING_FILE="$RECON_DIR/live/cidr_remaining.json"' in text
+    assert 'CIDR_CONTINUATION_FILE="$RECON_DIR/live/cidr_continuation.json"' in text
+    assert '"remaining_hosts": remaining' in text
+    assert '"next_offset": next_offset if remaining else None' in text
+    assert 'status = "partial" if remaining else "ok"' in text
+    assert 'BBHUNT_CIDR_OFFSET={next_offset} bash {shlex.quote(script_path)}' in text
+    assert 'cidr_seed' in text
+    assert 'remaining=$CIDR_REMAINING' in text
+    assert 'continuation=recon/${RECON_TARGET_KEY}/live/cidr_continuation.json' in text
+
+
+def test_recon_engine_preserves_http_probe_exit_semantics():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'HTTP_STATUS="skipped"' in text
+    assert 'HTTPX_EXIT_CODE=$?' in text
+    assert 'HTTP_STATUS="ok"' in text
+    assert 'HTTP_NOTE="httpx completed successfully; exit_code=0"' in text
+    assert 'HTTP_STATUS="partial"' in text
+    assert 'HTTP_NOTE="httpx timeout; exit_code=124; partial output preserved"' in text
+    assert 'HTTP_STATUS="failed"' in text
+    assert 'HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; partial output preserved"' in text
+    assert 'successful zero is not target closure' in text
+    assert 'httpx_exit_code      "${HTTPX_EXIT_CODE:-not-run}"' in text
+    assert 'elif [ "$LIVE_TOTAL" -eq 0 ]; then' not in text
+
+
+def test_recon_engine_cidr_continuation_advances_to_next_slice(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    block = text.split("CIDR_RESULT=$(python3", 1)[1]
+    python_source = block.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+
+    def run_slice(offset):
+        discovery = tmp_path / f"discovery-{offset}.txt"
+        page = tmp_path / f"page-{offset}.txt"
+        remaining = tmp_path / f"remaining-{offset}.json"
+        continuation = tmp_path / f"continuation-{offset}.json"
+        subprocess.run(
+            [
+                sys.executable,
+                "-",
+                "10.0.0.0/19",
+                str(discovery),
+                str(page),
+                str(remaining),
+                str(continuation),
+                "4096",
+                str(offset),
+                "--quick",
+                "/repo/tools/recon_engine.sh",
+            ],
+            input=python_source,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return (
+            discovery.read_text(encoding="utf-8").splitlines(),
+            json.loads(continuation.read_text()),
+        )
+
+    first_hosts, first_continuation = run_slice(0)
+    second_hosts, second_continuation = run_slice(first_continuation["next_offset"])
+
+    assert len(first_hosts) == 4096
+    assert first_hosts[0] == "10.0.0.1"
+    assert first_continuation["status"] == "partial"
+    assert first_continuation["remaining_hosts"] == 4094
+    assert "BBHUNT_CIDR_OFFSET=4096" in first_continuation["command"]
+    assert len(second_hosts) == 4094
+    assert second_hosts[0] == "10.0.16.1"
+    assert second_continuation["status"] == "ok"
+    assert second_continuation["remaining_hosts"] == 0
+    assert second_continuation["next_offset"] is None
 
 
 def test_recon_engine_has_timeout_compat_helper():
@@ -107,6 +194,10 @@ def test_recon_engine_preserves_host_port_lab_url_seed():
     assert '[ "$seed_http_code" = "401" ] || [ "$seed_http_code" = "403" ]' in text
     assert '[ -s "$RECON_DIR/live/urls.txt" ] && cat "$RECON_DIR/live/urls.txt"' in text
     assert '[ -s "$RECON_DIR/live/seed_urls.txt" ] && cat "$RECON_DIR/live/seed_urls.txt"' in text
+    assert 'SUBDOMAIN_ARTIFACT="recon/${RECON_TARGET_KEY}/live/discovery_hosts.txt"' in text
+    assert 'SUBS_TOTAL=0' in text
+    assert '"curl -H \\"Host: ${RECON_TARGET_KEY}\\" http://<origin_ip>/' in text
+    assert '"curl -H \\"Host: ${TARGET}\\" http://<origin_ip>/' not in text
 
 
 def test_recon_engine_filters_spa_fallback_directory_fuzz_noise():

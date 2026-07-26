@@ -317,7 +317,7 @@ def test_autopilot_can_select_controlled_credential_lane():
     spray = (REPO_ROOT / "commands" / "spray.md").read_text(encoding="utf-8")
     tool_index = (REPO_ROOT / "docs" / "tool-index.md").read_text(encoding="utf-8")
 
-    assert "## Credential Lane" in autopilot
+    assert "- Credential Lane:" in autopilot
     assert "`/autopilot` may select" in autopilot
     assert "Password brute force, default credential checks, and password spray are not" in autopilot
     assert "Controlled credential spray" in spray

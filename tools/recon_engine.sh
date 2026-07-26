@@ -1405,34 +1405,115 @@ elif [ "$TARGET_KIND" = "ip" ]; then
     log_ok "IP target prepared for probing: 1 host"
 else
     CIDR_LIMIT=4096
-    CIDR_COUNT=$(python3 - "$TARGET" "$DISCOVERY_HOSTS_FILE" "$CIDR_LIMIT" <<'PY'
+    CIDR_OFFSET="${BBHUNT_CIDR_OFFSET:-0}"
+    if ! [[ "$CIDR_OFFSET" =~ ^[0-9]+$ ]]; then
+        log_err "Invalid BBHUNT_CIDR_OFFSET=$CIDR_OFFSET"
+        exit 2
+    fi
+    mkdir -p "$RECON_DIR/live/cidr_pages"
+    CIDR_PAGE_FILE="$RECON_DIR/live/cidr_pages/${CIDR_OFFSET}.txt"
+    CIDR_REMAINING_FILE="$RECON_DIR/live/cidr_remaining.json"
+    CIDR_CONTINUATION_FILE="$RECON_DIR/live/cidr_continuation.json"
+    CIDR_RESULT=$(python3 - "$TARGET" "$DISCOVERY_HOSTS_FILE" "$CIDR_PAGE_FILE" "$CIDR_REMAINING_FILE" "$CIDR_CONTINUATION_FILE" "$CIDR_LIMIT" "$CIDR_OFFSET" "$RECON_MODE_FLAG" "$SCRIPT_PATH" <<'PY'
 import ipaddress
+import json
+import shlex
 import sys
+from datetime import datetime, timezone
 
-network = ipaddress.ip_network(sys.argv[1], strict=False)
-output_path = sys.argv[2]
-limit = int(sys.argv[3])
-count = 0
-with open(output_path, "w", encoding="utf-8") as handle:
-    for host in network.hosts():
-        if count >= limit:
-            break
-        handle.write(f"{host}\n")
-        count += 1
-print(count)
+target, output_path, page_path, remaining_path, continuation_path, limit_raw, offset_raw, mode, script_path = sys.argv[1:]
+network = ipaddress.ip_network(target, strict=False)
+limit = int(limit_raw)
+offset = int(offset_raw)
+if network.version == 4:
+    total = network.num_addresses if network.prefixlen >= 31 else max(network.num_addresses - 2, 0)
+else:
+    total = network.num_addresses if network.prefixlen >= 127 else max(network.num_addresses - 1, 0)
+if offset > total:
+    raise SystemExit(f"CIDR continuation offset {offset} exceeds total host count {total}")
+first_host = int(network.network_address)
+if (network.version == 4 and network.prefixlen < 31) or (network.version == 6 and network.prefixlen < 127):
+    first_host += 1
+count = min(limit, total - offset)
+hosts = "".join(f"{ipaddress.ip_address(first_host + offset + index)}\n" for index in range(count))
+for path in (output_path, page_path):
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(hosts)
+next_offset = offset + count
+remaining = max(total - next_offset, 0)
+status = "partial" if remaining else "ok"
+continuation_command = (
+    f"BBHUNT_CIDR_OFFSET={next_offset} bash {shlex.quote(script_path)} "
+    f"{shlex.quote(target)} {shlex.quote(mode)}"
+    if remaining else ""
+)
+payload = {
+    "schema_version": 1,
+    "target": target,
+    "network": str(network),
+    "limit": limit,
+    "offset": offset,
+    "emitted": count,
+    "total_hosts": total,
+    "remaining_hosts": remaining,
+    "next_offset": next_offset if remaining else None,
+    "status": status,
+    "continuation": continuation_command or "complete",
+    "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+}
+with open(remaining_path, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+    handle.write("\n")
+with open(continuation_path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "target": target,
+        "network": str(network),
+        "status": status,
+        "offset": offset,
+        "next_offset": next_offset if remaining else None,
+        "remaining_hosts": remaining,
+        "limit": limit,
+        "command": continuation_command,
+    }, handle, ensure_ascii=False, sort_keys=True)
+    handle.write("\n")
+print(f"{count}\t{total}\t{remaining}\t{status}")
 PY
 )
+    IFS=$'\t' read -r CIDR_COUNT CIDR_TOTAL CIDR_REMAINING CIDR_STATUS <<< "$CIDR_RESULT"
     HTTPX_INPUT_FILE="$DISCOVERY_HOSTS_FILE"
-    log_ok "CIDR candidates prepared: $CIDR_COUNT hosts"
+    if [ "$CIDR_STATUS" = "partial" ]; then
+        log_warn "CIDR candidates capped at $CIDR_COUNT/$CIDR_TOTAL hosts; remaining=$CIDR_REMAINING (continuation: $CIDR_CONTINUATION_FILE)"
+    else
+        log_ok "CIDR candidates prepared: $CIDR_COUNT hosts"
+    fi
+    record_recon_phase \
+        cidr_seed \
+        "$CIDR_STATUS" \
+        "recon/${RECON_TARGET_KEY}/live/discovery_hosts.txt" \
+        "$CIDR_COUNT" \
+        "limit=$CIDR_LIMIT; offset=$CIDR_OFFSET; total=$CIDR_TOTAL; remaining=$CIDR_REMAINING; continuation=recon/${RECON_TARGET_KEY}/live/cidr_continuation.json"
+    emit_claude_hint \
+        phase                cidr_seed \
+        status               "$CIDR_STATUS" \
+        offset               "$CIDR_OFFSET" \
+        emitted              "$CIDR_COUNT" \
+        total_hosts          "$CIDR_TOTAL" \
+        remaining_hosts      "$CIDR_REMAINING" \
+        continuation         "recon/${RECON_TARGET_KEY}/live/cidr_continuation.json"
 fi
 
+SUBDOMAIN_ARTIFACT="recon/${RECON_TARGET_KEY}/subdomains/all.txt"
 SUBS_TOTAL=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null | tr -d ' ' || echo 0)
 SUBDOMAIN_STATUS="ok"
-[ "$TARGET_KIND" != "domain" ] && SUBDOMAIN_STATUS="skipped"
+if [ "$TARGET_KIND" != "domain" ]; then
+    SUBDOMAIN_STATUS="skipped"
+    SUBDOMAIN_ARTIFACT="recon/${RECON_TARGET_KEY}/live/discovery_hosts.txt"
+    SUBS_TOTAL=0
+fi
 record_recon_phase \
     subdomain_enum \
     "$SUBDOMAIN_STATUS" \
-    "recon/${RECON_TARGET_KEY}/subdomains/all.txt" \
+    "$SUBDOMAIN_ARTIFACT" \
     "$SUBS_TOTAL" \
     "domain targets run passive enum; URL/IP/CIDR targets seed discovery hosts directly"
 emit_claude_hint \
@@ -1484,10 +1565,14 @@ if [ "$TARGET_KIND" = "domain" ]; then
     fi
 fi
 
+HTTP_STATUS="skipped"
+HTTPX_EXIT_CODE=""
+HTTP_NOTE="httpx skipped: discovery host input is empty"
 if [ ! -s "$HTTPX_INPUT_FILE" ]; then
     log_warn "Discovery host list is empty — skipping downstream probing"
 elif [ -n "$HTTPX_BIN" ]; then
     log_step "Probing with ProjectDiscovery httpx (status, title, tech, content-length)..."
+    set +e
     "$HTTPX_BIN" -l "$HTTPX_INPUT_FILE" \
         -silent \
         -status-code \
@@ -1498,7 +1583,20 @@ elif [ -n "$HTTPX_BIN" ]; then
         -threads "$THREADS" \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
-        -o "$RECON_DIR/live/httpx_full.txt" 2>/dev/null || true
+        -o "$RECON_DIR/live/httpx_full.txt" 2>/dev/null
+    HTTPX_EXIT_CODE=$?
+    set -e
+
+    if [ "$HTTPX_EXIT_CODE" -eq 0 ]; then
+        HTTP_STATUS="ok"
+        HTTP_NOTE="httpx completed successfully; exit_code=0"
+    elif [ "$HTTPX_EXIT_CODE" -eq 124 ]; then
+        HTTP_STATUS="partial"
+        HTTP_NOTE="httpx timeout; exit_code=124; partial output preserved"
+    else
+        HTTP_STATUS="failed"
+        HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; partial output preserved"
+    fi
 
     # Extract just the URLs for other tools
     awk '{print $1}' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/urls.txt" 2>/dev/null || true
@@ -1510,7 +1608,11 @@ elif [ -n "$HTTPX_BIN" ]; then
     ensure_explicit_port_seed_live
 
     LIVE_COUNT=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null || echo 0)
-    log_done "Live hosts: $LIVE_COUNT"
+    if [ "$HTTP_STATUS" = "ok" ]; then
+        log_done "Live hosts: $LIVE_COUNT"
+    else
+        log_warn "HTTP probing $HTTP_STATUS (exit=$HTTPX_EXIT_CODE); preserved $LIVE_COUNT live URL(s)"
+    fi
 
     # Separate by status code
     grep '\[200\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_200.txt" 2>/dev/null || true
@@ -1523,6 +1625,7 @@ elif [ -n "$HTTPX_BIN" ]; then
     log_done "403 Forbidden: $(wc -l < "$RECON_DIR/live/status_403.txt" 2>/dev/null || echo 0)"
     log_done "401 Auth Required: $(wc -l < "$RECON_DIR/live/status_401.txt" 2>/dev/null || echo 0)"
 else
+    HTTP_NOTE="httpx skipped: ProjectDiscovery binary is unavailable"
     log_warn "ProjectDiscovery httpx not installed — skipping"
 fi
 
@@ -1530,22 +1633,20 @@ ensure_explicit_port_seed_live
 
 LIVE_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
 RESOLVED_TOTAL=$(wc -l < "$DISCOVERY_HOSTS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
-HTTP_STATUS="ok"
-if [ ! -s "$HTTPX_INPUT_FILE" ]; then
-    HTTP_STATUS="skipped"
-elif [ -z "$HTTPX_BIN" ]; then
-    HTTP_STATUS="skipped"
-elif [ "$LIVE_TOTAL" -eq 0 ]; then
-    HTTP_STATUS="partial"
+if [ "$HTTP_STATUS" = "ok" ]; then
+    HTTP_NOTE="$HTTP_NOTE; live_hosts=$LIVE_TOTAL"
+    [ "$LIVE_TOTAL" -ne 0 ] || HTTP_NOTE="$HTTP_NOTE; successful zero is not target closure"
 fi
 record_recon_phase \
     http_probing \
     "$HTTP_STATUS" \
     "recon/${RECON_TARGET_KEY}/live/urls.txt" \
     "$LIVE_TOTAL" \
-    "httpx live-host inventory; 0 live hosts is low signal, not target closure"
+    "$HTTP_NOTE"
 emit_claude_hint \
     phase                http_probing \
+    status               "$HTTP_STATUS" \
+    httpx_exit_code      "${HTTPX_EXIT_CODE:-not-run}" \
     resolved_hosts_total "$RESOLVED_TOTAL" \
     live_hosts_total     "$LIVE_TOTAL" \
     httpx_present        "$([ -n "$HTTPX_BIN" ] && echo true || echo false)" \
@@ -1781,7 +1882,7 @@ emit_claude_hint \
     unwaf_enabled        "$([ "$UNWAF_ENABLE" -eq 1 ] && echo true || echo false)" \
     unwaf_skipped        "$([ "$UNWAF_SKIP" -eq 1 ] && echo true || echo false)"
 emit_claude_hint_actions \
-    "curl -H \"Host: ${TARGET}\" http://<origin_ip>/   # WAF bypass via origin" \
+    "curl -H \"Host: ${RECON_TARGET_KEY}\" http://<origin_ip>/   # WAF bypass via origin" \
     "if origin_candidates is 0, preserve that as an unattempted/low-signal origin lane"
 
 # ============================================================

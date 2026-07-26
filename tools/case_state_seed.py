@@ -181,6 +181,11 @@ def _dedupe_objects(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for field in ("endpoint", "private_marker", "source"):
             if not current.get(field) and item.get(field):
                 current[field] = item[field]
+        confidence_rank = {"high": 3, "medium": 2, "low": 1}
+        if confidence_rank.get(str(item.get("confidence") or ""), 0) > confidence_rank.get(
+            str(current.get("confidence") or ""), 0
+        ):
+            current["confidence"] = item["confidence"]
         if item.get("reason") and item["reason"] not in str(current.get("reason") or ""):
             current["reason"] = f"{current.get('reason', '')}; {item['reason']}".strip("; ")
     return [merged[ref] for ref in order]
@@ -513,7 +518,13 @@ def object_candidates_from_endpoint(endpoint: str, source: str = "") -> list[dic
             "type": object_type,
             "object_id": object_id,
             "endpoint": endpoint,
-            "confidence": "high",
+            "confidence": (
+                "high"
+                if object_type in HIGH_PRIORITY_TYPES
+                else "medium"
+                if any(token in source for token in ("/browser/", "source_intel", "js_intel", "api_endpoints"))
+                else "low"
+            ),
             "reason": f"query parameter {key!r} carries concrete object id {object_id!r}",
             "source": source,
         })

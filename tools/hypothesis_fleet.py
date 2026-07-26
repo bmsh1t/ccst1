@@ -70,21 +70,20 @@ def classify_worker_outcome(result: pw.WorkerResult, done_flag_summary: dict | N
     """Map worker result → ranking bucket.
 
     Rules:
-      * if findings.json contains rows with `severity in (high,critical)` → validated_finding
-      * if findings.json contains ANY row → strong_signal
-      * if done_flag_summary["outcome"] is one of the OUTCOME_* constants → use it
+      * if findings.json contains a row with `validation_status=validated` → validated_finding
+      * if findings.json contains ANY non-validated row → strong_signal
+      * a done.flag may preserve strong_signal/leads_only, but cannot declare validation
       * else → leads_only
     """
     if not result.findings:
-        if done_flag_summary and done_flag_summary.get("outcome") in _OUTCOME_RANK:
-            return done_flag_summary["outcome"]
+        if done_flag_summary and done_flag_summary.get("outcome") == OUTCOME_STRONG:
+            return OUTCOME_STRONG
         return OUTCOME_LEADS
-    # Prefer findings-based judgement; promote to validated only if a high-sev row is present
-    has_high = any(
-        str(f.get("severity") or "").lower() in {"high", "critical"}
+    has_validated = any(
+        str(f.get("validation_status") or "").lower() == "validated"
         for f in result.findings
     )
-    if has_high:
+    if has_validated:
         return OUTCOME_VALIDATED
     return OUTCOME_STRONG
 

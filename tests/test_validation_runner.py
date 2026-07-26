@@ -817,7 +817,7 @@ def test_authz_public_exposure_cli_syncs_finding_and_action_queue(monkeypatch, t
     assert summary["sync"]["action_queue"]["status"] == "updated"
     finding = findings["findings"][0]
     assert finding["validation_status"] == "candidate"
-    assert finding["confidence"] == "confirmed"
+    assert finding["confidence"] == "high"
     assert finding["validation_summary"].endswith("summary.json")
     assert finding["vuln_class"] == "Authz"
     assert finding["evidence_rubric"]["status"] == "candidate-ready"
@@ -1452,6 +1452,33 @@ def test_marker_replay_without_marker_is_clean(monkeypatch, tmp_path):
     assert summary["runs"][0]["marker_found"] is False
 
 
+def test_xss_marker_reflection_stays_open_signal_until_browser_context(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body="reflected CCST_XSS_MARKER"),
+    )
+
+    summary = validation_runner.run_marker_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/reflected?q=CCST_XSS_MARKER",
+        expect_marker="CCST_XSS_MARKER",
+        finding_id="XSS-MARKER-SIGNAL",
+        vuln_class="XSS",
+        repeat=2,
+    )
+
+    ledger = tmp_path / "memory" / "evidence" / _target_key("https://target.test") / "ledger.jsonl"
+    entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
+
+    assert summary["result"] == "tested_finding"
+    assert summary["evidence_rubric"]["ready"] is False
+    assert entry["result"] == "signal"
+    assert "reflected" in summary["ai_next"]["hypothesis"]
+    assert "browser execution context" in summary["ai_next"]["next_action"]
+
+
 def test_idor_actor_pair_marker_finding_creates_diff_and_ledger(monkeypatch, tmp_path):
     def fake_request_once(**kwargs):
         token = (kwargs.get("headers") or {}).get("Authorization", "")
@@ -1779,6 +1806,8 @@ def test_idor_actor_pair_from_case_state_cli_resolves_headers_and_object(monkeyp
     assert queue["actions"][0]["status"] == "candidate"
     assert findings["findings"][0]["id"] == "IDOR-CASE-STATE"
     assert findings["findings"][0]["validation_status"] == "candidate"
+    assert findings["findings"][0]["title"].startswith("Candidate IDOR")
+    assert findings["findings"][0]["confidence"] == "high"
     assert findings["findings"][0]["report_status"] == "not_generated"
 
 

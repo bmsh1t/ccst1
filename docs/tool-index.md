@@ -20,6 +20,8 @@
 | `tools/intel_engine.py` | Versioned component/service review | `/intel` owner — OSV/GHSA/NVD, KEV/EPSS, local signals, atomic `intel.json` |
 | `tools/technology_inventory.py` | Multiple consumers need reliable httpx/Nmap tech, version, service, or CPE data | Shared JSONL/text/Nmap parser and atomic component inventory owner |
 | `tools/web_intel_artifact.py` | Official-source gap | Verified Web Intel recorder: TTL, source groups, atomic index |
+| `tools/fresh_code.py` | Recent feature or code-change signal may change the attack surface | Bounded recent code/feature intelligence; record leads, do not auto-run it |
+| `tools/disclosure_search.py` / `disclosed-researcher` | Target or comparable disclosed-report pattern may transfer | Bounded disclosed-pattern research; records evidence, not a finding |
 | `tools/learn.py` | Legacy tech-stack research | Compatibility backend; not the schema-v2 Intel artifact owner |
 | `tools/scope_checker.py` | Verifying target classification | Deterministic host/URL classifier against active target set |
 | `tools/target_paths.py` | Computing per-target storage keys | Normalize target string for `recon/`/`findings/` directories |
@@ -79,6 +81,7 @@ identity, and cloud signals without re-enumerating everything.
 |---|---|---|
 | `tools/vuln_scanner.sh` | Recon done, want broad active coverage | Multi-lane scanner; unsafe methods become manual-review unless `ALLOW_UNSAFE_HTTP_TESTS=1` |
 | `tools/bypass_403.sh` | 403/401 on interesting endpoint | byp4xx + 20 built-in header/method/encoding bypass tricks |
+| `tools/sibling_generator.py` | Candidate route has an ID-bearing sibling shape | Writes a bounded sibling-endpoint probe queue for evidence-fit replay |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
 | `tools/smuggling_executor.py` | Smuggling/cache candidate execution plan | `--summary` / `--variant 0.CL`; sender + evidence classes |
 | `tools/role_diff.py` | Multiple session files available | **Multi-role endpoint diff — IDOR gold standard** (R2 new) |

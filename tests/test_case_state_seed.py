@@ -61,6 +61,21 @@ def test_case_state_seed_extracts_query_object_from_browser_params(tmp_path):
     assert "query parameter 'order_id'" in payload["suggested_objects"][0]["reason"]
 
 
+def test_raw_unknown_query_id_is_retained_as_low_confidence(tmp_path):
+    urls_dir = tmp_path / "recon" / "target.com" / "urls"
+    urls_dir.mkdir(parents=True)
+    (urls_dir / "with_params.txt").write_text(
+        "https://target.com/?option=com_demo&Itemid=0\n",
+        encoding="utf-8",
+    )
+
+    payload = case_state_seed.build_case_state_seed(tmp_path, "target.com")
+
+    assert payload["status"] == "suggestions"
+    assert payload["suggested_objects"][0]["object_ref"] == "item_0"
+    assert payload["suggested_objects"][0]["confidence"] == "low"
+
+
 def test_case_state_seed_extracts_objects_from_browser_json_artifacts(tmp_path):
     target = "http://127.0.0.1:3002"
     browser_dir = tmp_path / "recon" / "127.0.0.1:3002" / "browser"

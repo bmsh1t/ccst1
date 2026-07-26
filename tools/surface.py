@@ -854,6 +854,7 @@ BROWSER_VALUE_KEYWORDS = (
 
 REVIEW_POOL_LIMIT = 16
 REVIEW_SIGNAL_GROUPS = (
+    ("client-side", frozenset({"xss"})),
     ("auth", frozenset({"auth", "oauth", "saml", "secret"})),
     ("admin", frozenset({"admin", "internal"})),
     ("payment", frozenset({"billing", "payment"})),

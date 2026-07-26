@@ -12,31 +12,15 @@ def _read(relative_path: str) -> str:
 
 def test_autopilot_requires_known_software_intelligence_lane():
     text = _read("commands/autopilot.md")
-    flat = " ".join(text.split())
+    intel = _read("commands/intel.md")
 
-    assert "## Actionable Evidence Continuation Contract" in text
-    assert "must not turn an evidence-backed next step into a passive TODO" in text
-    assert "python3 tools/action_queue.py ingest-checkpoint --target <target_shell>" in text
-    assert "python3 tools/action_queue.py next --target <target_shell>" in text
-    assert "python3 tools/action_queue.py resolve --target <target_shell>" in text
-    assert "known product/CMS/plugin/theme/library versions" in text
-    assert "authz/IDOR, SQLi/NoSQLi, SSRF, XXE, RCE/SSTI/command injection" in text
-    assert "Do not overfit this contract into a fixed checklist" in text
-    assert "When a primary lane is blocked, do not checkpoint/finish immediately if adjacent high-value lanes remain." in text
-    assert "remaining high-value lanes are tested, blocked, dead-end, or not applicable" in text
-    assert "## Known Software Intelligence Lane" in text
-    assert 'must not stop at "needs CVE lookup."' in flat
-    assert "one specialization of the Actionable Evidence Continuation Contract" in flat
-    assert "python3 tools/intel_engine.py --target <target_shell>" in text
-    assert "Do not also run `tools/cve_hunter.py` in this default lane" in text
-    assert "only when AI explicitly selects a reachable advisory" in text
-    assert "NVD, GitHub Advisory, WPScan/vulnerability DB" in text
-    assert "vendor changelog" in text
-    assert "WordPress Tribe Events 6.16.3" in text
-    assert "identified network services" in text
-    assert "collect_web_intel" in text
-    assert "test_advisory_applicability" in text
-    assert "tools/web_intel_artifact.py" in text
+    assert "Known software" in text
+    assert "tools/intel_engine.py" in text
+    assert "AI must select a reachable" in text
+    assert "collect_web_intel" in intel
+    assert "test_advisory_applicability" in intel
+    assert "tools/web_intel_artifact.py" in intel
+    assert "action_queue" in intel
 
 
 def test_autopilot_agent_inherits_known_software_lane():
@@ -65,11 +49,11 @@ def test_wordpress_wpscan_is_explicitly_on_demand_and_bounded():
     agent = _read("agents/autopilot.md")
     card = _read("knowledge/cards/wordpress-surface-intelligence.md")
 
-    for text in (command, agent, card):
+    assert "knowledge/cards/wordpress-surface-intelligence.md" in command
+    for text in (agent, card):
         assert "WPSCAN_API_TOKEN" in text
         assert "--enumerate p,t" in text
         assert "--no-update" in text
-    assert "不属于默认 Recon" in command
     assert "not default Recon" in agent
     assert "--password-attack" not in command
     assert "WPScan 命中、文件存在或 HTTP 200 不证明" in card

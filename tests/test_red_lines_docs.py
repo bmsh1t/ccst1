@@ -76,7 +76,7 @@ def test_autopilot_and_runtime_keep_red_lines_minimal():
         assert "not red lines" in flat or "absolute red lines" in flat
 
     command_flat = " ".join(command.split())
-    assert "not a requirement that every other lane fails first" in command_flat
+    assert "absolute red lines or a mandatory last lane" in command_flat
     assert "change real account or permission state" in command_flat
     assert "trigger CI/CD/deployment side effects" in command_flat
     assert "Other high-value lanes are blocked" not in command

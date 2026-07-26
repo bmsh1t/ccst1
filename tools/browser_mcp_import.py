@@ -58,6 +58,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 DEFAULT_EVIDENCE_ROOT = BASE_DIR / "evidence"
 DEFAULT_RECON_ROOT = BASE_DIR / "recon"
 DEFAULT_FOCUSED_LIMIT = 8
+BROWSER_FRESHNESS_SECONDS = 24 * 60 * 60
 RAW_REQUEST_RE = re.compile(
     r"""
     ^\s*
@@ -288,6 +289,137 @@ def normalize_mcp_network(payload: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _network_capture_failed(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("success") is False:
+        return True
+    return str(payload.get("status") or "").strip().lower() in {
+        "error", "failed", "failure", "timeout", "stale",
+    }
+
+
+def inspect_mcp_browser_readiness(
+    repo_root: str | Path,
+    target: str,
+    *,
+    freshness_seconds: int = BROWSER_FRESHNESS_SECONDS,
+) -> dict[str, Any]:
+    """Validate the importer-owned latest capture without trusting file presence."""
+    root = Path(repo_root)
+    key = target_storage_key(target)
+    pointer_path = root / "evidence" / key / "browser" / "last-capture.json"
+    result: dict[str, Any] = {
+        "present": False,
+        "ready": False,
+        "status": "missing",
+        "success": False,
+        "core_network": False,
+        "fresh": False,
+        "fingerprint": "",
+        "fingerprint_valid": False,
+        "auth_required": False,
+        "auth_state": "unknown",
+        "summary_path": str(pointer_path),
+        "reason": "missing browser capture",
+    }
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return result
+    if not isinstance(pointer, dict):
+        result["reason"] = "invalid browser pointer"
+        return result
+    summary_path = Path(str(pointer.get("summary_path") or ""))
+    if not summary_path.is_absolute():
+        summary_path = pointer_path.parent / summary_path
+    result["summary_path"] = str(summary_path)
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        result["reason"] = "missing or invalid browser summary"
+        return result
+    if not isinstance(summary, dict):
+        result["reason"] = "invalid browser summary"
+        return result
+
+    result["present"] = True
+    result["status"] = str(summary.get("status") or "unknown").strip().lower()
+    result["success"] = bool(summary.get("success"))
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    result["core_network"] = int(counts.get("requests", 0) or 0) > 0
+    result["fingerprint"] = str(summary.get("network_fingerprint") or "").strip()
+    artifacts = summary.get("artifacts") if isinstance(summary.get("artifacts"), dict) else {}
+    requests_path = Path(str(artifacts.get("requests_json") or ""))
+    try:
+        result["fingerprint_valid"] = bool(
+            result["fingerprint"]
+            and requests_path.is_file()
+            and hashlib.sha256(requests_path.read_bytes()).hexdigest() == result["fingerprint"]
+        )
+    except OSError:
+        pass
+    private_artifacts = summary.get("private_artifacts") if isinstance(summary.get("private_artifacts"), dict) else {}
+    browser_state = (
+        private_artifacts.get("browser_state")
+        if isinstance(private_artifacts.get("browser_state"), dict)
+        else {}
+    )
+    state_artifact = Path(str(browser_state.get("path") or ""))
+    if state_artifact and not state_artifact.is_absolute():
+        state_artifact = summary_path.parent / state_artifact
+    state_digest = str(browser_state.get("sha256") or "").strip()
+    try:
+        state_artifact_valid = bool(
+            state_artifact.is_file()
+            and (
+                not state_digest
+                or hashlib.sha256(state_artifact.read_bytes()).hexdigest() == state_digest
+            )
+        )
+    except OSError:
+        state_artifact_valid = False
+    result["auth_required"] = bool(summary.get("auth_required") or summary.get("authenticated"))
+    claimed_auth_state = str(summary.get("auth_state") or "").strip().lower()
+    result["auth_state"] = (
+        "present"
+        if state_artifact_valid and claimed_auth_state in {"", "present"}
+        else claimed_auth_state
+        if claimed_auth_state and claimed_auth_state != "present"
+        else "missing"
+    )
+    try:
+        captured_at = datetime.strptime(
+            str(summary.get("captured_at") or ""), "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=timezone.utc)
+    except ValueError:
+        captured_at = None
+    result["fresh"] = bool(
+        captured_at is not None
+        and (datetime.now(timezone.utc) - captured_at).total_seconds() <= freshness_seconds
+    )
+    result["ready"] = bool(
+        result["status"] == "ok"
+        and result["success"]
+        and result["core_network"]
+        and result["fresh"]
+        and result["fingerprint_valid"]
+        and (not result["auth_required"] or result["auth_state"] == "present")
+    )
+    failed = []
+    if result["status"] != "ok":
+        failed.append("status")
+    failed.extend(
+        name
+        for name in ("success", "core_network", "fresh", "fingerprint_valid")
+        if not result[name]
+    )
+    if result["auth_required"] and result["auth_state"] != "present":
+        failed.append("missing_state")
+    result["reason"] = "ready" if result["ready"] else "browser capture is " + ", ".join(failed or ["not ready"])
+    return result
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
@@ -323,6 +455,8 @@ def import_mcp_browser_evidence(
     evidence_root: str | Path = DEFAULT_EVIDENCE_ROOT,
     recon_root: str | Path = DEFAULT_RECON_ROOT,
     source: str = "mcp",
+    auth_required: bool = False,
+    auth_state: str = "",
 ) -> dict[str, Any]:
     """Create an evidence capture from MCP-exported browser artifacts."""
     target_key = target_storage_key(target)
@@ -337,14 +471,22 @@ def import_mcp_browser_evidence(
     artifacts: dict[str, str] = {}
     network_payload = _load_network_payload(network_path or har_path)
     requests = normalize_mcp_network(network_payload)
-    if not requests and har_path and str(har_path) != str(network_path):
-        requests = normalize_mcp_network(_load_network_payload(har_path))
+    if (
+        (not requests or _network_capture_failed(network_payload))
+        and har_path
+        and str(har_path) != str(network_path)
+    ):
+        har_payload = _load_network_payload(har_path)
+        har_requests = normalize_mcp_network(har_payload)
+        if har_requests and not _network_capture_failed(har_payload):
+            network_payload, requests = har_payload, har_requests
     artifacts["network_private_json"] = str(
         write_private_json(private_dir / "network.raw.json", network_payload)
     )
     requests_file = capture_dir / "requests.json"
     _write_json(requests_file, public_request_payload({"requests": requests}, source=safe_source))
     artifacts["requests_json"] = str(requests_file)
+    network_fingerprint = hashlib.sha256(requests_file.read_bytes()).hexdigest()
 
     copied_snapshot = ""
     if snapshot_path and Path(snapshot_path).is_file():
@@ -396,9 +538,29 @@ def import_mcp_browser_evidence(
     summary_path = capture_dir / "summary.json"
     pointer_path = root / target_key / "browser" / "last-capture.json"
     browser_counts = browser_surface.get("counts") if isinstance(browser_surface, dict) else {}
-    has_core_network = bool(requests)
+    source_failed = _network_capture_failed(network_payload)
+    has_core_network = bool(requests) and not source_failed
     has_any_artifact = bool(
         requests or copied_snapshot or console_items or copied_screenshot or private_artifacts
+    )
+    archived_browser_state = bool(private_artifacts.get("browser_state"))
+    requested_auth_state = _safe_label(auth_state, "missing") if auth_state else ""
+    auth_state_value = (
+        "present"
+        if archived_browser_state
+        else "missing"
+        if requested_auth_state in {"", "present"}
+        else requested_auth_state
+    )
+    capture_success = has_any_artifact and not source_failed
+    capture_status = (
+        "error"
+        if source_failed
+        else "ok"
+        if has_core_network and (not auth_required or auth_state_value == "present")
+        else "partial"
+        if has_any_artifact
+        else "error"
     )
     summary = {
         "schema_version": 1,
@@ -412,8 +574,11 @@ def import_mcp_browser_evidence(
         "evidence_dir": str(capture_dir),
         "summary_path": str(summary_path),
         "pointer_path": str(pointer_path),
-        "success": has_any_artifact,
-        "status": "ok" if has_core_network else ("partial" if has_any_artifact else "error"),
+        "success": capture_success,
+        "status": capture_status,
+        "network_fingerprint": network_fingerprint,
+        "auth_required": bool(auth_required),
+        "auth_state": auth_state_value,
         "counts": {
             "requests": len(requests),
             "console": len(console_items),
@@ -690,6 +855,8 @@ def import_focused_mcp_manifest(
                 evidence_root=evidence,
                 recon_root=recon,
                 source=str(item.get("source") or "mcp"),
+                auth_required=bool(item.get("auth_required") or item.get("authenticated")),
+                auth_state=str(item.get("auth_state") or ""),
             )
         except (OSError, ValueError) as exc:
             captures.append(
@@ -787,6 +954,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-storage", default="", help="Optional localStorage artifact kept private")
     parser.add_argument("--session-storage", default="", help="Optional sessionStorage artifact kept private")
     parser.add_argument("--state", default="", help="Optional browser state artifact kept private")
+    parser.add_argument("--auth-required", action="store_true", help="Require persisted browser state for an authenticated capture")
+    parser.add_argument("--auth-state", default="", help="Authenticated state label, e.g. present or missing")
     parser.add_argument("--har", default="", help="Optional HAR artifact kept private; also used as network input when needed")
     parser.add_argument("--focused-manifest", default="", help="Import a bounded file-backed MCP capture manifest")
     parser.add_argument("--max-urls", type=int, default=DEFAULT_FOCUSED_LIMIT, help="Focused manifest URL budget")
@@ -832,6 +1001,8 @@ def main(argv: list[str] | None = None) -> int:
         evidence_root=args.evidence_root,
         recon_root=args.recon_root,
         source=args.source,
+        auth_required=args.auth_required,
+        auth_state=args.auth_state,
     )
     print(json.dumps(compact_browser_evidence(summary), ensure_ascii=False, indent=2))
     return 0

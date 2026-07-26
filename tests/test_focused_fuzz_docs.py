@@ -64,19 +64,32 @@ def test_web2_recon_uses_existing_isolated_artifact_and_memory_contracts():
 
 
 def test_autopilot_entries_keep_focused_fuzz_ai_selected_and_non_automatic():
-    for relative_path in ("commands/autopilot.md", "agents/autopilot.md"):
-        normalized = " ".join(_read(relative_path).split()).lower()
+    command = " ".join(_read("commands/autopilot.md").split()).lower()
+    agent = " ".join(_read("agents/autopilot.md").split()).lower()
+    skill = " ".join(_read("skills/web2-recon/SKILL.md").split()).lower()
 
-        assert "focused fuzz is an optional ai-selected discovery action" in normalized
-        assert "one concrete template and bounded, deduplicated wordlist" in normalized
-        assert "an empty baseline does not trigger focused fuzz" in normalized
-        assert "recon/<target_key>/focused_fuzz/<run_id>/" in normalized
-        assert "target_memory.py lead/dead-end" in normalized
-        assert "never auto-expand surface, queue, or coverage" in normalized
-        assert "same-target seeds expose a naming dialect" in normalized
-        assert "random-miss response groups" in normalized
-        assert "next bounded round" in normalized
-        assert "route existence remains a signal, not a vulnerability candidate" in normalized
+    assert "focused fuzz is an optional ai-selected discovery action" in command
+    assert "skills/web2-recon/skill.md" in command
+    for marker in (
+        "one concrete template and bounded, deduplicated wordlist",
+        "an empty baseline does not trigger focused fuzz",
+        "recon/<target_key>/focused_fuzz/<run_id>/",
+        "target_memory.py lead/dead-end",
+        "never auto-expand surface, queue, or coverage",
+        "same-target seeds expose a naming dialect",
+        "random-miss response groups",
+        "next bounded round",
+        "route existence remains a signal, not a vulnerability candidate",
+    ):
+        assert marker in agent
+    for marker in (
+        "baseline ffuf",
+        "focused fuzz",
+        "ai 显式选择",
+        "recon/<target_key>/focused_fuzz/",
+        "target_memory.py lead",
+    ):
+        assert marker in skill
 
 
 def test_target_dialect_is_evidence_linked_bounded_and_feedback_driven():

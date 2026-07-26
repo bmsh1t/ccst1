@@ -23,7 +23,7 @@ def test_autopilot_prompts_stay_compact():
     command = _read(COMMAND)
     agent = _read(AGENT)
 
-    assert len(command.splitlines()) <= 280
+    assert len(command.splitlines()) <= 180
     assert len(agent.splitlines()) <= 220
 
 
@@ -74,11 +74,12 @@ def test_autopilot_keeps_decision_loop_without_legacy_cadence_bulk():
         "Expert Hunter Autopilot",
         "fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW",
         "LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT",
+        "State Consumption Loop",
+        "Execution Invariants",
         "Discovery / Exploitation / Validation Modes",
-        "Known Software Intelligence Lane",
-        "Deep Mode",
+        "Evidence-Triggered Lane Pointers",
         "Credential Lane",
-        "Finish Condition",
+        "Transition And Finish Contract",
     ):
         assert marker in flat
 
@@ -101,17 +102,18 @@ def test_expert_hunter_startup_is_state_first_then_evidence_driven():
     combined = f"{command}\n{agent}"
 
     for marker in (
-        "Super-pentester priority: business impact > workflow evidence > crown-jewel hypothesis",
+        "Super-pentester priority",
+        "business impact > workflow evidence > crown-jewel",
         "Every invocation is state-first",
         "scanner quick",
         "breadth sensor",
         "advisory lead source",
         "scanner-negative is not completion",
-        "Branch only after that state read",
+        "Branch only after that state",
         "Four-layer memory is the external brain, not the steering wheel",
         "BUSINESS/CROWN JEWELS",
         "MINIMAL PROOF",
-        "CHAIN EXPANSION",
+        "-> CHAIN ->",
         "do not let them drive first contact",
     ):
         assert marker in combined
@@ -126,11 +128,14 @@ def test_expert_hunter_startup_is_state_first_then_evidence_driven():
 
 def test_deep_mode_points_to_coverage_tools_instead_of_embedded_lab_fixtures():
     command = _read(COMMAND)
+    hunting = _read(REPO_ROOT / "rules" / "hunting.md")
 
-    assert "Deep Exhaustion Checklist" in command
-    assert "python3 tools/coverage_matrix.py rebuild --target <target_shell>" in command
-    assert "python3 tools/coverage_matrix.py find-gaps --target <target_shell>" in command
-    assert "python3 tools/action_queue.py summary --target <target_shell>" in command
+    assert "`--deep` is a value-first comprehensive depth flag" in command
+    assert "rules/hunting.md#broad-scanner-input-and-completion-contract" in command
+    assert "tools/coverage_matrix.py find-gaps" in command
+    assert "tools/action_queue.py" in command
+    assert "High-Intensity Hunting Posture" in hunting
+    assert "Value-first coverage model" in hunting
 
     # Cadence lab fixtures are no longer required for the compact prompt model.
     assert "evidence/cadence-labs" not in command
@@ -142,7 +147,7 @@ def test_compact_transition_contract_preserves_cadence_and_single_specialist_bud
     combined = f"{command}\n{agent}"
 
     for marker in (
-        "## Compact Transition Gate",
+        "## Transition And Finish Contract",
         "after each substantive state change",
         "coherent lane batch",
         "blocker/handoff/finish",

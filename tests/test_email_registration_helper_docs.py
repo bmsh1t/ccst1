@@ -25,14 +25,17 @@ def test_auth_sessions_documents_optional_mail_receiver_setup():
 def test_autopilot_mentions_mail_receiver_without_turning_it_into_attack_lane():
     command = _read("commands/autopilot.md")
     agent = _read("agents/autopilot.md")
+    auth_sessions = _read("docs/auth-sessions.md")
 
-    for text in (command, agent):
+    assert "Credential Lane" in command
+    assert "skills/credential-attack/" in command
+    for text in (agent, auth_sessions):
         assert HELPER in text
         assert "self-owned" in text
-        assert "setup aid" in text
-        assert ".private/" in text
-        assert "case_state" in text
+    assert "setup aid" in agent
+    assert ".private/" in agent
+    assert "case_state" in agent
 
     combined = f"{command}\n{agent}"
-    assert "not a default brute-force" in combined
+    assert "Password brute force" in combined
     assert "stop-on-hit" in combined

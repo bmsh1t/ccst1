@@ -1119,8 +1119,10 @@ def select_targets(top_n=10):
 
 def run_recon(domain, quick=False, deep=False):
     """Run recon engine on a classified target."""
+    supplied_target = str(domain or "").strip()
     target_info = classify_target(domain)
     normalized_target = target_info["target"]
+    recon_target = supplied_target if "://" in supplied_target else normalized_target
     list_count = 0
     if target_info["kind"] == "list":
         try:
@@ -1143,10 +1145,14 @@ def run_recon(domain, quick=False, deep=False):
         child_env = os.environ.copy()
         _active_auth_session().export_to_env(child_env)
         child_env["BBHUNT_RUNTIME_PHASE_LOCKED"] = "recon"
-        child_env["BBHUNT_RUNTIME_LOCK_TARGET"] = normalized_target
+        # The inherited flock is keyed by ``normalized_target``, but the shell
+        # child compares this marker with its exact argv before deciding whether
+        # it must acquire a lock itself.  Preserve an exact URL here so the
+        # child recognises the lock it already inherited.
+        child_env["BBHUNT_RUNTIME_LOCK_TARGET"] = recon_target
         proc = subprocess.Popen(
-            f'bash "{script}" "{normalized_target}" {recon_flag}',
-            shell=True,
+            ["bash", script, recon_target, recon_flag],
+            shell=False,
             cwd=BASE_DIR,
             env=child_env,
             start_new_session=True,
@@ -2073,9 +2079,9 @@ def _hunt_target_impl(
     if not scan_only:
         try:
             if deep:
-                result["recon"] = run_recon(canonical_target, quick=quick, deep=True)
+                result["recon"] = run_recon(domain, quick=quick, deep=True)
             else:
-                result["recon"] = run_recon(canonical_target, quick=quick)
+                result["recon"] = run_recon(domain, quick=quick)
         except Exception:
             if recon_only:
                 # recon phase 已经退出（异常也是退出）。先覆盖 running marker，
@@ -2244,6 +2250,7 @@ def hunt_target(
     global _RUNTIME_PHASE_LOCK_FDS
     target_info = classify_target(domain)
     canonical_target = target_info["target"]
+    execution_target = str(domain).strip() if "://" in str(domain) else canonical_target
     if not _active_auth_session().is_empty():
         _active_auth_session().bind_target(canonical_target)
     phases = []
@@ -2271,7 +2278,7 @@ def hunt_target(
         _RUNTIME_PHASE_LOCK_FDS = tuple(lock_fds)
         try:
             return _hunt_target_impl(
-                canonical_target,
+                execution_target,
                 quick=quick,
                 deep=deep,
                 recon_only=recon_only,

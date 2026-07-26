@@ -1222,12 +1222,12 @@ def test_agent_main_reuses_cookie_arg_for_auth_session_and_post_discovery(monkey
 
 
 def test_autopilot_command_md_has_tool_index_prelude():
-    """R1: prelude tells Claude to scan tool-index before non-default tool choice."""
+    """The compact command points unusual helpers to the canonical index."""
     from pathlib import Path
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
-    assert "## Tool Index" in text
+    assert "## Evidence-Triggered Lane Pointers" in text
     assert "docs/tool-index.md" in text
 
 
@@ -1239,17 +1239,18 @@ def test_autopilot_command_md_bootstraps_state_first_then_branches():
     text = md.read_text(encoding="utf-8")
 
     assert "Every invocation is state-first" in text
-    assert "python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only" in text
-    assert "Branch only after that state read" in text
+    normalized = " ".join(text.split())
+    assert "python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only" in normalized
+    assert "Branch only after that state" in normalized
     assert "python3 tools/autopilot_state.py --target <target_shell>" in text
     assert "python3 tools/autopilot_state.py --target <target_shell> --bounded" in text
-    assert "python3 tools/context_pack.py --target <target_shell>" in text
-    assert "bootstrap `ctf_mode` and compact `state`" in text
-    assert text.index("python3 tools/autopilot_state.py --target <target_shell>") < text.index("python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only")
-    assert "If state returns `wait_recon` / `wait_scan`, do not start that phase again" in text
-    assert "Runtime phase locks are the final" in text
-    assert "not a pre-flight checklist" in text
-    assert "1-2 knowledge cards" in text
+    assert "tools/context_pack.py" in text
+    assert "Bootstrap `ctf_mode`, compact `state`" in text
+    assert normalized.index("python3 tools/autopilot_state.py --target <target_shell>") < normalized.index("python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only")
+    assert "`wait_recon` / `wait_scan`: wait or poll" in text
+    assert "Runtime phase locks are the final duplicate-launch guard" in normalized
+    assert "the only initial inputs" in normalized
+    assert "1-2 matching knowledge cards" in text
 
 
 def test_autopilot_command_md_uses_checkpoint_tool_for_writeback():
@@ -1259,9 +1260,9 @@ def test_autopilot_command_md_uses_checkpoint_tool_for_writeback():
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
 
-    assert "python3 tools/checkpoint.py --target <target_shell>" in text
-    assert "target-memory write-back proposals" in text
-    assert "apply target memory only when it is useful" in text
+    assert "tools/checkpoint.py" in text
+    assert "run `/checkpoint`" in text
+    assert "canonical candidate and queue action" in text
 
 
 def test_autopilot_command_md_requires_next_action_queue_consumption():
@@ -1271,12 +1272,12 @@ def test_autopilot_command_md_requires_next_action_queue_consumption():
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
 
-    assert "## Next Action Consumption Loop" in text
-    assert "recommended_executable_action" in text
-    assert "next_action_queue" in text
-    assert "Memory action queue" in text
-    assert "If coverage is near 0%" in text
-    assert "do not end with only" in text
+    assert "consume structured `next_action` and the durable Action" in text
+    assert "resume_action_queue" in text
+    assert "python3 tools/surface.py --target <target_shell> --refresh" in text
+    assert "python3 tools/action_queue.py next --target <target_shell>" in text
+    assert "python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>" in text
+    assert "instead of passive TODOs" in text
 
 
 def test_autopilot_command_md_finish_is_invariant_check_not_checklist():
@@ -1299,8 +1300,8 @@ def test_autopilot_command_md_finish_is_invariant_check_not_checklist():
     text = md.read_text(encoding="utf-8")
     # Old heading MUST be gone.
     assert "## Finish Pre-checklist" not in text
-    # New heading MUST be present.
-    assert "## Finish Condition" in text
+    # New compact transition/finish section must remain present.
+    assert "## Transition And Finish Contract" in text
     # The four invariant subjects from design.md Contract 4 must each
     # be recognizable in the section (anchor-level, not sentence-level).
     invariant_anchors = (
@@ -1313,43 +1314,25 @@ def test_autopilot_command_md_finish_is_invariant_check_not_checklist():
         assert anchor in text, f"finish invariant anchor missing: {anchor}"
     assert "python3 tools/coverage_matrix.py rebuild --target <target_shell>" in text
     assert "python3 tools/coverage_matrix.py find-gaps --target <target_shell>" in text
-    assert "absent or empty matrix is not proof of coverage" in text
+    assert "absent or empty matrix never proof of coverage" in text
     # The framing must NOT reintroduce the checkbox idiom (state check,
     # not flow gate per C3).
     assert text.count("- [ ]") == 0 or "## Finish Pre-checklist" not in text
 
 
-def test_autopilot_command_md_routes_subagents_via_question_to_tool_advisory():
-    """Phase 2 PR-6: deterministic Sub-agent State Machine is replaced by
-    a Question -> Tool advisory table. The five sub-agent names must
-    still be reachable through the advisory; routing is no longer
-    expressed as a state machine.
-
-    Prior shape (deleted): '## Sub-agent State Machine' section with
-    'recon completed -> spawn ...' rules. That was the options[]
-    anti-pattern routing identified in aisuradd.md Part 2 audit.
-
-    New shape: '## Question -> Tool Reference (advisory, not routing)'
-    table mapping next_question text to the cheapest tool that answers
-    it. Sub-agents appear as rows when their evidence shape calls for
-    them.
-    """
+def test_autopilot_command_routes_helpers_through_canonical_owners():
+    """The compact prompt has no second tool-routing table or controller."""
     from pathlib import Path
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
     # Old state machine heading MUST be gone.
     assert "## Sub-agent State Machine" not in text
-    # New advisory section heading MUST be present (accept either Unicode
-    # arrow or ASCII arrow for portability).
-    assert "## Question -> Tool Reference" in text or "## Question → Tool Reference" in text
-    # All five sub-agent names from design.md must still appear somewhere
-    # in the document so they remain reachable.
+    assert "## Question -> Tool Reference" not in text
+    assert "docs/tool-index.md" in text
+    assert "at most one bounded specialist" in text.lower()
     for agent_name in ("recon-ranker", "js-reader", "validator", "chain-builder", "report-writer"):
-        assert agent_name in text, f"sub-agent name missing from autopilot.md: {agent_name}"
-    # The advisory must explicitly frame itself as non-routing to
-    # prevent silent regression to a state machine.
-    assert "advisory" in text.lower() or "not routing" in text.lower() or "not a state machine" in text.lower()
+        assert (Path(__file__).resolve().parents[1] / "agents" / f"{agent_name}.md").is_file()
 
 
 def test_autopilot_command_md_has_post_hunt_unsafe_review_gate():
@@ -1359,15 +1342,9 @@ def test_autopilot_command_md_has_post_hunt_unsafe_review_gate():
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
 
-    assert "After `run_vuln_scan`" in text
     assert "action-gated scanner leads" in text
-    assert "weak template hits as `lead`" in text
-    assert "stable diffs as `signal`" in text
-    assert "practical impact as `candidate`" in text
-    assert "unsafe_skipped.txt" in text
-    assert "ALLOW_UNSAFE_HTTP_TESTS=1" in text
-    assert "standard_public_metadata.txt" in text
-    assert "checkpoint instead of finishing" in text
+    assert "Partial/blocked is unresolved, not tested-clean" in " ".join(text.split())
+    assert "rules/hunting.md" in text
 
 
 def test_autopilot_command_md_defines_deep_as_value_first_comprehensive_depth():
@@ -1379,22 +1356,13 @@ def test_autopilot_command_md_defines_deep_as_value_first_comprehensive_depth():
     flat = " ".join(text.split())
 
     assert "`--deep` is a value-first comprehensive depth flag" in flat
-    assert "not a checkpoint mode" in flat
-    assert "Substantive actions are actions that add, confirm, disprove, block, or record" in flat
-    assert "do not pad the run with repeated scans or cosmetic steps" in flat
-    assert "rules/hunting.md#high-intensity-hunting-posture" in text
-    assert "value-first coverage model" in flat
-    assert "do not lock onto authz/IDOR or any other fixed favorite class" in flat
-    assert "SQLi/NoSQLi" in text
-    assert "SSRF" in text
-    assert "XXE" in text
-    assert "RCE/SSTI/command injection" in text
-    assert "unsafe deserialization" in flat
-    assert "LFI/RFI/path traversal" in text
-    assert "coverage matrix rebuilt" in flat
-    assert "Evidence Ledger / actor matrix reviewed" in flat
-    assert "python3 tools/evidence_ledger.py summary --target <target_shell>" in text
-    assert "python3 tools/checkpoint.py --target <target_shell>" in text
+    assert "not a checklist or favorite bug class" in flat
+    assert "rules/hunting.md" in text
+    assert "tools/coverage_matrix.py" in text
+    assert "tools/evidence_ledger.py" in text
+    hunting = (Path(__file__).resolve().parent.parent / "rules" / "hunting.md").read_text(encoding="utf-8")
+    assert "Value-first coverage model" in hunting
+    assert "Do not prioritize by a fixed favorite bug class" in hunting
 
 
 def test_autopilot_agent_md_has_post_hunt_unsafe_review_gate():
@@ -1478,12 +1446,16 @@ def test_autopilot_prompts_keep_broad_scanner_bounded_without_limiting_ai():
         text = (root / relative_path).read_text(encoding="utf-8")
         flat = " ".join(text.split())
         assert "rules/hunting.md#broad-scanner-input-and-completion-contract" in text
-        assert "tools/hunt.py --target <target_shell> --scan-only --quick" in text
+        normalized = " ".join(text.split())
+        assert "tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick" in normalized or "tools/hunt.py --target <target_shell> --scan-only --quick" in normalized
         assert "never feed raw historical corpora directly to general nuclei" in flat
-        assert "not repeated because Deep mode or raw URL volume is large" in flat
+        assert (
+            "never repeat breadth only because Deep mode or raw volume is large" in flat
+            or "A successful quick pass is not repeated because Deep mode or raw URL volume is large" in flat
+        )
         assert "Bounded Surface is the default window, not an AI capability limit" in flat
-        assert "targeted lists/templates" in flat
-        assert "killed/stopped/timeout/non-zero is incomplete" in flat
+        assert "targeted lists/templates" in flat or "rules/hunting.md" in text
+        assert "treat killed/stopped/timeout/non-zero as incomplete" in flat or "killed/stopped/timeout/non-zero is incomplete" in flat
 
     hunting = (root / "rules/hunting.md").read_text(encoding="utf-8")
     assert "urls/all.txt" in hunting
@@ -1503,7 +1475,15 @@ def test_autopilot_prompts_separate_runner_replay_from_final_validation():
     for relative_path in ("commands/autopilot.md", "agents/autopilot.md"):
         text = (root / relative_path).read_text(encoding="utf-8")
         assert "python3 tools/validation_runner.py <lane> --target" in text
-        assert "its first positional argument is `<lane>`" in text
-        assert "`validation_runner.py` never accepts `--decision-json`" in text
+        normalized = " ".join(text.split())
+        assert "its first positional argument is `<lane>`" in normalized
+        assert "never accepts `--decision-json`" in normalized
         assert "python3 tools/validate.py --target" in text
-        assert "`--decision-json` is a JSON file path, never inline JSON" in text
+        assert "`--decision-json` is a JSON file path, never inline JSON" in text or "the JSON file path is never inline" in normalized
+
+
+def test_autopilot_authenticated_browser_capture_requires_state_marker():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    assert "`--auth-required` for authenticated captures" in " ".join(text.split())

@@ -135,6 +135,8 @@ def classify_high_value_signal(*, path: str = "", query_keys: list[str] | None =
 
     if lower_path.startswith("/api/") or re.search(r"/api/v\d+/", lower_path):
         add(2, "api", "api")
+    if re.search(r"/(?:[a-z0-9_-]*dom|reflected)(?:/|$)", lower_path):
+        add(3, "xss", "client-side-input")
 
     path_hints = [
         token
@@ -165,7 +167,9 @@ def classify_high_value_signal(*, path: str = "", query_keys: list[str] | None =
         add(3, "sequential", "sequential-id")
     if any(token in lower_path for token in ("upload", "import", "export", "download", "preview", "render")):
         add(3, "file", "file-flow")
-    if any(token in lower_path for token in ("oauth", "saml", "sso", "session")):
+    if any(token in lower_path for token in ("oauth", "saml", "sso")) or re.search(
+        r"/session(?:[/._-]|$)", lower_path
+    ):
         add(4, "auth", "auth-flow")
     if any(token in lower_path for token in ("webhook", "callback")):
         add(4, "callback", "callback-flow")

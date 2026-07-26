@@ -162,6 +162,50 @@ class TestTargetScope:
         assert session.headers_for_url("https://api.example.com/me") == {"Cookie": "s=1"}
         assert session.headers_for_url("https://example.net/me") == {}
 
+    def test_protocol_relative_external_url_does_not_receive_auth(self):
+        session = AuthSession(["Cookie: s=1"], target="example.com")
+        assert session.headers_for_url("//api.example.com/me") == {"Cookie": "s=1"}
+        assert session.headers_for_url("//example.net/me") == {}
+
+    def test_wildcard_and_default_port_target_scope(self):
+        wildcard = AuthSession(["Cookie: s=1"], target="*.example.com")
+        assert wildcard.headers_for_url("https://api.example.com/me") == {"Cookie": "s=1"}
+        assert wildcard.headers_for_url("https://example.com/me") == {}
+
+        https = AuthSession(["Cookie: s=1"], target="example.com:443")
+        assert https.headers_for_url("https://example.com/me") == {"Cookie": "s=1"}
+        assert https.headers_for_url("//example.com/me") == {"Cookie": "s=1"}
+        assert https.headers_for_url("http://example.com/me") == {}
+
+    def test_explicit_https_target_scope_survives_same_target_bind_and_env_round_trip(self):
+        session = AuthSession(["Cookie: s=1"], target="https://example.com")
+        session.bind_target("example.com")
+
+        assert session.target() == "example.com"
+        assert session.headers_for_url("https://example.com/me") == {"Cookie": "s=1"}
+        assert session.headers_for_url("http://example.com/me") == {}
+
+        env = {}
+        session.export_to_env(env)
+        restored = AuthSession.from_env(env)
+        assert env[ENV_TARGET] == "https://example.com"
+        assert restored.headers_for_url("https://example.com/me") == {"Cookie": "s=1"}
+        assert restored.headers_for_url("http://example.com/me") == {}
+
+    def test_file_target_scope_survives_from_sources_merge(self, tmp_path):
+        import json
+
+        auth_file = tmp_path / "auth.json"
+        auth_file.write_text(json.dumps({
+            "target": "https://example.com",
+            "cookie": "s=1",
+        }))
+
+        session = AuthSession.from_sources(env={}, file=auth_file)
+
+        assert session.headers_for_url("https://example.com/me") == {"Cookie": "s=1"}
+        assert session.headers_for_url("http://example.com/me") == {}
+
     def test_rebinding_to_another_target_drops_headers_and_origins(self):
         session = AuthSession(
             ["Authorization: Bearer secret"],

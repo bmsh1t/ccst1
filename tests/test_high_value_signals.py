@@ -20,3 +20,14 @@ def test_short_tokens_still_match_explicit_segments_and_words():
 
     assert "ci" in path_signal.classes
     assert "rce" in evidence_signal.classes
+
+
+def test_dom_and_reflected_routes_are_client_side_without_sessionstorage_auth_noise():
+    dom = classify_high_value_signal(
+        path="/dom/toxicdom/external/sessionStorage/array/eval"
+    )
+    reflected = classify_high_value_signal(path="/reflected/url/css_import")
+
+    assert "xss" in dom.classes
+    assert "auth" not in dom.classes
+    assert "xss" in reflected.classes

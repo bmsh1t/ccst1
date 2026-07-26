@@ -21,6 +21,8 @@ from checkpoint import (
     _lead_proposals,
     _matrix_summary,
     _next_proposals,
+    _ranked_surface_replay_draft,
+    _ranked_surface_vuln_hint,
     _select_default_candidate,
     apply_target_memory,
     build_checkpoint,
@@ -1665,6 +1667,24 @@ def test_checkpoint_surfaces_case_state_seed_opportunity_from_object_endpoint(tm
     assert "tools/case_state_seed.py" in checkpoint["recommended_executable_action"]["command_hint"]
 
 
+def test_checkpoint_does_not_promote_low_confidence_historical_object_shape(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir()
+    (recon_dir / "live" / "httpx_full.txt").write_text("https://target.com\n")
+    historical = "https://target.com/?option=com_demo&Itemid=0\n"
+    (recon_dir / "urls" / "with_params.txt").write_text(historical)
+    (recon_dir / "urls" / "all.txt").write_text(historical)
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert checkpoint["case_state_seed"]["suggested_objects"][0]["confidence"] == "low"
+    assert not any(
+        item.get("type") in {"case-state-seed", "case-state-enrichment"}
+        for item in checkpoint["next_action_queue"]
+    )
+
+
 def test_checkpoint_demotes_endpointless_case_state_seed_to_enrichment(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/rest/languages",
@@ -1991,6 +2011,25 @@ def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
     assert "--browser-observed" in skeleton
     assert "--state-changing" not in skeleton
     assert "--redline-checked" not in skeleton
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://target.com/urldom/jsonp?callback=foo",
+        "https://target.com/reflected/url/css_import?q=a",
+        "https://target.com/dom/toxicdom/external/sessionStorage/array/eval",
+    ],
+)
+def test_ranked_dom_surfaces_prefer_xss_over_server_side_or_auth_noise(url):
+    entry = {"url": url}
+    state = {"surface": {"p1": [entry], "p2": []}, "recommended_targets": [entry]}
+
+    assert _ranked_surface_vuln_hint(entry, url) == "XSS"
+    draft = _ranked_surface_replay_draft(state, entry, target="target.com")
+    assert "focus XSS evidence" in draft
+    assert "parameter-behavior-first" not in draft
+    assert "browser-state-first page route" not in draft
 
 
 def test_ranked_surface_role_replay_when_case_state_ready():

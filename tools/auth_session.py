@@ -71,7 +71,8 @@ class AuthSession:
         allowed_origins: list[str] | None = None,
     ):
         self._headers: list[str] = []
-        self._target = canonical_target_value(target)
+        self._scope_target = str(target or "").strip()
+        self._target = canonical_target_value(self._scope_target)
         self._allowed_origins: list[str] = []
         for origin in allowed_origins or []:
             normalized = _normalize_origin(origin)
@@ -82,11 +83,21 @@ class AuthSession:
 
     def bind_target(self, target: str) -> "AuthSession":
         """绑定本次运行目标；跨目标时丢弃认证并按 anonymous 继续。"""
-        requested = canonical_target_value(target)
+        requested_scope = str(target or "").strip()
+        requested = canonical_target_value(requested_scope)
         if self._target and requested and self._target != requested:
             # 认证材料不能从一个目标迁移到另一个目标；与 Shell helper 保持同一契约。
             self._headers.clear()
             self._allowed_origins.clear()
+            self._scope_target = requested_scope
+        elif requested and (
+            not self._scope_target
+            or "://" in requested_scope
+            or requested_scope.startswith("//")
+        ):
+            # 同一 canonical target 的显式 URL 是更窄的认证 scope；后续内部
+            # host-only bind 不能把它重新放宽到另一个 scheme。
+            self._scope_target = requested_scope
         if requested:
             self._target = requested
         return self
@@ -102,12 +113,14 @@ class AuthSession:
         candidate = (url or "").strip()
         if not candidate:
             return False
-        if candidate.startswith("/"):
+        if candidate.startswith("/") and not candidate.startswith("//"):
             return bool(self._target)
         normalized_origin = _normalize_origin(candidate)
         if normalized_origin and normalized_origin in self._allowed_origins:
             return True
-        return bool(self._target) and url_belongs_to_target(candidate, self._target)
+        return bool(self._target) and url_belongs_to_target(
+            candidate, self._scope_target or self._target
+        )
 
     def add_header(self, raw: str) -> None:
         """Add a 'Name: value' header. Reject malformed or CRLF-tainted input."""
@@ -244,6 +257,7 @@ class AuthSession:
                 session.add_header(header)
             if not session._target and file_session._target:
                 session._target = file_session._target
+                session._scope_target = file_session._scope_target
             for origin in file_session._allowed_origins:
                 if origin not in session._allowed_origins:
                     session._allowed_origins.append(origin)
@@ -307,7 +321,7 @@ class AuthSession:
             ENV_SESSION_ID: self.session_id(),
         }
         if self._target:
-            overlay[ENV_TARGET] = self._target
+            overlay[ENV_TARGET] = self._scope_target or self._target
         if self._allowed_origins:
             overlay[ENV_ORIGINS] = "\n".join(self._allowed_origins)
         return overlay
@@ -342,7 +356,7 @@ class AuthSession:
         if self.is_empty():
             return "auth: none (anonymous)"
         names = sorted({header.partition(":")[0].strip() for header in self._headers})
-        scope = self._target or "unbound"
+        scope = self._scope_target or self._target or "unbound"
         return f"auth: session={self.session_id()} scope={scope} headers=[{', '.join(names)}]"
 
     def __repr__(self) -> str:

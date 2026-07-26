@@ -66,15 +66,19 @@ def test_autopilot_docs_keep_discovery_as_first_class_mode():
     command = _read("commands/autopilot.md")
     agent = _read("agents/autopilot.md")
 
-    for text in (command, agent):
-        assert "Discovery / Exploitation / Validation Modes" in text
-        assert "Evidence-driven depth does not mean evidence-only testing" in text
-        assert "actively generate new evidence" in text
-        assert "browser-observed APIs" in text
-        assert "JS/source-derived routes" in text
-        assert "component/CVE intelligence" in text
-        assert "AI override" in text
-        assert "not hard rails" in text
+    assert "Discovery / Exploitation / Validation Modes" in command
+    assert "evidence-driven depth does not" in command
+    assert "Actively generate new evidence" in command
+    assert "AI override" in command
+    assert "skills/runtime-protocol.md" in command
+    for marker in (
+        "Evidence-driven depth does not mean evidence-only testing",
+        "browser-observed APIs",
+        "JS/source-derived routes",
+        "component/CVE intelligence",
+        "not hard rails",
+    ):
+        assert marker in agent
 
 
 def test_case_state_first_docs_do_not_make_it_a_hard_rail():
@@ -83,12 +87,19 @@ def test_case_state_first_docs_do_not_make_it_a_hard_rail():
     validate = _read("commands/validate.md")
     hunting = _read("rules/hunting.md")
 
-    for text in (command, agent):
-        assert "Case-State First, Not Case-State Only" in text
-        assert "case-state-validation" in text
-        assert "case-state-enrichment" in text
-        assert "not a scope gate" in text
-        assert "AI override" in text
+    assert "Case-State First, Not Case-State Only" in command
+    assert "case-state-validation" in command
+    assert "case-state-enrichment" in command
+    assert "not a scope gate" in command
+    assert "AI override" in command
+    for marker in (
+        "Case-State First, Not Case-State Only",
+        "case-state-validation",
+        "case-state-enrichment",
+        "not a scope gate",
+        "AI override",
+    ):
+        assert marker in agent
 
     assert "Case-State-First Validation" in validate
     assert "runtime memory that feeds deterministic evidence runners" in validate

@@ -372,15 +372,17 @@ def _create_runner_finding(
     url = str(summary.get("url") or summary.get("raw_endpoint") or "").strip()
     lane = str(summary.get("lane") or "").strip()
     finding_type = _runner_finding_type(vuln_class, lane)
+    lifecycle_label = "Validated" if validation_status == "validated" else "Candidate"
+    confidence = "confirmed" if validation_status == "validated" else "high"
     result = upsert_finding(findings_dir, {
         "id": finding_id,
         "type": finding_type,
         "category": finding_type,
-        "title": f"Validated {vuln_class or finding_type} on {url or target}",
+        "title": f"{lifecycle_label} {vuln_class or finding_type} on {url or target}",
         "summary": str((summary.get("evidence_rubric") or {}).get("summary") or summary.get("result") or "")[:240],
         "url": url,
         "severity": _runner_finding_severity(finding_type),
-        "confidence": "confirmed",
+        "confidence": confidence,
         "source_file": str(summary.get("summary_path") or ""),
         "line_number": 0,
         "template_id": "",
@@ -631,6 +633,9 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
         validation_summary=summary_ref,
         validated_at=generated_at,
     )
+    confidence = "confirmed" if gate_updates["validation_status"] == "validated" else (
+        "high" if result == "tested_finding" else ""
+    )
     updated = update_finding_status(
         findings_dir,
         finding_id,
@@ -638,7 +643,7 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
         **identity_updates,
         vuln_class=vuln_class,
         evidence_rubric=summary.get("evidence_rubric") or {},
-        confidence="confirmed" if result == "tested_finding" else "",
+        confidence=confidence,
     )
     if not updated:
         finding_type = _runner_finding_type(vuln_class, str(summary.get("lane") or ""))
@@ -657,13 +662,16 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
                 validation_summary=summary_ref,
                 validated_at=generated_at,
             )
+            confidence = "confirmed" if gate_updates["validation_status"] == "validated" else (
+                "high" if result == "tested_finding" else ""
+            )
             updated = update_finding_status(
                 findings_dir,
                 existing_id,
                 **gate_updates,
                 vuln_class=vuln_class,
                 evidence_rubric=summary.get("evidence_rubric") or {},
-                confidence="confirmed" if result == "tested_finding" else "",
+                confidence=confidence,
             )
             if updated:
                 return {
@@ -1544,7 +1552,7 @@ def run_authz_public_exposure(
             f"markers={','.join(markers)} unauthenticated public exposure {impact_text}".strip()
         ),
         "raw": f"anonymous replay returned {response['status']} with markers {markers}; {impact_text}".strip(),
-        "confidence": "confirmed" if candidate_ready else "medium",
+        "confidence": "high" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))
     if not candidate_ready:
@@ -2066,7 +2074,7 @@ def run_authz_role_replay(
             f"authenticated broad exposure={authenticated_exposure_any}; "
             "role-aware replay captured"
         ),
-        "confidence": "confirmed" if candidate_ready else "medium",
+        "confidence": "high" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding, vuln_type="authz"))
     if result == "dead_end":
@@ -2313,7 +2321,7 @@ def run_sqli_result_diff(
         ),
         "raw": "SQLI-POC-VERIFIED read-only baseline perturbation repeat stable"
         if candidate_ready else "read-only SQLi perturbation did not produce strong SQLi evidence",
-        "confidence": "confirmed" if candidate_ready else "medium",
+        "confidence": "high" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))
     if not candidate_ready:
@@ -2474,9 +2482,16 @@ def run_marker_replay(
             if candidate_ready
             else "exact marker replay did not show expected inert marker"
         ),
-        "confidence": "confirmed" if candidate_ready else "medium",
+        "confidence": "high" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding, vuln_type=vuln_class))
+    ledger_result = (
+        "tested_finding"
+        if candidate_ready and rubric.get("ready") is True
+        else "signal"
+        if candidate_ready
+        else "tested_clean"
+    )
     summary_path = bundle / "summary.json"
     evidence_ref = _rel(summary_path, repo_root)
     notes = (
@@ -2493,7 +2508,7 @@ def run_marker_replay(
         actor="anonymous",
         object_scope="none",
         variant="replay",
-        result=result,
+        result=ledger_result,
         source="validation-runner:marker-replay",
         evidence_ref=evidence_ref,
         notes=notes,
@@ -2501,6 +2516,21 @@ def run_marker_replay(
         redline_checked=redline_checked,
         state_changing=state_changing,
     )
+    xss_marker = str(vuln_class or "").strip().lower() in {
+        "xss",
+        "cross-site-scripting",
+    }
+    ai_next = {
+        "hypothesis": "exact request causes server-side evaluation/execution observable through an inert marker",
+        "next_action": "If marker is stable, use /validate to assess execution context and bounded impact; if absent, refine the hypothesis or downgrade.",
+        "stop_condition": "Expected inert marker is absent, unstable across repeats, or only appears in client-side/static reflection without execution context.",
+    }
+    if xss_marker:
+        ai_next = {
+            "hypothesis": "the supplied input is reflected in a target-owned HTML response",
+            "next_action": "Capture the exact browser execution context and encoding boundary; keep plain or safely encoded reflection as a signal, not an XSS finding.",
+            "stop_condition": "The marker is absent, unstable, safely encoded, or has no executable browser context.",
+        }
     summary = {
         "schema_version": SCHEMA_VERSION,
         "lane": "marker_replay",
@@ -2520,11 +2550,7 @@ def run_marker_replay(
         "runs": runs,
         "evidence_rubric": rubric,
         "ledger_record": ledger,
-        "ai_next": {
-            "hypothesis": "exact request causes server-side evaluation/execution observable through an inert marker",
-            "next_action": "If marker is stable, use /validate to assess execution context and bounded impact; if absent, refine the hypothesis or downgrade.",
-            "stop_condition": "Expected inert marker is absent, unstable across repeats, or only appears in client-side/static reflection without execution context.",
-        },
+        "ai_next": ai_next,
     }
     summary["summary_path"] = _rel(summary_path, repo_root)
     _write_json(summary_path, summary)
@@ -2671,7 +2697,7 @@ def run_idor_actor_pair(
             if candidate_ready
             else "owner peer replay captured; strong private-data marker not proven"
         ),
-        "confidence": "confirmed" if candidate_ready else "medium",
+        "confidence": "high" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding, vuln_type="idor"))
     if result == "dead_end":

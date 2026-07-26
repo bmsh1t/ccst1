@@ -17,8 +17,8 @@ def test_slash_command_runs_inline_with_one_controller_and_bounded_specialist():
     assert "runs inline in the current Claude session as the sole controller" in normalized
     assert "does not create/resume legacy `agent_session.json`" in normalized
     assert "specialists default to zero" in normalized
-    assert "at most one bounded specialist" in normalized
-    assert "without spawning agents, running full recon/scans, writing final closure, or controlling finish" in normalized
+    assert "At most one bounded specialist" in normalized
+    assert "The invoked specialist must not spawn nested agents, run full recon/scans, write final closure, or control finish" in normalized
     assert "--isolated" not in text
 
 
@@ -28,8 +28,10 @@ def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
 
     assert 'allowed-tools:' in text
     assert '- Bash' in text
+    assert '- Agent' in text
     assert 'mcp__Playwright__*' in text
     assert 'mcp__chrome-devtools__*' in text
+    assert "through Claude Code's `Agent` tool" in normalized
     assert 'tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"' in text
     assert "git rev-parse --show-toplevel" in text
     assert "Authoritative bootstrap contract (do not reinterpret)" in normalized
@@ -62,9 +64,9 @@ def test_bounded_deep_invocation_handoffs_instead_of_expanding_new_lanes():
 
     assert "[--max-lanes N]" in command
     assert "invocation_batch.bounded" in command
-    assert "browser/source discoveries become next-invocation work, not lane N+1" in command
+    assert "browser/source discoveries become next-invocation work, not lane n+1" in " ".join(command.split()).lower()
     assert "after lane N do not execute a newly discovered queue item" in command
-    assert "terminal handoff override target-exhaustion bullets" in command
+    assert "terminal handoff overrides target exhaustion" in command
     assert "checkpoint/sync durable queue" in agent
 
 

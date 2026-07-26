@@ -49,6 +49,27 @@ def test_unknown_versioned_component_gets_nvd_fallback_without_fake_package_mapp
     assert "osv_ecosystem" not in queries[0]
 
 
+def test_protocol_and_managed_edge_banners_do_not_become_advisory_queries(tmp_path):
+    components = [
+        _component(name="HTTP", version="3"),
+        {**_component(name="Google Cloud", version=""), "kind": "web_component"},
+        {**_component(name="Google Frontend", version=""), "kind": "network_service"},
+    ]
+
+    assert intel_sources.build_component_queries(components) == []
+    calls = []
+    result = intel_sources.fetch_nvd_for_components(
+        components,
+        tmp_path,
+        fetcher=lambda url, **_kwargs: calls.append(url) or {"vulnerabilities": []},
+        now=NOW,
+    )
+
+    assert calls == []
+    assert result["status"] == "unavailable"
+    assert result["stats"]["eligible_queries"] == 0
+
+
 def test_network_service_uses_cpe_and_unknown_port_is_not_queryable(tmp_path):
     service = {
         "name": "openssh",

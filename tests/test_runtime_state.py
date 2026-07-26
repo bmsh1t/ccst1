@@ -375,6 +375,55 @@ def test_inspect_recon_artifacts_reports_ready_cache(tmp_path):
     assert payload["counts"]["api_urls"] == 1
 
 
+@pytest.mark.parametrize(
+    ("status", "note", "outcome"),
+    [
+        ("ok", "completed", "success_zero"),
+        ("skipped", "httpx missing", "skipped"),
+        ("partial", "httpx timed out", "timeout"),
+        ("error", "httpx failed", "failure"),
+    ],
+)
+def test_http_probe_outcome_distinguishes_success_zero_from_incomplete(
+    tmp_path, status, note, outcome
+):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "live" / "httpx_full.txt").write_text("")
+    (recon_dir / "recon_manifest.jsonl").write_text(
+        json.dumps({
+            "record_type": "recon_phase",
+            "phase": "http_probing",
+            "status": status,
+            "count": 0,
+            "note": note,
+        }) + "\n"
+    )
+
+    exact = inspect_recon_artifacts(tmp_path, "target.com")
+    fast = inspect_recon_artifacts_fast(tmp_path, "target.com")
+
+    assert exact["http_probe"]["outcome"] == outcome
+    assert fast["http_probe"]["outcome"] == outcome
+    assert (exact["missing"] == []) is (outcome == "success_zero")
+
+
+def test_zero_live_hosts_keeps_historical_surface_ready(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir()
+    (recon_dir / "live" / "httpx_full.txt").write_text("")
+    (recon_dir / "urls" / "all.txt").write_text("https://target.com/old-api\n")
+
+    exact = inspect_recon_artifacts(tmp_path, "target.com")
+    fast = inspect_recon_artifacts_fast(tmp_path, "target.com")
+
+    assert exact["host_inventory_ready"] is False
+    assert exact["surface_inputs_ready"] is True
+    assert exact["ready"] is True
+    assert fast["ready"] is True
+
+
 def test_normal_recon_js_inventory_is_a_surface_input(tmp_path):
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)

@@ -95,11 +95,13 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.attack_probe_filter import is_attack_probe, sanitize_attack_probe_url
     from tools.finding_index import load_finding_index, upsert_finding
+    from tools.recon_filters import has_malformed_path
     from tools.surface_weights import value_weight
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
     from attack_probe_filter import is_attack_probe, sanitize_attack_probe_url  # type: ignore
     from finding_index import load_finding_index, upsert_finding  # type: ignore
+    from recon_filters import has_malformed_path  # type: ignore
     from surface_weights import value_weight  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
@@ -252,11 +254,11 @@ _RELEVANCE_RULES: tuple[tuple[str, int, re.Pattern, str], ...] = (
     ("Authz", 5, re.compile(r"/(?:admin|staff|internal|backoffice|console|manage|management)(?:/|$|\b)", re.I), "admin/internal path"),
     ("IDOR", 6, re.compile(r"\b(userid|user_id|accountid|account_id|orgid|org_id|organizationid|organization_id|tenantid|tenant_id|workspaceid|workspace_id|customerid|customer_id|memberid|member_id|orderid|order_id|invoiceid|invoice_id|objectid|object_id|ownerid|owner_id)\b", re.I), "object/tenant identifier parameter"),
     ("IDOR", 3, re.compile(r"\b(id|uid|uuid|guid|account|accounts|tenant|tenants|org|organization|workspace|customer|customers|order|orders|invoice|invoices|user|users|member|members|profile|profiles)\b", re.I), "object reference path/parameter"),
-    ("SSRF", 8, re.compile(r"\b(url|uri|callback|callbackurl|callback_url|webhook|fetch|proxy|target|host|hostname|domain|remote|endpoint|imageurl|image_url|avatarurl|avatar_url|feed|oembed|importurl|import_url|sourceurl|source_url)\b", re.I), "server-side fetch candidate parameter"),
+    ("SSRF", 8, re.compile(r"\b(url|uri|callback|callbackurl|callback_url|webhook|fetch|proxy|target|targeturl|target_url|host|hostname|domain|remote|endpoint|imageurl|image_url|avatarurl|avatar_url|feed|oembed|importurl|import_url|sourceurl|source_url)\b", re.I), "server-side fetch candidate parameter"),
     ("SSRF", 5, re.compile(r"/(?:fetch|proxy|webhook|callback|oembed|import|integrations?)(?:/|$|\b)", re.I), "server-side fetch/webhook path"),
     ("Path", 8, re.compile(r"\b(file|filepath|file_path|filename|file_name|path|dir|directory|download|export|include|include_path|template|theme|locale|doc|document|attachment|archive)\b", re.I), "file/path selector"),
     ("Path", 6, re.compile(r"/(?:download|export|file|files|attachment|attachments|include|static|assets|preview)(?:/|$|\b)", re.I), "file download/read path"),
-    ("RCE", 9, re.compile(r"\b(cmd|command|exec|execute|shell|process|template|render|ssti|deserialize|deserialise|unserialize|pickle|yaml|script|workflow|job)\b", re.I), "code/template/deserialization execution candidate"),
+    ("RCE", 9, re.compile(r"\b(cmd|command|exec|execute|shell|process|template|render|ssti|deserialize|deserialise|unserialize|pickle|yaml|workflow|job)\b", re.I), "code/template/deserialization execution candidate"),
     ("RCE", 6, re.compile(r"/(?:render|template|preview|execute|exec|job|jobs|worker|debug)(?:/|$|\b)", re.I), "render/execution path"),
     ("XXE", 8, re.compile(r"\b(xml|soap|wsdl|saml|xinclude|xxe|doctype|docx|xlsx|svg|rss|feed)\b", re.I), "XML/parser surface"),
     ("Upload", 8, re.compile(r"\b(upload|import|file|filename|attachment|avatar|media|document|csv|xlsx|zip|archive)\b", re.I), "upload/import file surface"),
@@ -264,6 +266,7 @@ _RELEVANCE_RULES: tuple[tuple[str, int, re.Pattern, str], ...] = (
     ("OAuth", 8, re.compile(r"\b(oauth|oidc|saml|sso|redirecturi|redirect_uri|clientid|client_id|state|nonce|pkce|scope|callback)\b", re.I), "OAuth/OIDC/SAML flow surface"),
     ("JWT", 7, re.compile(r"\b(jwt|token|access_token|refresh_token|id_token|kid|jwks|jwk|jws|bearer|authorization)\b", re.I), "token/JWT surface"),
     ("Webhook", 8, re.compile(r"\b(webhook|hook|callback|signature|hmac|event|secret)\b|/(?:webhook|hook|callback)(?:/|$|\b)", re.I), "webhook/signature surface"),
+    ("XSS", 8, re.compile(r"/(?:[a-z0-9_-]*dom|reflected)(?:/|$|\b)", re.I), "reflection/DOM execution path"),
     ("XSS", 5, re.compile(r"\b(html|content|message|comment|title|name|callback|redirect|return|next|search|q)\b", re.I), "reflection/DOM input surface"),
     ("CSRF", 5, re.compile(r"\b(csrf|xsrf|state|token|update|change|invite|delete|remove|submit)\b", re.I), "session state-change surface"),
 )
@@ -839,6 +842,22 @@ def class_relevance(endpoint: str, vuln_class: str, observed_params: object | No
     if vuln_class == "Race":
         return _race_relevance(endpoint, params)
 
+    if vuln_class == "SSRF" and re.search(
+        r"/(?:url)?dom(?:/|$)|/location/(?:hash|search)(?:/|$)|/window/(?:name|open)(?:/|$)",
+        str(endpoint or ""),
+        re.I,
+    ):
+        # These paths name browser-side sources/sinks.  Keep the endpoint in
+        # coverage, but do not promote it as server-side SSRF without an
+        # independently observed URL-like request parameter.
+        params_blob = _normalise_signal(" ".join(params))
+        if not re.search(
+            r"\b(url|uri|callbackurl|callback_url|webhook|proxy|target|targeturl|target_url|host|hostname|remote|endpoint|imageurl|image_url|importurl|import_url|sourceurl|source_url)\b",
+            params_blob,
+            re.I,
+        ):
+            return {"relevance_score": 0, "relevance_reason": ""}
+
     blob = _normalise_signal(" ".join([endpoint, *params]))
     score = 0
     reasons: list[str] = []
@@ -1042,7 +1061,7 @@ def rebuild_matrix(
         if is_attack_probe(raw):
             raw = sanitize_attack_probe_url(raw)
         path = _canonicalize_endpoint(raw)
-        if not path:
+        if not path or has_malformed_path(raw):
             continue
         if _looks_like_minified_js_pseudo_endpoint(path):
             continue

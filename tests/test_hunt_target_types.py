@@ -96,9 +96,14 @@ def test_run_recon_passes_ip_target_to_subprocess(monkeypatch):
     monkeypatch.setattr(hunt, "_RUNTIME_PHASE_LOCK_FDS", (101, 102))
 
     assert hunt.run_recon("1.2.3.4") is True
-    assert '"1.2.3.4"' in captured["cmd"]
+    assert captured["cmd"] == [
+        "bash",
+        str(Path(hunt.TOOLS_DIR) / "recon_engine.sh"),
+        "1.2.3.4",
+        "--normal",
+    ]
     assert "--normal" in captured["cmd"]
-    assert captured["shell"] is True
+    assert captured["shell"] is False
     assert captured["cwd"] == hunt.BASE_DIR
     assert captured["start_new_session"] is True
     assert captured["env"]["BBHUNT_RUNTIME_PHASE_LOCKED"] == "recon"
@@ -107,6 +112,71 @@ def test_run_recon_passes_ip_target_to_subprocess(monkeypatch):
     assert captured["timeout"] == 7200
     assert captured["env"]["BBHUNT_AUTH_HEADERS"] == "Cookie: session=abc"
     assert captured["env"]["BBHUNT_SESSION_ID"] == hunt._AUTH_SESSION.session_id()
+
+
+def test_run_recon_does_not_shell_expand_target(monkeypatch):
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["shell"] = kwargs.get("shell")
+        return FakeProc()
+
+    monkeypatch.setattr(hunt.subprocess, "Popen", fake_popen)
+    target = "example.com;printf injected"
+
+    assert hunt.run_recon(target) is True
+    assert captured["cmd"][2] == target
+    assert captured["shell"] is False
+
+
+def test_run_recon_preserves_exact_url_argv(monkeypatch):
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["shell"] = kwargs.get("shell")
+        captured["env"] = kwargs.get("env")
+        return FakeProc()
+
+    monkeypatch.setattr(hunt.subprocess, "Popen", fake_popen)
+    target = "https://Example.COM:8443/app"
+
+    assert hunt.run_recon(target) is True
+    assert captured["cmd"][2] == target
+    assert captured["shell"] is False
+    assert captured["env"]["BBHUNT_RUNTIME_PHASE_LOCKED"] == "recon"
+    assert captured["env"]["BBHUNT_RUNTIME_LOCK_TARGET"] == target
+
+
+def test_hunt_target_preserves_exact_url_for_recon(monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr(
+        hunt,
+        "run_recon",
+        lambda target, **_kwargs: seen.setdefault("recon_target", target) or True,
+    )
+    monkeypatch.setattr(hunt, "_persist_runtime_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hunt, "_update_target_profile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hunt, "_auto_log_session_summary", lambda *_args, **_kwargs: None)
+
+    result = hunt.hunt_target("https://Example.COM:8443/app", recon_only=True)
+
+    assert result["domain"] == "example.com:8443"
+    assert seen["recon_target"] == "https://Example.COM:8443/app"
 
 
 @pytest.mark.parametrize(

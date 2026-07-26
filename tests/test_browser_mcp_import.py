@@ -6,6 +6,7 @@ from pathlib import Path
 import browser_mcp_import
 from tools.action_queue import load_queue
 from tools import vision_browser
+from runtime_state import inspect_browser_evidence
 
 
 def test_browser_mcp_import_writes_surface_and_evidence(tmp_path):
@@ -406,6 +407,118 @@ def test_browser_mcp_import_falls_back_to_har_when_network_file_is_missing(tmp_p
     assert summary["status"] == "ok"
     assert summary["counts"]["requests"] == 1
     assert Path(summary["private_artifacts"]["network_har"]["path"]).read_bytes() == har_path.read_bytes()
+
+
+def test_browser_readiness_requires_success_network_fresh_fingerprint(tmp_path):
+    network_path = tmp_path / "network.json"
+    network_path.write_text(json.dumps([{
+        "url": "https://target.local/api/me",
+        "method": "GET",
+        "resourceType": "xhr",
+        "status": 200,
+    }]))
+    summary = browser_mcp_import.import_mcp_browser_evidence(
+        target="target.local",
+        network_path=network_path,
+        evidence_root=tmp_path / "evidence",
+        recon_root=tmp_path / "recon",
+    )
+
+    ready = inspect_browser_evidence(tmp_path, "target.local")
+    assert ready["ready"] is True
+    assert ready["core_network"] is True
+    assert ready["fresh"] is True
+    assert ready["fingerprint_valid"] is True
+
+    summary_path = Path(summary["summary_path"])
+    saved_summary = json.loads(summary_path.read_text())
+    saved_summary["captured_at"] = "2000-01-01T00:00:00Z"
+    summary_path.write_text(json.dumps(saved_summary))
+    old = inspect_browser_evidence(tmp_path, "target.local")
+    assert old["ready"] is False
+    assert old["fresh"] is False
+    saved_summary["captured_at"] = summary["captured_at"]
+    summary_path.write_text(json.dumps(saved_summary))
+
+    Path(summary["artifacts"]["requests_json"]).write_text("{}\n")
+    stale = inspect_browser_evidence(tmp_path, "target.local")
+    assert stale["ready"] is False
+    assert stale["fingerprint_valid"] is False
+
+
+def test_authenticated_browser_capture_reports_missing_state(tmp_path):
+    network_path = tmp_path / "network.json"
+    network_path.write_text(json.dumps([{
+        "url": "https://target.local/api/account",
+        "method": "GET",
+        "resourceType": "xhr",
+        "status": 200,
+    }]))
+    summary = browser_mcp_import.import_mcp_browser_evidence(
+        target="target.local",
+        network_path=network_path,
+        auth_required=True,
+        auth_state="present",
+        evidence_root=tmp_path / "evidence",
+        recon_root=tmp_path / "recon",
+    )
+
+    readiness = inspect_browser_evidence(tmp_path, "target.local")
+    assert summary["status"] == "partial"
+    assert summary["success"] is True
+    assert summary["auth_state"] == "missing"
+    assert readiness["ready"] is False
+    assert readiness["auth_required"] is True
+    assert "missing_state" in readiness["reason"]
+
+
+def test_authenticated_browser_readiness_rechecks_archived_state(tmp_path):
+    network_path = tmp_path / "network.json"
+    network_path.write_text(json.dumps([{
+        "url": "https://target.local/api/account",
+        "method": "GET",
+        "resourceType": "xhr",
+        "status": 200,
+    }]))
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"cookies": [{"name": "session"}]}))
+    summary = browser_mcp_import.import_mcp_browser_evidence(
+        target="target.local",
+        network_path=network_path,
+        state_path=state_path,
+        auth_required=True,
+        evidence_root=tmp_path / "evidence",
+        recon_root=tmp_path / "recon",
+    )
+
+    assert inspect_browser_evidence(tmp_path, "target.local")["ready"] is True
+    Path(summary["private_artifacts"]["browser_state"]["path"]).unlink()
+
+    readiness = inspect_browser_evidence(tmp_path, "target.local")
+    assert readiness["ready"] is False
+    assert readiness["auth_state"] == "missing"
+    assert "missing_state" in readiness["reason"]
+
+
+def test_failed_browser_envelope_is_not_ready_even_with_requests(tmp_path):
+    network_path = tmp_path / "network.json"
+    network_path.write_text(json.dumps({
+        "success": False,
+        "status": "error",
+        "data": {"requests": [{"url": "https://target.local/api/me"}]},
+        "error": "capture failed",
+    }))
+    summary = browser_mcp_import.import_mcp_browser_evidence(
+        target="target.local",
+        network_path=network_path,
+        evidence_root=tmp_path / "evidence",
+        recon_root=tmp_path / "recon",
+    )
+
+    readiness = inspect_browser_evidence(tmp_path, "target.local")
+    assert summary["status"] == "error"
+    assert summary["success"] is False
+    assert readiness["ready"] is False
 
 
 def test_browser_mcp_import_merges_incremental_surface_instead_of_erasing(tmp_path):

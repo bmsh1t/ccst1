@@ -122,6 +122,36 @@ PACKAGE_MAPPINGS: dict[str, dict] = {
     "cpanel": {"nvd_keyword": "cPanel", "allow_nvd_without_version": True},
 }
 
+# Transport protocols and managed edge/cloud banners are useful deployment
+# context, not target software identities.  Querying advisory catalogs for
+# them binds unrelated vendor-wide CVEs to the target (for example HTTP/3 or a
+# generic Google Frontend banner).
+NON_ADVISORY_COMPONENT_NAMES = frozenset({
+    "http",
+    "https",
+    "ssl",
+    "tls",
+    "tcp",
+    "udp",
+    "google cloud",
+    "google cloud load balancing",
+    "google cloud trace",
+    "google frontend",
+    "amazon web services",
+    "aws",
+    "microsoft azure",
+    "azure",
+    "cloudflare",
+    "akamai",
+    "fastly",
+})
+
+
+def component_is_advisory_product(component: dict) -> bool:
+    """Return whether an observation identifies target-testable software."""
+    name = str(component.get("name") or "").strip().lower()
+    return bool(name and name not in NON_ADVISORY_COMPONENT_NAMES)
+
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -321,7 +351,7 @@ def build_component_queries(components: list[dict]) -> list[dict]:
             continue
         name = str(component.get("name") or "").strip().lower()
         version = str(component.get("version") or "").strip()
-        if not name:
+        if not component_is_advisory_product(component):
             continue
         key = (name, version)
         item = grouped.setdefault(key, {

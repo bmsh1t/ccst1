@@ -731,8 +731,21 @@ def _case_state_seed_summary(repo_root: Path | str, target: str) -> dict:
 def _case_state_seed_proposal(seed: dict) -> str:
     if str(seed.get("status") or "") != "suggestions":
         return ""
-    objects = seed.get("suggested_objects") if isinstance(seed.get("suggested_objects"), list) else []
-    backlog = seed.get("suggested_backlog") if isinstance(seed.get("suggested_backlog"), list) else []
+    raw_objects = seed.get("suggested_objects") if isinstance(seed.get("suggested_objects"), list) else []
+    raw_backlog = seed.get("suggested_backlog") if isinstance(seed.get("suggested_backlog"), list) else []
+    actionable_refs = {
+        str(item.get("object_ref") or "")
+        for item in raw_objects
+        if isinstance(item, dict) and str(item.get("confidence") or "") != "low"
+    }
+    objects = [
+        item for item in raw_objects
+        if isinstance(item, dict) and str(item.get("object_ref") or "") in actionable_refs
+    ]
+    backlog = [
+        item for item in raw_backlog
+        if isinstance(item, dict) and str(item.get("object_ref") or "") in actionable_refs
+    ]
     if not objects and not backlog:
         return ""
     selected_index = 0
@@ -1046,6 +1059,8 @@ def _ranked_surface_vuln_hint(entry: dict, url: str) -> str:
     endpoint = _canonicalize_url_path(url)
     query_keys = _ranked_surface_query_keys(url)
     candidates = ["Authz", "IDOR", "SQLi", "SSRF", "Race", "Upload", "GraphQL", "RCE"]
+    if re.search(r"/(?:[a-z0-9_-]*dom|reflected)(?:/|$)", endpoint, re.I):
+        candidates.append("XSS")
     scored = [
         (klass, class_relevance(endpoint, klass, query_keys))
         for klass in candidates
@@ -1343,7 +1358,10 @@ def _ranked_surface_replay_draft(
     baseline_first = _is_path_only_authz_gap(authz_gap)
     browser_state_first = _ranked_surface_browser_state_first(url, vuln_class, query_keys)
     auth_workflow_first = _ranked_surface_auth_workflow_first(url, js_methods)
-    parameter_behavior_first = _ranked_surface_parameter_behavior_first(url, query_keys)
+    parameter_behavior_first = (
+        vuln_class != "XSS"
+        and _ranked_surface_parameter_behavior_first(url, query_keys)
+    )
     route_prefix_first = _ranked_surface_route_prefix_first(state, url, query_keys)
     placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
     role_replay_ready = (

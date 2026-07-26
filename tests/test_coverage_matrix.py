@@ -700,6 +700,46 @@ class TestFindGaps:
         assert class_relevance("/address/select", "SQLi", [])["relevance_score"] == 0
         assert class_relevance("/rest/products/search", "SQLi", ["q"])["relevance_score"] > 0
 
+    def test_dom_sources_and_script_names_do_not_promote_server_side_classes(self):
+        assert class_relevance("/urldom/location/hash/fetch", "SSRF", [])["relevance_score"] == 0
+        assert class_relevance("/urldom/location/hash/fetch", "XSS", [])["relevance_score"] > 0
+        assert class_relevance("/dom/window/name/fetch", "SSRF", [])["relevance_score"] == 0
+        assert class_relevance(
+            "/urldom/location/hash/fetch", "SSRF", ["target_url"]
+        )["relevance_score"] > 0
+        assert class_relevance(
+            "/reflected/filteredstrings/body/caseSensitive/script", "RCE", ["q"]
+        )["relevance_score"] == 0
+        assert class_relevance("/api/template/render", "RCE", ["template"])["relevance_score"] > 0
+
+    def test_payload_shaped_dom_paths_rank_as_xss_not_ssrf_or_rce(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://x.com/urldom/location/hash/fetch",
+            "https://x.com/reflected/filteredstrings/body/caseSensitive/script?q=a",
+        ])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+
+        gaps = find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=3.0)
+        first_by_endpoint = {}
+        for gap in gaps:
+            first_by_endpoint.setdefault(gap["endpoint"], gap["vuln_class"])
+
+        assert first_by_endpoint["/urldom/location/hash/fetch"] == "XSS"
+        assert first_by_endpoint["/reflected/filteredstrings/body/caseSensitive/script"] == "XSS"
+
+    def test_unbalanced_archive_path_stays_raw_but_not_in_coverage_queue(self, tmp_path):
+        malformed = "https://x.com/dom/index.html.[10"
+        valid = "https://x.com/dom/index.html"
+        _seed_recon(tmp_path, "x.com", [malformed, valid])
+
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+
+        endpoints = {item["endpoint"] for item in matrix["endpoints"]}
+        assert "/dom/index.html.[10" not in endpoints
+        assert "/dom/index.html" in endpoints
+        assert malformed in (tmp_path / "recon" / "x.com" / "urls" / "all.txt").read_text()
+
     def test_bare_numeric_path_not_promoted_as_high_value_idor_gap(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [
             "https://app.target.com/16",

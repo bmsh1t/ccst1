@@ -218,6 +218,15 @@ def has_js_path_artifact(url):
     return suspicious >= 2 or (suspicious >= 1 and js_signal_hits >= 2)
 
 
+def has_malformed_path(url):
+    """Detect invalid unbalanced brackets in a URL path without touching raw evidence."""
+    try:
+        path = urlparse(str(url or "")).path
+    except ValueError:
+        return True
+    return path.count("[") != path.count("]")
+
+
 def detect_path_explosion(url, threshold=4, log_file=None):
     """
     Detect URLs with recursive/repeated path segments (e.g., /API/API/API/).
@@ -330,7 +339,8 @@ def filter_urls_batch(input_file, output_file, target_domain,
 
     total = len(urls)
     stats = {'total': total, 'kept': 0, 'removed_external': 0, 'removed_explosion': 0,
-             'removed_encoding_errors': 0, 'removed_html_encoding': 0, 'removed_js_path_artifacts': 0}
+             'removed_encoding_errors': 0, 'removed_html_encoding': 0,
+             'removed_js_path_artifacts': 0, 'removed_malformed_paths': 0}
 
     # Filter URL encoding errors
     filtered = []
@@ -339,6 +349,18 @@ def filter_urls_batch(input_file, output_file, target_domain,
             stats['removed_encoding_errors'] += 1
             if log_file:
                 _append_log(log_file, [f"[ENCODING_ERROR] {url}"])
+        else:
+            filtered.append(url)
+    urls = filtered
+
+    # Keep malformed archive/crawler strings in raw all.txt, but do not place
+    # them in the automatic priority view.
+    filtered = []
+    for url in urls:
+        if has_malformed_path(url):
+            stats['removed_malformed_paths'] += 1
+            if log_file:
+                _append_log(log_file, [f"[MALFORMED_PATH] {url}"])
         else:
             filtered.append(url)
     urls = filtered
@@ -432,6 +454,7 @@ def main(argv=None):
     print(f"  Removed encoding errors: {stats['removed_encoding_errors']}")
     print(f"  Removed HTML encoding: {stats['removed_html_encoding']}")
     print(f"  Removed JS path artifacts: {stats['removed_js_path_artifacts']}")
+    print(f"  Removed malformed paths: {stats['removed_malformed_paths']}")
     print(f"  Removed external: {stats['removed_external']}")
     print(f"  Removed path explosion: {stats['removed_explosion']}")
     print(f"  Kept: {stats['kept']} ({kept_percent:.1f}%)")

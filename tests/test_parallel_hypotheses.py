@@ -71,19 +71,29 @@ class TestPerWorkerScratch:
 # ---------------------------------------------------------------------
 
 class TestClassifyOutcome:
-    def test_findings_with_high_severity_become_validated(self):
+    def test_only_validated_lifecycle_becomes_validated(self):
         r = pw.WorkerResult(
             worker_id="a", kind="hypothesis", scratch_dir="",
             completed=True, timed_out=False, exit_code=0,
-            findings=[{"endpoint": "/x", "vuln_class": "IDOR", "severity": "high"}],
+            findings=[{
+                "endpoint": "/x",
+                "vuln_class": "IDOR",
+                "severity": "low",
+                "validation_status": "validated",
+            }],
         )
         assert hf.classify_worker_outcome(r) == hf.OUTCOME_VALIDATED
 
-    def test_findings_without_high_become_strong_signal(self):
+    def test_high_severity_candidate_remains_strong_signal(self):
         r = pw.WorkerResult(
             worker_id="a", kind="hypothesis", scratch_dir="",
             completed=True, timed_out=False, exit_code=0,
-            findings=[{"endpoint": "/x", "vuln_class": "IDOR", "severity": "low"}],
+            findings=[{
+                "endpoint": "/x",
+                "vuln_class": "IDOR",
+                "severity": "critical",
+                "validation_status": "candidate",
+            }],
         )
         assert hf.classify_worker_outcome(r) == hf.OUTCOME_STRONG
 
@@ -95,6 +105,7 @@ class TestClassifyOutcome:
         )
         assert hf.classify_worker_outcome(r, done_flag_summary={"outcome": "leads_only"}) == hf.OUTCOME_LEADS
         assert hf.classify_worker_outcome(r, done_flag_summary={"outcome": "strong_signal"}) == hf.OUTCOME_STRONG
+        assert hf.classify_worker_outcome(r, done_flag_summary={"outcome": "validated_finding"}) == hf.OUTCOME_LEADS
 
     def test_unknown_outcome_falls_back_to_leads(self):
         r = pw.WorkerResult(
@@ -119,8 +130,8 @@ class TestRanking:
 
     def test_validated_finding_beats_strong_signal(self):
         results = [
-            self._result("a", [{"severity": "low"}]),
-            self._result("b", [{"severity": "high"}]),
+            self._result("a", [{"severity": "critical", "validation_status": "candidate"}]),
+            self._result("b", [{"severity": "low", "validation_status": "validated"}]),
         ]
         ranked = hf.rank_results(results)
         assert ranked[0]["worker_id"] == "b"
@@ -135,7 +146,7 @@ class TestRanking:
         assert ranked[0]["worker_id"] == "b"
 
     def test_pick_winner_returns_highest(self):
-        results = [self._result("solo", [{"severity": "high"}])]
+        results = [self._result("solo", [{"severity": "high", "validation_status": "validated"}])]
         ranked = hf.rank_results(results)
         winner = hf.pick_winner(ranked)
         assert winner["worker_id"] == "solo"
@@ -233,7 +244,7 @@ class TestRunFanoutEndToEnd:
              "mock_findings": [],
              "mock_outcome": "leads_only"},
             {"working_hypothesis": "strong B",
-             "mock_findings": [{"endpoint": "/x", "vuln_class": "IDOR", "severity": "high"}],
+             "mock_findings": [{"endpoint": "/x", "vuln_class": "IDOR", "severity": "high", "validation_status": "validated"}],
              "mock_outcome": "validated_finding"},
             {"working_hypothesis": "medium C",
              "mock_findings": [{"endpoint": "/y", "vuln_class": "IDOR", "severity": "low"}],

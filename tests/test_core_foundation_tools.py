@@ -78,6 +78,28 @@ def test_url_belongs_to_target_distinguishes_direct_evidence_from_chain_context(
     )
 
 
+def test_url_belongs_to_target_handles_protocol_relative_wildcard_and_default_ports(tmp_path):
+    scope = tmp_path / "scope.txt"
+    scope.write_text("*.example.com\n", encoding="utf-8")
+
+    assert target_paths.classify_target("//Example.COM/path") == {
+        "kind": "domain",
+        "target": "example.com",
+    }
+    assert target_paths.canonical_target_value("https://*.Example.COM/path") == "*.example.com"
+    assert target_paths.url_belongs_to_target("//api.example.com/v1", "example.com")
+    assert not target_paths.url_belongs_to_target("//evil.example.net/v1", "example.com")
+    assert target_paths.url_belongs_to_target("https://api.example.com/v1", "*.example.com")
+    assert not target_paths.url_belongs_to_target("https://example.com/v1", "*.example.com")
+    assert target_paths.url_belongs_to_target("https://api.example.com/v1", str(scope))
+    assert not target_paths.url_belongs_to_target("https://example.com/v1", str(scope))
+    assert target_paths.url_belongs_to_target("https://example.com/v1", "example.com:443")
+    assert target_paths.url_belongs_to_target("//example.com/v1", "example.com:443")
+    assert target_paths.url_belongs_to_target("http://example.com/v1", "example.com:80")
+    assert target_paths.url_belongs_to_target("https://example.com:443/v1", "https://example.com")
+    assert not target_paths.url_belongs_to_target("http://example.com/v1", "https://example.com")
+
+
 def test_url_belongs_to_target_checks_each_primary_target_in_list(tmp_path):
     scope = tmp_path / "scope.txt"
     scope.write_text(

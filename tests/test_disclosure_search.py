@@ -203,10 +203,15 @@ class TestQuestionToToolDiscoverability:
 
     def test_autopilot_md_has_disclosed_researcher_row(self):
         md = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
-        # The subagent must be reachable through the advisory table.
-        # Anchor on the agent name (the row is between table delimiters,
-        # so this also implicitly checks the row landed in the table region).
-        assert "disclosed-researcher" in md
+        tool_index = (REPO_ROOT / "docs" / "tool-index.md").read_text(encoding="utf-8")
+        agent = (REPO_ROOT / "agents" / "disclosed-researcher.md").read_text(
+            encoding="utf-8"
+        )
+
+        assert "Question -> Tool Reference" not in md
+        assert "docs/tool-index.md" in md
+        assert "tools/disclosure_search.py" in tool_index
+        assert "name: disclosed-researcher" in agent
 
 
 class TestSubagentDefinition:

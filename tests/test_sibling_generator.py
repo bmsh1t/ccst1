@@ -239,6 +239,12 @@ class TestQuestionToToolDiscoverability:
 
     def test_autopilot_md_has_sibling_generator_row(self):
         md = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
-        assert "tools/sibling_generator.py" in md
-        # Anchor: the question shape mentioned in implement.md
-        assert "sibling endpoints" in md.lower()
+        tool_index = (REPO_ROOT / "docs" / "tool-index.md").read_text(encoding="utf-8")
+        owner = (REPO_ROOT / "tools" / "sibling_generator.py").read_text(
+            encoding="utf-8"
+        )
+
+        assert "Question -> Tool Reference" not in md
+        assert "docs/tool-index.md" in md
+        assert "tools/sibling_generator.py" in tool_index
+        assert "sibling-endpoint probe queue" in owner

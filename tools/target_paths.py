@@ -35,7 +35,7 @@ def classify_target(target: str) -> dict:
     # URL-form targets should share the same state/recon key as the equivalent
     # host or host:port. This keeps `/autopilot http://127.0.0.1:3002` from
     # creating a separate `http:_127...` tree that later tools cannot resume.
-    if "://" in value:
+    if "://" in value or value.startswith("//"):
         parsed = urlparse(value)
         host = (parsed.hostname or "").strip().lower()
         if not host:
@@ -182,23 +182,38 @@ def migrate_legacy_list_storage(repo_root: str | Path, target: str) -> dict:
     }
 
 
-def _host_port(value: str) -> tuple[str, int | None]:
-    """Parse a host[:port] or URL-ish value into normalized host/port."""
+def _scope_endpoint(
+    value: str,
+    *,
+    inherited_scheme: str = "",
+) -> tuple[str, int | None, str, bool]:
+    """Parse target-scope host, effective port, scheme, and wildcard semantics."""
     candidate = (value or "").strip()
     if not candidate:
-        return "", None
+        return "", None, "", False
     try:
-        parsed = urlparse(candidate if "://" in candidate or candidate.startswith("//") else f"//{candidate}")
+        parsed = urlparse(
+            candidate
+            if "://" in candidate or candidate.startswith("//")
+            else f"//{candidate}"
+        )
     except ValueError:
-        return candidate.split(":")[0].lower().strip("."), None
+        return "", None, "", False
     try:
         port = parsed.port
     except ValueError:
-        port = None
-    return (parsed.hostname or "").lower().strip("."), port
+        return "", None, "", False
+    scheme = parsed.scheme.lower() or inherited_scheme.lower()
+    if port is None:
+        port = {"http": 80, "https": 443}.get(scheme)
+    host = (parsed.hostname or "").lower().strip(".")
+    wildcard = host.startswith("*.")
+    if wildcard:
+        host = host[2:]
+    return host, port, scheme, wildcard
 
 
-def target_list_entries(path: str) -> list[str]:
+def target_list_entries(path: str, *, preserve_wildcards: bool = False) -> list[str]:
     """Return normalized primary domains from a readable batch list."""
     entries = []
     seen = set()
@@ -211,7 +226,7 @@ def target_list_entries(path: str) -> list[str]:
             value = raw.strip().strip("\ufeff").rstrip("/").lower()
             if not value or value.startswith("#"):
                 continue
-            if value.startswith("*."):
+            if value.startswith("*.") and not preserve_wildcards:
                 value = value[2:]
             if value and value not in seen:
                 seen.add(value)
@@ -227,12 +242,17 @@ def url_belongs_to_target(url: str, target: str, *, allow_subdomains: bool = Tru
     for the current target.
     """
     raw_url = (url or "").strip()
-    if not raw_url or raw_url.startswith("/"):
+    if not raw_url:
+        return True
+    if raw_url.startswith("/") and not raw_url.startswith("//"):
         return True
 
     target_info = classify_target(canonical_target_value(target))
     if target_info["kind"] == "list":
-        for listed_target in target_list_entries(target_info["target"]):
+        for listed_target in target_list_entries(
+            target_info["target"],
+            preserve_wildcards=True,
+        ):
             # Primary-domain lists are intentionally one level deep. A line
             # resolving to another local file is not a root target and must
             # not recurse into nested or self-referential lists.
@@ -246,9 +266,15 @@ def url_belongs_to_target(url: str, target: str, *, allow_subdomains: bool = Tru
                 return True
         return False
 
-    url_host, url_port = _host_port(raw_url)
+    target_value = (target or "").strip()
+    target_host, target_port, target_scheme, target_wildcard = _scope_endpoint(target_value)
+    inherited_scheme = target_scheme or {80: "http", 443: "https"}.get(target_port, "")
+    url_host, url_port, url_scheme, _ = _scope_endpoint(
+        raw_url,
+        inherited_scheme=inherited_scheme,
+    )
     if not url_host:
-        return True
+        return False
 
     if target_info["kind"] == "cidr":
         try:
@@ -256,14 +282,15 @@ def url_belongs_to_target(url: str, target: str, *, allow_subdomains: bool = Tru
         except ValueError:
             return False
 
-    target_host, target_port = _host_port(target_info["target"])
     if not target_host:
-        return True
+        return False
 
-    host_matches = url_host == target_host
-    if allow_subdomains and not host_matches:
+    host_matches = not target_wildcard and url_host == target_host
+    if (allow_subdomains or target_wildcard) and not host_matches:
         host_matches = url_host.endswith("." + target_host)
     if not host_matches:
+        return False
+    if target_scheme and url_scheme and url_scheme != target_scheme:
         return False
     if target_port is not None and url_port != target_port:
         return False

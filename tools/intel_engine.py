@@ -32,6 +32,7 @@ try:
     from tools.intel_artifact import INTEL_SCHEMA_VERSION, IntelArtifactError, write_intel_artifact
     from tools.intel_sources import (
         build_component_queries,
+        component_is_advisory_product,
         fetch_advisory_sources,
         fetch_epss,
         fetch_json,
@@ -50,6 +51,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from intel_artifact import INTEL_SCHEMA_VERSION, IntelArtifactError, write_intel_artifact  # type: ignore
     from intel_sources import (  # type: ignore
         build_component_queries,
+        component_is_advisory_product,
         fetch_advisory_sources,
         fetch_epss,
         fetch_json,
@@ -644,6 +646,8 @@ def _kev_label(value: object) -> str:
 
 def _kev_matches_component(kev_item: dict, component: dict) -> bool:
     """将 KEV vendor/product 绑定到已观测或声明的组件，避免全目录污染。"""
+    if not component_is_advisory_product(component):
+        return False
     vendor = _kev_label(kev_item.get("vendorProject"))
     product = _kev_label(kev_item.get("product"))
     labels = {
@@ -653,11 +657,6 @@ def _kev_matches_component(kev_item: dict, component: dict) -> bool:
     labels.discard("")
     if not labels:
         return False
-    if any(
-        vendor == label or (len(label) >= 5 and (vendor in label or label in vendor))
-        for label in labels
-    ):
-        return True
     # Fortinet product names share the `Forti*` family prefix (FortiOS,
     # FortiGate, FortiSandbox, ...), while KEV stores vendor and product apart.
     if vendor == "fortinet" and any(label.startswith("forti") for label in labels):
@@ -1477,7 +1476,21 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(intel, ensure_ascii=False, indent=2))
     else:
         print(format_output(resolved_target, intel))
-    return 0 if intel.get("coverage_status") in {"ready", "partial"} else 2
+    coverage = intel.get("coverage_status")
+    if coverage in {"ready", "partial"}:
+        return 0
+    advisory_sources = [
+        source for source in intel.get("sources") or []
+        if source.get("source") in {"osv", "github_advisory", "nvd"}
+    ]
+    # No queryable product is a valid empty result, not a source failure.
+    if coverage == "unavailable" and advisory_sources and all(
+        source.get("status") == "unavailable"
+        and (source.get("stats") or {}).get("eligible_queries") == 0
+        for source in advisory_sources
+    ):
+        return 0
+    return 2
 
 
 if __name__ == "__main__":

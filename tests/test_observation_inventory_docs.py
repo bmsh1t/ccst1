@@ -27,7 +27,7 @@ def test_autopilot_command_and_agent_consume_summary_without_auto_routing():
 
     assert "observation_inventory.py summary" in command
     assert "/observations" in command
-    assert "Never route every untouched observation to a Skill" in command
+    assert "Never route every untouched observation to a Skill" in " ".join(command.split())
     assert "observation_inventory" in agent
     assert "Never auto-route or enqueue the full inventory" in agent
 

@@ -669,6 +669,37 @@ class TestStandaloneTechResolution:
         assert result == 2
         assert json.loads(captured.out)["coverage_status"] == "error"
 
+    def test_json_mode_accepts_no_eligible_advisory_product(self, monkeypatch, capsys):
+        payload = {
+            "schema_version": 2,
+            "target": "target.com",
+            "coverage_status": "unavailable",
+            "inventory": {"components": []},
+            "sources": [
+                {
+                    "source": source,
+                    "status": "unavailable",
+                    "stats": {"eligible_queries": 0},
+                }
+                for source in ("osv", "github_advisory", "nvd")
+            ],
+            "advisories": [],
+            "critical": [],
+            "high": [],
+            "info": [],
+            "identity_intel": {},
+            "total": 0,
+        }
+        monkeypatch.setattr(intel_engine, "build_target_intel", lambda *_args, **_kwargs: payload)
+
+        result = intel_engine.main(["--target", "target.com", "--tech", "HTTP/3", "--json"])
+
+        assert result == 0
+        assert json.loads(capsys.readouterr().out)["coverage_status"] == "unavailable"
+
+        payload["sources"] = []
+        assert intel_engine.main(["--target", "target.com", "--tech", "HTTP/3", "--json"]) == 2
+
 
 class TestIntelV2Pipeline:
 
@@ -869,6 +900,26 @@ class TestIntelV2Pipeline:
         assert enriched[0]["epss"] == 0.42
         assert enriched[0]["kev_only"] is True
         assert enriched[0]["component"]["name"] == "fortios"
+
+    def test_kev_vendor_name_does_not_bind_managed_cloud_banner(self):
+        component = {
+            "name": "google cloud",
+            "display_name": "Google Cloud",
+            "version": "",
+            "kind": "web_component",
+        }
+        kev = {
+            "source": "kev",
+            "items": {
+                "CVE-2026-10001": {
+                    "cveID": "CVE-2026-10001",
+                    "vendorProject": "Google",
+                    "product": "Chromium V8",
+                }
+            },
+        }
+
+        assert intel_engine.merge_kev_only_advisories([], kev, [component]) == []
 
     def test_local_nuclei_signal_enriches_matching_cve_without_creating_finding(self, tmp_path):
         findings_dir = tmp_path / "findings" / "target.com"

@@ -76,6 +76,7 @@ def test_filter_urls_batch_logs_external_urls_and_keeps_original_input(tmp_path)
         "removed_encoding_errors": 0,
         "removed_html_encoding": 0,
         "removed_js_path_artifacts": 0,
+        "removed_malformed_paths": 0,
     }
     assert out.read_text(encoding="utf-8").splitlines() == [
         "https://example.com/",
@@ -157,6 +158,7 @@ def test_main_supports_log_file_and_path_explosion_switch(tmp_path, capsys):
     assert "Removed encoding errors: 0" in output
     assert "Removed HTML encoding: 0" in output
     assert "Removed JS path artifacts: 0" in output
+    assert "Removed malformed paths: 0" in output
 
 
 def test_filter_urls_batch_removes_js_member_expression_path_artifacts(tmp_path):
@@ -186,3 +188,19 @@ def test_filter_urls_batch_removes_js_member_expression_path_artifacts(tmp_path)
     log_text = log.read_text(encoding="utf-8")
     assert "[JS_PATH_ARTIFACT] https://example.com/i.visualViewport.scale/i.document.do" in log_text
     assert "[JS_PATH_ARTIFACT] https://example.com/r.dom.offsetHeight/r.do" in log_text
+
+
+def test_filter_urls_batch_demotes_unbalanced_path_without_changing_raw_input(tmp_path):
+    src = tmp_path / "all.txt"
+    out = tmp_path / "all_filtered.txt"
+    log = tmp_path / "filter.log"
+    malformed = "https://example.com/dom/index.html.[10"
+    valid = "https://example.com/dom/index.html"
+    src.write_text(f"{malformed}\n{valid}\n", encoding="utf-8")
+
+    stats = recon_filters.filter_urls_batch(src, out, "example.com", log_file=log)
+
+    assert stats["removed_malformed_paths"] == 1
+    assert out.read_text(encoding="utf-8").splitlines() == [valid]
+    assert src.read_text(encoding="utf-8").splitlines() == [malformed, valid]
+    assert f"[MALFORMED_PATH] {malformed}" in log.read_text(encoding="utf-8")

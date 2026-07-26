@@ -40,9 +40,14 @@ try:
         load_finding_index,
         verify_finalized_finding_owner_provenance,
     )
+    from tools.browser_mcp_import import (
+        BROWSER_FRESHNESS_SECONDS,
+        inspect_mcp_browser_readiness,
+    )
     from tools.recon_adapter import ReconAdapter
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from browser_mcp_import import BROWSER_FRESHNESS_SECONDS, inspect_mcp_browser_readiness
     from finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from recon_adapter import ReconAdapter
     from target_paths import canonical_target_value, target_storage_key
@@ -534,6 +539,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     ffuf_legacy_raw_files = int(ffuf_summary.get("legacy_raw_files", 0) or 0)
     counts = {
         "hosts": _line_count(recon_dir / "live" / "httpx_full.txt"),
+        "historical_urls": _line_count(recon_dir / "urls" / "all.txt"),
         "api_urls": _line_count(recon_dir / "urls" / "api_endpoints.txt"),
         "param_urls": _line_count(recon_dir / "urls" / "with_params.txt"),
         "js_files": _line_count(recon_dir / "urls" / "js_files.txt"),
@@ -542,6 +548,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "browser_api_urls": _line_count(recon_dir / "browser" / "api_endpoints.txt"),
         "ffuf_observations": ffuf_observations,
         "ffuf_legacy_raw_files": ffuf_legacy_raw_files,
+        "source_intel": 1 if _source_intel_present(findings_dir) else 0,
     }
     exposure_counts, exposure_paths = _inspect_exposure_counts(recon_dir)
     infra_counts, infra_paths = _inspect_named_counts(recon_dir, INFRA_COUNT_PATHS)
@@ -560,6 +567,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     surface_inputs_ready = any(
         counts[key] > 0
         for key in (
+            "historical_urls",
             "api_urls",
             "param_urls",
             "js_files",
@@ -568,23 +576,32 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
             "browser_api_urls",
             "ffuf_observations",
             "structured_findings",
+            "source_intel",
         )
     )
 
+    http_probe = _http_probe_state(recon_dir)
+    ready = host_inventory_ready or surface_inputs_ready
+
     missing = []
     warnings = []
-    if not host_inventory_ready:
+    if not host_inventory_ready and http_probe.get("outcome") != "success_zero":
         missing.append("live/httpx_full.txt")
     if ffuf_summary.get("needs_summary"):
         warnings.append("FFUF artifacts found but compact summary is missing or stale")
+    if http_probe.get("outcome") == "success_zero":
+        warnings.append("HTTP probing completed successfully with zero live hosts")
+    elif http_probe.get("outcome") in {"timeout", "failure", "partial", "skipped", "unavailable"}:
+        warnings.append(f"HTTP probing is incomplete: {http_probe.get('outcome')}")
     if host_inventory_ready and not surface_inputs_ready and not warnings:
         warnings.append("no URL, JS, browser, or structured finding surface artifacts found yet")
 
     return {
         "available": True,
-        "ready": host_inventory_ready,
+        "ready": ready,
         "host_inventory_ready": host_inventory_ready,
         "surface_inputs_ready": surface_inputs_ready,
+        "http_probe": http_probe,
         "recon_dir": str(recon_dir),
         "counts": counts,
         "exposure_ready": any(value > 0 for value in exposure_counts.values()),
@@ -603,6 +620,76 @@ def _artifact_has_bytes(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def _http_probe_state(recon_dir: Path) -> dict:
+    """Project the latest HTTP probing phase without conflating zero with failure."""
+    manifest = recon_dir / "recon_manifest.jsonl"
+    latest: dict = {}
+    try:
+        with manifest.open(encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                try:
+                    item = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(item, dict)
+                    and item.get("record_type") == "recon_phase"
+                    and item.get("phase") == "http_probing"
+                ):
+                    latest = item
+    except OSError:
+        pass
+
+    if not latest:
+        return {"status": "missing", "outcome": "missing", "count": 0}
+    status = str(latest.get("status") or "").strip().lower()
+    note = str(latest.get("note") or "").strip()
+    try:
+        count = max(0, int(latest.get("count", 0) or 0))
+    except (TypeError, ValueError):
+        count = 0
+    if status in {"success_zero", "success-zero"}:
+        outcome = "success_zero"
+    elif status == "ok":
+        outcome = "success" if count else "success_zero"
+    elif status == "partial" and any(token in note.lower() for token in ("timeout", "timed out")):
+        outcome = "timeout"
+    elif status in {"error", "failed", "failure"}:
+        outcome = "failure"
+    elif status in {"skipped", "unavailable"}:
+        outcome = status
+    else:
+        outcome = status or "unknown"
+    return {
+        "status": status or "unknown",
+        "outcome": outcome,
+        "count": count,
+        "artifact": str(latest.get("artifact") or ""),
+        "note": note,
+        "recorded_at": str(latest.get("recorded_at") or ""),
+    }
+
+
+def _source_intel_present(findings_dir: Path) -> bool:
+    source_dir = findings_dir / "source_intel"
+    return any(
+        _artifact_has_bytes(source_dir / name)
+        for name in ("hypotheses.jsonl", "routes.json", "summary.md")
+    )
+
+
+def inspect_browser_evidence(
+    repo_root: str | Path,
+    target: str,
+    *,
+    freshness_seconds: int = BROWSER_FRESHNESS_SECONDS,
+) -> dict:
+    """Compatibility projection for the browser importer-owned readiness check."""
+    return inspect_mcp_browser_readiness(
+        repo_root, target, freshness_seconds=freshness_seconds
+    )
 
 
 def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
@@ -630,6 +717,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
 
     paths = {
         "hosts": recon_dir / "live" / "httpx_full.txt",
+        "historical_urls": recon_dir / "urls" / "all.txt",
         "api_urls": recon_dir / "urls" / "api_endpoints.txt",
         "param_urls": recon_dir / "urls" / "with_params.txt",
         "js_files": recon_dir / "urls" / "js_files.txt",
@@ -648,11 +736,13 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         )
     )
     findings_ready = _artifact_has_bytes(findings_dir / "findings.json")
+    source_intel_ready = _source_intel_present(findings_dir)
     counts.update(
         {
             "ffuf_observations": None if ffuf_ready else 0,
             "ffuf_legacy_raw_files": 0,
             "structured_findings": None if findings_ready else 0,
+            "source_intel": None if source_intel_ready else 0,
         }
     )
 
@@ -675,6 +765,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
     surface_inputs_ready = any(
         present[key]
         for key in (
+            "historical_urls",
             "api_urls",
             "param_urls",
             "js_files",
@@ -682,17 +773,28 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
             "browser_xhr_urls",
             "browser_api_urls",
         )
-    ) or ffuf_ready or findings_ready
-    missing = [] if host_inventory_ready else ["live/httpx_full.txt"]
+    ) or ffuf_ready or findings_ready or source_intel_ready
+    http_probe = _http_probe_state(recon_dir)
+    ready = host_inventory_ready or surface_inputs_ready
+    missing = (
+        []
+        if host_inventory_ready or http_probe.get("outcome") == "success_zero"
+        else ["live/httpx_full.txt"]
+    )
     warnings = []
+    if http_probe.get("outcome") == "success_zero":
+        warnings.append("HTTP probing completed successfully with zero live hosts")
+    elif http_probe.get("outcome") in {"timeout", "failure", "partial", "skipped", "unavailable"}:
+        warnings.append(f"HTTP probing is incomplete: {http_probe.get('outcome')}")
     if host_inventory_ready and not surface_inputs_ready:
         warnings.append("no URL, JS, browser, or structured finding surface artifacts found yet")
 
     return {
         "available": True,
-        "ready": host_inventory_ready,
+        "ready": ready,
         "host_inventory_ready": host_inventory_ready,
         "surface_inputs_ready": surface_inputs_ready,
+        "http_probe": http_probe,
         "recon_dir": str(recon_dir),
         "counts": counts,
         "counts_exact": False,
@@ -805,8 +907,14 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
         if report_status == "generated":
             findings["reports_generated"] += 1
 
+    browser_evidence = inspect_browser_evidence(repo_root_p, target)
     evidence = {
-        "browser_evidence_present": (recon_dir / "browser" / "summary.json").is_file(),
+        "browser_evidence_present": bool(
+            browser_evidence.get("present")
+            or (recon_dir / "browser" / "summary.json").is_file()
+        ),
+        "browser_evidence_ready": bool(browser_evidence.get("ready")),
+        "browser_evidence": browser_evidence,
         "js_intel_present": (findings_dir / "js_intel" / "materials.json").is_file(),
         "source_intel_present": (findings_dir / "source_intel").is_dir(),
     }
