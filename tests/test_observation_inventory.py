@@ -115,6 +115,26 @@ def test_summary_exposes_stale_and_bounded_neutral_samples(tmp_path):
     assert "priority" not in json.dumps(summary).lower()
 
 
+def test_summary_exposes_bounded_present_untouched_new_sample(tmp_path):
+    recon_dir, _urls = _write_recon(tmp_path, count=3)
+    sync_inventory(tmp_path, "target.com")
+    with (recon_dir / "urls" / "all.txt").open("a", encoding="utf-8") as handle:
+        handle.write("https://api.target.com/new-observation\n")
+
+    summary = summarize_inventory(sync_inventory(tmp_path, "target.com"))
+
+    assert len(summary["new_sample"]) <= 4
+    assert [item["value"] for item in summary["new_sample"]] == [
+        "https://api.target.com/new-observation"
+    ]
+    assert set(summary["new_sample"][0]) == {
+        "id", "kind", "value", "sources", "first_seen", "seen_count", "present", "status",
+    }
+    assert summary["new_sample"][0]["seen_count"] == 1
+    assert summary["new_sample"][0]["present"] is True
+    assert summary["new_sample"][0]["status"] == "untouched"
+
+
 def test_invalid_state_fails_explicitly_without_overwriting_file(tmp_path):
     path = inventory_path(tmp_path, "target.com")
     path.parent.mkdir(parents=True)

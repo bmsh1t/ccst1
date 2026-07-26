@@ -32,6 +32,7 @@ SUMMARY_KIND = "observation_inventory_summary"
 STALE_AFTER_SECONDS = 2 * 24 * 60 * 60
 ALLOWED_STATUSES = frozenset({"untouched", "reviewing", "reviewed", "parked"})
 DEFAULT_SAMPLE_LIMIT = 8
+NEW_SAMPLE_LIMIT = 4
 MAX_LIST_LIMIT = 1000
 CURSOR_SCHEMA_VERSION = 2
 PAGE_ORDER_FIRST_SEEN_ID = "first_seen_id"
@@ -448,6 +449,26 @@ def summarize_inventory(
                 "stale": observation_id in stale_ids,
             }
         )
+    new_observations = (
+        item
+        for item in observations
+        if bool(item.get("present", True))
+        and str(item.get("status") or "untouched") == "untouched"
+        and int(item.get("seen_count", 0) or 0) == 1
+    )
+    new_sample = [
+        {
+            "id": str(item.get("id") or ""),
+            "kind": str(item.get("kind") or ""),
+            "value": str(item.get("value") or ""),
+            "sources": list(item.get("sources") or [])[:4],
+            "first_seen": str(item.get("first_seen") or ""),
+            "seen_count": int(item.get("seen_count", 0) or 0),
+            "present": bool(item.get("present", True)),
+            "status": str(item.get("status") or "untouched"),
+        }
+        for item in heapq.nsmallest(NEW_SAMPLE_LIMIT, new_observations, key=_page_sort_key)
+    ]
     return {
         "available": bool(payload.get("last_synced_at") or observations),
         "path": "state/{}/observations.json".format(payload.get("storage_key") or ""),
@@ -460,6 +481,7 @@ def summarize_inventory(
         "stale": len(stale_ids),
         "last_synced_at": str(payload.get("last_synced_at") or ""),
         "sample": sample,
+        "new_sample": new_sample,
     }
 
 
@@ -488,6 +510,7 @@ def _summary_error(
         "stale": 0,
         "last_synced_at": "",
         "sample": [],
+        "new_sample": [],
         "inventory_binding": {},
         "needs_sync": True,
     }
@@ -502,6 +525,7 @@ def _summary_error(
             "stale",
             "last_synced_at",
             "sample",
+            "new_sample",
             "inventory_binding",
         ):
             if key in previous:

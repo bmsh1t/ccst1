@@ -31,11 +31,8 @@ exact first-contact browser/source/workflow seed for the canonical target.
 Treat the supplied target set as the active execution target set; `ctf_mode` is the
 authoritative lab target record. External policy is advisory audit/replay context;
 do not require public-program, written-permission, or ownership-confirmation.
-`/autopilot` runs inline in the current Claude session as the sole controller
-and does not create/resume legacy `agent_session.json`; specialists default to
-zero. At most one bounded specialist may be invoked through Claude Code's `Agent`
-tool for one evidence question. The invoked specialist must not spawn nested agents,
-run full recon/scans, write final closure, or control finish. After using one, this invocation cannot call a second specialist.
+`/autopilot` runs inline in the current Claude session as the sole controller and does not create/resume legacy `agent_session.json`; specialists default to zero.
+At most one bounded specialist may be invoked through Claude Code's `Agent` tool for one evidence question. The invoked specialist must not spawn nested agents, run full recon/scans, write final closure, or control finish. After using one, this invocation cannot call a second specialist.
 ## State Consumption Loop
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
@@ -161,20 +158,23 @@ try one bounded evidence-fit sibling or chain. On 401/403/404/405/415 or parser
 delta, try one evidence-linked bypass family or close it. After three homogeneous
 no-information results, resolve and rotate to one adjacent high-value lane.
 Refresh rotating form/session tokens from the legitimate baseline before replay.
+After every substantive lane, request the explicit read-only loop guard with `cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --json`.
+Obey `loop_guard.verdict`. On `rotate`, do not continue the reported `endpoint_family` × `vuln_class` in this invocation; prefer its bounded `rotation_target` when present, or choose another adjacent high-value lane.
+`continue` preserves `loop_guard.next_action`. The guard never overrides runtime waits, candidate validation, report work, or durable Action Queue work; their authoritative next action remains in force.
 `--deep` is a value-first comprehensive depth flag, not a checklist or favorite bug
 class. With `invocation_batch.bounded`, execute at most `max_lanes` named
 substantive lanes; after lane N do not execute a newly discovered queue item.
 Checkpoint/sync the durable queue, state the handoff, and end. Browser/source
 discoveries become next-invocation work, not lane N+1.
-Finish on evidence state, not a tool checklist. `working_hypothesis` must be
-resolved, blocked, dead-end, Candidate, or Validated Finding. Check `oast_listen`
-when used; resolve or record high-value action-gated scanner leads; review matrix gaps: run
-`python3 tools/coverage_matrix.py rebuild --target <target_shell>` then `python3 tools/coverage_matrix.py find-gaps --target <target_shell>`; an
-absent or empty matrix never proof of coverage; consult available
-`evidence/<target>/intelligence.md`, browser, JS, source, and exposure evidence.
-A pending report is a closure asset, not a stop signal. Active durable work, pending
-validation/report, partial browser/source/intel, or untouched high-value work means `handoff/partial`;
-never `finish/complete/exhausted`. Checkpoint it in the existing Action Queue instead of passive TODOs.
+Finish on evidence state, not a tool checklist. `working_hypothesis` must be resolved, blocked, dead-end, Candidate, or Validated Finding. Check `oast_listen` when used; resolve or record high-value action-gated scanner leads and every matrix gap.
+Immediately before any target-exhaustion claim, run the ordered coverage review and explicit read-only verdict below; an absent or empty matrix never proof of coverage. Consult available `evidence/<target>/intelligence.md`, browser, JS, source, and exposure evidence.
+```bash
+cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --json
+```
+Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and advisory `closure.rotation_hint`. Only `verdict=finish` with `can_claim_exhausted=true` permits a `finish/complete/exhausted` claim; `handoff` preserves durable work and `blocked` records the terminal prerequisite blocker.
+When `max_lanes` was reached, pass `--max-lanes-reached`; it always requires handoff. A pending report is a closure asset, not a stop signal. Active durable work, pending validation/report, partial browser/source/intel, or untouched high-value work means `handoff/partial`, never `finish/complete/exhausted`.
+Checkpoint unresolved work in the existing Action Queue instead of passive TODOs.
 Passing `check_autopilot_run.py` proves state-chain integrity, not target exhaustion.
-End with target, mode, strongest evidence, findings/candidates, blockers/dead ends, and next best action. If the bounded invocation reached `max_lanes`, its
-terminal handoff overrides target exhaustion; unresolved durable work is expected.
+End with target, mode, strongest evidence, findings/candidates, blockers/dead ends, and next best action. If the bounded invocation reached `max_lanes`, its terminal handoff overrides target exhaustion; unresolved durable work is expected.

@@ -12,7 +12,10 @@ from autopilot_state import (
     _build_recommended_targets,
     _filter_ranked_placeholders,
     _is_substantive_queue_action,
+    _load_closure_projection,
     _pick_next_action,
+    build_closure_projection,
+    build_loop_guard_projection,
     build_autopilot_state,
     format_autopilot_state,
 )
@@ -61,6 +64,355 @@ def test_deep_js_review_queue_item_is_substantive():
 
     assert _is_substantive_queue_action(action)
     assert not _is_substantive_queue_action({**action, "evidence_type": "generic"})
+
+
+def _closure_matrix(*, status: str = "tested_clean") -> dict:
+    return {
+        "endpoints": [{
+            "endpoint": "/api/orders/1",
+            "weight": 3.0,
+            "cells": {"IDOR": {"status": status}},
+        }],
+        "summary": {"total_cells": 1},
+    }
+
+
+def test_closure_finishes_only_for_gap_free_handoff_state():
+    closure = build_closure_projection({"next_action": "handoff"}, _closure_matrix())
+
+    assert closure["verdict"] == "finish"
+    assert closure["can_claim_exhausted"] is True
+    assert closure["reasons"] == []
+
+
+def test_closure_handoffs_actionable_work_and_coverage_gaps():
+    action_closure = build_closure_projection(
+        {"next_action": "validate_finding"}, _closure_matrix()
+    )
+    gap_closure = build_closure_projection(
+        {"next_action": "handoff"}, _closure_matrix(status="untested")
+    )
+
+    assert action_closure["verdict"] == "handoff"
+    assert action_closure["reasons"] == ["next_action_pending"]
+    assert gap_closure["can_claim_exhausted"] is False
+    assert gap_closure["reasons"] == ["coverage_high_value_gaps"]
+
+
+def test_closure_never_finishes_for_invalid_coverage_or_explicit_durable_work():
+    missing = build_closure_projection({"next_action": "handoff"}, None)
+    invalid = build_closure_projection(
+        {"next_action": "handoff"},
+        _closure_matrix(status="unknown"),
+    )
+    durable = build_closure_projection(
+        {"next_action": "handoff", "action_queue_next": {"id": "pending-1"}},
+        _closure_matrix(),
+    )
+
+    assert missing["verdict"] == "handoff"
+    assert missing["reasons"] == ["coverage_missing"]
+    assert invalid["verdict"] == "handoff"
+    assert invalid["reasons"] == ["coverage_invalid"]
+    assert durable["verdict"] == "handoff"
+    assert durable["reasons"] == ["durable_work_pending"]
+
+
+def test_closure_blocks_terminal_prerequisites_and_lane_limit_handoffs():
+    blocked = build_closure_projection(
+        {"next_action": "recon_no_live_hosts"}, _closure_matrix()
+    )
+    lane_limited = build_closure_projection(
+        {"next_action": "handoff"}, _closure_matrix(), max_lanes_reached=True
+    )
+    terminal_lane_limited = build_closure_projection(
+        {"next_action": "batch_failed"}, _closure_matrix(), max_lanes_reached=True
+    )
+
+    assert blocked["verdict"] == "blocked"
+    assert blocked["reasons"] == ["recon_no_live_hosts"]
+    assert lane_limited["verdict"] == "handoff"
+    assert lane_limited["reasons"] == ["max_lanes_reached"]
+    assert terminal_lane_limited["verdict"] == "handoff"
+    assert terminal_lane_limited["reasons"] == ["max_lanes_reached"]
+
+
+def test_closure_rotation_hint_never_changes_the_verdict():
+    entries = [
+        {
+            "endpoint": f"/api/orders/{value}",
+            "vuln_class": "IDOR",
+            "result": result,
+        }
+        for value, result in (("1", "tested_clean"), ("2", "dead_end"), ("3", "tested_clean"))
+    ]
+    closure = build_closure_projection({"next_action": "handoff"}, _closure_matrix(), entries)
+
+    assert closure["verdict"] == "finish"
+    assert closure["rotation_hint"] == {
+        "reason": "three_homogeneous_clean_outcomes",
+        "endpoint_family": "/api/orders/:id",
+        "vuln_class": "IDOR",
+        "action": "rotate_to_adjacent_high_value_lane",
+    }
+
+
+def test_loop_guard_rotates_only_three_matching_recent_outcomes():
+    entries = [
+        {
+            "endpoint": f"/api/orders/{value}",
+            "vuln_class": "IDOR",
+            "result": result,
+        }
+        for value, result in (("1", "tested_clean"), ("2", "dead_end"), ("3", "tested_clean"))
+    ]
+    rotate = build_loop_guard_projection({"next_action": "hunt_p1"}, entries)
+    mixed = build_loop_guard_projection(
+        {"next_action": "hunt_p1"},
+        [*entries[:2], {**entries[2], "vuln_class": "Authz"}],
+    )
+
+    assert rotate == {
+        "verdict": "rotate",
+        "reason": "three_homogeneous_clean_outcomes",
+        "endpoint_family": "/api/orders/:id",
+        "vuln_class": "IDOR",
+        "next_action": "rotate_to_adjacent_high_value_lane",
+        "rotation_target": {},
+    }
+    assert mixed["verdict"] == "continue"
+    assert mixed["reason"] == "insufficient_homogeneous_outcomes"
+    assert mixed["rotation_target"] == {}
+
+
+def test_loop_guard_rotation_target_excludes_blocked_family_and_prefers_new_observation():
+    entries = [
+        {"endpoint": f"/api/orders/{value}", "vuln_class": "IDOR", "result": "tested_clean"}
+        for value in ("1", "2", "3")
+    ]
+    guard = build_loop_guard_projection(
+        {
+            "target": "target.com",
+            "next_action": "hunt_p1",
+            "surface_review_candidates": [
+                {"url": "https://target.com/api/orders/99", "score": 20},
+                {"url": "https://target.com/api/settings", "score": 10},
+                {
+                    "url": "https://target.com/api/profile",
+                    "score": 1,
+                    "new_observation": True,
+                    "review_reason": "new observation representative (neutral)",
+                },
+            ],
+        },
+        entries,
+    )
+
+    assert guard["verdict"] == "rotate"
+    assert guard["rotation_target"] == {
+        "url": "https://target.com/api/profile",
+        "score": 1,
+        "review_reason": "new observation representative (neutral)",
+        "new_observation": True,
+    }
+
+
+def test_loop_guard_rotation_target_ignores_off_target_frontier_entries():
+    entries = [
+        {"endpoint": f"/api/orders/{value}", "vuln_class": "IDOR", "result": "tested_clean"}
+        for value in ("1", "2", "3")
+    ]
+    guard = build_loop_guard_projection(
+        {
+            "target": "target.com",
+            "next_action": "hunt_p1",
+            "surface_review_candidates": [
+                {"url": "https://external.example/api/profile", "new_observation": True},
+                {"url": "https://target.com/api/settings", "score": 10},
+            ],
+        },
+        entries,
+    )
+
+    assert guard["rotation_target"] == {
+        "url": "https://target.com/api/settings",
+        "score": 10,
+    }
+
+
+def test_loop_guard_never_overrides_authoritative_next_actions():
+    entries = [
+        {"endpoint": f"/api/orders/{value}", "vuln_class": "IDOR", "result": "tested_clean"}
+        for value in ("1", "2", "3")
+    ]
+    for action in ("wait_recon", "wait_scan", "validate_finding", "complete_report_draft", "resume_action_queue"):
+        guard = build_loop_guard_projection({"next_action": action}, entries)
+        assert guard["verdict"] == "continue"
+        assert guard["reason"] == "authoritative_next_action"
+        assert guard["next_action"] == action
+        assert guard["rotation_target"] == {}
+
+
+def test_loop_guard_stale_handoff_yields_to_authoritative_control_plane_work():
+    entries = [
+        {"endpoint": f"/api/orders/{value}", "vuln_class": "IDOR", "result": "tested_clean"}
+        for value in ("1", "2", "3")
+    ]
+    states = [
+        {"recon_in_progress": True},
+        {"scan_in_progress": True},
+        {"active_action_queue_count": 1},
+        {"action_queue_next": {"id": "AQ-1"}},
+        {"validation_runner_next": {"id": "VR-1"}},
+        {"root_finding_claim_next": {"id": "F-1"}},
+        {"memory_candidate_next": {"id": "M-1"}},
+        {"structured_findings": {"next_owner_revalidation": {"id": "F-1"}}},
+        {"structured_findings": {"next_validation": {"id": "F-1"}}},
+        {"structured_findings": {"draft_completion_pending": {"id": "F-1"}}},
+        {"structured_findings": {"validated_pending_report": {"id": "F-1"}}},
+        {"intel_continuation": {"blocked": True}},
+    ]
+
+    for state in states:
+        guard = build_loop_guard_projection({"next_action": "handoff", **state}, entries)
+        assert guard["verdict"] == "continue"
+        assert guard["reason"].startswith("authoritative_")
+        assert guard["next_action"] == "handoff"
+        assert guard["rotation_target"] == {}
+
+
+def test_closure_ignores_malformed_or_endpointless_rotation_entries():
+    malformed = [
+        {"endpoint": "/api/orders/1", "vuln_class": "IDOR", "result": "tested_clean"},
+        "not a ledger entry",
+        {"endpoint": "/api/orders/3", "vuln_class": "IDOR", "result": "dead_end"},
+    ]
+    endpointless = [
+        {"vuln_class": "IDOR", "result": "tested_clean"},
+        {"vuln_class": "IDOR", "result": "tested_clean"},
+        {"vuln_class": "IDOR", "result": "dead_end"},
+    ]
+
+    assert build_closure_projection({"next_action": "handoff"}, _closure_matrix(), malformed)["rotation_hint"] == {}
+    assert build_closure_projection({"next_action": "handoff"}, _closure_matrix(), endpointless)["rotation_hint"] == {}
+
+
+def test_closure_only_handoffs_browser_or_js_when_partial_work_is_explicit():
+    missing_browser = build_closure_projection(
+        {"next_action": "handoff", "browser_evidence": {"present": False, "ready": False}},
+        _closure_matrix(),
+    )
+    partial_browser = build_closure_projection(
+        {"next_action": "handoff", "browser_evidence": {"present": True, "ready": False}},
+        _closure_matrix(),
+    )
+    pending_js = build_closure_projection(
+        {"next_action": "handoff", "enrichment_hints": [{"tool": "run_js_read"}]},
+        _closure_matrix(),
+    )
+    blocked_source = build_closure_projection(
+        {"next_action": "handoff", "repo_source_summary": {"status": "confirmation_required"}},
+        _closure_matrix(),
+    )
+
+    assert missing_browser["verdict"] == "finish"
+    assert partial_browser["reasons"] == ["browser_evidence_partial"]
+    assert pending_js["reasons"] == ["js_evidence_partial"]
+    assert blocked_source["reasons"] == ["source_evidence_partial"]
+
+
+def test_default_formatted_state_omits_explicit_closure_line():
+    output = format_autopilot_state({
+        "target": "target.com",
+        "has_recon": False,
+        "has_memory": False,
+        "next_action": "run_recon",
+    })
+
+    assert "Closure:" not in output
+    assert "Loop guard:" not in output
+
+
+def test_normal_bounded_state_never_loads_closure_owners(tmp_path, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise AssertionError("closure owner read")
+
+    monkeypatch.setattr("autopilot_state.load_matrix", fail)
+    monkeypatch.setattr("autopilot_state.load_entries", fail)
+
+    state = build_autopilot_state(
+        str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory"), bounded=True
+    )
+
+    assert state["next_action"] == "run_recon"
+
+
+def test_explicit_closure_checks_non_substantive_active_queue_work(tmp_path):
+    target = "target.com"
+    evidence_dir = tmp_path / "evidence" / target_storage_key(target)
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "coverage_matrix.json").write_text(
+        json.dumps(_closure_matrix()), encoding="utf-8"
+    )
+    queue_dir = tmp_path / "state" / target_storage_key(target)
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target": target,
+            "actions": [{
+                "id": "AQ-0001",
+                "status": "queued",
+                "type": "surface-review",
+                "evidence": "reason: top advisory score",
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    state = build_autopilot_state(
+        str(tmp_path), target, memory_dir=str(tmp_path / "hunt-memory"), bounded=True
+    )
+    assert state["action_queue_next"] == {}
+    state["next_action"] = "handoff"
+    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["durable_work_pending"]
+
+
+def test_explicit_closure_checks_pending_source_and_js_artifacts(tmp_path):
+    target = "target.com"
+    storage_key = target_storage_key(target)
+    evidence_dir = tmp_path / "evidence" / storage_key
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "coverage_matrix.json").write_text(
+        json.dumps(_closure_matrix()), encoding="utf-8"
+    )
+    exposure_dir = tmp_path / "findings" / storage_key / "exposure"
+    exposure_dir.mkdir(parents=True)
+    (exposure_dir / "repo_source_meta.json").write_text('{"status":"ok"}\n', encoding="utf-8")
+
+    state = build_autopilot_state(str(tmp_path), target, bounded=True)
+    state["next_action"] = "handoff"
+    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    assert closure["reasons"] == ["source_evidence_partial"]
+
+    source_intel = tmp_path / "findings" / storage_key / "source_intel"
+    source_intel.mkdir()
+    (source_intel / "summary.md").write_text("source review complete\n", encoding="utf-8")
+    assert _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)["verdict"] == "finish"
+
+    js_dir = tmp_path / "recon" / storage_key / "urls"
+    js_dir.mkdir(parents=True)
+    (js_dir / "js_files.txt").write_text("https://target.com/app.js\n", encoding="utf-8")
+    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    assert closure["reasons"] == ["js_evidence_partial"]
+
+    js_intel = tmp_path / "findings" / storage_key / "js_intel"
+    js_intel.mkdir()
+    (js_intel / "materials.json").write_text("{}\n", encoding="utf-8")
+    assert _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)["verdict"] == "finish"
 
 
 class TestAutopilotState:

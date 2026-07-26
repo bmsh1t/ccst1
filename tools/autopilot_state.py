@@ -72,6 +72,7 @@ try:
         migrate_legacy_list_storage,
         target_list_entries,
         target_storage_key,
+        url_belongs_to_target,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from finding_index import (  # type: ignore
@@ -96,7 +97,15 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         migrate_legacy_list_storage,
         target_list_entries,
         target_storage_key,
+        url_belongs_to_target,
     )
+
+try:
+    from tools.coverage_matrix import STATUS_VALUES, VULN_CLASSES, high_value_gaps_from_matrix, load_matrix
+    from tools.evidence_ledger import load_entries
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from coverage_matrix import STATUS_VALUES, VULN_CLASSES, high_value_gaps_from_matrix, load_matrix  # type: ignore
+    from evidence_ledger import load_entries  # type: ignore
 
 
 
@@ -284,6 +293,7 @@ def _build_recommended_targets(
             "tripped": bool(status.get("tripped", False)),
             "remaining_seconds": float(status.get("remaining_seconds", 0.0) or 0.0),
             "matches_resume_target": _matches_resume_target(item.get("url", ""), preferred),
+            "new_observation": bool(item.get("new_observation")),
         })
 
     recommended.sort(
@@ -1868,6 +1878,342 @@ def build_autopilot_state(
     )
 
 
+_TERMINAL_CLOSURE_ACTIONS = {
+    "invalid_batch_target",
+    "batch_failed",
+    "recon_no_live_hosts",
+}
+_ROTATION_OUTCOMES = {"tested_clean", "dead_end"}
+_LOOP_GUARD_ROTATABLE_ACTIONS = {
+    "handoff",
+    "continue_last_focus",
+    "resume_untested",
+    "hunt_p1",
+    "hunt_p2",
+    "guard_safe_pivot",
+}
+_UUID_SEGMENT_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_VARIABLE_PATH_SEGMENT_RE = re.compile(r"^(?:\d+|[0-9a-f]{12,})$", re.IGNORECASE)
+
+
+def _endpoint_family(endpoint: object) -> str:
+    """Collapse common object-id path segments for the advisory rotation check."""
+    path = _normalise_endpoint_path(str(endpoint or ""))
+    return "/".join(
+        ":id" if _UUID_SEGMENT_RE.fullmatch(segment) or _VARIABLE_PATH_SEGMENT_RE.fullmatch(segment) else segment
+        for segment in path.split("/")
+    ) or "/"
+
+
+def _rotation_hint(entries: list[dict]) -> dict:
+    recent = entries[-3:]
+    if len(recent) != 3 or not all(isinstance(item, dict) for item in recent):
+        return {}
+    outcomes = {str(item.get("result") or "").strip().lower() for item in recent}
+    endpoints = [str(item.get("endpoint") or item.get("url") or "").strip() for item in recent]
+    if not all(endpoints):
+        return {}
+    families = {_endpoint_family(endpoint) for endpoint in endpoints}
+    vuln_classes = {str(item.get("vuln_class") or "").strip() for item in recent}
+    if outcomes <= _ROTATION_OUTCOMES and len(families) == len(vuln_classes) == 1 and next(iter(vuln_classes)):
+        return {
+            "reason": "three_homogeneous_clean_outcomes",
+            "endpoint_family": next(iter(families)),
+            "vuln_class": next(iter(vuln_classes)),
+            "action": "rotate_to_adjacent_high_value_lane",
+        }
+    return {}
+
+
+def _rotation_target(state: dict, blocked_family: str) -> dict:
+    """Choose one bounded adjacent Surface candidate without changing its rank."""
+    candidates = state.get("surface_review_candidates") or state.get("recommended_targets") or []
+    target = str(state.get("resolved_target") or state.get("target") or "")
+    eligible = [
+        item
+        for item in candidates
+        if isinstance(item, dict)
+        and (url := str(item.get("url") or "").strip())
+        and url_belongs_to_target(url, target)
+        and _endpoint_family(url) != blocked_family
+    ]
+    if not eligible:
+        return {}
+    candidate = next((item for item in eligible if item.get("new_observation")), eligible[0])
+    return {
+        key: candidate[key]
+        for key in ("url", "host", "suggested", "score", "review_reason", "new_observation")
+        if key in candidate
+    }
+
+
+def _loop_guard_authoritative_reason(state: dict) -> str:
+    """Keep a stale handoff from rotating past durable control-plane work."""
+    if state.get("recon_in_progress") or state.get("scan_in_progress"):
+        return "authoritative_runtime_work"
+    if (
+        state.get("active_action_queue_count")
+        or state.get("action_queue_next")
+        or state.get("validation_runner_next")
+    ):
+        return "authoritative_durable_work"
+    if state.get("root_finding_claim_next") or state.get("memory_candidate_next"):
+        return "authoritative_finding_work"
+    findings = state.get("structured_findings") or {}
+    if isinstance(findings, dict) and any(
+        findings.get(key)
+        for key in (
+            "next_owner_revalidation",
+            "next_validation",
+            "draft_completion_pending",
+            "validated_pending_report",
+        )
+    ):
+        return "authoritative_finding_work"
+    intel = state.get("intel_continuation") or {}
+    if isinstance(intel, dict) and intel.get("blocked"):
+        return "authoritative_intel_work"
+    return ""
+
+
+def build_loop_guard_projection(state: dict, ledger_entries: list[dict] | None = None) -> dict:
+    """Return a read-only per-iteration rotation decision from recent evidence."""
+    action = str(state.get("next_action") or "handoff")
+    authoritative_reason = _loop_guard_authoritative_reason(state)
+    if authoritative_reason:
+        return {
+            "verdict": "continue",
+            "reason": authoritative_reason,
+            "endpoint_family": "",
+            "vuln_class": "",
+            "next_action": action,
+            "rotation_target": {},
+        }
+    hint = _rotation_hint(ledger_entries or [])
+    if not hint:
+        return {
+            "verdict": "continue",
+            "reason": "insufficient_homogeneous_outcomes",
+            "endpoint_family": "",
+            "vuln_class": "",
+            "next_action": action,
+            "rotation_target": {},
+        }
+    if action not in _LOOP_GUARD_ROTATABLE_ACTIONS:
+        return {
+            "verdict": "continue",
+            "reason": "authoritative_next_action",
+            "endpoint_family": hint["endpoint_family"],
+            "vuln_class": hint["vuln_class"],
+            "next_action": action,
+            "rotation_target": {},
+        }
+    return {
+        "verdict": "rotate",
+        "reason": hint["reason"],
+        "endpoint_family": hint["endpoint_family"],
+        "vuln_class": hint["vuln_class"],
+        "next_action": hint["action"],
+        "rotation_target": _rotation_target(state, hint["endpoint_family"]),
+    }
+
+
+def _matrix_is_usable_for_closure(matrix: object) -> bool:
+    """Reject damaged coverage rather than treating unknown cells as clean."""
+    if not isinstance(matrix, dict):
+        return False
+    endpoints = matrix.get("endpoints")
+    if not isinstance(endpoints, list) or not endpoints:
+        return False
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict) or not str(endpoint.get("endpoint") or "").strip():
+            return False
+        cells = endpoint.get("cells")
+        if not isinstance(cells, dict) or not cells:
+            return False
+        for vuln_class, cell in cells.items():
+            if vuln_class not in VULN_CLASSES or not isinstance(cell, dict):
+                return False
+            if cell.get("status") not in STATUS_VALUES:
+                return False
+    return True
+
+
+def _explicit_partial_reason(state: dict) -> str:
+    """Keep a stale handoff state from hiding durable work owned elsewhere."""
+    if state.get("recon_in_progress") or state.get("scan_in_progress"):
+        return "runtime_phase_active"
+    if state.get("active_action_queue_count"):
+        return "durable_work_pending"
+    if state.get("action_queue_next") or state.get("validation_runner_next"):
+        return "durable_work_pending"
+    if state.get("root_finding_claim_next") or state.get("memory_candidate_next"):
+        return "finding_work_pending"
+    findings = state.get("structured_findings") or {}
+    if isinstance(findings, dict) and any(
+        findings.get(key)
+        for key in (
+            "next_owner_revalidation",
+            "next_validation",
+            "draft_completion_pending",
+            "validated_pending_report",
+        )
+    ):
+        return "finding_work_pending"
+    if state.get("surface_review_candidates") or state.get("resume_targets"):
+        return "surface_work_pending"
+    return ""
+
+
+def build_closure_projection(
+    state: dict,
+    matrix: dict | None,
+    ledger_entries: list[dict] | None = None,
+    *,
+    max_lanes_reached: bool = False,
+) -> dict:
+    """Return the explicit, read-only closure verdict for an existing state."""
+    reasons: list[str] = []
+    action = str(state.get("next_action") or "handoff")
+    if max_lanes_reached:
+        verdict = "handoff"
+        reasons.append("max_lanes_reached")
+    elif action in _TERMINAL_CLOSURE_ACTIONS:
+        verdict = "blocked"
+        reasons.append(action)
+    elif action != "handoff":
+        verdict = "handoff"
+        reasons.append("next_action_pending")
+    elif matrix is None:
+        verdict = "handoff"
+        reasons.append("coverage_missing")
+    elif not isinstance(matrix, dict) or not matrix.get("endpoints"):
+        verdict = "handoff"
+        reasons.append("coverage_empty")
+    elif not _matrix_is_usable_for_closure(matrix):
+        verdict = "handoff"
+        reasons.append("coverage_invalid")
+    elif high_value_gaps_from_matrix(matrix):
+        verdict = "handoff"
+        reasons.append("coverage_high_value_gaps")
+    else:
+        browser = state.get("browser_evidence") or {}
+        source = state.get("repo_source_summary") or {}
+        intel = state.get("intel_continuation") or {}
+        enrichment_tools = {
+            str(item.get("tool") or "")
+            for item in state.get("enrichment_hints") or []
+            if isinstance(item, dict)
+        }
+        source_status = str(source.get("status") or "").strip().lower()
+        partial_reason = _explicit_partial_reason(state)
+        if partial_reason:
+            verdict = "handoff"
+            reasons.append(partial_reason)
+        elif browser.get("present") and not browser.get("ready"):
+            verdict = "handoff"
+            reasons.append("browser_evidence_partial")
+        elif source_status in {
+            "partial", "blocked", "failed", "error", "incomplete", "confirmation_required",
+        }:
+            verdict = "handoff"
+            reasons.append("source_evidence_partial")
+        elif "run_source_intel" in enrichment_tools:
+            verdict = "handoff"
+            reasons.append("source_evidence_partial")
+        elif "run_js_read" in enrichment_tools:
+            verdict = "handoff"
+            reasons.append("js_evidence_partial")
+        elif intel.get("blocked"):
+            verdict = "handoff"
+            reasons.append("intel_evidence_blocked")
+        else:
+            verdict = "finish"
+
+    return {
+        "verdict": verdict,
+        "can_claim_exhausted": verdict == "finish",
+        "reasons": reasons[:3],
+        "next_action": action,
+        "rotation_hint": _rotation_hint(ledger_entries or []),
+    }
+
+
+def _load_closure_projection(repo_root: str, state: dict, *, max_lanes_reached: bool) -> dict:
+    """Read existing closure inputs only for an explicit CLI request."""
+    target = str(state.get("resolved_target") or state.get("target") or "")
+    matrix_path = Path(repo_root) / "evidence" / target_storage_key(target) / "coverage_matrix.json"
+    matrix = load_matrix(target, repo_root) if matrix_path.is_file() else None
+    queue = load_queue(repo_root, target)
+    _, artifact_hints = _build_enrichment_hints(
+        repo_root=repo_root,
+        resolved_target=target,
+        surface_context={},
+        ranked=state.get("surface") or {},
+        repo_source_available=bool(state.get("repo_source_available")),
+        next_action="handoff",
+        browser_evidence={"ready": True},
+    )
+    enrichment_hints = [
+        item
+        for item in [*(state.get("enrichment_hints") or []), *artifact_hints]
+        if isinstance(item, dict)
+        and str(item.get("tool") or "") in {"run_source_intel", "run_js_read"}
+    ]
+    closure_state = {
+        **state,
+        "enrichment_hints": enrichment_hints,
+        "active_action_queue_count": sum(
+            isinstance(item, dict)
+            and str(item.get("status") or "queued").strip().lower() in ACTIVE_STATUSES
+            for item in queue.get("actions") or []
+        ),
+    }
+    return build_closure_projection(
+        closure_state,
+        matrix,
+        load_entries(repo_root, target),
+        max_lanes_reached=max_lanes_reached,
+    )
+
+
+def _load_loop_guard_projection(repo_root: str, state: dict) -> dict:
+    """Read the ledger only for an explicit per-iteration loop check."""
+    target = str(state.get("resolved_target") or state.get("target") or "")
+    return build_loop_guard_projection(state, load_entries(repo_root, target))
+
+
+def _format_closure_line(state: dict) -> str:
+    closure = state.get("closure") or {}
+    if not closure:
+        return ""
+    reasons = ",".join(str(item) for item in closure.get("reasons") or []) or "-"
+    rotation = closure.get("rotation_hint") or {}
+    rotation_text = str(rotation.get("reason") or "-") if isinstance(rotation, dict) else str(rotation)
+    return (
+        "Closure: verdict={verdict} exhausted={exhausted} reasons={reasons} rotation={rotation}".format(
+            verdict=closure.get("verdict", "handoff"),
+            exhausted=str(bool(closure.get("can_claim_exhausted"))).lower(),
+            reasons=reasons,
+            rotation=rotation_text,
+        )
+    )
+
+
+def _format_loop_guard_line(state: dict) -> str:
+    guard = state.get("loop_guard") or {}
+    if not guard:
+        return ""
+    return "Loop guard: verdict={verdict} reason={reason} next={next_action}".format(
+        verdict=guard.get("verdict", "continue"),
+        reason=guard.get("reason", "-"),
+        next_action=guard.get("next_action", "handoff"),
+    )
+
+
 def _format_durable_action_lines(item: dict) -> list[str]:
     """Format the selected persistent action without dumping the full queue."""
     if not item:
@@ -1940,6 +2286,12 @@ def format_autopilot_state(state: dict) -> str:
                 "Select one completed domain, then rerun autopilot_state.py for that domain.",
                 "Do not run surface, scan, or active hunting against the batch index.",
             ])
+        closure_line = _format_closure_line(state)
+        if closure_line:
+            lines.append(closure_line)
+        loop_guard_line = _format_loop_guard_line(state)
+        if loop_guard_line:
+            lines.append(loop_guard_line)
         return "\n".join(lines)
 
     summary = state.get("resume_summary") or {}
@@ -2082,6 +2434,12 @@ def format_autopilot_state(state: dict) -> str:
                 details = _format_recent_guard_advisory(item)
                 if details:
                     lines.append(f"- {details}")
+        closure_line = _format_closure_line(state)
+        if closure_line:
+            lines.append(closure_line)
+        loop_guard_line = _format_loop_guard_line(state)
+        if loop_guard_line:
+            lines.append(loop_guard_line)
         return "\n".join(lines) + "\n"
 
     lines = [
@@ -2293,6 +2651,13 @@ def format_autopilot_state(state: dict) -> str:
                 f"{idx}. {item['url']} — {item['suggested']} (score hint {item['score']}){reason}{suffix}"
             )
 
+    closure_line = _format_closure_line(state)
+    if closure_line:
+        lines.append(closure_line)
+    loop_guard_line = _format_loop_guard_line(state)
+    if loop_guard_line:
+        lines.append(loop_guard_line)
+
     return "\n".join(lines)
 
 
@@ -2348,6 +2713,21 @@ def main() -> None:
         action="store_true",
         help="Consume only compact projections and bounded control-plane state",
     )
+    parser.add_argument(
+        "--closure",
+        action="store_true",
+        help="Read existing coverage and evidence owners for an explicit closure verdict",
+    )
+    parser.add_argument(
+        "--max-lanes-reached",
+        action="store_true",
+        help="Mark this bounded invocation as a required handoff",
+    )
+    parser.add_argument(
+        "--loop-check",
+        action="store_true",
+        help="Read recent ledger outcomes for an explicit per-iteration rotation decision",
+    )
     parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args()
 
@@ -2357,6 +2737,14 @@ def main() -> None:
         memory_dir=args.memory_dir or None,
         bounded=args.bounded,
     )
+    if args.closure:
+        state["closure"] = _load_closure_projection(
+            BASE_DIR,
+            state,
+            max_lanes_reached=args.max_lanes_reached,
+        )
+    if args.loop_check:
+        state["loop_guard"] = _load_loop_guard_projection(BASE_DIR, state)
     if args.json:
         print(json.dumps(state, indent=2))
         return

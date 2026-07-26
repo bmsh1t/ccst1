@@ -106,6 +106,19 @@ def test_review_pool_reserves_high_value_categories_before_source_flood():
     assert low_score_category["url"] in [item["url"] for item in bounded_pool]
 
 
+def test_review_pool_reserves_at_most_two_neutral_new_observation_representatives():
+    candidates = [
+        {**_candidate(index, 0, 0), "new_observation": True}
+        for index in range(3)
+    ]
+
+    pool = _build_review_pool(candidates)
+
+    assert [item["url"] for item in pool] == [item["url"] for item in candidates[:2]]
+    assert all(item["review_reason"] == "top advisory score (low-evidence fallback)" for item in pool)
+    assert all(not item["score_breakdown"] for item in pool)
+
+
 def test_review_pool_labels_dom_surface_as_client_side_before_incidental_file_words():
     item = {
         "url": "https://target.com/reflected/url/css_import?q=a",

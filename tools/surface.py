@@ -1033,6 +1033,20 @@ def _build_review_pool(
     seen: set[str] = set()
     unresolved = [item for item in candidates if not _is_final_surface_item(item)]
 
+    # New observations are neutral facts, not a score source.  Keep two exact
+    # matches visible before the ordinary evidence-led review seats fill up.
+    for item in unresolved:
+        if item.get("new_observation"):
+            reason = (
+                "browser-observed API/workflow" if item.get("browser_observed")
+                else "JS/source-inferred surface" if item.get("js_intel_observed") or item.get("source_intel_observed")
+                else "top advisory score" if _has_actionable_review_evidence(item)
+                else "top advisory score (low-evidence fallback)"
+            )
+            _add_review_item(pool, seen, item, reason)
+            if len(pool) == 2:
+                break
+
     # 先保留各业务类别的最高分代表，避免大量同源 search/facet 路径占满 16 条。
     represented_groups: set[str] = set()
     for item in unresolved:
@@ -1672,6 +1686,7 @@ class _SurfaceCandidateFrontiers:
         }
         self.ffuf_urls = ffuf_urls
         self.ffuf_matches: dict[str, tuple[int, dict]] = {}
+        self.new_observations: list[tuple[int, dict]] = []
 
     def add(self, item: dict, sequence: int) -> None:
         self.total += 1
@@ -1698,6 +1713,8 @@ class _SurfaceCandidateFrontiers:
         url = str(item.get("url") or "")
         if url in self.ffuf_urls:
             self.ffuf_matches[url] = (sequence, item)
+        if item.get("new_observation") and len(self.new_observations) < 2:
+            self.new_observations.append((sequence, item))
 
     def review_candidates(self) -> list[dict]:
         by_url: dict[str, tuple[int, dict]] = {}
@@ -1710,6 +1727,8 @@ class _SurfaceCandidateFrontiers:
                     by_url[url] = (sequence, item)
         for url, value in self.ffuf_matches.items():
             by_url.setdefault(url, value)
+        for sequence, item in self.new_observations:
+            by_url.setdefault(str(item.get("url") or ""), (sequence, item))
         return [
             item
             for sequence, item in sorted(
@@ -1861,6 +1880,13 @@ def rank_surface(context: dict) -> dict:
 
     browser_urls = set(context.get("browser_xhr_urls", []) + context.get("browser_api_urls", []))
     api_urls = set(context.get("api_urls") or [])
+    new_observations = {
+        str(item.get("value") or "").strip(): item
+        for item in (context.get("observation_inventory") or {}).get("new_sample") or []
+        if isinstance(item, dict)
+        and str(item.get("kind") or "") == "url"
+        and url_belongs_to_target(str(item.get("value") or "").strip(), context["target"])
+    }
     js_intel = context.get("js_intel") or {}
     scanner_findings_by_url = {}
     for finding in context.get("scanner_findings", []):
@@ -2219,6 +2245,10 @@ def rank_surface(context: dict) -> dict:
             "tech_stack": context["hosts"].get(host, {}).get("tech_stack", []),
             "tested": path in tested_endpoints,
         }
+        new_observation = new_observations.get(raw_url)
+        if new_observation is not None:
+            entry["new_observation"] = True
+            entry["new_observation_id"] = str(new_observation.get("id") or "")
         if active_memory_hits or next_memory_hits:
             entry["target_memory_hits"] = [
                 {"type": "active_lead", "text": _target_memory_text(item)}

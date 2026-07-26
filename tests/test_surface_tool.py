@@ -81,6 +81,40 @@ class TestSurfaceContext:
         assert context["recon_artifacts"]["counts"]["hosts"] == 1
 
 
+def test_surface_marks_exact_target_owned_new_observations_without_score_bonus(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir()
+    (recon_dir / "js").mkdir()
+    urls = [
+        "https://api.target.com/api/new-one",
+        "https://api.target.com/api/new-two",
+    ]
+    (recon_dir / "live" / "httpx_full.txt").write_text(
+        "https://api.target.com [200] [API] [Python] [100]\n", encoding="utf-8"
+    )
+    (recon_dir / "urls" / "api_endpoints.txt").write_text("\n".join(urls) + "\n", encoding="utf-8")
+    (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+    context = load_surface_context(tmp_path, "target.com")
+    context["observation_inventory"] = {
+        "new_sample": [
+            {"id": "new-1", "kind": "url", "value": urls[0]},
+            {"id": "new-2", "kind": "url", "value": urls[1]},
+            {"id": "external", "kind": "url", "value": "https://external.example/api"},
+        ]
+    }
+
+    ranked = rank_surface(context)
+    baseline = rank_surface({**context, "observation_inventory": {"new_sample": []}})
+    representatives = [item for item in ranked["review_pool"] if item.get("new_observation")]
+    baseline_scores = {item["url"]: item["score"] for item in baseline["review_pool"]}
+
+    assert [item["url"] for item in representatives] == urls
+    assert all(item["review_reason"] for item in representatives)
+    assert all(item["score"] == baseline_scores[item["url"]] for item in representatives)
+    assert all("external.example" not in item["url"] for item in ranked["review_pool"])
+
+
 class TestSurfaceRanking:
 
     def test_ffuf_summary_enters_neutral_review_pool_without_off_target_promotion(self, tmp_path):
@@ -905,7 +939,8 @@ class TestSurfaceRanking:
         assert ranked["review_pool"][0]["url"] == browser_url
         assert ranked["review_pool"][0]["review_reason"] == "browser-observed API/workflow"
         assert any(item["url"] == score_only_url for item in ranked["p1"] + ranked["p2"])
-        assert all(item["url"] != score_only_url for item in ranked["review_pool"])
+        score_only_item = next(item for item in ranked["review_pool"] if item["url"] == score_only_url)
+        assert score_only_item["new_observation"] is True
 
     def test_review_pool_falls_back_to_score_only_when_no_actionable_evidence_exists(self, tmp_path):
         repo_root = tmp_path
