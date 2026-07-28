@@ -20,9 +20,9 @@ if TOOLS_DIR not in sys.path:
 
 from memory.target_profile import default_memory_dir
 try:
-    from tools.action_queue import ACTIVE_STATUSES, load_queue, select_next_action
+    from tools.action_queue import ACTIVE_STATUSES, FINAL_STATUSES, load_queue, select_next_action
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from action_queue import ACTIVE_STATUSES, load_queue, select_next_action
+    from action_queue import ACTIVE_STATUSES, FINAL_STATUSES, load_queue, select_next_action
 try:
     from tools.intel_continuation import apply_intel_continuation, inspect_intel_continuation
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -102,10 +102,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 try:
     from tools.coverage_matrix import STATUS_VALUES, VULN_CLASSES, high_value_gaps_from_matrix, load_matrix
-    from tools.evidence_ledger import load_entries
+    from tools.evidence_ledger import CLOSED_CELL_RESULTS, load_entries
 except ImportError:  # pragma: no cover - direct tools/ execution
     from coverage_matrix import STATUS_VALUES, VULN_CLASSES, high_value_gaps_from_matrix, load_matrix  # type: ignore
-    from evidence_ledger import load_entries  # type: ignore
+    from evidence_ledger import CLOSED_CELL_RESULTS, load_entries  # type: ignore
 
 
 
@@ -337,6 +337,7 @@ def _pick_next_action(
     root_finding_claim_next: dict | None = None,
     fresh_recon_ready: bool = False,
     surface_context_required: bool = False,
+    cidr_continuation: dict | None = None,
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
@@ -371,6 +372,8 @@ def _pick_next_action(
         return "review_validation_candidate"
     if action_queue_next:
         return "resume_action_queue"
+    if (cidr_continuation or {}).get("status") == "pending":
+        return "run_recon"
     # Legacy target-memory is only a recovery bridge.  Canonical report
     # closure must remain reachable once live/resume work above is exhausted.
     if memory_candidate_next and not (
@@ -452,6 +455,12 @@ def _describe_next_step(state: dict) -> str:
     recon_artifacts = state.get("recon_artifacts") or {}
 
     if action == "run_recon":
+        continuation = recon_artifacts.get("cidr_continuation") or {}
+        if continuation.get("status") == "pending":
+            return (
+                f"continue CIDR recon {target} from offset {continuation.get('next_offset')}; "
+                "preserve prior CIDR pages."
+            )
         missing = recon_artifacts.get("missing") or []
         if recon_artifacts.get("available") and missing:
             return f"rerun /recon {target}; cached recon is incomplete ({', '.join(missing[:2])})."
@@ -1646,6 +1655,7 @@ def _build_domain_autopilot_state(
             and surface_projection.get("status") != "valid"
         ),
         surface_context_required=surface_context_required,
+        cidr_continuation=(facts.get("recon_artifacts") or {}).get("cidr_continuation"),
     )
     intel_continuation = facts.get("intel_continuation") or {}
     next_action = apply_intel_continuation(primary_next_action, intel_continuation)
@@ -2042,10 +2052,92 @@ def _matrix_is_usable_for_closure(matrix: object) -> bool:
     return True
 
 
+def _final_queue_endpoint_paths(queue: dict) -> set[str]:
+    """Return exact endpoint identities with a durable final queue outcome."""
+    paths: set[str] = set()
+    for action in queue.get("actions") or []:
+        if not isinstance(action, dict):
+            continue
+        if str(action.get("status") or "").strip().lower() not in FINAL_STATUSES:
+            continue
+        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+        endpoint = _normalise_endpoint_path(
+            str(metadata.get("endpoint") or metadata.get("url") or "")
+        )
+        if endpoint:
+            paths.add(endpoint)
+    return paths
+
+
+def _closed_ledger_endpoint_paths(entries: list[dict]) -> set[str]:
+    """Return endpoint paths with a terminal evidence-ledger outcome."""
+    paths: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("result") or "").strip().lower() not in CLOSED_CELL_RESULTS:
+            continue
+        endpoint = _normalise_endpoint_path(str(entry.get("endpoint") or ""))
+        if endpoint:
+            paths.add(endpoint)
+    return paths
+
+
+def _surface_review_completion(
+    state: dict,
+    matrix: dict | None,
+    queue: dict,
+    ledger_entries: list[dict],
+) -> dict:
+    """Project whether the current bounded Surface window still owns work.
+
+    Surface keeps every raw URL visible.  This projection only releases the
+    terminal gate when each currently offered URL has both a completed
+    endpoint-level coverage view and a durable review outcome.  A single lane
+    therefore cannot make a raw URL identity final.
+    """
+    candidates = state.get("surface_review_candidates") or state.get("recommended_targets") or []
+    if not candidates:
+        return {"status": "none", "unresolved": []}
+    if not _matrix_is_usable_for_closure(matrix):
+        return {"status": "unresolved", "unresolved": [{"reason": "coverage_unavailable"}]}
+
+    matrix_by_path = {
+        _normalise_endpoint_path(str(item.get("endpoint") or "")): item
+        for item in matrix.get("endpoints") or []
+        if isinstance(item, dict) and _normalise_endpoint_path(str(item.get("endpoint") or ""))
+    }
+    high_gap_paths = {
+        _normalise_endpoint_path(str(gap.get("endpoint") or ""))
+        for gap in high_value_gaps_from_matrix(matrix)
+        if isinstance(gap, dict)
+    }
+    final_paths = _final_queue_endpoint_paths(queue) | _closed_ledger_endpoint_paths(ledger_entries)
+    unresolved = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            unresolved.append({"reason": "invalid_candidate"})
+            continue
+        url = str(candidate.get("url") or "").strip()
+        endpoint = _normalise_endpoint_path(url)
+        if not endpoint:
+            unresolved.append({"url": url, "reason": "missing_endpoint"})
+        elif endpoint not in matrix_by_path:
+            unresolved.append({"url": url, "reason": "coverage_endpoint_missing"})
+        elif endpoint in high_gap_paths:
+            unresolved.append({"url": url, "reason": "coverage_gap_pending"})
+        elif endpoint not in final_paths:
+            unresolved.append({"url": url, "reason": "review_outcome_missing"})
+    return {"status": "complete" if not unresolved else "unresolved", "unresolved": unresolved[:5]}
+
+
 def _explicit_partial_reason(state: dict) -> str:
     """Keep a stale handoff state from hiding durable work owned elsewhere."""
     if state.get("recon_in_progress") or state.get("scan_in_progress"):
         return "runtime_phase_active"
+    continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
+    if continuation.get("status") == "invalid":
+        return "cidr_continuation_invalid"
     if state.get("active_action_queue_count"):
         return "durable_work_pending"
     if state.get("action_queue_next") or state.get("validation_runner_next"):
@@ -2063,7 +2155,12 @@ def _explicit_partial_reason(state: dict) -> str:
         )
     ):
         return "finding_work_pending"
-    if state.get("surface_review_candidates") or state.get("resume_targets"):
+    surface_review = state.get("surface_review_completion") or {}
+    if (
+        state.get("surface_review_candidates") or state.get("recommended_targets")
+    ) and surface_review.get("status") != "complete":
+        return "surface_work_pending"
+    if state.get("resume_targets"):
         return "surface_work_pending"
     return ""
 
@@ -2078,6 +2175,9 @@ def build_closure_projection(
     """Return the explicit, read-only closure verdict for an existing state."""
     reasons: list[str] = []
     action = str(state.get("next_action") or "handoff")
+    surface_review = state.get("surface_review_completion") or {}
+    if action in {"hunt_p1", "hunt_p2"} and surface_review.get("status") == "complete":
+        action = "handoff"
     if max_lanes_reached:
         verdict = "handoff"
         reasons.append("max_lanes_reached")
@@ -2139,6 +2239,7 @@ def build_closure_projection(
         "reasons": reasons[:3],
         "next_action": action,
         "rotation_hint": _rotation_hint(ledger_entries or []),
+        "surface_review": surface_review,
     }
 
 
@@ -2163,6 +2264,7 @@ def _load_closure_projection(repo_root: str, state: dict, *, max_lanes_reached: 
         if isinstance(item, dict)
         and str(item.get("tool") or "") in {"run_source_intel", "run_js_read"}
     ]
+    ledger_entries = load_entries(repo_root, target)
     closure_state = {
         **state,
         "enrichment_hints": enrichment_hints,
@@ -2171,11 +2273,17 @@ def _load_closure_projection(repo_root: str, state: dict, *, max_lanes_reached: 
             and str(item.get("status") or "queued").strip().lower() in ACTIVE_STATUSES
             for item in queue.get("actions") or []
         ),
+        "surface_review_completion": _surface_review_completion(
+            state,
+            matrix,
+            queue,
+            ledger_entries,
+        ),
     }
     return build_closure_projection(
         closure_state,
         matrix,
-        load_entries(repo_root, target),
+        ledger_entries,
         max_lanes_reached=max_lanes_reached,
     )
 
@@ -2704,7 +2812,26 @@ def _format_target_goal_memory_lines(active: dict, target_memory: dict) -> list[
     return lines
 
 
-def main() -> None:
+def _error_state(target: str, error: Exception) -> dict:
+    """Keep explicit control-plane reads machine-readable when canonical state is damaged."""
+    return {
+        "target": target,
+        "next_action": "error",
+        "closure": {
+            "verdict": "error",
+            "can_claim_exhausted": False,
+            "reasons": ["state_read_error"],
+            "next_action": "error",
+            "rotation_hint": {},
+            "error": {
+                "type": type(error).__name__,
+                "message": str(error),
+            },
+        },
+    }
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description="Build combined autopilot state for a target")
     parser.add_argument("--target", required=True, help="Target domain")
     parser.add_argument("--memory-dir", default="", help="Optional hunt-memory directory")
@@ -2731,25 +2858,33 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args()
 
-    state = build_autopilot_state(
-        BASE_DIR,
-        args.target,
-        memory_dir=args.memory_dir or None,
-        bounded=args.bounded,
-    )
-    if args.closure:
-        state["closure"] = _load_closure_projection(
+    try:
+        state = build_autopilot_state(
             BASE_DIR,
-            state,
-            max_lanes_reached=args.max_lanes_reached,
+            args.target,
+            memory_dir=args.memory_dir or None,
+            bounded=args.bounded,
         )
-    if args.loop_check:
-        state["loop_guard"] = _load_loop_guard_projection(BASE_DIR, state)
+        if args.closure:
+            state["closure"] = _load_closure_projection(
+                BASE_DIR,
+                state,
+                max_lanes_reached=args.max_lanes_reached,
+            )
+        if args.loop_check:
+            state["loop_guard"] = _load_loop_guard_projection(BASE_DIR, state)
+    except (OSError, ValueError) as exc:
+        if args.json:
+            print(json.dumps(_error_state(args.target, exc), indent=2))
+        else:
+            print(f"autopilot_state: {exc}", file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(state, indent=2))
-        return
+        return 0
     print(format_autopilot_state(state))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

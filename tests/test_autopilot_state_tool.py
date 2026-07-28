@@ -1,6 +1,7 @@
 """Tests for tools/autopilot_state.py."""
 
 import json
+import sys
 import time
 
 import finding_index
@@ -18,6 +19,7 @@ from autopilot_state import (
     build_loop_guard_projection,
     build_autopilot_state,
     format_autopilot_state,
+    main as autopilot_state_main,
 )
 from request_guard import record_request
 from runtime_state import runtime_phase_lock, update_runtime_state
@@ -66,6 +68,15 @@ def test_deep_js_review_queue_item_is_substantive():
     assert not _is_substantive_queue_action({**action, "evidence_type": "generic"})
 
 
+def test_pending_cidr_continuation_routes_back_to_recon():
+    assert _pick_next_action(
+        True,
+        {"p1": [], "p2": []},
+        None,
+        cidr_continuation={"status": "pending", "next_offset": 4096},
+    ) == "run_recon"
+
+
 def _closure_matrix(*, status: str = "tested_clean") -> dict:
     return {
         "endpoints": [{
@@ -83,6 +94,137 @@ def test_closure_finishes_only_for_gap_free_handoff_state():
     assert closure["verdict"] == "finish"
     assert closure["can_claim_exhausted"] is True
     assert closure["reasons"] == []
+
+
+def _write_closure_owners(tmp_path, target: str, *, status: str, final_review: bool) -> None:
+    evidence_dir = tmp_path / "evidence" / target_storage_key(target)
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "coverage_matrix.json").write_text(
+        json.dumps(_closure_matrix(status=status)),
+        encoding="utf-8",
+    )
+    if final_review:
+        queue_dir = tmp_path / "state" / target_storage_key(target)
+        queue_dir.mkdir(parents=True)
+        (queue_dir / "action_queue.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target": target,
+                "actions": [{
+                    "id": "AQ-0001",
+                    "status": "tested",
+                    "type": "surface-review",
+                    "metadata": {"endpoint": "/api/orders/1"},
+                }],
+            }),
+            encoding="utf-8",
+        )
+
+
+def _surface_closure_state(target: str, *, next_action: str = "hunt_p1") -> dict:
+    return {
+        "target": target,
+        "resolved_target": target,
+        "next_action": next_action,
+        "surface_review_candidates": [{"url": f"https://{target}/api/orders/1"}],
+        "browser_evidence": {"ready": True},
+    }
+
+
+def test_surface_candidate_blocks_closure_without_durable_review_outcome(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+
+    closure = _load_closure_projection(
+        str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["surface_review"]["status"] == "unresolved"
+    assert closure["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
+
+
+def test_surface_candidate_allows_closure_after_coverage_and_final_review(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
+
+    closure = _load_closure_projection(
+        str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
+    )
+
+    assert closure["verdict"] == "finish"
+    assert closure["can_claim_exhausted"] is True
+    assert closure["surface_review"] == {"status": "complete", "unresolved": []}
+
+
+def test_surface_candidate_allows_closure_after_terminal_ledger_outcome(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "ledger.jsonl").write_text(
+        json.dumps({
+            "endpoint": "/api/orders/1",
+            "vuln_class": "IDOR",
+            "result": "dead_end",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    closure = _load_closure_projection(
+        str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
+    )
+
+    assert closure["verdict"] == "finish"
+    assert closure["surface_review"]["status"] == "complete"
+
+
+def test_malformed_surface_candidate_fails_open_at_closure(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
+    state = _surface_closure_state(target, next_action="handoff")
+    state["surface_review_candidates"] = ["broken-candidate"]
+
+    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+
+    assert closure["verdict"] == "handoff"
+    assert closure["surface_review"]["unresolved"] == [{"reason": "invalid_candidate"}]
+
+
+def test_final_surface_review_does_not_hide_high_value_coverage_gap(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="untested", final_review=True)
+
+    closure = _load_closure_projection(
+        str(tmp_path),
+        _surface_closure_state(target, next_action="handoff"),
+        max_lanes_reached=False,
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["coverage_high_value_gaps"]
+    assert closure["surface_review"]["unresolved"][0]["reason"] == "coverage_gap_pending"
+
+
+def test_json_closure_returns_structured_error_for_malformed_coverage(
+    tmp_path, monkeypatch, capsys
+):
+    target = "target.com"
+    evidence_dir = tmp_path / "evidence" / target_storage_key(target)
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "coverage_matrix.json").write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr("autopilot_state.BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["autopilot_state.py", "--target", target, "--bounded", "--closure", "--json"],
+    )
+
+    assert autopilot_state_main() == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["closure"]["verdict"] == "error"
+    assert payload["closure"]["reasons"] == ["state_read_error"]
+    assert payload["closure"]["error"]["type"] == "ValueError"
 
 
 def test_closure_handoffs_actionable_work_and_coverage_gaps():

@@ -1162,7 +1162,23 @@ fi
 
 mkdir -p "$RECON_DIR"/{subdomains,live,ports,urls,js,dirs,params,exposure,logs}
 RECON_MANIFEST="$RECON_DIR/recon_manifest.jsonl"
-: > "$RECON_MANIFEST"
+CIDR_OFFSET=0
+if [ "$TARGET_KIND" = "cidr" ]; then
+    CIDR_OFFSET="${BBHUNT_CIDR_OFFSET:-0}"
+    if ! [[ "$CIDR_OFFSET" =~ ^[0-9]+$ ]]; then
+        log_err "Invalid BBHUNT_CIDR_OFFSET=$CIDR_OFFSET"
+        exit 2
+    fi
+    mkdir -p "$RECON_DIR/live/cidr_pages"
+fi
+
+if [ "$TARGET_KIND" != "cidr" ] || [ "$CIDR_OFFSET" -eq 0 ]; then
+    : > "$RECON_MANIFEST"
+    : > "$RECON_DIR/live/httpx_full.txt"
+    [ "$TARGET_KIND" != "cidr" ] || rm -f "$RECON_DIR/live/cidr_pages/"*.txt
+else
+    touch "$RECON_MANIFEST" "$RECON_DIR/live/httpx_full.txt"
+fi
 : > "$DISCOVERY_HOSTS_FILE"
 
 # Pre-seed result files that summary blocks read via `< file`. Without these,
@@ -1195,7 +1211,6 @@ touch "$RECON_DIR/subdomains/all.txt" \
       "$RECON_DIR/exposure/asset_relation_candidates.jsonl"
 
 # Clear regenerated summary files so reruns cannot inherit stale counters.
-: > "$RECON_DIR/live/httpx_full.txt"
 : > "$RECON_DIR/live/urls.txt"
 : > "$RECON_DIR/live/seed_urls.txt"
 : > "$RECON_DIR/live/wafw00f_hits.txt"
@@ -1405,12 +1420,6 @@ elif [ "$TARGET_KIND" = "ip" ]; then
     log_ok "IP target prepared for probing: 1 host"
 else
     CIDR_LIMIT=4096
-    CIDR_OFFSET="${BBHUNT_CIDR_OFFSET:-0}"
-    if ! [[ "$CIDR_OFFSET" =~ ^[0-9]+$ ]]; then
-        log_err "Invalid BBHUNT_CIDR_OFFSET=$CIDR_OFFSET"
-        exit 2
-    fi
-    mkdir -p "$RECON_DIR/live/cidr_pages"
     CIDR_PAGE_FILE="$RECON_DIR/live/cidr_pages/${CIDR_OFFSET}.txt"
     CIDR_REMAINING_FILE="$RECON_DIR/live/cidr_remaining.json"
     CIDR_CONTINUATION_FILE="$RECON_DIR/live/cidr_continuation.json"
@@ -1568,10 +1577,15 @@ fi
 HTTP_STATUS="skipped"
 HTTPX_EXIT_CODE=""
 HTTP_NOTE="httpx skipped: discovery host input is empty"
+HTTPX_OUTPUT_FILE="$RECON_DIR/live/httpx_full.txt"
+if [ "$TARGET_KIND" = "cidr" ]; then
+    HTTPX_OUTPUT_FILE="$RECON_DIR/live/cidr_pages/${CIDR_OFFSET}.httpx.txt"
+fi
 if [ ! -s "$HTTPX_INPUT_FILE" ]; then
     log_warn "Discovery host list is empty — skipping downstream probing"
 elif [ -n "$HTTPX_BIN" ]; then
     log_step "Probing with ProjectDiscovery httpx (status, title, tech, content-length)..."
+    : > "$HTTPX_OUTPUT_FILE"
     set +e
     "$HTTPX_BIN" -l "$HTTPX_INPUT_FILE" \
         -silent \
@@ -1583,7 +1597,7 @@ elif [ -n "$HTTPX_BIN" ]; then
         -threads "$THREADS" \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
-        -o "$RECON_DIR/live/httpx_full.txt" 2>/dev/null
+        -o "$HTTPX_OUTPUT_FILE" 2>/dev/null
     HTTPX_EXIT_CODE=$?
     set -e
 
@@ -1598,38 +1612,42 @@ elif [ -n "$HTTPX_BIN" ]; then
         HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; partial output preserved"
     fi
 
-    # Extract just the URLs for other tools
-    awk '{print $1}' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/urls.txt" 2>/dev/null || true
-
-    # Local lab host:port targets can be reachable even when a particular
-    # httpx binary/proxy combination emits no rows. Preserve one explicit
-    # URL seed so `/autopilot 127.0.0.1:PORT` does not start from a false
-    # "no live hosts" state.
-    ensure_explicit_port_seed_live
-
-    LIVE_COUNT=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null || echo 0)
-    if [ "$HTTP_STATUS" = "ok" ]; then
-        log_done "Live hosts: $LIVE_COUNT"
-    else
-        log_warn "HTTP probing $HTTP_STATUS (exit=$HTTPX_EXIT_CODE); preserved $LIVE_COUNT live URL(s)"
-    fi
-
-    # Separate by status code
-    grep '\[200\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_200.txt" 2>/dev/null || true
-    grep '\[30[12]\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_3xx.txt" 2>/dev/null || true
-    grep '\[403\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_403.txt" 2>/dev/null || true
-    grep '\[401\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_401.txt" 2>/dev/null || true
-
-    log_done "200 OK: $(wc -l < "$RECON_DIR/live/status_200.txt" 2>/dev/null || echo 0)"
-    log_done "3xx Redirect: $(wc -l < "$RECON_DIR/live/status_3xx.txt" 2>/dev/null || echo 0)"
-    log_done "403 Forbidden: $(wc -l < "$RECON_DIR/live/status_403.txt" 2>/dev/null || echo 0)"
-    log_done "401 Auth Required: $(wc -l < "$RECON_DIR/live/status_401.txt" 2>/dev/null || echo 0)"
 else
     HTTP_NOTE="httpx skipped: ProjectDiscovery binary is unavailable"
     log_warn "ProjectDiscovery httpx not installed — skipping"
 fi
 
+# Each CIDR invocation owns one page. Rebuild the canonical probe artifact from
+# every preserved page so later consumers never see only the newest slice.
+if [ "$TARGET_KIND" = "cidr" ]; then
+    CIDR_HTTPX_PAGE_FILES=("$RECON_DIR"/live/cidr_pages/*.httpx.txt)
+    if [ -e "${CIDR_HTTPX_PAGE_FILES[0]}" ]; then
+        LC_ALL=C sort -u "${CIDR_HTTPX_PAGE_FILES[@]}" > "$RECON_DIR/live/httpx_full.txt.tmp"
+        mv "$RECON_DIR/live/httpx_full.txt.tmp" "$RECON_DIR/live/httpx_full.txt"
+    fi
+fi
+
+# Derive every summary view from the canonical union, including continuation
+# runs where httpx was skipped and prior pages remain authoritative.
+awk '{print $1}' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/urls.txt" 2>/dev/null || true
 ensure_explicit_port_seed_live
+grep '\[200\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_200.txt" 2>/dev/null || true
+grep '\[30[12]\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_3xx.txt" 2>/dev/null || true
+grep '\[403\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_403.txt" 2>/dev/null || true
+grep '\[401\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_401.txt" 2>/dev/null || true
+
+LIVE_COUNT=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null || echo 0)
+if [ -n "$HTTPX_EXIT_CODE" ]; then
+    if [ "$HTTP_STATUS" = "ok" ]; then
+        log_done "Live hosts: $LIVE_COUNT"
+    else
+        log_warn "HTTP probing $HTTP_STATUS (exit=$HTTPX_EXIT_CODE); preserved $LIVE_COUNT live URL(s)"
+    fi
+    log_done "200 OK: $(wc -l < "$RECON_DIR/live/status_200.txt" 2>/dev/null || echo 0)"
+    log_done "3xx Redirect: $(wc -l < "$RECON_DIR/live/status_3xx.txt" 2>/dev/null || echo 0)"
+    log_done "403 Forbidden: $(wc -l < "$RECON_DIR/live/status_403.txt" 2>/dev/null || echo 0)"
+    log_done "401 Auth Required: $(wc -l < "$RECON_DIR/live/status_401.txt" 2>/dev/null || echo 0)"
+fi
 
 LIVE_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
 RESOLVED_TOTAL=$(wc -l < "$DISCOVERY_HOSTS_FILE" 2>/dev/null | tr -d ' ' || echo 0)

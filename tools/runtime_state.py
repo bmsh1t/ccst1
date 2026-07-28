@@ -511,6 +511,38 @@ def _inspect_named_counts(recon_dir: Path, mapping: dict[str, Path]) -> tuple[di
     return counts, paths
 
 
+def _cidr_continuation_state(recon_dir: Path, target: str) -> dict:
+    """Read the bounded CIDR cursor without conflating it with recon output."""
+    path = recon_dir / "live" / "cidr_continuation.json"
+    base = {"status": "none", "path": str(path), "next_offset": None, "remaining_hosts": 0}
+    if not path.is_file():
+        return base
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return {**base, "status": "invalid", "reason": f"invalid-json: {exc}"}
+    if not isinstance(payload, dict):
+        return {**base, "status": "invalid", "reason": "root-not-object"}
+    if canonical_target_value(str(payload.get("target") or "")) != canonical_target_value(target):
+        return {**base, "status": "invalid", "reason": "target-mismatch"}
+    status = str(payload.get("status") or "").strip().lower()
+    if status == "ok":
+        return {**base, "status": "complete"}
+    try:
+        next_offset = int(payload.get("next_offset"))
+        remaining_hosts = int(payload.get("remaining_hosts", 0))
+    except (TypeError, ValueError):
+        return {**base, "status": "invalid", "reason": "invalid-offset"}
+    if status != "partial" or next_offset <= 0 or remaining_hosts <= 0:
+        return {**base, "status": "invalid", "reason": "invalid-continuation"}
+    return {
+        "status": "pending",
+        "path": str(path),
+        "next_offset": next_offset,
+        "remaining_hosts": remaining_hosts,
+    }
+
+
 def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     """Summarize whether cached recon artifacts are usable for resume/surface."""
     repo_root = Path(repo_root)
@@ -581,6 +613,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     )
 
     http_probe = _http_probe_state(recon_dir)
+    cidr_continuation = _cidr_continuation_state(recon_dir, target)
     ready = host_inventory_ready or surface_inputs_ready
 
     missing = []
@@ -593,6 +626,8 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         warnings.append("HTTP probing completed successfully with zero live hosts")
     elif http_probe.get("outcome") in {"timeout", "failure", "partial", "skipped", "unavailable"}:
         warnings.append(f"HTTP probing is incomplete: {http_probe.get('outcome')}")
+    if cidr_continuation.get("status") == "invalid":
+        warnings.append(f"CIDR continuation is invalid: {cidr_continuation.get('reason')}")
     if host_inventory_ready and not surface_inputs_ready and not warnings:
         warnings.append("no URL, JS, browser, or structured finding surface artifacts found yet")
 
@@ -602,6 +637,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "host_inventory_ready": host_inventory_ready,
         "surface_inputs_ready": surface_inputs_ready,
         "http_probe": http_probe,
+        "cidr_continuation": cidr_continuation,
         "recon_dir": str(recon_dir),
         "counts": counts,
         "exposure_ready": any(value > 0 for value in exposure_counts.values()),
@@ -775,6 +811,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         )
     ) or ffuf_ready or findings_ready or source_intel_ready
     http_probe = _http_probe_state(recon_dir)
+    cidr_continuation = _cidr_continuation_state(recon_dir, target)
     ready = host_inventory_ready or surface_inputs_ready
     missing = (
         []
@@ -786,6 +823,8 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         warnings.append("HTTP probing completed successfully with zero live hosts")
     elif http_probe.get("outcome") in {"timeout", "failure", "partial", "skipped", "unavailable"}:
         warnings.append(f"HTTP probing is incomplete: {http_probe.get('outcome')}")
+    if cidr_continuation.get("status") == "invalid":
+        warnings.append(f"CIDR continuation is invalid: {cidr_continuation.get('reason')}")
     if host_inventory_ready and not surface_inputs_ready:
         warnings.append("no URL, JS, browser, or structured finding surface artifacts found yet")
 
@@ -795,6 +834,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         "host_inventory_ready": host_inventory_ready,
         "surface_inputs_ready": surface_inputs_ready,
         "http_probe": http_probe,
+        "cidr_continuation": cidr_continuation,
         "recon_dir": str(recon_dir),
         "counts": counts,
         "counts_exact": False,

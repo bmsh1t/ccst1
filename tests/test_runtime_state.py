@@ -375,6 +375,55 @@ def test_inspect_recon_artifacts_reports_ready_cache(tmp_path):
     assert payload["counts"]["api_urls"] == 1
 
 
+def test_recon_inspection_projects_pending_cidr_continuation(tmp_path):
+    live_dir = tmp_path / "recon" / "10.0.0.0_19" / "live"
+    live_dir.mkdir(parents=True)
+    (live_dir / "cidr_continuation.json").write_text(
+        json.dumps({
+            "target": "10.0.0.0/19",
+            "status": "partial",
+            "next_offset": 4096,
+            "remaining_hosts": 4094,
+        }),
+        encoding="utf-8",
+    )
+
+    exact = inspect_recon_artifacts(tmp_path, "10.0.0.0/19")
+    fast = inspect_recon_artifacts_fast(tmp_path, "10.0.0.0/19")
+
+    expected = {
+        "status": "pending",
+        "path": str(live_dir / "cidr_continuation.json"),
+        "next_offset": 4096,
+        "remaining_hosts": 4094,
+    }
+    assert exact["cidr_continuation"] == expected
+    assert fast["cidr_continuation"] == expected
+
+    (live_dir / "cidr_continuation.json").write_text(
+        json.dumps({
+            "target": "10.0.0.0/19",
+            "status": "partial",
+            "next_offset": 0,
+            "remaining_hosts": 4094,
+        }),
+        encoding="utf-8",
+    )
+    assert inspect_recon_artifacts(tmp_path, "10.0.0.0/19")["cidr_continuation"]["status"] == "invalid"
+
+
+@pytest.mark.parametrize("content", [b"{broken", b"\xff"])
+def test_recon_inspection_warns_on_invalid_cidr_continuation(tmp_path, content):
+    live_dir = tmp_path / "recon" / "10.0.0.0_19" / "live"
+    live_dir.mkdir(parents=True)
+    (live_dir / "cidr_continuation.json").write_bytes(content)
+
+    payload = inspect_recon_artifacts(tmp_path, "10.0.0.0/19")
+
+    assert payload["cidr_continuation"]["status"] == "invalid"
+    assert any("CIDR continuation is invalid" in item for item in payload["warnings"])
+
+
 @pytest.mark.parametrize(
     ("status", "note", "outcome"),
     [

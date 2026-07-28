@@ -424,6 +424,26 @@ def test_bootstrap_projects_bounded_intel_continuation_details():
     assert "do-not-project" not in encoded
 
 
+def test_bootstrap_projects_bounded_cidr_continuation():
+    state = _state("/tmp/repo", "10.0.0.0/19")
+    state["recon_artifacts"]["cidr_continuation"] = {
+        "status": "pending",
+        "path": "/tmp/repo/recon/10.0.0.0_19/live/cidr_continuation.json",
+        "next_offset": 4096,
+        "remaining_hosts": 4094,
+        "raw": "do-not-project",
+    }
+
+    compact = autopilot_bootstrap.compact_autopilot_state(state)
+
+    assert compact["recon"]["cidr_continuation"] == {
+        "status": "pending",
+        "next_offset": 4096,
+        "remaining_hosts": 4094,
+    }
+    assert "do-not-project" not in json.dumps(compact)
+
+
 def test_bootstrap_projects_recovery_and_draft_completion_handoffs():
     state = _state("/tmp/repo", "example.test")
     state["next_action"] = "prepare_surface_context"

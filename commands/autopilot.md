@@ -46,8 +46,8 @@ one smallest evidence-producing action, execute it, write evidence, then refresh
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
 ```
-- `run_recon`: launch once with `python3 tools/hunt.py --target <target_shell>
-  [--auth-file <auth_file_shell>] --recon-only` plus exact recon flags.
+- `run_recon`: when `state.recon.cidr_continuation.status=pending`, continue once with
+  `BBHUNT_CIDR_OFFSET=<next_offset> python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only`; otherwise omit the offset. Keep exact recon flags; never restart a pending CIDR at zero or discard prior pages.
 - `wait_recon` / `wait_scan`: wait or poll, then refresh state. Runtime phase
   locks are the final duplicate-launch guard.
 - usable cache: inspect `tools/surface.py`, `tools/context_pack.py`, and

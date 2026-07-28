@@ -241,6 +241,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     memory_candidate_next = state.get("memory_candidate_next") or {}
     root_claim_next = state.get("root_finding_claim_next") or {}
     recon_artifacts = state.get("recon_artifacts") or {}
+    cidr_continuation = recon_artifacts.get("cidr_continuation") or {}
     surface_projection = state.get("surface_projection") or {}
     observation_inventory = state.get("observation_inventory") or {}
     batch = state.get("batch") or {}
@@ -279,6 +280,11 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             "host_inventory_ready": bool(recon_artifacts.get("host_inventory_ready")),
             "fresh_recon_ready": bool(state.get("fresh_recon_ready")),
             "blocker": str(state.get("recon_blocker") or ""),
+            "cidr_continuation": {
+                key: cidr_continuation.get(key)
+                for key in ("status", "next_offset", "remaining_hosts", "reason")
+                if cidr_continuation.get(key) not in (None, "")
+            },
         },
         "structured_next": (
             _compact_candidate(structured_next)

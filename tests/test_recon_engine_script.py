@@ -116,6 +116,71 @@ def test_recon_engine_cidr_continuation_advances_to_next_slice(tmp_path):
     assert second_continuation["next_offset"] is None
 
 
+def test_recon_engine_preserves_and_unions_cidr_httpx_pages(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    recon_dir = tmp_path / "recon" / "10.0.0.0_19"
+    pages_dir = recon_dir / "live" / "cidr_pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir / "0.httpx.txt").write_text(
+        "http://10.0.0.1 [200]\nhttp://10.0.0.2 [403]\n",
+        encoding="utf-8",
+    )
+    (pages_dir / "4096.httpx.txt").write_text(
+        "http://10.0.0.2 [403]\nhttp://10.0.16.1 [200]\n",
+        encoding="utf-8",
+    )
+
+    assert 'if [ "$TARGET_KIND" != "cidr" ] || [ "$CIDR_OFFSET" -eq 0 ]; then' in text
+    assert 'HTTPX_OUTPUT_FILE="$RECON_DIR/live/cidr_pages/${CIDR_OFFSET}.httpx.txt"' in text
+    union_section = text.split("# Each CIDR invocation owns one page.", 1)[1].split(
+        "# Derive every summary view", 1
+    )[0]
+    union_block = 'if [ "$TARGET_KIND" = "cidr" ]; then' + union_section.split(
+        'if [ "$TARGET_KIND" = "cidr" ]; then', 1
+    )[1]
+    env = {**os.environ, "TARGET_KIND": "cidr", "RECON_DIR": str(recon_dir)}
+    completed = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + union_block],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    canonical = recon_dir / "live" / "httpx_full.txt"
+    assert canonical.read_text(encoding="utf-8").splitlines() == [
+        "http://10.0.0.1 [200]",
+        "http://10.0.0.2 [403]",
+        "http://10.0.16.1 [200]",
+    ]
+
+    views_section = text.split("# Derive every summary view", 1)[1]
+    views_block = "awk '{print $1}'" + views_section.split("awk '{print $1}'", 1)[1].split(
+        "LIVE_COUNT=", 1
+    )[0]
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -euo pipefail\nensure_explicit_port_seed_live() { :; }\n" + views_block,
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert (recon_dir / "live" / "urls.txt").read_text(encoding="utf-8").splitlines() == [
+        "http://10.0.0.1",
+        "http://10.0.0.2",
+        "http://10.0.16.1",
+    ]
+    assert len((recon_dir / "live" / "status_200.txt").read_text().splitlines()) == 2
+    assert len((recon_dir / "live" / "status_403.txt").read_text().splitlines()) == 1
+
+
 def test_recon_engine_has_timeout_compat_helper():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
