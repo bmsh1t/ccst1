@@ -20,6 +20,9 @@ from knowledge_lifecycle import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _repo(tmp_path: Path, *, card_ids: tuple[str, ...] = ("first-card", "second-card")) -> Path:
     cards = []
     for card_id in card_ids:
@@ -94,6 +97,12 @@ deep_refs: []
 
 def _events(repo: Path) -> Path:
     return repo / "knowledge" / "governance" / "events.jsonl"
+
+
+def test_current_repository_lifecycle_is_clean() -> None:
+    result = audit_lifecycle(REPO_ROOT)
+
+    assert result["ok"] is True, result["errors"]
 
 
 def test_bootstrap_adopts_every_active_card_and_audit_is_clean(tmp_path: Path) -> None:
