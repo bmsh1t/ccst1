@@ -129,6 +129,8 @@ def _resolve_auth_file(
 def parse_autopilot_args(
     argv: Sequence[str],
     cwd: str | os.PathLike[str] | None = None,
+    *,
+    round_defaults: bool = False,
 ) -> dict[str, Any]:
     """解析 inline 参数；错误也返回稳定 JSON，避免模型自行猜测。"""
     effective_argv = _effective_argv(argv)
@@ -138,7 +140,7 @@ def parse_autopilot_args(
     auth_file_inputs: list[str] = []
     max_lanes_inputs: list[str] = []
     quick = False
-    deep = False
+    deep = round_defaults
 
     if len(effective_argv) > MAX_EFFECTIVE_TOKENS:
         errors.append(
@@ -326,7 +328,12 @@ def parse_autopilot_args(
             )
         )
 
-    cadence = CADENCE_FLAGS[cadence_flags[0]] if cadence_flags else "paranoid"
+    if not max_lanes_inputs and round_defaults:
+        max_lanes = 3
+
+    cadence = CADENCE_FLAGS[cadence_flags[0]] if cadence_flags else (
+        "normal" if round_defaults else "paranoid"
+    )
     target_input = targets[0] if len(targets) == 1 else None
     target = None
     target_kind = None

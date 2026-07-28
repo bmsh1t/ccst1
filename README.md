@@ -121,6 +121,33 @@ claude                          # Start Claude Code from this repo root
 /pickup target.com              # Pick up where you left off
 ```
 
+**Native recurring Autopilot rounds**
+
+Claude CLI 2.1.220+ can schedule the bounded wrapper with its interactive
+`/loop` command:
+
+```text
+/loop 10m /autopilot-round target.com --normal --deep --max-lanes 3
+```
+
+One loop owns one target. Each invocation reads the existing checkpoint/state,
+runs at most the requested substantive lanes, and returns a stable status:
+
+| Status | Scheduler action |
+|---|---|
+| `CONTINUE` | Keep the native loop active; durable work remains. |
+| `DONE` | The wrapper deletes its exact matching recurring job; closure finished and at least one canonical report exists. |
+| `EXHAUSTED` | The wrapper deletes its exact matching recurring job; current evidence and known Surface contain no unresolved high-value work. |
+| `BLOCKED` | The wrapper deletes its exact matching recurring job; an owner-reported prerequisite is unavailable. |
+| `ERROR` | The wrapper deletes its exact matching recurring job; bootstrap or closure state is invalid, damaged, or unknown. |
+
+`EXHAUSTED` is evidence-bounded, not proof that every payload, identity, timing,
+business state, or exploit path has been exhausted. DONE and EXHAUSTED include
+bounded residual blind spots already visible in target state. If a turn is
+interrupted, the next round resumes from disk; it does not resume legacy
+`agent.py --agent` working memory. Cancel the current loop before scheduling the
+same target at a different cadence.
+
 **Authenticated / stateful targets**
 
 When a target needs a logged-in cookie, bearer token, or repeatable custom
@@ -306,6 +333,7 @@ Use this Core 4 when you want a clear Claude Code CLI loop from attack-surface d
 | `/web3-audit <contract>` | 10-class smart contract checklist + Foundry PoC |
 | `/token-scan <token>` | Meme/token risk review and rug-pull checklist |
 | `/autopilot target.com` | Full autonomous hunt loop with safety checkpoints |
+| `/autopilot-round target.com` | One bounded native `/loop` round with stable terminal status |
 | `/surface target.com` | AI Review Pool with advisory evidence from recon + memory |
 | `/pickup target.com` | Continue previous hunt — shows what's untested |
 | `/remember` | Save finding or pattern to persistent memory |

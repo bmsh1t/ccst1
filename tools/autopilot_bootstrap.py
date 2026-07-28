@@ -351,11 +351,16 @@ def build_autopilot_bootstrap(
     cwd: str | Path | None = None,
     repo_root: str | Path | None = None,
     runtime_root: str | Path | None = None,
+    round_defaults: bool = False,
 ) -> dict[str, Any]:
     """按 args -> runtime drift -> target state 顺序构建只读启动结果。"""
     resolved_repo = Path(repo_root or REPO_ROOT).resolve()
     invocation_cwd = Path(cwd or Path.cwd()).resolve()
-    arguments = parse_autopilot_args(argv, cwd=invocation_cwd)
+    arguments = parse_autopilot_args(
+        argv,
+        cwd=invocation_cwd,
+        round_defaults=round_defaults,
+    )
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "action": arguments["action"],
@@ -417,10 +422,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     compact = bool(cli_argv and cli_argv[0] == "--json")
     if compact:
         cli_argv.pop(0)
+    round_defaults = bool(cli_argv and cli_argv[0] == "--round-defaults")
+    if round_defaults:
+        cli_argv.pop(0)
     if cli_argv and cli_argv[0] == "--":
         cli_argv.pop(0)
 
-    payload = build_autopilot_bootstrap(cli_argv)
+    payload = build_autopilot_bootstrap(cli_argv, round_defaults=round_defaults)
     if compact:
         print(render_autopilot_bootstrap_json(payload))
     else:
