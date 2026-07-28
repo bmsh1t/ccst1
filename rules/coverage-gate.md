@@ -40,6 +40,18 @@ Claude 不能直接说“测试完成”或“没有发现问题”，除非已�
 - `dead-end`：写明证伪原因
 - `unknown`：写明下一步或为什么本轮未覆盖
 
+## Feature / Workflow Closure
+
+Before any feature or workflow is summarized as `tested`, its evidence must state:
+
+- Input surface: which externally controlled inputs were actually exercised.
+- Behavior/state surface: which roles, state transitions, or business behaviors were observed.
+- Validation depth: which boundaries or variants were tested, including whether only one variant was tried.
+
+Anything not established must remain in the existing `unknown`, `queued`, `lead`,
+`signal`, `blocked`, `n/a`, or `dead-end` states with the reasons required above.
+Do not add a parallel coverage state or schema for these residual lanes.
+
 ## Discovery Gap
 
 `unknown` is not a final completion state. 如果当前 surface is underexplored，

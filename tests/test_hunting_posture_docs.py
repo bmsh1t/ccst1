@@ -120,3 +120,15 @@ def test_coverage_gate_treats_underexplored_unknown_as_gap():
     assert "surface is underexplored" in text
     assert "actively generate new evidence" in text
     assert "不能把它写成 `tested`" in text
+
+
+def test_coverage_gate_requires_three_axis_feature_workflow_closure():
+    text = _read("rules/coverage-gate.md")
+
+    assert "## Feature / Workflow Closure" in text
+    assert "Before any feature or workflow is summarized as `tested`" in text
+    assert "Input surface" in text
+    assert "Behavior/state surface" in text
+    assert "Validation depth" in text
+    assert "including whether only one variant was tried" in text
+    assert "Do not add a parallel coverage state or schema" in text
