@@ -17,6 +17,7 @@ load_priority: high
 deep_refs:
   - knowledge/cards/api-idor.md
   - knowledge/cards/missing-parameter-discovery.md
+  - knowledge/cards/path-pattern-management-exposure.md
   - knowledge/cards/graphql.md
   - knowledge/cards/xxe-xml-parser.md
 ---
@@ -45,6 +46,7 @@ deep_refs:
 ## 思路分支
 
 - Discovery：从 OpenAPI/Swagger/Postman、JS/source、browser-observed XHR、mobile endpoints、robots/manifest、错误页面和历史 URL 合并 endpoint。
+- Ancestor prefix：已观察 API 路径存在非根前缀时，转 `path-pattern-management-exposure` 做有界祖先前缀补漏；不在本卡复制目录字典。
 - Auth Matrix：匿名、普通用户、同组织成员、跨组织成员、管理员或测试账号之间对比同一请求。
 - Object Matrix：替换 path/body/query/header 中的对象 ID、租户 ID、批量数组、filter、include、fields、export 范围。
 - Parser Diff：JSON、form、multipart、XML、text/plain、GraphQL batch、duplicate params、array/object wrap、method override、旧 API version。

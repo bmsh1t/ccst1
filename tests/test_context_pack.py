@@ -356,6 +356,36 @@ def test_path_pattern_focus_routes_to_management_exposure_card(tmp_path):
     assert any("不接管云资源" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_observed_api_path_routes_to_bounded_ancestor_prefix_cards(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="observed API path https://target.com/prod-api/system/user/list",
+    )
+
+    assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert "knowledge/cards/api-testing-workflow.md" in pack["knowledge_cards"]
+    assert "knowledge/cards/path-pattern-management-exposure.md" in pack["knowledge_cards"]
+    assert any(
+        "最多 3 个非根祖先前缀" in seed
+        and "最多 12 个候选" in seed
+        and "seed_refs" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
+
+
+def test_generic_path_does_not_route_to_ancestor_prefix_discovery(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="generic path https://target.com/about/company",
+    )
+    all_cards = pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+
+    assert "knowledge/cards/path-pattern-management-exposure.md" not in all_cards
+    assert not any("最多 3 个非根祖先前缀" in seed for seed in pack["hypothesis_seeds"])
+
+
 def test_context_pack_surfaces_actor_matrix_gaps(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/accounts/42/export?account_id=42",

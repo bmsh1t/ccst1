@@ -303,6 +303,14 @@ API_BUSINESS_CONTEXT_RE = re.compile(
     re.I,
 )
 
+API_ANCESTOR_PREFIX_RE = re.compile(
+    r"\b(?:observed|known|discovered|captured|browser|xhr|js|openapi|recon)[-_ ]?"
+    r"(?:api[-_ ]?(?:path|route|endpoint)|endpoint[-_ ]?path)\b|"
+    r"\b(?:api[-_ ]?(?:path|route|endpoint)|endpoint[-_ ]?path)[-_ ]?"
+    r"(?:ancestor|parent)[-_ ]?prefix\b",
+    re.I,
+)
+
 BUSINESS_STATE_TARGET_RE = re.compile(
     r"\b(price|pricing|cart|checkout|order|purchase|buy|payment|billing|coupon|"
     r"wallet|quantity|stock|discount|refund|place[-_ ]?order)\b",
@@ -554,6 +562,7 @@ REFERENCE_PATHS = {
 }
 
 DISTILLED_TOKEN_TO_CARDS = (
+    (API_ANCESTOR_PREFIX_RE, ("api-testing-workflow", "path-pattern-management-exposure")),
     (JS_RUNTIME_SIGNATURE_RE, ("js-runtime-signature-reconstruction",)),
     (CUSTOM_PROTOCOL_STATE_RE, ("custom-protocol-state-recovery",)),
     (PRESIGNED_URL_CAPABILITY_RE, ("api-idor", "auth-access")),
@@ -1212,6 +1221,10 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
         or has_candidate
     ):
         return "triage-validation", "已有 candidate / validation 信号，本轮优先把候选证据过验证门。"
+    if API_ANCESTOR_PREFIX_RE.search(focus):
+        return "web2-vuln-classes", "已观察 API 路径需要有界祖先前缀补漏，复用现有 API/path discovery owner。"
+    if not focus.strip() and API_ANCESTOR_PREFIX_RE.search(blob):
+        return "web2-vuln-classes", "目标证据出现 API 祖先前缀补漏信号，复用现有 API/path discovery owner。"
     if JS_RUNTIME_SIGNATURE_RE.search(focus) or CUSTOM_PROTOCOL_STATE_RE.search(focus):
         return "web2-recon", "用户 focus 指向运行时请求链或自定义协议恢复，先走有界 Recon 证据分支。"
     if not focus.strip() and (
@@ -2304,6 +2317,8 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "发现类 fuzz 先从目标已有路径、文件名、API 前缀、参数名、子域、静态资源等命名规律生成有界词表，再验证兄弟 surface；不要直接扩大到无边界通用字典。",
             "管理/监控/日志/统计/配置/记录类 surface 优先做只读识别和结构化记录提取；疑似 access key/secret 只记录最小证据与验证计划，不接管云资源或读取真实数据。",
         ])
+        if API_ANCESTOR_PREFIX_RE.search(blob):
+            seeds.append("已观察 API 路径只取同目标、最多 3 个非根祖先前缀，本轮最多 12 个候选并保留 seed_refs；API 文档优先，management 需要框架证据。")
         if ACTUATOR_MANAGEMENT_RE.search(blob):
             seeds.append("Actuator/Jolokia 路径 200 必须确认 actuator-shaped JSON、endpoint link、heapdump magic 或目标特定管理数据，并排除登录页、Whitelabel、SPA fallback 和统一错误页。")
     if CARD_PATHS["graphql"] in cards:

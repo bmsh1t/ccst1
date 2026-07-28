@@ -286,6 +286,7 @@ def test_path_pattern_management_exposure_is_part_of_skill_flow():
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
     bug_bounty = (REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md").read_text(encoding="utf-8")
     methodology = (REPO_ROOT / "skills" / "bb-methodology" / "SKILL.md").read_text(encoding="utf-8")
+    api_card = (REPO_ROOT / "knowledge" / "cards" / "api-testing-workflow.md").read_text(encoding="utf-8")
     card = (REPO_ROOT / "knowledge" / "cards" / "path-pattern-management-exposure.md").read_text(encoding="utf-8")
 
     assert "knowledge/cards/path-pattern-management-exposure.md" in runtime
@@ -294,7 +295,12 @@ def test_path_pattern_management_exposure_is_part_of_skill_flow():
     assert "Do not import keys into cloud panels" in web2
     assert "### Path Pattern / Management Exposure" in bug_bounty
     assert "context-pack path-pattern" in methodology
+    assert "knowledge/cards/path-pattern-management-exposure.md" in api_card
     assert "## 候选形态示例" in card
+    assert "## API 祖先前缀补漏" in card
+    assert "最多保留 3 个非根祖先前缀" in card
+    assert "最多生成 12 个候选" in card
+    assert "不展开通用端点字典" in card
     assert "manifest.json" in card
     assert "<service><separator><region><separator><cluster>" in card
     assert "seed_refs" in card

@@ -90,6 +90,17 @@ deep_refs: []
 
 画像和候选只是本轮证据附件，不拥有 finding、queue、coverage 或 target memory 状态。
 
+## API 祖先前缀补漏
+
+- 只消费同目标 browser/XHR、JS/source、OpenAPI、recon 或用户提供的已观察 API 路径；去掉
+  query/fragment 后逐层取目录，根路径和完整已知 endpoint 不生成候选。
+- 每条 seed 最多保留 3 个非根祖先前缀，本轮全局去重后最多生成 12 个候选。API 文档候选优先；
+  management 候选还必须有 Spring、Actuator、gateway、框架响应头或相邻路径证据。
+- 候选必须记录 `seed_refs`、`ancestor_prefix`、`candidate_family` 和 `derivation_reason`。后缀只复用
+  当前目标已经出现的文档/管理形态和现有 OpenAPI/management owner，不展开通用端点字典。
+- 命中只保持 Signal：用随机 miss、soft-404、content-type、响应结构、认证语义和相邻 endpoint
+  对照排除 SPA/统一网关页。确认 OpenAPI 文档后再交给 `tools/openapi_semantics.py`，不直接晋升漏洞。
+
 ## 默认不执行的动作
 
 - 不把具体账号口令、Burp Battering ram、云管平台导入、服务器接管、支付集群接管写成默认流程。
