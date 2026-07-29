@@ -81,6 +81,33 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     assert witness["context_pack"]["selected_skill"] == checkpoint["context_pack"]["selected_skill"]
 
 
+def test_checkpoint_reuses_surface_state_for_context_pack(tmp_path, monkeypatch):
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/users/1"])
+    context_globals = checkpoint_module.build_context_pack.__globals__
+    load_registry = context_globals["_load_capability_registry"]
+    registry_loads = 0
+
+    def fail_on_second_surface_load(*_args, **_kwargs):
+        raise AssertionError("checkpoint rebuilt surface state for context pack")
+
+    def count_registry_loads(*args, **kwargs):
+        nonlocal registry_loads
+        registry_loads += 1
+        return load_registry(*args, **kwargs)
+
+    monkeypatch.setitem(
+        context_globals,
+        "_surface_state",
+        fail_on_second_surface_load,
+    )
+    monkeypatch.setitem(context_globals, "_load_capability_registry", count_registry_loads)
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
+
+    assert checkpoint["evidence_reviewed"]["surface"] is True
+    assert registry_loads == 1
+
+
 def test_bounded_proposals_preserve_lane_types_before_duplicate_fill():
     proposals = [
         f"Candidate evidence gap for finding F-{index} on /items/{index}: fill evidence."

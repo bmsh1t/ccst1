@@ -520,8 +520,13 @@ def _card_capability(
     }
 
 
-def _card_capabilities(paths: list[str], repo_root: Path | str = BASE_DIR) -> list[dict[str, str]]:
-    registry = _load_capability_registry(repo_root)
+def _card_capabilities(
+    paths: list[str],
+    repo_root: Path | str = BASE_DIR,
+    *,
+    registry: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    registry = registry if registry is not None else _load_capability_registry(repo_root)
     return [_card_capability(path, repo_root, registry=registry) for path in paths]
 
 
@@ -531,6 +536,7 @@ def _budget_knowledge_cards(
     *,
     max_cards: int = 2,
     max_case_router: int = 1,
+    registry: dict[str, dict[str, str]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """按 registry 做保守预算。
 
@@ -540,7 +546,7 @@ def _budget_knowledge_cards(
     selected: list[str] = []
     deferred: list[str] = []
     case_router_count = 0
-    registry = _load_capability_registry(repo_root)
+    registry = registry if registry is not None else _load_capability_registry(repo_root)
     for path in _dedupe(paths):
         meta = _card_capability(path, repo_root, registry=registry)
         if meta["layer"] == "case-router" and case_router_count >= max_case_router:
@@ -1628,6 +1634,8 @@ def _select_cards_and_deferred(
     goal_memory: dict,
     focus: str,
     repo_root: Path | str = BASE_DIR,
+    *,
+    registry: dict[str, dict[str, str]] | None = None,
 ) -> tuple[list[str], list[str]]:
     focus_cards = _cards_from_focus(focus)
     cards: list[str] = list(focus_cards)
@@ -1957,7 +1965,7 @@ def _select_cards_and_deferred(
             cards = _dedupe((cards[:1] if cards else []) + ["coverage-prompts"])
         preserved_deferred = [name for name in before_fallback if name not in cards]
     candidate_paths = [CARD_PATHS[name] for name in _dedupe(cards) if name in CARD_PATHS]
-    selected, deferred = _budget_knowledge_cards(candidate_paths, repo_root)
+    selected, deferred = _budget_knowledge_cards(candidate_paths, repo_root, registry=registry)
     deferred.extend(
         CARD_PATHS[name]
         for name in preserved_deferred
@@ -2990,19 +2998,30 @@ def build_context_pack(
     target: str,
     focus: str = "",
     memory_dir: str | None = None,
+    surface_state: dict | None = None,
 ) -> dict:
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     target_key = target_storage_key(resolved_target)
     goal_memory = _load_goal_memory(repo, resolved_target)
-    ranked = _surface_state(repo, resolved_target, memory_dir)
+    ranked = surface_state if surface_state is not None else _surface_state(repo, resolved_target, memory_dir)
     gaps, matrix = _safe_find_gaps(resolved_target, target_key, repo)
     findings = _load_findings(repo, target_key)
     runner_candidates = load_validation_runner_candidate_pool(repo, resolved_target)
     local_intel = _load_local_intel(repo, target_key)
     blob = _text_blob(focus, goal_memory, ranked, gaps, findings, local_intel)
     skill, why_skill = _select_skill(focus, blob, ranked, findings, goal_memory)
-    cards, deferred_cards = _select_cards_and_deferred(blob, skill, ranked, gaps, goal_memory, focus, repo)
+    registry = _load_capability_registry(repo)
+    cards, deferred_cards = _select_cards_and_deferred(
+        blob,
+        skill,
+        ranked,
+        gaps,
+        goal_memory,
+        focus,
+        repo,
+        registry=registry,
+    )
     checks = _required_checks(skill, blob)
     evidence_summary = build_evidence_summary(
         repo,
@@ -3037,9 +3056,9 @@ def build_context_pack(
         "why_this_skill": why_skill,
         "must_read": must_read,
         "knowledge_cards": cards,
-        "knowledge_card_capabilities": _card_capabilities(cards, repo),
+        "knowledge_card_capabilities": _card_capabilities(cards, repo, registry=registry),
         "deferred_knowledge_cards": deferred_cards,
-        "deferred_knowledge_card_capabilities": _card_capabilities(deferred_cards, repo),
+        "deferred_knowledge_card_capabilities": _card_capabilities(deferred_cards, repo, registry=registry),
         "reference_hints": _reference_hints(cards, blob, focus, skill),
         "required_checks": checks,
         "evidence_anchors": _build_evidence_anchors(ranked, goal_memory, gaps, findings, local_intel)

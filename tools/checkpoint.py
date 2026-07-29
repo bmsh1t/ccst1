@@ -2747,7 +2747,12 @@ def build_checkpoint(
     resolved_target = canonical_target_value(target)
     coverage_target = target_storage_key(resolved_target)
     state = build_autopilot_state(str(repo), resolved_target, memory_dir=memory_dir)
-    context = build_context_pack(repo, target=resolved_target, memory_dir=memory_dir)
+    context = build_context_pack(
+        repo,
+        target=resolved_target,
+        memory_dir=memory_dir,
+        surface_state=state.get("surface") if isinstance(state.get("surface"), dict) else None,
+    )
 
     matrix = rebuild_matrix(coverage_target, repo_root=repo)
     gaps = _matrix_gaps(matrix)
