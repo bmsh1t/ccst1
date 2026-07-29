@@ -483,6 +483,9 @@ EXPOSURE_COUNT_PATHS = {
 INFRA_COUNT_PATHS = {
     "waf_hits": Path("live/wafw00f_hits.txt"),
     "origin_candidates": Path("live/unwaf_bypass_ips.txt"),
+    "open_ports": Path("ports/open_host_ports.txt"),
+}
+INFRA_LEGACY_FALLBACK_PATHS = {
     "open_ports": Path("ports/open_ports_all.txt"),
 }
 
@@ -499,11 +502,17 @@ def _inspect_exposure_counts(recon_dir: Path) -> tuple[dict[str, int], dict[str,
     return counts, paths
 
 
-def _inspect_named_counts(recon_dir: Path, mapping: dict[str, Path]) -> tuple[dict[str, int], dict[str, str]]:
+def _inspect_named_counts(
+    recon_dir: Path,
+    mapping: dict[str, Path],
+    fallbacks: dict[str, Path] | None = None,
+) -> tuple[dict[str, int], dict[str, str]]:
     """Return line counts and relative paths for a named artifact mapping."""
     counts = {}
     paths = {}
     for key, relative_path in mapping.items():
+        if not (recon_dir / relative_path).is_file() and fallbacks and key in fallbacks:
+            relative_path = fallbacks[key]
         count = _line_count(recon_dir / relative_path)
         counts[key] = count
         if count > 0:
@@ -583,7 +592,11 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "source_intel": 1 if _source_intel_present(findings_dir) else 0,
     }
     exposure_counts, exposure_paths = _inspect_exposure_counts(recon_dir)
-    infra_counts, infra_paths = _inspect_named_counts(recon_dir, INFRA_COUNT_PATHS)
+    infra_counts, infra_paths = _inspect_named_counts(
+        recon_dir,
+        INFRA_COUNT_PATHS,
+        INFRA_LEGACY_FALLBACK_PATHS,
+    )
     counts.update(exposure_counts)
     counts.update(infra_counts)
     findings_payload = load_finding_index(findings_dir)
@@ -787,11 +800,12 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         for key, relative in EXPOSURE_COUNT_PATHS.items()
         if _artifact_has_bytes(recon_dir / relative)
     }
-    infra_paths = {
-        key: str(relative)
-        for key, relative in INFRA_COUNT_PATHS.items()
-        if _artifact_has_bytes(recon_dir / relative)
-    }
+    infra_paths = {}
+    for key, relative in INFRA_COUNT_PATHS.items():
+        if not (recon_dir / relative).is_file() and key in INFRA_LEGACY_FALLBACK_PATHS:
+            relative = INFRA_LEGACY_FALLBACK_PATHS[key]
+        if _artifact_has_bytes(recon_dir / relative):
+            infra_paths[key] = str(relative)
     for key in EXPOSURE_COUNT_PATHS:
         counts[key] = None if key in exposure_paths else 0
     for key in INFRA_COUNT_PATHS:

@@ -19,9 +19,9 @@ from typing import Callable
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 try:
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - 兼容 python3 tools/openapi_semantics.py
-    from target_paths import canonical_target_value, target_storage_key
+    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 
 
 SCHEMA_VERSION = 1
@@ -558,7 +558,11 @@ def run(
     storage_key = target_storage_key(resolved_target)
     recon_dir = repo / "recon" / storage_key
     api_specs_dir = recon_dir / "api_specs"
-    candidate_urls = _candidate_urls(recon_dir)
+    candidate_urls = [
+        url
+        for url in _candidate_urls(recon_dir)
+        if url_belongs_to_target(url, resolved_target)
+    ]
     errors: list[dict] = []
     parsed_sources: list[str] = []
     raw_operations: list[dict] = []

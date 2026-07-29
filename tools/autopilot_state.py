@@ -983,7 +983,11 @@ def _format_infra_signal_lines(target: str, recon_artifacts: dict) -> list[str]:
     if origin_candidates > 0:
         review_paths.append(f"recon/{storage_key}/live/unwaf_bypass_ips.txt")
     if open_ports > 0:
-        review_paths.append(f"recon/{storage_key}/ports/open_ports_all.txt")
+        relative = (recon_artifacts.get("infra_paths") or {}).get(
+            "open_ports",
+            "ports/open_host_ports.txt",
+        )
+        review_paths.append(f"recon/{storage_key}/{relative}")
     if review_paths:
         lines.append("Next infra review:")
         lines.extend(f"- {path}" for path in review_paths[:4])

@@ -47,6 +47,7 @@ try:
         build_surface_index,
         iter_surface_index,
         load_surface_index_status,
+        surface_shape,
     )
     from tools.surface_projection import (
         build_surface_input_manifest,
@@ -68,7 +69,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     )
     from recon_adapter import ReconAdapter
     from runtime_state import inspect_recon_artifacts, load_runtime_state
-    from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status
+    from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, surface_shape
     from surface_projection import build_surface_input_manifest, write_surface_projection
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 try:
@@ -918,15 +919,27 @@ def _format_score_breakdown(item: dict) -> str:
     return f"{total} = " + ", ".join(segments[:6])
 
 
-def _add_review_item(pool: list[dict], seen: set[str], item: dict, reason: str) -> None:
+def _add_review_item(
+    pool: list[dict],
+    seen: set[str],
+    item: dict,
+    reason: str,
+    shape_counts: dict[str, int] | None = None,
+) -> bool:
     """Add one surface item to the bounded AI review pool."""
     url = str(item.get("url") or "").strip()
     if not url or url in seen or len(pool) >= REVIEW_POOL_LIMIT:
-        return
+        return False
+    shape_id = str(surface_shape(url).get("id") or url)
+    if shape_counts is not None and shape_counts.get(shape_id, 0) >= 2:
+        return False
     seen.add(url)
+    if shape_counts is not None:
+        shape_counts[shape_id] = shape_counts.get(shape_id, 0) + 1
     cloned = dict(item)
     cloned["review_reason"] = reason
     pool.append(cloned)
+    return True
 
 
 def _is_final_surface_item(item: dict) -> bool:
@@ -1031,6 +1044,7 @@ def _build_review_pool(
     """
     pool: list[dict] = []
     seen: set[str] = set()
+    shape_counts: dict[str, int] = {}
     unresolved = [item for item in candidates if not _is_final_surface_item(item)]
 
     # New observations are neutral facts, not a score source.  Keep two exact
@@ -1043,7 +1057,7 @@ def _build_review_pool(
                 else "top advisory score" if _has_actionable_review_evidence(item)
                 else "top advisory score (low-evidence fallback)"
             )
-            _add_review_item(pool, seen, item, reason)
+            _add_review_item(pool, seen, item, reason, shape_counts)
             if len(pool) == 2:
                 break
 
@@ -1053,32 +1067,45 @@ def _build_review_pool(
         groups = _review_signal_groups(item)
         if not groups or represented_groups.issuperset(groups):
             continue
-        _add_review_item(pool, seen, item, _category_review_reason(item, groups))
-        represented_groups.update(groups)
+        if _add_review_item(pool, seen, item, _category_review_reason(item, groups), shape_counts):
+            represented_groups.update(groups)
 
     for item in unresolved:
         if item.get("evidence_convergence"):
-            _add_review_item(pool, seen, item, "cross-evidence convergence")
+            _add_review_item(pool, seen, item, "cross-evidence convergence", shape_counts)
     for item in unresolved:
         if item.get("browser_observed"):
-            _add_review_item(pool, seen, item, "browser-observed API/workflow")
+            _add_review_item(pool, seen, item, "browser-observed API/workflow", shape_counts)
     for item in unresolved:
         if item.get("js_intel_observed") or item.get("source_intel_observed"):
-            _add_review_item(pool, seen, item, "JS/source-inferred surface")
+            _add_review_item(pool, seen, item, "JS/source-inferred surface", shape_counts)
     for item in unresolved:
         if item.get("scanner_findings"):
-            _add_review_item(pool, seen, item, "scanner lead requiring AI triage")
+            _add_review_item(pool, seen, item, "scanner lead requiring AI triage", shape_counts)
     for item in unresolved:
         if item.get("target_memory_hits"):
-            _add_review_item(pool, seen, item, "target-memory continuation")
+            _add_review_item(pool, seen, item, "target-memory continuation", shape_counts)
     for item in unresolved:
         if _has_actionable_review_evidence(item):
-            _add_review_item(pool, seen, item, "top advisory score")
+            _add_review_item(pool, seen, item, "top advisory score", shape_counts)
     for item in ffuf_candidates or []:
-        _add_review_item(pool, seen, item, "ffuf-observed route; AI triage required")
+        _add_review_item(pool, seen, item, "ffuf-observed route; AI triage required", shape_counts)
     if not pool:
         for item in unresolved:
+            _add_review_item(pool, seen, item, "top advisory score (low-evidence fallback)", shape_counts)
+        for item in unresolved:
             _add_review_item(pool, seen, item, "top advisory score (low-evidence fallback)")
+    else:
+        eligible = [
+            item
+            for item in unresolved
+            if not (item.get("new_observation") and not _has_actionable_review_evidence(item))
+            and (_review_signal_groups(item) or _has_actionable_review_evidence(item))
+        ]
+        for item in eligible:
+            _add_review_item(pool, seen, item, "top advisory score", shape_counts)
+        for item in eligible:
+            _add_review_item(pool, seen, item, "top advisory score")
     return pool
 
 
@@ -1661,16 +1688,86 @@ class _BoundedCandidateFrontier:
         ]
 
 
+class _DiverseBoundedCandidateFrontier:
+    """Keep top exact candidates plus bounded top representatives per route shape."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self._overall = _BoundedCandidateFrontier(limit)
+        self._shapes: dict[str, tuple[int, dict]] = {}
+
+    @staticmethod
+    def _better_representative(
+        left_sequence: int,
+        left: dict,
+        right_sequence: int,
+        right: dict,
+    ) -> bool:
+        """Prefer score, then legacy first-seen order, then stable URL."""
+        left_score = int(left.get("score", 0) or 0)
+        right_score = int(right.get("score", 0) or 0)
+        if left_score != right_score:
+            return left_score > right_score
+        if left_sequence != right_sequence:
+            return left_sequence < right_sequence
+        return str(left.get("url") or "") < str(right.get("url") or "")
+
+    def _worst_shape(self) -> tuple[str, tuple[int, dict]]:
+        iterator = iter(self._shapes.items())
+        worst_shape, worst = next(iterator)
+        for shape_id, candidate in iterator:
+            if self._better_representative(
+                worst[0], worst[1], candidate[0], candidate[1]
+            ):
+                worst_shape, worst = shape_id, candidate
+        return worst_shape, worst
+
+    def add(self, item: dict, sequence: int) -> None:
+        self._overall.add(item, sequence)
+        url = str(item.get("url") or "")
+        shape_id = str(surface_shape(url).get("id") or url)
+        current = self._shapes.get(shape_id)
+        if current is not None:
+            if self._better_representative(sequence, item, current[0], current[1]):
+                self._shapes[shape_id] = (sequence, item)
+            return
+        if len(self._shapes) < self.limit:
+            self._shapes[shape_id] = (sequence, item)
+            return
+        worst_shape, worst = self._worst_shape()
+        if self._better_representative(sequence, item, worst[0], worst[1]):
+            del self._shapes[worst_shape]
+            self._shapes[shape_id] = (sequence, item)
+
+    def values(self) -> list[tuple[int, dict]]:
+        selected = sorted(
+            self._shapes.values(),
+            key=lambda value: (-int(value[1].get("score", 0) or 0), value[0], str(value[1].get("url") or "")),
+        )
+        seen = {str(item.get("url") or "") for _sequence, item in selected}
+        for sequence, item in self._overall.values():
+            url = str(item.get("url") or "")
+            if url not in seen:
+                selected.append((sequence, item))
+                seen.add(url)
+            if len(selected) >= self.limit:
+                break
+        return sorted(
+            selected[: self.limit],
+            key=lambda value: (-int(value[1].get("score", 0) or 0), value[0], str(value[1].get("url") or "")),
+        )
+
+
 class _SurfaceCandidateFrontiers:
     """生成兼容 P1/P2/review pool 所需的 bounded deterministic 子集。"""
 
     def __init__(self, ffuf_urls: set[str]):
         self.total = 0
-        self.p1 = _BoundedCandidateFrontier(8)
-        self.p2 = _BoundedCandidateFrontier(8)
-        self.overall = _BoundedCandidateFrontier(REVIEW_POOL_LIMIT)
+        self.p1 = _DiverseBoundedCandidateFrontier(8)
+        self.p2 = _DiverseBoundedCandidateFrontier(8)
+        self.overall = _DiverseBoundedCandidateFrontier(REVIEW_POOL_LIMIT)
         self.review = {
-            name: _BoundedCandidateFrontier(REVIEW_POOL_LIMIT)
+            name: _DiverseBoundedCandidateFrontier(REVIEW_POOL_LIMIT)
             for name in (
                 "convergence",
                 "browser",
@@ -1713,8 +1810,10 @@ class _SurfaceCandidateFrontiers:
         url = str(item.get("url") or "")
         if url in self.ffuf_urls:
             self.ffuf_matches[url] = (sequence, item)
-        if item.get("new_observation") and len(self.new_observations) < 2:
+        if item.get("new_observation"):
             self.new_observations.append((sequence, item))
+            self.new_observations.sort(key=lambda value: value[0])
+            del self.new_observations[2:]
 
     def review_candidates(self) -> list[dict]:
         by_url: dict[str, tuple[int, dict]] = {}

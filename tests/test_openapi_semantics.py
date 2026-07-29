@@ -274,6 +274,30 @@ def test_invalid_run_arguments_fail_before_writing(tmp_path):
     assert not (tmp_path / "recon" / "target.test" / "api_specs").exists()
 
 
+def test_off_target_spec_candidate_is_not_fetched(tmp_path):
+    recon = tmp_path / "recon" / "target.test"
+    (recon / "exposure").mkdir(parents=True)
+    (recon / "urls").mkdir(parents=True)
+    in_scope = "https://docs.target.test/openapi.json"
+    off_target = "https://external.test/openapi.json"
+    (recon / "exposure" / "api_doc_candidates.txt").write_text(
+        f"{off_target}\n{in_scope}\n",
+        encoding="utf-8",
+    )
+    calls = []
+    schema = {"openapi": "3.0.3", "paths": {}}
+
+    def fetcher(url, _timeout, _max_bytes):
+        calls.append(url)
+        return json.dumps(schema).encode(), "application/json"
+
+    summary = openapi_semantics.run(tmp_path, "target.test", fetcher=fetcher)
+
+    assert calls == [in_scope]
+    assert summary["counts"]["candidate_urls"] == 1
+    assert summary["counts"]["specs_parsed"] == 1
+
+
 def test_fetch_rejects_declared_or_streamed_oversize_response(monkeypatch):
     class Response:
         def __init__(self, *, declared="", body=b""):

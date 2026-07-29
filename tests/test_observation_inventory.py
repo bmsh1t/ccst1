@@ -92,6 +92,26 @@ def test_sync_merges_subdomain_collector_provenance(tmp_path):
     ]
 
 
+def test_sync_inventory_prefers_host_aware_port_evidence(tmp_path):
+    recon_dir, _urls = _write_recon(tmp_path, count=1)
+    (recon_dir / "ports").mkdir()
+    (recon_dir / "ports" / "open_ports_all.txt").write_text("443/open\n", encoding="utf-8")
+
+    legacy = sync_inventory(tmp_path, "target.com")
+    assert any(item["value"] == "443/open" for item in legacy["observations"])
+
+    (recon_dir / "ports" / "open_host_ports.txt").write_text(
+        "api.target.com:443\nadmin.target.com:8443\n",
+        encoding="utf-8",
+    )
+    preferred = sync_inventory(tmp_path, "target.com")
+    current = [item for item in preferred["observations"] if item.get("present", True)]
+    assert {item["value"] for item in current if item["kind"] == "infra"} == {
+        "api.target.com:443",
+        "admin.target.com:8443",
+    }
+
+
 def test_summary_exposes_stale_and_bounded_neutral_samples(tmp_path):
     _write_recon(tmp_path, count=24)
     payload = sync_inventory(tmp_path, "target.com")

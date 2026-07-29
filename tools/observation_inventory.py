@@ -70,8 +70,11 @@ ARTIFACT_SPECS = (
     ("exposure", Path("exposure/s3_bucket_candidates.txt")),
     ("infra", Path("live/wafw00f_hits.txt")),
     ("infra", Path("live/unwaf_bypass_ips.txt")),
-    ("infra", Path("ports/open_ports_all.txt")),
+    ("infra", Path("ports/open_host_ports.txt")),
 )
+LEGACY_ARTIFACT_FALLBACKS = {
+    Path("ports/open_host_ports.txt"): Path("ports/open_ports_all.txt"),
+}
 
 
 class InventoryError(RuntimeError):
@@ -236,6 +239,9 @@ def _source_files(recon_dir: Path) -> list[tuple[str, Path, Path]]:
     files = []
     for kind, relative_path in ARTIFACT_SPECS:
         path = recon_dir / relative_path
+        if not path.is_file() and relative_path in LEGACY_ARTIFACT_FALLBACKS:
+            relative_path = LEGACY_ARTIFACT_FALLBACKS[relative_path]
+            path = recon_dir / relative_path
         if path.is_file():
             files.append((kind, relative_path, path))
     return files

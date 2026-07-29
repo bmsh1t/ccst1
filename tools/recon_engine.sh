@@ -159,6 +159,65 @@ build_filtered_first_backstop() {
     } 2>/dev/null | awk 'NF && !seen[$0]++' > "$output" || true
 }
 
+build_target_owned_input() {
+    local input="$1"
+    local output="$2"
+    local mode="${3:-host}"
+
+    python3 - "$BASE_DIR" "$TARGET" "$input" "$output" "$mode" <<'PY'
+from pathlib import Path
+import sys
+
+base_dir, target, input_raw, output_raw, mode = sys.argv[1:]
+sys.path.insert(0, base_dir)
+from tools.target_paths import url_belongs_to_target
+
+source = Path(input_raw)
+values = []
+seen = set()
+if source.is_file():
+    for raw in source.read_text(encoding="utf-8", errors="replace").splitlines():
+        value = raw.strip()
+        candidate = value.split()[0] if value else ""
+        if not candidate:
+            continue
+        if mode == "http-url" and not candidate.lower().startswith(("http://", "https://")):
+            continue
+        if url_belongs_to_target(candidate, target) and candidate not in seen:
+            seen.add(candidate)
+            values.append(candidate)
+Path(output_raw).write_text(("\n".join(values) + "\n") if values else "", encoding="utf-8")
+PY
+}
+
+js_profile_defers_active_analysis() {
+    [ "$RECON_PROFILE" = "quick" ] || [ "$RECON_PROFILE" = "normal" ]
+}
+
+url_append_base() {
+    python3 - "$1" <<'PY'
+import sys
+from urllib.parse import urlsplit, urlunsplit
+
+parsed = urlsplit(sys.argv[1].strip())
+if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    raise SystemExit(2)
+print(urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")))
+PY
+}
+
+url_origin() {
+    python3 - "$1" <<'PY'
+import sys
+from urllib.parse import urlsplit, urlunsplit
+
+parsed = urlsplit(sys.argv[1].strip())
+if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    raise SystemExit(2)
+print(urlunsplit((parsed.scheme, parsed.netloc, "", "", "")))
+PY
+}
+
 timeout_bin() {
     if command -v timeout >/dev/null 2>&1; then
         printf '%s\n' timeout
@@ -178,6 +237,42 @@ run_with_timeout() {
         "$timeout_cmd" "$limit" "$@"
     else
         "$@"
+    fi
+}
+
+require_positive_integer() {
+    local name="$1"
+    local value="$2"
+    if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+        log_err "Invalid $name=$value (expected a positive integer)"
+        exit 2
+    fi
+}
+
+require_nonnegative_integer() {
+    local name="$1"
+    local value="$2"
+    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+        log_err "Invalid $name=$value (expected a non-negative integer)"
+        exit 2
+    fi
+}
+
+aggregate_optional_status() {
+    local status any_ok=0 any_missing=0
+    for status in "$@"; do
+        case "$status" in
+            error|partial) printf 'partial\n'; return 0 ;;
+            ok) any_ok=1 ;;
+            missing|unavailable|skipped) any_missing=1 ;;
+        esac
+    done
+    if [ "$any_ok" -eq 1 ] && [ "$any_missing" -eq 0 ]; then
+        printf 'ok\n'
+    elif [ "$any_ok" -eq 1 ]; then
+        printf 'partial\n'
+    else
+        printf 'unavailable\n'
     fi
 }
 
@@ -241,6 +336,12 @@ run_collector_task() {
             [ ! -s "${artifact}.gz" ] || rm -f "$artifact"
             status="skipped"
             note="not applicable for this target/profile; prior artifact preserved"
+            ;;
+        5)
+            rm -f "$temp_artifact"
+            [ ! -s "${artifact}.gz" ] || rm -f "$artifact"
+            status="unavailable"
+            note="optional collector credential unavailable; prior artifact preserved"
             ;;
         124)
             merged_artifact="${temp_artifact}.merged"
@@ -327,7 +428,7 @@ env_truthy() {
 
 post_compress_raw_recon_urls() {
     local recon_dir="$1"
-    local min_mb="${BBHUNT_RECON_COMPRESS_MIN_MB:-5}"
+    local min_mb="${RECON_COMPRESS_MIN_MB:-5}"
     local min_bytes=0
     local compressed=0
     local skipped=0
@@ -347,10 +448,6 @@ post_compress_raw_recon_urls() {
         return 0
     fi
 
-    if ! [[ "$min_mb" =~ ^[0-9]+$ ]]; then
-        log_warn "Invalid BBHUNT_RECON_COMPRESS_MIN_MB=$min_mb — using 5"
-        min_mb=5
-    fi
     min_bytes=$((min_mb * 1024 * 1024))
 
     echo ""
@@ -586,10 +683,7 @@ case "$RECON_MODE_FLAG" in
 esac
 RECON_STARTED_EPOCH=$(date +%s)
 RECON_SOFT_BUDGET_SECONDS="${BBHUNT_RECON_SOFT_BUDGET_SECONDS:-1800}"
-if ! [[ "$RECON_SOFT_BUDGET_SECONDS" =~ ^[0-9]+$ ]]; then
-    log_err "Invalid BBHUNT_RECON_SOFT_BUDGET_SECONDS=$RECON_SOFT_BUDGET_SECONDS"
-    exit 2
-fi
+require_positive_integer BBHUNT_RECON_SOFT_BUDGET_SECONDS "$RECON_SOFT_BUDGET_SECONDS"
 BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "recon" ] || [ "${BBHUNT_RUNTIME_LOCK_TARGET:-}" != "$TARGET" ]; then
@@ -652,7 +746,8 @@ PY
     if [[ "$batch_size_raw" =~ ^[0-9]+$ ]]; then
         batch_size="$batch_size_raw"
     else
-        log_warn "Invalid BBHUNT_BATCH_SIZE=$batch_size_raw — falling back to full batch"
+        log_err "Invalid BBHUNT_BATCH_SIZE=$batch_size_raw"
+        return 2
     fi
     chunk_mode=0
     [ "$batch_size" -gt 0 ] && chunk_mode=1
@@ -893,7 +988,7 @@ for target in targets:
         "cloud_enum_hits": line_count(recon_dir / "exposure" / "cloud" / "cloud_enum.txt"),
         "status_401": line_count(recon_dir / "live" / "status_401.txt"),
         "status_403": line_count(recon_dir / "live" / "status_403.txt"),
-        "open_ports": first_existing_count(recon_dir, "ports/open_ports_all.txt", "ports/open_ports.txt", "ports/open_ports_naabu.txt"),
+        "open_ports": first_existing_count(recon_dir, "ports/open_host_ports.txt", "ports/open_ports_all.txt", "ports/open_ports.txt", "ports/open_ports_naabu.txt"),
     }
     details["api_hosts"] = host_count(host_lines, ("api", "graphql", "gateway", "gw"))
     details["admin_hosts"] = host_count(
@@ -1152,6 +1247,20 @@ RECON_DIR="$BASE_DIR/recon/$RECON_TARGET_KEY"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 THREADS="${BB_THREADS:-20}"
 RATE_LIMIT="${BB_RATE_LIMIT:-50}"  # requests per second
+SUBFINDER_THREADS="${SUBFINDER_THREADS:-50}"
+GAU_THREADS="${GAU_THREADS:-20}"
+JS_CANDIDATE_LIMIT="${BBHUNT_RECON_JS_CANDIDATE_LIMIT:-800}"
+OPENAPI_PLATFORM_HOST_BUDGET="${BBHUNT_OPENAPI_MAX_PLATFORM_HOSTS:-20}"
+RECON_COMPRESS_MIN_MB="${BBHUNT_RECON_COMPRESS_MIN_MB:-5}"
+require_positive_integer BB_THREADS "$THREADS"
+require_positive_integer BB_RATE_LIMIT "$RATE_LIMIT"
+require_positive_integer SUBFINDER_THREADS "$SUBFINDER_THREADS"
+require_positive_integer GAU_THREADS "$GAU_THREADS"
+require_positive_integer BBHUNT_RECON_JS_CANDIDATE_LIMIT "$JS_CANDIDATE_LIMIT"
+require_nonnegative_integer BBHUNT_OPENAPI_MAX_PLATFORM_HOSTS "$OPENAPI_PLATFORM_HOST_BUDGET"
+require_nonnegative_integer BBHUNT_RECON_COMPRESS_MIN_MB "$RECON_COMPRESS_MIN_MB"
+[ -z "${KATANA_CONCURRENCY:-}" ] || require_positive_integer KATANA_CONCURRENCY "$KATANA_CONCURRENCY"
+[ -z "${KATANA_PARALLELISM:-}" ] || require_positive_integer KATANA_PARALLELISM "$KATANA_PARALLELISM"
 DISCOVERY_HOSTS_FILE="$RECON_DIR/live/discovery_hosts.txt"
 HTTPX_INPUT_FILE="$RECON_DIR/subdomains/all.txt"
 HTTPX_BIN="$(resolve_pd_httpx || true)"
@@ -1193,9 +1302,11 @@ touch "$RECON_DIR/subdomains/all.txt" \
       "$RECON_DIR/ports/open_ports.txt" \
       "$RECON_DIR/ports/open_ports_naabu.txt" \
       "$RECON_DIR/ports/open_ports_all.txt" \
+      "$RECON_DIR/ports/open_host_ports.txt" \
       "$RECON_DIR/js/endpoints.txt" \
       "$RECON_DIR/js/potential_secrets.txt" \
       "$RECON_DIR/js/linkfinder_endpoints.txt" \
+      "$RECON_DIR/js/request_targets.txt" \
       "$RECON_DIR/js/deep_candidates.txt" \
       "$RECON_DIR/params/unique_params.txt" \
       "$RECON_DIR/params/interesting_params.txt" \
@@ -1223,6 +1334,10 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/ports/open_ports.txt"
 : > "$RECON_DIR/ports/open_ports_naabu.txt"
 : > "$RECON_DIR/ports/open_ports_all.txt"
+: > "$RECON_DIR/ports/open_host_ports.txt"
+: > "$RECON_DIR/ports/open_host_ports_naabu.txt"
+: > "$RECON_DIR/ports/open_host_ports_nmap.txt"
+: > "$RECON_DIR/ports/open_host_ports_explicit.txt"
 : > "$RECON_DIR/urls/katana_targets.txt"
 : > "$RECON_DIR/urls/all.txt"
 : > "$RECON_DIR/urls/all_filtered.txt"
@@ -1237,8 +1352,10 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/urls/sensitive_paths.txt"
 : > "$RECON_DIR/urls/sensitive_paths_filtered.txt"
 : > "$RECON_DIR/js/endpoints.txt"
+: > "$RECON_DIR/js/endpoints_raw.txt"
 : > "$RECON_DIR/js/potential_secrets.txt"
 : > "$RECON_DIR/js/linkfinder_endpoints.txt"
+: > "$RECON_DIR/js/request_targets.txt"
 
 ensure_explicit_port_seed_live() {
     if [ ! -s "$RECON_DIR/live/urls.txt" ] && [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ] && [ -n "$TARGET_HTTP_SEED" ]; then
@@ -1256,7 +1373,7 @@ ensure_explicit_port_seed_live() {
 collect_subfinder() {
     local output="$1"
     command -v subfinder >/dev/null 2>&1 || return 3
-    run_with_timeout 180 subfinder -d "$TARGET" -silent -all -t "${SUBFINDER_THREADS:-50}" \
+    run_with_timeout 180 subfinder -d "$TARGET" -silent -all -t "$SUBFINDER_THREADS" \
         -o "$output" \
         2> "$RECON_DIR/logs/subfinder.log"
 }
@@ -1297,15 +1414,55 @@ try:
     for entry in data:
         for name in entry.get('name_value', '').split('\\n'):
             name = name.strip().lower()
-            if name and '*' not in name and name.endswith('.$TARGET'):
-                names.add(name)
-            elif name and '*' not in name and '.' in name:
+            if name and '*' not in name and '.' in name:
                 names.add(name)
     for name in sorted(names):
         print(name)
 except (TypeError, ValueError, json.JSONDecodeError):
     raise SystemExit(2)
 " > "$output"
+}
+
+collect_chaos() {
+    local output="$1"
+    [ "$TARGET_KIND" = "domain" ] || return 4
+    [ -n "${CHAOS_API_KEY:-}" ] || return 5
+    local raw="$RECON_DIR/logs/chaos.raw.json"
+    curl -fsS --max-time 20 --max-filesize 1048576 \
+        -H "Authorization: $CHAOS_API_KEY" \
+        "https://dns.projectdiscovery.io/dns/$TARGET/subdomains" \
+        > "$raw" 2> "$RECON_DIR/logs/chaos.log"
+    local rc=$?
+    python3 - "$raw" "$output" "$TARGET" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source, output, target = map(str, sys.argv[1:])
+try:
+    payload = json.loads(Path(source).read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit(2)
+values = payload.get("subdomains", payload) if isinstance(payload, dict) else payload
+if not isinstance(values, list):
+    raise SystemExit(2)
+rows = []
+for raw in values:
+    value = str(raw or "").strip().lower().strip(".")
+    if not value or "*" in value:
+        continue
+    if value == target or value.endswith("." + target):
+        rows.append(value)
+    # Chaos returns relative labels.  A dotted foreign FQDN is not a label;
+    # never turn it into a synthetic in-scope name by appending the target.
+    elif "." not in value:
+        rows.append(f"{value}.{target}")
+Path(output).write_text(("\n".join(sorted(set(rows))) + "\n") if rows else "", encoding="utf-8")
+PY
+    local parse_rc=$?
+    rm -f "$raw"
+    [ "$parse_rc" -eq 0 ] || return "$parse_rc"
+    return "$rc"
 }
 
 collect_wayback_subdomains() {
@@ -1322,7 +1479,7 @@ collect_gau_urls() {
     [ "$TARGET_KIND" = "domain" ] || return 4
     command -v gau >/dev/null 2>&1 || return 3
     printf '%s\n' "$TARGET" \
-        | run_with_timeout 180 gau --threads "${GAU_THREADS:-20}" \
+        | run_with_timeout 180 gau --threads "$GAU_THREADS" \
             --o "$output" \
             2> "$RECON_DIR/logs/gau.log"
 }
@@ -1361,6 +1518,7 @@ collect_katana_urls() {
     run_with_timeout 300 katana \
         -list "$RECON_DIR/urls/katana_targets.txt" \
         -d 3 -jc -kf all -silent -dr -fs rdn -do \
+        -rl "$RATE_LIMIT" \
         "${perf_args[@]}" \
         "${BB_AUTH_ARGS[@]}" \
         -o "$output" \
@@ -1397,17 +1555,23 @@ if [ "$TARGET_KIND" = "domain" ]; then
         "recon/${RECON_TARGET_KEY}/subdomains/amass.txt" collect_amass
     start_collector crtsh "$RECON_DIR/subdomains/crtsh.txt" \
         "recon/${RECON_TARGET_KEY}/subdomains/crtsh.txt" collect_crtsh
+    start_collector chaos "$RECON_DIR/subdomains/chaos.txt" \
+        "recon/${RECON_TARGET_KEY}/subdomains/chaos.txt" collect_chaos
     start_collector wayback_subdomains "$RECON_DIR/subdomains/wayback_subs.txt" \
         "recon/${RECON_TARGET_KEY}/subdomains/wayback_subs.txt" collect_wayback_subdomains
     wait_collector_group
 
+    SUBDOMAIN_MERGED_TMP="$(mktemp "$RECON_DIR/subdomains/.all.XXXXXX")"
     cat \
         "$RECON_DIR/subdomains/subfinder.txt" \
         "$RECON_DIR/subdomains/assetfinder.txt" \
         "$RECON_DIR/subdomains/amass.txt" \
         "$RECON_DIR/subdomains/crtsh.txt" \
+        "$RECON_DIR/subdomains/chaos.txt" \
         "$RECON_DIR/subdomains/wayback_subs.txt" \
-        2>/dev/null | awk 'NF' | sort -u > "$RECON_DIR/subdomains/all.txt" || true
+        2>/dev/null | awk 'NF' | sort -u > "$SUBDOMAIN_MERGED_TMP" || true
+    build_target_owned_input "$SUBDOMAIN_MERGED_TMP" "$RECON_DIR/subdomains/all.txt" host
+    rm -f "$SUBDOMAIN_MERGED_TMP"
     TOTAL_SUBS=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)
     log_ok "Total unique subdomains: $TOTAL_SUBS"
 elif [ "$TARGET_KIND" = "url" ]; then
@@ -1542,24 +1706,45 @@ emit_claude_hint_actions \
 echo ""
 log_info "Phase 2: HTTP Probing"
 
+PUREDNS_STATUS="skipped"
+PUREDNS_NOTE="puredns not applicable to this target"
+PUREDNS_DURATION=0
+PUREDNS_OUTPUT_FILE="$RECON_DIR/live/puredns_resolved.txt"
 if [ "$TARGET_KIND" = "domain" ]; then
     if command -v puredns &>/dev/null && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
-        PUREDNS_OUTPUT_FILE="$RECON_DIR/live/puredns_resolved.txt"
-        PUREDNS_RATE=$([ "$QUICK_MODE" = "--quick" ] && echo 1000 || echo 5000)
+        PUREDNS_CURRENT_FILE="$(mktemp "$RECON_DIR/live/.puredns.XXXXXX")"
+        PUREDNS_STARTED=$(date +%s)
         log_step "Resolving hosts with puredns (massdns + wildcard filtering)..."
         # puredns resolve: massdns first pass with public resolvers, then wildcard
         # filtering, then verification with trusted resolvers. Default resolver
         # files at /root/.config/puredns/{resolvers,resolvers-trusted}.txt; quiet
         # mode keeps stdout clean for log capture.
-        puredns resolve "$RECON_DIR/subdomains/all.txt" \
-            --rate-limit "$PUREDNS_RATE" \
+        set +e
+        run_with_timeout 180 puredns resolve "$RECON_DIR/subdomains/all.txt" \
+            --rate-limit "$RATE_LIMIT" \
             --quiet \
-            --write "$PUREDNS_OUTPUT_FILE" \
-            >/dev/null 2>&1 || true
+            --write "$PUREDNS_CURRENT_FILE" \
+            >/dev/null 2>&1
+        PUREDNS_EXIT_CODE=$?
+        set -e
+        PUREDNS_DURATION=$(( $(date +%s) - PUREDNS_STARTED ))
         # Normalize: strip trailing dot, lowercase, dedupe.
-        if [ -s "$PUREDNS_OUTPUT_FILE" ]; then
-            tr '[:upper:]' '[:lower:]' < "$PUREDNS_OUTPUT_FILE" \
+        if [ -s "$PUREDNS_CURRENT_FILE" ]; then
+            tr '[:upper:]' '[:lower:]' < "$PUREDNS_CURRENT_FILE" \
                 | sed 's/\.$//' | awk 'NF' | sort -u > "$DISCOVERY_HOSTS_FILE" || true
+        fi
+        if [ "$PUREDNS_EXIT_CODE" -eq 0 ]; then
+            mv -f "$PUREDNS_CURRENT_FILE" "$PUREDNS_OUTPUT_FILE"
+            PUREDNS_STATUS="ok"
+            PUREDNS_NOTE="current run completed; exit_code=0"
+        elif [ -s "$PUREDNS_CURRENT_FILE" ]; then
+            mv -f "$PUREDNS_CURRENT_FILE" "$PUREDNS_OUTPUT_FILE"
+            PUREDNS_STATUS="partial"
+            PUREDNS_NOTE="current run exited $PUREDNS_EXIT_CODE; current partial output published"
+        else
+            rm -f "$PUREDNS_CURRENT_FILE"
+            PUREDNS_STATUS=$([ "$PUREDNS_EXIT_CODE" -eq 124 ] && echo partial || echo error)
+            PUREDNS_NOTE="current run exited $PUREDNS_EXIT_CODE without results; prior canonical artifact preserved"
         fi
         PUREDNS_COUNT=$(wc -l < "$DISCOVERY_HOSTS_FILE" 2>/dev/null || echo 0)
         if [ "$PUREDNS_COUNT" -gt 0 ]; then
@@ -1569,10 +1754,23 @@ if [ "$TARGET_KIND" = "domain" ]; then
             log_warn "puredns found no resolvable hosts — falling back to raw candidates"
         fi
     else
+        if ! command -v puredns >/dev/null 2>&1; then
+            PUREDNS_STATUS="unavailable"
+            PUREDNS_NOTE="puredns unavailable; scoped raw hosts used"
+        else
+            PUREDNS_NOTE="no scoped host candidates; puredns skipped"
+        fi
         log_warn "puredns not installed or no host candidates — using raw hosts for httpx"
         log_warn "Install: GOBIN=\"\$HOME/go/bin\" go install github.com/d3mondev/puredns/v2@latest"
     fi
 fi
+record_recon_collector \
+    puredns \
+    "$PUREDNS_STATUS" \
+    "recon/${RECON_TARGET_KEY}/live/puredns_resolved.txt" \
+    "$(artifact_line_count "$PUREDNS_OUTPUT_FILE")" \
+    "$PUREDNS_DURATION" \
+    "$PUREDNS_NOTE"
 
 HTTP_STATUS="skipped"
 HTTPX_EXIT_CODE=""
@@ -1587,7 +1785,8 @@ elif [ -n "$HTTPX_BIN" ]; then
     log_step "Probing with ProjectDiscovery httpx (status, title, tech, content-length)..."
     : > "$HTTPX_OUTPUT_FILE"
     set +e
-    "$HTTPX_BIN" -l "$HTTPX_INPUT_FILE" \
+    HTTPX_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 180 || echo 300)
+    run_with_timeout "$HTTPX_RUN_TIMEOUT" "$HTTPX_BIN" -l "$HTTPX_INPUT_FILE" \
         -silent \
         -status-code \
         -title \
@@ -1607,9 +1806,12 @@ elif [ -n "$HTTPX_BIN" ]; then
     elif [ "$HTTPX_EXIT_CODE" -eq 124 ]; then
         HTTP_STATUS="partial"
         HTTP_NOTE="httpx timeout; exit_code=124; partial output preserved"
+    elif [ -s "$HTTPX_OUTPUT_FILE" ]; then
+        HTTP_STATUS="partial"
+        HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; current partial output preserved"
     else
         HTTP_STATUS="failed"
-        HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; partial output preserved"
+        HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; no current results"
     fi
 
 else
@@ -1680,14 +1882,18 @@ emit_claude_hint_actions \
 echo ""
 log_info "Phase 2.5: WAF Fingerprinting"
 
+WAFW00F_STATUS="skipped"
+WAFW00F_NOTE="no live targets"
 if command -v wafw00f &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     WAFW00F_MAX_TARGETS=$([ "$QUICK_MODE" = "--quick" ] && echo 3 || echo 10)
     WAFW00F_HTTP_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 8 || echo 10)
     WAFW00F_TARGETS_FILE="$RECON_DIR/live/wafw00f_targets.txt"
     WAFW00F_JSON_FILE="$RECON_DIR/live/wafw00f.json"
+    WAFW00F_CURRENT_JSON="$(mktemp "$RECON_DIR/live/.wafw00f.XXXXXX")"
     WAFW00F_HITS_FILE="$RECON_DIR/live/wafw00f_hits.txt"
     WAFW00F_HEADER_ARGS=()
     WAFW00F_REDIRECT_ARGS=()
+    WAFW00F_CURRENT_PUBLISHED="false"
 
     head -"$WAFW00F_MAX_TARGETS" "$RECON_DIR/live/urls.txt" > "$WAFW00F_TARGETS_FILE"
     if prepare_wafw00f_headers_file; then
@@ -1696,21 +1902,38 @@ if command -v wafw00f &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     fi
 
     log_step "Running wafw00f (top $WAFW00F_MAX_TARGETS live hosts)..."
-    if wafw00f \
+    WAFW00F_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 90 || echo 180)
+    set +e
+    run_with_timeout "$WAFW00F_RUN_TIMEOUT" wafw00f \
         -i "$WAFW00F_TARGETS_FILE" \
-        -o "$WAFW00F_JSON_FILE" \
+        -o "$WAFW00F_CURRENT_JSON" \
         -f json \
         --no-colors \
         -T "$WAFW00F_HTTP_TIMEOUT" \
         "${WAFW00F_REDIRECT_ARGS[@]}" \
         "${WAFW00F_HEADER_ARGS[@]}" \
-        >/dev/null 2>&1; then
+        >/dev/null 2>&1
+    WAFW00F_EXIT_CODE=$?
+    set -e
+    if [ "$WAFW00F_EXIT_CODE" -eq 0 ]; then
+        mv -f "$WAFW00F_CURRENT_JSON" "$WAFW00F_JSON_FILE"
+        WAFW00F_CURRENT_PUBLISHED="true"
         WAFW00F_STATUS="ok"
-    else
+        WAFW00F_NOTE="current run completed; exit_code=0"
+    elif [ -s "$WAFW00F_CURRENT_JSON" ]; then
+        mv -f "$WAFW00F_CURRENT_JSON" "$WAFW00F_JSON_FILE"
+        WAFW00F_CURRENT_PUBLISHED="true"
         WAFW00F_STATUS="partial"
+        WAFW00F_NOTE="current run exited $WAFW00F_EXIT_CODE; current partial JSON published"
+    else
+        rm -f "$WAFW00F_CURRENT_JSON"
+        WAFW00F_STATUS=$([ "$WAFW00F_EXIT_CODE" -eq 124 ] && echo partial || echo error)
+        WAFW00F_NOTE="current run exited $WAFW00F_EXIT_CODE without JSON; prior JSON preserved but not counted"
     fi
 
-    python3 - "$WAFW00F_JSON_FILE" "$WAFW00F_HITS_FILE" <<'PY'
+    WAFW00F_PARSE_FILE="$WAFW00F_CURRENT_JSON"
+    [ "$WAFW00F_CURRENT_PUBLISHED" != "true" ] || WAFW00F_PARSE_FILE="$WAFW00F_JSON_FILE"
+    python3 - "$WAFW00F_PARSE_FILE" "$WAFW00F_HITS_FILE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -1745,20 +1968,20 @@ PY
     fi
     [ "$WAFW00F_STATUS" = "partial" ] && log_warn "wafw00f timed out or returned non-zero — partial output may still be useful"
 else
+    if ! command -v wafw00f >/dev/null 2>&1; then
+        WAFW00F_STATUS="unavailable"
+        WAFW00F_NOTE="wafw00f unavailable"
+    fi
     log_warn "wafw00f not installed or no live hosts — skipping WAF fingerprinting"
 fi
 
 WAF_HITS=$(wc -l < "$RECON_DIR/live/wafw00f_hits.txt" 2>/dev/null | tr -d ' ' || echo 0)
-WAF_PHASE_STATUS="skipped"
-if command -v wafw00f >/dev/null 2>&1 && [ -s "$RECON_DIR/live/urls.txt" ]; then
-    WAF_PHASE_STATUS="ok"
-fi
 record_recon_phase \
     waf_fp \
-    "$WAF_PHASE_STATUS" \
+    "$WAFW00F_STATUS" \
     "recon/${RECON_TARGET_KEY}/live/wafw00f_hits.txt" \
     "$WAF_HITS" \
-    "sampled WAF fingerprinting; no hit does not prove no edge control"
+    "$WAFW00F_NOTE; sampled WAF fingerprinting; no hit does not prove no edge control"
 emit_claude_hint \
     phase                waf_fp \
     waf_results_lines    "$WAF_HITS" \
@@ -1909,17 +2132,39 @@ emit_claude_hint_actions \
 echo ""
 log_info "Phase 3: Port Scanning"
 
+NAABU_STATUS="skipped"
+NAABU_NOTE="not run"
+NMAP_STATUS="skipped"
+NMAP_NOTE="not run"
 if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
     log_warn "Skipping broad naabu scan for exact URL/explicit-port target"
     if [ -n "$TARGET_EXPLICIT_PORT" ]; then
         printf '%s/open\n' "$TARGET_EXPLICIT_PORT" > "$RECON_DIR/ports/open_ports_explicit.txt"
+        python3 - "$TARGET" "$TARGET_EXPLICIT_PORT" "$RECON_DIR/ports/open_host_ports_explicit.txt" <<'PY'
+import ipaddress
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+target, port, output = sys.argv[1:]
+parsed = urlparse(target if "://" in target else f"//{target}")
+host = (parsed.hostname or "").strip().lower()
+try:
+    ipaddress.IPv6Address(host)
+except ValueError:
+    pass
+else:
+    host = f"[{host}]"
+Path(output).write_text(f"{host}:{port}\n" if host else "", encoding="utf-8")
+PY
     fi
+    NAABU_STATUS="skipped"
+    NAABU_NOTE="exact URL/explicit port target; supplied port seeded"
 elif command -v naabu &>/dev/null; then
     NAABU_TARGETS_FILE="$RECON_DIR/ports/naabu_targets.txt"
     NAABU_OUTPUT_FILE="$RECON_DIR/ports/naabu.txt"
     NAABU_MAX_TARGETS=$([ "$QUICK_MODE" = "--quick" ] && echo 20 || echo 100)
     NAABU_TOP_PORTS=$([ "$QUICK_MODE" = "--quick" ] && echo 100 || echo 1000)
-    NAABU_RATE=$([ "$QUICK_MODE" = "--quick" ] && echo 300 || echo 1000)
 
     if [ -s "$RECON_DIR/live/urls.txt" ]; then
         python3 - "$RECON_DIR/live/urls.txt" "$NAABU_TARGETS_FILE" "$NAABU_MAX_TARGETS" <<'PY'
@@ -1952,78 +2197,171 @@ PY
 
     if [ -s "$NAABU_TARGETS_FILE" ]; then
         log_step "Running naabu (top $NAABU_MAX_TARGETS targets, top $NAABU_TOP_PORTS ports)..."
-        naabu \
+        NAABU_CURRENT_FILE="$(mktemp "$RECON_DIR/ports/.naabu.XXXXXX")"
+        NAABU_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 120 || echo 300)
+        set +e
+        run_with_timeout "$NAABU_RUN_TIMEOUT" naabu \
             -list "$NAABU_TARGETS_FILE" \
             -top-ports "$NAABU_TOP_PORTS" \
             -c "$THREADS" \
-            -rate "$NAABU_RATE" \
+            -rate "$RATE_LIMIT" \
             -silent \
-            -o "$NAABU_OUTPUT_FILE" 2>/dev/null || true
-        if [ -s "$NAABU_OUTPUT_FILE" ]; then
+            -o "$NAABU_CURRENT_FILE" 2>/dev/null
+        NAABU_EXIT_CODE=$?
+        set -e
+        NAABU_PUBLISHED="false"
+        if [ "$NAABU_EXIT_CODE" -eq 0 ]; then
+            mv -f "$NAABU_CURRENT_FILE" "$NAABU_OUTPUT_FILE"
+            NAABU_PUBLISHED="true"
+            NAABU_STATUS="ok"
+            NAABU_NOTE="current run completed; exit_code=0"
+        elif [ -s "$NAABU_CURRENT_FILE" ]; then
+            mv -f "$NAABU_CURRENT_FILE" "$NAABU_OUTPUT_FILE"
+            NAABU_PUBLISHED="true"
+            NAABU_STATUS="partial"
+            NAABU_NOTE="current run exited $NAABU_EXIT_CODE; current partial output published"
+        else
+            rm -f "$NAABU_CURRENT_FILE"
+            NAABU_STATUS=$([ "$NAABU_EXIT_CODE" -eq 124 ] && echo partial || echo error)
+            NAABU_NOTE="current run exited $NAABU_EXIT_CODE without results; prior canonical artifact preserved"
+        fi
+        if [ "$NAABU_PUBLISHED" = "true" ] && [ -s "$NAABU_OUTPUT_FILE" ]; then
+            awk 'NF' "$NAABU_OUTPUT_FILE" | sort -u > "$RECON_DIR/ports/open_host_ports_naabu.txt"
             sed -nE 's|.*:([0-9]+)$|\1/open|p' "$NAABU_OUTPUT_FILE" | sort -u > "$RECON_DIR/ports/open_ports_naabu.txt" 2>/dev/null || true
             log_done "naabu hits: $(wc -l < "$NAABU_OUTPUT_FILE" 2>/dev/null || echo 0)"
             log_done "naabu open ports: $(wc -l < "$RECON_DIR/ports/open_ports_naabu.txt" 2>/dev/null || echo 0)"
-        else
+        elif [ "$NAABU_STATUS" = "ok" ]; then
             log_done "naabu: no open ports found"
         fi
     else
+        NAABU_NOTE="no scoped targets prepared"
         log_warn "No naabu targets prepared — skipping"
     fi
 else
+    NAABU_STATUS="unavailable"
+    NAABU_NOTE="naabu unavailable"
     log_warn "naabu not installed — skipping"
 fi
 
 if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
     log_warn "Skipping broad nmap scan for exact URL/explicit-port target"
+    NMAP_STATUS="skipped"
+    NMAP_NOTE="exact URL/explicit port target; broad scan skipped"
 elif command -v nmap &>/dev/null; then
+    NMAP_CURRENT_DIR="$(mktemp -d "$RECON_DIR/ports/.nmap.XXXXXX")"
+    NMAP_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 180 || echo 600)
+    NMAP_RAN="false"
     if [ "$TARGET_KIND" = "domain" ]; then
         log_step "Running nmap (top 1000 ports) on $TARGET..."
-        nmap -sV --top-ports 1000 -T4 --open "$TARGET" \
-            -oN "$RECON_DIR/ports/nmap_results.txt" \
-            -oG "$RECON_DIR/ports/nmap_greppable.txt" \
-            -oX "$RECON_DIR/ports/nmap_results.xml" 2>/dev/null || true
-        log_done "Nmap scan complete"
+        NMAP_TARGET_ARGS=("$TARGET")
+        NMAP_RAN="true"
     elif [ -s "$DISCOVERY_HOSTS_FILE" ]; then
         log_step "Running nmap (top 1000 ports) on discovery host list..."
-        nmap -sV --top-ports 1000 -T4 --open -iL "$DISCOVERY_HOSTS_FILE" \
-            -oN "$RECON_DIR/ports/nmap_results.txt" \
-            -oG "$RECON_DIR/ports/nmap_greppable.txt" \
-            -oX "$RECON_DIR/ports/nmap_results.xml" 2>/dev/null || true
-        log_done "Nmap scan complete"
+        NMAP_TARGET_ARGS=(-iL "$DISCOVERY_HOSTS_FILE")
+        NMAP_RAN="true"
     else
+        NMAP_NOTE="no scoped discovery hosts"
         log_warn "Discovery host list is empty — skipping port scan"
     fi
 
-    if [ -f "$RECON_DIR/ports/nmap_greppable.txt" ]; then
-        # Extract open ports (macOS compatible - no grep -P). Nmap greppable
-        # keeps all ports for one host on a single comma-separated line, so
-        # split first; otherwise a greedy sed expression only keeps the last
-        # open port and under-reports attack surface.
-        grep "open" "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null \
-            | tr ',' '\n' \
-            | sed -nE 's/.*[^0-9]([0-9]+)\/open\/.*/\1\/open/p' \
+    if [ "$NMAP_RAN" = "true" ]; then
+        set +e
+        run_with_timeout "$NMAP_RUN_TIMEOUT" nmap -sV --top-ports 1000 -T4 --open --max-rate "$RATE_LIMIT" \
+            "${NMAP_TARGET_ARGS[@]}" \
+            -oN "$NMAP_CURRENT_DIR/nmap_results.txt" \
+            -oG "$NMAP_CURRENT_DIR/nmap_greppable.txt" \
+            -oX "$NMAP_CURRENT_DIR/nmap_results.xml" 2>/dev/null
+        NMAP_EXIT_CODE=$?
+        set -e
+        NMAP_HAS_CURRENT="false"
+        NMAP_GREPPABLE_CURRENT="false"
+        find "$NMAP_CURRENT_DIR" -type f -size +0c -print -quit 2>/dev/null | grep -q . && NMAP_HAS_CURRENT="true"
+        [ ! -f "$NMAP_CURRENT_DIR/nmap_greppable.txt" ] || NMAP_GREPPABLE_CURRENT="true"
+        if [ "$NMAP_EXIT_CODE" -eq 0 ] || [ "$NMAP_HAS_CURRENT" = "true" ]; then
+            for name in nmap_results.txt nmap_greppable.txt nmap_results.xml; do
+                if [ -f "$NMAP_CURRENT_DIR/$name" ]; then
+                    mv -f "$NMAP_CURRENT_DIR/$name" "$RECON_DIR/ports/$name"
+                elif [ "$NMAP_EXIT_CODE" -eq 0 ]; then
+                    rm -f "$RECON_DIR/ports/$name"
+                fi
+            done
+            if [ "$NMAP_EXIT_CODE" -eq 0 ]; then
+                NMAP_STATUS="ok"
+                NMAP_NOTE="current run completed; exit_code=0"
+            else
+                NMAP_STATUS="partial"
+                NMAP_NOTE="current run exited $NMAP_EXIT_CODE; current partial artifacts published; absent prior siblings excluded from current derived evidence"
+            fi
+            NMAP_PUBLISHED="true"
+        else
+            NMAP_STATUS=$([ "$NMAP_EXIT_CODE" -eq 124 ] && echo partial || echo error)
+            NMAP_NOTE="current run exited $NMAP_EXIT_CODE without artifacts; prior canonical artifacts preserved"
+            NMAP_PUBLISHED="false"
+        fi
+        rm -rf "$NMAP_CURRENT_DIR"
+    fi
+
+    if [ "${NMAP_PUBLISHED:-false}" = "true" ] && [ "${NMAP_GREPPABLE_CURRENT:-false}" = "true" ] && [ -f "$RECON_DIR/ports/nmap_greppable.txt" ]; then
+        python3 - "$RECON_DIR/ports/nmap_greppable.txt" "$RECON_DIR/ports/open_host_ports_nmap.txt" <<'PY'
+import ipaddress
+import re
+import sys
+from pathlib import Path
+
+source, output = map(Path, sys.argv[1:])
+rows = set()
+for raw in source.read_text(encoding="utf-8", errors="replace").splitlines():
+    match = re.match(r"Host:\s+(\S+).*?Ports:\s+(.+)", raw)
+    if not match:
+        continue
+    host, ports = match.groups()
+    try:
+        ipaddress.IPv6Address(host)
+    except ValueError:
+        pass
+    else:
+        host = f"[{host}]"
+    for entry in ports.split(","):
+        port = re.match(r"\s*(\d+)/open/", entry)
+        if port:
+            rows.add(f"{host}:{port.group(1)}")
+Path(output).write_text(("\n".join(sorted(rows)) + "\n") if rows else "", encoding="utf-8")
+PY
+        sed -nE 's|.*:([0-9]+)$|\1/open|p' "$RECON_DIR/ports/open_host_ports_nmap.txt" \
             | sort -u > "$RECON_DIR/ports/open_ports.txt" 2>/dev/null || true
         log_done "Open ports: $(wc -l < "$RECON_DIR/ports/open_ports.txt" 2>/dev/null || echo 0)"
     fi
 else
+    NMAP_STATUS="unavailable"
+    NMAP_NOTE="nmap unavailable"
     log_warn "nmap not installed — skipping"
 fi
 
 cat "$RECON_DIR/ports/open_ports.txt" "$RECON_DIR/ports/open_ports_naabu.txt" "$RECON_DIR/ports/open_ports_explicit.txt" 2>/dev/null \
     | awk 'NF' | sort -u > "$RECON_DIR/ports/open_ports_all.txt" || true
-PORTS_OPEN=$(wc -l < "$RECON_DIR/ports/open_ports_all.txt" 2>/dev/null | tr -d ' ' || echo 0)
-PORT_PHASE_STATUS="ok"
+cat "$RECON_DIR/ports/open_host_ports_nmap.txt" "$RECON_DIR/ports/open_host_ports_naabu.txt" "$RECON_DIR/ports/open_host_ports_explicit.txt" 2>/dev/null \
+    | awk 'NF' | sort -u > "$RECON_DIR/ports/open_host_ports.txt" || true
+PORTS_OPEN=$(wc -l < "$RECON_DIR/ports/open_host_ports.txt" 2>/dev/null | tr -d ' ' || echo 0)
+PORT_PHASE_STATUS="skipped"
 if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
     PORT_PHASE_STATUS="seeded"
-elif ! command -v naabu >/dev/null 2>&1 && ! command -v nmap >/dev/null 2>&1; then
-    PORT_PHASE_STATUS="skipped"
+elif [ "$NAABU_STATUS" = "ok" ] && [ "$NMAP_STATUS" = "ok" ]; then
+    PORT_PHASE_STATUS="ok"
+elif [ "$NAABU_STATUS" = "ok" ] || [ "$NMAP_STATUS" = "ok" ]; then
+    PORT_PHASE_STATUS="partial"
+elif [ "$NAABU_STATUS" = "partial" ] || [ "$NMAP_STATUS" = "partial" ]; then
+    PORT_PHASE_STATUS="partial"
+elif [ "$NAABU_STATUS" = "error" ] || [ "$NMAP_STATUS" = "error" ]; then
+    PORT_PHASE_STATUS="error"
+elif [ "$NAABU_STATUS" = "unavailable" ] && [ "$NMAP_STATUS" = "unavailable" ]; then
+    PORT_PHASE_STATUS="unavailable"
 fi
 record_recon_phase \
     port_scan \
     "$PORT_PHASE_STATUS" \
-    "recon/${RECON_TARGET_KEY}/ports/open_ports_all.txt" \
+    "recon/${RECON_TARGET_KEY}/ports/open_host_ports.txt" \
     "$PORTS_OPEN" \
-    "bounded infra inventory; explicit URL/port targets preserve supplied port without broad scan"
+    "naabu=${NAABU_STATUS} (${NAABU_NOTE}); nmap=${NMAP_STATUS} (${NMAP_NOTE}); host-aware canonical evidence with open_ports_all.txt compatibility projection"
 emit_claude_hint \
     phase                port_scan \
     open_ports_total     "$PORTS_OPEN"
@@ -2192,10 +2530,12 @@ echo ""
 log_info "Phase 5: JavaScript Analysis"
 
 JS_FILES_FOR_ANALYSIS="$RECON_DIR/urls/js_files_analysis.txt"
+JS_REQUEST_TARGETS="$RECON_DIR/js/request_targets.txt"
 build_filtered_first_backstop \
     "$RECON_DIR/urls/js_files_filtered.txt" \
     "$RECON_DIR/urls/js_files.txt" \
     "$JS_FILES_FOR_ANALYSIS"
+build_target_owned_input "$JS_FILES_FOR_ANALYSIS" "$JS_REQUEST_TARGETS" http-url
 JS_ANALYSIS_STATUS="skipped"
 JS_CANDIDATE_BUILD_STATUS="skipped"
 JS_DEEP_CANDIDATES=0
@@ -2207,7 +2547,7 @@ if [ -s "$JS_FILES_FOR_ANALYSIS" ]; then
     if python3 "$BASE_DIR/tools/recon_candidates.py" \
         --js-input "$JS_FILES_FOR_ANALYSIS" \
         --js-output "$RECON_DIR/js/deep_candidates.txt" \
-        --js-limit "${BBHUNT_RECON_JS_CANDIDATE_LIMIT:-800}" \
+        --js-limit "$JS_CANDIDATE_LIMIT" \
         > "$RECON_DIR/logs/js_deep_candidates.json" 2>&1; then
         JS_CANDIDATE_BUILD_STATUS="ok"
         JS_DEEP_CANDIDATES=$(wc -l < "$RECON_DIR/js/deep_candidates.txt" 2>/dev/null | tr -d ' ' || echo 0)
@@ -2227,9 +2567,9 @@ PY
         log_warn "Deep-JS candidate view failed; complete JS inventory and prior candidate artifact were preserved"
     fi
 
-    if [ "$RECON_PROFILE" = "normal" ]; then
+    if js_profile_defers_active_analysis; then
         JS_ANALYSIS_STATUS="deferred"
-        log_done "Normal profile indexed JS inventory; deep analysis deferred to Action Queue"
+        log_done "$RECON_PROFILE profile indexed JS inventory; active bundle analysis deferred to Action Queue"
         if [ "$JS_CANDIDATE_BUILD_STATUS" != "ok" ]; then
             JS_ANALYSIS_STATUS="partial"
         elif [ "$JS_DEEP_CANDIDATES" -gt 0 ] && ! python3 "$BASE_DIR/tools/action_queue.py" --repo-root "$BASE_DIR" add \
@@ -2253,7 +2593,7 @@ PY
         JS_ANALYSIS_STATUS="ok"
         log_step "Extracting endpoints from JS files (top 50)..."
 
-        head -50 "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
+        head -50 "$JS_REQUEST_TARGETS" | while IFS= read -r js_url; do
             bb_auth_args_for_url "$js_url"
             curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
                 sed -nE 's/.*["'"'"']([a-zA-Z0-9_/.-]*(\/[a-zA-Z0-9_/.-]+)+)["'"'"'].*/\1/p' \
@@ -2265,7 +2605,7 @@ PY
             log_done "JS endpoints: $(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null || echo 0)"
 
             # Extract potential secrets from JS
-            head -50 "$JS_FILES_FOR_ANALYSIS" | while IFS= read -r js_url; do
+            head -50 "$JS_REQUEST_TARGETS" | while IFS= read -r js_url; do
                 bb_auth_args_for_url "$js_url"
                 curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
                     grep -oiE '([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)["'\''[:space:]]*[:=]["'\''[:space:]]*["'\'' ]?([A-Za-z0-9_./+=:-]{8,})' \
@@ -2282,7 +2622,7 @@ PY
         XNLINKFINDER_TARGETS="$RECON_DIR/js/xnlinkfinder_targets.txt"
         XNLINKFINDER_SCOPE="$RECON_DIR/js/xnlinkfinder_scope.txt"
         : > "$RECON_DIR/js/linkfinder_raw.txt"
-        head -"$LINKFINDER_MAX_JS" "$JS_FILES_FOR_ANALYSIS" > "$XNLINKFINDER_TARGETS"
+        head -"$LINKFINDER_MAX_JS" "$JS_REQUEST_TARGETS" > "$XNLINKFINDER_TARGETS"
         if ! python3 - "$BASE_DIR" "$TARGET" "$XNLINKFINDER_TARGETS" "$RECON_DIR/subdomains/all.txt" "$XNLINKFINDER_SCOPE" <<'PY'
 from ipaddress import ip_address
 from pathlib import Path
@@ -2367,7 +2707,7 @@ PY
         if [ "$JS_LINK_ANALYZER" = "none" ]; then
             log_step "Running legacy LinkFinder on top $LINKFINDER_MAX_JS JS files..."
             if run_legacy_linkfinder \
-                "$JS_FILES_FOR_ANALYSIS" \
+                "$JS_REQUEST_TARGETS" \
                 "$LINKFINDER_MAX_JS" \
                 "$RECON_DIR/js/linkfinder_raw.txt"; then
                 JS_LINK_ANALYZER="LinkFinder"
@@ -2390,13 +2730,13 @@ JS_ENDPOINTS=$(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null | tr -d ' ' || 
 JS_SECRETS=$(wc -l < "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null | tr -d ' ' || echo 0)
 JS_LINKFINDER=$(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null | tr -d ' ' || echo 0)
 JS_MANIFEST_COUNT="$JS_ENDPOINTS"
-[ "$RECON_PROFILE" != "normal" ] || JS_MANIFEST_COUNT="$JS_DEEP_CANDIDATES"
+js_profile_defers_active_analysis && JS_MANIFEST_COUNT="$JS_DEEP_CANDIDATES"
 record_recon_phase \
     js_analysis \
     "$JS_ANALYSIS_STATUS" \
-    "recon/${RECON_TARGET_KEY}/js/$([ "$RECON_PROFILE" = "normal" ] && echo deep_candidates.txt || echo endpoints.txt)" \
+    "recon/${RECON_TARGET_KEY}/js/$(js_profile_defers_active_analysis && echo deep_candidates.txt || echo endpoints.txt)" \
     "$JS_MANIFEST_COUNT" \
-    "all JS URLs remain in urls/js_files.txt; candidate_view=${JS_CANDIDATE_BUILD_STATUS}; link_analyzer=${JS_LINK_ANALYZER}; limit=${BBHUNT_RECON_JS_CANDIDATE_LIMIT:-800}; normal defers deep analysis without closing coverage"
+    "all JS URLs remain in urls/js_files.txt; active request inputs are target-owned in js/request_targets.txt; candidate_view=${JS_CANDIDATE_BUILD_STATUS}; link_analyzer=${JS_LINK_ANALYZER}; limit=${JS_CANDIDATE_LIMIT}; quick/normal defer active analysis without closing coverage"
 emit_claude_hint \
     phase                  js_analysis \
     profile                "$RECON_PROFILE" \
@@ -2481,7 +2821,11 @@ if [ -n "$WORDLIST" ]; then
 
     while IFS= read -r url && [ "$FFUF_ATTEMPTED" -lt "$MAX_FUZZ" ]; do
         [ -n "$url" ] || continue
-        bb_auth_args_for_url "$url"
+        if ! FFUF_BASE_URL="$(url_append_base "$url")"; then
+            log_warn "Skipping invalid FFUF base URL: $url"
+            continue
+        fi
+        bb_auth_args_for_url "$FFUF_BASE_URL"
         FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))
         FFUF_FILTER_ARGS=()
         FFUF_CONTROL_WORDLIST_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf-control-words.XXXXXX")"
@@ -2489,7 +2833,7 @@ if [ -n "$WORDLIST" ]; then
         printf '__bbhunt_missing_%s_%s\n__bbhunt_missing_%s_%s\n' \
             "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" > "$FFUF_CONTROL_WORDLIST_TMP"
 
-        if ffuf -u "${url}/FUZZ" \
+        if ffuf -u "${FFUF_BASE_URL}/FUZZ" \
             -w "$FFUF_CONTROL_WORDLIST_TMP" \
             -mc all \
             -s -json \
@@ -2512,8 +2856,8 @@ if [ -n "$WORDLIST" ]; then
             fi
             if [ "$SPA_FALLBACK_SIZE" -gt 0 ]; then
                 FFUF_FILTER_ARGS=(-fs "$SPA_FALLBACK_SIZE")
-                printf '%s\t%s\n' "$url" "$SPA_FALLBACK_SIZE" >> "$SPA_FALLBACK_LOG"
-                log_warn "SPA fallback observed for $url (two FFUF controls returned 200 size=$SPA_FALLBACK_SIZE); filtering that size"
+                printf '%s\t%s\n' "$FFUF_BASE_URL" "$SPA_FALLBACK_SIZE" >> "$SPA_FALLBACK_LOG"
+                log_warn "SPA fallback observed for $FFUF_BASE_URL (two FFUF controls returned 200 size=$SPA_FALLBACK_SIZE); filtering that size"
             fi
         else
             FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + 1))
@@ -2523,9 +2867,9 @@ if [ -n "$WORDLIST" ]; then
         FFUF_CONTROL_WORDLIST_TMP=""
         FFUF_CONTROL_RUN_TMP=""
 
-        log_step "Fuzzing: $url"
+        log_step "Fuzzing: $FFUF_BASE_URL"
         if [ "$FFUF_USE_GZIP" = "true" ]; then
-            if ffuf -u "${url}/FUZZ" \
+            if ffuf -u "${FFUF_BASE_URL}/FUZZ" \
                 -w "$WORDLIST" \
                 -mc 200,301,302,403,405 \
                 -ac \
@@ -2541,7 +2885,7 @@ if [ -n "$WORDLIST" ]; then
                 log_warn "FFUF failed for $url; any valid partial JSONL remains in the evidence artifact"
             fi
         else
-            if ffuf -u "${url}/FUZZ" \
+            if ffuf -u "${FFUF_BASE_URL}/FUZZ" \
                 -w "$WORDLIST" \
                 -mc 200,301,302,403,405 \
                 -ac \
@@ -2679,15 +3023,20 @@ if [ -s "$RECON_DIR/live/urls.txt" ]; then
     : > "$RECON_DIR/exposure/config_files.txt"
 
     while IFS= read -r base_url; do
+        if ! CONFIG_ORIGIN="$(url_origin "$base_url")"; then
+            log_warn "Skipping invalid config probe base URL: $base_url"
+            continue
+        fi
         for path in "${CONFIG_PATHS[@]}"; do
-            bb_auth_args_for_url "${base_url}${path}"
-            STATUS=$(curl -s "${BB_URL_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "${base_url}${path}" 2>/dev/null || echo "000")
+            CONFIG_URL="${CONFIG_ORIGIN}${path}"
+            bb_auth_args_for_url "$CONFIG_URL"
+            STATUS=$(curl -s "${BB_URL_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$CONFIG_URL" 2>/dev/null || echo "000")
             if [ "$STATUS" = "200" ]; then
-                CONTENT_TYPE=$(curl -sI "${BB_URL_AUTH_ARGS[@]}" --max-time 5 "${base_url}${path}" 2>/dev/null | grep -i content-type | head -1 || true)
+                CONTENT_TYPE=$(curl -sI "${BB_URL_AUTH_ARGS[@]}" --max-time 5 "$CONFIG_URL" 2>/dev/null | grep -i content-type | head -1 || true)
                 # Only flag if it returns JS/JSON/text (not HTML error pages)
                 if echo "$CONTENT_TYPE" | grep -qiE '(javascript|json|text/plain)'; then
-                    echo "[EXPOSED] ${base_url}${path}" >> "$RECON_DIR/exposure/config_files.txt"
-                    log_vuln "Config exposed: ${base_url}${path}"
+                    echo "[EXPOSED] $CONFIG_URL" >> "$RECON_DIR/exposure/config_files.txt"
+                    log_vuln "Config exposed: $CONFIG_URL"
                 fi
             fi
         done
@@ -2846,6 +3195,9 @@ POSTLEAKS_URLS="$API_LEAK_DIR/postleaks_urls.txt"
 SWAGGER_LEAKS="$API_LEAK_DIR/swagger_leaks.txt"
 API_LEAK_TARGET=""
 API_LEAK_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 120 || echo 240)
+PORCH_PIRATE_STATUS="missing"
+POSTLEAKS_STATUS="missing"
+SWAGGERSPY_STATUS="missing"
 
 mkdir -p "$API_LEAK_DIR" "$POSTLEAKS_DIR"
 : > "$API_LEAK_CANDIDATES"
@@ -2862,10 +3214,17 @@ fi
 if [ -n "$API_LEAK_TARGET" ]; then
     if command -v porch-pirate &>/dev/null; then
         log_step "Searching public Postman leaks with porch-pirate..."
+        set +e
         run_with_timeout "$API_LEAK_TIMEOUT" porch-pirate -s "$API_LEAK_TARGET" -l 25 --dump \
-            > "$POSTMAN_LEAKS" 2>/dev/null || \
-        run_with_timeout "$API_LEAK_TIMEOUT" porch-pirate -s "$API_LEAK_TARGET" -l 25 \
-            > "$POSTMAN_LEAKS" 2>/dev/null || true
+            > "$POSTMAN_LEAKS" 2>/dev/null
+        PORCH_PIRATE_EXIT=$?
+        if [ "$PORCH_PIRATE_EXIT" -ne 0 ]; then
+            run_with_timeout "$API_LEAK_TIMEOUT" porch-pirate -s "$API_LEAK_TARGET" -l 25 \
+                > "$POSTMAN_LEAKS" 2>/dev/null
+            PORCH_PIRATE_EXIT=$?
+        fi
+        set -e
+        PORCH_PIRATE_STATUS=$([ "$PORCH_PIRATE_EXIT" -eq 0 ] && echo ok || echo partial)
         log_done "porch-pirate lines: $(wc -l < "$POSTMAN_LEAKS" 2>/dev/null || echo 0)"
     else
         log_warn "porch-pirate not installed — skipping Postman public workspace search"
@@ -2874,11 +3233,15 @@ if [ -n "$API_LEAK_TARGET" ]; then
     if command -v postleaksNg &>/dev/null; then
         POSTLEAKS_THREADS=$([ "$QUICK_MODE" = "--quick" ] && echo 1 || echo 2)
         log_step "Searching Postman leaks with postleaksNg..."
+        set +e
         run_with_timeout "$API_LEAK_TIMEOUT" postleaksNg \
             -k "$API_LEAK_TARGET" \
             --output "$POSTLEAKS_DIR" \
             -t "$POSTLEAKS_THREADS" \
-            > "$POSTLEAKS_LOG" 2>&1 || true
+            > "$POSTLEAKS_LOG" 2>&1
+        POSTLEAKS_EXIT=$?
+        set -e
+        POSTLEAKS_STATUS=$([ "$POSTLEAKS_EXIT" -eq 0 ] && echo ok || echo partial)
 
         # postleaksNg 输出格式可能随版本变化；这里按文本方式提取 URL，避免 jq 依赖。
         while IFS= read -r -d '' leak_file; do
@@ -2893,13 +3256,17 @@ if [ -n "$API_LEAK_TARGET" ]; then
 
     if [ -x "$SHARED_TOOLS_DIR/SwaggerSpy/venv/bin/python3" ] && [ -f "$SHARED_TOOLS_DIR/SwaggerSpy/swaggerspy.py" ]; then
         log_step "Searching Swagger/OpenAPI leaks with Osmedeus SwaggerSpy..."
+        set +e
         (
             cd "$SHARED_TOOLS_DIR/SwaggerSpy" 2>/dev/null && \
             run_with_timeout "$API_LEAK_TIMEOUT" \
                 "$SHARED_TOOLS_DIR/SwaggerSpy/venv/bin/python3" \
                 "$SHARED_TOOLS_DIR/SwaggerSpy/swaggerspy.py" \
                 "$API_LEAK_TARGET"
-        ) > "$SWAGGER_LEAKS" 2>/dev/null || true
+        ) > "$SWAGGER_LEAKS" 2>/dev/null
+        SWAGGERSPY_EXIT=$?
+        set -e
+        SWAGGERSPY_STATUS=$([ "$SWAGGERSPY_EXIT" -eq 0 ] && echo ok || echo partial)
     else
         log_warn "Osmedeus SwaggerSpy not found under $SHARED_TOOLS_DIR/SwaggerSpy — skipping Swagger/OpenAPI leak search"
     fi
@@ -2933,13 +3300,13 @@ POSTMAN_LINE_COUNT=$(wc -l < "$POSTMAN_LEAKS" 2>/dev/null | tr -d ' ' || echo 0)
 POSTLEAKS_URL_COUNT=$(wc -l < "$POSTLEAKS_URLS" 2>/dev/null | tr -d ' ' || echo 0)
 SWAGGER_LINE_COUNT=$(wc -l < "$SWAGGER_LEAKS" 2>/dev/null | tr -d ' ' || echo 0)
 API_LEAK_PHASE_STATUS="skipped"
-[ -n "$API_LEAK_TARGET" ] && API_LEAK_PHASE_STATUS="ok"
+[ -z "$API_LEAK_TARGET" ] || API_LEAK_PHASE_STATUS="$(aggregate_optional_status "$PORCH_PIRATE_STATUS" "$POSTLEAKS_STATUS" "$SWAGGERSPY_STATUS")"
 record_recon_phase \
     api_leak_detection \
     "$API_LEAK_PHASE_STATUS" \
     "recon/${RECON_TARGET_KEY}/exposure/api_leak_candidates.txt" \
     "$API_LEAK_CANDIDATE_COUNT" \
-    "domain-keyed public API leak signal; raw candidates remain for AI review"
+    "porch-pirate=${PORCH_PIRATE_STATUS}; postleaksNg=${POSTLEAKS_STATUS}; SwaggerSpy=${SWAGGERSPY_STATUS}; raw candidates remain for AI review"
 
 emit_claude_hint \
     phase                api_leak_detection \
@@ -3008,8 +3375,6 @@ OPENAPI_SEMANTIC_STATUS="failed"
 OPENAPI_OPERATION_COUNT=0
 OPENAPI_AUTH_BOUNDARY_COUNT=0
 OPENAPI_PLATFORM_METADATA_COUNT=0
-OPENAPI_PLATFORM_HOST_BUDGET="${BBHUNT_OPENAPI_MAX_PLATFORM_HOSTS:-20}"
-
 if python3 "$BASE_DIR/tools/openapi_semantics.py" \
     --repo-root "$BASE_DIR" \
     --target "$TARGET" \
@@ -3156,12 +3521,16 @@ log_done "LeakSearch: $LEAKSEARCH_COUNT lines ($LEAKSEARCH_STATUS)"
 log_done "cloud_enum: $CLOUD_ENUM_COUNT lines ($CLOUD_ENUM_STATUS)"
 
 IDENTITY_TOTAL=$((EMAIL_COUNT + LEAKSEARCH_COUNT + CLOUD_ENUM_COUNT))
+IDENTITY_PHASE_STATUS="skipped"
+if [ "$TARGET_KIND" = "domain" ]; then
+    IDENTITY_PHASE_STATUS="$(aggregate_optional_status "$EMAILFINDER_STATUS" "$LEAKSEARCH_STATUS" "$CLOUD_ENUM_STATUS")"
+fi
 record_recon_phase \
     identity_cloud_intel \
-    ok \
+    "$IDENTITY_PHASE_STATUS" \
     "recon/${RECON_TARGET_KEY}/exposure/identity_intel/summary.md" \
     "$IDENTITY_TOTAL" \
-    "identity/cloud artifacts are hypothesis seeds, not credential-use actions"
+    "emailfinder=${EMAILFINDER_STATUS}; LeakSearch=${LEAKSEARCH_STATUS}; cloud_enum=${CLOUD_ENUM_STATUS}; artifacts are hypothesis seeds, not credential-use actions"
 
 emit_claude_hint \
     phase                identity_cloud_intel \
@@ -3237,6 +3606,8 @@ log_info "Phase 8: CI/CD Workflow Scan"
 
 GITHUB_ORGS=""
 CICD_SCANNER="$(dirname "$0")/cicd_scanner.sh"
+CICD_SUCCEEDED=0
+CICD_FAILED=0
 
 # Extract github.com/<org> patterns from recon data
 for f in "$RECON_DIR/live/httpx_full.txt" "$RECON_DIR/js/endpoints.txt" "$RECON_DIR/urls/all.txt"; do
@@ -3252,7 +3623,12 @@ GITHUB_ORGS=$(echo "$GITHUB_ORGS" | tr ' ' '\n' | grep -v '^$' | sort -u | head 
 if [ -n "$GITHUB_ORGS" ] && [ -x "$CICD_SCANNER" ] && command -v sisakulint &>/dev/null; then
     for ORG in $GITHUB_ORGS; do
         log_info "CI/CD scan: org:$ORG"
-        bash "$CICD_SCANNER" "org:$ORG" --output-dir "$RECON_DIR/cicd/$ORG/" || true
+        if bash "$CICD_SCANNER" "org:$ORG" --output-dir "$RECON_DIR/cicd/$ORG/"; then
+            CICD_SUCCEEDED=$((CICD_SUCCEEDED + 1))
+        else
+            CICD_FAILED=$((CICD_FAILED + 1))
+            log_warn "CI/CD scan failed for org:$ORG"
+        fi
     done
 else
     if [ -z "$GITHUB_ORGS" ]; then
@@ -3266,14 +3642,16 @@ CICD_ORGS_FOUND=$(printf '%s\n' "$GITHUB_ORGS" | grep -cE '^[a-zA-Z0-9_-]+' 2>/d
 [ -n "$CICD_ORGS_FOUND" ] || CICD_ORGS_FOUND=0
 CICD_PHASE_STATUS="skipped"
 if [ -n "$GITHUB_ORGS" ] && [ -x "$CICD_SCANNER" ] && command -v sisakulint >/dev/null 2>&1; then
-    CICD_PHASE_STATUS="ok"
+    CICD_PHASE_STATUS=$([ "$CICD_FAILED" -eq 0 ] && echo ok || echo partial)
+elif [ -n "$GITHUB_ORGS" ]; then
+    CICD_PHASE_STATUS="unavailable"
 fi
 record_recon_phase \
     cicd \
     "$CICD_PHASE_STATUS" \
     "recon/${RECON_TARGET_KEY}/cicd/" \
     "$CICD_ORGS_FOUND" \
-    "CI/CD workflow scan runs only when GitHub orgs and sisakulint are available"
+    "orgs_detected=${CICD_ORGS_FOUND}; succeeded=${CICD_SUCCEEDED}; failed=${CICD_FAILED}; missing scanner/tool is unavailable, not tested clean"
 emit_claude_hint \
     phase                cicd \
     orgs_scanned         "$CICD_ORGS_FOUND" \
@@ -3366,8 +3744,8 @@ echo ""
 echo "  Subdomains:        $(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)"
 [ -f "$RECON_DIR/live/urls.txt" ] && \
 echo "  Live hosts:        $(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null || echo 0)"
-[ -f "$RECON_DIR/ports/open_ports_all.txt" ] && \
-echo "  Open ports:        $(wc -l < "$RECON_DIR/ports/open_ports_all.txt" 2>/dev/null || echo 0)"
+[ -f "$RECON_DIR/ports/open_host_ports.txt" ] && \
+echo "  Open ports:        $(wc -l < "$RECON_DIR/ports/open_host_ports.txt" 2>/dev/null || echo 0)"
 [ -f "$RECON_DIR/urls/all.txt" ] && \
 echo "  URLs collected:    $(wc -l < "$RECON_DIR/urls/all.txt" 2>/dev/null || echo 0)"
 [ -f "$RECON_DIR/urls/all_filtered.txt" ] && \

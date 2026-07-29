@@ -32,7 +32,7 @@ python3 tools/hunt.py --target targets.txt --recon-only            # primary-dom
 bash tools/recon_engine.sh target.com                              # direct full entrypoint (legacy-compatible)
 ```
 
-`hunt.py --recon-only` 默认使用 normal profile：完整保留 raw surface，只把逐 bundle
+`hunt.py --recon-only` 默认使用 normal profile；quick/normal 都完整保留 raw surface，只把逐 bundle
 正则提取、secret grep 和递归 JS 链接分析交给 Surface/Action Queue。裸
 `recon_engine.sh TARGET` 保持原 full 行为；Source Map、AST/去混淆和动态签名重建继续由
 后续 `/js-read` 深度 lane 按证据选择。
@@ -72,12 +72,12 @@ If these files are absent or empty, read the command output. Do not spend anothe
 
 The integrated `tools/recon_engine.sh` path may run, when available:
 
-- subdomain sources: `subfinder`, `assetfinder`, `amass`, `crt.sh`, wayback-derived hosts, `puredns`；独立被动源并行、父流程统一合并
+- subdomain sources: `subfinder`, `assetfinder`, `amass`, `crt.sh`, optional credential-gated `Chaos`, wayback-derived hosts, `puredns`；独立被动源并行、父流程按 target scope 统一合并
 - live probing and fingerprinting: ProjectDiscovery `httpx`, WAF/origin hints, lightweight ports/services
 - URL collection: `katana`, `gau`, `waymore`
 - URL denoising: non-destructive `_filtered` URL views plus `urls/filter.log`; raw `urls/all.txt` is preserved
 - Storage guard: large raw collector source files (`katana`/`gau`/`waymore`/`wayback`) are gzip-compressed after `all.txt` and `_filtered` files are built; set `BBHUNT_RECON_POST_COMPRESS=0` to keep source `.txt` files
-- JS/API extraction: normal 保留完整 JS inventory 并生成多类别有界 `js/deep_candidates.txt`；full/deep 优先使用有界、限速、scope-filtered 的 xnLinkFinder，失败、不兼容 scope 或认证上下文回退逐 URL LinkFinder；所有 profile 都保留 raw backstop
+- JS/API extraction: quick/normal 保留完整 JS inventory 并生成多类别有界 `js/deep_candidates.txt`，但不主动请求 bundle；full/deep 仅从 `js/request_targets.txt` 使用有界、限速、scope-filtered 的 xnLinkFinder，失败、不兼容 scope 或认证上下文回退逐 URL LinkFinder；所有 profile 都保留 raw backstop
 - bounded directory/parameter fuzzing and config discovery with timeout guards
 - exposure candidates: API docs, config files, cloud storage, S3 buckets, third-party hosted assets
 - routing candidates: 从已有 origin/shared-IP/CNAME/certificate（若 artifact 已包含）、path/schema 事实及可选通用资产关系 observation 生成 Host/SNI、AI/LLM 与外部资产关系中性候选，不在 Recon 中主动验证

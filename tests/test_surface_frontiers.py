@@ -8,6 +8,7 @@ from tools.surface import (
     _SurfaceCandidateFrontiers,
     _build_review_pool,
 )
+from tools.surface_index import surface_shape
 
 
 def _candidate(index: int, score: int, category: int) -> dict:
@@ -73,6 +74,31 @@ def test_frontier_keeps_first_seen_order_for_equal_scores():
     ]
 
 
+def test_frontiers_and_review_pool_reserve_distinct_route_shapes():
+    dominant = [
+        {
+            **_candidate(index, 30 - index, 1),
+            "url": f"https://target.com/search?q={index}",
+        }
+        for index in range(12)
+    ]
+    alternatives = [
+        {**_candidate(100, 10, 1), "url": "https://target.com/admin/users"},
+        {**_candidate(101, 9, 1), "url": "https://target.com/payments/export"},
+        {**_candidate(102, 8, 1), "url": "https://target.com/files/upload"},
+    ]
+    frontiers = _SurfaceCandidateFrontiers(set())
+    for sequence, item in enumerate([*dominant, *alternatives]):
+        frontiers.add(item, sequence)
+
+    p1 = [item for _sequence, item in frontiers.p1.values()]
+    review = _build_review_pool(frontiers.review_candidates())
+
+    assert len({surface_shape(item["url"])["id"] for item in p1}) >= 4
+    assert {item["url"] for item in alternatives}.issubset({item["url"] for item in p1})
+    assert {item["url"] for item in alternatives}.issubset({item["url"] for item in review})
+
+
 def test_review_pool_reserves_high_value_categories_before_source_flood():
     noisy = [
         {
@@ -104,6 +130,32 @@ def test_review_pool_reserves_high_value_categories_before_source_flood():
 
     bounded_pool = _build_review_pool(frontiers.review_candidates())
     assert low_score_category["url"] in [item["url"] for item in bounded_pool]
+
+
+def test_review_pool_only_marks_a_category_after_its_representative_is_added():
+    new_observations = [
+        {
+            **_candidate(index, 30 - index, 0),
+            "url": f"https://target.com/search?q={index}",
+            "new_observation": True,
+        }
+        for index in range(2)
+    ]
+    blocked = {
+        **_candidate(2, 28, 0),
+        "url": "https://target.com/search?q=2",
+        "suggested": "review upload",
+    }
+    alternative = {
+        **_candidate(100, 20, 0),
+        "url": "https://target.com/files/upload",
+        "suggested": "review upload",
+    }
+
+    pool = _build_review_pool([*new_observations, blocked, alternative])
+
+    selected = next(item for item in pool if item["url"] == alternative["url"])
+    assert selected["review_reason"] == "high-value category: upload/file"
 
 
 def test_review_pool_reserves_at_most_two_neutral_new_observation_representatives():

@@ -20,11 +20,11 @@ def test_recon_engine_guards_common_set_e_pitfalls():
     assert 'TARGET_KIND="cidr"' in text
     assert '"$RECON_DIR/subdomains/subfinder.txt" \\' in text
     assert '"$RECON_DIR/subdomains/wayback_subs.txt" \\' in text
-    assert "2>/dev/null | awk 'NF' | sort -u > \"$RECON_DIR/subdomains/all.txt\" || true" in text
+    assert 'build_target_owned_input "$SUBDOMAIN_MERGED_TMP" "$RECON_DIR/subdomains/all.txt" host' in text
     assert '"$HTTPX_BIN" -l "$HTTPX_INPUT_FILE"' in text
     assert "resolve_pd_httpx()" in text
     assert 'FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))' in text
-    assert 'CONTENT_TYPE=$(curl -sI "${BB_URL_AUTH_ARGS[@]}" --max-time 5 "${base_url}${path}" 2>/dev/null | grep -i content-type | head -1 || true)' in text
+    assert 'CONTENT_TYPE=$(curl -sI "${BB_URL_AUTH_ARGS[@]}" --max-time 5 "$CONFIG_URL" 2>/dev/null | grep -i content-type | head -1 || true)' in text
     assert "count = min(limit, total - offset)" in text
     assert "first_host + offset + index" in text
     assert 'if [ "$TARGET_KIND" = "domain" ]; then' in text
@@ -59,8 +59,10 @@ def test_recon_engine_preserves_http_probe_exit_semantics():
     assert 'HTTP_NOTE="httpx completed successfully; exit_code=0"' in text
     assert 'HTTP_STATUS="partial"' in text
     assert 'HTTP_NOTE="httpx timeout; exit_code=124; partial output preserved"' in text
+    assert 'elif [ -s "$HTTPX_OUTPUT_FILE" ]; then' in text
+    assert 'HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; current partial output preserved"' in text
     assert 'HTTP_STATUS="failed"' in text
-    assert 'HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; partial output preserved"' in text
+    assert 'HTTP_NOTE="httpx failed; exit_code=$HTTPX_EXIT_CODE; no current results"' in text
     assert 'successful zero is not target closure' in text
     assert 'httpx_exit_code      "${HTTPX_EXIT_CODE:-not-run}"' in text
     assert 'elif [ "$LIVE_TOTAL" -eq 0 ]; then' not in text
@@ -189,7 +191,10 @@ def test_recon_engine_has_timeout_compat_helper():
     assert "gtimeout" in text
     assert "run_with_timeout()" in text
     assert "run_with_timeout 300 amass enum -passive" in text
-    assert 'NAABU_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 120 || echo 300)' not in text
+    assert 'NAABU_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 120 || echo 300)' in text
+    assert 'run_with_timeout "$HTTPX_RUN_TIMEOUT" "$HTTPX_BIN"' in text
+    assert 'run_with_timeout "$NMAP_RUN_TIMEOUT" nmap' in text
+    assert '--max-rate "$RATE_LIMIT"' in text
 
 
 def test_recon_engine_supports_auth_session_env():
@@ -207,7 +212,7 @@ def test_recon_engine_supports_auth_session_env():
     assert "-follow-host-redirects" in text
     assert "-follow-redirects" not in text
     assert "-dr -fs rdn -do" in text
-    assert 'ffuf -u "${url}/FUZZ"' in text
+    assert 'ffuf -u "${FFUF_BASE_URL}/FUZZ"' in text
 
 
 def test_recon_engine_supports_assetfinder_and_puredns():
@@ -431,6 +436,8 @@ def test_recon_engine_denoising_is_non_destructive():
     assert 'urls_filtered        "$URLS_FILTERED"' in text
     assert 'url_filter_log       "$URL_FILTER_LOG"' in text
     assert 'JS_FILES_FOR_ANALYSIS="$RECON_DIR/urls/js_files_analysis.txt"' in text
+    assert 'JS_REQUEST_TARGETS="$RECON_DIR/js/request_targets.txt"' in text
+    assert 'build_target_owned_input "$JS_FILES_FOR_ANALYSIS" "$JS_REQUEST_TARGETS" http-url' in text
     assert 'PARAM_URLS_FOR_DISCOVERY="$RECON_DIR/urls/with_params_analysis.txt"' in text
     assert '"$RECON_DIR/urls/js_files_filtered.txt" \\\n    "$RECON_DIR/urls/js_files.txt"' in text
     assert '"$RECON_DIR/urls/with_params_filtered.txt" \\\n    "$RECON_DIR/urls/with_params.txt"' in text
@@ -473,13 +480,209 @@ def test_recon_engine_profiles_collectors_and_normal_js_handoff():
     for source in ("gau", "wayback", "waymore", "katana"):
         assert f': > "$RECON_DIR/urls/{source}.txt"' not in text
     assert ': > "$RECON_DIR/js/deep_candidates.txt"' not in text
-    assert 'if [ "$RECON_PROFILE" = "normal" ]; then' in text
+    assert 'js_profile_defers_active_analysis()' in text
+    assert '[ "$RECON_PROFILE" = "quick" ] || [ "$RECON_PROFILE" = "normal" ]' in text
     assert '"$RECON_DIR/js/deep_candidates.txt"' in text
     assert 'JS_MANIFEST_COUNT="$JS_DEEP_CANDIDATES"' in text
     assert 'tools/action_queue.py" --repo-root "$BASE_DIR" add' in text
     assert 'python3 "$BASE_DIR/tools/recon_candidates.py"' in text
     assert '"$RECON_DIR/exposure/asset_relation_candidates.jsonl"' in text
     assert 'asset_relation_candidates  "$ASSET_RELATION_CANDIDATES"' in text
+
+
+def test_target_owned_active_inputs_keep_raw_evidence_but_filter_requests(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    prefix = script.read_text(encoding="utf-8").split('TARGET="${1:?', 1)[0]
+    functions = tmp_path / "recon-functions.sh"
+    functions.write_text(prefix, encoding="utf-8")
+    source = tmp_path / "raw.txt"
+    source.write_text(
+        "https://app.target.test/a.js\n"
+        "https://cdn.external.test/vendor.js\n"
+        "http://127.0.0.2/private.js\n"
+        "https://api.target.test/b.js\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "request-targets.txt"
+
+    subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; BASE_DIR="$2"; TARGET="target.test"; '
+            'build_target_owned_input "$3" "$4" http-url',
+            "_",
+            str(functions),
+            str(Path(__file__).resolve().parent.parent),
+            str(source),
+            str(output),
+        ],
+        check=True,
+    )
+
+    assert source.read_text(encoding="utf-8").splitlines() == [
+        "https://app.target.test/a.js",
+        "https://cdn.external.test/vendor.js",
+        "http://127.0.0.2/private.js",
+        "https://api.target.test/b.js",
+    ]
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        "https://app.target.test/a.js",
+        "https://api.target.test/b.js",
+    ]
+
+
+def test_recon_engine_optional_chaos_collector_is_scope_filtered():
+    text = (Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'start_collector chaos "$RECON_DIR/subdomains/chaos.txt"' in text
+    assert '[ -n "${CHAOS_API_KEY:-}" ] || return 5' in text
+    assert '"https://dns.projectdiscovery.io/dns/$TARGET/subdomains"' in text
+    assert '"$RECON_DIR/subdomains/chaos.txt" \\' in text
+    assert 'optional collector credential unavailable' in text
+
+
+def test_recon_engine_chaos_malformed_json_is_an_error(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    prefix = script.read_text(encoding="utf-8").split('TARGET="${1:?', 1)[0]
+    functions = tmp_path / "recon-functions.sh"
+    functions.write_text(prefix, encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_curl = bin_dir / "curl"
+    fake_curl.write_text("#!/bin/sh\nprintf '{malformed'\n", encoding="utf-8")
+    fake_curl.chmod(0o755)
+    recon_dir = tmp_path / "recon"
+    (recon_dir / "logs").mkdir(parents=True)
+    artifact = recon_dir / "chaos.txt"
+    meta = recon_dir / "chaos.status"
+
+    subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; BASE_DIR="$2"; TARGET="target.test"; TARGET_KIND=domain; '
+            'RECON_DIR="$3"; CHAOS_API_KEY=test; run_collector_task "$4" "$5" collect_chaos',
+            "_",
+            str(functions),
+            str(Path(__file__).resolve().parent.parent),
+            str(recon_dir),
+            str(artifact),
+            str(meta),
+        ],
+        check=True,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+    )
+
+    assert meta.read_text(encoding="utf-8").split("\t", 1)[0] == "error"
+    assert not artifact.exists()
+
+
+def test_recon_engine_chaos_drops_foreign_fqdns(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    source = script.read_text(encoding="utf-8").split("collect_chaos() {", 1)[1]
+    python_source = source.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    raw = tmp_path / "chaos.json"
+    output = tmp_path / "chaos.txt"
+    raw.write_text(
+        json.dumps({"subdomains": ["api", "www.target.test", "cdn.foreign.test"]}),
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        [sys.executable, "-", str(raw), str(output), "target.test"],
+        input=python_source,
+        text=True,
+        check=True,
+    )
+
+    assert output.read_text(encoding="utf-8").splitlines() == ["api.target.test", "www.target.test"]
+
+
+def test_port_phase_treats_success_plus_error_as_partial():
+    text = (Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh").read_text(
+        encoding="utf-8"
+    )
+    success_branch = text.index('elif [ "$NAABU_STATUS" = "ok" ] || [ "$NMAP_STATUS" = "ok" ]; then')
+    error_branch = text.index('elif [ "$NAABU_STATUS" = "error" ] || [ "$NMAP_STATUS" = "error" ]; then')
+
+    assert success_branch < error_branch
+
+
+def test_recon_engine_rejects_invalid_numeric_settings_before_recon_io():
+    repo = Path(__file__).resolve().parent.parent
+    target = "invalid-setting-fixture.test"
+    completed = subprocess.run(
+        ["bash", str(repo / "tools" / "recon_engine.sh"), target, "--quick"],
+        cwd=repo,
+        env={
+            **os.environ,
+            "BBHUNT_RUNTIME_PHASE_LOCKED": "recon",
+            "BBHUNT_RUNTIME_LOCK_TARGET": target,
+            "BB_THREADS": "many",
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "Invalid BB_THREADS=many" in completed.stdout
+    assert not (repo / "recon" / target).exists()
+
+
+def test_recon_url_join_helpers_drop_query_fragment_without_double_slash(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    prefix = script.read_text(encoding="utf-8").split('TARGET="${1:?', 1)[0]
+    functions = tmp_path / "recon-functions.sh"
+    functions.write_text(prefix, encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; url_append_base "$2"; url_origin "$2"',
+            "_",
+            str(functions),
+            "https://target.test/base/?old=1#frag",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout.splitlines() == [
+        "https://target.test/base",
+        "https://target.test",
+    ]
+
+
+def test_nmap_host_port_projection_preserves_each_host(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    marker = 'python3 - "$RECON_DIR/ports/nmap_greppable.txt" "$RECON_DIR/ports/open_host_ports_nmap.txt" <<\'PY\'\n'
+    python_source = text.split(marker, 1)[1].split("\nPY\n", 1)[0]
+    source = tmp_path / "nmap.gnmap"
+    output = tmp_path / "host-ports.txt"
+    source.write_text(
+        "Host: 192.0.2.10 (api.target.test) Ports: 80/open/tcp//http///, 443/open/tcp//https///\n"
+        "Host: 192.0.2.11 (admin.target.test) Ports: 8443/open/tcp//https-alt///\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        [sys.executable, "-", str(source), str(output)],
+        input=python_source,
+        text=True,
+        check=True,
+    )
+
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        "192.0.2.10:443",
+        "192.0.2.10:80",
+        "192.0.2.11:8443",
+    ]
 
 
 def test_collector_runtime_preserves_plain_and_gzip_artifacts_by_exit_status(tmp_path):
@@ -592,9 +795,9 @@ def test_recon_engine_supports_wafw00f_fingerprinting():
     assert 'WAFW00F_MAX_TARGETS=$([ "$QUICK_MODE" = "--quick" ] && echo 3 || echo 10)' in text
     assert 'head -"$WAFW00F_MAX_TARGETS" "$RECON_DIR/live/urls.txt" > "$WAFW00F_TARGETS_FILE"' in text
     assert 'wafw00f \\' in text
-    assert 'run_with_timeout "$WAFW00F_RUN_TIMEOUT" wafw00f \\' not in text
-    assert '-o "$WAFW00F_JSON_FILE" \\' in text
-    assert 'python3 - "$WAFW00F_JSON_FILE" "$WAFW00F_HITS_FILE" <<' in text
+    assert 'run_with_timeout "$WAFW00F_RUN_TIMEOUT" wafw00f \\' in text
+    assert '-o "$WAFW00F_CURRENT_JSON" \\' in text
+    assert 'python3 - "$WAFW00F_PARSE_FILE" "$WAFW00F_HITS_FILE" <<' in text
 
 
 def test_recon_engine_supports_unwaf_origin_discovery():
@@ -627,9 +830,11 @@ def test_recon_engine_supports_naabu_and_xnlinkfinder_fallback():
 
     assert 'log_step "Running naabu (top $NAABU_MAX_TARGETS targets, top $NAABU_TOP_PORTS ports)..."' in text
     assert 'naabu \\' in text
-    assert 'run_with_timeout "$NAABU_RUN_TIMEOUT" naabu \\' not in text
+    assert 'run_with_timeout "$NAABU_RUN_TIMEOUT" naabu \\' in text
     assert '-list "$NAABU_TARGETS_FILE" \\' in text
     assert 'sed -nE \'s|.*:([0-9]+)$|\\1/open|p\' "$NAABU_OUTPUT_FILE"' in text
+    assert 'open_host_ports_naabu.txt' in text
+    assert 'open_host_ports_nmap.txt' in text
     assert "resolve_xnlinkfinder_path()" in text
     assert 'XNLINKFINDER_BIN="$(resolve_xnlinkfinder_path || true)"' in text
     assert 'run_xnlinkfinder \\' in text

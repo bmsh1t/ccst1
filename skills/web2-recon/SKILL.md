@@ -1,6 +1,6 @@
 ---
 name: web2-recon
-description: Web2 recon pipeline — subdomain enumeration (subfinder, Chaos API, assetfinder), live host discovery (dnsx, httpx), URL crawling (katana, waybackurls, gau), directory fuzzing (ffuf), JS analysis (LinkFinder, SecretFinder), continuous monitoring (new subdomain alerts, JS change detection, GitHub commit watch). Use when starting recon on any web2 target or when asked about asset discovery, subdomain enum, or attack surface mapping.
+description: Web2 recon pipeline — subdomain enumeration (subfinder, optional Chaos API, assetfinder), live host discovery (puredns, httpx), URL crawling (katana, waybackurls, gau), directory fuzzing (ffuf), JS analysis (LinkFinder, SecretFinder), continuous monitoring (new subdomain alerts, JS change detection, GitHub commit watch). Use when starting recon on any web2 target or when asked about asset discovery, subdomain enum, or attack surface mapping.
 ---
 
 # WEB2 RECON PIPELINE
@@ -67,7 +67,7 @@ JS/parameter extraction by default.
 ## SETUP (one-time)
 
 ```bash
-# 1. Set your Chaos API key (get free key at chaos.projectdiscovery.io)
+# 1. Optional: set a Chaos API key for one additional passive source
 export CHAOS_API_KEY="your-key-here"
 # Add to ~/.zshrc or ~/.bashrc for persistence:
 echo 'export CHAOS_API_KEY="your-key-here"' >> ~/.zshrc
@@ -125,10 +125,12 @@ curl -s "https://crt.sh/?q=%.${TARGET}&output=json" \
   | sort -u > /tmp/subs.txt
 echo "[+] crt.sh: $(wc -l < /tmp/subs.txt) subdomains"
 
-# Step 1: Chaos API (ProjectDiscovery — most comprehensive source)
-curl -s "https://dns.projectdiscovery.io/dns/$TARGET/subdomains" \
-  -H "Authorization: $CHAOS_API_KEY" \
-  | jq -r '.[]' >> /tmp/subs.txt
+# Step 1: optional Chaos API collector (the integrated engine skips it without a key)
+if [ -n "${CHAOS_API_KEY:-}" ]; then
+  curl -s "https://dns.projectdiscovery.io/dns/$TARGET/subdomains" \
+    -H "Authorization: $CHAOS_API_KEY" \
+    | jq -r '(.subdomains // .)[]?' >> /tmp/subs.txt
+fi
 
 echo "[+] Chaos returned $(wc -l < /tmp/subs.txt) subdomains"
 
@@ -237,7 +239,7 @@ xnLinkFinder \
   < recon/target.com/js/xnlinkfinder_targets.txt
 ```
 
-`normal` 不运行递归链接分析。`deep/full` 优先运行 xnLinkFinder；缺工具、执行失败或存在
+`quick/normal` 不运行主动逐 bundle 或递归链接分析。`deep/full` 优先运行 xnLinkFinder；缺工具、执行失败或存在
 认证 header 时回退逐 URL LinkFinder，避免把同一组认证信息发送到错误 origin。xnLinkFinder v8.2
 在非 TTY 环境必须从 stdin 读取目标；`-all` 避免非常见 TLD 的范围内链接被默认规则过滤，
 输出仍由 `-sf` 限定。IP 或单标签 scope 会成功返回但过滤全部链接，因此也走 LinkFinder 回退。

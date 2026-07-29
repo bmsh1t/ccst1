@@ -89,6 +89,8 @@ cd claude-bug-bounty
 chmod +x install.sh && ./install.sh
 # optional: create repo-local runtime config
 cp config.example.json config.json
+# optional: add Chaos, HackerOne, or Resin credentials
+cp .env.example .env
 # localhost/private IP/CIDR/list targets remain valid inputs;
 # request guard records advisory audit/replay metadata.
 ```
@@ -736,7 +738,7 @@ bash install_tools.sh                    # Install recon/scan tools + sisakulint
 ### API Keys
 
 <details>
-<summary><b>Chaos API</b> (required for recon)</summary>
+<summary><b>Chaos API</b> (optional passive recon coverage)</summary>
 <br>
 
 1. Sign up at [chaos.projectdiscovery.io](https://chaos.projectdiscovery.io)
@@ -746,6 +748,11 @@ bash install_tools.sh                    # Install recon/scan tools + sisakulint
 export CHAOS_API_KEY="your-key-here"
 echo 'export CHAOS_API_KEY="your-key-here"' >> ~/.zshrc
 ```
+
+Alternatively, set `CHAOS_API_KEY` in the gitignored `.env`; `tools/hunt.py`
+passes it only to the recon child process that may need it.
+Without a key, Recon records the Chaos collector as optional/unavailable and
+continues with the other passive sources.
 
 </details>
 

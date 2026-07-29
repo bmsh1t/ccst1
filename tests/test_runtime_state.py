@@ -627,6 +627,25 @@ def test_inspect_recon_artifacts_warns_on_surface_gaps(tmp_path):
     assert payload["warnings"] == ["no URL, JS, browser, or structured finding surface artifacts found yet"]
 
 
+def test_inspect_recon_prefers_host_aware_ports_with_legacy_fallback(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "ports").mkdir(parents=True)
+    legacy = recon_dir / "ports" / "open_ports_all.txt"
+    legacy.write_text("443/open\n", encoding="utf-8")
+
+    fallback = inspect_recon_artifacts(tmp_path, "target.com")
+    assert fallback["counts"]["open_ports"] == 1
+    assert fallback["infra_paths"]["open_ports"] == "ports/open_ports_all.txt"
+
+    (recon_dir / "ports" / "open_host_ports.txt").write_text(
+        "api.target.com:443\nadmin.target.com:8443\n",
+        encoding="utf-8",
+    )
+    preferred = inspect_recon_artifacts(tmp_path, "target.com")
+    assert preferred["counts"]["open_ports"] == 2
+    assert preferred["infra_paths"]["open_ports"] == "ports/open_host_ports.txt"
+
+
 def test_inspect_recon_artifacts_accepts_compact_ffuf_surface(tmp_path):
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)
