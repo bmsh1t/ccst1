@@ -32,6 +32,8 @@ static page parsing did not expose the script. The adapter runs anonymously,
 keeps target scope, and writes recovered files under
 `recon/<target>/js_dump/packer/`; a partial/unavailable result leaves the
 existing `deep-js-review` action unresolved.
+Source Map restoration additionally requires `shuji@0.8.0` on `PATH` (Node >=14.15);
+the adapter reports its absence as `unavailable` and does not install it automatically.
 
 ## Run This (the only required step)
 

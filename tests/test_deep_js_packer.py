@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -29,7 +30,12 @@ def _write(path: Path, content: str) -> None:
 
 
 def _fake_packer(
-    root: Path, *, include_js: bool = True, page_delay: float = 0
+    root: Path,
+    *,
+    include_js: bool = True,
+    page_delay: float = 0,
+    source_map: bytes | None = None,
+    source_map_attempts: int = 1,
 ) -> Path:
     _write(root / "Packer-InfoFinder.py", "# fake tool root\n")
     _write(root / "lib" / "__init__.py", "")
@@ -44,11 +50,15 @@ class DownloadJs:
 
     def _is_sane_js_url(self, url):
         return url.startswith(("http://", "https://"))
+
+    def _restore_sources_with_reverse_sourcemap(self, _map_bytes, _map_name, _project_root):
+        raise AssertionError("adapter did not replace reverse-sourcemap")
 """,
     )
     _write(
         root / "lib" / "runner" / "js_only_scan.py",
-        f"INCLUDE_JS = {include_js!r}\n"
+        f"INCLUDE_JS = {include_js!r}\nSOURCE_MAP = {source_map!r}\n"
+        f"SOURCE_MAP_ATTEMPTS = {source_map_attempts!r}\n"
         + """import json
 import os
 from pathlib import Path
@@ -63,6 +73,12 @@ def run_js_only_scan(options):
     pool = download_module.ThreadPoolExecutor(max_workers=30)
     downloader = DownloadJs()
     Path("tmp").mkdir(exist_ok=True)
+    if SOURCE_MAP is not None:
+        for _ in range(SOURCE_MAP_ATTEMPTS):
+            try:
+                downloader._restore_sources_with_reverse_sourcemap(SOURCE_MAP, "bundle.map", "tmp")
+            except Exception:
+                pass
     if INCLUDE_JS:
         Path("tmp/recovered.js").write_text("fetch('/api/recovered')", encoding="utf-8")
     Path("tmp/worker.json").write_text(json.dumps({
@@ -122,6 +138,34 @@ def _raw_published_path(repo_root: Path, result: dict, suffix: str) -> Path:
     )
 
 
+def _fake_shuji(directory: Path, *, exit_code: int = 0) -> Path:
+    script = directory / "shuji"
+    _write(
+        script,
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "Path('shuji-invocation.json').write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n"
+        f"if {exit_code}:\n    print('fake shuji failure', file=sys.stderr)\n    raise SystemExit({exit_code})\n"
+        "source_map = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
+        "for source, content in zip(source_map['sources'], source_map['sourcesContent']):\n"
+        "    Path(source).write_text(content, encoding='utf-8')\n",
+    )
+    script.chmod(0o755)
+    return directory
+
+
+def _source_map() -> bytes:
+    return json.dumps(
+        {
+            "version": 3,
+            "sourceRoot": "../../unsafe",
+            "sources": ["../one/index.js?x=1", "C:\\two\\index.js", "/tmp/three.ts"],
+            "sourcesContent": ["export const one = 1;", "export const two = 2;", "export const three = 3;"],
+        }
+    ).encode()
+
+
 def test_select_bundle_urls_prefers_runtime_and_preserves_source_file(
     tmp_path: Path,
 ) -> None:
@@ -179,6 +223,179 @@ def test_rate_limited_session_rejects_out_of_scope_source_map() -> None:
     session = _RateLimitedSession(Session(), _RateLimiter(5), "example.test")
     with pytest.raises(PermissionError, match="outside target scope"):
         session.get("https://outside.invalid/app.js.map")
+
+
+def test_normalize_source_map_flattens_root_and_indexed_source_names() -> None:
+    root_payload = {
+        "version": 3,
+        "sourceRoot": "../../unsafe",
+        "sources": ["../a/index.js", "C:\\b\\index.js?x=1"],
+        "sourcesContent": ["one", "two"],
+    }
+    indexed_payload = {
+        "version": 3,
+        "sections": [
+            {
+                "offset": {"line": 0, "column": 0},
+                "map": {
+                    "version": 3,
+                    "sourceRoot": "/absolute",
+                    "sources": ["../../nested.ts"],
+                    "sourcesContent": ["three"],
+                },
+            }
+        ],
+    }
+
+    normalized = json.loads(
+        deep_js_packer._normalize_source_map(
+            b"\xef\xbb\xbf" + json.dumps(root_payload).encode()
+        )
+    )
+
+    assert normalized["sourceRoot"] == ""
+    assert normalized["sourcesContent"] == ["one", "two"]
+    assert len(set(normalized["sources"])) == 2
+    assert all("/" not in source and "\\" not in source and ".." not in source for source in normalized["sources"])
+    indexed = json.loads(
+        deep_js_packer._normalize_source_map(json.dumps(indexed_payload).encode())
+    )
+    nested = indexed["sections"][0]["map"]
+    assert nested["sourceRoot"] == ""
+    assert nested["sourcesContent"] == ["three"]
+    assert "/" not in nested["sources"][0]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"sources": ["one.js"], "sourcesContent": ["one"]},
+        {
+            "version": 3,
+            "sources": [],
+            "sourcesContent": [],
+            "sections": [],
+        },
+        {
+            "version": 3,
+            "sections": [{"offset": {"line": 0, "column": -1}, "map": {}}],
+        },
+    ],
+)
+def test_normalize_source_map_rejects_invalid_shape(payload: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="Source Map|indexed Source Map"):
+        deep_js_packer._normalize_source_map(json.dumps(payload).encode())
+
+
+def test_shuji_source_map_recovery_is_invoked_and_published(
+    repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir = _fake_shuji(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    _write(repo_root / "evidence.json", "{}\n")
+
+    result = run_packer(
+        "example.test",
+        mode="bundle",
+        signal_name="source-map",
+        evidence_ref="evidence.json",
+        explicit_urls=["https://example.test/app.js"],
+        tool_root=str(_fake_packer(tmp_path / "packer", source_map=_source_map())),
+        repo_root=repo_root,
+    )
+
+    assert result["status"] == "ok"
+    assert result["source_map_status"] == "ok"
+    assert any(path.endswith(".js") for path in result["published_artifacts"])
+    invocation = _raw_published_path(repo_root, result, "shuji-invocation.json")
+    args = json.loads(invocation.read_text(encoding="utf-8"))
+    assert args[0].startswith(".shuji_input_") and args[0].endswith(".map")
+    assert args[1:] == ["-o", ".", "-v"]
+    assert "reverse-sourcemap" not in (repo_root / result["log_artifact"]).read_text(encoding="utf-8")
+
+
+def test_missing_shuji_downgrades_productive_packer_run(
+    repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", "")
+    _write(repo_root / "evidence.json", "{}\n")
+
+    result = run_packer(
+        "example.test",
+        mode="bundle",
+        signal_name="source-map",
+        evidence_ref="evidence.json",
+        explicit_urls=["https://example.test/app.js"],
+        tool_root=str(_fake_packer(tmp_path / "packer", source_map=_source_map())),
+        repo_root=repo_root,
+    )
+
+    assert result["status"] == "partial"
+    assert result["source_map_status"] == "unavailable"
+    assert "shuji@0.8.0 command is unavailable" in result["source_map_failure_summary"]
+
+
+def test_nonzero_shuji_downgrades_productive_packer_run(
+    repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir = _fake_shuji(tmp_path / "bin", exit_code=7)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    _write(repo_root / "evidence.json", "{}\n")
+
+    result = run_packer(
+        "example.test",
+        mode="bundle",
+        signal_name="source-map",
+        evidence_ref="evidence.json",
+        explicit_urls=["https://example.test/app.js"],
+        tool_root=str(_fake_packer(tmp_path / "packer", source_map=_source_map())),
+        repo_root=repo_root,
+    )
+
+    assert result["status"] == "partial"
+    assert result["source_map_status"] == "error"
+    assert "shuji exited with code 7" in result["source_map_failure_summary"]
+
+
+def test_repeated_source_map_reuses_existing_worker_output(
+    repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir = _fake_shuji(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    _write(repo_root / "evidence.json", "{}\n")
+
+    result = run_packer(
+        "example.test",
+        mode="bundle",
+        signal_name="source-map",
+        evidence_ref="evidence.json",
+        explicit_urls=["https://example.test/app.js"],
+        tool_root=str(
+            _fake_packer(
+                tmp_path / "packer", source_map=_source_map(), source_map_attempts=2
+            )
+        ),
+        repo_root=repo_root,
+    )
+
+    assert result["status"] == "ok"
+    assert result["source_map_status"] == "ok"
+
+
+def test_no_source_map_attempt_remains_skipped(repo_root: Path, tmp_path: Path) -> None:
+    _write(repo_root / "evidence.json", "{}\n")
+    result = run_packer(
+        "example.test",
+        mode="bundle",
+        signal_name="webpack-runtime",
+        evidence_ref="evidence.json",
+        explicit_urls=["https://example.test/app.js"],
+        tool_root=str(_fake_packer(tmp_path / "packer")),
+        repo_root=repo_root,
+    )
+
+    assert result["status"] == "ok"
+    assert result["source_map_status"] == "skipped"
 
 
 def test_browser_route_aborts_out_of_scope_and_limits_target_requests() -> None:

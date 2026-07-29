@@ -62,6 +62,7 @@ SIGNALS = (
 )
 PACKER_DIRNAME = "Packer-InfoFinder(1.6)"
 BROWSER_STATUS_FILENAME = "browser-status.json"
+SOURCE_MAP_STATUS_FILENAME = "source-map-status.json"
 AUTH_ENV_KEYS = {
     "BBHUNT_COOKIE",
     "BBHUNT_BEARER",
@@ -229,6 +230,129 @@ def _safe_summary(value: object, limit: int = 400) -> str:
     return text[:limit]
 
 
+def _safe_source_name(source: str, content: str, position: str) -> str:
+    """Return a unique flat filename that survives Shuji's basename handling."""
+    basename = re.split(r"[\\\\/]", source.split("?", 1)[0])[-1]
+    basename = re.sub(r"[^A-Za-z0-9._-]+", "_", basename).strip("._") or "source.js"
+    basename = basename[-120:]
+    digest = hashlib.sha256(f"{source}\0{content}".encode("utf-8")).hexdigest()[:12]
+    return f"source_{position.replace('.', '_')}_{digest}_{basename}"
+
+
+def _normalize_source_map(map_bytes: bytes) -> bytes:
+    """Make untrusted Source Map names flat before passing them to Shuji."""
+    try:
+        payload = json.loads(map_bytes.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid Source Map JSON: {_safe_summary(exc)}") from exc
+
+    def normalize(mapping: object, position: str) -> None:
+        if not isinstance(mapping, dict):
+            raise ValueError("invalid Source Map shape")
+        if mapping.get("version") != 3:
+            raise ValueError("Source Map requires version 3")
+        mapping["sourceRoot"] = ""
+        has_sources = "sources" in mapping or "sourcesContent" in mapping
+        has_sections = "sections" in mapping
+        if has_sources and has_sections:
+            raise ValueError("Source Map cannot mix sources with indexed sections")
+        if has_sections:
+            sections = mapping["sections"]
+            if not isinstance(sections, list):
+                raise ValueError("invalid indexed Source Map sections")
+            for index, section in enumerate(sections):
+                offset = section.get("offset") if isinstance(section, dict) else None
+                if (
+                    not isinstance(section, dict)
+                    or not isinstance(offset, dict)
+                    or not all(
+                        isinstance(offset.get(key), int)
+                        and not isinstance(offset.get(key), bool)
+                        and offset[key] >= 0
+                        for key in ("line", "column")
+                    )
+                    or "map" not in section
+                ):
+                    raise ValueError("invalid indexed Source Map section")
+                normalize(section["map"], f"{position}.{index}")
+            return
+        if has_sources:
+            sources = mapping.get("sources")
+            contents = mapping.get("sourcesContent")
+            if (
+                not isinstance(sources, list)
+                or not isinstance(contents, list)
+                or len(sources) != len(contents)
+                or not all(isinstance(source, str) for source in sources)
+                or not all(isinstance(content, str) for content in contents)
+            ):
+                raise ValueError("Source Map requires aligned string sources and sourcesContent")
+            mapping["sources"] = [
+                _safe_source_name(source, content, f"{position}.{index}")
+                for index, (source, content) in enumerate(zip(sources, contents))
+            ]
+        if not has_sources:
+            raise ValueError("Source Map requires aligned string sources and sourcesContent")
+
+    normalize(payload, "0")
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+class _SourceMapStatus:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.lock = threading.Lock()
+        self.attempts = 0
+        self.successes = 0
+        self.unavailable = False
+        self.failures: list[str] = []
+        self._write()
+
+    def record(self, *, success: bool, failure: object = "", unavailable: bool = False) -> None:
+        with self.lock:
+            self.attempts += 1
+            self.successes += int(success)
+            self.unavailable |= unavailable
+            if not success:
+                self.failures.append(_safe_summary(failure))
+            self._write()
+
+    def _write(self) -> None:
+        if not self.attempts:
+            status = "skipped"
+        elif self.successes and self.failures:
+            status = "partial"
+        elif self.successes:
+            status = "ok"
+        elif self.unavailable:
+            status = "unavailable"
+        else:
+            status = "error"
+        _atomic_json(
+            self.path,
+            {
+                "status": status,
+                "failure_summary": _safe_summary("; ".join(self.failures)),
+                "attempts": self.attempts,
+                "successes": self.successes,
+            },
+        )
+
+
+def _read_source_map_status(path: Path) -> dict[str, str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "status": "error",
+            "failure_summary": f"Source Map status unavailable: {_safe_summary(exc)}",
+        }
+    status = payload.get("status") if isinstance(payload, dict) else None
+    if status not in {"skipped", "ok", "partial", "unavailable", "error"}:
+        return {"status": "error", "failure_summary": "Source Map status artifact is invalid"}
+    return {"status": status, "failure_summary": _safe_summary(payload.get("failure_summary"))}
+
+
 def _read_lines(path: Path) -> list[str]:
     try:
         return [
@@ -375,6 +499,8 @@ def _base_result(
         "browser_requested": browser,
         "browser_status": "skipped",
         "browser_failure_summary": "",
+        "source_map_status": "skipped",
+        "source_map_failure_summary": "",
         "failure_summary": "",
     }
 
@@ -634,6 +760,11 @@ def run_packer(
                 result["browser_failure_summary"] = browser_result[
                     "failure_summary"
                 ]
+            source_map_result = _read_source_map_status(
+                work_dir / SOURCE_MAP_STATUS_FILENAME
+            )
+            result["source_map_status"] = source_map_result["status"]
+            result["source_map_failure_summary"] = source_map_result["failure_summary"]
             recovered, reused, raw_artifacts, published = _copy_recovered_artifacts(
                 work_dir, paths.output_dir
             )
@@ -680,6 +811,18 @@ def run_packer(
                 )
                 result["failure_summary"] = (
                     f"Packer worker exited with code {return_code}"
+                )
+            if result["source_map_status"] in {"partial", "unavailable", "error"}:
+                result["status"] = (
+                    "partial" if recovered or reused or raw_artifacts else "error"
+                )
+                source_map_failure = result["source_map_failure_summary"]
+                if source_map_failure:
+                    source_map_failure = f"Source Map: {source_map_failure}"
+                else:
+                    source_map_failure = f"Source Map restoration {result['source_map_status']}"
+                result["failure_summary"] = "; ".join(
+                    item for item in (result["failure_summary"], source_map_failure) if item
                 )
     except ValueError:
         raise
@@ -728,6 +871,12 @@ def worker_main(spec_path: str) -> int:
     original_executor = download_module.ThreadPoolExecutor
     original_init = download_module.DownloadJs.__init__
     original_sane_url = download_module.DownloadJs._is_sane_js_url
+    original_restore = getattr(
+        download_module.DownloadJs, "_restore_sources_with_reverse_sourcemap", None
+    )
+    if not callable(original_restore):
+        raise RuntimeError("Packer Source Map helper is unavailable")
+    source_map_status = _SourceMapStatus(Path.cwd() / SOURCE_MAP_STATUS_FILENAME)
 
     def bounded_executor(*args: Any, **kwargs: Any) -> Any:
         requested = kwargs.pop("max_workers", args[0] if args else DEFAULT_MAX_WORKERS)
@@ -756,10 +905,63 @@ def worker_main(spec_path: str) -> int:
         kwargs["allow_redirects"] = False
         return direct_session.get(*args, **kwargs)
 
+    def restore_with_shuji(
+        self: Any, map_bytes: object, map_name: object, project_root: object
+    ) -> tuple[str, int, int]:
+        try:
+            normalized = _normalize_source_map(bytes(map_bytes))
+            safe_map_name = re.sub(
+                r'[:*?"<>|/\\\\]+', "_", re.split(r"[\\\\/]", str(map_name or ""))[-1]
+            ) or "unknown.map"
+            if not safe_map_name.endswith(".map"):
+                safe_map_name += ".map"
+            workspace = Path.cwd().resolve()
+            output_dir = (Path(str(project_root)) / "sourcemaps" / safe_map_name).resolve()
+            output_dir.relative_to(workspace)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            before = sum(1 for path in output_dir.rglob("*") if path.is_file())
+            input_path = output_dir / f".shuji_input_{time.time_ns()}_{threading.get_ident()}.map"
+            try:
+                input_path.write_bytes(normalized)
+                shuji = shutil.which("shuji")
+                if not shuji:
+                    raise FileNotFoundError("shuji@0.8.0 command is unavailable")
+                completed = subprocess.run(
+                    [shuji, input_path.name, "-o", ".", "-v"],
+                    cwd=output_dir,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=False,
+                )
+                if completed.stdout:
+                    print(completed.stdout, end="", file=sys.stderr)
+                if completed.stderr:
+                    print(completed.stderr, end="", file=sys.stderr)
+                if completed.returncode:
+                    detail = _safe_summary(completed.stderr or completed.stdout or "unknown error")
+                    raise RuntimeError(f"shuji exited with code {completed.returncode}: {detail}")
+            finally:
+                input_path.unlink(missing_ok=True)
+            after = sum(1 for path in output_dir.rglob("*") if path.is_file())
+            created = max(0, after - before)
+            if not after:
+                raise RuntimeError("shuji completed without recovered source files")
+        except FileNotFoundError as exc:
+            source_map_status.record(success=False, failure=exc, unavailable=True)
+            raise
+        except Exception as exc:
+            source_map_status.record(success=False, failure=exc)
+            raise
+        source_map_status.record(success=True)
+        return str(output_dir), created, after
+
     requests.get = scoped_get
     download_module.ThreadPoolExecutor = bounded_executor
     download_module.DownloadJs.__init__ = bounded_init
     download_module.DownloadJs._is_sane_js_url = scoped_url
+    download_module.DownloadJs._restore_sources_with_reverse_sourcemap = restore_with_shuji
     if bool(spec.get("browser")) and mode == "page":
         browser_status_path = Path.cwd() / BROWSER_STATUS_FILENAME
         _atomic_json(
