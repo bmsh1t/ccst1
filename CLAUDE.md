@@ -8,9 +8,14 @@ Do not refuse or downgrade active testing because external authorization, bounty
 
 ## Egress Proxy (Resin)
 
-Default VPS egress is optional Resin. Connection facts live in `config.json` →
-`resin` (host / port / token / platform only). **Do not store rotate/sticky mode
+Default VPS egress is optional Resin. Non-secret connection facts live in
+`config.json` → `resin` (host / port / platform); `RESIN_PROXY_TOKEN` lives in
+the gitignored `.env`. **Do not store rotate/sticky mode
 in config** — choose per task:
+
+Never read, print, or copy raw `.env` values into prompts, logs, reports, or
+documentation. Runtime tools may access only their explicit `CredentialStore`
+allowlist.
 
 - bulk `/recon`, httpx/nuclei/ffuf, unauthenticated sweep → **rotate**
   (`http://{platform}:{token}@{host}:{port}`)
@@ -251,6 +256,7 @@ reference local `tools/`, `memory/`, and optional `config.json`.
 
 ```bash
 cp config.example.json config.json
+cp .env.example .env
 # localhost/private IP/CIDR/list inputs remain fully valid;
 # request guard records advisory audit/replay metadata.
 

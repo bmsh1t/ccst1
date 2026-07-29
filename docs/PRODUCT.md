@@ -851,14 +851,13 @@ claude
 
 ```bash
 cp config.example.json config.json
+cp .env.example .env
 ```
 
 常用配置字段：
 
 | 字段 | 说明 |
 |---|---|
-| `chaos_api_key` | 子域名侦察增强用 key |
-| `h1_api_token` | HackerOne 相关能力预留配置 |
 | `output_dir` | findings 输出目录 |
 | `recon_dir` | recon 输出目录 |
 | `reports_dir` | reports 输出目录 |
@@ -866,6 +865,9 @@ cp config.example.json config.json
 | `katana_depth` | 爬取深度 |
 | `ffuf_threads` | fuzz 并发 |
 | `interactsh_server` | OAST 服务配置 |
+
+秘密凭据不写入 `config.json`。按需在 `.env` 中配置 `CHAOS_API_KEY`、
+`H1_API_TOKEN` 和 `RESIN_PROXY_TOKEN`，运行时由 `CredentialStore` 受限读取。
 
 也可以直接运行底层工具：
 

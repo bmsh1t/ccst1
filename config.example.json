@@ -1,7 +1,6 @@
 {
+  "_credentials_comment": "Copy .env.example to .env for Chaos, HackerOne, and Resin credentials. Keep secrets out of config.json.",
   "ctf_mode": false,
-  "chaos_api_key": "YOUR_PROJECTDISCOVERY_CHAOS_API_KEY",
-  "h1_api_token": "YOUR_HACKERONE_API_TOKEN",
   "output_dir": "./findings",
   "recon_dir": "./recon",
   "reports_dir": "./reports",
@@ -10,13 +9,12 @@
   "ffuf_threads": 40,
   "interactsh_server": "oast.pro",
 
-  "_resin_comment": "Optional Resin egress endpoint. Only connection facts live here (host/port/token/platform). Mode (rotate/sticky) and Account are chosen per task — see docs/resin-proxy.md. Do not hardcode mode in config. Put real values only in local config.json (gitignored).",
+  "_resin_comment": "Optional Resin egress endpoint. Connection facts live here; RESIN_PROXY_TOKEN lives in .env. Mode (rotate/sticky) and Account are chosen per task — see docs/resin-proxy.md.",
   "resin": {
     "enabled": false,
     "host": "127.0.0.1",
     "port": 2260,
     "auth_version": "V1",
-    "proxy_token": "YOUR_RESIN_PROXY_TOKEN",
     "platform": "Default",
     "no_proxy": "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
     "probe_url": "https://api.ipify.org"

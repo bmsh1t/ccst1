@@ -20,6 +20,24 @@ def _b64url_json(data):
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+def test_runtime_child_env_exports_only_allowlisted_credentials(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text(
+        "CHAOS_API_KEY=file-chaos\nH1_API_TOKEN=file-h1\nRESIN_PROXY_TOKEN=file-resin\nUNRELATED_SECRET=private\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(hunt, "BASE_DIR", str(tmp_path))
+    monkeypatch.setenv("CHAOS_API_KEY", "shell-chaos")
+    monkeypatch.setenv("H1_API_TOKEN", "shell-h1")
+
+    child_env = hunt._runtime_child_env("CHAOS_API_KEY")
+
+    assert child_env["CHAOS_API_KEY"] == "shell-chaos"
+    assert "H1_API_TOKEN" not in child_env
+    assert "RESIN_PROXY_TOKEN" not in child_env
+    assert "UNRELATED_SECRET" not in child_env
+    assert all(key not in hunt._runtime_child_env() for key in hunt._MANAGED_CREDENTIAL_KEYS)
+
+
 def test_run_js_analysis_extracts_endpoints_and_secrets(monkeypatch, tmp_path):
     domain = "example.com"
     monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))

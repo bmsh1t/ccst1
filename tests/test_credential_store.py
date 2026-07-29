@@ -1,5 +1,8 @@
 """Tests for CredentialStore — secure .env-based credential loading."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from tools.credential_store import CredentialStore
@@ -127,3 +130,29 @@ class TestCredentialStoreHeaders:
         store = CredentialStore(env_file)
         headers = store.as_headers("NONEXISTENT", header_type="bearer")
         assert headers == {}
+
+
+def test_export_to_is_allowlisted_and_preserves_existing_environment(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "CHAOS_API_KEY=file-chaos\nH1_API_TOKEN=file-h1\nUNRELATED_SECRET=private\n",
+        encoding="utf-8",
+    )
+    store = CredentialStore(env_file)
+    environ = {"CHAOS_API_KEY": "shell-chaos"}
+
+    exported = store.export_to(environ, ("CHAOS_API_KEY", "H1_API_TOKEN"))
+
+    assert exported == ["H1_API_TOKEN"]
+    assert environ == {"CHAOS_API_KEY": "shell-chaos", "H1_API_TOKEN": "file-h1"}
+
+
+def test_example_config_keeps_runtime_credentials_in_env_only():
+    repo = Path(__file__).resolve().parents[1]
+    config = json.loads((repo / "config.example.json").read_text(encoding="utf-8"))
+    env_example = (repo / ".env.example").read_text(encoding="utf-8")
+
+    assert "chaos_api_key" not in config
+    assert "h1_api_token" not in config
+    assert "proxy_token" not in config["resin"]
+    assert all(key in env_example for key in ("CHAOS_API_KEY", "H1_API_TOKEN", "RESIN_PROXY_TOKEN"))

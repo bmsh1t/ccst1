@@ -54,6 +54,7 @@ from memory.target_profile import default_memory_dir, load_target_profile, make_
 from legacy_bridge import generate_legacy_reports, open_hunt_journal, run_legacy_cve_hunt
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
 from tools.autopilot_args import cadence_from_namespace
+from tools.credential_store import CredentialStore
 from tools.public_exposure_signals import classify_public_response
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
 from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock
@@ -71,6 +72,7 @@ HUNT_MEMORY_DIR = default_memory_dir(BASE_DIR)
 URL_SSL_CTX = ssl._create_unverified_context()
 _SEEN_GUARD_BLOCKS: set[tuple[str, str, str, str, str]] = set()
 _AUTH_SESSION: AuthSession | None = None
+_MANAGED_CREDENTIAL_KEYS = ("CHAOS_API_KEY", "H1_API_TOKEN", "RESIN_PROXY_TOKEN")
 # CLI 编排是单线程的；实际 recon/scan 子进程继承这些 fd，父进程退出时锁仍有效。
 _RUNTIME_PHASE_LOCK_FDS: tuple[int, ...] = ()
 
@@ -117,6 +119,20 @@ def _active_auth_session() -> AuthSession:
     if _AUTH_SESSION is not None:
         return _AUTH_SESSION
     return AuthSession.from_env(os.environ)
+
+
+def _runtime_child_env(*credential_keys: str) -> dict[str, str]:
+    """Build child env with only the credentials required by this caller."""
+    child_env = os.environ.copy()
+    for key in _MANAGED_CREDENTIAL_KEYS:
+        if key not in credential_keys:
+            child_env.pop(key, None)
+    CredentialStore(os.path.join(BASE_DIR, ".env")).export_to(
+        child_env,
+        credential_keys,
+    )
+    _active_auth_session().export_to_env(child_env)
+    return child_env
 
 
 def _merge_auth_headers(url: str, headers: dict[str, str] | None = None) -> dict[str, str]:
@@ -1142,8 +1158,7 @@ def run_recon(domain, quick=False, deep=False):
 
     # Run with live output
     try:
-        child_env = os.environ.copy()
-        _active_auth_session().export_to_env(child_env)
+        child_env = _runtime_child_env("CHAOS_API_KEY")
         child_env["BBHUNT_RUNTIME_PHASE_LOCKED"] = "recon"
         # The inherited flock is keyed by ``normalized_target``, but the shell
         # child compares this marker with its exact argv before deciding whether
@@ -1203,8 +1218,7 @@ def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
         cmd = f"{cmd} {scanner_flag_text}"
 
     try:
-        child_env = os.environ.copy()
-        _active_auth_session().export_to_env(child_env)
+        child_env = _runtime_child_env()
         child_env["BBHUNT_RUNTIME_PHASE_LOCKED"] = "scan"
         child_env["BBHUNT_RUNTIME_LOCK_TARGET"] = classify_target(domain)["target"]
         proc = subprocess.Popen(

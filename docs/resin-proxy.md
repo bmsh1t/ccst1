@@ -1,6 +1,6 @@
 # Resin 出口代理池（ccst1）
 
-VPS 命令行默认出口。连接信息在仓库根目录 `config.json` → `resin`；**mode 不要写进 config**，由任务类型当场判断。
+VPS 命令行默认出口。非秘密连接信息在仓库根目录 `config.json` → `resin`，Token 在 `.env` → `RESIN_PROXY_TOKEN`；**mode 不要写进 config**，由任务类型当场判断。
 
 不依赖 Burp。主工具：`curl` / `httpx` / `nuclei` / `ffuf` / `katana` / `python3 tools/hunt.py`。
 
@@ -8,7 +8,7 @@ VPS 命令行默认出口。连接信息在仓库根目录 `config.json` → `re
 
 ---
 
-## 1. config（只存连接事实）
+## 1. config（只存非秘密连接事实）
 
 ```json
 "resin": {
@@ -16,11 +16,15 @@ VPS 命令行默认出口。连接信息在仓库根目录 `config.json` → `re
   "host": "YOUR_RESIN_HOST",
   "port": 2260,
   "auth_version": "V1",
-  "proxy_token": "YOUR_RESIN_PROXY_TOKEN",
   "platform": "Default",
   "no_proxy": "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
   "probe_url": "https://api.ipify.org"
 }
+```
+
+```dotenv
+# .env
+RESIN_PROXY_TOKEN=YOUR_RESIN_PROXY_TOKEN
 ```
 
 改实例只改这里。`enabled: false` 表示本仓库默认不走 Resin。
@@ -72,7 +76,8 @@ PY
 ## 3. 拼串（V1）
 
 ```text
-HOST/PORT/TOKEN/PLATFORM  ← config.resin
+HOST/PORT/PLATFORM        ← config.resin
+TOKEN                     ← CredentialStore(.env): RESIN_PROXY_TOKEN
 HTTP_ROTATE = http://{PLATFORM}:{TOKEN}@{HOST}:{PORT}
 HTTP_STICKY = http://{PLATFORM}.{ACCOUNT}:{TOKEN}@{HOST}:{PORT}
 SOCKS       = socks5h://{user}:{TOKEN}@{HOST}:{PORT}
@@ -128,7 +133,7 @@ curl "http://YOUR_RESIN_HOST:2260/YOUR_RESIN_PROXY_TOKEN/Default/https/api.ipify
 
 路径里协议字段只写 `http`/`https`。
 
-### 从 config 组装 export
+### 从 config + CredentialStore 组装 export
 
 ```bash
 cd /home/fsh1t/tool/ccst1
@@ -136,11 +141,12 @@ cd /home/fsh1t/tool/ccst1
 MODE=rotate ACCOUNT= eval "$(MODE="$MODE" ACCOUNT="$ACCOUNT" python3 - <<'PY'
 import json, os
 from pathlib import Path
+from tools.credential_store import CredentialStore
 r=json.loads(Path("config.json").read_text()).get("resin") or {}
 if r.get("enabled") is False:
     raise SystemExit(0)
 host=r.get("host","YOUR_RESIN_HOST"); port=int(r.get("port",2260))
-token=r.get("proxy_token",""); plat=r.get("platform") or "Default"
+token=CredentialStore(Path(".env")).get("RESIN_PROXY_TOKEN",""); plat=r.get("platform") or "Default"
 mode=os.environ.get("MODE","rotate"); acc=os.environ.get("ACCOUNT","").strip()
 user=f"{plat}.{acc}" if mode=="sticky" and acc else plat
 auth=f"{user}:{token}@" if token else ""

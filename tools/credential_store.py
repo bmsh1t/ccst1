@@ -10,6 +10,7 @@ Usage:
     headers = store.as_headers("TARGET_TOKEN", header_type="bearer")
 """
 
+from collections.abc import Iterable, MutableMapping
 from pathlib import Path
 
 
@@ -81,6 +82,23 @@ class CredentialStore:
         elif header_type == "api_key":
             return {"X-API-Key": value}
         return {}
+
+    def export_to(
+        self,
+        environ: MutableMapping[str, str],
+        keys: Iterable[str],
+        *,
+        overwrite: bool = False,
+    ) -> list[str]:
+        """Export only explicitly allowed, non-empty credentials."""
+        exported: list[str] = []
+        for key in keys:
+            value = self._data.get(key)
+            if not value or (key in environ and not overwrite):
+                continue
+            environ[key] = value
+            exported.append(key)
+        return exported
 
     def __repr__(self) -> str:
         keys_str = ", ".join(self._data.keys())
