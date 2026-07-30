@@ -22,7 +22,7 @@ if str(BASE_DIR) not in sys.path:
 try:
     from memory.target_profile import default_memory_dir
     from tools.closure_resolver import ClosureResolver
-    from tools.coverage_matrix import find_high_value_gaps, load_matrix
+    from tools.coverage_matrix import high_value_gaps_from_matrix, load_matrix
     from tools.evidence_ledger import build_summary as build_evidence_summary
     from tools.knowledge_registry import (
         load_card_metadata_by_file,
@@ -38,7 +38,7 @@ try:
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
     from closure_resolver import ClosureResolver  # type: ignore
-    from coverage_matrix import find_high_value_gaps, load_matrix  # type: ignore
+    from coverage_matrix import high_value_gaps_from_matrix, load_matrix  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary  # type: ignore
     from knowledge_registry import (  # type: ignore
         load_card_metadata_by_file,
@@ -1083,11 +1083,11 @@ def _finding_anchor(finding: dict) -> str:
 
 
 def _safe_find_gaps(target: str, target_key: str, repo_root: Path) -> tuple[list[dict], dict]:
-    gaps = find_high_value_gaps(target, repo_root=repo_root)
     matrix = load_matrix(target, repo_root=repo_root)
+    gaps = high_value_gaps_from_matrix(matrix)
     if not gaps and target_key != target:
-        key_gaps = find_high_value_gaps(target_key, repo_root=repo_root)
         key_matrix = load_matrix(target_key, repo_root=repo_root)
+        key_gaps = high_value_gaps_from_matrix(key_matrix)
         if key_gaps or key_matrix.get("summary", {}).get("total_cells", 0):
             return key_gaps, key_matrix
     return gaps, matrix
@@ -2999,13 +2999,14 @@ def build_context_pack(
     focus: str = "",
     memory_dir: str | None = None,
     surface_state: dict | None = None,
+    coverage_state: tuple[list[dict], dict] | None = None,
 ) -> dict:
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     target_key = target_storage_key(resolved_target)
     goal_memory = _load_goal_memory(repo, resolved_target)
     ranked = surface_state if surface_state is not None else _surface_state(repo, resolved_target, memory_dir)
-    gaps, matrix = _safe_find_gaps(resolved_target, target_key, repo)
+    gaps, matrix = coverage_state or _safe_find_gaps(resolved_target, target_key, repo)
     findings = _load_findings(repo, target_key)
     runner_candidates = load_validation_runner_candidate_pool(repo, resolved_target)
     local_intel = _load_local_intel(repo, target_key)

@@ -19,13 +19,16 @@ from coverage_matrix import (
     VULN_CLASS_ALIASES,
     VULN_CLASSES,
     _canonicalize_endpoint,
+    _route_template,
     _compute_summary,
     _empty_matrix,
     class_relevance,
     find_high_value_gaps,
     load_matrix,
+    load_matrix_projection,
     mark_cell,
     mark_endpoint_kind,
+    matrix_is_fresh,
     needs_endpoint_triage,
     normalize_vuln_class,
     rebuild_matrix,
@@ -126,6 +129,39 @@ class TestCanonicalizeEndpoint:
 
     def test_empty(self):
         assert _canonicalize_endpoint("") == ""
+
+
+class TestRouteTemplate:
+    def test_collapses_obvious_dynamic_tokens(self):
+        assert _route_template("/users/123/orders/2025-01-02") == "/users/{id}/orders/{date}"
+        assert _route_template("/objects/550e8400-e29b-41d4-a716-446655440000") == "/objects/{uuid}"
+        assert _route_template("/download/abcdef0123456789abcdef0123456789") == "/download/{hash}"
+
+    def test_preserves_static_and_metadata_paths(self):
+        assert _route_template("/assets/123/app.js") == "/assets/123/app.js"
+        assert _route_template("/.well-known/openid-configuration") == "/.well-known/openid-configuration"
+
+    def test_rebuild_collapses_dynamic_rows(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://x.com/users/123",
+            "https://x.com/users/456",
+            "https://x.com/users/789",
+        ])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        assert [item["endpoint"] for item in matrix["endpoints"]] == ["/users/{id}"]
+
+    def test_rebuild_preserves_exact_rows_with_operator_state(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", ["https://x.com/users/123"])
+        save_matrix("x.com", rebuild_matrix("x.com", repo_root=tmp_path), repo_root=tmp_path)
+        mark_cell("x.com", "/users/123", "IDOR", "tested_clean", repo_root=tmp_path)
+        (tmp_path / "recon/x.com/urls/all.txt").write_text(
+            "https://x.com/users/123\nhttps://x.com/users/456\n",
+            encoding="utf-8",
+        )
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        endpoints = {item["endpoint"]: item for item in matrix["endpoints"]}
+        assert endpoints["/users/123"]["cells"]["IDOR"]["status"] == "tested_clean"
+        assert "/users/{id}" in endpoints
 
 
 class TestComputeSummary:
@@ -241,8 +277,30 @@ class TestSaveLoadRoundTrip:
         assert path.read_bytes() == previous
         assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
 
+    def test_compact_projection_is_bound_to_matrix_and_sources(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", ["https://x.com/api/users/1"])
+        save_matrix("x.com", rebuild_matrix("x.com", repo_root=tmp_path), repo_root=tmp_path)
+
+        projection = load_matrix_projection("x.com", repo_root=tmp_path)
+        assert projection is not None
+        assert projection["_coverage_projection"] is True
+        assert projection["summary"]["total_cells"] > 0
+
+        with (tmp_path / "recon/x.com/urls/all.txt").open("a", encoding="utf-8") as handle:
+            handle.write("\nhttps://x.com/api/users/2")
+        assert load_matrix_projection("x.com", repo_root=tmp_path) is None
+
 
 class TestRebuildMatrix:
+    def test_source_fingerprint_skips_only_unchanged_inputs(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", ["https://x.com/api/users/1"])
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        assert matrix_is_fresh("x.com", matrix, repo_root=tmp_path) is True
+
+        with (tmp_path / "recon/x.com/urls/all.txt").open("a", encoding="utf-8") as handle:
+            handle.write("\nhttps://x.com/api/users/2")
+        assert matrix_is_fresh("x.com", matrix, repo_root=tmp_path) is False
+
     def test_rebuild_does_not_expand_ffuf_only_evidence(self, tmp_path):
         dirs = tmp_path / "recon" / "x.com" / "dirs"
         dirs.mkdir(parents=True)

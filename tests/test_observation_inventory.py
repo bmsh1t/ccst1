@@ -394,6 +394,26 @@ def test_page_cursor_streams_later_pages_without_snapshot_reload(tmp_path, monke
     assert seen == expected_ids
 
 
+def test_unfiltered_first_page_stops_after_limit_using_bound_summary(tmp_path, monkeypatch):
+    _write_recon(tmp_path, count=420)
+    sync_inventory(tmp_path, "target.com")
+    original = observation_inventory._iter_ordered_inventory_rows
+    rows_read = 0
+
+    def counted(*args, **kwargs):
+        nonlocal rows_read
+        for row in original(*args, **kwargs):
+            rows_read += 1
+            yield row
+
+    monkeypatch.setattr(observation_inventory, "_iter_ordered_inventory_rows", counted)
+    page = page_inventory(tmp_path, "target.com", limit=9)
+
+    assert len(page["items"]) == 9
+    assert page["total_matching"] > 9
+    assert rows_read == 9
+
+
 def test_page_legacy_body_falls_back_without_rewriting_target_state(tmp_path):
     _write_recon(tmp_path, count=12)
     payload = sync_inventory(tmp_path, "target.com")

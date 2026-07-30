@@ -79,6 +79,7 @@ on extension; positional consumers may rely on the prefix):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -110,6 +111,10 @@ VULN_CLASSES = (
     "GraphQL", "OAuth", "Upload", "Webhook", "JWT",
     "SQLi", "XXE", "RCE", "Path", "CSRF",
 )
+COVERAGE_BUILD_VERSION = 2
+COVERAGE_PROJECTION_SCHEMA_VERSION = 1
+COVERAGE_PROJECTION_KIND = "coverage_matrix_projection"
+COVERAGE_PROJECTION_GAP_LIMIT = 1000
 
 # Operator-side aliases. The KEY is the lowercased form of an alias
 # the operator might type; the VALUE is the canonical name from
@@ -318,6 +323,10 @@ PUBLIC_METADATA_EXACT_PATHS = {
 PUBLIC_METADATA_PREFIXES = (
     "/.well-known/csaf/",
 )
+_ROUTE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
+_ROUTE_HEX_RE = re.compile(r"^[0-9a-f]{16,64}$", re.I)
+_ROUTE_NUMBER_RE = re.compile(r"^\d{2,}$")
+_ROUTE_DATE_RE = re.compile(r"^(?:19|20)\d{2}[-_/](?:0[1-9]|1[0-2])[-_/](?:0[1-9]|[12]\d|3[01])$")
 
 ROUTE_PREFIX_CANDIDATE_SEGMENTS = {
     "admin",
@@ -363,6 +372,10 @@ def _matrix_path(repo_root: Path, target: str) -> Path:
     return repo_root / "evidence" / _storage_key(target) / "coverage_matrix.json"
 
 
+def _projection_path(repo_root: Path, target: str) -> Path:
+    return repo_root / "evidence" / _storage_key(target) / "coverage_matrix-summary.json"
+
+
 def _empty_matrix(target: str) -> dict:
     return {
         "target": target,
@@ -399,6 +412,185 @@ def load_matrix(target: str, repo_root: Path | str | None = None) -> dict:
     return data
 
 
+def coverage_source_fingerprint(
+    target: str,
+    repo_root: Path | str | None = None,
+    *,
+    min_weight_to_include: float = 1.0,
+) -> str:
+    """Bind a rebuilt matrix to its inputs without reading large bodies."""
+    repo = Path(repo_root) if repo_root else BASE_DIR
+    key = _storage_key(target)
+    paths = (
+        repo / "recon" / key / "urls" / "all_filtered.txt",
+        repo / "recon" / key / "urls" / "all.txt",
+        repo / "recon" / key / "urls" / "filter.log",
+        repo / "findings" / key / "findings.json",
+        repo / "findings" / key / "scanner_pass.json",
+    )
+    items = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            items.append({"path": str(path.relative_to(repo)), "exists": False})
+            continue
+        items.append({
+            "path": str(path.relative_to(repo)),
+            "exists": True,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "ctime_ns": stat.st_ctime_ns,
+            "st_dev": stat.st_dev,
+            "st_ino": stat.st_ino,
+        })
+    payload = {
+        "build_version": COVERAGE_BUILD_VERSION,
+        "min_weight_to_include": float(min_weight_to_include),
+        "inputs": items,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def matrix_is_fresh(
+    target: str,
+    matrix: dict,
+    repo_root: Path | str | None = None,
+    *,
+    min_weight_to_include: float = 1.0,
+) -> bool:
+    expected = coverage_source_fingerprint(
+        target,
+        repo_root,
+        min_weight_to_include=min_weight_to_include,
+    )
+    return bool(matrix.get("source_fingerprint")) and matrix.get("source_fingerprint") == expected
+
+
+def _file_binding(path: Path) -> dict:
+    stat = path.stat()
+    return {
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "ctime_ns": stat.st_ctime_ns,
+        "st_dev": stat.st_dev,
+        "st_ino": stat.st_ino,
+    }
+
+
+def _binding_matches(path: Path, binding: dict) -> bool:
+    try:
+        current = _file_binding(path)
+        return current == {key: int(binding[key]) for key in current}
+    except (KeyError, OSError, TypeError, ValueError):
+        return False
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(json.dumps(payload, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def save_matrix_projection(
+    target: str,
+    matrix: dict,
+    repo_root: Path | str | None = None,
+) -> Path:
+    repo = Path(repo_root) if repo_root else BASE_DIR
+    matrix_path = _matrix_path(repo, target)
+    if not matrix_path.is_file():
+        raise ValueError(f"coverage matrix missing for projection: {matrix_path}")
+    endpoints = []
+    for endpoint in matrix.get("endpoints") or []:
+        if not isinstance(endpoint, dict):
+            continue
+        path = str(endpoint.get("endpoint") or "")
+        if not path:
+            continue
+        cells = {
+            str(vuln_class): dict(cell)
+            for vuln_class, cell in (endpoint.get("cells") or {}).items()
+            if isinstance(cell, dict) and cell.get("status", "untested") != "untested"
+        }
+        endpoints.append({"endpoint": path, "cells": cells})
+    payload = {
+        "kind": COVERAGE_PROJECTION_KIND,
+        "schema_version": COVERAGE_PROJECTION_SCHEMA_VERSION,
+        "target": canonical_target_value(target),
+        "source_fingerprint": str(matrix.get("source_fingerprint") or ""),
+        "matrix_binding": _file_binding(matrix_path),
+        "summary": dict(matrix.get("summary") or _compute_summary(matrix)),
+        "high_value_gaps": high_value_gaps_from_matrix(matrix)[:COVERAGE_PROJECTION_GAP_LIMIT],
+        "endpoints": endpoints,
+    }
+    path = _projection_path(repo, target)
+    _write_json_atomic(path, payload)
+    return path
+
+
+def load_matrix_projection(
+    target: str,
+    repo_root: Path | str | None = None,
+) -> dict | None:
+    repo = Path(repo_root) if repo_root else BASE_DIR
+    path = _projection_path(repo, target)
+    matrix_path = _matrix_path(repo, target)
+    if not path.is_file() or not matrix_path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("kind") != COVERAGE_PROJECTION_KIND or payload.get("schema_version") != COVERAGE_PROJECTION_SCHEMA_VERSION:
+        return None
+    if payload.get("target") != canonical_target_value(target):
+        return None
+    binding = payload.get("matrix_binding") if isinstance(payload.get("matrix_binding"), dict) else {}
+    if not _binding_matches(matrix_path, binding):
+        return None
+    source_fingerprint = str(payload.get("source_fingerprint") or "")
+    if source_fingerprint != coverage_source_fingerprint(target, repo):
+        return None
+    endpoints = payload.get("endpoints")
+    gaps = payload.get("high_value_gaps")
+    summary = payload.get("summary")
+    if not isinstance(endpoints, list) or not isinstance(gaps, list) or not isinstance(summary, dict):
+        return None
+    return {
+        "target": target,
+        "vuln_classes": list(VULN_CLASSES),
+        "source_fingerprint": source_fingerprint,
+        "summary": summary,
+        "endpoints": endpoints,
+        "_coverage_gaps": gaps,
+        "_coverage_projection": True,
+    }
+
+
 def save_matrix(target: str, matrix: dict, repo_root: Path | str | None = None) -> Path:
     """Persist matrix; recompute summary at save time.
 
@@ -413,29 +605,8 @@ def save_matrix(target: str, matrix: dict, repo_root: Path | str | None = None) 
     matrix["last_updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     matrix["summary"] = _compute_summary(matrix)
     path = _matrix_path(repo, target)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(json.dumps(matrix, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
+    _write_json_atomic(path, matrix)
+    save_matrix_projection(target, matrix, repo)
     return path
 
 
@@ -472,6 +643,34 @@ def _canonicalize_endpoint(url: str) -> str:
     else:
         path = url
     return path.split("?", 1)[0].split("#", 1)[0]
+
+
+def _route_template(endpoint: str) -> str:
+    """Collapse obvious dynamic path tokens for coverage admission only."""
+    path = _canonicalize_endpoint(endpoint)
+    if not path or _is_static_asset_endpoint(path) or _is_public_metadata_endpoint(path):
+        return path
+    parts = []
+    for segment in path.strip("/").split("/"):
+        if _ROUTE_UUID_RE.fullmatch(segment):
+            segment = "{uuid}"
+        elif _ROUTE_HEX_RE.fullmatch(segment):
+            segment = "{hash}"
+        elif _ROUTE_DATE_RE.fullmatch(segment):
+            segment = "{date}"
+        elif _ROUTE_NUMBER_RE.fullmatch(segment):
+            segment = "{id}"
+        parts.append(segment)
+    return "/" + "/".join(parts) if parts else "/"
+
+
+def _has_persisted_coverage_state(endpoint: dict | None) -> bool:
+    if not isinstance(endpoint, dict):
+        return False
+    return any(
+        isinstance(cell, dict) and cell.get("status", "untested") != "untested"
+        for cell in (endpoint.get("cells") or {}).values()
+    )
 
 
 def _path_segments(endpoint: str) -> list[str]:
@@ -1048,6 +1247,7 @@ def rebuild_matrix(
     # endpoint and avoid always proposing IDOR first.
     js_path_artifacts = _load_js_path_artifact_urls(urls_dir)
     seen: dict[str, dict] = {}
+    route_template_counts: dict[str, int] = {}
     for raw in urls:
         if raw in js_path_artifacts:
             continue
@@ -1076,6 +1276,27 @@ def rebuild_matrix(
         meta["weight"] = max(_coerce_weight(meta.get("weight", 0.0), 0.0), weight)
         meta["params"].update(params)
         meta["source_count"] = int(meta.get("source_count", 0) or 0) + 1
+        template = _route_template(path)
+        route_template_counts[template] = route_template_counts.get(template, 0) + 1
+
+    # Only fold a route template when multiple raw observations prove the
+    # pattern is repeated. A lone `/orders/123` remains addressable for
+    # backwards compatibility and precise operator review.
+    compacted_seen: dict[str, dict] = {}
+    for endpoint, meta in seen.items():
+        template = _route_template(endpoint)
+        key = (
+            template
+            if template != endpoint
+            and route_template_counts.get(template, 0) > 1
+            and not _has_persisted_coverage_state(existing.get(endpoint))
+            else endpoint
+        )
+        current = compacted_seen.setdefault(key, {"weight": 0.0, "params": set(), "source_count": 0})
+        current["weight"] = max(current["weight"], _coerce_weight(meta.get("weight", 0.0), 0.0))
+        current["params"].update(meta.get("params") or [])
+        current["source_count"] += int(meta.get("source_count", 0) or 0)
+    seen = compacted_seen
 
     # Apply a small semantic weight floor after all params for an endpoint
     # have been merged. This lets high-risk query surfaces participate in
@@ -1217,6 +1438,11 @@ def rebuild_matrix(
     _apply_scanner_pass(target_key, repo, new_endpoints)
 
     matrix["endpoints"] = new_endpoints
+    matrix["source_fingerprint"] = coverage_source_fingerprint(
+        target,
+        repo,
+        min_weight_to_include=min_weight_to_include,
+    )
     return matrix
 
 

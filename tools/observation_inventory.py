@@ -958,14 +958,27 @@ def _streaming_page(
     else:
         items = []
         next_offset = 0
-        total_matching = 0
+        summary_count = None
+        if not filters["kind"] and not filters["source"]:
+            summary_key = filters["status"] or "total"
+            try:
+                summary_count = int(summary.get(summary_key, -1))
+            except (TypeError, ValueError):
+                summary_count = None
+            if summary_count is not None and summary_count < 0:
+                summary_count = None
+
+        total_matching = summary_count if summary_count is not None else 0
         for item, _row_start, after_row in _iter_ordered_inventory_rows(path):
             if not _matches_page_filters(item, filters):
                 continue
-            total_matching += 1
+            if summary_count is None:
+                total_matching += 1
             if len(items) < limit:
                 items.append(item)
                 next_offset = after_row
+            if summary_count is not None and len(items) == min(limit, total_matching):
+                break
         remaining = total_matching - len(items)
 
     next_cursor = ""

@@ -96,7 +96,7 @@ def test_vuln_scanner_supports_auth_session_env():
     assert 'bb_auth_bind_target "$SCANNER_AUTH_TARGET"' in text
     assert 'bb_auth_filter_file "$ORDERED_SCAN" "$AUTH_ORDERED_SCAN"' in text
     assert '"${BB_AUTH_ARGS[@]}"' in text
-    assert 'nuclei -l "$ORDERED_SCAN"' in text
+    assert 'nuclei -l "$NUCLEI_TARGETS"' in text
     assert 'curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null --max-time 20 "$url"' in text
     assert 'nuclei -fhr "$@"' in text
 
@@ -288,7 +288,46 @@ def test_vuln_scanner_keeps_historical_corpus_out_of_ordered_scan(tmp_path):
     assert summary["raw_url_count"] == 19_000
     assert summary["parameter_url_count"] == 4
     assert summary["ordered_scan_count"] == 3
+    assert summary["nuclei_target_available_count"] == 3
+    assert summary["nuclei_target_count"] == 3
+    assert summary["nuclei_targets_truncated"] is False
     assert len((urls_dir / "all.txt").read_text(encoding="utf-8").splitlines()) == 19_000
+
+
+def test_vuln_scanner_deduplicates_origins_and_bounds_quick_nuclei_input(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    recon_dir = tmp_path / "recon" / "large.example"
+    live_dir = recon_dir / "live"
+    findings_dir = tmp_path / "findings"
+    live_dir.mkdir(parents=True)
+    urls = [f"http://127.0.0.1:{20000 + index}/path/{index}" for index in range(80)]
+    urls.extend(f"http://127.0.0.1:{20000 + index}/other" for index in range(10))
+    (live_dir / "urls.txt").write_text("\n".join(urls) + "\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["FINDINGS_OUT_DIR"] = str(findings_dir)
+    env["PATH"] = "/usr/bin:/bin"
+
+    result = subprocess.run(
+        ["bash", str(script), str(recon_dir), "--quick", "--skip", "all"],
+        cwd=script.resolve().parent.parent,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    summary = json.loads((findings_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["ordered_scan_count"] == 90
+    assert summary["nuclei_target_available_count"] == 80
+    assert summary["nuclei_target_count"] == 50
+    assert summary["nuclei_target_limit"] == 50
+    assert summary["nuclei_targets_truncated"] is True
+    selected = (findings_dir / ".tmp" / "nuclei_targets.txt").read_text(encoding="utf-8").splitlines()
+    assert selected[0] == "http://127.0.0.1:20000"
+    assert selected[-1] == "http://127.0.0.1:20049"
 
 
 def test_vuln_scanner_clears_stale_summary_before_early_exit(tmp_path):

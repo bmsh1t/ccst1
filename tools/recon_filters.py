@@ -9,7 +9,15 @@ import argparse
 from pathlib import Path
 import re
 import sys
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
+
+try:
+    from tools.surface_index import surface_shape
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from surface_index import surface_shape  # type: ignore
+
+
+DEFAULT_MAX_PER_SHAPE = 8
 
 
 def _normalize_domain(value):
@@ -264,6 +272,56 @@ def detect_path_explosion(url, threshold=4, log_file=None):
         return False
 
 
+def is_invalid_url(url):
+    """Reject non-web schemes and malformed absolute URLs from active views."""
+    value = str(url or "").strip()
+    if not value or any(char.isspace() or ord(char) < 32 for char in value):
+        return True
+    if re.match(r"^(?:javascript|data|mailto|file|blob|ws|wss):", value, re.I):
+        return True
+    try:
+        parsed = urlparse(value if "://" in value or value.startswith("//") else f"//{value}")
+    except ValueError:
+        return True
+    if parsed.scheme and parsed.scheme.lower() not in {"http", "https"}:
+        return True
+    if value.startswith(("http://", "https://", "//")) and not parsed.hostname:
+        return True
+    return False
+
+
+def _dedupe_key(url):
+    """Ignore cache-only query values while preserving the first raw URL."""
+    value = str(url or "").strip()
+    try:
+        parsed = urlparse(value if "://" in value or value.startswith("//") else f"//{value}")
+        if not parsed.query:
+            return parsed._replace(fragment="").geturl()
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        meaningful = [
+            (key, val)
+            for key, val in pairs
+            if not is_cache_param_in_context(value, key)
+        ]
+        if len(meaningful) == len(pairs):
+            return parsed._replace(fragment="").geturl()
+        query = urlencode(meaningful, doseq=True)
+        return parsed._replace(query=query, fragment="").geturl()
+    except (TypeError, ValueError):
+        return value
+
+
+def _has_cache_param(url):
+    try:
+        parsed = urlparse(str(url or ""))
+        return any(
+            is_cache_param_in_context(str(url), key)
+            for key, _value in parse_qsl(parsed.query, keep_blank_values=True)
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def is_cache_param_in_context(url, param_name):
     """
     Context-aware cache param detection.
@@ -300,7 +358,8 @@ def is_cache_param(param_name):
     cache_params = [
         'v', 'ver', 'version', 'bust', 'cache', '_', 'ts', 'timestamp',
         'nc', 'nocache', 'rev', 'hash', 't', 'time', 'cachebuster',
-        'cb', 'random', 'rand'
+        'cb', 'random', 'rand', 'utm_source', 'utm_medium', 'utm_campaign',
+        'utm_term', 'utm_content', 'fbclid', 'gclid', 'msclkid'
     ]
 
     param_lower = param_name.lower()
@@ -318,7 +377,8 @@ def is_cache_param(param_name):
 
 def filter_urls_batch(input_file, output_file, target_domain,
                      remove_external=True, remove_path_explosion=True,
-                     explosion_threshold=4, log_file=None):
+                     explosion_threshold=4, log_file=None,
+                     max_per_shape=DEFAULT_MAX_PER_SHAPE):
     """
     Batch filter URLs from file.
 
@@ -334,88 +394,73 @@ def filter_urls_batch(input_file, output_file, target_domain,
     Returns:
         Dict with stats (total, kept, removed_external, removed_explosion)
     """
-    with open(input_file, 'r') as f:
-        urls = [line.strip() for line in f if line.strip()]
-
-    total = len(urls)
-    stats = {'total': total, 'kept': 0, 'removed_external': 0, 'removed_explosion': 0,
+    stats = {'total': 0, 'kept': 0, 'removed_external': 0, 'removed_explosion': 0,
              'removed_encoding_errors': 0, 'removed_html_encoding': 0,
-             'removed_js_path_artifacts': 0, 'removed_malformed_paths': 0}
+             'removed_js_path_artifacts': 0, 'removed_malformed_paths': 0,
+             'removed_invalid': 0, 'removed_duplicates': 0, 'removed_cache_only': 0,
+             'removed_shape_overflow': 0}
+    dedupe_keys = set()
+    shape_counts = Counter()
+    log_handle = None
+    if log_file:
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = log_path.open("a", encoding="utf-8")
 
-    # Filter URL encoding errors
-    filtered = []
-    for url in urls:
-        if has_url_encoding_error(url):
-            stats['removed_encoding_errors'] += 1
-            if log_file:
-                _append_log(log_file, [f"[ENCODING_ERROR] {url}"])
-        else:
-            filtered.append(url)
-    urls = filtered
+    def reject(counter, label, url):
+        stats[counter] += 1
+        if log_handle:
+            log_handle.write(f"[{label}] {url}\n")
 
-    # Keep malformed archive/crawler strings in raw all.txt, but do not place
-    # them in the automatic priority view.
-    filtered = []
-    for url in urls:
-        if has_malformed_path(url):
-            stats['removed_malformed_paths'] += 1
-            if log_file:
-                _append_log(log_file, [f"[MALFORMED_PATH] {url}"])
-        else:
-            filtered.append(url)
-    urls = filtered
+    try:
+        with open(input_file, "r", encoding="utf-8", errors="ignore") as source, open(
+            output_file, "w", encoding="utf-8"
+        ) as output:
+            for raw in source:
+                url = raw.strip()
+                if not url:
+                    continue
+                stats['total'] += 1
+                if is_invalid_url(url):
+                    reject('removed_invalid', 'INVALID_URL', url)
+                    continue
+                if has_url_encoding_error(url):
+                    reject('removed_encoding_errors', 'ENCODING_ERROR', url)
+                    continue
+                if has_malformed_path(url):
+                    reject('removed_malformed_paths', 'MALFORMED_PATH', url)
+                    continue
+                if has_html_unicode_encoding(url):
+                    reject('removed_html_encoding', 'HTML_ENCODING', url)
+                    continue
+                if has_js_path_artifact(url):
+                    reject('removed_js_path_artifacts', 'JS_PATH_ARTIFACT', url)
+                    continue
+                if remove_external and not _is_in_scope_or_relative(url, target_domain):
+                    reject('removed_external', 'EXTERNAL', url)
+                    continue
+                if remove_path_explosion and detect_path_explosion(url, explosion_threshold):
+                    reject('removed_explosion', 'PATH_EXPLOSION', url)
+                    continue
 
-    # Filter HTML Unicode encoding
-    filtered = []
-    for url in urls:
-        if has_html_unicode_encoding(url):
-            stats['removed_html_encoding'] += 1
-            if log_file:
-                _append_log(log_file, [f"[HTML_ENCODING] {url}"])
-        else:
-            filtered.append(url)
-    urls = filtered
-
-    # Filter JS member-expression path artifacts from crawlers/JS URL extraction
-    filtered = []
-    for url in urls:
-        if has_js_path_artifact(url):
-            stats['removed_js_path_artifacts'] += 1
-            if log_file:
-                _append_log(log_file, [f"[JS_PATH_ARTIFACT] {url}"])
-        else:
-            filtered.append(url)
-    urls = filtered
-
-    # Filter external URLs
-    if remove_external:
-        filtered = []
-        removed_urls = []
-        for url in urls:
-            if _is_in_scope_or_relative(url, target_domain):
-                filtered.append(url)
-            else:
-                removed_urls.append(url)
-        urls = filtered
-        stats['removed_external'] = len(removed_urls)
-        _append_log(log_file, [f"[EXTERNAL] {url}" for url in removed_urls])
-
-    # Filter path explosion
-    if remove_path_explosion:
-        filtered = []
-        for url in urls:
-            if not detect_path_explosion(url, explosion_threshold, log_file):
-                filtered.append(url)
-            else:
-                stats['removed_explosion'] += 1
-        urls = filtered
-
-    stats['kept'] = len(urls)
-
-    # Write output
-    with open(output_file, 'w') as f:
-        for url in urls:
-            f.write(url + '\n')
+                key = _dedupe_key(url)
+                if key in dedupe_keys:
+                    reject('removed_duplicates', 'DUPLICATE_URL', url)
+                    if _has_cache_param(url):
+                        stats['removed_cache_only'] += 1
+                    continue
+                dedupe_keys.add(key)
+                shape_id = str(surface_shape(url).get("id") or "")
+                if max_per_shape and shape_id and shape_counts[shape_id] >= max_per_shape:
+                    reject('removed_shape_overflow', 'SHAPE_OVERFLOW', url)
+                    continue
+                if shape_id:
+                    shape_counts[shape_id] += 1
+                output.write(url + "\n")
+                stats['kept'] += 1
+    finally:
+        if log_handle:
+            log_handle.close()
 
     return stats
 
@@ -429,6 +474,7 @@ def main(argv=None):
     parser.add_argument("target_domain")
     parser.add_argument("--log-file", default=None)
     parser.add_argument("--explosion-threshold", type=int, default=4)
+    parser.add_argument("--max-per-shape", type=int, default=DEFAULT_MAX_PER_SHAPE)
     parser.add_argument("--no-remove-external", action="store_true")
     parser.add_argument(
         "--no-remove-path-explosion",
@@ -437,6 +483,8 @@ def main(argv=None):
         action="store_true",
     )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    if args.max_per_shape < 0:
+        parser.error("--max-per-shape must be >= 0")
 
     stats = filter_urls_batch(
         args.input_file,
@@ -446,6 +494,7 @@ def main(argv=None):
         remove_path_explosion=not args.no_remove_path_explosion,
         explosion_threshold=args.explosion_threshold,
         log_file=args.log_file,
+        max_per_shape=args.max_per_shape,
     )
     kept_percent = (stats['kept'] / stats['total'] * 100) if stats['total'] else 0.0
 
@@ -457,6 +506,10 @@ def main(argv=None):
     print(f"  Removed malformed paths: {stats['removed_malformed_paths']}")
     print(f"  Removed external: {stats['removed_external']}")
     print(f"  Removed path explosion: {stats['removed_explosion']}")
+    print(f"  Removed invalid URLs: {stats['removed_invalid']}")
+    print(f"  Removed duplicate URLs: {stats['removed_duplicates']}")
+    print(f"  Removed cache-only duplicates: {stats['removed_cache_only']}")
+    print(f"  Removed shape overflow: {stats['removed_shape_overflow']}")
     print(f"  Kept: {stats['kept']} ({kept_percent:.1f}%)")
     return 0
 

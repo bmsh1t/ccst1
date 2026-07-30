@@ -77,6 +77,10 @@ def test_filter_urls_batch_logs_external_urls_and_keeps_original_input(tmp_path)
         "removed_html_encoding": 0,
         "removed_js_path_artifacts": 0,
         "removed_malformed_paths": 0,
+        "removed_invalid": 0,
+        "removed_duplicates": 0,
+        "removed_cache_only": 0,
+        "removed_shape_overflow": 0,
     }
     assert out.read_text(encoding="utf-8").splitlines() == [
         "https://example.com/",
@@ -104,6 +108,44 @@ def test_main_handles_empty_input_without_dividing_by_zero(tmp_path, capsys):
 def test_cache_param_detection_keeps_api_version_context():
     assert recon_filters.is_cache_param_in_context("https://example.com/api/users?v=1", "v") is False
     assert recon_filters.is_cache_param_in_context("https://example.com/static/app.js?v=1", "v") is True
+
+
+def test_filter_urls_batch_removes_invalid_and_cache_only_duplicates(tmp_path):
+    src = tmp_path / "all.txt"
+    out = tmp_path / "all_filtered.txt"
+    log = tmp_path / "filter.log"
+    src.write_text(
+        "\n".join([
+            "javascript:alert(1)",
+            "https://example.com/items?id=1&utm_source=a",
+            "https://example.com/items?id=1&utm_source=b",
+            "https://example.com/items?id=1&utm_medium=email",
+            "https://example.com/items?id=2#first",
+            "https://example.com/items?id=2#second",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    stats = recon_filters.filter_urls_batch(src, out, "example.com", log_file=log)
+    assert stats["removed_invalid"] == 1
+    assert stats["removed_duplicates"] == 3
+    assert stats["removed_cache_only"] == 2
+    assert out.read_text(encoding="utf-8").splitlines() == [
+        "https://example.com/items?id=1&utm_source=a",
+        "https://example.com/items?id=2#first",
+    ]
+
+
+def test_filter_urls_batch_bounds_repeated_surface_shapes(tmp_path):
+    src = tmp_path / "all.txt"
+    out = tmp_path / "all_filtered.txt"
+    src.write_text(
+        "\n".join(f"https://example.com/users/{value}?view=full" for value in range(20, 32)) + "\n",
+        encoding="utf-8",
+    )
+    stats = recon_filters.filter_urls_batch(src, out, "example.com", max_per_shape=3)
+    assert stats["kept"] == 3
+    assert stats["removed_shape_overflow"] == 9
+    assert len(out.read_text(encoding="utf-8").splitlines()) == 3
 
 
 def test_filter_urls_batch_logs_encoding_artifacts(tmp_path):

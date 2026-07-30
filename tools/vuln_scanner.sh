@@ -375,16 +375,23 @@ write_summary_json() {
     local output_path="$1"
 
     python3 - "$TARGET" "$SESSION_ID" "$SCAN_MODE" "$RECON_DIR" "$FINDINGS_DIR" \
-        "$SKIP_CHECKS" "$LIVE_COUNT" "$ORDERED_SCAN" "$output_path" <<'PY'
+        "$SKIP_CHECKS" "$LIVE_COUNT" "$ORDERED_SCAN" "$NUCLEI_TARGETS_ALL" \
+        "$NUCLEI_TARGETS" "$NUCLEI_TARGET_LIMIT" "$output_path" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-target, session_id, scan_mode, recon_dir, findings_dir, skip_checks, live_count, ordered_scan, output_path = sys.argv[1:]
+(
+    target, session_id, scan_mode, recon_dir, findings_dir, skip_checks,
+    live_count, ordered_scan, nuclei_targets_all, nuclei_targets,
+    nuclei_target_limit, output_path,
+) = sys.argv[1:]
 findings_root = Path(findings_dir)
 recon_root = Path(recon_dir)
 ordered_scan_path = Path(ordered_scan)
+nuclei_targets_all_path = Path(nuclei_targets_all)
+nuclei_targets_path = Path(nuclei_targets)
 
 categories = [
     "upload",
@@ -486,6 +493,10 @@ summary = {
     "live_count": int(live_count or 0),
     "ordered_scan_count": count_lines(ordered_scan_path),
     "ordered_scan_file": str(ordered_scan_path),
+    "nuclei_target_available_count": count_lines(nuclei_targets_all_path),
+    "nuclei_target_count": count_lines(nuclei_targets_path),
+    "nuclei_target_limit": int(nuclei_target_limit),
+    "nuclei_targets_truncated": count_lines(nuclei_targets_all_path) > count_lines(nuclei_targets_path),
     "skipped_checks": [],
     "categories": category_summary,
     "totals": {
@@ -872,6 +883,47 @@ if bb_auth_active; then
     LIVE_COUNT=$(wc -l < "$LIVE_URLS" 2>/dev/null || echo 0)
 fi
 
+NUCLEI_TARGET_LIMIT="${BB_NUCLEI_MAX_TARGETS:-$(scan_limit 50 100 200)}"
+case "$NUCLEI_TARGET_LIMIT" in
+    ''|*[!0-9]*|0)
+        log_err "BB_NUCLEI_MAX_TARGETS must be a positive integer"
+        exit 1
+        ;;
+esac
+NUCLEI_TARGETS_ALL="$FINDINGS_DIR/.tmp/nuclei_targets_all.txt"
+NUCLEI_TARGETS="$FINDINGS_DIR/.tmp/nuclei_targets.txt"
+python3 - "$ORDERED_SCAN" "$NUCLEI_TARGETS_ALL" "$NUCLEI_TARGETS" "$NUCLEI_TARGET_LIMIT" <<'PY'
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+source, all_output, selected_output, limit = sys.argv[1:]
+seen = set()
+origins = []
+for raw in Path(source).read_text(encoding="utf-8", errors="replace").splitlines():
+    value = raw.strip().split()[0] if raw.strip() else ""
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        continue
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        continue
+    origin = urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), "", "", ""))
+    if origin not in seen:
+        seen.add(origin)
+        origins.append(origin)
+Path(all_output).write_text("\n".join(origins) + ("\n" if origins else ""), encoding="utf-8")
+selected = origins[:int(limit)]
+Path(selected_output).write_text("\n".join(selected) + ("\n" if selected else ""), encoding="utf-8")
+PY
+NUCLEI_AVAILABLE_COUNT=$(wc -l < "$NUCLEI_TARGETS_ALL" 2>/dev/null | tr -d ' ' || echo 0)
+NUCLEI_SELECTED_COUNT=$(wc -l < "$NUCLEI_TARGETS" 2>/dev/null | tr -d ' ' || echo 0)
+if [ "$NUCLEI_AVAILABLE_COUNT" -gt "$NUCLEI_SELECTED_COUNT" ]; then
+    log_warn "Nuclei breadth bounded to $NUCLEI_SELECTED_COUNT/$NUCLEI_AVAILABLE_COUNT service origins (limit=$NUCLEI_TARGET_LIMIT)"
+else
+    log_info "Nuclei breadth: $NUCLEI_SELECTED_COUNT service origins"
+fi
+
 # ============================================================
 # Noise filter prep: SPA fingerprints + dedup'd PARAM_URLS
 # ============================================================
@@ -976,7 +1028,7 @@ if ! skip_has sqli; then
 
     if command -v nuclei &>/dev/null; then
         log_step "Running nuclei SQLi templates..."
-        run_nuclei -l "$ORDERED_SCAN" \
+        run_nuclei -l "$NUCLEI_TARGETS" \
             -tags sqli \
             -severity medium,high,critical \
             -silent \
@@ -1090,7 +1142,7 @@ PY
     # Nuclei XSS templates
     if command -v nuclei &>/dev/null; then
         log_step "Running nuclei XSS templates..."
-        cat "$LIVE_URLS" | run_nuclei \
+        cat "$NUCLEI_TARGETS" | run_nuclei \
             -tags xss \
             -severity low,medium,high,critical \
             -silent \
@@ -1171,7 +1223,7 @@ fi
 # Nuclei takeover templates
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     log_step "Running nuclei takeover templates..."
-    cat "$LIVE_URLS" | run_nuclei \
+    cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags takeover \
         -silent \
         -rate-limit "$RATE_LIMIT" \
@@ -1195,7 +1247,7 @@ log_info "Check 3: Misconfigurations"
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     # CORS misconfigurations
     log_step "Checking CORS misconfigurations..."
-    cat "$LIVE_URLS" | run_nuclei \
+    cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags cors \
         -silent \
         -rate-limit "$RATE_LIMIT" \
@@ -1206,7 +1258,7 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
 
     # Security headers
     log_step "Checking security headers..."
-    cat "$LIVE_URLS" | run_nuclei \
+    cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags headers,missing-headers \
         -severity medium,high,critical \
         -silent \
@@ -1218,7 +1270,7 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
 
     # General misconfigurations
     log_step "Running misconfiguration templates..."
-    cat "$LIVE_URLS" | run_nuclei \
+    cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags misconfig \
         -severity medium,high,critical \
         -silent \
@@ -1244,7 +1296,7 @@ log_info "Check 4: Sensitive Data Exposure"
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     # Exposed files (.git, .env, backups, etc.)
     log_step "Checking for exposed files (.git, .env, backups)..."
-    cat "$LIVE_URLS" | run_nuclei \
+    cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags exposure,file \
         -severity low,medium,high,critical \
         -silent \
@@ -1256,7 +1308,7 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
 
     # Exposed panels (admin, debug, etc.)
     log_step "Checking for exposed panels..."
-    cat "$LIVE_URLS" | run_nuclei \
+    cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags panel,login \
         -severity medium,high,critical \
         -silent \
@@ -1268,7 +1320,7 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
 
     # Technology detection & default credentials
     log_step "Checking for default credentials..."
-    cat "$LIVE_URLS" | run_nuclei \
+    cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags default-login \
         -severity high,critical \
         -silent \
@@ -1317,7 +1369,7 @@ log_info "Check 5: SSRF Detection"
 
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     log_step "Running nuclei SSRF templates..."
-    cat "$LIVE_URLS" | run_nuclei \
+    cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags ssrf \
         -severity medium,high,critical \
         -silent \
@@ -1358,7 +1410,7 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     fi
     log_step "Running nuclei CVE templates (max ${CVE_TIMEOUT}s)..."
     run_nuclei_timeout "$CVE_TIMEOUT" \
-        -l "$LIVE_URLS" \
+        -l "$NUCLEI_TARGETS" \
         -tags cve \
         -severity medium,high,critical \
         -silent \
@@ -1382,7 +1434,7 @@ log_info "Check 7: Open Redirects"
 
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     log_step "Running nuclei redirect templates..."
-    cat "$LIVE_URLS" | run_nuclei \
+    cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags redirect \
         -severity low,medium,high \
         -silent \
