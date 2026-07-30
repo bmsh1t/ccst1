@@ -30,6 +30,8 @@ ARSENAL_TOOLS=(
   "massdns|recon|brew install massdns|github.com/blechschmidt/massdns"
   "puredns|recon|GOBIN=\$HOME/go/bin go install github.com/d3mondev/puredns/v2@latest|github.com/d3mondev/puredns"
   "shuffledns|recon|GOBIN=\$HOME/go/bin go install github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest|github.com/projectdiscovery/shuffledns"
+  "alterx|recon|GOBIN=\$HOME/go/bin go install github.com/projectdiscovery/alterx/cmd/alterx@latest|github.com/projectdiscovery/alterx"
+  "dnsgen|recon|pipx install dnsgen|github.com/ProjectAnte/dnsgen"
   "knockpy|recon|pipx install knockpy|github.com/guelfoweb/knockpy"
   # ── Live host probing ───────────────────────────────────────────────────
   "httpx|probe|GOBIN=\$HOME/go/bin go install github.com/projectdiscovery/httpx/cmd/httpx@latest|github.com/projectdiscovery/httpx"

@@ -34,8 +34,10 @@ bash tools/recon_engine.sh target.com                              # direct full
 
 `hunt.py --recon-only` 默认使用 normal profile；quick/normal 都完整保留 raw surface，只把逐 bundle
 正则提取、secret grep 和递归 JS 链接分析交给 Surface/Action Queue。裸
-`recon_engine.sh TARGET` 保持原 full 行为；Source Map、AST/去混淆和动态签名重建继续由
-后续 `/js-read` 深度 lane 按证据选择。
+`recon_engine.sh TARGET` 保持原 full 行为；Source Map 源文件恢复和动态 chunk 重建继续由
+后续 `/js-read` 深度 lane 按证据选择。Shuji 只消费有效的 v3 Source Map；
+通用 AST/去混淆不是 Recon 的固定自动步骤，需要时由 `web2-recon` DeepDive
+在真实 JS/runtime 证据触发后使用当前可用的本地工具或 AI 分析。
 
 For large primary-domain lists, keep the Claude session short and resumable:
 
@@ -60,6 +62,29 @@ Success signal:
   `recon/<list-stem>/<domain> -> ../<domain>` for browsing by source list.
 
 If these files are absent or empty, read the command output. Do not spend another turn restating the recon phases.
+
+## AI-selected DNS expansion
+
+DNS permutation/brute force is not a default Recon phase. After passive Recon,
+AI may run the fixed lane only when it can state a target-specific reason such
+as an observed environment/region/numbering dialect, a certificate/JS hostname
+gap, or a materially thin inventory:
+
+```bash
+python3 tools/dns_expand.py --target target.com \
+  --reason "observed dev/stage and numbered API host naming"
+
+# Optional reviewed brute-force labels; never pass an unbounded corpus.
+python3 tools/dns_expand.py --target target.com \
+  --reason "source evidence names an unobserved environment family" \
+  --wordlist /path/to/reviewed-dns-words.txt
+```
+
+The tool bounds seeds/candidates/rate/time, uses `alterx`/`dnsgen` plus
+`puredns`, filters wildcard and off-target output, and merges only DNS-confirmed
+hosts. On new hosts, run `python3 tools/surface.py --target target.com --refresh`.
+Do not trigger from host count alone or treat zero resolved names as broad DNS
+coverage.
 
 ## Target Semantics
 

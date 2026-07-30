@@ -544,6 +544,18 @@ def test_recon_engine_optional_chaos_collector_is_scope_filtered():
     assert 'optional collector credential unavailable' in text
 
 
+def test_recon_engine_reuses_verified_dns_expansion_on_later_runs():
+    text = (Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh").read_text(
+        encoding="utf-8"
+    )
+
+    expansion = '"$RECON_DIR/subdomains/dns-expansion/resolved.txt" \\'
+    assert expansion in text
+    assert text.index(expansion) < text.index(
+        'build_target_owned_input "$SUBDOMAIN_MERGED_TMP" "$RECON_DIR/subdomains/all.txt" host'
+    )
+
+
 def test_recon_engine_chaos_malformed_json_is_an_error(tmp_path):
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     prefix = script.read_text(encoding="utf-8").split('TARGET="${1:?', 1)[0]

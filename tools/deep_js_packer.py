@@ -48,6 +48,7 @@ SCHEMA_VERSION = 1
 DEFAULT_MAX_BUNDLES = 3
 MAX_BUNDLES = 5
 DEFAULT_TIMEOUT_SECONDS = 600
+DEFAULT_SHUJI_TIMEOUT_SECONDS = 120
 DEFAULT_RATE_LIMIT = 5
 DEFAULT_MAX_WORKERS = 5
 DEFAULT_MAX_WORKSPACE_FILES = 500
@@ -748,6 +749,7 @@ def run_packer(
                 "browser": bool(browser and mode == "page"),
                 "max_workers": DEFAULT_MAX_WORKERS,
                 "rate_limit": DEFAULT_RATE_LIMIT,
+                "timeout": timeout,
             }
             spec_path = work_dir / "worker-spec.json"
             _atomic_json(spec_path, spec)
@@ -877,6 +879,13 @@ def worker_main(spec_path: str) -> int:
     if not callable(original_restore):
         raise RuntimeError("Packer Source Map helper is unavailable")
     source_map_status = _SourceMapStatus(Path.cwd() / SOURCE_MAP_STATUS_FILENAME)
+    shuji_timeout = max(
+        1,
+        min(
+            DEFAULT_SHUJI_TIMEOUT_SECONDS,
+            int(spec.get("timeout") or DEFAULT_TIMEOUT_SECONDS) - 1,
+        ),
+    )
 
     def bounded_executor(*args: Any, **kwargs: Any) -> Any:
         requested = kwargs.pop("max_workers", args[0] if args else DEFAULT_MAX_WORKERS)
@@ -926,15 +935,21 @@ def worker_main(spec_path: str) -> int:
                 shuji = shutil.which("shuji")
                 if not shuji:
                     raise FileNotFoundError("shuji@0.8.0 command is unavailable")
-                completed = subprocess.run(
-                    [shuji, input_path.name, "-o", ".", "-v"],
-                    cwd=output_dir,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    check=False,
-                )
+                try:
+                    completed = subprocess.run(
+                        [shuji, input_path.name, "-o", ".", "-v"],
+                        cwd=output_dir,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        check=False,
+                        timeout=shuji_timeout,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise TimeoutError(
+                        f"shuji timed out after {shuji_timeout}s"
+                    ) from exc
                 if completed.stdout:
                     print(completed.stdout, end="", file=sys.stderr)
                 if completed.stderr:

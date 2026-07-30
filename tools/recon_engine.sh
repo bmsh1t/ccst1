@@ -1569,6 +1569,7 @@ if [ "$TARGET_KIND" = "domain" ]; then
         "$RECON_DIR/subdomains/crtsh.txt" \
         "$RECON_DIR/subdomains/chaos.txt" \
         "$RECON_DIR/subdomains/wayback_subs.txt" \
+        "$RECON_DIR/subdomains/dns-expansion/resolved.txt" \
         2>/dev/null | awk 'NF' | sort -u > "$SUBDOMAIN_MERGED_TMP" || true
     build_target_owned_input "$SUBDOMAIN_MERGED_TMP" "$RECON_DIR/subdomains/all.txt" host
     rm -f "$SUBDOMAIN_MERGED_TMP"

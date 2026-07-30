@@ -158,6 +158,22 @@ echo "[+] Total URLs: $(wc -l < /tmp/urls.txt)"
 nuclei -l /tmp/live.txt -t ~/nuclei-templates/ -severity critical,high,medium -o /tmp/nuclei.txt
 ```
 
+### AI-selected DNS expansion
+
+Do not make DNS permutation a default pipeline step. After passive Recon, use
+the fixed lane only when current evidence shows a naming dialect or a concrete
+certificate/JS/source hostname gap:
+
+```bash
+python3 tools/dns_expand.py --target "$TARGET" \
+  --reason "observed dev/stage and numbered API host naming"
+```
+
+AI chooses whether to run and may supply one reviewed `--wordlist`; the tool
+owns bounded `alterx`/`dnsgen` generation, `puredns` resolution/wildcard
+filtering, target scope, artifacts, and atomic merge. Host count alone is not a
+trigger. Refresh `/surface` after new resolved hosts are published.
+
 ### Output to Organized Directory
 
 ```bash

@@ -138,13 +138,16 @@ def _raw_published_path(repo_root: Path, result: dict, suffix: str) -> Path:
     )
 
 
-def _fake_shuji(directory: Path, *, exit_code: int = 0) -> Path:
+def _fake_shuji(
+    directory: Path, *, exit_code: int = 0, delay: float = 0
+) -> Path:
     script = directory / "shuji"
     _write(
         script,
         "#!/usr/bin/env python3\n"
-        "import json, sys\n"
+        "import json, sys, time\n"
         "from pathlib import Path\n"
+        f"time.sleep({delay!r})\n"
         "Path('shuji-invocation.json').write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n"
         f"if {exit_code}:\n    print('fake shuji failure', file=sys.stderr)\n    raise SystemExit({exit_code})\n"
         "source_map = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
@@ -355,6 +358,29 @@ def test_nonzero_shuji_downgrades_productive_packer_run(
     assert result["status"] == "partial"
     assert result["source_map_status"] == "error"
     assert "shuji exited with code 7" in result["source_map_failure_summary"]
+
+
+def test_shuji_timeout_downgrades_productive_packer_run(
+    repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir = _fake_shuji(tmp_path / "bin", delay=3)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    _write(repo_root / "evidence.json", "{}\n")
+
+    result = run_packer(
+        "example.test",
+        mode="bundle",
+        signal_name="source-map",
+        evidence_ref="evidence.json",
+        explicit_urls=["https://example.test/app.js"],
+        timeout=2,
+        tool_root=str(_fake_packer(tmp_path / "packer", source_map=_source_map())),
+        repo_root=repo_root,
+    )
+
+    assert result["status"] == "partial"
+    assert result["source_map_status"] == "error"
+    assert "shuji timed out after 1s" in result["source_map_failure_summary"]
 
 
 def test_repeated_source_map_reuses_existing_worker_output(
