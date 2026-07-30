@@ -176,11 +176,11 @@ def _log_legacy_path_hint(kind: str, preferred_command: str) -> None:
     )
 
 
-def run_cmd(cmd, cwd=None, timeout=600):
+def run_cmd(cmd, cwd=None, timeout=600, env=None):
     """Run a shell command and return (success, output)."""
     from runtime_exec import run_shell_command
 
-    return run_shell_command(cmd, cwd=cwd, timeout=timeout)
+    return run_shell_command(cmd, cwd=cwd, timeout=timeout, env=env)
 
 
 def _kill_process_group(proc):
@@ -1706,8 +1706,9 @@ def run_json_inject_probe(
       - js_intel       = findings/<t>/js_intel/hypotheses.json (if present)
       - falls back to DEFAULT_LOGIN_SEEDS if neither source yields endpoints
 
-    Writes findings under findings/<t>/poc/json_inject/. Returns True if the
-    probe ran to completion (regardless of whether hits were found).
+    WAF-blocked canonical SQLi/XSS probes get at most two semantic retries.
+    Writes findings and WAF observations under findings/<t>/poc/json_inject/.
+    Returns True if the probe ran to completion regardless of hit count.
     """
     findings_dir = _resolve_findings_dir(domain, create=True)
     recon_dir = _resolve_recon_dir(domain)
@@ -1734,14 +1735,15 @@ def run_json_inject_probe(
     if js_intel:
         cmd.extend(["--js-intel", js_intel])
     if not add_default_seeds:
-        # The probe defaults to add_default_seeds=True; explicit opt-out is
-        # only meaningful when the operator wants STRICT input-driven probing.
-        # We emulate it by passing an empty endpoints-file marker; the probe
-        # will exit with no endpoints.
-        pass
+        cmd.append("--no-default-seeds")
 
     cmd_str = " ".join(shlex.quote(c) for c in cmd)
-    success, output = run_cmd(cmd_str, cwd=BASE_DIR, timeout=600)
+    success, output = run_cmd(
+        cmd_str,
+        cwd=BASE_DIR,
+        timeout=600,
+        env=_runtime_child_env(),
+    )
     log_path = os.path.join(out_dir, "probe_log.txt")
     _append_text(
         log_path,

@@ -17,6 +17,7 @@ TOOL_REGISTRY: dict[str, tuple[str, ...]] = {
     "browser": (),
     "recon": ("subfinder", "httpx", "katana", "gau", "waybackurls", "ffuf"),
     "scanner": ("nuclei",),
+    "dns-expansion": ("alterx", "dnsgen", "puredns"),
 }
 SESSION_MANAGED = ("chrome-devtools-mcp", "playwright-mcp")
 CORE_EXTERNAL_TOOLS = ("curl", "httpx")
@@ -79,6 +80,7 @@ def build_capability_profile(
         "tools/js_reader.py",
     )
     browser_mcp_import_ready = _helpers_exist(resolved_repo, "tools/browser_mcp_import.py")
+    dns_expansion_ready = _helpers_exist(resolved_repo, "tools/dns_expand.py")
 
     missing_core: list[str] = []
     if not curl_available:
@@ -113,6 +115,13 @@ def build_capability_profile(
         recommended_paths.append("recon-source-js-only")
     else:
         recommended_paths.append("recon-manual-evidence-only")
+
+    if (
+        dns_expansion_ready
+        and "puredns" in available["dns-expansion"]
+        and any(tool in available["dns-expansion"] for tool in ("alterx", "dnsgen"))
+    ):
+        recommended_paths.append("dns-expansion-evidence-gated")
 
     if "nuclei" in available["scanner"] and "curl-native-http" in fallbacks:
         recommended_paths.append("scanner-native-plus-nuclei")

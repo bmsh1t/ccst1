@@ -12,6 +12,45 @@ from tools.surface_projection import build_surface_input_manifest, write_surface
 from tools.technology_inventory import load_or_build_inventory
 
 
+def test_state_read_error_is_structured_without_traceback(monkeypatch, tmp_path):
+    monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", _clean_runtime)
+    monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", _capabilities)
+    monkeypatch.setattr(
+        autopilot_bootstrap,
+        "build_autopilot_bootstrap_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad queue\nsecret body omitted")),
+    )
+
+    payload = autopilot_bootstrap.build_autopilot_bootstrap(
+        ["example.test"], repo_root=tmp_path, runtime_root=tmp_path / "runtime"
+    )
+
+    assert payload["action"] == "stop_state_error"
+    assert payload["error"] == {"type": "ValueError", "reason": "bad queue secret body omitted"}
+    assert "state" not in payload
+
+
+def test_runtime_read_error_is_structured_before_target_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        autopilot_bootstrap,
+        "compare_runtime",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("runtime unreadable\nno traceback")),
+    )
+    monkeypatch.setattr(
+        autopilot_bootstrap,
+        "build_autopilot_bootstrap_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("target state read")),
+    )
+
+    payload = autopilot_bootstrap.build_autopilot_bootstrap(
+        ["example.test"], repo_root=tmp_path, runtime_root=tmp_path / "runtime"
+    )
+
+    assert payload["action"] == "stop_runtime_error"
+    assert payload["error"] == {"type": "OSError", "reason": "runtime unreadable no traceback"}
+    assert "state" not in payload
+
+
 def _capabilities(_repo_root):
     return {
         "schema_version": 1,
@@ -274,7 +313,12 @@ def test_capability_profile_failure_is_advisory(monkeypatch, tmp_path):
         "schema_version": 1,
         "checked": False,
         "status": "unknown",
-        "available": {"browser": [], "recon": [], "scanner": []},
+            "available": {
+                "browser": [],
+                "recon": [],
+                "scanner": [],
+                "dns-expansion": [],
+            },
         "session_managed": [],
         "fallbacks": [],
         "missing_core": [],

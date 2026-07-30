@@ -128,6 +128,20 @@ def test_failed_sources_and_tools_are_suppressed_within_one_invocation():
     assert "diagnostics-only, never startup" in command
 
 
+def test_inline_json_injection_uses_bounded_baseline_relative_waf_adaptation():
+    command = " ".join(_read("commands/autopilot.md").split()).lower()
+
+    assert "live/wafw00f_hits.txt" in command
+    assert "sampled host-level context" in command
+    assert "python3 -m tools.json_inject_probe" in command
+    assert "--no-default-seeds" in command
+    assert "--max-requests <budget>" in command
+    assert "poc/json_inject/summary.json" in command
+    assert "at most two budgeted sqli/xss semantic variants" in command
+    assert "`429`, transport failure, block pages" in command
+    assert "never spray because parameters or a waf exist" in command
+
+
 def test_optional_autopilot_agent_is_not_the_slash_command_backend():
     text = _read("agents/autopilot.md")
     normalized = " ".join(text.split())

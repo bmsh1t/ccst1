@@ -69,6 +69,26 @@ def test_ingest_checkpoint_persists_and_prioritizes(tmp_path):
     assert (tmp_path / "state" / "target.com" / "action_queue.json").is_file()
 
 
+def test_checkpoint_generated_action_is_idempotent_by_generation(tmp_path):
+    item = {
+        "id": "JSON-INJECT",
+        "priority": 80,
+        "type": "json-inject-review",
+        "status": "ready",
+        "action": "Review JSON injection candidates.",
+        "source": "json-inject",
+        "source_id": "json-inject-lane",
+        "metadata": {"generation": "g1"},
+    }
+
+    first = ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [item]})
+    second = ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [item]})
+
+    assert first["stats"]["added"] == 1
+    assert second["stats"]["added"] == 0
+    assert len(load_queue(tmp_path, "target.com")["actions"]) == 1
+
+
 def test_concurrent_manual_actions_do_not_lose_updates(tmp_path):
     code = """
 import sys

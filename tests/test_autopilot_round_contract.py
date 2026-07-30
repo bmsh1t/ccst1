@@ -110,12 +110,13 @@ def test_round_end_orders_checkpoint_coverage_and_lane_limited_closure():
     checkpoint = command.index("After the canonical checkpoint/write-back")
     rebuild = command.index("python3 tools/coverage_matrix.py rebuild", checkpoint)
     gaps = command.index("python3 tools/coverage_matrix.py find-gaps", rebuild)
+    record = command.index("python3 tools/checkpoint.py --target <target_shell> --record-round-closure --json", gaps)
     closure = command.index(
         "python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --json",
-        gaps,
+        record,
     )
 
-    assert checkpoint < rebuild < gaps < closure
+    assert checkpoint < rebuild < gaps < record < closure
     assert "After every substantive lane" in command
     assert "canonical `--loop-check --json` guard" in command
     assert "at most bootstrap `invocation_batch.max_lanes`" in normalized
@@ -132,6 +133,7 @@ def test_status_projection_is_owner_driven_and_distinguishes_finish_outcomes():
     assert "Any other shape: `STATUS: ERROR reason=" in command
     assert "After a successful bootstrap, closure owner fields alone select STATUS" in command
     assert "never override them" in command
+    assert "`stop_runtime_error`" in command
 
 
 def test_terminal_statuses_bound_residual_blind_spots_and_exhaustion_claims():

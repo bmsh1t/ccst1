@@ -28,6 +28,7 @@ from checkpoint import (
     apply_target_memory,
     build_checkpoint,
     format_checkpoint,
+    record_round_closure,
     sync_checkpoint_action_queue,
 )
 from evidence_ledger import record_entry
@@ -81,6 +82,24 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     assert witness["context_pack"]["selected_skill"] == checkpoint["context_pack"]["selected_skill"]
 
 
+def test_round_guard_blocks_only_after_three_identical_records(monkeypatch, tmp_path):
+    target = "target.com"
+    state_dir = tmp_path / "state" / target
+    state_dir.mkdir(parents=True)
+    witness = state_dir / "checkpoint_latest.json"
+    witness.write_text(json.dumps({"schema_version": 1, "target": target}), encoding="utf-8")
+    state = {"target": target, "resolved_target": target, "json_inject": {
+        "status": "partial", "input_fingerprint": "abc", "request_count": 1,
+    }}
+    closure = {"verdict": "handoff", "reasons": ["json_evidence_partial"], "next_action": "handoff"}
+    monkeypatch.setattr(checkpoint_module, "build_autopilot_state", lambda *_args, **_kwargs: state)
+    monkeypatch.setattr(checkpoint_module, "_load_closure_projection", lambda *_args, **_kwargs: closure)
+
+    counts = [record_round_closure(tmp_path, target)["round_guard"]["consecutive"] for _ in range(4)]
+
+    assert counts == [1, 2, 3, 3]
+
+
 def test_checkpoint_reuses_surface_state_for_context_pack(tmp_path, monkeypatch):
     _seed_recon(tmp_path, "target.com", ["https://api.target.com/users/1"])
     context_globals = checkpoint_module.build_context_pack.__globals__
@@ -106,6 +125,35 @@ def test_checkpoint_reuses_surface_state_for_context_pack(tmp_path, monkeypatch)
 
     assert checkpoint["evidence_reviewed"]["surface"] is True
     assert registry_loads == 1
+
+
+def test_checkpoint_reuses_fresh_coverage_matrix(tmp_path, monkeypatch):
+    _seed_recon(tmp_path, "target.com", ["https://target.com/api/users/1"])
+    first = build_checkpoint(tmp_path, target="target.com")
+    assert first["evidence_reviewed"]["coverage_rebuilt"] is True
+
+    monkeypatch.setattr(
+        checkpoint_module,
+        "rebuild_matrix",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fresh coverage matrix was rebuilt")
+        ),
+    )
+    second = build_checkpoint(tmp_path, target="target.com")
+    assert second["evidence_reviewed"]["coverage_rebuilt"] is False
+
+
+def test_checkpoint_no_refresh_is_read_only_for_coverage(tmp_path, monkeypatch):
+    _seed_recon(tmp_path, "target.com", ["https://target.com/api/users/1"])
+    monkeypatch.setattr(
+        checkpoint_module,
+        "rebuild_matrix",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("no-refresh rebuilt coverage")
+        ),
+    )
+    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
+    assert checkpoint["evidence_reviewed"]["coverage_rebuilt"] is False
 
 
 def test_bounded_proposals_preserve_lane_types_before_duplicate_fill():

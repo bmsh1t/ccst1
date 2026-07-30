@@ -4,6 +4,7 @@ autopilot_state.py — combine resume + surface context into one practical state
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -101,10 +102,22 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
 
 try:
-    from tools.coverage_matrix import STATUS_VALUES, VULN_CLASSES, high_value_gaps_from_matrix, load_matrix
+    from tools.coverage_matrix import (
+        STATUS_VALUES,
+        VULN_CLASSES,
+        high_value_gaps_from_matrix,
+        load_matrix,
+        load_matrix_projection,
+    )
     from tools.evidence_ledger import CLOSED_CELL_RESULTS, load_entries
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from coverage_matrix import STATUS_VALUES, VULN_CLASSES, high_value_gaps_from_matrix, load_matrix  # type: ignore
+    from coverage_matrix import (  # type: ignore
+        STATUS_VALUES,
+        VULN_CLASSES,
+        high_value_gaps_from_matrix,
+        load_matrix,
+        load_matrix_projection,
+    )
     from evidence_ledger import CLOSED_CELL_RESULTS, load_entries  # type: ignore
 
 
@@ -228,6 +241,64 @@ def _read_json_file(path: str) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _load_json_inject_projection(repo_root: str, target: str) -> dict:
+    """Read only the bounded JSON probe summary; malformed data stays partial."""
+    path = Path(repo_root) / "findings" / target_storage_key(target) / "poc" / "json_inject" / "summary.json"
+    projection = {"status": "not_run", "path": str(path), "present": path.is_file()}
+    if not path.is_file():
+        return projection
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        projection.update({"status": "partial", "reason": "malformed_summary"})
+        return projection
+    if not isinstance(payload, dict) or payload.get("kind") != "json_inject_summary":
+        projection.update({"status": "partial", "reason": "invalid_summary"})
+        return projection
+    if canonical_target_value(str(payload.get("target") or "")) != canonical_target_value(target):
+        projection.update({"status": "partial", "reason": "target_mismatch"})
+        return projection
+    status = str(payload.get("status") or "partial")
+    fingerprint = str(payload.get("input_fingerprint") or "")
+    if (
+        int(payload.get("schema_version", 0) or 0) < 2
+        or status not in {"complete_no_hit", "candidate_pending", "partial", "invalid_input"}
+        or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+    ):
+        status = "partial"
+    for binding in payload.get("source_bindings") or []:
+        if not isinstance(binding, dict):
+            status = "partial"
+            projection["reason"] = "stale_source_binding"
+            break
+        source = Path(str(binding.get("path") or ""))
+        source = source if source.is_absolute() else Path(repo_root) / source
+        try:
+            current = hashlib.sha256(source.read_bytes()).hexdigest()
+        except OSError:
+            current = ""
+        if current != str(binding.get("sha256") or ""):
+            status = "partial"
+            projection["reason"] = "stale_source_binding"
+            break
+    projection.update({
+        "status": status,
+        "schema_version": int(payload.get("schema_version", 0) or 0),
+        "input_fingerprint": fingerprint,
+        "endpoint_count": int(payload.get("endpoint_count", 0) or 0),
+        "probed_endpoint_count": int(payload.get("probed_endpoint_count", 0) or 0),
+        "request_count": int(payload.get("request_count", 0) or 0),
+        "hit_count": int(payload.get("hit_count", 0) or 0),
+        "waf_observation_count": int(payload.get("waf_observation_count", 0) or 0),
+        "transport_error_count": int(payload.get("transport_error_count", 0) or 0),
+        "skipped": {
+            key: int((payload.get("skipped") or {}).get(key, 0) or 0)
+            for key in ("out_of_scope", "unsupported_method", "invalid_url", "out_of_scope_redirect")
+        },
+    })
+    return projection
 
 
 def load_target_goal_memory(repo_root: str, target: str) -> dict:
@@ -646,6 +717,11 @@ def _describe_next_step(state: dict) -> str:
     if action == "handoff":
         return "no strong executable next action from cached state; use checkpoint or fresh evidence before continuing."
     return "follow the highest-confidence target shown below."
+
+
+def describe_next_step(state: dict) -> str:
+    """Return a single-line bounded next-step instruction for controllers."""
+    return " ".join(_describe_next_step(state).split())[:500]
 
 
 def _runtime_recon_in_progress(
@@ -1575,6 +1651,7 @@ def _load_autopilot_control_facts(
     )
     intel_continuation = inspect_intel_continuation(repo_root, resolved_target)
     browser_evidence = inspect_browser_evidence(repo_root, resolved_target)
+    json_inject = _load_json_inject_projection(repo_root, resolved_target)
     return {
         "repo_root": repo_root,
         "resolved_target": resolved_target,
@@ -1606,6 +1683,7 @@ def _load_autopilot_control_facts(
         "memory_candidate_next": _select_memory_candidate(memory_action_queue),
         "intel_continuation": intel_continuation,
         "browser_evidence": browser_evidence,
+        "json_inject": json_inject,
     }
 
 
@@ -1722,6 +1800,7 @@ def _build_domain_autopilot_state(
         "repo_source_artifacts": facts.get("repo_source_artifacts") or [],
         "repo_source_summary": facts.get("repo_source_summary") or {},
         "browser_evidence": facts.get("browser_evidence") or {},
+        "json_inject": facts.get("json_inject") or {},
         "runtime_state": facts.get("runtime_state") or {},
         "recon_artifacts": facts.get("recon_artifacts") or {},
         "recon_in_progress": bool(facts.get("recon_in_progress")),
@@ -2042,11 +2121,21 @@ def _matrix_is_usable_for_closure(matrix: object) -> bool:
     endpoints = matrix.get("endpoints")
     if not isinstance(endpoints, list) or not endpoints:
         return False
+    if matrix.get("_coverage_projection"):
+        summary = matrix.get("summary")
+        gaps = matrix.get("_coverage_gaps")
+        if not isinstance(summary, dict) or not isinstance(gaps, list):
+            return False
+        try:
+            if int(summary.get("high_value_gaps_count", -1)) < 0:
+                return False
+        except (TypeError, ValueError):
+            return False
     for endpoint in endpoints:
         if not isinstance(endpoint, dict) or not str(endpoint.get("endpoint") or "").strip():
             return False
         cells = endpoint.get("cells")
-        if not isinstance(cells, dict) or not cells:
+        if not isinstance(cells, dict) or (not cells and not matrix.get("_coverage_projection")):
             return False
         for vuln_class, cell in cells.items():
             if vuln_class not in VULN_CLASSES or not isinstance(cell, dict):
@@ -2054,6 +2143,21 @@ def _matrix_is_usable_for_closure(matrix: object) -> bool:
             if cell.get("status") not in STATUS_VALUES:
                 return False
     return True
+
+
+def _coverage_gaps(matrix: dict) -> list[dict]:
+    if matrix.get("_coverage_projection"):
+        return [item for item in matrix.get("_coverage_gaps") or [] if isinstance(item, dict)]
+    return high_value_gaps_from_matrix(matrix)
+
+
+def _coverage_has_high_value_gaps(matrix: dict) -> bool:
+    if matrix.get("_coverage_projection"):
+        try:
+            return int((matrix.get("summary") or {}).get("high_value_gaps_count", 0)) > 0
+        except (TypeError, ValueError):
+            return True
+    return bool(high_value_gaps_from_matrix(matrix))
 
 
 def _final_queue_endpoint_paths(queue: dict) -> set[str]:
@@ -2113,7 +2217,7 @@ def _surface_review_completion(
     }
     high_gap_paths = {
         _normalise_endpoint_path(str(gap.get("endpoint") or ""))
-        for gap in high_value_gaps_from_matrix(matrix)
+        for gap in _coverage_gaps(matrix)
         if isinstance(gap, dict)
     }
     final_paths = _final_queue_endpoint_paths(queue) | _closed_ledger_endpoint_paths(ledger_entries)
@@ -2200,13 +2304,14 @@ def build_closure_projection(
     elif not _matrix_is_usable_for_closure(matrix):
         verdict = "handoff"
         reasons.append("coverage_invalid")
-    elif high_value_gaps_from_matrix(matrix):
+    elif _coverage_has_high_value_gaps(matrix):
         verdict = "handoff"
         reasons.append("coverage_high_value_gaps")
     else:
         browser = state.get("browser_evidence") or {}
         source = state.get("repo_source_summary") or {}
         intel = state.get("intel_continuation") or {}
+        json_inject = state.get("json_inject") or {}
         enrichment_tools = {
             str(item.get("tool") or "")
             for item in state.get("enrichment_hints") or []
@@ -2217,6 +2322,12 @@ def build_closure_projection(
         if partial_reason:
             verdict = "handoff"
             reasons.append(partial_reason)
+        elif str(json_inject.get("status") or "") == "candidate_pending":
+            verdict = "handoff"
+            reasons.append("json_candidate_pending")
+        elif str(json_inject.get("status") or "") in {"partial", "invalid_input"}:
+            verdict = "handoff"
+            reasons.append("json_evidence_partial")
         elif browser.get("present") and not browser.get("ready"):
             verdict = "handoff"
             reasons.append("browser_evidence_partial")
@@ -2247,11 +2358,85 @@ def build_closure_projection(
     }
 
 
-def _load_closure_projection(repo_root: str, state: dict, *, max_lanes_reached: bool) -> dict:
+_STAGNANT_REASONS = {
+    "browser_evidence_partial",
+    "source_evidence_partial",
+    "js_evidence_partial",
+    "intel_evidence_blocked",
+    "json_evidence_partial",
+}
+
+
+def stagnation_fingerprint(state: dict, closure: dict) -> str:
+    """Fingerprint only explicit prerequisite blockers; other handoffs never count."""
+    projected = str(closure.get("stagnation_fingerprint") or "")
+    if projected:
+        return projected
+    reasons = closure.get("reasons") or []
+    reason = str(reasons[0] if reasons else "")
+    if closure.get("verdict") != "handoff" or reason not in _STAGNANT_REASONS:
+        return ""
+    payload = {
+        "target": str(state.get("resolved_target") or state.get("target") or ""),
+        "reason": reason,
+        "next_action": str(closure.get("next_action") or ""),
+        "browser": {
+            key: (state.get("browser_evidence") or {}).get(key)
+            for key in ("present", "ready", "fingerprint", "status")
+        },
+        "source": {
+            key: (state.get("repo_source_summary") or {}).get(key)
+            for key in ("status", "fingerprint", "input_fingerprint")
+        },
+        "intel": {
+            "blocked": (state.get("intel_continuation") or {}).get("blocked") or [],
+            "reason": (state.get("intel_continuation") or {}).get("reason") or "",
+        },
+        "json": {
+            key: (state.get("json_inject") or {}).get(key)
+            for key in ("status", "input_fingerprint", "request_count", "transport_error_count")
+        },
+        "durable": {
+            "active_actions": int(state.get("active_action_queue_count", 0) or 0),
+            "queue_next": str((state.get("action_queue_next") or {}).get("id") or ""),
+            "findings": {
+                key: (state.get("structured_findings") or {}).get(key)
+                for key in ("total", "pending_validation", "validated", "reported", "rejected")
+            },
+            "coverage": str(state.get("_stagnation_coverage") or ""),
+            "ledger": str(state.get("_stagnation_ledger") or ""),
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _semantic_coverage_fingerprint(matrix: dict | None) -> str:
+    """Hash coverage meaning, not rebuild timestamps."""
+    if not isinstance(matrix, dict):
+        return ""
+    semantic = {
+        key: value
+        for key, value in matrix.items()
+        if key not in {"last_updated", "_coverage_projection"}
+    }
+    encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _load_closure_projection(
+    repo_root: str,
+    state: dict,
+    *,
+    max_lanes_reached: bool,
+    apply_round_guard: bool = True,
+) -> dict:
     """Read existing closure inputs only for an explicit CLI request."""
     target = str(state.get("resolved_target") or state.get("target") or "")
     matrix_path = Path(repo_root) / "evidence" / target_storage_key(target) / "coverage_matrix.json"
-    matrix = load_matrix(target, repo_root) if matrix_path.is_file() else None
+    matrix = load_matrix_projection(target, repo_root)
+    if matrix is None and matrix_path.is_file():
+        matrix = load_matrix(target, repo_root)
     queue = load_queue(repo_root, target)
     _, artifact_hints = _build_enrichment_hints(
         repo_root=repo_root,
@@ -2283,13 +2468,38 @@ def _load_closure_projection(repo_root: str, state: dict, *, max_lanes_reached: 
             queue,
             ledger_entries,
         ),
+        "_stagnation_coverage": _semantic_coverage_fingerprint(matrix),
+        "_stagnation_ledger": hashlib.sha256(
+            json.dumps(ledger_entries, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest(),
     }
-    return build_closure_projection(
+    closure = build_closure_projection(
         closure_state,
         matrix,
         ledger_entries,
         max_lanes_reached=max_lanes_reached,
     )
+    witness_path = Path(repo_root) / "state" / target_storage_key(target) / "checkpoint_latest.json"
+    witness = _read_json_file(str(witness_path))
+    guard = witness.get("round_guard") if isinstance(witness.get("round_guard"), dict) else {}
+    fingerprint = stagnation_fingerprint(closure_state, closure)
+    if fingerprint:
+        closure["stagnation_fingerprint"] = fingerprint
+    if (
+        apply_round_guard
+        and fingerprint
+        and fingerprint == str(guard.get("fingerprint") or "")
+        and int(guard.get("consecutive", 0) or 0) >= 3
+    ):
+        closure.update({
+            "verdict": "blocked",
+            "can_claim_exhausted": False,
+            "reasons": ["stagnant_prerequisite"],
+            "round_guard": guard,
+        })
+    elif guard:
+        closure["round_guard"] = guard
+    return closure
 
 
 def _load_loop_guard_projection(repo_root: str, state: dict) -> dict:

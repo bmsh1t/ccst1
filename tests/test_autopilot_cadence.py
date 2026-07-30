@@ -23,8 +23,8 @@ def test_autopilot_prompts_stay_compact():
     command = _read(COMMAND)
     agent = _read(AGENT)
 
-    assert len(command.splitlines()) <= 180
-    assert len(agent.splitlines()) <= 220
+    assert len(command.encode("utf-8")) <= 20 * 1024
+    assert len(agent.encode("utf-8")) <= 32 * 1024
 
 
 def test_autopilot_references_canonical_runtime_layers():

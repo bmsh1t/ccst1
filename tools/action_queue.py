@@ -601,8 +601,8 @@ def _checkpoint_item_to_action(target: str, item: dict) -> dict:
         priority=int(item.get("priority", 50) or 50),
         command_hint=command_hint,
         evidence_type="checkpoint-next-action",
-        source="checkpoint",
-        source_id=str(item.get("id") or ""),
+        source=str(item.get("source") or "checkpoint"),
+        source_id=str(item.get("source_id") or item.get("id") or ""),
         redline_required=bool(item.get("redline_required", False)),
         stop_condition=str(item.get("stop_condition") or DEFAULT_STOP_CONDITION),
         metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else None,
@@ -862,7 +862,15 @@ def ingest_checkpoint(repo_root: Path | str, target: str, *, checkpoint: dict | 
         runtime_wait_projection = current_runtime_wait in {"wait_recon", "wait_scan"} or str(
             checkpoint.get("decision") or checkpoint.get("next_action") or ""
         ) in {"wait_recon", "wait_scan"}
-        stats = upsert_actions(queue, actions)
+        stats = {"added": 0, "updated": 0, "skipped_final": 0}
+        for action in actions:
+            result = (
+                upsert_generated_action(queue, action)
+                if str((action.get("metadata") or {}).get("generation") or "")
+                else upsert_actions(queue, [action])
+            )
+            for key, value in result.items():
+                stats[key] = stats.get(key, 0) + int(value or 0)
         if runtime_wait_projection:
             # wait_* 是临时执行态，不代表旧 action 过时。
             stats["retired_stale"] = 0

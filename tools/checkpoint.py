@@ -32,9 +32,9 @@ try:
         load_queue as load_action_queue,
         select_next_action as action_queue_select_next_action,
     )
-    from tools.autopilot_state import build_autopilot_state
+    from tools.autopilot_state import build_autopilot_state, _load_closure_projection, stagnation_fingerprint
     from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix
+    from tools.coverage_matrix import class_relevance, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
@@ -53,9 +53,9 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_queue as load_action_queue,
         select_next_action as action_queue_select_next_action,
     )
-    from autopilot_state import build_autopilot_state  # type: ignore
+    from autopilot_state import build_autopilot_state, _load_closure_projection, stagnation_fingerprint  # type: ignore
     from context_pack import build_context_pack  # type: ignore
-    from coverage_matrix import class_relevance, high_value_gaps_from_matrix, rebuild_matrix, save_matrix  # type: ignore
+    from coverage_matrix import class_relevance, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
@@ -125,6 +125,8 @@ def write_checkpoint_witness(
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     context = checkpoint.get("context_pack") if isinstance(checkpoint.get("context_pack"), dict) else {}
+    path = repo / "state" / target_storage_key(resolved_target) / "checkpoint_latest.json"
+    previous = _read_json(path)
     payload = {
         "schema_version": 1,
         "kind": "autopilot_checkpoint_witness",
@@ -138,6 +140,8 @@ def write_checkpoint_witness(
             "required_checks": context.get("required_checks", []),
         },
     }
+    if isinstance(previous.get("round_guard"), dict):
+        payload["round_guard"] = previous["round_guard"]
     queue_sync = checkpoint.get("action_queue_sync")
     if isinstance(queue_sync, dict):
         queue_path = str(queue_sync.get("path") or "").strip()
@@ -156,9 +160,42 @@ def write_checkpoint_witness(
             "updated": int(stats.get("updated", 0) or 0),
             "next_id": str(next_action.get("id") or ""),
         }
-    path = repo / "state" / target_storage_key(resolved_target) / "checkpoint_latest.json"
     _write_json_atomic(path, payload)
     return {"path": str(path), "payload": payload}
+
+
+def record_round_closure(repo_root: Path | str, target: str) -> dict:
+    """Record one completed round only when closure is the same explicit prerequisite blocker."""
+    repo = Path(repo_root)
+    resolved_target = canonical_target_value(target)
+    state = build_autopilot_state(str(repo), resolved_target, bounded=True)
+    closure = _load_closure_projection(
+        str(repo), state, max_lanes_reached=False, apply_round_guard=False
+    )
+    fingerprint = stagnation_fingerprint(state, closure)
+    path = repo / "state" / target_storage_key(resolved_target) / "checkpoint_latest.json"
+    payload = _read_json(path)
+    if not payload:
+        raise ValueError(f"checkpoint witness missing or invalid: {path}")
+    previous = payload.get("round_guard") if isinstance(payload.get("round_guard"), dict) else {}
+    if fingerprint:
+        consecutive = (
+            min(int(previous.get("consecutive", 0) or 0) + 1, 3)
+            if fingerprint == str(previous.get("fingerprint") or "")
+            else 1
+        )
+        payload["round_guard"] = {
+            "schema_version": 1,
+            "fingerprint": fingerprint,
+            "reason": str((closure.get("reasons") or [""])[0]),
+            "consecutive": consecutive,
+            "threshold": 3,
+            "recorded_at": now_utc(),
+        }
+    else:
+        payload.pop("round_guard", None)
+    _write_json_atomic(path, payload)
+    return {"path": str(path), "round_guard": payload.get("round_guard") or {}}
 
 
 def sync_checkpoint_action_queue(
@@ -336,6 +373,18 @@ def _coverage_gap_validation_path(gap: dict) -> str:
 
 def _matrix_summary(matrix: dict, gaps: list[dict]) -> dict:
     endpoints = matrix.get("endpoints") or []
+    stored = matrix.get("summary") if isinstance(matrix.get("summary"), dict) else {}
+    if stored and matrix.get("_coverage_projection"):
+        return {
+            "endpoints": len([item for item in endpoints if isinstance(item, dict)]),
+            "total_cells": int(stored.get("total_cells", 0) or 0),
+            "tested_clean": int(stored.get("tested_clean", 0) or 0),
+            "tested_finding": int(stored.get("tested_finding", 0) or 0),
+            "untested": int(stored.get("untested", 0) or 0),
+            "n_a": int(stored.get("n_a", 0) or 0),
+            "high_value_gaps_count": int(stored.get("high_value_gaps_count", len(gaps)) or 0),
+            "actionable_high_value_gaps_count": len(_actionable_coverage_gaps(gaps)),
+        }
     total_cells = 0
     counts = {
         "tested_clean": 0,
@@ -2376,6 +2425,36 @@ def _build_next_action_queue(next_items: list[str], target: str = "") -> list[di
     return queue
 
 
+def _json_inject_queue_item(state: dict) -> dict:
+    projection = state.get("json_inject") or {}
+    status = str(projection.get("status") or "")
+    generation = str(projection.get("input_fingerprint") or "")
+    if status not in {"candidate_pending", "partial", "invalid_input"} or not generation:
+        return {}
+    action = {
+        "candidate_pending": "Review JSON injection candidates and validate locatable raw evidence.",
+        "partial": "Resume the JSON injection lane after resolving its recorded transport or evidence blocker.",
+        "invalid_input": "Review the rejected JSON endpoint input and supply an in-scope POST endpoint.",
+    }[status]
+    return {
+        "id": "JSON-INJECT",
+        "priority": 88 if status == "candidate_pending" else 62,
+        "type": "json-inject-review",
+        "status": "ready",
+        "action": action,
+        "command_hint": "python3 -m tools.json_inject_probe --target TARGET --endpoints-file FILE",
+        "redline_required": False,
+        "stop_condition": "record candidate validation, complete_no_hit, or the explicit blocker",
+        "source": "json-inject",
+        "source_id": "json-inject-lane",
+        "metadata": {
+            "generation": generation,
+            "summary_path": str(projection.get("path") or ""),
+            "summary_status": status,
+        },
+    }
+
+
 def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[dict]) -> list[dict]:
     """Remove checkpoint actions already closed in persistent action_queue state."""
     try:
@@ -2747,17 +2826,24 @@ def build_checkpoint(
     resolved_target = canonical_target_value(target)
     coverage_target = target_storage_key(resolved_target)
     state = build_autopilot_state(str(repo), resolved_target, memory_dir=memory_dir)
+    matrix = load_matrix_projection(coverage_target, repo_root=repo)
+    coverage_rebuilt = False
+    if matrix is None:
+        matrix = load_matrix(coverage_target, repo_root=repo)
+        if refresh_coverage and not matrix_is_fresh(coverage_target, matrix, repo_root=repo):
+            matrix = rebuild_matrix(coverage_target, repo_root=repo)
+            save_matrix(coverage_target, matrix, repo_root=repo)
+            coverage_rebuilt = True
+        elif matrix_is_fresh(coverage_target, matrix, repo_root=repo):
+            save_matrix_projection(coverage_target, matrix, repo_root=repo)
+    gaps = list(matrix.get("_coverage_gaps") or _matrix_gaps(matrix))
     context = build_context_pack(
         repo,
         target=resolved_target,
         memory_dir=memory_dir,
         surface_state=state.get("surface") if isinstance(state.get("surface"), dict) else None,
+        coverage_state=(gaps, matrix),
     )
-
-    matrix = rebuild_matrix(coverage_target, repo_root=repo)
-    gaps = _matrix_gaps(matrix)
-    if refresh_coverage:
-        save_matrix(coverage_target, matrix, repo_root=repo)
     coverage_summary = _matrix_summary(matrix, gaps)
     evidence_summary = build_evidence_summary(
         repo,
@@ -2794,10 +2880,14 @@ def build_checkpoint(
         next_items = [case_state_proposal, *next_items]
     elif case_state_seed_proposal:
         next_items = [case_state_seed_proposal, *next_items]
+    next_action_queue = _build_next_action_queue(next_items, resolved_target)
+    json_inject_item = _json_inject_queue_item(state)
+    if json_inject_item:
+        next_action_queue.append(json_inject_item)
     next_action_queue = _filter_final_action_queue_items(
         repo,
         resolved_target,
-        _build_next_action_queue(next_items, resolved_target),
+        next_action_queue,
     )
     dead_ends = _dead_end_proposals(state, gaps)
     runtime_wait_action = str(state.get("next_action") or "")
@@ -2851,7 +2941,7 @@ def build_checkpoint(
         "evidence_reviewed": {
             "autopilot_state": True,
             "context_pack": True,
-            "coverage_rebuilt": bool(refresh_coverage),
+            "coverage_rebuilt": coverage_rebuilt,
             "surface": bool(state.get("surface")),
         },
         "coverage": {
@@ -3089,6 +3179,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--note", default="")
     parser.add_argument("--no-refresh-coverage", action="store_true")
     parser.add_argument("--apply-target-memory", action="store_true")
+    parser.add_argument("--record-round-closure", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -3098,6 +3189,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     repo = Path(args.repo_root)
     resolved_target = canonical_target_value(args.target)
+    if args.record_round_closure:
+        try:
+            result = record_round_closure(repo, resolved_target)
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"checkpoint round closure record failed: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else result["path"])
+        return 0
     # Durable handoff 损坏时必须在 root-claim reconciliation 等写入前停止，避免把
     # “无法读取旧 queue”误当作可从空状态继续构建 checkpoint。
     try:

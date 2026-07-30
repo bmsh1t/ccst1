@@ -636,7 +636,8 @@ _ALL_TOOL_SPECS: list[dict] = [
             "description": (
                 "Run sqlmap against parameterized GET URLs found in recon. "
                 "Tests error-based, boolean-blind, time-blind, UNION injection. "
-                "Use when parameterized URLs exist OR nuclei flagged SQL-related findings."
+                "Use for a bounded deep test after SQL-related evidence or on a high-value "
+                "query surface; parameterized URLs alone are not a trigger."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
@@ -685,6 +686,9 @@ _ALL_TOOL_SPECS: list[dict] = [
                 "GraphQL __schema baseline diff). NoSQL payloads re-shape string fields into Mongo "
                 "operator objects ({$ne:null}, {$regex:.*}) — fire on /api/login when stack is "
                 "Node+Mongo; GraphQL probe fires on `query`-shaped fields targeting /graphql. "
+                "When a canonical SQLi/XSS probe is newly WAF-blocked relative to the endpoint "
+                "baseline, it tries at most two class-specific semantic variants and preserves "
+                "the block/bypass observations; normal responses never expand into a payload spray. "
                 "Auto-loads endpoints from recon/<t>/browser/xhr_endpoints.txt and "
                 "findings/<t>/js_intel/hypotheses.json. "
                 "Use AFTER imported browser MCP evidence or run_js_read has populated POST endpoint "
@@ -1923,6 +1927,27 @@ class ToolDispatcher:
 
         # Walk findings dir for any .txt with content
         if findings_dir and os.path.isdir(findings_dir):
+            if label == "json_inject":
+                summary_path = Path(findings_dir) / "poc" / "json_inject" / "summary.json"
+                try:
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    observations = summary.get("waf_observations", [])
+                    outcomes: dict[str, int] = {}
+                    if isinstance(observations, list):
+                        for observation in observations:
+                            if isinstance(observation, dict) and observation.get("outcome"):
+                                outcome = str(observation["outcome"])
+                                outcomes[outcome] = outcomes.get(outcome, 0) + 1
+                    outcome_text = ",".join(f"{key}:{value}" for key, value in sorted(outcomes.items()))
+                    lines.append(
+                        "  JSON probe: hits={hits} waf_observations={waf}{outcomes}".format(
+                            hits=summary.get("hit_count", 0),
+                            waf=summary.get("waf_observation_count", 0),
+                            outcomes=f" outcomes={outcome_text}" if outcome_text else "",
+                        )
+                    )
+                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                    pass
             scanner_summary = self._format_scanner_summary(findings_dir)
             if scanner_summary:
                 lines.append(scanner_summary)
@@ -3170,7 +3195,7 @@ CORE RULES:
 12. If ranked workflow leads already exist → read_surface_summary and spend at least one focused step on the best lead before defaulting back to another broad scanner pass. Demoted/manual-review leads are not final rejections; treat them as reversible secondary-sweep candidates when they may hide secret, supply-chain, or chain-pivot evidence.
 13. Do not get trapped in enrichment-only loops: after one or two focused lead-driven attempts, either promote/demote the lead with evidence and widen back into the next best active lane.
 14. If API endpoints or numeric-object URLs exist → run_api_fuzz. If authenticated surfaces exist → run_cors_check.
-15. If parameterized URLs found → run_param_discovery and run_sqlmap_targeted. Use run_sqlmap_on_file for specific raw requests. For POST JSON endpoints discovered through imported browser MCP evidence or js_read (REST APIs, GraphQL, login/auth/import/mutation paths), prefer run_json_inject_probe — it is surgical (≈30s for 50 endpoints), AI-callable, and tests 8 payload classes (sqli auth-bypass/error/time, ssti, cmd-injection, open-redirect, path-traversal, xss) with 3-stage detection.
+15. Use `tools/validation_runner.py sqli-result-diff` for controlled baseline/variant replay of one evidence-backed GET parameter. Use run_sqlmap_targeted for bounded GET deep testing only after SQL-related evidence or on a high-value query surface; use run_sqlmap_on_file for an exact raw POST/JSON request. For surgical JSON-body discovery on imported browser MCP or js_read evidence (REST, GraphQL, login/auth/import/mutation), use run_json_inject_probe; it only expands SQLi/XSS variants after a canonical response is newly WAF-blocked relative to the endpoint baseline.
 16. If JWT tokens appear in recon data → run_jwt_audit.
 17. When standard scans have plateaued but attack surface remains, use run_zero_day_fuzzer.
 18. For the primary /report reporting workflow, generate reports with generate_reports before finish when findings or useful artifacts exist; generate_reports is the compatibility path behind /report.

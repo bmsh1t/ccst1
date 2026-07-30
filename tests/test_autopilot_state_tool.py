@@ -4,6 +4,7 @@ import json
 import sys
 import time
 
+import autopilot_state as autopilot_state_module
 import finding_index
 from memory.hunt_journal import HuntJournal
 from memory.pattern_db import PatternDB
@@ -14,11 +15,13 @@ from autopilot_state import (
     _filter_ranked_placeholders,
     _is_substantive_queue_action,
     _load_closure_projection,
+    _load_json_inject_projection,
     _pick_next_action,
     build_closure_projection,
     build_loop_guard_projection,
     build_autopilot_state,
     format_autopilot_state,
+    stagnation_fingerprint,
     main as autopilot_state_main,
 )
 from request_guard import record_request
@@ -96,6 +99,34 @@ def test_closure_finishes_only_for_gap_free_handoff_state():
     assert closure["reasons"] == []
 
 
+def test_json_summary_projection_and_partial_closure(tmp_path):
+    target = "target.com"
+    path = tmp_path / "findings" / target / "poc" / "json_inject" / "summary.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "schema_version": 2,
+        "kind": "json_inject_summary",
+        "target": target,
+        "status": "partial",
+        "input_fingerprint": "a" * 64,
+        "request_count": 2,
+        "transport_error_count": 1,
+        "skipped": {},
+    }), encoding="utf-8")
+
+    projection = _load_json_inject_projection(str(tmp_path), target)
+    closure = build_closure_projection(
+        {"target": target, "next_action": "handoff", "json_inject": projection},
+        _closure_matrix(),
+    )
+
+    assert projection["status"] == "partial"
+    assert closure["reasons"] == ["json_evidence_partial"]
+    assert stagnation_fingerprint(
+        {"target": target, "json_inject": projection}, closure
+    )
+
+
 def _write_closure_owners(tmp_path, target: str, *, status: str, final_review: bool) -> None:
     evidence_dir = tmp_path / "evidence" / target_storage_key(target)
     evidence_dir.mkdir(parents=True)
@@ -119,6 +150,115 @@ def _write_closure_owners(tmp_path, target: str, *, status: str, final_review: b
             }),
             encoding="utf-8",
         )
+
+
+def test_matching_third_round_guard_blocks_partial_json_lane(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    state = {
+        "target": target,
+        "resolved_target": target,
+        "next_action": "handoff",
+        "json_inject": {"status": "partial", "input_fingerprint": "abc", "request_count": 1},
+    }
+    base = _load_closure_projection(
+        str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
+    )
+    fingerprint = base["stagnation_fingerprint"]
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text(json.dumps({"round_guard": {
+        "fingerprint": fingerprint, "consecutive": 3, "threshold": 3,
+    }}), encoding="utf-8")
+
+    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+
+    assert closure["verdict"] == "blocked"
+    assert closure["reasons"] == ["stagnant_prerequisite"]
+
+
+def test_round_guard_ignores_coverage_rebuild_timestamp(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    state = {
+        "target": target,
+        "resolved_target": target,
+        "next_action": "handoff",
+        "json_inject": {"status": "partial", "input_fingerprint": "abc", "request_count": 1},
+    }
+    first = _load_closure_projection(
+        str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
+    )
+    matrix_path = tmp_path / "evidence" / target / "coverage_matrix.json"
+    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+    matrix["last_updated"] = "2099-01-01T00:00:00+00:00"
+    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+    second = _load_closure_projection(
+        str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
+    )
+
+    assert first["stagnation_fingerprint"] == second["stagnation_fingerprint"]
+
+
+def test_closure_prefers_compact_coverage_projection(tmp_path, monkeypatch):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    projection = {
+        "target": target,
+        "summary": {"high_value_gaps_count": 0},
+        "endpoints": [{
+            "endpoint": "/api/orders/1",
+            "cells": {"IDOR": {"status": "tested_clean"}},
+        }],
+        "_coverage_gaps": [],
+        "_coverage_projection": True,
+    }
+    monkeypatch.setattr(autopilot_state_module, "load_matrix_projection", lambda *_args: projection)
+    monkeypatch.setattr(
+        autopilot_state_module,
+        "load_matrix",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("full matrix loaded")),
+    )
+
+    closure = _load_closure_projection(
+        str(tmp_path), {"target": target, "next_action": "handoff"}, max_lanes_reached=False
+    )
+
+    assert closure["verdict"] == "finish"
+
+
+def test_closure_falls_back_when_coverage_projection_is_unavailable(tmp_path, monkeypatch):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    loaded = []
+    monkeypatch.setattr(autopilot_state_module, "load_matrix_projection", lambda *_args: None)
+    original = autopilot_state_module.load_matrix
+    monkeypatch.setattr(
+        autopilot_state_module,
+        "load_matrix",
+        lambda *args: loaded.append(args) or original(*args),
+    )
+
+    closure = _load_closure_projection(
+        str(tmp_path), {"target": target, "next_action": "handoff"}, max_lanes_reached=False
+    )
+
+    assert closure["verdict"] == "finish"
+    assert loaded
+
+
+def test_compact_projection_keeps_default_cells_as_pending_gaps():
+    projection = {
+        "summary": {"high_value_gaps_count": 1},
+        "endpoints": [{"endpoint": "/api/orders/1", "cells": {}}],
+        "_coverage_gaps": [{"endpoint": "/api/orders/1", "vuln_class": "IDOR"}],
+        "_coverage_projection": True,
+    }
+
+    closure = build_closure_projection({"next_action": "handoff"}, projection)
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["coverage_high_value_gaps"]
 
 
 def _surface_closure_state(target: str, *, next_action: str = "hunt_p1") -> dict:

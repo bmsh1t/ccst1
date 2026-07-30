@@ -834,6 +834,24 @@ runtime_doctor drift = 0
 - checkpoint 是否只在阶段收束；
 - coverage 是否只在 finish/handoff 发挥作用。
 
+### Backlog：多步 workflow sequence runner
+
+先不进入当前主线，作为后续 P1 能力保留。
+
+目标：把浏览器/HAR/代理中观察到的业务流程录成有序请求序列，例如
+`add-cart -> coupon -> checkout -> cancel`，再做最小扰动重放。
+
+边界：
+
+- 只在存在真实业务流证据时触发，不进入默认 recon/scanner。
+- 复用现有 browser/HAR/import、Action Queue、evidence ledger 和 validation runner。
+- 首版只做 record -> replay -> perturb -> diff -> evidence write-back。
+- 不新增长期状态 owner；序列原件作为 evidence artifact，执行项进入 Action Queue。
+- 红线动作、真实付款、不可逆订单/权限变更仍需显式当轮确认。
+
+价值：覆盖步骤跳过、重复提交、优惠券/库存/订单状态机、跨 actor/object
+重放和 race/state-machine 类高价值漏洞。
+
 ## 19. 最终结论
 
 最终优化主线：

@@ -48,6 +48,23 @@ def test_spawn_uses_session_safe_popen_options_and_cwd(monkeypatch):
     assert "preexec_fn" not in captured["kwargs"]
 
 
+def test_spawn_passes_explicit_environment(monkeypatch):
+    captured = {}
+
+    class FakeProc:
+        pass
+
+    monkeypatch.setattr(
+        runtime_exec.subprocess,
+        "Popen",
+        lambda *args, **kwargs: captured.update(kwargs) or FakeProc(),
+    )
+
+    runtime_exec._spawn("echo ok", env={"BBHUNT_AUTH_HEADERS": "Authorization: secret"})
+
+    assert captured["env"] == {"BBHUNT_AUTH_HEADERS": "Authorization: secret"}
+
+
 
 def test_run_shell_command_returns_combined_output(monkeypatch):
     class FakeProc:

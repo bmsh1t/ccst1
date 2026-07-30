@@ -11,7 +11,7 @@ from typing import Any, Sequence
 
 try:
     from tools.autopilot_args import parse_autopilot_args
-    from tools.autopilot_state import build_autopilot_bootstrap_state
+    from tools.autopilot_state import build_autopilot_bootstrap_state, describe_next_step
     from tools.capability_profile import (
         build_capability_profile,
         unknown_capability_profile,
@@ -20,7 +20,7 @@ try:
     from tools.runtime_doctor import KIND_ORDER, compare_runtime
 except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直接执行
     from autopilot_args import parse_autopilot_args
-    from autopilot_state import build_autopilot_bootstrap_state
+    from autopilot_state import build_autopilot_bootstrap_state, describe_next_step
     from capability_profile import build_capability_profile, unknown_capability_profile
     from runtime_config import is_ctf_mode_enabled
     from runtime_doctor import KIND_ORDER, compare_runtime
@@ -244,6 +244,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     cidr_continuation = recon_artifacts.get("cidr_continuation") or {}
     surface_projection = state.get("surface_projection") or {}
     observation_inventory = state.get("observation_inventory") or {}
+    json_inject = state.get("json_inject") or {}
     batch = state.get("batch") or {}
     intel_continuation = _compact_intel_continuation(state.get("intel_continuation"))
     workflow_leads = []
@@ -270,6 +271,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "target_kind": str(state.get("target_kind") or "domain"),
         "next_action": next_action,
+        "next_step": describe_next_step(state),
         "wait": next_action in {"wait_recon", "wait_scan"},
         "recon": {
             "has_recon": bool(state.get("has_recon")),
@@ -338,6 +340,15 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             )
             if key in observation_inventory
         },
+        "json_inject": {
+            key: json_inject[key]
+            for key in (
+                "status", "reason", "path", "schema_version", "input_fingerprint",
+                "endpoint_count", "probed_endpoint_count", "request_count", "hit_count",
+                "waf_observation_count", "transport_error_count", "skipped",
+            )
+            if key in json_inject
+        },
         "surface_candidates": [
             _compact_candidate(item)
             for item in (
@@ -392,11 +403,19 @@ def build_autopilot_bootstrap(
     if arguments["action"] != "continue":
         return payload
 
-    runtime = compare_runtime(
-        repo_root=resolved_repo,
-        runtime_root=runtime_root,
-        kinds=list(KIND_ORDER),
-    )
+    try:
+        runtime = compare_runtime(
+            repo_root=resolved_repo,
+            runtime_root=runtime_root,
+            kinds=list(KIND_ORDER),
+        )
+    except (OSError, ValueError) as exc:
+        payload["action"] = "stop_runtime_error"
+        payload["error"] = {
+            "type": type(exc).__name__,
+            "reason": " ".join(str(exc).split())[:500],
+        }
+        return payload
     payload["runtime"] = _runtime_projection(runtime)
     if not runtime["clean"]:
         payload["action"] = "stop_runtime_drift"
@@ -409,11 +428,19 @@ def build_autopilot_bootstrap(
         payload["capabilities"] = unknown_capability_profile("profile-error")
 
     payload["ctf_mode"] = is_ctf_mode_enabled(resolved_repo)
-    state = build_autopilot_bootstrap_state(
-        str(resolved_repo),
-        str(arguments["target"]),
-    )
-    payload["state"] = compact_autopilot_state(state)
+    try:
+        state = build_autopilot_bootstrap_state(
+            str(resolved_repo),
+            str(arguments["target"]),
+        )
+        payload["state"] = compact_autopilot_state(state)
+    except (OSError, ValueError) as exc:
+        payload["action"] = "stop_state_error"
+        payload["error"] = {
+            "type": type(exc).__name__,
+            "reason": " ".join(str(exc).split())[:500],
+        }
+        return payload
     payload["action"] = "continue"
     return payload
 

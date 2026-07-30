@@ -64,6 +64,7 @@ identity, and cloud signals without re-enumerating everything.
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/param_discovery.sh` | Live URLs exist, parameters thin | Active hidden parameter mining (arjun + x8) |
+| `tools/dns_expand.py` | AI sees a DNS naming/scope gap after passive Recon | Bounded alterx/dnsgen + puredns expansion |
 | `tools/takeover_scanner.sh` | subdomains/all.txt populated | dnsReaper + subjack subdomain takeover scan |
 | `tools/secrets_hunter.sh` | After JS/source collection | trufflehog/noseyparker/gitleaks — verified secret discovery |
 | `tools/cicd_scanner.sh` | GitHub org name detected | sisakulint remote scan of `.github/workflows/*.yml` |
@@ -80,6 +81,7 @@ identity, and cloud signals without re-enumerating everything.
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/vuln_scanner.sh` | Recon done, want broad active coverage | Multi-lane scanner; unsafe methods become manual-review unless `ALLOW_UNSAFE_HTTP_TESTS=1` |
+| `tools/json_inject_probe.py` | Reviewed same-target POST/JSON shape exists | Scoped AuthSession probe with atomic summary and bounded WAF adaptation |
 | `tools/bypass_403.sh` | 403/401 on interesting endpoint | byp4xx + 20 built-in header/method/encoding bypass tricks |
 | `tools/sibling_generator.py` | Candidate route has an ID-bearing sibling shape | Writes a bounded sibling-endpoint probe queue for evidence-fit replay |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
@@ -183,6 +185,7 @@ identity, and cloud signals without re-enumerating everything.
 | Brand keyword for buckets | `cloud_recon.sh` |
 | Batch recon manifest exists | read `recon/<list-stem>/batch_manifest.jsonl`, then run `/surface` or `/hunt` on completed domains |
 | Identity/cloud intel from recon has hits | review `exposure/identity_intel/summary.md` and `exposure/cloud/cloud_enum.txt`, then pivot to `/intel` or `/cloud-recon` |
+| Passive DNS shows a naming dialect or evidence-backed hostname gap | AI-selected `dns_expand.py`, then refresh `/surface` |
 | `subdomains/all.txt` ready | `takeover_scanner.sh` |
 | Live URLs but no params | `param_discovery.sh` |
 | Concrete webpack/chunk/source-map signal | `deep_js_packer.py`, then `js_reader.py` |

@@ -11,7 +11,7 @@ Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-pars
 Formal arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep] [--max-lanes N] [--auth-file PATH]`, or one readable primary-domain list.
 ## Runtime Preflight
 Obey bootstrap `action` before any other step. `ask_target` asks for the exact target;
-`stop_invalid_arguments` reports `arguments.errors`; `stop_runtime_drift` reports compact
+`stop_invalid_arguments` reports `arguments.errors`; `stop_state_error`/`stop_runtime_error` report bounded `error` and stop; `stop_runtime_drift` reports compact
 runtime counts, points to `/sync-check`, requests explicit confirmation before any sync,
 and stops. Never sync automatically. Only `continue` may act.
 The bootstrap already ran arguments, read-only runtime compare, advisory capability profile,
@@ -41,7 +41,7 @@ existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> RE
 Every invocation is state-first. Bootstrap `ctf_mode`, compact `state`, and advisory
 `capabilities` are the only initial inputs. Branch only after that state read;
 missing/stale/invalid is work, not no surface. State tools are not a pre-flight checklist.
-For each iteration: consume structured `next_action` and the durable Action Queue, choose
+For each iteration: consume structured `next_action` and the durable Action Queue; use bounded `next_step`, then choose
 one smallest evidence-producing action, execute it, write evidence, then refresh bounded state before choosing again:
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
@@ -89,6 +89,10 @@ advisory lead source; scanner-negative is not completion. Follow
 historical corpora directly to general nuclei, never repeat breadth only because
 Deep mode or raw volume is large, and treat killed/stopped/timeout/non-zero as
 incomplete. Bounded Surface is the default window, not an AI capability limit.
+General Nuclei breadth is origin-deduplicated and bounded to 50/100/200 targets
+for quick/standard/full (`BB_NUCLEI_MAX_TARGETS` overrides); `summary.json`
+records available and selected origin counts. Long-tail paths/components/CVEs
+need a reviewed evidence-backed list.
 Business Model Read: before recon or after first recon, maintain
 `evidence/<target>/business_model.md` using the `agent.py` directive.
 Promote Lead -> Signal -> Candidate -> Validated Finding only with practical,
@@ -125,8 +129,8 @@ Before unusual helpers, scan `docs/tool-index.md` once. Canonical contracts are
   Missing Network/state stays partial. Use `tools/source_intel.py`/`tools/js_reader.py`;
   `tools/deep_js_packer.py` requires concrete runtime/chunk/source-map evidence; JS volume alone is not a trigger.
   partial/unavailable stays open.
-- Known software: concrete version -> `tools/intel_engine.py`; AI must select a reachable
-  advisory before targeted probe; refresh state. WordPress/WPScan: `knowledge/cards/wordpress-surface-intelligence.md`.
+- Known software: concrete version -> `tools/intel_engine.py`; AI must select a reachable advisory before targeted probe; refresh state. WordPress/WPScan: `knowledge/cards/wordpress-surface-intelligence.md`.
+- SQL/JSON/WAF: `live/wafw00f_hits.txt` is sampled host-level context, not per-request proof. For a reviewed same-target POST/JSON shape, run `python3 -m tools.json_inject_probe --target <target_shell> --endpoints-file <reviewed-jsonl> [--auth-file <auth_file_shell>] --no-default-seeds --max-requests <budget>` and read `findings/<target-key>/poc/json_inject/summary.json`. It owns baseline-relative classification and at most two budgeted SQLi/XSS semantic variants after a new block; `429`, transport failure, block pages, and WAF observations are not findings. Use result-diff or bounded sqlmap only for an evidence-backed query/raw request; never spray because parameters or a WAF exist.
 - Case state: case-state-validation and case-state-enrichment are high-value continuity;
   Case-State First, Not Case-State Only: not a scope gate or bug-class selector. Stale/missing
   cannot block fresh evidence/AI override; use `tools/target_case_state.py`, `tools/case_state_seed.py`, and runners.
@@ -135,8 +139,8 @@ Before unusual helpers, scan `docs/tool-index.md` once. Canonical contracts are
   lockout/rate, shortlist, dry-run/preflight, audit, and stop-on-hit gates exist.
   Password brute force, default credential checks, and password spray are not
   absolute red lines or a mandatory last lane. Missing hygiene becomes a queued action.
-- Focused fuzz is an optional AI-selected discovery action; canonical trigger,
-  artifact, feedback, and non-expansion rules live in `skills/web2-recon/SKILL.md`.
+- Focused fuzz is an optional AI-selected discovery action; DNS expansion is also AI-selected, and canonical contracts live in `skills/web2-recon/SKILL.md`.
+  DNS expansion requires a concrete naming/certificate/JS/source gap and calls `tools/dns_expand.py --target <target_shell> --reason "<evidence>"`; host count alone is not a trigger, and generation/resolution/scope/merge stay tool-owned.
 - Byte-exact HTTP/cache/desync uses `tools/sender_semantics.py --require` and
   `tools/smuggling_executor.py --variant`; browser evidence cannot prove wire absence.
 - Live-Action Boundaries: `rules/red-lines.md` is canonical. Red-line checks are

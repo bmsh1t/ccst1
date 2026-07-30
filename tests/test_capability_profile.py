@@ -20,6 +20,7 @@ HELPERS = (
     "tools/source_intel.py",
     "tools/js_reader.py",
     "tools/browser_mcp_import.py",
+    "tools/dns_expand.py",
 )
 
 
@@ -53,6 +54,7 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
             "browser": [],
             "recon": ["subfinder", "httpx", "katana", "gau", "waybackurls", "ffuf"],
             "scanner": ["nuclei"],
+            "dns-expansion": ["alterx", "dnsgen", "puredns"],
         },
         "session_managed": list(SESSION_MANAGED),
         "fallbacks": [
@@ -66,6 +68,7 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
             "prefer-session-browser-mcp",
             "browser-mcp-evidence-import",
             "recon-engine-httpx",
+            "dns-expansion-evidence-gated",
             "scanner-native-plus-nuclei",
         ],
     }
@@ -94,6 +97,7 @@ def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback
         "browser": [],
         "recon": [],
         "scanner": [],
+        "dns-expansion": [],
     }
     assert profile["session_managed"] == list(SESSION_MANAGED)
     assert profile["fallbacks"] == ["browser-mcp-evidence-import", "source-js-enrichment"]
@@ -105,6 +109,9 @@ def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback
         "waybackurls",
         "ffuf",
         "nuclei",
+        "alterx",
+        "dnsgen",
+        "puredns",
     ]
     assert profile["recommended_paths"] == [
         "prefer-session-browser-mcp",
@@ -176,7 +183,12 @@ def test_unknown_profile_is_distinct_from_checked_but_degraded():
         "schema_version": 1,
         "checked": False,
         "status": "unknown",
-        "available": {"browser": [], "recon": [], "scanner": []},
+        "available": {
+            "browser": [],
+            "recon": [],
+            "scanner": [],
+            "dns-expansion": [],
+        },
         "session_managed": [],
         "fallbacks": [],
         "missing_core": [],

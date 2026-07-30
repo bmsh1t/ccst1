@@ -10,7 +10,6 @@ Usage:
   tools/waf_encoder.py "<payload>" --layers 2
   tools/waf_encoder.py "<payload>" --json
 """
-import sys
 import json
 import urllib.parse
 import base64
@@ -68,19 +67,10 @@ def html_entity(payload: str) -> list[tuple[str, str]]:
 def sql_comment_inject(payload: str) -> list[tuple[str, str]]:
     keywords = ["SELECT", "UNION", "INSERT", "UPDATE", "DELETE", "FROM", "WHERE", "AND", "OR", "ORDER", "GROUP", "HAVING", "LIMIT"]
     variants = []
-
-    def comment_split(kw, comment="/**/"):
-        return kw[0] + comment + kw[1:]
-
-    result1 = payload
-    result2 = payload
-    result3 = payload
-    for kw in keywords:
-        if kw in payload.upper():
-            idx = payload.upper().find(kw)
-            result1 = result1[:idx] + comment_split(kw) + result1[idx + len(kw):]
-            result2 = result2[:idx] + f"/*!{kw}*/" + result2[idx + len(kw):]
-            result3 = result3[:idx] + f"/*!50000{kw}*/" + result3[idx + len(kw):]
+    keyword_re = re.compile(r"\b(?:" + "|".join(keywords) + r")\b", re.IGNORECASE)
+    result1 = keyword_re.sub(lambda m: m.group(0)[0] + "/**/" + m.group(0)[1:], payload)
+    result2 = keyword_re.sub(lambda m: f"/*!{m.group(0)}*/", payload)
+    result3 = keyword_re.sub(lambda m: f"/*!50000{m.group(0)}*/", payload)
 
     if result1 != payload:
         variants.append(("sql-comment-/**/-split", result1))

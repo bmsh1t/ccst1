@@ -24,7 +24,7 @@ bootstrap/parser is the only argument owner.
 
 Obey bootstrap `action` exactly as `commands/autopilot.md` requires. Only
 `continue` may proceed. For `ask_target`, `stop_invalid_arguments`, or
-`stop_runtime_drift`, preserve the bounded bootstrap reason, apply the terminal
+`stop_runtime_drift`, `stop_runtime_error`, or `stop_state_error`, preserve the bounded bootstrap reason, apply the terminal
 cron cleanup below, emit `STATUS: ERROR reason=<bounded-summary>`, and stop. Do
 not sync runtime automatically and do not perform a target action before the
 read-only precheck below.
@@ -71,6 +71,7 @@ requesting the final owner verdict:
 ```bash
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-closure --json
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --json [--max-lanes-reached]
 ```
 
