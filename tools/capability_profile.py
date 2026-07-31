@@ -7,6 +7,11 @@ import shutil
 from pathlib import Path
 from typing import Callable
 
+try:
+    from tools.eburst_lane import resolve_eburst
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from eburst_lane import resolve_eburst  # type: ignore
+
 
 SCHEMA_VERSION = 1
 MAX_LIST_ITEMS = 16
@@ -18,6 +23,7 @@ TOOL_REGISTRY: dict[str, tuple[str, ...]] = {
     "recon": ("subfinder", "httpx", "katana", "gau", "waybackurls", "ffuf"),
     "scanner": ("nuclei",),
     "dns-expansion": ("alterx", "dnsgen", "puredns"),
+    "exchange": ("eburst",),
 }
 SESSION_MANAGED = ("chrome-devtools-mcp", "playwright-mcp")
 CORE_EXTERNAL_TOOLS = ("curl", "httpx")
@@ -64,7 +70,12 @@ def build_capability_profile(
     for category, tools in TOOL_REGISTRY.items():
         category_available = []
         for tool in tools:
-            if resolver(tool):
+            is_available = (
+                resolve_eburst(which=resolver).get("status") == "ready"
+                if tool == "eburst"
+                else bool(resolver(tool))
+            )
+            if is_available:
                 category_available.append(tool)
             elif tool not in CORE_EXTERNAL_TOOLS:
                 missing_optional.append(tool)

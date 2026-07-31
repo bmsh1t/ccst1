@@ -130,6 +130,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/osint_employees.sh` | Identity surface / username candidates needed | theHarvester + username-anarchy into `recon/<target>/osint/` |
 | `tools/breach_checker.py` | Enrich prepared password candidates | HIBP sweet/zero/common/unknown buckets; sends SHA-1 prefixes only |
 | `tools/spray_orchestrator.sh` ⚠️ controlled | Credential lane selected after AI shortlist | input-bound dry-run; request spec; unified audit/stop/resume; private evidence |
+| `tools/eburst_lane.py` ⚠️ Exchange-only | Exchange/OWA/EWS evidence in target recon | External EBurst `-C` interface check with scope/timeout/artifact bounds; credentials stay in `/spray` |
 
 ## 6. OAST / async (Blind vulnerabilities)
 
@@ -188,6 +189,7 @@ identity, and cloud signals without re-enumerating everything.
 | Passive DNS shows a naming dialect or evidence-backed hostname gap | AI-selected `dns_expand.py`, then refresh `/surface` |
 | `subdomains/all.txt` ready | `takeover_scanner.sh` |
 | Live URLs but no params | `param_discovery.sh` |
+| Exchange/OWA/EWS/Autodiscover signal in `technology_inventory` or URL evidence | `eburst_lane.py --target <target>` (interface check only; use `/spray` for controlled credentials) |
 | Concrete webpack/chunk/source-map signal | `deep_js_packer.py`, then `js_reader.py` |
 | JS bundles cached without recovery evidence | `js_reader.py` (then `js-reader` agent) |
 | Recon done, want broad active | `vuln_scanner.sh` |

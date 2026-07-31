@@ -55,6 +55,7 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
             "recon": ["subfinder", "httpx", "katana", "gau", "waybackurls", "ffuf"],
             "scanner": ["nuclei"],
             "dns-expansion": ["alterx", "dnsgen", "puredns"],
+            "exchange": ["eburst"],
         },
         "session_managed": list(SESSION_MANAGED),
         "fallbacks": [
@@ -98,6 +99,7 @@ def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback
         "recon": [],
         "scanner": [],
         "dns-expansion": [],
+        "exchange": [],
     }
     assert profile["session_managed"] == list(SESSION_MANAGED)
     assert profile["fallbacks"] == ["browser-mcp-evidence-import", "source-js-enrichment"]
@@ -112,6 +114,7 @@ def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback
         "alterx",
         "dnsgen",
         "puredns",
+        "eburst",
     ]
     assert profile["recommended_paths"] == [
         "prefer-session-browser-mcp",
@@ -188,6 +191,7 @@ def test_unknown_profile_is_distinct_from_checked_but_degraded():
             "recon": [],
             "scanner": [],
             "dns-expansion": [],
+            "exchange": [],
         },
         "session_managed": [],
         "fallbacks": [],

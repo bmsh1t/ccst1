@@ -56,3 +56,34 @@ def test_single_version_smoke_reports_missing_without_installing(tmp_path):
     assert "definitely-missing-tool" in result.stdout
     assert "MISSING" in result.stdout
     assert not (tmp_path / "go").exists()
+
+
+def test_eburst_is_detected_from_shared_tools_dir_without_installing(tmp_path):
+    home = tmp_path / "Tools" / "EBurst"
+    home.mkdir(parents=True)
+    (home / "EBurst.py").write_text("# fixture\n", encoding="utf-8")
+    python2 = tmp_path / "python2"
+    python2.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python2.chmod(0o755)
+    env = {"HOME": str(tmp_path), "PATH": str(tmp_path), "LC_ALL": "C"}
+
+    result = subprocess.run(
+        ["/bin/bash", str(SCRIPT), "--have", "eburst"],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "yes"
+
+    version = subprocess.run(
+        ["/bin/bash", str(SCRIPT), "--version", "eburst"],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+    assert version.returncode == 0
+    assert "Python 2" in version.stdout

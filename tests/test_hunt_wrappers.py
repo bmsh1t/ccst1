@@ -20,6 +20,16 @@ def _b64url_json(data):
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+def test_check_tools_includes_runnable_external_eburst(monkeypatch):
+    monkeypatch.setattr(hunt, "resolve_eburst", lambda: {"status": "ready"})
+    monkeypatch.setattr(hunt, "run_cmd", lambda command, **_kwargs: (command.endswith("subfinder"), ""))
+
+    installed, missing = hunt.check_tools()
+
+    assert "eburst" in installed
+    assert "eburst" not in missing
+
+
 def test_runtime_child_env_exports_only_allowlisted_credentials(monkeypatch, tmp_path):
     (tmp_path / ".env").write_text(
         "CHAOS_API_KEY=file-chaos\nH1_API_TOKEN=file-h1\nRESIN_PROXY_TOKEN=file-resin\nUNRELATED_SECRET=private\n",

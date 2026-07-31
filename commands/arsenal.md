@@ -28,6 +28,7 @@ Inspect the external tool inventory used by this plugin.
 - **Takeover** — dnsreaper, subjack
 - **Bypass** — byp4xx, wafw00f, unwaf
 - **JWT/auth** — jwt_tool
+- **Exchange** — eburst (external `/root/Tools/EBurst`, Python 2 runtime)
 - **Scope** — bbscope
 - **Mobile** — mobsf, apkleaks, objection, jadx
 - **OSINT** — maigret, pywhat, sublert
@@ -47,3 +48,8 @@ single source of truth for what is and isn't wired in.
 
 Version smoke is diagnostic-only and never runs during `/autopilot` bootstrap.
 It executes only known read-only version flags and reports unsupported tools without guessing.
+
+Exchange is evidence-triggered, not a startup check. When target-owned recon shows
+OWA/EWS/Autodiscover/Exchange paths, use `python3 tools/eburst_lane.py --target
+<target>` for a bounded interface check. Route any reviewed credential test through
+the existing `/spray` preflight instead of invoking EBurst's legacy dictionary mode.

@@ -17,6 +17,8 @@
 set -uo pipefail
 
 export PATH="$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+SHARED_TOOLS_DIR="${BBHUNT_TOOLS_DIR:-${OSMEDEUS_TOOLS_DIR:-$HOME/Tools}}"
+EBURST_HOME="${EBURST_HOME:-$SHARED_TOOLS_DIR/EBurst}"
 
 # tool|category|install-hint|upstream-url
 ARSENAL_TOOLS=(
@@ -33,6 +35,7 @@ ARSENAL_TOOLS=(
   "alterx|recon|GOBIN=\$HOME/go/bin go install github.com/projectdiscovery/alterx/cmd/alterx@latest|github.com/projectdiscovery/alterx"
   "dnsgen|recon|pipx install dnsgen|github.com/ProjectAnte/dnsgen"
   "knockpy|recon|pipx install knockpy|github.com/guelfoweb/knockpy"
+  "eburst|exchange|git clone https://github.com/grayddq/EBurst.git \"\$HOME/Tools/EBurst\" (requires Python 2)|github.com/grayddq/EBurst"
   # ── Live host probing ───────────────────────────────────────────────────
   "httpx|probe|GOBIN=\$HOME/go/bin go install github.com/projectdiscovery/httpx/cmd/httpx@latest|github.com/projectdiscovery/httpx"
   "dnsx|probe|GOBIN=\$HOME/go/bin go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest|github.com/projectdiscovery/dnsx"
@@ -111,7 +114,18 @@ ARSENAL_TOOLS=(
 
 # `_have <tool>` — true when the binary is on PATH. Source this file from other
 # scripts to use it; safe under `set -e` because it returns 1 (no exit).
-_have() { command -v "$1" >/dev/null 2>&1; }
+_have() {
+  if [ "$1" = "eburst" ] || [ "$1" = "EBurst" ]; then
+    [ -f "$EBURST_HOME/EBurst.py" ] || return 1
+    if [ -n "${EBURST_PYTHON:-}" ]; then
+      [ -x "$EBURST_PYTHON" ] || command -v "$EBURST_PYTHON" >/dev/null 2>&1
+      return
+    fi
+    command -v python2 >/dev/null 2>&1 || command -v python2.7 >/dev/null 2>&1
+    return
+  fi
+  command -v "$1" >/dev/null 2>&1
+}
 export -f _have 2>/dev/null || true
 
 _print_status() {
@@ -159,6 +173,14 @@ _version_arg() {
 
 _print_version() {
   local tool="$1" path arg output first
+  if [ "$tool" = "eburst" ] || [ "$tool" = "EBurst" ]; then
+    if _have "$tool"; then
+      printf '%-18s %-12s %s\n' "$tool" "OK" "$EBURST_HOME/EBurst.py (Python 2)"
+      return 0
+    fi
+    printf '%-18s %-12s %s\n' "$tool" "MISSING" "external script or Python 2 runtime unavailable"
+    return 1
+  fi
   if ! path=$(command -v "$tool" 2>/dev/null); then
     printf '%-18s %-12s %s\n' "$tool" "MISSING" "not on PATH"
     return 1

@@ -318,6 +318,7 @@ def test_capability_profile_failure_is_advisory(monkeypatch, tmp_path):
                 "recon": [],
                 "scanner": [],
                 "dns-expansion": [],
+                "exchange": [],
             },
         "session_managed": [],
         "fallbacks": [],

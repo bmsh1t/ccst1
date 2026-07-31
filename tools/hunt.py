@@ -55,6 +55,7 @@ from legacy_bridge import generate_legacy_reports, open_hunt_journal, run_legacy
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
 from tools.autopilot_args import cadence_from_namespace
 from tools.credential_store import CredentialStore
+from tools.eburst_lane import resolve_eburst
 from tools.public_exposure_signals import classify_public_response
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
 from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock
@@ -1067,12 +1068,16 @@ def _batch_recon_result(canonical_target, recon_ok, started, *, ctf_mode=False):
 
 def check_tools():
     """Check which tools are installed."""
-    tools = ["subfinder", "httpx", "nuclei", "ffuf", "nmap", "amass", "gau", "dalfox", "subjack"]
+    tools = ["subfinder", "httpx", "nuclei", "ffuf", "nmap", "amass", "gau", "dalfox", "subjack", "eburst"]
     installed = []
     missing = []
 
     for tool in tools:
-        success, _ = run_cmd(f"command -v {tool}")
+        success = (
+            resolve_eburst().get("status") == "ready"
+            if tool == "eburst"
+            else run_cmd(f"command -v {tool}")[0]
+        )
         if success:
             installed.append(tool)
         else:
