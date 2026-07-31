@@ -35,6 +35,8 @@ If `recon/<target>/` is missing, run `/recon target.com` first. If the output sa
 - `findings/<target>/source_intel/` from source intelligence
 - `recon/<target>/browser/` browser-observed XHR/API surface
 - `recon/<target>/dirs/ffuf_summary.json` compact FFUF observations; full results stay in `ffuf_results.jsonl.gz`
+- `recon/<target>/dirs/ffuf_target_plan.json` current bounded FFUF target selection and pending count
+- `recon/<target>/dirs/ffuf_target_state.json` target-owned completion ledger for cross-round rotation
 - `state/<target>/observations-summary.json` when its schema/body/source binding is valid; an
   explicit surface refresh may synchronize the full inventory once before publishing a new summary
 

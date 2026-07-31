@@ -120,6 +120,11 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from evidence_ledger import CLOSED_CELL_RESULTS, load_entries  # type: ignore
 
+try:
+    from tools.recon_target_selector import load_rotation_status
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from recon_target_selector import load_rotation_status  # type: ignore
+
 
 
 
@@ -410,6 +415,7 @@ def _pick_next_action(
     fresh_recon_ready: bool = False,
     surface_context_required: bool = False,
     cidr_continuation: dict | None = None,
+    dir_fuzz_rotation_pending: bool = False,
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
@@ -475,6 +481,8 @@ def _pick_next_action(
         return "hunt_p1"
     if surface_context_required or fresh_recon_ready:
         return "prepare_surface_context"
+    if dir_fuzz_rotation_pending:
+        return "run_recon"
     if resume_targets:
         return "resume_untested"
     if structured_findings.get("draft_completion_pending"):
@@ -1618,6 +1626,7 @@ def _load_autopilot_control_facts(
         if fast_recon
         else inspect_recon_artifacts(repo_root, resolved_target)
     )
+    dir_fuzz_rotation = load_rotation_status(repo_root, resolved_target)
     recon_in_progress = (
         _runtime_recon_in_progress(repo_root, resolved_target, runtime_state)
         and not bool(recon_artifacts.get("ready"))
@@ -1671,6 +1680,7 @@ def _load_autopilot_control_facts(
         "action_queue_next": action_queue_next,
         "runtime_state": runtime_state,
         "recon_artifacts": recon_artifacts,
+        "dir_fuzz_rotation": dir_fuzz_rotation,
         "recon_in_progress": recon_in_progress,
         "scan_in_progress": scan_in_progress,
         "recon_completed_no_live_hosts": recon_completed_no_live_hosts,
@@ -1739,6 +1749,9 @@ def _build_domain_autopilot_state(
         ),
         surface_context_required=surface_context_required,
         cidr_continuation=(facts.get("recon_artifacts") or {}).get("cidr_continuation"),
+        dir_fuzz_rotation_pending=bool(
+            (facts.get("dir_fuzz_rotation") or {}).get("pending")
+        ),
     )
     intel_continuation = facts.get("intel_continuation") or {}
     next_action = apply_intel_continuation(primary_next_action, intel_continuation)
@@ -1804,6 +1817,7 @@ def _build_domain_autopilot_state(
         "json_inject": facts.get("json_inject") or {},
         "runtime_state": facts.get("runtime_state") or {},
         "recon_artifacts": facts.get("recon_artifacts") or {},
+        "dir_fuzz_rotation": facts.get("dir_fuzz_rotation") or {},
         "recon_in_progress": bool(facts.get("recon_in_progress")),
         "scan_in_progress": bool(facts.get("scan_in_progress")),
         "recon_completed_no_live_hosts": recon_completed_no_live_hosts,

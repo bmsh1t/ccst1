@@ -47,7 +47,7 @@ one smallest evidence-producing action, execute it, write evidence, then refresh
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
 ```
 - `run_recon`: when `state.recon.cidr_continuation.status=pending`, continue once with
-  `BBHUNT_CIDR_OFFSET=<next_offset> python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only`; otherwise omit the offset. Keep exact recon flags; never restart a pending CIDR at zero or discard prior pages.
+  `BBHUNT_CIDR_OFFSET=<next_offset> python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only`; otherwise omit the offset. Keep exact recon flags; never restart a pending CIDR at zero or discard prior pages. If `state.dir_fuzz_rotation.pending=true`, rerun the same bounded Recon so its FFUF target ledger advances to the next live services; `live/urls.txt` remains the complete source.
 - `wait_recon` / `wait_scan`: wait or poll, then refresh state. Runtime phase
   locks are the final duplicate-launch guard.
 - usable cache: inspect `tools/surface.py`, `tools/context_pack.py`, and

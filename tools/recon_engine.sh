@@ -500,6 +500,7 @@ post_compress_raw_recon_urls() {
 cleanup_auth_tmpfiles() {
     [ -n "${WAFW00F_HEADERS_FILE:-}" ] && [ -f "$WAFW00F_HEADERS_FILE" ] && rm -f "$WAFW00F_HEADERS_FILE"
     [ -n "${FFUF_RESULT_TMP:-}" ] && [ -f "$FFUF_RESULT_TMP" ] && rm -f "$FFUF_RESULT_TMP"
+    [ -n "${FFUF_TARGET_RESULTS_TMP:-}" ] && [ -f "$FFUF_TARGET_RESULTS_TMP" ] && rm -f "$FFUF_TARGET_RESULTS_TMP"
     [ -n "${FFUF_CONTROL_TMP:-}" ] && [ -f "$FFUF_CONTROL_TMP" ] && rm -f "$FFUF_CONTROL_TMP"
     [ -n "${FFUF_CONTROL_RUN_TMP:-}" ] && [ -f "$FFUF_CONTROL_RUN_TMP" ] && rm -f "$FFUF_CONTROL_RUN_TMP"
     [ -n "${FFUF_CONTROL_WORDLIST_TMP:-}" ] && [ -f "$FFUF_CONTROL_WORDLIST_TMP" ] && rm -f "$FFUF_CONTROL_WORDLIST_TMP"
@@ -2775,6 +2776,13 @@ FFUF_RESULT_TMP=""
 FFUF_CONTROL_TMP=""
 FFUF_CONTROL_RUN_TMP=""
 FFUF_CONTROL_WORDLIST_TMP=""
+FFUF_TARGET_RESULTS_TMP=""
+FFUF_TARGET_PLAN="$RECON_DIR/dirs/ffuf_target_plan.json"
+FFUF_TARGETS_FILE="$RECON_DIR/dirs/ffuf_targets.txt"
+FFUF_TARGET_STATE="$RECON_DIR/dirs/ffuf_target_state.json"
+FFUF_TARGET_PENDING=0
+FFUF_TARGET_SELECTION_STATUS="not-run"
+FFUF_TARGET_RECORD_STATUS="not-run"
 FFUF_RESULT_ARTIFACT=""
 FFUF_PHASE_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/"
 FFUF_SUMMARY_ARTIFACT="-"
@@ -2782,6 +2790,7 @@ FFUF_SKIP_REASON=""
 FFUF_SUMMARY_OK="false"
 DIR_FUZZ_STATUS="skipped"
 FFUF_LOG="$RECON_DIR/logs/ffuf.log"
+: > "$FFUF_LOG"
 
 if ! command -v ffuf >/dev/null 2>&1; then
     FFUF_SKIP_REASON="ffuf not installed"
@@ -2804,10 +2813,54 @@ else
 fi
 
 if [ -n "$WORDLIST" ]; then
+    if python3 "$BASE_DIR/tools/recon_target_selector.py" \
+        --select \
+        --target "$TARGET" \
+        --httpx "$RECON_DIR/live/httpx_full.txt" \
+        --urls "$RECON_DIR/live/urls.txt" \
+        --state "$FFUF_TARGET_STATE" \
+        --plan "$FFUF_TARGET_PLAN" \
+        --targets "$FFUF_TARGETS_FILE" \
+        --wordlist "$WORDLIST" \
+        --limit "$([ "$QUICK_MODE" = "--quick" ] && echo 2 || echo 5)" \
+        >> "$FFUF_LOG" 2>&1; then
+        FFUF_TARGET_SELECTION_STATUS="ok"
+        if FFUF_TARGET_PENDING="$(python3 - "$FFUF_TARGET_PLAN" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+print(int(payload.get("remaining_count", payload.get("pending_count", 0))))
+PY
+)"; then
+            :
+        else
+            FFUF_TARGET_PENDING=0
+            FFUF_TARGET_SELECTION_STATUS="partial"
+            log_warn "FFUF target plan was written but its pending count could not be read"
+        fi
+        if [ ! -s "$FFUF_TARGETS_FILE" ]; then
+            if grep -q '"exhausted": true' "$FFUF_TARGET_PLAN" 2>/dev/null; then
+                FFUF_SKIP_REASON="directory target rotation exhausted"
+            else
+                FFUF_SKIP_REASON="no scope-owned live URL"
+            fi
+            WORDLIST=""
+        fi
+    else
+        FFUF_TARGET_SELECTION_STATUS="failed"
+        FFUF_SKIP_REASON="directory target selection failed"
+        WORDLIST=""
+        log_warn "Directory target selection failed; raw live inventory preserved and FFUF skipped"
+    fi
+fi
+
+if [ -n "$WORDLIST" ]; then
     MAX_FUZZ=$([ "$QUICK_MODE" = "--quick" ] && echo 2 || echo 5)
     SPA_FALLBACK_LOG="$RECON_DIR/dirs/spa_fallback.txt"
     : > "$SPA_FALLBACK_LOG"
-    : > "$FFUF_LOG"
+    FFUF_TARGET_RESULTS_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf_target_results.XXXXXX")"
     FFUF_CONTROL_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf_controls.XXXXXX")"
     FFUF_RESULT_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf_results.XXXXXX")"
 
@@ -2826,6 +2879,8 @@ if [ -n "$WORDLIST" ]; then
             log_warn "Skipping invalid FFUF base URL: $url"
             continue
         fi
+        FFUF_HOST_CONTROL_OK=1
+        FFUF_HOST_MAIN_OK=0
         bb_auth_args_for_url "$FFUF_BASE_URL"
         FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))
         FFUF_FILTER_ARGS=()
@@ -2850,10 +2905,12 @@ if [ -n "$WORDLIST" ]; then
                 --controls "$FFUF_CONTROL_RUN_TMP" 2>> "$FFUF_LOG")"; then
                 SPA_FALLBACK_SIZE=0
                 FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + 1))
+                FFUF_HOST_CONTROL_OK=0
             fi
             if ! [[ "$SPA_FALLBACK_SIZE" =~ ^[0-9]+$ ]]; then
                 SPA_FALLBACK_SIZE=0
                 FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + 1))
+                FFUF_HOST_CONTROL_OK=0
             fi
             if [ "$SPA_FALLBACK_SIZE" -gt 0 ]; then
                 FFUF_FILTER_ARGS=(-fs "$SPA_FALLBACK_SIZE")
@@ -2862,6 +2919,7 @@ if [ -n "$WORDLIST" ]; then
             fi
         else
             FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + 1))
+            FFUF_HOST_CONTROL_OK=0
             log_warn "FFUF random-miss controls failed for $url; continuing without a fallback size filter"
         fi
         rm -f "$FFUF_CONTROL_WORDLIST_TMP" "$FFUF_CONTROL_RUN_TMP"
@@ -2881,6 +2939,7 @@ if [ -n "$WORDLIST" ]; then
                 "${BB_URL_AUTH_ARGS[@]}" \
                 -s -json 2>> "$FFUF_LOG" | gzip -c >> "$FFUF_RESULT_TMP"; then
                 FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + 1))
+                FFUF_HOST_MAIN_OK=1
             else
                 FFUF_FAILED=$((FFUF_FAILED + 1))
                 log_warn "FFUF failed for $url; any valid partial JSONL remains in the evidence artifact"
@@ -2897,12 +2956,34 @@ if [ -n "$WORDLIST" ]; then
                 "${BB_URL_AUTH_ARGS[@]}" \
                 -s -json >> "$FFUF_RESULT_TMP" 2>> "$FFUF_LOG"; then
                 FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + 1))
+                FFUF_HOST_MAIN_OK=1
             else
                 FFUF_FAILED=$((FFUF_FAILED + 1))
                 log_warn "FFUF failed for $url; any valid partial JSONL remains in the evidence artifact"
             fi
         fi
-    done < "$RECON_DIR/live/urls.txt"
+        if [ "$FFUF_HOST_MAIN_OK" -eq 1 ] && [ "$FFUF_HOST_CONTROL_OK" -eq 1 ]; then
+            printf '%s\tok\n' "$FFUF_BASE_URL" >> "$FFUF_TARGET_RESULTS_TMP"
+        elif [ "$FFUF_HOST_MAIN_OK" -eq 1 ]; then
+            printf '%s\tpartial\n' "$FFUF_BASE_URL" >> "$FFUF_TARGET_RESULTS_TMP"
+        else
+            printf '%s\tfailed\n' "$FFUF_BASE_URL" >> "$FFUF_TARGET_RESULTS_TMP"
+        fi
+    done < "$FFUF_TARGETS_FILE"
+
+    if [ -s "$FFUF_TARGET_RESULTS_TMP" ]; then
+        if python3 "$BASE_DIR/tools/recon_target_selector.py" \
+            --record-results \
+            --target "$TARGET" \
+            --state "$FFUF_TARGET_STATE" \
+            --results "$FFUF_TARGET_RESULTS_TMP" \
+            >> "$FFUF_LOG" 2>&1; then
+            FFUF_TARGET_RECORD_STATUS="ok"
+        else
+            FFUF_TARGET_RECORD_STATUS="failed"
+            log_warn "FFUF target rotation state update failed; completed coverage was not advanced"
+        fi
+    fi
 
     if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
         mv -f "$FFUF_RESULT_TMP" "$FFUF_RESULT_ARTIFACT"
@@ -2967,7 +3048,8 @@ fi
 if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
     DIR_FUZZ_STATUS="ok"
     if [ "$FFUF_FAILED" -gt 0 ] || [ "$FFUF_CONTROL_FAILED" -gt 0 ] || \
-       [ "$FFUF_PARSE_ERRORS" -gt 0 ] || [ "$FFUF_SUMMARY_OK" != "true" ]; then
+       [ "$FFUF_PARSE_ERRORS" -gt 0 ] || [ "$FFUF_SUMMARY_OK" != "true" ] || \
+       [ "$FFUF_TARGET_RECORD_STATUS" != "ok" ]; then
         DIR_FUZZ_STATUS="partial"
     fi
     log_done "Directory fuzzing complete: attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED observations=$FFUF_OBSERVATIONS"
@@ -2975,7 +3057,7 @@ else
     log_warn "Directory fuzzing skipped: ${FFUF_SKIP_REASON:-no runnable inputs}"
 fi
 
-FFUF_PHASE_NOTE="bounded host sampling; attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED parse_errors=$FFUF_PARSE_ERRORS; not complete directory coverage"
+FFUF_PHASE_NOTE="bounded host sampling with rotation; attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED parse_errors=$FFUF_PARSE_ERRORS target_selection=$FFUF_TARGET_SELECTION_STATUS target_record=$FFUF_TARGET_RECORD_STATUS pending=$FFUF_TARGET_PENDING; not complete directory coverage"
 [ -n "$FFUF_SKIP_REASON" ] && FFUF_PHASE_NOTE="$FFUF_PHASE_NOTE; skipped_reason=$FFUF_SKIP_REASON"
 record_recon_phase \
     dir_fuzz \
@@ -2989,12 +3071,17 @@ emit_claude_hint \
     hosts_attempted      "$FFUF_ATTEMPTED" \
     hosts_succeeded      "$FFUF_SUCCEEDED" \
     hosts_failed         "$FFUF_FAILED" \
+    target_selection     "$FFUF_TARGET_SELECTION_STATUS" \
+    target_record        "$FFUF_TARGET_RECORD_STATUS" \
+    pending_targets      "$FFUF_TARGET_PENDING" \
     observations         "$FFUF_OBSERVATIONS" \
     status_counts        "$FFUF_STATUS_COUNTS" \
     heavy_signatures     "$FFUF_HEAVY_SIGNATURES" \
     review_sample_count  "$FFUF_SAMPLE_COUNT" \
     review_overflow      "$FFUF_OVERFLOW" \
     artifact             "$FFUF_PHASE_ARTIFACT" \
+    targets_plan         "recon/${RECON_TARGET_KEY}/dirs/ffuf_target_plan.json" \
+    targets_state        "recon/${RECON_TARGET_KEY}/dirs/ffuf_target_state.json" \
     summary              "$FFUF_SUMMARY_ARTIFACT" \
     interpretation       "AI review required; control matches are evidence hints, not exclusions"
 

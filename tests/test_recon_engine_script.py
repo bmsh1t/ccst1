@@ -300,6 +300,12 @@ def test_recon_engine_streams_one_compressed_ffuf_artifact_without_coverage_merg
     assert '--control-failed "$FFUF_CONTROL_FAILED"' in text
     assert 'FFUF_OBSERVATIONS' in text
     assert 'FFUF_SUMMARY_OK="true"' in text
+    assert 'tools/recon_target_selector.py' in text
+    assert '--select' in text
+    assert '--record-results' in text
+    assert 'FFUF_TARGET_STATE="$RECON_DIR/dirs/ffuf_target_state.json"' in text
+    assert 'done < "$FFUF_TARGETS_FILE"' in text
+    assert 'target_selection' in text
     assert '-o "$RECON_DIR/dirs/ffuf_' not in text
     ffuf_block = text[text.index('log_info "Phase 6: Directory Fuzzing"'):text.index('log_info "Phase 6.5: Config File Exposure Check"')]
     assert 'urls/all.txt' not in ffuf_block

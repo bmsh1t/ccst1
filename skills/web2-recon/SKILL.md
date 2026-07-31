@@ -348,8 +348,11 @@ Recon 阶段只产出候选材料，不把缺参错误当漏洞：
 ### Baseline FFUF 与 Focused FFUF
 
 `tools/recon_engine.sh` 已自动执行 baseline FFUF：使用固定通用词表、有界 live URL、
-SPA/WAF control、压缩 JSONL 和 compact summary。它是 breadth sensor，不代表路径覆盖
-完整；Claude 不重复运行，也不因 baseline 零命中而自动转入 focused fuzz。
+SPA/WAF control、压缩 JSONL 和 compact summary。单轮只执行有限目标，但
+`dirs/ffuf_target_state.json` 会记录已成功覆盖的 base URL，后续轮次从
+`dirs/ffuf_target_plan.json` 轮换未完成服务；原始 `live/urls.txt` 始终是完整攻击面，
+不是本轮 FFUF 的截断结果。它是 breadth sensor，不代表路径覆盖完整；Claude 不重复运行，
+也不因 baseline 零命中而自动转入 focused fuzz。
 
 Focused fuzz 是 AI 显式选择的 discovery action。仅当 browser/JS/source/API docs/schema/
 GraphQL/recon/history 已支持一个具体 URL 或 request template，且它比当前 replay、authz、
