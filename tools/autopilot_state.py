@@ -124,6 +124,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 
 PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
+DECISION_PROJECTION_SCHEMA_VERSION = 1
 
 
 def _normalise_endpoint_path(value: str) -> str:
@@ -3045,6 +3046,59 @@ def _error_state(target: str, error: Exception) -> dict:
     }
 
 
+def build_decision_projection(state: dict, kind: str) -> dict:
+    """Project only the fields consumed by the loop or closure controller."""
+    target = str(state.get("resolved_target") or state.get("target") or "")
+    projection = {
+        "schema_version": DECISION_PROJECTION_SCHEMA_VERSION,
+        "kind": f"autopilot_{kind}_projection",
+        "target": target,
+        "target_storage_key": target_storage_key(target) if target else "",
+    }
+    if kind == "loop_check":
+        projection["loop_guard"] = state.get("loop_guard") or {}
+        return projection
+    if kind != "closure":
+        raise ValueError(f"unsupported decision projection: {kind}")
+
+    closure = state.get("closure") if isinstance(state.get("closure"), dict) else {}
+    projection["closure"] = {
+        key: closure[key]
+        for key in (
+            "verdict",
+            "can_claim_exhausted",
+            "reasons",
+            "next_action",
+            "rotation_hint",
+            "stagnation_fingerprint",
+            "error",
+        )
+        if key in closure
+    }
+    structured = (
+        state.get("structured_findings")
+        if isinstance(state.get("structured_findings"), dict)
+        else {}
+    )
+    projection["structured_findings"] = {
+        key: structured[key]
+        for key in ("reported",)
+        if key in structured
+    }
+    for field, keys in (
+        ("browser_evidence", ("present", "ready")),
+        ("repo_source_summary", ("status",)),
+        ("observation_inventory", ("status", "reason")),
+        ("surface_projection", ("status", "reason", "refresh_command")),
+    ):
+        value = state.get(field) if isinstance(state.get(field), dict) else {}
+        projection[field] = {key: value[key] for key in keys if key in value}
+    for field in ("repo_source_available", "recon_blocker"):
+        if field in state:
+            projection[field] = state[field]
+    return projection
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build combined autopilot state for a target")
     parser.add_argument("--target", required=True, help="Target domain")
@@ -3069,8 +3123,17 @@ def main() -> int:
         action="store_true",
         help="Read recent ledger outcomes for an explicit per-iteration rotation decision",
     )
+    parser.add_argument(
+        "--projection-only",
+        action="store_true",
+        help="With JSON, emit only the requested loop-check or closure decision fields",
+    )
     parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args()
+    if args.projection_only and (
+        not args.json or args.closure == args.loop_check
+    ):
+        parser.error("--projection-only requires --json and exactly one of --closure or --loop-check")
 
     try:
         state = build_autopilot_state(
@@ -3094,6 +3157,9 @@ def main() -> int:
             print(f"autopilot_state: {exc}", file=sys.stderr)
         return 2
     if args.json:
+        if args.projection_only:
+            kind = "closure" if args.closure else "loop_check"
+            state = build_decision_projection(state, kind)
         print(json.dumps(state, indent=2))
         return 0
     print(format_autopilot_state(state))

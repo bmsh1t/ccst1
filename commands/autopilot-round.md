@@ -35,7 +35,7 @@ Using bootstrap `repo_root_shell` and `arguments.target_shell`, run exactly one
 state-only precheck without `--max-lanes-reached`:
 
 ```bash
-cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --json
+cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
 ```
 
 For STATUS selection, read only `closure.verdict`,
@@ -72,7 +72,7 @@ requesting the final owner verdict:
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell>
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-closure --json
-cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --json [--max-lanes-reached]
+cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json [--max-lanes-reached]
 ```
 
 Include `--max-lanes-reached` only when this invocation actually executed its

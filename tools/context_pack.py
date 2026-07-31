@@ -835,11 +835,27 @@ def _read_json_any(path: Path) -> object:
 def _read_lines(path: Path, limit: int = 50) -> list[str]:
     if not path.is_file():
         return []
+    if limit <= 0:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+        return _dedupe([line.strip() for line in lines if line.strip()])[:limit]
+    items: list[str] = []
+    seen: set[str] = set()
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                value = line.strip()
+                if not value or value in seen:
+                    continue
+                seen.add(value)
+                items.append(value)
+                if len(items) >= limit:
+                    break
     except OSError:
         return []
-    return _dedupe([line.strip() for line in lines if line.strip()])[:limit]
+    return items
 
 
 def _read_jsonl_objects(path: Path, limit: int = 50) -> list[dict]:
@@ -847,21 +863,21 @@ def _read_jsonl_objects(path: Path, limit: int = 50) -> list[dict]:
         return []
     items: list[dict] = []
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                value = line.strip()
+                if not value:
+                    continue
+                try:
+                    item = json.loads(value)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict):
+                    items.append(item)
+                if len(items) >= limit:
+                    break
     except OSError:
         return []
-    for line in lines:
-        value = line.strip()
-        if not value:
-            continue
-        try:
-            item = json.loads(value)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            items.append(item)
-        if len(items) >= limit:
-            break
     return items
 
 

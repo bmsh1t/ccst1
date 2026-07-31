@@ -18,6 +18,7 @@ from autopilot_state import (
     _load_json_inject_projection,
     _pick_next_action,
     build_closure_projection,
+    build_decision_projection,
     build_loop_guard_projection,
     build_autopilot_state,
     format_autopilot_state,
@@ -97,6 +98,102 @@ def test_closure_finishes_only_for_gap_free_handoff_state():
     assert closure["verdict"] == "finish"
     assert closure["can_claim_exhausted"] is True
     assert closure["reasons"] == []
+
+
+def test_decision_projections_preserve_only_controller_fields():
+    state = {
+        "resolved_target": "target.com",
+        "loop_guard": {"verdict": "rotate", "next_action": "hunt_p2"},
+        "closure": {
+            "verdict": "handoff",
+            "can_claim_exhausted": False,
+            "reasons": ["next_action_pending"],
+            "next_action": "hunt_p1",
+            "rotation_hint": {"action": "rotate_to_adjacent_high_value_lane"},
+            "surface_review": {"unresolved": [{"url": "https://target.com/large"}]},
+        },
+        "structured_findings": {"reported": 2, "items": [{"raw": "omitted"}]},
+        "browser_evidence": {"present": True, "ready": False, "private": "omitted"},
+        "repo_source_available": True,
+        "repo_source_summary": {"status": "partial", "routes": ["omitted"]},
+        "recon_blocker": "",
+        "observation_inventory": {"status": "ready", "reason": "", "items": ["omitted"]},
+        "surface_projection": {"status": "valid", "reason": "", "surface": {"p1": ["omitted"]}},
+        "surface": {"raw": "omitted"},
+    }
+
+    loop = build_decision_projection(state, "loop_check")
+    closure = build_decision_projection(state, "closure")
+
+    assert loop == {
+        "schema_version": 1,
+        "kind": "autopilot_loop_check_projection",
+        "target": "target.com",
+        "target_storage_key": "target.com",
+        "loop_guard": state["loop_guard"],
+    }
+    assert closure["closure"] == {
+        key: state["closure"][key]
+        for key in ("verdict", "can_claim_exhausted", "reasons", "next_action", "rotation_hint")
+    }
+    assert closure["structured_findings"] == {"reported": 2}
+    assert closure["browser_evidence"] == {"present": True, "ready": False}
+    assert closure["repo_source_summary"] == {"status": "partial"}
+    assert closure["observation_inventory"] == {"status": "ready", "reason": ""}
+    assert closure["surface_projection"] == {"status": "valid", "reason": ""}
+    assert "surface" not in closure
+
+
+def test_cli_projection_only_keeps_full_json_mode_available(monkeypatch, capsys):
+    state = {
+        "target": "target.com",
+        "resolved_target": "target.com",
+        "surface": {"p1": [{"url": "https://target.com/admin"}]},
+        "structured_findings": {"reported": 0},
+    }
+    monkeypatch.setattr(
+        autopilot_state_module,
+        "build_autopilot_state",
+        lambda *_args, **_kwargs: dict(state),
+    )
+    monkeypatch.setattr(
+        autopilot_state_module,
+        "_load_closure_projection",
+        lambda *_args, **_kwargs: {
+            "verdict": "finish",
+            "can_claim_exhausted": True,
+            "reasons": [],
+            "next_action": "handoff",
+            "rotation_hint": {},
+        },
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "autopilot_state.py",
+            "--target",
+            "target.com",
+            "--bounded",
+            "--closure",
+            "--projection-only",
+            "--json",
+        ],
+    )
+    assert autopilot_state_main() == 0
+    narrow = json.loads(capsys.readouterr().out)
+    assert narrow["closure"]["verdict"] == "finish"
+    assert "surface" not in narrow
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["autopilot_state.py", "--target", "target.com", "--bounded", "--closure", "--json"],
+    )
+    assert autopilot_state_main() == 0
+    full = json.loads(capsys.readouterr().out)
+    assert full["surface"] == state["surface"]
 
 
 def test_json_summary_projection_and_partial_closure(tmp_path):
@@ -357,7 +454,15 @@ def test_json_closure_returns_structured_error_for_malformed_coverage(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["autopilot_state.py", "--target", target, "--bounded", "--closure", "--json"],
+        [
+            "autopilot_state.py",
+            "--target",
+            target,
+            "--bounded",
+            "--closure",
+            "--projection-only",
+            "--json",
+        ],
     )
 
     assert autopilot_state_main() == 2

@@ -101,7 +101,7 @@ def test_finish_contract_rebuilds_coverage_then_reads_explicit_closure_verdict()
 
     rebuild = "python3 tools/coverage_matrix.py rebuild --target <target_shell>"
     gaps = "python3 tools/coverage_matrix.py find-gaps --target <target_shell>"
-    closure = "python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --json"
+    closure = "python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json"
     assert command.count(rebuild) == 1
     assert command.index(rebuild) < command.index(gaps) < command.index(closure)
     assert "only `verdict=finish` with `can_claim_exhausted=true`" in normalized
@@ -112,7 +112,7 @@ def test_substantive_lanes_obey_explicit_loop_guard_without_overriding_durable_w
     command = " ".join(_read("commands/autopilot.md").split()).lower()
 
     assert "after every substantive lane" in command
-    assert "autopilot_state.py --target <target_shell> --bounded --loop-check --json" in command
+    assert "autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json" in command
     assert "obey `loop_guard.verdict`" in command
     assert "do not continue the reported `endpoint_family` × `vuln_class`" in command
     assert "bounded `rotation_target` when present" in command

@@ -162,7 +162,7 @@ try one bounded evidence-fit sibling or chain. On 401/403/404/405/415 or parser
 delta, try one evidence-linked bypass family or close it. After three homogeneous
 no-information results, resolve and rotate to one adjacent high-value lane.
 Refresh rotating form/session tokens from the legitimate baseline before replay.
-After every substantive lane, request the explicit read-only loop guard with `cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --json`.
+After every substantive lane, request the explicit read-only loop guard with `cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json`.
 Obey `loop_guard.verdict`. On `rotate`, do not continue the reported `endpoint_family` × `vuln_class` in this invocation; prefer its bounded `rotation_target` when present, or choose another adjacent high-value lane.
 `continue` preserves `loop_guard.next_action`. The guard never overrides runtime waits, candidate validation, report work, or durable Action Queue work; their authoritative next action remains in force.
 `--deep` is a value-first comprehensive depth flag, not a checklist or favorite bug
@@ -175,7 +175,7 @@ Immediately before any target-exhaustion claim, run the ordered coverage review 
 ```bash
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell>
-cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --json
+cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
 ```
 Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and advisory `closure.rotation_hint`. Only `verdict=finish` with `can_claim_exhausted=true` permits a `finish/complete/exhausted` claim; `handoff` preserves durable work and `blocked` records the terminal prerequisite blocker.
 When `max_lanes` was reached, pass `--max-lanes-reached`; it always requires handoff. A pending report is a closure asset, not a stop signal. Active durable work, pending validation/report, partial browser/source/intel, or untouched high-value work means `handoff/partial`, never `finish/complete/exhausted`.

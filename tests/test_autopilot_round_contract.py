@@ -86,7 +86,7 @@ def test_terminal_precheck_is_state_only_and_precedes_target_work():
     normalized_precheck = " ".join(precheck.split())
     closure = (
         "python3 tools/autopilot_state.py --target <target_shell> "
-        "--bounded --closure --json"
+        "--bounded --closure --projection-only --json"
     )
 
     assert command.index("## Read-Only Terminal Precheck") < command.index(
@@ -112,7 +112,7 @@ def test_round_end_orders_checkpoint_coverage_and_lane_limited_closure():
     gaps = command.index("python3 tools/coverage_matrix.py find-gaps", rebuild)
     record = command.index("python3 tools/checkpoint.py --target <target_shell> --record-round-closure --json", gaps)
     closure = command.index(
-        "python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --json",
+        "python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json",
         record,
     )
 

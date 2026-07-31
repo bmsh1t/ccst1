@@ -12,7 +12,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from tools.action_queue import resolve_action
-from tools.autopilot_state import build_autopilot_state
+from tools.autopilot_state import (
+    _load_closure_projection,
+    build_autopilot_state,
+    build_decision_projection,
+    build_loop_guard_projection,
+)
 from tools.checkpoint import build_checkpoint
 from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock, update_runtime_state
 from tools.target_paths import target_storage_key
@@ -189,6 +194,29 @@ def test_localhost_sequential_fresh_resume_batch_queue_runner_and_checkpoint(
     )
     assert checkpoint["target"] == target
     assert checkpoint["decision"] in {"continue", "hunt", "enrich", "checkpoint", "handoff", "report"}
+
+    projection_state = build_autopilot_state(
+        str(tmp_path),
+        target,
+        memory_dir=str(memory_dir),
+        bounded=True,
+    )
+    projection_state["loop_guard"] = build_loop_guard_projection(projection_state)
+    projection_state["closure"] = _load_closure_projection(
+        str(tmp_path),
+        projection_state,
+        max_lanes_reached=True,
+    )
+    loop_payload = build_decision_projection(projection_state, "loop_check")
+    closure_payload = build_decision_projection(projection_state, "closure")
+    assert loop_payload["loop_guard"] == projection_state["loop_guard"]
+    assert closure_payload["closure"] == {
+        key: projection_state["closure"][key]
+        for key in ("verdict", "can_claim_exhausted", "reasons", "next_action", "rotation_hint")
+    }
+    assert closure_payload["closure"]["reasons"] == ["max_lanes_reached"]
+    assert "surface" not in loop_payload
+    assert "surface" not in closure_payload
 
     rss_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     started = time.monotonic()

@@ -53,6 +53,28 @@ def _hint_paths(pack: dict) -> list[str]:
     return [item["path"] for item in pack.get("reference_hints", [])]
 
 
+def test_bounded_context_readers_preserve_order_limits_and_error_handling(tmp_path):
+    lines_path = tmp_path / "lines.txt"
+    lines_path.write_bytes(b"\nalpha\nalpha\nbeta\n\xfftail\ngamma\n")
+    jsonl_path = tmp_path / "items.jsonl"
+    jsonl_path.write_text(
+        '\n'.join(("not-json", '[1, 2]', '{"id": 1}', '{"id": 2}', '{"id": 3}')),
+        encoding="utf-8",
+    )
+
+    assert context_pack_module._read_lines(lines_path, limit=3) == [
+        "alpha",
+        "beta",
+        "\ufffdtail",
+    ]
+    assert context_pack_module._read_lines(lines_path, limit=0) == []
+    assert context_pack_module._read_jsonl_objects(jsonl_path, limit=2) == [
+        {"id": 1},
+        {"id": 2},
+    ]
+    assert context_pack_module._read_jsonl_objects(jsonl_path, limit=0) == []
+
+
 def test_context_pack_reuses_exact_surface_projection(tmp_path, monkeypatch):
     _seed_recon(
         tmp_path,
