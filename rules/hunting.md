@@ -2,10 +2,11 @@
 
 These rules are always active. Breaking them wastes time and reduces payout rate.
 
-`rules/red-lines.md` has higher priority than this file. Do not perform DDoS,
-high-pressure traffic, or destructive/state-changing actions against real target
-data. When a hunt idea might change state or create load, run the red-line
-check first and downgrade to a low-risk validation path when possible.
+`rules/red-lines.md` has higher priority for concrete side-effect decisions,
+not for authorization, ownership, or target-scope adjudication. Do not perform
+DDoS, high-pressure traffic, or irreversible destructive actions against real
+target data. A current-turn request that names an action is already its opt-in;
+use the red-line check to choose allow, allow-with-controls, downgrade, or pause.
 
 ---
 

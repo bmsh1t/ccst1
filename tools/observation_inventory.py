@@ -416,15 +416,40 @@ def summarize_inventory(
     current_time = now or datetime.now(timezone.utc)
     observations = [item for item in payload.get("observations", []) if isinstance(item, dict)]
     counts = {status: 0 for status in sorted(ALLOWED_STATUSES)}
+    by_kind: dict[str, dict[str, int]] = {}
     stale_ids = set()
     present = 0
     for item in observations:
         status = str(item.get("status") or "untouched")
+        kind = str(item.get("kind") or "unknown")
         counts[status] = counts.get(status, 0) + 1
-        if bool(item.get("present", True)):
+        kind_counts = by_kind.setdefault(
+            kind,
+            {
+                "total": 0,
+                "present": 0,
+                "untouched": 0,
+                "present_untouched": 0,
+                "reviewing": 0,
+                "reviewed": 0,
+                "parked": 0,
+                "stale": 0,
+                "present_stale": 0,
+            },
+        )
+        kind_counts["total"] += 1
+        kind_counts[status] = kind_counts.get(status, 0) + 1
+        item_present = bool(item.get("present", True))
+        if item_present:
             present += 1
+            kind_counts["present"] += 1
+            if status == "untouched":
+                kind_counts["present_untouched"] += 1
         if _is_stale(item, current_time, stale_after_seconds):
             stale_ids.add(str(item.get("id") or ""))
+            kind_counts["stale"] += 1
+            if item_present:
+                kind_counts["present_stale"] += 1
 
     untouched_candidates = (
         item
@@ -485,6 +510,7 @@ def summarize_inventory(
         "reviewed": counts.get("reviewed", 0),
         "parked": counts.get("parked", 0),
         "stale": len(stale_ids),
+        "by_kind": by_kind,
         "last_synced_at": str(payload.get("last_synced_at") or ""),
         "sample": sample,
         "new_sample": new_sample,
@@ -517,6 +543,7 @@ def _summary_error(
         "last_synced_at": "",
         "sample": [],
         "new_sample": [],
+        "by_kind": {},
         "inventory_binding": {},
         "needs_sync": True,
     }
@@ -532,6 +559,7 @@ def _summary_error(
             "last_synced_at",
             "sample",
             "new_sample",
+            "by_kind",
             "inventory_binding",
         ):
             if key in previous:
@@ -675,7 +703,7 @@ def sync_inventory_summary(
         cached = peek_inventory_summary(repo_root, target)
         if cached.get("status") == "valid":
             return cached
-    payload = sync_inventory(repo_root, target, force=force)
+    sync_inventory(repo_root, target, force=force)
     refreshed = peek_inventory_summary(repo_root, target)
     if refreshed.get("status") != "valid":
         raise InventoryError(

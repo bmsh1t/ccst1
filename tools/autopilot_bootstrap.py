@@ -319,6 +319,12 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
         ),
         "batch": compact_batch,
         "intel_continuation": intel_continuation,
+        "browser_required": bool(state.get("browser_required")),
+        "browser_evidence": {
+            key: (state.get("browser_evidence") or {})[key]
+            for key in ("present", "ready", "status", "auth_required", "auth_state")
+            if key in (state.get("browser_evidence") or {})
+        },
         "surface_projection": {
             key: surface_projection[key]
             for key in ("status", "reason", "path", "refresh_command")
@@ -337,6 +343,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
                 "reviewed",
                 "parked",
                 "stale",
+                "by_kind",
             )
             if key in observation_inventory
         },
@@ -345,7 +352,8 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             for key in (
                 "status", "reason", "path", "schema_version", "input_fingerprint",
                 "endpoint_count", "probed_endpoint_count", "request_count", "hit_count",
-                "waf_observation_count", "transport_error_count", "skipped",
+                "waf_observation_count", "transport_error_count", "request_budget",
+                "budget_exhausted", "skipped",
             )
             if key in json_inject
         },

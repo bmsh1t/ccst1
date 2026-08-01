@@ -129,6 +129,9 @@ def test_summary_exposes_stale_and_bounded_neutral_samples(tmp_path):
     assert summary["total"] > 16
     assert summary["untouched"] == summary["total"]
     assert summary["stale"] == summary["total"]
+    assert sum(item["total"] for item in summary["by_kind"].values()) == summary["total"]
+    assert sum(item["present_untouched"] for item in summary["by_kind"].values()) == summary["present"]
+    assert sum(item["present_stale"] for item in summary["by_kind"].values()) == summary["present"]
     assert len(summary["sample"]) == 5
     assert all(set(item) == {"id", "kind", "value", "sources", "status", "stale"} for item in summary["sample"])
     assert "skill" not in json.dumps(summary).lower()

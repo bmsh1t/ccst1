@@ -12,6 +12,9 @@ description: 检查当前计划、请求或候选动作是否命中 DDoS / 破�
 JS/source 分析、CVE 情报、OAST、受控口令测试、反射/DOM XSS 低风险验证、
 参数/路径/角色差异分析默认不应被红线阻断。
 
+目标授权已经由当前工作区上下文建立，本命令不检查所有权、授权书或 bounty scope。
+当前回合明确点名的动作已经满足该动作的 opt-in，不再追加授权确认。
+
 ## 必读文件
 
 运行本命令时必须先读取：
@@ -57,7 +60,7 @@ RED-LINE CHECK
 - Stored-XSS persistence risk: yes/no/unclear
 - Test-owned resource: yes/no/unclear
 - Low-risk alternative: yes/no
-- Decision: allow / downgrade / pause
+- Decision: allow / allow-with-controls / downgrade / pause
 - Safe alternative: 低风险替代验证方式
 ```
 
@@ -66,6 +69,11 @@ RED-LINE CHECK
 ### allow
 
 低频、低副作用、只读、不会持久化可执行 payload、或测试资源内的最小验证可以继续。
+
+### allow-with-controls
+
+当前回合已经明确点名，且动作有限、可回滚、使用测试资源并有清理方案时，按记录的
+频率、停止条件和清理步骤执行，不再要求独立授权声明。
 
 ### downgrade
 
@@ -89,6 +97,6 @@ RED-LINE CHECK
 - 可能提交 stored XSS 可执行持久 payload
 - 可能触发真实支付、转账、退款、发货、短信、邮件、CI/CD，或改变真实账号/权限
 - 操作对象不是测试资源
-- 没有安全替代方案且缺少当前回合明确 opt-in
+- 没有安全替代方案且当前回合也没有明确点名该动作
 
 暂停时不要继续执行该动作，只报告阻塞原因和安全替代方案。

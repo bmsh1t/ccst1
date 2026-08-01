@@ -124,3 +124,33 @@ def test_tls_verification_is_default_and_insecure_is_explicit(monkeypatch: pytes
     assert oauth._ssl_context().verify_mode == ssl.CERT_REQUIRED
     monkeypatch.setenv("SPRAY_INSECURE", "true")
     assert oauth._ssl_context().verify_mode == ssl.CERT_NONE
+
+
+def test_oauth_cross_scope_redirect_is_rejected():
+    handler = oauth.ScopedRedirectHandler("http://127.0.0.1:8000/token")
+
+    class RequestStub:
+        full_url = "http://127.0.0.1:8000/token"
+
+    with pytest.raises(oauth.ScopeRedirectError, match="leaves target scope"):
+        handler.redirect_request(RequestStub(), None, 307, "redirect", {}, "http://127.0.0.1:8001/token")
+
+
+def test_oauth_scope_redirect_becomes_guarded_result(monkeypatch: pytest.MonkeyPatch):
+    class FailingOpener:
+        def open(self, request, timeout=0):
+            raise oauth.ScopeRedirectError("cross-scope")
+
+    monkeypatch.setattr(
+        oauth.urllib.request,
+        "build_opener",
+        lambda *handlers: FailingOpener(),
+    )
+    result = oauth._attempt(
+        "http://127.0.0.1:8000/token",
+        "alice@example.test",
+        "wrong",
+        {"client_id": "client", "client_secret": "secret", "scope": "openid"},
+    )
+    assert result["classification"] == "guarded"
+    assert result["error_kind"] == "scope_redirect"

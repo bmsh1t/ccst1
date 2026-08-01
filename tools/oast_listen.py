@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hashlib
 import json
 import os
 import shutil
@@ -223,6 +224,115 @@ def _paths(target: str) -> dict[str, Path]:
     }
 
 
+def _queue_repo_root() -> Path:
+    return REPO_ROOT
+
+
+def _sync_start_action(target: str, *, backend: str, url: str, pid: int = 0) -> None:
+    """Create one durable continuation for this listener generation."""
+    try:
+        from tools.action_queue import add_manual_action, load_queue
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from action_queue import add_manual_action, load_queue  # type: ignore
+    generation = hashlib.sha256(f"{backend}:{url}:{pid}".encode("utf-8")).hexdigest()[:16]
+    queue = load_queue(_queue_repo_root(), target)
+    if any(
+        isinstance(item, dict)
+        and item.get("source") == "oast_listen"
+        and isinstance(item.get("metadata"), dict)
+        and item["metadata"].get("generation") == generation
+        and str(item.get("status") or "") in {"queued", "running", "lead", "signal", "candidate"}
+        for item in queue.get("actions", [])
+    ):
+        return
+    add_manual_action(
+        _queue_repo_root(),
+        target=target,
+        action_type="oast-callback",
+        evidence=f"OAST listener started ({backend}) for {target}",
+        next_question="Keep the listener active and correlate callbacks with the sent payload.",
+        action=f"Poll OAST callbacks for {target}, then classify any callback as candidate evidence.",
+        priority=75,
+        command_hint=f"python3 tools/oast_listen.py poll --target {target}",
+        evidence_type="oast-listener",
+        source="oast_listen",
+        generation=generation,
+        safety="oast_observation",
+    )
+
+
+def _latest_oast_action(target: str) -> dict | None:
+    try:
+        from tools.action_queue import load_queue
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from action_queue import load_queue  # type: ignore
+    queue = load_queue(_queue_repo_root(), target)
+    actions = [
+        item
+        for item in queue.get("actions", [])
+        if isinstance(item, dict)
+        and item.get("source") == "oast_listen"
+        and item.get("type") == "oast-callback"
+    ]
+    actions.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return actions[0] if actions else None
+
+
+def _sync_poll_action(target: str, *, paths: dict[str, Path], callbacks: int) -> None:
+    if callbacks <= 0:
+        return
+    try:
+        from tools.action_queue import resolve_action
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from action_queue import resolve_action  # type: ignore
+    action = _latest_oast_action(target)
+    if not action or str(action.get("status") or "") in {"tested", "dead-end", "blocked", "n/a"}:
+        return
+    artifact = str(paths["callbacks"])
+    try:
+        artifact = str(paths["callbacks"].relative_to(_queue_repo_root()))
+    except ValueError:
+        pass
+    resolve_action(
+        _queue_repo_root(),
+        target=target,
+        action_id=str(action.get("id") or ""),
+        status="candidate",
+        result=f"callbacks={callbacks}; artifact={artifact}",
+        notes="Callback evidence is candidate-only until correlated and validated.",
+    )
+
+
+def _sync_stop_action(target: str, *, paths: dict[str, Path]) -> None:
+    try:
+        from tools.action_queue import resolve_action
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from action_queue import resolve_action  # type: ignore
+    action = _latest_oast_action(target)
+    if not action or str(action.get("status") or "") in {"candidate", "tested", "dead-end", "blocked", "n/a"}:
+        return
+    callback_count = 0
+    if paths["callbacks"].is_file():
+        for line in paths["callbacks"].read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                if isinstance(json.loads(line), dict):
+                    callback_count += 1
+            except json.JSONDecodeError:
+                continue
+    resolve_action(
+        _queue_repo_root(),
+        target=target,
+        action_id=str(action.get("id") or ""),
+        status="dead-end" if callback_count == 0 else "candidate",
+        result=(
+            "listener stopped without callbacks"
+            if callback_count == 0
+            else f"callbacks={callback_count}; listener stopped"
+        ),
+        notes="No callback was observed; restart the listener only when a new OAST lane is justified." if callback_count == 0 else "Callback evidence remains candidate-only.",
+    )
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -336,6 +446,10 @@ def cmd_start(target: str, allow_external: bool) -> int:
     if pid is not None and pid > 0 and _pid_alive(pid) and _pid_matches_oast(pid, paths):
         existing_url = paths["url"].read_text().strip() if paths["url"].is_file() else "(unknown)"
         _log_warn(f"OAST already running for {target} (pid={pid}); URL={existing_url}")
+        try:
+            _sync_start_action(target, backend="interactsh", url=existing_url, pid=pid)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            _log_warn(f"OAST action queue sync failed: {exc}")
         _emit_start_hint(target, "already_running", existing_url, "interactsh")
         return 0
 
@@ -366,6 +480,10 @@ def cmd_start(target: str, allow_external: bool) -> int:
         return 0
 
     _log_ok(f"OAST started; backend={backend} pid={pid} url={url}")
+    try:
+        _sync_start_action(target, backend=backend, url=url, pid=pid)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        _log_warn(f"OAST action queue sync failed: {exc}")
     _emit_start_hint(target, "started", url, backend, pid=pid)
     return 0
 
@@ -386,11 +504,18 @@ def _emit_start_hint(target: str, state: str, url: str, backend: str, *, pid: in
 
 def cmd_poll(target: str, since_ts: int) -> int:
     paths = _paths(target)
+    backend_path = paths["backend"]
+    backend = backend_path.read_text().strip() if backend_path.is_file() else "unknown"
+    if backend == "webhook.site":
+        drained = _poll_webhook_site(target, paths, since_ts)
+        if drained < 0:
+            return 1
+        try:
+            _sync_poll_action(target, paths=paths, callbacks=drained)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            _log_warn(f"OAST action queue sync failed: {exc}")
+        return 0
     if not paths["callbacks"].is_file():
-        backend_path = paths["backend"]
-        backend = backend_path.read_text().strip() if backend_path.is_file() else "unknown"
-        if backend == "webhook.site":
-            return _poll_webhook_site(target, paths, since_ts)
         _log_warn(f"no callbacks.jsonl yet for {target}")
         _emit_poll_hint(target, drained=0)
         return 0
@@ -411,6 +536,10 @@ def cmd_poll(target: str, since_ts: int) -> int:
         last_ts = max(last_ts, normalized["ts_unix"])
     paths["since"].write_text(str(last_ts))
     _emit_poll_hint(target, drained=drained)
+    try:
+        _sync_poll_action(target, paths=paths, callbacks=drained)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        _log_warn(f"OAST action queue sync failed: {exc}")
     return 0
 
 
@@ -418,7 +547,7 @@ def _poll_webhook_site(target: str, paths: dict[str, Path], since_ts: int) -> in
     url = paths["url"].read_text().strip() if paths["url"].is_file() else ""
     if not url:
         _log_err(f"no webhook.site URL recorded for {target}")
-        return 1
+        return -1
     token = url.rstrip("/").split("/")[-1]
     api_url = f"https://webhook.site/token/{token}/requests"
     try:
@@ -426,7 +555,7 @@ def _poll_webhook_site(target: str, paths: dict[str, Path], since_ts: int) -> in
             payload = json.loads(resp.read().decode("utf-8"))
     except (URLError, HTTPError, json.JSONDecodeError, OSError) as exc:
         _log_err(f"webhook.site poll failed: {exc}")
-        return 1
+        return -1
     drained = 0
     last_ts = since_ts
     for req in payload.get("data", []) or []:
@@ -444,12 +573,15 @@ def _poll_webhook_site(target: str, paths: dict[str, Path], since_ts: int) -> in
             "method": req.get("method", ""),
             "raw": json.dumps(req)[:1024],
         }
+        paths["base"].mkdir(parents=True, exist_ok=True)
+        with paths["callbacks"].open("a", encoding="utf-8") as callback_log:
+            callback_log.write(json.dumps(normalized, ensure_ascii=False) + "\n")
         sys.stdout.write(json.dumps(normalized) + "\n")
         drained += 1
         last_ts = max(last_ts, ts_unix)
     paths["since"].write_text(str(last_ts))
     _emit_poll_hint(target, drained=drained)
-    return 0
+    return drained
 
 
 def _emit_poll_hint(target: str, *, drained: int) -> None:
@@ -472,12 +604,20 @@ def cmd_stop(target: str) -> int:
     pid = _read_pid(paths["pid"])
     if pid is None:
         _log_warn(f"no OAST instance recorded for {target}")
+        try:
+            _sync_stop_action(target, paths=paths)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            _log_warn(f"OAST action queue sync failed: {exc}")
         return 0
     if pid == 0:
         # webhook.site has no local process — just unlink state files.
         for key in ("pid", "url", "backend"):
             if paths[key].is_file():
                 paths[key].unlink()
+        try:
+            _sync_stop_action(target, paths=paths)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            _log_warn(f"OAST action queue sync failed: {exc}")
         _log_ok(f"webhook.site OAST entry cleared for {target} (callbacks.jsonl preserved)")
         return 0
     if not _pid_alive(pid):
@@ -485,6 +625,10 @@ def cmd_stop(target: str) -> int:
         for key in ("pid", "url", "backend"):
             if paths[key].is_file():
                 paths[key].unlink()
+        try:
+            _sync_stop_action(target, paths=paths)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            _log_warn(f"OAST action queue sync failed: {exc}")
         return 0
     if not _pid_matches_oast(pid, paths):
         _log_warn(f"recorded pid {pid} is alive but does not match this OAST listener; cleaning stale state")
@@ -509,6 +653,10 @@ def cmd_stop(target: str) -> int:
     for key in ("pid", "url", "backend"):
         if paths[key].is_file():
             paths[key].unlink()
+    try:
+        _sync_stop_action(target, paths=paths)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        _log_warn(f"OAST action queue sync failed: {exc}")
     _log_ok(f"OAST stopped for {target} (pid={pid}). callbacks.jsonl preserved.")
     return 0
 

@@ -319,7 +319,7 @@ def _write_results(target: str, lane: str, hits: list[dict], waf_events: list[di
         status = "invalid_input"
     elif hits:
         status = "candidate_pending"
-    elif execution.get("transport_error_count") or any(int(value or 0) for value in skipped.values()):
+    elif execution.get("transport_error_count") or execution.get("budget_exhausted") or any(int(value or 0) for value in skipped.values()):
         status = "partial"
     else:
         status = "complete_no_hit"
@@ -372,6 +372,8 @@ def main() -> int:
     parser.add_argument("--max-requests", type=int, default=60)
     add_cli_args(parser)
     args = parser.parse_args()
+    if args.max_requests < 1:
+        parser.error("--max-requests must be a positive integer")
     target = canonical_target_value(args.target)
     mode = "query" if args.urls_file else "form"
     source = args.urls_file or args.form_file
@@ -380,6 +382,8 @@ def main() -> int:
     hits: list[dict] = []
     waf_events: list[dict] = []
     stats = {"request_count": 0, "transport_error_count": 0, "endpoint_count": 0, "probed_endpoint_count": 0, "skipped": {"out_of_scope": 0, "invalid": 0}}
+    request_budget = int(args.max_requests)
+    eligible: list[dict] = []
     for endpoint in endpoints:
         url = str(endpoint.get("url") or "").strip()
         if not url or not url_belongs_to_target(url, target):
@@ -390,10 +394,16 @@ def main() -> int:
             stats["skipped"]["invalid"] += 1
             continue
         stats["endpoint_count"] += 1
+        eligible.append(endpoint)
+    for index, endpoint in enumerate(eligible):
+        remaining_budget = request_budget - stats["request_count"]
+        if remaining_budget <= 0:
+            break
+        remaining_endpoints = len(eligible) - index
         found, events = probe_parameter_endpoint(
             endpoint,
             mode=mode,
-            max_requests=max(1, int(args.max_requests)),
+            max_requests=max(1, remaining_budget // remaining_endpoints),
             target=target,
             session=session,
             stats=stats,
@@ -401,6 +411,11 @@ def main() -> int:
         stats["probed_endpoint_count"] += 1
         hits.extend(found)
         waf_events.extend(events)
+    stats["request_budget"] = request_budget
+    stats["budget_exhausted"] = bool(
+        stats["request_count"] >= request_budget
+        or stats["probed_endpoint_count"] < len(eligible)
+    )
     result = _write_results(target, mode, hits, waf_events, stats)
     print(json.dumps({"status": "ok", "hit_count": len(hits), **result}, indent=2))
     return 0

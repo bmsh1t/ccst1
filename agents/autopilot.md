@@ -67,7 +67,7 @@ These tools are memory and execution aids, not a pre-flight checklist. Empty/sta
 - `case_state_seed.py` suggests add-actor/add-object/add-backlog commands from cached object-like endpoints; it does not auto-write.
 - Knowledge cards come from `knowledge/index.md`; load only matching cards and `reference_hints` from context-pack when evidence needs on-demand references.
 - Red-line, coverage, and tool/AI boundary semantics live in `rules/red-lines.md`, `rules/coverage-gate.md`, `rules/hunting.md`, and `rules/tool-ai-boundary.md`.
-- Red-line checks are narrow safety checks, not broad permission gates. HTTP method alone is not a red line; block or downgrade only the concrete destructive, irreversible, high-pressure, persistent-payload, or real-business side effect.
+- Red-line checks are narrow side-effect checks, not authorization or ownership gates. HTTP method alone is not a red line; block or downgrade only the concrete destructive, irreversible, high-pressure, persistent-payload, or real-business side effect.
 - Resolve queue items with `tools/action_queue.py resolve` after the smallest safe evidence-producing step.
 
 ## Case-State First, Not Case-State Only
@@ -116,7 +116,13 @@ AI override is part of the operating model: skip a default lane, combine knowled
 
 Use the provided target set as the active execution target set. `ctf_mode: true` in `config.json` means full local/lab coverage. External program/scope text is optional context, not an execution gate.
 
-Pause only for ambiguous target identity, unavailable credentials that cannot be derived through the controlled Credential Lane, report submission, a new target not present in the current input/context, or explicit destructive side effects / irreversible mutations / high-pressure actions.
+A current-turn request that names an action already supplies its opt-in. Do not
+ask for a separate authorization or ownership statement. Red-line review only
+classifies concrete side effects as allow, allow-with-controls, downgrade, or
+pause. Pause only for ambiguous target identity, unavailable credentials that
+cannot be derived through the controlled Credential Lane, report submission, a
+new target not present in the current input/context, or irreversible/high-pressure
+effects that cannot be bounded or rolled back.
 
 CTF/lab mode treats supplied target set plus repo config as the authoritative lab target record.
 
@@ -198,6 +204,7 @@ Canonical source: `rules/red-lines.md`.
 - Do not run DDoS/high-pressure traffic, destructive behavior, real data modification/deletion/corruption, real account/permission/CI/CD/business side effects, or active stored XSS payload submission.
 - Controlled credential testing, OAST, read-only replay, CVE lookup, browser/JS/source analysis, and low-risk reflected/DOM XSS checks are not red lines when bounded and non-destructive.
 - Payment/order/permission/CI/CD surfaces remain high-value; avoid only the concrete side effect, use dry-run/preview/validate-only/inert/test-owned alternatives.
+- Current-turn action wording is sufficient opt-in; this section does not ask for separate authorization proof.
 - If all live hosts are cooling down or guarded, pivot to cached evidence, JS/source review, context packing, checkpointing, and coverage accounting; do not default to residential IP rotation, WAF evasion, or social engineering.
 
 ## Specialist Handoff Contract

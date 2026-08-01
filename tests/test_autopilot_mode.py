@@ -57,7 +57,9 @@ def test_build_agent_system_includes_mode_guidance():
     assert "silently killing the path" in paranoid_prompt
     assert "never overrides live-action boundaries" in deep_prompt.lower()
     assert "Authorization posture" in paranoid_prompt
-    assert "active target context" in paranoid_prompt
+    assert "active authorized target context" in paranoid_prompt
+    assert "current-turn request that names an action already supplies its opt-in" in paranoid_prompt
+    assert "allow-with-controls" in paranoid_prompt
     assert "frequent checkpoints" in paranoid_prompt.lower()
     assert "Autonomously choose the next best A/B/C action" in paranoid_prompt
     assert "do not ask the operator to pick the next branch" in paranoid_prompt

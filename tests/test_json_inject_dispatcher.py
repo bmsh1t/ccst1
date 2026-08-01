@@ -21,8 +21,6 @@ from pathlib import Path
 
 import pytest
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -32,6 +30,52 @@ import agent  # noqa: E402
 def _build_dispatcher(tmp_path):
     memory = agent.HuntMemory(str(tmp_path / "agent_session.json"))
     return agent.ToolDispatcher("target.com", memory)
+
+
+def test_json_probe_shares_one_request_budget_across_endpoints(monkeypatch):
+    from tools import json_inject_probe as probe
+
+    endpoints = [
+        {"method": "POST", "url": f"https://target.test/api/{index}", "body_template": {"q": "x"}, "source": "test"}
+        for index in range(3)
+    ]
+    allocated: list[int] = []
+    captured: dict = {}
+
+    class Session:
+        def bind_target(self, _target):
+            return self
+
+        def is_empty(self):
+            return True
+
+        def headers_for_url(self, _url):
+            return {}
+
+        def session_id(self):
+            return ""
+
+    def fake_probe(_endpoint, max_requests, *, stats, **_kwargs):
+        allocated.append(max_requests)
+        stats["request_count"] += max_requests
+        return [], []
+
+    def fake_write(_target, _hits, _events, *, execution):
+        captured.update(execution)
+        return {"out_dir": "", "summary": "", "files": []}
+
+    monkeypatch.setattr(probe, "session_from_args", lambda _args: Session())
+    monkeypatch.setattr(probe, "_collect_endpoints", lambda _args: (endpoints, {
+        "out_of_scope": 0, "unsupported_method": 0, "invalid_url": 0, "items": []
+    }))
+    monkeypatch.setattr(probe, "probe_endpoint", fake_probe)
+    monkeypatch.setattr(probe, "_write_findings", fake_write)
+    monkeypatch.setattr(sys, "argv", ["json_inject_probe", "--target", "target.test", "--max-requests", "6"])
+
+    assert probe.main() == 0
+    assert allocated == [2, 2, 2]
+    assert captured["request_count"] == captured["request_budget"] == 6
+    assert captured["budget_exhausted"] is True
 
 
 # ---------------------------------------------------------------------

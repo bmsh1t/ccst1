@@ -925,7 +925,7 @@ def _write_findings(
     redirect_skips = int((details.get("skipped") or {}).get("out_of_scope_redirect", 0) or 0)
     if not status:
         status = "candidate_pending" if hits else (
-            "partial" if transport_errors or redirect_skips else "complete_no_hit"
+            "partial" if transport_errors or redirect_skips or details.get("budget_exhausted") else "complete_no_hit"
         )
     summary = {
         "schema_version": SUMMARY_SCHEMA_VERSION,
@@ -965,9 +965,11 @@ def main() -> int:
                             default=True, help="When no other source provides endpoints, probe common login paths")
     seed_group.add_argument("--no-default-seeds", dest="add_default_seeds", action="store_false",
                             help="Probe only endpoints supplied by explicit or discovered inputs")
-    parser.add_argument("--max-requests", type=int, default=60, help="Hard cap on total probe requests per endpoint")
+    parser.add_argument("--max-requests", type=int, default=60, help="Hard cap on total requests for the whole probe lane")
     add_cli_args(parser)
     args = parser.parse_args()
+    if args.max_requests < 1:
+        parser.error("--max-requests must be a positive integer")
     args.target = canonical_target_value(args.target)
     session = session_from_args(args).bind_target(args.target)
 
@@ -1017,11 +1019,17 @@ def main() -> int:
         "out_of_scope_redirect": 0,
     }
     probed_endpoint_count = 0
-    for ep in endpoints:
+    request_budget = int(args.max_requests)
+    for index, ep in enumerate(endpoints):
+        remaining_budget = request_budget - execution_stats["request_count"]
+        if remaining_budget <= 0:
+            break
+        remaining_endpoints = len(endpoints) - index
+        endpoint_budget = max(1, remaining_budget // remaining_endpoints)
         print(f"[json_inject]  -> {ep['method']} {ep['url']} (source={ep.get('source')})", file=sys.stderr)
         hits, waf_events = probe_endpoint(
             ep,
-            max_requests=args.max_requests,
+            max_requests=endpoint_budget,
             target=args.target,
             session=session,
             stats=execution_stats,
@@ -1033,6 +1041,10 @@ def main() -> int:
             all_hits.extend(hits)
 
     skipped["out_of_scope_redirect"] = execution_stats["out_of_scope_redirect"]
+    budget_exhausted = bool(
+        execution_stats["request_count"] >= request_budget
+        or probed_endpoint_count < len(endpoints)
+    )
     result = _write_findings(
         args.target,
         all_hits,
@@ -1043,6 +1055,8 @@ def main() -> int:
             "endpoint_count": len(endpoints),
             "probed_endpoint_count": probed_endpoint_count,
             "request_count": execution_stats["request_count"],
+            "request_budget": request_budget,
+            "budget_exhausted": budget_exhausted,
             "transport_error_count": execution_stats["transport_error_count"],
             "skipped": skipped,
             "auth_applied": bool(

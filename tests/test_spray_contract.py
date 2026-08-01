@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tools.spray_contract import append_attempt, finish_run, password_hash_prefix, prepare_run
+from tools.action_queue import load_queue
 
 
 def _set_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
@@ -130,6 +131,31 @@ def test_terminal_run_cannot_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("SPRAY_RESUME", str(live.run_dir))
     with pytest.raises(ValueError, match="run is terminal"):
         prepare_run("oauth", config_binding={}, request_shape={})
+
+
+def test_finish_run_projects_credential_disposition_to_action_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_env(monkeypatch, tmp_path)
+    dry = prepare_run("oauth", config_binding={}, request_shape={})
+    monkeypatch.setenv("SPRAY_DRY_RUN", "false")
+    monkeypatch.setenv("SPRAY_PREFLIGHT", str(dry.preflight_path))
+    live = prepare_run("oauth", config_binding={}, request_shape={})
+    summary = finish_run(
+        live,
+        status="completed",
+        stop_reason="completed",
+        counters={"invalid_credentials": 1},
+        exit_code=0,
+    )
+
+    assert summary["action_queue_sync"]["status"] == "updated"
+    queue = load_queue(tmp_path, "https://login.example.test/token")
+    action = next(item for item in queue["actions"] if item["source"] == "spray_contract")
+    assert action["status"] == "tested"
+    assert action["metadata"]["counts"] == {"invalid_credentials": 1}
+    assert "Secret#1" not in json.dumps(queue)
 
 
 def test_resume_rejects_corrupt_jsonl_and_concurrent_runner(

@@ -13,6 +13,9 @@ def _read(relative_path: str) -> str:
 def test_red_lines_are_narrow_damage_boundaries():
     text = _read("rules/red-lines.md")
 
+    assert "## 授权与动作边界" in text
+    assert "不要求所有权证明、授权书、bounty scope 复核" in text
+    assert "该请求本身满足该动作的 opt-in 条件" in text
     assert "## 红线最小化原则" in text
     assert "只读验证、低频单请求、浏览器观察、源码/JS 分析、CVE 情报" in text
     assert "OAST 回调、受控口令测试、反射/DOM XSS 低风险验证" in text
@@ -20,6 +23,7 @@ def test_red_lines_are_narrow_damage_boundaries():
     assert "状态改变方法不是天然红线" in text
     assert "不要因为“看起来敏感”而阻断 AI 的正常测试路线" in text
     assert "不是要求必须等其它高价值路线全部失败" in text
+    assert "allow-with-controls" in text
     assert "常规高价值路线已经产生稳定" not in text
 
 
@@ -50,10 +54,11 @@ def test_check_redlines_command_is_not_a_broad_permission_gate():
 
     assert "伤害目标系统、真实数据或真实用户" in text
     assert "红线检查是窄边界安全检查，不是泛化权限闸门" in text
+    assert "当前回合明确点名的动作已经满足该动作的 opt-in" in text
     assert "改变真实账号/权限/CI/CD 状态的副作用" in text
     assert "Stored-XSS persistence risk" in text
     assert "Low-risk alternative" in text
-    assert "没有安全替代方案且缺少当前回合明确 opt-in" in text
+    assert "没有安全替代方案且当前回合也没有明确点名该动作" in text
 
 
 def test_autopilot_and_runtime_keep_red_lines_minimal():
@@ -70,7 +75,7 @@ def test_autopilot_and_runtime_keep_red_lines_minimal():
     for text in (command, agent):
         flat = " ".join(text.split())
 
-        assert "Red-line checks are narrow safety checks, not broad" in flat
+        assert "Red-line checks are narrow side-effect checks, not authorization or ownership gates" in flat
         assert "active stored XSS payload" in flat
         assert "Controlled credential testing" in flat or "Password brute force" in flat
         assert "not red lines" in flat or "absolute red lines" in flat

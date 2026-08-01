@@ -26,6 +26,7 @@ try:
         prepare_run,
         write_private_json,
     )
+    from tools.target_paths import url_belongs_to_target
 except ImportError:  # pragma: no cover - 支持直接运行 tools 脚本
     from spray_contract import (
         append_attempt,
@@ -35,6 +36,7 @@ except ImportError:  # pragma: no cover - 支持直接运行 tools 脚本
         prepare_run,
         write_private_json,
     )
+    from target_paths import url_belongs_to_target  # type: ignore
 
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Bug-Bounty-Research"
@@ -191,6 +193,8 @@ def load_request_spec() -> dict[str, Any]:
         csrf_parsed = urllib.parse.urlparse(csrf_url)
         if csrf_parsed.scheme not in {"http", "https"} or not csrf_parsed.hostname:
             raise ValueError("csrf.url must be a valid http/https URL")
+        if not url_belongs_to_target(csrf_url, target_url):
+            raise ValueError("csrf.url must belong to the target scope")
         csrf_re = _compile_optional(csrf.get("regex"), label="csrf.regex")
         if csrf_re is None or csrf_re.groups < 1:
             raise ValueError("csrf.regex must contain a capture group")

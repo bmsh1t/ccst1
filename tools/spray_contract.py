@@ -547,9 +547,128 @@ def finish_run(
     }
     try:
         _write_json_atomic(context.summary_path, payload)
+        try:
+            payload["action_queue_sync"] = _sync_action_queue(context, payload)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            # A spray summary is still useful when queue storage is damaged;
+            # expose the failure instead of silently losing the continuation.
+            payload["action_queue_sync"] = {
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            payload["warnings"] = ["action queue synchronization failed"]
+        _write_json_atomic(context.summary_path, payload)
         return payload
     finally:
         _release_run_lock(context)
+
+
+def _spray_queue_disposition(summary: dict[str, Any]) -> tuple[str, str]:
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+
+    def count(names: set[str]) -> int:
+        return sum(int(counts.get(name, 0) or 0) for name in names)
+
+    valid = count({"valid_session", "valid_token", "valid_password_mfa", "valid_password_expired"})
+    uncertain = count({"ambiguous_candidate", "rate_limited", "guarded", "locked", "unknown"})
+    invalid = count({"invalid_credentials", "already_tried"})
+    if valid:
+        return "candidate", "credential candidate requires isolated validation"
+    if uncertain:
+        return "signal", "credential lane stopped on an ambiguous or guarded response"
+    if summary.get("status") == "completed" and summary.get("stop_reason") == "completed" and invalid:
+        return "tested", "credential lane completed without a confirmed credential"
+    return "lead", "credential lane requires continuation after an incomplete run"
+
+
+def _sync_action_queue(context: RunContext, summary: dict[str, Any]) -> dict[str, Any]:
+    """Project the spray disposition into the existing durable action queue."""
+    try:
+        from tools.action_queue import (
+            build_action,
+            load_queue,
+            queue_mutation_lock,
+            save_queue,
+            upsert_actions,
+        )
+    except ImportError:  # pragma: no cover - direct tools/ execution
+        from action_queue import build_action, load_queue, queue_mutation_lock, save_queue, upsert_actions  # type: ignore
+
+    repo_root = context.run_dir.parents[3]
+    status, next_question = _spray_queue_disposition(summary)
+    summary_ref = str(context.summary_path)
+    try:
+        summary_ref = str(context.summary_path.relative_to(repo_root))
+    except ValueError:
+        pass
+    source_id = f"{context.mode}:credentials"
+    action = build_action(
+        target=context.target_url,
+        action_type="credential-spray",
+        evidence=f"Credential spray summary for {context.mode}: {summary_ref}",
+        next_question=next_question,
+        action=(
+            "Review the credential spray summary and isolate any candidate before "
+            "using the resulting session or token."
+        ),
+        priority=85 if status == "candidate" else 60,
+        command_hint=f"cat {summary_ref}",
+        evidence_type="credential-spray-summary",
+        source="spray_contract",
+        source_id=source_id,
+        safety="credential_review",
+        metadata={
+            "summary_path": summary_ref,
+            "run_id": context.run_id,
+            "mode": context.mode,
+            "counts": summary.get("counts", {}),
+            "stop_reason": summary.get("stop_reason", ""),
+        },
+    )
+    action["status"] = status
+
+    with queue_mutation_lock(repo_root, context.target_url):
+        queue = load_queue(repo_root, context.target_url)
+        existing = next(
+            (
+                item
+                for item in queue.get("actions", [])
+                if isinstance(item, dict)
+                and item.get("source") == "spray_contract"
+                and item.get("source_id") == source_id
+            ),
+            None,
+        )
+        if existing is None:
+            upsert_actions(queue, [action])
+            existing = action
+        else:
+            previous = str(existing.get("status") or "queued")
+            # A confirmed candidate remains active until isolated validation;
+            # a later incomplete/clean run must not erase that evidence.
+            effective = "candidate" if previous == "candidate" and status != "candidate" else status
+            existing.update(
+                {
+                    "status": effective,
+                    "priority": max(int(existing.get("priority", 50) or 50), int(action["priority"])),
+                    "evidence": action["evidence"],
+                    "next_question": action["next_question"] if effective != "candidate" else existing.get("next_question", next_question),
+                    "action": action["action"],
+                    "command_hint": action["command_hint"],
+                    "updated_at": utc_now(),
+                    "result": f"spray-status={summary.get('status')}; stop_reason={summary.get('stop_reason')}; summary={summary_ref}",
+                }
+            )
+            metadata = existing.setdefault("metadata", {})
+            if isinstance(metadata, dict):
+                metadata.update(action.get("metadata", {}))
+        path = save_queue(repo_root, context.target_url, queue)
+    return {
+        "status": "updated",
+        "queue_status": str(existing.get("status") or status),
+        "action_id": str(existing.get("id") or ""),
+        "path": str(path),
+    }
 
 
 def assert_private_permissions(path: Path) -> None:

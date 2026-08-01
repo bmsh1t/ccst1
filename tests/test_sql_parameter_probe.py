@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 from tools import sql_parameter_probe as probe
 from tools.json_inject_probe import PAYLOADS
 from tools.sql_payloads import SQL_PAYLOADS
@@ -120,3 +122,38 @@ def test_form_adapter_preserves_form_encoding_and_method(monkeypatch):
     assert calls[0]["content_type"] == "application/x-www-form-urlencoded"
     assert b"q=%27" in calls[1]["body"]
     assert b"sort=%27" in calls[2]["body"]
+
+
+def test_parameter_probe_shares_one_request_budget_across_endpoints(monkeypatch):
+    endpoints = [
+        {"url": f"https://target.test/search/{index}?q=x", "method": "GET"}
+        for index in range(3)
+    ]
+    allocated: list[int] = []
+    captured: dict = {}
+
+    class Session:
+        def bind_target(self, _target):
+            return self
+
+    def fake_probe(_endpoint, *, max_requests, stats, **_kwargs):
+        allocated.append(max_requests)
+        stats["request_count"] += max_requests
+        return [], []
+
+    def fake_write(_target, _lane, _hits, _events, execution):
+        captured.update(execution)
+        return {"summary": "", "files": []}
+
+    monkeypatch.setattr(probe, "session_from_args", lambda _args: Session())
+    monkeypatch.setattr(probe, "_read_inputs", lambda _path, _mode: endpoints)
+    monkeypatch.setattr(probe, "probe_parameter_endpoint", fake_probe)
+    monkeypatch.setattr(probe, "_write_results", fake_write)
+    monkeypatch.setattr(sys, "argv", [
+        "sql_parameter_probe", "--target", "target.test", "--urls-file", "unused", "--max-requests", "6"
+    ])
+
+    assert probe.main() == 0
+    assert allocated == [2, 2, 2]
+    assert captured["request_count"] == captured["request_budget"] == 6
+    assert captured["budget_exhausted"] is True

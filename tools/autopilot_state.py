@@ -19,7 +19,7 @@ TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if TOOLS_DIR not in sys.path:
     sys.path.insert(0, TOOLS_DIR)
 
-from memory.target_profile import default_memory_dir
+from memory.target_profile import default_memory_dir  # noqa: E402
 try:
     from tools.action_queue import ACTIVE_STATUSES, FINAL_STATUSES, load_queue, select_next_action
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -236,7 +236,17 @@ APP_LIKE_HINT_TOKENS = (
     "admin",
     "workspace",
     "graphql",
+    "oauth",
+    "sso",
+    "session",
+    "profile",
+    "settings",
+    "checkout",
+    "billing",
+    "websocket",
+    "client-side",
 )
+HIGH_VALUE_OBSERVATION_KINDS = frozenset({"exposure", "infra"})
 
 
 def _read_json_file(path: str) -> dict:
@@ -857,14 +867,20 @@ def _has_browser_mcp_signal(surface_context: dict, ranked: dict) -> bool:
         for item in (surface_context.get("hosts") or {}).values()
         if isinstance(item, dict)
     ]
-    ranked_urls = [
-        str(item.get("url", "") or "").lower()
-        for bucket in ("p1", "p2")
-        for item in (ranked.get(bucket) or [])
-        if isinstance(item, dict)
-    ]
+    ranked_values = []
+    for bucket in ("p1", "p2", "review_pool"):
+        for item in ranked.get(bucket) or []:
+            if not isinstance(item, dict):
+                continue
+            ranked_values.extend(str(item.get(key) or "").lower() for key in ("url", "title", "reason"))
+            ranked_values.extend(str(value or "").lower() for value in item.get("tech_stack") or [])
+    for item in ranked.get("workflow_leads") or []:
+        if isinstance(item, str):
+            ranked_values.append(item.lower())
+        elif isinstance(item, dict):
+            ranked_values.extend(str(item.get(key) or "").lower() for key in ("category", "title", "rationale", "next_action"))
 
-    for value in titles + ranked_urls:
+    for value in titles + ranked_values:
         if any(token in value for token in APP_LIKE_HINT_TOKENS):
             return True
     return False
@@ -1803,6 +1819,9 @@ def _build_domain_autopilot_state(
 
     recon_completed_no_live_hosts = bool(facts.get("recon_completed_no_live_hosts"))
     recent_guard_advisories = facts.get("recent_guard_advisories") or []
+    browser_required = bool(
+        has_recon and _has_browser_mcp_signal(surface_context or {}, ranked_for_next)
+    )
     return {
         "target": target,
         "resolved_target": resolved_target,
@@ -1814,6 +1833,7 @@ def _build_domain_autopilot_state(
         "repo_source_artifacts": facts.get("repo_source_artifacts") or [],
         "repo_source_summary": facts.get("repo_source_summary") or {},
         "browser_evidence": facts.get("browser_evidence") or {},
+        "browser_required": browser_required,
         "json_inject": facts.get("json_inject") or {},
         "runtime_state": facts.get("runtime_state") or {},
         "recon_artifacts": facts.get("recon_artifacts") or {},
@@ -2285,6 +2305,22 @@ def _explicit_partial_reason(state: dict) -> str:
         return "surface_work_pending"
     if state.get("resume_targets"):
         return "surface_work_pending"
+
+    return ""
+
+
+def _observation_partial_reason(state: dict) -> str:
+    """Return the bounded Observation prerequisite after actionable lanes."""
+    inventory = state.get("observation_inventory") or {}
+    inventory_status = str(inventory.get("status") or "")
+    if inventory_status and inventory_status != "valid":
+        return "observation_inventory_partial"
+    by_kind = inventory.get("by_kind") if isinstance(inventory.get("by_kind"), dict) else {}
+    if any(
+        int((by_kind.get(kind) or {}).get("present_untouched", 0) or 0) > 0
+        for kind in HIGH_VALUE_OBSERVATION_KINDS
+    ):
+        return "observation_high_value_pending"
     return ""
 
 
@@ -2334,6 +2370,7 @@ def build_closure_projection(
         }
         source_status = str(source.get("status") or "").strip().lower()
         partial_reason = _explicit_partial_reason(state)
+        observation_reason = _observation_partial_reason(state)
         if partial_reason:
             verdict = "handoff"
             reasons.append(partial_reason)
@@ -2346,6 +2383,9 @@ def build_closure_projection(
         elif browser.get("present") and not browser.get("ready"):
             verdict = "handoff"
             reasons.append("browser_evidence_partial")
+        elif state.get("browser_required") and not browser.get("ready"):
+            verdict = "handoff"
+            reasons.append("browser_evidence_required")
         elif source_status in {
             "partial", "blocked", "failed", "error", "incomplete", "confirmation_required",
         }:
@@ -2360,6 +2400,9 @@ def build_closure_projection(
         elif intel.get("blocked"):
             verdict = "handoff"
             reasons.append("intel_evidence_blocked")
+        elif observation_reason:
+            verdict = "handoff"
+            reasons.append(observation_reason)
         else:
             verdict = "finish"
 
@@ -2375,6 +2418,9 @@ def build_closure_projection(
 
 _STAGNANT_REASONS = {
     "browser_evidence_partial",
+    "browser_evidence_required",
+    "observation_inventory_partial",
+    "observation_high_value_pending",
     "source_evidence_partial",
     "js_evidence_partial",
     "intel_evidence_blocked",
@@ -2410,6 +2456,10 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
         "json": {
             key: (state.get("json_inject") or {}).get(key)
             for key in ("status", "input_fingerprint", "request_count", "transport_error_count")
+        },
+        "observations": {
+            "status": (state.get("observation_inventory") or {}).get("status"),
+            "by_kind": (state.get("observation_inventory") or {}).get("by_kind") or {},
         },
         "durable": {
             "active_actions": int(state.get("active_action_queue_count", 0) or 0),
@@ -2783,7 +2833,7 @@ def format_autopilot_state(state: dict) -> str:
         f"AUTOPILOT STATE: {state['target']}",
         "═══════════════════════════════════════",
         "",
-        f"Recon: ready",
+        "Recon: ready",
         f"Memory: {'available' if state['has_memory'] else 'missing'}",
         f"Next action: {state['next_action']}",
         f"Next step: {_describe_next_step(state)}",
@@ -3102,12 +3152,12 @@ def build_decision_projection(state: dict, kind: str) -> dict:
     for field, keys in (
         ("browser_evidence", ("present", "ready")),
         ("repo_source_summary", ("status",)),
-        ("observation_inventory", ("status", "reason")),
+        ("observation_inventory", ("status", "reason", "untouched", "stale", "by_kind")),
         ("surface_projection", ("status", "reason", "refresh_command")),
     ):
         value = state.get(field) if isinstance(state.get(field), dict) else {}
         projection[field] = {key: value[key] for key in keys if key in value}
-    for field in ("repo_source_available", "recon_blocker"):
+    for field in ("repo_source_available", "recon_blocker", "browser_required"):
         if field in state:
             projection[field] = state[field]
     return projection

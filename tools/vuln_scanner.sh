@@ -34,21 +34,43 @@ filter_target_urls_copy() {
     local output_file="$2"
     local dropped_file="${3:-}"
     local lane_label="${4:-target-filter}"
+    : > "$output_file"
     if [ ! -s "$input_file" ] 2>/dev/null; then
-        : > "$output_file"
         return 0
     fi
-    # Discovery-first 恢复：不要在 scanner 层按“当前 live host 集合”裁掉
-    # recon 里已经发现的 URL。外部 URL、第三方 API、Docker/GitHub/CDN、
-    # webhook、OAuth/JWKS 等都可能是攻击链线索；是否属于直接 finding 交给
-    # 后续 triage/validation 判断，而不是在发现阶段丢弃。
-    #
-    # 保留函数名和参数是为了兼容下游调用与测试；dropped_file/lane_label 仅作
-    # 文档化占位，不再写“目标外 URL”降级清单。
-    : "${dropped_file:=}"
-    : "${lane_label:=}"
-    cp "$input_file" "$output_file"
-    return 0
+
+    # Raw recon artifacts remain discovery-first. This derived file is the
+    # active-network view, so a scope-owner failure must stop the scanner.
+    if ! PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 - "$input_file" "$output_file" "$SCANNER_AUTH_TARGET" "$dropped_file" "$lane_label" <<'PY'
+import sys
+from pathlib import Path
+
+from tools.target_paths import url_belongs_to_target
+
+source, destination, target, dropped_path, lane = sys.argv[1:]
+dropped = []
+with Path(source).open(encoding="utf-8", errors="replace") as reader, Path(
+    destination
+).open("w", encoding="utf-8") as writer:
+    for raw in reader:
+        value = raw.strip().split()[0] if raw.strip() else ""
+        if not value:
+            continue
+        if url_belongs_to_target(value, target):
+            writer.write(value + "\n")
+        else:
+            dropped.append(value)
+if dropped_path and dropped:
+    with Path(dropped_path).open("a", encoding="utf-8") as handle:
+        for value in dropped:
+            handle.write(f"[OUT-OF-TARGET:{lane}] {value}\n")
+PY
+    then
+        : > "$output_file"
+        log_err "Unable to build target-owned network input for $lane_label"
+        return 1
+    fi
 }
 
 filter_direct_finding_urls_copy() {
@@ -848,6 +870,12 @@ if [ ! -s "$LIVE_URLS" ] 2>/dev/null; then
     fi
 fi
 
+EXTERNAL_CHAIN_CONTEXT="$FINDINGS_DIR/manual_review/external_chain_context.txt"
+: > "$EXTERNAL_CHAIN_CONTEXT"
+SCOPED_LIVE_URLS="$FINDINGS_DIR/.tmp/live_urls.target.txt"
+filter_target_urls_copy "$LIVE_URLS" "$SCOPED_LIVE_URLS" "$EXTERNAL_CHAIN_CONTEXT" "live"
+LIVE_URLS="$SCOPED_LIVE_URLS"
+
 LIVE_COUNT=$(wc -l < "$LIVE_URLS" 2>/dev/null || echo 0)
 log_info "Scanning $LIVE_COUNT live hosts"
 
@@ -864,8 +892,11 @@ do
 done
 
 awk '!seen[$0]++' "$ORDERED_SCAN" > "${ORDERED_SCAN}.tmp" && mv "${ORDERED_SCAN}.tmp" "$ORDERED_SCAN"
+ORDERED_SCAN_SCOPED="$FINDINGS_DIR/.tmp/ordered_scan.target.txt"
+filter_target_urls_copy "$ORDERED_SCAN" "$ORDERED_SCAN_SCOPED" "$EXTERNAL_CHAIN_CONTEXT" "ordered-scan"
+mv "$ORDERED_SCAN_SCOPED" "$ORDERED_SCAN"
 if [ ! -s "$ORDERED_SCAN" ]; then
-    log_err "No scan targets found"
+    log_err "No target-owned scan targets found"
     exit 1
 fi
 
@@ -952,10 +983,12 @@ else
     [ -s "$PARAM_URLS_RAW" ] && cp "$PARAM_URLS_RAW" "$PARAM_URLS" || : > "$PARAM_URLS"
 fi
 
-filter_target_urls_copy "$RECON_DIR/urls/api_endpoints.txt" "$API_ENDPOINTS_FILTERED" "" "api_endpoints"
-filter_target_urls_copy "$RECON_DIR/urls/sensitive_paths.txt" "$SENSITIVE_PATHS_FILTERED" "" "sensitive_paths"
+filter_target_urls_copy "$RECON_DIR/urls/api_endpoints.txt" "$API_ENDPOINTS_FILTERED" "$EXTERNAL_CHAIN_CONTEXT" "api-endpoints"
+filter_target_urls_copy "$RECON_DIR/urls/sensitive_paths.txt" "$SENSITIVE_PATHS_FILTERED" "$EXTERNAL_CHAIN_CONTEXT" "sensitive-paths"
 # Always keep PARAM_URLS readable downstream even if filter produced empty file.
 [ -f "$PARAM_URLS" ] || cp "$PARAM_URLS_RAW" "$PARAM_URLS" 2>/dev/null || : > "$PARAM_URLS"
+filter_target_urls_copy "$PARAM_URLS" "${PARAM_URLS}.scoped" "$EXTERNAL_CHAIN_CONTEXT" "parameter-urls"
+mv "${PARAM_URLS}.scoped" "$PARAM_URLS"
 
 if bb_auth_active; then
     AUTH_PARAM_URLS="$FINDINGS_DIR/.tmp/with_params.auth-scope.txt"
@@ -1205,7 +1238,8 @@ echo ""
 if ! skip_has takeover; then
 log_info "Check 2: Subdomain Takeover"
 
-SUBDOMAINS="$RECON_DIR/subdomains/all.txt"
+SUBDOMAINS="$FINDINGS_DIR/.tmp/subdomains.target.txt"
+filter_target_urls_copy "$RECON_DIR/subdomains/all.txt" "$SUBDOMAINS" "$EXTERNAL_CHAIN_CONTEXT" "takeover-subdomains"
 
 # Subjack
 if command -v subjack &>/dev/null && [ -s "$SUBDOMAINS" ]; then

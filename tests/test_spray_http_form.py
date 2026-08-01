@@ -235,3 +235,17 @@ def test_resume_skips_recorded_builtin_attempt(
     assert LoginHandler.last_password == 'p&+"'
     summary = json.loads(context.summary_path.read_text(encoding="utf-8"))
     assert summary["counts"] == {"invalid_credentials": 1, "valid_session": 1}
+
+
+def test_csrf_url_must_remain_in_target_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    login_server: str,
+):
+    _configure(monkeypatch, tmp_path, login_server, body_format="form", password="wrong")
+    spec_path = tmp_path / "request.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["csrf"]["url"] = "http://127.0.0.1:1/csrf"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    with pytest.raises(ValueError, match="csrf.url must belong to the target scope"):
+        http_form.load_request_spec()

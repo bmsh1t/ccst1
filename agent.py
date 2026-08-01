@@ -3033,8 +3033,9 @@ def _build_agent_system(
             "- Keep every request-centric lane available in CTF mode, including browser-state flows, raw-request replay, scanner expansion, OAST follow-up, and second-stage replays.\n"
         )
     mode_block += (
-        "- Authorization posture: the supplied target set is this run's active target context. Do not ask for authorization proof, ownership proof, or public-program confirmation before routine recon, scanning, or evidence-driven hunting.\n"
-        "- Pause only for ambiguous target identity, unavailable credentials that cannot be derived through the controlled Credential Lane, report submission, a new target not present in the current input/context, or explicit destructive side effects / irreversible mutations / high-pressure actions.\n"
+        "- Authorization posture: the supplied target set is this run's active authorized target context. Do not ask for authorization proof, ownership proof, or public-program confirmation before routine recon, scanning, or evidence-driven hunting.\n"
+        "- A current-turn request that names an action already supplies its opt-in; do not ask for a separate authorization statement. Apply red-line review only to concrete side effects and classify them as allow, allow-with-controls, downgrade, or pause.\n"
+        "- Pause only for ambiguous target identity, unavailable credentials that cannot be derived through the controlled Credential Lane, report submission, a new target not present in the current input/context, or irreversible/high-pressure effects that cannot be bounded or rolled back.\n"
         "- Treat the provided targets as the active execution target set for this run.\n"
         "- Read local repo config early; if it marks the run as CTF/lab or sandbox mode, treat that as authoritative for this session and do not ask for external authorization before loading the config.\n"
         "- Treat recon-discovered subdomains, live hosts, URLs, JS files, parameters, and exposure candidates under the supplied targets as part of the working target set.\n"
@@ -3103,7 +3104,7 @@ def _build_agent_system(
         "- Prefer evidence-driven depth over random tool spray, but do not be timid. Use run_vuln_scan full=true, run_zero_day_fuzzer deep=true, run_js_analysis, run_secret_hunt, equivalent helpers, or small custom probes when the target is high-value, the surface is broad, a lane plateaus, or partial evidence suggests the extra cost may pay off.\n"
         "- Substantive actions must add, confirm, disprove, block, or record target evidence; do not pad the run with repeated scans or cosmetic steps.\n"
         "- Deep exhaustion checklist before finish: confirm recon/state and surface ranking were consulted; coverage matrix was rebuilt; Evidence Ledger / actor matrix was reviewed; scanner-negative results received manual follow-up; JS/source/browser/exposure context was used or explicitly ruled out; sibling/bypass/role-diff/parser/chain-building attempts were made where applicable; high-value vuln-family directions are tested, blocked, not applicable, or listed with reasons.\n"
-        "- Deep mode never overrides live-action boundaries: payment/funds/order lifecycle writes, report submission, destructive side effects, and irreversible mutations still require explicit current-turn operator intent; HTTP method alone is advisory, not the boundary.\n"
+        "- Deep mode never overrides live-action boundaries: payment/funds/order lifecycle writes, report submission, destructive side effects, and irreversible mutations still require explicit current-turn operator intent; naming the action in the current turn supplies that intent, and HTTP method alone is advisory, not the boundary.\n"
         "- Before finishing, write concrete evidence gaps rather than a generic 'no findings' conclusion.\n"
     ) if deep_mode else ""
 

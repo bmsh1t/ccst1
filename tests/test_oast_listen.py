@@ -17,12 +17,14 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import oast_listen  # noqa: E402
+from tools.action_queue import load_queue  # noqa: E402
 
 
 @pytest.fixture
 def isolated_findings(tmp_path, monkeypatch):
     """Redirect FINDINGS_ROOT to a tmp dir for test isolation."""
     monkeypatch.setattr(oast_listen, "FINDINGS_ROOT", tmp_path)
+    monkeypatch.setattr(oast_listen, "REPO_ROOT", tmp_path)
     return tmp_path
 
 
@@ -55,6 +57,8 @@ def test_start_falls_back_to_webhook_site_with_allow_external(isolated_findings,
     assert paths["url"].read_text().strip().endswith("fake-token-123")
     assert paths["backend"].read_text().strip() == "webhook.site"
     assert paths["pid"].read_text().strip() == "0"
+    queue = load_queue(isolated_findings, "demo.com")
+    assert any(item["type"] == "oast-callback" for item in queue["actions"])
 
 
 def test_start_emits_hint_on_already_running(isolated_findings, capsys):
@@ -149,6 +153,7 @@ def test_poll_drains_interactsh_jsonl(isolated_findings, capsys):
     paths = oast_listen._paths("demo.com")
     paths["base"].mkdir(parents=True)
     paths["backend"].write_text("interactsh")
+    oast_listen._sync_start_action(target="demo.com", backend="interactsh", url="abc.oast.fun", pid=4242)
     paths["callbacks"].write_text(
         json.dumps({
             "timestamp": "2026-05-13T08:30:00Z",
@@ -171,12 +176,14 @@ def test_poll_drains_interactsh_jsonl(isolated_findings, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     # Two normalized rows printed before the hint block.
-    out_lines = [l for l in captured.out.splitlines() if l.startswith("{")]
+    out_lines = [line for line in captured.out.splitlines() if line.startswith("{")]
     assert len(out_lines) == 2
-    parsed = [json.loads(l) for l in out_lines]
+    parsed = [json.loads(line) for line in out_lines]
     assert {r["protocol"] for r in parsed} == {"dns", "http"}
     assert "## CLAUDE_HINT" in captured.out
     assert "new_callbacks: 2" in captured.out
+    queue = load_queue(isolated_findings, "demo.com")
+    assert next(item for item in queue["actions"] if item["type"] == "oast-callback")["status"] == "candidate"
 
 
 def test_poll_emits_hint_when_no_callbacks(isolated_findings, capsys):
@@ -184,6 +191,31 @@ def test_poll_emits_hint_when_no_callbacks(isolated_findings, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert "new_callbacks: 0" in captured.out
+
+
+def test_webhook_poll_persists_callback_and_returns_success(isolated_findings, capsys):
+    paths = oast_listen._paths("demo.com")
+    paths["base"].mkdir(parents=True)
+    paths["backend"].write_text("webhook.site")
+    paths["url"].write_text("https://webhook.site/token-123")
+    oast_listen._sync_start_action(
+        target="demo.com",
+        backend="webhook.site",
+        url="https://webhook.site/token-123",
+    )
+    fake_response = MagicMock()
+    fake_response.__enter__ = MagicMock(return_value=fake_response)
+    fake_response.__exit__ = MagicMock(return_value=False)
+    fake_response.read = MagicMock(
+        return_value=json.dumps(
+            {"data": [{"created_at": "2026-05-13T08:30:00Z", "ip": "1.2.3.4", "url": "/cb", "method": "GET"}]}
+        ).encode()
+    )
+    with patch.object(oast_listen, "urlopen", return_value=fake_response):
+        assert oast_listen.main(["poll", "--target", "demo.com", "--since-ts", "0"]) == 0
+    assert paths["callbacks"].is_file()
+    queue = load_queue(isolated_findings, "demo.com")
+    assert next(item for item in queue["actions"] if item["type"] == "oast-callback")["status"] == "candidate"
 
 
 # ─── Stop ───────────────────────────────────────────────────────────────────
@@ -242,6 +274,20 @@ def test_stop_warns_when_nothing_running(isolated_findings, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert "no OAST instance recorded" in captured.err
+
+
+def test_stop_without_callbacks_closes_active_queue_action(isolated_findings, capsys):
+    paths = oast_listen._paths("demo.com")
+    paths["base"].mkdir(parents=True)
+    paths["pid"].write_text("0")
+    paths["url"].write_text("https://webhook.site/abc")
+    paths["backend"].write_text("webhook.site")
+    oast_listen._sync_start_action(target="demo.com", backend="webhook.site", url="https://webhook.site/abc")
+
+    assert oast_listen.main(["stop", "--target", "demo.com"]) == 0
+    queue = load_queue(isolated_findings, "demo.com")
+    action = next(item for item in queue["actions"] if item["type"] == "oast-callback")
+    assert action["status"] == "dead-end"
 
 
 # ─── Status ─────────────────────────────────────────────────────────────────

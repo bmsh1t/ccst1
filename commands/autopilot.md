@@ -140,9 +140,11 @@ Before unusual helpers, scan `docs/tool-index.md` once. Canonical contracts are
 - Byte-exact HTTP/cache/desync uses `tools/sender_semantics.py --require` and
   `tools/smuggling_executor.py --variant`; browser evidence cannot prove wire absence.
 - Live-Action Boundaries: `rules/red-lines.md` is canonical. Red-line checks are
-  narrow safety checks, not broad workflow blockers. Pause for ambiguous target,
-  missing required credentials, new off-set target, report submission, or concrete
-  destructive/irreversible/high-pressure side effects. Controlled credential
+  narrow side-effect checks, not authorization or ownership gates. A current-turn
+  request that names an action already supplies its opt-in; do not ask for a
+  separate authorization statement. Pause for ambiguous target, missing required
+  credentials, new off-set target, report submission, or concrete irreversible/
+  high-pressure side effects. Controlled credential
   testing and OAST are not red lines; active stored XSS payload, change real
   account or permission state, and trigger CI/CD/deployment side effects require
   explicit current-turn intent.

@@ -10,14 +10,15 @@ def _read(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_claude_md_has_authorization_posture_without_overriding_red_lines():
+def test_claude_md_separates_authorization_from_side_effect_review():
     text = _read("CLAUDE.md")
 
     assert "## Authorization Posture" in text
     assert "视为已授权的" in text
-    assert "非破坏性安全测试上下文" in text
-    assert "授权姿态不覆盖 `rules/red-lines.md`" in text
-    assert "不得执行 DDoS/高压流量" in text
+    assert "安全测试上下文" in text
+    assert "该请求本身就是该动作的 opt-in" in text
+    assert "只判断具体副作用，不重新裁决授权或目标归属" in text
+    assert "allow-with-controls" in text
 
 
 def test_claude_md_operator_profile_is_evidence_driven_not_class_forcing():
@@ -35,9 +36,11 @@ def test_claude_md_operator_profile_is_evidence_driven_not_class_forcing():
     assert "绝不意味着高压流量" in text
 
 
-def test_runtime_protocol_inherits_profile_with_red_lines_higher_priority():
+def test_runtime_protocol_inherits_profile_without_rechecking_authorization():
     text = _read("skills/runtime-protocol.md")
 
     assert "Authorization Posture" in text
     assert "Operator Profile" in text
-    assert "`rules/red-lines.md` 始终是更高优先级的安全边界" in text
+    assert "`rules/red-lines.md` 始终是更高优先级的动作安全边界" in text
+    assert "不重新裁决授权" in text
+    assert "allow-with-controls" in text

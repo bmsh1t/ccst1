@@ -25,6 +25,7 @@ try:
         sha256_text,
         write_private_json,
     )
+    from tools.target_paths import url_belongs_to_target
 except ImportError:  # pragma: no cover
     from spray_contract import (
         append_attempt,
@@ -35,10 +36,27 @@ except ImportError:  # pragma: no cover
         sha256_text,
         write_private_json,
     )
+    from target_paths import url_belongs_to_target  # type: ignore
 
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Bug-Bounty-Research"
 MAX_RESPONSE_BYTES = 64 * 1024
+
+
+class ScopeRedirectError(ValueError):
+    """Raised before an OAuth redirect can forward credentials or tokens."""
+
+
+class ScopedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, target: str):
+        super().__init__()
+        self.target = target
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        destination = urllib.parse.urljoin(req.full_url, newurl)
+        if not url_belongs_to_target(destination, self.target):
+            raise ScopeRedirectError(f"OAuth redirect leaves target scope: {destination}")
+        return super().redirect_request(req, fp, code, msg, headers, destination)
 
 
 def _oauth_config() -> tuple[dict[str, str], dict[str, Any], dict[str, Any]]:
@@ -83,10 +101,26 @@ def _attempt(url: str, user: str, password: str, config: dict[str, str]) -> dict
     body = b""
     headers: dict[str, str] = {}
     try:
-        with urllib.request.urlopen(request, timeout=15, context=_ssl_context()) as response:
+        opener = urllib.request.build_opener(
+            ScopedRedirectHandler(url),
+            urllib.request.HTTPSHandler(context=_ssl_context()),
+        )
+        with opener.open(request, timeout=15) as response:
             status = response.status
             headers = dict(response.headers.items())
             body = response.read(MAX_RESPONSE_BYTES)
+    except ScopeRedirectError:
+        return {
+            "status_code": 0,
+            "classification": "guarded",
+            "credential_valid": None,
+            "token_issued": False,
+            "oauth_error": "",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "error_kind": "scope_redirect",
+            "response": {},
+            "headers": {},
+        }
     except urllib.error.HTTPError as exc:
         status = exc.code
         headers = dict(exc.headers.items()) if exc.headers else {}

@@ -693,6 +693,14 @@ def test_closure_only_handoffs_browser_or_js_when_partial_work_is_explicit():
         {"next_action": "handoff", "browser_evidence": {"present": True, "ready": False}},
         _closure_matrix(),
     )
+    required_browser = build_closure_projection(
+        {
+            "next_action": "handoff",
+            "browser_required": True,
+            "browser_evidence": {"present": False, "ready": False},
+        },
+        _closure_matrix(),
+    )
     pending_js = build_closure_projection(
         {"next_action": "handoff", "enrichment_hints": [{"tool": "run_js_read"}]},
         _closure_matrix(),
@@ -704,8 +712,40 @@ def test_closure_only_handoffs_browser_or_js_when_partial_work_is_explicit():
 
     assert missing_browser["verdict"] == "finish"
     assert partial_browser["reasons"] == ["browser_evidence_partial"]
+    assert required_browser["reasons"] == ["browser_evidence_required"]
     assert pending_js["reasons"] == ["js_evidence_partial"]
     assert blocked_source["reasons"] == ["source_evidence_partial"]
+
+
+def test_closure_handoffs_for_high_value_or_invalid_observation_inventory():
+    high_value = build_closure_projection(
+        {
+            "next_action": "handoff",
+            "observation_inventory": {
+                "status": "valid",
+                "by_kind": {"exposure": {"present_untouched": 2}},
+            },
+        },
+        _closure_matrix(),
+    )
+    invalid = build_closure_projection(
+        {"next_action": "handoff", "observation_inventory": {"status": "stale"}},
+        _closure_matrix(),
+    )
+    reviewed = build_closure_projection(
+        {
+            "next_action": "handoff",
+            "observation_inventory": {
+                "status": "valid",
+                "by_kind": {"exposure": {"present_untouched": 0}},
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert high_value["reasons"] == ["observation_high_value_pending"]
+    assert invalid["reasons"] == ["observation_inventory_partial"]
+    assert reviewed["verdict"] == "finish"
 
 
 def test_default_formatted_state_omits_explicit_closure_line():
@@ -782,6 +822,7 @@ def test_explicit_closure_checks_pending_source_and_js_artifacts(tmp_path):
 
     state = build_autopilot_state(str(tmp_path), target, bounded=True)
     state["next_action"] = "handoff"
+    state["observation_inventory"] = {"status": "valid", "by_kind": {}}
     closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
     assert closure["reasons"] == ["source_evidence_partial"]
 
@@ -2114,6 +2155,7 @@ class TestAutopilotState:
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
 
         assert state["next_tool_hint"] == "collect_browser_mcp_evidence"
+        assert state["browser_required"] is True
         assert [item["tool"] for item in state["enrichment_hints"]] == [
             "collect_browser_mcp_evidence",
             "run_source_intel",

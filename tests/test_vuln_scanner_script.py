@@ -136,8 +136,10 @@ def test_vuln_scanner_keeps_recon_url_artifacts_discovery_first():
     assert 'sensitive_paths.target.txt' in text
     assert ': > "$FINDINGS_DIR/idor/idor_candidates.txt"' in text
     assert ': > "$FINDINGS_DIR/idor/api_sequential_ids.txt"' in text
-    assert 'cp "$input_file" "$output_file"' in text
-    assert '[OUT-OF-TARGET:' not in text
+    assert 'url_belongs_to_target(value, target)' in text
+    assert 'Raw recon artifacts remain discovery-first' in text
+    assert '[OUT-OF-TARGET:{lane}]' in text
+    assert 'No target-owned scan targets found' in text
 
 
 def test_vuln_scanner_filters_direct_findings_but_keeps_external_chain_context():
@@ -249,11 +251,11 @@ def test_vuln_scanner_keeps_historical_corpus_out_of_ordered_scan(tmp_path):
     priority_dir.mkdir()
 
     (live_dir / "urls.txt").write_text(
-        "https://127.0.0.1:10\nhttps://127.0.0.1:11\n",
+        "https://large.example:10\nhttps://large.example:11\n",
         encoding="utf-8",
     )
     (priority_dir / "critical_hosts.txt").write_text(
-        "https://127.0.0.1:9\nhttps://127.0.0.1:10\n",
+        "https://large.example:9\nhttps://large.example:10\n",
         encoding="utf-8",
     )
     raw_urls = "".join(
@@ -300,8 +302,8 @@ def test_vuln_scanner_deduplicates_origins_and_bounds_quick_nuclei_input(tmp_pat
     live_dir = recon_dir / "live"
     findings_dir = tmp_path / "findings"
     live_dir.mkdir(parents=True)
-    urls = [f"http://127.0.0.1:{20000 + index}/path/{index}" for index in range(80)]
-    urls.extend(f"http://127.0.0.1:{20000 + index}/other" for index in range(10))
+    urls = [f"http://large.example:{20000 + index}/path/{index}" for index in range(80)]
+    urls.extend(f"http://large.example:{20000 + index}/other" for index in range(10))
     (live_dir / "urls.txt").write_text("\n".join(urls) + "\n", encoding="utf-8")
 
     env = os.environ.copy()
@@ -326,8 +328,50 @@ def test_vuln_scanner_deduplicates_origins_and_bounds_quick_nuclei_input(tmp_pat
     assert summary["nuclei_target_limit"] == 50
     assert summary["nuclei_targets_truncated"] is True
     selected = (findings_dir / ".tmp" / "nuclei_targets.txt").read_text(encoding="utf-8").splitlines()
-    assert selected[0] == "http://127.0.0.1:20000"
-    assert selected[-1] == "http://127.0.0.1:20049"
+    assert selected[0] == "http://large.example:20000"
+    assert selected[-1] == "http://large.example:20049"
+
+
+def test_vuln_scanner_keeps_off_target_urls_as_inert_chain_context(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    recon_dir = tmp_path / "recon" / "example.com"
+    live_dir = recon_dir / "live"
+    urls_dir = recon_dir / "urls"
+    findings_dir = tmp_path / "findings"
+    live_dir.mkdir(parents=True)
+    urls_dir.mkdir()
+    (live_dir / "urls.txt").write_text(
+        "https://app.example.com\nhttps://third-party.test/callback\n",
+        encoding="utf-8",
+    )
+    (urls_dir / "api_endpoints.txt").write_text(
+        "https://api.example.com/search\n"
+        "https://third-party.test/search\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["FINDINGS_OUT_DIR"] = str(findings_dir)
+    env["PATH"] = "/usr/bin:/bin"
+    result = subprocess.run(
+        ["bash", str(script), str(recon_dir), "--quick", "--skip", "all"],
+        cwd=script.resolve().parent.parent,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (findings_dir / "ordered_scan_targets.txt").read_text().splitlines() == [
+        "https://app.example.com"
+    ]
+    assert (findings_dir / ".tmp" / "api_endpoints.target.txt").read_text().splitlines() == [
+        "https://api.example.com/search"
+    ]
+    chain = (findings_dir / "manual_review" / "external_chain_context.txt").read_text()
+    assert "https://third-party.test/callback" in chain
+    assert "https://third-party.test/search" in chain
 
 
 def test_vuln_scanner_clears_stale_summary_before_early_exit(tmp_path):
@@ -367,7 +411,7 @@ def test_vuln_scanner_publishes_summary_json_only_after_success(tmp_path):
     shim_dir = tmp_path / "bin"
     live_dir.mkdir(parents=True)
     shim_dir.mkdir()
-    (live_dir / "urls.txt").write_text("https://127.0.0.1:9\n", encoding="utf-8")
+    (live_dir / "urls.txt").write_text("https://summary-failure.example:9\n", encoding="utf-8")
 
     real_python = shutil.which("python3")
     assert real_python
@@ -413,7 +457,7 @@ def test_vuln_scanner_keeps_scan_incomplete_when_nuclei_fails(tmp_path):
     shim_dir = tmp_path / "bin"
     live_dir.mkdir(parents=True)
     shim_dir.mkdir()
-    (live_dir / "urls.txt").write_text("https://127.0.0.1:9\n", encoding="utf-8")
+    (live_dir / "urls.txt").write_text("https://nuclei-failure.example:9\n", encoding="utf-8")
     nuclei_shim = shim_dir / "nuclei"
     nuclei_shim.write_text("#!/bin/sh\nexit 124\n", encoding="utf-8")
     nuclei_shim.chmod(0o755)
@@ -453,7 +497,7 @@ def test_vuln_scanner_requires_finding_index_before_completion(tmp_path):
     shim_dir = tmp_path / "bin"
     live_dir.mkdir(parents=True)
     shim_dir.mkdir()
-    (live_dir / "urls.txt").write_text("https://127.0.0.1:9\n", encoding="utf-8")
+    (live_dir / "urls.txt").write_text("https://index-failure.example:9\n", encoding="utf-8")
 
     real_python = shutil.which("python3")
     assert real_python
