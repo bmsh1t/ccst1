@@ -81,7 +81,8 @@ identity, and cloud signals without re-enumerating everything.
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/vuln_scanner.sh` | Recon done, want broad active coverage | Multi-lane scanner; unsafe methods become manual-review unless `ALLOW_UNSAFE_HTTP_TESTS=1` |
-| `tools/json_inject_probe.py` | Reviewed same-target POST/JSON shape exists | Scoped AuthSession probe with atomic summary and bounded WAF adaptation |
+| `tools/json_inject_probe.py` | Reviewed same-target POST/JSON shape exists | AuthSession probe; bounded SQL matrix, baseline findings, atomic summary, at-most-two WAF retries |
+| `tools/sql_parameter_probe.py` | Reviewed query URL or POST form file | Shared SQL matrix for query/form parameters; scoped findings and at-most-two WAF retries |
 | `tools/bypass_403.sh` | 403/401 on interesting endpoint | byp4xx + 20 built-in header/method/encoding bypass tricks |
 | `tools/sibling_generator.py` | Candidate route has an ID-bearing sibling shape | Writes a bounded sibling-endpoint probe queue for evidence-fit replay |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |

