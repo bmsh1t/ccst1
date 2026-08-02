@@ -83,6 +83,9 @@ STANDARD_PUBLIC_METADATA_KEYS = {
 STACK_TRACE_RE = re.compile(
     r"Traceback \(most recent call last\)|(?:java\.lang\.|javax\.)[A-Za-z]+Exception|"
     r"System\.[A-Za-z]+Exception|at [A-Za-z0-9_$.]+\([^)]*\.java:\d+\)|"
+    r"(?:^|\n)\s*at\s+(?:async\s+)?(?:[^\n(]+\s+\()?"
+    r"(?:file://)?[^)\n]+\.(?:[cm]?js|ts):\d+:\d+\)?|"
+    r"(?:^|\n)\s*at\s+(?:async\s+)?node:internal/[^\n]+|"
     r"Unhandled exception|stack trace",
     re.I,
 )
@@ -93,6 +96,7 @@ MAGIC_SIGNATURES = {
     "png": b"\x89PNG\r\n\x1a\n",
     "elf": b"\x7fELF",
     "sqlite": b"SQLite format 3\x00",
+    "kdbx": b"\x03\xd9\xa2\x9a\x67\xfb\x4b\xb5",
 }
 
 

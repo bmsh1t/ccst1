@@ -37,6 +37,28 @@ def test_binary_exposure_detects_bounded_stack_trace_without_promoting_alone():
     assert result["candidate_ready"] is False
 
 
+def test_binary_exposure_detects_node_stack_frame():
+    result = classify_binary_response(
+        "https://example.com/api/export",
+        b"TypeError: invalid state\n    at handler (/srv/app.js:17:9)",
+        status=500,
+    )
+
+    assert result["binary_evidence"]["stack_trace"] is True
+    assert result["workflow_leads"][0]["type"] == "stack-trace"
+
+
+def test_binary_exposure_detects_kdbx_magic():
+    result = classify_binary_response(
+        "https://example.com/download/vault",
+        b"\x03\xd9\xa2\x9a\x67\xfb\x4b\xb5\x00fixture",
+        status=200,
+    )
+
+    assert result["binary_evidence"]["magic"] == "kdbx"
+    assert result["workflow_leads"][0]["type"] == "magic-byte"
+
+
 def test_csaf_provider_metadata_is_treated_as_standard_public_metadata():
     body = json.dumps(
         {

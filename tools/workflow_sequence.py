@@ -10,6 +10,7 @@ import re
 import shlex
 import sys
 import urllib.parse
+from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,8 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 MAX_STEPS = 8
 DEFAULT_REQUEST_CAP = 16
 SAFE_EFFECTS = {"read_only", "preview"}
+TOKEN_SOURCES = ("regex", "response_header", "cookie", "json_path")
+MAX_TOKEN_LENGTH = 8192
 
 
 def _rel(path: Path, repo_root: Path) -> str:
@@ -135,13 +138,9 @@ def _refresh_token(
     url = str(spec.get("url") or step["url"])
     if not url_belongs_to_target(url, target):
         raise ValueError("workflow token source leaves target scope")
-    pattern = str(spec.get("regex") or "")
-    if not pattern:
-        raise ValueError("workflow token regex is required")
-    try:
-        regex = re.compile(pattern)
-    except re.error as exc:
-        raise ValueError(f"invalid workflow token regex: {exc}") from exc
+    sources = [name for name in TOKEN_SOURCES if str(spec.get(name) or "").strip()]
+    if len(sources) != 1:
+        raise ValueError("workflow token requires exactly one extraction source")
     response = request_once(
         target=target,
         url=url,
@@ -149,10 +148,61 @@ def _refresh_token(
         headers=session.headers_for_url(url),
         timeout=timeout,
     )
-    match = regex.search(str(response.get("body") or ""))
-    if not match or not match.group(1):
+    source = sources[0]
+    token = ""
+    if source == "regex":
+        try:
+            regex = re.compile(str(spec["regex"]))
+        except re.error as exc:
+            raise ValueError(f"invalid workflow token regex: {exc}") from exc
+        if regex.groups < 1:
+            raise ValueError("workflow token regex requires a capture group")
+        match = regex.search(str(response.get("body") or ""))
+        token = str(match.group(1)) if match else ""
+    elif source == "response_header":
+        wanted = str(spec["response_header"]).strip().lower()
+        token = next(
+            (str(value).strip() for name, value in (response.get("headers") or {}).items() if str(name).lower() == wanted),
+            "",
+        )
+    elif source == "cookie":
+        raw_cookie = next(
+            (str(value) for name, value in (response.get("headers") or {}).items() if str(name).lower() == "set-cookie"),
+            "",
+        )
+        jar = SimpleCookie()
+        try:
+            jar.load(raw_cookie)
+        except CookieError as exc:
+            raise ValueError("workflow token source returned an invalid Set-Cookie header") from exc
+        morsel = jar.get(str(spec["cookie"]).strip())
+        token = morsel.value if morsel else ""
+    else:
+        path = str(spec["json_path"]).strip()
+        # ponytail: dotted keys and numeric indexes only; add JSONPath when target evidence requires it.
+        parts = path.split(".")
+        if parts and parts[0] == "$":
+            parts.pop(0)
+        if not parts or len(parts) > 8 or len(path) > 200 or any(not part for part in parts):
+            raise ValueError("workflow token json_path must contain 1-8 bounded segments")
+        try:
+            value: Any = json.loads(str(response.get("body") or ""))
+        except json.JSONDecodeError as exc:
+            raise ValueError("workflow token source did not return valid JSON") from exc
+        for part in parts:
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+                value = value[int(part)]
+            else:
+                raise ValueError("workflow token json_path did not resolve")
+        if value is not None and not isinstance(value, (dict, list, bool)):
+            token = str(value).strip()
+    if not token:
         raise ValueError("workflow token source did not yield a token")
-    return match.group(1), 1
+    if len(token) > MAX_TOKEN_LENGTH:
+        raise ValueError("workflow token exceeds the bounded length")
+    return token, 1
 
 
 def _step_request(step: dict[str, Any], *, target: str, session: AuthSession, timeout: int) -> tuple[dict[str, Any], int]:
@@ -164,8 +214,12 @@ def _step_request(step: dict[str, Any], *, target: str, session: AuthSession, ti
         header = str(spec.get("header") or "").strip()
         placeholder = str(spec.get("placeholder") or "{TOKEN}")
         if header:
+            if "\r" in token or "\n" in token:
+                raise ValueError("workflow token header value contains CR/LF")
             headers[header] = token
         else:
+            if placeholder not in body:
+                raise ValueError("workflow token has no header or body placeholder destination")
             body = body.replace(placeholder, token)
     return request_once(
         target=target,

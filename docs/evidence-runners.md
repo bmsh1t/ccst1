@@ -95,6 +95,21 @@ Mutation or unknown steps return `manual_required` until the current turn suppli
 the explicit red-line flag; a response difference remains a candidate until AI
 reviews impact and replayability.
 
+A step-level `token` declares exactly one source: `regex` (body capture group),
+`response_header`, `cookie` (`Set-Cookie` name), or a bounded dotted `json_path`.
+Send the extracted value through `header` or a body `placeholder`; token source
+URLs and redirects remain target-scoped. Example:
+
+```json
+{
+  "token": {
+    "url": "https://api.TARGET/session/refresh",
+    "json_path": "$.data.csrf",
+    "header": "X-CSRF-Token"
+  }
+}
+```
+
 ### Timing SQL
 
 Use after a time-shaped SQL signal, never as a default sweep. Samples are
