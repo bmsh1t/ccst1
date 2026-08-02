@@ -1,10 +1,40 @@
 import json
 
 from tools.public_exposure_signals import (
+    classify_binary_response,
     classify_public_response,
     looks_like_standard_public_metadata,
     standard_public_metadata_kind,
 )
+
+
+def test_binary_exposure_preserves_magic_and_nul_as_structured_leads():
+    result = classify_binary_response(
+        "https://example.com/download/export.zip",
+        b"PK\x03\x04\x00\x00archive",
+        status=200,
+    )
+
+    assert result["binary_evidence"] == {
+        "magic": "zip",
+        "stack_trace": False,
+        "nul_bytes": True,
+        "byte_length": 13,
+    }
+    assert result["workflow_leads"][0]["type"] == "magic-byte"
+    assert result["candidate_ready"] is False
+
+
+def test_binary_exposure_detects_bounded_stack_trace_without_promoting_alone():
+    result = classify_binary_response(
+        "https://example.com/api/export",
+        b"Traceback (most recent call last):\n  File \"app.py\", line 4",
+        status=500,
+    )
+
+    assert result["binary_evidence"]["stack_trace"] is True
+    assert result["workflow_leads"][0]["type"] == "stack-trace"
+    assert result["candidate_ready"] is False
 
 
 def test_csaf_provider_metadata_is_treated_as_standard_public_metadata():

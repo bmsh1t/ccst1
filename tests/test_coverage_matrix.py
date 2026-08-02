@@ -35,6 +35,7 @@ from coverage_matrix import (
     save_matrix,
 )
 from finding_index import update_finding_status, upsert_finding
+from surface_index import build_surface_index
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -292,6 +293,26 @@ class TestSaveLoadRoundTrip:
 
 
 class TestRebuildMatrix:
+    def test_rebuild_consumes_complete_surface_index_and_tracks_its_generation(self, tmp_path):
+        urls_dir = tmp_path / "recon" / "x.com" / "urls"
+        urls_dir.mkdir(parents=True)
+        urls = [f"https://x.com/api/admin/resources/{index}?tenant_id={index}" for index in range(9)]
+        (urls_dir / "api_endpoints.txt").write_text("\n".join(urls), encoding="utf-8")
+        build_surface_index(tmp_path, "x.com")
+
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+
+        assert {item["endpoint"] for item in matrix["endpoints"]} == {
+            f"/api/admin/resources/{index}" for index in range(9)
+        }
+        assert matrix_is_fresh("x.com", matrix, repo_root=tmp_path) is True
+
+        with (urls_dir / "api_endpoints.txt").open("a", encoding="utf-8") as handle:
+            handle.write("\nhttps://x.com/api/admin/resources/9?tenant_id=9")
+        build_surface_index(tmp_path, "x.com")
+
+        assert matrix_is_fresh("x.com", matrix, repo_root=tmp_path) is False
+
     def test_source_fingerprint_skips_only_unchanged_inputs(self, tmp_path):
         _seed_recon(tmp_path, "x.com", ["https://x.com/api/users/1"])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)

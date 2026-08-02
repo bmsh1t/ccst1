@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -352,6 +353,7 @@ def test_next_prefers_ready_item_over_higher_priority_missing_evidence(tmp_path)
         TARGET,
         runner="marker-replay",
         endpoint=f"{TARGET}/api/ready",
+        expect_marker="MARKER",
         priority="high",
     )
 
@@ -359,7 +361,71 @@ def test_next_prefers_ready_item_over_higher_priority_missing_evidence(tmp_path)
 
     assert next_item["backlog_id"] == ready["id"]
     assert next_item["ready"] is True
-    assert next_item["next_action"] == "run_validation_runner"
+    assert next_item["backlog_id"] == ready["id"]
+    assert "--expect-marker" in shlex.split(next_item["command"])
+
+
+def test_marker_runner_builds_complete_command_when_contract_is_satisfied(tmp_path):
+    ready = target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="marker-replay",
+        endpoint=f"{TARGET}/api/ready",
+        expect_marker="MARKER",
+        method="POST",
+        priority="high",
+    )
+
+    next_item = target_case_state.next_action(tmp_path, TARGET)
+
+    assert next_item["backlog_id"] == ready["id"]
+    assert next_item["ready"] is True
+    assert "--expect-marker MARKER" in next_item["command"]
+    assert "--method POST" in next_item["command"]
+
+
+def test_sqli_runner_requires_parameter_and_variant_and_builds_command(tmp_path):
+    target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="sqli-result-diff",
+        endpoint=f"{TARGET}/search",
+        priority="critical",
+    )
+    blocked = target_case_state.next_action(tmp_path, TARGET)
+    assert blocked["ready"] is False
+    assert {"param", "variant_value"}.issubset(set(blocked["missing_evidence"]))
+
+    target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="sqli-result-diff",
+        endpoint=f"{TARGET}/search",
+        param="q",
+        baseline_value="safe",
+        variant_value="'",
+        priority="high",
+    )
+    ready = target_case_state.next_action(tmp_path, TARGET)
+    assert ready["ready"] is True
+    assert "--param q" in ready["command"]
+    command = shlex.split(ready["command"])
+    assert command[command.index("--variant-value") + 1] == "'"
+
+
+def test_unknown_runner_fails_closed(tmp_path):
+    target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="future-runner",
+        endpoint=f"{TARGET}/api",
+        priority="critical",
+    )
+    next_item = target_case_state.next_action(tmp_path, TARGET)
+    assert next_item["ready"] is False
+    assert any("unsupported runner" in value for value in next_item["missing_evidence"])
+    assert next_item["command"] == ""
+    assert next_item["next_action"] == "enrich_case_state"
 
 
 def test_candidate_routes_to_enrichment_without_replay(tmp_path):
@@ -368,6 +434,7 @@ def test_candidate_routes_to_enrichment_without_replay(tmp_path):
         TARGET,
         runner="marker-replay",
         endpoint=f"{TARGET}/api/candidate",
+        expect_marker="MARKER",
         priority="critical",
         status="candidate",
     )

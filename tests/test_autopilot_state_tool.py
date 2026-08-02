@@ -1,6 +1,7 @@
 """Tests for tools/autopilot_state.py."""
 
 import json
+import hashlib
 import sys
 import time
 
@@ -16,6 +17,8 @@ from autopilot_state import (
     _is_substantive_queue_action,
     _load_closure_projection,
     _load_json_inject_projection,
+    _load_js_intel_projection,
+    _load_sql_matrix_projection,
     _pick_next_action,
     build_closure_projection,
     build_decision_projection,
@@ -100,6 +103,150 @@ def test_closure_finishes_only_for_gap_free_handoff_state():
     assert closure["reasons"] == []
 
 
+def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    progress = {
+        "schema_version": 1,
+        "round_id": "round-test",
+        "status": "active",
+        "max_lanes": 1,
+        "claimed_lanes": ["sqli:/api/search"],
+        "lanes": [{
+            "schema_version": 1,
+            "id": "sqli:/api/search",
+            "status": "started",
+            "decision": "",
+            "evidence_ref": "",
+            "next_action": "",
+            "started_at": "2026-08-01T00:00:00Z",
+            "updated_at": "2026-08-01T00:00:00Z",
+        }],
+        "claimed_count": 1,
+        "remaining_lanes": 0,
+        "budget_reached": True,
+        "started_at": "2026-08-01T00:00:00Z",
+        "updated_at": "2026-08-01T00:00:00Z",
+    }
+    witness.write_text(json.dumps({"round_progress": progress}), encoding="utf-8")
+    state = {"target": target, "resolved_target": target, "next_action": "handoff"}
+
+    started = _load_closure_projection(
+        str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
+    )
+    progress["lanes"][0].update({
+        "status": "completed",
+        "decision": "tested clean",
+        "evidence_ref": "findings/target.com/poc/sql_parameter/summary.json",
+        "next_action": "none",
+        "finished_at": "2026-08-01T00:01:00Z",
+        "updated_at": "2026-08-01T00:01:00Z",
+    })
+    witness.write_text(json.dumps({"round_progress": progress}), encoding="utf-8")
+    terminal = _load_closure_projection(
+        str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
+    )
+    progress["status"] = "completed"
+    witness.write_text(json.dumps({"round_progress": progress}), encoding="utf-8")
+    closed = _load_closure_projection(
+        str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
+    )
+
+    assert started["verdict"] == "handoff"
+    assert started["reasons"] == ["round_lane_unfinished"]
+    assert started["next_action"] == "resume_round_lane"
+    assert started["round_progress"]["unfinished_lanes"] == ["sqli:/api/search"]
+    assert terminal["verdict"] == "handoff"
+    assert terminal["reasons"] == ["round_closure_pending"]
+    assert terminal["round_progress"]["latest_lane"]["decision"] == "tested clean"
+    assert closed["verdict"] == "finish"
+    assert closed["can_claim_exhausted"] is True
+
+
+def test_case_state_work_routes_bootstrap_and_blocks_exhausted_closure(tmp_path):
+    target = "target.com"
+    case_path = tmp_path / "state" / target / "case_state.json"
+    case_path.parent.mkdir(parents=True)
+    case_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target": target,
+            "target_key": target,
+            "actors": {},
+            "sessions": {},
+            "objects": {},
+            "hypotheses": [{
+                "status": "open",
+                "vuln_class": "Authz",
+                "endpoint": "https://target.com/api/orders/1",
+                "next_action": "build actor-pair replay",
+            }],
+            "validation_backlog": [],
+        }),
+        encoding="utf-8",
+    )
+
+    state = build_autopilot_state(
+        str(tmp_path), target, memory_dir=str(tmp_path / "memory"), bounded=True
+    )
+    closure = build_closure_projection(
+        {"next_action": "handoff", "case_state": state["case_state"]},
+        _closure_matrix(),
+    )
+
+    assert state["next_action"] == "resume_case_state"
+    assert state["case_state"]["top_next_action"]["next_action"] == "create_validation_backlog"
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["case_state_work_pending"]
+
+
+def test_malformed_case_state_returns_structured_state_error(tmp_path, monkeypatch, capsys):
+    target = "target.com"
+    case_path = tmp_path / "state" / target / "case_state.json"
+    case_path.parent.mkdir(parents=True)
+    case_path.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr("autopilot_state.BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["autopilot_state.py", "--target", target, "--bounded", "--closure", "--json"],
+    )
+
+    assert autopilot_state_main() == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["closure"]["verdict"] == "error"
+    assert payload["closure"]["reasons"] == ["state_read_error"]
+    assert "invalid target case state JSON" in payload["closure"]["error"]["message"]
+
+
+def test_malformed_checkpoint_witness_returns_structured_state_error(tmp_path, monkeypatch, capsys):
+    target = "target.com"
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True)
+    witness.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr("autopilot_state.BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "autopilot_state.py",
+            "--target", target,
+            "--bounded",
+            "--closure",
+            "--projection-only",
+            "--json",
+        ],
+    )
+
+    assert autopilot_state_main() == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["closure"]["verdict"] == "error"
+    assert payload["closure"]["reasons"] == ["state_read_error"]
+    assert "invalid checkpoint witness JSON" in payload["closure"]["error"]["message"]
+
+
 def test_decision_projections_preserve_only_controller_fields():
     state = {
         "resolved_target": "target.com",
@@ -110,6 +257,10 @@ def test_decision_projections_preserve_only_controller_fields():
             "reasons": ["next_action_pending"],
             "next_action": "hunt_p1",
             "rotation_hint": {"action": "rotate_to_adjacent_high_value_lane"},
+            "round_progress": {
+                "status": "active",
+                "unfinished_lanes": ["sqli:/api/search"],
+            },
             "surface_review": {"unresolved": [{"url": "https://target.com/large"}]},
         },
         "structured_findings": {"reported": 2, "items": [{"raw": "omitted"}]},
@@ -134,7 +285,14 @@ def test_decision_projections_preserve_only_controller_fields():
     }
     assert closure["closure"] == {
         key: state["closure"][key]
-        for key in ("verdict", "can_claim_exhausted", "reasons", "next_action", "rotation_hint")
+        for key in (
+            "verdict",
+            "can_claim_exhausted",
+            "reasons",
+            "next_action",
+            "rotation_hint",
+            "round_progress",
+        )
     }
     assert closure["structured_findings"] == {"reported": 2}
     assert closure["browser_evidence"] == {"present": True, "ready": False}
@@ -840,7 +998,74 @@ def test_explicit_closure_checks_pending_source_and_js_artifacts(tmp_path):
     js_intel = tmp_path / "findings" / storage_key / "js_intel"
     js_intel.mkdir()
     (js_intel / "materials.json").write_text("{}\n", encoding="utf-8")
-    assert _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)["verdict"] == "finish"
+    prepared = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    assert prepared["verdict"] == "handoff"
+    assert prepared["reasons"] == ["js_evidence_partial"]
+
+
+def test_sql_matrix_projection_validates_lane_and_source_freshness(tmp_path):
+    target = "target.com"
+    source = tmp_path / "urls.txt"
+    source.write_text("https://target.com/search?q=1\n", encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    summary = tmp_path / "findings" / target / "poc" / "sql_matrix" / "query" / "summary.json"
+    summary.parent.mkdir(parents=True)
+    summary.write_text(json.dumps({
+        "schema_version": 1,
+        "kind": "sql_matrix_summary",
+        "lane": "query",
+        "target": target,
+        "status": "candidate_pending",
+        "input_fingerprint": "a" * 64,
+        "source_bindings": [{"path": str(source), "sha256": digest}],
+        "endpoint_count": 1,
+        "hit_count": 1,
+        "hits": [{"url": "https://target.com/search", "field": "q", "class": "sqli_error", "signal": "error"}],
+    }), encoding="utf-8")
+    projection = _load_sql_matrix_projection(str(tmp_path), target, "query")
+    assert projection["status"] == "candidate_pending"
+    assert projection["candidates"] == [{"endpoint": "/search", "field": "q", "class": "sqli_error", "signal": "error"}]
+    source.write_text("changed\n", encoding="utf-8")
+    stale = _load_sql_matrix_projection(str(tmp_path), target, "query")
+    assert stale["status"] == "partial"
+    assert stale["reason"] == "stale_source_binding"
+
+
+def test_sql_matrix_partial_blocks_closure(tmp_path):
+    target = "target.com"
+    summary = tmp_path / "findings" / target / "poc" / "sql_matrix" / "form" / "summary.json"
+    summary.parent.mkdir(parents=True)
+    summary.write_text(json.dumps({
+        "schema_version": 1,
+        "kind": "sql_matrix_summary",
+        "lane": "form",
+        "target": target,
+        "status": "partial",
+        "input_fingerprint": "b" * 64,
+        "source_bindings": [{"path": "missing-input", "sha256": "c" * 64}],
+    }), encoding="utf-8")
+    projection = _load_sql_matrix_projection(str(tmp_path), target, "form")
+    closure = build_closure_projection(
+        {"target": target, "next_action": "handoff", "sql_matrix": {"form": projection}},
+        _closure_matrix(),
+    )
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["sql_evidence_partial"]
+
+
+def test_js_materials_require_analysis_or_terminal_disposition(tmp_path):
+    target = "target.com"
+    js_dir = tmp_path / "findings" / target / "js_intel"
+    js_dir.mkdir(parents=True)
+    (js_dir / "materials.json").write_text("{}\n", encoding="utf-8")
+    prepared = _load_js_intel_projection(str(tmp_path), target)
+    assert prepared["status"] == "prepared"
+    (js_dir / "hypotheses.json").write_text(json.dumps({"hypotheses": [{"id": "h1"}]}), encoding="utf-8")
+    assert _load_js_intel_projection(str(tmp_path), target)["status"] == "analyzed"
+    (js_dir / "hypotheses.json").write_text("{}\n", encoding="utf-8")
+    assert _load_js_intel_projection(str(tmp_path), target)["status"] == "partial"
+    (js_dir / "disposition.json").write_text(json.dumps({"status": "blocked", "evidence_ref": "findings/target/js.log"}), encoding="utf-8")
+    assert _load_js_intel_projection(str(tmp_path), target)["status"] == "blocked"
 
 
 class TestAutopilotState:

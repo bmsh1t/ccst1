@@ -1277,7 +1277,7 @@ def test_autopilot_command_md_requires_next_action_queue_consumption():
     assert "consume structured `next_action` and the durable Action" in text
     assert "resume_action_queue" in text
     assert "python3 tools/surface.py --target <target_shell> --refresh" in text
-    assert "python3 tools/action_queue.py next --target <target_shell>" in text
+    assert "python3 tools/action_queue.py claim --target <target_shell>" in text
     assert "python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>" in text
     assert "instead of passive TODOs" in text
 

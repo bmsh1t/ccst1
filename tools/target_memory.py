@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -50,17 +52,39 @@ def read_json(path: Path, default: dict | None = None) -> dict:
         return default or {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return default or {}
-    return payload if isinstance(payload, dict) else (default or {})
+    except OSError as exc:
+        raise ValueError(f"unable to read target memory {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid target memory JSON {path}: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"target memory {path} must contain one object")
+    return payload
 
 
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
 
 
 def target_memory_path(target: str) -> Path:
@@ -309,7 +333,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    print(args.func(args))
+    try:
+        print(args.func(args))
+    except (OSError, ValueError) as exc:
+        print(f"target memory command failed: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 

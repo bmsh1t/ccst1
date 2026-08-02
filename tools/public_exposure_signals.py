@@ -80,6 +80,20 @@ STANDARD_PUBLIC_METADATA_KEYS = {
         "role",
     },
 }
+STACK_TRACE_RE = re.compile(
+    r"Traceback \(most recent call last\)|(?:java\.lang\.|javax\.)[A-Za-z]+Exception|"
+    r"System\.[A-Za-z]+Exception|at [A-Za-z0-9_$.]+\([^)]*\.java:\d+\)|"
+    r"Unhandled exception|stack trace",
+    re.I,
+)
+MAGIC_SIGNATURES = {
+    "zip": b"PK\x03\x04",
+    "gzip": b"\x1f\x8b\x08",
+    "pdf": b"%PDF-",
+    "png": b"\x89PNG\r\n\x1a\n",
+    "elf": b"\x7fELF",
+    "sqlite": b"SQLite format 3\x00",
+}
 
 
 def _safe_json_loads(body: str) -> Any | None:
@@ -251,6 +265,43 @@ def classify_public_response(url: str, body: str, *, status: int = 200) -> dict[
     }
 
 
+def classify_binary_response(url: str, body: bytes, *, status: int = 200) -> dict[str, Any]:
+    """Add bounded stack-trace and magic-byte leads without shell text coercion."""
+    raw = bytes(body or b"")
+    text = raw.decode("utf-8", errors="replace")
+    payload = classify_public_response(url, text, status=status)
+    magic = next((name for name, signature in MAGIC_SIGNATURES.items() if raw.startswith(signature)), "")
+    stack_trace = bool(STACK_TRACE_RE.search(text))
+    nul_bytes = b"\x00" in raw
+    leads: list[dict[str, str]] = []
+    if stack_trace:
+        leads.append({
+            "type": "stack-trace",
+            "evidence": "body-backed exception/trace marker",
+            "next_action": "replay one controlled error input and compare a harmless negative control",
+        })
+    if magic:
+        leads.append({
+            "type": "magic-byte",
+            "evidence": f"response begins with {magic} signature",
+            "next_action": "classify download/archive/parser behavior before any file handling probe",
+        })
+    if nul_bytes and not magic:
+        leads.append({
+            "type": "binary-body",
+            "evidence": "response contains NUL bytes",
+            "next_action": "preserve raw bytes and inspect content-type/length without shell interpolation",
+        })
+    payload["binary_evidence"] = {
+        "magic": magic,
+        "stack_trace": stack_trace,
+        "nul_bytes": nul_bytes,
+        "byte_length": len(raw),
+    }
+    payload["workflow_leads"] = leads[:3]
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="提取匿名公开响应里的高价值暴露信号。")
     parser.add_argument("--url", required=True)
@@ -275,11 +326,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.body_file:
-        body = open(args.body_file, encoding="utf-8", errors="replace").read()
+        raw_body = open(args.body_file, "rb").read()
     else:
-        body = sys.stdin.read()
+        raw_body = getattr(sys.stdin, "buffer", sys.stdin).read()
+        if isinstance(raw_body, str):
+            raw_body = raw_body.encode("utf-8", errors="replace")
 
-    payload = classify_public_response(args.url, body, status=args.status)
+    payload = classify_binary_response(args.url, raw_body, status=args.status)
     predicate_only = args.authz_candidate or args.candidate_ready or args.standard_public_metadata
     if args.json or not predicate_only:
         print(json.dumps(payload, ensure_ascii=False, indent=2))

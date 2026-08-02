@@ -12,6 +12,64 @@ from tools.surface_projection import build_surface_input_manifest, write_surface
 from tools.technology_inventory import load_or_build_inventory
 
 
+def test_compact_state_keeps_bounded_case_state_continuation():
+    compact = autopilot_bootstrap.compact_autopilot_state({
+        "next_action": "resume_case_state",
+        "case_state": {
+            "status": "valid",
+            "pending_validation_backlog": 1,
+            "top_next_action": {
+                "next_action": "run_validation_runner",
+                "backlog_id": "val_001",
+                "redacted_command": "python3 tools/validation_runner.py idor-actor-pair --from-case-state",
+            },
+        },
+    })
+
+    assert compact["case_state"]["pending_validation_backlog"] == 1
+    assert compact["case_state"]["top_next_action"]["backlog_id"] == "val_001"
+
+
+def test_compact_state_keeps_sql_matrix_and_js_lifecycle_projection():
+    compact = autopilot_bootstrap.compact_autopilot_state({
+        "sql_matrix": {
+            "query": {
+                "status": "candidate_pending",
+                "path": "findings/example/poc/sql_matrix/query/summary.json",
+                "input_fingerprint": "a" * 64,
+                "request_count": 4,
+                "candidates": [
+                    {
+                        "endpoint": "/search",
+                        "field": "q",
+                        "class": "sqli_error",
+                        "signal": "database error",
+                        "raw_body": "do-not-project",
+                    }
+                ],
+            }
+        },
+        "js_intel": {
+            "status": "prepared",
+            "path": "findings/example/js_intel/materials.json",
+            "hypotheses": ["do-not-project"],
+        },
+    })
+
+    assert compact["sql_matrix"]["query"]["status"] == "candidate_pending"
+    assert compact["sql_matrix"]["query"]["candidates"] == [{
+        "endpoint": "/search",
+        "field": "q",
+        "class": "sqli_error",
+        "signal": "database error",
+    }]
+    assert compact["js_intel"] == {
+        "status": "prepared",
+        "path": "findings/example/js_intel/materials.json",
+    }
+    assert "do-not-project" not in json.dumps(compact)
+
+
 def test_state_read_error_is_structured_without_traceback(monkeypatch, tmp_path):
     monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", _clean_runtime)
     monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", _capabilities)

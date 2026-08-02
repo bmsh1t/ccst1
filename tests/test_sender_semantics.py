@@ -152,3 +152,17 @@ def test_autopilot_docs_route_byte_exact_work_to_sender_semantics():
     assert "tools/sender_semantics.py --require" in agent_text
     assert "byte-exact" in agent_text
     assert "absence" in agent_text
+
+
+def test_smuggling_execution_gate_requires_manual_handoff_without_local_sender():
+    gate = smuggling_executor.execution_gate("H2.CL")
+    assert gate["disposition"] == "manual_required"
+    assert gate["manual_required"] is True
+    assert gate["selected_sender"] == ""
+
+
+def test_smuggling_execution_gate_accepts_local_raw_sender():
+    gate = smuggling_executor.execution_gate("CL.TE")
+    assert gate["disposition"] == "ready"
+    assert gate["manual_required"] is False
+    assert gate["selected_sender"] == "raw-http1"

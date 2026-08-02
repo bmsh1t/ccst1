@@ -59,8 +59,15 @@ cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_she
   `validate_finding`. The non-TTY owner is
   `python3 tools/validate.py --target <target_shell> --finding-id <id>
   --decision-json <json_file_shell> --json`; the JSON file path is never inline.
-- `resume_action_queue`: run `python3 tools/action_queue.py next --target <target_shell>`, perform one durable
-  replay, then `python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>` and refresh.
+- `resume_action_queue`: run
+  `python3 tools/action_queue.py claim --target <target_shell>`, perform the
+  claimed or resumed durable replay, then run
+  `python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>`
+  and refresh.
+- `resume_case_state`: follow `state.case_state.top_next_action`; run its
+  redacted validation command when ready. Otherwise, enrich or create the owner
+  backlog with `tools/target_case_state.py`, write back through that owner, then
+  refresh.
 - `review_validation_candidate`, `complete_report_draft`, `run_intel`,
   `collect_web_intel`, `test_advisory_applicability`, and
   `recon_no_live_hosts` retain their owner-defined stop/write-back semantics.
@@ -127,6 +134,8 @@ Before unusual helpers, scan `docs/tool-index.md` once. Canonical contracts are
   partial/unavailable stays open.
 - Known software: concrete version -> `tools/intel_engine.py`; AI must select a reachable advisory before targeted probe; refresh state. WordPress/WPScan: `knowledge/cards/wordpress-surface-intelligence.md`. Exchange/OWA/EWS/Autodiscover evidence -> `python3 tools/eburst_lane.py --target <target_shell>` for the bounded interface check; use `/spray` for reviewed credentials.
 - SQL/JSON/WAF: `live/wafw00f_hits.txt` is sampled host-level context, not per-request proof. For a reviewed same-target POST/JSON shape, run `python3 -m tools.json_inject_probe --target <target_shell> --endpoints-file <reviewed-jsonl> [--auth-file <auth_file_shell>] --no-default-seeds --max-requests <budget>` and read `findings/<target-key>/poc/json_inject/summary.json`; for reviewed GET/query or form inputs, use `python3 -m tools.sql_parameter_probe --target <target_shell> --urls-file <query_urls> [--auth-file <auth_file_shell>]` or `--form-file <form-jsonl> [--auth-file <auth_file_shell>]`. Both adapters use the same bounded SQL matrix and at most two budgeted SQLi/XSS semantic variants after a new block (baseline-relative); read the lane `summary.json`. `429`, transport failure, block pages, and WAF observations are not findings. Use result-diff or bounded sqlmap only for an evidence-backed raw request; never spray because parameters or a WAF exist.
+- Workflow sequence: when imported HAR/browser Network evidence contains at least two ordered same-target business requests, run `python3 tools/workflow_sequence.py --target <target_shell> --evidence-ref <repo-evidence-json>`; it performs one bounded remove/repeat perturbation, refreshes declared per-step tokens, writes raw traffic privately, and leaves the result in Action Queue. Mutation/unknown steps remain `manual_required` unless the current turn supplies the red-line flag.
+- Timing SQL: when a time-shaped candidate or explicit SQL timing evidence remains after result-diff, run `python3 tools/timing_sql_runner.py --target <target_shell> --url <target-url> --param <name> --variant-value <controlled-delay>` with an explicit request cap. It interleaves baseline/variant samples and requires a stable median/MAD trend; one slow response, `429`, WAF block, or transport error stays partial.
 - Case state: case-state-validation and case-state-enrichment are high-value continuity;
   Case-State First, Not Case-State Only: not a scope gate or bug-class selector. Stale/missing
   cannot block fresh evidence/AI override; use `tools/target_case_state.py`, `tools/case_state_seed.py`, and runners.
@@ -138,7 +147,9 @@ Before unusual helpers, scan `docs/tool-index.md` once. Canonical contracts are
 - Focused fuzz is an optional AI-selected discovery action; DNS expansion is also AI-selected, and canonical contracts live in `skills/web2-recon/SKILL.md`.
   DNS expansion requires a concrete naming/certificate/JS/source gap and calls `tools/dns_expand.py --target <target_shell> --reason "<evidence>"`; host count alone is not a trigger, and generation/resolution/scope/merge stay tool-owned.
 - Byte-exact HTTP/cache/desync uses `tools/sender_semantics.py --require` and
-  `tools/smuggling_executor.py --variant`; browser evidence cannot prove wire absence.
+  `tools/smuggling_executor.py --variant`; read `disposition=manual_required` as a
+  capability handoff, not a verified smuggling result. Browser evidence cannot prove
+  wire absence.
 - Live-Action Boundaries: `rules/red-lines.md` is canonical. Red-line checks are
   narrow side-effect checks, not authorization or ownership gates. A current-turn
   request that names an action already supplies its opt-in; do not ask for a

@@ -86,6 +86,7 @@ import re
 import sys
 import tempfile
 from datetime import datetime, timezone
+from itertools import chain
 from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
 
@@ -97,12 +98,14 @@ try:
     from tools.attack_probe_filter import is_attack_probe, sanitize_attack_probe_url
     from tools.finding_index import load_finding_index, upsert_finding
     from tools.recon_filters import has_malformed_path
+    from tools.surface_index import iter_surface_index, load_surface_index_status
     from tools.surface_weights import value_weight
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
     from attack_probe_filter import is_attack_probe, sanitize_attack_probe_url  # type: ignore
     from finding_index import load_finding_index, upsert_finding  # type: ignore
     from recon_filters import has_malformed_path  # type: ignore
+    from surface_index import iter_surface_index, load_surface_index_status  # type: ignore
     from surface_weights import value_weight  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
@@ -111,7 +114,7 @@ VULN_CLASSES = (
     "GraphQL", "OAuth", "Upload", "Webhook", "JWT",
     "SQLi", "XXE", "RCE", "Path", "CSRF",
 )
-COVERAGE_BUILD_VERSION = 2
+COVERAGE_BUILD_VERSION = 3
 COVERAGE_PROJECTION_SCHEMA_VERSION = 1
 COVERAGE_PROJECTION_KIND = "coverage_matrix_projection"
 COVERAGE_PROJECTION_GAP_LIMIT = 1000
@@ -444,10 +447,23 @@ def coverage_source_fingerprint(
             "st_dev": stat.st_dev,
             "st_ino": stat.st_ino,
         })
+    surface_status = load_surface_index_status(repo, target)
+    surface_binding = {
+        "status": str(surface_status.get("status") or "invalid"),
+        "reason": str(surface_status.get("reason") or ""),
+    }
+    if surface_binding["status"] == "valid":
+        manifest = surface_status.get("manifest") or {}
+        surface_binding.update({
+            "input_fingerprint": str(manifest.get("input_fingerprint") or ""),
+            "index_binding": manifest.get("index_binding") or {},
+            "row_count": int(manifest.get("row_count", 0) or 0),
+        })
     payload = {
         "build_version": COVERAGE_BUILD_VERSION,
         "min_weight_to_include": float(min_weight_to_include),
         "inputs": items,
+        "surface_index": surface_binding,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -1240,6 +1256,12 @@ def rebuild_matrix(
         except OSError:
             continue
     urls = list(dict.fromkeys(urls))
+    surface_status = load_surface_index_status(repo, target)
+    surface_urls = (
+        str(item.get("url") or "")
+        for item in iter_surface_index(repo, target)
+        if item.get("target_owned") and str(item.get("url") or "")
+    ) if surface_status.get("status") == "valid" else ()
 
     # Build endpoint set with weights and lightweight param-name signals.
     # The canonical matrix key remains path-only, but the sorting layer can
@@ -1248,7 +1270,11 @@ def rebuild_matrix(
     js_path_artifacts = _load_js_path_artifact_urls(urls_dir)
     seen: dict[str, dict] = {}
     route_template_counts: dict[str, int] = {}
-    for raw in urls:
+    raw_urls_seen: set[str] = set()
+    for raw in chain(urls, surface_urls):
+        if raw in raw_urls_seen:
+            continue
+        raw_urls_seen.add(raw)
         if raw in js_path_artifacts:
             continue
         if (

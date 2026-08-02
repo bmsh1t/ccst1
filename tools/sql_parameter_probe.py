@@ -9,6 +9,7 @@ baseline-relative detection, WAF handling, request budget, and the shared
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -35,6 +36,37 @@ except ImportError:  # pragma: no cover
 BASE_DIR = Path(__file__).resolve().parent.parent
 USER_AGENT = "claude-bug-bounty/sql_parameter_probe"
 SUMMARY_ITEM_LIMIT = 100
+
+
+def _source_binding(path_value: str) -> dict:
+    """Return a redacted, replay-freshness binding for an input artifact."""
+    if not path_value:
+        return {}
+    path = Path(path_value).expanduser().resolve()
+    if not path.is_file():
+        return {}
+    try:
+        display = str(path.relative_to(BASE_DIR))
+    except ValueError:
+        display = str(path)
+    data = path.read_bytes()
+    return {"path": display, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
+
+def _input_fingerprint(endpoints: list[dict], source_bindings: list[dict]) -> str:
+    canonical = {
+        "endpoints": [
+            {
+                "method": str(item.get("method") or "GET"),
+                "url": str(item.get("url") or ""),
+                "body": str(item.get("body") or ""),
+            }
+            for item in endpoints
+        ],
+        "sources": source_bindings,
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _http_request(
@@ -379,9 +411,19 @@ def main() -> int:
     source = args.urls_file or args.form_file
     session = session_from_args(args).bind_target(target)
     endpoints = _read_inputs(source, mode)
+    source_bindings = [binding for binding in (_source_binding(source),) if binding]
+    input_fingerprint = _input_fingerprint(endpoints, source_bindings)
     hits: list[dict] = []
     waf_events: list[dict] = []
-    stats = {"request_count": 0, "transport_error_count": 0, "endpoint_count": 0, "probed_endpoint_count": 0, "skipped": {"out_of_scope": 0, "invalid": 0}}
+    stats = {
+        "input_fingerprint": input_fingerprint,
+        "source_bindings": source_bindings,
+        "request_count": 0,
+        "transport_error_count": 0,
+        "endpoint_count": 0,
+        "probed_endpoint_count": 0,
+        "skipped": {"out_of_scope": 0, "invalid": 0},
+    }
     request_budget = int(args.max_requests)
     eligible: list[dict] = []
     for endpoint in endpoints:

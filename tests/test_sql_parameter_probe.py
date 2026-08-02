@@ -157,3 +157,22 @@ def test_parameter_probe_shares_one_request_budget_across_endpoints(monkeypatch)
     assert allocated == [2, 2, 2]
     assert captured["request_count"] == captured["request_budget"] == 6
     assert captured["budget_exhausted"] is True
+
+
+def test_summary_metadata_binds_input_source_and_fingerprint(tmp_path, monkeypatch):
+    source = tmp_path / "query_urls.txt"
+    source.write_text("https://target.test/search?q=x\n", encoding="utf-8")
+    binding = probe._source_binding(str(source))
+    fingerprint = probe._input_fingerprint([{"url": "https://target.test/search?q=x", "method": "GET"}], [binding])
+    assert len(binding["sha256"]) == 64
+    assert fingerprint != ""
+
+    captured = {}
+    monkeypatch.setattr(probe, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(probe, "_write_results", lambda _target, _lane, _hits, _events, execution: captured.update(execution) or {})
+    monkeypatch.setattr(probe, "session_from_args", lambda _args: type("S", (), {"bind_target": lambda self, _target: self})())
+    monkeypatch.setattr(probe, "_read_inputs", lambda _path, _mode: [])
+    monkeypatch.setattr(sys, "argv", ["sql_parameter_probe", "--target", "target.test", "--urls-file", str(source)])
+    assert probe.main() == 0
+    assert captured["input_fingerprint"]
+    assert captured["source_bindings"]

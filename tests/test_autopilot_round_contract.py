@@ -117,10 +117,29 @@ def test_round_end_orders_checkpoint_coverage_and_lane_limited_closure():
     )
 
     assert checkpoint < rebuild < gaps < record < closure
-    assert "After every substantive lane" in command
+    assert "After every terminal lane heartbeat" in command
     assert "canonical `--loop-check --json` guard" in command
     assert "at most bootstrap `invocation_batch.max_lanes`" in normalized
-    assert "Include `--max-lanes-reached` only when this invocation actually executed its full substantive-lane budget" in normalized
+    assert "Include `--max-lanes-reached` only when the immediately preceding" in normalized
+    assert "never infer it from model-side counting" in normalized
+
+
+def test_round_budget_is_checkpoint_owned_not_prompt_counted():
+    command = _read("commands/autopilot-round.md")
+    normalized = " ".join(command.split())
+
+    assert "--round-begin --max-lanes <invocation_batch.max_lanes> --json" in command
+    assert "--record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json" in command
+    assert "--record-round-lane-result --lane <stable_lane_id> --lane-status <completed_or_blocked>" in command
+    assert "--decision <decision_shell> --evidence-ref <evidence_ref_shell> --next-action <next_action_shell> --json" in command
+    assert "Resume any lane whose heartbeat is still `status=started`" in normalized
+    assert "`already_completed` or `already_blocked` must not replay target work" in normalized
+    assert "A round with any `started` lane cannot close" in normalized
+    assert "heartbeat is recovery context, not a second action owner" in normalized
+    assert "Action Queue before round closure" in normalized
+    assert "Never store raw responses, prompts, credentials, tokens, cookies, or authorization headers" in normalized
+    assert "`round_progress.budget_reached`" in command
+    assert "never infer it from model-side counting" in normalized
 
 
 def test_status_projection_is_owner_driven_and_distinguishes_finish_outcomes():

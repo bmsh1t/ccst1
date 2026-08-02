@@ -40,7 +40,9 @@ cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_she
 
 For STATUS selection, read only `closure.verdict`,
 `closure.can_claim_exhausted`, `closure.reasons`, `closure.next_action`, and
-`structured_findings.reported`. For terminal residual blind spots only, also
+`structured_findings.reported`. `closure.round_progress` is the bounded recovery
+projection for an active lane/round and may only explain its owner-selected
+handoff. For terminal residual blind spots only, also
 read the bounded `browser_evidence.present/ready`, `repo_source_available`,
 `repo_source_summary.status`, `recon_blocker`,
 `observation_inventory.status/reason`, and bootstrap
@@ -51,6 +53,16 @@ and stop without any target action. `handoff` is the only verdict that may enter
 a round. A missing, damaged, inconsistent, or unknown closure/verdict follows
 the same cleanup, emits `STATUS: ERROR`, and stops.
 
+Before target work, start or resume the checkpoint-owned round budget:
+
+```bash
+cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --round-begin --max-lanes <invocation_batch.max_lanes> --json
+```
+
+Treat its `round_progress` as authoritative. A resumed round keeps its original
+limit and lane heartbeats after context/process loss. Resume any lane whose
+heartbeat is still `status=started` before selecting new work.
+
 ## One Canonical Round
 
 After a non-terminal precheck, read and obey `commands/autopilot.md` as the sole
@@ -59,7 +71,37 @@ copy or reinterpret its hunt, state, checkpoint, coverage, closure, loop-guard,
 red-line, credential-hygiene, or report rules here.
 
 Consume at most bootstrap `invocation_batch.max_lanes` named substantive lanes.
-After every substantive lane, use the canonical `--loop-check --json` guard.
+Immediately before each substantive lane, derive a stable ID from the owner ID
+when available, otherwise `<lane-kind>:<endpoint-or-artifact>`, then run:
+
+```bash
+cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json
+```
+
+Execute the lane only when `allowed=true`. `already_claimed` resumes interrupted
+work without consuming another slot. `already_completed` or `already_blocked`
+must not replay target work; use its recorded decision, evidence reference, and
+next action. `budget_exhausted` skips target work and goes directly to
+checkpoint/final closure.
+
+After target work and before selecting another lane or requesting closure,
+record its terminal heartbeat:
+
+```bash
+cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane-result --lane <stable_lane_id> --lane-status <completed_or_blocked> --decision <decision_shell> --evidence-ref <evidence_ref_shell> --next-action <next_action_shell> --json
+```
+
+Keep decision, evidence reference, and next action bounded and single-line.
+Use a locatable owner artifact for every completed lane; a blocked lane may use
+literal `none` when it has no evidence, and any terminal lane may use `none`
+when it has no next action. Never store raw responses,
+prompts, credentials, tokens, cookies, or authorization headers in the heartbeat.
+The terminal write is idempotent; a conflicting rewrite or write failure stops
+target work. The heartbeat is recovery context, not a second action owner:
+write every unresolved terminal `next_action` through its existing owner or the
+Action Queue before round closure. A round with any `started` lane cannot close.
+
+After every terminal lane heartbeat, use the canonical `--loop-check --json` guard.
 When the lane budget is consumed, checkpoint the completed batch and durable
 queue, but leave newly discovered work for the next scheduled invocation.
 
@@ -75,8 +117,10 @@ cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> -
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json [--max-lanes-reached]
 ```
 
-Include `--max-lanes-reached` only when this invocation actually executed its
-full substantive-lane budget. Then apply the same Status Projection and terminal
+Include `--max-lanes-reached` only when the immediately preceding
+`--record-round-closure` output has `round_progress.budget_reached` set to true;
+never infer it from model-side counting.
+Then apply the same Status Projection and terminal
 cron cleanup before emitting. After a successful bootstrap, closure owner fields
 alone select STATUS; model prose, scanner-negative output, coverage score, and
 the run-contract checker never override them.

@@ -245,6 +245,9 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     surface_projection = state.get("surface_projection") or {}
     observation_inventory = state.get("observation_inventory") or {}
     json_inject = state.get("json_inject") or {}
+    sql_matrix = state.get("sql_matrix") or {}
+    js_intel = state.get("js_intel") or {}
+    case_state = state.get("case_state") or {}
     batch = state.get("batch") or {}
     intel_continuation = _compact_intel_continuation(state.get("intel_continuation"))
     workflow_leads = []
@@ -356,6 +359,48 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
                 "budget_exhausted", "skipped",
             )
             if key in json_inject
+        },
+        "sql_matrix": {
+            lane: {
+                **{
+                    key: item[key]
+                    for key in (
+                        "status", "reason", "path", "input_fingerprint",
+                        "endpoint_count", "probed_endpoint_count", "request_count",
+                        "request_budget", "hit_count", "candidate_count",
+                        "waf_observation_count", "transport_error_count",
+                        "budget_exhausted", "source_paths",
+                    )
+                    if key in item
+                },
+                "candidates": [
+                    {
+                        key: candidate[key]
+                        for key in ("endpoint", "field", "class", "signal")
+                        if key in candidate
+                    }
+                    for candidate in (item.get("candidates") or [])[:5]
+                    if isinstance(candidate, dict)
+                ],
+            }
+            for lane, item in sql_matrix.items()
+            if lane in {"query", "form"} and isinstance(item, dict)
+        },
+        "js_intel": {
+            key: js_intel[key]
+            for key in (
+                "status", "reason", "path", "present", "hypotheses_path",
+                "hypothesis_count", "disposition_path",
+            )
+            if key in js_intel
+        },
+        "case_state": {
+            key: case_state[key]
+            for key in (
+                "status", "path", "actors", "sessions", "objects",
+                "open_hypotheses", "pending_validation_backlog", "top_next_action",
+            )
+            if key in case_state
         },
         "surface_candidates": [
             _compact_candidate(item)

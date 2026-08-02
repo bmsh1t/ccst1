@@ -11,6 +11,7 @@ import pytest
 
 from action_queue import (
     add_manual_action,
+    claim_next_action,
     format_action,
     ingest_checkpoint,
     load_queue,
@@ -67,6 +68,37 @@ def test_ingest_checkpoint_persists_and_prioritizes(tmp_path):
     queue = load_queue(tmp_path, "target.com")
     assert summarize_queue(queue)["active"] == 2
     assert (tmp_path / "state" / "target.com" / "action_queue.json").is_file()
+
+
+def test_claim_is_atomic_and_resumes_running_before_new_queued_work(tmp_path):
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
+
+    first = claim_next_action(tmp_path, "target.com")
+    first_id = first["id"]
+    queued_id = next(
+        item["id"]
+        for item in load_queue(tmp_path, "target.com")["actions"]
+        if item["id"] != first_id
+    )
+    resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=first_id,
+        status="running",
+        notes="preserve replay context",
+    )
+
+    resumed = claim_next_action(tmp_path, "target.com")
+    queue = load_queue(tmp_path, "target.com")
+    running = next(item for item in queue["actions"] if item["id"] == first_id)
+
+    assert first["claim_status"] == "claimed"
+    assert resumed["id"] == first_id
+    assert resumed["claim_status"] == "resumed"
+    assert running["status"] == "running"
+    assert running["attempts"] == 1
+    assert running["notes"] == "preserve replay context"
+    assert next(item for item in queue["actions"] if item["id"] == queued_id)["status"] == "queued"
 
 
 def test_checkpoint_generated_action_is_idempotent_by_generation(tmp_path):

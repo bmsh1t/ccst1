@@ -10,11 +10,14 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
 import os
 import re
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -24,6 +27,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.autopilot_args import MAX_LANES
     from tools.action_queue import (
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
@@ -45,6 +49,7 @@ try:
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
     from tools.experience_schema import make_entry_id
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from autopilot_args import MAX_LANES  # type: ignore
     from action_queue import (  # type: ignore
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
@@ -116,6 +121,317 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
         raise
 
 
+def _checkpoint_witness_path(repo_root: Path | str, target: str) -> Path:
+    resolved = canonical_target_value(target)
+    return Path(repo_root) / "state" / target_storage_key(resolved) / "checkpoint_latest.json"
+
+
+@contextmanager
+def checkpoint_witness_lock(repo_root: Path | str, target: str):
+    lock_path = _checkpoint_witness_path(repo_root, target).parent / "locks" / "checkpoint.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _load_checkpoint_witness(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"unable to read checkpoint witness {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid checkpoint witness JSON {path}: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"checkpoint witness {path} must contain one object")
+    return payload
+
+
+def _new_checkpoint_witness(target: str) -> dict:
+    resolved = canonical_target_value(target)
+    return {
+        "schema_version": 1,
+        "kind": "autopilot_checkpoint_witness",
+        "generated_at": now_utc(),
+        "target": resolved,
+        "target_key": target_storage_key(resolved),
+        "context_pack": {},
+    }
+
+
+def _new_round_progress(max_lanes: int) -> dict:
+    if (
+        isinstance(max_lanes, bool)
+        or not isinstance(max_lanes, int)
+        or not 1 <= max_lanes <= MAX_LANES
+    ):
+        raise ValueError(f"max_lanes must be an integer from 1 to {MAX_LANES}")
+    return {
+        "schema_version": 1,
+        "round_id": f"round-{os.urandom(8).hex()}",
+        "status": "active",
+        "max_lanes": int(max_lanes),
+        "claimed_lanes": [],
+        "lanes": [],
+        "claimed_count": 0,
+        "remaining_lanes": int(max_lanes),
+        "budget_reached": False,
+        "started_at": now_utc(),
+        "updated_at": now_utc(),
+    }
+
+
+def _round_lane(lane_id: str, *, started_at: str | None = None) -> dict:
+    timestamp = started_at or now_utc()
+    return {
+        "schema_version": 1,
+        "id": lane_id,
+        "status": "started",
+        "decision": "",
+        "evidence_ref": "",
+        "next_action": "",
+        "started_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+def _round_lane_text(value: str, field: str, *, max_length: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"round lane {field} is required")
+    if "\n" in text or "\r" in text:
+        raise ValueError(f"round lane {field} must be one line")
+    if len(text) > max_length:
+        raise ValueError(f"round lane {field} exceeds {max_length} characters")
+    return text
+
+
+def _round_lanes(progress: dict, claimed: list[str]) -> list[dict]:
+    lanes = progress.get("lanes")
+    if lanes is None:
+        started_at = str(progress.get("started_at") or now_utc())
+        lanes = [_round_lane(lane_id, started_at=started_at) for lane_id in claimed]
+        progress["lanes"] = lanes
+    if not isinstance(lanes, list):
+        raise ValueError("checkpoint round_progress lanes are invalid")
+    ids: list[str] = []
+    for lane in lanes:
+        if not isinstance(lane, dict) or lane.get("schema_version") != 1:
+            raise ValueError("checkpoint round_progress lane is invalid")
+        lane_id = lane.get("id")
+        status = lane.get("status")
+        if (
+            not isinstance(lane_id, str)
+            or not lane_id
+            or lane_id not in claimed
+            or status not in {"started", "completed", "blocked"}
+        ):
+            raise ValueError("checkpoint round_progress lane fields are invalid")
+        for field, limit in (("decision", 500), ("evidence_ref", 500), ("next_action", 1000)):
+            value = lane.get(field, "")
+            if not isinstance(value, str) or "\n" in value or "\r" in value or len(value) > limit:
+                raise ValueError("checkpoint round_progress lane fields are invalid")
+        for field in ("started_at", "updated_at"):
+            if not isinstance(lane.get(field), str) or not lane.get(field):
+                raise ValueError("checkpoint round_progress lane timestamps are invalid")
+        if status == "started":
+            if any(lane.get(field) for field in ("decision", "evidence_ref", "next_action", "finished_at")):
+                raise ValueError("checkpoint started round lane has terminal fields")
+        elif (
+            not isinstance(lane.get("finished_at"), str)
+            or not lane.get("finished_at")
+            or "\n" in lane.get("finished_at")
+            or "\r" in lane.get("finished_at")
+            or not lane.get("decision")
+            or not lane.get("evidence_ref")
+            or not lane.get("next_action")
+            or (status == "completed" and lane.get("evidence_ref") == "none")
+        ):
+            raise ValueError("checkpoint terminal round lane is incomplete")
+        ids.append(lane_id)
+    if ids != claimed:
+        raise ValueError("checkpoint round_progress lane identities are invalid")
+    return lanes
+
+
+def _round_progress(payload: dict) -> dict:
+    progress = payload.get("round_progress")
+    if progress is None:
+        return {}
+    if (
+        not isinstance(progress, dict)
+        or progress.get("schema_version") != 1
+        or progress.get("status") not in {"active", "completed"}
+    ):
+        raise ValueError("checkpoint round_progress is invalid")
+    limit = progress.get("max_lanes")
+    claimed = progress.get("claimed_lanes")
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= MAX_LANES
+        or not isinstance(claimed, list)
+        or any(
+            not isinstance(item, str)
+            or not item
+            or len(item) > 200
+            or "\n" in item
+            or "\r" in item
+            for item in claimed
+        )
+        or len(set(claimed)) != len(claimed)
+        or len(claimed) > limit
+        or isinstance(progress.get("claimed_count"), bool)
+        or not isinstance(progress.get("claimed_count"), int)
+        or progress.get("claimed_count") != len(claimed)
+        or isinstance(progress.get("remaining_lanes"), bool)
+        or not isinstance(progress.get("remaining_lanes"), int)
+        or progress.get("remaining_lanes") != limit - len(claimed)
+        or not isinstance(progress.get("budget_reached"), bool)
+        or progress.get("budget_reached") != (len(claimed) >= limit)
+    ):
+        raise ValueError("checkpoint round_progress budget fields are invalid")
+    lanes = _round_lanes(progress, claimed)
+    if progress["status"] == "completed" and any(
+        item.get("status") == "started" for item in lanes
+    ):
+        raise ValueError("checkpoint completed round has unfinished lanes")
+    return progress
+
+
+def begin_round(repo_root: Path | str, target: str, *, max_lanes: int) -> dict:
+    """Start a round or resume the active round after an interrupted invocation."""
+    path = _checkpoint_witness_path(repo_root, target)
+    with checkpoint_witness_lock(repo_root, target):
+        payload = _load_checkpoint_witness(path) or _new_checkpoint_witness(target)
+        progress = _round_progress(payload)
+        if progress.get("status") == "active":
+            status = "resumed"
+        else:
+            progress = _new_round_progress(max_lanes)
+            payload["round_progress"] = progress
+            status = "started"
+        _write_json_atomic(path, payload)
+        return {"status": status, "path": str(path), "round_progress": dict(progress)}
+
+
+def record_round_lane(
+    repo_root: Path | str,
+    target: str,
+    *,
+    lane: str,
+    max_lanes: int,
+) -> dict:
+    """Atomically claim one stable lane ID against the active round budget."""
+    if (
+        isinstance(max_lanes, bool)
+        or not isinstance(max_lanes, int)
+        or not 1 <= max_lanes <= MAX_LANES
+    ):
+        raise ValueError(f"max_lanes must be an integer from 1 to {MAX_LANES}")
+    lane_id = _round_lane_text(" ".join(str(lane or "").split()), "id", max_length=200)
+    path = _checkpoint_witness_path(repo_root, target)
+    with checkpoint_witness_lock(repo_root, target):
+        payload = _load_checkpoint_witness(path) or _new_checkpoint_witness(target)
+        progress = _round_progress(payload)
+        if progress.get("status") != "active":
+            progress = _new_round_progress(max_lanes)
+            payload["round_progress"] = progress
+        claimed = progress.get("claimed_lanes") if isinstance(progress.get("claimed_lanes"), list) else []
+        lanes = _round_lanes(progress, claimed)
+        if lane_id in claimed:
+            lane_record = next(item for item in lanes if item.get("id") == lane_id)
+            lane_status = str(lane_record.get("status") or "started")
+            status = "already_claimed" if lane_status == "started" else f"already_{lane_status}"
+            allowed = lane_status == "started"
+        elif len(claimed) >= int(progress.get("max_lanes", max_lanes) or max_lanes):
+            lane_record = {}
+            status, allowed = "budget_exhausted", False
+        else:
+            claimed.append(lane_id)
+            lane_record = _round_lane(lane_id)
+            lanes.append(lane_record)
+            status, allowed = "claimed", True
+        limit = int(progress.get("max_lanes", max_lanes) or max_lanes)
+        progress.update({
+            "claimed_lanes": claimed,
+            "claimed_count": len(claimed),
+            "remaining_lanes": max(0, limit - len(claimed)),
+            "budget_reached": len(claimed) >= limit,
+            "updated_at": now_utc(),
+        })
+        _write_json_atomic(path, payload)
+        return {
+            "status": status,
+            "allowed": allowed,
+            "path": str(path),
+            "lane": dict(lane_record),
+            "round_progress": dict(progress),
+        }
+
+
+def record_round_lane_result(
+    repo_root: Path | str,
+    target: str,
+    *,
+    lane: str,
+    status: str,
+    decision: str,
+    evidence_ref: str,
+    next_action: str,
+) -> dict:
+    """Atomically finish one claimed lane with bounded recovery context."""
+    lane_id = _round_lane_text(" ".join(str(lane or "").split()), "id", max_length=200)
+    terminal_status = _round_lane_text(status, "status", max_length=20)
+    if terminal_status not in {"completed", "blocked"}:
+        raise ValueError("round lane status must be completed or blocked")
+    terminal_decision = _round_lane_text(decision, "decision", max_length=500)
+    terminal_evidence = _round_lane_text(evidence_ref, "evidence_ref", max_length=500)
+    terminal_next = _round_lane_text(next_action, "next_action", max_length=1000)
+    if terminal_status == "completed" and terminal_evidence == "none":
+        raise ValueError("completed round lane requires a locatable evidence_ref")
+
+    path = _checkpoint_witness_path(repo_root, target)
+    with checkpoint_witness_lock(repo_root, target):
+        payload = _load_checkpoint_witness(path)
+        progress = _round_progress(payload)
+        if progress.get("status") != "active":
+            raise ValueError("round lane result requires an active round")
+        lanes = _round_lanes(progress, progress.get("claimed_lanes") or [])
+        lane_record = next((item for item in lanes if item.get("id") == lane_id), None)
+        if lane_record is None:
+            raise ValueError(f"round lane was not claimed: {lane_id}")
+        expected = {
+            "status": terminal_status,
+            "decision": terminal_decision,
+            "evidence_ref": terminal_evidence,
+            "next_action": terminal_next,
+        }
+        if lane_record.get("status") in {"completed", "blocked"}:
+            if any(lane_record.get(field) != value for field, value in expected.items()):
+                raise ValueError(f"terminal round lane cannot be rewritten: {lane_id}")
+            result_status = "already_recorded"
+        else:
+            timestamp = now_utc()
+            lane_record.update(expected)
+            lane_record["finished_at"] = timestamp
+            lane_record["updated_at"] = timestamp
+            progress["updated_at"] = timestamp
+            result_status = "recorded"
+        _write_json_atomic(path, payload)
+        return {
+            "status": result_status,
+            "path": str(path),
+            "lane": dict(lane_record),
+            "round_progress": dict(progress),
+        }
+
+
 def write_checkpoint_witness(
     repo_root: Path | str,
     target: str,
@@ -125,8 +441,7 @@ def write_checkpoint_witness(
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     context = checkpoint.get("context_pack") if isinstance(checkpoint.get("context_pack"), dict) else {}
-    path = repo / "state" / target_storage_key(resolved_target) / "checkpoint_latest.json"
-    previous = _read_json(path)
+    path = _checkpoint_witness_path(repo, resolved_target)
     payload = {
         "schema_version": 1,
         "kind": "autopilot_checkpoint_witness",
@@ -140,8 +455,6 @@ def write_checkpoint_witness(
             "required_checks": context.get("required_checks", []),
         },
     }
-    if isinstance(previous.get("round_guard"), dict):
-        payload["round_guard"] = previous["round_guard"]
     queue_sync = checkpoint.get("action_queue_sync")
     if isinstance(queue_sync, dict):
         queue_path = str(queue_sync.get("path") or "").strip()
@@ -160,7 +473,12 @@ def write_checkpoint_witness(
             "updated": int(stats.get("updated", 0) or 0),
             "next_id": str(next_action.get("id") or ""),
         }
-    _write_json_atomic(path, payload)
+    with checkpoint_witness_lock(repo, resolved_target):
+        previous = _load_checkpoint_witness(path)
+        for field in ("round_guard", "round_progress"):
+            if isinstance(previous.get(field), dict):
+                payload[field] = previous[field]
+        _write_json_atomic(path, payload)
     return {"path": str(path), "payload": payload}
 
 
@@ -173,29 +491,48 @@ def record_round_closure(repo_root: Path | str, target: str) -> dict:
         str(repo), state, max_lanes_reached=False, apply_round_guard=False
     )
     fingerprint = stagnation_fingerprint(state, closure)
-    path = repo / "state" / target_storage_key(resolved_target) / "checkpoint_latest.json"
-    payload = _read_json(path)
-    if not payload:
-        raise ValueError(f"checkpoint witness missing or invalid: {path}")
-    previous = payload.get("round_guard") if isinstance(payload.get("round_guard"), dict) else {}
-    if fingerprint:
-        consecutive = (
-            min(int(previous.get("consecutive", 0) or 0) + 1, 3)
-            if fingerprint == str(previous.get("fingerprint") or "")
-            else 1
-        )
-        payload["round_guard"] = {
-            "schema_version": 1,
-            "fingerprint": fingerprint,
-            "reason": str((closure.get("reasons") or [""])[0]),
-            "consecutive": consecutive,
-            "threshold": 3,
-            "recorded_at": now_utc(),
+    path = _checkpoint_witness_path(repo, resolved_target)
+    with checkpoint_witness_lock(repo, resolved_target):
+        payload = _load_checkpoint_witness(path)
+        if not payload:
+            raise ValueError(f"checkpoint witness missing or invalid: {path}")
+        previous = payload.get("round_guard") if isinstance(payload.get("round_guard"), dict) else {}
+        if fingerprint:
+            consecutive = (
+                min(int(previous.get("consecutive", 0) or 0) + 1, 3)
+                if fingerprint == str(previous.get("fingerprint") or "")
+                else 1
+            )
+            payload["round_guard"] = {
+                "schema_version": 1,
+                "fingerprint": fingerprint,
+                "reason": str((closure.get("reasons") or [""])[0]),
+                "consecutive": consecutive,
+                "threshold": 3,
+                "recorded_at": now_utc(),
+            }
+        else:
+            payload.pop("round_guard", None)
+        progress = _round_progress(payload)
+        unfinished = [
+            str(item.get("id") or "")
+            for item in (progress.get("lanes") or [])
+            if item.get("status") == "started"
+        ]
+        if progress.get("status") == "active" and unfinished:
+            raise ValueError(
+                "cannot close round with unfinished lanes: " + ", ".join(unfinished)
+            )
+        if progress.get("status") == "active":
+            progress["status"] = "completed"
+            progress["completed_at"] = now_utc()
+            progress["updated_at"] = now_utc()
+        _write_json_atomic(path, payload)
+        return {
+            "path": str(path),
+            "round_guard": payload.get("round_guard") or {},
+            "round_progress": dict(progress),
         }
-    else:
-        payload.pop("round_guard", None)
-    _write_json_atomic(path, payload)
-    return {"path": str(path), "round_guard": payload.get("round_guard") or {}}
 
 
 def sync_checkpoint_action_queue(
@@ -1751,6 +2088,154 @@ def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> li
     return proposals
 
 
+def _workflow_lead_queue_items(
+    state: dict,
+    *,
+    repo_root: Path | None,
+    target: str,
+) -> list[dict]:
+    """Project only artifact-backed critical/high leads into durable work."""
+    if repo_root is None:
+        return []
+    items: list[dict] = []
+    for lead in _json_list((state.get("surface") or {}).get("workflow_leads")):
+        priority_name = str(lead.get("priority") or "medium").strip().lower()
+        if priority_name not in {"critical", "high"}:
+            continue
+        artifact = str(lead.get("artifact") or lead.get("evidence_ref") or "").strip()
+        if not artifact:
+            continue
+        artifact_path = Path(artifact)
+        if not artifact_path.is_absolute():
+            artifact_path = repo_root / artifact_path
+        try:
+            stat = artifact_path.stat()
+        except OSError:
+            # A lead without a locatable artifact remains advisory; do not
+            # create durable work that can never be resumed or audited.
+            continue
+        source_id = str(lead.get("id") or "").strip()
+        if not source_id:
+            source_id = hashlib.sha256(
+                json.dumps(
+                    {
+                        "category": lead.get("category", ""),
+                        "title": lead.get("title", ""),
+                        "artifact": artifact,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()[:20]
+        generation = hashlib.sha256(
+            f"{artifact}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")
+        ).hexdigest()[:24]
+        title = str(lead.get("title") or lead.get("category") or "workflow lead").strip()
+        next_action = str(lead.get("next_action") or "inspect the linked artifact").strip()
+        evidence = str(lead.get("evidence") or lead.get("rationale") or "").strip()
+        items.append({
+            "id": f"LEAD-{source_id}",
+            "priority": 98 if priority_name == "critical" else 88,
+            "type": "workflow-lead-review",
+            "status": "ready",
+            "action": (
+                f"Review high-value workflow lead: {title}. {next_action}. "
+                f"Artifact={artifact}. Evidence={evidence[:180]}"
+            ),
+            "command_hint": "",
+            "redline_required": any(
+                token in " ".join((title, next_action, evidence)).lower()
+                for token in ("mutation", "delete", "destructive", "state-changing", "payment")
+            ),
+            "stop_condition": (
+                "record tested, blocked, dead-end, candidate, or validated finding "
+                "with a locatable evidence reference"
+            ),
+            "source": "workflow-lead",
+            "source_id": source_id,
+            "metadata": {
+                "generation": generation,
+                "category": str(lead.get("category") or "workflow").strip(),
+                "priority": priority_name,
+                "artifact": artifact,
+                "evidence_ref": str(lead.get("evidence_ref") or artifact),
+            },
+        })
+    return items
+
+
+def _sibling_queue_item(
+    state: dict,
+    *,
+    repo_root: Path | None,
+    target: str,
+) -> dict:
+    """Queue one bounded lateral probe after a durable candidate result."""
+    if repo_root is None:
+        return {}
+    findings = state.get("structured_findings") or {}
+    candidates = [
+        findings.get("next_validation") or {},
+        findings.get("next_report") or {},
+    ]
+    for finding in candidates:
+        if not isinstance(finding, dict):
+            continue
+        status = str(finding.get("validation_status") or "").strip().lower()
+        if status not in {"candidate", "validated"}:
+            continue
+        finding_id = str(finding.get("id") or "").strip()
+        endpoint = str(finding.get("url") or "").strip()
+        source_file = str(finding.get("source_file") or "").strip()
+        if not finding_id or not endpoint or not url_belongs_to_target(endpoint, target):
+            continue
+        if source_file:
+            source_path = Path(source_file)
+            if not source_path.is_absolute():
+                source_path = repo_root / source_path
+            try:
+                source_stat = source_path.stat()
+            except OSError:
+                continue
+            source_generation = f"{source_file}:{source_stat.st_size}:{source_stat.st_mtime_ns}"
+        else:
+            source_generation = ""
+        generation = hashlib.sha256(
+            f"{finding_id}:{endpoint}:{source_generation}".encode("utf-8")
+        ).hexdigest()[:24]
+        return {
+            "id": f"SIBLING-{finding_id}",
+            "priority": 68 if status == "candidate" else 60,
+            "type": "sibling-chain-review",
+            "status": "ready",
+            "action": (
+                f"Generate one bounded sibling probe for finding {finding_id} at {endpoint}; "
+                "review the generated queue and validate only same-target endpoints."
+            ),
+            "command_hint": (
+                "python3 tools/sibling_generator.py --target "
+                f"{_quote(target)} --finding-id {_quote(finding_id)} "
+                f"--endpoint {_quote(endpoint)} --max-count 20"
+            ),
+            "redline_required": False,
+            "stop_condition": (
+                "record sibling queue reviewed, blocked, dead-end, candidate, or validated; "
+                "do not treat sibling discovery alone as a finding"
+            ),
+            "source": "primary-finding-sibling",
+            "source_id": finding_id,
+            "metadata": {
+                "generation": generation,
+                "finding_id": finding_id,
+                "endpoint": endpoint,
+                "validation_status": status,
+                "evidence_ref": source_file,
+            },
+        }
+    return {}
+
+
 def _runner_candidate_proposals(state: dict, *, limit: int = 2) -> list[str]:
     """Expose runner evidence as AI review work when no finding row owns it yet."""
     proposals: list[str] = []
@@ -2455,6 +2940,66 @@ def _json_inject_queue_item(state: dict) -> dict:
     }
 
 
+def _sql_matrix_queue_items(state: dict, target: str) -> list[dict]:
+    """Project unfinished query/form SQL summaries into durable work."""
+    matrix = state.get("sql_matrix") if isinstance(state.get("sql_matrix"), dict) else {}
+    items: list[dict] = []
+    for lane in ("query", "form"):
+        projection = matrix.get(lane)
+        if not isinstance(projection, dict):
+            continue
+        status = str(projection.get("status") or "").strip().lower()
+        generation = str(projection.get("input_fingerprint") or "").strip()
+        if status not in {"candidate_pending", "partial", "invalid_input"} or not generation:
+            continue
+        if status == "candidate_pending":
+            action = f"Review {lane} SQL matrix candidates and validate each locatable raw evidence path."
+            priority = 92
+        elif status == "invalid_input":
+            action = f"Repair rejected {lane} SQL matrix input, then rerun the bounded lane."
+            priority = 62
+        else:
+            action = f"Resume the {lane} SQL matrix after resolving its recorded evidence or transport blocker."
+            priority = 64
+        source_paths = [str(path) for path in (projection.get("source_paths") or []) if str(path).strip()][:2]
+        input_hint = source_paths[0] if source_paths else "FILE"
+        option = "--urls-file" if lane == "query" else "--form-file"
+        candidates = [
+            {
+                key: candidate[key]
+                for key in ("endpoint", "field", "class", "signal")
+                if key in candidate
+            }
+            for candidate in (projection.get("candidates") or [])[:5]
+            if isinstance(candidate, dict)
+        ]
+        items.append({
+            "id": f"SQL-MATRIX-{lane.upper()}",
+            "priority": priority,
+            "type": "sql-matrix-review",
+            "status": "ready",
+            "action": action,
+            "command_hint": (
+                "python3 tools/sql_parameter_probe.py --target {target} {option} {input}"
+                .format(target=_quote(target), option=option, input=_quote(input_hint))
+            ),
+            "redline_required": False,
+            "stop_condition": "record candidate validation, complete_no_hit, invalid_input, or the explicit blocker",
+            "source": "sql-matrix",
+            "source_id": f"sql-matrix-{lane}",
+            "metadata": {
+                "generation": generation,
+                "lane": lane,
+                "summary_path": str(projection.get("path") or ""),
+                "summary_status": status,
+                "reason": str(projection.get("reason") or ""),
+                "candidate_count": int(projection.get("candidate_count", 0) or 0),
+                "candidates": candidates,
+            },
+        })
+    return items
+
+
 def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[dict]) -> list[dict]:
     """Remove checkpoint actions already closed in persistent action_queue state."""
     try:
@@ -2884,6 +3429,21 @@ def build_checkpoint(
     json_inject_item = _json_inject_queue_item(state)
     if json_inject_item:
         next_action_queue.append(json_inject_item)
+    next_action_queue.extend(_sql_matrix_queue_items(state, resolved_target))
+    next_action_queue.extend(
+        _workflow_lead_queue_items(
+            state,
+            repo_root=repo,
+            target=resolved_target,
+        )
+    )
+    sibling_item = _sibling_queue_item(
+        state,
+        repo_root=repo,
+        target=resolved_target,
+    )
+    if sibling_item:
+        next_action_queue.append(sibling_item)
     next_action_queue = _filter_final_action_queue_items(
         repo,
         resolved_target,
@@ -3179,7 +3739,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--note", default="")
     parser.add_argument("--no-refresh-coverage", action="store_true")
     parser.add_argument("--apply-target-memory", action="store_true")
-    parser.add_argument("--record-round-closure", action="store_true")
+    round_operation = parser.add_mutually_exclusive_group()
+    round_operation.add_argument("--round-begin", action="store_true")
+    round_operation.add_argument("--record-round-lane", action="store_true")
+    round_operation.add_argument("--record-round-lane-result", action="store_true")
+    parser.add_argument("--lane", default="")
+    parser.add_argument("--max-lanes", type=int, default=0)
+    parser.add_argument("--lane-status", default="")
+    parser.add_argument("--decision", default="")
+    parser.add_argument("--evidence-ref", default="")
+    parser.add_argument("--next-action", default="")
+    round_operation.add_argument("--record-round-closure", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -3189,6 +3759,36 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     repo = Path(args.repo_root)
     resolved_target = canonical_target_value(args.target)
+    if args.round_begin or args.record_round_lane or args.record_round_lane_result:
+        try:
+            if args.record_round_lane_result:
+                result = record_round_lane_result(
+                    repo,
+                    resolved_target,
+                    lane=args.lane,
+                    status=args.lane_status,
+                    decision=args.decision,
+                    evidence_ref=args.evidence_ref,
+                    next_action=args.next_action,
+                )
+            else:
+                if args.max_lanes < 1:
+                    raise ValueError("--max-lanes must be a positive integer")
+                result = (
+                    begin_round(repo, resolved_target, max_lanes=args.max_lanes)
+                    if args.round_begin
+                    else record_round_lane(
+                        repo,
+                        resolved_target,
+                        lane=args.lane,
+                        max_lanes=args.max_lanes,
+                    )
+                )
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"checkpoint round budget failed: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else result["path"])
+        return 0
     if args.record_round_closure:
         try:
             result = record_round_closure(repo, resolved_target)

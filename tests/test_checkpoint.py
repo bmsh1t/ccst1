@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 from pathlib import Path
 
 import pytest
@@ -22,13 +23,19 @@ from checkpoint import (
     _lead_proposals,
     _matrix_summary,
     _next_proposals,
+    _sibling_queue_item,
+    _workflow_lead_queue_items,
     _ranked_surface_replay_draft,
     _ranked_surface_vuln_hint,
     _select_default_candidate,
+    _sql_matrix_queue_items,
     apply_target_memory,
     build_checkpoint,
+    begin_round,
     format_checkpoint,
     record_round_closure,
+    record_round_lane,
+    record_round_lane_result,
     sync_checkpoint_action_queue,
 )
 from evidence_ledger import record_entry
@@ -55,6 +62,30 @@ def _seed_recon(repo_root: Path, target: str, urls: list[str]) -> None:
         encoding="utf-8",
     )
     (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+
+
+def _claim_round_lane_worker(repo_root, target, lane, max_lanes, output):
+    try:
+        result = record_round_lane(repo_root, target, lane=lane, max_lanes=max_lanes)
+        output.put((result["status"], result["allowed"], ""))
+    except Exception as exc:  # pragma: no cover - surfaced through parent assertion
+        output.put(("error", False, str(exc)))
+
+
+def _finish_round_lane_worker(repo_root, target, lane, output):
+    try:
+        result = record_round_lane_result(
+            repo_root,
+            target,
+            lane=lane,
+            status="completed",
+            decision="concurrent replay completed",
+            evidence_ref="findings/target.com/poc/concurrent/summary.json",
+            next_action="none",
+        )
+        output.put((result["status"], ""))
+    except Exception as exc:  # pragma: no cover - surfaced through parent assertion
+        output.put(("error", str(exc)))
 
 
 def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
@@ -98,6 +129,333 @@ def test_round_guard_blocks_only_after_three_identical_records(monkeypatch, tmp_
     counts = [record_round_closure(tmp_path, target)["round_guard"]["consecutive"] for _ in range(4)]
 
     assert counts == [1, 2, 3, 3]
+
+
+def test_round_lane_budget_resumes_and_dedupes_claims_across_invocations(tmp_path):
+    target = "target.com"
+    first = begin_round(tmp_path, target, max_lanes=2)
+    lane_one = record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=2)
+    resumed = begin_round(tmp_path, target, max_lanes=2)
+    duplicate = record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=2)
+    lane_two = record_round_lane(tmp_path, target, lane="authz:/api/orders/:id", max_lanes=2)
+    denied = record_round_lane(tmp_path, target, lane="ssrf:/api/fetch", max_lanes=2)
+
+    assert first["round_progress"]["status"] == "active"
+    assert lane_one["status"] == "claimed"
+    assert resumed["status"] == "resumed"
+    assert resumed["round_progress"]["round_id"] == first["round_progress"]["round_id"]
+    assert resumed["round_progress"]["lanes"][0]["status"] == "started"
+    assert duplicate["status"] == "already_claimed"
+    assert duplicate["allowed"] is True
+    assert duplicate["round_progress"]["claimed_count"] == 1
+    assert lane_two["round_progress"]["budget_reached"] is True
+    assert denied["status"] == "budget_exhausted"
+    assert denied["allowed"] is False
+
+
+def test_round_lane_result_survives_resume_and_terminal_replay_is_idempotent(tmp_path):
+    target = "target.com"
+    lane = "sqli:/api/search"
+    begin_round(tmp_path, target, max_lanes=2)
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=2)
+
+    result = record_round_lane_result(
+        tmp_path,
+        target,
+        lane=lane,
+        status="completed",
+        decision="tested-clean after boolean pair",
+        evidence_ref="findings/target.com/poc/sql_parameter/summary.json",
+        next_action="review authz:/api/orders/:id",
+    )
+    replay = record_round_lane_result(
+        tmp_path,
+        target,
+        lane=lane,
+        status="completed",
+        decision="tested-clean after boolean pair",
+        evidence_ref="findings/target.com/poc/sql_parameter/summary.json",
+        next_action="review authz:/api/orders/:id",
+    )
+    resumed = begin_round(tmp_path, target, max_lanes=2)
+    terminal_claim = record_round_lane(tmp_path, target, lane=lane, max_lanes=2)
+
+    assert result["status"] == "recorded"
+    assert result["lane"]["status"] == "completed"
+    assert result["lane"]["decision"] == "tested-clean after boolean pair"
+    assert result["lane"]["evidence_ref"].endswith("summary.json")
+    assert replay["status"] == "already_recorded"
+    assert resumed["round_progress"]["lanes"][0] == replay["lane"]
+    assert terminal_claim["status"] == "already_completed"
+    assert terminal_claim["allowed"] is False
+
+    with pytest.raises(ValueError, match="cannot be rewritten"):
+        record_round_lane_result(
+            tmp_path,
+            target,
+            lane=lane,
+            status="completed",
+            decision="different decision",
+            evidence_ref="findings/target.com/poc/sql_parameter/summary.json",
+            next_action="none",
+        )
+
+
+def test_round_lane_result_requires_claim_and_completed_evidence(tmp_path):
+    target = "target.com"
+    begin_round(tmp_path, target, max_lanes=1)
+
+    with pytest.raises(ValueError, match="was not claimed"):
+        record_round_lane_result(
+            tmp_path,
+            target,
+            lane="sqli:/api/search",
+            status="blocked",
+            decision="tool unavailable",
+            evidence_ref="none",
+            next_action="repair sql runner",
+        )
+
+    record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=1)
+    with pytest.raises(ValueError, match="locatable evidence_ref"):
+        record_round_lane_result(
+            tmp_path,
+            target,
+            lane="sqli:/api/search",
+            status="completed",
+            decision="tested clean",
+            evidence_ref="none",
+            next_action="none",
+        )
+
+
+def test_round_lane_result_cli_records_bounded_heartbeat(tmp_path, capsys):
+    target = "target.com"
+    lane = "authz:/api/orders/:id"
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+
+    exit_code = checkpoint_module.main([
+        "--target", target,
+        "--repo-root", str(tmp_path),
+        "--record-round-lane-result",
+        "--lane", lane,
+        "--lane-status", "blocked",
+        "--decision", "owner session unavailable",
+        "--evidence-ref", "none",
+        "--next-action", "capture owner session",
+        "--json",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["status"] == "recorded"
+    assert payload["lane"]["status"] == "blocked"
+    assert payload["lane"]["next_action"] == "capture owner session"
+
+
+def test_round_lane_heartbeat_is_atomic_under_concurrent_processes(tmp_path):
+    target = "target.com"
+    max_lanes = 5
+    begin_round(tmp_path, target, max_lanes=max_lanes)
+    context = multiprocessing.get_context("fork")
+    claim_output = context.Queue()
+    claimers = [
+        context.Process(
+            target=_claim_round_lane_worker,
+            args=(str(tmp_path), target, f"lane:{index}", max_lanes, claim_output),
+        )
+        for index in range(24)
+    ]
+    for process in claimers:
+        process.start()
+    claim_results = [claim_output.get(timeout=10) for _ in claimers]
+    for process in claimers:
+        process.join(timeout=10)
+
+    resumed = begin_round(tmp_path, target, max_lanes=max_lanes)
+    progress = resumed["round_progress"]
+    assert all(process.exitcode == 0 for process in claimers)
+    assert all(not error for _, _, error in claim_results)
+    assert sum(allowed for _, allowed, _ in claim_results) == max_lanes
+    assert progress["claimed_count"] == max_lanes
+    assert len(progress["claimed_lanes"]) == max_lanes
+    assert len(progress["lanes"]) == max_lanes
+    assert all(item["status"] == "started" for item in progress["lanes"])
+
+    lane = progress["claimed_lanes"][0]
+    finish_output = context.Queue()
+    finishers = [
+        context.Process(
+            target=_finish_round_lane_worker,
+            args=(str(tmp_path), target, lane, finish_output),
+        )
+        for _ in range(12)
+    ]
+    for process in finishers:
+        process.start()
+    finish_results = [finish_output.get(timeout=10) for _ in finishers]
+    for process in finishers:
+        process.join(timeout=10)
+
+    final = begin_round(tmp_path, target, max_lanes=max_lanes)["round_progress"]
+    heartbeat = next(item for item in final["lanes"] if item["id"] == lane)
+    assert all(process.exitcode == 0 for process in finishers)
+    assert all(not error for _, error in finish_results)
+    assert [status for status, _ in finish_results].count("recorded") == 1
+    assert [status for status, _ in finish_results].count("already_recorded") == 11
+    assert heartbeat["status"] == "completed"
+    assert heartbeat["decision"] == "concurrent replay completed"
+
+
+def test_round_lane_heartbeat_survives_repeated_interrupt_cycles(monkeypatch, tmp_path):
+    target = "target.com"
+    monkeypatch.setattr(
+        checkpoint_module,
+        "build_autopilot_state",
+        lambda *_args, **_kwargs: {"target": target, "resolved_target": target},
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "_load_closure_projection",
+        lambda *_args, **_kwargs: {"verdict": "handoff", "reasons": ["next_action_pending"]},
+    )
+
+    previous_round = ""
+    for round_index in range(50):
+        started = begin_round(tmp_path, target, max_lanes=3)
+        round_id = started["round_progress"]["round_id"]
+        assert round_id != previous_round
+        lane_ids = [f"round-{round_index}:lane-{index}" for index in range(3)]
+        record_round_lane(tmp_path, target, lane=lane_ids[0], max_lanes=3)
+
+        resumed = begin_round(tmp_path, target, max_lanes=3)
+        assert resumed["status"] == "resumed"
+        assert resumed["round_progress"]["round_id"] == round_id
+        assert resumed["round_progress"]["lanes"][0]["status"] == "started"
+
+        for index, lane in enumerate(lane_ids):
+            if index:
+                record_round_lane(tmp_path, target, lane=lane, max_lanes=3)
+            record_round_lane_result(
+                tmp_path,
+                target,
+                lane=lane,
+                status="completed",
+                decision=f"round {round_index} lane {index} completed",
+                evidence_ref=f"findings/target.com/poc/round-{round_index}/lane-{index}.json",
+                next_action="none",
+            )
+
+        closed = record_round_closure(tmp_path, target)
+        assert closed["round_progress"]["status"] == "completed"
+        assert closed["round_progress"]["claimed_count"] == 3
+        assert all(item["status"] == "completed" for item in closed["round_progress"]["lanes"])
+        previous_round = round_id
+
+
+def test_round_closure_completes_budget_and_next_begin_starts_new_round(monkeypatch, tmp_path):
+    target = "target.com"
+    first = begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=1)
+    record_round_lane_result(
+        tmp_path,
+        target,
+        lane="sqli:/api/search",
+        status="completed",
+        decision="tested clean",
+        evidence_ref="findings/target.com/poc/sql_parameter/summary.json",
+        next_action="none",
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "build_autopilot_state",
+        lambda *_args, **_kwargs: {"target": target, "resolved_target": target},
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "_load_closure_projection",
+        lambda *_args, **_kwargs: {"verdict": "handoff", "reasons": ["next_action_pending"]},
+    )
+
+    completed = record_round_closure(tmp_path, target)
+    second = begin_round(tmp_path, target, max_lanes=1)
+
+    assert completed["round_progress"]["status"] == "completed"
+    assert completed["round_progress"]["budget_reached"] is True
+    assert second["status"] == "started"
+    assert second["round_progress"]["round_id"] != first["round_progress"]["round_id"]
+
+
+def test_round_closure_rejects_unfinished_lane(monkeypatch, tmp_path):
+    target = "target.com"
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=1)
+    monkeypatch.setattr(
+        checkpoint_module,
+        "build_autopilot_state",
+        lambda *_args, **_kwargs: {"target": target, "resolved_target": target},
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "_load_closure_projection",
+        lambda *_args, **_kwargs: {"verdict": "handoff", "reasons": ["lane_pending"]},
+    )
+
+    with pytest.raises(ValueError, match="unfinished lanes: sqli:/api/search"):
+        record_round_closure(tmp_path, target)
+
+
+def test_round_begin_normalizes_legacy_claimed_lanes_as_unfinished(tmp_path):
+    target = "target.com"
+    first = begin_round(tmp_path, target, max_lanes=1)
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    payload = json.loads(witness.read_text(encoding="utf-8"))
+    payload["round_progress"].update({
+        "claimed_lanes": ["sqli:/api/search"],
+        "claimed_count": 1,
+        "remaining_lanes": 0,
+        "budget_reached": True,
+    })
+    payload["round_progress"].pop("lanes")
+    witness.write_text(json.dumps(payload), encoding="utf-8")
+
+    resumed = begin_round(tmp_path, target, max_lanes=1)
+
+    assert resumed["status"] == "resumed"
+    assert resumed["round_progress"]["round_id"] == first["round_progress"]["round_id"]
+    assert resumed["round_progress"]["lanes"][0]["id"] == "sqli:/api/search"
+    assert resumed["round_progress"]["lanes"][0]["status"] == "started"
+
+
+def test_round_begin_rejects_corrupt_checkpoint_witness(tmp_path):
+    witness = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True)
+    witness.write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid checkpoint witness JSON"):
+        begin_round(tmp_path, "target.com", max_lanes=2)
+
+
+def test_round_begin_rejects_inconsistent_persisted_budget(tmp_path):
+    witness = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True)
+    witness.write_text(json.dumps({
+        "schema_version": 1,
+        "target": "target.com",
+        "round_progress": {
+            "schema_version": 1,
+            "status": "active",
+            "max_lanes": 1,
+            "claimed_lanes": ["lane-one", "lane-two"],
+            "claimed_count": 2,
+            "remaining_lanes": 0,
+            "budget_reached": True,
+        },
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="round_progress budget fields are invalid"):
+        begin_round(tmp_path, "target.com", max_lanes=2)
 
 
 def test_checkpoint_reuses_surface_state_for_context_pack(tmp_path, monkeypatch):
@@ -2119,6 +2477,131 @@ def test_next_proposals_keeps_ranked_surface_candidates_after_secondary_sweeps()
     ranked = [item for item in proposals if item.startswith("Review surface candidate ")]
     assert len(ranked) == 4
     assert any(urls[-1] in item for item in ranked)
+
+
+def test_artifact_backed_high_workflow_leads_become_durable_queue_items(tmp_path):
+    artifact = tmp_path / "recon" / "target.com" / "exposure" / "openapi.jsonl"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text('{"path":"/api/admin/export"}\n', encoding="utf-8")
+
+    items = _workflow_lead_queue_items(
+        {
+            "surface": {
+                "workflow_leads": [
+                    {
+                        "title": "OpenAPI auth boundary",
+                        "category": "openapi-semantics",
+                        "priority": "high",
+                        "artifact": str(artifact),
+                        "next_action": "replay the declared operation",
+                    },
+                    {
+                        "title": "ordinary metadata",
+                        "category": "public-metadata",
+                        "priority": "medium",
+                        "artifact": str(artifact),
+                    },
+                ]
+            }
+        },
+        repo_root=tmp_path,
+        target="target.com",
+    )
+
+    assert len(items) == 1
+    item = items[0]
+    assert item["type"] == "workflow-lead-review"
+    assert item["source"] == "workflow-lead"
+    assert item["metadata"]["artifact"] == str(artifact)
+    assert item["metadata"]["generation"]
+
+    save_queue(tmp_path, "target.com", {"actions": []})
+    assert load_queue(tmp_path, "target.com")["actions"] == []
+    checkpoint = {"target": "target.com", "next_action_queue": items}
+    sync_checkpoint_action_queue(tmp_path, checkpoint)
+    persisted = load_queue(tmp_path, "target.com")
+    assert len(persisted["actions"]) == 1
+    assert persisted["actions"][0]["source"] == "workflow-lead"
+
+
+def test_sql_matrix_candidates_become_generation_aware_durable_actions(tmp_path):
+    state = {
+        "sql_matrix": {
+            "query": {
+                "status": "candidate_pending",
+                "path": "findings/target.com/poc/sql_matrix/query/summary.json",
+                "input_fingerprint": "a" * 64,
+                "candidate_count": 1,
+                "source_paths": ["recon/target.com/urls/with_params.txt"],
+                "candidates": [{
+                    "endpoint": "/search",
+                    "field": "q",
+                    "class": "sqli_error",
+                    "signal": "database error",
+                }],
+            },
+            "form": {"status": "complete_no_hit"},
+        }
+    }
+
+    items = _sql_matrix_queue_items(state, "target.com")
+    assert len(items) == 1
+    assert items[0]["type"] == "sql-matrix-review"
+    assert items[0]["source"] == "sql-matrix"
+    assert items[0]["source_id"] == "sql-matrix-query"
+    assert items[0]["metadata"]["generation"] == "a" * 64
+    assert "--urls-file" in items[0]["command_hint"]
+
+    save_queue(tmp_path, "target.com", {"actions": []})
+    checkpoint = {"target": "target.com", "next_action_queue": items}
+    sync_checkpoint_action_queue(tmp_path, checkpoint)
+    persisted = load_queue(tmp_path, "target.com")
+    assert len(persisted["actions"]) == 1
+    assert persisted["actions"][0]["source_id"] == "sql-matrix-query"
+
+    sync_checkpoint_action_queue(tmp_path, {"target": "target.com", "next_action_queue": items})
+    assert len(load_queue(tmp_path, "target.com")["actions"]) == 1
+
+
+def test_candidate_finding_creates_one_scoped_sibling_action(tmp_path):
+    evidence = tmp_path / "findings" / "target.com" / "validation" / "F-1.json"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text('{"id":"F-1"}\n', encoding="utf-8")
+    item = _sibling_queue_item(
+        {
+            "structured_findings": {
+                "next_validation": {
+                    "id": "F-1",
+                    "url": "https://target.com/api/orders/123",
+                    "validation_status": "candidate",
+                    "source_file": str(evidence),
+                }
+            }
+        },
+        repo_root=tmp_path,
+        target="target.com",
+    )
+    assert item["type"] == "sibling-chain-review"
+    assert item["source"] == "primary-finding-sibling"
+    assert "sibling_generator.py" in item["command_hint"]
+    assert item["metadata"]["finding_id"] == "F-1"
+
+
+def test_candidate_sibling_action_rejects_off_target_endpoint(tmp_path):
+    assert _sibling_queue_item(
+        {
+            "structured_findings": {
+                "next_validation": {
+                    "id": "F-1",
+                    "url": "https://other.example/api/orders/123",
+                    "validation_status": "candidate",
+                    "source_file": "findings/target.com/F-1.json",
+                }
+            }
+        },
+        repo_root=tmp_path,
+        target="target.com",
+    ) == {}
 
 
 def test_ranked_surface_proposal_includes_replay_draft_and_metadata():

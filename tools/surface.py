@@ -213,6 +213,7 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "title": "Verified secret material found in API leak artifacts",
             "category": "verified-secret",
             "priority": "critical",
+            "artifact": f"recon/{storage_key}/exposure/api_leak_trufflehog_verified.jsonl",
             "next_action": (
                 f"inspect recon/{storage_key}/exposure/api_leak_trufflehog_verified.jsonl "
                 "and perform minimal-impact credential usability validation only"

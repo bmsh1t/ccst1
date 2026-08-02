@@ -124,6 +124,14 @@ try:
     from tools.recon_target_selector import load_rotation_status
 except ImportError:  # pragma: no cover - direct tools/ execution
     from recon_target_selector import load_rotation_status  # type: ignore
+try:
+    from tools.target_case_state import case_state_path, summary as build_case_state_summary
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_case_state import case_state_path, summary as build_case_state_summary  # type: ignore
+try:
+    from tools.target_memory import read_json as read_target_memory_json
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_memory import read_json as read_target_memory_json  # type: ignore
 
 
 
@@ -259,6 +267,110 @@ def _read_json_file(path: str) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _load_checkpoint_witness(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"unable to read checkpoint witness {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid checkpoint witness JSON {path}: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"checkpoint witness {path} must contain one object")
+    return payload
+
+
+def _checkpoint_round_projection(witness: dict) -> dict:
+    progress = witness.get("round_progress")
+    if progress is None:
+        return {}
+    if (
+        not isinstance(progress, dict)
+        or progress.get("schema_version") != 1
+        or progress.get("status") not in {"active", "completed"}
+    ):
+        raise ValueError("checkpoint round_progress is invalid")
+    claimed = progress.get("claimed_lanes")
+    limit = progress.get("max_lanes")
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or limit < 1
+        or not isinstance(claimed, list)
+        or any(
+            not isinstance(item, str)
+            or not item
+            or len(item) > 200
+            or "\n" in item
+            or "\r" in item
+            for item in claimed
+        )
+        or len(claimed) > limit
+        or len(set(claimed)) != len(claimed)
+        or isinstance(progress.get("claimed_count"), bool)
+        or not isinstance(progress.get("claimed_count"), int)
+        or progress.get("claimed_count") != len(claimed)
+        or isinstance(progress.get("remaining_lanes"), bool)
+        or not isinstance(progress.get("remaining_lanes"), int)
+        or progress.get("remaining_lanes") != limit - len(claimed)
+        or not isinstance(progress.get("budget_reached"), bool)
+        or progress.get("budget_reached") != (len(claimed) >= limit)
+    ):
+        raise ValueError("checkpoint round_progress budget fields are invalid")
+    lanes = progress.get("lanes")
+    if lanes is None:
+        lanes = [{"schema_version": 1, "id": lane_id, "status": "started"} for lane_id in claimed]
+    if not isinstance(lanes, list):
+        raise ValueError("checkpoint round_progress lanes are invalid")
+    projected_lanes = []
+    for lane in lanes:
+        if not isinstance(lane, dict) or lane.get("schema_version") != 1:
+            raise ValueError("checkpoint round_progress lane is invalid")
+        lane_id = lane.get("id")
+        lane_status = lane.get("status")
+        if (
+            not isinstance(lane_id, str)
+            or lane_id not in claimed
+            or lane_status not in {"started", "completed", "blocked"}
+        ):
+            raise ValueError("checkpoint round_progress lane fields are invalid")
+        item = {"id": lane_id, "status": lane_status}
+        for field, limit in (("decision", 500), ("evidence_ref", 500), ("next_action", 1000)):
+            value = lane.get(field, "")
+            if not isinstance(value, str) or "\n" in value or "\r" in value or len(value) > limit:
+                raise ValueError("checkpoint round_progress lane fields are invalid")
+            if value:
+                item[field] = value
+        if lane_status == "started" and (
+            any(item.get(field) for field in ("decision", "evidence_ref", "next_action"))
+            or lane.get("finished_at")
+        ):
+            raise ValueError("checkpoint started round lane has terminal fields")
+        if lane_status in {"completed", "blocked"} and (
+            any(not item.get(field) for field in ("decision", "evidence_ref", "next_action"))
+            or not isinstance(lane.get("finished_at"), str)
+            or not lane.get("finished_at")
+            or (lane_status == "completed" and item.get("evidence_ref") == "none")
+        ):
+            raise ValueError("checkpoint terminal round lane is incomplete")
+        projected_lanes.append(item)
+    if [item["id"] for item in projected_lanes] != claimed:
+        raise ValueError("checkpoint round_progress lane identities are invalid")
+    unfinished = [item["id"] for item in projected_lanes if item["status"] == "started"]
+    if progress["status"] == "completed" and unfinished:
+        raise ValueError("checkpoint completed round has unfinished lanes")
+    return {
+        "status": progress["status"],
+        "round_id": str(progress.get("round_id") or ""),
+        "max_lanes": limit,
+        "claimed_count": len(claimed),
+        "budget_reached": bool(progress.get("budget_reached")),
+        "unfinished_lanes": unfinished,
+        "latest_lane": projected_lanes[-1] if projected_lanes else {},
+    }
+
+
 def _load_json_inject_projection(repo_root: str, target: str) -> dict:
     """Read only the bounded JSON probe summary; malformed data stays partial."""
     path = Path(repo_root) / "findings" / target_storage_key(target) / "poc" / "json_inject" / "summary.json"
@@ -317,13 +429,222 @@ def _load_json_inject_projection(repo_root: str, target: str) -> dict:
     return projection
 
 
+_SQL_MATRIX_STATUSES = {"complete_no_hit", "candidate_pending", "partial", "invalid_input"}
+_SQL_MATRIX_LANES = {"query", "form"}
+
+
+def _bounded_count(value: object) -> int:
+    try:
+        value = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(value, 1_000_000))
+
+
+def _load_sql_matrix_projection(repo_root: str, target: str, lane: str | None = None) -> dict:
+    """Read a secret-free query/form SQL summary and reject stale inputs."""
+    if lane is None:
+        return _load_sql_matrix_projections(repo_root, target)
+    path = Path(repo_root) / "findings" / target_storage_key(target) / "poc" / "sql_matrix" / lane / "summary.json"
+    projection = {"status": "not_run", "lane": lane, "path": str(path), "present": path.is_file()}
+    if lane not in _SQL_MATRIX_LANES:
+        return {"status": "partial", "lane": lane, "path": str(path), "reason": "invalid_lane", "present": False}
+    if not path.is_file():
+        return projection
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        projection.update({"status": "partial", "reason": "malformed_summary"})
+        return projection
+    if not isinstance(payload, dict) or payload.get("kind") != "sql_matrix_summary":
+        projection.update({"status": "partial", "reason": "invalid_summary"})
+        return projection
+    if canonical_target_value(str(payload.get("target") or "")) != canonical_target_value(target):
+        projection.update({"status": "partial", "reason": "target_mismatch"})
+        return projection
+    if str(payload.get("lane") or "").strip().lower() != lane:
+        projection.update({"status": "partial", "reason": "lane_mismatch"})
+        return projection
+    status = str(payload.get("status") or "partial").strip().lower()
+    fingerprint = str(payload.get("input_fingerprint") or "")
+    reason = ""
+    try:
+        schema_version = int(payload.get("schema_version", 0) or 0)
+    except (TypeError, ValueError):
+        schema_version = 0
+    if schema_version < 1:
+        reason = "invalid_schema"
+    elif status not in _SQL_MATRIX_STATUSES:
+        reason = "invalid_status"
+    elif not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        reason = "missing_input_fingerprint"
+    bindings = payload.get("source_bindings")
+    if not isinstance(bindings, list) or not bindings:
+        reason = reason or "missing_source_binding"
+    else:
+        for binding in bindings:
+            if not isinstance(binding, dict) or not str(binding.get("path") or "") or not re.fullmatch(r"[0-9a-f]{64}", str(binding.get("sha256") or "")):
+                reason = "invalid_source_binding"
+                break
+            source = Path(str(binding["path"]))
+            source = source if source.is_absolute() else Path(repo_root) / source
+            try:
+                current = hashlib.sha256(source.read_bytes()).hexdigest()
+            except OSError:
+                current = ""
+            if current != str(binding.get("sha256") or ""):
+                reason = "stale_source_binding"
+                break
+    if reason:
+        status = "partial"
+    candidates = []
+    for item in payload.get("hits") or []:
+        if not isinstance(item, dict):
+            continue
+        endpoint = _normalise_endpoint_path(str(item.get("url") or ""))
+        if endpoint:
+            candidates.append({
+                "endpoint": endpoint,
+                "field": str(item.get("field") or "")[:120],
+                "class": str(item.get("class") or "")[:80],
+                "signal": str(item.get("signal") or "")[:160],
+            })
+    projection.update({
+        "status": status,
+        "schema_version": _bounded_count(schema_version),
+        "input_fingerprint": fingerprint,
+        "endpoint_count": _bounded_count(payload.get("endpoint_count")),
+        "probed_endpoint_count": _bounded_count(payload.get("probed_endpoint_count")),
+        "request_count": _bounded_count(payload.get("request_count")),
+        "request_budget": _bounded_count(payload.get("request_budget")),
+        "hit_count": _bounded_count(payload.get("hit_count")),
+        "candidate_count": _bounded_count(payload.get("hit_count")),
+        "waf_observation_count": _bounded_count(payload.get("waf_observation_count")),
+        "transport_error_count": _bounded_count(payload.get("transport_error_count")),
+        "budget_exhausted": bool(payload.get("budget_exhausted")),
+        "candidates": candidates[:20],
+        "source_paths": [
+            str(binding.get("path") or "")[:300]
+            for binding in (bindings or [])[:3]
+            if isinstance(binding, dict) and str(binding.get("path") or "")
+        ],
+    })
+    if reason:
+        projection["reason"] = reason
+    return projection
+
+
+def _load_sql_matrix_projections(repo_root: str, target: str) -> dict:
+    return {lane: _load_sql_matrix_projection(repo_root, target, lane) for lane in sorted(_SQL_MATRIX_LANES)}
+
+
+_JS_TERMINAL_DISPOSITIONS = {"tested", "blocked", "dead_end", "not_applicable"}
+
+
+def _load_js_intel_projection(repo_root: str, target: str) -> dict:
+    """Keep js-reader's prepared and analyzed lifecycle distinct."""
+    root = Path(repo_root) / "findings" / target_storage_key(target) / "js_intel"
+    materials = root / "materials.json"
+    summary = root / "materials_summary.md"
+    hypotheses = root / "hypotheses.json"
+    disposition = root / "disposition.json"
+    projection = {"status": "not_run", "path": str(materials), "present": False}
+    if materials.is_file() or summary.is_file():
+        projection.update({"status": "prepared", "present": True, "path": str(materials if materials.is_file() else summary)})
+    if materials.is_file():
+        try:
+            material_payload = json.loads(materials.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            projection.update({"status": "partial", "reason": "malformed_materials"})
+            return projection
+        if isinstance(material_payload, dict) and material_payload.get("target"):
+            if canonical_target_value(str(material_payload.get("target"))) != canonical_target_value(target):
+                projection.update({"status": "partial", "reason": "target_mismatch"})
+                return projection
+    if disposition.is_file():
+        try:
+            payload = json.loads(disposition.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            projection.update({"status": "partial", "reason": "malformed_disposition"})
+            return projection
+        disposition_status = str(payload.get("status") or "").strip().lower() if isinstance(payload, dict) else ""
+        if disposition_status not in _JS_TERMINAL_DISPOSITIONS:
+            projection.update({"status": "partial", "reason": "invalid_disposition"})
+            return projection
+        if not isinstance(payload, dict) or not str(payload.get("evidence_ref") or payload.get("reason") or "").strip():
+            projection.update({"status": "partial", "reason": "disposition_missing_evidence"})
+            return projection
+        projection.update({"status": disposition_status, "disposition_path": str(disposition)})
+        return projection
+    payload = None
+    if hypotheses.is_file():
+        try:
+            payload = json.loads(hypotheses.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            projection.update({"status": "partial", "reason": "malformed_hypotheses", "hypotheses_path": str(hypotheses)})
+            return projection
+        values = payload.get("hypotheses") if isinstance(payload, dict) else None
+        if not isinstance(values, list) or not values:
+            projection.update({"status": "partial", "reason": "hypotheses_empty", "hypotheses_path": str(hypotheses)})
+            return projection
+        bindings = payload.get("source_bindings") if isinstance(payload, dict) else None
+        if bindings is not None:
+            if not isinstance(bindings, list) or not bindings:
+                projection.update({"status": "partial", "reason": "invalid_source_binding", "hypotheses_path": str(hypotheses)})
+                return projection
+            for binding in bindings:
+                if not isinstance(binding, dict) or not str(binding.get("path") or ""):
+                    projection.update({"status": "partial", "reason": "invalid_source_binding", "hypotheses_path": str(hypotheses)})
+                    return projection
+                source = Path(str(binding["path"]))
+                source = source if source.is_absolute() else Path(repo_root) / source
+                try:
+                    current = hashlib.sha256(source.read_bytes()).hexdigest()
+                except OSError:
+                    current = ""
+                if current != str(binding.get("sha256") or ""):
+                    projection.update({"status": "partial", "reason": "stale_source_binding", "hypotheses_path": str(hypotheses)})
+                    return projection
+        projection.update({"status": "analyzed", "hypotheses_path": str(hypotheses), "hypothesis_count": min(len(values), 100)})
+    return projection
+
+
+def _load_case_state_projection(repo_root: str, target: str) -> dict:
+    """Load the bounded, secret-free Case State continuation."""
+    path = case_state_path(repo_root, target)
+    if not path.is_file():
+        return {"status": "missing", "path": str(path)}
+    payload = build_case_state_summary(repo_root, target)
+    top = payload.get("top_next_action") if isinstance(payload.get("top_next_action"), dict) else {}
+    allowed = {
+        "next_action", "ready", "score", "backlog_id", "runner", "hypothesis",
+        "chain_context", "why_now", "vuln_class", "endpoint", "owner_actor",
+        "peer_actor", "object_ref", "object_type", "required_evidence",
+        "optional_evidence_gaps", "missing_evidence", "redacted_command",
+        "downgrade_rule", "stop_condition", "chain_extensions_if_blocked", "write_back",
+        "param", "baseline_value", "variant_value", "expect_marker", "method",
+    }
+    return {
+        "status": "valid",
+        "path": str(path),
+        **{
+            key: int(payload.get(key, 0) or 0)
+            for key in (
+                "actors", "sessions", "objects", "open_hypotheses",
+                "pending_validation_backlog",
+            )
+        },
+        "top_next_action": {key: value for key, value in top.items() if key in allowed},
+    }
+
+
 def load_target_goal_memory(repo_root: str, target: str) -> dict:
     """Load the four-layer target memory for autopilot bootstrapping."""
     resolved_target = canonical_target_value(target)
     goals_dir = os.path.join(repo_root, "memory", "goals")
-    active = _read_json_file(os.path.join(goals_dir, "active.json"))
-    target_memory = _read_json_file(
-        os.path.join(goals_dir, "targets", f"{target_storage_key(resolved_target)}.json")
+    active = read_target_memory_json(Path(goals_dir) / "active.json")
+    target_memory = read_target_memory_json(
+        Path(goals_dir) / "targets" / f"{target_storage_key(resolved_target)}.json"
     )
 
     active_target = canonical_target_value(str(active.get("target", "") or ""))
@@ -426,6 +747,7 @@ def _pick_next_action(
     surface_context_required: bool = False,
     cidr_continuation: dict | None = None,
     dir_fuzz_rotation_pending: bool = False,
+    case_state_next: dict | None = None,
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
@@ -460,6 +782,8 @@ def _pick_next_action(
         return "review_validation_candidate"
     if action_queue_next:
         return "resume_action_queue"
+    if str((case_state_next or {}).get("next_action") or "none") != "none":
+        return "resume_case_state"
     if (cidr_continuation or {}).get("status") == "pending":
         return "run_recon"
     # Legacy target-memory is only a recovery bridge.  Canonical report
@@ -653,6 +977,12 @@ def _describe_next_step(state: dict) -> str:
         if item:
             return f"resume durable action {item.get('id')}: {item.get('action') or item.get('command_hint')}."
         return "resume the highest-priority substantive durable action."
+    if action == "resume_case_state":
+        item = (state.get("case_state") or {}).get("top_next_action") or {}
+        return (
+            f"resume Case State action {item.get('next_action', 'enrich_case_state')}: "
+            f"{item.get('hypothesis') or item.get('write_back') or 'refresh the validation backlog'}."
+        )
     if action == "recon_no_live_hosts":
         return (
             "recon completed with no live hosts; review cached infra/exposure/offline evidence "
@@ -1131,11 +1461,10 @@ def _build_enrichment_hints(
 
     browser_evidence = browser_evidence or inspect_browser_evidence(repo_root, resolved_target)
     browser_ready = bool(browser_evidence.get("ready"))
-    js_intel_ready = _has_any_artifact(
-        os.path.join(findings_dir, "js_intel", "materials.json"),
-        os.path.join(findings_dir, "js_intel", "materials_summary.md"),
-        os.path.join(findings_dir, "js_intel", "hypotheses.json"),
-    )
+    js_intel = _load_js_intel_projection(repo_root, resolved_target)
+    js_intel_ready = str(js_intel.get("status") or "") in {
+        "analyzed", *(_JS_TERMINAL_DISPOSITIONS - {"prepared"})
+    }
     source_intel_ready = _has_any_artifact(
         os.path.join(findings_dir, "source_intel", "summary.md"),
         os.path.join(findings_dir, "source_intel", "hypotheses.jsonl"),
@@ -1678,6 +2007,9 @@ def _load_autopilot_control_facts(
     intel_continuation = inspect_intel_continuation(repo_root, resolved_target)
     browser_evidence = inspect_browser_evidence(repo_root, resolved_target)
     json_inject = _load_json_inject_projection(repo_root, resolved_target)
+    sql_matrix = _load_sql_matrix_projections(repo_root, resolved_target)
+    js_intel = _load_js_intel_projection(repo_root, resolved_target)
+    case_state = _load_case_state_projection(repo_root, resolved_target)
     return {
         "repo_root": repo_root,
         "resolved_target": resolved_target,
@@ -1711,6 +2043,9 @@ def _load_autopilot_control_facts(
         "intel_continuation": intel_continuation,
         "browser_evidence": browser_evidence,
         "json_inject": json_inject,
+        "sql_matrix": sql_matrix,
+        "js_intel": js_intel,
+        "case_state": case_state,
     }
 
 
@@ -1768,6 +2103,7 @@ def _build_domain_autopilot_state(
         dir_fuzz_rotation_pending=bool(
             (facts.get("dir_fuzz_rotation") or {}).get("pending")
         ),
+        case_state_next=(facts.get("case_state") or {}).get("top_next_action") or {},
     )
     intel_continuation = facts.get("intel_continuation") or {}
     next_action = apply_intel_continuation(primary_next_action, intel_continuation)
@@ -1835,6 +2171,9 @@ def _build_domain_autopilot_state(
         "browser_evidence": facts.get("browser_evidence") or {},
         "browser_required": browser_required,
         "json_inject": facts.get("json_inject") or {},
+        "sql_matrix": facts.get("sql_matrix") or {},
+        "js_intel": facts.get("js_intel") or {},
+        "case_state": facts.get("case_state") or {},
         "runtime_state": facts.get("runtime_state") or {},
         "recon_artifacts": facts.get("recon_artifacts") or {},
         "dir_fuzz_rotation": facts.get("dir_fuzz_rotation") or {},
@@ -2088,6 +2427,13 @@ def _loop_guard_authoritative_reason(state: dict) -> str:
         or state.get("validation_runner_next")
     ):
         return "authoritative_durable_work"
+    case_state = state.get("case_state") or {}
+    if (
+        int(case_state.get("pending_validation_backlog", 0) or 0) > 0
+        or int(case_state.get("open_hypotheses", 0) or 0) > 0
+        or str((case_state.get("top_next_action") or {}).get("next_action") or "none") != "none"
+    ):
+        return "authoritative_case_state_work"
     if state.get("root_finding_claim_next") or state.get("memory_candidate_next"):
         return "authoritative_finding_work"
     findings = state.get("structured_findings") or {}
@@ -2335,14 +2681,36 @@ def build_closure_projection(
     reasons: list[str] = []
     action = str(state.get("next_action") or "handoff")
     surface_review = state.get("surface_review_completion") or {}
+    case_state = state.get("case_state") or {}
+    case_state_pending = (
+        str(case_state.get("status") or "missing") == "valid"
+        and (
+            int(case_state.get("pending_validation_backlog", 0) or 0) > 0
+            or int(case_state.get("open_hypotheses", 0) or 0) > 0
+            or str((case_state.get("top_next_action") or {}).get("next_action") or "none") != "none"
+        )
+    )
     if action in {"hunt_p1", "hunt_p2"} and surface_review.get("status") == "complete":
         action = "handoff"
-    if max_lanes_reached:
+    round_progress = state.get("round_progress") or {}
+    round_active = round_progress.get("status") == "active"
+    if round_active and round_progress.get("unfinished_lanes"):
+        action = "resume_round_lane"
+        verdict = "handoff"
+        reasons.append("round_lane_unfinished")
+    elif round_active and int(round_progress.get("claimed_count", 0) or 0) > 0:
+        action = "complete_round_closure"
+        verdict = "handoff"
+        reasons.append("round_closure_pending")
+    elif max_lanes_reached:
         verdict = "handoff"
         reasons.append("max_lanes_reached")
     elif action in _TERMINAL_CLOSURE_ACTIONS:
         verdict = "blocked"
         reasons.append(action)
+    elif case_state_pending:
+        verdict = "handoff"
+        reasons.append("case_state_work_pending")
     elif action != "handoff":
         verdict = "handoff"
         reasons.append("next_action_pending")
@@ -2363,6 +2731,8 @@ def build_closure_projection(
         source = state.get("repo_source_summary") or {}
         intel = state.get("intel_continuation") or {}
         json_inject = state.get("json_inject") or {}
+        sql_matrix = state.get("sql_matrix") or {}
+        js_intel = state.get("js_intel") or {}
         enrichment_tools = {
             str(item.get("tool") or "")
             for item in state.get("enrichment_hints") or []
@@ -2380,6 +2750,23 @@ def build_closure_projection(
         elif str(json_inject.get("status") or "") in {"partial", "invalid_input"}:
             verdict = "handoff"
             reasons.append("json_evidence_partial")
+        elif any(
+            str(item.get("status") or "") == "candidate_pending"
+            for item in sql_matrix.values()
+            if isinstance(item, dict)
+        ):
+            verdict = "handoff"
+            reasons.append("sql_candidate_pending")
+        elif any(
+            str(item.get("status") or "") in {"partial", "invalid_input"}
+            for item in sql_matrix.values()
+            if isinstance(item, dict)
+        ):
+            verdict = "handoff"
+            reasons.append("sql_evidence_partial")
+        elif str(js_intel.get("status") or "") in {"prepared", "partial"}:
+            verdict = "handoff"
+            reasons.append("js_evidence_partial")
         elif browser.get("present") and not browser.get("ready"):
             verdict = "handoff"
             reasons.append("browser_evidence_partial")
@@ -2406,7 +2793,7 @@ def build_closure_projection(
         else:
             verdict = "finish"
 
-    return {
+    result = {
         "verdict": verdict,
         "can_claim_exhausted": verdict == "finish",
         "reasons": reasons[:3],
@@ -2414,6 +2801,9 @@ def build_closure_projection(
         "rotation_hint": _rotation_hint(ledger_entries or []),
         "surface_review": surface_review,
     }
+    if round_progress:
+        result["round_progress"] = round_progress
+    return result
 
 
 _STAGNANT_REASONS = {
@@ -2425,6 +2815,7 @@ _STAGNANT_REASONS = {
     "js_evidence_partial",
     "intel_evidence_blocked",
     "json_evidence_partial",
+    "sql_evidence_partial",
 }
 
 
@@ -2456,6 +2847,18 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
         "json": {
             key: (state.get("json_inject") or {}).get(key)
             for key in ("status", "input_fingerprint", "request_count", "transport_error_count")
+        },
+        "sql": {
+            lane: {
+                key: item.get(key)
+                for key in ("status", "input_fingerprint", "request_count", "transport_error_count")
+            }
+            for lane, item in (state.get("sql_matrix") or {}).items()
+            if isinstance(item, dict)
+        },
+        "js": {
+            key: (state.get("js_intel") or {}).get(key)
+            for key in ("status", "reason", "hypothesis_count")
         },
         "observations": {
             "status": (state.get("observation_inventory") or {}).get("status"),
@@ -2519,8 +2922,12 @@ def _load_closure_projection(
         and str(item.get("tool") or "") in {"run_source_intel", "run_js_read"}
     ]
     ledger_entries = load_entries(repo_root, target)
+    witness_path = Path(repo_root) / "state" / target_storage_key(target) / "checkpoint_latest.json"
+    witness = _load_checkpoint_witness(witness_path)
+    round_progress = _checkpoint_round_projection(witness)
     closure_state = {
         **state,
+        "round_progress": round_progress,
         "enrichment_hints": enrichment_hints,
         "active_action_queue_count": sum(
             isinstance(item, dict)
@@ -2544,8 +2951,6 @@ def _load_closure_projection(
         ledger_entries,
         max_lanes_reached=max_lanes_reached,
     )
-    witness_path = Path(repo_root) / "state" / target_storage_key(target) / "checkpoint_latest.json"
-    witness = _read_json_file(str(witness_path))
     guard = witness.get("round_guard") if isinstance(witness.get("round_guard"), dict) else {}
     fingerprint = stagnation_fingerprint(closure_state, closure)
     if fingerprint:
@@ -3136,6 +3541,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
             "rotation_hint",
             "stagnation_fingerprint",
             "error",
+            "round_progress",
         )
         if key in closure
     }
@@ -3154,9 +3560,25 @@ def build_decision_projection(state: dict, kind: str) -> dict:
         ("repo_source_summary", ("status",)),
         ("observation_inventory", ("status", "reason", "untouched", "stale", "by_kind")),
         ("surface_projection", ("status", "reason", "refresh_command")),
+        ("case_state", ("status", "actors", "sessions", "objects", "open_hypotheses", "pending_validation_backlog", "top_next_action")),
     ):
         value = state.get(field) if isinstance(state.get(field), dict) else {}
         projection[field] = {key: value[key] for key in keys if key in value}
+    projection["sql_matrix"] = {
+        lane: {
+            key: item[key]
+            for key in ("status", "reason", "path", "input_fingerprint", "endpoint_count", "probed_endpoint_count", "request_count", "hit_count", "candidate_count", "candidates")
+            if key in item
+        }
+        for lane, item in (state.get("sql_matrix") or {}).items()
+        if isinstance(item, dict)
+    }
+    js_intel = state.get("js_intel") if isinstance(state.get("js_intel"), dict) else {}
+    projection["js_intel"] = {
+        key: js_intel[key]
+        for key in ("status", "reason", "path", "hypotheses_path", "hypothesis_count", "disposition_path")
+        if key in js_intel
+    }
     for field in ("repo_source_available", "recon_blocker", "browser_required"):
         if field in state:
             projection[field] = state[field]

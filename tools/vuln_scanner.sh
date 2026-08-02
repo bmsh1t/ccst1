@@ -1372,19 +1372,22 @@ if [ -s "$SENSITIVE_PATHS_FILTERED" ]; then
     : > "$FINDINGS_DIR/manual_review/public_exposure_review.txt"
     while IFS= read -r url; do
         STATUS=$(curl -s "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
-        BODY=$(curl -s "${BB_AUTH_ARGS[@]}" --max-time 5 "$url" 2>/dev/null || true)
+        BODY_FILE=$(mktemp "$FINDINGS_DIR/manual_review/.exposure_body.XXXXXX")
+        curl -s "${BB_AUTH_ARGS[@]}" --max-time 5 -o "$BODY_FILE" "$url" 2>/dev/null || true
         if [ "$STATUS" = "200" ]; then
-            if printf '%s' "$BODY" | python3 "$BASE_DIR/tools/public_exposure_signals.py" --url "$url" --status "$STATUS" --standard-public-metadata >/dev/null 2>&1; then
+            if python3 "$BASE_DIR/tools/public_exposure_signals.py" --url "$url" --status "$STATUS" --body-file "$BODY_FILE" --standard-public-metadata >/dev/null 2>&1; then
                 echo "[STANDARD-PUBLIC-METADATA] $STATUS $url" >> "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
+                rm -f "$BODY_FILE"
                 continue
             fi
-            if printf '%s' "$BODY" | python3 "$BASE_DIR/tools/public_exposure_signals.py" --url "$url" --status "$STATUS" --candidate-ready >/dev/null 2>&1; then
+            if python3 "$BASE_DIR/tools/public_exposure_signals.py" --url "$url" --status "$STATUS" --body-file "$BODY_FILE" --candidate-ready >/dev/null 2>&1; then
                 echo "$STATUS $url" >> "$FINDINGS_DIR/exposure/verified_sensitive.txt"
             else
-                BODY_SIZE=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
+                BODY_SIZE=$(wc -c < "$BODY_FILE" | tr -d ' ')
                 echo "[PUBLIC-EXPOSURE-REVIEW] $STATUS $BODY_SIZE $url" >> "$FINDINGS_DIR/manual_review/public_exposure_review.txt"
             fi
         fi
+        rm -f "$BODY_FILE"
     done < <(head -50 "$SENSITIVE_PATHS_FILTERED")
 
     VERIFIED=$(count_findings "$FINDINGS_DIR/exposure/verified_sensitive.txt")

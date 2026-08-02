@@ -281,15 +281,15 @@ def _next_id(actions: list[dict]) -> str:
 
 
 def _status_rank(status: str) -> int:
-    if status == "candidate":
-        return 0
-    if status == "signal":
-        return 1
-    if status == "lead":
-        return 2
-    if status == "queued":
-        return 3
     if status == "running":
+        return 0
+    if status == "candidate":
+        return 1
+    if status == "signal":
+        return 2
+    if status == "lead":
+        return 3
+    if status == "queued":
         return 4
     return 9
 
@@ -929,6 +929,10 @@ def select_next_action(queue: dict) -> dict:
     ]
     if not candidates:
         return {}
+    running = [item for item in candidates if str(item.get("status") or "") == "running"]
+    if running:
+        running.sort(key=_action_sort_key)
+        return running[0]
     # 报告是阶段收束，不应抢在仍未处理的验证、深挖、coverage、action-gated
     # lead 前面。surface-review 则只是 Claude 审阅候选池，不应反过来压住
     # 已验证 finding 的报告收束；只有没有其它实质动作时才浮上来。
@@ -972,6 +976,32 @@ def select_next_action_for_target(
     if wait_action in {"wait_recon", "wait_scan"}:
         return _runtime_wait_queue_action(wait_action, target)
     return select_next_action(queue if queue is not None else load_queue(repo_root, target))
+
+
+def claim_next_action(repo_root: Path | str, target: str) -> dict:
+    """Atomically claim queued work or resume the current running action."""
+    with queue_mutation_lock(repo_root, target):
+        queue = load_queue(repo_root, target)
+        selected = select_next_action_for_target(repo_root, target, queue)
+        if not selected:
+            return {}
+        if selected.get("id") == "runtime-wait":
+            return {**selected, "claim_status": "transient", "previous_status": "transient"}
+
+        previous = str(selected.get("status") or "queued")
+        claim_status = "resumed" if previous == "running" else "selected"
+        if previous == "queued":
+            selected["status"] = "running"
+            selected["attempts"] = int(selected.get("attempts", 0) or 0) + 1
+            selected["updated_at"] = now_utc()
+            queue["actions"].sort(key=_action_sort_key)
+            save_queue(repo_root, target, queue)
+            claim_status = "claimed"
+        return {
+            **copy.deepcopy(selected),
+            "claim_status": claim_status,
+            "previous_status": previous,
+        }
 
 
 def resolve_action(
@@ -1021,7 +1051,7 @@ def _resolve_action_in_queue(
         item["updated_at"] = now_utc()
         item["result"] = _compact_text(result or item.get("result", ""), 1000)
         item["notes"] = _compact_text(notes or item.get("notes", ""), 1000)
-        if normalized in {"running", "tested", "dead-end", "blocked", "lead", "signal", "candidate", "validated"}:
+        if previous != "running" and normalized in {"running", "tested", "dead-end", "blocked", "lead", "signal", "candidate", "validated"}:
             item["attempts"] = int(item.get("attempts", 0) or 0) + 1
         coverage_update = _sync_coverage_matrix_for_action(repo_root, target, item, normalized)
         unsafe_review_update = _sync_unsafe_skipped_review_for_action(repo_root, target, item, normalized)
@@ -1151,6 +1181,10 @@ def build_parser() -> argparse.ArgumentParser:
     next_cmd.add_argument("--target", required=True)
     next_cmd.add_argument("--json", action="store_true")
 
+    claim = sub.add_parser("claim", help="Atomically claim or resume the highest-priority action.")
+    claim.add_argument("--target", required=True)
+    claim.add_argument("--json", action="store_true")
+
     resolve = sub.add_parser("resolve", help="Resolve or reclassify one action.")
     resolve.add_argument("--target", required=True)
     resolve.add_argument("--id", required=True)
@@ -1212,6 +1246,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "next":
             queue = load_queue(repo, args.target)
             action = select_next_action_for_target(repo, args.target, queue)
+            _print(action if args.json else format_action(action), as_json=args.json)
+            return 0 if action else 1
+
+        if args.command == "claim":
+            action = claim_next_action(repo, args.target)
             _print(action if args.json else format_action(action), as_json=args.json)
             return 0 if action else 1
 

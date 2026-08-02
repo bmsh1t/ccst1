@@ -78,6 +78,44 @@ python3 tools/validation_runner.py marker-replay \
   --browser-observed
 ```
 
+### Workflow sequence
+
+Use only an imported HAR/browser Network artifact with at least two ordered,
+same-target business requests. The runner performs one remove/repeat perturbation,
+refreshes declared short-lived tokens, keeps raw traffic private, and writes a
+bounded result to the Action Queue.
+
+```bash
+python3 tools/workflow_sequence.py \
+  --target <target> \
+  --evidence-ref evidence/<target>/browser/<capture>/requests.json
+```
+
+Mutation or unknown steps return `manual_required` until the current turn supplies
+the explicit red-line flag; a response difference remains a candidate until AI
+reviews impact and replayability.
+
+### Timing SQL
+
+Use after a time-shaped SQL signal, never as a default sweep. Samples are
+interleaved baseline/variant pairs with a lane-global request cap. Median/MAD and
+WAF/429/transport classification keep a single slow response from becoming a
+finding.
+
+```bash
+python3 tools/timing_sql_runner.py \
+  --target <target> --url '<target-url-with-param>' \
+  --param <name> --variant-value '<controlled-delay>' \
+  --repeat 5 --max-requests 20
+```
+
+### Request smuggling capability gate
+
+`smuggling_executor.py` reports whether a local sender can preserve the required
+byte-exact and connection-reuse semantics. `disposition=manual_required` is the
+expected result for unsupported H2/desync variants; it is not evidence of a
+vulnerability.
+
 ## 相关状态工具
 
 ### Target case state

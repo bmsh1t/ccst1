@@ -59,6 +59,17 @@ HIGH_IMPACT_OBJECT_TYPES = {
     "file",
 }
 
+# Only runners implemented by validation_runner are eligible for a ready
+# command.  Required values are public request facts; session headers remain
+# in the private Case State session store.
+RUNNER_CONTRACTS = {
+    "authz-public-exposure": ("endpoint",),
+    "authz-role-replay": ("endpoint", "owner_actor", "peer_actor"),
+    "sqli-result-diff": ("endpoint", "param", "variant_value"),
+    "marker-replay": ("endpoint", "expect_marker"),
+    "idor-actor-pair": ("endpoint", "owner_actor", "peer_actor"),
+}
+
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -492,6 +503,11 @@ def add_backlog(
     required_evidence: list[str] | None = None,
     stop_condition: str = "",
     chain_extensions_if_blocked: list[str] | None = None,
+    param: str = "",
+    baseline_value: str = "",
+    variant_value: str = "",
+    expect_marker: str = "",
+    method: str = "GET",
     status: str = "pending",
     backlog_id: str = "",
 ) -> dict[str, Any]:
@@ -517,6 +533,11 @@ def add_backlog(
             "required_evidence": list(required_evidence or []),
             "stop_condition": str(stop_condition or ""),
             "chain_extensions_if_blocked": list(chain_extensions_if_blocked or []),
+            "param": str(param or ""),
+            "baseline_value": str(baseline_value or ""),
+            "variant_value": str(variant_value or ""),
+            "expect_marker": str(expect_marker or ""),
+            "method": str(method or "GET").upper(),
             "created_at": now_utc(),
         }
         state["validation_backlog"].append(record)
@@ -558,8 +579,13 @@ def _readiness(
     optional_gaps: list[str] = []
     details: dict[str, Any] = {}
     obj = state.get("objects", {}).get(item.get("object_ref") or "", {})
+    runner = str(item.get("runner") or "").strip()
     endpoint = item.get("endpoint") or obj.get("endpoint")
-    if item.get("runner") == "idor-actor-pair":
+    details["runner"] = runner
+    if runner not in RUNNER_CONTRACTS:
+        missing.append(f"unsupported runner: {runner or '<empty>'}")
+        return 0, missing, details
+    if runner == "idor-actor-pair":
         owner = item.get("owner_actor") or obj.get("owner_actor")
         peer = item.get("peer_actor")
         owner_session_id, owner_session = _session_for_actor(state, owner) if owner else (None, None)
@@ -588,9 +614,36 @@ def _readiness(
             "optional_evidence_gaps": optional_gaps,
         })
         return max(0, 60 - 15 * len(missing) - 5 * len(optional_gaps)), missing, details
-    if not endpoint:
-        missing.append("endpoint")
+
     details["endpoint"] = endpoint
+    details["method"] = str(item.get("method") or "GET").upper()
+    for field in RUNNER_CONTRACTS[runner]:
+        if field == "endpoint":
+            if not endpoint:
+                missing.append("endpoint")
+            continue
+        value = item.get(field)
+        if value is None or not str(value).strip():
+            missing.append(field)
+        else:
+            details[field] = str(value)
+    if runner == "authz-role-replay":
+        owner = str(item.get("owner_actor") or "").strip()
+        peer = str(item.get("peer_actor") or "").strip()
+        owner_session_id, owner_session = _session_for_actor(state, owner) if owner else (None, None)
+        peer_session_id, peer_session = _session_for_actor(state, peer) if peer else (None, None)
+        if owner and not owner_session:
+            missing.append("owner session")
+        if peer and not peer_session:
+            missing.append("peer session")
+        if owner and peer and owner == peer:
+            missing.append("distinct owner and peer actors")
+        details.update({
+            "owner_session_id": owner_session_id,
+            "peer_session_id": peer_session_id,
+            "owner_session": owner_session,
+            "peer_session": peer_session,
+        })
     return max(0, 30 - 10 * len(missing)), missing, details
 
 
@@ -621,9 +674,26 @@ def _build_idor_actor_pair_command(target: str, item: dict[str, Any], details: d
 
 def _build_generic_command(target: str, item: dict[str, Any], details: dict[str, Any]) -> str:
     endpoint = details.get("endpoint") or item.get("endpoint") or ""
-    parts = ["python3", "tools/validation_runner.py", item.get("runner") or "", "--target", target]
+    runner = str(item.get("runner") or "").strip()
+    parts = ["python3", "tools/validation_runner.py", runner, "--target", target]
     if endpoint:
         parts.extend(["--url", endpoint])
+    parts.extend(["--method", str(item.get("method") or "GET").upper()])
+    if runner == "authz-role-replay":
+        parts.extend([
+            "--from-case-state",
+            "--owner-actor", item.get("owner_actor") or "",
+            "--peer-actor", item.get("peer_actor") or "",
+        ])
+    elif runner == "sqli-result-diff":
+        parts.extend([
+            "--param", item.get("param") or "",
+            "--variant-value", item.get("variant_value") or "",
+        ])
+        if str(item.get("baseline_value") or ""):
+            parts.extend(["--baseline-value", item.get("baseline_value")])
+    elif runner == "marker-replay":
+        parts.extend(["--expect-marker", item.get("expect_marker") or ""])
     return " ".join(_quote(part) for part in parts if part != "")
 
 
@@ -748,6 +818,11 @@ def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
             "owner private marker or exact owner-body match",
         ],
         "optional_evidence_gaps": details.get("optional_evidence_gaps", []),
+        "param": item.get("param") or "",
+        "baseline_value": item.get("baseline_value") or "",
+        "variant_value": item.get("variant_value") or "",
+        "expect_marker": item.get("expect_marker") or "",
+        "method": item.get("method") or "GET",
         "missing_evidence": missing,
         "command": command,
         "redacted_command": redacted_command,
@@ -903,6 +978,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--required-evidence", action="append", default=[])
     p.add_argument("--stop-condition", default="")
     p.add_argument("--chain-extension", action="append", default=[])
+    p.add_argument("--param", default="")
+    p.add_argument("--baseline-value", default="")
+    p.add_argument("--variant-value", default="")
+    p.add_argument("--expect-marker", default="")
+    p.add_argument("--method", default="GET")
     p.add_argument("--status", default="pending")
 
     p = sub.add_parser("next")
@@ -987,6 +1067,11 @@ def _run_command(argv: list[str] | None = None) -> int:
             required_evidence=args.required_evidence,
             stop_condition=args.stop_condition,
             chain_extensions_if_blocked=args.chain_extension,
+            param=args.param,
+            baseline_value=args.baseline_value,
+            variant_value=args.variant_value,
+            expect_marker=args.expect_marker,
+            method=args.method,
             status=args.status,
         ))
     elif args.cmd == "next":

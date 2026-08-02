@@ -108,6 +108,20 @@ def test_finish_contract_rebuilds_coverage_then_reads_explicit_closure_verdict()
     assert "--max-lanes-reached" in command
 
 
+def test_durable_queue_work_is_claimed_before_replay():
+    command = _read("commands/autopilot.md")
+
+    assert "python3 tools/action_queue.py claim --target <target_shell>" in command
+    assert "python3 tools/action_queue.py next --target <target_shell>" not in command
+
+
+def test_case_state_continuation_has_an_explicit_controller_branch():
+    command = _read("commands/autopilot.md")
+
+    assert "`resume_case_state`" in command
+    assert "state.case_state.top_next_action" in command
+
+
 def test_substantive_lanes_obey_explicit_loop_guard_without_overriding_durable_work():
     command = " ".join(_read("commands/autopilot.md").split()).lower()
 

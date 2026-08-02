@@ -151,10 +151,30 @@ def summarize_probe_specs(*, local_only: bool = True) -> list[dict]:
                 "required_capabilities": sorted(spec.required_capabilities),
                 "evidence": [item.value for item in spec.evidence],
                 "selected_sender": sender.name if sender else "",
+                "disposition": "ready" if sender else "manual_required",
+                "manual_required": sender is None,
                 "notes": list(spec.notes),
             }
         )
     return rows
+
+
+def execution_gate(variant: str, *, local_only: bool = True) -> dict:
+    """Return an executable/manual disposition without sending wire bytes."""
+    spec = get_probe_spec(variant)
+    sender = spec.choose_sender(local_only=local_only)
+    return {
+        "variant": spec.variant,
+        "required_capabilities": sorted(spec.required_capabilities),
+        "evidence": [item.value for item in spec.evidence],
+        "selected_sender": sender.name if sender else "",
+        "disposition": "ready" if sender else "manual_required",
+        "manual_required": sender is None,
+        "reason": "local sender satisfies byte-exact requirements"
+        if sender
+        else "no local sender satisfies the required byte-exact/connection capabilities",
+        "notes": list(spec.notes),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -166,15 +186,7 @@ def main(argv: list[str] | None = None) -> int:
 
     local_only = not args.include_external
     if args.variant:
-        spec = get_probe_spec(args.variant)
-        sender = spec.choose_sender(local_only=local_only)
-        payload = {
-            "variant": spec.variant,
-            "required_capabilities": sorted(spec.required_capabilities),
-            "evidence": [item.value for item in spec.evidence],
-            "selected_sender": sender.name if sender else "",
-            "notes": list(spec.notes),
-        }
+        payload = execution_gate(args.variant, local_only=local_only)
     else:
         payload = {"smuggling_probe_specs": summarize_probe_specs(local_only=local_only)}
 
