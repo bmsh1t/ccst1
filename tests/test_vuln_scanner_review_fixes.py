@@ -26,3 +26,12 @@ def test_scanner_uses_current_repo_paths():
     assert 'LIVE_URLS="$RECON_DIR/live/urls.txt"' in scanner
     assert 'ORDERED_SCAN="$FINDINGS_DIR/ordered_scan_targets.txt"' in scanner
     assert "httpx_live.txt" not in scanner
+
+
+def test_mfa_observations_are_manual_review_only():
+    scanner = SCANNER_PATH.read_text()
+
+    assert ': > "$FINDINGS_DIR/mfa/findings.txt"' in scanner
+    assert 'MFA_REVIEW_FILE="$FINDINGS_DIR/manual_review/mfa_review.txt"' in scanner
+    assert '>> "$MFA_REVIEW_FILE"' in scanner
+    assert '>> "$FINDINGS_DIR/mfa/findings.txt"' not in scanner

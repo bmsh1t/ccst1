@@ -322,6 +322,9 @@ PY
 }
 
 mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,metasploit,manual_review,.tmp}
+: > "$FINDINGS_DIR/mfa/findings.txt"
+MFA_REVIEW_FILE="$FINDINGS_DIR/manual_review/mfa_review.txt"
+: > "$MFA_REVIEW_FILE"
 NUCLEI_FAILURE_MARKER="$FINDINGS_DIR/.tmp/nuclei_failed"
 
 mark_nuclei_failure() {
@@ -1708,8 +1711,8 @@ if ! skip_has mfa; then
 
                 if printf '%s\n' "$STATUS_RAW" | grep -Eq '^[2-5][0-9][0-9]$' \
                     && ! printf '%s\n' "$STATUS_RAW" | grep -q '^429$'; then
-                    log_vuln "[MFA] No rate limit detected on OTP endpoint: $BASE"
-                    echo "[MFA-NO-RATE-LIMIT] $BASE | codes: $STATUS_CODES" >> "$FINDINGS_DIR/mfa/findings.txt"
+                    log_warn "[MFA] Rate-limit observation requires pre/post-MFA control: $BASE"
+                    echo "[MFA-NO-RATE-LIMIT] $BASE | codes: $STATUS_CODES | manual pre/post-MFA control required" >> "$MFA_REVIEW_FILE"
                 fi
             fi
 
@@ -1718,8 +1721,8 @@ if ! skip_has mfa; then
                 for PROTECTED in dashboard home profile account settings admin; do
                     SKIP_CODE=$(curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$HOST/$PROTECTED" 2>/dev/null || echo "000")
                     if [ "$SKIP_CODE" = "200" ]; then
-                        log_vuln "[MFA] Protected endpoint accessible before MFA: $HOST/$PROTECTED"
-                        echo "[MFA-WORKFLOW-SKIP] $HOST/$PROTECTED accessible (HTTP 200)" >> "$FINDINGS_DIR/mfa/findings.txt"
+                        log_warn "[MFA] Protected endpoint returned 200; pre-MFA session control required: $HOST/$PROTECTED"
+                        echo "[MFA-WORKFLOW-SKIP] $HOST/$PROTECTED accessible (HTTP 200) | manual pre/post-MFA control required" >> "$MFA_REVIEW_FILE"
                     fi
                 done
             fi
@@ -1730,8 +1733,8 @@ if ! skip_has mfa; then
                     -d '{"otp":"999999"}' 2>/dev/null || true)
 
                 if printf '%s\n' "$MFA_RESP" | grep -qi '"success"[[:space:]]*:[[:space:]]*false\|"verified"[[:space:]]*:[[:space:]]*false\|"status"[[:space:]]*:[[:space:]]*"fail"'; then
-                    log_vuln "[MFA] Response manipulation candidate: $BASE"
-                    echo "[MFA-RESPONSE-MANIP] $BASE | change false->true in response" >> "$FINDINGS_DIR/mfa/findings.txt"
+                    log_warn "[MFA] Normal failure response observed; no candidate without controlled pre/post-MFA comparison: $BASE"
+                    echo "[MFA-RESPONSE-MANIP] $BASE | normal failure response; manual pre/post-MFA control required" >> "$MFA_REVIEW_FILE"
                 fi
             fi
         done <<< "$MFA_ENDPOINTS"
@@ -1740,6 +1743,10 @@ if ! skip_has mfa; then
     fi
 else
     log_warn "Skipping MFA checks (--skip)"
+fi
+
+if [ ! -s "$MFA_REVIEW_FILE" ]; then
+    rm -f "$MFA_REVIEW_FILE"
 fi
 
 # ============================================================

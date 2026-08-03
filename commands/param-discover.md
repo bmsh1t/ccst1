@@ -1,5 +1,5 @@
 ---
-description: Discover hidden HTTP parameters on a URL or list of URLs using Arjun (or x8 fallback). Hidden params are gold for IDOR, SSRF, LFI, redirect, and authorization bypass — often missed by automated scanners. Usage: /param-discover <url> | /param-discover -l <urls-file>
+description: Discover hidden HTTP parameters on target-owned URLs using Arjun (or x8 fallback). Hidden params are useful leads for IDOR, SSRF, LFI, redirect, and authorization review.
 ---
 
 # /param-discover
@@ -12,14 +12,15 @@ unlocks the real surface.
 ## Usage
 
 ```
-/param-discover https://api.target.com/v2/user
-/param-discover -l recon/target.com/live/urls.txt
+/param-discover --target TARGET --url https://TARGET/v2/user
+/param-discover --target TARGET --list recon/TARGET/live/urls.txt
 ```
 
 ## Tools
 
-`tools/param_discovery.sh` prefers `arjun` (richer JSON output, ML-driven diffing) and
-falls back to `x8` (Rust, faster on huge wordlists). Install hint:
+`tools/param_discovery.sh` delegates to the scoped Python owner. Anonymous runs
+prefer `arjun` (richer JSON output) and fall back to `x8`; authenticated runs
+require `x8` so the session stays in a private raw request file. Install hint:
 
 ```
 pipx install arjun
@@ -35,11 +36,14 @@ cargo install x8
 - Hidden `debug=` / `admin=` → privilege escalation toggles.
 - Hidden `callback=` / `jsonp=` → reflected XSS via JSONP.
 
-After discovery, feed the URL+param into `/hunt --vuln-class <best-fit>` for
-targeted testing.
+After discovery, read `recon/TARGET/params/summary.json`, preserve the
+parameter names as inert surface shapes, and route high-value shapes through
+the matching validation runner.
 
 ## Output
 
-`findings/params/<timestamp>/`:
-- `arjun.json` / `arjun_summary.txt` — endpoint → discovered params
-- `x8.txt` — diff-based hits when arjun is unavailable
+`recon/TARGET/params/`:
+- `summary.json` — scoped runs, rejected inputs, tool status, and queue sync
+- `interesting_params.txt` — query and discovered GET parameter names
+- `post_params.json` — POST form actions and parameter names
+- `arjun_*` / `x8_*` — raw tool output for the bounded run

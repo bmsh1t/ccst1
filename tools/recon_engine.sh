@@ -499,6 +499,7 @@ post_compress_raw_recon_urls() {
 
 cleanup_auth_tmpfiles() {
     [ -n "${WAFW00F_HEADERS_FILE:-}" ] && [ -f "$WAFW00F_HEADERS_FILE" ] && rm -f "$WAFW00F_HEADERS_FILE"
+    [ -n "${HTTPX_RUN_TMP:-}" ] && [ -f "$HTTPX_RUN_TMP" ] && rm -f "$HTTPX_RUN_TMP"
     [ -n "${FFUF_RESULT_TMP:-}" ] && [ -f "$FFUF_RESULT_TMP" ] && rm -f "$FFUF_RESULT_TMP"
     [ -n "${FFUF_TARGET_RESULTS_TMP:-}" ] && [ -f "$FFUF_TARGET_RESULTS_TMP" ] && rm -f "$FFUF_TARGET_RESULTS_TMP"
     [ -n "${FFUF_CONTROL_TMP:-}" ] && [ -f "$FFUF_CONTROL_TMP" ] && rm -f "$FFUF_CONTROL_TMP"
@@ -1282,10 +1283,13 @@ if [ "$TARGET_KIND" = "cidr" ]; then
     mkdir -p "$RECON_DIR/live/cidr_pages"
 fi
 
-if [ "$TARGET_KIND" != "cidr" ] || [ "$CIDR_OFFSET" -eq 0 ]; then
+if [ "$TARGET_KIND" != "cidr" ]; then
+    : > "$RECON_MANIFEST"
+    touch "$RECON_DIR/live/httpx_full.txt"
+elif [ "$CIDR_OFFSET" -eq 0 ]; then
     : > "$RECON_MANIFEST"
     : > "$RECON_DIR/live/httpx_full.txt"
-    [ "$TARGET_KIND" != "cidr" ] || rm -f "$RECON_DIR/live/cidr_pages/"*.txt
+    rm -f "$RECON_DIR/live/cidr_pages/"*.txt
 else
     touch "$RECON_MANIFEST" "$RECON_DIR/live/httpx_full.txt"
 fi
@@ -1778,8 +1782,12 @@ HTTP_STATUS="skipped"
 HTTPX_EXIT_CODE=""
 HTTP_NOTE="httpx skipped: discovery host input is empty"
 HTTPX_OUTPUT_FILE="$RECON_DIR/live/httpx_full.txt"
+HTTPX_RUN_TMP=""
 if [ "$TARGET_KIND" = "cidr" ]; then
     HTTPX_OUTPUT_FILE="$RECON_DIR/live/cidr_pages/${CIDR_OFFSET}.httpx.txt"
+else
+    HTTPX_RUN_TMP="$(mktemp "$RECON_DIR/live/.httpx.XXXXXX")"
+    HTTPX_OUTPUT_FILE="$HTTPX_RUN_TMP"
 fi
 if [ ! -s "$HTTPX_INPUT_FILE" ]; then
     log_warn "Discovery host list is empty — skipping downstream probing"
@@ -1819,6 +1827,25 @@ elif [ -n "$HTTPX_BIN" ]; then
 else
     HTTP_NOTE="httpx skipped: ProjectDiscovery binary is unavailable"
     log_warn "ProjectDiscovery httpx not installed — skipping"
+fi
+
+# Publish one non-CIDR HTTP generation only after the current collector has a
+# complete result or useful partial output. A skipped/failed empty run keeps the
+# last-known live surface while its current failure remains explicit in manifest.
+if [ "$TARGET_KIND" != "cidr" ]; then
+    if [ "$HTTP_STATUS" = "ok" ] || { [ "$HTTP_STATUS" = "partial" ] && [ -s "$HTTPX_OUTPUT_FILE" ]; }; then
+        mv "$HTTPX_OUTPUT_FILE" "$RECON_DIR/live/httpx_full.txt"
+        HTTPX_RUN_TMP=""
+        HTTP_NOTE="$HTTP_NOTE; published current generation"
+    else
+        rm -f "$HTTPX_OUTPUT_FILE"
+        HTTPX_RUN_TMP=""
+        if [ -s "$RECON_DIR/live/httpx_full.txt" ]; then
+            HTTP_NOTE="$HTTP_NOTE; retained prior live artifact as last-known"
+        else
+            HTTP_NOTE="$HTTP_NOTE; no prior live artifact available"
+        fi
+    fi
 fi
 
 # Each CIDR invocation owns one page. Rebuild the canonical probe artifact from
@@ -2522,7 +2549,7 @@ emit_claude_hint \
     url_filter_log       "$URL_FILTER_LOG"
 emit_claude_hint_actions \
     "tools/role_diff.py --target ${TARGET} --endpoints recon/${RECON_TARGET_KEY}/urls/api_endpoints_filtered.txt --session ...   # fallback to api_endpoints.txt if absent" \
-    "tools/param_discovery.sh -l recon/${RECON_TARGET_KEY}/live/urls.txt   # mine hidden params" \
+    "python3 tools/param_discovery.py --target ${TARGET} --list recon/${RECON_TARGET_KEY}/live/urls.txt --method GET   # mine hidden params" \
     "spawn js-reader if js_files_filtered/js_files > 0"
 
 # ============================================================
@@ -3684,7 +3711,7 @@ emit_claude_hint \
     interesting_params   "$INTERESTING_PARAMS" \
     note                 "extraction only — not active hidden-param mining"
 emit_claude_hint_actions \
-    "bash tools/param_discovery.sh -l recon/${RECON_TARGET_KEY}/live/urls.txt   # active arjun/x8 mining" \
+    "python3 tools/param_discovery.py --target ${TARGET} --list recon/${RECON_TARGET_KEY}/live/urls.txt --method GET   # active arjun/x8 mining" \
     "review interesting_params.txt for redirect/url/path candidates"
 
 # ============================================================

@@ -63,7 +63,7 @@ identity, and cloud signals without re-enumerating everything.
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/param_discovery.sh` | Live URLs exist, parameters thin | Active hidden parameter mining (arjun + x8) |
+| `tools/param_discovery.py` (or `.sh`) | Live URLs exist, parameters thin | Target-scoped/auth-aware hidden parameter mining (arjun + x8) |
 | `tools/dns_expand.py` | AI sees a DNS naming/scope gap after passive Recon | Bounded alterx/dnsgen + puredns expansion |
 | `tools/takeover_scanner.sh` | subdomains/all.txt populated | dnsReaper + subjack subdomain takeover scan |
 | `tools/secrets_hunter.sh` | After JS/source collection | trufflehog/noseyparker/gitleaks — verified secret discovery |
@@ -191,7 +191,7 @@ identity, and cloud signals without re-enumerating everything.
 | Identity/cloud intel from recon has hits | review `exposure/identity_intel/summary.md` and `exposure/cloud/cloud_enum.txt`, then pivot to `/intel` or `/cloud-recon` |
 | Passive DNS shows a naming dialect or evidence-backed hostname gap | AI-selected `dns_expand.py`, then refresh `/surface` |
 | `subdomains/all.txt` ready | `takeover_scanner.sh` |
-| Live URLs but no params | `param_discovery.sh` |
+| Live URLs but no params | `param_discovery.py --target TARGET --from-recon` |
 | Exchange/OWA/EWS/Autodiscover signal in `technology_inventory` or URL evidence | `eburst_lane.py --target <target>` (interface check only; use `/spray` for controlled credentials) |
 | Concrete webpack/chunk/source-map signal | `deep_js_packer.py`, then `js_reader.py` |
 | JS bundles cached without recovery evidence | `js_reader.py` (then `js-reader` agent) |

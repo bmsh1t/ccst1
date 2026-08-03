@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -59,6 +61,10 @@ def test_authz_public_exposure_creates_bundle_and_ledger(monkeypatch, tmp_path):
     assert "oauth" in summary["markers"]
     assert (tmp_path / summary["artifacts"]["baseline_request"]).is_file()
     assert (tmp_path / summary["artifacts"]["baseline_response"]).is_file()
+    identity = json.loads((tmp_path / summary["artifacts"]["baseline_identity"]).read_text(encoding="utf-8"))
+    assert identity["requested_url"].endswith("/rest/admin/application-configuration")
+    assert identity["final_url"] == identity["requested_url"]
+    assert identity["redirect_chain"] == []
     assert (bundle / "summary.json").is_file()
     assert ledger.is_file()
     entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
@@ -1938,11 +1944,58 @@ def test_redirect_handler_rejects_off_target_redirect():
         handler.redirect_request(None, None, 302, "Found", {}, "https://other.test/callback?token=secret")
 
 
+def test_request_once_records_same_target_redirect_identity():
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler API
+            if self.path == "/start":
+                self.send_response(302)
+                self.send_header("Location", "/final")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", "5")
+            self.end_headers()
+            self.wfile.write(b"final")
+
+        def log_message(self, *_args):
+            return
+
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    except OSError as exc:  # pragma: no cover - restricted sandboxes
+        pytest.skip(f"localhost listener unavailable: {exc}")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    requested_url = f"http://127.0.0.1:{server.server_port}/start"
+    final_url = f"http://127.0.0.1:{server.server_port}/final"
+    try:
+        response = validation_runner.request_once(
+            target=f"127.0.0.1:{server.server_port}",
+            url=requested_url,
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+    assert response["url"] == requested_url
+    assert response["requested_url"] == requested_url
+    assert response["final_url"] == final_url
+    assert response["redirect_chain"] == [{
+        "status": 302,
+        "from_url": requested_url,
+        "to_url": final_url,
+    }]
+
+
 def test_request_once_bounds_response_and_records_hash(monkeypatch):
     class FakeResponse:
         status = 200
         reason = "OK"
         headers = {"Content-Type": "text/plain", "Content-Length": "6"}
+
+        def geturl(self):
+            return "https://target.test/api"
 
         def __enter__(self):
             return self

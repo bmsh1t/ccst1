@@ -945,11 +945,19 @@ def _format_response(status: int, reason: str, headers: dict[str, str], body: st
 class _TargetRedirectHandler(urllib.request.HTTPRedirectHandler):
     def __init__(self, target: str) -> None:
         self.target = target
+        self.redirect_chain: list[dict[str, Any]] = []
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         if not url_belongs_to_target(newurl, self.target):
             raise ValueError(f"validation redirect left target scope: {public_url_shape(newurl)}")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and len(self.redirect_chain) < self.max_redirections:
+            self.redirect_chain.append({
+                "status": int(code),
+                "from_url": req.full_url,
+                "to_url": redirected.full_url,
+            })
+        return redirected
 
 
 def _read_bounded(response: Any, limit: int) -> tuple[bytes, int, bool]:
@@ -981,21 +989,31 @@ def request_once(
     data = body.encode("utf-8") if body else None
     request = urllib.request.Request(url, data=data, headers=headers, method=method_u)
     request_text = _format_request(method_u, url, headers, body)
+    redirect_handler = _TargetRedirectHandler(target)
     try:
-        opener = urllib.request.build_opener(_TargetRedirectHandler(target))
+        opener = urllib.request.build_opener(redirect_handler)
         with opener.open(request, timeout=timeout) as response:
             raw, observed_bytes, truncated = _read_bounded(response, max_body_bytes)
             status = int(response.status)
             reason = str(response.reason or "")
             response_headers = {str(k): str(v) for k, v in response.headers.items()}
+            get_url = getattr(response, "geturl", None)
+            response_url = get_url() if callable(get_url) else ""
+            final_url = str(response_url or url)
     except urllib.error.HTTPError as exc:
         raw, observed_bytes, truncated = _read_bounded(exc, max_body_bytes)
         status = int(exc.code)
         reason = str(exc.reason or "")
         response_headers = {str(k): str(v) for k, v in exc.headers.items()}
+        final_url = str(exc.geturl() or url)
+    if not url_belongs_to_target(final_url, target):
+        raise ValueError(f"validation response left target scope: {public_url_shape(final_url)}")
     body_text = raw.decode("utf-8", errors="replace")
     return {
         "url": url,
+        "requested_url": url,
+        "final_url": final_url,
+        "redirect_chain": redirect_handler.redirect_chain,
         "method": method_u,
         "request_text": request_text,
         "status": status,
@@ -1023,9 +1041,18 @@ def _write_raw_http(
 ) -> dict[str, str]:
     request_path = write_private_text(private_dir / f"{prefix}request.txt", response["request_text"])
     response_path = write_private_text(private_dir / f"{prefix}response.txt", response["response_text"])
+    identity_path = write_private_json(
+        private_dir / f"{prefix}identity.json",
+        {
+            "requested_url": response.get("requested_url") or response.get("url", ""),
+            "final_url": response.get("final_url") or response.get("url", ""),
+            "redirect_chain": response.get("redirect_chain") or [],
+        },
+    )
     return {
         "request": _rel(request_path, repo_root),
         "response": _rel(response_path, repo_root),
+        "identity": _rel(identity_path, repo_root),
     }
 
 
@@ -1614,6 +1641,7 @@ def run_authz_public_exposure(
         "artifacts": {
             "baseline_request": raw_artifacts["request"],
             "baseline_response": raw_artifacts["response"],
+            "baseline_identity": raw_artifacts["identity"],
         },
         "evidence_rubric": rubric,
         "ledger_record": ledger,
@@ -1980,11 +2008,14 @@ def run_authz_role_replay(
                 **({
                     "anonymous_request": anon_artifacts["request"],
                     "anonymous_response": anon_artifacts["response"],
+                    "anonymous_identity": anon_artifacts["identity"],
                 } if anonymous is not None else {}),
                 "owner_request": owner_artifacts["request"],
                 "owner_response": owner_artifacts["response"],
+                "owner_identity": owner_artifacts["identity"],
                 "peer_request": peer_artifacts["request"],
                 "peer_response": peer_artifacts["response"],
+                "peer_identity": peer_artifacts["identity"],
             },
             "owner_peer_diff": owner_peer_diff,
             "anonymous_owner_diff": anonymous_owner_diff,
@@ -2282,8 +2313,10 @@ def run_sqli_result_diff(
             "artifacts": {
                 "baseline_request": base_artifacts["request"],
                 "baseline_response": base_artifacts["response"],
+                "baseline_identity": base_artifacts["identity"],
                 "variant_request": variant_artifacts["request"],
                 "variant_response": variant_artifacts["response"],
+                "variant_identity": variant_artifacts["identity"],
             },
             **diff,
             "sqli_evidence": sqli_evidence,
@@ -2464,6 +2497,7 @@ def run_marker_replay(
             "artifacts": {
                 "request": raw_artifacts["request"],
                 "response": raw_artifacts["response"],
+                "identity": raw_artifacts["identity"],
             },
             "snapshot": _response_snapshot(response),
         })
@@ -2664,8 +2698,10 @@ def run_idor_actor_pair(
             "artifacts": {
                 "owner_request": owner_artifacts["request"],
                 "owner_response": owner_artifacts["response"],
+                "owner_identity": owner_artifacts["identity"],
                 "peer_request": peer_artifacts["request"],
                 "peer_response": peer_artifacts["response"],
+                "peer_identity": peer_artifacts["identity"],
             },
             **diff,
         })

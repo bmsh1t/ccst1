@@ -68,6 +68,77 @@ def test_recon_engine_preserves_http_probe_exit_semantics():
     assert 'elif [ "$LIVE_TOTAL" -eq 0 ]; then' not in text
 
 
+def test_recon_parameter_hint_keeps_target_scope_contract():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert "python3 tools/param_discovery.py --target ${TARGET} --list recon/${RECON_TARGET_KEY}/live/urls.txt" in text
+    assert "bash tools/param_discovery.sh -l recon/${RECON_TARGET_KEY}/live/urls.txt" not in text
+
+
+def test_recon_engine_atomically_publishes_non_cidr_httpx_generations(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    section = text.split("# Publish one non-CIDR HTTP generation", 1)[1].split(
+        "# Each CIDR invocation owns one page.", 1
+    )[0]
+    block = 'if [ "$TARGET_KIND" != "cidr" ]; then' + section.split(
+        'if [ "$TARGET_KIND" != "cidr" ]; then', 1
+    )[1]
+
+    def publish(status, previous, current):
+        recon_dir = tmp_path / status
+        live = recon_dir / "live"
+        live.mkdir(parents=True)
+        canonical = live / "httpx_full.txt"
+        current_path = live / ".httpx.current"
+        canonical.write_text(previous, encoding="utf-8")
+        current_path.write_text(current, encoding="utf-8")
+        env = {
+            **os.environ,
+            "TARGET_KIND": "domain",
+            "HTTP_STATUS": status,
+            "HTTPX_OUTPUT_FILE": str(current_path),
+            "HTTPX_RUN_TMP": str(current_path),
+            "HTTP_NOTE": "collector result",
+            "RECON_DIR": str(recon_dir),
+        }
+        completed = subprocess.run(
+            ["bash", "-c", "set -euo pipefail\n" + block + "\nprintf '%s' \"$HTTP_NOTE\""],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        return canonical.read_text(encoding="utf-8"), completed.stdout, current_path.exists()
+
+    retained, note, temp_exists = publish(
+        "failed",
+        "https://old.example [200]\n",
+        "",
+    )
+    assert retained == "https://old.example [200]\n"
+    assert "retained prior live artifact as last-known" in note
+    assert temp_exists is False
+
+    partial, note, _ = publish(
+        "partial",
+        "https://old.example [200]\n",
+        "https://partial.example [403]\n",
+    )
+    assert partial == "https://partial.example [403]\n"
+    assert "published current generation" in note
+
+    complete_zero, note, _ = publish(
+        "ok",
+        "https://old.example [200]\n",
+        "",
+    )
+    assert complete_zero == ""
+    assert "published current generation" in note
+
+
 def test_recon_engine_cidr_continuation_advances_to_next_slice(tmp_path):
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
@@ -133,7 +204,8 @@ def test_recon_engine_preserves_and_unions_cidr_httpx_pages(tmp_path):
         encoding="utf-8",
     )
 
-    assert 'if [ "$TARGET_KIND" != "cidr" ] || [ "$CIDR_OFFSET" -eq 0 ]; then' in text
+    assert 'if [ "$TARGET_KIND" != "cidr" ]; then' in text
+    assert 'elif [ "$CIDR_OFFSET" -eq 0 ]; then' in text
     assert 'HTTPX_OUTPUT_FILE="$RECON_DIR/live/cidr_pages/${CIDR_OFFSET}.httpx.txt"' in text
     union_section = text.split("# Each CIDR invocation owns one page.", 1)[1].split(
         "# Derive every summary view", 1

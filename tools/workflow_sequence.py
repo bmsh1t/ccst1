@@ -404,7 +404,14 @@ def run_sequence(
                 summary["request_count"] += 1 + refreshed
                 summary["token_refresh_count"] += refreshed
                 results.append({"id": step["id"], "response": response})
-                raw[label].append({"id": step["id"], "request": response.get("request_text", ""), "response": response.get("response_text", "")})
+                raw[label].append({
+                    "id": step["id"],
+                    "request": response.get("request_text", ""),
+                    "response": response.get("response_text", ""),
+                    "requested_url": response.get("requested_url") or response.get("url", ""),
+                    "final_url": response.get("final_url") or response.get("url", ""),
+                    "redirect_chain": response.get("redirect_chain") or [],
+                })
             except Exception as exc:
                 summary["errors"].append({"step": step["id"], "type": type(exc).__name__, "reason": str(exc)[:240]})
                 break

@@ -359,7 +359,7 @@ tools are skipped, not fatal.
 | `/secrets-hunt --js-bundle <dir>` | Hunt leaked credentials in source, JS bundles, or GitHub orgs |
 | `/takeover --recon <dir>` | Subdomain takeover candidates from a recon run |
 | `/cloud-recon --keyword <name>` | Public S3 / Azure / GCP buckets + CloudFlare-bypassed origin IP hints |
-| `/param-discover <url>` | Hidden HTTP parameters via Arjun / x8 |
+| `/param-discover --target TARGET --url URL` | Target-scoped hidden HTTP parameters via Arjun / x8 |
 | `/bypass-403 <url>` | Header, method, and encoding tricks against a 403/401 |
 | `/scan-cves <host>` | Focused nuclei CVE sweep + optional log4j-scan |
 | `/arsenal [tool]` | Lists installed external tools or prints install hints |

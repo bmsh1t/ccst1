@@ -1423,83 +1423,53 @@ def read_js_intel(domain):
 
 
 def run_param_discovery(domain):
-    """Mine interesting parameter names from recon output and optionally brute-force with arjun."""
-    recon_dir = _resolve_recon_dir(domain)
-    params_dir = os.path.join(recon_dir, "params")
-    os.makedirs(params_dir, exist_ok=True)
+    """Thin compatibility wrapper around the canonical parameter owner."""
+    from pathlib import Path
 
-    param_urls = _collect_param_urls(domain, limit=300)
-    live_urls = _collect_live_urls(domain, limit=10)
+    from param_discovery import discover_parameters
 
-    interesting = []
-    for url in param_urls:
-        for key, value in parse_qsl(urlparse(url).query, keep_blank_values=True):
-            if value:
-                interesting.append(f"{key}={value}")
-            else:
-                interesting.append(key)
-
-    if _command_exists("arjun"):
-        for idx, url in enumerate(live_urls[:5], start=1):
-            output_path = os.path.join(params_dir, f"arjun_{idx}.txt")
-            cmd = f'arjun -u {shlex.quote(url)} -oT {shlex.quote(output_path)}'
-            run_cmd(cmd, cwd=BASE_DIR, timeout=180)
-            interesting.extend(_read_text_lines(output_path, limit=100))
-
-    interesting = _write_text_lines(os.path.join(params_dir, "interesting_params.txt"), interesting)
-    return bool(interesting)
+    summary = discover_parameters(
+        repo_root=Path(RECON_DIR).parent,
+        target=domain,
+        methods=("GET",),
+        session=_active_auth_session(),
+        tool_exists=lambda name: _command_exists(name),
+    )
+    return bool(summary.get("counts", {}).get("discoveries") or summary.get("counts", {}).get("runs"))
 
 
 def run_post_param_discovery(domain, cookies=""):
-    """Discover HTML POST forms and their parameter names from live targets."""
-    recon_dir = _resolve_recon_dir(domain)
-    params_dir = os.path.join(recon_dir, "params")
-    os.makedirs(params_dir, exist_ok=True)
+    """Thin compatibility wrapper around the canonical POST owner."""
+    from pathlib import Path
 
-    live_urls = _collect_live_urls(domain, limit=10)
-    if not live_urls:
-        return False
+    from param_discovery import discover_parameters
 
-    headers = {"Cookie": cookies} if cookies else {}
-    form_re = re.compile(r"<form[^>]*method=['\"]?post['\"]?[^>]*>(.*?)</form>", re.I | re.S)
-    action_re = re.compile(r"""action=['"]([^'"]+)['"]""", re.I)
-    input_re = re.compile(r"""name=['"]([^'"]+)['"]""", re.I)
-    post_forms = {}
+    active = _active_auth_session()
+    session = AuthSession(active.headers_list(), target=domain, allowed_origins=active.allowed_origins())
+    if cookies:
+        session.add_cookie(cookies)
 
-    for url in live_urls:
+    def fetch_html(url):
         status, body, _ = _fetch_url(
             url,
-            headers=headers,
+            headers=session.headers_for_url(url),
             timeout=10,
             target=domain,
             use_guard=True,
             is_recon=True,
         )
-        if status != 200 or not body:
-            continue
+        return status, body
 
-        for form_html in form_re.findall(body):
-            action_match = action_re.search(form_html)
-            action = urljoin(url, action_match.group(1)) if action_match else url
-            names = _dedupe_keep_order(input_re.findall(form_html))
-            if names:
-                post_forms[action] = {"source": url, "params": names}
-
-    if _command_exists("arjun"):
-        for idx, action in enumerate(list(post_forms)[:3], start=1):
-            output_path = os.path.join(params_dir, f"arjun_post_{idx}.txt")
-            cmd = f'arjun -u {shlex.quote(action)} -m POST -oT {shlex.quote(output_path)}'
-            run_cmd(cmd, cwd=BASE_DIR, timeout=180)
-            extra_params = _read_text_lines(output_path, limit=100)
-            if extra_params:
-                post_forms.setdefault(action, {"source": action, "params": []})
-                post_forms[action]["params"] = _dedupe_keep_order(post_forms[action]["params"] + extra_params)
-
-    output_path = os.path.join(params_dir, "post_params.json")
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(post_forms, f, indent=2, sort_keys=True)
-
-    return bool(post_forms)
+    summary = discover_parameters(
+        repo_root=Path(RECON_DIR).parent,
+        target=domain,
+        urls=_collect_live_urls(domain, limit=10),
+        methods=("POST",),
+        session=session,
+        fetch_html=fetch_html,
+        tool_exists=lambda name: _command_exists(name),
+    )
+    return bool(summary.get("counts", {}).get("post_forms") or summary.get("counts", {}).get("discoveries"))
 
 
 def run_api_fuzz(domain):
