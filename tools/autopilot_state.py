@@ -1675,6 +1675,13 @@ def _is_substantive_queue_action(item: dict) -> bool:
     action_type = str(item.get("type") or item.get("action_type") or "").strip()
     evidence_type = str(item.get("evidence_type") or "").strip()
     command_hint = str(item.get("command_hint") or "").strip()
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    if (
+        status in {"queued", "ready"}
+        and action_type == "workflow-lead-review"
+        and str(metadata.get("category") or "") == "asset-scope-review"
+    ):
+        return True
     if status == "queued" and action_type in {
         "candidate-evidence-gap",
         "actor-gap",
@@ -1695,7 +1702,6 @@ def _is_substantive_queue_action(item: dict) -> bool:
         and command_hint.startswith("/js-read ")
     ):
         return True
-    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     command = " ".join(
         str(value or "").strip()
         for value in (

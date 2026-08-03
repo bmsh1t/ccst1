@@ -203,6 +203,18 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
     host_pivots = _count_recon_artifact(recon_artifacts, "host_pivot_candidates")
     ai_assets = _count_recon_artifact(recon_artifacts, "ai_asset_candidates")
     asset_relations = _count_recon_artifact(recon_artifacts, "asset_relation_candidates")
+    asset_relation_state = (
+        recon_artifacts.get("asset_relations")
+        if isinstance(recon_artifacts.get("asset_relations"), dict)
+        else {}
+    )
+    try:
+        asset_scope_reviews = min(
+            asset_relations,
+            max(0, int(asset_relation_state.get("scope_review_pending", 0) or 0)),
+        )
+    except (TypeError, ValueError):
+        asset_scope_reviews = 0
     emails = _count_recon_artifact(recon_artifacts, "identity_emails")
     leaksearch = _count_recon_artifact(recon_artifacts, "leaksearch_hits")
     cloud_enum = _count_recon_artifact(recon_artifacts, "cloud_enum_hits")
@@ -363,7 +375,26 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "evidence": f"{ai_assets} candidate row(s)",
         })
 
-    if asset_relations > 0:
+    if asset_scope_reviews > 0:
+        leads.append({
+            "source": "recon_routing_candidate",
+            "title": "High-confidence target-linked assets require Scope review",
+            "category": "asset-scope-review",
+            "priority": "high",
+            "artifact": f"recon/{storage_key}/exposure/asset_relation_candidates.jsonl",
+            "next_action": (
+                f"review recon/{storage_key}/exposure/asset_relation_candidates.jsonl and classify "
+                "each scope-review row as explicitly in scope, external context, or excluded; do not "
+                "issue active requests until the explicit target set proves Scope"
+            ),
+            "rationale": (
+                f"{asset_scope_reviews} high-confidence target-linked candidate(s) have ownership or "
+                "multi-source evidence, but relationship evidence cannot expand active Scope."
+            ),
+            "evidence": f"{asset_scope_reviews} pending Scope review row(s)",
+        })
+
+    if asset_relations > asset_scope_reviews:
         leads.append({
             "source": "recon_routing_candidate",
             "title": "External asset relationship candidates are available",
@@ -376,11 +407,11 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
                 "explicitly supplied assets into active Recon/Surface work"
             ),
             "rationale": (
-                f"{asset_relations} normalized relationship candidate(s) were derived from external "
+                f"{asset_relations - asset_scope_reviews} contextual relationship candidate(s) were derived from external "
                 "registries, RDAP/WHOIS, certificate transparency, passive DNS, ASN/BGP, fingerprints, "
                 "or public supplier records; association is context, not scope or vulnerability proof."
             ),
-            "evidence": f"{asset_relations} candidate row(s)",
+            "evidence": f"{asset_relations - asset_scope_reviews} contextual candidate row(s)",
         })
 
     return leads

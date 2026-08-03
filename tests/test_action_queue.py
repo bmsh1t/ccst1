@@ -121,6 +121,43 @@ def test_checkpoint_generated_action_is_idempotent_by_generation(tmp_path):
     assert len(load_queue(tmp_path, "target.com")["actions"]) == 1
 
 
+def test_checkpoint_generated_action_reopens_only_for_a_new_generation(tmp_path):
+    item = {
+        "id": "ASSET-SCOPE",
+        "priority": 88,
+        "type": "workflow-lead-review",
+        "status": "ready",
+        "action": "Review target-linked external asset scope evidence.",
+        "source": "workflow-lead",
+        "source_id": "asset-scope-review",
+        "metadata": {"generation": "g1", "category": "asset-scope-review"},
+    }
+    ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [item]})
+    action = load_queue(tmp_path, "target.com")["actions"][0]
+    resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=action["id"],
+        status="tested",
+        result="Kept as external chain context.",
+    )
+
+    same = ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [item]})
+    newer = ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [
+                {**item, "metadata": {**item["metadata"], "generation": "g2"}}
+            ]
+        },
+    )
+
+    assert same["stats"]["skipped_final"] == 1
+    assert newer["stats"]["added"] == 1
+    assert summarize_queue(load_queue(tmp_path, "target.com"))["active"] == 1
+
+
 def test_concurrent_manual_actions_do_not_lose_updates(tmp_path):
     code = """
 import sys

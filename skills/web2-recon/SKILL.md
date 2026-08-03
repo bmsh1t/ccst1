@@ -174,6 +174,41 @@ owns bounded `alterx`/`dnsgen` generation, `puredns` resolution/wildcard
 filtering, target scope, artifacts, and atomic merge. Host count alone is not a
 trigger. Refresh `/surface` after new resolved hosts are published.
 
+### AI-selected asset relationship expansion
+
+Do not run corporate/supplier expansion for every target. Select it when current
+evidence identifies an organization/brand, certificate, ASN/origin, registrant,
+supplier, or an existing relationship worth resolving. Simple labs, localhost,
+and isolated IP/CIDR targets without organization evidence are normal skip cases.
+
+Use public structured sources first: corporate registry/LEI, RDAP/WHOIS, CT,
+passive DNS, ASN/BGP, TLS/HTTP/favicon fingerprints, supplier records, and optional
+mapping providers. Chrome DevTools MCP is only a public dynamic-page collector:
+use a browser context without target-application credentials, retain a locatable
+source URL/response reference, and do not send the result through
+`tools/browser_mcp_import.py` or Browser Surface.
+
+Normalize selected facts into
+`recon/<target_key>/exposure/asset_relation_observations.jsonl`, then rebuild the
+derived projection:
+
+```bash
+python3 tools/recon_candidates.py --target "$TARGET"
+```
+
+Quick mode requires explicit intent; normal performs one pass with depth 1; deep
+may recurse to depth 3; full may recurse to depth 4. Follow only majority/control
+relationships (`ownership_pct > 50` or explicit control), deduplicate by
+`entity_ref` with normalized source/entity fallback, and stop after two consecutive
+levels add no domains or the lane budget is exhausted. Optional FofaMap and future
+Quake/Hunter adapters write the same observation schema; none owns Scope.
+
+Read `asset_relation_summary.json` and refresh `/surface`/`/checkpoint`.
+`in_scope` is the only executable status. Resolve `scope-review` through the
+existing Action Queue; retain `external-chain-context`, `excluded`, and `unknown`
+without active requests. Relationship evidence can propose an explicit target-set
+change but never grants it, and candidate limits never truncate raw observations.
+
 ### Output to Organized Directory
 
 ```bash

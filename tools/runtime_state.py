@@ -502,6 +502,52 @@ def _inspect_exposure_counts(recon_dir: Path) -> tuple[dict[str, int], dict[str,
     return counts, paths
 
 
+def _asset_relation_state(recon_dir: Path, target: str) -> dict:
+    relative = Path("exposure/asset_relation_summary.json")
+    path = recon_dir / relative
+    base = {
+        "available": False,
+        "path": str(relative),
+        "scope_review_pending": 0,
+        "status_counts": {},
+        "partial": False,
+    }
+    if not path.is_file():
+        return base
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("kind") != "asset-relation-summary":
+            raise ValueError("unexpected summary schema")
+        if canonical_target_value(str(payload.get("target") or "")) != canonical_target_value(target):
+            raise ValueError("target mismatch")
+        if "candidate_bytes" in payload:
+            candidate_path = recon_dir / "exposure" / "asset_relation_candidates.jsonl"
+            if int(payload["candidate_bytes"]) != candidate_path.stat().st_size:
+                raise ValueError("candidate projection mismatch")
+        raw_status_counts = payload.get("status_counts") or {}
+        if not isinstance(raw_status_counts, dict):
+            raise ValueError("status_counts must be an object")
+        status_counts = {
+            str(key): max(0, int(value))
+            for key, value in raw_status_counts.items()
+        }
+        scope_review_pending = max(0, int(payload.get("scope_review_pending", 0) or 0))
+        if scope_review_pending != status_counts.get("scope-review", 0):
+            raise ValueError("scope review count mismatch")
+        return {
+            **base,
+            "available": True,
+            "scope_review_pending": scope_review_pending,
+            "status_counts": status_counts,
+            "partial": bool(payload.get("partial")),
+            "truncated": bool(payload.get("truncated")),
+            "invalid_count": max(0, int(payload.get("invalid_count", 0) or 0)),
+            "max_depth": payload.get("max_depth"),
+        }
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        return {**base, "error": str(exc)}
+
+
 def _inspect_named_counts(
     recon_dir: Path,
     mapping: dict[str, Path],
@@ -592,6 +638,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "source_intel": 1 if _source_intel_present(findings_dir) else 0,
     }
     exposure_counts, exposure_paths = _inspect_exposure_counts(recon_dir)
+    asset_relations = _asset_relation_state(recon_dir, target)
     infra_counts, infra_paths = _inspect_named_counts(
         recon_dir,
         INFRA_COUNT_PATHS,
@@ -641,6 +688,10 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         warnings.append(f"HTTP probing is incomplete: {http_probe.get('outcome')}")
     if cidr_continuation.get("status") == "invalid":
         warnings.append(f"CIDR continuation is invalid: {cidr_continuation.get('reason')}")
+    if asset_relations.get("error"):
+        warnings.append(f"asset relation summary is invalid: {asset_relations['error']}")
+    elif asset_relations.get("partial"):
+        warnings.append("asset relation projection is partial; inspect its summary diagnostics")
     if host_inventory_ready and not surface_inputs_ready and not warnings:
         warnings.append("no URL, JS, browser, or structured finding surface artifacts found yet")
 
@@ -655,6 +706,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "counts": counts,
         "exposure_ready": any(value > 0 for value in exposure_counts.values()),
         "exposure_paths": exposure_paths,
+        "asset_relations": asset_relations,
         "infra_ready": any(value > 0 for value in infra_counts.values()),
         "infra_paths": infra_paths,
         "ffuf_needs_summary": bool(ffuf_summary.get("needs_summary")),
@@ -760,6 +812,13 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
             "recon_dir": str(recon_dir),
             "counts": {},
             "counts_exact": False,
+            "asset_relations": {
+                "available": False,
+                "path": "exposure/asset_relation_summary.json",
+                "scope_review_pending": 0,
+                "status_counts": {},
+                "partial": False,
+            },
             "missing": ["recon directory"],
             "warnings": [],
         }
@@ -826,6 +885,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
     ) or ffuf_ready or findings_ready or source_intel_ready
     http_probe = _http_probe_state(recon_dir)
     cidr_continuation = _cidr_continuation_state(recon_dir, target)
+    asset_relations = _asset_relation_state(recon_dir, target)
     ready = host_inventory_ready or surface_inputs_ready
     missing = (
         []
@@ -839,6 +899,10 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         warnings.append(f"HTTP probing is incomplete: {http_probe.get('outcome')}")
     if cidr_continuation.get("status") == "invalid":
         warnings.append(f"CIDR continuation is invalid: {cidr_continuation.get('reason')}")
+    if asset_relations.get("error"):
+        warnings.append(f"asset relation summary is invalid: {asset_relations['error']}")
+    elif asset_relations.get("partial"):
+        warnings.append("asset relation projection is partial; inspect its summary diagnostics")
     if host_inventory_ready and not surface_inputs_ready:
         warnings.append("no URL, JS, browser, or structured finding surface artifacts found yet")
 
@@ -852,6 +916,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         "recon_dir": str(recon_dir),
         "counts": counts,
         "counts_exact": False,
+        "asset_relations": asset_relations,
         "exposure_ready": bool(exposure_paths),
         "exposure_paths": exposure_paths,
         "infra_ready": bool(infra_paths),

@@ -43,6 +43,33 @@ def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
     assert '"$ARGUMENTS"' not in text
 
 
+def test_generic_asset_relationship_lane_is_bounded_public_and_scope_preserving():
+    paths = (
+        "commands/autopilot.md",
+        "commands/recon.md",
+        "skills/web2-recon/SKILL.md",
+        "docs/tool-index.md",
+    )
+    combined = " ".join("\n".join(_read(path) for path in paths).split()).lower()
+
+    for marker in (
+        "generic asset-relationship expansion is optional and evidence-triggered",
+        "quick requires explicit intent",
+        "normal performs one pass with depth 1",
+        "deep may recurse to depth 3",
+        "full may recurse to depth 4",
+        "ownership_pct > 50",
+        "two consecutive levels add no domains",
+        "without target-application credentials",
+        "do not send the result through `tools/browser_mcp_import.py`",
+        "asset_relation_summary.json",
+        "scope-review",
+        "external-chain-context",
+        "candidate limits never truncate raw observations",
+    ):
+        assert marker in combined
+
+
 def test_inline_auth_and_seed_contract_uses_formal_arguments_only():
     command = _read("commands/autopilot.md")
     readme = _read("README.md")

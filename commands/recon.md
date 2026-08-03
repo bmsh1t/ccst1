@@ -153,6 +153,7 @@ recon/<target>/
     ├── ai_asset_candidates.jsonl
     ├── asset_relation_observations.jsonl  # optional normalized input
     ├── asset_relation_candidates.jsonl    # derived projection
+    ├── asset_relation_summary.json        # Scope/partial projection
     ├── identity_intel/
     ├── cloud/
     └── api_leaks/
@@ -172,10 +173,11 @@ python3 tools/recon_candidates.py \
 
 Required fields are `schema_version`, `kind`, `asset_type`, `value`, `relation`,
 and `source`; `related`, `signals`, `source_ref`, `confidence`, and UTC
-`observed_at` are optional:
+`observed_at` are optional. Corporate recursion may also supply `entity_ref`,
+`parent_ref`, `ownership_pct` (0-100), and `depth` (0-4):
 
 ```json
-{"schema_version":1,"kind":"asset-relation-observation","asset_type":"domain","value":"ASSET","relation":"certificate-san","related":["TARGET"],"source":"certificate-transparency","source_ref":"SOURCE_REF","confidence":"high","observed_at":"2026-01-01T00:00:00Z"}
+{"schema_version":1,"kind":"asset-relation-observation","asset_type":"domain","value":"ASSET","relation":"certificate-san","related":["TARGET"],"source":"certificate-transparency","source_ref":"SOURCE_REF","confidence":"high","observed_at":"2026-01-01T00:00:00Z","entity_ref":"SOURCE_ENTITY_REF","parent_ref":"PARENT_ENTITY_REF","ownership_pct":75,"depth":1}
 ```
 
 Supported sources are intentionally generic: corporate registries/LEI,
@@ -186,6 +188,26 @@ caller’s evidence. The derived view defaults to the 5,000 strongest
 confidence/provenance candidates (`--asset-limit` may lower it); the raw JSONL
 remains complete. Relationship candidates are context only and never expand
 target scope automatically.
+
+Run relationship expansion only for concrete organization, brand, certificate,
+ASN/origin, registrant, supplier, or existing relationship evidence, or explicit
+operator intent. Quick mode requires explicit intent; normal performs one bounded
+pass at depth 1; deep may recurse to depth 3; full may recurse to depth 4. Recurse
+only through majority/control relationships, deduplicate by `entity_ref` (or the
+normalized source/entity identity), and stop after two levels yield no new domains
+or the lane budget is exhausted.
+
+Prefer structured public sources. Chrome DevTools MCP may read a public dynamic
+registry/company page or its Network responses in a browser context that carries no
+target-application credentials. Write only selected normalized facts with locatable
+`source_ref`; do not call `browser_mcp_import.py` or add these pages to Browser Surface.
+
+The derived candidate rows receive one tool-owned `scope_status`: `in_scope`,
+`scope-review`, `external-chain-context`, `excluded`, or `unknown`. Explicit
+exclusions win, and relationship evidence never grants `in_scope`. High-confidence
+target-linked `scope-review` rows enter the existing Action Queue; active requests
+remain prohibited until the explicit target set is updated. Raw observations and
+external candidates remain available regardless of Scope disposition.
 
 For list input:
 

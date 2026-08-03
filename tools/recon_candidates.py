@@ -7,32 +7,49 @@ import argparse
 import hashlib
 import heapq
 import json
+import math
 import os
 import re
 import sqlite3
 import sys
 import tempfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 from urllib.parse import urlsplit
 
-try:
-    from tools.target_paths import canonical_target_value, target_storage_key
-except ImportError:  # pragma: no cover - direct tools/ execution
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+from memory.target_profile import default_memory_dir, load_target_profile
+from tools.scope_checker import ScopeChecker
+from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 
 
 SCHEMA_VERSION = 1
 DEFAULT_JS_CANDIDATE_LIMIT = 800
 ASSET_RELATION_INPUT_PATH = Path("exposure/asset_relation_observations.jsonl")
 ASSET_RELATION_OUTPUT_PATH = Path("exposure/asset_relation_candidates.jsonl")
+ASSET_RELATION_SUMMARY_PATH = Path("exposure/asset_relation_summary.json")
 ASSET_RELATION_WARNING_LIMIT = 10
 MAX_ASSET_RELATION_LINE_BYTES = 1_000_000
 MAX_ASSET_RELATION_LIST_ITEMS = 256
 DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT = 5000
 CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
+HOST_LIKE_ASSET_TYPES = {"domain", "hostname", "url", "ip", "cidr"}
+STRONG_RELATION_TOKENS = (
+    "certificate",
+    "control",
+    "majority",
+    "owned",
+    "owner",
+    "ownership",
+    "parent",
+    "registrant",
+    "subsidiary",
+)
 IP_RE = re.compile(r"(?<![0-9.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9.])")
 KEY_VALUE_RE = re.compile(r"\b(ip|cname|subject_cn|subject_an|san)=([^\]\s,;]+)", re.IGNORECASE)
 AI_SIGNAL_RE = re.compile(
@@ -107,6 +124,30 @@ def _write_jsonl_atomic(path: Path, rows: list[dict]) -> None:
             temp_path = Path(handle.name)
             for row in rows:
                 handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
         temp_path.replace(path)
@@ -262,6 +303,31 @@ def _asset_observed_at(value: object) -> str:
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _asset_optional_text(payload: dict, field: str) -> str:
+    if payload.get(field) in (None, ""):
+        return ""
+    return _asset_text(payload[field], field, max_length=4096)
+
+
+def _asset_ownership_pct(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("ownership_pct must be a number from 0 through 100")
+    result = float(value)
+    if not math.isfinite(result) or not 0 <= result <= 100:
+        raise ValueError("ownership_pct must be a number from 0 through 100")
+    return result
+
+
+def _asset_depth(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 4:
+        raise ValueError("depth must be an integer from 0 through 4")
+    return value
+
+
 def _normalize_asset_relation_observation(payload: object) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("record must be a JSON object")
@@ -287,6 +353,10 @@ def _normalize_asset_relation_observation(payload: object) -> dict:
         "source_ref": source_ref,
         "confidence": confidence,
         "observed_at": _asset_observed_at(payload.get("observed_at")),
+        "entity_ref": _asset_optional_text(payload, "entity_ref"),
+        "parent_ref": _asset_optional_text(payload, "parent_ref"),
+        "ownership_pct": _asset_ownership_pct(payload.get("ownership_pct")),
+        "depth": _asset_depth(payload.get("depth")),
     }
 
 
@@ -294,6 +364,9 @@ def _asset_relation_candidates(
     source: Path,
     *,
     limit: int = DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT,
+    target: str = "",
+    allowed: ScopeChecker | None = None,
+    excluded: ScopeChecker | None = None,
 ) -> tuple[list[dict], dict]:
     """流式合并 observation；完整原始输入保留，候选只发布固定上限。"""
     if limit < 1:
@@ -319,10 +392,18 @@ def _asset_relation_candidates(
             "sources": [],
             "source_refs": [],
             "confidence": "low",
+            "_target_related": False,
         }
         row["related"] = sorted(set(row["related"]) | set(observation["related"]))[
             :MAX_ASSET_RELATION_LIST_ITEMS
         ]
+        if target and any(
+            _parseable_network_asset("url" if "://" in value else "domain", value)
+            and not (excluded and excluded.is_in_scope(value))
+            and _matches_active_scope(value, target, allowed)
+            for value in observation["related"]
+        ):
+            row["_target_related"] = True
         row["signals"] = sorted(set(row["signals"]) | set(observation["signals"]))[
             :MAX_ASSET_RELATION_LIST_ITEMS
         ]
@@ -333,6 +414,20 @@ def _asset_relation_candidates(
             row["source_refs"] = sorted(
                 set(row["source_refs"]) | {observation["source_ref"]}
             )[:MAX_ASSET_RELATION_LIST_ITEMS]
+        if observation["entity_ref"]:
+            row["entity_refs"] = sorted(
+                set(row.get("entity_refs", [])) | {observation["entity_ref"]}
+            )[:MAX_ASSET_RELATION_LIST_ITEMS]
+        if observation["parent_ref"]:
+            row["parent_refs"] = sorted(
+                set(row.get("parent_refs", [])) | {observation["parent_ref"]}
+            )[:MAX_ASSET_RELATION_LIST_ITEMS]
+        if observation["ownership_pct"] is not None:
+            row["ownership_pct"] = max(
+                float(row.get("ownership_pct", 0)), observation["ownership_pct"]
+            )
+        if observation["depth"] is not None:
+            row["depth"] = min(int(row.get("depth", observation["depth"])), observation["depth"])
         if CONFIDENCE_RANK[observation["confidence"]] > CONFIDENCE_RANK[row["confidence"]]:
             row["confidence"] = observation["confidence"]
         if observation["observed_at"] > str(row.get("observed_at") or ""):
@@ -408,6 +503,135 @@ def _asset_relation_candidates(
             ]
     stats["truncated"] = stats["unique_count"] > len(rows)
     return rows, stats
+
+
+def _parseable_network_asset(asset_type: str, value: str) -> bool:
+    if asset_type not in HOST_LIKE_ASSET_TYPES:
+        return False
+    try:
+        if asset_type == "ip":
+            ip_address(value.strip("[]"))
+            return True
+        if asset_type == "cidr":
+            ip_network(value, strict=False)
+            return True
+        if asset_type == "url":
+            parsed = urlsplit(value)
+            return parsed.scheme.lower() in {"http", "https"} and bool(parsed.hostname)
+        if any(character.isspace() for character in value) or any(
+            marker in value for marker in ("/", "?", "#")
+        ):
+            return False
+        parsed = urlsplit(f"//{value}")
+        host = (parsed.hostname or "").strip(".")
+        if not host:
+            return False
+        parsed.port
+        try:
+            ip_address(host)
+            return True
+        except ValueError:
+            ascii_host = host.encode("idna").decode("ascii")
+            return all(
+                label
+                and len(label) <= 63
+                and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label)
+                for label in ascii_host.split(".")
+            )
+    except (UnicodeError, ValueError):
+        return False
+
+
+def _asset_scope_context(repo_root: Path, target: str) -> tuple[ScopeChecker | None, ScopeChecker | None]:
+    profile = load_target_profile(default_memory_dir(repo_root), target)
+    snapshot = profile.get("scope_snapshot", {}) if profile else {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    allowed = [item.strip() for item in snapshot.get("in_scope", []) if isinstance(item, str) and item.strip()]
+    excluded = [
+        item.strip()
+        for item in snapshot.get("out_of_scope", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    return (ScopeChecker(allowed) if allowed else None, ScopeChecker(excluded) if excluded else None)
+
+
+def _matches_active_scope(value: str, target: str, allowed: ScopeChecker | None) -> bool:
+    return url_belongs_to_target(value, target) or bool(allowed and allowed.is_in_scope(value))
+
+
+def _related_to_scope(
+    row: dict,
+    target: str,
+    allowed: ScopeChecker | None,
+    excluded: ScopeChecker | None,
+) -> bool:
+    for related in row.get("related", []):
+        if not _parseable_network_asset("url" if "://" in related else "domain", related):
+            continue
+        if excluded and excluded.is_in_scope(related):
+            continue
+        if _matches_active_scope(related, target, allowed):
+            return True
+    return False
+
+
+def _classify_asset_relation_scope(
+    row: dict,
+    target: str,
+    allowed: ScopeChecker | None,
+    excluded: ScopeChecker | None,
+) -> None:
+    network_asset = _parseable_network_asset(row["asset_type"], row["value"])
+    if network_asset and excluded and excluded.is_in_scope(row["value"]):
+        row["scope_status"] = "excluded"
+        row["scope_reason"] = "matched explicit target-profile exclusion"
+        return
+    if network_asset and _matches_active_scope(row["value"], target, allowed):
+        row["scope_status"] = "in_scope"
+        row["scope_reason"] = "matched active target set"
+        return
+
+    target_linked = bool(row.get("_target_related")) or _related_to_scope(
+        row, target, allowed, excluded
+    )
+    strong_relation = any(token in row["relation"] for token in STRONG_RELATION_TOKENS)
+    majority_owned = float(row.get("ownership_pct", 0)) > 50
+    if (
+        row["confidence"] == "high"
+        and target_linked
+        and (strong_relation or majority_owned or len(row["sources"]) > 1)
+    ):
+        row["scope_status"] = "scope-review"
+        row["scope_reason"] = (
+            f"high-confidence target-linked {row['relation']} relationship"
+        )
+    elif network_asset:
+        row["scope_status"] = "external-chain-context"
+        row["scope_reason"] = "external network relationship retained as context"
+    else:
+        row["scope_status"] = "unknown"
+        row["scope_reason"] = "non-network or unparseable relationship candidate"
+
+
+def _asset_relation_summary(target: str, rows: list[dict], stats: dict) -> dict:
+    counts = Counter(row["scope_status"] for row in rows)
+    depths = [row["depth"] for row in rows if "depth" in row]
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "asset-relation-summary",
+        "target": target,
+        "candidate_count": len(rows),
+        "observation_count": stats["input_count"],
+        "invalid_count": stats["invalid_count"],
+        "unique_count": stats["unique_count"],
+        "truncated": bool(stats.get("truncated")),
+        "partial": bool(stats["invalid_count"] or stats.get("truncated")),
+        "warnings": stats["warnings"],
+        "status_counts": dict(sorted(counts.items())),
+        "scope_review_pending": counts["scope-review"],
+        "max_depth": max(depths) if depths else None,
+    }
 
 
 def _host_candidates(recon_dir: Path) -> list[dict]:
@@ -516,13 +740,27 @@ def build_recon_candidates(
     host_rows = _host_candidates(recon_dir)
     ai_rows = _ai_candidates(recon_dir)
     asset_input_path = Path(asset_input) if asset_input else recon_dir / ASSET_RELATION_INPUT_PATH
-    asset_rows, asset_stats = _asset_relation_candidates(asset_input_path, limit=asset_limit)
+    allowed_scope, excluded_scope = _asset_scope_context(Path(repo_root), resolved)
+    asset_rows, asset_stats = _asset_relation_candidates(
+        asset_input_path,
+        limit=asset_limit,
+        target=resolved,
+        allowed=allowed_scope,
+        excluded=excluded_scope,
+    )
+    for row in asset_rows:
+        _classify_asset_relation_scope(row, resolved, allowed_scope, excluded_scope)
+        row.pop("_target_related", None)
+    asset_summary = _asset_relation_summary(resolved, asset_rows, asset_stats)
     host_path = exposure_dir / "host_pivot_candidates.jsonl"
     ai_path = exposure_dir / "ai_asset_candidates.jsonl"
     asset_path = recon_dir / ASSET_RELATION_OUTPUT_PATH
+    asset_summary_path = recon_dir / ASSET_RELATION_SUMMARY_PATH
     _write_jsonl_atomic(host_path, host_rows)
     _write_jsonl_atomic(ai_path, ai_rows)
     _write_jsonl_atomic(asset_path, asset_rows)
+    asset_summary["candidate_bytes"] = asset_path.stat().st_size
+    _write_json_atomic(asset_summary_path, asset_summary)
     return {
         "target": resolved,
         "host_pivot_candidates": len(host_rows),
@@ -537,6 +775,9 @@ def build_recon_candidates(
         "ai_path": str(ai_path),
         "asset_input_path": str(asset_input_path),
         "asset_path": str(asset_path),
+        "asset_summary_path": str(asset_summary_path),
+        "asset_scope_status_counts": asset_summary["status_counts"],
+        "asset_scope_review_pending": asset_summary["scope_review_pending"],
     }
 
 

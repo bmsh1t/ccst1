@@ -146,6 +146,25 @@ Before unusual helpers, scan `docs/tool-index.md` once. Canonical contracts are
   absolute red lines or a mandatory last lane. Missing hygiene becomes a queued action.
 - Focused fuzz is an optional AI-selected discovery action; DNS expansion is also AI-selected, and canonical contracts live in `skills/web2-recon/SKILL.md`.
   DNS expansion requires a concrete naming/certificate/JS/source gap and calls `tools/dns_expand.py --target <target_shell> --reason "<evidence>"`; host count alone is not a trigger, and generation/resolution/scope/merge stay tool-owned.
+- Generic asset-relationship expansion is optional and evidence-triggered: use only
+  organization/brand, certificate, ASN/origin, registrant, supplier, public-source,
+  or existing relationship evidence, or explicit intent; skip simple labs, localhost,
+  and isolated IP/CIDR without organization evidence. Quick requires explicit intent;
+  normal gets one pass at depth 1; deep may recurse to depth 3; full may recurse to
+  depth 4. Follow only majority/control relationships, dedupe `entity_ref` (or
+  source/entity), and stop after two empty domain levels or budget exhaustion. Use
+  structured public sources; Chrome DevTools MCP is public/no-credential only, writes
+  locatable `source_ref` facts, and never calls `browser_mcp_import.py` or Browser
+  Surface. Normalize to `recon/<target-key>/exposure/asset_relation_observations.jsonl`
+  with optional `entity_ref`, `parent_ref`, `ownership_pct`, and `depth`, run
+  `python3 tools/recon_candidates.py --target <target_shell>`, and refresh
+  `/surface`/`/checkpoint`. Resolve `asset-scope-review`; only tool-derived `in_scope`
+  is executable, while `scope-review`, `external-chain-context`, `excluded`, and
+  `unknown` retain lossless raw evidence. FofaMap (`mcp__fofamap__*`) is one optional
+  FOFA/Shodan adapter for a concrete coverage gap; do not call it every round or
+  install it when missing. Future Quake/Hunter adapters use the same contract. Never
+  send active validation requests to a returned third-party asset solely because a
+  relationship source reported it.
 - Byte-exact HTTP/cache/desync uses `tools/sender_semantics.py --require` and
   `tools/smuggling_executor.py --variant`; read `disposition=manual_required` as a
   capability handoff, not a verified smuggling result. Browser evidence cannot prove

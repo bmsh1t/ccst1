@@ -75,6 +75,52 @@ def test_deep_js_review_queue_item_is_substantive():
     assert not _is_substantive_queue_action({**action, "evidence_type": "generic"})
 
 
+def test_asset_scope_workflow_review_is_substantive_but_other_advisory_leads_are_not():
+    action = {
+        "status": "ready",
+        "type": "workflow-lead-review",
+        "source": "workflow-lead",
+        "metadata": {"category": "asset-scope-review"},
+    }
+
+    assert _is_substantive_queue_action(action)
+    assert not _is_substantive_queue_action(
+        {**action, "metadata": {"category": "public-metadata"}}
+    )
+
+
+def test_asset_scope_workflow_review_routes_autopilot_to_durable_queue(tmp_path):
+    queue_dir = tmp_path / "state" / "target.com"
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": "target.com",
+                "actions": [
+                    {
+                        "id": "AQ-0001",
+                        "status": "queued",
+                        "type": "workflow-lead-review",
+                        "priority": 88,
+                        "source": "workflow-lead",
+                        "action": "Review target-linked external asset scope evidence.",
+                        "metadata": {"category": "asset-scope-review"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = build_autopilot_state(
+        str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory")
+    )
+
+    assert state["action_queue_next"]["id"] == "AQ-0001"
+    assert state["next_action"] == "resume_action_queue"
+
+
 def test_pending_cidr_continuation_routes_back_to_recon():
     assert _pick_next_action(
         True,
