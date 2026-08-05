@@ -52,13 +52,13 @@ def test_slash_command_consumes_capabilities_as_advisory_only():
     assert "count as tested-clean" in text
 
 
-def test_slash_command_limits_batch_to_recon_and_single_domain_handoff():
+def test_slash_command_preserves_parent_scope_for_multi_asset_handoff():
     text = " ".join(_read("commands/autopilot.md").split())
 
-    assert "the list context is recon/handoff only" in text
-    assert "never scan the list/index" in text
-    assert "select one completed domain, then rerun `autopilot_state.py --target <domain> --bounded`" in text
-    assert "Only the selected domain may enter surface/context/browser/scan/hunt" in text
+    assert "text list or JSON Scope manifest" in text
+    assert "Never scan the list or manifest file itself" in text
+    assert "keep the parent `scope_ref/scope_hash`" in text
+    assert "Every listed `in_scope` asset may enter surface/context/browser/scan/hunt" in text
 
 
 def test_optional_agent_uses_the_same_state_first_contract():

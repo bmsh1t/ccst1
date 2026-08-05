@@ -169,8 +169,9 @@ if prompt_yes_no "Set up FofaMap MCP now? (y/N): "; then
     echo ""
     echo "Replace /absolute/path/to/FofaMap/mcp_server.py with your local FofaMap path."
     echo ""
-    echo "This is an optional external Claude MCP capability only."
-    echo "It does not automatically integrate with /recon, /surface, /autopilot, or agent.py."
+    echo "This is an optional external Claude MCP capability."
+    echo "Autopilot may call it only on an evidence-triggered asset-intelligence lane when visible."
+    echo "Results remain passive chain context until target scope is validated."
     echo ""
 fi
 

@@ -52,6 +52,7 @@ try:
     from tools.sql_payloads import SQL_PAYLOADS
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
     from tools.waf_encoder import base64_wrap_xss, tab_newline_space
+    from tools.waf_pass_plan import DEFAULT_AI_VARIANTS, MAX_AI_VARIANTS, load_plan, select_variants
     from tools.waf_response_analyzer import LogIDExtractor, ResponseFingerprint, WAFSignatureDB
 except ImportError:  # pragma: no cover
     sys.path.insert(0, str(TOOLS_DIR))
@@ -60,12 +61,14 @@ except ImportError:  # pragma: no cover
     from sql_payloads import SQL_PAYLOADS  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
     from waf_encoder import base64_wrap_xss, tab_newline_space  # type: ignore
+    from waf_pass_plan import DEFAULT_AI_VARIANTS, MAX_AI_VARIANTS, load_plan, select_variants  # type: ignore
     from waf_response_analyzer import LogIDExtractor, ResponseFingerprint, WAFSignatureDB  # type: ignore
 
 USER_AGENT = "claude-bug-bounty/json_inject_probe"
 MAX_WAF_RETRIES = 2
 SUMMARY_SCHEMA_VERSION = 2
 SUMMARY_ITEM_LIMIT = 100
+CURSOR_SCHEMA_VERSION = 1
 _WAF_DB = WAFSignatureDB()
 _WAF_LOG_IDS = LogIDExtractor(_WAF_DB)
 
@@ -442,6 +445,41 @@ def _waf_variants(payload_class: str, payload_value: object) -> list[tuple[str, 
     ][:MAX_WAF_RETRIES]
 
 
+def _waf_retry_variants(
+    plan: dict | None,
+    *,
+    url: str,
+    field: str,
+    payload: dict,
+) -> list[dict]:
+    """Prefer evidence-linked AI decisions, then fill remaining slots statically."""
+    value = payload.get("value")
+    retry_limit = MAX_WAF_RETRIES
+    if plan is not None:
+        retry_limit = min(MAX_AI_VARIANTS, int(plan.get("max_variants", DEFAULT_AI_VARIANTS)))
+    candidates: list[dict] = []
+    seen_values: set[str] = set()
+    for item in select_variants(
+        plan,
+        url=url,
+        payload_class=str(payload.get("class") or ""),
+        field=field,
+        canonical_value=value,
+        limit=retry_limit,
+    ):
+        variant_value = str(item.get("value") or "")
+        if not variant_value or variant_value in seen_values:
+            continue
+        seen_values.add(variant_value)
+        candidates.append({"id": item.get("id", "ai-variant"), "value": variant_value, "source": "ai", **item})
+    for technique, variant_value in _waf_variants(str(payload.get("class") or ""), value):
+        if variant_value in seen_values:
+            continue
+        seen_values.add(variant_value)
+        candidates.append({"id": technique, "technique": technique, "value": variant_value, "source": "fallback"})
+    return candidates[:retry_limit]
+
+
 # ---------------------------------------------------------------------------
 # Probe logic
 
@@ -698,12 +736,15 @@ def probe_endpoint(
     *,
     target: str = "",
     session: AuthSession | None = None,
+    waf_plan: dict | None = None,
     stats: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
     url = endpoint["url"]
     body_template = endpoint.get("body_template") or {}
     if not isinstance(body_template, dict) or not body_template:
         return [], []
+    if waf_plan and waf_plan.get("max_requests") is not None:
+        max_requests = min(max_requests, int(waf_plan["max_requests"]))
 
     # baseline call
     baseline = _send_json(url, body_template, 10.0, target=target, session=session)
@@ -779,9 +820,16 @@ def probe_endpoint(
             "technique": "canonical",
             **waf,
         })
-        for technique, variant in _waf_variants(payload["class"], payload["value"]):
+        for candidate in _waf_retry_variants(
+            waf_plan,
+            url=url,
+            field=field,
+            payload=payload,
+        ):
             if request_count >= max_requests:
                 return hits, waf_events
+            technique = str(candidate.get("technique") or candidate.get("id") or "ai-variant")
+            variant = str(candidate.get("value") or "")
             mutated = dict(body_template)
             mutated[field] = variant
             retry = _send_json(
@@ -794,14 +842,24 @@ def probe_endpoint(
             _record_request(stats, retry)
             request_count += 1
             retry_waf = _waf_observation(baseline, retry)
-            waf_events.append({
+            event = {
                 "url": url,
                 "field": field,
                 "payload_class": payload["class"],
                 "payload_family": payload.get("family", payload["class"]),
                 "technique": technique,
+                "variant_source": candidate.get("source", "fallback"),
                 **retry_waf,
-            })
+            }
+            if candidate.get("source") == "ai":
+                event.update({
+                    "variant_id": candidate.get("id", ""),
+                    "ai_reason": candidate.get("reason", ""),
+                    "expected_signal": candidate.get("expected_signal", ""),
+                    "stop_condition": candidate.get("stop_condition", ""),
+                    "evidence_refs": candidate.get("evidence_refs", []),
+                })
+            waf_events.append(event)
             if retry_waf["outcome"] in {"transport_error", "rate_limited"}:
                 break
             if retry_waf["blocked"]:
@@ -814,7 +872,7 @@ def probe_endpoint(
                 min_delay=float(payload.get("min_delay", 4.0) or 4.0),
             )
             if detection["hit"]:
-                hits.append({
+                hit = {
                     "url": url,
                     "method": "POST",
                     "field": field,
@@ -829,7 +887,17 @@ def probe_endpoint(
                     "response_size": retry["body_size"],
                     "response_excerpt": retry["body_text"][:280],
                     "curl": _curl_reproducer(url, mutated),
-                })
+                    "variant_source": candidate.get("source", "fallback"),
+                }
+                if candidate.get("source") == "ai":
+                    hit.update({
+                        "waf_variant_id": candidate.get("id", ""),
+                        "ai_reason": candidate.get("reason", ""),
+                        "expected_signal": candidate.get("expected_signal", ""),
+                        "stop_condition": candidate.get("stop_condition", ""),
+                        "evidence_refs": candidate.get("evidence_refs", []),
+                    })
+                hits.append(hit)
                 break
             break
     return hits, waf_events
@@ -872,6 +940,94 @@ def _input_fingerprint(endpoints: list[dict], source_bindings: list[dict]) -> st
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _probe_cursor(
+    summary_path: Path,
+    *,
+    target: str,
+    input_fingerprint: str,
+    endpoint_count: int,
+    kind: str,
+    lane: str = "",
+) -> dict:
+    """Load a target-owned endpoint batch cursor, or start a fresh batch.
+
+    The cursor is deliberately stored beside the lane summary so Autopilot,
+    direct CLI, and the state projection consume the same checkpoint.  A
+    changed input fingerprint invalidates it instead of guessing an offset.
+    """
+    fresh = {
+        "start_index": 0,
+        "deferred_indices": [],
+        "resumed": False,
+    }
+    if not summary_path.is_file():
+        return fresh
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return fresh
+    if (
+        not isinstance(payload, dict)
+        or payload.get("kind") != kind
+        or canonical_target_value(str(payload.get("target") or ""))
+        != canonical_target_value(target)
+        or str(payload.get("input_fingerprint") or "") != input_fingerprint
+        or (lane and str(payload.get("lane") or "") != lane)
+    ):
+        return fresh
+    cursor = payload.get("cursor")
+    if not isinstance(cursor, dict) or cursor.get("schema_version") != CURSOR_SCHEMA_VERSION:
+        return fresh
+    if (
+        cursor.get("input_fingerprint") != input_fingerprint
+        or cursor.get("endpoint_count") != endpoint_count
+        or cursor.get("coverage_complete") is True
+    ):
+        return fresh
+    start_index = cursor.get("next_endpoint_index")
+    deferred = cursor.get("deferred_endpoint_indices", [])
+    if (
+        isinstance(start_index, bool)
+        or not isinstance(start_index, int)
+        or not 0 <= start_index <= endpoint_count
+        or not isinstance(deferred, list)
+        or any(
+            isinstance(item, bool)
+            or not isinstance(item, int)
+            or not 0 <= item < endpoint_count
+            for item in deferred
+        )
+        or len(set(deferred)) != len(deferred)
+    ):
+        return fresh
+    return {
+        "start_index": start_index,
+        "deferred_indices": list(deferred),
+        "resumed": True,
+    }
+
+
+def _build_probe_cursor(
+    input_fingerprint: str,
+    *,
+    endpoint_count: int,
+    next_endpoint_index: int,
+    deferred_endpoint_indices: list[int],
+) -> dict:
+    deferred = list(dict.fromkeys(int(item) for item in deferred_endpoint_indices))
+    next_index = max(0, min(int(next_endpoint_index), endpoint_count))
+    remaining = len(deferred) + max(0, endpoint_count - next_index)
+    return {
+        "schema_version": CURSOR_SCHEMA_VERSION,
+        "input_fingerprint": input_fingerprint,
+        "endpoint_count": endpoint_count,
+        "next_endpoint_index": next_index,
+        "deferred_endpoint_indices": deferred,
+        "remaining_endpoint_count": remaining,
+        "coverage_complete": remaining == 0,
+    }
+
+
 def _write_json_atomic(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
@@ -908,47 +1064,95 @@ def _write_findings(
     target_key = target_storage_key(target)
     out_dir = BASE_DIR / "findings" / target_key / "poc" / "json_inject"
     out_dir.mkdir(parents=True, exist_ok=True)
-    for stale in out_dir.glob("*.json"):
-        if stale.name != "summary.json":
-            stale.unlink()
+    summary_path = out_dir / "summary.json"
     written: list[str] = []
+    details = dict(execution or {})
+    resumed = bool(details.get("resumed"))
+    previous: dict = {}
+    if resumed and summary_path.is_file():
+        try:
+            loaded = json.loads(summary_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict) and loaded.get("input_fingerprint") == details.get("input_fingerprint"):
+                previous = loaded
+        except (OSError, json.JSONDecodeError):
+            previous = {}
+    if not previous:
+        for stale in out_dir.glob("*.json"):
+            if stale.name != "summary.json":
+                stale.unlink()
     for hit in hits:
         slug_url = re.sub(r"[^A-Za-z0-9._-]+", "_", urllib.parse.urlparse(hit["url"]).path).strip("_") or "root"
         fname = f"{hit['payload_class']}_{slug_url}_{hit['field']}.json"
         path = out_dir / fname
         path.write_text(json.dumps(hit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         written.append(str(path))
-    summary_path = out_dir / "summary.json"
-    details = dict(execution or {})
     status = str(details.pop("status", "") or "")
     transport_errors = int(details.get("transport_error_count", 0) or 0)
     redirect_skips = int((details.get("skipped") or {}).get("out_of_scope_redirect", 0) or 0)
+    prior_hits = previous.get("hits") if isinstance(previous.get("hits"), list) else []
+    prior_waf = previous.get("waf_observations") if isinstance(previous.get("waf_observations"), list) else []
+    prior_hit_count = int(previous.get("hit_count", 0) or 0) if previous else 0
+    prior_waf_count = int(previous.get("waf_observation_count", 0) or 0) if previous else 0
     if not status:
-        status = "candidate_pending" if hits else (
+        status = "candidate_pending" if (hits or prior_hit_count) else (
             "partial" if transport_errors or redirect_skips or details.get("budget_exhausted") else "complete_no_hit"
         )
+    current_hit_summaries = [
+        {
+            "url": h["url"],
+            "field": h["field"],
+            "class": h["payload_class"],
+            "signal": h["signal"],
+        }
+        for h in hits
+    ]
+    merged_hits = _merge_summary_items(prior_hits, current_hit_summaries)
+    merged_waf = _merge_summary_items(prior_waf, waf_events)
     summary = {
         "schema_version": SUMMARY_SCHEMA_VERSION,
         "kind": "json_inject_summary",
         "target": canonical_target_value(target),
         "status": status,
         **details,
-        "hit_count": len(hits),
-        "waf_observation_count": len(waf_events),
+        "hit_count": prior_hit_count + _new_summary_item_count(prior_hits, current_hit_summaries),
+        "waf_observation_count": prior_waf_count + _new_summary_item_count(prior_waf, waf_events),
         "generated_at": int(time.time()),
-        "hits": [
-            {
-                "url": h["url"],
-                "field": h["field"],
-                "class": h["payload_class"],
-                "signal": h["signal"],
-            }
-            for h in hits[:SUMMARY_ITEM_LIMIT]
-        ],
-        "waf_observations": waf_events[:SUMMARY_ITEM_LIMIT],
+        "hits": merged_hits[:SUMMARY_ITEM_LIMIT],
+        "waf_observations": merged_waf[:SUMMARY_ITEM_LIMIT],
     }
     _write_json_atomic(summary_path, summary)
     return {"out_dir": str(out_dir), "summary": str(summary_path), "files": written}
+
+
+def _merge_summary_items(previous: list, current: list) -> list:
+    merged = [item for item in previous if isinstance(item, dict)]
+    seen = {
+        json.dumps(item, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        for item in merged
+    }
+    for item in current:
+        if not isinstance(item, dict):
+            continue
+        key = json.dumps(item, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        if previous and key in seen:
+            continue
+        merged.append(item)
+        seen.add(key)
+    return merged
+
+
+def _new_summary_item_count(previous: list, current: list) -> int:
+    previous_keys = {
+        json.dumps(item, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        for item in previous
+        if isinstance(item, dict)
+    }
+    return sum(
+        1
+        for item in current
+        if isinstance(item, dict)
+        and json.dumps(item, sort_keys=True, ensure_ascii=False, separators=(",", ":")) not in previous_keys
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -960,6 +1164,11 @@ def main() -> int:
     parser.add_argument("--target", required=True, help="Target host or host:port (used for storage path + default seeds)")
     parser.add_argument("--endpoints-file", default="", help="File with one URL per line OR JSONL of {method,url,body}")
     parser.add_argument("--js-intel", default="", help="Path to findings/<t>/js_intel/hypotheses.json for endpoint seeds")
+    parser.add_argument(
+        "--waf-plan",
+        default="",
+        help="Optional target-owned AI WAF-pass plan JSON; only used after a new baseline-relative SQLi/XSS block",
+    )
     seed_group = parser.add_mutually_exclusive_group()
     seed_group.add_argument("--add-default-seeds", dest="add_default_seeds", action="store_true",
                             default=True, help="When no other source provides endpoints, probe common login paths")
@@ -972,6 +1181,10 @@ def main() -> int:
         parser.error("--max-requests must be a positive integer")
     args.target = canonical_target_value(args.target)
     session = session_from_args(args).bind_target(args.target)
+    try:
+        waf_plan = load_plan(args.waf_plan, target=args.target) if args.waf_plan else None
+    except ValueError as exc:
+        parser.error(str(exc))
 
     endpoints, skipped = _collect_endpoints(args)
     source_bindings = [
@@ -979,6 +1192,7 @@ def main() -> int:
         for binding in (
             _source_binding(args.endpoints_file),
             _source_binding(args.js_intel),
+            _source_binding(args.waf_plan),
         )
         if binding
     ]
@@ -1006,6 +1220,10 @@ def main() -> int:
                     "skipped": {**skipped, "out_of_scope_redirect": 0},
                     "auth_applied": False,
                     "auth_session_id": session.session_id(),
+                    "waf_plan_ref": str(waf_plan.get("plan_ref") or "") if waf_plan else "",
+                    "waf_plan_sha256": str(waf_plan.get("plan_sha256") or "") if waf_plan else "",
+                    "waf_plan_variant_count": len(waf_plan.get("variants") or []) if waf_plan else 0,
+                    "waf_ai_variants_executed": 0,
                 },
             )
         return 1
@@ -1020,30 +1238,69 @@ def main() -> int:
     }
     probed_endpoint_count = 0
     request_budget = int(args.max_requests)
-    for index, ep in enumerate(endpoints):
+    if waf_plan and waf_plan.get("max_requests") is not None:
+        request_budget = min(request_budget, int(waf_plan["max_requests"]))
+    summary_path = BASE_DIR / "findings" / target_storage_key(args.target) / "poc" / "json_inject" / "summary.json"
+    cursor_state = _probe_cursor(
+        summary_path,
+        target=args.target,
+        input_fingerprint=input_fingerprint,
+        endpoint_count=len(endpoints),
+        kind="json_inject_summary",
+    )
+    start_index = int(cursor_state["start_index"])
+    deferred_indices = list(cursor_state["deferred_indices"])
+    worklist: list[int] = []
+    for index in [*deferred_indices, *range(start_index, len(endpoints))]:
+        if index not in worklist:
+            worklist.append(index)
+    next_index = start_index
+    deferred_next: list[int] = []
+    processed_work_items = 0
+    for position, index in enumerate(worklist):
+        ep = endpoints[index]
         remaining_budget = request_budget - execution_stats["request_count"]
         if remaining_budget <= 0:
             break
-        remaining_endpoints = len(endpoints) - index
+        remaining_endpoints = len(worklist) - position
         endpoint_budget = max(1, remaining_budget // remaining_endpoints)
         print(f"[json_inject]  -> {ep['method']} {ep['url']} (source={ep.get('source')})", file=sys.stderr)
+        before_errors = execution_stats["transport_error_count"]
+        before_redirects = execution_stats["out_of_scope_redirect"]
         hits, waf_events = probe_endpoint(
             ep,
             max_requests=endpoint_budget,
             target=args.target,
             session=session,
+            waf_plan=waf_plan,
             stats=execution_stats,
         )
         probed_endpoint_count += 1
+        processed_work_items += 1
         all_waf_events.extend(waf_events)
         if hits:
             print(f"[json_inject]     {len(hits)} hit(s)", file=sys.stderr)
             all_hits.extend(hits)
+        if index >= start_index:
+            next_index = max(next_index, index + 1)
+        if execution_stats["transport_error_count"] > before_errors or execution_stats["out_of_scope_redirect"] > before_redirects:
+            deferred_next.append(index)
+    deferred_next.extend(
+        index
+        for index in worklist[processed_work_items:]
+        if index < start_index
+    )
+    cursor = _build_probe_cursor(
+        input_fingerprint,
+        endpoint_count=len(endpoints),
+        next_endpoint_index=next_index,
+        deferred_endpoint_indices=deferred_next,
+    )
 
     skipped["out_of_scope_redirect"] = execution_stats["out_of_scope_redirect"]
     budget_exhausted = bool(
         execution_stats["request_count"] >= request_budget
-        or probed_endpoint_count < len(endpoints)
+        or not cursor["coverage_complete"]
     )
     result = _write_findings(
         args.target,
@@ -1054,6 +1311,10 @@ def main() -> int:
             "source_bindings": source_bindings,
             "endpoint_count": len(endpoints),
             "probed_endpoint_count": probed_endpoint_count,
+            "batch_start_endpoint_index": start_index,
+            "batch_tested_endpoint_count": processed_work_items,
+            "resumed": bool(cursor_state["resumed"]),
+            "cursor": cursor,
             "request_count": execution_stats["request_count"],
             "request_budget": request_budget,
             "budget_exhausted": budget_exhausted,
@@ -1064,6 +1325,12 @@ def main() -> int:
                 and any(session.headers_for_url(str(item.get("url") or "")) for item in endpoints)
             ),
             "auth_session_id": session.session_id(),
+            "waf_plan_ref": str(waf_plan.get("plan_ref") or "") if waf_plan else "",
+            "waf_plan_sha256": str(waf_plan.get("plan_sha256") or "") if waf_plan else "",
+            "waf_plan_variant_count": len(waf_plan.get("variants") or []) if waf_plan else 0,
+            "waf_ai_variants_executed": sum(
+                1 for event in all_waf_events if event.get("variant_source") == "ai"
+            ),
         },
     )
     if not all_hits:

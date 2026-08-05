@@ -24,6 +24,7 @@
 | `tools/disclosure_search.py` / `disclosed-researcher` | Target or comparable disclosed-report pattern may transfer | Bounded disclosed-pattern research; records evidence, not a finding |
 | `tools/learn.py` | Legacy tech-stack research | Compatibility backend; not the schema-v2 Intel artifact owner |
 | `tools/scope_checker.py` | Verifying target classification | Deterministic host/URL classifier against active target set |
+| `tools/scope_context.py` | Global Scope owner | Parses text lists/manifest v1, applies exclusions, classifies external context, and emits stable Scope hash |
 | `tools/target_paths.py` | Computing per-target storage keys | Normalize target string for `recon/`/`findings/` directories |
 | `tools/target_selector.py` | Pulling H1 public program info | Query HackerOne directory API for public programs |
 
@@ -81,8 +82,9 @@ identity, and cloud signals without re-enumerating everything.
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/vuln_scanner.sh` | Recon done, want broad active coverage | Multi-lane scanner; unsafe methods become manual-review unless `ALLOW_UNSAFE_HTTP_TESTS=1` |
-| `tools/json_inject_probe.py` | Reviewed same-target POST/JSON shape exists | AuthSession probe; bounded SQL matrix, baseline findings, atomic summary, at-most-two WAF retries |
-| `tools/sql_parameter_probe.py` | Reviewed query URL or POST form file | Shared SQL matrix for query/form parameters; scoped findings and at-most-two WAF retries |
+| `tools/json_inject_probe.py` | Reviewed same-target POST/JSON shape exists | AuthSession, bounded matrix, atomic summary, resumable cursor, WAF plan 4/8 or fallback 2 |
+| `tools/sql_parameter_probe.py` | Reviewed query URL or POST form file | Shared matrix, scoped findings, resumable cursor, and plan/static WAF bounds |
+| `tools/waf_pass_plan.py` | New SQLi/XSS WAF block plus target evidence | Validates AI plan refs, defaults to 4 variants, caps at 8, and keeps adapter scope/auth/budget/fallback |
 | `tools/workflow_sequence.py` | HAR/browser flow has 2+ same-target requests | Bounded replay/perturb/diff with token refresh, private evidence and Action Queue |
 | `tools/timing_sql_runner.py` | Time-shaped SQL candidate remains | Interleaved timing evidence with robust stats, caps, WAF/429 semantics and queue |
 | `tools/bypass_403.sh` | 403/401 on interesting endpoint | byp4xx + 20 built-in header/method/encoding bypass tricks |

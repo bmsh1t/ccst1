@@ -30,6 +30,19 @@ def test_compact_state_keeps_bounded_case_state_continuation():
     assert compact["case_state"]["top_next_action"]["backlog_id"] == "val_001"
 
 
+def test_compact_state_projects_only_the_next_lane_contract():
+    recon = autopilot_bootstrap.compact_autopilot_state({"next_action": "run_recon"})
+    assert recon["lane_contract"] == {
+        "id": "recon-surface",
+        "ref": "docs/autopilot-lanes.md#recon-and-surface",
+        "reason": "discovery, surface, or evidence collection is next",
+    }
+
+    queue = autopilot_bootstrap.compact_autopilot_state({"next_action": "resume_action_queue"})
+    assert queue["lane_contract"]["id"] == "state-and-queue"
+    assert queue["lane_contract"]["ref"].startswith("docs/autopilot-lanes.md#")
+
+
 def test_compact_state_keeps_sql_matrix_and_js_lifecycle_projection():
     compact = autopilot_bootstrap.compact_autopilot_state({
         "sql_matrix": {
@@ -222,6 +235,40 @@ def test_invalid_arguments_stop_before_runtime_or_target_state(monkeypatch, tmp_
     assert payload["capabilities"]["checked"] is False
     assert payload["capabilities"]["reason"] == "not-checked"
     assert "state" not in payload
+
+
+def test_scope_manifest_is_projected_and_invalid_manifest_stops_before_runtime(monkeypatch, tmp_path):
+    scope = tmp_path / "scope.json"
+    scope.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "in_scope": ["*.target.example"],
+            "out_of_scope": ["admin.target.example"],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", _clean_runtime)
+    monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", _capabilities)
+    monkeypatch.setattr(
+        autopilot_bootstrap,
+        "build_autopilot_bootstrap_state",
+        lambda *_args, **_kwargs: {"target": str(scope.resolve()), "next_action": "run_recon"},
+    )
+
+    payload = autopilot_bootstrap.build_autopilot_bootstrap(
+        [scope.name], cwd=tmp_path, repo_root=tmp_path, runtime_root=tmp_path / "runtime"
+    )
+    assert payload["action"] == "continue"
+    assert payload["scope"]["scope_ref"] == str(scope.resolve())
+    assert payload["scope"]["summary"]["out_of_scope_count"] == 1
+
+    invalid = tmp_path / "invalid.json"
+    invalid.write_text('{"schema_version": 99, "in_scope": ["target.example"]}', encoding="utf-8")
+    invalid_payload = autopilot_bootstrap.build_autopilot_bootstrap(
+        [invalid.name], cwd=tmp_path, repo_root=tmp_path, runtime_root=tmp_path / "runtime"
+    )
+    assert invalid_payload["action"] == "stop_invalid_scope"
+    assert invalid_payload["error"]["type"] == "ScopeContextError"
 
 
 def test_bootstrap_projects_bounded_deep_invocation_batch(monkeypatch, tmp_path):

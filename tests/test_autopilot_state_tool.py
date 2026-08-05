@@ -410,6 +410,10 @@ def test_json_summary_projection_and_partial_closure(tmp_path):
         "target": target,
         "status": "partial",
         "input_fingerprint": "a" * 64,
+        "waf_plan_ref": "findings/target.com/poc/waf-plan.json",
+        "waf_plan_sha256": "b" * 64,
+        "waf_plan_variant_count": 1,
+        "waf_ai_variants_executed": 1,
         "request_count": 2,
         "transport_error_count": 1,
         "skipped": {},
@@ -422,6 +426,8 @@ def test_json_summary_projection_and_partial_closure(tmp_path):
     )
 
     assert projection["status"] == "partial"
+    assert projection["waf_plan_variant_count"] == 1
+    assert projection["waf_ai_variants_executed"] == 1
     assert closure["reasons"] == ["json_evidence_partial"]
     assert stagnation_fingerprint(
         {"target": target, "json_inject": projection}, closure
@@ -1063,6 +1069,9 @@ def test_sql_matrix_projection_validates_lane_and_source_freshness(tmp_path):
         "target": target,
         "status": "candidate_pending",
         "input_fingerprint": "a" * 64,
+        "waf_plan_sha256": "b" * 64,
+        "waf_plan_variant_count": 2,
+        "waf_ai_variants_executed": 2,
         "source_bindings": [{"path": str(source), "sha256": digest}],
         "endpoint_count": 1,
         "hit_count": 1,
@@ -1070,6 +1079,7 @@ def test_sql_matrix_projection_validates_lane_and_source_freshness(tmp_path):
     }), encoding="utf-8")
     projection = _load_sql_matrix_projection(str(tmp_path), target, "query")
     assert projection["status"] == "candidate_pending"
+    assert projection["waf_plan_variant_count"] == 2
     assert projection["candidates"] == [{"endpoint": "/search", "field": "q", "class": "sqli_error", "signal": "error"}]
     source.write_text("changed\n", encoding="utf-8")
     stale = _load_sql_matrix_projection(str(tmp_path), target, "query")
@@ -1279,6 +1289,24 @@ class TestAutopilotState:
         assert state["batch"]["completed"] == []
         assert state["batch"]["candidates"] == []
         assert state["batch"]["pending"] == ["beta.test"]
+
+    def test_changed_batch_scope_hash_invalidates_completion_projection(self, tmp_path):
+        scope = tmp_path / "targets.txt"
+        scope.write_text("alpha.test\nbeta.test\n", encoding="utf-8")
+        batch_dir = tmp_path / "recon" / target_storage_key(str(scope))
+        batch_dir.mkdir(parents=True)
+        (batch_dir / "completed_targets.txt").write_text("alpha.test\n", encoding="utf-8")
+        (batch_dir / "scope_context.json").write_text(
+            json.dumps({"scope_hash": "sha256:old"}),
+            encoding="utf-8",
+        )
+
+        state = build_autopilot_state(str(tmp_path), str(scope))
+
+        assert state["batch"]["scope_changed"] is True
+        assert state["batch"]["completed"] == []
+        assert state["batch"]["pending"] == ["alpha.test", "beta.test"]
+        assert state["next_action"] == "run_batch_recon"
 
     def test_partial_batch_keeps_current_pending_when_ranked_json_is_invalid(self, tmp_path):
         scope = tmp_path / "targets.txt"

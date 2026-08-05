@@ -887,7 +887,8 @@ def test_recon_engine_supports_wafw00f_fingerprinting():
     assert 'wafw00f \\' in text
     assert 'run_with_timeout "$WAFW00F_RUN_TIMEOUT" wafw00f \\' in text
     assert '-o "$WAFW00F_CURRENT_JSON" \\' in text
-    assert 'python3 - "$WAFW00F_PARSE_FILE" "$WAFW00F_HITS_FILE" <<' in text
+    assert 'python3 - "$WAFW00F_PARSE_FILE" "$WAFW00F_HITS_FILE" "$WAFW00F_CONTEXT_FILE"' in text
+    assert '"kind": "waf_context"' in text
 
 
 def test_recon_engine_supports_unwaf_origin_discovery():

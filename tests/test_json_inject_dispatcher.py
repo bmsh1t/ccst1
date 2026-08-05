@@ -78,6 +78,96 @@ def test_json_probe_shares_one_request_budget_across_endpoints(monkeypatch):
     assert captured["budget_exhausted"] is True
 
 
+def test_json_probe_resumes_endpoint_tail_and_keeps_prior_hit(monkeypatch, tmp_path):
+    from tools import json_inject_probe as probe
+
+    endpoints = [
+        {"method": "POST", "url": f"https://target.test/api/{index}", "body_template": {"q": "x"}, "source": "test"}
+        for index in range(4)
+    ]
+    calls: list[str] = []
+
+    class Session:
+        def bind_target(self, _target):
+            return self
+
+        def is_empty(self):
+            return True
+
+        def headers_for_url(self, _url):
+            return {}
+
+        def session_id(self):
+            return ""
+
+    def fake_probe(endpoint, max_requests, *, stats, **_kwargs):
+        calls.append(endpoint["url"])
+        stats["request_count"] += max_requests
+        if endpoint["url"].endswith("/0"):
+            return [{
+                "url": endpoint["url"], "field": "q", "payload_class": "sqli_error",
+                "signal": "sql_error",
+            }], []
+        return [], []
+
+    monkeypatch.setattr(probe, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(probe, "session_from_args", lambda _args: Session())
+    monkeypatch.setattr(probe, "_collect_endpoints", lambda _args: (endpoints, {
+        "out_of_scope": 0, "unsupported_method": 0, "invalid_url": 0, "items": []
+    }))
+    monkeypatch.setattr(probe, "probe_endpoint", fake_probe)
+    monkeypatch.setattr(sys, "argv", ["json_inject_probe", "--target", "target.test", "--max-requests", "2"])
+
+    assert probe.main() == 0
+    assert calls == [item["url"] for item in endpoints[:2]]
+    summary_path = tmp_path / "findings" / "target.test" / "poc" / "json_inject" / "summary.json"
+    first = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert first["cursor"]["next_endpoint_index"] == 2
+    assert first["cursor"]["coverage_complete"] is False
+    hit_path = tmp_path / "findings" / "target.test" / "poc" / "json_inject" / "sqli_error_api_0_q.json"
+    assert hit_path.is_file()
+
+    assert probe.main() == 0
+    assert calls == [item["url"] for item in endpoints]
+    second = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert second["resumed"] is True
+    assert second["cursor"]["coverage_complete"] is True
+    assert second["hit_count"] == 1
+    assert hit_path.is_file()
+
+    reset = probe._probe_cursor(
+        summary_path,
+        target="target.test",
+        input_fingerprint="0" * 64,
+        endpoint_count=len(endpoints),
+        kind="json_inject_summary",
+    )
+    assert reset["resumed"] is False
+    assert reset["start_index"] == 0
+
+
+def test_json_resume_does_not_inflate_replayed_hit_count(monkeypatch, tmp_path):
+    from tools import json_inject_probe as probe
+
+    monkeypatch.setattr(probe, "BASE_DIR", tmp_path)
+    hit = {"url": "https://target.test/api", "field": "q", "payload_class": "sqli_error", "signal": "sql_error"}
+    base = {
+        "input_fingerprint": "a" * 64,
+        "endpoint_count": 1,
+        "probed_endpoint_count": 1,
+        "request_count": 1,
+        "request_budget": 1,
+        "budget_exhausted": True,
+        "cursor": {"coverage_complete": False},
+        "skipped": {},
+    }
+    probe._write_findings("target.test", [hit], [], execution=base)
+    resumed = dict(base, resumed=True, request_count=2)
+    result = probe._write_findings("target.test", [hit], [], execution=resumed)
+    summary = json.loads(Path(result["summary"]).read_text(encoding="utf-8"))
+    assert summary["hit_count"] == 1
+
+
 # ---------------------------------------------------------------------
 #  Hook 1 — TOOL_NAMES / TOOLS spec presence
 # ---------------------------------------------------------------------
@@ -103,11 +193,12 @@ class TestToolRegistration:
         assert params["type"] == "object"
         props = params["properties"]
         # All 4 documented args present and typed
-        for arg in ("endpoints_file", "js_intel", "max_requests", "add_default_seeds"):
+        for arg in ("endpoints_file", "js_intel", "max_requests", "add_default_seeds", "waf_plan"):
             assert arg in props, f"missing arg {arg}"
         assert props["max_requests"]["type"] == "integer"
         assert props["add_default_seeds"]["type"] == "boolean"
         assert props["endpoints_file"]["type"] == "string"
+        assert props["waf_plan"]["type"] == "string"
         # No required args (auto-discovery covers them)
         assert params["required"] == []
 
@@ -121,7 +212,7 @@ class TestToolRegistration:
         assert "post" in desc and "json" in desc
         assert "sqli" in desc
         assert "ssti" in desc or "cmd" in desc  # at least one other class
-        assert "waf" in desc and "at most two" in desc
+        assert "waf" in desc and "maximum eight" in desc and "capped at two" in desc
 
 
 # ---------------------------------------------------------------------
@@ -185,6 +276,7 @@ class TestDispatcherBranch:
         assert captured["js_intel"] == ""
         assert captured["max_requests"] == 60
         assert captured["add_default_seeds"] is True
+        assert captured["waf_plan"] == ""
         # observation summary contains the json_inject label
         assert "json_inject" in obs
 
@@ -209,6 +301,10 @@ class TestDispatcherBranch:
         assert captured["js_intel"] == "/tmp/hyp.json"
         assert captured["max_requests"] == 25
         assert captured["add_default_seeds"] is False
+
+        captured.clear()
+        dispatcher.dispatch("run_json_inject_probe", {"waf_plan": "/tmp/plan.json"})
+        assert captured["waf_plan"] == "/tmp/plan.json"
 
     def test_dispatch_coerces_max_requests_to_int(self, monkeypatch, tmp_path):
         captured = {}

@@ -59,7 +59,11 @@ from tools.eburst_lane import resolve_eburst
 from tools.public_exposure_signals import classify_public_response
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
 from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock
-from tools.target_paths import classify_target as classify_target_input, target_storage_key
+from tools.target_paths import (
+    classify_target as classify_target_input,
+    target_list_entries,
+    target_storage_key,
+)
 
 # Colors
 GREEN = "\033[0;32m"
@@ -279,27 +283,17 @@ def _read_text_lines(path, limit=None):
 
 def _count_target_list_entries(path):
     """Count usable entries in a primary-domain batch list."""
-    count = 0
-    with open(path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            value = line.strip()
-            if value and not value.startswith("#"):
-                count += 1
-    return count
+    if not os.path.isfile(path):
+        raise OSError(f"target list is not readable: {path}")
+    return len(target_list_entries(path))
 
 
 def _target_list_entries(path, limit=None):
     """Return usable primary-domain entries from a target list file."""
-    items = []
-    with open(path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            value = line.strip().strip("\ufeff")
-            if not value or value.startswith("#"):
-                continue
-            items.append(value)
-            if limit and len(items) >= limit:
-                break
-    return _dedupe_keep_order(items)
+    if not os.path.isfile(path):
+        raise OSError(f"target list is not readable: {path}")
+    items = target_list_entries(path, preserve_wildcards=True)
+    return items[:limit] if limit else items
 
 
 def _write_text_lines(path, lines):
@@ -1673,6 +1667,7 @@ def run_json_inject_probe(
     js_intel: str = "",
     max_requests: int = 60,
     add_default_seeds: bool = True,
+    waf_plan: str = "",
 ):
     """Run the POST-JSON injection probe (sqli/ssti/cmd/xss/lfi/open-redirect).
 
@@ -1681,7 +1676,11 @@ def run_json_inject_probe(
       - js_intel       = findings/<t>/js_intel/hypotheses.json (if present)
       - falls back to DEFAULT_LOGIN_SEEDS if neither source yields endpoints
 
-    WAF-blocked canonical SQLi/XSS probes get at most two semantic retries.
+    WAF-blocked canonical SQLi/XSS probes get four evidence-linked semantic
+    retries by default in plan mode, capped at eight; an optional target-owned
+    waf_plan lets the AI choose them from current response and stack evidence
+    while the tool keeps the hard total request budget. Without a plan, static
+    fallback stays capped at two retries.
     Writes findings and WAF observations under findings/<t>/poc/json_inject/.
     Returns True if the probe ran to completion regardless of hit count.
     """
@@ -1709,6 +1708,8 @@ def run_json_inject_probe(
         cmd.extend(["--endpoints-file", endpoints_file])
     if js_intel:
         cmd.extend(["--js-intel", js_intel])
+    if waf_plan:
+        cmd.extend(["--waf-plan", waf_plan])
     if not add_default_seeds:
         cmd.append("--no-default-seeds")
 
@@ -1725,6 +1726,7 @@ def run_json_inject_probe(
         f"\n--- json_inject_probe @ {datetime.now().isoformat()} ---\n"
         f"endpoints_file={endpoints_file}\n"
         f"js_intel={js_intel}\n"
+        f"waf_plan={waf_plan}\n"
         f"max_requests={max_requests}\n"
         f"---\n{output[:8000]}\n",
     )

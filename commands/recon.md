@@ -98,7 +98,7 @@ coverage.
 The integrated `tools/recon_engine.sh` path may run, when available:
 
 - subdomain sources: `subfinder`, `assetfinder`, `amass`, `crt.sh`, optional credential-gated `Chaos`, wayback-derived hosts, `puredns`；独立被动源并行、父流程按 target scope 统一合并
-- live probing and fingerprinting: ProjectDiscovery `httpx`, WAF/origin hints, lightweight ports/services
+- live probing and fingerprinting: ProjectDiscovery `httpx`, bounded `wafw00f` sampling with durable `live/waf_context.json` context, optional origin hints, lightweight ports/services
 - URL collection: `katana`, `gau`, `waymore`
 - URL denoising: non-destructive `_filtered` URL views plus `urls/filter.log`; raw `urls/all.txt` is preserved
 - Storage guard: large raw collector source files (`katana`/`gau`/`waymore`/`wayback`) are gzip-compressed after `all.txt` and `_filtered` files are built; set `BBHUNT_RECON_POST_COMPRESS=0` to keep source `.txt` files

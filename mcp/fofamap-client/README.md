@@ -13,9 +13,11 @@ search tools, including:
 - Shodan asset search
 - Shodan host profile lookups
 
-This is an optional external Claude MCP capability. It does **not**
-automatically integrate with `/recon`, `/surface`, `/autopilot`, or `agent.py`.
-Use it when you want FOFA/Shodan search at the Claude tool layer.
+This is an optional external Claude MCP capability. It is not run on every
+Recon or Autopilot round. When the server is visible in the current session,
+`/autopilot` and `/autopilot-round` may call it on an evidence-triggered asset
+intelligence lane; missing MCP availability is advisory and does not block the
+run.
 
 ## Setup
 
@@ -65,13 +67,16 @@ with your local FofaMap checkout path.
 
 ### 5. Verify
 
-Start Claude Code and ask it to use the FofaMap MCP server for FOFA or Shodan
-asset lookups. If the connection works, Claude can call FofaMap's MCP tools
-directly.
+Start Claude Code and verify the FofaMap MCP server is visible. Autopilot may
+use it only for a concrete coverage gap or target-relevant asset relationship.
+Normalize selected results into the existing
+`recon/<target-key>/exposure/asset_relation_observations.jsonl` contract, then
+run `tools/recon_candidates.py` and refresh `/surface`/`/checkpoint`.
 
 ## Notes
 
 - One server provides both FOFA and Shodan capabilities.
 - This repo does not modify FofaMap's credential-loading logic.
-- This repo does not automatically feed FofaMap results into the built-in
-  `/recon`, `/surface`, `/autopilot`, or `agent.py` flows.
+- FofaMap results remain passive asset-relation evidence; they are not direct
+  scan targets until the existing target-scope check accepts them.
+- The repo does not add a second asset state owner or run FofaMap by default.

@@ -24,6 +24,8 @@ class ScopeChecker:
         excluded_domains: list[str] | None = None,
         excluded_classes: list[str] | None = None,
         unrestricted: bool = False,
+        *,
+        context=None,
     ):
         """
         Args:
@@ -36,6 +38,13 @@ class ScopeChecker:
         self.excluded_domains = [d.lower() for d in (excluded_domains or [])]
         self.excluded_classes = [c.lower() for c in (excluded_classes or [])]
         self.unrestricted = bool(unrestricted)
+        self._context = context
+
+    @classmethod
+    def from_context(cls, context):
+        """Adapt the canonical ScopeContext for legacy filter callers."""
+        excluded_classes = list(getattr(context, "excluded_classes", ()) or ())
+        return cls([], excluded_classes=excluded_classes, context=context)
 
     def is_in_scope(self, url: str) -> bool:
         """Check if a URL's hostname matches the configured target set.
@@ -44,6 +53,9 @@ class ScopeChecker:
             True if the hostname matches a configured pattern and is not excluded.
             False otherwise (including for malformed URLs and empty input).
         """
+        if self._context is not None:
+            return bool(self._context.allows_active(url))
+
         if self.unrestricted:
             return bool(url and isinstance(url, str))
 

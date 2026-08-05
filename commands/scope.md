@@ -20,8 +20,11 @@ Use `/scope` when you want to:
 
 ## Target-Driven Semantics
 
-- Treat the supplied target, IP, CIDR, or primary-domain batch list as the active execution target set.
+- Treat the supplied target, IP, CIDR, text list, or schema-v1 JSON Scope manifest as the active execution target set.
 - localhost, private IPs, CIDRs, and list inputs remain fully valid.
+- In a JSON manifest, `in_scope` entries add active assets and `out_of_scope` entries always win.
+- Discovered but unlisted third-party assets remain lossless `external-chain-context` or `scope-review`;
+  they are not silently promoted to active requests.
 - External policy pages and metadata are optional context only.
 - `scope_snapshot.json` is documentation, not a gate.
 
@@ -34,6 +37,7 @@ Use `/scope` when you want to:
 /scope *.company.com
 /scope 10.0.0.0/24
 /scope targets.txt
+/scope scope.json
 ```
 
 ## Suggested Output Shape

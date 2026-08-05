@@ -114,12 +114,12 @@ Browser-state surfaces should use the shared browser evidence lane:
 ## High-ROI Lanes
 
 - **Auth / IDOR / role diff**: compare A/B users, object IDs, tenant/account IDs, export/download/report results.
-- **403 / auth boundary**: try a small number of stack-specific path/header/method variants, then stop if responses are identical.
+- **403 / auth boundary**: when a target-owned 401/403 has path, proxy, framework, or sibling evidence, let Claude create a bounded plan and run `tools/bypass_403.sh --plan ... --target ...`; otherwise use its fallback. Preserve raw responses and stop on `blocked`, stable no-diff, or unresolved `needs_review`.
 - **GraphQL**: inspect schema/operation names, compare auth on `query`, `node(id)`, and safe read operations; mutation execution requires explicit operator intent.
 - **SSRF / webhook / async**: use `tools/oast_listen.py` only when a URL-fetch or webhook sink exists.
 - **Upload/import/export**: confirm parser/authorization paths with minimal samples; record state-changing leads separately.
 - **JWT/OIDC/SAML/OAuth**: decode and inspect issuer/JWKS/callback/state/session binding signals before probing.
-- **SQL/NoSQL JSON body**: use surgical single-endpoint checks when body/parameter evidence exists; avoid broad sqlmap by default.
+- **SQL/NoSQL JSON body**: use surgical single-endpoint checks when body/parameter evidence exists; avoid broad sqlmap by default. If the first SQLi/XSS request creates a new baseline-relative WAF block, let Claude compare the response and stack evidence, write a target-owned `waf_plan` with one-variable reasons/expected signals/stop conditions, and rerun the same adapter with `--waf-plan`; plan mode defaults to four evidence-linked variants and permits at most eight, while no-plan static fallback remains capped at two and every retry consumes the existing budget.
 - **API leak / Swagger / Postman**: review `recon/<target>/exposure/` before widening.
 - **IIS short filename**: when IIS is detected, use `shortscan <url> -s -p 1`; if `shortscan` is missing, keep a manual review hint instead of failing.
 

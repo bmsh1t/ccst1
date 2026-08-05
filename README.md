@@ -642,6 +642,7 @@ and the `disclosed-researcher` workflow instead of being mixed into the Intel ar
 | `zero_day_fuzzer.py` | Logic bugs, edge cases, access control |
 | `cve_hunter.py` | Tech fingerprinting + known CVE matching |
 | `vuln_scanner.sh` | Active candidate scanner: upload canaries, SQLi timing, dalfox/SSTI, MFA/SAML, nuclei |
+| `bypass_403.sh` | Bounded 401/403 path, proxy-route, and access-limit replay with optional AI plan |
 | `hai_probe.py` | AI chatbot IDOR, prompt injection |
 | `hai_payload_builder.py` | Prompt injection payload generator |
 
@@ -660,9 +661,11 @@ and the `disclosed-researcher` workflow instead of being mixed into the Intel ar
 | **HackerOne** (`hackerone-mcp/`) | `search_disclosed_reports`, `get_program_stats`, `get_program_policy` |
 
 FofaMap MCP (FOFA + Shodan) and JSHook MCP are optional external Claude MCP
-capabilities. They do **not** automatically integrate with `/recon`, `/surface`,
-`/autopilot`, or `agent.py`. See `mcp/fofamap-client/README.md` and
-`mcp/jshook-client/README.md` for setup.
+capabilities. FofaMap may be called by `/autopilot` or `/autopilot-round` only
+on an evidence-triggered asset-intelligence lane when visible; it is not run by
+default and its results remain passive chain context until scope validation.
+JSHook remains an explicit runtime-evidence integration. See
+`mcp/fofamap-client/README.md` and `mcp/jshook-client/README.md` for setup.
 
 </details>
 

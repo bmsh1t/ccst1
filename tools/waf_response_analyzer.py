@@ -302,6 +302,7 @@ class ResponseFingerprint:
     has_challenge_signal: bool
     response_time_ms: float
     body_sha256: str
+    header_context: dict[str, Any]
 
     @classmethod
     def build(
@@ -329,6 +330,7 @@ class ResponseFingerprint:
             has_challenge_signal=db.has_challenge_signal(body),
             response_time_ms=response_time_ms,
             body_sha256=hashlib.sha256(body.encode("utf-8", errors="replace")).hexdigest(),
+            header_context=_header_context(headers),
         )
 
 
@@ -688,6 +690,11 @@ class ResponseClassifier:
             "extracted_ids": fp.log_ids,
             "body_preview": fp.body_preview,
             "body_sha256": fp.body_sha256,
+            # These are context hints for the AI's next bounded plan, not
+            # proof of authorization or protected-content access.
+            "protected_content_hint": fp.has_business_signal or fp.has_business_cookies,
+            "backend_status_reached": fp.status_code in {401, 500, 502, 503},
+            "header_context": fp.header_context,
         }
 
 
@@ -701,6 +708,41 @@ _TOKEN_RE = re.compile(r"[A-Za-z0-9_]{3,}")
 
 def _tokens(text: str) -> set[str]:
     return set(_TOKEN_RE.findall(text.lower()))
+
+
+def _json_key_paths(text: str, *, limit: int = 80) -> list[str]:
+    """Return bounded JSON shape paths without retaining response values."""
+    if len(text) > 200_000:
+        return []
+    try:
+        value = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    paths: list[str] = []
+
+    def visit(node: Any, prefix: str = "") -> None:
+        if len(paths) >= limit:
+            return
+        if isinstance(node, dict):
+            for key in sorted(node):
+                path = f"{prefix}.{key}" if prefix else str(key)
+                paths.append(path)
+                visit(node[key], path)
+        elif isinstance(node, list) and node:
+            visit(node[0], f"{prefix}[]" if prefix else "[]")
+
+    visit(value)
+    return paths[:limit]
+
+
+def _body_context(text: str, db: WAFSignatureDB) -> dict[str, Any]:
+    return {
+        "vendor_hits": db.match_vendors(text, ""),
+        "has_block_title": db.has_block_title(text),
+        "has_challenge_signal": db.has_challenge_signal(text),
+        "has_business_signal": bool(BUSINESS_SIGNAL_RE.search(text[:16000])),
+        "json_key_paths": _json_key_paths(text),
+    }
 
 
 def diff_bodies(a: str, b: str) -> dict[str, Any]:
@@ -719,6 +761,11 @@ def diff_bodies(a: str, b: str) -> dict[str, Any]:
     common_tokens = a_tokens & b_tokens
     union_tokens = a_tokens | b_tokens
     token_overlap = round(len(common_tokens) / max(len(union_tokens), 1), 4)
+    db = WAFSignatureDB()
+    context_a = _body_context(a, db)
+    context_b = _body_context(b, db)
+    keys_a = set(context_a["json_key_paths"])
+    keys_b = set(context_b["json_key_paths"])
 
     return {
         "length_a": la,
@@ -727,6 +774,11 @@ def diff_bodies(a: str, b: str) -> dict[str, Any]:
         "length_ratio_b_over_a": length_ratio,
         "line_overlap_jaccard": line_overlap,
         "token_overlap_jaccard": token_overlap,
+        "json_keys_added": sorted(keys_b - keys_a),
+        "json_keys_removed": sorted(keys_a - keys_b),
+        "json_shape_changed": keys_a != keys_b,
+        "context_a": context_a,
+        "context_b": context_b,
         "sha256_a": hashlib.sha256(a.encode("utf-8", errors="replace")).hexdigest(),
         "sha256_b": hashlib.sha256(b.encode("utf-8", errors="replace")).hexdigest(),
         "identical": a == b,
@@ -752,6 +804,38 @@ def _read_text(path: str | None) -> str:
     except OSError as e:
         print(f"[warn] could not read {path}: {e}", file=sys.stderr)
         return ""
+
+
+def _header_context(headers: str) -> dict[str, Any]:
+    """Expose routing/auth hints without copying sensitive header values."""
+    values: dict[str, str] = {}
+    cookie_names: list[str] = []
+    for raw_line in headers.splitlines():
+        if ":" not in raw_line:
+            continue
+        name, value = raw_line.split(":", 1)
+        key = name.strip().lower()
+        value = value.strip()
+        if key in {"content-type", "location", "server", "via", "www-authenticate"}:
+            values.setdefault(key, value[:300])
+        if key == "set-cookie":
+            cookie_name = value.split("=", 1)[0].strip()
+            if cookie_name and cookie_name not in cookie_names:
+                cookie_names.append(cookie_name[:80])
+    location = values.get("location", "")
+    if location:
+        parsed = urllib.parse.urlsplit(location)
+        location = urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, "", "")
+        )[:300]
+    return {
+        "content_type": values.get("content-type", ""),
+        "location": location,
+        "server": values.get("server", ""),
+        "via": values.get("via", ""),
+        "www_authenticate": bool(values.get("www-authenticate")),
+        "set_cookie_names": cookie_names[:16],
+    }
 
 
 def _load_baseline(path: str | None) -> dict[str, Any]:

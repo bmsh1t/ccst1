@@ -223,8 +223,10 @@ LOAD -> REVIEW EVIDENCE -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDI
 - `mcp/hackerone-mcp/` — HackerOne public API (Hacktivity, program stats, policy)
 
 FofaMap MCP (FOFA + Shodan) and JSHook MCP are Claude-side optional external
-capabilities only. They do **not** automatically integrate with `/recon`,
-`/surface`, `/autopilot`, or `agent.py`.
+capabilities. FofaMap is allowed in `/autopilot` and `/autopilot-round` only for
+an evidence-triggered asset-intelligence lane when visible; it is not a default
+round step and returned third-party assets remain chain context until scope
+validation. JSHook remains an explicit runtime-evidence integration.
 
 ### Hunt Memory (in `memory/`)
 

@@ -31,6 +31,7 @@ def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
     assert '- Agent' in text
     assert 'mcp__Playwright__*' in text
     assert 'mcp__chrome-devtools__*' in text
+    assert 'mcp__fofamap__*' in text
     assert "through Claude Code's `Agent` tool" in normalized
     assert 'tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"' in text
     assert "git rev-parse --show-toplevel" in text
@@ -43,9 +44,22 @@ def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
     assert '"$ARGUMENTS"' not in text
 
 
+def test_fofamap_is_evidence_triggered_and_scope_bound():
+    command = " ".join(_read("docs/autopilot-lanes.md").split()).lower()
+
+    assert "fofamap (`mcp__fofamap__*`) is one optional" in command
+    assert "fofa/shodan adapter for a concrete coverage gap" in command
+    assert "do not call it every round" in command
+    assert "asset_relation_observations.jsonl" in command
+    assert "python3 tools/recon_candidates.py --target <target_shell>" in command
+    assert "external-chain-context" in command
+    assert "never send active validation requests" in command
+
+
 def test_generic_asset_relationship_lane_is_bounded_public_and_scope_preserving():
     paths = (
         "commands/autopilot.md",
+        "docs/autopilot-lanes.md",
         "commands/recon.md",
         "skills/web2-recon/SKILL.md",
         "docs/tool-index.md",
@@ -98,7 +112,9 @@ def test_bounded_deep_invocation_handoffs_instead_of_expanding_new_lanes():
 
 
 def test_browser_first_use_probe_retries_only_transient_session_failures():
-    command = " ".join(_read("commands/autopilot.md").split()).lower()
+    command = " ".join(
+        (_read("commands/autopilot.md"), _read("docs/autopilot-lanes.md"))
+    ).lower()
 
     assert "browser actions use only visible playwright/chrome mcp" in command
     assert "never run `agent-browser` or `playwright-cli` through bash" in command
@@ -136,14 +152,14 @@ def test_finish_contract_rebuilds_coverage_then_reads_explicit_closure_verdict()
 
 
 def test_durable_queue_work_is_claimed_before_replay():
-    command = _read("commands/autopilot.md")
+    command = _read("docs/autopilot-lanes.md")
 
     assert "python3 tools/action_queue.py claim --target <target_shell>" in command
     assert "python3 tools/action_queue.py next --target <target_shell>" not in command
 
 
 def test_case_state_continuation_has_an_explicit_controller_branch():
-    command = _read("commands/autopilot.md")
+    command = _read("docs/autopilot-lanes.md")
 
     assert "`resume_case_state`" in command
     assert "state.case_state.top_next_action" in command
@@ -170,7 +186,7 @@ def test_failed_sources_and_tools_are_suppressed_within_one_invocation():
 
 
 def test_inline_json_injection_uses_bounded_baseline_relative_waf_adaptation():
-    command = " ".join(_read("commands/autopilot.md").split()).lower()
+    command = " ".join(_read("docs/autopilot-lanes.md").split()).lower()
 
     assert "live/wafw00f_hits.txt" in command
     assert "sampled host-level context" in command
@@ -178,7 +194,7 @@ def test_inline_json_injection_uses_bounded_baseline_relative_waf_adaptation():
     assert "--no-default-seeds" in command
     assert "--max-requests <budget>" in command
     assert "poc/json_inject/summary.json" in command
-    assert "at most two budgeted sqli/xss semantic variants" in command
+    assert "defaults to four evidence-linked semantic variants and permits at most eight" in command
     assert "`429`, transport failure, block pages" in command
     assert "never spray because parameters or a waf exist" in command
 

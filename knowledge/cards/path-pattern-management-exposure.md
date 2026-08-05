@@ -107,6 +107,12 @@ deep_refs: []
 - 不把具体工具选择绑定为强制工具；核心是“目标特定词表 + 局部递归 + 只读记录反哺”。
 - 不把口令测试归入本卡自动执行；需要时只把登录面、命名规律、默认品牌和错误信号提供给 `/spray` / `credential-attack` 受控流程。
 
+## 401/403 访问边界衔接
+
+- 管理、内部、监控或调试兄弟路径返回 401/403 时，保留 `seed_refs`、响应栈、重定向和随机 miss 对照，交给 AI 选择一个有理由的 path/header/encoding/method 变体。
+- 变体只能通过 `tools/bypass_403.sh` 执行；计划模式由工具校验 Scope、AuthSession、预算和危险方法，结果写入其 `summary.json` 与现有 Action Queue。
+- 200 或状态变化只代表 edge/router 差异；必须有目标特定内容、组件结构或权限差分才升级为 Candidate，歧义保持 `needs_review`。
+
 ## 适用场景
 
 - 目标 URL、目录、文件名、API 前缀、参数名、子域、静态资源或业务模块名存在可归纳命名规律。

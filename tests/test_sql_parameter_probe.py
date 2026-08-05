@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import sys
+from pathlib import Path
 
 from tools import sql_parameter_probe as probe
 from tools.json_inject_probe import PAYLOADS
@@ -157,6 +159,70 @@ def test_parameter_probe_shares_one_request_budget_across_endpoints(monkeypatch)
     assert allocated == [2, 2, 2]
     assert captured["request_count"] == captured["request_budget"] == 6
     assert captured["budget_exhausted"] is True
+
+
+def test_parameter_probe_resumes_endpoint_tail(monkeypatch, tmp_path):
+    endpoints = [
+        {"url": f"https://target.test/search/{index}?q=x", "method": "GET"}
+        for index in range(4)
+    ]
+    calls: list[str] = []
+
+    class Session:
+        def bind_target(self, _target):
+            return self
+
+    def fake_probe(endpoint, *, max_requests, stats, **_kwargs):
+        calls.append(endpoint["url"])
+        stats["request_count"] += max_requests
+        return [], []
+
+    monkeypatch.setattr(probe, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(probe, "session_from_args", lambda _args: Session())
+    monkeypatch.setattr(probe, "_read_inputs", lambda _path, _mode: endpoints)
+    monkeypatch.setattr(probe, "probe_parameter_endpoint", fake_probe)
+    monkeypatch.setattr(sys, "argv", [
+        "sql_parameter_probe", "--target", "target.test", "--urls-file", "unused", "--max-requests", "2"
+    ])
+
+    assert probe.main() == 0
+    assert calls == [item["url"] for item in endpoints[:2]]
+    summary_path = tmp_path / "findings" / "target.test" / "poc" / "sql_matrix" / "query" / "summary.json"
+    first = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert first["cursor"]["next_endpoint_index"] == 2
+    assert first["cursor"]["coverage_complete"] is False
+
+    assert probe.main() == 0
+    assert calls == [item["url"] for item in endpoints]
+    second = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert second["resumed"] is True
+    assert second["cursor"]["coverage_complete"] is True
+
+
+def test_parameter_summary_path_survives_hit_write(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "BASE_DIR", tmp_path)
+    result = probe._write_results(
+        "target.test",
+        "query",
+        [{
+            "url": "https://target.test/search?q=x",
+            "field": "q",
+            "payload_class": "sqli_error",
+            "signal": "sql_error",
+        }],
+        [],
+        {
+            "input_fingerprint": "a" * 64,
+            "endpoint_count": 1,
+            "probed_endpoint_count": 1,
+            "request_count": 2,
+            "request_budget": 2,
+            "budget_exhausted": False,
+            "skipped": {},
+        },
+    )
+    assert Path(result["summary"]).is_file()
+    assert json.loads(Path(result["summary"]).read_text(encoding="utf-8"))["hit_count"] == 1
 
 
 def test_summary_metadata_binds_input_source_and_fingerprint(tmp_path, monkeypatch):

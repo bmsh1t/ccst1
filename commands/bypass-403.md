@@ -1,41 +1,55 @@
 ---
-description: Probe a 403/401 endpoint with the most-paid bypass tricks (header injection, path encoding, method swap). Wraps byp4xx when installed; otherwise runs a built-in matrix of ~20 techniques. Usage: /bypass-403 <url> | /bypass-403 -l <urls-file>
+description: Probe a 401/403 access-limit endpoint with a bounded fallback or an evidence-linked AI plan. Scope, auth, method safety, raw evidence, and result semantics stay tool-owned.
 ---
 
 # /bypass-403
 
-Try to bypass an HTTP 403/401 response with header injection, path encoding,
-and method tampering — the standard battery from disclosed reports.
+Run the single access-limit executor. It is for path, directory, proxy-route, and
+authorization-boundary evidence; WAF is only response context, not a prerequisite.
 
 ## Usage
 
 ```
 /bypass-403 https://target.com/admin
 /bypass-403 -l recon/target.com/live/status_403.txt
+/bypass-403 https://target.com/admin --max-requests 96
+/bypass-403 --plan plan.json --target target.com [--auth-file .private/auth.json] [--queue]
 ```
 
-## What it tries
+The positional URL/list path keeps the existing bounded fallback and optional
+`byp4xx` compatibility. When `ALLOW_UNSAFE_HTTP_TESTS=1` and no explicit
+`--max-requests` is supplied, `byp4xx` runs as an external compatibility pass
+with a 60-second wall-clock timeout (`BYP4XX_TIMEOUT`); its output is unparsed
+and therefore remains `needs_review`/`partial`. Supplying `--max-requests` forces
+the counted built-in matrix. The `--plan` path accepts schema-versioned JSON generated
+from target evidence; it validates target scope, AuthSession, request budget,
+headers, and methods before sending anything. PUT/PATCH/TRACE remain manual-review
+by default and require `ALLOW_UNSAFE_HTTP_TESTS=1`.
 
-| Class | Examples |
-|---|---|
-| Header injection | `X-Original-URL`, `X-Rewrite-URL`, `X-Forwarded-For: 127.0.0.1`, `X-Custom-IP-Authorization` |
-| Path encoding | `/admin/%2e/`, `/.admin`, `/admin/`, `/admin;/`, `/admin..;/` |
-| Suffix tricks | `/admin.json`, `/admin#`, `/admin/.` |
-| Method / verb boundary | Compare observed safe methods first; POST/PUT/PATCH/TRACE only when the concrete action has no destructive side effect or is explicitly opted in |
+Fallback mode has a 64-request invocation budget by default; use
+`--max-requests N` to narrow or raise it up to 512. A budget stop is written as
+`partial` and the remaining list/variants must be resumed explicitly. Plan mode
+also records the round, plan hash, executed probe IDs, and skipped probe IDs so a
+second evidence-linked plan can continue without claiming full coverage.
+The fallback uses its built-in WAF signatures so the request cap remains exact;
+set `BYPASS_ALLOW_EXTERNAL_WAF=1` only when an additional uncounted `wafw00f`
+advisory pass is intentional. Its result is context, never bypass proof.
 
-When `byp4xx` (`lobuhi/byp4xx`) is installed it is used directly; otherwise the
-built-in fallback runs the same set with `curl`.
+## Result contract
 
-## When it pays
-
-- 403 on `/admin`, `/api/internal/*`, `/debug` — admin panel exposure.
-- 401 on a GET endpoint that proxies through a misconfigured nginx — bypass
-  via `X-Original-URL` is common for Nginx + Spring Boot stacks.
-- A bypass that lands you in a privileged endpoint typically chains into
-  IDOR / RCE / data exposure — payouts depend on what's behind the door.
+`blocked` means the access-limit response remains; `edge_passed` means the edge
+changed without protected-content proof; `candidate` requires protected marker or
+permission-differential evidence; `needs_review` is ambiguous; `partial` records
+transport, rate, or incomplete execution. A changed status or 200 alone is not a
+bypass.
 
 ## Output
 
-`findings/bypass/<timestamp>/`:
-- `byp4xx.txt` — full upstream-tool output, OR
-- `bypass_hits.txt` — `method|url|header|status` lines for built-in fallback hits
+`findings/<target-key>/bypass/<timestamp>/`:
+- `byp4xx.txt` — full upstream-tool output (with `byp4xx.meta.json` and
+  `summary.json` marking the result for manual review), OR
+- `bypass_hits.txt`, `bypass_edge_passed.txt`, `bypass_uncertain.txt`, and
+  `bypass_blocked.txt` — line-oriented compatibility output
+- `results.jsonl` and `summary.json` — plan result/state contract
+- `raw/` — per-probe response headers and bodies for replay
+- `action_queue.json` — optional existing Action Queue projection when `--queue` is set

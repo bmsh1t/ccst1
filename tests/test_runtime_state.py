@@ -646,6 +646,29 @@ def test_inspect_recon_prefers_host_aware_ports_with_legacy_fallback(tmp_path):
     assert preferred["infra_paths"]["open_ports"] == "ports/open_host_ports.txt"
 
 
+def test_inspect_recon_exposes_structured_waf_context(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com" / "live"
+    recon_dir.mkdir(parents=True)
+    (recon_dir / "waf_context.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "waf_context",
+                "target": "target.com",
+                "status": "ok",
+                "detected_count": 1,
+                "vendors": ["cloudflare"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = inspect_recon_artifacts(tmp_path, "target.com")
+
+    assert payload["counts"]["waf_context"] == 1
+    assert payload["infra_paths"]["waf_context"] == "live/waf_context.json"
+
+
 def test_inspect_recon_artifacts_accepts_compact_ffuf_surface(tmp_path):
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)

@@ -687,8 +687,11 @@ _ALL_TOOL_SPECS: list[dict] = [
                 "operator objects ({$ne:null}, {$regex:.*}) — fire on /api/login when stack is "
                 "Node+Mongo; GraphQL probe fires on `query`-shaped fields targeting /graphql. "
                 "When a canonical SQLi/XSS probe is newly WAF-blocked relative to the endpoint "
-                "baseline, it tries at most two class-specific semantic variants and preserves "
-                "the block/bypass observations; normal responses never expand into a payload spray. "
+                "baseline, plan mode tries four class-specific semantic variants by default (hard maximum eight) and preserves "
+                "the block/bypass observations; without a plan static fallback remains capped at two, and normal responses never expand into a payload spray. "
+                "For evidence-guided WAF adaptation, the AI may provide a target-owned waf_plan "
+                "with reasons, expected signals, stop conditions, and artifact references; the "
+                "tool still owns scope, auth, and budget gates. "
                 "Auto-loads endpoints from recon/<t>/browser/xhr_endpoints.txt and "
                 "findings/<t>/js_intel/hypotheses.json. "
                 "Use AFTER imported browser MCP evidence or run_js_read has populated POST endpoint "
@@ -728,6 +731,13 @@ _ALL_TOOL_SPECS: list[dict] = [
                             "Default true."
                         ),
                         "default": True,
+                    },
+                    "waf_plan": {
+                        "type": "string",
+                        "description": (
+                            "Optional target-owned JSON plan written by the AI from WAF/response/stack evidence. "
+                            "The tool validates evidence, scope, and the default-four/hard-eight variant limit; without it the static fallback remains capped at two."
+                        ),
                     },
                 },
                 "required": [],
@@ -1713,6 +1723,7 @@ class ToolDispatcher:
                     js_intel=str(args.get("js_intel", "")),
                     max_requests=int(args.get("max_requests", 60)),
                     add_default_seeds=bool(args.get("add_default_seeds", True)),
+                    waf_plan=str(args.get("waf_plan", "")),
                 )
                 obs = self._summarize_findings(domain, "json_inject", ok)
 
@@ -1842,6 +1853,11 @@ class ToolDispatcher:
             tb = traceback.format_exc()
             return f"Tool {name} raised exception: {exc}\n{tb[:500]}"
 
+        # A boolean ``ok`` returned by an execution tool is part of the
+        # completion contract. Read-only tools have no such value and remain
+        # completed after their observation is persisted.
+        tool_success = locals().get("ok")
+
         # (P5-B11) Cap large tool returns and log overflow. Applied to the
         # read_* tools where 200KB+ outputs are realistic; other tools are
         # left untouched.
@@ -1863,7 +1879,8 @@ class ToolDispatcher:
 
         # Update memory
         self.memory.add_observation(name, obs_full)
-        self.memory.completed_steps.append(name)
+        if tool_success is not False:
+            self.memory.completed_steps.append(name)
         self.memory.step_count += 1
 
         # Classify any critical/high findings into findings_log

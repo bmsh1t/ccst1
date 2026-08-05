@@ -125,6 +125,10 @@ try:
 except ImportError:  # pragma: no cover - direct tools/ execution
     from recon_target_selector import load_rotation_status  # type: ignore
 try:
+    from tools.scope_context import ScopeContext, ScopeContextError
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from scope_context import ScopeContext, ScopeContextError  # type: ignore
+try:
     from tools.target_case_state import case_state_path, summary as build_case_state_summary
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_case_state import case_state_path, summary as build_case_state_summary  # type: ignore
@@ -394,6 +398,10 @@ def _load_json_inject_projection(repo_root: str, target: str) -> dict:
         int(payload.get("schema_version", 0) or 0) < 2
         or status not in {"complete_no_hit", "candidate_pending", "partial", "invalid_input"}
         or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+        or (
+            str(payload.get("waf_plan_sha256") or "")
+            and not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("waf_plan_sha256") or ""))
+        )
     ):
         status = "partial"
     for binding in payload.get("source_bindings") or []:
@@ -420,12 +428,25 @@ def _load_json_inject_projection(repo_root: str, target: str) -> dict:
         "request_count": int(payload.get("request_count", 0) or 0),
         "hit_count": int(payload.get("hit_count", 0) or 0),
         "waf_observation_count": int(payload.get("waf_observation_count", 0) or 0),
+        "batch_start_endpoint_index": _bounded_count(payload.get("batch_start_endpoint_index")),
+        "batch_tested_endpoint_count": _bounded_count(payload.get("batch_tested_endpoint_count")),
+        "resumed": bool(payload.get("resumed")),
+        "cursor": _probe_cursor_projection(payload.get("cursor")),
+        "waf_plan_ref": str(payload.get("waf_plan_ref") or "")[:300],
+        "waf_plan_sha256": str(payload.get("waf_plan_sha256") or ""),
+        "waf_plan_variant_count": _bounded_count(payload.get("waf_plan_variant_count")),
+        "waf_ai_variants_executed": _bounded_count(payload.get("waf_ai_variants_executed")),
         "transport_error_count": int(payload.get("transport_error_count", 0) or 0),
         "skipped": {
             key: int((payload.get("skipped") or {}).get(key, 0) or 0)
             for key in ("out_of_scope", "unsupported_method", "invalid_url", "out_of_scope_redirect")
         },
     })
+    if payload.get("cursor") is not None and not _probe_cursor_valid(
+        payload.get("cursor"), fingerprint, int(payload.get("endpoint_count", 0) or 0)
+    ):
+        projection["status"] = "partial"
+        projection["reason"] = "invalid_cursor"
     return projection
 
 
@@ -439,6 +460,47 @@ def _bounded_count(value: object) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, min(value, 1_000_000))
+
+
+def _probe_cursor_projection(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    deferred = value.get("deferred_endpoint_indices")
+    return {
+        "schema_version": _bounded_count(value.get("schema_version")),
+        "input_fingerprint": str(value.get("input_fingerprint") or "")[:64],
+        "endpoint_count": _bounded_count(value.get("endpoint_count")),
+        "next_endpoint_index": _bounded_count(value.get("next_endpoint_index")),
+        "deferred_endpoint_count": len(deferred) if isinstance(deferred, list) else 0,
+        "remaining_endpoint_count": _bounded_count(value.get("remaining_endpoint_count")),
+        "coverage_complete": bool(value.get("coverage_complete")),
+    }
+
+
+def _probe_cursor_valid(value: object, input_fingerprint: str, endpoint_count: int) -> bool:
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        return False
+    if value.get("input_fingerprint") != input_fingerprint or value.get("endpoint_count") != endpoint_count:
+        return False
+    start_index = value.get("next_endpoint_index")
+    deferred = value.get("deferred_endpoint_indices")
+    if not isinstance(value.get("coverage_complete"), bool):
+        return False
+    if isinstance(start_index, bool) or not 0 <= start_index <= endpoint_count:
+        return False
+    if not isinstance(deferred, list) or any(
+        isinstance(item, bool) or not isinstance(item, int) or not 0 <= item < endpoint_count
+        for item in deferred
+    ) or len(set(deferred)) != len(deferred):
+        return False
+    remaining = value.get("remaining_endpoint_count")
+    expected = len(deferred) + max(0, endpoint_count - start_index)
+    return (
+        isinstance(remaining, int)
+        and not isinstance(remaining, bool)
+        and remaining == expected
+        and value.get("coverage_complete") == (expected == 0)
+    )
 
 
 def _load_sql_matrix_projection(repo_root: str, target: str, lane: str | None = None) -> dict:
@@ -478,6 +540,10 @@ def _load_sql_matrix_projection(repo_root: str, target: str, lane: str | None = 
         reason = "invalid_status"
     elif not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
         reason = "missing_input_fingerprint"
+    elif str(payload.get("waf_plan_sha256") or "") and not re.fullmatch(
+        r"[0-9a-f]{64}", str(payload.get("waf_plan_sha256") or "")
+    ):
+        reason = "invalid_waf_plan_hash"
     bindings = payload.get("source_bindings")
     if not isinstance(bindings, list) or not bindings:
         reason = reason or "missing_source_binding"
@@ -495,6 +561,10 @@ def _load_sql_matrix_projection(repo_root: str, target: str, lane: str | None = 
             if current != str(binding.get("sha256") or ""):
                 reason = "stale_source_binding"
                 break
+    if payload.get("cursor") is not None and not _probe_cursor_valid(
+        payload.get("cursor"), fingerprint, int(payload.get("endpoint_count", 0) or 0)
+    ):
+        reason = reason or "invalid_cursor"
     if reason:
         status = "partial"
     candidates = []
@@ -520,6 +590,14 @@ def _load_sql_matrix_projection(repo_root: str, target: str, lane: str | None = 
         "hit_count": _bounded_count(payload.get("hit_count")),
         "candidate_count": _bounded_count(payload.get("hit_count")),
         "waf_observation_count": _bounded_count(payload.get("waf_observation_count")),
+        "batch_start_endpoint_index": _bounded_count(payload.get("batch_start_endpoint_index")),
+        "batch_tested_endpoint_count": _bounded_count(payload.get("batch_tested_endpoint_count")),
+        "resumed": bool(payload.get("resumed")),
+        "cursor": _probe_cursor_projection(payload.get("cursor")),
+        "waf_plan_ref": str(payload.get("waf_plan_ref") or "")[:300],
+        "waf_plan_sha256": str(payload.get("waf_plan_sha256") or ""),
+        "waf_plan_variant_count": _bounded_count(payload.get("waf_plan_variant_count")),
+        "waf_ai_variants_executed": _bounded_count(payload.get("waf_ai_variants_executed")),
         "transport_error_count": _bounded_count(payload.get("transport_error_count")),
         "budget_exhausted": bool(payload.get("budget_exhausted")),
         "candidates": candidates[:20],
@@ -1398,19 +1476,23 @@ def _format_infra_signal_lines(target: str, recon_artifacts: dict) -> list[str]:
     """Render WAF/origin/port recon signals as soft review hints."""
     counts = recon_artifacts.get("counts") or {}
     waf_hits = _count_value(counts, "waf_hits")
+    waf_context = _count_value(counts, "waf_context")
     origin_candidates = _count_value(counts, "origin_candidates")
     open_ports = _count_value(counts, "open_ports")
-    if waf_hits <= 0 and origin_candidates <= 0 and open_ports <= 0:
+    if waf_hits <= 0 and waf_context <= 0 and origin_candidates <= 0 and open_ports <= 0:
         return []
 
     storage_key = target_storage_key(target)
     lines = [
         "Infra signals:",
-        f"- WAF hits: {waf_hits}, origin candidates: {origin_candidates}, open ports: {open_ports}",
+        f"- WAF hits: {waf_hits}, WAF context: {waf_context}, "
+        f"origin candidates: {origin_candidates}, open ports: {open_ports}",
     ]
     review_paths = []
     if waf_hits > 0:
         review_paths.append(f"recon/{storage_key}/live/wafw00f_hits.txt")
+    if waf_context > 0:
+        review_paths.append(f"recon/{storage_key}/live/waf_context.json")
     if origin_candidates > 0:
         review_paths.append(f"recon/{storage_key}/live/unwaf_bypass_ips.txt")
     if open_ports > 0:
@@ -1678,6 +1760,13 @@ def _is_substantive_queue_action(item: dict) -> bool:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     if (
         status in {"queued", "ready"}
+        and action_type == "bypass-403"
+        and evidence_type == "access-limit"
+        and "summary.json" in str(item.get("evidence") or "")
+    ):
+        return True
+    if (
+        status in {"queued", "ready"}
         and action_type == "workflow-lead-review"
         and str(metadata.get("category") or "") == "asset-scope-review"
     ):
@@ -1885,6 +1974,24 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
         batch_dir / "high_value_targets.json",
         completed,
     )
+    scope = _scope_identity(resolved_target)
+    scope_changed = False
+    scope_metadata_path = batch_dir / "scope_context.json"
+    if scope_metadata_path.is_file() and scope.get("scope_hash"):
+        try:
+            recorded_scope = json.loads(scope_metadata_path.read_text(encoding="utf-8"))
+            scope_changed = bool(
+                isinstance(recorded_scope, dict)
+                and recorded_scope.get("scope_hash")
+                and str(recorded_scope.get("scope_hash")) != str(scope["scope_hash"])
+            )
+        except (OSError, json.JSONDecodeError):
+            scope_changed = True
+    if scope_changed:
+        completed = []
+        failed = []
+        candidates = []
+        pending = list(current_entries)
 
     blocker = ""
     if not current_entries:
@@ -1909,6 +2016,7 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
         "runtime_state": runtime_state,
         "recon_in_progress": recon_in_progress,
         "scan_in_progress": False,
+        "scope": scope,
         "next_action": next_action,
         "batch": {
             "batch_dir": str(batch_dir),
@@ -1923,7 +2031,28 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
             "pending": pending,
             "candidates": candidates,
             "blocker": blocker,
+            "scope": scope,
+            "scope_changed": scope_changed,
         },
+    }
+
+
+def _scope_identity(target: str) -> dict:
+    """Project stable Scope identity without loading recon/discovery bodies."""
+    try:
+        context = ScopeContext.from_target(target)
+    except ScopeContextError as exc:
+        return {
+            "status": "invalid",
+            "scope_ref": str(target or ""),
+            "scope_hash": "",
+            "reason": " ".join(str(exc).split())[:300],
+        }
+    return {
+        "status": "valid",
+        "scope_ref": context.source_ref or context.root_target,
+        "scope_hash": context.scope_hash,
+        "summary": context.summary(),
     }
 
 
@@ -2168,6 +2297,7 @@ def _build_domain_autopilot_state(
         "target": target,
         "resolved_target": resolved_target,
         "target_kind": classify_target(resolved_target)["kind"],
+        "scope": _scope_identity(resolved_target),
         "memory_dir": resolved_memory_dir,
         "has_recon": has_recon,
         "has_memory": bool(facts.get("has_memory")),
@@ -3065,6 +3195,9 @@ def format_autopilot_state(state: dict) -> str:
             f"Surface Ranking: {batch.get('surface_ranking', '')}",
             f"Manifest: {batch.get('manifest', '')}",
         ]
+        scope = batch.get("scope") or state.get("scope") or {}
+        if scope:
+            lines.append(f"Scope: {scope.get('scope_ref', '')} ({scope.get('scope_hash', '')})")
         blocker = str(batch.get("blocker") or "").strip()
         if blocker:
             lines.extend(["", f"Blocker: {blocker}"])
@@ -3530,6 +3663,8 @@ def build_decision_projection(state: dict, kind: str) -> dict:
         "target": target,
         "target_storage_key": target_storage_key(target) if target else "",
     }
+    if isinstance(state.get("scope"), dict) and state.get("scope"):
+        projection["scope"] = state["scope"]
     if kind == "loop_check":
         projection["loop_guard"] = state.get("loop_guard") or {}
         return projection
@@ -3573,7 +3708,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
     projection["sql_matrix"] = {
         lane: {
             key: item[key]
-            for key in ("status", "reason", "path", "input_fingerprint", "endpoint_count", "probed_endpoint_count", "request_count", "hit_count", "candidate_count", "candidates")
+            for key in ("status", "reason", "path", "input_fingerprint", "endpoint_count", "probed_endpoint_count", "request_count", "hit_count", "candidate_count", "batch_start_endpoint_index", "batch_tested_endpoint_count", "resumed", "cursor", "candidates")
             if key in item
         }
         for lane, item in (state.get("sql_matrix") or {}).items()

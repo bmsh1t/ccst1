@@ -18,12 +18,14 @@ try:
     )
     from tools.runtime_config import is_ctf_mode_enabled
     from tools.runtime_doctor import KIND_ORDER, compare_runtime
+    from tools.scope_context import ScopeContext, ScopeContextError
 except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直接执行
     from autopilot_args import parse_autopilot_args
     from autopilot_state import build_autopilot_bootstrap_state, describe_next_step
     from capability_profile import build_capability_profile, unknown_capability_profile
     from runtime_config import is_ctf_mode_enabled
     from runtime_doctor import KIND_ORDER, compare_runtime
+    from scope_context import ScopeContext, ScopeContextError
 
 
 SCHEMA_VERSION = 1
@@ -49,6 +51,16 @@ def _runtime_projection(payload: dict[str, Any]) -> dict[str, Any]:
         "drift_count": int(payload.get("drift_count", 0) or 0),
         "runtime_root": str(payload.get("runtime_root") or ""),
         "kinds": kinds,
+    }
+
+
+def _scope_projection(context: ScopeContext) -> dict[str, Any]:
+    """Expose only bounded scope identity; never load discovery artifacts."""
+    summary = context.summary()
+    return {
+        "scope_ref": context.source_ref or context.root_target,
+        "scope_hash": context.scope_hash,
+        "summary": summary,
     }
 
 
@@ -212,6 +224,67 @@ def _compact_intel_continuation(value: object) -> dict[str, Any]:
     }
 
 
+_LANE_CONTRACTS = {
+    "state-and-queue": (
+        "docs/autopilot-lanes.md#state-and-queue",
+        "durable state or Action Queue work is authoritative",
+    ),
+    "recon-surface": (
+        "docs/autopilot-lanes.md#recon-and-surface",
+        "discovery, surface, or evidence collection is next",
+    ),
+    "browser-source-js": (
+        "docs/autopilot-lanes.md#browser-source-and-js",
+        "browser, source, or JavaScript evidence is required",
+    ),
+    "software-intel": (
+        "docs/autopilot-lanes.md#software-and-intel",
+        "component or advisory intelligence is next",
+    ),
+    "workflow-case": (
+        "docs/autopilot-lanes.md#workflow-timing-and-case-state",
+        "workflow, timing, or case-state evidence is next",
+    ),
+    "controller": (
+        "commands/autopilot.md#state-consumption-loop",
+        "no specialized lane is selected by the current state",
+    ),
+}
+
+
+def _lane_contract_projection(state: dict[str, Any]) -> dict[str, str]:
+    """Return one on-demand lane reference instead of embedding every lane rule."""
+    action = str(state.get("next_action") or "")
+    if action in {
+        "run_recon",
+        "wait_recon",
+        "run_batch_recon",
+        "select_completed_domain",
+        "recon_no_live_hosts",
+        "prepare_surface_context",
+        "collect_candidate_evidence",
+        "hunt_p1",
+    }:
+        lane = "recon-surface"
+    elif action in {
+        "validate_finding",
+        "resume_action_queue",
+        "review_validation_candidate",
+        "complete_report_draft",
+    }:
+        lane = "state-and-queue"
+    elif action == "resume_case_state":
+        lane = "workflow-case"
+    elif action in {"run_intel", "collect_web_intel", "test_advisory_applicability"}:
+        lane = "software-intel"
+    elif state.get("browser_required"):
+        lane = "browser-source-js"
+    else:
+        lane = "controller"
+    ref, reason = _LANE_CONTRACTS[lane]
+    return {"id": lane, "ref": ref, "reason": reason}
+
+
 def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     """生成仅供 startup 路由使用的有界 state 视图。"""
     next_action = str(state.get("next_action") or "")
@@ -270,11 +343,23 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             if isinstance(item, dict)
         ]
         compact_batch["blocker"] = str(batch.get("blocker") or "")
+        if isinstance(batch.get("scope"), dict):
+            compact_batch["scope"] = {
+                key: batch["scope"][key]
+                for key in ("status", "scope_ref", "scope_hash", "summary", "reason")
+                if key in batch["scope"]
+            }
 
     return {
         "target_kind": str(state.get("target_kind") or "domain"),
+        "scope": {
+            key: (state.get("scope") or {})[key]
+            for key in ("status", "scope_ref", "scope_hash", "summary", "reason")
+            if key in (state.get("scope") or {})
+        },
         "next_action": next_action,
         "next_step": describe_next_step(state),
+        "lane_contract": _lane_contract_projection(state),
         "wait": next_action in {"wait_recon", "wait_scan"},
         "recon": {
             "has_recon": bool(state.get("has_recon")),
@@ -356,7 +441,9 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
                 "status", "reason", "path", "schema_version", "input_fingerprint",
                 "endpoint_count", "probed_endpoint_count", "request_count", "hit_count",
                 "waf_observation_count", "transport_error_count", "request_budget",
-                "budget_exhausted", "skipped",
+                "batch_start_endpoint_index", "batch_tested_endpoint_count", "resumed", "cursor",
+                "waf_plan_ref", "waf_plan_sha256", "waf_plan_variant_count",
+                "waf_ai_variants_executed", "budget_exhausted", "skipped",
             )
             if key in json_inject
         },
@@ -368,8 +455,10 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
                         "status", "reason", "path", "input_fingerprint",
                         "endpoint_count", "probed_endpoint_count", "request_count",
                         "request_budget", "hit_count", "candidate_count",
+                        "batch_start_endpoint_index", "batch_tested_endpoint_count", "resumed", "cursor",
                         "waf_observation_count", "transport_error_count",
-                        "budget_exhausted", "source_paths",
+                        "waf_plan_ref", "waf_plan_sha256", "waf_plan_variant_count",
+                        "waf_ai_variants_executed", "budget_exhausted", "source_paths",
                     )
                     if key in item
                 },
@@ -441,6 +530,7 @@ def build_autopilot_bootstrap(
         # the command must consume the parser result, not reinterpret raw
         # slash tokens while deciding when a deep invocation hands off.
         "invocation_batch": _invocation_batch_projection(arguments),
+        "scope": {},
         "runtime": {
             "checked": False,
             "clean": None,
@@ -455,6 +545,17 @@ def build_autopilot_bootstrap(
     # 参数 gate 必须在 runtime/state 读取前结束，避免 invalid slash 触发目标工作流。
     if arguments["action"] != "continue":
         return payload
+
+    try:
+        scope_context = ScopeContext.from_target(arguments["target"])
+    except ScopeContextError as exc:
+        payload["action"] = "stop_invalid_scope"
+        payload["error"] = {
+            "type": type(exc).__name__,
+            "reason": " ".join(str(exc).split())[:500],
+        }
+        return payload
+    payload["scope"] = _scope_projection(scope_context)
 
     try:
         runtime = compare_runtime(

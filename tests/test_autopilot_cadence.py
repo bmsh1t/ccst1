@@ -18,13 +18,15 @@ def _read(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_autopilot_prompts_stay_compact():
-    """Main prompts should remain routers, not giant embedded playbooks."""
+def test_autopilot_routes_lane_detail_on_demand():
+    """The controller routes lane detail instead of embedding another playbook."""
     command = _read(COMMAND)
     agent = _read(AGENT)
 
-    assert len(command.encode("utf-8")) <= 20 * 1024
-    assert len(agent.encode("utf-8")) <= 32 * 1024
+    assert "state.lane_contract.ref" in command
+    assert "docs/autopilot-lanes.md" in command
+    assert "read only the selected" in " ".join(command.split()).lower()
+    assert agent  # optional specialist prompt remains a separate entry point
 
 
 def test_autopilot_references_canonical_runtime_layers():
@@ -68,7 +70,8 @@ def test_autopilot_uses_context_pack_reference_hints_without_embedding_tables():
 
 def test_autopilot_keeps_decision_loop_without_legacy_cadence_bulk():
     command = _read(COMMAND)
-    flat = " ".join(command.split())
+    lanes = _read(REPO_ROOT / "docs" / "autopilot-lanes.md")
+    flat = " ".join(f"{command}\n{lanes}".split())
 
     for marker in (
         "Expert Hunter Autopilot",

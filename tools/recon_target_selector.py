@@ -21,9 +21,11 @@ from urllib.parse import urlsplit, urlunsplit
 try:
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
     from tools.technology_inventory import parse_httpx_text_line
+    from tools.scope_context import ScopeContext, ScopeContextError
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
     from technology_inventory import parse_httpx_text_line  # type: ignore
+    from scope_context import ScopeContext, ScopeContextError  # type: ignore
 
 
 STATE_SCHEMA = 1
@@ -190,7 +192,23 @@ def _read_candidates(httpx_path: Path, urls_path: Path, target: str) -> list[dic
     return candidates
 
 
-def _load_state(path: Path, target: str, wordlist_sha256: str, urls: set[str]) -> dict:
+def _scope_identity(target: str) -> tuple[str, str]:
+    try:
+        context = ScopeContext.from_target(target)
+    except ScopeContextError as exc:
+        raise ValueError(f"invalid target Scope: {exc}") from exc
+    return context.source_ref or context.root_target, context.scope_hash
+
+
+def _load_state(
+    path: Path,
+    target: str,
+    wordlist_sha256: str,
+    urls: set[str],
+    *,
+    scope_ref: str = "",
+    scope_hash: str = "",
+) -> dict:
     canonical_target = canonical_target_value(target)
     if not path.exists():
         return {
@@ -198,6 +216,8 @@ def _load_state(path: Path, target: str, wordlist_sha256: str, urls: set[str]) -
             "target": canonical_target,
             "wordlist_sha256": wordlist_sha256,
             "inventory_fingerprint": _fingerprint_urls(sorted(urls)),
+            "scope_ref": scope_ref,
+            "scope_hash": scope_hash,
             "completed": {},
             "active": [],
             "updated_at": _utc_now(),
@@ -218,12 +238,16 @@ def _load_state(path: Path, target: str, wordlist_sha256: str, urls: set[str]) -
         raise ValueError(f"invalid active batch in FFUF target state: {path}")
     if str(payload.get("wordlist_sha256") or "") != wordlist_sha256:
         completed = {}
+    if payload.get("scope_hash") and str(payload.get("scope_hash")) != scope_hash:
+        completed = {}
     payload["completed"] = {
         url: value
         for url, value in completed.items()
         if url in urls and isinstance(value, dict) and value.get("status") == "ok"
     }
     payload["wordlist_sha256"] = wordlist_sha256
+    payload["scope_ref"] = scope_ref
+    payload["scope_hash"] = scope_hash
     payload["inventory_fingerprint"] = _fingerprint_urls(sorted(urls))
     payload["active"] = []
     return payload
@@ -277,14 +301,24 @@ def select_targets(
     if limit < 1:
         raise ValueError("target selection limit must be positive")
     wordlist_sha256 = _sha256_file(wordlist_path)
+    scope_ref, scope_hash = _scope_identity(target)
     candidates = _read_candidates(httpx_path, urls_path, target)
     urls = {item["url"] for item in candidates}
-    state = _load_state(state_path, target, wordlist_sha256, urls)
+    state = _load_state(
+        state_path,
+        target,
+        wordlist_sha256,
+        urls,
+        scope_ref=scope_ref,
+        scope_hash=scope_hash,
+    )
     completed = set(state["completed"])
     selected = _pick_batch(candidates, completed, limit)
     plan = {
         "schema": STATE_SCHEMA,
         "target": canonical_target_value(target),
+        "scope_ref": scope_ref,
+        "scope_hash": scope_hash,
         "limit": limit,
         "eligible_count": len(candidates),
         "completed_count": len(completed),
@@ -311,6 +345,9 @@ def record_results(*, target: str, state_path: Path, results_path: Path) -> dict
         raise ValueError(f"invalid FFUF target state schema: {state_path}")
     if str(state.get("target") or "") != canonical_target_value(target):
         raise ValueError(f"FFUF target state belongs to a different target: {state_path}")
+    _scope_ref, scope_hash = _scope_identity(target)
+    if state.get("scope_hash") and str(state.get("scope_hash")) != scope_hash:
+        raise ValueError(f"FFUF target state Scope changed: {state_path}")
     active_raw = state.get("active", [])
     if not isinstance(active_raw, list) or any(not isinstance(item, str) for item in active_raw):
         raise ValueError(f"invalid active batch in FFUF target state: {state_path}")
@@ -362,6 +399,11 @@ def load_rotation_status(repo_root: str | Path, target: str) -> dict:
         eligible_count = int(plan.get("eligible_count", 0))
         if not isinstance(completed, dict) or eligible_count < 0:
             raise ValueError("invalid rotation counters")
+        scope_ref, scope_hash = _scope_identity(target)
+        for payload in (plan, state):
+            recorded_hash = str(payload.get("scope_hash") or "")
+            if recorded_hash and recorded_hash != scope_hash:
+                raise ValueError("Scope changed; FFUF rotation must restart")
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return {
             "status": "invalid",
@@ -376,6 +418,8 @@ def load_rotation_status(repo_root: str | Path, target: str) -> dict:
         "remaining": remaining,
         "eligible": eligible_count,
         "completed": len(completed),
+        "scope_ref": scope_ref,
+        "scope_hash": scope_hash,
         "plan": str(plan_path),
         "state": str(state_path),
     }

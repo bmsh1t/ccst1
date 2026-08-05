@@ -191,11 +191,14 @@ def probe_parameter_endpoint(
     max_requests: int,
     target: str,
     session: AuthSession | None,
+    waf_plan: dict | None = None,
     stats: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
     source = _parameter_source(endpoint, mode)
     if source is None:
         return [], []
+    if waf_plan and waf_plan.get("max_requests") is not None:
+        max_requests = min(max_requests, int(waf_plan["max_requests"]))
     url, method, pairs, content_type = source
     if not pairs:
         return [], []
@@ -290,9 +293,16 @@ def probe_parameter_endpoint(
             "technique": "canonical",
             **waf,
         })
-        for technique, variant in core._waf_variants(payload["class"], payload["value"]):
+        for candidate in core._waf_retry_variants(
+            waf_plan,
+            url=url,
+            field=field,
+            payload=payload,
+        ):
             if request_count >= max_requests:
                 break
+            technique = str(candidate.get("technique") or candidate.get("id") or "ai-variant")
+            variant = str(candidate.get("value") or "")
             retry_url, retry_body = _mutate_parameter(url, pairs, index, variant, mode)
             retry = _http_request(
                 retry_url,
@@ -306,15 +316,25 @@ def probe_parameter_endpoint(
             core._record_request(stats, retry)
             request_count += 1
             retry_waf = core._waf_observation(baseline, retry)
-            waf_events.append({
+            event = {
                 "url": retry_url,
                 "method": method,
                 "field": field,
                 "payload_class": payload["class"],
                 "payload_family": payload.get("family", payload["class"]),
                 "technique": technique,
+                "variant_source": candidate.get("source", "fallback"),
                 **retry_waf,
-            })
+            }
+            if candidate.get("source") == "ai":
+                event.update({
+                    "variant_id": candidate.get("id", ""),
+                    "ai_reason": candidate.get("reason", ""),
+                    "expected_signal": candidate.get("expected_signal", ""),
+                    "stop_condition": candidate.get("stop_condition", ""),
+                    "evidence_refs": candidate.get("evidence_refs", []),
+                })
+            waf_events.append(event)
             if retry_waf["outcome"] in {"transport_error", "rate_limited"}:
                 break
             if retry_waf["blocked"]:
@@ -329,6 +349,15 @@ def probe_parameter_endpoint(
             if detection["hit"]:
                 record = _hit_record(retry_url, method, field, payload, variant, retry, detection, body=retry_body)
                 record["waf_variant"] = technique
+                record["variant_source"] = candidate.get("source", "fallback")
+                if candidate.get("source") == "ai":
+                    record.update({
+                        "waf_variant_id": candidate.get("id", ""),
+                        "ai_reason": candidate.get("reason", ""),
+                        "expected_signal": candidate.get("expected_signal", ""),
+                        "stop_condition": candidate.get("stop_condition", ""),
+                        "evidence_refs": candidate.get("evidence_refs", []),
+                    })
                 hits.append(record)
             break
     return hits, waf_events
@@ -337,43 +366,61 @@ def probe_parameter_endpoint(
 def _write_results(target: str, lane: str, hits: list[dict], waf_events: list[dict], execution: dict) -> dict:
     out_dir = BASE_DIR / "findings" / target_storage_key(target) / "poc" / "sql_matrix" / lane
     out_dir.mkdir(parents=True, exist_ok=True)
-    for stale in out_dir.glob("*.json"):
-        if stale.name != "summary.json":
-            stale.unlink()
+    summary_path = out_dir / "summary.json"
+    details = dict(execution)
+    resumed = bool(details.get("resumed"))
+    previous: dict = {}
+    if resumed and summary_path.is_file():
+        try:
+            loaded = json.loads(summary_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict) and loaded.get("input_fingerprint") == details.get("input_fingerprint"):
+                previous = loaded
+        except (OSError, json.JSONDecodeError):
+            previous = {}
+    if not previous:
+        for stale in out_dir.glob("*.json"):
+            if stale.name != "summary.json":
+                stale.unlink()
     files: list[str] = []
     for hit in hits:
         slug = re.sub(r"[^A-Za-z0-9._-]+", "_", urllib.parse.urlparse(hit["url"]).path).strip("_") or "root"
         path = out_dir / f"{hit['payload_class']}_{slug}_{hit['field']}.json"
         path.write_text(json.dumps(hit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         files.append(str(path))
-    skipped = execution.get("skipped") or {}
+    skipped = details.get("skipped") or {}
+    prior_hits = previous.get("hits") if isinstance(previous.get("hits"), list) else []
+    prior_waf = previous.get("waf_observations") if isinstance(previous.get("waf_observations"), list) else []
+    prior_hit_count = int(previous.get("hit_count", 0) or 0) if previous else 0
+    prior_waf_count = int(previous.get("waf_observation_count", 0) or 0) if previous else 0
     if not int(execution.get("endpoint_count") or 0) and any(int(value or 0) for value in skipped.values()):
         status = "invalid_input"
-    elif hits:
+    elif hits or prior_hit_count:
         status = "candidate_pending"
-    elif execution.get("transport_error_count") or execution.get("budget_exhausted") or any(int(value or 0) for value in skipped.values()):
+    elif details.get("transport_error_count") or details.get("budget_exhausted") or any(int(value or 0) for value in skipped.values()):
         status = "partial"
     else:
         status = "complete_no_hit"
+    current_hit_summaries = [
+        {"url": item["url"], "field": item["field"], "class": item["payload_class"], "signal": item["signal"]}
+        for item in hits
+    ]
+    merged_hits = core._merge_summary_items(prior_hits, current_hit_summaries)
+    merged_waf = core._merge_summary_items(prior_waf, waf_events)
     payload = {
         "schema_version": 1,
         "kind": "sql_matrix_summary",
         "lane": lane,
         "target": canonical_target_value(target),
         "status": status,
-        **execution,
-        "hit_count": len(hits),
-        "waf_observation_count": len(waf_events),
+        **details,
+        "hit_count": prior_hit_count + core._new_summary_item_count(prior_hits, current_hit_summaries),
+        "waf_observation_count": prior_waf_count + core._new_summary_item_count(prior_waf, waf_events),
         "generated_at": int(time.time()),
-        "hits": [
-            {"url": item["url"], "field": item["field"], "class": item["payload_class"], "signal": item["signal"]}
-            for item in hits[:SUMMARY_ITEM_LIMIT]
-        ],
-        "waf_observations": waf_events[:SUMMARY_ITEM_LIMIT],
+        "hits": merged_hits[:SUMMARY_ITEM_LIMIT],
+        "waf_observations": merged_waf[:SUMMARY_ITEM_LIMIT],
     }
-    path = out_dir / "summary.json"
-    core._write_json_atomic(path, payload)
-    return {"summary": str(path), "files": files}
+    core._write_json_atomic(summary_path, payload)
+    return {"summary": str(summary_path), "files": files}
 
 
 def _read_inputs(path: str, mode: str) -> list[dict]:
@@ -402,6 +449,11 @@ def main() -> int:
     inputs.add_argument("--urls-file", help="newline-delimited query URLs or JSONL")
     inputs.add_argument("--form-file", help="JSONL of POST form requests: {url, method, body}")
     parser.add_argument("--max-requests", type=int, default=60)
+    parser.add_argument(
+        "--waf-plan",
+        default="",
+        help="Optional target-owned AI WAF-pass plan JSON; only used after a new baseline-relative SQLi block",
+    )
     add_cli_args(parser)
     args = parser.parse_args()
     if args.max_requests < 1:
@@ -410,8 +462,16 @@ def main() -> int:
     mode = "query" if args.urls_file else "form"
     source = args.urls_file or args.form_file
     session = session_from_args(args).bind_target(target)
+    try:
+        waf_plan = core.load_plan(args.waf_plan, target=target) if args.waf_plan else None
+    except ValueError as exc:
+        parser.error(str(exc))
     endpoints = _read_inputs(source, mode)
-    source_bindings = [binding for binding in (_source_binding(source),) if binding]
+    source_bindings = [
+        binding
+        for binding in (_source_binding(source), _source_binding(args.waf_plan))
+        if binding
+    ]
     input_fingerprint = _input_fingerprint(endpoints, source_bindings)
     hits: list[dict] = []
     waf_events: list[dict] = []
@@ -425,6 +485,8 @@ def main() -> int:
         "skipped": {"out_of_scope": 0, "invalid": 0},
     }
     request_budget = int(args.max_requests)
+    if waf_plan and waf_plan.get("max_requests") is not None:
+        request_budget = min(request_budget, int(waf_plan["max_requests"]))
     eligible: list[dict] = []
     for endpoint in endpoints:
         url = str(endpoint.get("url") or "").strip()
@@ -437,27 +499,74 @@ def main() -> int:
             continue
         stats["endpoint_count"] += 1
         eligible.append(endpoint)
-    for index, endpoint in enumerate(eligible):
+    summary_path = BASE_DIR / "findings" / target_storage_key(target) / "poc" / "sql_matrix" / mode / "summary.json"
+    cursor_state = core._probe_cursor(
+        summary_path,
+        target=target,
+        input_fingerprint=input_fingerprint,
+        endpoint_count=len(eligible),
+        kind="sql_matrix_summary",
+        lane=mode,
+    )
+    start_index = int(cursor_state["start_index"])
+    deferred_indices = list(cursor_state["deferred_indices"])
+    worklist: list[int] = []
+    for index in [*deferred_indices, *range(start_index, len(eligible))]:
+        if index not in worklist:
+            worklist.append(index)
+    next_index = start_index
+    deferred_next: list[int] = []
+    processed_work_items = 0
+    for position, index in enumerate(worklist):
+        endpoint = eligible[index]
         remaining_budget = request_budget - stats["request_count"]
         if remaining_budget <= 0:
             break
-        remaining_endpoints = len(eligible) - index
+        remaining_endpoints = len(worklist) - position
+        before_errors = stats["transport_error_count"]
         found, events = probe_parameter_endpoint(
             endpoint,
             mode=mode,
             max_requests=max(1, remaining_budget // remaining_endpoints),
             target=target,
             session=session,
+            waf_plan=waf_plan,
             stats=stats,
         )
         stats["probed_endpoint_count"] += 1
+        processed_work_items += 1
         hits.extend(found)
         waf_events.extend(events)
+        if index >= start_index:
+            next_index = max(next_index, index + 1)
+        if stats["transport_error_count"] > before_errors:
+            deferred_next.append(index)
+    deferred_next.extend(
+        index
+        for index in worklist[processed_work_items:]
+        if index < start_index
+    )
+    cursor = core._build_probe_cursor(
+        input_fingerprint,
+        endpoint_count=len(eligible),
+        next_endpoint_index=next_index,
+        deferred_endpoint_indices=deferred_next,
+    )
     stats["request_budget"] = request_budget
+    stats["waf_plan_ref"] = str(waf_plan.get("plan_ref") or "") if waf_plan else ""
+    stats["waf_plan_sha256"] = str(waf_plan.get("plan_sha256") or "") if waf_plan else ""
+    stats["waf_plan_variant_count"] = len(waf_plan.get("variants") or []) if waf_plan else 0
+    stats["waf_ai_variants_executed"] = sum(
+        1 for event in waf_events if event.get("variant_source") == "ai"
+    )
     stats["budget_exhausted"] = bool(
         stats["request_count"] >= request_budget
-        or stats["probed_endpoint_count"] < len(eligible)
+        or not cursor["coverage_complete"]
     )
+    stats["batch_start_endpoint_index"] = start_index
+    stats["batch_tested_endpoint_count"] = processed_work_items
+    stats["resumed"] = bool(cursor_state["resumed"])
+    stats["cursor"] = cursor
     result = _write_results(target, mode, hits, waf_events, stats)
     print(json.dumps({"status": "ok", "hit_count": len(hits), **result}, indent=2))
     return 0

@@ -2,6 +2,18 @@
 
 These are conditional probe shapes, not a default firing dictionary. Load this file only after the active evidence indicates parser mismatch, allowlist logic, upload validation, redirect validation, or WAF/router normalization issues. Every probe needs a baseline request, expected observation, and stop condition.
 
+## 401/403 Path and Proxy Access-Limit Lane
+
+Use `tools/bypass_403.sh` as the only network executor. Claude may form a
+schema-versioned plan from target evidence (path semantics, proxy/framework
+fingerprints, sibling routes, redirects, and prior responses), but each probe
+changes one boundary and carries a reason, expected signal, and stop condition.
+The executor enforces target Scope, AuthSession, request budget, raw evidence,
+and unsafe-method review. A 200 or changed status is only `edge_passed`; require
+protected content, component structure, or a permission differential for a
+`candidate`. Keep `blocked`, `needs_review`, and `partial` unresolved in the
+Action Queue/Checkpoint rather than widening the dictionary blindly.
+
 ## SSRF IP / URL Parser Bypass Shapes
 
 Use only after a server-side fetch primitive is evidenced. Prefer read-only callbacks or controlled internal test services before cloud metadata or protocol pivots.
@@ -81,6 +93,16 @@ Use only after stable SQLi-like baseline-vs-perturbation evidence exists. These 
 | Whitespace variants | comments, tabs, newlines | Parser and WAF split differently |
 
 Evidence gate: one stable baseline, one benign syntax perturbation, one normalizer-differential response, and a clear stop condition for noisy timing or WAF-only deltas.
+
+For an observed SQLi/XSS block, AI may write a target-owned `waf_plan` for the
+existing probe adapter instead of selecting from a blind dictionary. The plan
+must reference existing target artifacts, change one parser/WAF boundary per
+variant, state the reason/expected signal/stop condition, and default to four
+variants with a hard maximum of eight (`max_variants` may narrow the default).
+Every retry consumes the existing request budget; without a plan the static
+fallback remains capped at two. The adapter owns scope, authentication, and
+response evidence; a variant that reaches the application is not a finding
+without a stable backend, content, or permission differential.
 
 ## Path Traversal / File Selector Normalization Shapes
 

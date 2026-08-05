@@ -8,6 +8,7 @@ allowed-tools:
   - CronDelete
   - "mcp__Playwright__*"
   - "mcp__chrome-devtools__*"
+  - "mcp__fofamap__*"
 ---
 # /autopilot-round
 
@@ -73,6 +74,11 @@ red-line, credential-hygiene, or report rules here.
 Consume at most bootstrap `invocation_batch.max_lanes` named substantive lanes.
 Immediately before each substantive lane, derive a stable ID from the owner ID
 when available, otherwise `<lane-kind>:<endpoint-or-artifact>`, then run:
+
+For a target-owned 401/403 lane, use the plan/fallback and result contract from
+`commands/autopilot.md`: only `tools/bypass_403.sh` sends requests, and its
+`summary.json`/raw evidence is the heartbeat `evidence_ref`; do not create a
+round-local bypass queue or payload matrix.
 
 ```bash
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json

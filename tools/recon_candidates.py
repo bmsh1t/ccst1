@@ -25,6 +25,7 @@ if BASE_DIR not in sys.path:
 
 from memory.target_profile import default_memory_dir, load_target_profile
 from tools.scope_checker import ScopeChecker
+from tools.scope_context import ScopeContext, ScopeContextError
 from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 
 
@@ -553,7 +554,22 @@ def _asset_scope_context(repo_root: Path, target: str) -> tuple[ScopeChecker | N
         for item in snapshot.get("out_of_scope", [])
         if isinstance(item, str) and item.strip()
     ]
-    return (ScopeChecker(allowed) if allowed else None, ScopeChecker(excluded) if excluded else None)
+    try:
+        active_context = ScopeContext(
+            root_target=target,
+            in_scope=allowed,
+            out_of_scope=excluded,
+        )
+    except ScopeContextError:
+        # Invalid profile scope must not widen discovery into active scope.
+        return None, None
+    return (
+        ScopeChecker.from_context(active_context),
+        # Keep the legacy exclusion view for callers that explicitly ask
+        # whether a row matched a block pattern; active matching still comes
+        # from the canonical context above.
+        ScopeChecker(excluded) if excluded else None,
+    )
 
 
 def _matches_active_scope(value: str, target: str, allowed: ScopeChecker | None) -> bool:

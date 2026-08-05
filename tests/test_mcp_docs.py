@@ -36,6 +36,29 @@ def test_fofamap_mcp_docs_explain_scope_and_setup_boundary():
     assert "claude config edit" in content
     assert "python3 fofamap.py init" in content
     assert "shodan_api_key" in content
+    fofa_content = (REPO_ROOT / "mcp/fofamap-client/README.md").read_text(encoding="utf-8").lower()
+    assert "evidence-triggered" in fofa_content
+    assert "not run on every" in fofa_content
+
+
+def test_fofamap_mcp_docs_describe_autopilot_evidence_lane():
+    content = "\n".join(
+        (REPO_ROOT / path).read_text(encoding="utf-8")
+        for path in (
+            "README.md",
+            "CLAUDE.md",
+            "install.sh",
+            "commands/autopilot.md",
+            "commands/autopilot-round.md",
+            "mcp/fofamap-client/README.md",
+        )
+    ).lower()
+
+    assert "mcp__fofamap__*" in content
+    assert "evidence-triggered" in content
+    assert "asset_relation_observations.jsonl" in content
+    assert "not run on every" in content or "not a default" in content
+    assert "chain context" in content
 
 
 def test_jshook_mcp_template_exposes_single_server_with_runtime_env_passthrough():

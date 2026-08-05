@@ -482,6 +482,7 @@ EXPOSURE_COUNT_PATHS = {
 # 不参与 surface_inputs_ready 判定，也不触发强制自动化。
 INFRA_COUNT_PATHS = {
     "waf_hits": Path("live/wafw00f_hits.txt"),
+    "waf_context": Path("live/waf_context.json"),
     "origin_candidates": Path("live/unwaf_bypass_ips.txt"),
     "open_ports": Path("ports/open_host_ports.txt"),
 }

@@ -29,6 +29,8 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from runtime_exec import run_shell_command_split
+from auth_session import AuthSession
+from scope_context import ScopeContext, ScopeContextError
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FINDINGS_DIR = os.path.join(BASE_DIR, "findings")
@@ -85,17 +87,57 @@ def get_response_signature(status, body):
 
 
 class ZeroDayFuzzer:
-    def __init__(self, target, findings_dir=None, deep=False):
+    def __init__(
+        self,
+        target,
+        findings_dir=None,
+        deep=False,
+        *,
+        scope_target=None,
+        scope_context=None,
+        auth_session=None,
+        max_requests=60,
+    ):
         self.target = target
         self.deep = deep
         self.domain = urlparse(target).netloc
         self.findings = []
+        self.scope_target = str(scope_target or target)
+        self.scope_context = scope_context or ScopeContext.from_target(self.scope_target)
+        self.auth_session = auth_session or AuthSession(target=self.scope_target)
+        self.max_requests = max(1, int(max_requests))
+        self.request_count = 0
+        self.blocked_count = 0
+        self.transport_errors = 0
+        self.errors = []
 
         if findings_dir:
             self.findings_dir = findings_dir
         else:
             self.findings_dir = os.path.join(FINDINGS_DIR, self.domain, "zero_day")
         os.makedirs(self.findings_dir, exist_ok=True)
+
+    def request(self, url, method="GET", headers=None, data=None, timeout=10):
+        """Guard every fuzzer request before invoking the legacy curl helper."""
+        if not self.scope_context.allows_active(url, method):
+            self.blocked_count += 1
+            return None, None, None
+        if self.request_count >= self.max_requests:
+            return None, None, None
+        merged_headers = self.auth_session.headers_for_url(url)
+        if headers:
+            merged_headers.update(headers)
+        self.request_count += 1
+        result = curl_request(
+            url,
+            method=method,
+            headers=merged_headers,
+            data=data,
+            timeout=timeout,
+        )
+        if result[0] is None:
+            self.transport_errors += 1
+        return result
 
     def add_finding(self, vuln_type, severity, title, details):
         finding = {
@@ -123,7 +165,7 @@ class ZeroDayFuzzer:
         }
 
         # Get baseline
-        base_status, _, base_body = curl_request(self.target)
+        base_status, _, base_body = self.request(self.target)
         if not base_status:
             return
 
@@ -131,7 +173,7 @@ class ZeroDayFuzzer:
 
         # Test each method
         for method in methods:
-            status, headers, body = curl_request(self.target, method=method)
+            status, headers, body = self.request(self.target, method=method)
             if status and status != 405 and status != 501:
                 sig = get_response_signature(status, body)
                 if sig != base_sig:
@@ -152,7 +194,7 @@ class ZeroDayFuzzer:
 
         # Test method override headers
         for header, value in override_headers.items():
-            status, headers, body = curl_request(
+            status, headers, body = self.request(
                 self.target, headers={header: value}
             )
             if status and status != base_status:
@@ -174,7 +216,7 @@ class ZeroDayFuzzer:
         ]
 
         for payload, desc in payloads:
-            status, headers, body = curl_request(
+            status, headers, body = self.request(
                 self.target, headers={"Host": payload}
             )
             if status and body:
@@ -205,7 +247,7 @@ class ZeroDayFuzzer:
         ]
 
         for origin in origins:
-            status, headers, body = curl_request(
+            status, headers, body = self.request(
                 self.target, headers={"Origin": origin}
             )
             if headers:
@@ -226,7 +268,7 @@ class ZeroDayFuzzer:
         """Check for missing security headers."""
         print("  [>] Checking security headers...")
 
-        status, headers, body = curl_request(self.target)
+        status, headers, body = self.request(self.target)
         if not headers:
             return
 
@@ -260,7 +302,7 @@ class ZeroDayFuzzer:
 
         for payload, desc in payloads:
             url = f"{base_url}/{payload}"
-            status, headers, body = curl_request(url)
+            status, headers, body = self.request(url)
             if status == 200 and body:
                 if "root:" in body or "/bin/" in body:
                     self.add_finding(
@@ -283,7 +325,7 @@ class ZeroDayFuzzer:
 
         for payload in payloads:
             url = f"{base_url}/{payload}"
-            status, headers, body = curl_request(url)
+            status, headers, body = self.request(url)
             if headers and "x-injected" in headers.lower():
                 self.add_finding(
                     "crlf", "high",
@@ -293,7 +335,7 @@ class ZeroDayFuzzer:
 
             # Test in query parameter
             url = f"{base_url}/?param={payload}"
-            status, headers, body = curl_request(url)
+            status, headers, body = self.request(url)
             if headers and "x-injected" in headers.lower():
                 self.add_finding(
                     "crlf", "high",
@@ -327,11 +369,9 @@ class ZeroDayFuzzer:
         for param in redirect_params:
             for payload in payloads[:3]:  # Test top 3 payloads per param
                 url = f"{base_url}/?{param}={payload}"
-                # Use curl with -L to follow redirects but capture all headers
-                cmd = f'curl -sI -D- --max-time 10 "{url}" 2>/dev/null'
-                success, stdout, _ = run_cmd(cmd, timeout=15)
-                if success and stdout:
-                    location = re.search(r'location:\s*(.+)', stdout, re.I)
+                _status, response_headers, _body = self.request(url)
+                if response_headers:
+                    location = re.search(r'location:\s*(.+)', response_headers, re.I)
                     if location:
                         loc = location.group(1).strip()
                         if "evil.com" in loc:
@@ -353,7 +393,7 @@ class ZeroDayFuzzer:
         base_url = self.target.rstrip("/")
 
         for path in common_403:
-            status, _, _ = curl_request(f"{base_url}{path}")
+            status, _, _ = self.request(f"{base_url}{path}")
             if status != 403:
                 continue
 
@@ -386,7 +426,7 @@ class ZeroDayFuzzer:
             ]
 
             for bypass_path, desc in bypass_techniques:
-                test_status, _, _ = curl_request(f"{base_url}{bypass_path}")
+                test_status, _, _ = self.request(f"{base_url}{bypass_path}")
                 if test_status and test_status == 200:
                     self.add_finding(
                         "403_bypass", "high",
@@ -397,7 +437,7 @@ class ZeroDayFuzzer:
                     break
 
             for headers in header_bypasses:
-                test_status, _, _ = curl_request(f"{base_url}{path}", headers=headers)
+                test_status, _, _ = self.request(f"{base_url}{path}", headers=headers)
                 if test_status and test_status == 200:
                     header_name = list(headers.keys())[0]
                     self.add_finding(
@@ -422,7 +462,7 @@ class ZeroDayFuzzer:
 
         for payload in payloads:
             url = f"{base_url}/{payload}"
-            status, headers, body = curl_request(url)
+            status, headers, body = self.request(url)
             if status == 200 and body:
                 # Check if there's any reflection or error that indicates processing
                 if "polluted" in body and "__proto__" not in body:
@@ -445,7 +485,7 @@ class ZeroDayFuzzer:
         }
 
         for header, value in unkeyed_headers.items():
-            status, resp_headers, body = curl_request(
+            status, resp_headers, body = self.request(
                 self.target, headers={header: value}
             )
             if body and "evil.com" in body:
@@ -485,9 +525,27 @@ class ZeroDayFuzzer:
                 test()
             except Exception as e:
                 print(f"    [!] Error in {test.__name__}: {e}")
+                self.errors.append(f"{test.__name__}: {e}")
 
         self.save_findings()
         self.print_summary()
+        status = "ok"
+        if self.errors or self.transport_errors or self.request_count >= self.max_requests:
+            status = "partial"
+        if self.blocked_count and not self.request_count:
+            status = "blocked"
+        return {
+            "status": status,
+            "target": self.target,
+            "scope_target": self.scope_target,
+            "scope_hash": self.scope_context.scope_hash,
+            "request_count": self.request_count,
+            "request_budget": self.max_requests,
+            "blocked_count": self.blocked_count,
+            "transport_errors": self.transport_errors,
+            "error_count": len(self.errors),
+            "finding_count": len(self.findings),
+        }
 
     def save_findings(self):
         """Save findings to disk."""
@@ -548,6 +606,8 @@ def main():
     parser.add_argument("target", nargs="?", help="Target URL (https://example.com)")
     parser.add_argument("--recon-dir", type=str, help="Recon directory to load URLs from")
     parser.add_argument("--deep", action="store_true", help="Run additional deep checks")
+    parser.add_argument("--max-requests", type=int, default=60, help="Maximum requests per target")
+    parser.add_argument("--scope-target", default="", help="Parent target/list/manifest used for Scope checks")
     args = parser.parse_args()
 
     if not args.target and not args.recon_dir:
@@ -568,10 +628,34 @@ def main():
             with open(live_file) as f:
                 targets.extend([line.strip() for line in f if line.strip()][:10])
 
+    scope_target = args.scope_target
+    if not scope_target and args.target:
+        scope_target = args.target
+    if not scope_target and args.recon_dir:
+        scope_target = os.path.basename(os.path.normpath(args.recon_dir))
+    if not scope_target:
+        print("zero_day_fuzzer: a scope target is required", file=sys.stderr)
+        return 2
+
+    results = []
+    try:
+        context = ScopeContext.from_target(scope_target)
+    except ScopeContextError as exc:
+        print(f"zero_day_fuzzer: invalid Scope: {exc}", file=sys.stderr)
+        return 2
+    auth_session = AuthSession.from_env(os.environ).bind_target(scope_target)
     for target in targets:
-        fuzzer = ZeroDayFuzzer(target, deep=args.deep)
-        fuzzer.run_all_tests()
+        fuzzer = ZeroDayFuzzer(
+            target,
+            deep=args.deep,
+            scope_target=scope_target,
+            scope_context=context,
+            auth_session=auth_session,
+            max_requests=args.max_requests,
+        )
+        results.append(fuzzer.run_all_tests())
+    return 0 if results and all(item.get("status") == "ok" for item in results) else 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -68,6 +68,7 @@ def test_round_reuses_the_bootstrap_and_canonical_controller_contract():
         "CronDelete",
         '"mcp__Playwright__*"',
         '"mcp__chrome-devtools__*"',
+        '"mcp__fofamap__*"',
     ):
         assert f"- {tool}" in command
     assert command.count("autopilot_bootstrap.py") == 1

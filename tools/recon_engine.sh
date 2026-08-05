@@ -711,6 +711,7 @@ run_domain_list_batch() {
     local list_file="$1"
     local mode_flag="${2:-}"
     local batch_name batch_key batch_dir targets_file manifest completed_file failed_file summary_file
+    local scope_metadata_file scope_hash
     local high_value_file ranking_file ai_handoff_file target_links_file
     local pending_file run_targets_file processed_file batch_size_raw batch_size batch_reset chunk_mode
     batch_name="$(basename "$list_file")"
@@ -739,6 +740,7 @@ PY
     ranking_file="$batch_dir/surface_ranking.txt"
     ai_handoff_file="$batch_dir/ai_handoff.md"
     target_links_file="$batch_dir/grouped_targets.tsv"
+    scope_metadata_file="$batch_dir/scope_context.json"
     pending_file="$batch_dir/pending_targets.txt"
     run_targets_file="$batch_dir/current_batch_targets.txt"
     processed_file="$batch_dir/.processed_targets.tmp"
@@ -770,29 +772,74 @@ PY
         touch "$manifest" "$completed_file" "$failed_file" "$target_links_file"
     fi
 
-    # targets.txt is treated as a primary-domain batch list. Keep the cleanup
-    # minimal: skip empty/comment lines, drop CR, and strip wildcard prefixes.
-    python3 - "$list_file" "$targets_file" <<'PY'
+    # targets.txt is a text list or Scope manifest. ScopeContext owns parsing and
+    # exclusion precedence; this batch file contains only active in-scope hosts.
+    python3 - "$list_file" "$targets_file" "$BASE_DIR" "$scope_metadata_file" <<'PY'
 import sys
+import json
+import os
 from pathlib import Path
 
 src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
+base_dir = Path(sys.argv[3])
+metadata_path = Path(sys.argv[4])
+sys.path.insert(0, str(base_dir))
+sys.path.insert(0, str(base_dir / "tools"))
+from tools.scope_context import ScopeContext
+
+context = ScopeContext.from_file(src)
+old_hash = ""
+try:
+    old = json.loads(metadata_path.read_text(encoding="utf-8"))
+    old_hash = str(old.get("scope_hash") or "") if isinstance(old, dict) else ""
+except (OSError, json.JSONDecodeError):
+    pass
+if old_hash and old_hash != context.scope_hash:
+    metadata_path.with_name(".scope_changed").write_text("1\n", encoding="utf-8")
+metadata = context.summary()
+metadata["scope_ref"] = context.source_ref or context.root_target
+temporary = metadata_path.with_name(f".{metadata_path.name}.tmp")
+metadata_path.parent.mkdir(parents=True, exist_ok=True)
+temporary.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+os.replace(temporary, metadata_path)
+entries = list(context.in_scope)
+if context.root_target and not Path(context.root_target).is_file():
+    if context.root_target not in entries:
+        entries.insert(0, context.root_target)
 seen = set()
 out = []
-for raw in src.read_text(encoding="utf-8", errors="replace").splitlines():
-    value = raw.strip().strip("\ufeff").strip()
-    if not value or value.startswith("#"):
-        continue
-    value = value.rstrip("/").lower()
+for value in entries:
+    value = str(value).strip().rstrip("/").lower()
+    probe_value = value
     if value.startswith("*."):
+        probe_value = f"scope.{value[2:]}"
         value = value[2:]
-    if not value or value in seen:
+    probe = probe_value if "://" in probe_value else f"https://{probe_value}"
+    if context.classify(probe)["status"] != "in_scope":
         continue
-    seen.add(value)
-    out.append(value)
+    if value and value not in seen:
+        seen.add(value)
+        out.append(value)
 dst.write_text(("\n".join(out) + "\n") if out else "", encoding="utf-8")
 PY
+
+    if [ -f "$batch_dir/.scope_changed" ]; then
+        : > "$manifest"
+        : > "$completed_file"
+        : > "$failed_file"
+        : > "$target_links_file"
+        rm -f "$batch_dir/.scope_changed"
+        log_info "Scope changed; prior batch completion state was invalidated"
+    fi
+    scope_hash="$(python3 - "$scope_metadata_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(str(payload.get("scope_hash") or ""))
+PY
+)"
 
     local total
     total=$(wc -l < "$targets_file" 2>/dev/null | tr -d ' ' || echo 0)
@@ -875,13 +922,14 @@ PY
             printf '%s\t%s\t%s\n' "$batch_target" "recon/$batch_key/$recon_key" "recon/$recon_key" >> "$target_links_file"
         fi
 
-        python3 - "$manifest" "$batch_target" "$status" "$exit_code" "$duration" "$start_iso" "$end_iso" "$recon_path" <<'PY'
+        python3 - "$manifest" "$batch_target" "$status" "$exit_code" "$duration" "$start_iso" "$end_iso" "$recon_path" "$scope_hash" <<'PY'
 import json
 import sys
 
-manifest, target, status, exit_code, duration, start_iso, end_iso, recon_path = sys.argv[1:]
+manifest, target, status, exit_code, duration, start_iso, end_iso, recon_path, scope_hash = sys.argv[1:]
 record = {
     "target": target,
+    "scope_hash": scope_hash,
     "status": status,
     "exit_code": int(exit_code),
     "duration_seconds": int(duration),
@@ -1302,6 +1350,7 @@ fi
 touch "$RECON_DIR/subdomains/all.txt" \
       "$RECON_DIR/live/wafw00f.txt" \
       "$RECON_DIR/live/wafw00f_hits.txt" \
+      "$RECON_DIR/live/waf_context.json" \
       "$RECON_DIR/live/origin_candidates.txt" \
       "$RECON_DIR/live/unwaf_bypass_ips.txt" \
       "$RECON_DIR/ports/open_ports.txt" \
@@ -1330,6 +1379,7 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/live/urls.txt"
 : > "$RECON_DIR/live/seed_urls.txt"
 : > "$RECON_DIR/live/wafw00f_hits.txt"
+: > "$RECON_DIR/live/waf_context.json"
 : > "$RECON_DIR/live/unwaf_bypass_ips.txt"
 : > "$RECON_DIR/live/origin_candidates.txt"
 : > "$RECON_DIR/live/status_200.txt"
@@ -1920,6 +1970,7 @@ if command -v wafw00f &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     WAFW00F_JSON_FILE="$RECON_DIR/live/wafw00f.json"
     WAFW00F_CURRENT_JSON="$(mktemp "$RECON_DIR/live/.wafw00f.XXXXXX")"
     WAFW00F_HITS_FILE="$RECON_DIR/live/wafw00f_hits.txt"
+    WAFW00F_CONTEXT_FILE="$RECON_DIR/live/waf_context.json"
     WAFW00F_HEADER_ARGS=()
     WAFW00F_REDIRECT_ARGS=()
     WAFW00F_CURRENT_PUBLISHED="false"
@@ -1962,30 +2013,86 @@ if command -v wafw00f &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
 
     WAFW00F_PARSE_FILE="$WAFW00F_CURRENT_JSON"
     [ "$WAFW00F_CURRENT_PUBLISHED" != "true" ] || WAFW00F_PARSE_FILE="$WAFW00F_JSON_FILE"
-    python3 - "$WAFW00F_PARSE_FILE" "$WAFW00F_HITS_FILE" <<'PY'
+    python3 - "$WAFW00F_PARSE_FILE" "$WAFW00F_HITS_FILE" "$WAFW00F_CONTEXT_FILE" "$TARGET" "$WAFW00F_STATUS" "$WAFW00F_NOTE" "$WAFW00F_CURRENT_PUBLISHED" <<'PY'
 import json
+import hashlib
 import sys
 from pathlib import Path
 
 src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
+context_dst = Path(sys.argv[3])
+target = sys.argv[4]
+run_status = sys.argv[5]
+run_note = sys.argv[6]
+published = sys.argv[7] == "true"
 rows = []
+observations = []
+vendors = set()
+scanned = 0
+malformed = 0
+parse_error = ""
+source_sha256 = ""
 
 if src.exists() and src.stat().st_size:
+    scanned = 0
     try:
-        data = json.loads(src.read_text(encoding="utf-8"))
-    except Exception:
+        raw = src.read_bytes()
+        source_sha256 = hashlib.sha256(raw).hexdigest()
+        data = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        data = []
+        parse_error = str(exc)
+    if not isinstance(data, list):
+        parse_error = parse_error or "wafw00f JSON root is not a list"
         data = []
     for item in data:
-        if isinstance(item, dict) and item.get("detected"):
-            rows.append("\t".join([
-                str(item.get("url", "")),
-                str(item.get("firewall", "")),
-                str(item.get("manufacturer", "")),
-                str(item.get("trigger_url", "")),
-            ]))
+        if not isinstance(item, dict):
+            malformed += 1
+            continue
+        scanned += 1
+        if not item.get("detected"):
+            continue
+        firewall = str(item.get("firewall", ""))
+        manufacturer = str(item.get("manufacturer", ""))
+        if firewall:
+            vendors.add(firewall)
+        if manufacturer:
+            vendors.add(manufacturer)
+        observation = {
+            "url": str(item.get("url", "")),
+            "firewall": firewall,
+            "manufacturer": manufacturer,
+            "trigger_url": str(item.get("trigger_url", "")),
+        }
+        observations.append(observation)
+        rows.append("\t".join(observation.values()))
 
 dst.write_text(("\n".join(rows) + "\n") if rows else "", encoding="utf-8")
+context = {
+    "schema_version": 1,
+    "kind": "waf_context",
+    "target": target,
+    "status": run_status,
+    "published": published,
+    "note": run_note,
+    "detector": "wafw00f",
+    "scanned_count": scanned,
+    "detected_count": len(observations),
+    "unmatched_count": max(0, scanned - len(observations)),
+    "malformed_result_count": malformed,
+    "parse_error": parse_error,
+    "vendors": sorted(vendors),
+    "observations": observations[:32],
+    "source_sha256": source_sha256,
+    "artifacts": {
+        "raw": str(Path("live/wafw00f.json")),
+        "hits": str(Path("live/wafw00f_hits.txt")),
+    },
+}
+tmp = context_dst.with_name(f".{context_dst.name}.tmp")
+tmp.write_text(json.dumps(context, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+tmp.replace(context_dst)
 PY
 
     WAFW00F_COUNT=$(wc -l < "$WAFW00F_HITS_FILE" 2>/dev/null || echo 0)
@@ -2004,6 +2111,42 @@ else
     log_warn "wafw00f not installed or no live hosts — skipping WAF fingerprinting"
 fi
 
+# Keep a structured, explicit unavailable/skipped state so later AI rounds do
+# not confuse an empty hit file with a completed negative fingerprint.
+if [ ! -s "$RECON_DIR/live/waf_context.json" ]; then
+    python3 - "$RECON_DIR/live/waf_context.json" "$TARGET" "$WAFW00F_STATUS" "$WAFW00F_NOTE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = {
+    "schema_version": 1,
+    "kind": "waf_context",
+    "target": sys.argv[2],
+    "status": sys.argv[3],
+    "published": False,
+    "note": sys.argv[4],
+    "detector": "wafw00f",
+    "scanned_count": 0,
+    "detected_count": 0,
+    "unmatched_count": 0,
+    "malformed_result_count": 0,
+    "parse_error": "",
+    "vendors": [],
+    "observations": [],
+    "source_sha256": "",
+    "artifacts": {
+        "raw": "live/wafw00f.json",
+        "hits": "live/wafw00f_hits.txt",
+    },
+}
+tmp = path.with_name(f".{path.name}.tmp")
+tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+tmp.replace(path)
+PY
+fi
+
 WAF_HITS=$(wc -l < "$RECON_DIR/live/wafw00f_hits.txt" 2>/dev/null | tr -d ' ' || echo 0)
 record_recon_phase \
     waf_fp \
@@ -2014,10 +2157,11 @@ record_recon_phase \
 emit_claude_hint \
     phase                waf_fp \
     waf_results_lines    "$WAF_HITS" \
+    waf_context_ref      "recon/${RECON_TARGET_KEY}/live/waf_context.json" \
     wafw00f_present      "$(command -v wafw00f >/dev/null 2>&1 && echo true || echo false)"
 emit_claude_hint_actions \
-    "bash tools/bypass_403.sh <url> on any 403 endpoint discovered later" \
-    "if no WAF was detected, treat this as no sampled edge-control signal and continue recon"
+    "on a target-owned high-value 401/403, let AI build an evidence-linked plan for tools/bypass_403.sh --plan --target; without a plan keep its complete fallback" \
+    "WAF fingerprinting is context only; no sampled WAF hit does not suppress path, proxy, or authorization-boundary testing"
 
 # ============================================================
 # Phase 2.6: Origin Discovery

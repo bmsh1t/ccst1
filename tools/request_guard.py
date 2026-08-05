@@ -27,6 +27,7 @@ if BASE_DIR not in sys.path:
 from memory.audit_log import AuditLog
 from memory.target_profile import default_memory_dir, load_target_profile, target_filename
 from scope_checker import ScopeChecker
+from scope_context import ScopeContext, ScopeContextError
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "POST"}
 FAILURE_STATUSES = {403, 429}
@@ -173,21 +174,33 @@ def build_scope_checker(
         excluded_domains=excluded_domains,
         excluded_classes=excluded_classes,
     )
-    if not domains:
+    try:
+        context = ScopeContext(
+            root_target=target,
+            # Keep the historical target fallback in root_target. Explicit
+            # profile/CLI entries add assets without replacing the primary.
+            in_scope=[] if scope_source == "target_fallback" else domains,
+            out_of_scope=excluded,
+            excluded_classes=classes,
+        )
+    except ScopeContextError as exc:
         return None, {
-            "source": "missing",
-            "domains": [],
+            "source": "invalid",
+            "domains": domains,
             "excluded_domains": excluded,
             "excluded_classes": classes,
             "unrestricted": False,
+            "error": str(exc),
         }
 
-    return ScopeChecker(domains, excluded, classes), {
+    return ScopeChecker.from_context(context), {
         "source": scope_source,
         "domains": domains,
         "excluded_domains": excluded,
         "excluded_classes": classes,
         "unrestricted": False,
+        "scope_hash": context.scope_hash,
+        "summary": context.summary(),
     }
 
 

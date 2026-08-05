@@ -25,8 +25,10 @@ from urllib.parse import urlparse
 
 try:
     from tools.target_paths import canonical_target_value, url_belongs_to_target
+    from tools.scope_context import ScopeContext, ScopeContextError
 except ImportError:  # 兼容 python3 tools/auth_session.py
     from target_paths import canonical_target_value, url_belongs_to_target
+    from scope_context import ScopeContext, ScopeContextError
 
 _HEADER_RE = re.compile(r"^([A-Za-z0-9!#$%&'*+\-.^_`|~]+)\s*:\s*(.+)$")
 
@@ -69,10 +71,12 @@ class AuthSession:
         *,
         target: str = "",
         allowed_origins: list[str] | None = None,
+        scope_context: ScopeContext | None = None,
     ):
         self._headers: list[str] = []
         self._scope_target = str(target or "").strip()
         self._target = canonical_target_value(self._scope_target)
+        self._scope_context = scope_context
         self._allowed_origins: list[str] = []
         for origin in allowed_origins or []:
             normalized = _normalize_origin(origin)
@@ -80,6 +84,11 @@ class AuthSession:
                 self._allowed_origins.append(normalized)
         for header in headers or []:
             self.add_header(header)
+
+    def bind_scope(self, context: ScopeContext | None) -> "AuthSession":
+        """Attach the parent ScopeContext without changing the asset binding."""
+        self._scope_context = context
+        return self
 
     def bind_target(self, target: str) -> "AuthSession":
         """绑定本次运行目标；跨目标时丢弃认证并按 anonymous 继续。"""
@@ -115,6 +124,8 @@ class AuthSession:
             return False
         if candidate.startswith("/") and not candidate.startswith("//"):
             return bool(self._target)
+        if self._scope_context is not None and not self._scope_context.allows_active(candidate):
+            return False
         normalized_origin = _normalize_origin(candidate)
         if normalized_origin and normalized_origin in self._allowed_origins:
             return True
@@ -248,9 +259,11 @@ class AuthSession:
         cookie: str | None = None,
         bearer: str | None = None,
         api_key: str | None = None,
+        scope_context: ScopeContext | None = None,
     ) -> "AuthSession":
         """Merge env + file + explicit args. Explicit wins on name collisions."""
         session = cls.from_env(env)
+        session.bind_scope(scope_context)
         if file:
             file_session = cls.from_file(file)
             for header in file_session.headers_list():
@@ -432,7 +445,7 @@ def session_from_args(args, env: dict[str, str] | None = None) -> AuthSession:
             )
         ))
     ) else {}
-    return AuthSession.from_sources(
+    session = AuthSession.from_sources(
         env=env_arg,
         file=getattr(args, "auth_file", None),
         headers=getattr(args, "auth_header", []) or [],
@@ -440,3 +453,12 @@ def session_from_args(args, env: dict[str, str] | None = None) -> AuthSession:
         bearer=getattr(args, "bearer", None),
         api_key=getattr(args, "api_key", None),
     )
+    target = str(getattr(args, "target", "") or "").strip()
+    if target:
+        try:
+            session.bind_scope(ScopeContext.from_target(target))
+        except ScopeContextError:
+            # The owning CLI reports invalid target/Scope; auth remains
+            # unbound here so a malformed target cannot receive credentials.
+            session.bind_scope(None)
+    return session

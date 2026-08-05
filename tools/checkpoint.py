@@ -2921,13 +2921,17 @@ def _json_inject_queue_item(state: dict) -> dict:
         "partial": "Resume the JSON injection lane after resolving its recorded transport or evidence blocker.",
         "invalid_input": "Review the rejected JSON endpoint input and supply an in-scope POST endpoint.",
     }[status]
+    plan_ref = str(projection.get("waf_plan_ref") or "").strip()
+    command_hint = "python3 -m tools.json_inject_probe --target TARGET --endpoints-file FILE"
+    if plan_ref:
+        command_hint += f" --waf-plan {_quote(plan_ref)}"
     return {
         "id": "JSON-INJECT",
         "priority": 88 if status == "candidate_pending" else 62,
         "type": "json-inject-review",
         "status": "ready",
         "action": action,
-        "command_hint": "python3 -m tools.json_inject_probe --target TARGET --endpoints-file FILE",
+        "command_hint": command_hint,
         "redline_required": False,
         "stop_condition": "record candidate validation, complete_no_hit, or the explicit blocker",
         "source": "json-inject",
@@ -2936,6 +2940,9 @@ def _json_inject_queue_item(state: dict) -> dict:
             "generation": generation,
             "summary_path": str(projection.get("path") or ""),
             "summary_status": status,
+            "waf_plan_ref": plan_ref,
+            "waf_plan_sha256": str(projection.get("waf_plan_sha256") or ""),
+            "waf_ai_variants_executed": int(projection.get("waf_ai_variants_executed", 0) or 0),
         },
     }
 
@@ -2964,6 +2971,13 @@ def _sql_matrix_queue_items(state: dict, target: str) -> list[dict]:
         source_paths = [str(path) for path in (projection.get("source_paths") or []) if str(path).strip()][:2]
         input_hint = source_paths[0] if source_paths else "FILE"
         option = "--urls-file" if lane == "query" else "--form-file"
+        plan_ref = str(projection.get("waf_plan_ref") or "").strip()
+        command_hint = (
+            "python3 tools/sql_parameter_probe.py --target {target} {option} {input}"
+            .format(target=_quote(target), option=option, input=_quote(input_hint))
+        )
+        if plan_ref:
+            command_hint += f" --waf-plan {_quote(plan_ref)}"
         candidates = [
             {
                 key: candidate[key]
@@ -2979,10 +2993,7 @@ def _sql_matrix_queue_items(state: dict, target: str) -> list[dict]:
             "type": "sql-matrix-review",
             "status": "ready",
             "action": action,
-            "command_hint": (
-                "python3 tools/sql_parameter_probe.py --target {target} {option} {input}"
-                .format(target=_quote(target), option=option, input=_quote(input_hint))
-            ),
+            "command_hint": command_hint,
             "redline_required": False,
             "stop_condition": "record candidate validation, complete_no_hit, invalid_input, or the explicit blocker",
             "source": "sql-matrix",
@@ -2995,6 +3006,9 @@ def _sql_matrix_queue_items(state: dict, target: str) -> list[dict]:
                 "reason": str(projection.get("reason") or ""),
                 "candidate_count": int(projection.get("candidate_count", 0) or 0),
                 "candidates": candidates,
+                "waf_plan_ref": plan_ref,
+                "waf_plan_sha256": str(projection.get("waf_plan_sha256") or ""),
+                "waf_ai_variants_executed": int(projection.get("waf_ai_variants_executed", 0) or 0),
             },
         })
     return items

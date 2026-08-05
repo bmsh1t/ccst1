@@ -215,6 +215,23 @@ def _scope_endpoint(
 
 def target_list_entries(path: str, *, preserve_wildcards: bool = False) -> list[str]:
     """Return normalized primary domains from a readable batch list."""
+    if str(path).lower().endswith(".json"):
+        try:
+            from tools.scope_context import ScopeContext
+        except ImportError:  # pragma: no cover - direct script compatibility
+            from scope_context import ScopeContext
+        try:
+            context = ScopeContext.from_file(path)
+        except (OSError, ValueError):
+            return []
+        entries = list(context.in_scope)
+        if context.root_target and not os.path.isfile(context.root_target):
+            if context.root_target not in entries:
+                entries.insert(0, context.root_target)
+        if preserve_wildcards:
+            return entries
+        return [value[2:] if value.startswith("*.") else value for value in entries]
+
     entries = []
     seen = set()
     try:
@@ -249,6 +266,15 @@ def url_belongs_to_target(url: str, target: str, *, allow_subdomains: bool = Tru
 
     target_info = classify_target(canonical_target_value(target))
     if target_info["kind"] == "list":
+        if str(target_info["target"]).lower().endswith(".json"):
+            try:
+                from tools.scope_context import ScopeContext
+            except ImportError:  # pragma: no cover - direct script compatibility
+                from scope_context import ScopeContext
+            try:
+                return ScopeContext.from_file(target_info["target"]).allows_active(raw_url)
+            except (OSError, ValueError):
+                return False
         for listed_target in target_list_entries(
             target_info["target"],
             preserve_wildcards=True,

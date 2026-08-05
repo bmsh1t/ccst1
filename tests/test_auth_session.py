@@ -20,6 +20,7 @@ from tools.auth_session import (
     add_cli_args,
     session_from_args,
 )
+from tools.scope_context import ScopeContext
 
 
 class TestAuthSessionBasic:
@@ -152,6 +153,24 @@ class TestOutput:
 
 
 class TestTargetScope:
+
+    def test_parent_scope_context_blocks_excluded_and_unlisted_origins(self):
+        context = ScopeContext(
+            root_target="target.example",
+            in_scope=["identity.partner.example"],
+            out_of_scope=["admin.target.example"],
+        )
+        session = AuthSession(
+            ["Cookie: s=1"],
+            target="target.example",
+            allowed_origins=["https://identity.partner.example"],
+            scope_context=context,
+        )
+
+        assert session.headers_for_url("https://target.example/api") == {"Cookie": "s=1"}
+        assert session.headers_for_url("https://admin.target.example/api") == {}
+        assert session.headers_for_url("https://identity.partner.example/token") == {"Cookie": "s=1"}
+        assert session.headers_for_url("https://unlisted.example/token") == {}
 
     def test_unbound_session_never_returns_auth_for_url(self):
         session = AuthSession(["Authorization: Bearer secret"])
