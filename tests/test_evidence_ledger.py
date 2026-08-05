@@ -126,6 +126,7 @@ def test_state_changing_record_without_redline_check_is_flagged(tmp_path):
         object_scope="own",
         variant="role_diff",
         result="tested_clean",
+        state_changing=True,
     )
 
     summary = build_summary(
@@ -152,11 +153,28 @@ def test_state_changing_patch_with_redline_remains_covering(tmp_path):
         method="PATCH",
         vuln_class="Authz",
         result="tested_clean",
+        state_changing=True,
         redline_checked=True,
     )
 
     assert entry["result"] == "tested_clean"
     assert entry["redline_decision"] == "allowed"
+
+
+def test_patch_preview_is_not_redline_blocked_by_method_alone(tmp_path):
+    entry = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/accounts/42/role/preview",
+        method="PATCH",
+        vuln_class="Authz",
+        result="tested_clean",
+        state_changing=False,
+    )
+
+    assert entry["state_changing"] is False
+    assert entry["result"] == "tested_clean"
+    assert entry["warnings"] == []
 
 
 def test_concurrent_appends_remain_parseable_jsonl(tmp_path):

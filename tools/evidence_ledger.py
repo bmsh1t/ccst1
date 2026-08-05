@@ -288,7 +288,7 @@ def record_entry(
         "state_changing": (
             None
             if state_changing is None
-            else bool(state_changing or method_u not in SAFE_METHODS)
+            else bool(state_changing)
         ),
         "redline_checked": bool(redline_checked),
         "evidence_ref": str(evidence_ref or "").strip(),
