@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -115,7 +116,7 @@ def test_actor_matrix_reports_missing_then_covered_checks(tmp_path):
 
 
 def test_state_changing_record_without_redline_check_is_flagged(tmp_path):
-    record_entry(
+    entry = record_entry(
         tmp_path,
         target="target.com",
         endpoint="/api/accounts/42/role",
@@ -135,9 +136,48 @@ def test_state_changing_record_without_redline_check_is_flagged(tmp_path):
         method="PATCH",
     )
 
+    assert entry["result"] == "blocked_redline"
+    assert entry["requested_result"] == "tested_clean"
+    assert entry["redline_decision"] == "blocked"
     assert summary["redline_unchecked_count"] == 1
     assert "redline_check_missing_for_state_changing_test" in summary["recent_entries"][0]["warnings"]
     assert any(row["redline_required"] for row in summary["actor_matrix"]["gaps"])
+
+
+def test_state_changing_patch_with_redline_remains_covering(tmp_path):
+    entry = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/accounts/42/role",
+        method="PATCH",
+        vuln_class="Authz",
+        result="tested_clean",
+        redline_checked=True,
+    )
+
+    assert entry["result"] == "tested_clean"
+    assert entry["redline_decision"] == "allowed"
+
+
+def test_concurrent_appends_remain_parseable_jsonl(tmp_path):
+    def append(index):
+        return record_entry(
+            tmp_path,
+            target="target.com",
+            endpoint=f"/api/orders/{index}",
+            vuln_class="IDOR",
+            result="tested_clean",
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(append, range(24)))
+
+    rows = [
+        json.loads(line)
+        for line in ledger_path(tmp_path, "target.com").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(rows) == 24
+    assert {row["endpoint"] for row in rows} == {f"/api/orders/{index}" for index in range(24)}
 
 
 def test_post_record_is_not_state_changing_by_method_alone(tmp_path):

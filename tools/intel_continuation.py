@@ -10,7 +10,13 @@ from pathlib import Path
 
 try:
     from tools.action_queue import FINAL_STATUSES, load_queue
-    from tools.intel_artifact import IntelArtifactError, read_intel_artifact
+    from tools.intel_artifact import (
+        IntelArtifactError,
+        advisory_is_actionable,
+        advisory_is_stale,
+        normalize_advisory_applicability,
+        read_intel_artifact,
+    )
     from tools.intel_sources import DEFAULT_COMPONENT_TTL_SECONDS
     from tools.target_paths import canonical_target_value, target_storage_key
     from tools.technology_inventory import (
@@ -21,7 +27,13 @@ try:
     from tools.web_intel_artifact import load_web_intel_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import FINAL_STATUSES, load_queue  # type: ignore
-    from intel_artifact import IntelArtifactError, read_intel_artifact  # type: ignore
+    from intel_artifact import (  # type: ignore
+        IntelArtifactError,
+        advisory_is_actionable,
+        advisory_is_stale,
+        normalize_advisory_applicability,
+        read_intel_artifact,
+    )
     from intel_sources import DEFAULT_COMPONENT_TTL_SECONDS  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
     from technology_inventory import (  # type: ignore
@@ -232,7 +244,7 @@ def _bound_inventory_sources(repo: Path, inventory: dict) -> list[tuple[dict, Pa
 
 
 def _high_value_advisory(item: dict) -> bool:
-    if item.get("already_tested") or item.get("applicability") == "not_affected":
+    if item.get("already_tested") or not advisory_is_actionable(item):
         return False
     score = _score_hint(item)
     return bool(
@@ -374,10 +386,17 @@ def inspect_intel_continuation(
     recommended = [item for item in gaps.get("recommended") or [] if isinstance(item, dict)]
     blocked = [item for item in gaps.get("blocked") or [] if isinstance(item, dict)]
     final_dispositions = _final_queue_dispositions(repo, resolved_target)
+    advisories = [item for item in intel.get("advisories") or [] if isinstance(item, dict)]
+    stale_advisories = [
+        item for item in advisories
+        if advisory_is_stale(item)
+        and not item.get("already_tested")
+        and normalize_advisory_applicability(item.get("applicability")) != "not_affected"
+        and not _has_final_disposition(item, final_dispositions)
+    ]
     candidates = [
-        item for item in intel.get("advisories") or []
-        if isinstance(item, dict)
-        and _high_value_advisory(item)
+        item for item in advisories
+        if _high_value_advisory(item)
         and not _has_final_disposition(item, final_dispositions)
     ]
     candidates.sort(
@@ -409,6 +428,20 @@ def inspect_intel_continuation(
                 "score_hint": selected.get("score_hint", 0),
                 "source_refs": list(selected.get("source_refs") or [])[:5],
             },
+        }
+    if stale_advisories:
+        return {
+            **base,
+            "action": "run_intel",
+            "reason": "stale advisory applicability requires an Intel refresh",
+            "blocked": [
+                {
+                    "id": item.get("id", ""),
+                    "component": item.get("component", {}),
+                    "applicability": normalize_advisory_applicability(item.get("applicability")),
+                }
+                for item in stale_advisories[:4]
+            ],
         }
     # Web Intel 只补充官方源没有覆盖的内容，不能抢占已有高危/受影响 advisory。
     if gaps.get("web_search_recommended") and recommended:

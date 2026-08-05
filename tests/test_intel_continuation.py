@@ -143,6 +143,59 @@ def test_malformed_score_hint_does_not_break_advisory_selection(tmp_path):
     assert state["advisory"]["id"] == "CVE-2026-63030"
 
 
+def test_not_affected_advisory_spelling_does_not_reopen_applicability(tmp_path):
+    _prepare_inventory(tmp_path)
+    advisory = _advisory()
+    advisory["applicability"] = "not affected"
+    _write_intel(tmp_path, _intel(advisories=[advisory]))
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "complete"
+
+
+def test_stale_advisory_is_one_refresh_handoff(tmp_path):
+    _prepare_inventory(tmp_path)
+    advisory = _advisory()
+    advisory["stale"] = True
+    _write_intel(tmp_path, _intel(advisories=[advisory]))
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "run_intel"
+    assert "stale advisory" in state["reason"]
+    assert state["blocked"][0]["id"] == "CVE-2026-63030"
+
+
+def test_degraded_advisory_source_is_one_refresh_handoff(tmp_path):
+    _prepare_inventory(tmp_path)
+    advisory = _advisory()
+    advisory["source_names"] = ["nvd"]
+    payload = _intel(advisories=[advisory])
+    payload["sources"][0]["status"] = "partial"
+    _write_intel(tmp_path, payload)
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "run_intel"
+    assert state["blocked"][0]["id"] == "CVE-2026-63030"
+
+
+def test_degraded_singular_advisory_source_is_one_refresh_handoff(tmp_path):
+    _prepare_inventory(tmp_path)
+    advisory = _advisory()
+    advisory.pop("source_refs")
+    advisory["source"] = "nvd"
+    payload = _intel(advisories=[advisory])
+    payload["sources"][0]["status"] = "partial"
+    _write_intel(tmp_path, payload)
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "run_intel"
+    assert state["blocked"][0]["id"] == "CVE-2026-63030"
+
+
 def test_blocked_web_intel_is_handoff_context_not_a_repeat_loop(tmp_path):
     _prepare_inventory(tmp_path)
     _write_intel(tmp_path, _intel(gaps={

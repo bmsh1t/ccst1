@@ -7,6 +7,8 @@ import time
 
 import autopilot_state as autopilot_state_module
 import finding_index
+from tools import surface as surface_module
+from tools.surface_projection import build_surface_input_manifest, write_surface_projection
 from memory.hunt_journal import HuntJournal
 from memory.pattern_db import PatternDB
 from memory.schemas import make_journal_entry, make_pattern_entry
@@ -140,6 +142,28 @@ def _closure_matrix(*, status: str = "tested_clean") -> dict:
         }],
         "summary": {"total_cells": 1},
     }
+
+
+def _publish_surface_projection(repo_root, target: str, memory_dir=None) -> None:
+    memory_dir = memory_dir or (repo_root / "hunt-memory")
+    inventory_path = repo_root / "recon" / target / "live" / "technology_inventory.json"
+    had_inventory = inventory_path.is_file()
+    context = surface_module.load_surface_context(
+        repo_root,
+        target,
+        memory_dir=memory_dir,
+        write_probe_log=False,
+    )
+    if not had_inventory and inventory_path.is_file():
+        inventory_path.unlink()
+    manifest = build_surface_input_manifest(repo_root, target, memory_dir=memory_dir)
+    write_surface_projection(
+        repo_root,
+        target,
+        surface_module.rank_surface(context),
+        manifest=manifest,
+        memory_dir=memory_dir,
+    )
 
 
 def test_closure_finishes_only_for_gap_free_handoff_state():
@@ -722,6 +746,46 @@ def test_closure_handoffs_actionable_work_and_coverage_gaps():
     assert action_closure["reasons"] == ["next_action_pending"]
     assert gap_closure["can_claim_exhausted"] is False
     assert gap_closure["reasons"] == ["coverage_high_value_gaps"]
+
+
+def test_stale_surface_projection_blocks_full_state_and_closure(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir()
+    (recon_dir / "js").mkdir()
+    (recon_dir / "live" / "httpx_full.txt").write_text(
+        "https://target.com [200] [API] [Express] [100]\n", encoding="utf-8"
+    )
+    source = recon_dir / "urls" / "with_params.txt"
+    source.write_text("https://target.com/api/orders?id=1\n", encoding="utf-8")
+    (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+    _publish_surface_projection(tmp_path, "target.com")
+
+    source.write_text("https://target.com/api/orders?id=2\n", encoding="utf-8")
+    state = build_autopilot_state(str(tmp_path), "target.com")
+
+    assert state["surface_projection"]["status"] == "stale"
+    assert state["next_action"] == "prepare_surface_context"
+
+    _write_closure_owners(tmp_path, "target.com", status="tested_clean", final_review=False)
+    state["next_action"] = "handoff"
+    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["surface_projection_pending"]
+
+
+def test_missing_surface_projection_without_recon_does_not_mask_closure_reason():
+    closure = build_closure_projection(
+        {
+            "has_recon": False,
+            "next_action": "handoff",
+            "surface_projection": {"status": "missing"},
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "finish"
+    assert closure["reasons"] == []
 
 
 def test_closure_never_finishes_for_invalid_coverage_or_explicit_durable_work():
@@ -1712,6 +1776,7 @@ class TestAutopilotState:
             now_ts=time.time(),
         )
 
+        _publish_surface_projection(repo_root, "target.com", memory_dir)
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
         output = format_autopilot_state(state)
 
@@ -2171,7 +2236,9 @@ class TestAutopilotState:
         )
         _record_owner_provenance(findings_dir, "mfa_report")
 
-        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+        state = build_autopilot_state(
+            str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory")
+        )
         output = format_autopilot_state(state)
 
         assert state["next_action"] == "run_recon"
@@ -2266,7 +2333,9 @@ class TestAutopilotState:
         )
         _record_owner_provenance(findings_dir, "mfa_report")
 
-        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory"))
+        memory_dir = tmp_path / "hunt-memory"
+        _publish_surface_projection(repo_root, "target.com", memory_dir)
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
         output = format_autopilot_state(state)
 
         assert state["has_recon"] is True
@@ -2311,6 +2380,7 @@ class TestAutopilotState:
             payout=900,
         ))
 
+        _publish_surface_projection(repo_root, "target.com", memory_dir)
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
         assert state["has_recon"] is True
         assert state["has_memory"] is True
@@ -2437,6 +2507,7 @@ class TestAutopilotState:
             session_id="sess-closed",
         )
 
+        _publish_surface_projection(repo_root, "target.com", memory_dir)
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
 
         assert state["resume_targets"] == []
@@ -2479,6 +2550,7 @@ class TestAutopilotState:
             hunt_sessions=1,
         ))
 
+        _publish_surface_projection(repo_root, "target.com", memory_dir)
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
 
         assert state["next_tool_hint"] == "collect_browser_mcp_evidence"

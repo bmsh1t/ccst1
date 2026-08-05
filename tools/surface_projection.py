@@ -85,7 +85,7 @@ def _manifest_roots(
         (repo_root / "recon" / storage_key, _GENERATED_RECON_PARTS),
         # owner 锁只承载并发控制；首次创建不能让业务输入 projection 失效。
         (repo_root / "findings" / storage_key, frozenset({".locks"})),
-        (repo_root / "memory" / "evidence" / storage_key, frozenset()),
+        (repo_root / "memory" / "evidence" / storage_key, frozenset({".locks"})),
         (repo_root / "memory" / "goals" / "targets" / f"{storage_key}.json", frozenset()),
         (repo_root / "memory" / "goals" / "active.json", frozenset()),
         (repo_root / "state" / storage_key / "action_queue.json", frozenset()),
@@ -192,6 +192,7 @@ def _bounded_surface(ranked: dict) -> dict:
         "js_intel",
         "source_intel",
         "browser",
+        "evidence_refs",
         "stats",
     )
     surface = {key: ranked[key] for key in allowed if key in ranked}

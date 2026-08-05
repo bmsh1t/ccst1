@@ -18,10 +18,87 @@ INTEL_SCHEMA_VERSION = 2
 SOURCE_STATUSES = {"ok", "partial", "unavailable", "error"}
 COVERAGE_STATUSES = {"ready", "partial", "unavailable", "error"}
 REVIEW_ITEM_LIMIT = 16
+NOT_APPLICABLE_VALUES = {
+    "not_affected",
+    "not-affected",
+    "not affected",
+    "not_applicable",
+    "not-applicable",
+    "not applicable",
+    "n/a",
+    "na",
+}
+STALE_ADVISORY_STATUSES = {"stale", "partial", "invalid", "error", "unavailable"}
 
 
 class IntelArtifactError(RuntimeError):
     """Intel artifact 存在但无法安全消费。"""
+
+
+def normalize_advisory_applicability(value: object) -> str:
+    """Normalize legacy advisory disposition spellings before routing."""
+    normalized = str(value or "unknown").strip().lower().replace("_", " ").replace("-", " ")
+    normalized = " ".join(normalized.split())
+    if normalized in {item.replace("_", " ").replace("-", " ") for item in NOT_APPLICABLE_VALUES}:
+        return "not_affected"
+    return normalized.replace(" ", "_")
+
+
+def advisory_is_stale(item: dict) -> bool:
+    """Return true only for an explicit stale/degraded advisory marker."""
+    if bool(item.get("stale")):
+        return True
+    status = str(item.get("status") or item.get("source_status") or "").strip().lower()
+    return status in STALE_ADVISORY_STATUSES
+
+
+def advisory_is_actionable(item: dict) -> bool:
+    """Gate advisory consumers on applicability and explicit freshness."""
+    return (
+        normalize_advisory_applicability(item.get("applicability")) != "not_affected"
+        and not advisory_is_stale(item)
+    )
+
+
+def _with_advisory_source_freshness(payload: dict) -> dict:
+    """Mark advisories backed only by degraded sources as stale."""
+    sources = {
+        str(source.get("source") or "").strip(): source
+        for source in payload.get("sources") or []
+        if isinstance(source, dict) and str(source.get("source") or "").strip()
+    }
+    degraded = {
+        name
+        for name, source in sources.items()
+        if str(source.get("status") or "").strip().lower() in STALE_ADVISORY_STATUSES
+        or bool(source.get("stale"))
+    }
+    if not degraded:
+        return payload
+    result = dict(payload)
+    advisories = []
+    for item in payload.get("advisories") or []:
+        if not isinstance(item, dict):
+            continue
+        names = {
+            str(name).strip()
+            for name in item.get("source_names") or []
+            if str(name).strip()
+        }
+        if str(item.get("source") or "").strip():
+            names.add(str(item.get("source")).strip())
+        names.update(
+            str(ref.get("source") or "").strip()
+            for ref in item.get("source_refs") or []
+            if isinstance(ref, dict) and str(ref.get("source") or "").strip()
+        )
+        copy = dict(item)
+        if names and names.issubset(degraded):
+            copy["stale"] = True
+            copy["source_status"] = "partial"
+        advisories.append(copy)
+    result["advisories"] = advisories
+    return result
 
 
 def validate_intel_artifact(payload: object) -> dict:
@@ -105,7 +182,7 @@ def read_intel_artifact(path: str | Path) -> dict:
         payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise IntelArtifactError(f"invalid intel artifact {artifact_path}: {exc}") from exc
-    return validate_intel_artifact(payload)
+    return _with_advisory_source_freshness(validate_intel_artifact(payload))
 
 
 def _score_hint(item: dict) -> int:
@@ -124,7 +201,7 @@ def project_intel_review_items(items: list[dict], *, limit: int = REVIEW_ITEM_LI
     candidates = [
         item
         for item in items
-        if isinstance(item, dict) and item.get("applicability") != "not_affected"
+        if isinstance(item, dict) and advisory_is_actionable(item)
     ]
     candidates.sort(key=lambda item: (-_score_hint(item), str(item.get("id") or "")))
     projected = []
@@ -195,6 +272,7 @@ def load_intel_projection(recon_dir: str | Path) -> dict:
                     "sources": [],
                     "coverage_status": "error",
                 }
+            payload = _with_advisory_source_freshness(payload)
             return {
                 "status": "ready",
                 "path": str(json_path),

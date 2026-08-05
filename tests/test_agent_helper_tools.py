@@ -57,7 +57,7 @@ def test_dispatch_autopilot_state_reads_combined_bootstrap_context(tmp_hunt_dir,
     )
 
     assert "AUTOPILOT STATE: target.com" in output
-    assert "Next action: hunt_p1" in output
+    assert "Next action: prepare_surface_context" in output
     assert "Surface review candidates (AI decides final priority):" in output
     assert "https://api.target.com/graphql" in output
 

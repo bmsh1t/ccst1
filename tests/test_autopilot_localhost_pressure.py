@@ -148,7 +148,7 @@ def test_localhost_sequential_fresh_resume_batch_queue_runner_and_checkpoint(
     )
     existing = build_autopilot_state(str(tmp_path), target, memory_dir=str(memory_dir))
     assert existing["has_recon"] is True
-    assert existing["next_action"] == "hunt_p1"
+    assert existing["next_action"] == "prepare_surface_context"
     inventory = existing["observation_inventory"]
     assert inventory["total"] >= 1
     assert inventory["untouched"] == inventory["total"]

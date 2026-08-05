@@ -39,7 +39,7 @@ class TestClaudeCodeHelperFlow:
         ))
 
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
-        assert state["next_action"] == "hunt_p1"
+        assert state["next_action"] == "prepare_surface_context"
         first_target = state["recommended_targets"][0]
         # Value-class weighting amplifies high-value paths (/api/v2 + /export
         # composite weight > /graphql alone). The chain semantics being tested

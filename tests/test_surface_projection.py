@@ -197,3 +197,34 @@ def test_surface_refresh_input_race_preserves_previous_projection(tmp_path, monk
         surface_module.build_surface_review(tmp_path, "target.com", refresh=True)
 
     assert path.read_bytes() == original
+
+
+def test_projection_preserves_browser_and_js_evidence_refs(tmp_path):
+    recon_dir = _write_surface_inputs(tmp_path)
+    browser_dir = recon_dir / "browser"
+    browser_dir.mkdir()
+    (browser_dir / "xhr_endpoints.txt").write_text(
+        "https://api.target.com/orders?id=1\n", encoding="utf-8"
+    )
+    (browser_dir / "api_endpoints.txt").write_text(
+        "https://api.target.com/orders?id=1\n", encoding="utf-8"
+    )
+    js_dir = tmp_path / "findings" / "target.com" / "js_intel"
+    js_dir.mkdir(parents=True)
+    (js_dir / "hypotheses.json").write_text(
+        json.dumps({"endpoints": [{"path": "/orders?id=1"}]}), encoding="utf-8"
+    )
+    (js_dir / "materials.json").write_text("{}\n", encoding="utf-8")
+
+    ranked = _ranked()
+    ranked["evidence_refs"] = {
+        "browser": ["recon/target.com/browser/xhr_endpoints.txt"],
+        "js": ["findings/target.com/js_intel/hypotheses.json"],
+    }
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", ranked, manifest=manifest)
+
+    loaded = load_surface_projection(tmp_path, "target.com")
+    assert loaded["status"] == "valid"
+    assert loaded["surface"]["evidence_refs"]["browser"]
+    assert loaded["surface"]["evidence_refs"]["js"]

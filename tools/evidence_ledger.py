@@ -9,10 +9,12 @@ Evidence Ledger 补 coverage_matrix 没覆盖到的一层：同一个 endpoint �
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import re
 import shlex
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -117,6 +119,20 @@ def ledger_path(repo_root: Path | str, target: str) -> Path:
     repo = Path(repo_root)
     key = target_storage_key(canonical_target_value(target))
     return repo / "memory" / "evidence" / key / "ledger.jsonl"
+
+
+@contextmanager
+def ledger_mutation_lock(repo_root: Path | str, target: str):
+    """Serialize one target's append without creating a second state owner."""
+    path = ledger_path(repo_root, target)
+    lock_path = path.parent / ".locks" / "ledger.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -279,13 +295,22 @@ def record_entry(
         "notes": str(notes or "").strip(),
         "warnings": [],
     }
-    if entry["state_changing"] and not entry["redline_checked"] and normalized_result in COVERING_RESULTS:
+    requires_redline = method_u == "PATCH" and bool(entry["state_changing"])
+    if requires_redline and not entry["redline_checked"] and normalized_result in COVERING_RESULTS:
+        entry["requested_result"] = normalized_result
+        entry["result"] = "blocked_redline"
+        entry["redline_decision"] = "blocked"
         entry["warnings"].append("redline_check_missing_for_state_changing_test")
+    elif entry["redline_checked"]:
+        entry["redline_decision"] = "allowed"
+    elif entry["result"] == "blocked_redline":
+        entry["redline_decision"] = "blocked"
 
     path = ledger_path(repo_root, resolved_target)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+    with ledger_mutation_lock(repo_root, resolved_target):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
     return entry
 
 

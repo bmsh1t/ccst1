@@ -74,6 +74,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 try:
     from tools.high_value_signals import classify_high_value_signal, summarize_high_value_signal
+    from tools.intel_artifact import advisory_is_actionable, normalize_advisory_applicability
     from tools.surface_js_intel import (
         build_js_lead_hints,
         build_js_intel_urls,
@@ -88,6 +89,7 @@ try:
     )
 except ImportError:  # pragma: no cover - top-level tools/ import
     from high_value_signals import classify_high_value_signal, summarize_high_value_signal
+    from intel_artifact import advisory_is_actionable, normalize_advisory_applicability  # type: ignore
     from surface_js_intel import (
         build_js_lead_hints,
         build_js_intel_urls,
@@ -1211,7 +1213,7 @@ def _load_intel_context(recon_dir: Path) -> dict:
     signals = []
     seen = set()
     for item in review_items:
-        if not isinstance(item, dict) or item.get("applicability") == "not_affected":
+        if not isinstance(item, dict) or not advisory_is_actionable(item):
             continue
         component = item.get("component") if isinstance(item.get("component"), dict) else {}
         haystack = " ".join(
@@ -1245,7 +1247,7 @@ def _load_intel_context(recon_dir: Path) -> dict:
                     or item.get("source", "intel"),
                     "id": item.get("id", ""),
                     "summary": item.get("summary", ""),
-                    "applicability": item.get("applicability", "unknown"),
+                    "applicability": normalize_advisory_applicability(item.get("applicability")),
                     "score_hint": item.get("score_hint", 0),
                     "kev": bool(item.get("kev")),
                     "epss": item.get("epss"),
@@ -2376,6 +2378,24 @@ def rank_surface(context: dict) -> dict:
             "tech_stack": context["hosts"].get(host, {}).get("tech_stack", []),
             "tested": path in tested_endpoints,
         }
+        evidence_refs: list[str] = []
+        if browser_observed:
+            evidence_refs.extend([
+                f"recon/{target_storage_key(context['target'])}/browser/xhr_endpoints.txt",
+                f"recon/{target_storage_key(context['target'])}/browser/api_endpoints.txt",
+            ])
+            page_js_map = Path(context.get("recon_dir") or "") / "browser" / "page_js_map.json"
+            if page_js_map.is_file():
+                evidence_refs.append(
+                    f"recon/{target_storage_key(context['target'])}/browser/page_js_map.json"
+                )
+        if matching_js_intel_endpoints:
+            evidence_refs.extend([
+                f"findings/{target_storage_key(context['target'])}/js_intel/hypotheses.json",
+                f"findings/{target_storage_key(context['target'])}/js_intel/materials.json",
+            ])
+        if evidence_refs:
+            entry["evidence_refs"] = _dedupe_keep_order(evidence_refs)
         new_observation = new_observations.get(raw_url)
         if new_observation is not None:
             entry["new_observation"] = True
@@ -2598,6 +2618,25 @@ def rank_surface(context: dict) -> dict:
             "api_count": int(
                 browser_source_counts.get("browser_api", len(context.get("browser_api_urls", []))) or 0
             ),
+        },
+        "evidence_refs": {
+            "browser": [
+                path
+                for path in (
+                    f"recon/{target_storage_key(context['target'])}/browser/xhr_endpoints.txt",
+                    f"recon/{target_storage_key(context['target'])}/browser/api_endpoints.txt",
+                    f"recon/{target_storage_key(context['target'])}/browser/page_js_map.json",
+                )
+                if (context.get("repo_root") and (Path(context["repo_root"]) / path).is_file())
+            ],
+            "js": [
+                path
+                for path in (
+                    f"findings/{target_storage_key(context['target'])}/js_intel/hypotheses.json",
+                    f"findings/{target_storage_key(context['target'])}/js_intel/materials.json",
+                )
+                if (context.get("repo_root") and (Path(context["repo_root"]) / path).is_file())
+            ],
         },
         "stats": {
             "total_candidates": frontiers.total,

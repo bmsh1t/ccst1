@@ -58,6 +58,9 @@ HIGH_IMPACT_OBJECT_TYPES = {
     "billing",
     "file",
 }
+ISOLATED_PAYMENT_TYPES = {"payment", "billing"}
+ISOLATED_OBJECT_STATUSES = {"isolated", "active"}
+ISOLATED_SIDE_EFFECTS = {"none", "reversible"}
 
 # Only runners implemented by validation_runner are eligible for a ready
 # command.  Required values are public request facts; session headers remain
@@ -68,6 +71,7 @@ RUNNER_CONTRACTS = {
     "sqli-result-diff": ("endpoint", "param", "variant_value"),
     "marker-replay": ("endpoint", "expect_marker"),
     "idor-actor-pair": ("endpoint", "owner_actor", "peer_actor"),
+    "payment-race": ("endpoint", "owner_actor", "object_ref"),
 }
 
 
@@ -430,6 +434,10 @@ def add_object(
     private_marker: str = "",
     status: str = "active",
     notes: str = "",
+    isolation: str = "",
+    cleanup_endpoint: str = "",
+    cleanup_method: str = "DELETE",
+    side_effects: str = "",
 ) -> dict[str, Any]:
     ref = _require_non_empty(object_ref, "object")
     type_value = _require_non_empty(object_type, "type")
@@ -446,11 +454,120 @@ def add_object(
             "private_marker": str(private_marker or current.get("private_marker", "") or ""),
             "status": str(status or current.get("status", "active") or "active"),
             "notes": str(notes or current.get("notes", "") or ""),
+            "isolation": str(isolation or current.get("isolation", "") or ""),
+            "cleanup_endpoint": str(cleanup_endpoint or current.get("cleanup_endpoint", "") or ""),
+            "cleanup_method": str(cleanup_method or current.get("cleanup_method", "DELETE") or "DELETE").upper(),
+            "side_effects": str(side_effects or current.get("side_effects", "") or ""),
             "created_at": current.get("created_at") or ts,
             "last_seen": ts,
         }
         return state["objects"][ref]
     return _mutate_case_state(repo_root, target, mutate)
+
+
+def add_isolated_object(
+    repo_root: str | Path,
+    target: str,
+    *,
+    object_ref: str,
+    object_type: str = "payment",
+    object_id: str = "",
+    owner_actor: str,
+    endpoint: str,
+    cleanup_endpoint: str,
+    cleanup_method: str = "DELETE",
+    private_marker: str,
+    side_effects: str = "reversible",
+    notes: str = "",
+) -> dict[str, Any]:
+    """Register a disposable payment/billing object for bounded replay."""
+    type_value = str(object_type or "").strip().lower()
+    if type_value not in ISOLATED_PAYMENT_TYPES:
+        raise ValueError("isolated objects must use payment or billing type")
+    if not str(owner_actor or "").strip():
+        raise ValueError("owner_actor is required for an isolated payment object")
+    if not str(endpoint or "").strip() or not str(cleanup_endpoint or "").strip():
+        raise ValueError("endpoint and cleanup_endpoint are required for an isolated payment object")
+    if not str(private_marker or "").strip():
+        raise ValueError("private_marker is required for an isolated payment object")
+    side_effects_value = str(side_effects or "reversible").strip().lower()
+    if side_effects_value not in ISOLATED_SIDE_EFFECTS:
+        raise ValueError("side_effects must be none or reversible")
+    return add_object(
+        repo_root,
+        target,
+        object_ref=object_ref,
+        object_type=type_value,
+        object_id=object_id,
+        owner_actor=owner_actor,
+        endpoint=endpoint,
+        private_marker=private_marker,
+        status="isolated",
+        notes=notes,
+        isolation="disposable",
+        cleanup_endpoint=cleanup_endpoint,
+        cleanup_method=cleanup_method,
+        side_effects=side_effects_value,
+    )
+
+
+def cleanup_object(
+    repo_root: str | Path,
+    target: str,
+    *,
+    object_ref: str,
+    status: str = "completed",
+    notes: str = "",
+) -> dict[str, Any]:
+    """Record cleanup state without pretending a cleanup request succeeded."""
+    ref = _require_non_empty(object_ref, "object")
+    status_value = str(status or "completed").strip().lower()
+    if status_value not in {"completed", "failed", "skipped"}:
+        raise ValueError("cleanup status must be completed, failed, or skipped")
+
+    def mutate(state):
+        obj = state["objects"].get(ref)
+        if not isinstance(obj, dict):
+            raise ValueError(f"object does not exist: {ref}")
+        obj["cleanup_status"] = status_value
+        obj["cleanup_at"] = now_utc()
+        if status_value == "completed":
+            obj["status"] = "cleaned"
+        if notes:
+            obj["notes"] = str(notes)
+        return obj
+
+    return _mutate_case_state(repo_root, target, mutate)
+
+
+def isolated_object_readiness(state: dict[str, Any], object_ref: str) -> dict[str, Any]:
+    """Return a bounded readiness result for the payment-race runner."""
+    ref = str(object_ref or "").strip()
+    obj = state.get("objects", {}).get(ref) if isinstance(state.get("objects"), dict) else None
+    if not isinstance(obj, dict):
+        return {"ready": False, "reason": "isolated test object is missing", "object": {}}
+    missing = []
+    if str(obj.get("type") or "").lower() not in ISOLATED_PAYMENT_TYPES:
+        missing.append("payment/billing object type")
+    if str(obj.get("isolation") or "").lower() != "disposable":
+        missing.append("disposable isolation")
+    if str(obj.get("status") or "").lower() not in ISOLATED_OBJECT_STATUSES:
+        missing.append("active isolated status")
+    cleanup_status = str(obj.get("cleanup_status") or "").lower()
+    if cleanup_status and cleanup_status != "completed":
+        missing.append("previous cleanup incomplete")
+    if not str(obj.get("cleanup_endpoint") or "").strip():
+        missing.append("cleanup endpoint")
+    if not str(obj.get("private_marker") or "").strip():
+        missing.append("private marker")
+    if str(obj.get("side_effects") or "").lower() not in ISOLATED_SIDE_EFFECTS:
+        missing.append("reversible side-effect declaration")
+    return {
+        "ready": not missing,
+        "reason": "; ".join(missing) if missing else "ready",
+        "object": obj,
+        "missing": missing,
+    }
 
 
 def add_hypothesis(
@@ -615,6 +732,28 @@ def _readiness(
         })
         return max(0, 60 - 15 * len(missing) - 5 * len(optional_gaps)), missing, details
 
+    if runner == "payment-race":
+        owner = str(item.get("owner_actor") or obj.get("owner_actor") or "").strip()
+        owner_session_id, owner_session = _session_for_actor(state, owner) if owner else (None, None)
+        isolated = isolated_object_readiness(state, str(item.get("object_ref") or ""))
+        if not endpoint:
+            missing.append("object endpoint")
+        if not owner:
+            missing.append("owner actor")
+        elif not owner_session:
+            missing.append("owner session")
+        if not isolated.get("ready"):
+            missing.append(str(isolated.get("reason") or "isolated payment object"))
+        details.update({
+            "endpoint": endpoint,
+            "object": obj,
+            "owner_actor": owner,
+            "owner_session_id": owner_session_id,
+            "owner_session": owner_session,
+            "redline_required": True,
+        })
+        return max(0, 50 - 15 * len(missing)), missing, details
+
     details["endpoint"] = endpoint
     details["method"] = str(item.get("method") or "GET").upper()
     for field in RUNNER_CONTRACTS[runner]:
@@ -694,6 +833,11 @@ def _build_generic_command(target: str, item: dict[str, Any], details: dict[str,
             parts.extend(["--baseline-value", item.get("baseline_value")])
     elif runner == "marker-replay":
         parts.extend(["--expect-marker", item.get("expect_marker") or ""])
+    elif runner == "payment-race":
+        parts.extend([
+            "--object-ref", item.get("object_ref") or "",
+            "--redline-checked",
+        ])
     return " ".join(_quote(part) for part in parts if part != "")
 
 
@@ -955,6 +1099,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--status", default="active")
     p.add_argument("--notes", default="")
 
+    p = sub.add_parser("add-isolated-object")
+    common(p)
+    p.add_argument("--object", required=True)
+    p.add_argument("--type", default="payment", choices=sorted(ISOLATED_PAYMENT_TYPES))
+    p.add_argument("--object-id", default="")
+    p.add_argument("--owner-actor", required=True)
+    p.add_argument("--endpoint", required=True)
+    p.add_argument("--cleanup-endpoint", required=True)
+    p.add_argument("--cleanup-method", default="DELETE")
+    p.add_argument("--private-marker", required=True)
+    p.add_argument("--side-effects", default="reversible", choices=sorted(ISOLATED_SIDE_EFFECTS))
+    p.add_argument("--notes", default="")
+
+    p = sub.add_parser("cleanup-object")
+    common(p)
+    p.add_argument("--object", required=True)
+    p.add_argument("--status", default="completed", choices=["completed", "failed", "skipped"])
+    p.add_argument("--notes", default="")
+
     p = sub.add_parser("add-hypothesis")
     common(p)
     p.add_argument("--id", default="")
@@ -1037,6 +1200,29 @@ def _run_command(argv: list[str] | None = None) -> int:
             owner_actor=args.owner_actor,
             endpoint=args.endpoint,
             private_marker=args.private_marker,
+            status=args.status,
+            notes=args.notes,
+        ))
+    elif args.cmd == "add-isolated-object":
+        _print_json(add_isolated_object(
+            repo_root,
+            args.target,
+            object_ref=args.object,
+            object_type=args.type,
+            object_id=args.object_id,
+            owner_actor=args.owner_actor,
+            endpoint=args.endpoint,
+            cleanup_endpoint=args.cleanup_endpoint,
+            cleanup_method=args.cleanup_method,
+            private_marker=args.private_marker,
+            side_effects=args.side_effects,
+            notes=args.notes,
+        ))
+    elif args.cmd == "cleanup-object":
+        _print_json(cleanup_object(
+            repo_root,
+            args.target,
+            object_ref=args.object,
             status=args.status,
             notes=args.notes,
         ))

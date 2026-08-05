@@ -889,10 +889,10 @@ def _pick_next_action(
     if latest_session and resume_targets:
         return "resume_untested"
 
-    if ranked.get("review_pool") or ranked.get("p1"):
-        return "hunt_p1"
     if surface_context_required or fresh_recon_ready:
         return "prepare_surface_context"
+    if ranked.get("review_pool") or ranked.get("p1"):
+        return "hunt_p1"
     if dir_fuzz_rotation_pending:
         return "run_recon"
     if resume_targets:
@@ -2477,6 +2477,9 @@ def build_autopilot_state(
             "reason": str(projection.get("reason") or ""),
             "path": str(projection.get("path") or ""),
         },
+        surface_context_required=(
+            bool(facts.get("has_recon")) and projection.get("status") != "valid"
+        ),
         surface_context=surface_context,
     )
 
@@ -2817,6 +2820,13 @@ def build_closure_projection(
     reasons: list[str] = []
     action = str(state.get("next_action") or "handoff")
     surface_review = state.get("surface_review_completion") or {}
+    surface_projection = state.get("surface_projection")
+    surface_projection_pending = bool(
+        isinstance(surface_projection, dict)
+        and surface_projection
+        and bool(state.get("has_recon") or state.get("surface_context_required"))
+        and str(surface_projection.get("status") or "").strip().lower() != "valid"
+    )
     case_state = state.get("case_state") or {}
     case_state_pending = (
         str(case_state.get("status") or "missing") == "valid"
@@ -2847,6 +2857,9 @@ def build_closure_projection(
     elif case_state_pending:
         verdict = "handoff"
         reasons.append("case_state_work_pending")
+    elif surface_projection_pending:
+        verdict = "handoff"
+        reasons.append("surface_projection_pending")
     elif action != "handoff":
         verdict = "handoff"
         reasons.append("next_action_pending")
@@ -2949,6 +2962,7 @@ _STAGNANT_REASONS = {
     "observation_high_value_pending",
     "source_evidence_partial",
     "js_evidence_partial",
+    "surface_projection_pending",
     "intel_evidence_blocked",
     "json_evidence_partial",
     "sql_evidence_partial",
@@ -2979,6 +2993,10 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
         "intel": {
             "blocked": (state.get("intel_continuation") or {}).get("blocked") or [],
             "reason": (state.get("intel_continuation") or {}).get("reason") or "",
+        },
+        "surface_projection": {
+            key: (state.get("surface_projection") or {}).get(key)
+            for key in ("status", "reason", "path")
         },
         "json": {
             key: (state.get("json_inject") or {}).get(key)
