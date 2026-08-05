@@ -13,6 +13,7 @@ from memory.schemas import make_journal_entry, make_pattern_entry
 from memory.target_profile import make_target_profile, save_target_profile
 from autopilot_state import (
     _build_recommended_targets,
+    _checkpoint_round_projection,
     _filter_ranked_placeholders,
     _is_substantive_queue_action,
     _load_closure_projection,
@@ -209,6 +210,33 @@ def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
     assert terminal["round_progress"]["latest_lane"]["decision"] == "tested clean"
     assert closed["verdict"] == "finish"
     assert closed["can_claim_exhausted"] is True
+
+
+def test_round_projection_preserves_budget_after_lane_field_projection():
+    lane = {
+        "schema_version": 1,
+        "id": "validate:example",
+        "status": "completed",
+        "decision": "tested clean",
+        "evidence_ref": "evidence/target.com/summary.json",
+        "next_action": "none",
+        "finished_at": "2026-08-01T00:01:00Z",
+    }
+    projection = _checkpoint_round_projection({
+        "round_progress": {
+            "schema_version": 1,
+            "round_id": "round-test",
+            "status": "completed",
+            "max_lanes": 3,
+            "claimed_lanes": ["validate:example"],
+            "lanes": [lane],
+            "claimed_count": 1,
+            "remaining_lanes": 2,
+            "budget_reached": False,
+        }
+    })
+
+    assert projection["max_lanes"] == 3
 
 
 def test_case_state_work_routes_bootstrap_and_blocks_exhausted_closure(tmp_path):

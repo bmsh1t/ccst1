@@ -329,7 +329,7 @@ def parse_autopilot_args(
         )
 
     if not max_lanes_inputs and round_defaults:
-        max_lanes = 3
+        max_lanes = 8
 
     cadence = CADENCE_FLAGS[cadence_flags[0]] if cadence_flags else (
         "normal" if round_defaults else "paranoid"

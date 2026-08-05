@@ -129,7 +129,7 @@ Claude CLI 2.1.220+ can schedule the bounded wrapper with its interactive
 `/loop` command:
 
 ```text
-/loop 10m /autopilot-round target.com --normal --deep --max-lanes 3
+/loop 10m /autopilot-round target.com --normal --deep --max-lanes 8
 ```
 
 One loop owns one target. Each invocation reads the existing checkpoint/state,

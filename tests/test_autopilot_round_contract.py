@@ -24,10 +24,10 @@ def test_round_defaults_are_bounded_and_explicit_arguments_win():
     assert default["action"] == "continue"
     assert default["cadence"] == "normal"
     assert default["deep"] is True
-    assert default["max_lanes"] == 3
+    assert default["max_lanes"] == 8
     assert default["invocation_batch"] == {
         "bounded": True,
-        "max_lanes": 3,
+        "max_lanes": 8,
         "handoff": "checkpoint_and_handoff_after_max_lanes",
     }
     assert explicit["cadence"] == "paranoid"
@@ -170,7 +170,7 @@ def test_terminal_statuses_bound_residual_blind_spots_and_exhaustion_claims():
 def test_readme_documents_native_loop_cancellation_and_disk_resume():
     readme = " ".join(_read("README.md").split())
 
-    assert "/loop 10m /autopilot-round target.com --normal --deep --max-lanes 3" in readme
+    assert "/loop 10m /autopilot-round target.com --normal --deep --max-lanes 8" in readme
     for status in ("CONTINUE", "DONE", "EXHAUSTED", "BLOCKED", "ERROR"):
         assert f"`{status}`" in readme
     assert "One loop owns one target" in readme

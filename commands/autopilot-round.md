@@ -18,7 +18,7 @@ Native fixed-loop prompt identity (do not reinterpret): `/autopilot-round $ARGUM
 Formal arguments are identical to `/autopilot`: `<target>
 [--paranoid|--normal|--yolo] [--quick] [--deep] [--max-lanes N]
 [--auth-file PATH]`, or one readable primary-domain list. Round defaults are
-`--normal --deep --max-lanes 3`; an explicit formal argument wins. The existing
+`--normal --deep --max-lanes 8`; an explicit formal argument wins. The existing
 bootstrap/parser is the only argument owner.
 
 ## Bootstrap Gate
@@ -163,7 +163,7 @@ canonical generated report but has the same closure and blind-spot limits.
 Recommended scheduler entry:
 
 ```text
-/loop 10m /autopilot-round TARGET --normal --deep --max-lanes 3
+/loop 10m /autopilot-round TARGET --normal --deep --max-lanes 8
 ```
 
 This interval form creates a native fixed-interval cron job; native `/loop` owns

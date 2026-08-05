@@ -340,9 +340,9 @@ def _checkpoint_round_projection(witness: dict) -> dict:
         ):
             raise ValueError("checkpoint round_progress lane fields are invalid")
         item = {"id": lane_id, "status": lane_status}
-        for field, limit in (("decision", 500), ("evidence_ref", 500), ("next_action", 1000)):
+        for field, field_limit in (("decision", 500), ("evidence_ref", 500), ("next_action", 1000)):
             value = lane.get(field, "")
-            if not isinstance(value, str) or "\n" in value or "\r" in value or len(value) > limit:
+            if not isinstance(value, str) or "\n" in value or "\r" in value or len(value) > field_limit:
                 raise ValueError("checkpoint round_progress lane fields are invalid")
             if value:
                 item[field] = value
