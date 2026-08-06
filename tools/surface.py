@@ -21,7 +21,7 @@ if BASE_DIR not in sys.path:
 from memory.pattern_db import PatternDB
 from memory.target_profile import default_memory_dir, load_target_profile
 try:
-    from tools.closure_resolver import ClosureResolver
+    from tools.closure_resolver import ClosureResolver, canonical_endpoint_path
     from tools.evidence_ledger import (
         build_current_cell_projection,
         load_entries as load_evidence_ledger_entries,
@@ -58,7 +58,7 @@ try:
     )
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
-    from closure_resolver import ClosureResolver  # type: ignore
+    from closure_resolver import ClosureResolver, canonical_endpoint_path  # type: ignore
     from evidence_ledger import (  # type: ignore
         build_current_cell_projection,
         load_entries as load_evidence_ledger_entries,
@@ -1505,11 +1505,9 @@ def _action_queue_final_endpoints(actions: list[dict]) -> dict[str, str]:
         if status not in ACTION_QUEUE_FINAL_STATUSES:
             continue
         metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-        endpoint = str(metadata.get("endpoint") or "").split("?", 1)[0].strip()
+        endpoint = canonical_endpoint_path(str(metadata.get("endpoint") or ""))
         if not endpoint:
-            url = str(metadata.get("url") or "").strip()
-            if url:
-                endpoint = (urlparse(url).path or "/").split("?", 1)[0].strip()
+            endpoint = canonical_endpoint_path(str(metadata.get("url") or ""))
         if endpoint:
             endpoints[endpoint] = status
     return endpoints
@@ -2494,7 +2492,7 @@ def rank_surface(context: dict) -> dict:
                 for signal in matching_intel[:5]
             ]
 
-        endpoint_path = parsed.path or "/"
+        endpoint_path = canonical_endpoint_path(raw_url) or "/"
         ledger_vuln_hint = _surface_vuln_hint(path, suggested, query_keys)
         ledger_result = closure_resolver.closed_result(endpoint_path, ledger_vuln_hint)
         if ledger_result:

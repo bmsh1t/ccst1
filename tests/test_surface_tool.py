@@ -1369,7 +1369,7 @@ class TestSurfaceRanking:
             "https://app.target.com [200] [SPA] [React] [1000]\n"
         )
         (recon_dir / "urls" / "api_endpoints.txt").write_text(
-            "https://app.target.com/orders\n"
+            "https://app.target.com/orders?view=latest\n"
             "https://app.target.com/rest/order-history\n"
             "https://app.target.com/rest/track-order/abc123\n"
         )
@@ -1385,8 +1385,8 @@ class TestSurfaceRanking:
                             "status": "n/a",
                             "type": "ranked-surface",
                             "metadata": {
-                                "url": "https://app.target.com/orders",
-                                "endpoint": "/orders",
+                                "url": "https://app.target.com/orders/",
+                                "endpoint": "https://app.target.com/orders/",
                             },
                         }
                     ],
@@ -1400,10 +1400,10 @@ class TestSurfaceRanking:
         visible_urls = [item["url"] for item in ranked["p1"] + ranked["p2"]]
         review_urls = [item["url"] for item in ranked["review_pool"]]
 
-        assert "https://app.target.com/orders" in p1_urls
-        assert "https://app.target.com/orders" in visible_urls
-        assert "https://app.target.com/orders" in review_urls
-        orders = next(item for item in ranked["p1"] if item["url"] == "https://app.target.com/orders")
+        assert "https://app.target.com/orders?view=latest" in p1_urls
+        assert "https://app.target.com/orders?view=latest" in visible_urls
+        assert "https://app.target.com/orders?view=latest" in review_urls
+        orders = next(item for item in ranked["p1"] if item["url"] == "https://app.target.com/orders?view=latest")
         assert orders["action_queue_history"]["status"] == "n/a"
         assert "https://app.target.com/rest/order-history" in p1_urls
 
