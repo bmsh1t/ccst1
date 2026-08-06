@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+import finding_index
 import target_case_state
 import validation_runner
 from evidence_ledger import ledger_path
@@ -2355,6 +2356,38 @@ def test_runner_reconciliation_replay_repairs_each_owner_without_duplicates(
     assert finding["runner_operation_id"] == summary["operation_id"]
     assert queue["metadata"]["runner_operation_id"] == summary["operation_id"]
     assert queue["attempts"] == 1
+
+
+def test_runner_replay_repairs_finding_event_missing_after_canonical_write(monkeypatch, tmp_path):
+    original_append = finding_index._append_mutation_events
+    failed = {"value": False}
+
+    def fail_once(path, events):
+        if not failed["value"]:
+            failed["value"] = True
+            raise OSError("mutation event fault")
+        return original_append(path, events)
+
+    monkeypatch.setattr(finding_index, "_append_mutation_events", fail_once)
+    summary, queue_path, key = _runner_reconciliation_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(finding_index, "_append_mutation_events", original_append)
+
+    recovered = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    replay = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    findings_dir = tmp_path / "findings" / key
+    finding = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))["findings"][0]
+    events = (findings_dir / "mutation-events.jsonl").read_text(encoding="utf-8").splitlines()
+    queue = json.loads(queue_path.read_text(encoding="utf-8"))["actions"][0]
+
+    assert recovered["status"] == "updated"
+    assert replay["status"] == "deduplicated"
+    assert len(events) == 1
+    assert finding_index.verify_finding_owner_provenance(
+        findings_dir,
+        finding,
+        target=summary["target"],
+    )["valid"] is True
+    assert queue["metadata"]["runner_operation_id"] == summary["operation_id"]
 
 
 def test_request_once_bounds_response_and_records_hash(monkeypatch):

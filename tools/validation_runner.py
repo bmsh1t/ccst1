@@ -51,6 +51,7 @@ try:
         load_finding_index,
         update_finding_status,
         upsert_finding,
+        verify_finding_owner_provenance,
         verify_finalized_finding_owner_provenance,
     )
     from tools.public_exposure_signals import (
@@ -85,6 +86,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_finding_index,
         update_finding_status,
         upsert_finding,
+        verify_finding_owner_provenance,
         verify_finalized_finding_owner_provenance,
     )
     from public_exposure_signals import (  # type: ignore
@@ -338,6 +340,16 @@ def _find_existing_finding(findings_dir: Path, finding_id: str) -> dict[str, Any
         if isinstance(item, dict) and str(item.get("id") or "") == finding_id:
             return item
     return {}
+
+
+def _runner_finding_replay_is_valid(
+    findings_dir: Path,
+    finding: dict[str, Any],
+    *,
+    target: str,
+) -> bool:
+    """Only deduplicate a runner row whose owner event is still present."""
+    return bool(verify_finding_owner_provenance(findings_dir, finding, target=target).get("valid"))
 
 
 def _runner_sync_gate_updates(
@@ -634,7 +646,11 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
     generated_at = str(summary.get("generated_at") or now_utc())
     operation_id = str(summary.get("operation_id") or "").strip()
     existing = _find_existing_finding(findings_dir, finding_id)
-    if operation_id and str(existing.get("runner_operation_id") or "") == operation_id:
+    if (
+        operation_id
+        and str(existing.get("runner_operation_id") or "") == operation_id
+        and _runner_finding_replay_is_valid(findings_dir, existing, target=target)
+    ):
         return {
             "status": "deduplicated",
             "findings_dir": str(findings_dir),
@@ -720,7 +736,11 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
         )
         if existing_id:
             matched_existing = _find_existing_finding(findings_dir, existing_id)
-            if operation_id and str(matched_existing.get("runner_operation_id") or "") == operation_id:
+            if (
+                operation_id
+                and str(matched_existing.get("runner_operation_id") or "") == operation_id
+                and _runner_finding_replay_is_valid(findings_dir, matched_existing, target=target)
+            ):
                 return {
                     "status": "deduplicated",
                     "findings_dir": str(findings_dir),

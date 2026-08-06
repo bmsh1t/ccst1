@@ -19,6 +19,11 @@ def _to_text(value: Any) -> str:
     return str(value)
 
 
+def _bounded_error(error: BaseException, limit: int = 240) -> str:
+    message = " ".join(str(error).split())[:limit]
+    return message or type(error).__name__
+
+
 def _append_message(stream: str, message: str) -> str:
     if not stream:
         return message
@@ -43,8 +48,8 @@ def _communicate_for(proc: subprocess.Popen[str], timeout: int | float) -> tuple
         return _to_text(stdout), _to_text(stderr), True
     except subprocess.TimeoutExpired as exc:
         return _to_text(exc.output), _to_text(exc.stderr), False
-    except Exception:
-        return "", "", True
+    except Exception as exc:
+        return "", f"communicate failed: {_bounded_error(exc)}", False
 
 
 def _merge_timeout_stream(partial: str, cleanup: str) -> str:
@@ -54,22 +59,25 @@ def _merge_timeout_stream(partial: str, cleanup: str) -> str:
 def _terminate_process_group(proc: subprocess.Popen[str]) -> tuple[str, str]:
     try:
         pgid = os.getpgid(proc.pid)
-    except Exception:
-        return "", ""
+    except Exception as exc:
+        return "", f"process-group lookup failed: {_bounded_error(exc)}"
 
+    termination_error = ""
     try:
         os.killpg(pgid, signal.SIGTERM)
-    except Exception:
-        pass
+    except Exception as exc:
+        termination_error = f"SIGTERM failed: {_bounded_error(exc)}"
 
     stdout, stderr, finished = _communicate_for(proc, TERMINATION_GRACE_SECONDS)
+    if termination_error:
+        stderr = _append_message(stderr, termination_error)
     if finished:
         return stdout, stderr
 
     try:
         os.killpg(pgid, signal.SIGKILL)
-    except Exception:
-        return stdout, stderr
+    except Exception as exc:
+        return stdout, _append_message(stderr, f"SIGKILL failed: {_bounded_error(exc)}")
 
     kill_stdout, kill_stderr, _finished = _communicate_for(proc, TERMINATION_GRACE_SECONDS)
     return _merge_timeout_stream(stdout, kill_stdout), _merge_timeout_stream(stderr, kill_stderr)
@@ -123,7 +131,7 @@ def _run_command_split(
         cleanup_stdout, cleanup_stderr = _terminate_process_group(proc)
         stdout = _merge_timeout_stream(stdout, cleanup_stdout)
         stderr = _merge_timeout_stream(stderr, cleanup_stderr)
-        stderr = _append_message(stderr, str(exc))
+        stderr = _append_message(stderr, f"command failed: {_bounded_error(exc)}")
         return False, stdout, stderr
 
 

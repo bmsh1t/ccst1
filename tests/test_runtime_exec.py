@@ -184,6 +184,31 @@ def test_run_shell_command_kills_process_group_on_timeout(monkeypatch):
 
 
 
+def test_cleanup_communication_error_is_failure_and_reaches_sigkill(monkeypatch):
+    events = []
+
+    class FakeProc:
+        pid = 9010
+
+        def communicate(self, timeout=None):
+            raise RuntimeError("x" * 1000)
+
+    monkeypatch.setattr(runtime_exec.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        runtime_exec.os,
+        "killpg",
+        lambda pid, sig: events.append((pid, sig)),
+    )
+
+    stdout, stderr = runtime_exec._terminate_process_group(FakeProc())
+
+    assert stdout == ""
+    assert "communicate failed:" in stderr
+    assert len(stderr) < 600
+    assert (9010, signal.SIGTERM) in events
+    assert (9010, signal.SIGKILL) in events
+
+
 def test_run_shell_command_timeout_preserves_partial_and_cleanup_output(monkeypatch):
     calls = {"communicate": 0}
 
