@@ -156,8 +156,9 @@ local practice / lab assets.
   reaching for a non-default tool.
 - `docs/resin-proxy.md` — Resin egress pool: `config.resin`, mode auto-choice,
   httpx/nuclei/curl wiring (no separate skill).
-- `templates/phased-surface-validation-plan.md` 是分阶段攻击面验证计划模板；它只沉淀目标事实、
-  证据、阶段和停止条件。副作用判断统一由 `rules/red-lines.md` 负责，避免模板形成第二套门槛。
+- `templates/phased-surface-validation-plan.md` 是分阶段攻击面验证计划模板；当目标脚本、
+  `unsafe-skipped`、checkpoint 或验证需要沉淀时，只把目标事实写入目标作用域，模板记录证据、
+  阶段和停止条件，通用流程留在通用层。副作用判断统一由 `rules/red-lines.md` 负责，避免模板形成第二套门槛。
 
 ### Operational Summary
 
