@@ -17,16 +17,17 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.closure_resolver import extract_endpoint_parts
     from tools.coverage_matrix import normalize_vuln_class
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from closure_resolver import extract_endpoint_parts  # type: ignore
     from coverage_matrix import normalize_vuln_class  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
@@ -151,30 +152,12 @@ def _canonicalize_endpoint(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
-
-    def _hash_route(path: str, fragment: str) -> str:
-        fragment = str(fragment or "")
-        if not fragment.startswith("/"):
-            return ""
+    path, fragment = extract_endpoint_parts(raw)
+    if fragment.startswith("/"):
         route = fragment.split("?", 1)[0].split("#", 1)[0] or "/"
-        prefix = (path or "/").split("?", 1)[0].rstrip("/") or "/"
+        prefix = (path or "/").rstrip("/") or "/"
         return f"{prefix}#{route}"
-
-    if "://" in raw:
-        try:
-            parsed = urlparse(raw)
-        except ValueError:
-            return raw.split("?", 1)[0].split("#", 1)[0]
-        hash_route = _hash_route(parsed.path or "/", parsed.fragment)
-        if hash_route:
-            return hash_route
-        return (parsed.path or "/").split("?", 1)[0].split("#", 1)[0]
-    if "#/" in raw:
-        path, fragment = raw.split("#", 1)
-        hash_route = _hash_route(path or "/", fragment)
-        if hash_route:
-            return hash_route
-    return raw.split("?", 1)[0].split("#", 1)[0]
+    return path
 
 
 def _quote(value: str) -> str:

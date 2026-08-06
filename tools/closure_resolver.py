@@ -68,20 +68,31 @@ def canonical_vuln_class(vuln_hint: str) -> str:
     return _VULN_ALIAS.get(value, "")
 
 
-def canonical_endpoint_path(value: str) -> str:
-    """归一化 endpoint 到 path-only 形态。"""
+def extract_endpoint_parts(value: str) -> tuple[str, str]:
+    """Return an endpoint's path and fragment using one URL parser."""
     raw = str(value or "").strip()
     if not raw:
-        return ""
+        return "", ""
     if "://" in raw:
         try:
             parsed = urlparse(raw)
             path = parsed.path or "/"
+            fragment = parsed.fragment
         except ValueError:
-            path = raw
+            path, _, fragment = raw.partition("#")
     else:
-        path = raw
-    path = path.split("?", 1)[0].split("#", 1)[0].strip()
+        path, _, fragment = raw.partition("#")
+    return path.split("?", 1)[0], fragment
+
+
+def extract_endpoint_path(value: str) -> str:
+    """Project a URL or endpoint to its path without identity normalization."""
+    return extract_endpoint_parts(value)[0]
+
+
+def canonical_endpoint_path(value: str) -> str:
+    """归一化 endpoint 到 path-only 形态。"""
+    path = extract_endpoint_path(value).strip()
     if not path:
         return ""
     if not path.startswith("/"):

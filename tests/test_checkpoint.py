@@ -14,10 +14,9 @@ from action_queue import _checkpoint_item_to_action, _dedupe_key, load_queue, sa
 from checkpoint import (
     _build_next_action_queue,
     _bounded_next_proposals,
-    _align_decision_with_default_candidate,
     _actor_gap_enrichment_proposal,
     _coverage_gap_validation_path,
-    _decide,
+    _decision_for_action,
     _dead_end_proposals,
     _filter_final_action_queue_items,
     _lead_proposals,
@@ -144,7 +143,7 @@ def test_round_guard_blocks_only_after_three_identical_records(monkeypatch, tmp_
     }}
     closure = {"verdict": "handoff", "reasons": ["json_evidence_partial"], "next_action": "handoff"}
     monkeypatch.setattr(checkpoint_module, "build_autopilot_state", lambda *_args, **_kwargs: state)
-    monkeypatch.setattr(checkpoint_module, "_load_closure_projection", lambda *_args, **_kwargs: closure)
+    monkeypatch.setattr(checkpoint_module, "load_closure_projection", lambda *_args, **_kwargs: closure)
 
     counts = [record_round_closure(tmp_path, target)["round_guard"]["consecutive"] for _ in range(4)]
 
@@ -362,7 +361,7 @@ def test_round_lane_heartbeat_survives_repeated_interrupt_cycles(monkeypatch, tm
     )
     monkeypatch.setattr(
         checkpoint_module,
-        "_load_closure_projection",
+        "load_closure_projection",
         lambda *_args, **_kwargs: {"verdict": "handoff", "reasons": ["next_action_pending"]},
     )
 
@@ -419,7 +418,7 @@ def test_round_closure_completes_budget_and_next_begin_starts_new_round(monkeypa
     )
     monkeypatch.setattr(
         checkpoint_module,
-        "_load_closure_projection",
+        "load_closure_projection",
         lambda *_args, **_kwargs: {"verdict": "handoff", "reasons": ["next_action_pending"]},
     )
 
@@ -443,7 +442,7 @@ def test_round_closure_rejects_unfinished_lane(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         checkpoint_module,
-        "_load_closure_projection",
+        "load_closure_projection",
         lambda *_args, **_kwargs: {"verdict": "handoff", "reasons": ["lane_pending"]},
     )
 
@@ -1031,10 +1030,11 @@ def test_checkpoint_ignores_off_target_direct_finding_followup(tmp_path):
 
     checkpoint = build_checkpoint(tmp_path, target="target.com")
 
-    assert checkpoint["decision"] == "report"
+    assert checkpoint["decision"] == "refresh-recon"
     assert checkpoint["structured_findings"]["pending_validation"] == 0
     assert checkpoint["structured_findings"]["validated_pending_report"] == 1
     assert checkpoint["structured_findings"]["next_report"]["id"] == "TARGET-AUTHZ"
+    assert any(item["type"] == "report" for item in checkpoint["next_action_queue"])
     assert "OFFTARGET-IDOR" not in json.dumps(checkpoint["next_action_queue"])
 
 
@@ -1078,59 +1078,23 @@ def test_checkpoint_keeps_report_queued_without_outranking_high_value_hunt(tmp_p
     assert report_action["priority"] >= 90
 
 
-def test_checkpoint_decision_treats_pending_report_as_reportable_asset_not_stop_condition():
-    state = {
-        "has_recon": True,
-        "structured_findings": {
-            "validated_pending_report": 1,
-            "next_report": {"id": "F-REPORT"},
-        },
-        "surface": {"stats": {"p1": 1, "p2": 0}},
-        "recommended_targets": [{"url": "https://api.target.com/api/admin/export"}],
-    }
-
-    assert _decide(state, coverage_gaps=[], actor_gaps=[], case_state={}) == "hunt"
-
-    report_only_state = {
-        "has_recon": True,
-        "structured_findings": {
-            "validated_pending_report": 1,
-            "next_report": {"id": "F-REPORT"},
-        },
-        "surface": {"stats": {"p1": 0, "p2": 0}},
-        "recommended_targets": [],
-    }
-    assert _decide(report_only_state, coverage_gaps=[], actor_gaps=[], case_state={}) == "report"
-
-
-def test_checkpoint_decision_ignores_non_actionable_pending_validation():
-    state = {
-        "has_recon": True,
-        "structured_findings": {
-            "pending_validation": 1,
-            "evidence_gap_count": 1,
-            # generic弱线索没有 next_validation，只保留统计，不应驱动 validate。
-            "validated_pending_report": 1,
-            "next_report": {"id": "F-REPORT"},
-        },
-        "surface": {"stats": {"p1": 1, "p2": 0}},
-        "recommended_targets": [{"url": "https://api.target.com/api/admin/export"}],
-    }
-
-    assert _decide(state, coverage_gaps=[], actor_gaps=[], case_state={}) == "hunt"
-
-    report_only_state = {
-        "has_recon": True,
-        "structured_findings": {
-            "pending_validation": 1,
-            "evidence_gap_count": 1,
-            "validated_pending_report": 1,
-            "next_report": {"id": "F-REPORT"},
-        },
-        "surface": {"stats": {"p1": 0, "p2": 0}},
-        "recommended_targets": [],
-    }
-    assert _decide(report_only_state, coverage_gaps=[], actor_gaps=[], case_state={}) == "report"
+@pytest.mark.parametrize(
+    ("action", "decision"),
+    [
+        ("wait_recon", "wait_recon"),
+        ("validation", "validate"),
+        ("candidate-evidence-gap", "validate"),
+        ("recon", "refresh-recon"),
+        ("ranked-surface", "hunt"),
+        ("source-enrichment", "enrich"),
+        ("action-gated-review", "checkpoint"),
+        ("report", "report"),
+        ("recon_no_live_hosts", "handoff"),
+        ("unknown-action", "handoff"),
+    ],
+)
+def test_checkpoint_decision_is_pure_projection_of_effective_action(action, decision):
+    assert _decision_for_action(action) == decision
 
 
 def test_checkpoint_handoff_next_action_does_not_reuse_stale_runtime_state(tmp_path, monkeypatch):
@@ -1252,21 +1216,6 @@ def test_default_candidate_keeps_report_above_advisory_surface_review():
 
     assert selected["type"] == "report"
     assert selected["metadata"]["finding_id"] == "F-REPORT"
-
-
-def test_decision_aligns_to_report_when_filtering_leaves_only_report():
-    assert _align_decision_with_default_candidate(
-        "hunt",
-        {"type": "report", "metadata": {"finding_id": "F-REPORT"}},
-    ) == "report"
-    assert _align_decision_with_default_candidate(
-        "hunt",
-        {"type": "surface-review"},
-    ) == "hunt"
-    assert _align_decision_with_default_candidate(
-        "validate",
-        {"type": "report"},
-    ) == "validate"
 
 
 def test_checkpoint_replaces_replay_with_existing_candidate_evidence_gap(tmp_path):

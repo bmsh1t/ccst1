@@ -319,6 +319,11 @@ Runner 当前分别写 Ledger、Finding、Action Queue；`tools/validation_runne
 
 ### P2-C.1 抽取最小纯函数边界
 
+> 执行状态：已于 2026-08-06 完成。共享实现为
+> `closure_resolver.extract_endpoint_parts/extract_endpoint_path/canonical_endpoint_path`；
+> Checkpoint 以 `ACTION_DECISIONS` 对已选 Action Queue 候选做纯投影，已删除 `_decide`；
+> closure projection 已提供公共 API，私有名称仅保留兼容别名。
+
 **问题**
 
 `tools/autopilot_state.py` 约 3797 行，`tools/checkpoint.py` 约 3865 行，`tools/surface.py` 约 3128 行；`autopilot_state._pick_next_action:811` 与 `checkpoint._decide:1218` 存在重复决策，Checkpoint 还依赖 Autopilot 的私有 closure helper。endpoint canonicalization 在 state/checkpoint/coverage/ledger 多处重复。
@@ -334,8 +339,10 @@ Runner 当前分别写 Ledger、Finding、Action Queue；`tools/validation_runne
 ### P2-C.2 验收
 
 - 共享原语有输入/输出契约和异常分类。
-- 旧 state/checkpoint fixture 的 decision、closure、identity 指纹保持一致。
-- `surface`、`coverage`、`ledger` 对同一 URL 产生相同 endpoint identity。
+- 无路由冲突的旧 state/checkpoint fixture 保持 decision、closure、identity 指纹一致；历史冲突
+  统一服从有效 Action Queue 候选，未选中的 report 等资产仍保留在队列。
+- 普通 URL/path 的提取规则由共享原语提供；Evidence Ledger 对 SPA `/#/route` 保留专用身份，
+  不再与普通 fragment 清理混为同一规则。
 - 模块依赖图不出现 state <-> checkpoint 循环。
 - 复杂度下降以重复代码量、私有导入数和失败分支数记录，而非只看行数。
 

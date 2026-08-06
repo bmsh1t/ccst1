@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from closure_resolver import ClosureResolver, canonical_endpoint_path, canonical_vuln_class, from_summary
+from closure_resolver import (
+    ClosureResolver,
+    canonical_endpoint_path,
+    canonical_vuln_class,
+    extract_endpoint_parts,
+    extract_endpoint_path,
+    from_summary,
+)
 
 
 def test_endpoint_normalization_strips_query_fragment_and_trailing_slash():
@@ -11,6 +18,8 @@ def test_endpoint_normalization_strips_query_fragment_and_trailing_slash():
     assert canonical_endpoint_path("api/x") == "/api/x"
     assert canonical_endpoint_path("/") == "/"
     assert canonical_endpoint_path("") == ""
+    assert extract_endpoint_path("https://x.test/api/Users/?q=1#frag") == "/api/Users/"
+    assert extract_endpoint_parts("https://x.test/#/search?q=marker") == ("/", "/search?q=marker")
 
 
 def test_vuln_normalization_unknown_and_generic_fail_open():

@@ -28,6 +28,7 @@ from autopilot_state import (
     build_loop_guard_projection,
     build_autopilot_state,
     format_autopilot_state,
+    load_closure_projection,
     stagnation_fingerprint,
     main as autopilot_state_main,
 )
@@ -204,7 +205,7 @@ def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
     witness.write_text(json.dumps({"round_progress": progress}), encoding="utf-8")
     state = {"target": target, "resolved_target": target, "next_action": "handoff"}
 
-    started = _load_closure_projection(
+    started = load_closure_projection(
         str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
     )
     progress["lanes"][0].update({
@@ -216,12 +217,12 @@ def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
         "updated_at": "2026-08-01T00:01:00Z",
     })
     witness.write_text(json.dumps({"round_progress": progress}), encoding="utf-8")
-    terminal = _load_closure_projection(
+    terminal = load_closure_projection(
         str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
     )
     progress["status"] = "completed"
     witness.write_text(json.dumps({"round_progress": progress}), encoding="utf-8")
-    closed = _load_closure_projection(
+    closed = load_closure_projection(
         str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
     )
 
@@ -414,7 +415,7 @@ def test_cli_projection_only_keeps_full_json_mode_available(monkeypatch, capsys)
     )
     monkeypatch.setattr(
         autopilot_state_module,
-        "_load_closure_projection",
+        "load_closure_projection",
         lambda *_args, **_kwargs: {
             "verdict": "finish",
             "can_claim_exhausted": True,

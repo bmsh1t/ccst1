@@ -36,13 +36,13 @@ try:
         load_queue as load_action_queue,
         select_next_action as action_queue_select_next_action,
     )
-    from tools.autopilot_state import build_autopilot_state, _load_closure_projection, stagnation_fingerprint
+    from tools.autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint
     from tools.context_pack import build_context_pack
     from tools.coverage_matrix import class_relevance, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
-    from tools.closure_resolver import ClosureResolver
+    from tools.closure_resolver import ClosureResolver, canonical_endpoint_path, extract_endpoint_path
     from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import load_case_state, summary as build_case_state_summary
@@ -64,13 +64,13 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_queue as load_action_queue,
         select_next_action as action_queue_select_next_action,
     )
-    from autopilot_state import build_autopilot_state, _load_closure_projection, stagnation_fingerprint  # type: ignore
+    from autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint  # type: ignore
     from context_pack import build_context_pack  # type: ignore
     from coverage_matrix import class_relevance, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
-    from closure_resolver import ClosureResolver  # type: ignore
+    from closure_resolver import ClosureResolver, canonical_endpoint_path, extract_endpoint_path  # type: ignore
     from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import load_case_state, summary as build_case_state_summary  # type: ignore
@@ -482,7 +482,7 @@ def record_round_closure(repo_root: Path | str, target: str) -> dict:
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     state = build_autopilot_state(str(repo), resolved_target, bounded=True)
-    closure = _load_closure_projection(
+    closure = load_closure_projection(
         str(repo), state, max_lanes_reached=False, apply_round_guard=False
     )
     fingerprint = stagnation_fingerprint(state, closure)
@@ -1210,40 +1210,58 @@ def _case_state_seed_proposal(seed: dict) -> str:
     )
 
 
-def _decide(state: dict, coverage_gaps: list[dict], actor_gaps: list[dict], case_state: dict | None = None) -> str:
-    findings = _structured_findings(state)
-    if findings.get("next_owner_revalidation"):
-        # A mutable JSON finality claim is not a closure. Keep the next step in
-        # the durable checkpoint as a candidate recovery instead of selecting
-        # report generation or suppressing the surface.
-        return "continue"
-    if findings.get("next_validation"):
-        return "validate"
-    top_case_state = _case_state_top_next(case_state or {})
-    if str(top_case_state.get("next_action") or "").strip().lower() in {
-        "run_validation_runner",
-        "enrich_case_state",
-        "create_validation_backlog",
-    }:
-        return "continue"
-    if _unsafe_leads(state):
-        return "checkpoint"
-    if _actionable_coverage_gaps(coverage_gaps):
-        return "continue"
-    if actor_gaps:
-        return "continue"
-    if state.get("next_tool_hint"):
-        return "enrich"
-    stats = _surface_stats(state)
-    if stats["review_pool"] or stats["p1"] or stats["p2"] or state.get("recommended_targets"):
-        return "hunt"
-    if findings.get("validated_pending_report"):
-        return "report"
-    if not state.get("has_recon"):
-        return "refresh-recon"
-    if _secondary_sweep_leads(state):
-        return "continue"
-    return "handoff"
+ACTION_DECISIONS = {
+    "wait_recon": "wait_recon",
+    "wait_scan": "wait_scan",
+    "validation": "validate",
+    "validate_finding": "validate",
+    "candidate-evidence-gap": "validate",
+    "report": "report",
+    "report_finding": "report",
+    "complete_report_draft": "report",
+    "recon": "refresh-recon",
+    "run_recon": "refresh-recon",
+    "hunt_p1": "hunt",
+    "hunt_p2": "hunt",
+    "prepare_surface_context": "hunt",
+    "surface-review": "hunt",
+    "ranked-surface": "hunt",
+    "evidence-convergence": "hunt",
+    "workflow-lead-review": "hunt",
+    "sibling-chain-review": "hunt",
+    "source-enrichment": "enrich",
+    "js-enrichment": "enrich",
+    "browser-enrichment": "enrich",
+    "run_intel": "enrich",
+    "collect_web_intel": "enrich",
+    "test_advisory_applicability": "enrich",
+    "context-review": "checkpoint",
+    "action-gated-review": "checkpoint",
+    "handoff": "handoff",
+    "recon_no_live_hosts": "handoff",
+    "revalidate_finding_owner": "continue",
+    "collect_candidate_evidence": "continue",
+    "review_validation_candidate": "continue",
+    "resume_action_queue": "continue",
+    "resume_case_state": "continue",
+    "continue_last_focus": "continue",
+    "resume_untested": "continue",
+    "case-state-validation": "continue",
+    "case-state-enrichment": "continue",
+    "case-state-backlog-create": "continue",
+    "case-state-seed": "continue",
+    "actor-gap": "continue",
+    "coverage-gap": "continue",
+    "secondary-sweep": "continue",
+    "secret-verification": "continue",
+    "json-inject-review": "continue",
+    "sql-matrix-review": "continue",
+    "next-action": "continue",
+}
+
+
+def _decision_for_action(action: str) -> str:
+    return ACTION_DECISIONS.get(str(action or "").strip().lower(), "handoff")
 
 
 def _lead_proposals(
@@ -1318,27 +1336,11 @@ def _active_contradictions(context_pack: dict) -> list[str]:
 
 
 def _canonicalize_url_path(value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    if "://" in raw:
-        try:
-            parsed = urlparse(raw)
-        except ValueError:
-            return raw.split("?", 1)[0].split("#", 1)[0]
-        return (parsed.path or "/").split("?", 1)[0].split("#", 1)[0]
-    return raw.split("?", 1)[0].split("#", 1)[0]
+    return extract_endpoint_path(value)
 
 
 def _normalise_endpoint_path(value: str) -> str:
-    path = _canonicalize_url_path(value).strip()
-    if not path:
-        return ""
-    if not path.startswith("/"):
-        path = "/" + path
-    if path != "/":
-        path = path.rstrip("/")
-    return path
+    return canonical_endpoint_path(value)
 
 
 PLACEHOLDER_OBJECT_SEGMENTS = {"nan", "undefined", "null", "none", "object", "[object object]"}
@@ -3144,23 +3146,6 @@ def _select_default_candidate(target: str, items: list[dict]) -> dict:
     return items[0]
 
 
-def _align_decision_with_default_candidate(decision: str, default_candidate: dict) -> str:
-    """Keep checkpoint's phase label consistent with the selected executable item.
-
-    `_decide` uses broad state signals, while `_next_proposals` later filters
-    stale/covered ranked surfaces through ledger and action-queue state. If that
-    filtering leaves only a report candidate, the final checkpoint should say
-    `report` instead of `hunt`; otherwise Claude sees contradictory steering.
-    """
-    if (
-        decision in {"continue", "hunt", "enrich", "checkpoint"}
-        and isinstance(default_candidate, dict)
-        and str(default_candidate.get("type") or "") == "report"
-    ):
-        return "report"
-    return decision
-
-
 def _runtime_wait_candidate(wait_action: str, target: str) -> dict:
     """Return a transient status pointer for an active long-running phase lock."""
     if wait_action == "wait_recon":
@@ -3411,7 +3396,6 @@ def build_checkpoint(
     case_state_seed = _case_state_seed_summary(repo, resolved_target) if not case_state_proposal else {}
     case_state_seed_proposal = _case_state_seed_proposal(case_state_seed)
 
-    decision = _decide(state, gaps, executable_actor_gaps, case_state)
     lead = _lead_proposals(
         state,
         context,
@@ -3462,7 +3446,7 @@ def build_checkpoint(
     if runtime_wait_action in {"wait_recon", "wait_scan"}:
         # 活跃 phase gate 属于瞬时执行态，不是持久 queue 工作。只要匹配 flock
         # 仍被持有，就不要 enqueue validation/report/surface candidates。
-        decision = runtime_wait_action
+        decision = _decision_for_action(runtime_wait_action)
         lead = []
         next_items = []
         dead_ends = []
@@ -3470,10 +3454,9 @@ def build_checkpoint(
         default_candidate = {}
         recommended_executable_action = _runtime_wait_candidate(runtime_wait_action, resolved_target)
     else:
-        if decision in {"continue", "hunt", "enrich", "checkpoint"} and not next_action_queue:
-            decision = "handoff"
         default_candidate = _select_default_candidate(resolved_target, next_action_queue)
-        decision = _align_decision_with_default_candidate(decision, default_candidate)
+        effective_action = str(default_candidate.get("type") or runtime_wait_action)
+        decision = _decision_for_action(effective_action if default_candidate else "handoff")
         # Backward compatibility: older command docs and tests still consume the
         # historical field name. The new name makes the contract explicit: this is
         # only the default pointer from the candidate set, not a replacement for

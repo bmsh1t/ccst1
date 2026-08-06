@@ -96,6 +96,7 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.attack_probe_filter import is_attack_probe, sanitize_attack_probe_url
+    from tools.closure_resolver import extract_endpoint_path
     from tools.finding_index import load_finding_index, upsert_finding
     from tools.recon_filters import has_malformed_path
     from tools.surface_index import iter_surface_index, load_surface_index_status
@@ -103,6 +104,7 @@ try:
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
     from attack_probe_filter import is_attack_probe, sanitize_attack_probe_url  # type: ignore
+    from closure_resolver import extract_endpoint_path  # type: ignore
     from finding_index import load_finding_index, upsert_finding  # type: ignore
     from recon_filters import has_malformed_path  # type: ignore
     from surface_index import iter_surface_index, load_surface_index_status  # type: ignore
@@ -648,17 +650,7 @@ def _compute_summary(matrix: dict) -> dict:
 
 def _canonicalize_endpoint(url: str) -> str:
     """Project a raw URL to a canonical endpoint key (no query string)."""
-    if not url:
-        return ""
-    if "://" in url:
-        try:
-            parsed = urlparse(url)
-            path = parsed.path or "/"
-        except ValueError:
-            return ""
-    else:
-        path = url
-    return path.split("?", 1)[0].split("#", 1)[0]
+    return extract_endpoint_path(url)
 
 
 def _route_template(endpoint: str) -> str:

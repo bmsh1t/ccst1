@@ -119,6 +119,10 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_matrix_projection,
     )
     from evidence_ledger import build_current_cell_projection, load_entries  # type: ignore
+try:
+    from tools.closure_resolver import canonical_endpoint_path
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from closure_resolver import canonical_endpoint_path  # type: ignore
 
 try:
     from tools.recon_target_selector import load_rotation_status
@@ -145,25 +149,7 @@ DECISION_PROJECTION_SCHEMA_VERSION = 1
 
 
 def _normalise_endpoint_path(value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    if "://" in raw:
-        try:
-            parsed = urlparse(raw)
-            path = parsed.path or "/"
-        except ValueError:
-            path = raw
-    else:
-        path = raw
-    path = path.split("?", 1)[0].split("#", 1)[0].strip()
-    if not path:
-        return ""
-    if not path.startswith("/"):
-        path = "/" + path
-    if path != "/":
-        path = path.rstrip("/")
-    return path
+    return canonical_endpoint_path(value)
 
 
 def _has_placeholder_object_segment(value: str) -> bool:
@@ -3044,7 +3030,7 @@ def _semantic_coverage_fingerprint(matrix: dict | None) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _load_closure_projection(
+def load_closure_projection(
     repo_root: str,
     state: dict,
     *,
@@ -3123,6 +3109,9 @@ def _load_closure_projection(
     elif guard:
         closure["round_guard"] = guard
     return closure
+
+
+_load_closure_projection = load_closure_projection
 
 
 def _load_loop_guard_projection(repo_root: str, state: dict) -> dict:
@@ -3787,7 +3776,7 @@ def main() -> int:
             bounded=args.bounded,
         )
         if args.closure:
-            state["closure"] = _load_closure_projection(
+            state["closure"] = load_closure_projection(
                 BASE_DIR,
                 state,
                 max_lanes_reached=args.max_lanes_reached,
