@@ -19,6 +19,7 @@ from autopilot_state import (
     _filter_ranked_placeholders,
     _is_substantive_queue_action,
     _load_closure_projection,
+    _load_loop_guard_projection,
     _load_json_inject_projection,
     _load_js_intel_projection,
     _load_sql_matrix_projection,
@@ -990,6 +991,67 @@ def test_loop_guard_rotates_only_three_matching_recent_outcomes():
     assert mixed["verdict"] == "continue"
     assert mixed["reason"] == "insufficient_homogeneous_outcomes"
     assert mixed["rotation_target"] == {}
+
+
+def test_damaged_ledger_is_visible_and_blocks_closure_and_rotation(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
+    ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
+    ledger_dir.mkdir(parents=True)
+    rows = [
+        {
+            "endpoint": f"/api/orders/{value}",
+            "vuln_class": "IDOR",
+            "result": "tested_clean",
+        }
+        for value in ("1", "2", "3")
+    ]
+    (ledger_dir / "ledger.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows) + "{broken\n",
+        encoding="utf-8",
+    )
+    state = {"target": target, "resolved_target": target, "next_action": "handoff"}
+
+    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    loop = _load_loop_guard_projection(str(tmp_path), {**state, "next_action": "hunt_p1"})
+
+    assert closure["ledger_health"]["status"] == "partial"
+    assert closure["ledger_health"]["invalid_count"] == 1
+    assert closure["ledger_health"]["last_valid_offset"] > 0
+    assert closure["verdict"] == "handoff"
+    assert "ledger_partial" in closure["reasons"]
+    assert loop["ledger_health"]["status"] == "partial"
+    assert loop["verdict"] == "continue"
+    assert loop["reason"] == "ledger_partial"
+    assert loop["rotation_target"] == {}
+
+
+def test_unreadable_ledger_is_visible_and_blocks_closure(tmp_path, monkeypatch):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
+    monkeypatch.setattr(
+        autopilot_state_module,
+        "load_entries_diagnostic",
+        lambda *_args: {
+            "status": "unreadable",
+            "entries": [],
+            "invalid_rows": [],
+            "invalid_count": 0,
+            "last_valid_offset": 0,
+            "read_error": "permission denied " + ("x" * 1000),
+        },
+    )
+
+    closure = _load_closure_projection(
+        str(tmp_path),
+        {"target": target, "resolved_target": target, "next_action": "handoff"},
+        max_lanes_reached=False,
+    )
+
+    assert closure["ledger_health"]["status"] == "unreadable"
+    assert len(closure["ledger_health"]["read_error"]) <= 240
+    assert closure["verdict"] == "handoff"
+    assert "ledger_unreadable" in closure["reasons"]
 
 
 def test_loop_guard_rotation_target_excludes_blocked_family_and_prefers_new_observation():

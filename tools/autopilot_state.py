@@ -109,7 +109,7 @@ try:
         load_matrix,
         load_matrix_projection,
     )
-    from tools.evidence_ledger import load_entries
+    from tools.evidence_ledger import load_entries, load_entries_diagnostic
 except ImportError:  # pragma: no cover - direct tools/ execution
     from coverage_matrix import (  # type: ignore
         STATUS_VALUES,
@@ -118,7 +118,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_matrix,
         load_matrix_projection,
     )
-    from evidence_ledger import load_entries  # type: ignore
+    from evidence_ledger import load_entries, load_entries_diagnostic  # type: ignore
 try:
     from tools.closure_resolver import (
         canonical_endpoint_identity,
@@ -2597,12 +2597,44 @@ def _loop_guard_authoritative_reason(state: dict) -> str:
     return ""
 
 
+def _ledger_health_projection(diagnostic: dict) -> dict:
+    """Keep Ledger damage visible without serializing raw rows or paths."""
+    if not isinstance(diagnostic, dict):
+        return {}
+    status = str(diagnostic.get("status") or "missing").strip().lower()
+    health = {
+        "status": status,
+        "invalid_count": int(diagnostic.get("invalid_count", 0) or 0),
+        "invalid_rows": [
+            item for item in (diagnostic.get("invalid_rows") or [])[:5]
+            if isinstance(item, dict)
+        ],
+        "last_valid_offset": int(diagnostic.get("last_valid_offset", 0) or 0),
+    }
+    if status == "unreadable" and diagnostic.get("read_error"):
+        health["read_error"] = " ".join(str(diagnostic["read_error"]).split())[:240]
+    return health
+
+
 def build_loop_guard_projection(state: dict, ledger_entries: list[dict] | None = None) -> dict:
     """Return a read-only per-iteration rotation decision from recent evidence."""
     action = str(state.get("next_action") or "handoff")
+    ledger_health = state.get("_ledger_health") if isinstance(state.get("_ledger_health"), dict) else {}
+    ledger_status = str(ledger_health.get("status") or "missing").strip().lower()
+    if ledger_status in {"partial", "unreadable"}:
+        result = {
+            "verdict": "continue",
+            "reason": f"ledger_{ledger_status}",
+            "endpoint_family": "",
+            "vuln_class": "",
+            "next_action": action,
+            "rotation_target": {},
+        }
+        result["ledger_health"] = ledger_health
+        return result
     authoritative_reason = _loop_guard_authoritative_reason(state)
     if authoritative_reason:
-        return {
+        result = {
             "verdict": "continue",
             "reason": authoritative_reason,
             "endpoint_family": "",
@@ -2610,9 +2642,12 @@ def build_loop_guard_projection(state: dict, ledger_entries: list[dict] | None =
             "next_action": action,
             "rotation_target": {},
         }
+        if ledger_health:
+            result["ledger_health"] = ledger_health
+        return result
     hint = _rotation_hint(ledger_entries or [])
     if not hint:
-        return {
+        result = {
             "verdict": "continue",
             "reason": "insufficient_homogeneous_outcomes",
             "endpoint_family": "",
@@ -2620,8 +2655,11 @@ def build_loop_guard_projection(state: dict, ledger_entries: list[dict] | None =
             "next_action": action,
             "rotation_target": {},
         }
+        if ledger_health:
+            result["ledger_health"] = ledger_health
+        return result
     if action not in _LOOP_GUARD_ROTATABLE_ACTIONS:
-        return {
+        result = {
             "verdict": "continue",
             "reason": "authoritative_next_action",
             "endpoint_family": hint["endpoint_family"],
@@ -2629,7 +2667,10 @@ def build_loop_guard_projection(state: dict, ledger_entries: list[dict] | None =
             "next_action": action,
             "rotation_target": {},
         }
-    return {
+        if ledger_health:
+            result["ledger_health"] = ledger_health
+        return result
+    result = {
         "verdict": "rotate",
         "reason": hint["reason"],
         "endpoint_family": hint["endpoint_family"],
@@ -2637,6 +2678,9 @@ def build_loop_guard_projection(state: dict, ledger_entries: list[dict] | None =
         "next_action": hint["action"],
         "rotation_target": _rotation_target(state, hint["endpoint_family"]),
     }
+    if ledger_health:
+        result["ledger_health"] = ledger_health
+    return result
 
 
 def _matrix_is_usable_for_closure(matrix: object) -> bool:
@@ -2810,6 +2854,8 @@ def build_closure_projection(
     """Return the explicit, read-only closure verdict for an existing state."""
     reasons: list[str] = []
     action = str(state.get("next_action") or "handoff")
+    ledger_health = state.get("_ledger_health") if isinstance(state.get("_ledger_health"), dict) else {}
+    ledger_status = str(ledger_health.get("status") or "missing").strip().lower()
     surface_review = state.get("surface_review_completion") or {}
     surface_projection = state.get("surface_projection")
     surface_projection_pending = bool(
@@ -2933,6 +2979,13 @@ def build_closure_projection(
         else:
             verdict = "finish"
 
+    if ledger_status in {"partial", "unreadable"}:
+        ledger_reason = f"ledger_{ledger_status}"
+        if ledger_reason not in reasons:
+            reasons.insert(0, ledger_reason)
+        if verdict == "finish":
+            verdict = "handoff"
+
     result = {
         "verdict": verdict,
         "can_claim_exhausted": verdict == "finish",
@@ -2943,6 +2996,8 @@ def build_closure_projection(
     }
     if round_progress:
         result["round_progress"] = round_progress
+    if ledger_health:
+        result["ledger_health"] = ledger_health
     return result
 
 
@@ -3066,13 +3121,16 @@ def load_closure_projection(
         if isinstance(item, dict)
         and str(item.get("tool") or "") in {"run_source_intel", "run_js_read"}
     ]
-    ledger_entries = load_entries(repo_root, target)
+    ledger_diagnostic = load_entries_diagnostic(repo_root, target)
+    ledger_entries = list(ledger_diagnostic.get("entries") or [])
+    ledger_health = _ledger_health_projection(ledger_diagnostic)
     witness_path = Path(repo_root) / "state" / target_storage_key(target) / "checkpoint_latest.json"
     witness = _load_checkpoint_witness(witness_path)
     round_progress = _checkpoint_round_projection(witness)
     closure_state = {
         **state,
         "round_progress": round_progress,
+        "_ledger_health": ledger_health,
         "enrichment_hints": enrichment_hints,
         "active_action_queue_count": sum(
             isinstance(item, dict)
@@ -3122,7 +3180,10 @@ _load_closure_projection = load_closure_projection
 def _load_loop_guard_projection(repo_root: str, state: dict) -> dict:
     """Read the ledger only for an explicit per-iteration loop check."""
     target = str(state.get("resolved_target") or state.get("target") or "")
-    return build_loop_guard_projection(state, load_entries(repo_root, target))
+    diagnostic = load_entries_diagnostic(repo_root, target)
+    projected_state = dict(state)
+    projected_state["_ledger_health"] = _ledger_health_projection(diagnostic)
+    return build_loop_guard_projection(projected_state, list(diagnostic.get("entries") or []))
 
 
 def _format_closure_line(state: dict) -> str:
@@ -3691,6 +3752,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
             "reasons",
             "next_action",
             "rotation_hint",
+            "ledger_health",
             "stagnation_fingerprint",
             "error",
             "round_progress",
