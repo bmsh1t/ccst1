@@ -6,7 +6,7 @@
 
 - 这是计划模板，不是自动执行器。
 - 所有目标、端点、actor、凭据、payload 都必须来自当前目标的 `surface`、`checkpoint`、`coverage_matrix`、`action_queue` 或人工确认。
-- 副作用判断统一遵循 `rules/red-lines.md`；模板不因漏洞类别、攻击方向或 payload 名称自动跳过覆盖，只有明确的破坏、持久化、高压流量或不可逆影响才需要红线决策。
+- 副作用判断统一遵循 `rules/red-lines.md`；模板不因漏洞类别、攻击方向或 payload 名称自动跳过覆盖。`PUT/PATCH/DELETE` 和实际文件上传先进入 checkpoint，其他动作只按具体副作用判断。
 - 每个阶段结束后先回写证据和队列状态，再进入下一阶段。
 
 ## 输入
@@ -125,6 +125,7 @@ tested | dead-end | blocked | candidate | validated | n/a
 需要门控的动作示例：
 
 ```text
+- PUT/PATCH/DELETE 或实际文件上传
 - 持久化写入、删除或真实业务状态改变
 - 高压流量、资源耗尽或不可逆动作
 - 其他经红线判断确认存在真实副作用的动作

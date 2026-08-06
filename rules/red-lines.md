@@ -146,6 +146,8 @@ admin action、workflow dispatch、payment action 等只在可能改变、破坏
 污染真实数据/账号/权限/业务状态，或触发真实资金/订单/通知/生产配置副作用时
 才进入红线判断。
 
+自动流程不得直接执行 `PUT`、`PATCH`、`DELETE` 或实际文件上传；此类动作先进入 checkpoint。
+
 只读、低频、dry-run、preview、validate-only、不会提交最终动作、只访问自己
 创建的可清理测试资源，或只做请求差异/权限差异观察时，不应被红线阻断。
 
