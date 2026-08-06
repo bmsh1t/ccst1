@@ -657,7 +657,7 @@ def test_surface_candidate_allows_closure_after_coverage_and_final_review(tmp_pa
     assert closure["surface_review"] == {"status": "complete", "unresolved": []}
 
 
-def test_surface_candidate_allows_closure_after_terminal_ledger_outcome(tmp_path):
+def test_surface_candidate_stays_unresolved_after_terminal_ledger_outcome(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
@@ -675,11 +675,13 @@ def test_surface_candidate_allows_closure_after_terminal_ledger_outcome(tmp_path
         str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
     )
 
-    assert closure["verdict"] == "finish"
-    assert closure["surface_review"]["status"] == "complete"
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["surface_review"]["status"] == "unresolved"
+    assert closure["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
 
 
-def test_surface_candidate_query_requires_exact_terminal_ledger_identity(tmp_path):
+def test_surface_candidate_query_is_not_closed_by_terminal_ledger_identity(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
@@ -706,7 +708,8 @@ def test_surface_candidate_query_requires_exact_terminal_ledger_identity(tmp_pat
         mismatch["surface_review"]["unresolved"][0]["reason"]
         == "review_outcome_missing"
     )
-    assert exact["verdict"] == "finish"
+    assert exact["verdict"] == "handoff"
+    assert exact["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
 
 
 def test_surface_candidate_query_requires_exact_final_queue_identity(tmp_path):

@@ -109,7 +109,7 @@ try:
         load_matrix,
         load_matrix_projection,
     )
-    from tools.evidence_ledger import build_current_cell_projection, load_entries
+    from tools.evidence_ledger import load_entries
 except ImportError:  # pragma: no cover - direct tools/ execution
     from coverage_matrix import (  # type: ignore
         STATUS_VALUES,
@@ -118,7 +118,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_matrix,
         load_matrix_projection,
     )
-    from evidence_ledger import build_current_cell_projection, load_entries  # type: ignore
+    from evidence_ledger import load_entries  # type: ignore
 try:
     from tools.closure_resolver import (
         canonical_endpoint_identity,
@@ -2702,23 +2702,10 @@ def _final_queue_endpoint_identities(queue: dict) -> set[str]:
     return identities
 
 
-def _closed_ledger_endpoint_identities(summary: dict) -> set[str]:
-    """Return exact endpoint identities from the Ledger current projection."""
-    identities: set[str] = set()
-    for cell in summary.get("closed_cells") or []:
-        if not isinstance(cell, dict):
-            continue
-        endpoint = canonical_endpoint_identity(str(cell.get("endpoint") or ""))
-        if endpoint:
-            identities.add(endpoint)
-    return identities
-
-
 def _surface_review_completion(
     state: dict,
     matrix: dict | None,
     queue: dict,
-    ledger_summary: dict,
 ) -> dict:
     """Project whether the current bounded Surface window still owns work.
 
@@ -2743,10 +2730,7 @@ def _surface_review_completion(
         for gap in _coverage_gaps(matrix)
         if isinstance(gap, dict)
     }
-    final_identities = (
-        _final_queue_endpoint_identities(queue)
-        | _closed_ledger_endpoint_identities(ledger_summary)
-    )
+    final_identities = _final_queue_endpoint_identities(queue)
     unresolved = []
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -3083,7 +3067,6 @@ def load_closure_projection(
         and str(item.get("tool") or "") in {"run_source_intel", "run_js_read"}
     ]
     ledger_entries = load_entries(repo_root, target)
-    ledger_summary = build_current_cell_projection(ledger_entries)
     witness_path = Path(repo_root) / "state" / target_storage_key(target) / "checkpoint_latest.json"
     witness = _load_checkpoint_witness(witness_path)
     round_progress = _checkpoint_round_projection(witness)
@@ -3100,7 +3083,6 @@ def load_closure_projection(
             state,
             matrix,
             queue,
-            ledger_summary,
         ),
         "_stagnation_coverage": _semantic_coverage_fingerprint(matrix),
         "_stagnation_ledger": hashlib.sha256(
