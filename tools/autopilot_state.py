@@ -120,9 +120,15 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from evidence_ledger import build_current_cell_projection, load_entries  # type: ignore
 try:
-    from tools.closure_resolver import canonical_endpoint_path
+    from tools.closure_resolver import (
+        canonical_endpoint_identity,
+        canonical_endpoint_path,
+    )
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from closure_resolver import canonical_endpoint_path  # type: ignore
+    from closure_resolver import (  # type: ignore
+        canonical_endpoint_identity,
+        canonical_endpoint_path,
+    )
 
 try:
     from tools.recon_target_selector import load_rotation_status
@@ -158,8 +164,8 @@ def _has_placeholder_object_segment(value: str) -> bool:
     return any(segment in PLACEHOLDER_OBJECT_SEGMENTS for segment in segments)
 
 
-def _finalized_finding_paths(repo_root: str, resolved_target: str) -> set[str]:
-    """Return finding URL paths that are already validated/rejected/reported.
+def _finalized_finding_identities(repo_root: str, resolved_target: str) -> set[str]:
+    """Return exact finding identities already validated/rejected/reported.
 
     This is an egress guard for AI-facing next actions. It does not delete raw
     surface; it only prevents old finalized findings from steering startup.
@@ -170,7 +176,7 @@ def _finalized_finding_paths(repo_root: str, resolved_target: str) -> set[str]:
     except (OSError, json.JSONDecodeError):
         return set()
 
-    paths: set[str] = set()
+    identities: set[str] = set()
     for item in payload.get("findings", []):
         if not isinstance(item, dict):
             continue
@@ -187,11 +193,12 @@ def _finalized_finding_paths(repo_root: str, resolved_target: str) -> set[str]:
             # Direct JSON lifecycle claims must not hide a resume target.  The
             # structured state projects them as owner-revalidation candidates.
             continue
-        endpoint_path = _normalise_endpoint_path(str(item.get("url") or item.get("endpoint") or ""))
-        # Hash-route findings normalize to root; never hide the entire SPA root.
-        if endpoint_path and endpoint_path != "/":
-            paths.add(endpoint_path)
-    return paths
+        endpoint_identity = canonical_endpoint_identity(
+            str(item.get("url") or item.get("endpoint") or "")
+        )
+        if endpoint_identity and endpoint_identity != "/":
+            identities.add(endpoint_identity)
+    return identities
 
 
 def _is_placeholder_surface(item: dict) -> bool:
@@ -199,11 +206,14 @@ def _is_placeholder_surface(item: dict) -> bool:
     return _has_placeholder_object_segment(url)
 
 
-def _filter_resume_targets_for_final_state(targets: list[str], finalized_paths: set[str]) -> list[str]:
+def _filter_resume_targets_for_final_state(
+    targets: list[str],
+    finalized_identities: set[str],
+) -> list[str]:
     filtered: list[str] = []
     for target in targets:
-        endpoint_path = _normalise_endpoint_path(target)
-        if endpoint_path and endpoint_path in finalized_paths:
+        endpoint_identity = canonical_endpoint_identity(target)
+        if endpoint_identity and endpoint_identity in finalized_identities:
             continue
         if _has_placeholder_object_segment(target):
             continue
@@ -2065,7 +2075,7 @@ def _load_autopilot_control_facts(
     但保留精确 recon 计数。
     """
     resume_summary = load_resume_summary(resolved_memory_dir, resolved_target)
-    finalized_paths = _finalized_finding_paths(repo_root, resolved_target)
+    finalized_identities = _finalized_finding_identities(repo_root, resolved_target)
     guard_status = load_guard_status(resolved_memory_dir, resolved_target)
     tripped_hosts = [item for item in guard_status.get("hosts", []) if item.get("tripped")]
     repo_source_artifacts = list_repo_source_artifacts(repo_root, resolved_target)
@@ -2123,7 +2133,7 @@ def _load_autopilot_control_facts(
     )
     resume_targets = _filter_resume_targets_for_final_state(
         _build_resume_targets(resume_summary),
-        finalized_paths,
+        finalized_identities,
     )
     recent_guard_advisories = list(
         (resume_summary or {}).get("recent_guard_advisories")
@@ -2675,33 +2685,33 @@ def _coverage_has_high_value_gaps(matrix: dict) -> bool:
     return bool(high_value_gaps_from_matrix(matrix))
 
 
-def _final_queue_endpoint_paths(queue: dict) -> set[str]:
+def _final_queue_endpoint_identities(queue: dict) -> set[str]:
     """Return exact endpoint identities with a durable final queue outcome."""
-    paths: set[str] = set()
+    identities: set[str] = set()
     for action in queue.get("actions") or []:
         if not isinstance(action, dict):
             continue
         if str(action.get("status") or "").strip().lower() not in FINAL_STATUSES:
             continue
         metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-        endpoint = _normalise_endpoint_path(
+        endpoint = canonical_endpoint_identity(
             str(metadata.get("endpoint") or metadata.get("url") or "")
         )
         if endpoint:
-            paths.add(endpoint)
-    return paths
+            identities.add(endpoint)
+    return identities
 
 
-def _closed_ledger_endpoint_paths(summary: dict) -> set[str]:
-    """Return endpoint paths from the Ledger owner's current projection."""
-    paths: set[str] = set()
+def _closed_ledger_endpoint_identities(summary: dict) -> set[str]:
+    """Return exact endpoint identities from the Ledger current projection."""
+    identities: set[str] = set()
     for cell in summary.get("closed_cells") or []:
         if not isinstance(cell, dict):
             continue
-        endpoint = _normalise_endpoint_path(str(cell.get("endpoint") or ""))
+        endpoint = canonical_endpoint_identity(str(cell.get("endpoint") or ""))
         if endpoint:
-            paths.add(endpoint)
-    return paths
+            identities.add(endpoint)
+    return identities
 
 
 def _surface_review_completion(
@@ -2733,7 +2743,10 @@ def _surface_review_completion(
         for gap in _coverage_gaps(matrix)
         if isinstance(gap, dict)
     }
-    final_paths = _final_queue_endpoint_paths(queue) | _closed_ledger_endpoint_paths(ledger_summary)
+    final_identities = (
+        _final_queue_endpoint_identities(queue)
+        | _closed_ledger_endpoint_identities(ledger_summary)
+    )
     unresolved = []
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -2741,13 +2754,14 @@ def _surface_review_completion(
             continue
         url = str(candidate.get("url") or "").strip()
         endpoint = _normalise_endpoint_path(url)
-        if not endpoint:
+        endpoint_identity = canonical_endpoint_identity(url)
+        if not endpoint or not endpoint_identity:
             unresolved.append({"url": url, "reason": "missing_endpoint"})
         elif endpoint not in matrix_by_path:
             unresolved.append({"url": url, "reason": "coverage_endpoint_missing"})
         elif endpoint in high_gap_paths:
             unresolved.append({"url": url, "reason": "coverage_gap_pending"})
-        elif endpoint not in final_paths:
+        elif endpoint_identity not in final_identities:
             unresolved.append({"url": url, "reason": "review_outcome_missing"})
     return {"status": "complete" if not unresolved else "unresolved", "unresolved": unresolved[:5]}
 

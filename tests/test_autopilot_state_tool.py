@@ -679,6 +679,57 @@ def test_surface_candidate_allows_closure_after_terminal_ledger_outcome(tmp_path
     assert closure["surface_review"]["status"] == "complete"
 
 
+def test_surface_candidate_query_requires_exact_terminal_ledger_identity(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "ledger.jsonl").write_text(
+        json.dumps({
+            "endpoint": "/api/orders/1?view=summary",
+            "vuln_class": "IDOR",
+            "result": "dead_end",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    state = _surface_closure_state(target)
+    state["surface_review_candidates"][0]["url"] += "?view=detail"
+    mismatch = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    state["surface_review_candidates"][0]["url"] = (
+        f"https://{target}/api/orders/1?view=summary"
+    )
+    exact = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+
+    assert mismatch["verdict"] == "handoff"
+    assert (
+        mismatch["surface_review"]["unresolved"][0]["reason"]
+        == "review_outcome_missing"
+    )
+    assert exact["verdict"] == "finish"
+
+
+def test_surface_candidate_query_requires_exact_final_queue_identity(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
+    state = _surface_closure_state(target)
+    state["surface_review_candidates"][0]["url"] += "?view=detail"
+
+    mismatch = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    queue_path = tmp_path / "state" / target_storage_key(target) / "action_queue.json"
+    queue = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue["actions"][0]["metadata"]["endpoint"] += "?view=detail"
+    queue_path.write_text(json.dumps(queue), encoding="utf-8")
+    exact = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+
+    assert mismatch["verdict"] == "handoff"
+    assert (
+        mismatch["surface_review"]["unresolved"][0]["reason"]
+        == "review_outcome_missing"
+    )
+    assert exact["verdict"] == "finish"
+
+
 def test_surface_candidate_reopens_after_new_ledger_candidate(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
@@ -718,6 +769,40 @@ def test_malformed_surface_candidate_fails_open_at_closure(tmp_path):
 
     assert closure["verdict"] == "handoff"
     assert closure["surface_review"]["unresolved"] == [{"reason": "invalid_candidate"}]
+
+
+def test_finalized_finding_filters_only_exact_resume_identity(tmp_path):
+    target = "target.com"
+    findings_dir = tmp_path / "findings" / target
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target": target,
+            "findings": [{
+                "id": "idor_summary",
+                "type": "idor",
+                "url": f"https://{target}/api/orders/1?view=summary",
+                "validation_status": "rejected",
+                "report_status": "not_generated",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    _record_owner_provenance(findings_dir, "idor_summary")
+    targets = ["/api/orders/1?view=summary", "/api/orders/1?view=detail"]
+    finalized = autopilot_state_module._finalized_finding_identities(
+        str(tmp_path),
+        target,
+    )
+
+    filtered = autopilot_state_module._filter_resume_targets_for_final_state(
+        targets,
+        finalized,
+    )
+
+    assert finalized == {"/api/orders/1?view=summary"}
+    assert filtered == ["/api/orders/1?view=detail"]
 
 
 def test_final_surface_review_does_not_hide_high_value_coverage_gap(tmp_path):
