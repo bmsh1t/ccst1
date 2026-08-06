@@ -678,6 +678,35 @@ def test_surface_candidate_allows_closure_after_terminal_ledger_outcome(tmp_path
     assert closure["surface_review"]["status"] == "complete"
 
 
+def test_surface_candidate_reopens_after_new_ledger_candidate(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "ledger.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "endpoint": "/api/orders/1",
+                "vuln_class": "IDOR",
+                "result": "dead_end",
+            }),
+            json.dumps({
+                "endpoint": "/api/orders/1",
+                "vuln_class": "IDOR",
+                "result": "candidate",
+            }),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    closure = _load_closure_projection(
+        str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
+
+
 def test_malformed_surface_candidate_fails_open_at_closure(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)

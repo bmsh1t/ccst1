@@ -109,7 +109,7 @@ try:
         load_matrix,
         load_matrix_projection,
     )
-    from tools.evidence_ledger import CLOSED_CELL_RESULTS, load_entries
+    from tools.evidence_ledger import build_current_cell_projection, load_entries
 except ImportError:  # pragma: no cover - direct tools/ execution
     from coverage_matrix import (  # type: ignore
         STATUS_VALUES,
@@ -118,7 +118,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_matrix,
         load_matrix_projection,
     )
-    from evidence_ledger import CLOSED_CELL_RESULTS, load_entries  # type: ignore
+    from evidence_ledger import build_current_cell_projection, load_entries  # type: ignore
 
 try:
     from tools.recon_target_selector import load_rotation_status
@@ -2697,15 +2697,13 @@ def _final_queue_endpoint_paths(queue: dict) -> set[str]:
     return paths
 
 
-def _closed_ledger_endpoint_paths(entries: list[dict]) -> set[str]:
-    """Return endpoint paths with a terminal evidence-ledger outcome."""
+def _closed_ledger_endpoint_paths(summary: dict) -> set[str]:
+    """Return endpoint paths from the Ledger owner's current projection."""
     paths: set[str] = set()
-    for entry in entries:
-        if not isinstance(entry, dict):
+    for cell in summary.get("closed_cells") or []:
+        if not isinstance(cell, dict):
             continue
-        if str(entry.get("result") or "").strip().lower() not in CLOSED_CELL_RESULTS:
-            continue
-        endpoint = _normalise_endpoint_path(str(entry.get("endpoint") or ""))
+        endpoint = _normalise_endpoint_path(str(cell.get("endpoint") or ""))
         if endpoint:
             paths.add(endpoint)
     return paths
@@ -2715,7 +2713,7 @@ def _surface_review_completion(
     state: dict,
     matrix: dict | None,
     queue: dict,
-    ledger_entries: list[dict],
+    ledger_summary: dict,
 ) -> dict:
     """Project whether the current bounded Surface window still owns work.
 
@@ -2740,7 +2738,7 @@ def _surface_review_completion(
         for gap in _coverage_gaps(matrix)
         if isinstance(gap, dict)
     }
-    final_paths = _final_queue_endpoint_paths(queue) | _closed_ledger_endpoint_paths(ledger_entries)
+    final_paths = _final_queue_endpoint_paths(queue) | _closed_ledger_endpoint_paths(ledger_summary)
     unresolved = []
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -3076,6 +3074,7 @@ def _load_closure_projection(
         and str(item.get("tool") or "") in {"run_source_intel", "run_js_read"}
     ]
     ledger_entries = load_entries(repo_root, target)
+    ledger_summary = build_current_cell_projection(ledger_entries)
     witness_path = Path(repo_root) / "state" / target_storage_key(target) / "checkpoint_latest.json"
     witness = _load_checkpoint_witness(witness_path)
     round_progress = _checkpoint_round_projection(witness)
@@ -3092,7 +3091,7 @@ def _load_closure_projection(
             state,
             matrix,
             queue,
-            ledger_entries,
+            ledger_summary,
         ),
         "_stagnation_coverage": _semantic_coverage_fingerprint(matrix),
         "_stagnation_ledger": hashlib.sha256(

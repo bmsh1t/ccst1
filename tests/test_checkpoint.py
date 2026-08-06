@@ -2402,7 +2402,7 @@ def test_next_proposals_skip_ranked_surface_when_ledger_has_tested_clean():
         target="target.com",
         context_pack={"contradictions": []},
         evidence_summary={
-            "recent_entries": [
+            "closed_cells": [
                 {
                     "endpoint": "/rest/admin/application-version",
                     "vuln_class": "Authz",
@@ -2460,7 +2460,7 @@ def test_next_proposals_rolls_past_covered_ranked_surfaces():
         target="target.com",
         context_pack={"contradictions": []},
         evidence_summary={
-            "recent_entries": [
+            "closed_cells": [
                 {
                     "endpoint": "/rest/admin/application-version",
                     "vuln_class": "Authz",
@@ -3042,7 +3042,7 @@ def test_ranked_surface_placeholder_object_skips_when_concrete_endpoint_covered(
         target="target.com",
         context_pack={"contradictions": []},
         evidence_summary={
-            "recent_entries": [
+            "closed_cells": [
                 {
                     "endpoint": "/rest/basket/6",
                     "vuln_class": "IDOR",

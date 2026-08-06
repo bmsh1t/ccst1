@@ -22,7 +22,10 @@ from memory.pattern_db import PatternDB
 from memory.target_profile import default_memory_dir, load_target_profile
 try:
     from tools.closure_resolver import ClosureResolver
-    from tools.evidence_ledger import load_entries as load_evidence_ledger_entries
+    from tools.evidence_ledger import (
+        build_current_cell_projection,
+        load_entries as load_evidence_ledger_entries,
+    )
     from tools.action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES
     from tools.action_queue import load_queue as load_action_queue
     from tools.attack_probe_filter import (
@@ -56,7 +59,10 @@ try:
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import ClosureResolver  # type: ignore
-    from evidence_ledger import load_entries as load_evidence_ledger_entries
+    from evidence_ledger import (  # type: ignore
+        build_current_cell_projection,
+        load_entries as load_evidence_ledger_entries,
+    )
     from action_queue import FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES  # type: ignore
     from action_queue import load_queue as load_action_queue  # type: ignore
     from attack_probe_filter import filter_attack_probes, is_attack_probe, sanitize_attack_probe_url
@@ -1676,6 +1682,7 @@ def load_surface_context(
         "surface_index": surface_index_status,
         "scanner_findings": scanner_findings,
         "ledger_entries": ledger_entries,
+        "ledger_summary": build_current_cell_projection(ledger_entries),
         "action_queue_entries": action_queue_entries if isinstance(action_queue_entries, list) else [],
         "intel_signals": intel_signals,
         "intel": intel_context,
@@ -2027,9 +2034,7 @@ def rank_surface(context: dict) -> dict:
         if not url:
             continue
         scanner_findings_by_url.setdefault(url, []).append(finding)
-    closure_resolver = ClosureResolver({
-        "recent_entries": context.get("ledger_entries") or [],
-    })
+    closure_resolver = ClosureResolver(context.get("ledger_summary") or {})
     action_queue_final_endpoints = _action_queue_final_endpoints(
         context.get("action_queue_entries") or []
     )

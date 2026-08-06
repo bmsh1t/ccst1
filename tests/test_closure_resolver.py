@@ -58,7 +58,7 @@ def test_authz_and_idor_do_not_close_each_other():
     assert resolver.is_cell_closed("/api/Cards", "Authz") is False
 
 
-def test_recent_entries_close_only_final_results_including_blocked_redline():
+def test_recent_entries_never_author_closure():
     resolver = from_summary({
         "recent_entries": [
             {"endpoint": "/a", "vuln_class": "XSS", "result": "tested_clean"},
@@ -68,12 +68,12 @@ def test_recent_entries_close_only_final_results_including_blocked_redline():
         ]
     })
 
-    assert resolver.is_cell_closed("/a", "XSS") is True
+    assert resolver.is_cell_closed("/a", "XSS") is False
     assert resolver.is_cell_closed("/b", "XSS") is False
     assert resolver.is_cell_closed("/c", "XSS") is False
-    assert resolver.is_cell_closed("/d", "SSRF") is True
-    assert resolver.closed_result("/a/", "xss") == "tested_clean"
-    assert resolver.closed_result("/d", "ssrf") == "blocked_redline"
+    assert resolver.is_cell_closed("/d", "SSRF") is False
+    assert resolver.closed_result("/a/", "xss") == ""
+    assert resolver.closed_result("/d", "ssrf") == ""
     assert resolver.closed_result("/b", "XSS") == ""
 
 

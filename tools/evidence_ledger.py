@@ -516,6 +516,45 @@ def _focus_endpoint_values(focus_endpoints: list[str | dict] | None, entries: li
     return _dedupe([_canonicalize_endpoint(value) for value in values])[:8]
 
 
+def build_current_cell_projection(entries: list[dict]) -> dict:
+    """Project the latest recognized result for each endpoint x vuln cell."""
+    closed_by_key: dict[tuple[str, str], dict] = {}
+    open_candidate_by_key: dict[tuple[str, str], dict] = {}
+    for entry in entries:
+        result = str(entry.get("result") or "")
+        endpoint = _canonicalize_endpoint(
+            str(entry.get("endpoint") or entry.get("raw_endpoint") or "")
+        )
+        vuln_class = str(entry.get("vuln_class") or "").strip()
+        if not endpoint or not vuln_class:
+            continue
+        key = (endpoint, vuln_class)
+        if result == "candidate":
+            closed_by_key.pop(key, None)
+            open_candidate_by_key[key] = entry
+        elif result in {"lead", "signal"}:
+            closed_by_key.pop(key, None)
+            open_candidate_by_key.pop(key, None)
+        elif result in CLOSED_CELL_RESULTS:
+            open_candidate_by_key.pop(key, None)
+            closed_by_key[key] = {
+                "endpoint": endpoint,
+                "vuln_class": vuln_class,
+                "result": result,
+                "ts": str(entry.get("ts") or ""),
+                "evidence_ref": str(entry.get("evidence_ref") or ""),
+            }
+
+    return {
+        "closed_cells": list(closed_by_key.values()),
+        "open_candidates": sorted(
+            open_candidate_by_key.values(),
+            key=lambda item: str(item.get("ts") or ""),
+            reverse=True,
+        )[:10],
+    }
+
+
 def build_summary(
     repo_root: Path | str,
     *,
@@ -549,36 +588,7 @@ def build_summary(
         if entry.get("state_changing") and not entry.get("redline_checked"):
             redline_unchecked += 1
 
-    closed_by_key: dict[tuple[str, str], dict] = {}
-    open_candidate_by_key: dict[tuple[str, str], dict] = {}
-    for entry in entries:
-        result = str(entry.get("result") or "")
-        endpoint = _canonicalize_endpoint(str(entry.get("endpoint") or entry.get("raw_endpoint") or ""))
-        vuln_class = str(entry.get("vuln_class") or "").strip()
-        if not endpoint or not vuln_class:
-            continue
-        key = (endpoint, vuln_class)
-        if result == "candidate":
-            # Candidate 是“需要 AI/validate 继续判断”的开放状态；如果后续同一
-            # endpoint × vuln 已经被 clean/finding/dead_end 覆盖，就不再暴露。
-            open_candidate_by_key[key] = entry
-            continue
-        if result not in CLOSED_CELL_RESULTS:
-            continue
-        open_candidate_by_key.pop(key, None)
-        closed_by_key[key] = {
-            "endpoint": endpoint,
-            "vuln_class": vuln_class,
-            "result": result,
-            "ts": str(entry.get("ts") or ""),
-            "evidence_ref": str(entry.get("evidence_ref") or ""),
-        }
-
-    open_candidates = sorted(
-        open_candidate_by_key.values(),
-        key=lambda item: str(item.get("ts") or ""),
-        reverse=True,
-    )[:10]
+    current_cells = build_current_cell_projection(entries)
 
     return {
         "target": resolved_target,
@@ -587,8 +597,8 @@ def build_summary(
         "entry_count": len(entries),
         "result_counts": counts,
         "redline_unchecked_count": redline_unchecked,
-        "closed_cells": list(closed_by_key.values()),
-        "open_candidates": open_candidates,
+        "closed_cells": current_cells["closed_cells"],
+        "open_candidates": current_cells["open_candidates"],
         "recent_entries": entries[-5:],
         "actor_matrix": {
             "endpoint_count": len(endpoints),

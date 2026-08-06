@@ -315,6 +315,64 @@ def test_summary_open_candidates_survive_recency_but_close_on_final_result(tmp_p
     assert not any(entry.get("endpoint") == "/profile/image/url" for entry in closed["open_candidates"])
 
 
+def test_summary_latest_open_result_reopens_terminal_cell(tmp_path):
+    endpoint = "/api/orders/42"
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint=endpoint,
+        vuln_class="IDOR",
+        actor="peer",
+        object_scope="other",
+        variant="id_swap",
+        result="tested_clean",
+    )
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint=endpoint,
+        vuln_class="IDOR",
+        actor="owner",
+        object_scope="own",
+        result="candidate",
+    )
+
+    reopened = build_summary(tmp_path, target="target.com")
+
+    assert not any(cell["endpoint"] == endpoint for cell in reopened["closed_cells"])
+    assert [item["endpoint"] for item in reopened["open_candidates"]] == [endpoint]
+
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint=endpoint,
+        vuln_class="IDOR",
+        result="tested_finding",
+    )
+    closed = build_summary(tmp_path, target="target.com")
+
+    assert not any(item["endpoint"] == endpoint for item in closed["open_candidates"])
+    terminal = next(cell for cell in closed["closed_cells"] if cell["endpoint"] == endpoint)
+    assert terminal["result"] == "tested_finding"
+
+
+def test_summary_signal_reopens_terminal_cell_without_becoming_candidate(tmp_path):
+    endpoint = "/api/orders/42"
+    for result in ("dead_end", "signal"):
+        record_entry(
+            tmp_path,
+            target="target.com",
+            endpoint=endpoint,
+            vuln_class="IDOR",
+            result=result,
+        )
+
+    summary = build_summary(tmp_path, target="target.com")
+
+    assert not any(cell["endpoint"] == endpoint for cell in summary["closed_cells"])
+    assert not any(item["endpoint"] == endpoint for item in summary["open_candidates"])
+
+
 def test_invalid_alias_error_lists_accepted_input_tokens(tmp_path):
     with pytest.raises(ValueError) as exc:
         record_entry(

@@ -1319,10 +1319,33 @@ class TestSurfaceRanking:
         ranked = rank_surface(load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory"))
         ranked_urls = [item["url"] for item in ranked["p1"]]
         review_urls = [item["url"] for item in ranked["review_pool"]]
+        terminal_entry = next(
+            item
+            for item in ranked["p1"]
+            if item["url"] == "https://api.target.com/rest/admin/application-version"
+        )
 
         assert "https://api.target.com/api/fresh?q=1" in ranked_urls
         assert "https://api.target.com/rest/admin/application-version" in ranked_urls
         assert "https://api.target.com/rest/admin/application-version" in review_urls
+        assert terminal_entry["ledger_history"]["result"] == "tested_clean"
+
+        with (ledger_dir / "ledger.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "endpoint": "/rest/admin/application-version",
+                "vuln_class": "Authz",
+                "result": "candidate",
+            }) + "\n")
+        reopened = rank_surface(
+            load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
+        )
+        reopened_entry = next(
+            item
+            for item in reopened["p1"]
+            if item["url"] == "https://api.target.com/rest/admin/application-version"
+        )
+
+        assert "ledger_history" not in reopened_entry
         item = next(
             item for item in ranked["p1"]
             if item["url"] == "https://api.target.com/rest/admin/application-version"

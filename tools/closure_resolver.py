@@ -140,19 +140,6 @@ class ClosureResolver:
                 result,
             )
 
-        # 兜底：summary 的 closed_cells 如果裁剪过，recent_entries 里的终态也能闭合。
-        for entry in evidence_summary.get("recent_entries") or []:
-            if not isinstance(entry, dict):
-                continue
-            if str(entry.get("result") or "") not in CLOSED_LEDGER_RESULTS:
-                continue
-            self._mark(
-                str(entry.get("endpoint") or entry.get("raw_endpoint") or ""),
-                str(entry.get("vuln_class") or ""),
-                str(entry.get("ts") or ""),
-                str(entry.get("result") or ""),
-            )
-
     def _ingest_matrix(self, matrix: dict) -> None:
         for endpoint_row in matrix.get("endpoints") or []:
             if not isinstance(endpoint_row, dict):
