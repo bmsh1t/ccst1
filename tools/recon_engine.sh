@@ -1280,6 +1280,14 @@ elif [[ "$(printf '%s' "$TARGET" | awk -F: '{print NF-1}')" = "1" ]]; then
     fi
 fi
 
+# httpx accepts both hosts and URLs, but its output format is not stable across
+# versions for bare host:port input. Always give exact URL/port targets an
+# explicit HTTP(S) URL so downstream URL projections can consume the result.
+TARGET_HTTP_PROBE_INPUT="$TARGET"
+if [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ] && [ -n "$TARGET_HTTP_SEED" ]; then
+    TARGET_HTTP_PROBE_INPUT="$TARGET_HTTP_SEED"
+fi
+
 RECON_TARGET_KEY="$(python3 - "$TARGET" "$BASE_DIR" <<'PY'
 import sys
 
@@ -1413,7 +1421,9 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/js/request_targets.txt"
 
 ensure_explicit_port_seed_live() {
-    if [ ! -s "$RECON_DIR/live/urls.txt" ] && [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ] && [ -n "$TARGET_HTTP_SEED" ]; then
+    if [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ] && [ -n "$TARGET_HTTP_SEED" ] \
+        && ! grep -qE '^https?://' "$RECON_DIR/live/urls.txt" 2>/dev/null; then
+        : > "$RECON_DIR/live/urls.txt"
         local seed_http_code
         bb_auth_args_for_url "$TARGET_HTTP_SEED"
         seed_http_code="$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' "${BB_URL_AUTH_ARGS[@]}" --max-time 5 "$TARGET_HTTP_SEED" 2>/dev/null || true)"
@@ -1631,11 +1641,11 @@ if [ "$TARGET_KIND" = "domain" ]; then
     TOTAL_SUBS=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)
     log_ok "Total unique subdomains: $TOTAL_SUBS"
 elif [ "$TARGET_KIND" = "url" ]; then
-    printf '%s\n' "$TARGET" > "$DISCOVERY_HOSTS_FILE"
+    printf '%s\n' "$TARGET_HTTP_PROBE_INPUT" > "$DISCOVERY_HOSTS_FILE"
     HTTPX_INPUT_FILE="$DISCOVERY_HOSTS_FILE"
     log_ok "URL target prepared for probing: 1 URL"
 elif [ "$TARGET_KIND" = "ip" ]; then
-    printf '%s\n' "$TARGET" > "$DISCOVERY_HOSTS_FILE"
+    printf '%s\n' "$TARGET_HTTP_PROBE_INPUT" > "$DISCOVERY_HOSTS_FILE"
     HTTPX_INPUT_FILE="$DISCOVERY_HOSTS_FILE"
     log_ok "IP target prepared for probing: 1 host"
 else
@@ -1910,7 +1920,7 @@ fi
 
 # Derive every summary view from the canonical union, including continuation
 # runs where httpx was skipped and prior pages remain authoritative.
-awk '{print $1}' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/urls.txt" 2>/dev/null || true
+awk '$1 ~ /^https?:\/\// {print $1}' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/urls.txt" 2>/dev/null || true
 ensure_explicit_port_seed_live
 grep '\[200\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_200.txt" 2>/dev/null || true
 grep '\[30[12]\]' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/status_3xx.txt" 2>/dev/null || true

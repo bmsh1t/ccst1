@@ -231,7 +231,9 @@ def test_recon_engine_preserves_and_unions_cidr_httpx_pages(tmp_path):
     ]
 
     views_section = text.split("# Derive every summary view", 1)[1]
-    views_block = "awk '{print $1}'" + views_section.split("awk '{print $1}'", 1)[1].split(
+    views_block = "awk '$1 ~ /^https?:\\/\\// {print $1}'" + views_section.split(
+        "awk '$1 ~ /^https?:\\/\\// {print $1}'", 1
+    )[1].split(
         "LIVE_COUNT=", 1
     )[0]
     completed = subprocess.run(
@@ -324,6 +326,9 @@ def test_recon_engine_preserves_host_port_lab_url_seed():
     assert 'TARGET_HAS_EXPLICIT_PORT="false"' in text
     assert 'TARGET_HTTP_SEED="$TARGET"' in text
     assert 'TARGET_HTTP_SEED="http://$TARGET"' in text
+    assert 'TARGET_HTTP_PROBE_INPUT="$TARGET"' in text
+    assert 'TARGET_HTTP_PROBE_INPUT="$TARGET_HTTP_SEED"' in text
+    assert 'printf \'%s\\n\' "$TARGET_HTTP_PROBE_INPUT" > "$DISCOVERY_HOSTS_FILE"' in text
     assert 'TARGET_EXPLICIT_PORT="$TARGET_PORT_PART"' in text
     assert 'log_ok "URL target prepared for probing: 1 URL"' in text
     assert 'Skipping broad naabu scan for exact URL/explicit-port target' in text
@@ -340,6 +345,88 @@ def test_recon_engine_preserves_host_port_lab_url_seed():
     assert 'SUBS_TOTAL=0' in text
     assert '"curl -H \\"Host: ${RECON_TARGET_KEY}\\" http://<origin_ip>/' in text
     assert '"curl -H \\"Host: ${TARGET}\\" http://<origin_ip>/' not in text
+
+
+def test_recon_engine_writes_explicit_port_probe_url(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    branch = text.split('elif [ "$TARGET_KIND" = "url" ]; then', 1)[1].split(
+        "else\n    CIDR_LIMIT", 1
+    )[0]
+    block = 'if [ "$TARGET_KIND" = "url" ]; then' + branch + "fi"
+    discovery = tmp_path / "discovery_hosts.txt"
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -euo pipefail\nlog_ok() { :; }\n" + block,
+        ],
+        env={
+            **os.environ,
+            "TARGET_KIND": "ip",
+            "TARGET_HTTP_PROBE_INPUT": "http://127.0.0.1:3001",
+            "DISCOVERY_HOSTS_FILE": str(discovery),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert discovery.read_text(encoding="utf-8") == "http://127.0.0.1:3001\n"
+
+
+def test_recon_engine_projects_only_http_urls_and_seeds_explicit_port(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    views_section = text.split("# Derive every summary view", 1)[1]
+    views_block = "awk '$1 ~ /^https?:\\/\\// {print $1}'" + views_section.split(
+        "awk '$1 ~ /^https?:\\/\\// {print $1}'", 1
+    )[1].split("LIVE_COUNT=", 1)[0]
+    seed_section = text.split("ensure_explicit_port_seed_live() {", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    seed_function = "ensure_explicit_port_seed_live() {" + seed_section + "\n}\n"
+
+    recon_dir = tmp_path / "recon"
+    live_dir = recon_dir / "live"
+    live_dir.mkdir(parents=True, exist_ok=True)
+    (live_dir / "httpx_full.txt").write_text("127.0.0.1:3001 [200]\n", encoding="utf-8")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text("#!/bin/sh\nprintf '200'\n", encoding="utf-8")
+    fake_curl.chmod(0o755)
+    env = {
+        **os.environ,
+        "RECON_DIR": str(recon_dir),
+        "TARGET_HAS_EXPLICIT_PORT": "true",
+        "TARGET_HTTP_SEED": "http://127.0.0.1:3001",
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+    }
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -euo pipefail\n"
+            "bb_auth_args_for_url() { BB_URL_AUTH_ARGS=(); }\n"
+            "BB_URL_AUTH_ARGS=()\n"
+            + seed_function
+            + views_block,
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    try:
+        assert completed.returncode == 0, completed.stderr
+        assert (live_dir / "urls.txt").read_text(encoding="utf-8") == "http://127.0.0.1:3001\n"
+        assert (live_dir / "seed_urls.txt").read_text(encoding="utf-8") == "http://127.0.0.1:3001\n"
+    finally:
+        for path in live_dir.iterdir():
+            path.unlink()
+        live_dir.rmdir()
+        recon_dir.rmdir()
 
 
 def test_recon_engine_filters_spa_fallback_directory_fuzz_noise():

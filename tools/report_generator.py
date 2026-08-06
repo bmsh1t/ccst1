@@ -1397,8 +1397,7 @@ def write_report_index(report_dir, target_name, total_reports, report_index):
 
 def create_manual_report(vuln_type, url, param=None, evidence=None):
     """Create a report from manual findings."""
-    domain = extract_domain(url)
-    target_name = domain.replace(".", "_")
+    target_name = target_storage_key(url)
     report_dir = os.path.join(REPORTS_DIR, target_name)
     os.makedirs(report_dir, exist_ok=True)
 
@@ -1414,10 +1413,15 @@ def create_manual_report(vuln_type, url, param=None, evidence=None):
 
     report_content, title = generate_report(finding, vuln_type, target_name)
 
-    report_id = f"{vuln_type}_manual_{datetime.now().strftime('%H%M%S')}"
-    report_file = os.path.join(report_dir, f"{report_id}.md")
-    with open(report_file, "w") as f:
-        f.write(report_content)
+    occupied_report_ids = _occupied_report_ids([], report_dir)
+    while True:
+        report_id = _next_report_id(vuln_type, finding, report_dir, occupied_report_ids)
+        report_file = os.path.join(report_dir, f"{report_id}.md")
+        try:
+            _create_or_reuse_report(report_file, report_content, finding)
+            break
+        except FileExistsError:
+            occupied_report_ids[report_id] = ""
 
     print(f"[+] Report saved: {report_file}")
     return report_file

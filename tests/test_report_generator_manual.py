@@ -29,6 +29,27 @@ def test_create_manual_report_generates_markdown_file(monkeypatch, tmp_path):
     assert "Parameter: q" in content
 
 
+def test_create_manual_report_uses_canonical_target_and_never_overwrites(monkeypatch, tmp_path):
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    first = Path(
+        report_generator.create_manual_report(
+            "xss", "https://App.Example.COM/search?q=first", evidence="first evidence"
+        )
+    )
+    second = Path(
+        report_generator.create_manual_report(
+            "xss", "https://app.example.com/search?q=second", evidence="second evidence"
+        )
+    )
+
+    assert first.parent.name == "app.example.com"
+    assert first.name == "xss_001.md"
+    assert second.name == "xss_002.md"
+    assert "first evidence" in first.read_text(encoding="utf-8")
+    assert "second evidence" in second.read_text(encoding="utf-8")
+
+
 def test_attach_poc_images_copies_image_and_appends_markdown(monkeypatch, tmp_path):
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
 
