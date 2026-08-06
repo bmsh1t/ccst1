@@ -1299,6 +1299,14 @@ class TestAutopilotState:
         assert state["batch"]["pending"] == ["gamma.test"]
         assert [item["target"] for item in state["batch"]["candidates"]] == ["alpha.test"]
         assert state["batch"]["candidates"][0]["score"] == 0
+        assert state["batch"]["candidates"][0]["parent_scope_ref"] == str(scope.resolve())
+        assert state["batch"]["candidates"][0]["parent_scope_hash"] == state["scope"]["scope_hash"]
+        assert state["batch"]["candidates"][0]["continuation_create_args"] == [
+            "--parent-target",
+            str(scope.resolve()),
+            "--selected-target",
+            "alpha.test",
+        ]
         output = format_autopilot_state(state)
         assert "Completed-domain candidates:" in output
         assert "alpha.test" in output

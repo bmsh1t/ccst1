@@ -12,7 +12,7 @@ allowed-tools:
 ---
 # /autopilot-round
 
-Authoritative round bootstrap (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json --round-defaults -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"`
+Authoritative round bootstrap (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json --round-defaults -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
 Native fixed-loop prompt identity (do not reinterpret): `/autopilot-round $ARGUMENTS`
 
 Formal arguments are identical to `/autopilot`: `<target>
@@ -47,7 +47,8 @@ handoff. For terminal residual blind spots only, also
 read the bounded `browser_evidence.present/ready`, `repo_source_available`,
 `repo_source_summary.status`, `recon_blocker`,
 `observation_inventory.status/reason`, and bootstrap
-`capabilities.missing_core/missing_optional`; these advisory facts never select
+`runtime.advisory_drift`, `capabilities.missing_core/missing_optional`, and the
+matching `capabilities.lanes` record; these advisory facts never select
 or override STATUS. Project through the Status Projection below. `finish` or
 `blocked` is terminal: project its STATUS, apply terminal cron cleanup, emit,
 and stop without any target action. `handoff` is the only verdict that may enter

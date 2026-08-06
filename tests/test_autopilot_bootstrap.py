@@ -145,7 +145,19 @@ def _clean_runtime(repo_root, runtime_root=None, kinds=None):
         "repo_root": str(repo_root),
         "runtime_root": str(runtime_root or "/tmp/staged-claude"),
         "clean": True,
+        "critical_clean": True,
         "drift_count": 0,
+        "critical_drift_count": 0,
+        "advisory_drift_count": 0,
+        "critical_manifest": {
+            "schema_version": 1,
+            "status": "valid",
+            "sha256": "sha256:fixture",
+            "mcp_contracts": ["mcp__Playwright__*"],
+        },
+        "critical_drift": [],
+        "missing_critical": [],
+        "advisory_drift": [],
         "kinds": [
             {
                 "kind": kind,
@@ -300,7 +312,23 @@ def test_runtime_drift_stops_before_target_state(monkeypatch, tmp_path):
             "repo_root": str(repo_root),
             "runtime_root": str(runtime_root or tmp_path / "runtime"),
             "clean": False,
+            "critical_clean": False,
             "drift_count": 2,
+            "critical_drift_count": 2,
+            "advisory_drift_count": 0,
+            "critical_manifest": {
+                "schema_version": 1,
+                "status": "valid",
+                "sha256": "sha256:fixture",
+                "mcp_contracts": ["mcp__Playwright__*"],
+            },
+            "critical_drift": [
+                {"kind": "commands", "relative_path": "autopilot.md", "status": "diff"}
+            ],
+            "missing_critical": [
+                {"kind": "commands", "relative_path": "autopilot-round.md", "status": "missing"}
+            ],
+            "advisory_drift": [],
             "kinds": [
                 {
                     "kind": "commands",
@@ -335,7 +363,23 @@ def test_runtime_drift_stops_before_target_state(monkeypatch, tmp_path):
     assert payload["runtime"] == {
         "checked": True,
         "clean": False,
+        "critical_clean": False,
         "drift_count": 2,
+        "critical_drift_count": 2,
+        "advisory_drift_count": 0,
+        "critical_manifest": {
+            "schema_version": 1,
+            "status": "valid",
+            "sha256": "sha256:fixture",
+            "mcp_contracts": ["mcp__Playwright__*"],
+        },
+        "critical_drift": [
+            {"kind": "commands", "status": "diff", "relative_path": "autopilot.md"}
+        ],
+        "missing_critical": [
+            {"kind": "commands", "status": "missing", "relative_path": "autopilot-round.md"}
+        ],
+        "advisory_drift": [],
         "runtime_root": str(tmp_path / "runtime"),
         "kinds": {
             "commands": {"ok": 3, "diff": 1, "missing": 1, "extra": 0}
@@ -343,6 +387,50 @@ def test_runtime_drift_stops_before_target_state(monkeypatch, tmp_path):
     }
     assert payload["capabilities"]["checked"] is False
     assert "state" not in payload
+
+
+def test_advisory_runtime_drift_is_projected_without_blocking(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        autopilot_bootstrap,
+        "compare_runtime",
+        lambda repo_root, runtime_root=None, kinds=None: {
+            "repo_root": str(repo_root),
+            "runtime_root": str(runtime_root or tmp_path / "runtime"),
+            "clean": False,
+            "critical_clean": True,
+            "drift_count": 1,
+            "critical_drift_count": 0,
+            "advisory_drift_count": 1,
+            "critical_manifest": {
+                "schema_version": 1,
+                "status": "valid",
+                "sha256": "sha256:fixture",
+                "mcp_contracts": [],
+            },
+            "critical_drift": [],
+            "missing_critical": [],
+            "advisory_drift": [
+                {"kind": "commands", "relative_path": "intel.md", "status": "diff"}
+            ],
+            "kinds": [],
+        },
+    )
+    monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", _capabilities)
+    monkeypatch.setattr(autopilot_bootstrap, "build_autopilot_bootstrap_state", _state)
+
+    payload = autopilot_bootstrap.build_autopilot_bootstrap(
+        ["example.test"],
+        cwd=tmp_path,
+        repo_root=tmp_path,
+    )
+
+    assert payload["action"] == "continue"
+    assert payload["runtime"]["clean"] is False
+    assert payload["runtime"]["critical_clean"] is True
+    assert payload["runtime"]["advisory_drift"] == [
+        {"kind": "commands", "status": "diff", "relative_path": "intel.md"}
+    ]
+    assert payload["state"]["next_action"] == "hunt_p1"
 
 
 def test_bootstrap_state_is_compact_and_json_cli_is_single_line(monkeypatch, tmp_path, capsys):
@@ -414,24 +502,7 @@ def test_capability_profile_failure_is_advisory(monkeypatch, tmp_path):
 
     assert payload["action"] == "continue"
     assert payload["state"]["next_action"] == "hunt_p1"
-    assert payload["capabilities"] == {
-        "schema_version": 1,
-        "checked": False,
-        "status": "unknown",
-            "available": {
-                "browser": [],
-                "recon": [],
-                "scanner": [],
-                "dns-expansion": [],
-                "exchange": [],
-            },
-        "session_managed": [],
-        "fallbacks": [],
-        "missing_core": [],
-        "missing_optional": [],
-        "recommended_paths": [],
-        "reason": "profile-error",
-    }
+    assert payload["capabilities"] == autopilot_bootstrap.unknown_capability_profile("profile-error")
 
 
 def test_bootstrap_projects_only_bounded_candidate_rubric():

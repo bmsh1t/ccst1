@@ -11,8 +11,11 @@ from evidence_ledger import (
     actor_requirements,
     build_summary,
     ledger_path,
+    load_entries,
+    load_entries_diagnostic,
     record_entry,
 )
+from closure_resolver import ClosureResolver
 
 
 def test_record_entry_writes_normalized_ledger_row(tmp_path):
@@ -34,7 +37,7 @@ def test_record_entry_writes_normalized_ledger_row(tmp_path):
     path = ledger_path(tmp_path, "target.com")
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
-    assert entry["endpoint"] == "/api/accounts/42/export"
+    assert entry["endpoint"] == "/api/accounts/42/export?account_id=42"
     assert entry["method"] == "GET"
     assert entry["vuln_class"] == "IDOR"
     assert entry["actor"] == "owner"
@@ -73,7 +76,7 @@ def test_record_entry_preserves_spa_hash_route_endpoint(tmp_path):
         replayed=True,
     )
 
-    assert entry["endpoint"] == "/#/search"
+    assert entry["endpoint"].startswith("/#/search?q=")
     assert entry["raw_endpoint"].startswith("https://target.com/#/search")
 
 
@@ -196,6 +199,76 @@ def test_concurrent_appends_remain_parseable_jsonl(tmp_path):
     ]
     assert len(rows) == 24
     assert {row["endpoint"] for row in rows} == {f"/api/orders/{index}" for index in range(24)}
+
+
+def test_event_id_append_is_idempotent(tmp_path):
+    kwargs = {
+        "target": "target.com",
+        "endpoint": "/api/orders/42",
+        "vuln_class": "IDOR",
+        "result": "tested_clean",
+        "operation_id": "runner:operation-1",
+        "event_id": "ledger:event-1",
+    }
+
+    first = record_entry(tmp_path, **kwargs)
+    second = record_entry(tmp_path, **kwargs)
+    rows = ledger_path(tmp_path, "target.com").read_text(encoding="utf-8").splitlines()
+
+    assert first["write_status"] == "updated"
+    assert second["write_status"] == "deduplicated"
+    assert len(rows) == 1
+
+
+def test_corrupt_row_is_diagnostic_and_withholds_closure(tmp_path, capsys):
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/orders/42",
+        vuln_class="IDOR",
+        result="tested_clean",
+    )
+    path = ledger_path(tmp_path, "target.com")
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("{broken\n")
+
+    summary = build_summary(tmp_path, target="target.com")
+    entries = load_entries(tmp_path, "target.com")
+    warning = capsys.readouterr().err
+
+    assert len(entries) == 1
+    assert summary["ledger_status"] == "partial"
+    assert summary["ledger_diagnostics"]["invalid_count"] == 1
+    assert summary["ledger_diagnostics"]["invalid_rows"][0]["line"] == 2
+    assert summary["closed_cells"] == []
+    assert ClosureResolver(summary).is_cell_closed("/api/orders/42", "IDOR") is False
+    assert f"{path}:2" in warning
+
+
+def test_last_valid_offset_stops_before_first_corrupt_row(tmp_path):
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/orders/1",
+        vuln_class="IDOR",
+        result="tested_clean",
+    )
+    path = ledger_path(tmp_path, "target.com")
+    first_row_size = path.stat().st_size
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("{broken\n")
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/orders/2",
+        vuln_class="IDOR",
+        result="tested_clean",
+    )
+
+    diagnostic = load_entries_diagnostic(tmp_path, "target.com")
+
+    assert len(diagnostic["entries"]) == 2
+    assert diagnostic["last_valid_offset"] == first_row_size
 
 
 def test_post_record_is_not_state_changing_by_method_alone(tmp_path):
@@ -347,6 +420,8 @@ def test_summary_latest_open_result_reopens_terminal_cell(tmp_path):
         target="target.com",
         endpoint=endpoint,
         vuln_class="IDOR",
+        actor="owner",
+        object_scope="own",
         result="tested_finding",
     )
     closed = build_summary(tmp_path, target="target.com")
@@ -354,6 +429,68 @@ def test_summary_latest_open_result_reopens_terminal_cell(tmp_path):
     assert not any(item["endpoint"] == endpoint for item in closed["open_candidates"])
     terminal = next(cell for cell in closed["closed_cells"] if cell["endpoint"] == endpoint)
     assert terminal["result"] == "tested_finding"
+
+
+def test_current_projection_keeps_case_dimensions_independent(tmp_path):
+    endpoint = "/api/orders/42?view=summary"
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint=endpoint,
+        method="GET",
+        vuln_class="IDOR",
+        actor="owner",
+        object_scope="own",
+        variant="baseline",
+        result="tested_clean",
+    )
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint=endpoint,
+        method="POST",
+        vuln_class="IDOR",
+        actor="peer",
+        object_scope="other",
+        variant="id_swap",
+        result="candidate",
+    )
+
+    summary = build_summary(tmp_path, target="target.com")
+
+    assert not any(cell["endpoint"] == endpoint for cell in summary["closed_cells"])
+    candidate = next(item for item in summary["open_candidates"] if item["endpoint"] == endpoint)
+    assert candidate["method"] == "POST"
+    assert candidate["actor"] == "peer"
+
+
+def test_actor_matrix_matches_method_as_evidence_identity(tmp_path):
+    endpoint = "/api/orders/42"
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint=endpoint,
+        method="GET",
+        vuln_class="IDOR",
+        actor="peer",
+        object_scope="other",
+        variant="id_swap",
+        result="tested_clean",
+    )
+
+    summary = build_summary(
+        tmp_path,
+        target="target.com",
+        focus_endpoints=[endpoint],
+        vuln_classes=["IDOR"],
+        method="POST",
+    )
+
+    peer = next(
+        row for row in summary["actor_matrix"]["rows"]
+        if row["actor"] == "peer" and row["variant"] == "id_swap"
+    )
+    assert peer["status"] == "missing"
 
 
 def test_summary_signal_reopens_terminal_cell_without_becoming_candidate(tmp_path):

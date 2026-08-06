@@ -116,6 +116,16 @@ def test_run_argv_command_rejects_invalid_shapes_before_spawn(monkeypatch):
         raise AssertionError(f"invalid argv accepted: {argv!r}")
 
 
+def test_run_argv_command_missing_executable_returns_failure():
+    success, stdout, stderr = runtime_exec.run_argv_command_split(
+        ["__ccst_missing_executable__"]
+    )
+
+    assert success is False
+    assert stdout == ""
+    assert "__ccst_missing_executable__" in stderr
+
+
 def test_run_argv_command_timeout_reuses_partial_output_cleanup():
     argv = shlex.split(_timeout_test_command())
 

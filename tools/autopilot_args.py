@@ -18,9 +18,9 @@ except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_args.py` 直接�
     from target_paths import classify_target
 
 
-SCHEMA_VERSION = 3
-# target + auth pair + quick + deep + cadence + max-lanes pair
-MAX_EFFECTIVE_TOKENS = 8
+SCHEMA_VERSION = 4
+# target + auth pair + quick + deep + cadence + max-lanes pair + context
+MAX_EFFECTIVE_TOKENS = 9
 MAX_CAPTURED_TOKENS = MAX_EFFECTIVE_TOKENS + 1
 MAX_LANES = 32
 
@@ -126,6 +126,16 @@ def _resolve_auth_file(
     return str(resolved)
 
 
+def _resolve_context_file(context_file_input: str, cwd: str | os.PathLike[str] | None) -> str:
+    path = Path(context_file_input).expanduser()
+    if not path.is_absolute():
+        path = Path(cwd or Path.cwd()) / path
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise ValueError(f"context file is not readable: {context_file_input}")
+    return str(resolved)
+
+
 def parse_autopilot_args(
     argv: Sequence[str],
     cwd: str | os.PathLike[str] | None = None,
@@ -138,6 +148,7 @@ def parse_autopilot_args(
     targets: list[str] = []
     cadence_flags: list[str] = []
     auth_file_inputs: list[str] = []
+    context_file_inputs: list[str] = []
     max_lanes_inputs: list[str] = []
     quick = False
     deep = round_defaults
@@ -190,6 +201,21 @@ def parse_autopilot_args(
                     _error(
                         "missing_auth_file_value",
                         "--auth-file requires one JSON or .env file path.",
+                        token=token,
+                    )
+                )
+            index += 1
+            continue
+
+        if token.startswith("--context-file="):
+            value = token.split("=", 1)[1].strip()
+            if value:
+                context_file_inputs.append(value)
+            else:
+                errors.append(
+                    _error(
+                        "missing_context_file_value",
+                        "--context-file requires an owner-generated continuation path.",
                         token=token,
                     )
                 )
@@ -289,6 +315,14 @@ def parse_autopilot_args(
                 paths=auth_file_inputs,
             )
         )
+    if len(context_file_inputs) > 1:
+        errors.append(
+            _error(
+                "context_file_conflict",
+                "Inline /autopilot accepts at most one --context-file path.",
+                paths=context_file_inputs,
+            )
+        )
 
     max_lanes: int | None = None
     if len(max_lanes_inputs) > 1:
@@ -375,6 +409,22 @@ def parse_autopilot_args(
         else:
             auth_file_shell = shlex.quote(auth_file)
 
+    context_file = None
+    context_file_shell = None
+    if len(context_file_inputs) == 1:
+        try:
+            context_file = _resolve_context_file(context_file_inputs[0], cwd)
+        except (OSError, ValueError) as exc:
+            errors.append(
+                _error(
+                    "invalid_context_file",
+                    f"Invalid /autopilot context file: {exc}",
+                    path=context_file_inputs[0],
+                )
+            )
+        else:
+            context_file_shell = shlex.quote(context_file)
+
     if errors:
         action = "stop_invalid_arguments"
     elif target_input is None:
@@ -402,6 +452,8 @@ def parse_autopilot_args(
         "auth_file": auth_file,
         "auth_file_shell": auth_file_shell,
         "hunt_auth_flags": ["--auth-file", auth_file] if auth_file else [],
+        "context_file": context_file,
+        "context_file_shell": context_file_shell,
         "cadence": cadence,
         "checkpoint_policy": CHECKPOINT_POLICIES[cadence],
         "checkpoint_trigger": CHECKPOINT_TRIGGERS[cadence],

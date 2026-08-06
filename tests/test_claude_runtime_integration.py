@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FAKE_RESPONSE_TEXT = "runtime-probe-ok"
 DYNAMIC_ARGUMENT_COMMAND = (
     '!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- '
-    '"$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"`'
+    '"$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`'
 )
 
 
@@ -353,7 +353,7 @@ def test_real_claude_cli_marks_tenth_argument_as_overflow(
     run_staged_claude,
 ):
     payload = run_staged_claude(
-        "/autopilot example.test --quick --deep --normal --quick --deep --quick --deep --quick"
+        "/autopilot example.test --quick --deep --normal --quick --deep --quick --deep --quick --deep"
     )
     command_body = next(
         text for text in _message_texts(payload) if text.startswith("# /autopilot")

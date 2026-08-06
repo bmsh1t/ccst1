@@ -7,13 +7,20 @@ from pathlib import Path
 from tools import runtime_doctor
 
 
+AUTOPILOT_COMMAND = """repo command
+<!-- AUTOPILOT_CRITICAL_RUNTIME_MANIFEST
+{"schema_version":1,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"agents","relative_path":"autopilot.md"},{"kind":"skills","relative_path":"bug-bounty/SKILL.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*"]}
+AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->
+"""
+
+
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
 
 
 def _repo_fixture(root: Path) -> Path:
-    _write(root / "commands" / "autopilot.md", "repo command\n")
+    _write(root / "commands" / "autopilot.md", AUTOPILOT_COMMAND)
     _write(root / "commands" / "sync-check.md", "repo sync-check\n")
     _write(root / "agents" / "autopilot.md", "repo agent\n")
     _write(root / "skills" / "bug-bounty" / "SKILL.md", "repo skill\n")
@@ -21,7 +28,7 @@ def _repo_fixture(root: Path) -> Path:
 
 
 def _runtime_fixture(root: Path) -> Path:
-    _write(root / "commands" / "autopilot.md", "repo command\n")
+    _write(root / "commands" / "autopilot.md", AUTOPILOT_COMMAND)
     _write(root / "commands" / "doctor.md", "stale runtime doctor\n")
     _write(root / "agents" / "claude-bug-bounty" / "autopilot.md", "old agent\n")
     _write(root / "skills" / "bug-bounty" / "SKILL.md", "repo skill\n")
@@ -29,7 +36,7 @@ def _runtime_fixture(root: Path) -> Path:
 
 
 def _runtime_fixture_with_disabled_command(root: Path) -> Path:
-    _write(root / "commands" / "autopilot.md", "repo command\n")
+    _write(root / "commands" / "autopilot.md", AUTOPILOT_COMMAND)
     _write(root / "commands" / ".disabled.sync-check.md", "repo sync-check\n")
     _write(root / "commands" / "doctor.md", "stale runtime doctor\n")
     _write(root / "agents" / "claude-bug-bounty" / "autopilot.md", "old agent\n")
@@ -38,7 +45,7 @@ def _runtime_fixture_with_disabled_command(root: Path) -> Path:
 
 
 def _runtime_fixture_with_external_skill(root: Path) -> Path:
-    _write(root / "commands" / "autopilot.md", "repo command\n")
+    _write(root / "commands" / "autopilot.md", AUTOPILOT_COMMAND)
     _write(root / "agents" / "claude-bug-bounty" / "autopilot.md", "repo agent\n")
     _write(root / "skills" / "bug-bounty" / "SKILL.md", "repo skill\n")
     _write(root / "skills" / "playwright-cli" / "SKILL.md", "external skill\n")
@@ -56,6 +63,16 @@ def test_compare_runtime_reports_diff_missing_and_extra(tmp_path):
 
     assert payload["clean"] is False
     assert payload["drift_count"] == 3
+    assert payload["critical_clean"] is False
+    assert payload["critical_drift_count"] == 1
+    assert payload["advisory_drift_count"] == 2
+    assert payload["critical_drift"] == [{
+        "kind": "agents",
+        "status": "diff",
+        "relative_path": "autopilot.md",
+    }]
+    assert payload["missing_critical"] == []
+    assert "hackerone" not in json.dumps(payload["critical_manifest"]).lower()
 
     by_kind = {item["kind"]: item for item in payload["kinds"]}
     assert by_kind["commands"]["counts"] == {"ok": 1, "diff": 0, "missing": 1, "extra": 1}
@@ -77,6 +94,67 @@ def test_compare_runtime_reports_diff_missing_and_extra(tmp_path):
     assert "sync-check.md" in report
     assert "doctor.md" in report
     assert "--prune" in report
+
+
+def test_advisory_drift_does_not_fail_autopilot_critical_gate(tmp_path):
+    repo_root = _repo_fixture(tmp_path / "repo")
+    runtime_root = _runtime_fixture(tmp_path / "runtime")
+    _write(runtime_root / "agents" / "claude-bug-bounty" / "autopilot.md", "repo agent\n")
+
+    payload = runtime_doctor.compare_runtime(repo_root, runtime_root)
+
+    assert payload["clean"] is False
+    assert payload["critical_clean"] is True
+    assert payload["critical_drift"] == []
+    assert payload["missing_critical"] == []
+    assert {item["relative_path"] for item in payload["advisory_drift"]} == {
+        "sync-check.md",
+        "doctor.md",
+    }
+
+
+def test_missing_critical_runtime_dependency_is_separate_from_diff(tmp_path):
+    repo_root = _repo_fixture(tmp_path / "repo")
+    runtime_root = _runtime_fixture(tmp_path / "runtime")
+    (runtime_root / "agents" / "claude-bug-bounty" / "autopilot.md").unlink()
+
+    payload = runtime_doctor.compare_runtime(repo_root, runtime_root)
+
+    assert payload["critical_clean"] is False
+    assert payload["critical_drift"] == []
+    assert payload["missing_critical"] == [{
+        "kind": "agents",
+        "status": "missing",
+        "relative_path": "autopilot.md",
+    }]
+
+
+def test_repository_autopilot_manifest_is_versioned_and_excludes_hackerone():
+    manifest = runtime_doctor.load_critical_runtime_manifest()
+
+    assert manifest["schema_version"] == 1
+    assert manifest["status"] == "valid"
+    assert manifest["sha256"].startswith("sha256:")
+    assert {item["kind"] for item in manifest["paths"]} == {"commands", "agents", "skills"}
+    assert "hackerone" not in json.dumps(manifest).lower()
+
+
+def test_missing_manifest_is_drift_even_when_runtime_files_match(tmp_path):
+    repo_root = _repo_fixture(tmp_path / "repo")
+    runtime_root = _runtime_fixture(tmp_path / "runtime")
+    _write(repo_root / "commands" / "autopilot.md", "same command without manifest\n")
+    _write(runtime_root / "commands" / "autopilot.md", "same command without manifest\n")
+    _write(runtime_root / "agents" / "claude-bug-bounty" / "autopilot.md", "repo agent\n")
+    (runtime_root / "commands" / "doctor.md").unlink()
+    _write(runtime_root / "commands" / "sync-check.md", "repo sync-check\n")
+
+    payload = runtime_doctor.compare_runtime(repo_root, runtime_root)
+
+    assert payload["clean"] is False
+    assert payload["drift_count"] == 1
+    assert payload["critical_clean"] is False
+    assert payload["critical_manifest"]["status"] == "invalid"
+    assert payload["missing_critical"][0]["status"] == "manifest_invalid"
 
 
 def test_sync_runtime_refreshes_runtime_files(tmp_path):
@@ -424,3 +502,33 @@ def test_runtime_doctor_main_json_and_fail_on_drift(tmp_path, monkeypatch, capsy
     )
 
     assert runtime_doctor.main() == 1
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "runtime_doctor.py",
+            "--repo-root",
+            str(repo_root),
+            "--runtime-root",
+            str(runtime_root),
+            "--fail-on-critical-drift",
+        ],
+    )
+    assert runtime_doctor.main() == 1
+
+    _write(runtime_root / "agents" / "claude-bug-bounty" / "autopilot.md", "repo agent\n")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "runtime_doctor.py",
+            "--repo-root",
+            str(repo_root),
+            "--runtime-root",
+            str(runtime_root),
+            "--fail-on-critical-drift",
+        ],
+    )
+
+    assert runtime_doctor.main() == 0

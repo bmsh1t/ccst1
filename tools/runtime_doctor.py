@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -18,6 +19,8 @@ DISABLED_COMMAND_PREFIX = ".disabled."
 # 可加载资产。只过滤 repo source，runtime 中曾被误同步的同名文件仍应显示
 # 为 extra，并可由 `--sync --prune` 清理。
 NON_RUNTIME_MARKDOWN_SUFFIXES = (".patch.md",)
+AUTOPILOT_MANIFEST_START = "<!-- AUTOPILOT_CRITICAL_RUNTIME_MANIFEST"
+AUTOPILOT_MANIFEST_END = "AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->"
 
 
 def _repo_root(path: str | Path | None = None) -> Path:
@@ -26,6 +29,59 @@ def _repo_root(path: str | Path | None = None) -> Path:
 
 def _runtime_root(path: str | Path | None = None) -> Path:
     return Path(path).expanduser().resolve() if path else (Path.home() / ".claude").resolve()
+
+
+def load_critical_runtime_manifest(repo_root: str | Path | None = None) -> dict:
+    """Load the versioned Autopilot manifest embedded in its runtime command."""
+    path = _repo_root(repo_root) / "commands" / "autopilot.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+        raw = text.split(AUTOPILOT_MANIFEST_START, 1)[1].split(AUTOPILOT_MANIFEST_END, 1)[0]
+        payload = json.loads(raw.strip())
+        if not isinstance(payload, dict) or int(payload.get("schema_version", 0)) < 1:
+            raise ValueError("manifest schema_version must be positive")
+        paths = []
+        for item in payload.get("paths") or []:
+            if not isinstance(item, dict):
+                raise ValueError("manifest paths must be objects")
+            kind = str(item.get("kind") or "").strip()
+            relative_path = str(item.get("relative_path") or "").strip()
+            relative = Path(relative_path)
+            if kind not in KIND_ORDER or not relative_path or relative.is_absolute() or ".." in relative.parts:
+                raise ValueError("manifest path is invalid")
+            paths.append({"kind": kind, "relative_path": relative_path})
+        if not paths:
+            raise ValueError("manifest paths are required")
+        raw_mcp_contracts = payload.get("mcp_contracts") or []
+        if not isinstance(raw_mcp_contracts, list):
+            raise ValueError("manifest mcp_contracts must be a list")
+        mcp_contracts = [
+            str(item).strip()
+            for item in raw_mcp_contracts
+            if str(item).strip()
+        ]
+        if any("hackerone" in item.lower() for item in mcp_contracts):
+            raise ValueError("HackerOne MCP is outside the Autopilot critical manifest")
+        canonical = {
+            "schema_version": int(payload["schema_version"]),
+            "paths": paths,
+            "mcp_contracts": mcp_contracts,
+        }
+        encoded = json.dumps(canonical, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        return {
+            **canonical,
+            "status": "valid",
+            "sha256": f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}",
+        }
+    except (IndexError, OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        return {
+            "schema_version": 0,
+            "status": "missing" if not path.is_file() else "invalid",
+            "sha256": "",
+            "paths": [],
+            "mcp_contracts": [],
+            "error": " ".join(str(exc).split())[:300],
+        }
 
 
 def _is_runtime_markdown_source(path: Path) -> bool:
@@ -187,12 +243,63 @@ def compare_runtime(
         result["counts"]["diff"] + result["counts"]["missing"] + result["counts"]["extra"]
         for result in results
     )
+    manifest = load_critical_runtime_manifest(resolved_repo)
+    selected = set(selected_kinds)
+    critical_paths = {
+        (item["kind"], item["relative_path"])
+        for item in manifest["paths"]
+        if item["kind"] in selected
+    }
+    seen: set[tuple[str, str]] = set()
+    critical_drift: list[dict[str, str]] = []
+    missing_critical: list[dict[str, str]] = []
+    advisory_drift: list[dict[str, str]] = []
+    for result in results:
+        for item in result["items"]:
+            key = (item["kind"], item["relative_path"])
+            seen.add(key)
+            if item["status"] == "ok":
+                continue
+            projection = {
+                "kind": item["kind"],
+                "status": item["status"],
+                "relative_path": item["relative_path"],
+            }
+            if key not in critical_paths:
+                advisory_drift.append(projection)
+            elif item["status"] in {"missing", "extra"}:
+                projection["status"] = "missing"
+                missing_critical.append(projection)
+            else:
+                critical_drift.append(projection)
+    synthetic_missing = sorted(critical_paths - seen)
+    for kind, relative_path in synthetic_missing:
+        missing_critical.append({
+            "kind": kind,
+            "status": "missing",
+            "relative_path": relative_path,
+        })
+    if manifest["status"] != "valid":
+        missing_critical.insert(0, {
+            "kind": "commands",
+            "status": f"manifest_{manifest['status']}",
+            "relative_path": "autopilot.md",
+        })
+    unobserved_drift = len(synthetic_missing) + int(manifest["status"] != "valid")
+    full_drift = drift + unobserved_drift
     return {
         "repo_root": str(resolved_repo),
         "runtime_root": str(resolved_runtime),
         "kinds": results,
-        "drift_count": drift,
-        "clean": drift == 0,
+        "drift_count": full_drift,
+        "clean": full_drift == 0,
+        "critical_manifest": manifest,
+        "critical_drift": critical_drift,
+        "missing_critical": missing_critical,
+        "advisory_drift": advisory_drift,
+        "critical_drift_count": len(critical_drift) + len(missing_critical),
+        "advisory_drift_count": len(advisory_drift),
+        "critical_clean": not critical_drift and not missing_critical,
     }
 
 
@@ -245,6 +352,11 @@ def format_report(payload: dict) -> str:
         f"Repo: {payload['repo_root']}",
         f"Runtime: {payload['runtime_root']}",
         f"Overall drift: {payload['drift_count']}",
+        (
+            f"Autopilot critical drift: {payload.get('critical_drift_count', 0)} "
+            f"(advisory={payload.get('advisory_drift_count', 0)}, "
+            f"manifest={payload.get('critical_manifest', {}).get('sha256', '') or 'invalid'})"
+        ),
     ]
 
     for result in payload["kinds"]:
@@ -295,6 +407,11 @@ def main() -> int:
     parser.add_argument("--prune", action="store_true", help="When syncing, also remove runtime-only extras for the selected kinds.")
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of human-readable text.")
     parser.add_argument("--fail-on-drift", action="store_true", help="Exit non-zero when drift is found.")
+    parser.add_argument(
+        "--fail-on-critical-drift",
+        action="store_true",
+        help="Exit non-zero only when Autopilot critical runtime drift is found.",
+    )
     args = parser.parse_args()
 
     kinds = _parse_kinds(args.kind)
@@ -312,6 +429,8 @@ def main() -> int:
     else:
         print(format_report(payload))
     if args.fail_on_drift and not payload["clean"]:
+        return 1
+    if args.fail_on_critical_drift and not payload["critical_clean"]:
         return 1
     return 0
 

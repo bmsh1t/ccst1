@@ -27,6 +27,8 @@ EXPECTED_KEYS = [
     "auth_file",
     "auth_file_shell",
     "hunt_auth_flags",
+    "context_file",
+    "context_file_shell",
     "cadence",
     "checkpoint_policy",
     "checkpoint_trigger",
@@ -46,7 +48,7 @@ def test_parse_defaults_to_paranoid_and_accepts_flags_around_target():
 
     assert list(payload) == EXPECTED_KEYS
     assert payload == {
-        "schema_version": 3,
+        "schema_version": 4,
         "valid": True,
         "action": "continue",
         "argv": ["--quick", "https://Example.TEST/admin?x=1", "--deep", "--normal"],
@@ -59,6 +61,8 @@ def test_parse_defaults_to_paranoid_and_accepts_flags_around_target():
         "auth_file": None,
         "auth_file_shell": None,
         "hunt_auth_flags": [],
+        "context_file": None,
+        "context_file_shell": None,
         "cadence": "normal",
         "checkpoint_policy": "batched",
         "checkpoint_trigger": "checkpoint after each coherent evidence-lane batch",
@@ -124,7 +128,7 @@ def test_repeated_core_flags_are_idempotent():
     assert payload["deep"] is True
 
 
-def test_auth_file_relative_path_and_full_eight_token_core_invocation(tmp_path):
+def test_auth_file_relative_path_and_full_core_invocation(tmp_path):
     auth_file = tmp_path / "private auth.json"
     auth_file.write_text('{"cookie":"session=example"}\n', encoding="utf-8")
 
@@ -155,7 +159,7 @@ def test_auth_file_relative_path_and_full_eight_token_core_invocation(tmp_path):
     }
 
     overflow = autopilot_args.parse_autopilot_args(
-        [*payload["argv"], "--quick"],
+        [*payload["argv"], "--quick", "--quick"],
         cwd=tmp_path,
     )
     assert overflow["valid"] is False
@@ -210,6 +214,24 @@ def test_multiple_auth_files_are_rejected(tmp_path):
     assert [error["code"] for error in payload["errors"]] == ["auth_file_conflict"]
 
 
+def test_context_file_equal_form_resolves_and_rejects_conflicts(tmp_path):
+    context = tmp_path / "continuation.json"
+    context.write_text("{}\n", encoding="utf-8")
+
+    valid = autopilot_args.parse_autopilot_args(
+        ["example.test", f"--context-file={context.name}"], cwd=tmp_path
+    )
+    assert valid["context_file"] == str(context.resolve())
+    assert shlex.split(valid["context_file_shell"]) == [str(context.resolve())]
+
+    invalid = autopilot_args.parse_autopilot_args(
+        ["example.test", "--context-file=", f"--context-file={context}"], cwd=tmp_path
+    )
+    assert [error["code"] for error in invalid["errors"]] == [
+        "missing_context_file_value"
+    ]
+
+
 def test_empty_claude_placeholder_slots_do_not_count_as_arguments():
     payload = autopilot_args.parse_autopilot_args(
         ["example.test", "--deep", "", "", "", "", ""]
@@ -250,7 +272,7 @@ def test_missing_target_asks_without_continuing():
         (
             [
                 "example.test", "--quick", "--deep", "--normal", "--quick", "--deep",
-                "--max-lanes", "2", "extra",
+                "--max-lanes", "2", "extra", "extra-2",
             ],
             ["overflow", "multiple_targets"],
         ),

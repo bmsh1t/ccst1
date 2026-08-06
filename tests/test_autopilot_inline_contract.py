@@ -33,7 +33,7 @@ def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
     assert 'mcp__chrome-devtools__*' in text
     assert 'mcp__fofamap__*' in text
     assert "through Claude Code's `Agent` tool" in normalized
-    assert 'tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"' in text
+    assert 'tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"' in text
     assert "git rev-parse --show-toplevel" in text
     assert "Authoritative bootstrap contract (do not reinterpret)" in normalized
     assert "Only `continue` may act" in normalized

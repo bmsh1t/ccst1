@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from tools.capability_profile import (
+    LANE_IDS,
     MAX_LIST_ITEMS,
     SESSION_MANAGED,
     TOOL_REGISTRY,
@@ -21,6 +22,20 @@ HELPERS = (
     "tools/js_reader.py",
     "tools/browser_mcp_import.py",
     "tools/dns_expand.py",
+    "tools/surface.py",
+    "tools/surface_projection.py",
+    "tools/sql_parameter_probe.py",
+    "tools/json_inject_probe.py",
+    "tools/workflow_sequence.py",
+    "tools/timing_sql_runner.py",
+    "tools/validation_runner.py",
+    "tools/target_case_state.py",
+    "tools/waf_pass_plan.py",
+    "tools/waf_response_analyzer.py",
+    "tools/cloud_recon.sh",
+    "tools/oast_listen.py",
+    "commands/web3-audit.md",
+    "skills/web3-audit/SKILL.md",
 )
 
 
@@ -46,7 +61,7 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
         which=_which_with(*tools, "curl"),
     )
 
-    assert profile == {
+    assert {key: value for key, value in profile.items() if key != "lanes"} == {
         "schema_version": 1,
         "checked": True,
         "status": "ready",
@@ -73,9 +88,16 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
             "scanner-native-plus-nuclei",
         ],
     }
+    lanes = {lane["id"]: lane for lane in profile["lanes"]}
+    assert tuple(lanes) == LANE_IDS
+    assert all(lane["checked"] and lane["ready"] for lane in lanes.values())
+    assert lanes["browser"]["degraded"] == ["session-browser-mcp-unchecked"]
+    assert lanes["oast"]["degraded"] == ["manual-oast-provider"]
+    assert lanes["web3"]["degraded"] == ["static-review-only"]
+    assert all(lane["input_fingerprint"].startswith("sha256:") for lane in lanes.values())
     encoded = json.dumps(profile, sort_keys=True)
     assert str(tmp_path) not in encoded
-    assert len(encoded) < 2_000
+    assert len(encoded) < 10_000
     for value in (
         *profile["available"].values(),
         profile["session_managed"],
@@ -83,8 +105,12 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
         profile["missing_core"],
         profile["missing_optional"],
         profile["recommended_paths"],
+        profile["lanes"],
     ):
         assert len(value) <= MAX_LIST_ITEMS
+    for lane in profile["lanes"]:
+        for key in ("missing", "degraded", "evidence_required", "tool_refs"):
+            assert len(lane[key]) <= MAX_LIST_ITEMS
 
 
 def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback(tmp_path):
@@ -122,6 +148,11 @@ def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback
         "recon-source-js-only",
         "scanner-manual-evidence-only",
     ]
+    lanes = {lane["id"]: lane for lane in profile["lanes"]}
+    assert lanes["recon"]["ready"] is False
+    assert lanes["recon"]["missing"] == ["httpx-or-curl"]
+    assert lanes["cloud"]["missing"] == ["cloud-provider-tool"]
+    assert lanes["surface"]["ready"] is True
 
 
 def test_browser_cli_presence_does_not_change_mcp_only_profile(tmp_path):
@@ -179,10 +210,25 @@ def test_profile_is_read_only(tmp_path):
     assert after == before
 
 
+def test_missing_sql_helper_only_degrades_sql_lane(tmp_path):
+    helpers = tuple(path for path in HELPERS if path != "tools/sql_parameter_probe.py")
+    repo = _repo_with_helpers(tmp_path, helpers=helpers)
+
+    profile = build_capability_profile(
+        repo,
+        which=_which_with("curl", "httpx", "interactsh-client", "forge"),
+    )
+    lanes = {lane["id"]: lane for lane in profile["lanes"]}
+
+    assert lanes["sql"]["ready"] is False
+    assert lanes["sql"]["missing"] == ["tools/sql_parameter_probe.py+json_inject_probe.py"]
+    assert all(lane["ready"] for lane_id, lane in lanes.items() if lane_id != "sql")
+
+
 def test_unknown_profile_is_distinct_from_checked_but_degraded():
     profile = unknown_capability_profile("profile-error")
 
-    assert profile == {
+    assert {key: value for key, value in profile.items() if key != "lanes"} == {
         "schema_version": 1,
         "checked": False,
         "status": "unknown",
@@ -200,3 +246,6 @@ def test_unknown_profile_is_distinct_from_checked_but_degraded():
         "recommended_paths": [],
         "reason": "profile-error",
     }
+    assert [lane["id"] for lane in profile["lanes"]] == list(LANE_IDS)
+    assert all(lane["checked"] is False for lane in profile["lanes"])
+    assert all(lane["degraded"] == ["profile-error"] for lane in profile["lanes"])

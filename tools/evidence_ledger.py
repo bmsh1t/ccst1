@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import os
 import re
 import shlex
 import sys
@@ -23,11 +24,11 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from tools.closure_resolver import extract_endpoint_parts
+    from tools.closure_resolver import canonical_endpoint_identity
     from tools.coverage_matrix import normalize_vuln_class
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from closure_resolver import extract_endpoint_parts  # type: ignore
+    from closure_resolver import canonical_endpoint_identity  # type: ignore
     from coverage_matrix import normalize_vuln_class  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
@@ -149,15 +150,7 @@ def _dedupe(items: list[str]) -> list[str]:
 
 
 def _canonicalize_endpoint(value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    path, fragment = extract_endpoint_parts(raw)
-    if fragment.startswith("/"):
-        route = fragment.split("?", 1)[0].split("#", 1)[0] or "/"
-        prefix = (path or "/").rstrip("/") or "/"
-        return f"{prefix}#{route}"
-    return path
+    return canonical_endpoint_identity(value)
 
 
 def _quote(value: str) -> str:
@@ -201,26 +194,81 @@ def normalize_result(value: str) -> str:
     return result
 
 
-def load_entries(repo_root: Path | str, target: str) -> list[dict]:
+def load_entries_diagnostic(repo_root: Path | str, target: str) -> dict:
     path = ledger_path(repo_root, target)
     if not path.is_file():
-        return []
+        return {
+            "status": "missing",
+            "path": str(path),
+            "entries": [],
+            "invalid_rows": [],
+            "invalid_count": 0,
+            "last_valid_offset": 0,
+        }
     entries: list[dict] = []
+    invalid_rows: list[dict] = []
+    offset = 0
+    last_valid_offset = 0
+    valid_prefix = True
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    for line in lines:
-        value = line.strip()
-        if not value:
-            continue
-        try:
-            item = json.loads(value)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            entries.append(item)
-    return entries
+        with path.open("rb") as handle:
+            for line_number, raw_line in enumerate(handle, 1):
+                offset += len(raw_line)
+                if not raw_line.strip():
+                    if valid_prefix:
+                        last_valid_offset = offset
+                    continue
+                try:
+                    value = raw_line.decode("utf-8").strip()
+                    item = json.loads(value)
+                except UnicodeDecodeError:
+                    invalid_rows.append({"line": line_number, "reason": "invalid UTF-8"})
+                    valid_prefix = False
+                    continue
+                except json.JSONDecodeError as exc:
+                    invalid_rows.append({"line": line_number, "reason": exc.msg[:160]})
+                    valid_prefix = False
+                    continue
+                if not isinstance(item, dict):
+                    invalid_rows.append({"line": line_number, "reason": "row is not a JSON object"})
+                    valid_prefix = False
+                    continue
+                entries.append(item)
+                if valid_prefix:
+                    last_valid_offset = offset
+    except OSError as exc:
+        return {
+            "status": "unreadable",
+            "path": str(path),
+            "entries": [],
+            "invalid_rows": [],
+            "invalid_count": 0,
+            "last_valid_offset": 0,
+            "read_error": str(exc)[:300],
+        }
+    return {
+        "status": "partial" if invalid_rows else "valid",
+        "path": str(path),
+        "entries": entries,
+        "invalid_rows": invalid_rows[:20],
+        "invalid_count": len(invalid_rows),
+        "last_valid_offset": last_valid_offset,
+    }
+
+
+def load_entries(repo_root: Path | str, target: str) -> list[dict]:
+    diagnostic = load_entries_diagnostic(repo_root, target)
+    if diagnostic.get("read_error"):
+        print(
+            f"warning: evidence ledger unreadable: {diagnostic['path']}: {diagnostic['read_error']}",
+            file=sys.stderr,
+        )
+    for item in (diagnostic.get("invalid_rows") or [])[:5]:
+        print(
+            f"warning: evidence ledger invalid row: {diagnostic['path']}:{item['line']}: {item['reason']}",
+            file=sys.stderr,
+        )
+    return list(diagnostic.get("entries") or [])
 
 
 def record_entry(
@@ -242,6 +290,8 @@ def record_entry(
     redline_checked: bool = False,
     evidence_ref: str = "",
     notes: str = "",
+    operation_id: str = "",
+    event_id: str = "",
 ) -> dict:
     resolved_target = canonical_target_value(target)
     canonical_endpoint = _canonicalize_endpoint(endpoint)
@@ -276,6 +326,8 @@ def record_entry(
         "redline_checked": bool(redline_checked),
         "evidence_ref": str(evidence_ref or "").strip(),
         "notes": str(notes or "").strip(),
+        "operation_id": str(operation_id or "").strip(),
+        "event_id": str(event_id or "").strip(),
         "warnings": [],
     }
     requires_redline = method_u == "PATCH" and bool(entry["state_changing"])
@@ -291,10 +343,25 @@ def record_entry(
 
     path = ledger_path(repo_root, resolved_target)
     with ledger_mutation_lock(repo_root, resolved_target):
+        if entry["event_id"]:
+            diagnostic = load_entries_diagnostic(repo_root, resolved_target)
+            existing = next(
+                (
+                    item
+                    for item in diagnostic.get("entries") or []
+                    if str(item.get("event_id") or "") == entry["event_id"]
+                ),
+                None,
+            )
+            if existing is not None:
+                return {**existing, "write_status": "deduplicated"}
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
-    return entry
+        encoded = (json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+        with path.open("ab", buffering=0) as fh:
+            if fh.write(encoded) != len(encoded):
+                raise OSError(f"partial evidence ledger append: {path}")
+            os.fsync(fh.fileno())
+    return {**entry, "write_status": "updated"}
 
 
 _OBJECT_RESOURCE_SEGMENTS = {
@@ -452,6 +519,7 @@ def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "G
 def _entry_matches_requirement(entry: dict, requirement: dict) -> bool:
     return (
         _canonicalize_endpoint(str(entry.get("endpoint") or "")) == requirement["endpoint"]
+        and str(entry.get("method") or "GET").upper() == requirement["method"]
         and str(entry.get("vuln_class") or "") == requirement["vuln_class"]
         and str(entry.get("actor") or "") == requirement["actor"]
         and str(entry.get("object_scope") or "") == requirement["object_scope"]
@@ -500,38 +568,64 @@ def _focus_endpoint_values(focus_endpoints: list[str | dict] | None, entries: li
 
 
 def build_current_cell_projection(entries: list[dict]) -> dict:
-    """Project the latest recognized result for each endpoint x vuln cell."""
-    closed_by_key: dict[tuple[str, str], dict] = {}
-    open_candidate_by_key: dict[tuple[str, str], dict] = {}
-    for entry in entries:
+    """Project current evidence identities, then aggregate endpoint closure."""
+    current_by_evidence_key: dict[tuple[str, str, str, str, str, str], tuple[int, dict]] = {}
+    for sequence, entry in enumerate(entries):
         result = str(entry.get("result") or "")
+        if result not in set(RESULTS):
+            continue
         endpoint = _canonicalize_endpoint(
-            str(entry.get("endpoint") or entry.get("raw_endpoint") or "")
+            str(entry.get("raw_endpoint") or entry.get("endpoint") or "")
         )
         vuln_class = str(entry.get("vuln_class") or "").strip()
         if not endpoint or not vuln_class:
             continue
-        key = (endpoint, vuln_class)
-        if result == "candidate":
-            closed_by_key.pop(key, None)
-            open_candidate_by_key[key] = entry
-        elif result in {"lead", "signal"}:
-            closed_by_key.pop(key, None)
-            open_candidate_by_key.pop(key, None)
-        elif result in CLOSED_CELL_RESULTS:
-            open_candidate_by_key.pop(key, None)
-            closed_by_key[key] = {
-                "endpoint": endpoint,
-                "vuln_class": vuln_class,
-                "result": result,
-                "ts": str(entry.get("ts") or ""),
-                "evidence_ref": str(entry.get("evidence_ref") or ""),
-            }
+        evidence_key = (
+            endpoint,
+            vuln_class,
+            str(entry.get("method") or "GET").strip().upper(),
+            str(entry.get("actor") or "owner").strip(),
+            str(entry.get("object_scope") or "unknown").strip(),
+            str(entry.get("variant") or "baseline").strip(),
+        )
+        current_by_evidence_key[evidence_key] = (sequence, entry)
+
+    current_by_closure_key: dict[tuple[str, str], list[tuple[int, dict]]] = {}
+    for evidence_key, current in current_by_evidence_key.items():
+        current_by_closure_key.setdefault(evidence_key[:2], []).append(current)
+
+    closed_cells: list[dict] = []
+    open_candidates: list[dict] = []
+    for (endpoint, vuln_class), current_rows in current_by_closure_key.items():
+        open_rows = [
+            item for item in current_rows
+            if str(item[1].get("result") or "") in {"lead", "signal", "candidate"}
+        ]
+        open_candidates.extend(
+            entry for _sequence, entry in open_rows
+            if str(entry.get("result") or "") == "candidate"
+        )
+        if open_rows:
+            continue
+        terminal_rows = [
+            item for item in current_rows
+            if str(item[1].get("result") or "") in CLOSED_CELL_RESULTS
+        ]
+        if not terminal_rows:
+            continue
+        _sequence, latest = max(terminal_rows, key=lambda item: item[0])
+        closed_cells.append({
+            "endpoint": endpoint,
+            "vuln_class": vuln_class,
+            "result": str(latest.get("result") or ""),
+            "ts": str(latest.get("ts") or ""),
+            "evidence_ref": str(latest.get("evidence_ref") or ""),
+        })
 
     return {
-        "closed_cells": list(closed_by_key.values()),
+        "closed_cells": closed_cells,
         "open_candidates": sorted(
-            open_candidate_by_key.values(),
+            open_candidates,
             key=lambda item: str(item.get("ts") or ""),
             reverse=True,
         )[:10],
@@ -547,7 +641,8 @@ def build_summary(
     method: str = "GET",
 ) -> dict:
     resolved_target = canonical_target_value(target)
-    entries = load_entries(repo_root, resolved_target)
+    diagnostics = load_entries_diagnostic(repo_root, resolved_target)
+    entries = list(diagnostics.get("entries") or [])
     path = ledger_path(repo_root, resolved_target)
     endpoints = _focus_endpoint_values(focus_endpoints, entries)
     selected_vulns = vuln_classes or ["IDOR", "Authz"]
@@ -572,12 +667,20 @@ def build_summary(
             redline_unchecked += 1
 
     current_cells = build_current_cell_projection(entries)
+    if diagnostics.get("status") in {"partial", "unreadable"}:
+        current_cells["closed_cells"] = []
 
     return {
         "target": resolved_target,
         "path": str(path),
         "path_exists": path.is_file(),
         "entry_count": len(entries),
+        "ledger_status": diagnostics.get("status", "missing"),
+        "ledger_diagnostics": {
+            key: diagnostics[key]
+            for key in ("status", "invalid_count", "invalid_rows", "last_valid_offset", "read_error")
+            if key in diagnostics
+        },
         "result_counts": counts,
         "redline_unchecked_count": redline_unchecked,
         "closed_cells": current_cells["closed_cells"],
@@ -635,6 +738,8 @@ def format_summary(summary: dict) -> str:
         f"- Target: {summary.get('target', '')}",
         f"- Entries: {summary.get('entry_count', 0)}",
         f"- Ledger path: {summary.get('path', '')}",
+        f"- Ledger status: {summary.get('ledger_status', 'missing')}",
+        f"- Invalid rows: {(summary.get('ledger_diagnostics') or {}).get('invalid_count', 0)}",
         f"- Red-line unchecked state-changing records: {summary.get('redline_unchecked_count', 0)}",
         "- Results:",
     ]

@@ -8,15 +8,18 @@ allowed-tools:
   - "mcp__fofamap__*"
 ---
 # /autopilot
-Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"`
-Formal arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep] [--max-lanes N] [--auth-file PATH]`, where `<target>` may be a domain/IP/CIDR, a readable text list, or a schema-v1 JSON Scope manifest.
+<!-- AUTOPILOT_CRITICAL_RUNTIME_MANIFEST
+{"schema_version":1,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"commands","relative_path":"autopilot-round.md"},{"kind":"agents","relative_path":"autopilot.md"},{"kind":"skills","relative_path":"runtime-protocol.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*","mcp__fofamap__*"]}
+AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->
+Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
+Formal arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep] [--max-lanes N] [--auth-file PATH] [--context-file=PATH]`, where `<target>` may be a domain/IP/CIDR, a readable text list, or a schema-v1 JSON Scope manifest. `--context-file` accepts only an owner-generated batch continuation under repository state.
 ## Runtime Preflight
 Obey bootstrap `action` before any other step. `ask_target` asks for the exact target;
-`stop_invalid_arguments` reports `arguments.errors`; `stop_invalid_scope` reports bounded `error` and stops; `stop_state_error`/`stop_runtime_error` report bounded `error` and stop; `stop_runtime_drift` reports compact runtime counts, points to `/sync-check`, requests explicit confirmation before any sync, and stops. Never sync automatically. Only `continue` may act.
+`stop_invalid_arguments` reports `arguments.errors`; `stop_invalid_scope`/`stop_invalid_context` report bounded `error` and stop; `stop_state_error`/`stop_runtime_error` report bounded `error` and stop; `stop_runtime_drift` reports compact critical runtime paths/counts, points to `/sync-check`, requests explicit confirmation before any sync, and stops. Advisory runtime drift is reported but does not block. Never sync automatically. Only `continue` may act.
 The bootstrap already ran arguments, read-only runtime compare, advisory capability profile, then compact target state. Arguments/runtime remain the only blocking gates. Treat
 `capabilities` as advisory: `session_managed` names are not availability claims; use MCP only when visible in this Claude session and use a listed fallback otherwise. Missing/degraded
 tools never block, trigger installation or request it, count as tested-clean, or hide material
-limits in the handoff. Within one invocation, do not rerun the same failed source/tool; preserve
+limits in the handoff. Use the matching `capabilities.lanes` record only to explain local readiness or choose a viable fallback; it never overrides the owner-selected Action Queue/state lane. Within one invocation, do not rerun the same failed source/tool; preserve
 cached/stale evidence as partial/blocked. `tools/external_arsenal.sh --versions` is diagnostics-only, never startup.
 Run project commands as `cd -- <repo_root_shell> && ...`. Use
 `arguments.target_shell`, expand `arguments.hunt_auth_flags` (or
@@ -73,7 +76,7 @@ Scope manifest, keep the parent `scope_ref/scope_hash` attached to each selected
 listed `in_scope` asset may enter surface/context/browser/scan/hunt; an `out_of_scope` match always
 wins. Keep unlisted discovery URLs as `external-chain-context` or `scope-review` until the
 manifest/list is explicitly updated. Never scan the list or manifest file itself. When selecting
-one asset, rerun `autopilot_state.py --target <domain> --bounded` with the parent Scope identity.
+one asset, first run `python3 tools/autopilot_continuation.py create --parent-target <scope_ref> --selected-target <domain> [--auth-file <auth_file_shell>]`, then invoke `/autopilot <domain> --context-file=<returned-path>`; bootstrap validates and applies the parent Scope/Auth before bounded state or target I/O.
 Browser imports use
 `tools/browser_mcp_import.py` with `--auth-required` for authenticated captures. JS packing uses
 `tools/deep_js_packer.py` only with concrete evidence; JS volume alone is not a trigger;

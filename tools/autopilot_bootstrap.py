@@ -11,6 +11,7 @@ from typing import Any, Sequence
 
 try:
     from tools.autopilot_args import parse_autopilot_args
+    from tools.autopilot_continuation import load_continuation
     from tools.autopilot_state import build_autopilot_bootstrap_state, describe_next_step
     from tools.capability_profile import (
         build_capability_profile,
@@ -21,6 +22,7 @@ try:
     from tools.scope_context import ScopeContext, ScopeContextError
 except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直接执行
     from autopilot_args import parse_autopilot_args
+    from autopilot_continuation import load_continuation
     from autopilot_state import build_autopilot_bootstrap_state, describe_next_step
     from capability_profile import build_capability_profile, unknown_capability_profile
     from runtime_config import is_ctf_mode_enabled
@@ -45,10 +47,35 @@ def _runtime_projection(payload: dict[str, Any]) -> dict[str, Any]:
                 key: int(counts.get(key, 0) or 0)
                 for key in ("ok", "diff", "missing", "extra")
             }
+    def bounded_items(name: str) -> list[dict[str, str]]:
+        return [
+            {
+                "kind": str(item.get("kind") or ""),
+                "status": str(item.get("status") or ""),
+                "relative_path": str(item.get("relative_path") or ""),
+            }
+            for item in (payload.get(name) or [])[:8]
+            if isinstance(item, dict)
+        ]
+
+    manifest = payload.get("critical_manifest") if isinstance(payload.get("critical_manifest"), dict) else {}
+    critical_clean = bool(payload.get("critical_clean", payload.get("clean")))
     return {
         "checked": True,
         "clean": bool(payload.get("clean")),
+        "critical_clean": critical_clean,
         "drift_count": int(payload.get("drift_count", 0) or 0),
+        "critical_drift_count": int(payload.get("critical_drift_count", 0) or 0),
+        "advisory_drift_count": int(payload.get("advisory_drift_count", 0) or 0),
+        "critical_manifest": {
+            "schema_version": int(manifest.get("schema_version", 0) or 0),
+            "status": str(manifest.get("status") or "unknown"),
+            "sha256": str(manifest.get("sha256") or ""),
+            "mcp_contracts": [str(item) for item in (manifest.get("mcp_contracts") or [])[:8]],
+        },
+        "critical_drift": bounded_items("critical_drift"),
+        "missing_critical": bounded_items("missing_critical"),
+        "advisory_drift": bounded_items("advisory_drift"),
         "runtime_root": str(payload.get("runtime_root") or ""),
         "kinds": kinds,
     }
@@ -123,6 +150,9 @@ def _compact_candidate(item: dict[str, Any]) -> dict[str, Any]:
         "artifact",
         "next_action",
         "rationale",
+        "parent_scope_ref",
+        "parent_scope_hash",
+        "continuation_create_args",
     )
     compact = {
         key: item[key]
@@ -357,6 +387,18 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             for key in ("status", "scope_ref", "scope_hash", "summary", "reason")
             if key in (state.get("scope") or {})
         },
+        "continuation": {
+            key: (state.get("continuation") or {})[key]
+            for key in (
+                "invocation_id",
+                "selected_target",
+                "parent_target",
+                "scope_ref",
+                "scope_hash",
+                "auth_private_ref",
+            )
+            if key in (state.get("continuation") or {})
+        },
         "next_action": next_action,
         "next_step": describe_next_step(state),
         "lane_contract": _lane_contract_projection(state),
@@ -531,10 +573,18 @@ def build_autopilot_bootstrap(
         # slash tokens while deciding when a deep invocation hands off.
         "invocation_batch": _invocation_batch_projection(arguments),
         "scope": {},
+        "continuation": {},
         "runtime": {
             "checked": False,
             "clean": None,
+            "critical_clean": None,
             "drift_count": 0,
+            "critical_drift_count": 0,
+            "advisory_drift_count": 0,
+            "critical_manifest": {},
+            "critical_drift": [],
+            "missing_critical": [],
+            "advisory_drift": [],
             "runtime_root": "",
             "kinds": {},
         },
@@ -546,10 +596,49 @@ def build_autopilot_bootstrap(
     if arguments["action"] != "continue":
         return payload
 
+    continuation = None
     try:
-        scope_context = ScopeContext.from_target(arguments["target"])
+        if arguments.get("context_file"):
+            continuation = load_continuation(
+                resolved_repo,
+                str(arguments["context_file"]),
+                selected_target=str(arguments["target"]),
+            )
+            scope_context = continuation["scope_context"]
+            continuation_auth = str(continuation.get("auth_file") or "")
+            if arguments.get("auth_file") and (
+                not continuation_auth
+                or Path(str(arguments["auth_file"])).resolve() != Path(continuation_auth)
+            ):
+                raise ValueError("explicit auth file conflicts with batch continuation")
+            if continuation_auth:
+                arguments["auth_file"] = continuation_auth
+                arguments["auth_file_shell"] = shlex.quote(continuation_auth)
+                arguments["hunt_auth_flags"] = ["--auth-file", continuation_auth]
+            public_continuation = continuation["continuation"]
+            payload["continuation"] = {
+                key: public_continuation[key]
+                for key in (
+                    "invocation_id",
+                    "selected_target",
+                    "parent_target",
+                    "scope_ref",
+                    "scope_hash",
+                    "auth_private_ref",
+                )
+                if public_continuation.get(key) not in (None, "")
+            }
+        else:
+            scope_context = ScopeContext.from_target(arguments["target"])
     except ScopeContextError as exc:
         payload["action"] = "stop_invalid_scope"
+        payload["error"] = {
+            "type": type(exc).__name__,
+            "reason": " ".join(str(exc).split())[:500],
+        }
+        return payload
+    except ValueError as exc:
+        payload["action"] = "stop_invalid_context"
         payload["error"] = {
             "type": type(exc).__name__,
             "reason": " ".join(str(exc).split())[:500],
@@ -571,7 +660,7 @@ def build_autopilot_bootstrap(
         }
         return payload
     payload["runtime"] = _runtime_projection(runtime)
-    if not runtime["clean"]:
+    if not bool(runtime.get("critical_clean", runtime.get("clean"))):
         payload["action"] = "stop_runtime_drift"
         return payload
 
@@ -587,6 +676,14 @@ def build_autopilot_bootstrap(
             str(resolved_repo),
             str(arguments["target"]),
         )
+        if arguments.get("auth_file") and state.get("target_kind") == "list":
+            for candidate in (state.get("batch") or {}).get("candidates") or []:
+                candidate.setdefault("continuation_create_args", []).extend(
+                    ["--auth-file", str(arguments["auth_file"])]
+                )
+        if continuation is not None:
+            state["scope"] = {"status": "valid", **_scope_projection(scope_context)}
+            state["continuation"] = payload["continuation"]
         payload["state"] = compact_autopilot_state(state)
     except (OSError, ValueError) as exc:
         payload["action"] = "stop_state_error"

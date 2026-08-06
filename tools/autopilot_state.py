@@ -1961,6 +1961,15 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
         completed,
     )
     scope = _scope_identity(resolved_target)
+    for candidate in candidates:
+        candidate["parent_scope_ref"] = str(scope.get("scope_ref") or "")
+        candidate["parent_scope_hash"] = str(scope.get("scope_hash") or "")
+        candidate["continuation_create_args"] = [
+            "--parent-target",
+            resolved_target,
+            "--selected-target",
+            str(candidate.get("target") or ""),
+        ]
     scope_changed = False
     scope_metadata_path = batch_dir / "scope_context.json"
     if scope_metadata_path.is_file() and scope.get("scope_hash"):

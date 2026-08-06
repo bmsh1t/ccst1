@@ -102,7 +102,10 @@ def _run_command_split(
     timeout: int | float = 600,
     env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str]:
-    proc = _spawn(cmd, shell=shell, cwd=cwd, env=env)
+    try:
+        proc = _spawn(cmd, shell=shell, cwd=cwd, env=env)
+    except OSError as exc:
+        return False, "", str(exc)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
         return proc.returncode == 0, _to_text(stdout), _to_text(stderr)

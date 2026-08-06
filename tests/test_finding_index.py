@@ -110,6 +110,42 @@ def test_upsert_finding_uses_semantic_identity_and_preserves_advanced_lifecycle(
     assert finding["report_id"] == "idor_001"
 
 
+def test_upsert_finding_semantic_identity_keeps_case_dimensions_distinct(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    common = {
+        "endpoint": "/api/orders/1?view=summary",
+        "vuln_class": "IDOR",
+        "severity": "medium",
+    }
+
+    finding_index.upsert_finding(
+        findings_dir,
+        {
+            **common,
+            "method": "GET",
+            "actor": "owner",
+            "object_scope": "own_object",
+            "variant": "baseline",
+        },
+        target="example.com",
+    )
+    finding_index.upsert_finding(
+        findings_dir,
+        {
+            **common,
+            "method": "POST",
+            "actor": "peer",
+            "object_scope": "other_object_same_org",
+            "variant": "id_swap",
+        },
+        target="example.com",
+    )
+
+    payload = finding_index.load_finding_index(findings_dir)
+    assert payload["total"] == 2
+    assert {item["method"] for item in payload["findings"]} == {"GET", "POST"}
+
+
 def test_concurrent_finding_upserts_do_not_lose_updates(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     code = """

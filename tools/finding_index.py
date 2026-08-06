@@ -22,9 +22,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from tools.closure_resolver import canonical_endpoint_identity
     from tools.evidence_rubric import rubric_for
     from tools.target_paths import canonical_target_value, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
+    from closure_resolver import canonical_endpoint_identity
     from evidence_rubric import rubric_for
     from target_paths import canonical_target_value, url_belongs_to_target
 
@@ -1200,22 +1202,32 @@ def _empty_finding_index(findings_dir: Path, *, target: str | None = None) -> di
     }
 
 
-def _finding_semantic_key(finding: dict[str, Any]) -> tuple[str, str]:
-    endpoint = str(finding.get("url") or finding.get("endpoint") or "").strip().rstrip("/")
+def _finding_semantic_key(finding: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    endpoint = canonical_endpoint_identity(
+        str(finding.get("url") or finding.get("endpoint") or "")
+    )
     vuln_class = str(
         finding.get("vuln_class")
         or finding.get("type")
         or finding.get("category")
         or "finding"
     ).strip().lower().replace("-", "_")
-    return endpoint, vuln_class
+    return (
+        endpoint,
+        vuln_class,
+        str(finding.get("method") or "").strip().upper(),
+        str(finding.get("actor") or "").strip().lower(),
+        str(finding.get("object_scope") or finding.get("object") or "").strip().lower(),
+        str(finding.get("variant") or "").strip().lower(),
+    )
 
 
 def _generated_finding_id(finding: dict[str, Any]) -> str:
-    endpoint, vuln_class = _finding_semantic_key(finding)
+    semantic_key = _finding_semantic_key(finding)
+    endpoint, vuln_class = semantic_key[:2]
     source = str(finding.get("source_file") or finding.get("source") or "")
     raw = str(finding.get("raw") or finding.get("reason") or "")
-    identity = f"{endpoint}|{vuln_class}" if endpoint else f"{vuln_class}|{source}|{raw}"
+    identity = "|".join(semantic_key) if endpoint else f"{vuln_class}|{source}|{raw}"
     digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]
     prefix = re.sub(r"[^a-z0-9_-]+", "_", vuln_class) or "finding"
     return f"{prefix}_{digest}"

@@ -35,6 +35,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.auth_session import AuthSession, add_cli_args, session_from_args
     from tools.action_queue import (
         ACTIVE_STATUSES,
         _resolve_action_in_queue,
@@ -68,6 +69,7 @@ try:
     )
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES,
         _resolve_action_in_queue,
@@ -232,6 +234,47 @@ def _summary_path(summary: dict[str, Any], repo_root: Path) -> Path | None:
     if not path.is_absolute():
         path = repo_root / path
     return path
+
+
+def _file_sha256(repo_root: Path, ref: str) -> str:
+    path = Path(str(ref or ""))
+    if not path.is_absolute():
+        path = repo_root / path
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(repo_root.resolve())
+        data = resolved.read_bytes()
+    except (OSError, ValueError):
+        return ""
+    return hashlib.sha256(data).hexdigest()
+
+
+def _runner_operation_id(material: dict[str, Any]) -> str:
+    encoded = json.dumps(material, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return f"runner:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _stable_operation_material(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _stable_operation_material(item)
+            for key, item in value.items()
+            if key not in {"artifacts", "generated_at", "operation_id", "summary_path", "sync"}
+        }
+    if isinstance(value, list):
+        return [_stable_operation_material(item) for item in value]
+    return value
+
+
+def _finalize_runner_summary(summary: dict[str, Any], path: Path, repo_root: Path) -> dict[str, Any]:
+    summary["summary_path"] = _rel(path, repo_root)
+    ledger = summary.get("ledger_record") if isinstance(summary.get("ledger_record"), dict) else {}
+    operation_id = str(ledger.get("operation_id") or "")
+    if not operation_id:
+        operation_id = _runner_operation_id(_stable_operation_material(summary))
+    summary["operation_id"] = operation_id
+    _write_json(path, summary)
+    return summary
 
 
 def _findings_dir(repo_root: Path, target: str) -> Path:
@@ -406,6 +449,7 @@ def _create_runner_finding(
         "validation_summary": validation_summary,
         "validated_at": str(summary.get("generated_at") or now_utc()),
         "vuln_class": vuln_class,
+        "runner_operation_id": str(summary.get("operation_id") or ""),
         "updated_at": now_utc(),
         "report_status": "not_generated",
     }, target=target)
@@ -588,7 +632,15 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
     )
     summary_ref = str(summary_path) if summary_path else str(summary.get("summary_path") or "")
     generated_at = str(summary.get("generated_at") or now_utc())
+    operation_id = str(summary.get("operation_id") or "").strip()
     existing = _find_existing_finding(findings_dir, finding_id)
+    if operation_id and str(existing.get("runner_operation_id") or "") == operation_id:
+        return {
+            "status": "deduplicated",
+            "findings_dir": str(findings_dir),
+            "finding_id": finding_id,
+            "operation_id": operation_id,
+        }
     identity_updates: dict[str, Any] = {}
     if existing:
         candidate_url = str(summary.get("url") or summary.get("endpoint") or "").strip()
@@ -656,6 +708,7 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
         vuln_class=vuln_class,
         evidence_rubric=summary.get("evidence_rubric") or {},
         confidence=confidence,
+        runner_operation_id=operation_id,
     )
     if not updated:
         finding_type = _runner_finding_type(vuln_class, str(summary.get("lane") or ""))
@@ -666,6 +719,15 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
             vuln_class=vuln_class,
         )
         if existing_id:
+            matched_existing = _find_existing_finding(findings_dir, existing_id)
+            if operation_id and str(matched_existing.get("runner_operation_id") or "") == operation_id:
+                return {
+                    "status": "deduplicated",
+                    "findings_dir": str(findings_dir),
+                    "finding_id": existing_id,
+                    "requested_finding_id": finding_id,
+                    "operation_id": operation_id,
+                }
             gate_updates = _runner_sync_gate_updates(
                 findings_dir,
                 existing_id,
@@ -684,6 +746,7 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
                 vuln_class=vuln_class,
                 evidence_rubric=summary.get("evidence_rubric") or {},
                 confidence=confidence,
+                runner_operation_id=operation_id,
             )
             if updated:
                 return {
@@ -866,6 +929,15 @@ def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str,
             }
 
         matched = matches[0]
+        operation_id = str(summary.get("operation_id") or "").strip()
+        metadata = matched.get("metadata") if isinstance(matched.get("metadata"), dict) else {}
+        if operation_id and str(metadata.get("runner_operation_id") or "") == operation_id:
+            return {
+                "status": "deduplicated",
+                "id": str(matched.get("id") or ""),
+                "operation_id": operation_id,
+                "match_kind": match_kind,
+            }
         summary_ref = str(summary.get("summary_path") or "")
         resolved = _resolve_action_in_queue(
             repo_root,
@@ -891,13 +963,51 @@ def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str,
                 summary=summary,
             )
             response["candidate_followup"] = patch
+        if operation_id:
+            metadata = matched.get("metadata") if isinstance(matched.get("metadata"), dict) else {}
+            metadata["runner_operation_id"] = operation_id
+            matched["metadata"] = metadata
         path = save_queue(repo_root, target, queue)
         response["path"] = str(path)
         return response
 
 
+def _sync_evidence_ledger(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
+    ledger = summary.get("ledger_record")
+    if ledger is None:
+        return {"status": "skipped", "reason": "runner was invoked with --no-ledger"}
+    if not isinstance(ledger, dict):
+        raise ValueError("runner ledger record must be an object")
+    request = ledger.get("request") if isinstance(ledger.get("request"), dict) else {
+        "target": ledger.get("target"),
+        "endpoint": ledger.get("raw_endpoint") or ledger.get("endpoint"),
+        "method": ledger.get("method"),
+        "vuln_class": ledger.get("vuln_class"),
+        "actor": ledger.get("actor"),
+        "object_scope": ledger.get("object_scope"),
+        "variant": ledger.get("variant"),
+        "source": ledger.get("source"),
+        "result": ledger.get("result"),
+        "browser_observed": ledger.get("browser_observed"),
+        "replayed": True,
+        "state_changing": ledger.get("state_changing"),
+        "redline_checked": ledger.get("redline_checked"),
+        "evidence_ref": ledger.get("evidence_ref"),
+        "notes": ledger.get("notes"),
+        "operation_id": ledger.get("operation_id") or summary.get("operation_id"),
+        "event_id": ledger.get("event_id"),
+    }
+    recorded = record_entry(repo_root, **request)
+    summary["ledger_record"] = recorded
+    return {
+        "status": str(recorded.get("write_status") or "updated"),
+        "event_id": str(recorded.get("event_id") or ""),
+        "operation_id": str(recorded.get("operation_id") or ""),
+    }
+
+
 def sync_runner_artifacts(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
-    """Best-effort sync from deterministic runner output into autopilot state.
+    """Replay one runner operation through the existing Ledger/Finding/Queue owners.
 
     Runner evidence is valuable only if `/autopilot` stops asking for the same
     validation again.  Keep this best-effort: evidence generation must not fail
@@ -906,28 +1016,30 @@ def sync_runner_artifacts(summary: dict[str, Any], *, repo_root: Path) -> dict[s
     if str(summary.get("result") or "") == "skeleton":
         return {"status": "skipped", "reason": "skeleton result does not close validation state"}
     updates: dict[str, Any] = {}
-    try:
-        updates["finding"] = _sync_finding_status(summary, repo_root=repo_root)
-    except Exception as exc:  # pragma: no cover - defensive state sync
-        updates["finding"] = {"status": "error", "error": str(exc)}
-    try:
-        updates["action_queue"] = _sync_action_queue(summary, repo_root=repo_root)
-    except Exception as exc:  # pragma: no cover - defensive state sync
-        updates["action_queue"] = {"status": "error", "error": str(exc)}
-    return {"status": "updated", **updates}
+    for owner, sync in (
+        ("ledger", _sync_evidence_ledger),
+        ("finding", _sync_finding_status),
+        ("action_queue", _sync_action_queue),
+    ):
+        try:
+            updates[owner] = sync(summary, repo_root=repo_root)
+        except Exception as exc:  # owner failure remains replayable from the summary witness
+            updates[owner] = {
+                "status": "error",
+                "error": " ".join(str(exc).split())[:500],
+            }
+    statuses = {str(item.get("status") or "") for item in updates.values()}
+    if statuses & {"error", "ambiguous", "blocked"}:
+        status = "partial"
+    elif statuses <= {"skipped", "deduplicated"}:
+        status = "deduplicated" if "deduplicated" in statuses else "skipped"
+    else:
+        status = "updated"
+    return {"status": status, "operation_id": str(summary.get("operation_id") or ""), **updates}
 
 
 def parse_headers(values: list[str] | None) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    for raw in values or []:
-        if ":" not in raw:
-            raise ValueError(f"header must be 'Name: value': {raw!r}")
-        name, value = raw.split(":", 1)
-        name = name.strip()
-        if not name:
-            raise ValueError(f"header name is empty: {raw!r}")
-        headers[name] = value.strip()
-    return headers
+    return AuthSession(values or []).headers_dict()
 
 
 def _format_request(method: str, url: str, headers: dict[str, str], body: str = "") -> str:
@@ -954,15 +1066,55 @@ def _format_response(status: int, reason: str, headers: dict[str, str], body: st
     return "\n".join(lines)
 
 
+def _request_origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urllib.parse.urlsplit(url)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    return parsed.scheme.lower(), (parsed.hostname or "").lower().rstrip("."), port or {
+        "http": 80,
+        "https": 443,
+    }.get(parsed.scheme.lower())
+
+
+def _request_headers(
+    session: AuthSession | None,
+    url: str,
+    headers: dict[str, str] | None,
+) -> dict[str, str]:
+    merged = session.headers_for_url(url) if session is not None else {}
+    merged.update(headers or {})
+    return merged
+
+
 class _TargetRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def __init__(self, target: str) -> None:
+    def __init__(
+        self,
+        target: str,
+        *,
+        session: AuthSession | None = None,
+        sensitive_header_names: set[str] | None = None,
+    ) -> None:
         self.target = target
+        self.session = session
+        self.sensitive_header_names = {
+            str(name).lower() for name in (sensitive_header_names or set())
+        }
         self.redirect_chain: list[dict[str, Any]] = []
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         if not url_belongs_to_target(newurl, self.target):
             raise ValueError(f"validation redirect left target scope: {public_url_shape(newurl)}")
         redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and _request_origin(req.full_url) != _request_origin(newurl):
+            for store in (redirected.headers, redirected.unredirected_hdrs):
+                for name in list(store):
+                    if name.lower() in self.sensitive_header_names:
+                        store.pop(name, None)
+            if self.session is not None and self.session.allows_origin(newurl):
+                for name, value in self.session.headers_for_url(newurl).items():
+                    redirected.add_header(name, value)
         if redirected is not None and len(self.redirect_chain) < self.max_redirections:
             self.redirect_chain.append({
                 "status": int(code),
@@ -990,6 +1142,7 @@ def request_once(
     body: str = "",
     timeout: int = 10,
     max_body_bytes: int = MAX_RESPONSE_BYTES,
+    session: AuthSession | None = None,
 ) -> dict[str, Any]:
     """Replay one HTTP request and return raw evidence fields."""
     if not url_belongs_to_target(url, target):
@@ -997,11 +1150,15 @@ def request_once(
     if max_body_bytes < 1:
         raise ValueError("max_body_bytes must be positive")
     method_u = str(method or "GET").upper()
-    headers = dict(headers or {})
+    headers = _request_headers(session, url, headers)
     data = body.encode("utf-8") if body else None
     request = urllib.request.Request(url, data=data, headers=headers, method=method_u)
     request_text = _format_request(method_u, url, headers, body)
-    redirect_handler = _TargetRedirectHandler(target)
+    redirect_handler = _TargetRedirectHandler(
+        target,
+        session=session,
+        sensitive_header_names={name.lower() for name in headers},
+    )
     try:
         opener = urllib.request.build_opener(redirect_handler)
         with opener.open(request, timeout=timeout) as response:
@@ -1529,24 +1686,49 @@ def _record_ledger_if_needed(
 ) -> dict[str, Any] | None:
     if no_ledger:
         return None
-    return record_entry(
-        repo_root,
-        target=target,
-        endpoint=public_url_shape(endpoint),
-        method=method,
-        vuln_class=vuln_class,
-        actor=actor,
-        object_scope=object_scope,
-        variant=variant,
-        source=source,
-        result=result,
-        browser_observed=browser_observed,
-        replayed=True,
-        state_changing=state_changing,
-        redline_checked=redline_checked,
-        evidence_ref=evidence_ref,
-        notes=notes,
-    )
+    request = {
+        "target": target,
+        "endpoint": public_url_shape(endpoint),
+        "method": method,
+        "vuln_class": vuln_class,
+        "actor": actor,
+        "object_scope": object_scope,
+        "variant": variant,
+        "source": source,
+        "result": result,
+        "browser_observed": browser_observed,
+        "replayed": True,
+        "state_changing": state_changing,
+        "redline_checked": redline_checked,
+        "evidence_ref": evidence_ref,
+        "notes": notes,
+    }
+    operation_id = _runner_operation_id({
+        "target": canonical_target_value(target),
+        "endpoint": public_url_shape(endpoint),
+        "method": str(method or "GET").upper(),
+        "vuln_class": vuln_class,
+        "actor": actor,
+        "object_scope": object_scope,
+        "variant": variant,
+        "result": result,
+        "source": source.replace("_", "-"),
+        "evidence_ref": evidence_ref,
+        "evidence_sha256": _file_sha256(repo_root, evidence_ref),
+    })
+    event_id = f"ledger:{hashlib.sha256(operation_id.encode('utf-8')).hexdigest()[:24]}"
+    request["operation_id"] = operation_id
+    request["event_id"] = event_id
+    try:
+        return record_entry(repo_root, **request)
+    except Exception as exc:
+        return {
+            "write_status": "error",
+            "error": " ".join(str(exc).split())[:500],
+            "operation_id": operation_id,
+            "event_id": event_id,
+            "request": request,
+        }
 
 
 def run_authz_public_exposure(
@@ -1563,6 +1745,7 @@ def run_authz_public_exposure(
     browser_observed: bool = False,
     state_changing: bool | None = None,
     redline_checked: bool = False,
+    session: AuthSession | None = None,
 ) -> dict[str, Any]:
     _validate_request_facts(state_changing, redline_checked)
     finding_id = finding_id or _default_finding_id("authz-public-exposure", url)
@@ -1575,6 +1758,7 @@ def run_authz_public_exposure(
         headers=headers,
         body=body,
         timeout=timeout,
+        session=session,
     )
     raw_artifacts = _write_raw_http(private_bundle, "baseline.", response, repo_root)
 
@@ -1664,10 +1848,7 @@ def run_authz_public_exposure(
         },
     }
     summary_path = bundle / "summary.json"
-    _write_json(summary_path, summary)
-    summary["summary_path"] = _rel(summary_path, repo_root)
-    _write_json(summary_path, summary)
-    return summary
+    return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
 def _role_replay_material_diff(diff: dict[str, Any]) -> bool:
@@ -1926,6 +2107,7 @@ def run_authz_role_replay(
     state_changing: bool | None = None,
     redline_checked: bool = False,
     case_state_ref: dict[str, Any] | None = None,
+    owner_session: AuthSession | None = None,
 ) -> dict[str, Any]:
     """Replay one surface as anonymous/owner/peer without claiming object IDOR.
 
@@ -1941,7 +2123,7 @@ def run_authz_role_replay(
     if not _actor_context_differs(
         url=url,
         peer_url=url,
-        owner_headers=owner_headers,
+        owner_headers=_request_headers(owner_session, url, owner_headers),
         peer_headers=peer_headers,
         owner_body=owner_body,
         peer_body=peer_body,
@@ -1969,6 +2151,7 @@ def run_authz_role_replay(
             headers=owner_headers,
             body=owner_body,
             timeout=timeout,
+            session=owner_session,
         )
         peer = request_once(
             target=target,
@@ -2241,9 +2424,7 @@ def run_authz_role_replay(
         },
     }
     summary_path = bundle / "summary.json"
-    summary["summary_path"] = _rel(summary_path, repo_root)
-    _write_json(summary_path, summary)
-    return summary
+    return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
 def _replace_query_param(url: str, param: str, value: str) -> str:
@@ -2278,6 +2459,7 @@ def run_sqli_result_diff(
     repeat: int = 1,
     no_ledger: bool = False,
     browser_observed: bool = False,
+    session: AuthSession | None = None,
 ) -> dict[str, Any]:
     if method.upper() != "GET":
         raise ValueError("sqli-result-diff v1 supports GET query parameters only")
@@ -2300,6 +2482,7 @@ def run_sqli_result_diff(
             method=method,
             headers=headers,
             timeout=timeout,
+            session=session,
         )
         variant = request_once(
             target=target,
@@ -2307,6 +2490,7 @@ def run_sqli_result_diff(
             method=method,
             headers=headers,
             timeout=timeout,
+            session=session,
         )
         prefix = "" if repeat == 1 else f"{idx}."
         base_artifacts = _write_raw_http(private_bundle, f"{prefix}baseline.", base, repo_root)
@@ -2447,9 +2631,7 @@ def run_sqli_result_diff(
         },
     }
     summary_path = bundle / "summary.json"
-    summary["summary_path"] = _rel(summary_path, repo_root)
-    _write_json(summary_path, summary)
-    return summary
+    return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
 def run_marker_replay(
@@ -2469,6 +2651,7 @@ def run_marker_replay(
     browser_observed: bool = False,
     state_changing: bool | None = None,
     redline_checked: bool = False,
+    session: AuthSession | None = None,
 ) -> dict[str, Any]:
     """Replay an exact request and require an inert marker in every response.
 
@@ -2496,6 +2679,7 @@ def run_marker_replay(
             headers=headers,
             body=body,
             timeout=timeout,
+            session=session,
         )
         prefix = "" if repeat == 1 else f"{idx}."
         raw_artifacts = _write_raw_http(private_bundle, prefix, response, repo_root)
@@ -2598,9 +2782,7 @@ def run_marker_replay(
         "ledger_record": ledger,
         "ai_next": ai_next,
     }
-    summary["summary_path"] = _rel(summary_path, repo_root)
-    _write_json(summary_path, summary)
-    return summary
+    return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
 def run_idor_actor_pair(
@@ -2623,6 +2805,7 @@ def run_idor_actor_pair(
     state_changing: bool | None = None,
     redline_checked: bool = False,
     case_state_ref: dict[str, Any] | None = None,
+    owner_session: AuthSession | None = None,
 ) -> dict[str, Any]:
     """Replay the same object/action as owner and peer, then preserve the diff.
 
@@ -2645,7 +2828,7 @@ def run_idor_actor_pair(
     if not _actor_context_differs(
         url=url,
         peer_url=peer_url,
-        owner_headers=owner_headers,
+        owner_headers=_request_headers(owner_session, url, owner_headers),
         peer_headers=peer_headers,
         owner_body=owner_body,
         peer_body=peer_body,
@@ -2671,6 +2854,7 @@ def run_idor_actor_pair(
             headers=owner_headers,
             body=owner_body,
             timeout=timeout,
+            session=owner_session,
         )
         peer = request_once(
             target=target,
@@ -2826,9 +3010,7 @@ def run_idor_actor_pair(
         },
     }
     summary_path = bundle / "summary.json"
-    summary["summary_path"] = _rel(summary_path, repo_root)
-    _write_json(summary_path, summary)
-    return summary
+    return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
 def run_payment_race(
@@ -2846,6 +3028,7 @@ def run_payment_race(
     no_ledger: bool = False,
     browser_observed: bool = False,
     redline_checked: bool = False,
+    owner_session: AuthSession | None = None,
 ) -> dict[str, Any]:
     """Run a two-request payment replay only against a disposable object."""
     target_value = canonical_target_value(target)
@@ -2877,9 +3060,7 @@ def run_payment_race(
         }
         summary.update(extra)
         summary_path = bundle / "summary.json"
-        summary["summary_path"] = _rel(summary_path, repo_root)
-        _write_json(summary_path, summary)
-        return summary
+        return _finalize_runner_summary(summary, summary_path, repo_root)
 
     if not readiness.get("ready"):
         return blocked(str(readiness.get("reason") or "isolated payment object is unavailable"))
@@ -2891,7 +3072,7 @@ def run_payment_race(
         return blocked("isolated payment object endpoint is missing")
     owner_actor = str(obj.get("owner_actor") or "").strip()
     headers = dict(owner_headers or {})
-    if not headers:
+    if not _request_headers(owner_session, endpoint, headers):
         try:
             _session_id, headers = _case_state_session_header(state, owner_actor)
         except ValueError as exc:
@@ -2922,6 +3103,7 @@ def run_payment_race(
                     headers=headers,
                     body=body,
                     timeout=timeout,
+                    session=owner_session,
                 )
                 for _ in range(repeat)
             ]
@@ -2949,6 +3131,7 @@ def run_payment_race(
             method=str(obj.get("cleanup_method") or "DELETE").upper(),
             headers=headers,
             timeout=timeout,
+            session=owner_session,
         )
         cleanup_ok = _is_success_status(cleanup_response["status"]) or cleanup_response["status"] == 404
         cleanup_result = {"status": "completed" if cleanup_ok else "failed", "http_status": cleanup_response["status"]}
@@ -3027,9 +3210,7 @@ def run_payment_race(
         },
     }
     summary_path = bundle / "summary.json"
-    summary["summary_path"] = _rel(summary_path, repo_root)
-    _write_json(summary_path, summary)
-    return summary
+    return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
 def run_idor_skeleton(
@@ -3071,9 +3252,7 @@ def run_idor_skeleton(
         "then run a response diff and record the ledger entry.\n",
     )
     summary_path = bundle / "summary.json"
-    skeleton["summary_path"] = _rel(summary_path, repo_root)
-    _write_json(summary_path, skeleton)
-    return skeleton
+    return _finalize_runner_summary(skeleton, summary_path, repo_root)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3095,6 +3274,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     authz = sub.add_parser("authz-public-exposure", help="Validate anonymous public admin/config exposure")
     add_common(authz)
+    add_cli_args(authz)
     authz.add_argument("--url", required=True)
     authz.add_argument("--method", default="GET")
     authz.add_argument("--header", action="append", default=[])
@@ -3106,6 +3286,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     authz_role = sub.add_parser("authz-role-replay", help="Replay anonymous/owner/peer actor contexts on one surface")
     add_common(authz_role)
+    add_cli_args(authz_role)
     authz_role.add_argument("--url", required=True)
     authz_role.add_argument("--method", default="GET")
     authz_role.add_argument("--owner-header", action="append", default=[])
@@ -3125,6 +3306,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sqli = sub.add_parser("sqli-result-diff", help="Validate read-only SQLi-style result differential")
     add_common(sqli)
+    add_cli_args(sqli)
     sqli.add_argument("--url", required=True)
     sqli.add_argument("--param", required=True)
     sqli.add_argument("--baseline-value", default="")
@@ -3138,6 +3320,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     marker = sub.add_parser("marker-replay", help="Replay exact request and check for an inert marker")
     add_common(marker)
+    add_cli_args(marker)
     marker.add_argument("--url", required=True)
     marker.add_argument("--expect-marker", required=True)
     marker.add_argument("--method", default="GET")
@@ -3152,6 +3335,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     idor_pair = sub.add_parser("idor-actor-pair", help="Replay owner vs peer actor pair and diff responses")
     add_common(idor_pair)
+    add_cli_args(idor_pair)
     idor_pair.add_argument("--url", default="")
     idor_pair.add_argument("--peer-url", default="")
     idor_pair.add_argument("--method", default="GET")
@@ -3179,6 +3363,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     payment = sub.add_parser("payment-race", help="Run a bounded replay against an isolated payment object")
     add_common(payment)
+    add_cli_args(payment)
     payment.add_argument("--object-ref", required=True)
     payment.add_argument("--url", default="")
     payment.add_argument("--method", default="PATCH")
@@ -3195,6 +3380,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     repo_root = Path(args.repo_root)
+    auth_session = session_from_args(args).bind_target(args.target)
     if args.lane == "authz-public-exposure":
         summary = run_authz_public_exposure(
             repo_root=repo_root,
@@ -3209,6 +3395,7 @@ def main(argv: list[str] | None = None) -> int:
             browser_observed=args.browser_observed,
             state_changing=args.state_changing,
             redline_checked=args.redline_checked,
+            session=auth_session,
         )
     elif args.lane == "authz-role-replay":
         owner_body = args.body if args.owner_body is None else args.owner_body
@@ -3246,6 +3433,7 @@ def main(argv: list[str] | None = None) -> int:
             state_changing=args.state_changing,
             redline_checked=args.redline_checked,
             case_state_ref=case_state_ref,
+            owner_session=None if args.from_case_state else auth_session,
         )
     elif args.lane == "sqli-result-diff":
         summary = run_sqli_result_diff(
@@ -3262,6 +3450,7 @@ def main(argv: list[str] | None = None) -> int:
             repeat=args.repeat,
             no_ledger=args.no_ledger,
             browser_observed=args.browser_observed,
+            session=auth_session,
         )
     elif args.lane == "marker-replay":
         summary = run_marker_replay(
@@ -3280,6 +3469,7 @@ def main(argv: list[str] | None = None) -> int:
             browser_observed=args.browser_observed,
             state_changing=args.state_changing,
             redline_checked=args.redline_checked,
+            session=auth_session,
         )
     elif args.lane == "idor-actor-pair":
         owner_body = args.body if args.owner_body is None else args.owner_body
@@ -3331,6 +3521,7 @@ def main(argv: list[str] | None = None) -> int:
             state_changing=args.state_changing,
             redline_checked=args.redline_checked,
             case_state_ref=case_state_ref,
+            owner_session=None if args.from_case_state else auth_session,
         )
         if args.complete_case_state:
             backlog_id = str((case_state_ref or {}).get("backlog_id") or "")
@@ -3366,6 +3557,7 @@ def main(argv: list[str] | None = None) -> int:
             no_ledger=args.no_ledger,
             browser_observed=args.browser_observed,
             redline_checked=args.redline_checked,
+            owner_session=auth_session,
         )
     else:  # pragma: no cover - argparse guards this
         raise ValueError(f"unknown lane: {args.lane}")

@@ -90,9 +90,8 @@ def extract_endpoint_path(value: str) -> str:
     return extract_endpoint_parts(value)[0]
 
 
-def canonical_endpoint_path(value: str) -> str:
-    """归一化 endpoint 到 path-only 形态。"""
-    path = extract_endpoint_path(value).strip()
+def _normalize_endpoint_path(path: str) -> str:
+    path = str(path or "").strip()
     if not path:
         return ""
     if not path.startswith("/"):
@@ -100,6 +99,41 @@ def canonical_endpoint_path(value: str) -> str:
     if path != "/":
         path = path.rstrip("/")
     return path
+
+
+def canonical_endpoint_identity(value: str) -> str:
+    """Return an exact endpoint identity while discarding document fragments."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw) if "://" in raw else urlparse(f"local://host/{raw.lstrip('/')}")
+        path = _normalize_endpoint_path(parsed.path or "/")
+        query = parsed.query
+        fragment = parsed.fragment
+    except ValueError:
+        base, _, fragment = raw.partition("#")
+        path, separator, query = base.partition("?")
+        query = query if separator else ""
+        path = _normalize_endpoint_path(path)
+    if not path:
+        return ""
+    identity = f"{path}?{query}" if query else path
+    if fragment.startswith("/"):
+        identity = f"{identity}#{fragment}"
+    return identity
+
+
+def canonical_endpoint_path(value: str) -> str:
+    """Normalize to a path while retaining semantic SPA hash routes."""
+    identity = canonical_endpoint_identity(value)
+    if not identity:
+        return ""
+    server_route, separator, fragment = identity.partition("#")
+    path = server_route.split("?", 1)[0]
+    if not separator:
+        return path
+    return f"{path}#{fragment.split('?', 1)[0]}"
 
 
 class ClosureResolver:
@@ -120,7 +154,7 @@ class ClosureResolver:
         ts: str = "",
         result: str = "",
     ) -> None:
-        ep = canonical_endpoint_path(endpoint)
+        ep = canonical_endpoint_identity(endpoint)
         vc = canonical_vuln_class(vuln_class)
         if not ep or not vc:
             return
@@ -174,7 +208,7 @@ class ClosureResolver:
 
         Authz 和 IDOR 不互相关闭；unknown/generic 不关闭。
         """
-        ep = canonical_endpoint_path(endpoint)
+        ep = canonical_endpoint_identity(endpoint)
         vc = canonical_vuln_class(vuln_class)
         if not ep or not vc:
             return False
@@ -182,7 +216,7 @@ class ClosureResolver:
 
     def closed_result(self, endpoint: str, vuln_class: str) -> str:
         """返回精确 endpoint × vuln_class 的终态标签；未知类型 fail-open。"""
-        ep = canonical_endpoint_path(endpoint)
+        ep = canonical_endpoint_identity(endpoint)
         vc = canonical_vuln_class(vuln_class)
         if not ep or not vc:
             return ""
@@ -198,7 +232,7 @@ class ClosureResolver:
         required_classes 非空时，每个 endpoint 必须命中其中一个已关闭漏洞类；
         为空时，有任意已关闭类即可。空 endpoint 列表 fail-open。
         """
-        eps = [canonical_endpoint_path(item) for item in endpoints or []]
+        eps = [canonical_endpoint_identity(item) for item in endpoints or []]
         eps = [item for item in eps if item]
         if not eps:
             return False
@@ -224,7 +258,7 @@ class ClosureResolver:
         if not ts:
             return False
         for raw in endpoint_paths or []:
-            ep = canonical_endpoint_path(raw)
+            ep = canonical_endpoint_identity(raw)
             if ep and self._closed_ts.get(ep, "") > ts:
                 return True
         return False

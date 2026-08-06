@@ -42,7 +42,7 @@ try:
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
-    from tools.closure_resolver import ClosureResolver, canonical_endpoint_path, extract_endpoint_path
+    from tools.closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path
     from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import load_case_state, summary as build_case_state_summary
@@ -70,7 +70,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
-    from closure_resolver import ClosureResolver, canonical_endpoint_path, extract_endpoint_path  # type: ignore
+    from closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path  # type: ignore
     from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import load_case_state, summary as build_case_state_summary  # type: ignore
@@ -979,10 +979,16 @@ def _actionable_actor_gaps(evidence_summary: dict, case_state: dict | None = Non
     ]
 
 
-def _actor_gap_enrichment_proposal(evidence_summary: dict, case_state: dict | None = None) -> str:
+def _actor_gap_enrichment_proposal(
+    evidence_summary: dict,
+    case_state: dict | None = None,
+    ignored_endpoints: set[str] | None = None,
+) -> str:
+    ignored = ignored_endpoints or set()
     blocked = [
         gap for gap in _actor_gaps(evidence_summary)
         if not _actor_gap_ready(gap, case_state)
+        and canonical_endpoint_identity(str(gap.get("endpoint") or "")) not in ignored
     ]
     if not blocked:
         return ""
@@ -2310,6 +2316,7 @@ def _next_proposals(
     evidence_summary: dict,
     case_state: dict | None = None,
     repo_root: Path | None = None,
+    ignored_actor_gap_endpoints: set[str] | None = None,
 ) -> list[str]:
     proposals: list[str] = []
     # Contradictions are Claude-facing advisory context, not executable work.
@@ -2472,7 +2479,11 @@ def _next_proposals(
                 cmd=evidence_record_command(target, gap),
             )
         )
-    actor_enrichment = _actor_gap_enrichment_proposal(evidence_summary, case_state)
+    actor_enrichment = _actor_gap_enrichment_proposal(
+        evidence_summary,
+        case_state,
+        ignored_actor_gap_endpoints,
+    )
     if actor_enrichment:
         proposals.append(actor_enrichment)
 
@@ -3395,6 +3406,13 @@ def build_checkpoint(
     case_state_proposal = _case_state_proposal(case_state)
     case_state_seed = _case_state_seed_summary(repo, resolved_target) if not case_state_proposal else {}
     case_state_seed_proposal = _case_state_seed_proposal(case_state_seed)
+    ignored_actor_gap_endpoints = {
+        canonical_endpoint_identity(str(item.get("endpoint") or ""))
+        for item in case_state_seed.get("suggested_objects") or []
+        if isinstance(item, dict)
+        and str(item.get("confidence") or "").lower() == "low"
+        and item.get("endpoint")
+    }
 
     lead = _lead_proposals(
         state,
@@ -3412,6 +3430,7 @@ def build_checkpoint(
         evidence_summary,
         case_state,
         repo_root=repo,
+        ignored_actor_gap_endpoints=ignored_actor_gap_endpoints,
     )
     if case_state_proposal:
         next_items = [case_state_proposal, *next_items]

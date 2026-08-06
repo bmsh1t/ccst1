@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 from pathlib import Path
 from typing import Callable
@@ -27,6 +29,21 @@ TOOL_REGISTRY: dict[str, tuple[str, ...]] = {
 }
 SESSION_MANAGED = ("chrome-devtools-mcp", "playwright-mcp")
 CORE_EXTERNAL_TOOLS = ("curl", "httpx")
+LANE_PROFILE_VERSION = 1
+LANE_IDS = (
+    "recon",
+    "surface",
+    "browser",
+    "source_js",
+    "sql",
+    "workflow",
+    "timing",
+    "idor_authz",
+    "waf",
+    "cloud",
+    "oast",
+    "web3",
+)
 
 Which = Callable[[str], str | None]
 
@@ -43,6 +60,20 @@ def unknown_capability_profile(reason: str = "not-checked") -> dict:
         "missing_core": [],
         "missing_optional": [],
         "recommended_paths": [],
+        "lanes": [
+            {
+                "id": lane_id,
+                "checked": False,
+                "ready": False,
+                "missing": [],
+                "degraded": [reason],
+                "evidence_required": [],
+                "tool_refs": [],
+                "profile_version": LANE_PROFILE_VERSION,
+                "input_fingerprint": "",
+            }
+            for lane_id in LANE_IDS
+        ],
         "reason": reason,
     }
 
@@ -54,6 +85,27 @@ def _bounded(values: list[str]) -> list[str]:
 
 def _helpers_exist(repo_root: Path, *relative_paths: str) -> bool:
     return all((repo_root / relative_path).is_file() for relative_path in relative_paths)
+
+
+def _lane_record(
+    lane_id: str,
+    inputs: dict[str, bool],
+    *,
+    evidence_required: tuple[str, ...],
+    degraded: tuple[str, ...] = (),
+) -> dict:
+    encoded = json.dumps(inputs, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return {
+        "id": lane_id,
+        "checked": True,
+        "ready": all(inputs.values()),
+        "missing": _bounded([name for name, present in inputs.items() if not present]),
+        "degraded": _bounded(list(degraded)),
+        "evidence_required": _bounded(list(evidence_required)),
+        "tool_refs": _bounded(list(inputs)),
+        "profile_version": LANE_PROFILE_VERSION,
+        "input_fingerprint": f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}",
+    }
 
 
 def build_capability_profile(
@@ -92,6 +144,30 @@ def build_capability_profile(
     )
     browser_mcp_import_ready = _helpers_exist(resolved_repo, "tools/browser_mcp_import.py")
     dns_expansion_ready = _helpers_exist(resolved_repo, "tools/dns_expand.py")
+    surface_ready = _helpers_exist(resolved_repo, "tools/surface.py", "tools/surface_projection.py")
+    sql_ready = _helpers_exist(resolved_repo, "tools/sql_parameter_probe.py", "tools/json_inject_probe.py")
+    workflow_ready = _helpers_exist(resolved_repo, "tools/workflow_sequence.py")
+    timing_ready = _helpers_exist(resolved_repo, "tools/timing_sql_runner.py")
+    idor_authz_ready = _helpers_exist(
+        resolved_repo,
+        "tools/validation_runner.py",
+        "tools/target_case_state.py",
+    )
+    waf_ready = _helpers_exist(
+        resolved_repo,
+        "tools/waf_pass_plan.py",
+        "tools/waf_response_analyzer.py",
+    )
+    cloud_ready = _helpers_exist(resolved_repo, "tools/cloud_recon.sh")
+    oast_ready = _helpers_exist(resolved_repo, "tools/oast_listen.py")
+    web3_ready = _helpers_exist(
+        resolved_repo,
+        "commands/web3-audit.md",
+        "skills/web3-audit/SKILL.md",
+    )
+    interactsh_available = bool(resolver("interactsh-client"))
+    forge_available = bool(resolver("forge"))
+    cloud_provider_available = any(bool(resolver(tool)) for tool in ("cloud_enum", "s3scanner", "curl"))
 
     missing_core: list[str] = []
     if not curl_available:
@@ -141,6 +217,80 @@ def build_capability_profile(
     else:
         recommended_paths.append("scanner-manual-evidence-only")
 
+    lanes = [
+        _lane_record(
+            "recon",
+            {
+                "tools/recon_engine.sh": recon_engine_ready,
+                "httpx-or-curl": "httpx" in available["recon"] or curl_available,
+            },
+            evidence_required=("target-owned-host-or-url",),
+            degraded=("source-js-enrichment",) if source_js_ready and not ("httpx" in available["recon"] or curl_available) else (),
+        ),
+        _lane_record(
+            "surface",
+            {"tools/surface.py+surface_projection.py": surface_ready},
+            evidence_required=("recon-or-browser-artifact",),
+        ),
+        _lane_record(
+            "browser",
+            {"tools/browser_mcp_import.py": browser_mcp_import_ready},
+            evidence_required=("session-browser-network-or-dom",),
+            degraded=("session-browser-mcp-unchecked",),
+        ),
+        _lane_record(
+            "source_js",
+            {"tools/source_intel.py+js_reader.py": source_js_ready},
+            evidence_required=("target-source-or-javascript",),
+        ),
+        _lane_record(
+            "sql",
+            {"tools/sql_parameter_probe.py+json_inject_probe.py": sql_ready},
+            evidence_required=("reviewed-parameterized-request",),
+        ),
+        _lane_record(
+            "workflow",
+            {"tools/workflow_sequence.py": workflow_ready},
+            evidence_required=("ordered-same-target-requests",),
+        ),
+        _lane_record(
+            "timing",
+            {"tools/timing_sql_runner.py": timing_ready},
+            evidence_required=("time-shaped-candidate",),
+        ),
+        _lane_record(
+            "idor_authz",
+            {"tools/validation_runner.py+target_case_state.py": idor_authz_ready},
+            evidence_required=("actor-session-object-context",),
+        ),
+        _lane_record(
+            "waf",
+            {"tools/waf_pass_plan.py+waf_response_analyzer.py": waf_ready},
+            evidence_required=("waf-or-parser-delta",),
+        ),
+        _lane_record(
+            "cloud",
+            {
+                "tools/cloud_recon.sh": cloud_ready,
+                "cloud-provider-tool": cloud_provider_available,
+            },
+            evidence_required=("reviewed-brand-or-host", "provider-ownership-review"),
+            degraded=("manual-provider-review",) if not cloud_provider_available else (),
+        ),
+        _lane_record(
+            "oast",
+            {"tools/oast_listen.py": oast_ready},
+            evidence_required=("callback-capable-sink", "callback-correlation"),
+            degraded=("manual-oast-provider",) if not interactsh_available else (),
+        ),
+        _lane_record(
+            "web3",
+            {"commands/web3-audit.md+skills/web3-audit/SKILL.md": web3_ready},
+            evidence_required=("contract-source",),
+            degraded=("static-review-only",) if not forge_available else (),
+        ),
+    ]
+
     return {
         "schema_version": SCHEMA_VERSION,
         "checked": True,
@@ -151,4 +301,5 @@ def build_capability_profile(
         "missing_core": _bounded(missing_core),
         "missing_optional": _bounded(missing_optional),
         "recommended_paths": _bounded(recommended_paths),
+        "lanes": lanes,
     }

@@ -117,6 +117,12 @@ class AuthSession:
     def allowed_origins(self) -> list[str]:
         return list(self._allowed_origins)
 
+    def allows_origin(self, url: str) -> bool:
+        """Return whether an origin was explicitly bound for credential replay."""
+        origin = _normalize_origin(url)
+        target_origin = _normalize_origin(self._scope_target)
+        return bool(origin and (origin == target_origin or origin in self._allowed_origins))
+
     def allows_url(self, url: str) -> bool:
         """仅允许 target-owned URL 或显式列出的 Origin 使用认证。"""
         candidate = (url or "").strip()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from closure_resolver import (
     ClosureResolver,
+    canonical_endpoint_identity,
     canonical_endpoint_path,
     canonical_vuln_class,
     extract_endpoint_parts,
@@ -20,6 +21,14 @@ def test_endpoint_normalization_strips_query_fragment_and_trailing_slash():
     assert canonical_endpoint_path("") == ""
     assert extract_endpoint_path("https://x.test/api/Users/?q=1#frag") == "/api/Users/"
     assert extract_endpoint_parts("https://x.test/#/search?q=marker") == ("/", "/search?q=marker")
+
+
+def test_endpoint_identity_preserves_query_and_spa_routes():
+    assert canonical_endpoint_identity("https://x.test/api/Users/?q=1#frag") == "/api/Users?q=1"
+    assert canonical_endpoint_identity("https://x.test/#/search?q=marker") == "/#/search?q=marker"
+    assert canonical_endpoint_identity("/#/admin") == "/#/admin"
+    assert canonical_endpoint_path("/#/search?q=marker") == "/#/search"
+    assert canonical_endpoint_path("/#/admin") == "/#/admin"
 
 
 def test_vuln_normalization_unknown_and_generic_fail_open():
@@ -39,9 +48,21 @@ def test_closed_cell_from_ledger_closed_cells():
     })
 
     assert resolver.is_cell_closed("/api/Users", "Authz") is True
-    assert resolver.is_cell_closed("https://x.test/api/Users?p=1", "authz") is True
+    assert resolver.is_cell_closed("https://x.test/api/Users?p=1", "authz") is False
     assert resolver.is_cell_closed("/api/Users", "SQLi") is False
     assert resolver.is_cell_closed("/other", "Authz") is False
+
+
+def test_spa_hash_routes_do_not_close_each_other_or_root():
+    resolver = from_summary({
+        "closed_cells": [
+            {"endpoint": "/#/search", "vuln_class": "XSS", "ts": "2026-01-01T00:00:00Z"},
+        ]
+    })
+
+    assert resolver.is_cell_closed("/#/search", "XSS") is True
+    assert resolver.is_cell_closed("/#/admin", "XSS") is False
+    assert resolver.is_cell_closed("/", "XSS") is False
 
 
 def test_unknown_vuln_class_never_closes_as_authz():

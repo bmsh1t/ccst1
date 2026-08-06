@@ -12,6 +12,8 @@ import pytest
 
 import target_case_state
 import validation_runner
+from evidence_ledger import ledger_path
+from tools.auth_session import AuthSession
 
 
 def _target_key(target: str) -> str:
@@ -53,6 +55,47 @@ def _build_case_state_for_payment_race(tmp_path):
         private_marker="private-payment-1",
     )
     return target
+
+
+def _runner_reconciliation_fixture(monkeypatch, tmp_path):
+    target = "https://target.test"
+    url = "https://target.test/rest/admin/application-configuration"
+    finding_id = "AUTHZ-RECONCILE"
+    key = _target_key(target)
+    queue_dir = tmp_path / "state" / key
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": target,
+                "actions": [
+                    {
+                        "id": "AQ-RECONCILE",
+                        "status": "queued",
+                        "type": "validation",
+                        "metadata": {"finding_id": finding_id, "url": url},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(
+            kwargs["url"],
+            body=json.dumps({"config": {"googleOauth": {"clientId": "client.apps.test"}}}),
+        ),
+    )
+    summary = validation_runner.run_authz_public_exposure(
+        repo_root=tmp_path,
+        target=target,
+        url=url,
+        finding_id=finding_id,
+    )
+    return summary, queue_dir / "action_queue.json", key
 
 
 def test_payment_race_is_blocked_without_isolated_object(monkeypatch, tmp_path):
@@ -1472,7 +1515,7 @@ def test_sqli_result_diff_creates_diff_bundle_and_ledger(monkeypatch, tmp_path):
     assert (tmp_path / summary["runs"][0]["artifacts"]["variant_response"]).is_file()
     assert (bundle / "diff.json").is_file()
     entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
-    assert entry["endpoint"] == "/rest/products/search"
+    assert entry["endpoint"] == "/rest/products/search?q="
     assert entry["vuln_class"] == "SQLi"
     assert entry["result"] == "tested_finding"
 
@@ -2149,6 +2192,171 @@ def test_request_once_records_same_target_redirect_identity():
     }]
 
 
+def test_cross_origin_redirect_replays_only_explicitly_authorized_session_headers():
+    sink_headers: list[dict[str, str]] = []
+    source_headers: list[dict[str, str]] = []
+
+    class SinkHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler API
+            sink_headers.append(dict(self.headers.items()))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *_args):
+            return
+
+    try:
+        sink = ThreadingHTTPServer(("127.0.0.1", 0), SinkHandler)
+    except OSError as exc:  # pragma: no cover - restricted sandboxes
+        pytest.skip(f"localhost listener unavailable: {exc}")
+    sink_thread = threading.Thread(target=sink.serve_forever, daemon=True)
+    sink_thread.start()
+    sink_url = f"http://127.0.0.1:{sink.server_port}/final"
+
+    class SourceHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler API
+            source_headers.append(dict(self.headers.items()))
+            self.send_response(302)
+            self.send_header("Location", sink_url)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            return
+
+    try:
+        source = ThreadingHTTPServer(("127.0.0.1", 0), SourceHandler)
+    except OSError as exc:  # pragma: no cover - restricted sandboxes
+        sink.shutdown()
+        sink_thread.join(timeout=2)
+        sink.server_close()
+        pytest.skip(f"localhost listener unavailable: {exc}")
+    source_thread = threading.Thread(target=source.serve_forever, daemon=True)
+    source_thread.start()
+    source_url = f"http://127.0.0.1:{source.server_port}/start"
+    try:
+        untrusted = AuthSession(
+            ["Authorization: Bearer session", "Cookie: sid=session"],
+            target="127.0.0.1",
+        )
+        validation_runner.request_once(
+            target="127.0.0.1",
+            url=source_url,
+            headers={"Authorization": "Bearer raw", "X-Raw-Auth": "raw"},
+            session=untrusted,
+        )
+
+        trusted = AuthSession(
+            ["Authorization: Bearer session", "Cookie: sid=session"],
+            target="127.0.0.1",
+            allowed_origins=[sink_url],
+        )
+        validation_runner.request_once(
+            target="127.0.0.1",
+            url=source_url,
+            headers={"Authorization": "Bearer raw", "X-Raw-Auth": "raw"},
+            session=trusted,
+        )
+    finally:
+        source.shutdown()
+        source_thread.join(timeout=2)
+        source.server_close()
+        sink.shutdown()
+        sink_thread.join(timeout=2)
+        sink.server_close()
+
+    assert source_headers[0]["Authorization"] == "Bearer raw"
+    assert "Authorization" not in sink_headers[0]
+    assert "Cookie" not in sink_headers[0]
+    assert "X-Raw-Auth" not in sink_headers[0]
+    assert sink_headers[1]["Authorization"] == "Bearer session"
+    assert sink_headers[1]["Cookie"] == "sid=session"
+    assert "X-Raw-Auth" not in sink_headers[1]
+
+
+def test_cli_auth_file_builds_session_and_raw_header_keeps_precedence(monkeypatch, tmp_path, capsys):
+    auth = tmp_path / "auth.json"
+    auth.write_text(
+        json.dumps({"target": "target.test", "bearer": "session-token"}),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"result": "tested_clean"}
+
+    monkeypatch.setattr(validation_runner, "run_marker_replay", fake_run)
+    assert validation_runner.main([
+        "marker-replay",
+        "--target",
+        "target.test",
+        "--url",
+        "https://target.test/check",
+        "--expect-marker",
+        "SAFE",
+        "--auth-file",
+        str(auth),
+        "--header",
+        "Authorization: Bearer raw-token",
+        "--no-ledger",
+        "--no-sync",
+    ]) == 0
+    capsys.readouterr()
+
+    assert validation_runner._request_headers(
+        captured["session"],
+        "https://target.test/check",
+        captured["headers"],
+    )["Authorization"] == "Bearer raw-token"
+
+
+@pytest.mark.parametrize("failed_owner", ["ledger", "finding", "action_queue"])
+def test_runner_reconciliation_replay_repairs_each_owner_without_duplicates(
+    monkeypatch,
+    tmp_path,
+    failed_owner,
+):
+    summary, queue_path, key = _runner_reconciliation_fixture(monkeypatch, tmp_path)
+    owner_functions = {
+        "ledger": "_sync_evidence_ledger",
+        "finding": "_sync_finding_status",
+        "action_queue": "_sync_action_queue",
+    }
+    owner_name = owner_functions[failed_owner]
+    original = getattr(validation_runner, owner_name)
+    if failed_owner == "ledger":
+        ledger_path(tmp_path, summary["target"]).unlink()
+
+    monkeypatch.setattr(
+        validation_runner,
+        owner_name,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(f"{failed_owner} fault")),
+    )
+    partial = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert partial["status"] == "partial"
+    assert partial[failed_owner]["status"] == "error"
+
+    monkeypatch.setattr(validation_runner, owner_name, original)
+    recovered = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    replay = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+
+    findings_dir = tmp_path / "findings" / key
+    finding = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))["findings"][0]
+    events = (findings_dir / "mutation-events.jsonl").read_text(encoding="utf-8").splitlines()
+    queue = json.loads(queue_path.read_text(encoding="utf-8"))["actions"][0]
+    rows = ledger_path(tmp_path, summary["target"]).read_text(encoding="utf-8").splitlines()
+
+    assert recovered["status"] == "updated"
+    assert replay["status"] == "deduplicated"
+    assert len(rows) == 1
+    assert len(events) == 1
+    assert finding["runner_operation_id"] == summary["operation_id"]
+    assert queue["metadata"]["runner_operation_id"] == summary["operation_id"]
+    assert queue["attempts"] == 1
+
+
 def test_request_once_bounds_response_and_records_hash(monkeypatch):
     class FakeResponse:
         status = 200
@@ -2235,6 +2443,7 @@ def test_post_defaults_to_unknown_state_and_private_unique_runs(monkeypatch, tmp
     ]
 
     assert summaries[0]["summary_path"] != summaries[1]["summary_path"]
+    assert summaries[0]["operation_id"] == summaries[1]["operation_id"]
     assert all(item["state_changing"] is None for item in summaries)
     assert all(item["redline_checked"] is False for item in summaries)
     public_text = "\n".join(
