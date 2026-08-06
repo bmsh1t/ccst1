@@ -1,9 +1,11 @@
 """Regression tests for misc agent dispatcher tool summaries."""
 
 import importlib
+import json
 
 import agent
 import memory
+from memory.hunt_journal import HuntJournal
 
 
 def _build_dispatcher(tmp_path):
@@ -73,6 +75,36 @@ def test_dispatch_generate_reports_bridge_backed_hunt_still_summarizes_report_co
     }
     assert "generate_reports: 1 report(s) generated" in output
     assert "Reports: 001-bridge.md" in output
+
+
+def test_update_working_memory_logs_only_real_hypothesis_transitions(tmp_path):
+    memory_dir = tmp_path / "hunt-memory"
+    memory_state = agent.HuntMemory(str(tmp_path / "agent_session.json"))
+    dispatcher = agent.ToolDispatcher(
+        "target.com",
+        memory_state,
+        journal=HuntJournal(memory_dir / "journal.jsonl"),
+    )
+
+    first_notes = """working_hypothesis: IDOR may affect orders
+next_question: Can a peer actor read the same order?"""
+    second_notes = """- **working_hypothesis**: Role confusion may affect refunds
+- **next_question**: Can a peer role approve the refund?"""
+
+    dispatcher.dispatch("update_working_memory", {"notes": first_notes})
+    dispatcher.dispatch("update_working_memory", {"notes": first_notes})
+    dispatcher.dispatch("update_working_memory", {"notes": second_notes})
+
+    rows = HuntJournal(memory_dir / "journal.jsonl").query(
+        target="target.com", vuln_class="hypothesis"
+    )
+    assert len(rows) == 2
+    assert json.loads(rows[0]["notes"])["from"] == ""
+    assert json.loads(rows[1]["notes"]) == {
+        "from": "IDOR may affect orders",
+        "to": "Role confusion may affect refunds",
+        "reason": "Can a peer role approve the refund?",
+    }
 
 
 def test_bridge_backed_hunt_agent_imports_hunt_journal_via_memory_package(monkeypatch):

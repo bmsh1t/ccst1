@@ -1416,6 +1416,15 @@ def _phase_flags(completed_steps: list[str]) -> dict[str, bool]:
     }
 
 
+def _working_memory_anchor(notes: str, anchor: str) -> str:
+    """Extract one structured anchor from LLM-maintained working notes."""
+    match = re.search(
+        rf"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?{re.escape(anchor)}(?:\*\*)?\s*:\s*(.+?)\s*$",
+        str(notes or ""),
+    )
+    return " ".join(match.group(1).split())[:500] if match else ""
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  Memory
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1577,7 +1586,8 @@ class ToolDispatcher:
                  self_review_enabled: bool = False,
                  calibrate_patterns: bool = False,
                  autopilot_mode: str = "normal",
-                 deep_mode: bool = False):
+                 deep_mode: bool = False,
+                 journal: HuntJournal | None = None):
         self.domain          = domain
         self.memory          = memory
         self.scope_lock      = scope_lock
@@ -1591,6 +1601,7 @@ class ToolDispatcher:
         self.calibrate_patterns     = bool(calibrate_patterns)
         self.autopilot_mode         = str(autopilot_mode or "normal")
         self.deep_mode              = bool(deep_mode)
+        self.journal                = journal
         # Coerce max_parallel against mode (paranoid forces 1, normal caps at 3, yolo caps at 8)
         try:
             from tools.parallel_workers import coerce_max_parallel
@@ -1838,9 +1849,21 @@ class ToolDispatcher:
                 obs = self._read_findings_files(domain)
 
             elif name == "update_working_memory":
-                notes = args.get("notes", "")
+                notes = str(args.get("notes", ""))
+                previous_hypothesis = _working_memory_anchor(
+                    self.memory.working_memory, "working_hypothesis"
+                )
+                current_hypothesis = _working_memory_anchor(notes, "working_hypothesis")
+                transition_reason = _working_memory_anchor(notes, "next_question")
                 self.memory.working_memory = notes
                 self.memory.save()
+                if self.journal is not None:
+                    self.journal.log_hypothesis_transition(
+                        domain,
+                        previous_hypothesis,
+                        current_hypothesis,
+                        transition_reason or "working_memory_update",
+                    )
                 return f"Working memory updated ({len(notes)} chars)."
 
             elif name == "finish":
@@ -4040,15 +4063,21 @@ def run_agent_hunt(
     # ── Init memory + dispatcher ──────────────────────────────────────────
     memory     = HuntMemory(session_file)
     base_dir = getattr(h, "BASE_DIR", os.getcwd())
+    runtime_memory_dir = default_memory_dir(base_dir)
+    try:
+        journal = _open_hunt_journal(runtime_memory_dir)
+    except Exception as exc:
+        print(f"{YELLOW}[Agent] Hunt journal unavailable (non-fatal): {exc}{NC}", flush=True)
+        journal = None
     memory.bootstrap_state = _load_agent_bootstrap_state(
         canonical_target,
         repo_root=base_dir,
-        memory_dir=str(default_memory_dir(base_dir)),
+        memory_dir=str(runtime_memory_dir),
     )
     memory.bootstrap_context = _build_agent_bootstrap_context(
         canonical_target,
         repo_root=base_dir,
-        memory_dir=str(default_memory_dir(base_dir)),
+        memory_dir=str(runtime_memory_dir),
         state=memory.bootstrap_state,
     )
     dispatcher = ToolDispatcher(
@@ -4065,6 +4094,7 @@ def run_agent_hunt(
         calibrate_patterns=calibrate_patterns,
         autopilot_mode=autopilot_mode,
         deep_mode=deep_mode,
+        journal=journal,
     )
 
     # ── Run built-in ReAct loop ───────────────────────────────────────────

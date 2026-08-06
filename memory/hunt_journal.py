@@ -12,7 +12,12 @@ import sys
 from pathlib import Path
 
 from memory.rotation import DEFAULT_KEEP, DEFAULT_MAX_BYTES, rotate_if_needed
-from memory.schemas import validate_journal_entry, make_session_summary_entry, SchemaError
+from memory.schemas import (
+    SchemaError,
+    make_journal_entry,
+    make_session_summary_entry,
+    validate_journal_entry,
+)
 
 
 class HuntJournal:
@@ -121,6 +126,40 @@ class HuntJournal:
             self.append(entry)
         except Exception as e:
             print(f"WARNING: auto-log session summary failed (non-fatal): {e}", file=sys.stderr)
+
+    def log_hypothesis_transition(
+        self,
+        target: str,
+        previous: str,
+        current: str,
+        reason: str,
+    ) -> bool:
+        """Append one schema-compliant hypothesis transition when state changed."""
+        previous = " ".join(str(previous or "").split())[:500]
+        current = " ".join(str(current or "").split())[:500]
+        reason = " ".join(str(reason or "working_memory_update").split())[:500]
+        if not current or current == previous:
+            return False
+        try:
+            self.append(
+                make_journal_entry(
+                    target=target,
+                    action="hunt",
+                    vuln_class="hypothesis",
+                    endpoint="session",
+                    result="informational",
+                    technique="hypothesis_transition",
+                    notes=json.dumps(
+                        {"from": previous, "to": current, "reason": reason},
+                        separators=(",", ":"),
+                    ),
+                    tags=["auto_logged", "hypothesis_transition"],
+                )
+            )
+            return True
+        except Exception as e:
+            print(f"WARNING: hypothesis transition log failed (non-fatal): {e}", file=sys.stderr)
+            return False
 
     def query(self, *, target: str | None = None, vuln_class: str | None = None,
               action: str | None = None, result: str | None = None) -> list[dict]:

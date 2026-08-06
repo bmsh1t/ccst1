@@ -300,3 +300,31 @@ class TestLogSessionSummary:
         results = journal.query(target="target.com", vuln_class="session_summary")
         assert len(results) == 1
         assert results[0]["result"] == "informational"
+
+
+class TestHypothesisTransition:
+    def test_log_hypothesis_transition_writes_queryable_row(self, journal_path):
+        journal = HuntJournal(journal_path)
+
+        assert journal.log_hypothesis_transition(
+            "target.com",
+            "IDOR may affect orders",
+            "Role confusion may affect refunds",
+            "Does a peer role see the same refund object?",
+        ) is True
+
+        rows = journal.query(target="target.com", vuln_class="hypothesis")
+        assert len(rows) == 1
+        assert rows[0]["technique"] == "hypothesis_transition"
+        assert json.loads(rows[0]["notes"]) == {
+            "from": "IDOR may affect orders",
+            "to": "Role confusion may affect refunds",
+            "reason": "Does a peer role see the same refund object?",
+        }
+
+    def test_log_hypothesis_transition_skips_blank_or_unchanged_state(self, journal_path):
+        journal = HuntJournal(journal_path)
+
+        assert journal.log_hypothesis_transition("target.com", "same", "same", "reason") is False
+        assert journal.log_hypothesis_transition("target.com", "old", "", "reason") is False
+        assert not journal_path.exists()
