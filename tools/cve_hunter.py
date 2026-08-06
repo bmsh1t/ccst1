@@ -15,8 +15,8 @@ import re
 import sys
 
 from intel_engine import build_target_intel
-from runtime_exec import run_shell_command_split
-from target_paths import target_storage_key
+from runtime_exec import run_argv_command_split, run_shell_command_split
+from target_paths import classify_target, target_storage_key
 from technology_inventory import (
     load_or_build_inventory_for_recon_dir,
     parse_httpx_json_line,
@@ -31,8 +31,14 @@ def run_cmd(cmd, timeout=30):
     return success, stdout.strip()
 
 
+def run_argv(argv, timeout=30):
+    success, stdout, _stderr = run_argv_command_split(argv, timeout=timeout)
+    return success, stdout.strip()
+
+
 def detect_technologies(domain, recon_dir=None):
     """Detect technologies running on the target."""
+    domain = classify_target(domain)["target"]
     print(f"[*] Detecting technologies on {domain}...")
     techs = {}
 
@@ -48,8 +54,8 @@ def detect_technologies(domain, recon_dir=None):
 
     # Method 2: Direct httpx probe
     if not techs:
-        success, output = run_cmd(
-            f'echo "{domain}" | httpx -silent -json -tech-detect -status-code 2>/dev/null',
+        success, output = run_argv(
+            ["httpx", "-silent", "-json", "-tech-detect", "-status-code", "-u", domain],
             timeout=30
         )
         if success and output:
@@ -65,8 +71,8 @@ def detect_technologies(domain, recon_dir=None):
                         techs[tech_key] = 1
 
     # Method 3: Manual header analysis
-    success, output = run_cmd(
-        f'curl -sI "https://{domain}" --max-time 10 2>/dev/null',
+    success, output = run_argv(
+        ["curl", "-sI", f"https://{domain}", "--max-time", "10"],
         timeout=15
     )
     if success and output:
@@ -118,8 +124,8 @@ def detect_technologies(domain, recon_dir=None):
     }
 
     for path, tech in fingerprints.items():
-        success, output = run_cmd(
-            f'curl -s -o /dev/null -w "%{{http_code}}" "https://{domain}{path}" --max-time 5',
+        success, output = run_argv(
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"https://{domain}{path}", "--max-time", "5"],
             timeout=10
         )
         if success and output in ("200", "301", "302", "403"):
@@ -137,6 +143,7 @@ def detect_technologies(domain, recon_dir=None):
 
 def run_nuclei_cve_scan(domain, recon_dir=None):
     """Run nuclei with CVE templates against the target."""
+    domain = classify_target(domain)["target"]
     print(f"\n[*] Running nuclei CVE scan on {domain}...")
 
     targets_file = None
@@ -146,11 +153,12 @@ def run_nuclei_cve_scan(domain, recon_dir=None):
             targets_file = live_file
 
     if targets_file:
-        cmd = f'cat "{targets_file}" | nuclei -tags cve -severity medium,high,critical -silent -rate-limit 30 2>/dev/null'
+        cmd = ["nuclei", "-l", targets_file]
     else:
-        cmd = f'echo "https://{domain}" | nuclei -tags cve -severity medium,high,critical -silent -rate-limit 30 2>/dev/null'
+        cmd = ["nuclei", "-u", f"https://{domain}"]
+    cmd.extend(["-tags", "cve", "-severity", "medium,high,critical", "-silent", "-rate-limit", "30"])
 
-    success, output = run_cmd(cmd, timeout=300)
+    success, output = run_argv(cmd, timeout=300)
 
     findings = []
     if success and output:
@@ -167,6 +175,7 @@ def run_nuclei_cve_scan(domain, recon_dir=None):
 
 def check_exposed_configs(domain, recon_dir=None):
     """Check for exposed config files (env.js, app_env.js, etc.)."""
+    domain = classify_target(domain)["target"]
     print(f"\n[*] Checking for exposed config files on {domain}...")
     exposed = []
 
@@ -186,14 +195,14 @@ def check_exposed_configs(domain, recon_dir=None):
     for host in hosts:
         for path in config_paths:
             url = f"{host}{path}"
-            success, output = run_cmd(
-                f'curl -s -o /tmp/cfg_check.txt -w "%{{http_code}}" --max-time 5 "{url}"',
+            success, output = run_argv(
+                ["curl", "-s", "-o", "/tmp/cfg_check.txt", "-w", "%{http_code}", "--max-time", "5", url],
                 timeout=10
             )
             if success and output.strip() == "200":
                 # Verify it's not an HTML error page
-                _, content = run_cmd('file /tmp/cfg_check.txt', timeout=5)
-                _, head = run_cmd('head -1 /tmp/cfg_check.txt', timeout=5)
+                _, content = run_argv(["file", "/tmp/cfg_check.txt"], timeout=5)
+                _, head = run_argv(["head", "-1", "/tmp/cfg_check.txt"], timeout=5)
                 if 'HTML' not in content and '<!DOCTYPE' not in head and '<html' not in head.lower():
                     exposed.append(url)
                     print(f"    [VULN] Config exposed: {url}")
@@ -206,6 +215,7 @@ def check_exposed_configs(domain, recon_dir=None):
 
 def hunt_cves(domain, recon_dir=None):
     """Full CVE hunting pipeline."""
+    domain = classify_target(domain)["target"]
     print("=" * 50)
     print(f"  CVE Hunter — {domain}")
     print("=" * 50)

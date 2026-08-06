@@ -11,6 +11,8 @@ import argparse
 import json
 from pathlib import Path
 
+import pytest
+
 from tools import action_queue, high_value_signals, noise_filter, parallel_workers, runtime_config, target_memory, target_paths, target_selector
 
 
@@ -41,6 +43,57 @@ def test_target_paths_canonicalizes_host_port_cidr_and_lists(tmp_path):
     }
     assert target_paths.canonical_target_value("http://127.0.0.1:3002/#/login") == "127.0.0.1:3002"
     assert target_paths.target_storage_key("http://127.0.0.1:3002/#/login") == "127.0.0.1:3002"
+
+
+def test_target_paths_accepts_wildcards_single_labels_and_unambiguous_ipv6():
+    assert target_paths.classify_target("*.example.test") == {
+        "kind": "domain",
+        "target": "*.example.test",
+    }
+    assert target_paths.classify_target("localhost") == {
+        "kind": "domain",
+        "target": "localhost",
+    }
+    assert target_paths.classify_target("[2001:db8::1]:8443") == {
+        "kind": "ip",
+        "target": "[2001:db8::1]:8443",
+    }
+    assert target_paths.classify_target("https://[2001:db8::1]:8443/api?a=1&b=2") == {
+        "kind": "ip",
+        "target": "[2001:db8::1]:8443",
+    }
+
+
+@pytest.mark.parametrize(
+    "target",
+    (
+        "",
+        " example.test",
+        "example.test ",
+        "example.test bad",
+        "example.test\nnext.test",
+        "example.test;touch",
+        "$(touch marker)",
+        "https://user@example.test",
+        "ftp://example.test",
+        "https://https://example.test",
+        "https://example.test:0",
+        "https://example.test:99999",
+        "http://2001:db8::1",
+        "[2001:db8::1",
+        "[example.test]",
+        "https://[example.test]/",
+        "missing/scope.txt",
+        "täst.example",
+    ),
+)
+def test_target_paths_rejects_invalid_active_targets(target):
+    with pytest.raises(ValueError):
+        target_paths.classify_target(target)
+
+
+def test_canonical_target_value_keeps_invalid_legacy_lookup_fallback():
+    assert target_paths.canonical_target_value("legacy target") == "legacy target"
 
 
 def test_target_paths_isolates_same_stem_lists_by_canonical_path(tmp_path):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+from collections.abc import Sequence
 from typing import Any
 
 TERMINATION_GRACE_SECONDS = 3
@@ -75,14 +76,15 @@ def _terminate_process_group(proc: subprocess.Popen[str]) -> tuple[str, str]:
 
 
 def _spawn(
-    cmd: str,
+    cmd: str | Sequence[str],
     *,
+    shell: bool = True,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
 ) -> subprocess.Popen[str]:
     return subprocess.Popen(
         cmd,
-        shell=True,
+        shell=shell,
         cwd=cwd,
         env=env,
         stdout=subprocess.PIPE,
@@ -92,14 +94,15 @@ def _spawn(
     )
 
 
-def _run_shell_command_split(
-    cmd: str,
+def _run_command_split(
+    cmd: str | Sequence[str],
     *,
+    shell: bool,
     cwd: str | None = None,
     timeout: int | float = 600,
     env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str]:
-    proc = _spawn(cmd, cwd=cwd, env=env)
+    proc = _spawn(cmd, shell=shell, cwd=cwd, env=env)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
         return proc.returncode == 0, _to_text(stdout), _to_text(stderr)
@@ -121,6 +124,27 @@ def _run_shell_command_split(
         return False, stdout, stderr
 
 
+def _run_shell_command_split(
+    cmd: str,
+    *,
+    cwd: str | None = None,
+    timeout: int | float = 600,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, str, str]:
+    return _run_command_split(cmd, shell=True, cwd=cwd, timeout=timeout, env=env)
+
+
+def _normalize_argv(argv: Sequence[str]) -> list[str]:
+    if (
+        isinstance(argv, (str, bytes))
+        or not isinstance(argv, Sequence)
+        or not argv
+        or any(not isinstance(value, str) for value in argv)
+    ):
+        raise ValueError("argv must be a non-empty sequence of strings")
+    return list(argv)
+
+
 def run_shell_command(
     cmd: str,
     *,
@@ -140,3 +164,30 @@ def run_shell_command_split(
     env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str]:
     return _run_shell_command_split(cmd, cwd=cwd, timeout=timeout, env=env)
+
+
+def run_argv_command(
+    argv: Sequence[str],
+    *,
+    cwd: str | None = None,
+    timeout: int | float = 600,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
+    success, stdout, stderr = run_argv_command_split(argv, cwd=cwd, timeout=timeout, env=env)
+    return success, stdout + stderr
+
+
+def run_argv_command_split(
+    argv: Sequence[str],
+    *,
+    cwd: str | None = None,
+    timeout: int | float = 600,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, str, str]:
+    return _run_command_split(
+        _normalize_argv(argv),
+        shell=False,
+        cwd=cwd,
+        timeout=timeout,
+        env=env,
+    )

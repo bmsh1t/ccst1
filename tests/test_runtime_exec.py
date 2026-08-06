@@ -65,6 +65,68 @@ def test_spawn_passes_explicit_environment(monkeypatch):
     assert captured["env"] == {"BBHUNT_AUTH_HEADERS": "Authorization: secret"}
 
 
+def test_run_argv_command_split_preserves_arguments_and_spawn_contract(monkeypatch):
+    captured = {}
+
+    class FakeProc:
+        returncode = 7
+
+        def communicate(self, timeout=None):
+            captured["timeout"] = timeout
+            return "stdout", "stderr"
+
+    def fake_popen(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr(runtime_exec.subprocess, "Popen", fake_popen)
+
+    success, stdout, stderr = runtime_exec.run_argv_command_split(
+        ["tool", "arg with spaces", ";literal"],
+        cwd="/tmp/example",
+        env={"MODE": "test"},
+        timeout=12,
+    )
+
+    assert (success, stdout, stderr) == (False, "stdout", "stderr")
+    assert captured["args"] == (["tool", "arg with spaces", ";literal"],)
+    assert captured["kwargs"]["shell"] is False
+    assert captured["kwargs"]["cwd"] == "/tmp/example"
+    assert captured["kwargs"]["env"] == {"MODE": "test"}
+    assert captured["kwargs"]["stdout"] is subprocess.PIPE
+    assert captured["kwargs"]["stderr"] is subprocess.PIPE
+    assert captured["kwargs"]["text"] is True
+    assert captured["kwargs"]["start_new_session"] is True
+    assert captured["timeout"] == 12
+
+
+def test_run_argv_command_rejects_invalid_shapes_before_spawn(monkeypatch):
+    monkeypatch.setattr(
+        runtime_exec.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not spawn")),
+    )
+
+    for argv in ([], "echo ok", 123, ["echo", 1]):
+        try:
+            runtime_exec.run_argv_command(argv)
+        except ValueError:
+            continue
+        raise AssertionError(f"invalid argv accepted: {argv!r}")
+
+
+def test_run_argv_command_timeout_reuses_partial_output_cleanup():
+    argv = shlex.split(_timeout_test_command())
+
+    success, stdout, stderr = runtime_exec.run_argv_command_split(argv, timeout=0.1)
+
+    assert success is False
+    assert stdout == "hello\n"
+    assert stderr.count("err\n") == 1
+    assert "command timed out after 0.1s" in stderr.lower()
+
+
 
 def test_run_shell_command_returns_combined_output(monkeypatch):
     class FakeProc:

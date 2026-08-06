@@ -11,6 +11,81 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
+_HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+
+def _parse_port(value: str) -> int:
+    if not value.isdigit() or not 1 <= int(value) <= 65535:
+        raise ValueError("invalid target port")
+    return int(value)
+
+
+def _classify_host(host: str, port: int | None = None, *, lowercase: bool = False) -> dict:
+    wildcard = host.startswith("*.")
+    bare_host = host[2:] if wildcard else host
+    if not bare_host or not bare_host.isascii() or "%" in bare_host:
+        raise ValueError("invalid target host")
+
+    try:
+        address = ipaddress.ip_address(bare_host)
+    except ValueError:
+        address = None
+    if address is not None:
+        if wildcard:
+            raise ValueError("wildcard IP targets are invalid")
+        normalized = str(address)
+        if port is not None:
+            normalized = f"[{normalized}]:{port}" if address.version == 6 else f"{normalized}:{port}"
+        return {"kind": "ip", "target": normalized}
+
+    if re.fullmatch(r"[0-9.:]+", bare_host):
+        raise ValueError("invalid IP/CIDR target")
+    normalized_host = bare_host.rstrip(".")
+    if lowercase:
+        normalized_host = normalized_host.lower()
+    if (
+        not normalized_host
+        or len(normalized_host) > 253
+        or any(not _HOST_LABEL.fullmatch(label) for label in normalized_host.split("."))
+    ):
+        raise ValueError("invalid domain target")
+    normalized = f"*.{normalized_host}" if wildcard else normalized_host
+    if port is not None:
+        normalized = f"{normalized}:{port}"
+    return {"kind": "domain", "target": normalized}
+
+
+def _classify_url(value: str) -> dict:
+    try:
+        parsed = urlparse(value)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname
+        port = parsed.port
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError("invalid target URL") from exc
+    if (
+        (scheme and scheme not in {"http", "https"})
+        or not parsed.netloc
+        or not host
+        or parsed.netloc.endswith(":")
+    ):
+        raise ValueError("target URL must use HTTP(S) and include a host")
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        raise ValueError("target URL must not contain userinfo")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("invalid target port")
+    if "[" in parsed.netloc or "]" in parsed.netloc:
+        if not re.fullmatch(r"\[[^\[\]]+\](?::\d+)?", parsed.netloc):
+            raise ValueError("invalid bracketed target host")
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError as exc:
+            raise ValueError("bracketed target hosts must be IPv6") from exc
+    elif ":" in host:
+        raise ValueError("IPv6 URL hosts must be bracketed")
+    return _classify_host(host, port, lowercase=True)
+
+
 def canonical_target_value(target: str) -> str:
     """Return the normalized runtime target string used for state lookups."""
     value = (target or "").strip()
@@ -25,26 +100,25 @@ def canonical_target_value(target: str) -> str:
 
 def classify_target(target: str) -> dict:
     """Classify a target as domain, IP, CIDR, or readable host list."""
-    value = (target or "").strip()
+    raw_value = target or ""
+    value = raw_value.strip()
     if not value:
-        return {"kind": "domain", "target": value}
+        raise ValueError("target is required")
+
+    if any(ord(character) < 32 or ord(character) == 127 for character in raw_value):
+        raise ValueError("target must not contain control characters")
 
     if os.path.isfile(value):
         return {"kind": "list", "target": os.path.abspath(value)}
+
+    if any(character.isspace() for character in raw_value):
+        raise ValueError("target must not contain whitespace")
 
     # URL-form targets should share the same state/recon key as the equivalent
     # host or host:port. This keeps `/autopilot http://127.0.0.1:3002` from
     # creating a separate `http:_127...` tree that later tools cannot resume.
     if "://" in value or value.startswith("//"):
-        parsed = urlparse(value)
-        host = (parsed.hostname or "").strip().lower()
-        if not host:
-            return {"kind": "domain", "target": value}
-        try:
-            port = parsed.port
-        except ValueError:
-            port = None
-        value = f"{host}:{port}" if port is not None else host
+        return _classify_url(value)
 
     try:
         network = ipaddress.ip_network(value, strict=False)
@@ -61,24 +135,32 @@ def classify_target(target: str) -> dict:
     else:
         return {"kind": "ip", "target": str(address)}
 
+    if value.startswith("["):
+        match = re.fullmatch(r"\[([^\[\]]+)\](?::([^:]+))?", value)
+        if not match:
+            raise ValueError("invalid bracketed target host")
+        host, raw_port = match.groups()
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError as exc:
+            raise ValueError("bracketed target hosts must be IPv6") from exc
+        return _classify_host(host, _parse_port(raw_port) if raw_port is not None else None)
+    if "[" in value or "]" in value:
+        raise ValueError("invalid bracketed target host")
+
     # host:port form — local lab targets like 127.0.0.1:3000 or app.test:8080.
     # Must precede the strict-digits check below, which would otherwise reject
     # all-numeric host:port strings as "invalid IP/CIDR".
     if value.count(":") == 1:
         host, _, port = value.rpartition(":")
-        if host and port.isdigit() and 1 <= int(port) <= 65535:
-            try:
-                ipaddress.ip_address(host)
-            except ValueError:
-                if re.fullmatch(r"[A-Za-z0-9.\-]+", host):
-                    return {"kind": "domain", "target": value}
-            else:
-                return {"kind": "ip", "target": value}
+        if host and port.isdigit():
+            return _classify_host(host, _parse_port(port))
 
     if re.fullmatch(r"[0-9./:]+", value):
         raise ValueError("invalid IP/CIDR target")
-
-    return {"kind": "domain", "target": value}
+    if "/" in value:
+        raise ValueError("target path must be an existing file or HTTP(S) URL")
+    return _classify_host(value)
 
 
 def _list_storage_stem(normalized_target: str) -> str:
@@ -97,7 +179,13 @@ def legacy_list_storage_key(target: str) -> str:
 
 def target_storage_key(target: str) -> str:
     """Return the canonical on-disk storage key for a target."""
-    target_info = classify_target(target)
+    try:
+        target_info = classify_target(target)
+    except ValueError:
+        # Legacy cache/read callers use this helper to sanitize historical
+        # labels that were never active targets (for example `weird/host`).
+        normalized_target = canonical_target_value(target)
+        target_info = {"kind": "domain", "target": normalized_target}
     normalized_target = target_info["target"]
     if target_info["kind"] == "list":
         stem = _list_storage_stem(normalized_target)

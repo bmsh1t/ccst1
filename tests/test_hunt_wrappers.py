@@ -464,17 +464,17 @@ def test_run_jwt_audit_appends_jwt_tool_summary_when_available(monkeypatch, tmp_
     monkeypatch.setattr(hunt, "_resolve_jwt_tool_command", lambda: "jwt_tool")
     monkeypatch.setattr(hunt, "_resolve_jwt_tool_wordlist", lambda _cmd="": "/root/Tools/jwt_tool/jwt.secrets.list")
 
-    def fake_run_cmd(cmd, cwd=None, timeout=600):
-        if cmd.startswith("jwt_tool ") and " -C -d /root/Tools/jwt_tool/jwt.secrets.list" in cmd:
+    def fake_run_argv(cmd, cwd=None, timeout=600, env=None):
+        if cmd[0] == "jwt_tool" and "-C" in cmd and cmd[cmd.index("-d") + 1] == "/root/Tools/jwt_tool/jwt.secrets.list":
             return True, (
                 "\x1b[32mHeader:\x1b[0m {'alg': 'HS256', 'typ': 'JWT'}\n"
                 "Payload: {'sub': '123', 'role': 'admin'}\n"
                 "jwt.secrets.list loaded\n"
                 "Signature is valid\n"
             )
-        raise AssertionError(f"unexpected command: {cmd}")
+        raise AssertionError(f"unexpected command: {cmd!r}")
 
-    monkeypatch.setattr(hunt, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(hunt, "run_argv", fake_run_argv)
 
     assert hunt.run_jwt_audit(domain) is True
 
@@ -511,6 +511,102 @@ def test_resolve_jwt_tool_wordlist_supports_root_tools_path(monkeypatch):
     )
 
     assert hunt._resolve_jwt_tool_wordlist("python3 /root/Tools/jwt_tool/jwt_tool.py") == target_path
+
+
+def test_nuclei_scan_passes_output_and_input_paths_as_argv(tmp_path, monkeypatch):
+    output_path = tmp_path / "findings output" / "nuclei.txt"
+    captured = {}
+    monkeypatch.setattr(hunt, "_command_exists", lambda _tool: True)
+
+    def fake_run_argv(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("finding\n", encoding="utf-8")
+        return True, ""
+
+    monkeypatch.setattr(hunt, "run_argv", fake_run_argv)
+
+    assert hunt._run_nuclei_scan(
+        ["https://example.test/a?x=1&y=2"],
+        tags="cve,exposure",
+        output_path=str(output_path),
+    ) is True
+    assert captured["argv"][:4] == ["nuclei", "-l", str(output_path.parent / "_nuclei_targets.txt"), "-tags"]
+    assert captured["argv"][captured["argv"].index("-output") + 1] == str(output_path)
+    assert captured["kwargs"]["cwd"] == hunt.BASE_DIR
+
+
+def test_sqlmap_helpers_keep_url_and_request_path_as_single_argv(tmp_path, monkeypatch):
+    domain = "example.test"
+    monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings output"))
+    monkeypatch.setattr(hunt, "_collect_param_urls", lambda *_args, **_kwargs: [
+        "https://example.test/item?id=1&next=%3Btouch"
+    ])
+    monkeypatch.setattr(hunt, "_command_exists", lambda _tool: True)
+    calls = []
+    monkeypatch.setattr(
+        hunt,
+        "run_argv",
+        lambda argv, **_kwargs: calls.append(argv) or (True, "sqlmap output"),
+    )
+
+    assert hunt.run_sqlmap_targeted(domain) is True
+    request_file = tmp_path / "request with spaces.txt"
+    request_file.write_text("GET / HTTP/1.1\n", encoding="utf-8")
+    assert hunt.run_sqlmap_request_file(str(request_file), domain=domain) is True
+
+    assert calls[0][calls[0].index("-u") + 1] == "https://example.test/item?id=1&next=%3Btouch"
+    assert calls[1][calls[1].index("-r") + 1] == str(request_file)
+    assert all(isinstance(argv, list) for argv in calls)
+
+
+def test_zero_day_fuzzer_passes_recon_dir_and_deep_as_argv(tmp_path, monkeypatch):
+    domain = "example.test"
+    recon_dir = tmp_path / "recon output" / domain
+    recon_dir.mkdir(parents=True)
+    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon output"))
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            captured["timeout"] = timeout
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr(hunt.subprocess, "Popen", fake_popen)
+
+    assert hunt.run_zero_day_fuzzer(domain, deep=True) is True
+    assert captured["argv"][0] == sys.executable
+    assert "--recon-dir" in captured["argv"]
+    assert captured["argv"][captured["argv"].index("--recon-dir") + 1] == str(recon_dir)
+    assert captured["argv"][-1] == "--deep"
+    assert captured["kwargs"]["shell"] is False
+
+
+def test_setup_wordlists_uses_argv_for_curl_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(hunt, "WORDLIST_DIR", str(tmp_path / "word lists"))
+    calls = []
+
+    def fake_run_argv(argv, **_kwargs):
+        calls.append(argv)
+        output_path = Path(argv[argv.index("-o") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("x" * 101, encoding="utf-8")
+        return True, ""
+
+    monkeypatch.setattr(hunt, "run_argv", fake_run_argv)
+    hunt.setup_wordlists()
+
+    assert len(calls) == 4
+    assert all(argv[0:2] == ["curl", "-sL"] for argv in calls)
+    assert all("-o" in argv for argv in calls)
+    assert all(isinstance(argv, list) for argv in calls)
 
 
 def test_run_repo_source_hunt_delegates_to_source_hunt(monkeypatch):

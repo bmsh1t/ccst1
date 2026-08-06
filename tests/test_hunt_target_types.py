@@ -66,9 +66,9 @@ def test_classify_target_normalizes_url_inputs_to_host_or_host_port():
 
 def test_classify_target_rejects_invalid_port_range():
     # Port 0 is reserved, port > 65535 is invalid.
-    with pytest.raises(ValueError, match="invalid IP/CIDR target"):
+    with pytest.raises(ValueError):
         hunt.classify_target("127.0.0.1:0")
-    with pytest.raises(ValueError, match="invalid IP/CIDR target"):
+    with pytest.raises(ValueError):
         hunt.classify_target("127.0.0.1:99999")
 
 
@@ -114,26 +114,18 @@ def test_run_recon_passes_ip_target_to_subprocess(monkeypatch):
     assert captured["env"]["BBHUNT_SESSION_ID"] == hunt._AUTH_SESSION.session_id()
 
 
-def test_run_recon_does_not_shell_expand_target(monkeypatch):
-    captured = {}
-
-    class FakeProc:
-        returncode = 0
-
-        def wait(self, timeout=None):
-            return 0
-
-    def fake_popen(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["shell"] = kwargs.get("shell")
-        return FakeProc()
-
-    monkeypatch.setattr(hunt.subprocess, "Popen", fake_popen)
+def test_run_recon_rejects_command_syntax_before_subprocess(monkeypatch):
+    monkeypatch.setattr(
+        hunt.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("subprocess must not start for an invalid target")
+        ),
+    )
     target = "example.com;printf injected"
 
-    assert hunt.run_recon(target) is True
-    assert captured["cmd"][2] == target
-    assert captured["shell"] is False
+    with pytest.raises(ValueError):
+        hunt.run_recon(target)
 
 
 def test_run_recon_preserves_exact_url_argv(monkeypatch):
@@ -431,8 +423,9 @@ def test_run_vuln_scan_passes_scanner_full_and_skip_flags(monkeypatch, tmp_path)
     ) is True
     assert "--full" in captured["cmd"]
     assert "--quick" not in captured["cmd"]
-    assert "--skip xss,ssti,mfa" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--skip") + 1] == "xss,ssti,mfa"
     assert str(stored_recon_dir) in captured["cmd"]
+    assert captured["shell"] is False
 
 
 def test_run_vuln_scan_kills_process_group_when_wait_times_out(monkeypatch, tmp_path):

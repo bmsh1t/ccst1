@@ -24,6 +24,7 @@ import json
 import os
 import re
 import ipaddress
+import shutil
 import shlex
 import signal
 import ssl
@@ -188,6 +189,13 @@ def run_cmd(cmd, cwd=None, timeout=600, env=None):
     return run_shell_command(cmd, cwd=cwd, timeout=timeout, env=env)
 
 
+def run_argv(argv, cwd=None, timeout=600, env=None):
+    """Run an argv command without shell interpretation."""
+    from runtime_exec import run_argv_command
+
+    return run_argv_command(argv, cwd=cwd, timeout=timeout, env=env)
+
+
 def _kill_process_group(proc):
     """Best-effort termination for a spawned subprocess session."""
     try:
@@ -226,6 +234,7 @@ def classify_target(target):
 
 def _target_storage_key(target):
     """Return the on-disk storage key for a target."""
+    classify_target(target)
     return target_storage_key(target)
 
 
@@ -326,8 +335,7 @@ def _extract_generated_report_count(output):
 
 def _command_exists(tool):
     """Check whether a tool is available in PATH."""
-    success, _ = run_cmd(f"command -v {shlex.quote(tool)}")
-    return success
+    return shutil.which(tool) is not None
 
 
 def _guard_scope_patterns_for_target(target):
@@ -659,12 +667,12 @@ def _run_jwt_tool_probe(token, jwt_tool_cmd):
     wordlist = _resolve_jwt_tool_wordlist(jwt_tool_cmd)
 
     mode = "inspect"
-    cmd = f"{jwt_tool_cmd} {shlex.quote(token)}"
+    cmd = [*shlex.split(jwt_tool_cmd), token]
     if alg.startswith("HS") and wordlist:
         mode = "crack"
-        cmd = f"{jwt_tool_cmd} {shlex.quote(token)} -C -d {shlex.quote(wordlist)}"
+        cmd.extend(["-C", "-d", wordlist])
 
-    success, output = run_cmd(cmd, cwd=BASE_DIR, timeout=60)
+    success, output = run_argv(cmd, cwd=BASE_DIR, timeout=60)
     summary_lines = _summarize_jwt_tool_output(output)
     if not summary_lines:
         return success, []
@@ -1070,7 +1078,7 @@ def check_tools():
         success = (
             resolve_eburst().get("status") == "ready"
             if tool == "eburst"
-            else run_cmd(f"command -v {tool}")[0]
+            else _command_exists(tool)
         )
         if success:
             installed.append(tool)
@@ -1098,7 +1106,7 @@ def setup_wordlists():
             continue
 
         log("info", f"Downloading {name}...")
-        success, output = run_cmd(f'curl -sL "{url}" -o "{filepath}"')
+        success, output = run_argv(["curl", "-sL", url, "-o", filepath])
         if success and os.path.getsize(filepath) > 100:
             lines = sum(1 for _ in open(filepath))
             log("ok", f"Downloaded {name} ({lines} entries)")
@@ -1112,10 +1120,7 @@ def select_targets(top_n=10):
     """Run target selector."""
     log("info", "Running target selector...")
     script = os.path.join(TOOLS_DIR, "target_selector.py")
-    success, output = run_cmd(
-        f'python3 "{script}" --top {top_n}',
-        timeout=60
-    )
+    success, output = run_argv([sys.executable, script, "--top", str(top_n)], timeout=60)
     print(output)
 
     if not success:
@@ -1209,12 +1214,8 @@ def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
     elif quick:
         scanner_flags.append("--quick")
     if scanner_skip:
-        scanner_flags.extend(["--skip", shlex.quote(scanner_skip)])
-
-    scanner_flag_text = " ".join(scanner_flags)
-    cmd = f"bash {shlex.quote(script)} {shlex.quote(recon_dir)}"
-    if scanner_flag_text:
-        cmd = f"{cmd} {scanner_flag_text}"
+        scanner_flags.extend(["--skip", scanner_skip])
+    cmd = ["bash", script, recon_dir, *scanner_flags]
 
     try:
         child_env = _runtime_child_env()
@@ -1222,7 +1223,7 @@ def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
         child_env["BBHUNT_RUNTIME_LOCK_TARGET"] = classify_target(domain)["target"]
         proc = subprocess.Popen(
             cmd,
-            shell=True,
+            shell=False,
             cwd=BASE_DIR,
             env=child_env,
             start_new_session=True,
@@ -1245,13 +1246,16 @@ def _run_nuclei_scan(urls, *, tags, output_path, severity=None, rate_limit=20, c
 
     input_path = os.path.join(os.path.dirname(output_path), "_nuclei_targets.txt")
     _write_text_lines(input_path, urls)
-    severity_flag = f" -severity {shlex.quote(severity)}" if severity else ""
-    cmd = (
-        f'nuclei -l {shlex.quote(input_path)} -tags {shlex.quote(tags)}'
-        f'{severity_flag} -silent -rate-limit {rate_limit} -concurrency {concurrency}'
-        f' -output {shlex.quote(output_path)}'
-    )
-    success, _ = run_cmd(cmd, cwd=BASE_DIR, timeout=600)
+    cmd = ["nuclei", "-l", input_path, "-tags", tags]
+    if severity:
+        cmd.extend(["-severity", severity])
+    cmd.extend([
+        "-silent",
+        "-rate-limit", str(rate_limit),
+        "-concurrency", str(concurrency),
+        "-output", output_path,
+    ])
+    success, _ = run_argv(cmd, cwd=BASE_DIR, timeout=600)
     return success and os.path.exists(output_path)
 
 
@@ -1623,11 +1627,11 @@ def run_sqlmap_targeted(domain):
 
     summaries = []
     for url in param_urls:
-        cmd = (
-            f'sqlmap -u {shlex.quote(url)} --batch --smart --level=2 --risk=1 '
-            f'--disable-coloring --threads=1'
-        )
-        success, output = run_cmd(cmd, cwd=BASE_DIR, timeout=240)
+        cmd = [
+            "sqlmap", "-u", url, "--batch", "--smart", "--level=2", "--risk=1",
+            "--disable-coloring", "--threads=1",
+        ]
+        success, output = run_argv(cmd, cwd=BASE_DIR, timeout=240)
         snippet = output[:1200].replace("\r", "")
         if success or snippet:
             summaries.append(f"URL: {url}\n{snippet}\n")
@@ -1650,11 +1654,11 @@ def run_sqlmap_request_file(request_file, domain=None, level=5, risk=3):
         _write_text_lines(output_path, [request_file])
         return True
 
-    cmd = (
-        f'sqlmap -r {shlex.quote(request_file)} --batch --level={int(level)} --risk={int(risk)} '
-        '--disable-coloring --threads=1'
-    )
-    success, output = run_cmd(cmd, cwd=BASE_DIR, timeout=300)
+    cmd = [
+        "sqlmap", "-r", request_file, "--batch", f"--level={int(level)}", f"--risk={int(risk)}",
+        "--disable-coloring", "--threads=1",
+    ]
+    success, output = run_argv(cmd, cwd=BASE_DIR, timeout=300)
     if success or output:
         _append_text(output_path, output[:4000] + ("\n" if output else ""))
         return True
@@ -1713,9 +1717,8 @@ def run_json_inject_probe(
     if not add_default_seeds:
         cmd.append("--no-default-seeds")
 
-    cmd_str = " ".join(shlex.quote(c) for c in cmd)
-    success, output = run_cmd(
-        cmd_str,
+    success, output = run_argv(
+        cmd,
         cwd=BASE_DIR,
         timeout=600,
         env=_runtime_child_env(),
@@ -1918,17 +1921,16 @@ def run_zero_day_fuzzer(domain, deep=False):
     """Run zero-day fuzzer on a target."""
     log("info", f"Running zero-day fuzzer on {domain}...")
     script = os.path.join(TOOLS_DIR, "zero_day_fuzzer.py")
-    deep_flag = "--deep" if deep else ""
-
     # Check if we have recon data with live URLs
     recon_dir = _resolve_recon_dir(domain)
+    cmd = [sys.executable, script, f"https://{domain}"]
     if os.path.isdir(recon_dir):
-        cmd = f'python3 "{script}" "https://{domain}" --recon-dir "{recon_dir}" {deep_flag}'
-    else:
-        cmd = f'python3 "{script}" "https://{domain}" {deep_flag}'
+        cmd.extend(["--recon-dir", recon_dir])
+    if deep:
+        cmd.append("--deep")
 
     try:
-        proc = subprocess.Popen(cmd, shell=True, cwd=BASE_DIR, start_new_session=True)
+        proc = subprocess.Popen(cmd, shell=False, cwd=BASE_DIR, start_new_session=True)
         proc.wait(timeout=900)
         return proc.returncode == 0
     except subprocess.TimeoutExpired:

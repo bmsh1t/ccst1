@@ -291,12 +291,25 @@ def test_legacy_only_flags_are_rejected_with_direct_runtime_hint(legacy_argv):
     assert "tools/hunt.py --target <target> --agent" in legacy_error["hint"]
 
 
-def test_target_shell_round_trips_shell_metacharacters_without_execution_semantics():
+def test_invalid_target_command_syntax_stops_before_shell_projection():
     target = "example.test; touch /tmp/not-executed; $(touch /tmp/still-not-executed)"
     payload = autopilot_args.parse_autopilot_args([target])
 
+    assert payload["valid"] is False
+    assert payload["action"] == "stop_invalid_arguments"
+    assert payload["target"] is None
+    assert payload["target_shell"] is None
+    assert [error["code"] for error in payload["errors"]] == ["invalid_target"]
+
+
+def test_exact_http_seed_url_keeps_reserved_path_and_query_characters():
+    seed = "https://Example.TEST/a;b/c?next=https://other.test/a&x=$value#fragment"
+    payload = autopilot_args.parse_autopilot_args([seed])
+
     assert payload["valid"] is True
-    assert shlex.split(payload["target_shell"]) == [target]
+    assert payload["target"] == "example.test"
+    assert payload["seed_url"] == seed
+    assert shlex.split(payload["seed_url_shell"]) == [seed]
 
 
 def test_json_cli_is_compact_stable_and_returns_zero(capsys):

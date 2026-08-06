@@ -339,18 +339,18 @@ class TestWrapperAutoDiscovery:
         xhr.write_text("https://auto-disc.test/api/login\n")
 
         captured = {}
-        def fake_run_cmd(cmd, cwd=None, timeout=600, env=None):
+        def fake_run_argv(cmd, cwd=None, timeout=600, env=None):
             captured["cmd"] = cmd
             captured["env"] = env
             return True, ""
-        monkeypatch.setattr(huntmod, "run_cmd", fake_run_cmd)
+        monkeypatch.setattr(huntmod, "run_argv", fake_run_argv)
 
         ok = huntmod.run_json_inject_probe(target)
         assert ok is True
         # the wrapper auto-discovered xhr_endpoints.txt
-        assert "xhr_endpoints.txt" in captured["cmd"]
+        assert any("xhr_endpoints.txt" in value for value in captured["cmd"])
         assert "--endpoints-file" in captured["cmd"]
-        assert "--target auto-disc.test" in captured["cmd"]
+        assert captured["cmd"][captured["cmd"].index("--target") + 1] == "auto-disc.test"
 
     def test_wrapper_auto_loads_js_intel_when_present(self, monkeypatch, tmp_path):
         from tools import hunt as huntmod
@@ -364,14 +364,14 @@ class TestWrapperAutoDiscovery:
         (ji_dir / "hypotheses.json").write_text('{"endpoints": {"rest_custom": []}}')
 
         captured = {}
-        def fake_run_cmd(cmd, cwd=None, timeout=600, env=None):
+        def fake_run_argv(cmd, cwd=None, timeout=600, env=None):
             captured["cmd"] = cmd
             captured["env"] = env
             return True, ""
-        monkeypatch.setattr(huntmod, "run_cmd", fake_run_cmd)
+        monkeypatch.setattr(huntmod, "run_argv", fake_run_argv)
 
         huntmod.run_json_inject_probe(target)
-        assert "hypotheses.json" in captured["cmd"]
+        assert any("hypotheses.json" in value for value in captured["cmd"])
         assert "--js-intel" in captured["cmd"]
 
     def test_wrapper_respects_explicit_overrides(self, monkeypatch, tmp_path):
@@ -390,16 +390,16 @@ class TestWrapperAutoDiscovery:
         custom.write_text("https://x/new\n")
 
         captured = {}
-        def fake_run_cmd(cmd, cwd=None, timeout=600, env=None):
+        def fake_run_argv(cmd, cwd=None, timeout=600, env=None):
             captured["cmd"] = cmd
             captured["env"] = env
             return True, ""
-        monkeypatch.setattr(huntmod, "run_cmd", fake_run_cmd)
+        monkeypatch.setattr(huntmod, "run_argv", fake_run_argv)
 
         huntmod.run_json_inject_probe(target, endpoints_file=str(custom))
         # explicit caller arg wins over auto-discovery
         assert str(custom) in captured["cmd"]
-        assert "xhr_endpoints.txt" not in captured["cmd"]
+        assert not any("xhr_endpoints.txt" in value for value in captured["cmd"])
 
     def test_wrapper_can_disable_default_seeds(self, monkeypatch, tmp_path):
         from tools import hunt as huntmod
@@ -409,12 +409,12 @@ class TestWrapperAutoDiscovery:
         monkeypatch.setattr(huntmod, "FINDINGS_DIR", str(tmp_path / "findings"))
         captured = {}
 
-        def fake_run_cmd(cmd, cwd=None, timeout=600, env=None):
+        def fake_run_argv(cmd, cwd=None, timeout=600, env=None):
             captured["cmd"] = cmd
             captured["env"] = env
             return True, ""
 
-        monkeypatch.setattr(huntmod, "run_cmd", fake_run_cmd)
+        monkeypatch.setattr(huntmod, "run_argv", fake_run_argv)
 
         assert huntmod.run_json_inject_probe("strict.test", add_default_seeds=False) is True
         assert "--no-default-seeds" in captured["cmd"]
