@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -60,6 +61,49 @@ def test_sequence_replay_perturb_diff_writes_private_evidence_and_queue(monkeypa
     assert queue["actions"][0]["type"] == "workflow-sequence"
     assert queue["actions"][0]["status"] == "candidate"
     assert '"owner":true' not in json.dumps(summary)
+
+
+def test_sequence_transition_identity_is_distinct_and_idempotent(monkeypatch, tmp_path):
+    evidence = _write_steps(tmp_path, [
+        {"id": "login", "url": "https://target.test/api/login", "method": "POST", "body": "x=1", "state_effect": "read_only"},
+        {"id": "profile", "url": "https://target.test/api/profile", "method": "GET", "state_effect": "read_only"},
+    ])
+    monkeypatch.setattr(
+        sequence,
+        "request_once",
+        lambda **kwargs: _response(kwargs["url"], '{"ok":true}'),
+    )
+
+    def run(perturb, step_index):
+        return sequence.run_sequence(
+            repo_root=tmp_path,
+            target="target.test",
+            evidence_ref=str(evidence),
+            perturb=perturb,
+            step_index=step_index,
+            max_requests=8,
+        )
+
+    first = run("remove", 0)
+    different_perturb = run("repeat", 0)
+    different_step = run("remove", -1)
+    replay = run("remove", 1)
+    transitions = [first, different_perturb, different_step]
+
+    assert len({item["summary_path"] for item in transitions}) == 3
+    assert len({item["evidence_artifact"] for item in transitions}) == 3
+    assert replay["summary_path"] == different_step["summary_path"]
+    assert replay["evidence_artifact"] == different_step["evidence_artifact"]
+    assert all((tmp_path / item["summary_path"]).is_file() for item in transitions)
+    assert all((tmp_path / item["evidence_artifact"]).is_file() for item in transitions)
+    queue = load_queue(tmp_path, "target.test")
+    actions = [item for item in queue["actions"] if item["type"] == "workflow-sequence"]
+    assert len(actions) == 3
+    assert len({item["id"] for item in actions}) == 3
+    assert len({item["source_id"] for item in actions}) == 3
+    assert {item["metadata"]["generation"] for item in actions} == {
+        Path(item["summary_path"]).parent.name for item in transitions
+    }
 
 
 def test_sequence_refreshes_scoped_token_per_step(monkeypatch, tmp_path):

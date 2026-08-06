@@ -265,10 +265,10 @@ def _queue_sequence_action(
     target: str,
     evidence_ref: str,
     summary_path: str,
-    generation: str,
+    run_id: str,
     status: str,
 ) -> dict[str, Any]:
-    source_id = hashlib.sha256(evidence_ref.encode("utf-8")).hexdigest()[:20]
+    source_id = hashlib.sha256(f"{evidence_ref}:{run_id}".encode("utf-8")).hexdigest()[:20]
     try:
         result = add_manual_action(
             repo_root,
@@ -284,7 +284,7 @@ def _queue_sequence_action(
             ),
             source="workflow-sequence",
             source_id=source_id,
-            generation=generation,
+            generation=run_id,
             stop_condition="record tested_clean, candidate, blocked, or manual_required before closing the sequence",
         )
         queue = result.get("queue") if isinstance(result, dict) else {}
@@ -337,14 +337,16 @@ def run_sequence(
     resolved_target = canonical_target_value(target)
     steps = _extract_steps(payload, target=resolved_target, max_steps=max_steps)
     unsafe = [step["id"] for step in steps if step["state_effect"] not in SAFE_EFFECTS]
-    run_id = hashlib.sha256(f"{evidence}:{evidence.stat().st_size}:{evidence.stat().st_mtime_ns}".encode()).hexdigest()[:16]
-    target_key = target_storage_key(resolved_target)
-    summary_path = repo_root / "findings" / target_key / "workflow_sequence" / run_id / "summary.json"
-    private_dir = private_artifact_dir(repo_root, "workflow-sequence", target_key, run_id)
     if step_index < 0:
         step_index = len(steps) - 1
     if step_index >= len(steps):
         raise ValueError("step_index is outside the recorded sequence")
+    evidence_stat = evidence.stat()
+    transition = f"{evidence}:{evidence_stat.st_size}:{evidence_stat.st_mtime_ns}:{perturb}:{step_index}"
+    run_id = hashlib.sha256(transition.encode()).hexdigest()[:16]
+    target_key = target_storage_key(resolved_target)
+    summary_path = repo_root / "findings" / target_key / "workflow_sequence" / run_id / "summary.json"
+    private_dir = private_artifact_dir(repo_root, "workflow-sequence", target_key, run_id)
     summary: dict[str, Any] = {
         "schema_version": 1,
         "kind": "workflow_sequence_summary",
