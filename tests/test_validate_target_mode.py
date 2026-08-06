@@ -782,6 +782,7 @@ def test_validation_evidence_passed_keeps_durable_finding_and_queue_validated(tm
     }
     summary_path = report_path.parent / "validation-summary.json"
     summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    summary["validation_summary_path"] = str(summary_path)
 
     sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
     entries = load_entries(tmp_path, "target.com")
@@ -969,6 +970,8 @@ def test_sync_validation_artifacts_records_ledger_and_resolves_queue(tmp_path):
     )
     report_path = tmp_path / "findings" / "target.com-sqli" / "hackerone-report.md"
     report_path.parent.mkdir(parents=True)
+    summary_path = report_path.parent / "validation-summary.json"
+    summary_path.write_text("{}\n", encoding="utf-8")
     summary = {
         "target": "target.com",
         "endpoint": "https://target.com/item?id=1",
@@ -978,6 +981,7 @@ def test_sync_validation_artifacts_records_ledger_and_resolves_queue(tmp_path):
         "finding_id": "sqli_deadbeef",
         "report_path": str(report_path),
         "submission_notes_path": str(report_path.parent / "submission-notes.md"),
+        "validation_summary_path": str(summary_path),
     }
 
     sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,20 @@ from action_queue import (
 )
 from coverage_matrix import load_matrix, mark_cell
 from runtime_state import runtime_phase_lock, update_runtime_state
+
+
+def _resolve_unsafe_review_worker(repo_root, target, action_id, output):
+    try:
+        resolve_action(
+            repo_root,
+            target=target,
+            action_id=action_id,
+            status="blocked",
+            result=f"blocked-{action_id}",
+        )
+        output.put("ok")
+    except Exception as exc:  # pragma: no cover - surfaced through parent assertion
+        output.put(str(exc))
 
 
 def _checkpoint() -> dict:
@@ -923,6 +938,96 @@ def test_resolve_unsafe_skipped_review_persists_resolution(tmp_path):
     assert resolved["unsafe_review_update"]["status"] == "updated"
     assert payload["resolved"]["abcdef1234567890"]["status"] == "blocked"
     assert "operator opt-in" in payload["resolved"]["abcdef1234567890"]["result"]
+
+
+def test_concurrent_unsafe_review_resolutions_preserve_all_ids(tmp_path):
+    target = "target.com"
+    items = []
+    for index in range(12):
+        unsafe_id = f"unsafe-{index:02d}"
+        items.append(
+            {
+                "id": f"A{index}",
+                "priority": 88,
+                "type": "action-gated-review",
+                "status": "ready",
+                "action": f"Resolve unsafe review {unsafe_id}.",
+                "metadata": {
+                    "unsafe_skipped_id": unsafe_id,
+                    "artifact": f"findings/{target}/manual_review/unsafe_skipped.txt",
+                },
+            }
+        )
+    ingest_checkpoint(tmp_path, target, checkpoint={"next_action_queue": items})
+
+    context = multiprocessing.get_context("fork")
+    output = context.Queue()
+    workers = [
+        context.Process(
+            target=_resolve_unsafe_review_worker,
+            args=(str(tmp_path), target, f"AQ-{index + 1:04d}", output),
+        )
+        for index in range(len(items))
+    ]
+    for process in workers:
+        process.start()
+    results = [output.get(timeout=15) for _ in workers]
+    for process in workers:
+        process.join(timeout=15)
+
+    review_path = tmp_path / "state" / target / "unsafe_skipped_reviews.json"
+    payload = json.loads(review_path.read_text(encoding="utf-8"))
+
+    assert all(process.exitcode == 0 for process in workers)
+    assert results.count("ok") == len(workers)
+    assert set(payload["resolved"]) == {f"unsafe-{index:02d}" for index in range(len(items))}
+    assert all(item["status"] == "blocked" for item in payload["resolved"].values())
+
+
+def test_resolve_validated_and_reported_require_locatable_evidence(tmp_path):
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
+    action = select_next_action(load_queue(tmp_path, "target.com"))
+
+    with pytest.raises(ValueError, match="locatable evidence"):
+        resolve_action(
+            tmp_path,
+            target="target.com",
+            action_id=action["id"],
+            status="validated",
+        )
+    assert next(item for item in load_queue(tmp_path, "target.com")["actions"] if item["id"] == action["id"])["status"] == "queued"
+
+    validation_path = tmp_path / "findings" / "target.com" / "validation-summary.json"
+    validation_path.parent.mkdir(parents=True)
+    validation_path.write_text("{}\n", encoding="utf-8")
+    resolved = resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=action["id"],
+        status="validated",
+        result="validation-summary=findings/target.com/validation-summary.json",
+    )
+    assert resolved["status"] == "validated"
+
+    with pytest.raises(ValueError, match="locatable evidence"):
+        resolve_action(
+            tmp_path,
+            target="target.com",
+            action_id=action["id"],
+            status="reported",
+        )
+
+    report_path = tmp_path / "reports" / "target.com" / "report.md"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text("# report\n", encoding="utf-8")
+    reported = resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=action["id"],
+        status="reported",
+        result="report_file=reports/target.com/report.md",
+    )
+    assert reported["status"] == "reported"
 
 
 def test_resolve_cli_accepts_evidence_alias(tmp_path):

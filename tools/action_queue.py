@@ -66,6 +66,17 @@ COVERAGE_STATUS_BY_ACTION_STATUS = {
     "reported": "tested_finding",
 }
 UNSAFE_REVIEW_FINAL_STATUSES = {"tested", "dead-end", "blocked", "n/a", "candidate", "validated", "reported"}
+TERMINAL_EVIDENCE_STATUSES = {"validated", "reported"}
+EVIDENCE_REF_KEYS = {
+    "artifact",
+    "evidence",
+    "evidence_ref",
+    "report",
+    "report_file",
+    "summary",
+    "validation-summary",
+    "validation_summary",
+}
 REPORT_ACTION_TYPES = {"report"}
 ADVISORY_REVIEW_ACTION_TYPES = {"surface-review"}
 LOW_EVIDENCE_SURFACE_REVIEW_MARKERS = (
@@ -159,6 +170,11 @@ def save_queue(repo_root: Path | str, target: str, queue: dict) -> Path:
             queue.update(existing)
             return path
     queue["updated_at"] = now_utc()
+    _write_json_atomic(path, queue)
+    return path
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
     try:
@@ -171,7 +187,7 @@ def save_queue(repo_root: Path | str, target: str, queue: dict) -> Path:
             delete=False,
         ) as handle:
             temp_path = Path(handle.name)
-            handle.write(json.dumps(queue, ensure_ascii=False, indent=2) + "\n")
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
         temp_path.replace(path)
@@ -182,13 +198,40 @@ def save_queue(repo_root: Path | str, target: str, queue: dict) -> Path:
             except FileNotFoundError:
                 pass
         raise
-    return path
 
 
 def _compact_text(value: Any, limit: int = 800) -> str:
     text = str(value or "").strip()
     text = re.sub(r"\s+", " ", text)
     return text[:limit]
+
+
+def _locatable_evidence_ref(repo_root: Path | str, result: str) -> str:
+    """Return one existing repo-local evidence path embedded in a result."""
+    repo = Path(repo_root).resolve()
+    text = str(result or "").strip()
+    if not text:
+        return ""
+    candidates: list[str] = []
+    for match in re.finditer(r"(?:^|[;\s])([A-Za-z][A-Za-z0-9_-]*)=(\S+)", text):
+        if match.group(1).lower() in EVIDENCE_REF_KEYS:
+            candidates.append(match.group(2))
+    candidates.extend(re.split(r"[;\s]+", text))
+    for value in candidates:
+        ref = str(value or "").strip().strip("`'\"()[]{}<>,")
+        if not ref or ref.endswith("="):
+            continue
+        path = Path(ref)
+        if not path.is_absolute():
+            path = repo / path
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(repo)
+        except (OSError, ValueError):
+            continue
+        if resolved.is_file():
+            return str(resolved)
+    return ""
 
 
 def _dedupe_key(action: dict) -> str:
@@ -459,6 +502,19 @@ def _unsafe_review_path(repo_root: Path | str, target: str) -> Path:
     return repo / "state" / target_storage_key(resolved) / "unsafe_skipped_reviews.json"
 
 
+@contextmanager
+def _unsafe_review_mutation_lock(repo_root: Path | str, target: str):
+    path = _unsafe_review_path(repo_root, target)
+    lock_path = path.parent / "locks" / "unsafe_review.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _sync_unsafe_skipped_review_for_action(
     repo_root: Path | str,
     target: str,
@@ -483,28 +539,28 @@ def _sync_unsafe_skipped_review_for_action(
         }
 
     path = _unsafe_review_path(repo_root, target)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    except (OSError, json.JSONDecodeError):
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-    resolved = payload.setdefault("resolved", {})
-    if not isinstance(resolved, dict):
-        resolved = {}
-        payload["resolved"] = resolved
-    resolved[unsafe_id] = {
-        "status": normalized_status,
-        "artifact": artifact,
-        "result": _compact_text(action.get("result") or "", 1000),
-        "notes": _compact_text(action.get("notes") or "", 1000),
-        "resolved_at": now_utc(),
-    }
-    payload["schema_version"] = SCHEMA_VERSION
-    payload["target"] = canonical_target_value(target)
-    payload["updated_at"] = now_utc()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with _unsafe_review_mutation_lock(repo_root, target):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        resolved = payload.setdefault("resolved", {})
+        if not isinstance(resolved, dict):
+            resolved = {}
+            payload["resolved"] = resolved
+        resolved[unsafe_id] = {
+            "status": normalized_status,
+            "artifact": artifact,
+            "result": _compact_text(action.get("result") or "", 1000),
+            "notes": _compact_text(action.get("notes") or "", 1000),
+            "resolved_at": now_utc(),
+        }
+        payload["schema_version"] = SCHEMA_VERSION
+        payload["target"] = canonical_target_value(target)
+        payload["updated_at"] = now_utc()
+        _write_json_atomic(path, payload)
     return {
         "status": "updated",
         "unsafe_skipped_id": unsafe_id,
@@ -1047,6 +1103,12 @@ def _resolve_action_in_queue(
         if str(item.get("id") or "") != action_id:
             continue
         previous = str(item.get("status") or "queued")
+        if normalized in TERMINAL_EVIDENCE_STATUSES:
+            evidence_ref = _locatable_evidence_ref(repo_root, result)
+            if not evidence_ref:
+                raise ValueError(
+                    f"action status {normalized!r} requires a locatable evidence reference in result"
+                )
         item["status"] = normalized
         item["updated_at"] = now_utc()
         item["result"] = _compact_text(result or item.get("result", ""), 1000)

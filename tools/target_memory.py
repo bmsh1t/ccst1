@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -87,6 +89,45 @@ def write_json(path: Path, payload: dict) -> None:
         raise
 
 
+@contextmanager
+def target_memory_mutation_lock(path: Path):
+    """Serialize one target's target-memory read/modify/write sequence."""
+    path = Path(path)
+    lock_path = path.parent / ".locks" / f"{path.name}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def write_handoff_file(sessions_dir: Path, target_key: str, content: str) -> Path:
+    """Create one handoff file without replacing an existing handoff."""
+    sessions_dir = Path(sessions_dir)
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    for index in range(1000):
+        suffix = "" if index == 0 else f"-{index}"
+        path = sessions_dir / f"{stamp}-{target_key}{suffix}.md"
+        try:
+            with path.open("x", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            return path
+        except FileExistsError:
+            continue
+        except Exception:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+    raise FileExistsError(f"unable to allocate unique handoff file in {sessions_dir}")
+
+
 def target_memory_path(target: str) -> Path:
     return TARGETS_DIR / f"{target_storage_key(target)}.json"
 
@@ -127,6 +168,14 @@ def load_target_memory(target: str) -> dict:
 
 
 def save_target_memory(payload: dict) -> Path:
+    path = target_memory_path(payload["target"])
+    with target_memory_mutation_lock(path):
+        payload["updated_at"] = now_utc()
+        write_json(path, payload)
+        return path
+
+
+def _save_target_memory_unlocked(payload: dict) -> Path:
     payload["updated_at"] = now_utc()
     path = target_memory_path(payload["target"])
     write_json(path, payload)
@@ -135,32 +184,34 @@ def save_target_memory(payload: dict) -> Path:
 
 def set_active(args: argparse.Namespace) -> str:
     canonical_target = canonical_target_value(args.target)
-    target_memory = load_target_memory(canonical_target)
-    target_memory["mode"] = args.mode
-    target_memory["phase"] = args.phase
-    if args.goal:
-        target_memory["active_goal"] = args.goal
-    if args.hypothesis:
-        target_memory["current_hypothesis"] = args.hypothesis
-    if args.skill:
-        target_memory["selected_skills"] = args.skill
-    if args.knowledge:
-        target_memory["knowledge_focus"] = args.knowledge
-    target_path = save_target_memory(target_memory)
+    path = target_memory_path(canonical_target)
+    with target_memory_mutation_lock(path):
+        target_memory = load_target_memory(canonical_target)
+        target_memory["mode"] = args.mode
+        target_memory["phase"] = args.phase
+        if args.goal:
+            target_memory["active_goal"] = args.goal
+        if args.hypothesis:
+            target_memory["current_hypothesis"] = args.hypothesis
+        if args.skill:
+            target_memory["selected_skills"] = args.skill
+        if args.knowledge:
+            target_memory["knowledge_focus"] = args.knowledge
+        target_path = _save_target_memory_unlocked(target_memory)
 
-    active = {
-        "schema_version": SCHEMA_VERSION,
-        "target": canonical_target,
-        "mode": args.mode,
-        "phase": args.phase,
-        "active_goal": args.goal or target_memory.get("active_goal", ""),
-        "current_hypothesis": args.hypothesis or target_memory.get("current_hypothesis", ""),
-        "selected_skills": args.skill or target_memory.get("selected_skills", []),
-        "knowledge_focus": args.knowledge or target_memory.get("knowledge_focus", []),
-        "target_memory_path": display_path(target_path),
-        "updated_at": now_utc(),
-    }
-    write_json(ACTIVE_PATH, active)
+        active = {
+            "schema_version": SCHEMA_VERSION,
+            "target": canonical_target,
+            "mode": args.mode,
+            "phase": args.phase,
+            "active_goal": args.goal or target_memory.get("active_goal", ""),
+            "current_hypothesis": args.hypothesis or target_memory.get("current_hypothesis", ""),
+            "selected_skills": args.skill or target_memory.get("selected_skills", []),
+            "knowledge_focus": args.knowledge or target_memory.get("knowledge_focus", []),
+            "target_memory_path": display_path(target_path),
+            "updated_at": now_utc(),
+        }
+        write_json(ACTIVE_PATH, active)
     return format_summary("TARGET SET", active, target_memory)
 
 
@@ -176,73 +227,77 @@ def resolve_target(explicit_target: str | None) -> str:
 
 def append_entry(args: argparse.Namespace, field: str, label: str) -> str:
     target = resolve_target(args.target)
-    target_memory = load_target_memory(target)
-    entry = {
-        "ts": now_utc(),
-        "text": " ".join(args.text).strip(),
-    }
-    if not entry["text"]:
-        raise SystemExit(f"{label} text is required")
-    if field in {"useful_patterns", "dead_ends"}:
-        default_kind = "dead-end" if field == "dead_ends" else "useful-pattern"
-        evidence_refs = normalize_evidence_refs(getattr(args, "evidence_ref", []))
-        entry["entry_id"] = make_entry_id(
-            target=target,
-            field=field,
-            text=entry["text"],
-            evidence_refs=evidence_refs,
-        )
-        entry["kind"] = normalize_experience_kind(
-            getattr(args, "kind", None), default=default_kind
-        )
-        entry["evidence_refs"] = evidence_refs
-    target_memory.setdefault(field, []).append(entry)
-    save_target_memory(target_memory)
+    path = target_memory_path(target)
+    with target_memory_mutation_lock(path):
+        target_memory = load_target_memory(target)
+        entry = {
+            "ts": now_utc(),
+            "text": " ".join(args.text).strip(),
+        }
+        if not entry["text"]:
+            raise SystemExit(f"{label} text is required")
+        if field in {"useful_patterns", "dead_ends"}:
+            default_kind = "dead-end" if field == "dead_ends" else "useful-pattern"
+            evidence_refs = normalize_evidence_refs(getattr(args, "evidence_ref", []))
+            entry["entry_id"] = make_entry_id(
+                target=target,
+                field=field,
+                text=entry["text"],
+                evidence_refs=evidence_refs,
+            )
+            entry["kind"] = normalize_experience_kind(
+                getattr(args, "kind", None), default=default_kind
+            )
+            entry["evidence_refs"] = evidence_refs
+        target_memory.setdefault(field, []).append(entry)
+        _save_target_memory_unlocked(target_memory)
     suffix = f" [{entry['entry_id']}]" if entry.get("entry_id") else ""
     return f"{label} saved for {target}{suffix}: {entry['text']}"
 
 
 def write_handoff(args: argparse.Namespace) -> str:
     target = resolve_target(args.target)
-    target_memory = load_target_memory(target)
     summary = " ".join(args.summary).strip()
     if not summary:
         raise SystemExit("handoff summary is required")
+    path = target_memory_path(target)
+    with target_memory_mutation_lock(path):
+        target_memory = load_target_memory(target)
+        ts = now_utc()
+        next_actions = target_memory.get("next_actions", [])[-5:]
+        active_leads = target_memory.get("active_leads", [])[-5:]
+        dead_ends = target_memory.get("dead_ends", [])[-5:]
 
-    ts = now_utc()
-    stamp = ts.replace(":", "").replace("-", "").replace("Z", "Z")
-    session_path = SESSIONS_DIR / f"{stamp}-{target_storage_key(target)}.md"
-    next_actions = target_memory.get("next_actions", [])[-5:]
-    active_leads = target_memory.get("active_leads", [])[-5:]
-    dead_ends = target_memory.get("dead_ends", [])[-5:]
+        lines = [
+            f"# Target Handoff: {target}",
+            "",
+            f"- Time: {ts}",
+            f"- Mode: {target_memory.get('mode', 'hunt')}",
+            f"- Phase: {target_memory.get('phase', 'unknown')}",
+            "",
+            "## Summary",
+            summary,
+            "",
+            "## Active Leads",
+            *format_entries(active_leads),
+            "",
+            "## Next Actions",
+            *format_entries(next_actions),
+            "",
+            "## Recent Dead Ends",
+            *format_entries(dead_ends),
+            "",
+        ]
+        session_path = write_handoff_file(
+            SESSIONS_DIR,
+            target_storage_key(target),
+            "\n".join(lines),
+        )
 
-    lines = [
-        f"# Target Handoff: {target}",
-        "",
-        f"- Time: {ts}",
-        f"- Mode: {target_memory.get('mode', 'hunt')}",
-        f"- Phase: {target_memory.get('phase', 'unknown')}",
-        "",
-        "## Summary",
-        summary,
-        "",
-        "## Active Leads",
-        *format_entries(active_leads),
-        "",
-        "## Next Actions",
-        *format_entries(next_actions),
-        "",
-        "## Recent Dead Ends",
-        *format_entries(dead_ends),
-        "",
-    ]
-    session_path.parent.mkdir(parents=True, exist_ok=True)
-    session_path.write_text("\n".join(lines), encoding="utf-8")
-
-    target_memory.setdefault("session_handoffs", []).append(
-        {"ts": ts, "path": display_path(session_path), "summary": summary}
-    )
-    save_target_memory(target_memory)
+        target_memory.setdefault("session_handoffs", []).append(
+            {"ts": ts, "path": display_path(session_path), "summary": summary}
+        )
+        _save_target_memory_unlocked(target_memory)
     return f"Handoff written: {display_path(session_path)}"
 
 

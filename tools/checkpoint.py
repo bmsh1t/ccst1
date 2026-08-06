@@ -46,6 +46,12 @@ try:
     from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import load_case_state, summary as build_case_state_summary
+    from tools.target_memory import (
+        read_json as read_target_memory_json,
+        target_memory_mutation_lock,
+        write_handoff_file,
+        write_json as write_target_memory_json,
+    )
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
     from tools.experience_schema import make_entry_id
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -68,30 +74,18 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import load_case_state, summary as build_case_state_summary  # type: ignore
+    from target_memory import (  # type: ignore
+        read_json as read_target_memory_json,
+        target_memory_mutation_lock,
+        write_handoff_file,
+        write_json as write_target_memory_json,
+    )
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
     from experience_schema import make_entry_id  # type: ignore
 
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _read_json(path: Path) -> dict:
-    if not path.is_file():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
@@ -337,11 +331,12 @@ def record_round_lane(
     lane_id = _round_lane_text(" ".join(str(lane or "").split()), "id", max_length=200)
     path = _checkpoint_witness_path(repo_root, target)
     with checkpoint_witness_lock(repo_root, target):
-        payload = _load_checkpoint_witness(path) or _new_checkpoint_witness(target)
+        payload = _load_checkpoint_witness(path)
+        if not payload:
+            raise ValueError("round lane claim requires an active round; run --round-begin first")
         progress = _round_progress(payload)
         if progress.get("status") != "active":
-            progress = _new_round_progress(max_lanes)
-            payload["round_progress"] = progress
+            raise ValueError("round lane claim requires an active round; run --round-begin first")
         claimed = progress.get("claimed_lanes") if isinstance(progress.get("claimed_lanes"), list) else []
         lanes = _round_lanes(progress, claimed)
         if lane_id in claimed:
@@ -3306,66 +3301,65 @@ def apply_target_memory(repo_root: Path | str, target: str, checkpoint: dict) ->
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     path = _target_memory_path(repo, resolved_target)
-    memory = _read_json(path) or _empty_target_memory(resolved_target)
-    memory.setdefault("target", resolved_target)
+    with target_memory_mutation_lock(path):
+        memory = read_target_memory_json(path) or _empty_target_memory(resolved_target)
+        memory.setdefault("target", resolved_target)
 
-    added = {
-        "lead": _append_unique_entries(
-            memory,
-            "active_leads",
-            checkpoint.get("target_write_back", {}).get("lead", [])[:3],
-            resolved_target,
-        ),
-        "next": _append_unique_entries(
-            memory,
-            "next_actions",
-            checkpoint.get("target_write_back", {}).get("next", [])[:5],
-            resolved_target,
-        ),
-        "dead_end": _append_unique_entries(
-            memory,
-            "dead_ends",
-            checkpoint.get("target_write_back", {}).get("dead_end", [])[:2],
-            resolved_target,
-        ),
-    }
+        added = {
+            "lead": _append_unique_entries(
+                memory,
+                "active_leads",
+                checkpoint.get("target_write_back", {}).get("lead", [])[:3],
+                resolved_target,
+            ),
+            "next": _append_unique_entries(
+                memory,
+                "next_actions",
+                checkpoint.get("target_write_back", {}).get("next", [])[:5],
+                resolved_target,
+            ),
+            "dead_end": _append_unique_entries(
+                memory,
+                "dead_ends",
+                checkpoint.get("target_write_back", {}).get("dead_end", [])[:2],
+                resolved_target,
+            ),
+        }
 
-    handoff = str(checkpoint.get("target_write_back", {}).get("handoff") or "").strip()
-    session_path = ""
-    if handoff:
-        sessions_dir = repo / "memory" / "goals" / "sessions"
-        stamp = now_utc().replace(":", "").replace("-", "").replace("Z", "Z")
-        session_file = sessions_dir / f"{stamp}-{target_storage_key(resolved_target)}.md"
-        session_file.parent.mkdir(parents=True, exist_ok=True)
-        session_file.write_text(
-            "\n".join([
-                f"# Target Handoff: {resolved_target}",
-                "",
-                f"- Time: {now_utc()}",
-                f"- Decision: {checkpoint.get('decision', '-')}",
-                "",
-                "## Summary",
-                handoff,
-                "",
-            ]),
-            encoding="utf-8",
-        )
-        try:
-            session_path = str(session_file.relative_to(repo))
-        except ValueError:
-            session_path = str(session_file)
-        handoff_entry = {"ts": now_utc(), "path": session_path, "summary": handoff}
-        existing_handoffs = memory.setdefault("session_handoffs", [])
-        if not any(isinstance(item, dict) and item.get("summary") == handoff for item in existing_handoffs):
-            existing_handoffs.append(handoff_entry)
-            added["handoff"] = 1
+        handoff = str(checkpoint.get("target_write_back", {}).get("handoff") or "").strip()
+        session_path = ""
+        if handoff:
+            sessions_dir = repo / "memory" / "goals" / "sessions"
+            session_file = write_handoff_file(
+                sessions_dir,
+                target_storage_key(resolved_target),
+                "\n".join([
+                    f"# Target Handoff: {resolved_target}",
+                    "",
+                    f"- Time: {now_utc()}",
+                    f"- Decision: {checkpoint.get('decision', '-')}",
+                    "",
+                    "## Summary",
+                    handoff,
+                    "",
+                ]),
+            )
+            try:
+                session_path = str(session_file.relative_to(repo))
+            except ValueError:
+                session_path = str(session_file)
+            handoff_entry = {"ts": now_utc(), "path": session_path, "summary": handoff}
+            existing_handoffs = memory.setdefault("session_handoffs", [])
+            if not any(isinstance(item, dict) and item.get("summary") == handoff for item in existing_handoffs):
+                existing_handoffs.append(handoff_entry)
+                added["handoff"] = 1
+            else:
+                added["handoff"] = 0
         else:
             added["handoff"] = 0
-    else:
-        added["handoff"] = 0
 
-    memory["updated_at"] = now_utc()
-    _write_json(path, memory)
+        memory["updated_at"] = now_utc()
+        write_target_memory_json(path, memory)
     return {
         "target_memory_path": str(path.relative_to(repo)) if path.is_relative_to(repo) else str(path),
         "session_path": session_path,

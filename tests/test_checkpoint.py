@@ -88,6 +88,26 @@ def _finish_round_lane_worker(repo_root, target, lane, output):
         output.put(("error", str(exc)))
 
 
+def _apply_target_memory_worker(repo_root, target, index, output):
+    try:
+        result = apply_target_memory(
+            repo_root,
+            target,
+            {
+                "decision": "handoff",
+                "target_write_back": {
+                    "lead": [f"lead-{index}"],
+                    "next": [f"next-{index}"],
+                    "dead_end": [f"dead-end-{index}"],
+                    "handoff": f"handoff-{index}",
+                },
+            },
+        )
+        output.put(("ok", result.get("session_path", "")))
+    except Exception as exc:  # pragma: no cover - surfaced through parent assertion
+        output.put(("error", str(exc)))
+
+
 def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     checkpoint = build_checkpoint(tmp_path, target="target.com")
     output = format_checkpoint(checkpoint)
@@ -151,6 +171,31 @@ def test_round_lane_budget_resumes_and_dedupes_claims_across_invocations(tmp_pat
     assert lane_two["round_progress"]["budget_reached"] is True
     assert denied["status"] == "budget_exhausted"
     assert denied["allowed"] is False
+
+
+def test_round_lane_requires_explicit_round_begin(tmp_path):
+    target = "target.com"
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+
+    with pytest.raises(ValueError, match="run --round-begin first"):
+        record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=1)
+    assert not witness.exists()
+
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=1)
+    record_round_lane_result(
+        tmp_path,
+        target,
+        lane="sqli:/api/search",
+        status="completed",
+        decision="tested clean",
+        evidence_ref="findings/target.com/poc/sql.json",
+        next_action="none",
+    )
+    record_round_closure(tmp_path, target)
+
+    with pytest.raises(ValueError, match="run --round-begin first"):
+        record_round_lane(tmp_path, target, lane="authz:/api/orders", max_lanes=1)
 
 
 def test_round_lane_result_survives_resume_and_terminal_replay_is_idempotent(tmp_path):
@@ -3286,3 +3331,38 @@ def test_apply_target_memory_is_deduped(tmp_path):
     assert first["added"]["next"] >= 1
     assert second["added"]["next"] == 0
     assert second["added"]["handoff"] == 0
+
+
+def test_apply_target_memory_preserves_concurrent_entries_and_handoffs(tmp_path):
+    target = "target.com"
+    context = multiprocessing.get_context("fork")
+    output = context.Queue()
+    workers = [
+        context.Process(
+            target=_apply_target_memory_worker,
+            args=(str(tmp_path), target, index, output),
+        )
+        for index in range(12)
+    ]
+    for process in workers:
+        process.start()
+    results = [output.get(timeout=15) for _ in workers]
+    for process in workers:
+        process.join(timeout=15)
+
+    memory_path = tmp_path / "memory" / "goals" / "targets" / target / "target.com.json"
+    if not memory_path.is_file():
+        memory_path = tmp_path / "memory" / "goals" / "targets" / "target.com.json"
+    payload = json.loads(memory_path.read_text(encoding="utf-8"))
+
+    assert all(process.exitcode == 0 for process in workers)
+    assert all(status == "ok" for status, _ in results)
+    assert {item["text"] for item in payload["next_actions"]} == {
+        f"next-{index}" for index in range(12)
+    }
+    assert {item["summary"] for item in payload["session_handoffs"]} == {
+        f"handoff-{index}" for index in range(12)
+    }
+    session_paths = [item["path"] for item in payload["session_handoffs"]]
+    assert len(session_paths) == len(set(session_paths))
+    assert all((tmp_path / path).is_file() for path in session_paths)
