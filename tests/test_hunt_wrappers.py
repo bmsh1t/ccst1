@@ -516,11 +516,16 @@ def test_resolve_jwt_tool_wordlist_supports_root_tools_path(monkeypatch):
 def test_nuclei_scan_passes_output_and_input_paths_as_argv(tmp_path, monkeypatch):
     output_path = tmp_path / "findings output" / "nuclei.txt"
     captured = {}
+    input_paths = []
     monkeypatch.setattr(hunt, "_command_exists", lambda _tool: True)
 
     def fake_run_argv(argv, **kwargs):
         captured["argv"] = argv
         captured["kwargs"] = kwargs
+        input_path = Path(argv[argv.index("-l") + 1])
+        input_paths.append(input_path)
+        captured["input_path"] = input_path
+        assert input_path.read_text(encoding="utf-8") == "https://example.test/a?x=1&y=2\n"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("finding\n", encoding="utf-8")
         return True, ""
@@ -532,9 +537,21 @@ def test_nuclei_scan_passes_output_and_input_paths_as_argv(tmp_path, monkeypatch
         tags="cve,exposure",
         output_path=str(output_path),
     ) is True
-    assert captured["argv"][:4] == ["nuclei", "-l", str(output_path.parent / "_nuclei_targets.txt"), "-tags"]
+    assert captured["argv"][:2] == ["nuclei", "-l"]
+    assert captured["input_path"].parent == output_path.parent
+    assert captured["input_path"].name.startswith("_nuclei_targets_")
+    assert not captured["input_path"].exists()
     assert captured["argv"][captured["argv"].index("-output") + 1] == str(output_path)
     assert captured["kwargs"]["cwd"] == hunt.BASE_DIR
+
+    assert hunt._run_nuclei_scan(
+        ["https://example.test/a?x=1&y=2"],
+        tags="cve,exposure",
+        output_path=str(output_path),
+    ) is True
+    assert len(input_paths) == 2
+    assert len({path.name for path in input_paths}) == 2
+    assert all(not path.exists() for path in input_paths)
 
 
 def test_sqlmap_helpers_keep_url_and_request_path_as_single_argv(tmp_path, monkeypatch):
@@ -561,8 +578,8 @@ def test_sqlmap_helpers_keep_url_and_request_path_as_single_argv(tmp_path, monke
     assert all(isinstance(argv, list) for argv in calls)
 
 
-def test_zero_day_fuzzer_passes_recon_dir_and_deep_as_argv(tmp_path, monkeypatch):
-    domain = "example.test"
+def test_zero_day_fuzzer_passes_ipv6_recon_dir_and_deep_as_argv(tmp_path, monkeypatch):
+    domain = "2001:db8::1"
     recon_dir = tmp_path / "recon output" / domain
     recon_dir.mkdir(parents=True)
     monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon output"))
@@ -583,6 +600,7 @@ def test_zero_day_fuzzer_passes_recon_dir_and_deep_as_argv(tmp_path, monkeypatch
 
     assert hunt.run_zero_day_fuzzer(domain, deep=True) is True
     assert captured["argv"][0] == sys.executable
+    assert captured["argv"][2] == "https://[2001:db8::1]"
     assert "--recon-dir" in captured["argv"]
     assert captured["argv"][captured["argv"].index("--recon-dir") + 1] == str(recon_dir)
     assert captured["argv"][-1] == "--deep"

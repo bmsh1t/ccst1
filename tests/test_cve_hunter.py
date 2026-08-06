@@ -1,5 +1,7 @@
 """Legacy CVE hunter 必须复用 Intel v2 owner。"""
 
+import os
+
 import pytest
 
 from tools import cve_hunter
@@ -67,14 +69,53 @@ def test_detect_technologies_uses_argv_for_target_bearing_probes(monkeypatch):
 
     assert cve_hunter.detect_technologies("Example.TEST") == {}
     assert calls[0] == (
-        ["httpx", "-silent", "-json", "-tech-detect", "-status-code", "-u", "Example.TEST"],
+        ["httpx", "-silent", "-json", "-tech-detect", "-status-code", "-u", "example.test"],
         30,
     )
     assert calls[1] == (
-        ["curl", "-sI", "https://Example.TEST", "--max-time", "10"],
+        ["curl", "-sI", "https://example.test", "--max-time", "10"],
         15,
     )
     assert all(isinstance(argv, list) for argv, _timeout in calls)
+
+
+def test_cve_target_urls_bracket_bare_ipv6(monkeypatch):
+    calls = []
+
+    def fake_run_argv(argv, timeout=30):
+        calls.append(argv)
+        return False, ""
+
+    monkeypatch.setattr(cve_hunter, "run_argv", fake_run_argv)
+
+    assert cve_hunter.detect_technologies("2001:db8::1") == {}
+    assert calls[1][2] == "https://[2001:db8::1]"
+    assert all(argv[-3].startswith("https://[2001:db8::1]/") for argv in calls[2:])
+
+    calls.clear()
+    assert cve_hunter.run_nuclei_cve_scan("2001:db8::1") == []
+    assert calls[0][calls[0].index("-u") + 1] == "https://[2001:db8::1]"
+
+
+def test_exposed_config_checks_use_unique_cleaned_tempfiles(monkeypatch):
+    response_paths = []
+
+    def fake_run_argv(argv, timeout=30):
+        if argv[0] == "curl":
+            response_path = argv[argv.index("-o") + 1]
+            assert os.path.exists(response_path)
+            response_paths.append(response_path)
+            return (True, "200") if len(response_paths) == 1 else (False, "")
+        assert os.path.exists(argv[-1])
+        return (True, "ASCII text") if argv[0] == "file" else (True, "window.APP_CONFIG = {}")
+
+    monkeypatch.setattr(cve_hunter, "run_argv", fake_run_argv)
+
+    assert cve_hunter.check_exposed_configs("2001:db8::1") == [
+        "https://[2001:db8::1]/env.js"
+    ]
+    assert len(response_paths) == len(set(response_paths))
+    assert all(not os.path.exists(path) for path in response_paths)
 
 
 def test_nuclei_scan_passes_space_bearing_input_path_as_one_argument(tmp_path, monkeypatch):

@@ -20,7 +20,7 @@ def _parse_port(value: str) -> int:
     return int(value)
 
 
-def _classify_host(host: str, port: int | None = None, *, lowercase: bool = False) -> dict:
+def _classify_host(host: str, port: int | None = None) -> dict:
     wildcard = host.startswith("*.")
     bare_host = host[2:] if wildcard else host
     if not bare_host or not bare_host.isascii() or "%" in bare_host:
@@ -40,9 +40,7 @@ def _classify_host(host: str, port: int | None = None, *, lowercase: bool = Fals
 
     if re.fullmatch(r"[0-9.:]+", bare_host):
         raise ValueError("invalid IP/CIDR target")
-    normalized_host = bare_host.rstrip(".")
-    if lowercase:
-        normalized_host = normalized_host.lower()
+    normalized_host = (bare_host[:-1] if bare_host.endswith(".") else bare_host).lower()
     if (
         not normalized_host
         or len(normalized_host) > 253
@@ -83,7 +81,7 @@ def _classify_url(value: str) -> dict:
             raise ValueError("bracketed target hosts must be IPv6") from exc
     elif ":" in host:
         raise ValueError("IPv6 URL hosts must be bracketed")
-    return _classify_host(host, port, lowercase=True)
+    return _classify_host(host, port)
 
 
 def canonical_target_value(target: str) -> str:
@@ -161,6 +159,22 @@ def classify_target(target: str) -> dict:
     if "/" in value:
         raise ValueError("target path must be an existing file or HTTP(S) URL")
     return _classify_host(value)
+
+
+def target_https_url(target: str) -> str:
+    """Return an HTTPS origin with a URL-safe target authority."""
+    target_info = classify_target(target)
+    if target_info["kind"] not in {"domain", "ip"}:
+        raise ValueError("HTTPS target must be a domain or IP")
+    authority = target_info["target"]
+    try:
+        address = ipaddress.ip_address(authority)
+    except ValueError:
+        pass
+    else:
+        if address.version == 6:
+            authority = f"[{authority}]"
+    return f"https://{authority}"
 
 
 def _list_storage_stem(normalized_target: str) -> str:
@@ -294,7 +308,11 @@ def _scope_endpoint(
     scheme = parsed.scheme.lower() or inherited_scheme.lower()
     if port is None:
         port = {"http": 80, "https": 443}.get(scheme)
-    host = (parsed.hostname or "").lower().strip(".")
+    host = (parsed.hostname or "").lower()
+    if host.endswith(".."):
+        return "", None, "", False
+    if host.endswith("."):
+        host = host[:-1]
     wildcard = host.startswith("*.")
     if wildcard:
         host = host[2:]

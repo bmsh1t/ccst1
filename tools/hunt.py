@@ -30,6 +30,7 @@ import signal
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -62,6 +63,7 @@ from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
 from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock
 from tools.target_paths import (
     classify_target as classify_target_input,
+    target_https_url,
     target_list_entries,
     target_storage_key,
 )
@@ -1244,18 +1246,32 @@ def _run_nuclei_scan(urls, *, tags, output_path, severity=None, rate_limit=20, c
     if not urls or not _command_exists("nuclei"):
         return False
 
-    input_path = os.path.join(os.path.dirname(output_path), "_nuclei_targets.txt")
-    _write_text_lines(input_path, urls)
-    cmd = ["nuclei", "-l", input_path, "-tags", tags]
-    if severity:
-        cmd.extend(["-severity", severity])
-    cmd.extend([
-        "-silent",
-        "-rate-limit", str(rate_limit),
-        "-concurrency", str(concurrency),
-        "-output", output_path,
-    ])
-    success, _ = run_argv(cmd, cwd=BASE_DIR, timeout=600)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=os.path.dirname(output_path),
+        prefix="_nuclei_targets_",
+        suffix=".txt",
+        delete=False,
+    ) as handle:
+        input_path = handle.name
+        handle.write("".join(f"{url}\n" for url in urls))
+    try:
+        cmd = ["nuclei", "-l", input_path, "-tags", tags]
+        if severity:
+            cmd.extend(["-severity", severity])
+        cmd.extend([
+            "-silent",
+            "-rate-limit", str(rate_limit),
+            "-concurrency", str(concurrency),
+            "-output", output_path,
+        ])
+        success, _ = run_argv(cmd, cwd=BASE_DIR, timeout=600)
+    finally:
+        try:
+            os.unlink(input_path)
+        except FileNotFoundError:
+            pass
     return success and os.path.exists(output_path)
 
 
@@ -1923,7 +1939,7 @@ def run_zero_day_fuzzer(domain, deep=False):
     script = os.path.join(TOOLS_DIR, "zero_day_fuzzer.py")
     # Check if we have recon data with live URLs
     recon_dir = _resolve_recon_dir(domain)
-    cmd = [sys.executable, script, f"https://{domain}"]
+    cmd = [sys.executable, script, target_https_url(domain)]
     if os.path.isdir(recon_dir):
         cmd.extend(["--recon-dir", recon_dir])
     if deep:

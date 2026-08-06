@@ -41,6 +41,14 @@ def test_target_paths_canonicalizes_host_port_cidr_and_lists(tmp_path):
         "kind": "domain",
         "target": "example.com",
     }
+    assert target_paths.classify_target("Example.COM:8443") == {
+        "kind": "domain",
+        "target": "example.com:8443",
+    }
+    assert target_paths.canonical_target_value("Example.COM") == "example.com"
+    assert target_paths.target_storage_key("Example.COM") == target_paths.target_storage_key(
+        "https://Example.COM"
+    )
     assert target_paths.canonical_target_value("http://127.0.0.1:3002/#/login") == "127.0.0.1:3002"
     assert target_paths.target_storage_key("http://127.0.0.1:3002/#/login") == "127.0.0.1:3002"
 
@@ -62,6 +70,16 @@ def test_target_paths_accepts_wildcards_single_labels_and_unambiguous_ipv6():
         "kind": "ip",
         "target": "[2001:db8::1]:8443",
     }
+    assert target_paths.classify_target("example.test.") == {
+        "kind": "domain",
+        "target": "example.test",
+    }
+    assert target_paths.classify_target("https://example.test./") == {
+        "kind": "domain",
+        "target": "example.test",
+    }
+    assert target_paths.target_https_url("2001:db8::1") == "https://[2001:db8::1]"
+    assert target_paths.target_https_url("[2001:db8::1]:8443") == "https://[2001:db8::1]:8443"
 
 
 @pytest.mark.parametrize(
@@ -83,6 +101,8 @@ def test_target_paths_accepts_wildcards_single_labels_and_unambiguous_ipv6():
         "[2001:db8::1",
         "[example.test]",
         "https://[example.test]/",
+        "example.test..",
+        "https://example.test../",
         "missing/scope.txt",
         "täst.example",
     ),
@@ -128,6 +148,10 @@ def test_url_belongs_to_target_distinguishes_direct_evidence_from_chain_context(
     assert not target_paths.url_belongs_to_target(
         "http://127.0.0.1:3002application/vnd.ms-word.do",
         "http://127.0.0.1:3002/#/",
+    )
+    assert not target_paths.url_belongs_to_target(
+        "https://example.com../api",
+        "example.com",
     )
 
 
@@ -210,7 +234,7 @@ def test_target_memory_set_append_and_handoff_use_canonical_paths(tmp_path, monk
         )
     )
     assert "TARGET SET" in summary
-    assert "Example.COM" in summary
+    assert "example.com" in summary
 
     saved = target_memory.load_target_memory("Example.COM")
     assert saved["active_goal"] == "map auth boundaries"

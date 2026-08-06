@@ -13,10 +13,11 @@ import argparse
 import os
 import re
 import sys
+import tempfile
 
 from intel_engine import build_target_intel
 from runtime_exec import run_argv_command_split, run_shell_command_split
-from target_paths import classify_target, target_storage_key
+from target_paths import classify_target, target_https_url, target_storage_key
 from technology_inventory import (
     load_or_build_inventory_for_recon_dir,
     parse_httpx_json_line,
@@ -72,7 +73,7 @@ def detect_technologies(domain, recon_dir=None):
 
     # Method 3: Manual header analysis
     success, output = run_argv(
-        ["curl", "-sI", f"https://{domain}", "--max-time", "10"],
+        ["curl", "-sI", target_https_url(domain), "--max-time", "10"],
         timeout=15
     )
     if success and output:
@@ -125,7 +126,7 @@ def detect_technologies(domain, recon_dir=None):
 
     for path, tech in fingerprints.items():
         success, output = run_argv(
-            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"https://{domain}{path}", "--max-time", "5"],
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"{target_https_url(domain)}{path}", "--max-time", "5"],
             timeout=10
         )
         if success and output in ("200", "301", "302", "403"):
@@ -155,7 +156,7 @@ def run_nuclei_cve_scan(domain, recon_dir=None):
     if targets_file:
         cmd = ["nuclei", "-l", targets_file]
     else:
-        cmd = ["nuclei", "-u", f"https://{domain}"]
+        cmd = ["nuclei", "-u", target_https_url(domain)]
     cmd.extend(["-tags", "cve", "-severity", "medium,high,critical", "-silent", "-rate-limit", "30"])
 
     success, output = run_argv(cmd, timeout=300)
@@ -185,7 +186,7 @@ def check_exposed_configs(domain, recon_dir=None):
         "/static/env.js", "/assets/env.js", "/config/env.js",
     ]
 
-    hosts = [f"https://{domain}"]
+    hosts = [target_https_url(domain)]
     if recon_dir:
         live_file = os.path.join(recon_dir, "live", "urls.txt")
         if os.path.exists(live_file):
@@ -195,17 +196,25 @@ def check_exposed_configs(domain, recon_dir=None):
     for host in hosts:
         for path in config_paths:
             url = f"{host}{path}"
-            success, output = run_argv(
-                ["curl", "-s", "-o", "/tmp/cfg_check.txt", "-w", "%{http_code}", "--max-time", "5", url],
-                timeout=10
-            )
-            if success and output.strip() == "200":
-                # Verify it's not an HTML error page
-                _, content = run_argv(["file", "/tmp/cfg_check.txt"], timeout=5)
-                _, head = run_argv(["head", "-1", "/tmp/cfg_check.txt"], timeout=5)
-                if 'HTML' not in content and '<!DOCTYPE' not in head and '<html' not in head.lower():
-                    exposed.append(url)
-                    print(f"    [VULN] Config exposed: {url}")
+            with tempfile.NamedTemporaryFile(prefix="cfg_check_", delete=False) as handle:
+                response_path = handle.name
+            try:
+                success, output = run_argv(
+                    ["curl", "-s", "-o", response_path, "-w", "%{http_code}", "--max-time", "5", url],
+                    timeout=10
+                )
+                if success and output.strip() == "200":
+                    # Verify it's not an HTML error page
+                    _, content = run_argv(["file", response_path], timeout=5)
+                    _, head = run_argv(["head", "-1", response_path], timeout=5)
+                    if 'HTML' not in content and '<!DOCTYPE' not in head and '<html' not in head.lower():
+                        exposed.append(url)
+                        print(f"    [VULN] Config exposed: {url}")
+            finally:
+                try:
+                    os.unlink(response_path)
+                except FileNotFoundError:
+                    pass
 
     if not exposed:
         print("    [+] No exposed config files found")
