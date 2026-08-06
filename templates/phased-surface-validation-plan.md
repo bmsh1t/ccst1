@@ -6,7 +6,7 @@
 
 - 这是计划模板，不是自动执行器。
 - 所有目标、端点、actor、凭据、payload 都必须来自当前目标的 `surface`、`checkpoint`、`coverage_matrix`、`action_queue` 或人工确认。
-- 默认只做只读、低影响验证；任何写操作、登录尝试、状态改变、批量枚举、明显高风险 payload 都必须先形成 `unsafe-skipped-review` 或明确人工授权。
+- 副作用判断统一遵循 `rules/red-lines.md`；模板不因漏洞类别、攻击方向或 payload 名称自动跳过覆盖，只有明确的破坏、持久化、高压流量或不可逆影响才需要红线决策。
 - 每个阶段结束后先回写证据和队列状态，再进入下一阶段。
 
 ## 输入
@@ -16,6 +16,7 @@ target: <target>
 storage_key: <state/findings storage key>
 auth_context: <none | guest | user | admin | custom actor>
 scope_boundary: <program/scope note>
+side_effect_class: <read-only | inert-proof | reversible-test | persistent-write | destructive | unknown>
 source_artifacts:
   - findings/<target>/manual_review/unsafe_skipped.txt
   - evidence/<target>/coverage_matrix.json
@@ -58,14 +59,12 @@ continue | checkpoint | blocked | needs-operator-approval
 - 对同 endpoint family 的状态码/响应长度/内容类型差异做小样本对比
 ```
 
-禁止直接做：
+阶段路由：
 
 ```text
-- 登录尝试
-- 写入、删除、上传、修改状态
-- 大范围枚举
-- 时间延迟型 payload
-- OOB/SSRF/RCE 类高影响验证
+- 只读、inert marker、一次性 OAST 和最小 primitive proof：按当前证据继续验证
+- 需要状态改变或可清理测试资源：按 `rules/red-lines.md` 选择 `allow-with-controls` 或进入下一阶段
+- 具体破坏、持久化、高压或不可逆动作：先做红线决策；被延后或阻断时记录 `unsafe-skipped-review` 或 checkpoint
 ```
 
 证据回写：
@@ -84,7 +83,7 @@ continue | checkpoint | blocked | needs-operator-approval
 - 阶段 1 已产生明确 next_question
 - actor / endpoint family / vuln_class 已明确
 - action_queue 中有对应 queued item
-- 不需要默认凭据、批量枚举或状态改变；否则停在 checkpoint
+- action_queue item 有 source artifact、预算和停止条件；有副作用时按 `rules/red-lines.md` 决策
 ```
 
 适合动作：
@@ -112,32 +111,29 @@ tested | dead-end | blocked | candidate | validated | n/a
 - 不能把 blocked 写成 tested_clean
 ```
 
-## 阶段 3：高风险验证门槛
+## 阶段 3：具体副作用验证门槛
 
 进入条件：
 
 ```text
-- 明确授权
+- `rules/red-lines.md` 已完成具体副作用判断
 - 明确停止条件
 - 明确回滚/影响控制策略
-- 已经在 action_queue 中标记 redline_required
+- 需要门控时在 action_queue 中标记 `redline_required`
 ```
 
-高风险示例：
+需要门控的动作示例：
 
 ```text
-- POST/PUT/PATCH/DELETE 状态改变
-- 上传 canary
-- 登录/默认凭据尝试
-- 时间延迟型 SQLi
-- XXE 文件读取
-- SSRF/OOB/RCE 类验证
+- 持久化写入、删除或真实业务状态改变
+- 高压流量、资源耗尽或不可逆动作
+- 其他经红线判断确认存在真实副作用的动作
 ```
 
 默认行为：
 
 ```text
-不自动执行，进入 unsafe-skipped-review 或 checkpoint。
+按 `rules/red-lines.md` 的 `allow`、`allow-with-controls`、`downgrade` 或 `pause` 执行并回写证据。
 ```
 
 ## 阶段结束检查

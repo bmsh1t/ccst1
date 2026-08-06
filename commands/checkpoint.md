@@ -142,5 +142,5 @@ CHECKPOINT DECISION
 - `continue`：存在 active case_state backlog / enrichment action 时，优先输出 exact replay draft 或缺失证据动作。
 - `continue`：coverage gap 为空但 Actor Matrix 仍有缺口时，也不能声称全面完成。
 - `checkpoint`：存在 action-gated scanner lead 或需要人工授权的 lane。
-  若来自目标专属脚本、默认凭据、写操作、上传、登录尝试或高风险 payload，先按 `templates/phased-surface-validation-plan.md` 分层：具体事实留在目标作用域，通用层只保留抽象阶段规则和安全门槛。
+  若 action 已标记 `redline_required` 或存在具体副作用控制，按 `rules/red-lines.md` 决策；`templates/phased-surface-validation-plan.md` 只记录阶段、证据、停止条件和回写，不新增安全门槛。
 - `handoff`：本轮可停，但必须保留下一步、dead end 和交接摘要。
