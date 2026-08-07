@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Iterator
 from urllib.parse import urlparse
@@ -22,6 +23,7 @@ from memory.pattern_db import PatternDB
 from memory.target_profile import default_memory_dir, load_target_profile
 try:
     from tools.closure_resolver import ClosureResolver, canonical_endpoint_path
+    from tools.coverage_matrix import load_matrix
     from tools.evidence_ledger import (
         build_current_cell_projection,
         load_entries as load_evidence_ledger_entries,
@@ -59,6 +61,7 @@ try:
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import ClosureResolver, canonical_endpoint_path  # type: ignore
+    from coverage_matrix import load_matrix  # type: ignore
     from evidence_ledger import (  # type: ignore
         build_current_cell_projection,
         load_entries as load_evidence_ledger_entries,
@@ -1564,44 +1567,59 @@ def load_surface_context(
     # probe-derived shapes stay in ranking so a noisy archive cannot hide a
     # real attack surface.
     _probe_log = recon_dir / "urls" / "_filtered_attack_probes.txt"
-    if write_probe_log and _probe_log.is_file():
-        # Reset on each context load so the log reflects only the
-        # current pass — otherwise it grows unboundedly across re-runs.
-        _probe_log.unlink()
-    probe_log_path = _probe_log if write_probe_log else None
-    if use_surface_index:
-        # 完整 URL 正文由 index iterator 流式消费；这里不再把 30 万行物化成 list。
-        api_urls = []
-        param_urls = []
-        js_endpoints = []
-        browser_xhr_urls = []
-        browser_api_urls = []
-    else:
-        api_urls = filter_attack_probes(
-            _read_lines(recon_dir / "urls" / "api_endpoints.txt"),
-            log_path=probe_log_path,
-            preserve_surfaces=True,
+    probe_log_path = None
+    if write_probe_log:
+        _probe_log.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{_probe_log.name}.",
+            dir=_probe_log.parent,
         )
-        param_urls = filter_attack_probes(
-            _read_lines(recon_dir / "urls" / "with_params.txt"),
-            log_path=probe_log_path,
-            preserve_surfaces=True,
-        )
-        js_endpoints = filter_attack_probes(
-            _read_lines(recon_dir / "js" / "endpoints.txt"),
-            log_path=probe_log_path,
-            preserve_surfaces=True,
-        )
-        browser_xhr_urls = filter_attack_probes(
-            _read_lines(recon_dir / "browser" / "xhr_endpoints.txt"),
-            log_path=probe_log_path,
-            preserve_surfaces=True,
-        )
-        browser_api_urls = filter_attack_probes(
-            _read_lines(recon_dir / "browser" / "api_endpoints.txt"),
-            log_path=probe_log_path,
-            preserve_surfaces=True,
-        )
+        os.close(fd)
+        probe_log_path = Path(temp_name)
+    try:
+        if use_surface_index:
+            # 完整 URL 正文由 index iterator 流式消费；这里不再把 30 万行物化成 list。
+            api_urls = []
+            param_urls = []
+            js_endpoints = []
+            browser_xhr_urls = []
+            browser_api_urls = []
+        else:
+            api_urls = filter_attack_probes(
+                _read_lines(recon_dir / "urls" / "api_endpoints.txt"),
+                log_path=probe_log_path,
+                preserve_surfaces=True,
+            )
+            param_urls = filter_attack_probes(
+                _read_lines(recon_dir / "urls" / "with_params.txt"),
+                log_path=probe_log_path,
+                preserve_surfaces=True,
+            )
+            js_endpoints = filter_attack_probes(
+                _read_lines(recon_dir / "js" / "endpoints.txt"),
+                log_path=probe_log_path,
+                preserve_surfaces=True,
+            )
+            browser_xhr_urls = filter_attack_probes(
+                _read_lines(recon_dir / "browser" / "xhr_endpoints.txt"),
+                log_path=probe_log_path,
+                preserve_surfaces=True,
+            )
+            browser_api_urls = filter_attack_probes(
+                _read_lines(recon_dir / "browser" / "api_endpoints.txt"),
+                log_path=probe_log_path,
+                preserve_surfaces=True,
+            )
+        if probe_log_path is not None:
+            if probe_log_path.stat().st_size:
+                os.replace(probe_log_path, _probe_log)
+            else:
+                probe_log_path.unlink()
+                _probe_log.unlink(missing_ok=True)
+    except Exception:
+        if probe_log_path is not None:
+            probe_log_path.unlink(missing_ok=True)
+        raise
     finding_index = load_finding_index(findings_dir)
     scanner_findings = [
         _project_untrusted_finality_as_candidate(
@@ -1614,6 +1632,7 @@ def load_surface_context(
         and url_belongs_to_target(str(item.get("url") or ""), target)
     ]
     ledger_entries = load_evidence_ledger_entries(repo_root, target)
+    coverage_matrix = load_matrix(target, repo_root=repo_root)
     action_queue_entries = load_action_queue(repo_root, target).get("actions", [])
     intel_context = _load_intel_context(recon_dir)
     intel_signals = intel_context["signals"]
@@ -1681,6 +1700,7 @@ def load_surface_context(
         "scanner_findings": scanner_findings,
         "ledger_entries": ledger_entries,
         "ledger_summary": build_current_cell_projection(ledger_entries),
+        "coverage_matrix": coverage_matrix,
         "action_queue_entries": action_queue_entries if isinstance(action_queue_entries, list) else [],
         "intel_signals": intel_signals,
         "intel": intel_context,
@@ -2032,7 +2052,10 @@ def rank_surface(context: dict) -> dict:
         if not url:
             continue
         scanner_findings_by_url.setdefault(url, []).append(finding)
-    closure_resolver = ClosureResolver(context.get("ledger_summary") or {})
+    closure_resolver = ClosureResolver(
+        context.get("ledger_summary") or {},
+        context.get("coverage_matrix") or {},
+    )
     action_queue_final_endpoints = _action_queue_final_endpoints(
         context.get("action_queue_entries") or []
     )

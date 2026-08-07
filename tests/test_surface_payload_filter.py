@@ -22,6 +22,7 @@ from surface import (  # noqa: E402
     load_surface_context,
 )
 from attack_probe_filter import sanitize_attack_probe_url  # noqa: E402
+import surface as surface_module  # noqa: E402
 
 
 class TestIsAttackProbe:
@@ -284,6 +285,27 @@ class TestLoadSurfaceContextFilters:
         second = log.read_text(encoding="utf-8")
         # Same content, NOT doubled
         assert first == second
+
+    def test_failed_context_load_preserves_previous_probe_log(self, tmp_path, monkeypatch):
+        self._seed(
+            tmp_path,
+            "x.com",
+            api_urls=[],
+            param_urls=["/x?q=<script>alert(1)</script>"],
+        )
+        log = tmp_path / "recon" / "x.com" / "urls" / "_filtered_attack_probes.txt"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("previous-probe\n", encoding="utf-8")
+
+        def fail_filter(*_args, **_kwargs):
+            raise RuntimeError("injected filter failure")
+
+        monkeypatch.setattr(surface_module, "filter_attack_probes", fail_filter)
+        with pytest.raises(RuntimeError, match="injected filter failure"):
+            load_surface_context(tmp_path, "x.com")
+
+        assert log.read_text(encoding="utf-8") == "previous-probe\n"
+        assert list(log.parent.glob(f".{log.name}.*")) == []
 
 
 # ─── PR-19: page → JS helpers wired into load_surface_context ───────────────

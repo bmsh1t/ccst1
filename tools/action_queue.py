@@ -77,6 +77,7 @@ EVIDENCE_REF_KEYS = {
     "validation-summary",
     "validation_summary",
 }
+EVIDENCE_ROOTS = {".private", "evidence", "findings", "recon", "reports"}
 REPORT_ACTION_TYPES = {"report"}
 ADVISORY_REVIEW_ACTION_TYPES = {"surface-review"}
 LOW_EVIDENCE_SURFACE_REVIEW_MARKERS = (
@@ -226,10 +227,10 @@ def _locatable_evidence_ref(repo_root: Path | str, result: str) -> str:
             path = repo / path
         try:
             resolved = path.resolve()
-            resolved.relative_to(repo)
+            relative = resolved.relative_to(repo)
         except (OSError, ValueError):
             continue
-        if resolved.is_file():
+        if relative.parts and relative.parts[0] in EVIDENCE_ROOTS and resolved.is_file():
             return str(resolved)
     return ""
 

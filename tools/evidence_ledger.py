@@ -286,9 +286,10 @@ def load_entries_diagnostic(repo_root: Path | str, target: str) -> dict:
                     invalid_rows.append({"line": line_number, "reason": "row is not a JSON object"})
                     valid_prefix = False
                     continue
+                if not valid_prefix:
+                    continue
                 entries.append(item)
-                if valid_prefix:
-                    last_valid_offset = offset
+                last_valid_offset = offset
     except OSError as exc:
         return {
             "status": "unreadable",

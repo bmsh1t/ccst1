@@ -2863,6 +2863,7 @@ def build_closure_projection(
     reasons: list[str] = []
     action = str(state.get("next_action") or "handoff")
     ledger_health = state.get("_ledger_health") if isinstance(state.get("_ledger_health"), dict) else {}
+    checkpoint_health = state.get("_checkpoint_health") if isinstance(state.get("_checkpoint_health"), dict) else {}
     ledger_projection = state.get("_ledger_projection") if isinstance(state.get("_ledger_projection"), dict) else {}
     ledger_status = str(ledger_health.get("status") or "missing").strip().lower()
     surface_review = state.get("surface_review_completion") or {}
@@ -3003,6 +3004,11 @@ def build_closure_projection(
             reasons.insert(0, ledger_reason)
         if verdict == "finish":
             verdict = "handoff"
+    if str(checkpoint_health.get("status") or "") == "invalid":
+        if "checkpoint_invalid" not in reasons:
+            reasons.insert(0, "checkpoint_invalid")
+        if verdict == "finish":
+            verdict = "handoff"
 
     result = {
         "verdict": verdict,
@@ -3023,6 +3029,8 @@ def build_closure_projection(
         result["round_progress"] = round_progress
     if ledger_health:
         result["ledger_health"] = ledger_health
+    if checkpoint_health:
+        result["checkpoint_health"] = checkpoint_health
     return result
 
 
@@ -3162,12 +3170,23 @@ def load_closure_projection(
             "reason": f"ledger_{ledger_health.get('status')}",
         }
     witness_path = Path(repo_root) / "state" / target_storage_key(target) / "checkpoint_latest.json"
-    witness = _load_checkpoint_witness(witness_path)
-    round_progress = _checkpoint_round_projection(witness)
+    checkpoint_health = {"status": "valid"}
+    try:
+        witness = _load_checkpoint_witness(witness_path)
+        round_progress = _checkpoint_round_projection(witness)
+    except ValueError as exc:
+        witness = {}
+        round_progress = {}
+        checkpoint_health = {
+            "status": "invalid",
+            "path": str(witness_path),
+            "reason": str(exc),
+        }
     closure_state = {
         **state,
         "round_progress": round_progress,
         "_ledger_health": ledger_health,
+        "_checkpoint_health": checkpoint_health,
         "_ledger_projection": ledger_projection,
         "enrichment_hints": enrichment_hints,
         "active_action_queue_count": sum(
@@ -3791,6 +3810,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
             "next_action",
             "rotation_hint",
             "ledger_health",
+            "checkpoint_health",
             "stagnation_fingerprint",
             "error",
             "round_progress",

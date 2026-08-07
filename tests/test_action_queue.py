@@ -997,6 +997,17 @@ def test_resolve_validated_and_reported_require_locatable_evidence(tmp_path):
         )
     assert next(item for item in load_queue(tmp_path, "target.com")["actions"] if item["id"] == action["id"])["status"] == "queued"
 
+    unrelated_path = tmp_path / "README.md"
+    unrelated_path.write_text("not terminal evidence\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="locatable evidence"):
+        resolve_action(
+            tmp_path,
+            target="target.com",
+            action_id=action["id"],
+            status="validated",
+            result="evidence=README.md",
+        )
+
     validation_path = tmp_path / "findings" / "target.com" / "validation-summary.json"
     validation_path.parent.mkdir(parents=True)
     validation_path.write_text("{}\n", encoding="utf-8")

@@ -596,7 +596,7 @@ def test_last_valid_offset_stops_before_first_corrupt_row(tmp_path):
 
     diagnostic = load_entries_diagnostic(tmp_path, "target.com")
 
-    assert len(diagnostic["entries"]) == 2
+    assert [entry["endpoint"] for entry in diagnostic["entries"]] == ["/api/orders/1"]
     assert diagnostic["last_valid_offset"] == first_row_size
 
 

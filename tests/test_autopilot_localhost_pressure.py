@@ -212,7 +212,15 @@ def test_localhost_sequential_fresh_resume_batch_queue_runner_and_checkpoint(
     assert loop_payload["loop_guard"] == projection_state["loop_guard"]
     assert closure_payload["closure"] == {
         key: projection_state["closure"][key]
-        for key in ("verdict", "can_claim_exhausted", "reasons", "next_action", "rotation_hint")
+        for key in (
+            "verdict",
+            "can_claim_exhausted",
+            "reasons",
+            "next_action",
+            "rotation_hint",
+            "ledger_health",
+            "checkpoint_health",
+        )
     }
     assert closure_payload["closure"]["reasons"] == ["max_lanes_reached"]
     assert "surface" not in loop_payload

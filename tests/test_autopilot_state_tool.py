@@ -176,6 +176,23 @@ def test_closure_finishes_only_for_gap_free_handoff_state():
     assert closure["reasons"] == []
 
 
+def test_corrupt_checkpoint_witness_becomes_recovery_handoff(tmp_path):
+    witness_path = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
+    witness_path.parent.mkdir(parents=True)
+    witness_path.write_bytes(b"{broken\n")
+
+    closure = load_closure_projection(
+        str(tmp_path),
+        {"target": "target.com", "resolved_target": "target.com", "next_action": "handoff"},
+        max_lanes_reached=False,
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert "checkpoint_invalid" in closure["reasons"]
+    assert closure["checkpoint_health"]["status"] == "invalid"
+    assert witness_path.read_bytes() == b"{broken\n"
+
+
 def test_closure_projection_exposes_v2_identity_and_blocks_incomplete_candidate():
     identity = {
         "schema_version": 2,
@@ -401,11 +418,12 @@ def test_malformed_checkpoint_witness_returns_structured_state_error(tmp_path, m
         ],
     )
 
-    assert autopilot_state_main() == 2
+    assert autopilot_state_main() == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["closure"]["verdict"] == "error"
-    assert payload["closure"]["reasons"] == ["state_read_error"]
-    assert "invalid checkpoint witness JSON" in payload["closure"]["error"]["message"]
+    assert payload["closure"]["verdict"] == "handoff"
+    assert "checkpoint_invalid" in payload["closure"]["reasons"]
+    assert payload["closure"]["checkpoint_health"]["status"] == "invalid"
+    assert "invalid checkpoint witness JSON" in payload["closure"]["checkpoint_health"]["reason"]
 
 
 def test_decision_projections_preserve_only_controller_fields():

@@ -1218,9 +1218,16 @@ def request_once(
     }
 
 
-def _validate_request_facts(state_changing: bool | None, redline_checked: bool) -> None:
-    if state_changing is True and not redline_checked:
+def _validate_request_facts(
+    state_changing: bool | None,
+    redline_checked: bool,
+    method: str,
+) -> bool | None:
+    method_unsafe = str(method or "GET").upper() not in SAFE_METHODS
+    effective = True if method_unsafe else state_changing
+    if effective is True and not redline_checked:
         raise ValueError("state-changing validation requires --redline-checked before any request")
+    return effective
 
 
 def _write_raw_http(
@@ -1772,7 +1779,7 @@ def run_authz_public_exposure(
     identity_v2: dict[str, Any] | None = None,
     session: AuthSession | None = None,
 ) -> dict[str, Any]:
-    _validate_request_facts(state_changing, redline_checked)
+    state_changing = _validate_request_facts(state_changing, redline_checked, method)
     finding_id = finding_id or _default_finding_id("authz-public-exposure", url)
     bundle = _bundle_dir(repo_root, target, finding_id)
     private_bundle = _private_bundle_dir(repo_root, target, bundle)
@@ -2143,7 +2150,7 @@ def run_authz_role_replay(
     anonymous sensitive exposure promotes directly to ``tested_finding``.
     """
     method_u = method.upper()
-    _validate_request_facts(state_changing, redline_checked)
+    state_changing = _validate_request_facts(state_changing, redline_checked, method_u)
     owner_headers = dict(owner_headers or {})
     peer_headers = dict(peer_headers or {})
     peer_body = owner_body if peer_body is None else peer_body
@@ -2693,7 +2700,7 @@ def run_marker_replay(
     marker = str(expect_marker or "")
     if not marker:
         raise ValueError("expect_marker is required")
-    _validate_request_facts(state_changing, redline_checked)
+    state_changing = _validate_request_facts(state_changing, redline_checked, method)
     finding_id = finding_id or _default_finding_id("marker-replay", url)
     bundle = _bundle_dir(repo_root, target, finding_id)
     private_bundle = _private_bundle_dir(repo_root, target, bundle)
@@ -2857,7 +2864,7 @@ def run_idor_actor_pair(
     peer_headers = dict(peer_headers or {})
     peer_url = peer_url or url
     peer_body = owner_body if peer_body is None else peer_body
-    _validate_request_facts(state_changing, redline_checked)
+    state_changing = _validate_request_facts(state_changing, redline_checked, method_u)
     if not _actor_context_differs(
         url=url,
         peer_url=peer_url,

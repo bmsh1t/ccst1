@@ -8,10 +8,41 @@ from memory.schemas import make_pattern_entry
 from memory.target_profile import make_target_profile, save_target_profile
 from runtime_state import update_runtime_state
 from surface import format_surface_output, load_surface_context, rank_surface, unsafe_skipped_id
+from tools.coverage_matrix import save_matrix
 from tools.recon_adapter import ReconAdapter
 
 
 class TestSurfaceContext:
+
+    def test_surface_ranking_consumes_coverage_matrix_closure(self, tmp_path):
+        recon_dir = tmp_path / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "http://target.com [200] [API] [Node.js] [100]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "/api/orders/1\n",
+            encoding="utf-8",
+        )
+        save_matrix(
+            "target.com",
+            {
+                "endpoints": [{
+                    "endpoint": "/api/orders/1",
+                    "cells": {"IDOR": {"status": "tested_clean"}},
+                }],
+            },
+            repo_root=tmp_path,
+        )
+
+        context = load_surface_context(tmp_path, "target.com", write_probe_log=False)
+        ranked = rank_surface(context)
+        item = next(row for row in ranked["review_pool"] if row["url"] == "/api/orders/1")
+
+        assert item["ledger_history"]["result"] == "tested_clean"
 
     def test_loads_real_recon_layout_and_memory(self, tmp_path):
         repo_root = tmp_path
