@@ -28,6 +28,8 @@ tools/spray_orchestrator.sh https://target.test/login \
 
 `--i-understand` 只跳过交互提示；URL、输入、mode contract、preflight binding、停止和证据规则仍执行。交互 live 保留兼容，但同样应先 dry-run。
 
+去重后的输入默认限制为 `100` 个用户和 `1000` 次总尝试（用户数 × 密码数）。需要更大的本地压力测试时，在 dry-run、live 或 resume 命令中显式传入 `--max-users N` 和 `--max-attempts N`；两项限制都会写入 binding，改变后原 preflight/run 不可复用。
+
 `spray-shortlist.txt` 与同目录 `spray-shortlist.jsonl` 均须为 `0600`。JSONL 顺序与密码一致，
 每行包含 `schema_version=1`、`pwd_sha256_prefix`、`source`、`hibp_count`、`hibp_bucket`、
 `reason`。入口拒绝 candidate pool/ranked alias、缺失 metadata 或摘要漂移。

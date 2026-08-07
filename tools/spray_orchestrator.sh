@@ -9,6 +9,8 @@ USERS_FILE=""
 PASSES_FILE=""
 DELAY=1800
 JITTER=60
+MAX_USERS=100
+MAX_ATTEMPTS=1000
 AGGRESSIVE=false
 DRY_RUN=false
 CONTINUE_ON_HIT=false
@@ -40,6 +42,8 @@ while [[ $# -gt 0 ]]; do
         --passes)              _need_value "$@"; PASSES_FILE="$2"; shift 2 ;;
         --delay)               _need_value "$@"; DELAY="$2"; shift 2 ;;
         --jitter)              _need_value "$@"; JITTER="$2"; shift 2 ;;
+        --max-users)           _need_value "$@"; MAX_USERS="$2"; shift 2 ;;
+        --max-attempts)        _need_value "$@"; MAX_ATTEMPTS="$2"; shift 2 ;;
         --aggressive)          AGGRESSIVE=true; DELAY=60; JITTER=10; shift ;;
         --dry-run)             DRY_RUN=true; shift ;;
         --continue-on-hit)     CONTINUE_ON_HIT=true; shift ;;
@@ -60,7 +64,7 @@ while [[ $# -gt 0 ]]; do
 Usage: tools/spray_orchestrator.sh URL --mode MODE --users FILE --passes FILE [flags]
 Modes: http-form | oauth | o365 | okta
 Common: --delay N --jitter N --dry-run --preflight FILE --resume RUN_DIR
-        --continue-on-hit --i-understand
+        --max-users N --max-attempts N --continue-on-hit --i-understand
 Builtin HTTP/OAuth only: --insecure (explicitly disable TLS certificate verification)
 HTTP:   --request-spec FILE
 Legacy HTTP: --post-data TEMPLATE --csrf-extract REGEX --success-regex REGEX --fail-regex REGEX
@@ -94,6 +98,8 @@ log_bold() { echo -e "${BOLD}$1${NC}"; }
 [ -f "$PASSES_FILE" ] || { log_err "Passes file not found: $PASSES_FILE"; exit 1; }
 [[ "$DELAY" =~ ^[0-9]+$ ]] || { log_err "--delay must be a non-negative integer"; exit 1; }
 [[ "$JITTER" =~ ^[0-9]+$ ]] || { log_err "--jitter must be a non-negative integer"; exit 1; }
+[[ "$MAX_USERS" =~ ^[1-9][0-9]*$ ]] || { log_err "--max-users must be a positive integer"; exit 1; }
+[[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || { log_err "--max-attempts must be a positive integer"; exit 1; }
 [[ "$TARGET_URL" =~ ^https?://[^/[:space:]]+ ]] || { log_err "Target must be an http/https URL"; exit 1; }
 
 case "$MODE" in
@@ -133,8 +139,8 @@ print(urlparse(sys.argv[1]).hostname or "")
 PY
 )"
 [ -n "$TARGET_HOST" ] || { log_err "Target URL has no hostname"; exit 1; }
-USER_COUNT=$(awk 'NF && !seen[$0]++ {n++} END {print n+0}' "$USERS_FILE")
-PASS_COUNT=$(awk 'NF && !seen[$0]++ {n++} END {print n+0}' "$PASSES_FILE")
+USER_COUNT=$(awk '{value=$0; sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); if (value != "" && !seen[value]++) n++} END {print n+0}' "$USERS_FILE")
+PASS_COUNT=$(awk '{value=$0; sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); if (value != "" && !seen[value]++) n++} END {print n+0}' "$PASSES_FILE")
 [ "$USER_COUNT" -gt 0 ] || { log_err "Users file contains no non-empty entries"; exit 1; }
 [ "$PASS_COUNT" -gt 0 ] || { log_err "Passes file contains no non-empty entries"; exit 1; }
 TOTAL_ATTEMPTS=$((USER_COUNT * PASS_COUNT))
@@ -148,6 +154,8 @@ printf "  %-18s %s\n" "Mode:" "$MODE"
 printf "  %-18s %s (%d unique)\n" "Users file:" "$USERS_FILE" "$USER_COUNT"
 printf "  %-18s %s (%d unique)\n" "Passes file:" "$PASSES_FILE" "$PASS_COUNT"
 printf "  %-18s %d\n" "Total attempts:" "$TOTAL_ATTEMPTS"
+printf "  %-18s %s\n" "Max users:" "$MAX_USERS"
+printf "  %-18s %s\n" "Max attempts:" "$MAX_ATTEMPTS"
 printf "  %-18s %ds + %ds jitter %s\n" "Delay/round:" "$DELAY" "$JITTER" \
     "$([ "$AGGRESSIVE" = true ] && echo '(--aggressive)' || echo '')"
 printf "  %-18s ~%ds\n" "Est. duration:" "$DURATION_SEC"
@@ -169,6 +177,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export SPRAY_REPO_ROOT="$(pwd)"
 export SPRAY_DELAY="$DELAY"
 export SPRAY_JITTER="$JITTER"
+export SPRAY_MAX_USERS="$MAX_USERS"
+export SPRAY_MAX_ATTEMPTS="$MAX_ATTEMPTS"
 export SPRAY_CONTINUE_ON_HIT="$CONTINUE_ON_HIT"
 export SPRAY_TARGET_URL="$TARGET_URL"
 export SPRAY_USERS_FILE="$USERS_FILE"

@@ -49,6 +49,11 @@ def test_preflight_binds_inputs_and_resume_skips_recorded_attempt(
     assert dry.dry_run is True
     assert dry.preflight_path is not None
     assert stat.S_IMODE(dry.preflight_path.stat().st_mode) == 0o600
+    assert dry.binding["user_count"] == 1
+    assert dry.binding["password_count"] == 1
+    assert dry.binding["total_attempts"] == 1
+    assert dry.binding["max_users"] == 100
+    assert dry.binding["max_attempts"] == 1000
 
     monkeypatch.setenv("SPRAY_DRY_RUN", "false")
     monkeypatch.setenv("SPRAY_PREFLIGHT", str(dry.preflight_path))
@@ -103,6 +108,47 @@ def test_preflight_contains_no_plaintext_password(tmp_path: Path, monkeypatch: p
     payload = json.loads(raw)
     assert "Secret#1" not in raw
     assert payload["binding"]["user_count"] == 1
+
+
+def test_cardinality_limits_fail_before_run_directory_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    users, passes = _set_env(monkeypatch, tmp_path)
+    users.write_text("\n".join(f"user-{index}@example.test" for index in range(101)) + "\n", encoding="utf-8")
+    monkeypatch.setenv("SPRAY_MAX_USERS", "100")
+    with pytest.raises(ValueError, match=r"101.*100"):
+        prepare_run("oauth", config_binding={}, request_shape={})
+    assert not (tmp_path / "recon").exists()
+
+    users.write_text("one@example.test\ntwo@example.test\n", encoding="utf-8")
+    passes.write_text("\n".join(f"Secret#{index}" for index in range(501)) + "\n", encoding="utf-8")
+    passes.chmod(0o600)
+    monkeypatch.setenv("SPRAY_MAX_USERS", "100")
+    monkeypatch.setenv("SPRAY_MAX_ATTEMPTS", "1000")
+    with pytest.raises(ValueError, match=r"1002.*1000"):
+        prepare_run("oauth", config_binding={}, request_shape={})
+    assert not (tmp_path / "recon").exists()
+
+
+def test_cardinality_limits_are_bound_and_limit_drift_rejects_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("SPRAY_MAX_USERS", "2")
+    monkeypatch.setenv("SPRAY_MAX_ATTEMPTS", "2")
+    dry = prepare_run("oauth", config_binding={}, request_shape={})
+    assert dry.binding["max_users"] == 2
+    assert dry.binding["max_attempts"] == 2
+    assert dry.binding["total_attempts"] == 1
+
+    monkeypatch.setenv("SPRAY_DRY_RUN", "false")
+    monkeypatch.setenv("SPRAY_PREFLIGHT", str(dry.preflight_path))
+    monkeypatch.setenv("SPRAY_MAX_USERS", "3")
+    monkeypatch.setenv("SPRAY_MAX_ATTEMPTS", "3")
+    with pytest.raises(ValueError, match="preflight binding mismatch"):
+        prepare_run("oauth", config_binding={}, request_shape={})
 
 
 def test_expired_preflight_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

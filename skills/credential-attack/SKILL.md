@@ -87,7 +87,7 @@ tools/spray_orchestrator.sh URL --mode MODE --users users.txt \
   --preflight preflight.json --i-understand
 ```
 
-preflight 绑定 URL、mode、users/passwords、request config、delay/jitter 和 stop-on-hit；24 小时过期，输入漂移 fail-fast。`--i-understand` 只跳过交互，不跳过契约。
+preflight 绑定 URL、mode、users/passwords、request config、delay/jitter、stop-on-hit 和去重后的 cardinality limits；默认最多 `100` 个用户、`1000` 次总尝试，24 小时过期，输入或限制漂移 fail-fast。需要更大的本地压力测试时显式使用 `--max-users N --max-attempts N`。`--i-understand` 只跳过交互，不跳过契约。
 
 TLS 默认验证证书。仅在已确认的自签名环境显式增加 `--insecure`；该选择进入 preflight
 binding，不能在 live 前静默改变。

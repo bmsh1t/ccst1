@@ -24,6 +24,8 @@ except ImportError:  # pragma: no cover - 支持 python3 tools/x.py 直接调用
 
 SCHEMA_VERSION = 1
 PREFLIGHT_TTL = timedelta(hours=24)
+DEFAULT_MAX_USERS = 100
+DEFAULT_MAX_ATTEMPTS = 1000
 SECRET_KEY_RE = re.compile(
     r"(?:pass(?:word)?|secret|token|authorization|cookie|session)",
     re.IGNORECASE,
@@ -136,6 +138,16 @@ def parse_non_negative_int(value: str, *, label: str) -> int:
     return parsed
 
 
+def parse_positive_int(value: str, *, label: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{label} must be a positive integer")
+    return parsed
+
+
 def _canonical_digest(value: Any) -> str:
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256_text(raw)
@@ -240,6 +252,25 @@ def _common_input(mode: str, config_binding: dict[str, Any]) -> tuple[dict[str, 
         raise ValueError(f"passwords file must be owner-only (chmod 600): {passes_source}")
     users = read_unique_lines(users_path, label="users")
     passwords = read_unique_lines(passes_path, label="passwords")
+    max_users = parse_positive_int(
+        os.environ.get("SPRAY_MAX_USERS", str(DEFAULT_MAX_USERS)),
+        label="SPRAY_MAX_USERS",
+    )
+    max_attempts = parse_positive_int(
+        os.environ.get("SPRAY_MAX_ATTEMPTS", str(DEFAULT_MAX_ATTEMPTS)),
+        label="SPRAY_MAX_ATTEMPTS",
+    )
+    user_count = len(users)
+    password_count = len(passwords)
+    total_attempts = user_count * password_count
+    if user_count > max_users:
+        raise ValueError(
+            f"deduplicated user count {user_count} exceeds SPRAY_MAX_USERS limit {max_users}"
+        )
+    if total_attempts > max_attempts:
+        raise ValueError(
+            f"total spray attempts {total_attempts} exceeds SPRAY_MAX_ATTEMPTS limit {max_attempts}"
+        )
     shortlist_meta_sha256 = _shortlist_metadata_digest(passes_source, passwords)
     delay = parse_non_negative_int(os.environ.get("SPRAY_DELAY", "1800"), label="SPRAY_DELAY")
     jitter = parse_non_negative_int(os.environ.get("SPRAY_JITTER", "60"), label="SPRAY_JITTER")
@@ -255,8 +286,11 @@ def _common_input(mode: str, config_binding: dict[str, Any]) -> tuple[dict[str, 
         "passwords_sha256": _lines_digest(passwords),
         "shortlist_meta_sha256": shortlist_meta_sha256,
         "config_sha256": _canonical_digest(config_binding),
-        "user_count": len(users),
-        "password_count": len(passwords),
+        "user_count": user_count,
+        "password_count": password_count,
+        "total_attempts": total_attempts,
+        "max_users": max_users,
+        "max_attempts": max_attempts,
         "delay": delay,
         "jitter": jitter,
         "continue_on_hit": continue_on_hit,
@@ -277,7 +311,9 @@ def _validate_preflight(path: Path, binding: dict[str, Any]) -> dict[str, Any]:
     if payload.get("schema_version") != SCHEMA_VERSION or payload.get("kind") != "spray_preflight":
         raise ValueError(f"unsupported preflight schema: {path}")
     if payload.get("binding") != binding:
-        raise ValueError("preflight binding mismatch: URL, mode, input, config, or timing changed")
+        raise ValueError(
+            "preflight binding mismatch: URL, mode, input, config, timing, or cardinality limits changed"
+        )
     try:
         expires_at = _parse_utc(str(payload["expires_at"]))
     except (KeyError, TypeError, ValueError) as exc:
@@ -430,7 +466,9 @@ def prepare_run(
         if manifest.get("schema_version") != SCHEMA_VERSION or manifest.get("kind") != "spray_run":
             raise ValueError(f"unsupported run manifest schema: {run_dir / 'run.json'}")
         if manifest.get("binding") != binding:
-            raise ValueError("resume binding mismatch: URL, mode, input, config, or timing changed")
+            raise ValueError(
+                "resume binding mismatch: URL, mode, input, config, timing, or cardinality limits changed"
+            )
         run_id = str(manifest.get("run_id") or "")
         if not run_id or run_dir.name != run_id:
             raise ValueError(f"invalid run_id in manifest: {run_dir / 'run.json'}")
