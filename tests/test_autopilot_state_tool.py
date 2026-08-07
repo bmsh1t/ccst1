@@ -176,6 +176,67 @@ def test_closure_finishes_only_for_gap_free_handoff_state():
     assert closure["reasons"] == []
 
 
+def test_closure_projection_exposes_v2_identity_and_blocks_incomplete_candidate():
+    identity = {
+        "schema_version": 2,
+        "kind": "closure_cell",
+        "endpoint": {
+            "schema_version": 2,
+            "kind": "endpoint",
+            "endpoint": "/api/search",
+        },
+        "family": "SQLi",
+        "dimensions": {"method": "GET", "parameter": "q"},
+    }
+    open_candidate = {
+        "endpoint": "/api/search",
+        "vuln_class": "SQLi",
+        "identity_v2": identity,
+        "result": "candidate",
+    }
+    closure = build_closure_projection(
+        {
+            "next_action": "handoff",
+            "_ledger_projection": {
+                "closed_cells_v2": [],
+                "open_candidates_v2": [open_candidate],
+                "identity_v2_diagnostics": {"incomplete_count": 0},
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["identity_v2_candidate_pending"]
+    assert closure["identity_v2"]["open_candidates"] == [open_candidate]
+
+
+def test_closure_projection_exposes_identity_follow_up_and_shadow_diff():
+    follow_up = {
+        "kind": "identity_follow_up",
+        "endpoint": "/api/search",
+        "family": "SQLi",
+        "conflicts": ["method_mismatch"],
+    }
+    shadow = {"status": "compared", "different": True}
+    closure = build_closure_projection(
+        {
+            "next_action": "handoff",
+            "_ledger_projection": {
+                "identity_v2_follow_up_actions": [follow_up],
+                "identity_v2_shadow": shadow,
+                "identity_v2_diagnostics": {"incomplete_count": 1, "follow_up_count": 1},
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["identity_v2_follow_up_pending"]
+    assert closure["identity_v2"]["follow_up_actions"] == [follow_up]
+    assert closure["identity_v2"]["shadow"] == shadow
+
+
 def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
@@ -1006,6 +1067,25 @@ def test_damaged_ledger_is_visible_and_blocks_closure_and_rotation(tmp_path):
         }
         for value in ("1", "2", "3")
     ]
+    rows[0].update({
+        "identity_status": "complete",
+        "identity_v2": {
+            "schema_version": 2,
+            "kind": "closure_cell",
+            "endpoint": {
+                "schema_version": 2,
+                "kind": "endpoint",
+                "endpoint": "/api/orders/1",
+            },
+            "family": "IDOR",
+            "dimensions": {
+                "path_template": "/api/orders/{id}",
+                "method": "GET",
+                "actor_relation": "peer",
+                "object_scope": "other_object_same_org",
+            },
+        },
+    })
     (ledger_dir / "ledger.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in rows) + "{broken\n",
         encoding="utf-8",
@@ -1020,6 +1100,13 @@ def test_damaged_ledger_is_visible_and_blocks_closure_and_rotation(tmp_path):
     assert closure["ledger_health"]["last_valid_offset"] > 0
     assert closure["verdict"] == "handoff"
     assert "ledger_partial" in closure["reasons"]
+    assert closure["identity_v2"]["closed_cells"] == []
+    assert closure["identity_v2"]["diagnostics"]["closed_count"] == 0
+    assert closure["identity_v2"]["diagnostics"]["suppressed_closed_count"] == 1
+    assert closure["identity_v2"]["shadow"] == {
+        "status": "unavailable",
+        "reason": "ledger_partial",
+    }
     assert loop["ledger_health"]["status"] == "partial"
     assert loop["verdict"] == "continue"
     assert loop["reason"] == "ledger_partial"

@@ -129,6 +129,49 @@ def test_matrix_closed_statuses_are_auxiliary_closed_source():
     assert resolver.is_cell_closed("/m", "unknown") is False
 
 
+def test_legacy_matrix_status_cannot_close_a_v2_identity():
+    resolver = ClosureResolver(
+        evidence_summary={},
+        matrix={
+            "endpoints": [{
+                "endpoint": "/api/search",
+                "cells": {"SQLi": {"status": "tested_clean"}},
+            }],
+        },
+    )
+    identity = {
+        "schema_version": 2,
+        "kind": "closure_cell",
+        "endpoint": {"schema_version": 2, "kind": "endpoint", "endpoint": "/api/search"},
+        "family": "SQLi",
+        "dimensions": {"method": "GET", "parameter": "q"},
+    }
+
+    assert resolver.is_cell_closed("/api/search", "SQLi") is True
+    assert resolver.is_closure_closed(identity) is False
+
+
+def test_v2_query_rejects_endpoint_family_and_schema_disagreement():
+    identity = {
+        "schema_version": 2,
+        "kind": "closure_cell",
+        "endpoint": {"schema_version": 2, "kind": "endpoint", "endpoint": "/api/search"},
+        "family": "SQLi",
+        "dimensions": {"method": "GET", "parameter": "q"},
+    }
+    resolver = ClosureResolver({
+        "closed_cells_v2": [{"identity_v2": identity, "result": "tested_clean"}],
+    })
+
+    assert resolver.is_cell_closed("/other", "SQLi", identity_v2=identity) is False
+    assert resolver.is_cell_closed("/api/search", "XSS", identity_v2=identity) is False
+    malformed = {
+        **identity,
+        "endpoint": {**identity["endpoint"], "schema_version": 1},
+    }
+    assert resolver.is_closure_closed(malformed) is False
+
+
 def test_endpoint_batch_requires_all_endpoints_closed_with_required_class():
     resolver = from_summary({
         "closed_cells": [

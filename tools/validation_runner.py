@@ -1016,6 +1016,7 @@ def _sync_evidence_ledger(summary: dict[str, Any], *, repo_root: Path) -> dict[s
         "notes": ledger.get("notes"),
         "operation_id": ledger.get("operation_id") or summary.get("operation_id"),
         "event_id": ledger.get("event_id"),
+        "identity_v2": ledger.get("identity_v2"),
     }
     recorded = record_entry(repo_root, **request)
     summary["ledger_record"] = recorded
@@ -1703,6 +1704,7 @@ def _record_ledger_if_needed(
     browser_observed: bool,
     redline_checked: bool,
     state_changing: bool | None = None,
+    identity_v2: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if no_ledger:
         return None
@@ -1722,6 +1724,7 @@ def _record_ledger_if_needed(
         "redline_checked": redline_checked,
         "evidence_ref": evidence_ref,
         "notes": notes,
+        "identity_v2": identity_v2,
     }
     operation_id = _runner_operation_id({
         "target": canonical_target_value(target),
@@ -1735,6 +1738,7 @@ def _record_ledger_if_needed(
         "source": source.replace("_", "-"),
         "evidence_ref": evidence_ref,
         "evidence_sha256": _file_sha256(repo_root, evidence_ref),
+        "identity_v2": identity_v2,
     })
     event_id = f"ledger:{hashlib.sha256(operation_id.encode('utf-8')).hexdigest()[:24]}"
     request["operation_id"] = operation_id
@@ -1765,6 +1769,7 @@ def run_authz_public_exposure(
     browser_observed: bool = False,
     state_changing: bool | None = None,
     redline_checked: bool = False,
+    identity_v2: dict[str, Any] | None = None,
     session: AuthSession | None = None,
 ) -> dict[str, Any]:
     _validate_request_facts(state_changing, redline_checked)
@@ -1837,6 +1842,7 @@ def run_authz_public_exposure(
         browser_observed=browser_observed,
         redline_checked=redline_checked,
         state_changing=state_changing,
+        identity_v2=identity_v2,
     )
 
     summary = {
@@ -2127,6 +2133,7 @@ def run_authz_role_replay(
     state_changing: bool | None = None,
     redline_checked: bool = False,
     case_state_ref: dict[str, Any] | None = None,
+    identity_v2: dict[str, Any] | None = None,
     owner_session: AuthSession | None = None,
 ) -> dict[str, Any]:
     """Replay one surface as anonymous/owner/peer without claiming object IDOR.
@@ -2413,6 +2420,7 @@ def run_authz_role_replay(
         browser_observed=browser_observed,
         redline_checked=redline_checked,
         state_changing=state_changing,
+        identity_v2=identity_v2,
     )
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -2479,6 +2487,7 @@ def run_sqli_result_diff(
     repeat: int = 1,
     no_ledger: bool = False,
     browser_observed: bool = False,
+    identity_v2: dict[str, Any] | None = None,
     session: AuthSession | None = None,
 ) -> dict[str, Any]:
     if method.upper() != "GET":
@@ -2615,6 +2624,7 @@ def run_sqli_result_diff(
         notes=notes,
         browser_observed=browser_observed,
         redline_checked=True,
+        identity_v2=identity_v2,
     )
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -2671,6 +2681,7 @@ def run_marker_replay(
     browser_observed: bool = False,
     state_changing: bool | None = None,
     redline_checked: bool = False,
+    identity_v2: dict[str, Any] | None = None,
     session: AuthSession | None = None,
 ) -> dict[str, Any]:
     """Replay an exact request and require an inert marker in every response.
@@ -2765,6 +2776,7 @@ def run_marker_replay(
         browser_observed=browser_observed,
         redline_checked=redline_checked,
         state_changing=state_changing,
+        identity_v2=identity_v2,
     )
     xss_marker = str(vuln_class or "").strip().lower() in {
         "xss",
@@ -2825,6 +2837,7 @@ def run_idor_actor_pair(
     state_changing: bool | None = None,
     redline_checked: bool = False,
     case_state_ref: dict[str, Any] | None = None,
+    identity_v2: dict[str, Any] | None = None,
     owner_session: AuthSession | None = None,
 ) -> dict[str, Any]:
     """Replay the same object/action as owner and peer, then preserve the diff.
@@ -3001,6 +3014,7 @@ def run_idor_actor_pair(
         browser_observed=browser_observed,
         redline_checked=redline_checked,
         state_changing=state_changing,
+        identity_v2=identity_v2,
     )
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -3048,6 +3062,7 @@ def run_payment_race(
     no_ledger: bool = False,
     browser_observed: bool = False,
     redline_checked: bool = False,
+    identity_v2: dict[str, Any] | None = None,
     owner_session: AuthSession | None = None,
 ) -> dict[str, Any]:
     """Run a two-request payment replay only against a disposable object."""
@@ -3200,6 +3215,7 @@ def run_payment_race(
         browser_observed=browser_observed,
         redline_checked=redline_checked,
         state_changing=True,
+        identity_v2=identity_v2,
     )
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -3284,6 +3300,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--finding-id", default="")
         p.add_argument("--repo-root", default=str(BASE_DIR))
         p.add_argument("--no-sync", action="store_true", help="Do not sync runner result into findings/action_queue state")
+        p.add_argument(
+            "--identity-v2-json",
+            default="",
+            help="prebuilt ClosureCellKey v2 JSON carried from the planned test",
+        )
 
     def add_request_facts(p: argparse.ArgumentParser) -> None:
         group = p.add_mutually_exclusive_group()
@@ -3398,7 +3419,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    identity_v2: dict[str, Any] | None = None
+    if args.identity_v2_json:
+        try:
+            payload = json.loads(args.identity_v2_json)
+            try:
+                from tools.identity_contract import ClosureCellKey
+            except ImportError:  # pragma: no cover - direct tools/ execution
+                from identity_contract import ClosureCellKey  # type: ignore
+            identity_v2 = ClosureCellKey.from_dict(payload).to_dict()
+        except (json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
+            parser.error(f"--identity-v2-json must contain a valid ClosureCellKey v2: {exc}")
     repo_root = Path(args.repo_root)
     auth_session = session_from_args(args).bind_target(args.target)
     if args.lane == "authz-public-exposure":
@@ -3415,6 +3448,7 @@ def main(argv: list[str] | None = None) -> int:
             browser_observed=args.browser_observed,
             state_changing=args.state_changing,
             redline_checked=args.redline_checked,
+            identity_v2=identity_v2,
             session=auth_session,
         )
     elif args.lane == "authz-role-replay":
@@ -3453,6 +3487,7 @@ def main(argv: list[str] | None = None) -> int:
             state_changing=args.state_changing,
             redline_checked=args.redline_checked,
             case_state_ref=case_state_ref,
+            identity_v2=identity_v2,
             owner_session=None if args.from_case_state else auth_session,
         )
     elif args.lane == "sqli-result-diff":
@@ -3470,6 +3505,7 @@ def main(argv: list[str] | None = None) -> int:
             repeat=args.repeat,
             no_ledger=args.no_ledger,
             browser_observed=args.browser_observed,
+            identity_v2=identity_v2,
             session=auth_session,
         )
     elif args.lane == "marker-replay":
@@ -3489,6 +3525,7 @@ def main(argv: list[str] | None = None) -> int:
             browser_observed=args.browser_observed,
             state_changing=args.state_changing,
             redline_checked=args.redline_checked,
+            identity_v2=identity_v2,
             session=auth_session,
         )
     elif args.lane == "idor-actor-pair":
@@ -3541,6 +3578,7 @@ def main(argv: list[str] | None = None) -> int:
             state_changing=args.state_changing,
             redline_checked=args.redline_checked,
             case_state_ref=case_state_ref,
+            identity_v2=identity_v2,
             owner_session=None if args.from_case_state else auth_session,
         )
         if args.complete_case_state:
@@ -3577,10 +3615,13 @@ def main(argv: list[str] | None = None) -> int:
             no_ledger=args.no_ledger,
             browser_observed=args.browser_observed,
             redline_checked=args.redline_checked,
+            identity_v2=identity_v2,
             owner_session=auth_session,
         )
     else:  # pragma: no cover - argparse guards this
         raise ValueError(f"unknown lane: {args.lane}")
+    if identity_v2 is not None and summary.get("ledger_record") is None:
+        summary["identity_v2"] = identity_v2
     if not getattr(args, "no_sync", False):
         summary["sync"] = sync_runner_artifacts(summary, repo_root=repo_root)
         summary_path = _summary_path(summary, repo_root)

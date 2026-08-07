@@ -18,6 +18,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Mapping
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
@@ -26,10 +27,20 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.closure_resolver import canonical_endpoint_identity
     from tools.coverage_matrix import normalize_vuln_class
+    from tools.identity_contract import (
+        ClosureCellKey,
+        build_closure_cell,
+        validate_identity_candidate,
+    )
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from closure_resolver import canonical_endpoint_identity  # type: ignore
     from coverage_matrix import normalize_vuln_class  # type: ignore
+    from identity_contract import (  # type: ignore
+        ClosureCellKey,
+        build_closure_cell,
+        validate_identity_candidate,
+    )
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -194,6 +205,48 @@ def normalize_result(value: str) -> str:
     return result
 
 
+def normalize_ledger_vuln_class(value: str) -> str:
+    """Normalize Ledger families without widening Coverage Matrix's enum."""
+    if str(value or "").strip().lower() == "workflow":
+        return "Workflow"
+    return normalize_vuln_class(value)
+
+
+def _identity_fact_conflicts(key: ClosureCellKey, entry: Mapping[str, Any]) -> tuple[str, ...]:
+    """Reject a planned key that disagrees with durable Ledger facts."""
+    conflicts: list[str] = []
+    if key.endpoint != str(entry.get("endpoint") or ""):
+        conflicts.append("endpoint_mismatch")
+    if key.family != str(entry.get("vuln_class") or ""):
+        conflicts.append("family_mismatch")
+    dimensions = key.dimension_map
+    method = str(entry.get("method") or "").upper()
+    if "method" in dimensions and dimensions["method"] != method:
+        conflicts.append("method_mismatch")
+    return tuple(sorted(set(conflicts)))
+
+
+def _identity_follow_up_action(
+    entry: Mapping[str, Any],
+    *,
+    missing_fields: tuple[str, ...] | list[str] = (),
+    conflicts: tuple[str, ...] | list[str] = (),
+    evidence_refs: tuple[str, ...] | list[str] = (),
+) -> dict[str, Any]:
+    refs = _dedupe([
+        *(str(item) for item in evidence_refs),
+        str(entry.get("evidence_ref") or ""),
+    ])
+    return {
+        "kind": "identity_follow_up",
+        "family": str(entry.get("vuln_class") or ""),
+        "endpoint": str(entry.get("endpoint") or ""),
+        "missing_fields": sorted(set(missing_fields)),
+        "conflicts": sorted(set(conflicts)),
+        "evidence_refs": refs,
+    }
+
+
 def load_entries_diagnostic(repo_root: Path | str, target: str) -> dict:
     path = ledger_path(repo_root, target)
     if not path.is_file():
@@ -292,6 +345,10 @@ def record_entry(
     notes: str = "",
     operation_id: str = "",
     event_id: str = "",
+    identity_v2: Mapping[str, Any] | ClosureCellKey | None = None,
+    identity_dimensions: Mapping[str, Any] | None = None,
+    identity_candidate: Mapping[str, Any] | None = None,
+    identity_replaces_event_id: str = "",
 ) -> dict:
     resolved_target = canonical_target_value(target)
     canonical_endpoint = _canonicalize_endpoint(endpoint)
@@ -299,7 +356,7 @@ def record_entry(
         raise ValueError("endpoint is required")
 
     method_u = str(method or "GET").strip().upper()
-    normalized_vuln = normalize_vuln_class(vuln_class)
+    normalized_vuln = normalize_ledger_vuln_class(vuln_class)
     normalized_result = normalize_result(result)
     entry = {
         "schema_version": SCHEMA_VERSION,
@@ -330,6 +387,96 @@ def record_entry(
         "event_id": str(event_id or "").strip(),
         "warnings": [],
     }
+    if sum(value is not None for value in (identity_v2, identity_candidate, identity_dimensions)) > 1:
+        raise ValueError("provide only one of identity_v2, identity_candidate, or identity_dimensions")
+    if (
+        identity_v2 is not None
+        and not isinstance(identity_v2, Mapping)
+        and not callable(getattr(identity_v2, "to_dict", None))
+    ):
+        raise ValueError("identity_v2 must be a closure identity object")
+    if identity_candidate is not None and not isinstance(identity_candidate, Mapping):
+        raise ValueError("identity_candidate must be an object")
+    if identity_dimensions is not None and not isinstance(identity_dimensions, Mapping):
+        raise ValueError("identity_dimensions must be an object")
+    if identity_v2 is not None:
+        identity_payload = (
+            identity_v2.to_dict()
+            if callable(getattr(identity_v2, "to_dict", None))
+            else identity_v2
+        )
+        identity_key = ClosureCellKey.from_dict(identity_payload)
+        conflicts = _identity_fact_conflicts(identity_key, entry)
+        entry["identity_status"] = "conflict" if conflicts else "complete"
+        entry["identity_missing_fields"] = []
+        entry["identity_conflicts"] = list(conflicts)
+        if conflicts:
+            entry["identity_follow_up_action"] = _identity_follow_up_action(
+                entry,
+                conflicts=conflicts,
+            )
+        else:
+            entry["identity_v2"] = identity_key.to_dict()
+    elif identity_candidate is not None:
+        candidate_validation = validate_identity_candidate(identity_candidate)
+        candidate = candidate_validation.candidate
+        entry["identity_candidate"] = candidate.to_dict()
+        fact_conflicts = (
+            _identity_fact_conflicts(candidate_validation.identity, entry)
+            if candidate_validation.identity is not None
+            else ()
+        )
+        if candidate.endpoint and candidate.endpoint != canonical_endpoint:
+            fact_conflicts = (*fact_conflicts, "endpoint_mismatch")
+        if candidate.family and candidate.family != normalized_vuln:
+            fact_conflicts = (*fact_conflicts, "family_mismatch")
+        candidate_method = str(candidate.dimensions.get("method") or "").upper()
+        if candidate_method and candidate_method != method_u:
+            fact_conflicts = (*fact_conflicts, "method_mismatch")
+        fact_conflicts = tuple(sorted(set(fact_conflicts)))
+        conflicts = tuple(sorted(set((*candidate.conflicts, *fact_conflicts))))
+        if candidate_validation.closeable and not conflicts:
+            entry["identity_v2"] = candidate_validation.identity.to_dict()
+            entry["identity_status"] = "complete"
+        else:
+            entry["identity_status"] = "conflict" if fact_conflicts else "follow_up_required"
+            entry["identity_missing_fields"] = list(candidate.missing_fields)
+            entry["identity_conflicts"] = list(conflicts)
+            entry["identity_follow_up_action"] = _identity_follow_up_action(
+                entry,
+                missing_fields=candidate.missing_fields,
+                conflicts=conflicts,
+                evidence_refs=candidate.evidence_refs,
+            )
+    elif identity_dimensions is not None:
+        identity_result = build_closure_cell(
+            canonical_endpoint,
+            normalized_vuln,
+            identity_dimensions,
+        )
+        fact_conflicts = (
+            _identity_fact_conflicts(identity_result.key, entry)
+            if identity_result.key is not None
+            else ()
+        )
+        conflicts = tuple(sorted(set((*identity_result.conflicts, *fact_conflicts))))
+        entry["identity_status"] = (
+            "complete"
+            if identity_result.complete and not conflicts
+            else "conflict"
+            if conflicts
+            else "incomplete"
+        )
+        entry["identity_missing_fields"] = list(identity_result.missing_fields)
+        entry["identity_conflicts"] = list(conflicts)
+        if identity_result.key is not None and not conflicts:
+            entry["identity_v2"] = identity_result.key.to_dict()
+        if conflicts:
+            entry["identity_follow_up_action"] = _identity_follow_up_action(
+                entry,
+                missing_fields=identity_result.missing_fields,
+                conflicts=conflicts,
+            )
     requires_redline = method_u == "PATCH" and bool(entry["state_changing"])
     if requires_redline and not entry["redline_checked"] and normalized_result in COVERING_RESULTS:
         entry["requested_result"] = normalized_result
@@ -343,18 +490,45 @@ def record_entry(
 
     path = ledger_path(repo_root, resolved_target)
     with ledger_mutation_lock(repo_root, resolved_target):
-        if entry["event_id"]:
+        replacement_event_id = str(identity_replaces_event_id or "").strip()
+        existing_entries: list[dict] = []
+        if entry["event_id"] or replacement_event_id:
             diagnostic = load_entries_diagnostic(repo_root, resolved_target)
+            existing_entries = list(diagnostic.get("entries") or [])
+        if entry["event_id"]:
             existing = next(
                 (
                     item
-                    for item in diagnostic.get("entries") or []
+                    for item in existing_entries
                     if str(item.get("event_id") or "") == entry["event_id"]
                 ),
                 None,
             )
             if existing is not None:
                 return {**existing, "write_status": "deduplicated"}
+        if replacement_event_id:
+            if str(entry.get("identity_status") or "") != "complete":
+                raise ValueError("identity replacement requires a complete new identity")
+            replaced = next(
+                (
+                    item
+                    for item in existing_entries
+                    if str(item.get("event_id") or "") == replacement_event_id
+                ),
+                None,
+            )
+            if replaced is None or "identity_status" not in replaced:
+                raise ValueError(f"identity replacement event not found: {replacement_event_id}")
+            if (
+                str(replaced.get("endpoint") or "") != entry["endpoint"]
+                or str(replaced.get("vuln_class") or "") != entry["vuln_class"]
+            ):
+                raise ValueError("identity replacement must keep the same endpoint and vulnerability family")
+            entry["identity_replacement"] = {
+                "event_id": replacement_event_id,
+                "evidence_ref": str(replaced.get("evidence_ref") or ""),
+                "identity_v2": replaced.get("identity_v2") if isinstance(replaced.get("identity_v2"), dict) else None,
+            }
         path.parent.mkdir(parents=True, exist_ok=True)
         encoded = (json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
         with path.open("ab", buffering=0) as fh:
@@ -414,7 +588,7 @@ def _object_reference_endpoint(endpoint: str) -> bool:
 def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "GET") -> list[dict]:
     """返回高级 authz/IDOR 测试应覆盖的角色/对象差异项。"""
     canonical_endpoint = _canonicalize_endpoint(endpoint)
-    vc = normalize_vuln_class(vuln_class)
+    vc = normalize_ledger_vuln_class(vuln_class)
     method_u = str(method or "GET").strip().upper()
     state_changing = method_u not in SAFE_METHODS
 
@@ -567,12 +741,140 @@ def _focus_endpoint_values(focus_endpoints: list[str | dict] | None, entries: li
     return _dedupe([_canonicalize_endpoint(value) for value in values])[:8]
 
 
-def build_current_cell_projection(entries: list[dict]) -> dict:
-    """Project current evidence identities, then aggregate endpoint closure."""
+def _entry_closure_identity(entry: Mapping[str, Any]) -> ClosureCellKey | None:
+    if str(entry.get("identity_status") or "") != "complete":
+        return None
+    payload = entry.get("identity_v2")
+    if not isinstance(payload, Mapping):
+        return None
+    try:
+        return ClosureCellKey.from_dict(payload)
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _replaced_identity_event_ids(entries: list[dict]) -> set[str]:
+    return {
+        str(replacement.get("event_id") or "")
+        for entry in entries
+        for replacement in [entry.get("identity_replacement")]
+        if str(entry.get("identity_status") or "") == "complete"
+        and isinstance(replacement, Mapping)
+        and str(replacement.get("event_id") or "")
+    }
+
+
+def _project_v2_cells(entries: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Project only complete v2 identities; legacy rows never enter this view."""
+    replaced_event_ids = _replaced_identity_event_ids(entries)
+    current: dict[str, tuple[int, ClosureCellKey, dict]] = {}
+    for sequence, entry in enumerate(entries):
+        if str(entry.get("event_id") or "") in replaced_event_ids:
+            continue
+        key = _entry_closure_identity(entry)
+        if key is None or str(entry.get("result") or "") not in RESULTS:
+            continue
+        current[key.identity_key] = (sequence, key, entry)
+
+    closed: list[dict] = []
+    open_candidates: list[dict] = []
+    for _identity_key, (_sequence, key, entry) in current.items():
+        result = str(entry.get("result") or "")
+        if result == "candidate":
+            open_candidates.append(entry)
+        if result in {"lead", "signal", "candidate"}:
+            continue
+        if result not in CLOSED_CELL_RESULTS:
+            continue
+        closed.append({
+            "identity_v2": key.to_dict(),
+            "endpoint": key.endpoint,
+            "vuln_class": key.family,
+            "dimensions": key.dimension_map,
+            "result": result,
+            "ts": str(entry.get("ts") or ""),
+            "evidence_ref": str(entry.get("evidence_ref") or ""),
+        })
+    return closed, sorted(
+        open_candidates,
+        key=lambda item: str(item.get("ts") or ""),
+        reverse=True,
+    )[:10]
+
+
+def _project_identity_follow_ups(entries: list[dict], replaced_event_ids: set[str]) -> list[dict]:
+    rows = [
+        entry
+        for entry in entries
+        if str(entry.get("identity_status") or "") in {"conflict", "follow_up_required"}
+        and isinstance(entry.get("identity_follow_up_action"), Mapping)
+        and str(entry.get("event_id") or "") not in replaced_event_ids
+    ]
+    return [
+        {
+            **dict(entry["identity_follow_up_action"]),
+            "ts": str(entry.get("ts") or ""),
+            "event_id": str(entry.get("event_id") or ""),
+        }
+        for entry in sorted(rows, key=lambda item: str(item.get("ts") or ""), reverse=True)[:10]
+    ]
+
+
+def _identity_shadow_diff(closed_cells: list[dict], closed_cells_v2: list[dict]) -> dict[str, Any]:
+    legacy_keys = {
+        (str(cell.get("endpoint") or ""), str(cell.get("vuln_class") or ""))
+        for cell in closed_cells
+    }
+    v2_keys = {
+        (str(cell.get("endpoint") or ""), str(cell.get("vuln_class") or ""))
+        for cell in closed_cells_v2
+    }
+    legacy_only = [
+        {"endpoint": endpoint, "vuln_class": family}
+        for endpoint, family in sorted(legacy_keys - v2_keys)
+    ]
+    v2_only = [
+        cell
+        for cell in closed_cells_v2
+        if (str(cell.get("endpoint") or ""), str(cell.get("vuln_class") or ""))
+        in v2_keys - legacy_keys
+    ]
+    scope_mismatches = [
+        {
+            "endpoint": endpoint,
+            "vuln_class": family,
+            "legacy_scope": "endpoint_family",
+            "v2_cells": [
+                cell["identity_v2"]
+                for cell in closed_cells_v2
+                if str(cell.get("endpoint") or "") == endpoint
+                and str(cell.get("vuln_class") or "") == family
+            ],
+        }
+        for endpoint, family in sorted(legacy_keys & v2_keys)
+    ]
+    return {
+        "status": "compared",
+        "different": bool(legacy_only or v2_only or scope_mismatches),
+        "legacy_closed_count": len(closed_cells),
+        "v2_closed_count": len(closed_cells_v2),
+        "legacy_only": legacy_only,
+        "v2_only": v2_only,
+        "scope_mismatches": scope_mismatches,
+    }
+
+
+def _project_legacy_cells(
+    entries: list[dict],
+    *,
+    include_identity_rows: bool,
+) -> tuple[list[dict], list[dict]]:
     current_by_evidence_key: dict[tuple[str, str, str, str, str, str], tuple[int, dict]] = {}
     for sequence, entry in enumerate(entries):
+        if not include_identity_rows and "identity_status" in entry:
+            continue
         result = str(entry.get("result") or "")
-        if result not in set(RESULTS):
+        if result not in RESULTS:
             continue
         endpoint = _canonicalize_endpoint(
             str(entry.get("raw_endpoint") or entry.get("endpoint") or "")
@@ -621,14 +923,50 @@ def build_current_cell_projection(entries: list[dict]) -> dict:
             "ts": str(latest.get("ts") or ""),
             "evidence_ref": str(latest.get("evidence_ref") or ""),
         })
+    return closed_cells, open_candidates
 
+
+def build_current_cell_projection(entries: list[dict]) -> dict:
+    """Project current evidence identities and retain a v2 closure projection.
+
+    ``closed_cells`` remains the legacy endpoint projection for old readers.
+    ``closed_cells_v2`` is the only projection allowed to close a complete
+    family-aware identity.
+    """
+    closed_cells, open_candidates = _project_legacy_cells(
+        entries,
+        include_identity_rows=False,
+    )
+    shadow_legacy_cells, _shadow_candidates = _project_legacy_cells(
+        entries,
+        include_identity_rows=True,
+    )
+    closed_cells_v2, open_candidates_v2 = _project_v2_cells(entries)
+    replaced_event_ids = _replaced_identity_event_ids(entries)
+    identity_v2_incomplete = sum(
+        1
+        for entry in entries
+        if str(entry.get("identity_status") or "") in {"incomplete", "follow_up_required", "conflict"}
+        and str(entry.get("event_id") or "") not in replaced_event_ids
+    )
+    identity_v2_follow_ups = _project_identity_follow_ups(entries, replaced_event_ids)
     return {
         "closed_cells": closed_cells,
+        "closed_cells_v2": closed_cells_v2,
         "open_candidates": sorted(
             open_candidates,
             key=lambda item: str(item.get("ts") or ""),
             reverse=True,
         )[:10],
+        "open_candidates_v2": open_candidates_v2,
+        "identity_v2_follow_up_actions": identity_v2_follow_ups,
+        "identity_v2_diagnostics": {
+            "incomplete_count": identity_v2_incomplete,
+            "closed_count": len(closed_cells_v2),
+            "follow_up_count": len(identity_v2_follow_ups),
+            "replacement_count": len(replaced_event_ids),
+        },
+        "identity_v2_shadow": _identity_shadow_diff(shadow_legacy_cells, closed_cells_v2),
     }
 
 
@@ -646,7 +984,7 @@ def build_summary(
     path = ledger_path(repo_root, resolved_target)
     endpoints = _focus_endpoint_values(focus_endpoints, entries)
     selected_vulns = vuln_classes or ["IDOR", "Authz"]
-    selected_vulns = _dedupe([normalize_vuln_class(vuln) for vuln in selected_vulns])
+    selected_vulns = _dedupe([normalize_ledger_vuln_class(vuln) for vuln in selected_vulns])
 
     actor_rows: list[dict] = []
     for endpoint in endpoints:
@@ -669,6 +1007,15 @@ def build_summary(
     current_cells = build_current_cell_projection(entries)
     if diagnostics.get("status") in {"partial", "unreadable"}:
         current_cells["closed_cells"] = []
+        current_cells["closed_cells_v2"] = []
+        identity_diagnostics = dict(current_cells.get("identity_v2_diagnostics") or {})
+        identity_diagnostics["suppressed_closed_count"] = int(identity_diagnostics.get("closed_count", 0) or 0)
+        identity_diagnostics["closed_count"] = 0
+        current_cells["identity_v2_diagnostics"] = identity_diagnostics
+        current_cells["identity_v2_shadow"] = {
+            "status": "unavailable",
+            "reason": f"ledger_{diagnostics.get('status')}",
+        }
 
     return {
         "target": resolved_target,
@@ -684,7 +1031,12 @@ def build_summary(
         "result_counts": counts,
         "redline_unchecked_count": redline_unchecked,
         "closed_cells": current_cells["closed_cells"],
+        "closed_cells_v2": current_cells.get("closed_cells_v2", []),
         "open_candidates": current_cells["open_candidates"],
+        "open_candidates_v2": current_cells.get("open_candidates_v2", []),
+        "identity_v2_follow_up_actions": current_cells.get("identity_v2_follow_up_actions", []),
+        "identity_v2_diagnostics": current_cells.get("identity_v2_diagnostics", {}),
+        "identity_v2_shadow": current_cells.get("identity_v2_shadow", {}),
         "recent_entries": entries[-5:],
         "actor_matrix": {
             "endpoint_count": len(endpoints),
@@ -819,6 +1171,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_record.add_argument("--redline-checked", action="store_true")
     p_record.add_argument("--evidence-ref", default="")
     p_record.add_argument("--notes", default="")
+    identity_group = p_record.add_mutually_exclusive_group()
+    identity_group.add_argument(
+        "--identity-v2-json",
+        default="",
+        help="prebuilt ClosureCellKey v2 JSON carried unchanged from the planned test",
+    )
+    identity_group.add_argument(
+        "--identity-dimensions-json",
+        default="",
+        help="JSON object with deterministic family-specific closure dimensions",
+    )
+    identity_group.add_argument(
+        "--identity-candidate-json",
+        default="",
+        help="JSON object containing an AI identity candidate",
+    )
+    p_record.add_argument(
+        "--identity-replaces-event-id",
+        default="",
+        help="event_id of an immutable identity row replaced by this complete cell",
+    )
     p_record.add_argument("--repo-root", default=str(BASE_DIR))
     p_record.add_argument("--json", action="store_true")
 
@@ -836,6 +1209,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "record":
+        try:
+            identity_v2 = json.loads(args.identity_v2_json) if args.identity_v2_json else None
+            identity_dimensions = json.loads(args.identity_dimensions_json) if args.identity_dimensions_json else None
+            identity_candidate = json.loads(args.identity_candidate_json) if args.identity_candidate_json else None
+        except json.JSONDecodeError as exc:
+            parser.error(f"identity JSON must be valid JSON: {exc.msg}")
+        if identity_v2 is not None and not isinstance(identity_v2, dict):
+            parser.error("--identity-v2-json must contain a JSON object")
+        if identity_dimensions is not None and not isinstance(identity_dimensions, dict):
+            parser.error("--identity-dimensions-json must contain a JSON object")
+        if identity_candidate is not None and not isinstance(identity_candidate, dict):
+            parser.error("--identity-candidate-json must contain a JSON object")
         entry = record_entry(
             args.repo_root,
             target=args.target,
@@ -854,6 +1239,10 @@ def main(argv: list[str] | None = None) -> int:
             redline_checked=args.redline_checked,
             evidence_ref=args.evidence_ref,
             notes=args.notes,
+            identity_v2=identity_v2,
+            identity_dimensions=identity_dimensions,
+            identity_candidate=identity_candidate,
+            identity_replaces_event_id=args.identity_replaces_event_id,
         )
         if args.json:
             print(json.dumps(entry, ensure_ascii=False, indent=2))

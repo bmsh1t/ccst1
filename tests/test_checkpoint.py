@@ -20,6 +20,9 @@ from checkpoint import (
     _dead_end_proposals,
     _filter_final_action_queue_items,
     _lead_proposals,
+    _ledger_candidate_proposals,
+    _ledger_covered_cells,
+    _ledger_covers_cell,
     _matrix_summary,
     _next_proposals,
     _sibling_queue_item,
@@ -38,6 +41,7 @@ from checkpoint import (
     sync_checkpoint_action_queue,
 )
 from evidence_ledger import record_entry
+from identity_contract import build_closure_cell
 from runtime_state import runtime_phase_lock, update_runtime_state
 from target_case_state import add_actor, add_backlog, add_object, add_session
 
@@ -1601,6 +1605,43 @@ def test_lead_proposals_keep_unknown_surface_type_fail_open():
     )
 
     assert any("/api/Feedbacks" in item for item in proposals)
+
+
+def test_checkpoint_v2_closure_compares_the_complete_identity():
+    closed = build_closure_cell(
+        "/api/search",
+        "SQLi",
+        {"method": "GET", "parameter": "q"},
+    ).key.to_dict()
+    other = build_closure_cell(
+        "/api/search",
+        "SQLi",
+        {"method": "GET", "parameter": "term"},
+    ).key.to_dict()
+    resolver = _ledger_covered_cells({
+        "closed_cells_v2": [{"identity_v2": closed, "result": "tested_clean"}],
+    })
+
+    assert _ledger_covers_cell(resolver, "/api/search", "SQLi", closed)
+    assert not _ledger_covers_cell(resolver, "/api/search", "SQLi", other)
+    assert not _ledger_covers_cell(resolver, "/other", "SQLi", closed)
+
+
+def test_checkpoint_surfaces_identity_follow_up_action():
+    proposals = _ledger_candidate_proposals({
+        "identity_v2_follow_up_actions": [{
+            "kind": "identity_follow_up",
+            "endpoint": "/api/search",
+            "family": "SQLi",
+            "missing_fields": [],
+            "conflicts": ["method_mismatch"],
+            "evidence_refs": ["evidence/search.json"],
+        }],
+    })
+
+    assert len(proposals) == 1
+    assert "Resolve closure identity for /api/search x SQLi" in proposals[0]
+    assert "method_mismatch" in proposals[0]
 
 
 def test_checkpoint_keeps_open_200_secondary_sweep_without_authz_ledger_closure(tmp_path):

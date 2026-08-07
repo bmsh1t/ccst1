@@ -109,7 +109,11 @@ try:
         load_matrix,
         load_matrix_projection,
     )
-    from tools.evidence_ledger import load_entries, load_entries_diagnostic
+    from tools.evidence_ledger import (
+        build_current_cell_projection,
+        load_entries,
+        load_entries_diagnostic,
+    )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from coverage_matrix import (  # type: ignore
         STATUS_VALUES,
@@ -118,7 +122,11 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_matrix,
         load_matrix_projection,
     )
-    from evidence_ledger import load_entries, load_entries_diagnostic  # type: ignore
+    from evidence_ledger import (  # type: ignore
+        build_current_cell_projection,
+        load_entries,
+        load_entries_diagnostic,
+    )
 try:
     from tools.closure_resolver import (
         canonical_endpoint_identity,
@@ -2855,6 +2863,7 @@ def build_closure_projection(
     reasons: list[str] = []
     action = str(state.get("next_action") or "handoff")
     ledger_health = state.get("_ledger_health") if isinstance(state.get("_ledger_health"), dict) else {}
+    ledger_projection = state.get("_ledger_projection") if isinstance(state.get("_ledger_projection"), dict) else {}
     ledger_status = str(ledger_health.get("status") or "missing").strip().lower()
     surface_review = state.get("surface_review_completion") or {}
     surface_projection = state.get("surface_projection")
@@ -2976,6 +2985,15 @@ def build_closure_projection(
         elif observation_reason:
             verdict = "handoff"
             reasons.append(observation_reason)
+        elif ledger_projection.get("identity_v2_follow_up_actions"):
+            verdict = "handoff"
+            reasons.append("identity_v2_follow_up_pending")
+        elif ledger_projection.get("open_candidates_v2"):
+            verdict = "handoff"
+            reasons.append("identity_v2_candidate_pending")
+        elif int((ledger_projection.get("identity_v2_diagnostics") or {}).get("incomplete_count", 0) or 0) > 0:
+            verdict = "handoff"
+            reasons.append("identity_v2_incomplete")
         else:
             verdict = "finish"
 
@@ -2993,6 +3011,13 @@ def build_closure_projection(
         "next_action": action,
         "rotation_hint": _rotation_hint(ledger_entries or []),
         "surface_review": surface_review,
+        "identity_v2": {
+            "closed_cells": ledger_projection.get("closed_cells_v2") or [],
+            "open_candidates": ledger_projection.get("open_candidates_v2") or [],
+            "follow_up_actions": ledger_projection.get("identity_v2_follow_up_actions") or [],
+            "diagnostics": ledger_projection.get("identity_v2_diagnostics") or {},
+            "shadow": ledger_projection.get("identity_v2_shadow") or {},
+        },
     }
     if round_progress:
         result["round_progress"] = round_progress
@@ -3123,7 +3148,19 @@ def load_closure_projection(
     ]
     ledger_diagnostic = load_entries_diagnostic(repo_root, target)
     ledger_entries = list(ledger_diagnostic.get("entries") or [])
+    ledger_projection = build_current_cell_projection(ledger_entries)
     ledger_health = _ledger_health_projection(ledger_diagnostic)
+    if ledger_health.get("status") in {"partial", "unreadable"}:
+        ledger_projection["closed_cells"] = []
+        ledger_projection["closed_cells_v2"] = []
+        identity_diagnostics = dict(ledger_projection.get("identity_v2_diagnostics") or {})
+        identity_diagnostics["suppressed_closed_count"] = int(identity_diagnostics.get("closed_count", 0) or 0)
+        identity_diagnostics["closed_count"] = 0
+        ledger_projection["identity_v2_diagnostics"] = identity_diagnostics
+        ledger_projection["identity_v2_shadow"] = {
+            "status": "unavailable",
+            "reason": f"ledger_{ledger_health.get('status')}",
+        }
     witness_path = Path(repo_root) / "state" / target_storage_key(target) / "checkpoint_latest.json"
     witness = _load_checkpoint_witness(witness_path)
     round_progress = _checkpoint_round_projection(witness)
@@ -3131,6 +3168,7 @@ def load_closure_projection(
         **state,
         "round_progress": round_progress,
         "_ledger_health": ledger_health,
+        "_ledger_projection": ledger_projection,
         "enrichment_hints": enrichment_hints,
         "active_action_queue_count": sum(
             isinstance(item, dict)

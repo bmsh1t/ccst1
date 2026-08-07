@@ -54,6 +54,7 @@ _VULN_ALIAS = {
     "lfi": "Path",
     "path-traversal": "Path",
     "xxe": "XXE",
+    "workflow": "Workflow",
 }
 
 
@@ -136,6 +137,17 @@ def canonical_endpoint_path(value: str) -> str:
     return f"{path}#{fragment.split('?', 1)[0]}"
 
 
+def _closure_cell_key(value: dict | object):
+    """Decode through the contract even when top-level/tools imports coexist."""
+    from tools.identity_contract import ClosureCellKey
+
+    if isinstance(value, ClosureCellKey):
+        return value
+    if not isinstance(value, dict) and callable(getattr(value, "to_dict", None)):
+        value = value.to_dict()
+    return ClosureCellKey.from_dict(value)
+
+
 class ClosureResolver:
     """从 evidence summary / coverage matrix 构建闭合索引。"""
 
@@ -144,6 +156,7 @@ class ClosureResolver:
         self._closed_ts: dict[str, str] = {}
         self._closed_results: dict[tuple[str, str], str] = {}
         self._closed_result_ts: dict[tuple[str, str], str] = {}
+        self._closed_v2: dict[str, tuple[str, str]] = {}
         self._ingest_ledger(evidence_summary or {})
         self._ingest_matrix(matrix or {})
 
@@ -172,6 +185,24 @@ class ClosureResolver:
                 self._closed_result_ts[key] = ts
 
     def _ingest_ledger(self, evidence_summary: dict) -> None:
+        for cell in evidence_summary.get("closed_cells_v2") or []:
+            if not isinstance(cell, dict):
+                continue
+            identity = cell.get("identity_v2")
+            if not isinstance(identity, dict):
+                continue
+            try:
+                key = _closure_cell_key(identity)
+            except (ImportError, TypeError, ValueError, KeyError):
+                continue
+            result = str(cell.get("result") or "").strip()
+            if result not in CLOSED_LEDGER_RESULTS:
+                continue
+            identity_key = key.identity_key
+            ts = str(cell.get("ts") or "").strip()
+            previous = self._closed_v2.get(identity_key)
+            if previous is None or not previous[1] or not ts or ts >= previous[1]:
+                self._closed_v2[identity_key] = (result, ts)
         for cell in evidence_summary.get("closed_cells") or []:
             if not isinstance(cell, dict):
                 continue
@@ -203,19 +234,62 @@ class ClosureResolver:
                         result=str(cell.get("status") or ""),
                     )
 
-    def is_cell_closed(self, endpoint: str, vuln_class: str) -> bool:
+    def is_cell_closed(
+        self,
+        endpoint: str,
+        vuln_class: str,
+        *,
+        identity_v2: dict | object | None = None,
+    ) -> bool:
         """同一 endpoint × vuln_class 是否已关闭。
 
         Authz 和 IDOR 不互相关闭；unknown/generic 不关闭。
         """
+        if identity_v2 is not None:
+            try:
+                key = _closure_cell_key(identity_v2)
+            except (ImportError, TypeError, ValueError, KeyError):
+                return False
+            if (
+                key.endpoint != canonical_endpoint_identity(endpoint)
+                or key.family != canonical_vuln_class(vuln_class)
+            ):
+                return False
+            return self.is_closure_closed(key)
         ep = canonical_endpoint_identity(endpoint)
         vc = canonical_vuln_class(vuln_class)
         if not ep or not vc:
             return False
         return vc in self._closed_classes.get(ep, set())
 
-    def closed_result(self, endpoint: str, vuln_class: str) -> str:
+    def is_closure_closed(self, identity_v2: dict | object) -> bool:
+        """Check only a complete v2 key; malformed/incomplete keys fail open."""
+        try:
+            key = _closure_cell_key(identity_v2)
+        except (ImportError, TypeError, ValueError, KeyError):
+            return False
+        result_ts = self._closed_v2.get(key.identity_key)
+        return bool(result_ts and result_ts[0])
+
+    def closed_result(
+        self,
+        endpoint: str,
+        vuln_class: str,
+        *,
+        identity_v2: dict | object | None = None,
+    ) -> str:
         """返回精确 endpoint × vuln_class 的终态标签；未知类型 fail-open。"""
+        if identity_v2 is not None:
+            try:
+                key = _closure_cell_key(identity_v2)
+            except (ImportError, TypeError, ValueError, KeyError):
+                return ""
+            if (
+                key.endpoint != canonical_endpoint_identity(endpoint)
+                or key.family != canonical_vuln_class(vuln_class)
+            ):
+                return ""
+            return self._closed_v2.get(key.identity_key, ("", ""))[0]
         ep = canonical_endpoint_identity(endpoint)
         vc = canonical_vuln_class(vuln_class)
         if not ep or not vc:

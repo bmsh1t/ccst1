@@ -863,6 +863,39 @@ class TestFindGaps:
         assert class_relevance("/api/orders", "Race", ["coupon"])["relevance_score"] > 0
 
 
+def test_high_value_gap_preserves_explicit_closure_identity(tmp_path):
+    identity = {
+        "schema_version": 2,
+        "kind": "closure_cell",
+        "endpoint": {"schema_version": 2, "kind": "endpoint", "endpoint": "/api/search?q="},
+        "family": "SQLi",
+        "dimensions": {"method": "GET", "parameter": "q"},
+    }
+    matrix = _empty_matrix("x.com")
+    matrix["endpoints"] = [{
+        "endpoint": "/api/search?q=",
+        "weight": 5.0,
+        "observed_params": ["q"],
+        "source_count": 1,
+        "cells": {
+            vuln_class: (
+                {"status": "untested", "identity_v2": identity}
+                if vuln_class == "SQLi"
+                else {"status": "n_a", "reason": "fixture"}
+            )
+            for vuln_class in VULN_CLASSES
+        },
+    }]
+    save_matrix("x.com", matrix, repo_root=tmp_path)
+
+    gap = next(
+        item
+        for item in find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=1.0)
+        if item["vuln_class"] == "SQLi"
+    )
+    assert gap["identity_v2"] == identity
+
+
 class TestMarkCell:
     def test_mark_creates_endpoint_if_missing(self, tmp_path):
         cell = mark_cell(

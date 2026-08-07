@@ -14,6 +14,7 @@ import finding_index
 import target_case_state
 import validation_runner
 from evidence_ledger import ledger_path
+from identity_contract import build_closure_cell
 from tools.auth_session import AuthSession
 
 
@@ -1492,6 +1493,11 @@ def test_sqli_result_diff_creates_diff_bundle_and_ledger(monkeypatch, tmp_path):
         return _fake_response(kwargs["url"], body='{"data":[{"id":1}]}')
 
     monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    identity_v2 = build_closure_cell(
+        "/rest/products/search?q=",
+        "SQLi",
+        {"method": "GET", "parameter": "q"},
+    ).key.to_dict()
 
     summary = validation_runner.run_sqli_result_diff(
         repo_root=tmp_path,
@@ -1503,6 +1509,7 @@ def test_sqli_result_diff_creates_diff_bundle_and_ledger(monkeypatch, tmp_path):
         finding_id="SQLI-1",
         repeat=2,
         browser_observed=True,
+        identity_v2=identity_v2,
     )
 
     key = _target_key("https://target.test")
@@ -1519,6 +1526,7 @@ def test_sqli_result_diff_creates_diff_bundle_and_ledger(monkeypatch, tmp_path):
     assert entry["endpoint"] == "/rest/products/search?q="
     assert entry["vuln_class"] == "SQLi"
     assert entry["result"] == "tested_finding"
+    assert entry["identity_v2"] == identity_v2
 
 
 def test_sqli_result_diff_without_material_delta_is_clean(monkeypatch, tmp_path):

@@ -1155,6 +1155,8 @@ def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WE
                 "observed_params": list(observed_params),
                 "source_count": int(ep.get("source_count", 0) or 0),
             }
+            if isinstance(cell.get("identity_v2"), dict):
+                gap["identity_v2"] = cell["identity_v2"]
             gap.update(class_relevance(endpoint, vc, observed_params))
             gaps.append(gap)
     gaps.sort(key=_gap_sort_key)

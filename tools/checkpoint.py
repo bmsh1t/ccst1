@@ -1309,7 +1309,12 @@ def _lead_proposals(
         if url:
             endpoint_path = _normalise_endpoint_path(url)
             vuln_hint = _ranked_surface_vuln_hint(item, url)
-            if _ledger_covers_cell(_ledger_covered_cells(evidence_summary or {}), endpoint_path, vuln_hint):
+            if _ledger_covers_cell(
+                _ledger_covered_cells(evidence_summary or {}),
+                endpoint_path,
+                vuln_hint,
+                item.get("identity_v2"),
+            ):
                 continue
             proposals.append(
                 "Evidence: Surface review candidate {url} ({reasons}). Why it matters: "
@@ -2051,8 +2056,13 @@ def _ledger_covered_cells(evidence_summary: dict, matrix: dict | None = None) ->
     return ClosureResolver(evidence_summary or {}, matrix or {})
 
 
-def _ledger_covers_cell(covered_cells: ClosureResolver, endpoint: str, vuln_class: str) -> bool:
-    return covered_cells.is_cell_closed(endpoint, vuln_class)
+def _ledger_covers_cell(
+    covered_cells: ClosureResolver,
+    endpoint: str,
+    vuln_class: str,
+    identity_v2: dict | None = None,
+) -> bool:
+    return covered_cells.is_cell_closed(endpoint, vuln_class, identity_v2=identity_v2)
 
 
 def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> list[str]:
@@ -2063,7 +2073,44 @@ def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> li
     结合原始证据、7-Question Gate 和四个验证门判断。
     """
     proposals: list[str] = []
-    for entry in (evidence_summary.get("open_candidates") or [])[:limit]:
+    for action in (evidence_summary.get("identity_v2_follow_up_actions") or [])[:limit]:
+        if not isinstance(action, dict):
+            continue
+        endpoint = str(action.get("endpoint") or "").strip()
+        family = str(action.get("family") or "").strip()
+        missing = ", ".join(str(item) for item in (action.get("missing_fields") or []) if str(item))
+        conflicts = ", ".join(str(item) for item in (action.get("conflicts") or []) if str(item))
+        if not endpoint or not family:
+            continue
+        reason = "; ".join(item for item in (f"missing={missing}" if missing else "", f"conflicts={conflicts}" if conflicts else "") if item)
+        proposals.append(
+            f"Resolve closure identity for {endpoint} x {family}: {reason or 'deterministic identity gate pending'}. "
+            "Review the referenced evidence and record a linked complete identity or retain the fail-open state."
+        )
+    candidates = [
+        item
+        for item in [
+            *(evidence_summary.get("open_candidates") or []),
+            *(evidence_summary.get("open_candidates_v2") or []),
+        ]
+        if isinstance(item, dict)
+    ]
+    seen: set[str] = set()
+    for entry in candidates:
+        identity_key = json.dumps(
+            entry.get("identity_v2") or {
+                "endpoint": entry.get("endpoint"),
+                "vuln_class": entry.get("vuln_class"),
+                "method": entry.get("method"),
+                "variant": entry.get("variant"),
+            },
+            sort_keys=True,
+        )
+        if identity_key in seen:
+            continue
+        seen.add(identity_key)
+        if len(proposals) >= limit:
+            break
         if not isinstance(entry, dict):
             continue
         endpoint = str(entry.get("endpoint") or entry.get("raw_endpoint") or "").strip()
@@ -2071,6 +2118,13 @@ def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> li
         method = str(entry.get("method") or "GET").strip().upper()
         evidence_ref = str(entry.get("evidence_ref") or "").strip()
         notes = str(entry.get("notes") or "").strip()
+        identity = entry.get("identity_v2") if isinstance(entry.get("identity_v2"), dict) else {}
+        identity_dimensions = identity.get("dimensions") or {}
+        identity_suffix = (
+            f" IdentityV2={json.dumps(identity_dimensions, sort_keys=True, ensure_ascii=True)}."
+            if isinstance(identity_dimensions, dict) and identity_dimensions
+            else ""
+        )
         if not endpoint or not vuln_class:
             continue
         evidence_suffix = f" Evidence={evidence_ref}." if evidence_ref else ""
@@ -2086,7 +2140,7 @@ def _ledger_candidate_proposals(evidence_summary: dict, *, limit: int = 3) -> li
                 vuln_class=vuln_class,
                 evidence=evidence_suffix,
                 notes=notes_suffix,
-            )
+            ) + identity_suffix
         )
     return proposals
 
@@ -2441,6 +2495,7 @@ def _next_proposals(
             covered_ledger_cells,
             str(gap.get("endpoint") or ""),
             str(gap.get("vuln_class") or ""),
+            gap.get("identity_v2"),
         ):
             continue
         relevance = ""

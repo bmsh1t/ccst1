@@ -9,6 +9,7 @@ import pytest
 
 from evidence_ledger import (
     actor_requirements,
+    build_current_cell_projection,
     build_summary,
     ledger_path,
     load_entries,
@@ -45,6 +46,334 @@ def test_record_entry_writes_normalized_ledger_row(tmp_path):
     assert entry["variant"] == "baseline"
     assert rows[0]["browser_observed"] is True
     assert rows[0]["replayed"] is True
+
+
+def test_v2_projection_preserves_sql_parameter_identity(tmp_path):
+    first = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        method="GET",
+        vuln_class="SQLi",
+        result="tested_clean",
+        identity_dimensions={"method": "GET", "parameter": "q"},
+    )
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        method="GET",
+        vuln_class="SQLi",
+        result="candidate",
+        identity_dimensions={"method": "GET", "parameter": "term"},
+    )
+    summary = build_summary(tmp_path, target="target.com")
+
+    assert first["identity_status"] == "complete"
+    assert len(summary["closed_cells_v2"]) == 1
+    cell = summary["closed_cells_v2"][0]
+    assert cell["dimensions"] == {"method": "GET", "parameter": "q"}
+    resolver = ClosureResolver(summary)
+    assert resolver.is_closure_closed(cell["identity_v2"])
+    other = {
+        **cell["identity_v2"],
+        "dimensions": {"method": "GET", "parameter": "term"},
+    }
+    assert resolver.is_closure_closed(other) is False
+    assert summary["identity_v2_shadow"]["different"] is True
+    assert summary["identity_v2_shadow"]["v2_only"] == [cell]
+
+
+def test_workflow_identity_family_is_recordable_without_expanding_legacy_matrix(tmp_path):
+    entry = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/checkout",
+        vuln_class="Workflow",
+        result="tested_clean",
+        identity_dimensions={
+            "workflow": "checkout",
+            "transition": "pay",
+            "actor": "owner",
+        },
+    )
+
+    assert entry["vuln_class"] == "Workflow"
+    assert entry["identity_status"] == "complete"
+    assert build_summary(tmp_path, target="target.com")["closed_cells_v2"][0]["vuln_class"] == "Workflow"
+    assert build_summary(
+        tmp_path,
+        target="target.com",
+        vuln_classes=["Workflow"],
+    )["actor_matrix"]["rows"] == []
+
+
+def test_v2_incomplete_identity_is_recorded_but_not_closeable(tmp_path):
+    entry = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        method="GET",
+        vuln_class="SQLi",
+        result="tested_clean",
+        identity_dimensions={"method": "GET"},
+    )
+    summary = build_summary(tmp_path, target="target.com")
+
+    assert entry["identity_status"] == "incomplete"
+    assert "parameter" in entry["identity_missing_fields"]
+    assert summary["closed_cells_v2"] == []
+
+
+def test_v2_event_id_replay_is_idempotent_and_latest_result_controls_cell(tmp_path):
+    kwargs = {
+        "target": "target.com",
+        "endpoint": "/api/search",
+        "method": "GET",
+        "vuln_class": "SQLi",
+        "result": "tested_clean",
+        "event_id": "identity-v2:event-1",
+        "identity_dimensions": {"method": "GET", "parameter": "q"},
+    }
+    first = record_entry(tmp_path, **kwargs)
+    duplicate = record_entry(tmp_path, **kwargs)
+    assert first["write_status"] == "updated"
+    assert duplicate["write_status"] == "deduplicated"
+    summary = build_summary(tmp_path, target="target.com")
+    assert len(summary["closed_cells_v2"]) == 1
+
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        method="GET",
+        vuln_class="SQLi",
+        result="candidate",
+        identity_dimensions={"method": "GET", "parameter": "q"},
+    )
+    reopened = build_summary(tmp_path, target="target.com")
+    assert reopened["closed_cells_v2"] == []
+    assert len(reopened["open_candidates_v2"]) == 1
+
+    record_entry(tmp_path, **{**kwargs, "event_id": "identity-v2:event-2"})
+    reclosed = build_summary(tmp_path, target="target.com")
+    assert len(reclosed["closed_cells_v2"]) == 1
+    assert reclosed["open_candidates_v2"] == []
+
+
+def test_legacy_terminal_is_not_a_v2_closure(tmp_path):
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        vuln_class="SQLi",
+        result="tested_clean",
+    )
+    summary = build_summary(tmp_path, target="target.com")
+    legacy = next(cell for cell in summary["closed_cells"] if cell["endpoint"] == "/api/search")
+
+    assert summary["closed_cells_v2"] == []
+    assert ClosureResolver(summary).is_closure_closed(legacy) is False
+
+
+def test_ai_identity_candidate_persists_follow_up_without_closing(tmp_path):
+    entry = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        vuln_class="SQLi",
+        result="candidate",
+        identity_candidate={
+            "family": "SQLi",
+            "endpoint": "/api/search",
+            "dimensions": {"method": "GET"},
+            "confidence": 0.6,
+            "provenance": ["evidence/response.json"],
+            "evidence_refs": ["evidence/response.json"],
+        },
+    )
+
+    assert entry["identity_status"] == "follow_up_required"
+    assert entry["identity_candidate"]["kind"] == "ai_identity_candidate"
+    assert "parameter" in entry["identity_candidate"]["missing_fields"]
+    assert entry["identity_follow_up_action"]["kind"] == "identity_follow_up"
+    summary = build_summary(tmp_path, target="target.com")
+    assert summary["closed_cells_v2"] == []
+    assert summary["identity_v2_follow_up_actions"][0]["kind"] == "identity_follow_up"
+
+
+def test_identity_candidate_fact_disagreement_creates_follow_up(tmp_path):
+    entry = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        method="GET",
+        vuln_class="SQLi",
+        result="tested_clean",
+        identity_candidate={
+            "family": "SQLi",
+            "endpoint": "/api/search",
+            "dimensions": {"method": "POST", "parameter": "q"},
+            "confidence": 0.95,
+            "provenance": ["ai:planner"],
+            "evidence_refs": ["evidence/search.json"],
+        },
+    )
+
+    assert entry["identity_status"] == "conflict"
+    assert "method_mismatch" in entry["identity_conflicts"]
+    assert entry["identity_follow_up_action"]["conflicts"] == ["method_mismatch"]
+    assert build_summary(tmp_path, target="target.com")["closed_cells_v2"] == []
+
+
+def test_v2_projection_requires_complete_identity_status(tmp_path):
+    entry = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        method="GET",
+        vuln_class="SQLi",
+        result="tested_clean",
+        identity_dimensions={"method": "GET", "parameter": "q"},
+    )
+    conflicting = {
+        **entry,
+        "identity_status": "conflict",
+        "identity_conflicts": ["evidence_disagreement"],
+    }
+
+    assert build_current_cell_projection([conflicting])["closed_cells_v2"] == []
+
+
+def test_complete_identity_links_and_resolves_incomplete_event(tmp_path):
+    original = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        method="GET",
+        vuln_class="SQLi",
+        result="candidate",
+        event_id="identity:incomplete",
+        evidence_ref="evidence/search-original.json",
+        identity_dimensions={"method": "GET"},
+    )
+    replacement = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        method="GET",
+        vuln_class="SQLi",
+        result="tested_clean",
+        event_id="identity:complete",
+        evidence_ref="evidence/search-follow-up.json",
+        identity_dimensions={"method": "GET", "parameter": "q"},
+        identity_replaces_event_id="identity:incomplete",
+    )
+    summary = build_summary(tmp_path, target="target.com")
+    rows = load_entries(tmp_path, "target.com")
+
+    assert original["identity_status"] == "incomplete"
+    assert "identity_replacement" not in rows[0]
+    assert replacement["identity_replacement"] == {
+        "event_id": "identity:incomplete",
+        "evidence_ref": "evidence/search-original.json",
+        "identity_v2": None,
+    }
+    assert summary["identity_v2_diagnostics"]["incomplete_count"] == 0
+    assert summary["identity_v2_diagnostics"]["replacement_count"] == 1
+    assert len(summary["closed_cells_v2"]) == 1
+    assert summary["identity_v2_shadow"]["scope_mismatches"][0]["legacy_scope"] == "endpoint_family"
+
+
+def test_identity_replacement_requires_existing_event_and_complete_key(tmp_path):
+    with pytest.raises(ValueError, match="complete new identity"):
+        record_entry(
+            tmp_path,
+            target="target.com",
+            endpoint="/api/search",
+            vuln_class="SQLi",
+            result="candidate",
+            identity_dimensions={"method": "GET"},
+            identity_replaces_event_id="missing",
+        )
+
+
+def test_identity_replacement_cannot_suppress_another_endpoint_or_family(tmp_path):
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/orders/1",
+        vuln_class="IDOR",
+        actor="peer",
+        object_scope="other",
+        result="candidate",
+        event_id="identity:idor",
+        identity_dimensions={
+            "path_template": "/api/orders/{id}",
+            "method": "GET",
+            "actor_relation": "peer",
+            "object_scope": "other_object_same_org",
+        },
+    )
+
+    with pytest.raises(ValueError, match="same endpoint and vulnerability family"):
+        record_entry(
+            tmp_path,
+            target="target.com",
+            endpoint="/api/search",
+            vuln_class="SQLi",
+            result="tested_clean",
+            identity_dimensions={"method": "GET", "parameter": "q"},
+            identity_replaces_event_id="identity:idor",
+        )
+
+    summary = build_summary(tmp_path, target="target.com")
+    assert summary["open_candidates_v2"][0]["event_id"] == "identity:idor"
+    with pytest.raises(ValueError, match="replacement event not found"):
+        record_entry(
+            tmp_path,
+            target="target.com",
+            endpoint="/api/search",
+            vuln_class="SQLi",
+            result="tested_clean",
+            identity_dimensions={"method": "GET", "parameter": "q"},
+            identity_replaces_event_id="missing",
+        )
+
+
+def test_identity_replacement_supersedes_projection_without_mutating_old_event(tmp_path):
+    original = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        method="GET",
+        vuln_class="SQLi",
+        result="tested_clean",
+        event_id="identity:old-key",
+        evidence_ref="evidence/search-old.json",
+        identity_dimensions={"method": "GET", "parameter": "q"},
+    )
+    replacement = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/api/search",
+        method="GET",
+        vuln_class="SQLi",
+        result="tested_clean",
+        event_id="identity:new-key",
+        evidence_ref="evidence/search-new.json",
+        identity_dimensions={"method": "GET", "parameter": "term"},
+        identity_replaces_event_id="identity:old-key",
+    )
+    summary = build_summary(tmp_path, target="target.com")
+    resolver = ClosureResolver(summary)
+    rows = load_entries(tmp_path, "target.com")
+
+    assert rows[0]["identity_v2"] == original["identity_v2"]
+    assert "identity_replacement" not in rows[0]
+    assert replacement["identity_replacement"]["identity_v2"] == original["identity_v2"]
+    assert not resolver.is_closure_closed(original["identity_v2"])
+    assert resolver.is_closure_closed(replacement["identity_v2"])
 
 
 def test_record_entry_normalizes_file_upload_alias(tmp_path):
