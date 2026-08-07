@@ -90,7 +90,14 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
     }
     lanes = {lane["id"]: lane for lane in profile["lanes"]}
     assert tuple(lanes) == LANE_IDS
-    assert all(lane["checked"] and lane["ready"] for lane in lanes.values())
+    assert all(lane["checked"] for lane in lanes.values())
+    assert all(lane["ready"] for lane_id, lane in lanes.items() if lane_id != "browser")
+    assert lanes["browser"]["ready"] is False
+    assert lanes["browser"]["classification"] == "artifact_bridge"
+    assert lanes["browser"]["runtime_status"] == "unchecked"
+    assert lanes["browser"]["bridge_ready"] is True
+    assert lanes["browser"]["profile_version"] == 2
+    assert lanes["browser"]["missing"] == ["session-browser-mcp"]
     assert lanes["browser"]["degraded"] == ["session-browser-mcp-unchecked"]
     assert lanes["oast"]["degraded"] == ["manual-oast-provider"]
     assert lanes["web3"]["degraded"] == ["static-review-only"]
@@ -165,6 +172,10 @@ def test_browser_cli_presence_does_not_change_mcp_only_profile(tmp_path):
 
     assert profile["available"]["browser"] == []
     assert "browser-mcp-evidence-import" in profile["fallbacks"]
+    lanes = {lane["id"]: lane for lane in profile["lanes"]}
+    assert lanes["browser"]["ready"] is False
+    assert lanes["browser"]["classification"] == "artifact_bridge"
+    assert lanes["browser"]["bridge_ready"] is True
     assert profile["recommended_paths"][:2] == [
         "prefer-session-browser-mcp",
         "browser-mcp-evidence-import",
@@ -190,6 +201,11 @@ def test_fallbacks_require_their_local_helpers(tmp_path):
         "recon-manual-evidence-only",
         "scanner-manual-evidence-only",
     ]
+    browser = next(lane for lane in profile["lanes"] if lane["id"] == "browser")
+    assert browser["ready"] is False
+    assert browser["classification"] == "session_managed"
+    assert browser["runtime_status"] == "unchecked"
+    assert browser["bridge_ready"] is False
 
 
 def test_profile_is_read_only(tmp_path):
@@ -222,7 +238,8 @@ def test_missing_sql_helper_only_degrades_sql_lane(tmp_path):
 
     assert lanes["sql"]["ready"] is False
     assert lanes["sql"]["missing"] == ["tools/sql_parameter_probe.py+json_inject_probe.py"]
-    assert all(lane["ready"] for lane_id, lane in lanes.items() if lane_id != "sql")
+    assert all(lane["ready"] for lane_id, lane in lanes.items() if lane_id not in {"browser", "sql"})
+    assert lanes["browser"]["classification"] == "artifact_bridge"
 
 
 def test_unknown_profile_is_distinct_from_checked_but_degraded():
@@ -249,3 +266,5 @@ def test_unknown_profile_is_distinct_from_checked_but_degraded():
     assert [lane["id"] for lane in profile["lanes"]] == list(LANE_IDS)
     assert all(lane["checked"] is False for lane in profile["lanes"])
     assert all(lane["degraded"] == ["profile-error"] for lane in profile["lanes"])
+    assert all(lane["classification"] == "unknown" for lane in profile["lanes"])
+    assert all(lane["runtime_status"] == "unchecked" for lane in profile["lanes"])

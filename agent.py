@@ -956,7 +956,8 @@ _ALL_TOOL_SPECS: list[dict] = [
                 "(P5-W1 R4) Adversarial pre-finish self-review. For each "
                 "candidate finding, spawn a red-team worker that tries to "
                 "disqualify it, parse VERDICT, and decide keep / demote / "
-                "kill. Definitive-disqualifier candidates are recorded as "
+                "kill / manual review. Definitive-disqualifier candidates "
+                "are recorded as "
                 "false-positive patterns to teach future runs. Only runs "
                 "when --self-review is set; otherwise returns no-op."
             ),
@@ -2316,10 +2317,13 @@ class ToolDispatcher:
                 decision_for,
                 red_team_path_for,
                 record_disqualifier_as_false_positive,
-                build_audit_record,
             )
-        except Exception as exc:
-            return f"self_review modules unavailable: {exc}"
+        except ImportError as exc:
+            return json.dumps({
+                "status": "unavailable",
+                "manual_review": True,
+                "reason": f"self_review modules unavailable: {exc}",
+            }, indent=2)
 
         timeout = self.worker_timeout_secs
         valid = [c for c in candidates if isinstance(c, dict) and c.get("id")]
@@ -2340,7 +2344,7 @@ class ToolDispatcher:
             wait_for_workers([h for _, h in handles], timeout_secs=timeout)
 
             decisions = []
-            keep = demote = kill = 0
+            keep = demote = kill = manual_review = 0
             for cand, handle in handles:
                 fid = str(cand.get("id", ""))
                 vpath = red_team_path_for(domain, fid)
@@ -2357,6 +2361,8 @@ class ToolDispatcher:
                         pass
                 elif decision == "demote":
                     demote += 1
+                elif decision == "manual_review":
+                    manual_review += 1
                 else:
                     keep += 1
                 decisions.append({
@@ -2367,14 +2373,20 @@ class ToolDispatcher:
                 })
 
             return json.dumps({
+                "status": "manual_review" if manual_review else "complete",
                 "candidates_reviewed": len(handles),
                 "keep_count": keep,
                 "demote_count": demote,
                 "kill_count": kill,
+                "manual_review_count": manual_review,
                 "decisions": decisions,
             }, indent=2)
         except Exception as exc:
-            return f"run_self_review error: {exc}"
+            return json.dumps({
+                "status": "unavailable",
+                "manual_review": True,
+                "reason": f"run_self_review error: {exc}",
+            }, indent=2)
 
     def _read_guard_status(self, domain: str, memory_dir: str = "") -> str:
         from tools.request_guard import format_guard_output, load_guard_status

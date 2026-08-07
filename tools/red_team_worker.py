@@ -15,10 +15,9 @@ The worker prompt (per PRD R1):
      'no flaw found'."
 
 For deterministic testing, the worker accepts --mock-verdict to skip
-the LLM call and write a stub red_team.md. In real use, the worker
-calls Ollama with the prompt above and a small browser/HTTP toolset;
-that integration is opt-in and falls back to "no_flaw_found" if Ollama
-is unreachable.
+the LLM call and write a stub red_team.md. The optional LLM integration is not
+wired yet, so real mode returns `unavailable` and leaves the finding for manual
+review.
 
 Output schema (R2):
     <scratch_dir>/done.flag                     — signals completion
@@ -43,7 +42,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from tools.self_review import (        # noqa: E402
-    VERDICT_NO_FLAW, VERDICT_LIKELY, VERDICT_DISQUALIFY, VALID_VERDICTS,
+    VERDICT_UNAVAILABLE, VALID_VERDICTS,
     red_team_path_for,
 )
 
@@ -120,14 +119,10 @@ def run_worker(seed_path: Path, scratch: Path, mock_verdict: str | None = None) 
         verdict = mock_verdict
         rationale = f"Mock verdict supplied via CLI for deterministic testing."
     else:
-        # Real-mode placeholder: integrate with Ollama in a follow-up patch.
-        # For now, the worker conservatively returns no_flaw_found so the
-        # original /validate PASS stands.
-        verdict = VERDICT_NO_FLAW
+        verdict = VERDICT_UNAVAILABLE
         rationale = (
-            "Adversarial review did not surface a flaw within budget. "
-            "Original /validate decision stands. "
-            "(LLM-driven review not yet wired; this is the conservative default.)"
+            "Adversarial LLM review is not configured in this worker. "
+            "No review conclusion was produced; manual review is required."
         )
 
     path = write_review(

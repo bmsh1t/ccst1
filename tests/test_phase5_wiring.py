@@ -510,7 +510,7 @@ class TestR4SelfReviewWiring:
         assert len(recorded) == 1
         assert recorded[0]["finding"]["id"] == "f1"
 
-    def test_missing_verdict_treated_as_keep(self, monkeypatch):
+    def test_missing_verdict_requires_manual_review(self, monkeypatch):
         d = self._make_dispatcher(self_review_enabled=True)
 
         class FakeHandle:
@@ -526,6 +526,8 @@ class TestR4SelfReviewWiring:
         out = d.dispatch("run_self_review", {"candidates": [{"id": "f1"}]})
         head = out.split("\n\n[", 1)[0]
         payload = json.loads(head)
-        # Missing verdict → keep (per decision_for default)
-        assert payload["keep_count"] == 1
+        assert payload["status"] == "manual_review"
+        assert payload["keep_count"] == 0
+        assert payload["manual_review_count"] == 1
         assert payload["decisions"][0]["verdict"] == "missing"
+        assert payload["decisions"][0]["decision"] == "manual_review"

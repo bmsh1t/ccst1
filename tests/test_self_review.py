@@ -64,7 +64,7 @@ class TestVerdictParsing:
 
 
 # ---------------------------------------------------------------------
-#  R3: Parent decision branching (3 verdicts)
+#  R3: Parent decision branching
 # ---------------------------------------------------------------------
 
 class TestDecisionBranches:
@@ -77,11 +77,14 @@ class TestDecisionBranches:
     def test_definitive_disqualifier_kills_finding(self):
         assert sr.decision_for(sr.VERDICT_DISQUALIFY) == sr.DECISION_KILL
 
-    def test_missing_verdict_defaults_to_keep(self):
-        assert sr.decision_for(None) == sr.DECISION_KEEP
+    def test_unavailable_verdict_requires_manual_review(self):
+        assert sr.decision_for(sr.VERDICT_UNAVAILABLE) == sr.DECISION_MANUAL_REVIEW
 
-    def test_invalid_verdict_defaults_to_keep(self):
-        assert sr.decision_for("bogus") == sr.DECISION_KEEP
+    def test_missing_verdict_requires_manual_review(self):
+        assert sr.decision_for(None) == sr.DECISION_MANUAL_REVIEW
+
+    def test_invalid_verdict_requires_manual_review(self):
+        assert sr.decision_for("bogus") == sr.DECISION_MANUAL_REVIEW
 
 
 # ---------------------------------------------------------------------
@@ -207,6 +210,27 @@ class TestSpawnEndToEnd:
         assert (tmp_path / "scratch" / "done.flag").exists()
         # findings.json is empty list
         assert json.loads((tmp_path / "scratch" / "findings.json").read_text()) == []
+
+    def test_real_mode_is_explicitly_unavailable(self, tmp_path):
+        seed_path = tmp_path / "seed.json"
+        seed_path.write_text(json.dumps({
+            "kind": "red_team",
+            "worker_id": "rt-test",
+            "target": "x.com",
+            "candidate_finding": {"id": "fid"},
+        }))
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        original_base = red_team_worker.BASE_DIR
+        red_team_worker.BASE_DIR = tmp_path
+        try:
+            summary = red_team_worker.run_worker(seed_path, scratch)
+        finally:
+            red_team_worker.BASE_DIR = original_base
+
+        assert summary["verdict"] == sr.VERDICT_UNAVAILABLE
+        assert sr.parse_verdict_file(summary["review_path"]) == sr.VERDICT_UNAVAILABLE
+        assert sr.decision_for(summary["verdict"]) == sr.DECISION_MANUAL_REVIEW
 
 
 # ---------------------------------------------------------------------

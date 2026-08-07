@@ -30,7 +30,7 @@
 
 ```
   Core 4 workflow  ·  Power commands  ·  Claude CLI agents  ·  Skill routing
-  20 web2 vuln classes  ·  10 web3 bug classes
+  15 canonical web2 closure classes + discovery families  ·  10 web3 bug classes
   Burp MCP  ·  Caido MCP  ·  JSHook MCP  ·  HackerOne MCP  ·  Autonomous Mode
 ```
 
@@ -554,31 +554,31 @@ and the `disclosed-researcher` workflow instead of being mixed into the Intel ar
 ## Vulnerability Coverage
 
 <details>
-<summary><b>20 Web2 Bug Classes</b> — click to expand</summary>
+<summary><b>15 Canonical Web2 Closure Classes</b> — click to expand</summary>
 <br>
 
 | Class | Key Techniques | Typical Payout |
 |:---|:---|:---|
 | **IDOR** | Object-level, field-level, GraphQL node(), UUID enum, method swap | $500 - $5K |
-| **Auth Bypass** | Missing middleware, client-side checks, BFLA | $1K - $10K |
+| **SSRF** | Redirect chain, DNS rebinding, cloud metadata, URL parser boundaries | $1K - $15K |
 | **XSS** | Reflected, stored, DOM, postMessage, CSP bypass, mXSS | $500 - $5K |
-| **SSRF** | Redirect chain, DNS rebinding, cloud metadata, 11 IP bypasses | $1K - $15K |
-| **Business Logic** | Workflow bypass, negative quantity, price manipulation | $500 - $10K |
-| **Race Conditions** | TOCTOU, coupon reuse, limit overrun, double spend | $500 - $5K |
-| **SQLi** | Error-based, blind, time-based, ORM bypass, WAF bypass | $1K - $15K |
-| **OAuth/OIDC** | Missing PKCE, state bypass, 11 redirect_uri bypasses | $500 - $5K |
-| **File Upload** | Extension bypass, MIME confusion, polyglots, 10 bypasses | $500 - $5K |
+| **Race** | TOCTOU, coupon reuse, limit overrun, double spend | $500 - $5K |
+| **Authz** | Missing middleware, role/tenant boundaries, BFLA | $1K - $10K |
 | **GraphQL** | Introspection, node() IDOR, batching bypass, mutation auth | $1K - $10K |
-| **LLM/AI** | Prompt injection, chatbot IDOR, ASI01-ASI10 framework | $500 - $10K |
-| **API Misconfig** | Mass assignment, JWT attacks, prototype pollution, CORS | $500 - $5K |
-| **ATO** | Password reset poisoning, token leaks, 9 takeover paths | $1K - $20K |
-| **SSTI** | Jinja2, Twig, Freemarker, ERB, Thymeleaf -> RCE | $2K - $10K |
-| **Subdomain Takeover** | GitHub Pages, S3, Heroku, Netlify, Azure | $200 - $5K |
-| **Cloud/Infra** | S3 listing, EC2 metadata, Firebase, K8s, Docker API | $500 - $20K |
-| **HTTP Smuggling** | CL.TE, TE.CL, TE.TE, H2.CL request tunneling | $5K - $30K |
-| **Cache Poisoning** | Unkeyed headers, parameter cloaking, web cache deception | $1K - $10K |
-| **MFA Bypass** | No rate limit, OTP reuse, response manipulation, race | $1K - $10K |
-| **SAML/SSO** | XSW, comment injection, signature stripping, XXE | $2K - $20K |
+| **OAuth** | PKCE, state, redirect_uri, scope and issuer confusion | $500 - $5K |
+| **Upload** | Extension bypass, MIME confusion, polyglots, parser chains | $500 - $5K |
+| **Webhook** | Signature scope, replay, spoofing, callback ownership | $500 - $10K |
+| **JWT** | Algorithm confusion, kid/jku injection, weak key, claim boundaries | $500 - $10K |
+| **SQLi** | Error-based, blind, time-based, ORM bypass, WAF bypass | $1K - $15K |
+| **XXE** | General/parameter entities, XInclude, blind and OOB paths | $1K - $15K |
+| **RCE** | Command injection, deserialization, SSTI and upload-to-execution | $2K - $30K |
+| **Path** | Path traversal, LFI/RFI, archive and canonicalization boundaries | $500 - $10K |
+| **CSRF** | Session-riding state changes and account-impact chains | $500 - $5K |
+
+Discovery and knowledge routing additionally cover workflow/business logic,
+LLM/AI, account takeover, subdomain takeover, cloud/infra, HTTP smuggling,
+cache poisoning, MFA, SAML/SSO, and other technique families. They become
+closeable only after mapping to one of the canonical coverage cells above.
 
 </details>
 

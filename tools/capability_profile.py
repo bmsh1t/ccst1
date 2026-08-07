@@ -29,7 +29,7 @@ TOOL_REGISTRY: dict[str, tuple[str, ...]] = {
 }
 SESSION_MANAGED = ("chrome-devtools-mcp", "playwright-mcp")
 CORE_EXTERNAL_TOOLS = ("curl", "httpx")
-LANE_PROFILE_VERSION = 1
+LANE_PROFILE_VERSION = 2
 LANE_IDS = (
     "recon",
     "surface",
@@ -69,6 +69,8 @@ def unknown_capability_profile(reason: str = "not-checked") -> dict:
                 "degraded": [reason],
                 "evidence_required": [],
                 "tool_refs": [],
+                "classification": "unknown",
+                "runtime_status": "unchecked",
                 "profile_version": LANE_PROFILE_VERSION,
                 "input_fingerprint": "",
             }
@@ -93,16 +95,21 @@ def _lane_record(
     *,
     evidence_required: tuple[str, ...],
     degraded: tuple[str, ...] = (),
+    classification: str = "executable",
+    runtime_status: str | None = None,
 ) -> dict:
     encoded = json.dumps(inputs, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    ready = all(inputs.values())
     return {
         "id": lane_id,
         "checked": True,
-        "ready": all(inputs.values()),
+        "ready": ready,
         "missing": _bounded([name for name, present in inputs.items() if not present]),
         "degraded": _bounded(list(degraded)),
         "evidence_required": _bounded(list(evidence_required)),
         "tool_refs": _bounded(list(inputs)),
+        "classification": classification,
+        "runtime_status": runtime_status or ("ready" if ready else "unavailable"),
         "profile_version": LANE_PROFILE_VERSION,
         "input_fingerprint": f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}",
     }
@@ -232,12 +239,22 @@ def build_capability_profile(
             {"tools/surface.py+surface_projection.py": surface_ready},
             evidence_required=("recon-or-browser-artifact",),
         ),
-        _lane_record(
-            "browser",
-            {"tools/browser_mcp_import.py": browser_mcp_import_ready},
-            evidence_required=("session-browser-network-or-dom",),
-            degraded=("session-browser-mcp-unchecked",),
-        ),
+        {
+            **_lane_record(
+                "browser",
+                {
+                    "session-browser-mcp": False,
+                    "tools/browser_mcp_import.py": browser_mcp_import_ready,
+                },
+                evidence_required=("session-browser-network-or-dom",),
+                degraded=("session-browser-mcp-unchecked",),
+                classification=(
+                    "artifact_bridge" if browser_mcp_import_ready else "session_managed"
+                ),
+                runtime_status="unchecked",
+            ),
+            "bridge_ready": browser_mcp_import_ready,
+        },
         _lane_record(
             "source_js",
             {"tools/source_intel.py+js_reader.py": source_js_ready},

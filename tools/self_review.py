@@ -9,12 +9,14 @@ the parent spawns a red_team worker (B6 primitive). The worker writes
     VERDICT: no_flaw_found
     VERDICT: likely_flaw
     VERDICT: definitive_disqualifier
+    VERDICT: unavailable
 
 The parent reads the VERDICT line and routes:
 
     no_flaw_found             → keep validated → /report
     likely_flaw               → demote to Candidate
     definitive_disqualifier   → kill + record false-positive pattern
+    unavailable / missing     → manual review
 
 This module:
   * parses the red_team.md verdict line
@@ -45,11 +47,18 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 VERDICT_NO_FLAW = "no_flaw_found"
 VERDICT_LIKELY = "likely_flaw"
 VERDICT_DISQUALIFY = "definitive_disqualifier"
-VALID_VERDICTS = frozenset({VERDICT_NO_FLAW, VERDICT_LIKELY, VERDICT_DISQUALIFY})
+VERDICT_UNAVAILABLE = "unavailable"
+VALID_VERDICTS = frozenset({
+    VERDICT_NO_FLAW,
+    VERDICT_LIKELY,
+    VERDICT_DISQUALIFY,
+    VERDICT_UNAVAILABLE,
+})
 
 DECISION_KEEP = "keep"
 DECISION_DEMOTE = "demote"
 DECISION_KILL = "kill"
+DECISION_MANUAL_REVIEW = "manual_review"
 
 
 _VERDICT_RE = re.compile(r"^\s*VERDICT\s*:\s*([A-Za-z_]+)\s*$", re.MULTILINE)
@@ -101,15 +110,18 @@ def decision_for(verdict: Optional[str]) -> str:
         no_flaw_found             → keep
         likely_flaw               → demote
         definitive_disqualifier   → kill
+        unavailable/missing       → manual_review
 
-    A missing/invalid verdict is treated as `keep` (the worker did not
-    find a flaw; the original /validate PASS stands).
+    A missing/invalid verdict preserves uncertainty and cannot confirm the
+    original /validate PASS.
     """
     if verdict == VERDICT_DISQUALIFY:
         return DECISION_KILL
     if verdict == VERDICT_LIKELY:
         return DECISION_DEMOTE
-    return DECISION_KEEP
+    if verdict == VERDICT_NO_FLAW:
+        return DECISION_KEEP
+    return DECISION_MANUAL_REVIEW
 
 
 def build_audit_record(

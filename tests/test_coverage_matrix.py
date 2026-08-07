@@ -41,6 +41,14 @@ from surface_index import build_surface_index
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def test_readme_names_the_canonical_web2_closure_taxonomy():
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "15 Canonical Web2 Closure Classes" in text
+    section = text.split("15 Canonical Web2 Closure Classes", 1)[1].split("</details>", 1)[0]
+    assert all(f"**{vuln_class}**" in section for vuln_class in VULN_CLASSES)
+    assert "20 Web2 Bug Classes" not in text
+
+
 def _seed_recon(tmp_path: Path, target: str, urls: list[str]) -> None:
     urls_dir = tmp_path / "recon" / target / "urls"
     urls_dir.mkdir(parents=True)
