@@ -617,6 +617,151 @@ def test_matching_third_round_guard_blocks_partial_json_lane(tmp_path):
     assert closure["reasons"] == ["stagnant_prerequisite"]
 
 
+def test_matching_third_round_guard_rotates_to_adjacent_target_surface(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
+    matrix_path = tmp_path / "evidence" / target / "coverage_matrix.json"
+    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+    matrix["endpoints"].append({
+        "endpoint": "/profile",
+        "weight": 3.0,
+        "cells": {"IDOR": {"status": "tested_clean"}},
+    })
+    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+    queue_path = tmp_path / "state" / target / "action_queue.json"
+    queue = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue["actions"].append({
+        "id": "AQ-0002",
+        "status": "tested",
+        "type": "surface-review",
+        "metadata": {"endpoint": "/profile"},
+    })
+    queue_path.write_text(json.dumps(queue), encoding="utf-8")
+    ledger_dir = tmp_path / "memory" / "evidence" / target
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "ledger.jsonl").write_text(
+        "".join(json.dumps({
+            "endpoint": f"/api/orders/{value}",
+            "vuln_class": "IDOR",
+            "result": "tested_clean",
+        }) + "\n" for value in ("1", "2", "3")),
+        encoding="utf-8",
+    )
+    state = {
+        "target": target,
+        "resolved_target": target,
+        "next_action": "handoff",
+        "json_inject": {"status": "partial", "input_fingerprint": "abc", "request_count": 1},
+        "surface_review_candidates": [{
+            "url": "https://target.com/profile",
+            "score": 91,
+            "new_observation": True,
+        }],
+    }
+    base = _load_closure_projection(
+        str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
+    )
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text(json.dumps({"round_guard": {
+        "fingerprint": base["stagnation_fingerprint"], "consecutive": 3, "threshold": 3,
+    }}), encoding="utf-8")
+
+    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["stagnant_prerequisite_rotation"]
+    assert closure["next_action"] == "rotate_to_adjacent_high_value_lane"
+    assert closure["rotation_target"]["url"] == "https://target.com/profile"
+
+
+def test_matching_third_round_guard_preserves_authoritative_next_action(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    stagnant_state = {
+        "target": target,
+        "resolved_target": target,
+        "next_action": "handoff",
+        "json_inject": {"status": "partial", "input_fingerprint": "abc", "request_count": 1},
+    }
+    base = _load_closure_projection(
+        str(tmp_path), stagnant_state, max_lanes_reached=False, apply_round_guard=False
+    )
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text(json.dumps({"round_guard": {
+        "fingerprint": base["stagnation_fingerprint"], "consecutive": 3, "threshold": 3,
+    }}), encoding="utf-8")
+
+    closure = _load_closure_projection(str(tmp_path), {
+        **stagnant_state,
+        "action_queue_next": {"id": "AQ-1", "next_action": "validate_finding"},
+    }, max_lanes_reached=False)
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["durable_work_pending"]
+    assert closure["next_action"] == "handoff"
+    assert "rotation_target" not in closure
+
+
+def test_matching_third_round_guard_keeps_blocked_family_terminal(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
+    matrix_path = tmp_path / "evidence" / target / "coverage_matrix.json"
+    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+    matrix["endpoints"].append({
+        "endpoint": "/api/orders/99",
+        "weight": 3.0,
+        "cells": {"IDOR": {"status": "tested_clean"}},
+    })
+    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+    queue_path = tmp_path / "state" / target / "action_queue.json"
+    queue = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue["actions"].append({
+        "id": "AQ-0002",
+        "status": "tested",
+        "type": "surface-review",
+        "metadata": {"endpoint": "/api/orders/99"},
+    })
+    queue_path.write_text(json.dumps(queue), encoding="utf-8")
+    ledger_dir = tmp_path / "memory" / "evidence" / target
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "ledger.jsonl").write_text(
+        "".join(json.dumps({
+            "endpoint": f"/api/orders/{value}",
+            "vuln_class": "IDOR",
+            "result": "tested_clean",
+        }) + "\n" for value in ("1", "2", "3")),
+        encoding="utf-8",
+    )
+    state = {
+        "target": target,
+        "resolved_target": target,
+        "next_action": "handoff",
+        "json_inject": {"status": "partial", "input_fingerprint": "abc", "request_count": 1},
+    }
+    base = _load_closure_projection(
+        str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
+    )
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text(json.dumps({"round_guard": {
+        "fingerprint": base["stagnation_fingerprint"], "consecutive": 3, "threshold": 3,
+    }}), encoding="utf-8")
+
+    closure = _load_closure_projection(str(tmp_path), {
+        **state,
+        "surface_review_candidates": [{
+            "url": "https://target.com/api/orders/99",
+            "score": 91,
+            "new_observation": True,
+        }],
+    }, max_lanes_reached=False)
+
+    assert closure["verdict"] == "blocked"
+    assert closure["reasons"] == ["stagnant_prerequisite"]
+
+
 def test_round_guard_ignores_coverage_rebuild_timestamp(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)

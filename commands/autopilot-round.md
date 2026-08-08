@@ -51,9 +51,12 @@ read the bounded `browser_evidence.present/ready`, `repo_source_available`,
 matching `capabilities.lanes` record; these advisory facts never select
 or override STATUS. Project through the Status Projection below. `finish` or
 `blocked` is terminal: project its STATUS, apply terminal cron cleanup, emit,
-and stop without any target action. `handoff` is the only verdict that may enter
-a round. A missing, damaged, inconsistent, or unknown closure/verdict follows
-the same cleanup, emits `STATUS: ERROR`, and stops.
+and stop without any target action. A repeated lane-local prerequisite may
+project `handoff` with reason `stagnant_prerequisite_rotation` and a bounded
+`rotation_target`; treat it as `STATUS: CONTINUE` and leave the native loop
+active. `handoff` is the only verdict that may enter a round. A missing,
+damaged, inconsistent, or unknown closure/verdict follows the same cleanup,
+emits `STATUS: ERROR`, and stops.
 
 Before target work, start or resume the checkpoint-owned round budget:
 

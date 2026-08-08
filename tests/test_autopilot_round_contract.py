@@ -96,6 +96,8 @@ def test_terminal_precheck_is_state_only_and_precedes_target_work():
     assert closure in precheck
     assert f"{closure} --max-lanes-reached" not in precheck
     assert "`finish` or `blocked` is terminal" in normalized_precheck
+    assert "`stagnant_prerequisite_rotation`" in normalized_precheck
+    assert "leave the native loop active" in normalized_precheck
     assert "apply terminal cron cleanup, emit, and stop" in normalized_precheck
     assert "For STATUS selection, read only `closure.verdict`" in normalized_precheck
     assert "For terminal residual blind spots only" in normalized_precheck

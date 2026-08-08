@@ -3112,6 +3112,27 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _stagnation_continuation(state: dict, closure: dict) -> dict:
+    """Project bounded work that can continue after a repeated lane blocker."""
+    authoritative = _loop_guard_authoritative_reason(state)
+    if authoritative:
+        return {
+            "reason": str((closure.get("reasons") or [authoritative])[0]),
+            "next_action": str(closure.get("next_action") or "handoff"),
+            "rotation_target": {},
+        }
+    hint = closure.get("rotation_hint") or {}
+    blocked_family = str(hint.get("endpoint_family") or "")
+    target = _rotation_target(state, blocked_family)
+    if not target:
+        return {}
+    return {
+        "reason": "stagnant_prerequisite_rotation",
+        "next_action": "rotate_to_adjacent_high_value_lane",
+        "rotation_target": target,
+    }
+
+
 def _semantic_coverage_fingerprint(matrix: dict | None) -> str:
     """Hash coverage meaning, not rebuild timestamps."""
     if not isinstance(matrix, dict):
@@ -3220,12 +3241,23 @@ def load_closure_projection(
         and fingerprint == str(guard.get("fingerprint") or "")
         and int(guard.get("consecutive", 0) or 0) >= 3
     ):
-        closure.update({
-            "verdict": "blocked",
-            "can_claim_exhausted": False,
-            "reasons": ["stagnant_prerequisite"],
-            "round_guard": guard,
-        })
+        continuation = _stagnation_continuation(closure_state, closure)
+        if continuation:
+            closure.update({
+                "verdict": "handoff",
+                "can_claim_exhausted": False,
+                "reasons": [continuation["reason"]],
+                "next_action": continuation["next_action"],
+                "rotation_target": continuation["rotation_target"],
+                "round_guard": guard,
+            })
+        else:
+            closure.update({
+                "verdict": "blocked",
+                "can_claim_exhausted": False,
+                "reasons": ["stagnant_prerequisite"],
+                "round_guard": guard,
+            })
     elif guard:
         closure["round_guard"] = guard
     return closure
