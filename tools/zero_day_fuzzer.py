@@ -30,6 +30,7 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from runtime_exec import run_shell_command_split
 from auth_session import AuthSession
+from deep_budget import project_budget
 from scope_context import ScopeContext, ScopeContextError
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -97,6 +98,7 @@ class ZeroDayFuzzer:
         scope_context=None,
         auth_session=None,
         max_requests=60,
+        adaptive_budget=None,
     ):
         self.target = target
         self.deep = deep
@@ -105,11 +107,24 @@ class ZeroDayFuzzer:
         self.scope_target = str(scope_target or target)
         self.scope_context = scope_context or ScopeContext.from_target(self.scope_target)
         self.auth_session = auth_session or AuthSession(target=self.scope_target)
-        self.max_requests = max(1, int(max_requests))
+        self.base_request_budget = max(1, int(max_requests))
+        self.adaptive_budget = bool(deep) if adaptive_budget is None else bool(adaptive_budget)
+        self.request_budget_cap = max(self.base_request_budget, min(self.base_request_budget * 4, 240))
+        self.max_requests = self.base_request_budget
         self.request_count = 0
         self.blocked_count = 0
         self.transport_errors = 0
         self.errors = []
+        self._response_signatures = set()
+        self._response_variance = 0
+        self._high_value_evidence = 0
+        self.budget_projection = project_budget(
+            self.base_request_budget,
+            maximum=self.request_budget_cap,
+            url_count=1,
+            parameter_count=len(parse_qs(urlparse(target).query)),
+            adaptive=self.adaptive_budget,
+        )
 
         if findings_dir:
             self.findings_dir = findings_dir
@@ -137,7 +152,27 @@ class ZeroDayFuzzer:
         )
         if result[0] is None:
             self.transport_errors += 1
+        else:
+            self._observe_response(result[0], result[2] or "")
         return result
+
+    def _observe_response(self, status, body):
+        signature = f"{status}:{len(body)}:{hashlib.sha256(body[:1000].encode(errors='replace')).hexdigest()[:12]}"
+        if signature not in self._response_signatures:
+            self._response_signatures.add(signature)
+            self._response_variance += 1
+        if re.search(r"(?i)(eyj[a-z0-9_-]+\.|uid=\d+|admin|root:|sql syntax|stack trace|secret)", body):
+            self._high_value_evidence += 1
+        self.budget_projection = project_budget(
+            self.base_request_budget,
+            maximum=self.request_budget_cap,
+            url_count=1,
+            parameter_count=len(parse_qs(urlparse(self.target).query)),
+            response_variance=self._response_variance,
+            high_value_evidence=self._high_value_evidence,
+            adaptive=self.adaptive_budget,
+        )
+        self.max_requests = max(self.max_requests, int(self.budget_projection["budget"]))
 
     def add_finding(self, vuln_type, severity, title, details):
         finding = {
@@ -541,6 +576,8 @@ class ZeroDayFuzzer:
             "scope_hash": self.scope_context.scope_hash,
             "request_count": self.request_count,
             "request_budget": self.max_requests,
+            "budget": self.budget_projection,
+            "adaptive_budget": self.adaptive_budget,
             "blocked_count": self.blocked_count,
             "transport_errors": self.transport_errors,
             "error_count": len(self.errors),
@@ -607,6 +644,7 @@ def main():
     parser.add_argument("--recon-dir", type=str, help="Recon directory to load URLs from")
     parser.add_argument("--deep", action="store_true", help="Run additional deep checks")
     parser.add_argument("--max-requests", type=int, default=60, help="Maximum requests per target")
+    parser.add_argument("--adaptive-budget", action="store_true", help="Adapt deep request budget to response variance and high-value evidence")
     parser.add_argument("--scope-target", default="", help="Parent target/list/manifest used for Scope checks")
     args = parser.parse_args()
 
@@ -652,6 +690,7 @@ def main():
             scope_context=context,
             auth_session=auth_session,
             max_requests=args.max_requests,
+            adaptive_budget=args.adaptive_budget,
         )
         results.append(fuzzer.run_all_tests())
     return 0 if results and all(item.get("status") == "ok" for item in results) else 2

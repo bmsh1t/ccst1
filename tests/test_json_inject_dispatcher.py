@@ -146,6 +146,58 @@ def test_json_probe_resumes_endpoint_tail_and_keeps_prior_hit(monkeypatch, tmp_p
     assert reset["start_index"] == 0
 
 
+def test_json_probe_deep_budget_expands_after_waf_observation(monkeypatch, tmp_path):
+    from tools import json_inject_probe as probe
+
+    endpoints = [
+        {"method": "POST", "url": f"https://target.test/api/{index}", "body_template": {"q": "x"}, "source": "test"}
+        for index in range(2)
+    ]
+    allocated: list[int] = []
+    captured: dict = {}
+
+    class Session:
+        def bind_target(self, _target):
+            return self
+
+        def is_empty(self):
+            return True
+
+        def headers_for_url(self, _url):
+            return {}
+
+        def session_id(self):
+            return ""
+
+    def fake_probe(_endpoint, max_requests, *, stats, **_kwargs):
+        allocated.append(max_requests)
+        stats["request_count"] += max_requests
+        return [], [{"variant_source": "ai", "reason": "waf"}]
+
+    def fake_write(_target, _hits, _events, *, execution):
+        captured.update(execution)
+        return {"out_dir": "", "summary": "", "files": []}
+
+    monkeypatch.setattr(probe, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(probe, "session_from_args", lambda _args: Session())
+    monkeypatch.setattr(probe, "_collect_endpoints", lambda _args: (endpoints, {
+        "out_of_scope": 0, "unsupported_method": 0, "invalid_url": 0, "items": []
+    }))
+    monkeypatch.setattr(probe, "probe_endpoint", fake_probe)
+    monkeypatch.setattr(probe, "_write_findings", fake_write)
+    monkeypatch.setattr(sys, "argv", [
+        "json_inject_probe", "--target", "target.test", "--max-requests", "2", "--deep",
+    ])
+
+    assert probe.main() == 0
+    assert allocated[0] == 2
+    assert allocated[1] > allocated[0]
+    assert captured["budget"]["adaptive"] is True
+    assert captured["request_budget"] > 2
+    assert captured["request_count"] == sum(allocated)
+    assert captured["request_count"] <= captured["request_budget"]
+
+
 def test_json_resume_does_not_inflate_replayed_hit_count(monkeypatch, tmp_path):
     from tools import json_inject_probe as probe
 
@@ -418,6 +470,22 @@ class TestWrapperAutoDiscovery:
 
         assert huntmod.run_json_inject_probe("strict.test", add_default_seeds=False) is True
         assert "--no-default-seeds" in captured["cmd"]
+
+    def test_wrapper_forwards_deep_budget_flag(self, monkeypatch, tmp_path):
+        from tools import hunt as huntmod
+
+        monkeypatch.setattr(huntmod, "BASE_DIR", str(tmp_path))
+        monkeypatch.setattr(huntmod, "RECON_DIR", str(tmp_path / "recon"))
+        monkeypatch.setattr(huntmod, "FINDINGS_DIR", str(tmp_path / "findings"))
+        captured = {}
+
+        def fake_run_argv(cmd, cwd=None, timeout=600, env=None):
+            captured["cmd"] = cmd
+            return True, ""
+
+        monkeypatch.setattr(huntmod, "run_argv", fake_run_argv)
+        assert huntmod.run_json_inject_probe("deep.test", deep=True) is True
+        assert "--deep" in captured["cmd"]
 
 
 # ---------------------------------------------------------------------

@@ -49,6 +49,7 @@ BASE_DIR = TOOLS_DIR.parent
 try:
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
     from tools.browser_surface import public_url_shape
+    from tools.deep_budget import project_budget
     from tools.sql_payloads import SQL_PAYLOADS
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
     from tools.waf_encoder import base64_wrap_xss, tab_newline_space
@@ -58,6 +59,7 @@ except ImportError:  # pragma: no cover
     sys.path.insert(0, str(TOOLS_DIR))
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
+    from deep_budget import project_budget  # type: ignore
     from sql_payloads import SQL_PAYLOADS  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
     from waf_encoder import base64_wrap_xss, tab_newline_space  # type: ignore
@@ -1175,6 +1177,7 @@ def main() -> int:
     seed_group.add_argument("--no-default-seeds", dest="add_default_seeds", action="store_false",
                             help="Probe only endpoints supplied by explicit or discovered inputs")
     parser.add_argument("--max-requests", type=int, default=60, help="Hard cap on total requests for the whole probe lane")
+    parser.add_argument("--deep", action="store_true", help="Adapt the bounded request budget to current surface and evidence signals")
     add_cli_args(parser)
     args = parser.parse_args()
     if args.max_requests < 1:
@@ -1237,10 +1240,35 @@ def main() -> int:
         "out_of_scope_redirect": 0,
     }
     probed_endpoint_count = 0
-    request_budget = int(args.max_requests)
-    if waf_plan and waf_plan.get("max_requests") is not None:
-        request_budget = min(request_budget, int(waf_plan["max_requests"]))
     summary_path = BASE_DIR / "findings" / target_storage_key(args.target) / "poc" / "json_inject" / "summary.json"
+    prior_summary: dict = {}
+    if summary_path.is_file():
+        try:
+            loaded = json.loads(summary_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                prior_summary = loaded
+        except (OSError, json.JSONDecodeError):
+            prior_summary = {}
+    requested_budget = int(args.max_requests)
+    plan_cap = int(waf_plan["max_requests"]) if waf_plan and waf_plan.get("max_requests") is not None else None
+    base_budget = min(requested_budget, plan_cap) if plan_cap is not None else requested_budget
+    parameter_count = sum(
+        len(item.get("body_template", {}))
+        for item in endpoints
+        if isinstance(item, dict) and isinstance(item.get("body_template"), dict)
+    )
+    prior_hit_count = int(prior_summary.get("hit_count", 0) or 0)
+    prior_variance = int(prior_summary.get("waf_observation_count", 0) or 0)
+    budget = project_budget(
+        base_budget,
+        maximum=max(base_budget, min(base_budget * 4, plan_cap or base_budget * 4)),
+        url_count=len(endpoints),
+        parameter_count=parameter_count,
+        response_variance=prior_variance,
+        high_value_evidence=prior_hit_count,
+        adaptive=bool(args.deep),
+    )
+    request_budget = int(budget["budget"])
     cursor_state = _probe_cursor(
         summary_path,
         target=args.target,
@@ -1281,6 +1309,17 @@ def main() -> int:
         if hits:
             print(f"[json_inject]     {len(hits)} hit(s)", file=sys.stderr)
             all_hits.extend(hits)
+        if args.deep and (hits or waf_events):
+            budget = project_budget(
+                base_budget,
+                maximum=max(base_budget, min(base_budget * 4, plan_cap or base_budget * 4)),
+                url_count=len(endpoints),
+                parameter_count=parameter_count,
+                response_variance=prior_variance + len(all_waf_events),
+                high_value_evidence=prior_hit_count + len(all_hits),
+                adaptive=True,
+            )
+            request_budget = int(budget["budget"])
         if index >= start_index:
             next_index = max(next_index, index + 1)
         if execution_stats["transport_error_count"] > before_errors or execution_stats["out_of_scope_redirect"] > before_redirects:
@@ -1331,6 +1370,9 @@ def main() -> int:
             "waf_ai_variants_executed": sum(
                 1 for event in all_waf_events if event.get("variant_source") == "ai"
             ),
+            "requested_request_budget": requested_budget,
+            "budget": budget,
+            "deep": bool(args.deep),
         },
     )
     if not all_hits:

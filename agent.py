@@ -723,6 +723,11 @@ _ALL_TOOL_SPECS: list[dict] = [
                         "description": "Hard cap on probe requests per endpoint (default 60).",
                         "default": 60,
                     },
+                    "deep": {
+                        "type": "boolean",
+                        "description": "Enable bounded adaptive budgeting from endpoint, parameter, response, and evidence signals.",
+                        "default": False,
+                    },
                     "add_default_seeds": {
                         "type": "boolean",
                         "description": (
@@ -1689,12 +1694,12 @@ class ToolDispatcher:
                 obs = h.read_browser_surface(domain)
 
             elif name == "run_param_discovery":
-                ok = h.run_param_discovery(domain)
+                ok = h.run_param_discovery(domain, deep=self.deep_mode)
                 obs = self._summarize_params(domain, ok)
 
             elif name == "run_post_param_discovery":
                 cookies = args.get("cookies", self.default_cookies)
-                ok = h.run_post_param_discovery(domain, cookies=cookies)
+                ok = h.run_post_param_discovery(domain, cookies=cookies, deep=self.deep_mode)
                 obs = self._summarize_post_params(domain, ok)
 
             elif name == "run_api_fuzz":
@@ -1736,6 +1741,7 @@ class ToolDispatcher:
                     max_requests=int(args.get("max_requests", 60)),
                     add_default_seeds=bool(args.get("add_default_seeds", True)),
                     waf_plan=str(args.get("waf_plan", "")),
+                    deep=bool(args.get("deep", self.deep_mode)),
                 )
                 obs = self._summarize_findings(domain, "json_inject", ok)
 

@@ -167,7 +167,10 @@ CONTEXT PACK
 - 可能改变、破坏或污染真实状态的动作必须加入 `rules/red-lines.md`。
 - 结束前必须加入 `rules/coverage-gate.md`。
 - 上下文包不是结论；它只是执行前的加载计划。
+- 每次 substantive lane 以 context pack 的 `skill_route` 为执行边界；
+  `required_dimensions` 必须写入对应 Action Queue metadata。AI 可以改选路线，
+  但要把替代 `skill_id`、原因和测试维度写回，不能无记录地绕过路由。
 - browser 证据默认只读 `recon/<target>/browser/` 的 XHR/API/params/form/page-JS 小索引；
   不默认加载 `evidence/<target>/browser/...` 的原始 requests/console/storage。
 - Actor Matrix 缺口不是结论；它只是提醒哪些角色/对象/replay 还没有结构化记录。
-- 工具推荐不是强制路线；Claude 可以改选 Skill、知识卡或执行路径，但必须说明原因并写回。
+- 工具推荐不是强制路线，也不是固定工具清单；Claude 可以改选 Skill、知识卡或执行路径，但必须说明原因并写回 route metadata。

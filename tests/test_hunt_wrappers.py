@@ -603,7 +603,8 @@ def test_zero_day_fuzzer_passes_ipv6_recon_dir_and_deep_as_argv(tmp_path, monkey
     assert captured["argv"][2] == "https://[2001:db8::1]"
     assert "--recon-dir" in captured["argv"]
     assert captured["argv"][captured["argv"].index("--recon-dir") + 1] == str(recon_dir)
-    assert captured["argv"][-1] == "--deep"
+    assert "--deep" in captured["argv"]
+    assert "--adaptive-budget" in captured["argv"]
     assert captured["kwargs"]["shell"] is False
 
 

@@ -445,6 +445,7 @@ def write_checkpoint_witness(
         "target_key": target_storage_key(resolved_target),
         "context_pack": {
             "selected_skill": context.get("selected_skill", ""),
+            "skill_route": context.get("skill_route", {}),
             "knowledge_cards": context.get("knowledge_cards", []),
             "reference_hints": context.get("reference_hints", []),
             "required_checks": context.get("required_checks", []),
@@ -2957,7 +2958,7 @@ def _extract_action_metadata(text: str) -> dict:
     return metadata
 
 
-def _build_next_action_queue(next_items: list[str], target: str = "") -> list[dict]:
+def _build_next_action_queue(next_items: list[str], target: str = "", skill_route: dict | None = None) -> list[dict]:
     queue: list[dict] = []
     for idx, item in enumerate(next_items, 1):
         action_type, priority, command_hint = _classify_next_action(item, target)
@@ -2982,9 +2983,26 @@ def _build_next_action_queue(next_items: list[str], target: str = "") -> list[di
         }
         if metadata:
             row["metadata"] = metadata
+        if isinstance(skill_route, dict) and skill_route:
+            row.setdefault("metadata", {})
+            row["metadata"].setdefault("skill_route", dict(skill_route))
+            row["metadata"]["route_required"] = True
         queue.append(row)
     queue.sort(key=lambda item: (-int(item["priority"]), str(item["id"])))
     return queue
+
+
+def _attach_skill_route(actions: list[dict], skill_route: dict | None) -> list[dict]:
+    if not isinstance(skill_route, dict) or not skill_route:
+        return actions
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        metadata = action.setdefault("metadata", {})
+        if isinstance(metadata, dict):
+            metadata.setdefault("skill_route", dict(skill_route))
+            metadata["route_required"] = True
+    return actions
 
 
 def _json_inject_queue_item(state: dict) -> dict:
@@ -3505,7 +3523,7 @@ def build_checkpoint(
         next_items = [case_state_proposal, *next_items]
     elif case_state_seed_proposal:
         next_items = [case_state_seed_proposal, *next_items]
-    next_action_queue = _build_next_action_queue(next_items, resolved_target)
+    next_action_queue = _build_next_action_queue(next_items, resolved_target, context.get("skill_route"))
     json_inject_item = _json_inject_queue_item(state)
     if json_inject_item:
         next_action_queue.append(json_inject_item)
@@ -3524,6 +3542,7 @@ def build_checkpoint(
     )
     if sibling_item:
         next_action_queue.append(sibling_item)
+    _attach_skill_route(next_action_queue, context.get("skill_route"))
     next_action_queue = _filter_final_action_queue_items(
         repo,
         resolved_target,
@@ -3572,6 +3591,7 @@ def build_checkpoint(
         "next_action": next_action_label,
         "context_pack": {
             "selected_skill": context.get("selected_skill", ""),
+            "skill_route": context.get("skill_route", {}),
             "knowledge_cards": context.get("knowledge_cards", []),
             "reference_hints": context.get("reference_hints", []),
             "required_checks": context.get("required_checks", []),

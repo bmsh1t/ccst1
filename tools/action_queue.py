@@ -132,6 +132,20 @@ def _validate_action_metadata(metadata: dict | None) -> dict:
                 visit(child, f"{path}[{index}]")
 
     visit(metadata, "metadata")
+    route = metadata.get("skill_route")
+    if route is None:
+        if metadata.get("route_required"):
+            raise ValueError("Action Queue metadata requires a skill_route")
+    elif not isinstance(route, dict):
+        raise ValueError("Action Queue metadata skill_route must be an object")
+    else:
+        skill_id = str(route.get("skill_id") or "").strip()
+        skill_path = str(route.get("skill_path") or "").strip()
+        dimensions = route.get("required_dimensions")
+        if not skill_id or skill_path != f"skills/{skill_id}/SKILL.md":
+            raise ValueError("Action Queue metadata skill_route has an invalid skill path")
+        if not isinstance(dimensions, list) or not dimensions or any(not str(item).strip() for item in dimensions):
+            raise ValueError("Action Queue metadata skill_route requires test dimensions")
     return metadata
 
 
@@ -151,6 +165,70 @@ def _merge_action_metadata(existing: Any, incoming: dict | None) -> dict:
         else:
             merged[key] = copy.deepcopy(value)
     return _validate_action_metadata(merged)
+
+
+def _hypothesis_pivot_actions(item: dict, *, status: str, result: str) -> list[dict]:
+    """Project bounded follow-up actions from an explicitly declared hypothesis.
+
+    The model still supplies the hypothesis and pivot dimensions. The queue
+    only materializes those inert, evidence-backed continuations and dedupes
+    them through its existing owner.
+    """
+    if status not in {"tested", "dead-end"}:
+        return []
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    if metadata.get("kill_condition_met") is True:
+        return []
+    hypothesis_id = str(metadata.get("hypothesis_id") or "").strip()
+    hints = metadata.get("pivot_hints")
+    if not hypothesis_id or not isinstance(hints, list):
+        return []
+    tested = {
+        str(value).strip().lower()
+        for value in metadata.get("tested_dimensions", [])
+        if str(value).strip()
+    }
+    expected_learning = str(metadata.get("expected_learning") or "").strip()
+    kill_condition = str(metadata.get("kill_condition") or "").strip()
+    route = metadata.get("skill_route") if isinstance(metadata.get("skill_route"), dict) else None
+    actions: list[dict] = []
+    for raw_hint in hints:
+        hint = str(raw_hint or "").strip()
+        if not hint or hint.lower() in tested:
+            continue
+        question = f"Does the {hint} dimension change the result for hypothesis {hypothesis_id}?"
+        pivot_metadata = {
+            "hypothesis_id": hypothesis_id,
+            "parent_action_id": str(item.get("id") or ""),
+            "pivot_hint": hint,
+            "tested_dimensions": sorted(tested),
+            "expected_learning": expected_learning,
+            "kill_condition": kill_condition,
+            "hypothesis_status": "open",
+        }
+        if route:
+            pivot_metadata["skill_route"] = copy.deepcopy(route)
+            if metadata.get("route_required"):
+                pivot_metadata["route_required"] = True
+        actions.append(
+            build_action(
+                target=str(item.get("target") or ""),
+                action_type="hypothesis-pivot",
+                evidence=(
+                    f"Negative result for {hypothesis_id}: "
+                    f"{_compact_text(result or item.get('result') or item.get('evidence') or '', 700)}"
+                ),
+                next_question=question,
+                action=f"Run one bounded, target-owned {hint} follow-up and record its raw evidence.",
+                priority=max(50, int(item.get("priority", 50) or 50) - 5),
+                evidence_type="hypothesis-continuation",
+                source="hypothesis-loop",
+                source_id=f"{item.get('id', '')}:{hypothesis_id}:{hint}",
+                stop_condition=kill_condition or DEFAULT_STOP_CONDITION,
+                metadata=pivot_metadata,
+            )
+        )
+    return actions
 
 
 def queue_path(repo_root: Path | str, target: str) -> Path:
@@ -1192,6 +1270,16 @@ def _resolve_action_in_queue(
             item["metadata"] = merged_metadata
         if previous != "running" and normalized in {"running", "tested", "dead-end", "blocked", "lead", "signal", "candidate", "validated"}:
             item["attempts"] = int(item.get("attempts", 0) or 0) + 1
+        pivot_actions = _hypothesis_pivot_actions(
+            item,
+            status=normalized,
+            result=item.get("result", ""),
+        )
+        pivot_stats = upsert_actions(queue, pivot_actions) if pivot_actions else {"added": 0, "updated": 0, "skipped_final": 0}
+        if pivot_actions:
+            item.setdefault("metadata", {})["hypothesis_status"] = "open"
+        elif isinstance(item.get("metadata"), dict) and item["metadata"].get("kill_condition_met") is True:
+            item["metadata"]["hypothesis_status"] = "closed"
         coverage_update = _sync_coverage_matrix_for_action(repo_root, target, item, normalized)
         unsafe_review_update = _sync_unsafe_skipped_review_for_action(repo_root, target, item, normalized)
         queue["actions"].sort(key=_action_sort_key)
@@ -1206,6 +1294,8 @@ def _resolve_action_in_queue(
             response["coverage_update"] = coverage_update
         if unsafe_review_update:
             response["unsafe_review_update"] = unsafe_review_update
+        if pivot_stats["added"]:
+            response["hypothesis_continuation"] = pivot_stats
         return response
     raise KeyError(f"action not found: {action_id}")
 

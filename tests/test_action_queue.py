@@ -12,6 +12,7 @@ import pytest
 
 from action_queue import (
     add_manual_action,
+    build_action,
     claim_next_action,
     format_action,
     ingest_checkpoint,
@@ -902,6 +903,75 @@ def test_resolve_cli_merges_structured_metadata_idempotently(tmp_path):
     }
 
 
+def test_resolve_negative_hypothesis_generates_idempotent_pivots(tmp_path):
+    metadata = {
+        "hypothesis_id": "H-7",
+        "tested_dimensions": ["baseline"],
+        "pivot_hints": ["sibling endpoint", "encoding", "baseline"],
+        "expected_learning": "A sibling or encoding variant may differ.",
+        "kill_condition": "Both actor and encoding variants preserve the denial.",
+    }
+    assert add_manual_action(
+        tmp_path,
+        target="api.target.com",
+        action_type="hypothesis",
+        evidence="A target-owned object endpoint was observed.",
+        next_question="Does the baseline deny a peer actor?",
+        action="Replay the baseline object request.",
+        metadata=metadata,
+    )
+
+    first = resolve_action(
+        tmp_path,
+        target="api.target.com",
+        action_id="AQ-0001",
+        status="tested",
+        result="baseline denied",
+    )
+    assert first["hypothesis_continuation"]["added"] == 2
+    queue = load_queue(tmp_path, "api.target.com")
+    pivots = [item for item in queue["actions"] if item["type"] == "hypothesis-pivot"]
+    assert {item["metadata"]["pivot_hint"] for item in pivots} == {"sibling endpoint", "encoding"}
+
+    second = resolve_action(
+        tmp_path,
+        target="api.target.com",
+        action_id="AQ-0001",
+        status="tested",
+        result="baseline denied",
+    )
+    assert "hypothesis_continuation" not in second
+    assert len([item for item in load_queue(tmp_path, "api.target.com")["actions"] if item["type"] == "hypothesis-pivot"]) == 2
+
+
+def test_resolve_kill_condition_closes_hypothesis_without_pivots(tmp_path):
+    add_manual_action(
+        tmp_path,
+        target="api.target.com",
+        action_type="hypothesis",
+        evidence="Observed a baseline denial.",
+        next_question="Is the denial stable?",
+        action="Replay the baseline request.",
+        metadata={
+            "hypothesis_id": "H-8",
+            "pivot_hints": ["sibling endpoint"],
+            "kill_condition": "Stable denial across the complete matrix.",
+        },
+    )
+    resolve_action(
+        tmp_path,
+        target="api.target.com",
+        action_id="AQ-0001",
+        status="tested",
+        result="matrix complete",
+        metadata={"kill_condition_met": True},
+    )
+    queue = load_queue(tmp_path, "api.target.com")
+    assert not any(item["type"] == "hypothesis-pivot" for item in queue["actions"])
+    parent = queue["actions"][0]
+    assert parent["metadata"]["hypothesis_status"] == "closed"
+
+
 @pytest.mark.parametrize("metadata_json", ["not-json", "[]", "null", '"text"'])
 def test_resolve_cli_rejects_non_object_metadata_without_writing(tmp_path, capsys, metadata_json):
     assert main([
@@ -953,6 +1023,38 @@ def test_resolve_cli_rejects_sensitive_metadata_without_writing(tmp_path, capsys
     assert code == 2
     assert "sensitive field" in capsys.readouterr().err
     assert path.read_bytes() == before
+
+
+def test_action_queue_rejects_required_skill_route_without_dimensions(tmp_path):
+    with pytest.raises(ValueError, match="skill_route"):
+        build_action(
+            target="api.target.com",
+            action_type="hypothesis",
+            evidence="Observed an API object path.",
+            next_question="Can a peer actor read it?",
+            action="Replay the object path with a peer actor.",
+            metadata={"route_required": True},
+        )
+
+
+def test_action_queue_accepts_skill_route_with_required_dimensions(tmp_path):
+    action = build_action(
+        target="api.target.com",
+        action_type="hypothesis",
+        evidence="Observed an API object path.",
+        next_question="Can a peer actor read it?",
+        action="Replay the object path with a peer actor.",
+        metadata={
+            "route_required": True,
+            "skill_route": {
+                "skill_id": "web2-vuln-classes",
+                "skill_path": "skills/web2-vuln-classes/SKILL.md",
+                "reason": "API evidence",
+                "required_dimensions": ["auth", "object"],
+            },
+        },
+    )
+    assert action["metadata"]["skill_route"]["skill_id"] == "web2-vuln-classes"
 
 
 @pytest.mark.parametrize("metadata_json", ["not-json", "[]", "null", '"text"'])

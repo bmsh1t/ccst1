@@ -28,6 +28,8 @@ try:
     from tools.action_queue import build_action, load_queue, queue_mutation_lock, save_queue, upsert_actions
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
     from tools.browser_surface import public_url_shape
+    from tools.context_pack import skill_route
+    from tools.deep_budget import project_budget
     from tools.private_artifacts import private_artifact_dir, write_private_text
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
     from tools.validation_runner import request_once
@@ -35,6 +37,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import build_action, load_queue, queue_mutation_lock, save_queue, upsert_actions  # type: ignore
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
+    from context_pack import skill_route  # type: ignore
+    from deep_budget import project_budget  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_text  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
     from validation_runner import request_once  # type: ignore
@@ -462,6 +466,7 @@ def _sync_action_queue(repo_root: Path, target: str, summary: dict[str, Any]) ->
         status, priority, question = "tested", 45, "No hidden parameter signal was observed; continue with the next evidence-backed lane."
     summary_ref = str(summary["artifacts"]["summary"])
     resume_hint = " --resume" if not bool((summary.get("cursor") or {}).get("complete", True)) else ""
+    deep_hint = " --deep" if bool((summary.get("budget") or {}).get("adaptive")) else ""
     action = build_action(
         target=target,
         action_type="parameter-discovery",
@@ -469,11 +474,21 @@ def _sync_action_queue(repo_root: Path, target: str, summary: dict[str, Any]) ->
         next_question=question,
         action="Review the structured summary and preserve discovered parameter names as inert surface shapes.",
         priority=priority,
-        command_hint=f"python3 tools/param_discovery.py --target {shlex.quote(target)} --from-recon --method {shlex.quote(summary['method'])} --repo-root {shlex.quote(str(repo_root))}{resume_hint}",
+        command_hint=f"python3 tools/param_discovery.py --target {shlex.quote(target)} --from-recon --method {shlex.quote(summary['method'])} --repo-root {shlex.quote(str(repo_root))}{deep_hint}{resume_hint}",
         evidence_type="parameter-discovery-summary",
         source="param_discovery",
         source_id="hidden-parameters",
-        metadata={"summary_path": summary_ref, "method": summary["method"], "counts": counts, "session_id": summary.get("session_id", "")},
+        metadata={
+            "summary_path": summary_ref,
+            "method": summary["method"],
+            "counts": counts,
+            "session_id": summary.get("session_id", ""),
+            "skill_route": skill_route(
+                "web2-vuln-classes",
+                "Hidden parameter discovery can expose parameter, encoding, auth, sibling, and workflow attack-surface hypotheses.",
+            ),
+            "route_required": True,
+        },
     )
     action["status"] = status
     with queue_mutation_lock(repo_root, target):
@@ -502,6 +517,7 @@ def discover_parameters(
     fetch_html: Callable[[str], tuple[int | None, str]] | None = None,
     tool_exists: Callable[[str], bool] | None = None,
     resume: bool = False,
+    deep: bool = False,
 ) -> dict[str, Any]:
     repo = Path(repo_root).resolve()
     resolved_target = canonical_target_value(target)
@@ -558,6 +574,28 @@ def discover_parameters(
             "accepted_url_digest": _url_digest(accepted),
         }
 
+    previous_runs = previous.get("runs", []) if isinstance(previous, dict) else []
+    prior_signatures = {
+        (str(run.get("status") or ""), tuple(run.get("params") or []))
+        for run in previous_runs
+        if isinstance(run, dict)
+    }
+    discovered_before = {
+        str(item.get("param") or "")
+        for item in (previous.get("discoveries", []) if isinstance(previous, dict) else [])
+        if isinstance(item, dict) and item.get("param")
+    }
+    budget = project_budget(
+        max_urls,
+        maximum=max(max_urls, MAX_URLS * 8),
+        url_count=sum(len(data["accepted"]) for data in method_inputs.values()),
+        parameter_count=len(set(existing_params) | discovered_before),
+        response_variance=len(prior_signatures),
+        high_value_evidence=len(discovered_before),
+        adaptive=bool(deep),
+    )
+    effective_max_urls = int(budget["budget"])
+
     if resume:
         if previous is None:
             raise ValueError("--resume requires an existing parameter discovery summary")
@@ -581,7 +619,7 @@ def discover_parameters(
     advances: dict[str, int] = {}
     for method in selected_methods:
         start_index = int(cursors[method].get("next_index", 0) or 0)
-        batch_inputs = method_inputs[method]["accepted"][start_index : start_index + max_urls]
+        batch_inputs = method_inputs[method]["accepted"][start_index : start_index + effective_max_urls]
         if not batch_inputs:
             runs, discoveries, run_errors = [], [], []
             advances[method] = 0
@@ -624,14 +662,14 @@ def discover_parameters(
                         scan_targets.append(action_url)
                 if not from_recon and processed_inputs == len(remaining) and not scan_targets:
                     scan_targets = remaining
-                scan_targets = _unique(scan_targets)[:max_urls]
+                scan_targets = _unique(scan_targets)[:effective_max_urls]
             runs, discoveries, run_errors = _run_discovery(
                 repo_root=repo,
                 target=target,
                 method=method,
                 urls=scan_targets,
                 session=active_session,
-                max_urls=max_urls,
+                max_urls=effective_max_urls,
                 timeout=timeout,
                 tool_exists=tool_exists,
                 batch_id=batch_id,
@@ -715,6 +753,8 @@ def discover_parameters(
         "source": source_name,
         "session_id": active_session.session_id(),
         "batch_id": batch_id,
+        "budget": budget,
+        "requested_max_urls": max_urls,
         "cursor": cursor,
         "resumable": not complete,
         "scope": {
@@ -763,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--from-recon", action="store_true", help="Read endpoints from recon artifacts")
     parser.add_argument("--method", choices=("GET", "POST", "BOTH"), default="GET")
     parser.add_argument("--max-urls", type=int, default=MAX_URLS)
+    parser.add_argument("--deep", action="store_true", help="Adapt this bounded batch to the current surface and evidence signals.")
     parser.add_argument("--resume", action="store_true", help="Continue the existing target-owned summary cursor.")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("--repo-root", default=str(BASE_DIR))
@@ -779,7 +820,17 @@ def main(argv: list[str] | None = None) -> int:
     source = None if args.from_recon or not urls else urls
     methods = ("GET", "POST") if args.method == "BOTH" else (args.method,)
     try:
-        summary = discover_parameters(repo_root=Path(args.repo_root), target=target, urls=source, methods=methods, session=session_from_args(args), max_urls=args.max_urls, timeout=args.timeout, resume=args.resume)
+        summary = discover_parameters(
+            repo_root=Path(args.repo_root),
+            target=target,
+            urls=source,
+            methods=methods,
+            session=session_from_args(args),
+            max_urls=args.max_urls,
+            timeout=args.timeout,
+            resume=args.resume,
+            deep=args.deep,
+        )
     except (OSError, ValueError) as exc:
         print(f"param discovery error: {exc}", file=sys.stderr)
         return 2

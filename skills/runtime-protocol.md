@@ -75,8 +75,9 @@ actively generate new evidence。
 
 AI override 是能力上限保护：当前 Skill 可以跳过默认路线、组合多张知识卡、
 创建新的 action 类型，或把 Discovery / Exploitation / Validation 顺序局部
-重排；但必须说明原因、red-line status、下一步验证动作和停止条件。工具推荐、
-知识卡和 checklist 是决策输入，不是强制路线。
+重排；但必须说明原因、red-line status、下一步验证动作和停止条件。Skill route
+及其 required dimensions 是 substantive Action Queue 的最小执行证据；工具、知识卡
+和 checklist 仍是可替换的决策输入，不是固定工具清单。
 
 ## 2.2 Web 深水区启发式路由
 

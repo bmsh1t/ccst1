@@ -130,6 +130,8 @@ def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
     output = format_context_pack(pack)
 
     assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
+    assert pack["skill_route"]["skill_id"] == "web2-vuln-classes"
+    assert "auth" in pack["skill_route"]["required_dimensions"]
     assert "knowledge/cards/api-idor.md" in pack["knowledge_cards"]
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
     assert any("Surface review" in item for item in pack["evidence_anchors"])

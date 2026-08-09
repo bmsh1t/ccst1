@@ -1436,7 +1436,7 @@ def read_js_intel(domain):
     return f"No js_intel artifacts found for {domain}. Run run_js_read first."
 
 
-def run_param_discovery(domain):
+def run_param_discovery(domain, deep=False):
     """Thin compatibility wrapper around the canonical parameter owner."""
     from pathlib import Path
 
@@ -1448,11 +1448,12 @@ def run_param_discovery(domain):
         methods=("GET",),
         session=_active_auth_session(),
         tool_exists=lambda name: _command_exists(name),
+        deep=bool(deep),
     )
     return bool(summary.get("counts", {}).get("discoveries") or summary.get("counts", {}).get("runs"))
 
 
-def run_post_param_discovery(domain, cookies=""):
+def run_post_param_discovery(domain, cookies="", deep=False):
     """Thin compatibility wrapper around the canonical POST owner."""
     from pathlib import Path
 
@@ -1477,11 +1478,12 @@ def run_post_param_discovery(domain, cookies=""):
     summary = discover_parameters(
         repo_root=Path(RECON_DIR).parent,
         target=domain,
-        urls=_collect_live_urls(domain, limit=10),
+        urls=_collect_live_urls(domain, limit=64 if deep else 10),
         methods=("POST",),
         session=session,
         fetch_html=fetch_html,
         tool_exists=lambda name: _command_exists(name),
+        deep=bool(deep),
     )
     return bool(summary.get("counts", {}).get("post_forms") or summary.get("counts", {}).get("discoveries"))
 
@@ -1688,6 +1690,7 @@ def run_json_inject_probe(
     max_requests: int = 60,
     add_default_seeds: bool = True,
     waf_plan: str = "",
+    deep: bool = False,
 ):
     """Run the POST-JSON injection probe (sqli/ssti/cmd/xss/lfi/open-redirect).
 
@@ -1730,6 +1733,8 @@ def run_json_inject_probe(
         cmd.extend(["--js-intel", js_intel])
     if waf_plan:
         cmd.extend(["--waf-plan", waf_plan])
+    if deep:
+        cmd.append("--deep")
     if not add_default_seeds:
         cmd.append("--no-default-seeds")
 
@@ -1746,6 +1751,7 @@ def run_json_inject_probe(
         f"endpoints_file={endpoints_file}\n"
         f"js_intel={js_intel}\n"
         f"waf_plan={waf_plan}\n"
+        f"deep={deep}\n"
         f"max_requests={max_requests}\n"
         f"---\n{output[:8000]}\n",
     )
@@ -1944,6 +1950,7 @@ def run_zero_day_fuzzer(domain, deep=False):
         cmd.extend(["--recon-dir", recon_dir])
     if deep:
         cmd.append("--deep")
+        cmd.append("--adaptive-budget")
 
     try:
         proc = subprocess.Popen(cmd, shell=False, cwd=BASE_DIR, start_new_session=True)

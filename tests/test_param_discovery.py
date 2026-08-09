@@ -58,7 +58,10 @@ def test_authenticated_x8_uses_private_request_file_not_argv(tmp_path, monkeypat
     assert not list((tmp_path / ".private").rglob("request-*.http"))
     action_queue = tmp_path / "state" / "target.test" / "action_queue.json"
     assert action_queue.is_file()
-    assert json.loads(action_queue.read_text(encoding="utf-8"))["actions"][0]["status"] == "signal"
+    action = json.loads(action_queue.read_text(encoding="utf-8"))["actions"][0]
+    assert action["status"] == "signal"
+    assert action["metadata"]["route_required"] is True
+    assert action["metadata"]["skill_route"]["skill_id"] == "web2-vuln-classes"
 
 
 def test_authenticated_discovery_does_not_fallback_to_anonymous_arjun(tmp_path, monkeypatch):
@@ -137,6 +140,33 @@ def test_param_discovery_uses_explicit_url_budget_without_changing_default(tmp_p
     )
     assert default["counts"]["runs"] == param_discovery.MAX_URLS == 5
     assert calls == urls[:param_discovery.MAX_URLS]
+
+
+def test_param_discovery_deep_budget_uses_surface_signals(tmp_path, monkeypatch):
+    calls: list[str] = []
+
+    def fake_tool(argv, *, cwd, timeout):
+        calls.append(argv[argv.index("-u") + 1])
+        output = Path(argv[argv.index("-o") + 1])
+        output.write_text(json.dumps({"params": ["debug"]}), encoding="utf-8")
+        return 0, ""
+
+    monkeypatch.setattr(param_discovery, "_run_tool", fake_tool)
+    urls = [f"https://target.test/api/{index}" for index in range(20)]
+    summary = param_discovery.discover_parameters(
+        repo_root=tmp_path,
+        target="target.test",
+        urls=urls,
+        max_urls=5,
+        deep=True,
+        tool_exists=lambda name: name == "x8",
+    )
+
+    assert summary["budget"]["adaptive"] is True
+    assert summary["budget"]["budget"] == 8
+    assert summary["requested_max_urls"] == 5
+    assert len(calls) == 8
+    assert summary["status"] == "partial"
 
 
 @pytest.mark.parametrize("budget", [0, -1])

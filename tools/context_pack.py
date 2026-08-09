@@ -61,6 +61,28 @@ SKILL_PATHS = {
     "web2-vuln-classes": "skills/web2-vuln-classes/SKILL.md",
 }
 
+SKILL_TEST_DIMENSIONS = {
+    "bb-methodology": ["hypothesis", "coverage", "pivot", "stop_condition"],
+    "bug-bounty": ["scope", "evidence", "hypothesis", "next_action"],
+    "triage-validation": ["baseline", "variant", "impact", "replay"],
+    "web2-recon": ["surface", "source", "browser", "scope"],
+    "web2-vuln-classes": ["vulnerability_family", "parameter", "encoding", "auth", "sibling", "workflow", "chain"],
+}
+
+
+def _skill_route(skill: str, reason: str) -> dict:
+    return {
+        "skill_id": skill,
+        "skill_path": SKILL_PATHS[skill],
+        "reason": str(reason or "").strip(),
+        "required_dimensions": list(SKILL_TEST_DIMENSIONS.get(skill, [])),
+    }
+
+
+def skill_route(skill: str, reason: str) -> dict:
+    """Return the canonical route metadata for an owner-generated action."""
+    return _skill_route(skill, reason)
+
 KNOWN_SKILL_OR_FOCUS = {
     *SKILL_PATHS.keys(),
     "api",
@@ -3071,6 +3093,7 @@ def build_context_pack(
         "selected_skill": SKILL_PATHS[skill],
         "selected_skill_id": skill,
         "why_this_skill": why_skill,
+        "skill_route": _skill_route(skill, why_skill),
         "must_read": must_read,
         "knowledge_cards": cards,
         "knowledge_card_capabilities": _card_capabilities(cards, repo, registry=registry),
@@ -3099,8 +3122,9 @@ def build_context_pack(
         "write_back": _write_back_commands(resolved_target) + (evidence_summary.get("record_commands") or [])[:3],
         "ai_override": (
             "Claude may choose another skill, knowledge card, or path if the evidence supports it; "
-            "state the reason, keep red-lines/coverage checks loaded, and write the decision back "
-            "to target memory or /retrospect."
+            "state the reason, keep red-lines/coverage checks loaded, write the selected skill and "
+            "tested dimensions into the Action Queue, and write the decision back to target memory "
+            "or /retrospect."
         ),
         "source_summary": {
             "surface_available": bool(ranked.get("available")),
@@ -3135,6 +3159,7 @@ def format_context_pack(pack: dict) -> str:
         f"- Current hypothesis: {pack.get('current_hypothesis') or '-'}",
         f"- Selected skill: {pack['selected_skill']}",
         f"- Why this skill: {pack['why_this_skill']}",
+        f"- Required test dimensions: {', '.join((pack.get('skill_route') or {}).get('required_dimensions', []))}",
         "- Must read:",
         *_format_list(pack["must_read"]),
         "- Knowledge cards:",

@@ -60,6 +60,19 @@ record the selected sibling/variant/actor/workflow/chain dimension plus
 existing Action Queue metadata (for manual write-back, use `tools/action_queue.py add --metadata-json '{"hypothesis_id":"H-1","tested_dimensions":["sibling"],"expected_learning":"...","kill_condition":"...","next_question":"..."}'`; the parser accepts only a JSON object and rejects credential-bearing fields before any queue write; this is the existing Action Queue, not a new state owner). A partial tool cursor or unused depth dimension
 is resumable work, not tested-clean.
 
+Deep lanes keep the normal per-invocation caps unless `--deep` is active. In deep
+mode, parameter discovery, JSON injection, and zero-day fuzzing may project a
+larger bounded budget from URL/parameter breadth, response variance, and
+high-value evidence; every projection has a hard maximum and records
+`partial_on_exhaustion=true`. A larger projection never bypasses Scope/Auth or
+the WAF plan cap, and exhaustion with an incomplete cursor remains resumable.
+
+Every checkpoint-generated substantive Action Queue item carries the selected
+`skill_route` and its `required_dimensions`; the queue validates that route
+before persistence. AI may override the selected Skill, but must record the
+replacement route and reason in the same metadata. Hand-written advisory queue
+items remain compatible when `route_required` is not set.
+
 When resolving an existing action, preserve the same structured metadata through
 `tools/action_queue.py resolve --metadata-json`; `last_outcome`,
 `tested_dimensions`, `next_question`, `expected_learning`, `kill_condition`, and

@@ -15,6 +15,7 @@ unlocks the real surface.
 /param-discover --target TARGET --url https://TARGET/v2/user
 /param-discover --target TARGET --list recon/TARGET/live/urls.txt
 /param-discover --target TARGET --list recon/TARGET/live/urls.txt --max-urls 8
+/param-discover --target TARGET --list recon/TARGET/live/urls.txt --deep
 /param-discover --target TARGET --list recon/TARGET/live/urls.txt --resume
 ```
 
@@ -24,6 +25,9 @@ unlocks the real surface.
 当本次输入仍未耗尽时，summary 会保存有界 cursor；显式 `--resume` 会从同一输入列表
 继续下一批。输入列表变化、summary 损坏或 method/source/auth session 不一致会拒绝恢复，
 不会覆盖旧 artifact。重复运行会保留旧 summary，并使用带 batch 序号的输出文件名。
+`--deep` 仍保持单次有界执行，但会按 URL/参数数量、历史响应差异和已发现信号
+扩大本批预算；最大值固定，summary 写入 `budget`。预算耗尽或 cursor 未完成时状态
+为 `partial`，必须用 `--resume` 继续，不能投影为 clean。
 
 ## Tools
 
