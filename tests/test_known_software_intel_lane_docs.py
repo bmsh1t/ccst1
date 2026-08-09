@@ -23,6 +23,16 @@ def test_autopilot_requires_known_software_intelligence_lane():
     assert "action_queue" in intel
 
 
+def test_web_intel_selects_search_provider_on_demand():
+    claude = _read("CLAUDE.md")
+    rule = _read("rules/web-intel.md")
+    command = _read("commands/intel.md")
+
+    assert "Grok Search 或 Smartsearch" in claude
+    assert "不默认双重搜索" in rule
+    assert "do not call both unless" in command
+
+
 def test_autopilot_agent_inherits_known_software_lane():
     text = _read("agents/autopilot.md")
     flat = " ".join(text.split())

@@ -2169,6 +2169,31 @@ def test_checkpoint_surfaces_case_state_enrichment_when_evidence_missing(tmp_pat
     assert checkpoint["recommended_executable_action"]["command_hint"] == "enrich actor/session/object/private-marker evidence in case_state"
 
 
+def test_case_state_recovery_projection_keeps_hypothesis_metadata_in_action_queue():
+    proposal = checkpoint_module._case_state_proposal({
+        "top_next_action": {
+            "next_action": "recover_hypothesis",
+            "backlog_id": "val_001",
+            "hypothesis_id": "hyp_001",
+            "hypothesis": "peer access may differ on export",
+            "why_now": "previous replay is blocked; recover with: capture export route",
+            "recovery_next_action": "capture export route",
+            "write_back": "preserve the blocked outcome before a fresh backlog",
+            "chain_extensions_if_blocked": ["capture export route"],
+        },
+    })
+
+    action = _build_next_action_queue([proposal], "target.com")[0]
+
+    assert action["type"] == "case-state-enrichment"
+    assert action["metadata"]["backlog_id"] == "val_001"
+    assert action["metadata"]["hypothesis_id"] == "hyp_001"
+    assert action["metadata"]["hypothesis"] == "peer access may differ on export"
+    assert action["metadata"]["why_now"] == "previous replay is blocked; recover with: capture export route"
+    assert action["metadata"]["chain_extensions_if_blocked"] == ["capture export route"]
+    assert action["metadata"]["recovery_next_action"] == "capture export route"
+
+
 def test_checkpoint_surfaces_optional_case_state_marker_gap_without_blocking_replay(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/rest/order-history/123",

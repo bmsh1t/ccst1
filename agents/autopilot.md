@@ -79,6 +79,7 @@ Use case state as working memory:
 
 - Ready backlog -> run the `validation_runner.py ... --from-case-state` replay or resolve it with evidence.
 - Missing evidence -> collect the named actor/session/object/private marker, then rerun checkpoint.
+- Linked blocked backlog -> follow `recover_hypothesis` with an empty replay command; record the recovery step before creating a fresh backlog and never replay the blocked runner implicitly.
 - Empty case state + object IDs in cached artifacts -> run `case_state_seed.py --target <target> --json` and review suggested commands.
 - New workflow/object/role signal -> extend case state with `add-actor`, `add-session`, `add-object`, `add-hypothesis`, or `add-backlog`.
 - Stronger fresh signal -> state the AI override reason and pursue it; do not force old backlog items.
@@ -186,6 +187,22 @@ Deep mode:
 - Rotate across access/identity, injection/RCE, server-side/file/network, client-side, business workflow, and infrastructure/supply-chain bugs.
 - Browser-observed APIs, JS/source-derived routes, recon, errors, parameters, workflows, target memory, and target case state are evidence sources for any bug family.
 - Convert failures into next questions, sibling expansion, bypass, role/object diff, enrichment, chain-building, or lane rotation.
+- For a concrete API or browser XHR surface in deep mode, run both the observed
+  GET/query lane and the observed POST body/form lane when applicable; GET alone
+  is never API-depth completion. OPTIONS/HEAD are passive capability checks only.
+  Do not add PUT/PATCH/DELETE probing to the default depth pack.
+- After the first negative result, select an evidence-linked depth pack for the
+  lane: type/encoding/content-type, parser/error oracle, auth actor/object,
+  browser/JS/source sibling, replay/workflow, or chain impact. Record
+  `hypothesis`, `tested_dimensions`, `expected_learning`, `kill_condition`, and
+  `next_question` in the existing Action Queue metadata before stopping.
+- When writing a manual continuation, use the existing queue owner with
+  `tools/action_queue.py add --metadata-json '<JSON object>'`; invalid,
+  non-object, or credential-bearing metadata fails before any queue write. Do
+  not create a parallel hypothesis file or treat the metadata as finding evidence.
+- A tool cap is an invocation budget, not a clean verdict. Partial cursors,
+  untested endpoints, untried depth dimensions, and unresolved hypotheses must
+  produce a resumable queue action or an explicit blocked/dead-end reason.
 - Finish only with a concrete Deep Exhaustion Checklist: recon/state and `/surface` consulted; coverage matrix rebuilt; Evidence Ledger / actor matrix reviewed; scanner-negative results received manual follow-up; JS/source/browser/exposure context used or ruled out; high-value vuln-family directions tested, blocked, not applicable, or listed with reasons.
 
 Deep mode never overrides Live-Action Boundaries: irreversible lifecycle writes, real money movement, bulk external sends, report submission, active stored XSS payload submission, and destructive mutations still require explicit current-turn operator intent. Method is a signal, not the boundary: browser-observed POST, GraphQL read queries, search/filter POSTs, preview/validate-only flows, and test-owned reversible actions can be valid evidence paths.

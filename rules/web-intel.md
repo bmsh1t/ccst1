@@ -12,6 +12,12 @@ Web Search、Grok、smart-search、浏览器和其他 provider 只负责发现�
 
 没有上述条件时不为每个组件固定搜索；端口号本身也不能触发 CVE 查询。
 
+## Provider 选择
+
+- 组件 advisory、CVE、PoC 和披露情报优先 Grok Search。
+- 官方文档、原文、精确 URL 和来源核对优先 Smartsearch。
+- 同一 gap 先选一个 provider；结果不足或冲突时才用另一个，不默认双重搜索。
+
 ## 记录契约
 
 先核对正文，再提交 JSON。`body_verified=false` 的结果只保留 discovery lead，不能进入

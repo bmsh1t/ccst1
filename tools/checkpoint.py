@@ -1078,6 +1078,8 @@ def _case_state_proposal(case_state: dict) -> str:
         label = "Case-state validation backlog"
     elif action == "enrich_case_state":
         label = "Case-state enrichment backlog"
+    elif action == "recover_hypothesis":
+        label = "Case-state recovery backlog"
     elif action == "create_validation_backlog":
         label = "Case-state backlog creation"
 
@@ -1089,6 +1091,9 @@ def _case_state_proposal(case_state: dict) -> str:
     hypothesis = str(top.get("hypothesis") or "").strip()
     if hypothesis:
         parts.append(f"Hypothesis: {hypothesis}.")
+    hypothesis_id = str(top.get("hypothesis_id") or "").strip()
+    if hypothesis_id:
+        parts.append(f"Hypothesis ID: {hypothesis_id}.")
     why_now = str(top.get("why_now") or "").strip()
     if why_now:
         parts.append(f"Why now: {why_now}.")
@@ -1138,6 +1143,9 @@ def _case_state_proposal(case_state: dict) -> str:
     chain_extensions = _list_clause(top.get("chain_extensions_if_blocked"))
     if chain_extensions:
         parts.append(f"Chain extensions if blocked: {chain_extensions}.")
+    recovery_next = str(top.get("recovery_next_action") or "").strip()
+    if recovery_next:
+        parts.append(f"Recovery next action: {recovery_next}.")
     return " ".join(parts).strip()
 
 
@@ -2612,6 +2620,8 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         return "case-state-validation", 110, replay_hint or "python3 tools/validation_runner.py ... --from-case-state"
     if "case-state enrichment backlog" in lowered:
         return "case-state-enrichment", 108, "enrich actor/session/object/private-marker evidence in case_state"
+    if "case-state recovery backlog" in lowered:
+        return "case-state-enrichment", 108, "complete the recorded hypothesis recovery step before creating a fresh backlog"
     if "case-state acquisition lead" in lowered:
         return "case-state-enrichment", 66, "capture/register actors, sessions, and owned objects with tools/target_case_state.py"
     if "case-state enrichment lead" in lowered:
@@ -2704,8 +2714,11 @@ def _extract_action_metadata(text: str) -> dict:
     """
     value = str(text or "").strip()
     metadata: dict = {}
+    hypothesis_id_match = re.search(r"Hypothesis ID:\s+(?P<value>[A-Za-z0-9_-]+)", value, re.I)
+    if hypothesis_id_match:
+        metadata["hypothesis_id"] = hypothesis_id_match.group("value")
     case_state_match = re.search(
-        r"Case-state\s+(?:validation backlog|enrichment backlog|backlog creation)\s+(?P<backlog_id>[A-Za-z0-9_-]+)",
+        r"Case-state\s+(?:validation backlog|enrichment backlog|recovery backlog|backlog creation)\s+(?P<backlog_id>[A-Za-z0-9_-]+)",
         value,
         re.I,
     )
@@ -2717,9 +2730,10 @@ def _extract_action_metadata(text: str) -> dict:
             ("endpoint", r"Endpoint:\s+(?P<value>\S+)"),
             ("downgrade_rule", r"Downgrade rule:\s+(?P<value>.*?)(?:\.\s+(?:Stop condition|Write-back|Chain extensions if blocked):|$)"),
             ("stop_condition", r"Stop condition:\s+(?P<value>.*?)(?:\.\s+(?:Write-back|Chain extensions if blocked):|$)"),
-            ("write_back", r"Write-back:\s+(?P<value>.*?)(?:\.\s+Chain extensions if blocked:|$)"),
-            ("hypothesis", r"Hypothesis:\s+(?P<value>.*?)(?:\.\s+Why now:|$)"),
-            ("why_now", r"Why now:\s+(?P<value>.*?)(?:\.\s+(?:Runner|Actors|Object ref|Endpoint|Exact replay draft):|$)"),
+            ("write_back", r"Write-back:\s+(?P<value>.*?)(?:\.\s+(?:Chain extensions if blocked|Recovery next action):|$)"),
+            ("hypothesis", r"Hypothesis:\s+(?P<value>.*?)(?:\.\s+(?:Hypothesis ID|Why now):|$)"),
+            ("why_now", r"Why now:\s+(?P<value>.*?)(?:\.\s+(?:Runner|Actors|Object ref|Endpoint|Exact replay draft|Write-back|Chain extensions if blocked|Recovery next action):|$)"),
+            ("recovery_next_action", r"Recovery next action:\s+(?P<value>.*?)(?:\.$|$)"),
         ):
             match = re.search(pattern, value, re.I)
             if match:
@@ -2742,7 +2756,7 @@ def _extract_action_metadata(text: str) -> dict:
             ("required_evidence", r"Required evidence:\s+(?P<value>.*?)(?:\.\s+(?:Missing evidence|Optional evidence gaps|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
             ("missing_evidence", r"Missing evidence:\s+(?P<value>.*?)(?:\.\s+(?:Optional evidence gaps|Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
             ("optional_evidence_gaps", r"Optional evidence gaps:\s+(?P<value>.*?)(?:\.\s+(?:Downgrade rule|Stop condition|Write-back|Chain extensions if blocked):|$)"),
-            ("chain_extensions_if_blocked", r"Chain extensions if blocked:\s+(?P<value>.*?)(?:\.$|$)"),
+            ("chain_extensions_if_blocked", r"Chain extensions if blocked:\s+(?P<value>.*?)(?:\.\s+Recovery next action:|\.$|$)"),
         ):
             match = re.search(pattern, value, re.I)
             if match:

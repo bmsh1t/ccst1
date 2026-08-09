@@ -3,6 +3,7 @@
 import os
 import shlex
 import sys
+from pathlib import Path
 
 import agent
 import hunt
@@ -66,6 +67,30 @@ def test_build_agent_system_includes_mode_guidance():
     assert "batch related findings" in normal_prompt.lower()
     assert "keep moving" in yolo_prompt.lower()
     assert "advisory telemetry" in paranoid_prompt.lower()
+
+
+def test_deep_mode_requires_method_and_hypothesis_depth_packs():
+    root = Path(__file__).resolve().parents[1]
+    agent_text = (root / "agents" / "autopilot.md").read_text(encoding="utf-8")
+    command_text = (root / "commands" / "autopilot.md").read_text(encoding="utf-8")
+
+    for text in (agent_text, command_text):
+        assert "GET" in text and "POST" in text
+        assert "PUT/PATCH/DELETE" in text
+        assert "tested_dimensions" in text
+        assert "kill_condition" in text
+        assert "next_question" in text
+
+    assert "action_queue.py add --metadata-json" in agent_text
+
+
+def test_case_state_recovery_docs_forbid_implicit_replay():
+    root = Path(__file__).resolve().parents[1]
+    for relative in ("agents/autopilot.md", "commands/autopilot.md"):
+        text = (root / relative).read_text(encoding="utf-8")
+        assert "recover_hypothesis" in text
+        assert "empty replay command" in text
+        assert "never replay the blocked runner implicitly" in text
 
 
 def test_build_agent_bootstrap_context_surfaces_guard_guidance(monkeypatch):

@@ -813,6 +813,70 @@ def test_manual_action_cli_accepts_stop_condition_for_high_risk_lane(tmp_path):
     assert action["stop_condition"] != "record tested, dead-end, blocked, lead, signal, candidate, or validated before moving to the next queued action"
 
 
+def test_manual_action_cli_writes_metadata_and_preserves_duplicate_queue_behavior(tmp_path):
+    metadata = {
+        "hypothesis_id": "H-42",
+        "tested_dimensions": ["sibling endpoint", "low-role actor"],
+        "expected_learning": "A role difference should reveal object scoping.",
+        "kill_condition": "Responses remain identical across both actors.",
+        "next_question": "Does the sibling endpoint enforce the same object check?",
+        "attempts": 2,
+        "last_outcome": "anonymous baseline returned 403",
+    }
+    argv = [
+        "--repo-root", str(tmp_path),
+        "add",
+        "--target", "api.target.com",
+        "--type", "browser-api",
+        "--evidence", "Observed an object endpoint in the browser trace.",
+        "--next-question", "Can a low-role actor replay the object request?",
+        "--action", "Replay the request with the low-role actor.",
+        "--metadata-json", json.dumps(metadata),
+        "--json",
+    ]
+
+    assert main(argv) == 0
+    assert main(argv) == 0
+    queue = load_queue(tmp_path, "api.target.com")
+
+    assert len(queue["actions"]) == 1
+    assert queue["actions"][0]["metadata"] == metadata
+
+
+@pytest.mark.parametrize("metadata_json", ["not-json", "[]", "null", '"text"'])
+def test_manual_action_cli_rejects_non_object_metadata_json(tmp_path, capsys, metadata_json):
+    code = main([
+        "--repo-root", str(tmp_path),
+        "add",
+        "--target", "api.target.com",
+        "--evidence", "Observed an endpoint.",
+        "--next-question", "Can it be replayed?",
+        "--action", "Replay the endpoint.",
+        "--metadata-json", metadata_json,
+    ])
+
+    assert code == 2
+    assert "--metadata-json" in capsys.readouterr().err
+    assert not (tmp_path / "state" / "api.target.com" / "action_queue.json").exists()
+
+
+@pytest.mark.parametrize("field", ["authorization", "cookie", "access_token", "private_marker"])
+def test_manual_action_cli_rejects_sensitive_metadata_without_writing(tmp_path, capsys, field):
+    code = main([
+        "--repo-root", str(tmp_path),
+        "add",
+        "--target", "api.target.com",
+        "--evidence", "Observed an endpoint.",
+        "--next-question", "Can it be replayed?",
+        "--action", "Replay the endpoint.",
+        "--metadata-json", json.dumps({field: "secret-value"}),
+    ])
+
+    assert code == 2
+    assert "sensitive field" in capsys.readouterr().err
+    assert not (tmp_path / "state" / "api.target.com" / "action_queue.json").exists()
+
+
 def test_resolve_accepts_coverage_status_aliases(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
     next_action = select_next_action(load_queue(tmp_path, "target.com"))

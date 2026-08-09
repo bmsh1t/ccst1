@@ -68,7 +68,9 @@ workflow rather than the component advisory artifact.
 
 When compact state returns `run_intel`, run `/intel` and refresh state. When it
 returns `collect_web_intel`, use the bounded `recommended` query, verify the
-source body, then record a provider-neutral JSON payload:
+source body, then record a provider-neutral JSON payload. Select Grok Search or
+Smartsearch for the query; do not call both unless the first result is insufficient
+or conflicting.
 
 ```bash
 python3 tools/web_intel_artifact.py record --target TARGET --input WEB_INTEL.json

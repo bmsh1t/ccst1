@@ -36,6 +36,18 @@ def test_claude_md_operator_profile_is_evidence_driven_not_class_forcing():
     assert "绝不意味着高压流量" in text
 
 
+def test_resin_defaults_to_sticky_without_proxying_local_targets():
+    claude = _read("CLAUDE.md")
+    guide = _read("docs/resin-proxy.md")
+
+    assert "default public-target mode is\n**sticky**" in claude
+    assert "explicit user request for IP rotation" in claude
+    assert "localhost / RFC1918 → **bypass**" in claude
+    assert "默认 mode 是 **sticky**" in guide
+    assert "rotate 只在用户显式要求时使用" in guide
+    assert "localhost / 内网 / RFC1918 始终 bypass" in guide
+
+
 def test_runtime_protocol_inherits_profile_without_rechecking_authorization():
     text = _read("skills/runtime-protocol.md")
 

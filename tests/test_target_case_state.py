@@ -167,6 +167,42 @@ def test_existing_invalid_state_shape_fails_explicitly(tmp_path, payload, messag
         target_case_state.load_case_state(tmp_path, TARGET)
 
 
+@pytest.mark.parametrize("field", ["hypotheses", "validation_backlog"])
+def test_existing_invalid_case_state_list_member_fails_explicitly(tmp_path, field):
+    path = target_case_state.case_state_path(tmp_path, TARGET)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "actors": {},
+        "sessions": {},
+        "objects": {},
+        "hypotheses": [],
+        "validation_backlog": [],
+        field: ["invalid"],
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=rf"field '{field}'\[0\] must be object"):
+        target_case_state.load_case_state(tmp_path, TARGET)
+
+
+@pytest.mark.parametrize("field", ["hypotheses", "validation_backlog"])
+def test_existing_duplicate_case_state_id_fails_explicitly(tmp_path, field):
+    path = target_case_state.case_state_path(tmp_path, TARGET)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "actors": {},
+        "sessions": {},
+        "objects": {},
+        "hypotheses": [],
+        "validation_backlog": [],
+        field: [{"id": "duplicate"}, {"id": "duplicate"}],
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=rf"field '{field}' has duplicate id: duplicate"):
+        target_case_state.load_case_state(tmp_path, TARGET)
+
+
 def test_atomic_save_failure_preserves_previous_case_state(tmp_path, monkeypatch):
     _build_idor_state(tmp_path)
     path = target_case_state.case_state_path(tmp_path, TARGET)
@@ -502,6 +538,25 @@ def test_candidate_routes_to_enrichment_without_replay(tmp_path):
     assert resumed["next_action"] == "run_validation_runner"
 
 
+def test_unlinked_blocked_backlog_does_not_claim_hypothesis_recovery(tmp_path):
+    target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="marker-replay",
+        endpoint=f"{TARGET}/api/blocked",
+        expect_marker="MARKER",
+        status="blocked",
+    )
+
+    next_item = target_case_state.next_action(tmp_path, TARGET)
+
+    assert next_item["next_action"] == "enrich_case_state"
+    assert next_item["hypothesis_id"] == ""
+    assert next_item["recovery_next_action"] == ""
+    assert next_item["command"] == ""
+    assert "no linked hypothesis" in next_item["why_now"]
+
+
 def test_next_allows_replay_without_private_marker_as_optional_gap(tmp_path):
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
     target_case_state.add_actor(tmp_path, TARGET, actor="user_b", role="user")
@@ -559,6 +614,79 @@ def test_complete_backlog_writes_result_and_evidence_ref(tmp_path):
     assert updated["status"] == "tested_finding"
     assert updated["evidence_ref"].endswith("summary.json")
     assert next_item["next_action"] == "none"
+
+
+def test_hypothesis_backlog_outcome_projects_recovery_without_replaying_failure(tmp_path):
+    _build_idor_state(tmp_path)
+    hypothesis = target_case_state.add_hypothesis(
+        tmp_path,
+        TARGET,
+        vuln_class="IDOR",
+        endpoint=f"{TARGET}/rest/order-history/123",
+        object_ref="order_123",
+        next_action="compare owner and peer access",
+        metadata={"source": "browser-observation"},
+    )
+    backlog = target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        hypothesis_id=hypothesis["id"],
+        runner="idor-actor-pair",
+        owner_actor="user_a",
+        peer_actor="user_b",
+        object_ref="order_123",
+        chain_extensions_if_blocked=["try export/report endpoint for the same object"],
+    )
+
+    target_case_state.complete_backlog(
+        tmp_path,
+        TARGET,
+        backlog_id=backlog["id"],
+        result="blocked",
+        notes="peer session expired",
+    )
+    state = target_case_state.load_case_state(tmp_path, TARGET)
+    stored_hypothesis = state["hypotheses"][0]
+    resumed = target_case_state.next_action(tmp_path, TARGET)
+
+    assert stored_hypothesis["metadata"]["source"] == "browser-observation"
+    assert stored_hypothesis["metadata"]["last_outcome"]["status"] == "blocked"
+    assert stored_hypothesis["metadata"]["last_outcome"]["notes"] == "peer session expired"
+    assert stored_hypothesis["metadata"]["recovery_next_action"] == "try export/report endpoint for the same object"
+    assert resumed["next_action"] == "recover_hypothesis"
+    assert resumed["ready"] is False
+    assert resumed["recovery_next_action"] == "try export/report endpoint for the same object"
+    assert resumed["command"] == ""
+
+
+def test_case_state_rejects_duplicate_durable_ids(tmp_path):
+    hypothesis = target_case_state.add_hypothesis(
+        tmp_path,
+        TARGET,
+        hypothesis_id="hyp_001",
+        vuln_class="IDOR",
+    )
+    with pytest.raises(ValueError, match="hypothesis id already exists: hyp_001"):
+        target_case_state.add_hypothesis(
+            tmp_path,
+            TARGET,
+            hypothesis_id=hypothesis["id"],
+            vuln_class="IDOR",
+        )
+
+    backlog = target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        backlog_id="val_001",
+        runner="marker-replay",
+    )
+    with pytest.raises(ValueError, match="backlog id already exists: val_001"):
+        target_case_state.add_backlog(
+            tmp_path,
+            TARGET,
+            backlog_id=backlog["id"],
+            runner="marker-replay",
+        )
 
 
 def test_cli_next_outputs_json(tmp_path, capsys):

@@ -179,6 +179,16 @@ def _ensure_shape(state: dict[str, Any], target: str) -> dict[str, Any]:
             raise ValueError(
                 f"target case state field {key!r} must be {type(default).__name__}"
             )
+    for key in ("hypotheses", "validation_backlog"):
+        record_ids: set[str] = set()
+        for index, item in enumerate(state[key]):
+            if not isinstance(item, dict):
+                raise ValueError(f"target case state field {key!r}[{index}] must be object")
+            record_id = str(item.get("id") or "").strip()
+            if record_id in record_ids:
+                raise ValueError(f"target case state field {key!r} has duplicate id: {record_id}")
+            if record_id:
+                record_ids.add(record_id)
     for session in state["sessions"].values():
         if not isinstance(session, dict):
             continue
@@ -582,6 +592,7 @@ def add_hypothesis(
     next_action: str = "",
     status: str = "open",
     hypothesis_id: str = "",
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     actors = actors or []
     vuln_class_value = _require_non_empty(vuln_class, "vuln_class")
@@ -591,8 +602,11 @@ def add_hypothesis(
                 raise ValueError(f"actor does not exist: {actor}")
         if object_ref and object_ref not in state["objects"]:
             raise ValueError(f"object_ref does not exist: {object_ref}")
+        record_id = hypothesis_id or _next_id(state["hypotheses"], "hyp_")
+        if any(item.get("id") == record_id for item in state["hypotheses"]):
+            raise ValueError(f"hypothesis id already exists: {record_id}")
         record = {
-            "id": hypothesis_id or _next_id(state["hypotheses"], "hyp_"),
+            "id": record_id,
             "vuln_class": vuln_class_value,
             "endpoint": str(endpoint or ""),
             "object_ref": str(object_ref or ""),
@@ -602,6 +616,8 @@ def add_hypothesis(
             "next_action": str(next_action or ""),
             "created_at": now_utc(),
         }
+        if metadata:
+            record["metadata"] = dict(metadata)
         state["hypotheses"].append(record)
         return record
     return _mutate_case_state(repo_root, target, mutate)
@@ -627,6 +643,7 @@ def add_backlog(
     method: str = "GET",
     status: str = "pending",
     backlog_id: str = "",
+    hypothesis_id: str = "",
 ) -> dict[str, Any]:
     status_value = str(status or "pending")
     if status_value not in BACKLOG_STATUSES:
@@ -638,8 +655,17 @@ def add_backlog(
                 raise ValueError(f"actor does not exist: {actor}")
         if object_ref and object_ref not in state["objects"]:
             raise ValueError(f"object_ref does not exist: {object_ref}")
+        if hypothesis_id and not any(
+            item.get("id") == hypothesis_id
+            for item in state["hypotheses"]
+            if isinstance(item, dict)
+        ):
+            raise ValueError(f"hypothesis id does not exist: {hypothesis_id}")
+        record_id = backlog_id or _next_id(state["validation_backlog"], "val_")
+        if any(item.get("id") == record_id for item in state["validation_backlog"]):
+            raise ValueError(f"backlog id already exists: {record_id}")
         record = {
-            "id": backlog_id or _next_id(state["validation_backlog"], "val_"),
+            "id": record_id,
             "runner": runner_value,
             "endpoint": str(endpoint or ""),
             "owner_actor": str(owner_actor or ""),
@@ -657,6 +683,8 @@ def add_backlog(
             "method": str(method or "GET").upper(),
             "created_at": now_utc(),
         }
+        if hypothesis_id:
+            record["hypothesis_id"] = str(hypothesis_id)
         state["validation_backlog"].append(record)
         return record
     return _mutate_case_state(repo_root, target, mutate)
@@ -870,6 +898,31 @@ def _score_backlog_item(state: dict[str, Any], item: dict[str, Any]) -> tuple[in
     return score, missing, details
 
 
+def _linked_hypothesis(state: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+    hypothesis_id = str(item.get("hypothesis_id") or "").strip()
+    if not hypothesis_id:
+        return {}
+    return next(
+        (
+            hypothesis
+            for hypothesis in state.get("hypotheses", [])
+            if isinstance(hypothesis, dict) and hypothesis.get("id") == hypothesis_id
+        ),
+        {},
+    )
+
+
+def _recovery_next_action(item: dict[str, Any]) -> str:
+    extensions = item.get("chain_extensions_if_blocked") or []
+    for extension in extensions:
+        text = str(extension or "").strip()
+        if text:
+            return text
+    if item.get("runner") == "idor-actor-pair":
+        return "try export/report endpoint for the same object"
+    return "capture the missing prerequisite before creating a fresh validation backlog"
+
+
 def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
     state = load_case_state(repo_root, target)
     active = [
@@ -885,6 +938,7 @@ def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
             hyp = open_hypotheses[0]
             return {
                 "next_action": "create_validation_backlog",
+                "hypothesis_id": hyp.get("id", ""),
                 "hypothesis": hyp.get("next_action") or hyp.get("why_now") or "open hypothesis needs validation backlog",
                 "why_now": hyp.get("why_now", ""),
                 "vuln_class": hyp.get("vuln_class", ""),
@@ -906,12 +960,18 @@ def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
     # 在没有新上下文时被反复执行。
     ranked.sort(
         key=lambda row: (
-            not (not row[1] and str(row[3].get("status") or "pending") != "candidate"),
+            not (
+                not row[1]
+                and str(row[3].get("status") or "pending") not in {"candidate", "blocked"}
+            ),
             -row[0],
         )
     )
     score, missing, details, item = ranked[0]
-    ready = not missing and str(item.get("status") or "pending") != "candidate"
+    backlog_status = str(item.get("status") or "pending")
+    linked_hypothesis = _linked_hypothesis(state, item)
+    recovering_hypothesis = backlog_status == "blocked" and bool(linked_hypothesis)
+    ready = not missing and backlog_status not in {"candidate", "blocked"}
     target_value = state.get("target") or canonical_target_value(target)
     runner = item.get("runner")
     if runner == "idor-actor-pair":
@@ -931,6 +991,12 @@ def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
         if runner == "idor-actor-pair"
         else f"validate {runner} on {details.get('endpoint') or item.get('endpoint')}"
     )
+    if linked_hypothesis:
+        hypothesis = str(
+            linked_hypothesis.get("next_action")
+            or linked_hypothesis.get("why_now")
+            or hypothesis
+        )
     extensions = list(item.get("chain_extensions_if_blocked") or [])
     if runner == "idor-actor-pair" and not extensions:
         extensions = [
@@ -938,17 +1004,31 @@ def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
             "try mobile/versioned API equivalent",
             "try GraphQL node/global id if discovered",
         ]
+    recovery_next = next(
+        (str(extension).strip() for extension in extensions if str(extension).strip()),
+        "capture the missing prerequisite before creating a fresh validation backlog",
+    ) if recovering_hypothesis else ""
     return {
-        "next_action": "run_validation_runner" if ready else "enrich_case_state",
+        "next_action": (
+            "recover_hypothesis"
+            if recovering_hypothesis
+            else "run_validation_runner" if ready else "enrich_case_state"
+        ),
         "ready": ready,
         "score": score,
         "backlog_id": item.get("id"),
+        "hypothesis_id": item.get("hypothesis_id", ""),
         "runner": runner,
         "hypothesis": hypothesis,
         "chain_context": _chain_context(state, item, details),
         "why_now": (
+            f"previous replay is blocked; recover with: {recovery_next}"
+            if recovering_hypothesis
+            else "blocked backlog has no linked hypothesis; record the missing prerequisite before replay"
+            if backlog_status == "blocked"
+            else
             "ready validation first; candidate backlog is routed to evidence enrichment before any replay"
-            if str(item.get("status") or "pending") == "candidate"
+            if backlog_status == "candidate"
             else "highest-ranked ready backlog by priority, impact, chain potential, and risk cost"
         ),
         "endpoint": details.get("endpoint") or item.get("endpoint") or "",
@@ -973,9 +1053,15 @@ def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
         "downgrade_rule": "peer denied or response lacks owner-private marker",
         "stop_condition": item.get("stop_condition") or "peer 403/404 or no owner-private marker",
         "chain_extensions_if_blocked": extensions,
+        "recovery_next_action": recovery_next,
         "write_back": (
+            f"preserve this blocked outcome, then create a fresh backlog only after: {recovery_next}"
+            if recovering_hypothesis
+            else "link this blocked outcome to a hypothesis or record its missing prerequisite before replay"
+            if backlog_status == "blocked"
+            else
             f"after adding new evidence, set backlog {item.get('id')} to running before replay"
-            if str(item.get("status") or "pending") == "candidate"
+            if backlog_status == "candidate"
             else f"complete-backlog {item.get('id')} with tested_finding/tested_clean/candidate"
         ),
     }
@@ -999,6 +1085,29 @@ def complete_backlog(
                 item["evidence_ref"] = str(evidence_ref or item.get("evidence_ref", "") or "")
                 item["notes"] = str(notes or item.get("notes", "") or "")
                 item["completed_at"] = now_utc()
+                hypothesis = _linked_hypothesis(state, item)
+                if hypothesis:
+                    metadata = hypothesis.get("metadata")
+                    if not isinstance(metadata, dict):
+                        metadata = {}
+                    metadata["last_backlog_id"] = str(item.get("id") or "")
+                    metadata["last_outcome"] = {
+                        "status": result,
+                        "evidence_ref": item["evidence_ref"],
+                        "notes": item["notes"],
+                        "at": item["completed_at"],
+                    }
+                    if result == "blocked":
+                        recovery_next = _recovery_next_action(item)
+                        metadata["recovery_next_action"] = recovery_next
+                        hypothesis["next_action"] = recovery_next
+                        hypothesis["status"] = "open"
+                    elif result == "tested_finding":
+                        hypothesis["status"] = "candidate"
+                        metadata["recovery_next_action"] = "run /validate after reviewing candidate evidence"
+                    elif result in {"tested_clean", "dead_end"}:
+                        hypothesis["status"] = "closed"
+                    hypothesis["metadata"] = metadata
                 return item
         raise ValueError(f"backlog id not found: {backlog_id}")
     return _mutate_case_state(repo_root, target, mutate)
@@ -1147,6 +1256,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--expect-marker", default="")
     p.add_argument("--method", default="GET")
     p.add_argument("--status", default="pending")
+    p.add_argument("--hypothesis-id", default="")
 
     p = sub.add_parser("next")
     common(p)
@@ -1259,6 +1369,7 @@ def _run_command(argv: list[str] | None = None) -> int:
             expect_marker=args.expect_marker,
             method=args.method,
             status=args.status,
+            hypothesis_id=args.hypothesis_id,
         ))
     elif args.cmd == "next":
         _print_json(next_action(repo_root, args.target))

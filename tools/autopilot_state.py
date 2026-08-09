@@ -699,11 +699,11 @@ def _load_case_state_projection(repo_root: str, target: str) -> dict:
     payload = build_case_state_summary(repo_root, target)
     top = payload.get("top_next_action") if isinstance(payload.get("top_next_action"), dict) else {}
     allowed = {
-        "next_action", "ready", "score", "backlog_id", "runner", "hypothesis",
+        "next_action", "ready", "score", "backlog_id", "hypothesis_id", "runner", "hypothesis",
         "chain_context", "why_now", "vuln_class", "endpoint", "owner_actor",
         "peer_actor", "object_ref", "object_type", "required_evidence",
         "optional_evidence_gaps", "missing_evidence", "redacted_command",
-        "downgrade_rule", "stop_condition", "chain_extensions_if_blocked", "write_back",
+        "downgrade_rule", "stop_condition", "chain_extensions_if_blocked", "recovery_next_action", "write_back",
         "param", "baseline_value", "variant_value", "expect_marker", "method",
     }
     return {

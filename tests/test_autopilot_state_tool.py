@@ -380,6 +380,43 @@ def test_case_state_work_routes_bootstrap_and_blocks_exhausted_closure(tmp_path)
     assert closure["reasons"] == ["case_state_work_pending"]
 
 
+def test_case_state_recovery_keeps_bounded_hypothesis_linkage(tmp_path):
+    target = "target.com"
+    case_path = tmp_path / "state" / target / "case_state.json"
+    case_path.parent.mkdir(parents=True)
+    case_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target": target,
+            "target_key": target,
+            "actors": {},
+            "sessions": {},
+            "objects": {},
+            "hypotheses": [{
+                "id": "hyp_001",
+                "status": "open",
+                "vuln_class": "Authz",
+                "next_action": "capture the export route",
+            }],
+            "validation_backlog": [{
+                "id": "val_001",
+                "hypothesis_id": "hyp_001",
+                "runner": "marker-replay",
+                "status": "blocked",
+                "chain_extensions_if_blocked": ["capture the export route"],
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    state = build_autopilot_state(str(tmp_path), target, bounded=True)
+    top = state["case_state"]["top_next_action"]
+
+    assert top["next_action"] == "recover_hypothesis"
+    assert top["hypothesis_id"] == "hyp_001"
+    assert top["recovery_next_action"] == "capture the export route"
+
+
 def test_malformed_case_state_returns_structured_state_error(tmp_path, monkeypatch, capsys):
     target = "target.com"
     case_path = tmp_path / "state" / target / "case_state.json"

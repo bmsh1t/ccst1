@@ -6,17 +6,18 @@ This repo is a Claude Code plugin for target-driven vulnerability hunting and se
 
 Default VPS egress is optional Resin. Non-secret connection facts live in
 `config.json` → `resin` (host / port / platform); `RESIN_PROXY_TOKEN` lives in
-the gitignored `.env`. **Do not store rotate/sticky mode
-in config** — choose per task:
+the gitignored `.env`. **Do not store rotate/sticky mode in config.** When Resin
+is enabled and the token is available, the default public-target mode is
+**sticky** with one stable Account per target/job.
 
 Never read, print, or copy raw `.env` values into prompts, logs, reports, or
 documentation. Runtime tools may access only their explicit `CredentialStore`
 allowlist.
 
-- bulk `/recon`, httpx/nuclei/ffuf, unauthenticated sweep → **rotate**
-  (`http://{platform}:{token}@{host}:{port}`)
-- login / session / multi-step / fixed exit IP → **sticky**
+- `/recon`, httpx/nuclei/ffuf, unauthenticated sweep, login/session/multi-step → **sticky**
   (`http://{platform}.{account}:{token}@{host}:{port}`)
+- explicit user request for IP rotation → **rotate**
+  (`http://{platform}:{token}@{host}:{port}`)
 - localhost / RFC1918 → **bypass** (`no_proxy`, do not use Resin)
 
 `hunt.py` does not auto-apply this; export `http_proxy`/`https_proxy` or pass
@@ -49,6 +50,7 @@ Active recon、浏览器态观察、请求重放、scanner 扩展和后续验证
 工作方式：
 
 - 复杂任务先从目标记忆和 `/context-pack` 开始。
+- 目标调研/外部搜索按需使用 Grok Search 或 Smartsearch；先选一个，结果不足或冲突时再用另一个。
 - Skills 负责执行路径，知识卡负责思路发散，Rules 负责安全与检查。
 - 测试保持低风险、最小必要、可复现，并限定在当前目标上下文内。
 - 用 target memory、coverage matrix、Evidence Ledger、checkpoint 或 retrospect 记录测过什么、没测什么和下一步。

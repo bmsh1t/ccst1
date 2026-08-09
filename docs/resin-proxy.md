@@ -1,6 +1,6 @@
 # Resin 出口代理池（ccst1）
 
-VPS 命令行默认出口。非秘密连接信息在仓库根目录 `config.json` → `resin`，Token 在 `.env` → `RESIN_PROXY_TOKEN`；**mode 不要写进 config**，由任务类型当场判断。
+VPS 命令行默认出口。非秘密连接信息在仓库根目录 `config.json` → `resin`，Token 在 `.env` → `RESIN_PROXY_TOKEN`；**mode 不要写进 config**。Resin 可用时默认 mode 是 **sticky**，同一目标/任务固定一个 Account。
 
 不依赖 Burp。主工具：`curl` / `httpx` / `nuclei` / `ffuf` / `katana` / `python3 tools/hunt.py`。
 
@@ -47,19 +47,19 @@ PY
 
 | 任务信号 | mode | 用户名 |
 |---|---|---|
-| `/recon`、批量 httpx/nuclei/ffuf、无会话宽扫 | **rotate** | `{platform}`（`Default`） |
-| 登录 / session / 多步写 / 角色差分 / 「固定出口」 | **sticky** | `{platform}.{account}` |
+| 公网目标的 `/recon`、httpx/nuclei/ffuf、无会话宽扫、登录/session/多步写 | **sticky** | `{platform}.{account}` |
+| 用户显式要求轮换出口 | **rotate** | `{platform}`（`Default`） |
 | 只能改 BaseURL | **reverse** | 路径 + 可选 `X-Resin-Account` |
 | 只认 SOCKS / proxychains | **socks** | 同上 rotate/sticky |
 | localhost / 内网 / RFC1918 | **bypass** | 不走代理（`no_proxy`） |
 
 优先级：
 
-1. 用户显式指定 > 自动判断  
-2. 有状态交互 → sticky  
-3. 纯发现/指纹/无 cookie 批量 → rotate  
-4. 同一会话可分段：recon 用 rotate，切入登录后改 sticky  
-5. **禁止**批量 rotate 时每个请求随机 Account  
+1. localhost / 内网 / RFC1918 始终 bypass
+2. 用户显式指定 mode > 默认策略
+3. 其余公网目标流量默认 sticky，同一目标/任务复用 Account
+4. rotate 只在用户显式要求时使用
+5. **禁止**每个请求随机 Account
 
 ### sticky 的 Account
 
@@ -100,10 +100,10 @@ TOKEN 为空时不要拼 `user:pass@`。
 
 ## 4. 接线示例
 
-### rotate（/recon、nuclei、httpx）
+### sticky（默认：recon、scanner、登录态）
 
 ```bash
-export http_proxy="http://Default:YOUR_RESIN_PROXY_TOKEN@YOUR_RESIN_HOST:2260"
+export http_proxy="http://Default.target-sess:YOUR_RESIN_PROXY_TOKEN@YOUR_RESIN_HOST:2260"
 export https_proxy="$http_proxy" ALL_PROXY="$http_proxy"
 export no_proxy="localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
@@ -115,13 +115,11 @@ nuclei -l urls.txt -p "$P"
 ffuf -u https://target/FUZZ -w wordlist.txt -x "$P"
 ```
 
-### sticky（登录态 / 固定出口）
+### rotate（仅用户显式要求）
 
 ```bash
-export http_proxy="http://Default.acme-admin-1:YOUR_RESIN_PROXY_TOKEN@YOUR_RESIN_HOST:2260"
+export http_proxy="http://Default:YOUR_RESIN_PROXY_TOKEN@YOUR_RESIN_HOST:2260"
 export https_proxy="$http_proxy"
-curl -x "http://YOUR_RESIN_HOST:2260" -U "Default.acme-admin-1:YOUR_RESIN_PROXY_TOKEN" https://api.ipify.org
-# 连打两次，出口应尽量相同
 ```
 
 ### reverse（只能改 BaseURL）
@@ -137,8 +135,8 @@ curl "http://YOUR_RESIN_HOST:2260/YOUR_RESIN_PROXY_TOKEN/Default/https/api.ipify
 
 ```bash
 cd /home/fsh1t/tool/ccst1
-# 先定 MODE=rotate|sticky 与 ACCOUNT（sticky 时）
-MODE=rotate ACCOUNT= eval "$(MODE="$MODE" ACCOUNT="$ACCOUNT" python3 - <<'PY'
+# 默认 sticky；同一目标/任务保持 ACCOUNT 不变
+eval "$(MODE=sticky ACCOUNT=target-sess python3 - <<'PY'
 import json, os
 from pathlib import Path
 from tools.credential_store import CredentialStore
@@ -147,8 +145,8 @@ if r.get("enabled") is False:
     raise SystemExit(0)
 host=r.get("host","YOUR_RESIN_HOST"); port=int(r.get("port",2260))
 token=CredentialStore(Path(".env")).get("RESIN_PROXY_TOKEN",""); plat=r.get("platform") or "Default"
-mode=os.environ.get("MODE","rotate"); acc=os.environ.get("ACCOUNT","").strip()
-user=f"{plat}.{acc}" if mode=="sticky" and acc else plat
+mode=os.environ.get("MODE","sticky"); acc=os.environ.get("ACCOUNT","default").strip() or "default"
+user=f"{plat}.{acc}" if mode=="sticky" else plat
 auth=f"{user}:{token}@" if token else ""
 proxy=f"http://{auth}{host}:{port}"
 no=r.get("no_proxy","localhost,127.0.0.1")
@@ -176,10 +174,11 @@ curl -x "http://YOUR_RESIN_HOST:2260" -U "Default:YOUR_RESIN_PROXY_TOKEN" https:
 
 | 流程 | mode |
 |---|---|
-| `/recon`、`hunt.py --recon-only` | rotate |
-| `/hunt` 未认证宽扫、`/scan-cves` | rotate |
+| `/recon`、`hunt.py --recon-only` | sticky |
+| `/hunt` 未认证宽扫、`/scan-cves` | sticky |
 | 登录后继续测、角色差分 | sticky |
-| `/autopilot` | 侦察 rotate；有状态 lane sticky |
+| `/autopilot` | sticky |
+| 用户明确要求轮换 IP | rotate |
 | 内网目标 | bypass |
 
 给操作者/Agent 的最短输出：

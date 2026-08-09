@@ -51,6 +51,15 @@ one smallest evidence-producing action, execute it, write evidence, then refresh
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
 ```
+In deep mode, a concrete API/browser-XHR surface requires an evidence-linked
+depth pack: run the observed GET/query path and the observed POST JSON/form path
+when applicable. GET-only is not API completion; OPTIONS/HEAD remain passive
+checks, and default probing never adds PUT/PATCH/DELETE. After a negative result,
+record the selected sibling/variant/actor/workflow/chain dimension plus
+`hypothesis`, `tested_dimensions`, `expected_learning`, `kill_condition`, and `next_question` in the
+existing Action Queue metadata (for manual write-back, use `tools/action_queue.py add --metadata-json '{"hypothesis_id":"H-1","tested_dimensions":["sibling"],"expected_learning":"...","kill_condition":"...","next_question":"..."}'`; the parser accepts only a JSON object and rejects credential-bearing fields before any queue write; this is the existing Action Queue, not a new state owner). A partial tool cursor or unused depth dimension
+is resumable work, not tested-clean.
+
 Named action mechanics, replay commands, recon continuation, list selection, and owner
 write-back rules live in the selected lane section. Claim durable queue work before replay;
 never treat prose or a raw endpoint as evidence. If `state.root_claim_next` exists, run `/checkpoint`
@@ -124,6 +133,9 @@ terminal prose are not lifecycle transitions. Partial/blocked is unresolved,
 not tested-clean. A report draft with placeholders is not report-ready.
 Four-layer memory is the external brain, not the steering wheel:
 `target memory / target case state -> skill routing -> knowledge cards -> checks`.
+When a linked case-state backlog is blocked, state projects `recover_hypothesis`
+with an empty replay command; record the bounded recovery step before creating a
+fresh backlog and never replay the blocked runner implicitly.
 Use `reference_hints` and 1-2 matching knowledge cards/on-demand references; do
 not let them drive first contact. Observation top-K, `remaining`, and untouched
 long tail are completeness windows. Never route every untouched observation to

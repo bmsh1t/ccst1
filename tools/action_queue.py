@@ -84,10 +84,54 @@ LOW_EVIDENCE_SURFACE_REVIEW_MARKERS = (
     "reason: top advisory score",
     "reason: top advisory score (low-evidence fallback)",
 )
+SENSITIVE_METADATA_KEYS = {
+    "access_token",
+    "api_key",
+    "authorization",
+    "bearer",
+    "client_secret",
+    "cookie",
+    "credentials",
+    "credential",
+    "csrf_token",
+    "header_value",
+    "headers",
+    "id_token",
+    "password",
+    "private_key",
+    "private_marker",
+    "refresh_token",
+    "secret",
+    "secret_value",
+    "session_cookie",
+    "set_cookie",
+}
 
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _validate_action_metadata(metadata: dict | None) -> dict:
+    if metadata is None:
+        return {}
+    if not isinstance(metadata, dict):
+        raise ValueError("Action Queue metadata must be a JSON object")
+
+    def visit(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                normalized = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+                child_path = f"{path}.{key}"
+                if normalized in SENSITIVE_METADATA_KEYS and child not in (None, "", [], {}):
+                    raise ValueError(f"Action Queue metadata cannot contain sensitive field {child_path}")
+                visit(child, child_path)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}[{index}]")
+
+    visit(metadata, "metadata")
+    return metadata
 
 
 def queue_path(repo_root: Path | str, target: str) -> Path:
@@ -606,6 +650,7 @@ def build_action(
     stop_condition: str = DEFAULT_STOP_CONDITION,
     metadata: dict | None = None,
 ) -> dict:
+    metadata = _validate_action_metadata(metadata)
     text_for_redline = " ".join([action_type, evidence, next_question, action, command_hint])
     ts = now_utc()
     built = {
@@ -873,7 +918,11 @@ def add_manual_action(
     generation: str = "",
     safety: str = "non_destructive",
     stop_condition: str = DEFAULT_STOP_CONDITION,
+    metadata: dict | None = None,
 ) -> dict:
+    action_metadata = dict(_validate_action_metadata(metadata))
+    if generation:
+        action_metadata["generation"] = generation
     built = build_action(
         target=target,
         action_type=action_type,
@@ -887,7 +936,7 @@ def add_manual_action(
         source_id=source_id,
         safety=safety,
         stop_condition=stop_condition,
-        metadata={"generation": generation} if generation else None,
+        metadata=action_metadata or None,
     )
     with queue_mutation_lock(repo_root, target):
         queue = load_queue(repo_root, target)
@@ -1227,6 +1276,11 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--source", default="manual")
     add.add_argument("--source-id", default="")
     add.add_argument("--generation", default="")
+    add.add_argument(
+        "--metadata-json",
+        default=None,
+        help="JSON object merged into the existing Action Queue metadata.",
+    )
     add.add_argument("--evidence", required=True)
     add.add_argument("--next-question", required=True)
     add.add_argument("--action", required=True)
@@ -1284,6 +1338,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "add":
+            metadata = None
+            if args.metadata_json is not None:
+                try:
+                    metadata = json.loads(args.metadata_json)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"--metadata-json must be valid JSON: {exc.msg}") from exc
+                if not isinstance(metadata, dict):
+                    raise ValueError("--metadata-json must be a JSON object")
             result = add_manual_action(
                 repo,
                 target=args.target,
@@ -1299,6 +1361,7 @@ def main(argv: list[str] | None = None) -> int:
                 command_hint=args.command_hint,
                 safety=args.safety,
                 stop_condition=args.stop_condition,
+                metadata=metadata,
             )
             _print(
                 result if args.json else format_summary(result["queue"], repo_root=repo, target=args.target),
