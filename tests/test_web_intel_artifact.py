@@ -9,6 +9,7 @@ from tools.web_intel_artifact import (
     WebIntelArtifactError,
     build_web_intel_source,
     load_web_intel_projection,
+    normalize_web_intel_payload,
     record_web_intel,
 )
 
@@ -112,6 +113,36 @@ def test_blocked_query_is_not_clean_and_does_not_repeat_within_ttl(tmp_path):
     assert source["status"] == "unavailable"
     assert source["items"] == []
     assert "provider unavailable" in source["error"]
+
+
+@pytest.mark.parametrize(("subject", "intent", "expected"), [
+    ("cloudwaf@", "component_advisory", "cloudwaf"),
+    (" GiveWP @ 4.16.3 ", "component_advisory", "givewp@4.16.3"),
+    ("@scope/pkg@", "component_advisory", "@scope/pkg"),
+    ("@scope/pkg@1.2.0", "component_advisory", "@scope/pkg@1.2.0"),
+    ("CloudWAF@", "target_osint", "CloudWAF@"),
+])
+def test_component_subject_normalization(subject, intent, expected):
+    payload = _payload()
+    payload["subject"] = subject
+    payload["intent"] = intent
+
+    normalized = normalize_web_intel_payload(payload, target="target.test", now=NOW)
+
+    assert normalized["subject"] == expected
+
+
+def test_legacy_empty_version_subject_closes_unversioned_gap(tmp_path):
+    payload = _payload()
+    payload.update({"subject": "cloudwaf@", "status": "blocked", "results": []})
+    _path, index = record_web_intel(tmp_path, "target.test", payload, now=NOW)
+    index["entries"][0]["subject"] = "cloudwaf@"
+    index_path = tmp_path / "evidence" / "target.test" / "web-intel" / "index.json"
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+
+    projection = load_web_intel_projection(tmp_path, "target.test", now=NOW)
+
+    assert projection["blocked_subjects"] == ["cloudwaf"]
 
 
 def test_version_mismatch_downgrades_web_claim_to_unknown(tmp_path):

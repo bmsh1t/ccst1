@@ -109,6 +109,18 @@ def _identifier(value: object) -> str:
     return text if _CVE_RE.fullmatch(text) or _GHSA_RE.fullmatch(text) else ""
 
 
+def _normalize_subject(value: object, intent: str) -> str:
+    text = str(value or "").strip()
+    if intent != "component_advisory":
+        return text
+    name, separator, version = text.rpartition("@")
+    if not separator or not name.strip():
+        return text.lower()
+    name = name.strip().lower()
+    version = version.strip()
+    return f"{name}@{version}" if version else name
+
+
 def _normalize_claim(raw: object) -> dict | None:
     if not isinstance(raw, dict):
         return None
@@ -203,7 +215,7 @@ def normalize_web_intel_payload(
         )
     intent = str(payload.get("intent") or "").strip().lower()
     query = str(payload.get("query") or "").strip()
-    subject = str(payload.get("subject") or "").strip()
+    subject = _normalize_subject(payload.get("subject"), intent)
     provider = str(payload.get("provider") or "").strip()
     status = str(payload.get("status") or "ok").strip().lower()
     if not intent or not query or not subject or not provider:
@@ -469,7 +481,10 @@ def load_web_intel_projection(
         }
     current = now or _now_utc()
     active_entries = [
-        item
+        {
+            **item,
+            "subject": _normalize_subject(item.get("subject"), str(item.get("intent") or "")),
+        }
         for item in payload.get("entries") or []
         if isinstance(item, dict)
         and (_parse_utc(item.get("expires_at")) or datetime.min.replace(tzinfo=timezone.utc)) > current

@@ -4,6 +4,8 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
+import intel_engine
+
 from tools.action_queue import add_manual_action, resolve_action, save_queue
 from tools.intel_artifact import write_intel_artifact
 from tools.intel_continuation import apply_intel_continuation, inspect_intel_continuation
@@ -213,6 +215,36 @@ def test_blocked_web_intel_is_handoff_context_not_a_repeat_loop(tmp_path):
     assert state["action"] == "complete"
     assert state["blocked"][0]["subject"] == "givewp@4.16.3"
     assert "continue other lanes" in state["reason"]
+
+
+def test_empty_version_web_intel_subject_does_not_repeat_collection(tmp_path):
+    _prepare_inventory(tmp_path)
+    record_web_intel(tmp_path, "target.test", {
+        "target": "target.test",
+        "subject": "cloudwaf@",
+        "intent": "component_advisory",
+        "query": "CloudWAF vulnerability advisory",
+        "provider": "unavailable-provider",
+        "status": "blocked",
+        "results": [],
+    }, now=NOW)
+    projection = load_web_intel_projection(tmp_path, "target.test", now=NOW)
+    gaps = intel_engine._web_intel_gap_projection(
+        [{"name": "cloudwaf", "kind": "network_service"}],
+        [{"source": "nvd", "status": "ok"}],
+        [],
+        projection,
+    )
+    web_intel = {
+        field: projection[field]
+        for field in ("status", "fingerprint", "covered_subjects", "blocked_subjects")
+    }
+    _write_intel(tmp_path, _intel(gaps=gaps, web_intel=web_intel))
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "complete"
+    assert state["blocked"][0]["subject"] == "cloudwaf"
 
 
 def test_high_value_advisory_triggers_applicability_and_final_queue_closes_it(tmp_path):
