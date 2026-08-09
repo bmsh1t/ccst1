@@ -102,3 +102,36 @@ def test_summary_survives_action_queue_sync_failure(tmp_path, monkeypatch):
     assert persisted["status"] == "blocked"
     assert persisted["action_queue"]["status"] == "error"
     assert "queue unavailable" in persisted["action_queue"]["error"]
+
+
+def test_param_discovery_uses_explicit_url_budget_without_changing_default(tmp_path, monkeypatch):
+    calls: list[str] = []
+
+    def fake_tool(argv, *, cwd, timeout):
+        calls.append(argv[argv.index("-u") + 1])
+        output = Path(argv[argv.index("-o") + 1])
+        output.write_text(json.dumps({"params": ["debug"]}), encoding="utf-8")
+        return 0, ""
+
+    monkeypatch.setattr(param_discovery, "_run_tool", fake_tool)
+    urls = [f"https://target.test/api/{index}" for index in range(8)]
+
+    explicit = param_discovery.discover_parameters(
+        repo_root=tmp_path / "explicit",
+        target="target.test",
+        urls=urls,
+        max_urls=8,
+        tool_exists=lambda name: name == "x8",
+    )
+    assert explicit["counts"]["runs"] == 8
+    assert calls == urls
+
+    calls.clear()
+    default = param_discovery.discover_parameters(
+        repo_root=tmp_path / "default",
+        target="target.test",
+        urls=urls,
+        tool_exists=lambda name: name == "x8",
+    )
+    assert default["counts"]["runs"] == param_discovery.MAX_URLS == 5
+    assert calls == urls[:param_discovery.MAX_URLS]

@@ -14,7 +14,12 @@ unlocks the real surface.
 ```
 /param-discover --target TARGET --url https://TARGET/v2/user
 /param-discover --target TARGET --list recon/TARGET/live/urls.txt
+/param-discover --target TARGET --list recon/TARGET/live/urls.txt --max-urls 8
 ```
+
+每次调用默认最多处理 5 个 URL。显式传入 `--max-urls N`（或 Python API 的
+`max_urls=N`）时，`N` 仅作为本次调用的 URL 预算，且必须为正整数；不会被默认值
+5 再次截断。
 
 ## Tools
 

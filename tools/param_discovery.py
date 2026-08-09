@@ -235,7 +235,7 @@ def _tool_for(session: AuthSession, tool_exists: Callable[[str], bool]) -> str:
     return ""
 
 
-def _run_discovery(*, repo_root: Path, target: str, method: str, urls: list[str], session: AuthSession, timeout: int, tool_exists: Callable[[str], bool]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+def _run_discovery(*, repo_root: Path, target: str, method: str, urls: list[str], session: AuthSession, max_urls: int = MAX_URLS, timeout: int, tool_exists: Callable[[str], bool]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     tool = _tool_for(session, tool_exists)
     runs: list[dict[str, Any]] = []
     discoveries: list[dict[str, Any]] = []
@@ -247,7 +247,7 @@ def _run_discovery(*, repo_root: Path, target: str, method: str, urls: list[str]
     output_dir.mkdir(parents=True, exist_ok=True)
     private_dir = private_artifact_dir(repo_root, "param_discovery", target_storage_key(canonical_target_value(target)))
     wordlist = BASE_DIR / "wordlists" / "params.txt"
-    for index, url in enumerate(urls[:MAX_URLS], start=1):
+    for index, url in enumerate(urls[:max_urls], start=1):
         output_path = output_dir / f"{tool}_{method.lower()}_{index}.txt"
         output_path.unlink(missing_ok=True)
         request_path: Path | None = None
@@ -323,7 +323,7 @@ def discover_parameters(*, repo_root: Path | str = BASE_DIR, target: str, urls: 
     selected_methods = tuple(dict.fromkeys(str(method).upper() for method in methods if str(method).upper() in {"GET", "POST"}))
     if not selected_methods:
         raise ValueError("methods must include GET or POST")
-    max_urls = max(1, min(int(max_urls or MAX_URLS), MAX_URLS))
+    max_urls = max(1, int(max_urls or MAX_URLS))
     source_values = list(urls) if urls is not None else []
     from_recon = urls is None
     rejected: list[dict[str, str]] = []
@@ -341,7 +341,7 @@ def discover_parameters(*, repo_root: Path | str = BASE_DIR, target: str, urls: 
             for url in accepted:
                 existing_params.extend(name for name, _ in parse_qsl(urlsplit(url).query, keep_blank_values=True))
             if accepted:
-                runs, discoveries, run_errors = _run_discovery(repo_root=repo, target=target, method=method, urls=accepted, session=active_session, timeout=timeout, tool_exists=tool_exists)
+                runs, discoveries, run_errors = _run_discovery(repo_root=repo, target=target, method=method, urls=accepted, session=active_session, max_urls=max_urls, timeout=timeout, tool_exists=tool_exists)
             else:
                 runs, discoveries, run_errors = [], [], []
         else:
@@ -362,7 +362,7 @@ def discover_parameters(*, repo_root: Path | str = BASE_DIR, target: str, urls: 
                 targets = accepted
             scan_targets = _unique(targets)[:max_urls]
             if scan_targets:
-                runs, discoveries, run_errors = _run_discovery(repo_root=repo, target=target, method=method, urls=scan_targets, session=active_session, timeout=timeout, tool_exists=tool_exists)
+                runs, discoveries, run_errors = _run_discovery(repo_root=repo, target=target, method=method, urls=scan_targets, session=active_session, max_urls=max_urls, timeout=timeout, tool_exists=tool_exists)
             else:
                 runs, discoveries, run_errors = [], [], []
         all_runs.extend(runs)
