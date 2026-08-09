@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -48,6 +49,168 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def _url_digest(values: Iterable[str]) -> str:
+    """Return a stable digest for an ordered, already-normalized URL list."""
+    encoded = json.dumps(list(values), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _load_existing_summary(path: Path, target: str) -> dict[str, Any] | None:
+    """Read the latest summary without ever replacing a malformed artifact."""
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid parameter discovery summary {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid parameter discovery summary {path}: object required")
+    if not str(payload.get("target") or "").strip():
+        raise ValueError(f"invalid parameter discovery summary {path}: target is required")
+    if canonical_target_value(str(payload["target"])) != target:
+        raise ValueError(f"parameter discovery summary target mismatch: {path}")
+    for key in ("runs", "discoveries", "errors"):
+        if key in payload and not isinstance(payload[key], list):
+            raise ValueError(f"invalid parameter discovery summary {path}: {key} must be a list")
+    if "post_forms" in payload and not isinstance(payload["post_forms"], dict):
+        raise ValueError(f"invalid parameter discovery summary {path}: post_forms must be an object")
+    if "scope" in payload and not isinstance(payload["scope"], dict):
+        raise ValueError(f"invalid parameter discovery summary {path}: scope must be an object")
+    return payload
+
+
+def _summary_batch_id(summary: dict[str, Any] | None) -> int | None:
+    if not summary:
+        return None
+    value: Any = summary.get("batch_id")
+    if value is None and isinstance(summary.get("cursor"), dict):
+        value = summary["cursor"].get("batch_id")
+    if isinstance(value, str):
+        value = value.removeprefix("batch-")
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _next_batch_id(params_dir: Path, previous: dict[str, Any] | None) -> int:
+    highest = _summary_batch_id(previous) or 0
+    if params_dir.is_dir():
+        for artifact in params_dir.iterdir():
+            match = re.search(r"_batch-(\d+)(?:_|\.)", artifact.name)
+            if match:
+                highest = max(highest, int(match.group(1)))
+            match = re.fullmatch(r"summary\.batch-(\d+)(?:\.\d+)?\.json", artifact.name)
+            if match:
+                highest = max(highest, int(match.group(1)))
+    return highest + 1
+
+
+def _archive_summary(path: Path, params_dir: Path, previous: dict[str, Any]) -> Path:
+    """Keep the prior batch summary before publishing a new latest summary."""
+    label = _summary_batch_id(previous)
+    stem = f"summary.batch-{label:04d}" if label is not None else "summary.legacy"
+    candidate = params_dir / f"{stem}.json"
+    suffix = 1
+    while candidate.exists():
+        candidate = params_dir / f"{stem}.{suffix}.json"
+        suffix += 1
+    data = path.read_bytes()
+    with candidate.open("xb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return candidate
+
+
+def _new_output_path(output_dir: Path, tool: str, method: str, batch_id: int, index: int) -> Path:
+    base = output_dir / f"{tool}_{method.lower()}_batch-{batch_id:04d}_{index:04d}.txt"
+    candidate = base
+    retry = 1
+    while candidate.exists():
+        candidate = output_dir / f"{base.stem}.retry-{retry:03d}{base.suffix}"
+        retry += 1
+    return candidate
+
+
+def _resume_method_cursor(
+    previous: dict[str, Any],
+    selected_methods: tuple[str, ...],
+    method_inputs: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    cursor = previous.get("cursor")
+    methods = cursor.get("methods") if isinstance(cursor, dict) else None
+    if not isinstance(cursor, dict) or not isinstance(methods, dict):
+        raise ValueError("--resume requires a summary with a resumable cursor")
+    if _summary_batch_id(previous) is None:
+        raise ValueError("--resume requires a summary with a valid batch id")
+    expected_method = "+".join(selected_methods)
+    if previous.get("method") != expected_method:
+        raise ValueError("--resume method selection differs from the saved summary")
+    if set(methods) != set(selected_methods):
+        raise ValueError("--resume method selection differs from the saved summary")
+    result: dict[str, dict[str, Any]] = {}
+    for method in selected_methods:
+        saved = methods.get(method)
+        current = method_inputs[method]
+        if not isinstance(saved, dict):
+            raise ValueError(f"--resume cursor for {method} is invalid")
+        if saved.get("input_url_digest") != current["input_url_digest"] or saved.get("accepted_url_digest") != current["accepted_url_digest"]:
+            raise ValueError(f"--resume input URL digest changed for {method}")
+        try:
+            total = int(saved["total"])
+            next_index = int(saved["next_index"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"--resume cursor for {method} is invalid") from exc
+        if total != len(current["accepted"]) or not 0 <= next_index <= total:
+            raise ValueError(f"--resume cursor for {method} does not match the input list")
+        if bool(saved.get("complete")) != (next_index >= total):
+            raise ValueError(f"--resume completion marker for {method} is invalid")
+        result[method] = {"next_index": next_index, "total": total, "complete": next_index >= total}
+    if bool(cursor.get("complete")) != all(row["complete"] for row in result.values()):
+        raise ValueError("--resume completion marker is invalid")
+    return result
+
+
+def _build_cursor(
+    *,
+    batch_id: int,
+    method_inputs: dict[str, dict[str, Any]],
+    starts: dict[str, int],
+    runs_by_method: dict[str, list[dict[str, Any]]],
+    advances: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    methods: dict[str, dict[str, Any]] = {}
+    for method, data in method_inputs.items():
+        total = len(data["accepted"])
+        start = max(0, min(int(starts.get(method, 0)), total))
+        attempted = int((advances or {}).get(method, len(runs_by_method.get(method, []))) or 0)
+        next_index = min(total, start + attempted)
+        methods[method] = {
+            "input_url_digest": data["input_url_digest"],
+            "accepted_url_digest": data["accepted_url_digest"],
+            "total": total,
+            "next_index": next_index,
+            "remaining": max(0, total - next_index),
+            "complete": next_index >= total,
+        }
+    return {
+        "schema_version": 1,
+        "batch_id": batch_id,
+        "methods": methods,
+        "complete": all(item["complete"] for item in methods.values()),
+    }
+
+
+def _successful_prefix(runs: list[dict[str, Any]]) -> int:
+    """Return the contiguous successful prefix for resumable endpoint work."""
+    for index, run in enumerate(runs):
+        if str(run.get("status") or "") != "ok":
+            return index
+    return len(runs)
 
 
 def _read_lines(path: Path, limit: int = 1000) -> list[str]:
@@ -235,7 +398,19 @@ def _tool_for(session: AuthSession, tool_exists: Callable[[str], bool]) -> str:
     return ""
 
 
-def _run_discovery(*, repo_root: Path, target: str, method: str, urls: list[str], session: AuthSession, max_urls: int = MAX_URLS, timeout: int, tool_exists: Callable[[str], bool]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+def _run_discovery(
+    *,
+    repo_root: Path,
+    target: str,
+    method: str,
+    urls: list[str],
+    session: AuthSession,
+    max_urls: int = MAX_URLS,
+    timeout: int,
+    tool_exists: Callable[[str], bool],
+    batch_id: int = 1,
+    start_index: int = 0,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     tool = _tool_for(session, tool_exists)
     runs: list[dict[str, Any]] = []
     discoveries: list[dict[str, Any]] = []
@@ -247,9 +422,8 @@ def _run_discovery(*, repo_root: Path, target: str, method: str, urls: list[str]
     output_dir.mkdir(parents=True, exist_ok=True)
     private_dir = private_artifact_dir(repo_root, "param_discovery", target_storage_key(canonical_target_value(target)))
     wordlist = BASE_DIR / "wordlists" / "params.txt"
-    for index, url in enumerate(urls[:max_urls], start=1):
-        output_path = output_dir / f"{tool}_{method.lower()}_{index}.txt"
-        output_path.unlink(missing_ok=True)
+    for index, url in enumerate(urls[:max_urls], start=start_index + 1):
+        output_path = _new_output_path(output_dir, tool, method, batch_id, index)
         request_path: Path | None = None
         if tool == "arjun":
             argv = ["arjun", "-u", url, "-m", method, "-oT", str(output_path), "-q", "-t", "5", "-T", str(max(1, min(timeout, 60)))]
@@ -267,7 +441,7 @@ def _run_discovery(*, repo_root: Path, target: str, method: str, urls: list[str]
                 argv.extend(["-w", str(wordlist)])
         code, error = _run_tool(argv, cwd=repo_root, timeout=max(1, timeout))
         names = _parse_output(output_path)
-        runs.append({"tool": tool, "method": method, "endpoint": _safe_url(url), "status": "ok" if code == 0 else "failed", "exit_code": code, "output": str(output_path.relative_to(repo_root)), "params": names[:100]})
+        runs.append({"tool": tool, "method": method, "endpoint": _safe_url(url), "status": "ok" if code == 0 else "failed", "exit_code": code, "output": str(output_path.relative_to(repo_root)), "params": names[:100], "cursor_index": index - 1})
         if code != 0:
             errors.append(f"{tool} {method} {_safe_url(url)} exit={code}: {error}".strip())
         discoveries.extend({"endpoint": _safe_url(url), "method": method, "param": name, "source": tool} for name in names[:100])
@@ -287,6 +461,7 @@ def _sync_action_queue(repo_root: Path, target: str, summary: dict[str, Any]) ->
     else:
         status, priority, question = "tested", 45, "No hidden parameter signal was observed; continue with the next evidence-backed lane."
     summary_ref = str(summary["artifacts"]["summary"])
+    resume_hint = " --resume" if not bool((summary.get("cursor") or {}).get("complete", True)) else ""
     action = build_action(
         target=target,
         action_type="parameter-discovery",
@@ -294,7 +469,7 @@ def _sync_action_queue(repo_root: Path, target: str, summary: dict[str, Any]) ->
         next_question=question,
         action="Review the structured summary and preserve discovered parameter names as inert surface shapes.",
         priority=priority,
-        command_hint=f"python3 tools/param_discovery.py --target {shlex.quote(target)} --from-recon --method {shlex.quote(summary['method'])} --repo-root {shlex.quote(str(repo_root))}",
+        command_hint=f"python3 tools/param_discovery.py --target {shlex.quote(target)} --from-recon --method {shlex.quote(summary['method'])} --repo-root {shlex.quote(str(repo_root))}{resume_hint}",
         evidence_type="parameter-discovery-summary",
         source="param_discovery",
         source_id="hidden-parameters",
@@ -315,66 +490,174 @@ def _sync_action_queue(repo_root: Path, target: str, summary: dict[str, Any]) ->
     return {"status": "updated", "path": str(path.relative_to(repo_root)), "action_id": existing.get("id", ""), "queue_status": existing.get("status", status)}
 
 
-def discover_parameters(*, repo_root: Path | str = BASE_DIR, target: str, urls: Iterable[str] | None = None, methods: Iterable[str] = ("GET",), session: AuthSession | None = None, max_urls: int = MAX_URLS, timeout: int = DEFAULT_TIMEOUT, fetch_html: Callable[[str], tuple[int | None, str]] | None = None, tool_exists: Callable[[str], bool] | None = None) -> dict[str, Any]:
+def discover_parameters(
+    *,
+    repo_root: Path | str = BASE_DIR,
+    target: str,
+    urls: Iterable[str] | None = None,
+    methods: Iterable[str] = ("GET",),
+    session: AuthSession | None = None,
+    max_urls: int = MAX_URLS,
+    timeout: int = DEFAULT_TIMEOUT,
+    fetch_html: Callable[[str], tuple[int | None, str]] | None = None,
+    tool_exists: Callable[[str], bool] | None = None,
+    resume: bool = False,
+) -> dict[str, Any]:
     repo = Path(repo_root).resolve()
     resolved_target = canonical_target_value(target)
     active_session = (session or AuthSession()).bind_target(target)
     tool_exists = tool_exists or (lambda name: shutil.which(name) is not None)
-    selected_methods = tuple(dict.fromkeys(str(method).upper() for method in methods if str(method).upper() in {"GET", "POST"}))
+    selected_methods = tuple(
+        dict.fromkeys(
+            str(method).upper()
+            for method in methods
+            if str(method).upper() in {"GET", "POST"}
+        )
+    )
     if not selected_methods:
         raise ValueError("methods must include GET or POST")
-    max_urls = max(1, int(max_urls or MAX_URLS))
+    try:
+        max_urls = MAX_URLS if max_urls is None else int(max_urls)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_urls must be a positive integer") from exc
+    if max_urls <= 0:
+        raise ValueError("max_urls must be a positive integer")
     source_values = list(urls) if urls is not None else []
     from_recon = urls is None
+    source_name = "recon" if from_recon else "explicit"
+    params_dir = repo / "recon" / target_storage_key(resolved_target) / "params"
+    params_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = params_dir / "summary.json"
+    previous = _load_existing_summary(summary_path, resolved_target)
+
     rejected: list[dict[str, str]] = []
-    all_runs: list[dict[str, Any]] = []
-    all_discoveries: list[dict[str, Any]] = []
     errors: list[str] = []
     existing_params: list[str] = []
     post_forms: dict[str, dict[str, Any]] = {}
+    method_inputs: dict[str, dict[str, Any]] = {}
+
+    # Prepare every method's deterministic input list before executing any tool.
+    # This makes --resume input-digest failures zero-write and avoids running
+    # GET before discovering a changed POST input list.
     for method in selected_methods:
         values = source_values if not from_recon else _recon_inputs(repo, target, method)
-        accepted, refused = _validate_urls(values, target)
+        input_values = _unique(_line_url(value) for value in values)
+        accepted, refused = _validate_urls(input_values, target)
         rejected.extend(refused)
-        accepted = accepted[:max_urls]
         if method == "GET":
             for url in accepted:
-                existing_params.extend(name for name, _ in parse_qsl(urlsplit(url).query, keep_blank_values=True))
-            if accepted:
-                runs, discoveries, run_errors = _run_discovery(repo_root=repo, target=target, method=method, urls=accepted, session=active_session, max_urls=max_urls, timeout=timeout, tool_exists=tool_exists)
-            else:
-                runs, discoveries, run_errors = [], [], []
+                existing_params.extend(
+                    name for name, _ in parse_qsl(urlsplit(url).query, keep_blank_values=True)
+                )
+        # POST cursors advance over the bounded page input list; forms are
+        # fetched only for this batch so the default URL budget stays intact.
+        scan_targets = accepted
+        method_inputs[method] = {
+            "accepted": accepted,
+            "input_url_digest": _url_digest(input_values),
+            "accepted_url_digest": _url_digest(accepted),
+        }
+
+    if resume:
+        if previous is None:
+            raise ValueError("--resume requires an existing parameter discovery summary")
+        if str(previous.get("source") or "") != source_name:
+            raise ValueError("--resume source differs from the saved summary")
+        if str(previous.get("session_id") or "") != active_session.session_id():
+            raise ValueError("--resume auth session differs from the saved summary")
+        cursors = _resume_method_cursor(previous, selected_methods, method_inputs)
+        if all(item["complete"] for item in cursors.values()):
+            return previous
+    else:
+        cursors = {
+            method: {"next_index": 0, "total": len(data["accepted"]), "complete": False}
+            for method, data in method_inputs.items()
+        }
+
+    batch_id = _next_batch_id(params_dir, previous)
+    all_runs: list[dict[str, Any]] = []
+    all_discoveries: list[dict[str, Any]] = []
+    runs_by_method: dict[str, list[dict[str, Any]]] = {}
+    advances: dict[str, int] = {}
+    for method in selected_methods:
+        start_index = int(cursors[method].get("next_index", 0) or 0)
+        batch_inputs = method_inputs[method]["accepted"][start_index : start_index + max_urls]
+        if not batch_inputs:
+            runs, discoveries, run_errors = [], [], []
+            advances[method] = 0
         else:
-            targets: list[str] = []
-            for url in accepted:
-                forms, form_error = _fetch_forms(url, target=target, session=active_session, timeout=timeout, fetch_html=fetch_html)
-                if form_error:
-                    errors.append(f"{_safe_url(url)}: {form_error}")
-                for form in forms:
-                    action_url = str(form["action"])
-                    if not url_belongs_to_target(action_url, target):
-                        rejected.append({"url": _safe_url(action_url), "reason": "form action outside target scope"})
-                        continue
-                    entry = post_forms.setdefault(action_url, {"source": _safe_url(str(form["source"])), "params": []})
-                    entry["params"] = _unique([*entry["params"], *form["params"]])
-                    targets.append(action_url)
-            if not from_recon and accepted and not targets:
-                targets = accepted
-            scan_targets = _unique(targets)[:max_urls]
-            if scan_targets:
-                runs, discoveries, run_errors = _run_discovery(repo_root=repo, target=target, method=method, urls=scan_targets, session=active_session, max_urls=max_urls, timeout=timeout, tool_exists=tool_exists)
+            remaining = batch_inputs
+            tool_available = bool(_tool_for(active_session, tool_exists))
+            if method == "GET":
+                scan_targets = remaining
+                processed_inputs = len(remaining)
             else:
-                runs, discoveries, run_errors = [], [], []
+                scan_targets = []
+                processed_inputs = 0
+                for url in remaining:
+                    forms, form_error = _fetch_forms(
+                        url,
+                        target=target,
+                        session=active_session,
+                        timeout=timeout,
+                        fetch_html=fetch_html,
+                    )
+                    if form_error:
+                        errors.append(f"{_safe_url(url)}: {form_error}")
+                        break
+                    processed_inputs += 1
+                    for form in forms:
+                        action_url = str(form["action"])
+                        if not url_belongs_to_target(action_url, target):
+                            rejected.append(
+                                {
+                                    "url": _safe_url(action_url),
+                                    "reason": "form action outside target scope",
+                                }
+                            )
+                            continue
+                        entry = post_forms.setdefault(
+                            action_url,
+                            {"source": _safe_url(str(form["source"])), "params": []},
+                        )
+                        entry["params"] = _unique([*entry["params"], *form["params"]])
+                        scan_targets.append(action_url)
+                if not from_recon and processed_inputs == len(remaining) and not scan_targets:
+                    scan_targets = remaining
+                scan_targets = _unique(scan_targets)[:max_urls]
+            runs, discoveries, run_errors = _run_discovery(
+                repo_root=repo,
+                target=target,
+                method=method,
+                urls=scan_targets,
+                session=active_session,
+                max_urls=max_urls,
+                timeout=timeout,
+                tool_exists=tool_exists,
+                batch_id=batch_id,
+                start_index=start_index,
+            )
+            if method == "POST":
+                # A failed tool run keeps this batch resumable so the failed
+                # endpoint is retried before advancing to the tail.
+                advances[method] = 0 if not tool_available or any(
+                    str(run.get("status") or "") != "ok" for run in runs
+                ) else processed_inputs
+            else:
+                advances[method] = _successful_prefix(runs)
+        runs_by_method[method] = runs
         all_runs.extend(runs)
         all_discoveries.extend(discoveries)
         errors.extend(run_errors)
-    params_dir = repo / "recon" / target_storage_key(resolved_target) / "params"
-    params_dir.mkdir(parents=True, exist_ok=True)
-    if "GET" in selected_methods:
-        names = _unique([*existing_params, *[item["param"] for item in all_discoveries if item["method"] == "GET"]])
-        (params_dir / "interesting_params.txt").write_text("\n".join(names) + ("\n" if names else ""), encoding="utf-8")
-    if "POST" in selected_methods:
-        (params_dir / "post_params.json").write_text(json.dumps(post_forms, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    cursor = _build_cursor(
+        batch_id=batch_id,
+        method_inputs=method_inputs,
+        starts={method: int(cursors[method].get("next_index", 0) or 0) for method in selected_methods},
+        runs_by_method=runs_by_method,
+        advances=advances,
+    )
+    complete = bool(cursor["complete"])
     if not all_runs and any(
         "neither arjun" in error or "x8 is required" in error
         for error in errors
@@ -382,12 +665,80 @@ def discover_parameters(*, repo_root: Path | str = BASE_DIR, target: str, urls: 
         status = "blocked"
     elif errors or rejected:
         status = "partial"
-    elif not all_runs and not source_values and from_recon:
+    elif not complete:
+        status = "partial"
+    elif all(not data["accepted"] for data in method_inputs.values()):
         status = "no_input"
     else:
         status = "completed"
-    summary_path = params_dir / "summary.json"
-    summary: dict[str, Any] = {"schema_version": 1, "target": resolved_target, "method": "+".join(selected_methods), "status": status, "source": "recon" if from_recon else "explicit", "session_id": active_session.session_id(), "scope": {"accepted": len(set(run["endpoint"] for run in all_runs)), "rejected": rejected}, "runs": all_runs, "discoveries": all_discoveries, "post_forms": {key: {"source": value["source"], "params": value["params"]} for key, value in post_forms.items()}, "errors": errors[:100], "counts": {"runs": len(all_runs), "discoveries": len(all_discoveries), "post_forms": len(post_forms), "rejected": len(rejected), "errors": len(errors)}, "artifacts": {"summary": str(summary_path.relative_to(repo))}}
+
+    if "GET" in selected_methods:
+        old_names = _read_lines(params_dir / "interesting_params.txt")
+        names = _unique(
+            [
+                *old_names,
+                *existing_params,
+                *[item["param"] for item in all_discoveries if item["method"] == "GET"],
+            ]
+        )
+        (params_dir / "interesting_params.txt").write_text(
+            "\n".join(names) + ("\n" if names else ""), encoding="utf-8"
+        )
+    if "POST" in selected_methods:
+        post_path = params_dir / "post_params.json"
+        prior_forms: dict[str, Any] = {}
+        if post_path.is_file():
+            try:
+                loaded_forms = json.loads(post_path.read_text(encoding="utf-8"))
+                if isinstance(loaded_forms, dict):
+                    prior_forms = loaded_forms
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                prior_forms = {}
+        merged_forms = dict(prior_forms)
+        merged_forms.update(
+            {
+                key: {"source": value["source"], "params": value["params"]}
+                for key, value in post_forms.items()
+            }
+        )
+        post_path.write_text(json.dumps(merged_forms, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    if previous is not None:
+        archive_path = _archive_summary(summary_path, params_dir, previous)
+    else:
+        archive_path = None
+    summary: dict[str, Any] = {
+        "schema_version": 1,
+        "target": resolved_target,
+        "method": "+".join(selected_methods),
+        "status": status,
+        "source": source_name,
+        "session_id": active_session.session_id(),
+        "batch_id": batch_id,
+        "cursor": cursor,
+        "resumable": not complete,
+        "scope": {
+            "accepted": len(set(run["endpoint"] for run in all_runs)),
+            "rejected": rejected,
+        },
+        "runs": all_runs,
+        "discoveries": all_discoveries,
+        "post_forms": {
+            key: {"source": value["source"], "params": value["params"]}
+            for key, value in post_forms.items()
+        },
+        "errors": errors[:100],
+        "counts": {
+            "runs": len(all_runs),
+            "discoveries": len(all_discoveries),
+            "post_forms": len(post_forms),
+            "rejected": len(rejected),
+            "errors": len(errors),
+        },
+        "artifacts": {"summary": str(summary_path.relative_to(repo))},
+    }
+    if archive_path is not None:
+        summary["artifacts"]["previous_summary"] = str(archive_path.relative_to(repo))
     # Persist the scan facts before the optional queue projection so a queue
     # lock/corruption/permission failure cannot erase the durable summary.
     _atomic_json(summary_path, summary)
@@ -412,6 +763,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--from-recon", action="store_true", help="Read endpoints from recon artifacts")
     parser.add_argument("--method", choices=("GET", "POST", "BOTH"), default="GET")
     parser.add_argument("--max-urls", type=int, default=MAX_URLS)
+    parser.add_argument("--resume", action="store_true", help="Continue the existing target-owned summary cursor.")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("--repo-root", default=str(BASE_DIR))
     add_cli_args(parser)
@@ -427,7 +779,7 @@ def main(argv: list[str] | None = None) -> int:
     source = None if args.from_recon or not urls else urls
     methods = ("GET", "POST") if args.method == "BOTH" else (args.method,)
     try:
-        summary = discover_parameters(repo_root=Path(args.repo_root), target=target, urls=source, methods=methods, session=session_from_args(args), max_urls=args.max_urls, timeout=args.timeout)
+        summary = discover_parameters(repo_root=Path(args.repo_root), target=target, urls=source, methods=methods, session=session_from_args(args), max_urls=args.max_urls, timeout=args.timeout, resume=args.resume)
     except (OSError, ValueError) as exc:
         print(f"param discovery error: {exc}", file=sys.stderr)
         return 2

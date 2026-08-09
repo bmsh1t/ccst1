@@ -60,6 +60,13 @@ record the selected sibling/variant/actor/workflow/chain dimension plus
 existing Action Queue metadata (for manual write-back, use `tools/action_queue.py add --metadata-json '{"hypothesis_id":"H-1","tested_dimensions":["sibling"],"expected_learning":"...","kill_condition":"...","next_question":"..."}'`; the parser accepts only a JSON object and rejects credential-bearing fields before any queue write; this is the existing Action Queue, not a new state owner). A partial tool cursor or unused depth dimension
 is resumable work, not tested-clean.
 
+When resolving an existing action, preserve the same structured metadata through
+`tools/action_queue.py resolve --metadata-json`; `last_outcome`,
+`tested_dimensions`, `next_question`, `expected_learning`, `kill_condition`, and
+`pivot_hints` merge into the existing action metadata without creating another
+state owner. The JSON must be an object and must not contain credentials or
+authorization headers.
+
 Named action mechanics, replay commands, recon continuation, list selection, and owner
 write-back rules live in the selected lane section. Claim durable queue work before replay;
 never treat prose or a raw endpoint as evidence. If `state.root_claim_next` exists, run `/checkpoint`
@@ -75,7 +82,7 @@ usable cache inspection may read `tools/context_pack.py` and
 `collect_candidate_evidence` preserves `missing_labels` and `next_actions`;
 `resume_action_queue` claims before replay with
 `python3 tools/action_queue.py claim --target <target_shell>`, then
-`python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>`;
+`python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why> [--metadata-json <object>]`;
 `validate_finding` remains state-gated: Do not call `/validate` until state returns `validate_finding`;
 the non-TTY owner is `python3 tools/validate.py --target <target_shell> --finding-id <id> --decision-json <json_file_shell> --json`; the JSON file path is never inline.
 Deterministic replay is

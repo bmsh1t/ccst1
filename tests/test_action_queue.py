@@ -843,6 +843,118 @@ def test_manual_action_cli_writes_metadata_and_preserves_duplicate_queue_behavio
     assert queue["actions"][0]["metadata"] == metadata
 
 
+def test_resolve_cli_merges_structured_metadata_idempotently(tmp_path):
+    initial_metadata = {
+        "hypothesis_id": "H-42",
+        "tested_dimensions": ["sibling endpoint"],
+        "expected_learning": "A role difference should reveal object scoping.",
+        "kill_condition": "Responses remain identical across both actors.",
+        "next_question": "Can the sibling endpoint be replayed?",
+        "last_outcome": {"status": "running", "evidence_ref": "evidence/trace.json"},
+        "pivot_hints": ["try export"],
+    }
+    assert main([
+        "--repo-root", str(tmp_path),
+        "add",
+        "--target", "api.target.com",
+        "--type", "browser-api",
+        "--evidence", "Observed an object endpoint in the browser trace.",
+        "--next-question", "Can a low-role actor replay the object request?",
+        "--action", "Replay the request with the low-role actor.",
+        "--metadata-json", json.dumps(initial_metadata),
+        "--json",
+    ]) == 0
+
+    update = {
+        "tested_dimensions": ["sibling endpoint", "low-role actor"],
+        "next_question": "Does the export endpoint enforce the same object check?",
+        "expected_learning": "Export responses should preserve object scoping.",
+        "kill_condition": "Both export actors receive the same object body.",
+        "last_outcome": {"status": "blocked", "notes": "peer session expired"},
+        "pivot_hints": ["try export", "try GraphQL"],
+    }
+    argv = [
+        "--repo-root", str(tmp_path),
+        "resolve",
+        "--target", "api.target.com",
+        "--id", "AQ-0001",
+        "--status", "blocked",
+        "--evidence", "peer session expired",
+        "--metadata-json", json.dumps(update),
+        "--json",
+    ]
+    assert main(argv) == 0
+    assert main(argv) == 0
+
+    action = load_queue(tmp_path, "api.target.com")["actions"][0]
+    assert action["metadata"] == {
+        "hypothesis_id": "H-42",
+        "tested_dimensions": ["sibling endpoint", "low-role actor"],
+        "expected_learning": "Export responses should preserve object scoping.",
+        "kill_condition": "Both export actors receive the same object body.",
+        "next_question": "Does the export endpoint enforce the same object check?",
+        "last_outcome": {
+            "status": "blocked",
+            "evidence_ref": "evidence/trace.json",
+            "notes": "peer session expired",
+        },
+        "pivot_hints": ["try export", "try GraphQL"],
+    }
+
+
+@pytest.mark.parametrize("metadata_json", ["not-json", "[]", "null", '"text"'])
+def test_resolve_cli_rejects_non_object_metadata_without_writing(tmp_path, capsys, metadata_json):
+    assert main([
+        "--repo-root", str(tmp_path),
+        "add",
+        "--target", "api.target.com",
+        "--evidence", "Observed an endpoint.",
+        "--next-question", "Can it be replayed?",
+        "--action", "Replay the endpoint.",
+    ]) == 0
+    path = tmp_path / "state" / "api.target.com" / "action_queue.json"
+    before = path.read_bytes()
+
+    code = main([
+        "--repo-root", str(tmp_path),
+        "resolve",
+        "--target", "api.target.com",
+        "--id", "AQ-0001",
+        "--status", "blocked",
+        "--metadata-json", metadata_json,
+    ])
+
+    assert code == 2
+    assert "--metadata-json" in capsys.readouterr().err
+    assert path.read_bytes() == before
+
+
+def test_resolve_cli_rejects_sensitive_metadata_without_writing(tmp_path, capsys):
+    assert main([
+        "--repo-root", str(tmp_path),
+        "add",
+        "--target", "api.target.com",
+        "--evidence", "Observed an endpoint.",
+        "--next-question", "Can it be replayed?",
+        "--action", "Replay the endpoint.",
+    ]) == 0
+    path = tmp_path / "state" / "api.target.com" / "action_queue.json"
+    before = path.read_bytes()
+
+    code = main([
+        "--repo-root", str(tmp_path),
+        "resolve",
+        "--target", "api.target.com",
+        "--id", "AQ-0001",
+        "--status", "blocked",
+        "--metadata-json", json.dumps({"headers": {"Authorization": "secret"}}),
+    ])
+
+    assert code == 2
+    assert "sensitive field" in capsys.readouterr().err
+    assert path.read_bytes() == before
+
+
 @pytest.mark.parametrize("metadata_json", ["not-json", "[]", "null", '"text"'])
 def test_manual_action_cli_rejects_non_object_metadata_json(tmp_path, capsys, metadata_json):
     code = main([

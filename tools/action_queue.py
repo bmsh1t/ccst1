@@ -106,6 +106,7 @@ SENSITIVE_METADATA_KEYS = {
     "session_cookie",
     "set_cookie",
 }
+STRUCTURED_METADATA_LIST_FIELDS = {"tested_dimensions", "pivot_hints"}
 
 
 def now_utc() -> str:
@@ -132,6 +133,24 @@ def _validate_action_metadata(metadata: dict | None) -> dict:
 
     visit(metadata, "metadata")
     return metadata
+
+
+def _merge_action_metadata(existing: Any, incoming: dict | None) -> dict:
+    """Merge structured write-back metadata without duplicating pivot hints."""
+    incoming = _validate_action_metadata(incoming)
+    merged = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+    for key, value in incoming.items():
+        if key in STRUCTURED_METADATA_LIST_FIELDS and isinstance(value, list):
+            prior = merged.get(key)
+            values = list(prior) if isinstance(prior, list) else []
+            merged[key] = values + [item for item in value if item not in values]
+        elif key == "last_outcome" and isinstance(value, dict) and isinstance(merged.get(key), dict):
+            outcome = copy.deepcopy(merged[key])
+            outcome.update(copy.deepcopy(value))
+            merged[key] = outcome
+        else:
+            merged[key] = copy.deepcopy(value)
+    return _validate_action_metadata(merged)
 
 
 def queue_path(repo_root: Path | str, target: str) -> Path:
@@ -1118,7 +1137,9 @@ def resolve_action(
     status: str,
     result: str = "",
     notes: str = "",
+    metadata: dict | None = None,
 ) -> dict:
+    metadata = _validate_action_metadata(metadata)
     with queue_mutation_lock(repo_root, target):
         queue = load_queue(repo_root, target)
         response = _resolve_action_in_queue(
@@ -1129,6 +1150,7 @@ def resolve_action(
             status=status,
             result=result,
             notes=notes,
+            metadata=metadata,
         )
         path = save_queue(repo_root, target, queue)
         response["path"] = str(path)
@@ -1144,9 +1166,11 @@ def _resolve_action_in_queue(
     status: str,
     result: str = "",
     notes: str = "",
+    metadata: dict | None = None,
 ) -> dict:
     """在调用方已持有 queue lock 时修改一个 action。"""
     normalized = _normalize_status(status)
+    metadata = _validate_action_metadata(metadata)
     for item in queue.get("actions", []):
         if not isinstance(item, dict):
             continue
@@ -1159,10 +1183,13 @@ def _resolve_action_in_queue(
                 raise ValueError(
                     f"action status {normalized!r} requires a locatable evidence reference in result"
                 )
+        merged_metadata = _merge_action_metadata(item.get("metadata"), metadata)
         item["status"] = normalized
         item["updated_at"] = now_utc()
         item["result"] = _compact_text(result or item.get("result", ""), 1000)
         item["notes"] = _compact_text(notes or item.get("notes", ""), 1000)
+        if metadata and merged_metadata != item.get("metadata"):
+            item["metadata"] = merged_metadata
         if previous != "running" and normalized in {"running", "tested", "dead-end", "blocked", "lead", "signal", "candidate", "validated"}:
             item["attempts"] = int(item.get("attempts", 0) or 0) + 1
         coverage_update = _sync_coverage_matrix_for_action(repo_root, target, item, normalized)
@@ -1260,6 +1287,18 @@ def _print(payload: Any, *, as_json: bool) -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def _parse_metadata_json(raw: str | None) -> dict | None:
+    if raw is None:
+        return None
+    try:
+        metadata = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--metadata-json must be valid JSON: {exc.msg}") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError("--metadata-json must be a JSON object")
+    return _validate_action_metadata(metadata)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Persistent action queue for autopilot runs.")
     parser.add_argument("--repo-root", default=str(BASE_DIR), help="Repository root.")
@@ -1312,6 +1351,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Alias for --result; kept for command docs and Claude CLI muscle memory.",
     )
+    resolve.add_argument(
+        "--metadata-json",
+        default=None,
+        help="JSON object merged into the existing Action Queue metadata.",
+    )
     resolve.add_argument("--notes", default="")
     resolve.add_argument("--json", action="store_true")
 
@@ -1338,14 +1382,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "add":
-            metadata = None
-            if args.metadata_json is not None:
-                try:
-                    metadata = json.loads(args.metadata_json)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"--metadata-json must be valid JSON: {exc.msg}") from exc
-                if not isinstance(metadata, dict):
-                    raise ValueError("--metadata-json must be a JSON object")
+            metadata = _parse_metadata_json(args.metadata_json)
             result = add_manual_action(
                 repo,
                 target=args.target,
@@ -1381,6 +1418,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if action else 1
 
         if args.command == "resolve":
+            metadata = _parse_metadata_json(args.metadata_json)
             result = resolve_action(
                 repo,
                 target=args.target,
@@ -1388,6 +1426,7 @@ def main(argv: list[str] | None = None) -> int:
                 status=args.status,
                 result=args.result or args.evidence,
                 notes=args.notes,
+                metadata=metadata,
             )
             _print(
                 result if args.json else format_summary(load_queue(repo, args.target), repo_root=repo, target=args.target),
