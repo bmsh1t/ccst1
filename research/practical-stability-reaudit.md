@@ -1,5 +1,8 @@
 # `/autopilot` 实战稳定性复审
 
+> 历史复审快照：本文记录 2026-07-13 当时的仓库、机器与 runtime 状态，不作为当前执行
+> 契约。当前浏览器执行 owner 以 `.trellis/spec/backend/contracts/browser-js.md` 为准。
+
 审核日期：2026-07-13
 基线：`main` / `3215c83`，包含当前未提交的知识候选闭环与专项知识卡改动
 范围：Claude CLI `/autopilot` 的功能、能力、架构、状态闭环、失败恢复和 2–8GB
@@ -28,8 +31,9 @@ inline controller、runtime gate、fresh/existing/batch、evidence -> finding ->
 - 39 个 slash commands、11 个 agents、145 个 `tools/` 顶层文件、154 个 `tests/`
   顶层文件、48 张 knowledge cards。
 - 当前机器：7.8 GiB RAM、4.0 GiB swap、2 CPU；能力快照为 `ready`。
-- 能力快照可见 `playwright-cli`、`subfinder`、`httpx`、`katana`、`gau`、
-  `waybackurls`、`ffuf`、`nuclei`，核心缺失项为 0。
+- 当时机器的能力探测仍可见 legacy `playwright-cli`，同时可见 `subfinder`、`httpx`、
+  `katana`、`gau`、`waybackurls`、`ffuf`、`nuclei`，核心缺失项为 0；这不表示当前仓库通过
+  Bash 调用浏览器 CLI。
 - 工作树包含前序知识治理任务的未提交改动；未跟踪 `.claude/` 未读取为仓库契约、未修改。
 
 ## Runtime 与真实 wiring

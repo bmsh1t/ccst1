@@ -24,6 +24,11 @@ try:
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import target_storage_key
 
+try:
+    from tools.graphql_utils import escape_graphql_string
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from graphql_utils import escape_graphql_string
+
 # macOS: Python may not have system SSL certs. Use unverified context for API queries.
 _SSL_CTX = ssl.create_default_context()
 try:
@@ -194,13 +199,14 @@ def fetch_nvd_cves(tech: str) -> list[dict]:
 
 def fetch_hackerone_hacktivity(keyword: str, limit: int = 5) -> list[dict]:
     """Query HackerOne Hacktivity public GraphQL for a keyword."""
+    escaped_keyword = escape_graphql_string(keyword)
     query = {
         "query": f"""{{
           hacktivity_items(
             first: {limit},
             order_by: {{ field: popular, direction: DESC }},
             where: {{
-              report: {{ title: {{ _icontains: "{keyword}" }} }},
+              report: {{ title: {{ _icontains: "{escaped_keyword}" }} }},
               disclosed_at: {{ _is_null: false }}
             }}
           ) {{
@@ -378,13 +384,14 @@ def main():
     # If program specified, add program-specific HackerOne results
     if args.hackerone_program:
         print(f"  {CYAN}Fetching HackerOne disclosures for program: {args.hackerone_program}{RESET}")
+        escaped_program = escape_graphql_string(args.hackerone_program)
         query = {
             "query": f"""{{
               hacktivity_items(
                 first: 20,
                 order_by: {{ field: popular, direction: DESC }},
                 where: {{
-                  team: {{ handle: {{ _eq: "{args.hackerone_program}" }} }},
+                  team: {{ handle: {{ _eq: "{escaped_program}" }} }},
                   disclosed_at: {{ _is_null: false }}
                 }}
               ) {{

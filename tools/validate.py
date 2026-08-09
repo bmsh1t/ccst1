@@ -37,6 +37,11 @@ except ImportError:  # pragma: no cover - package import path
     from tools.target_paths import canonical_target_value, target_storage_key
 
 try:
+    from graphql_utils import escape_graphql_string
+except ImportError:  # pragma: no cover - package import path
+    from tools.graphql_utils import escape_graphql_string
+
+try:
     from browser_evidence import (
         compact_browser_evidence,
         load_last_browser_evidence,
@@ -881,14 +886,17 @@ def check_h1_dups(program_handle: str, vuln_keyword: str) -> list[dict]:
     if not program_handle:
         return []
 
+    escaped_program = escape_graphql_string(program_handle)
+    escaped_keyword = escape_graphql_string(vuln_keyword)
+
     query = {
         "query": f"""{{
           hacktivity_items(
             first: 10,
             order_by: {{ field: popular, direction: DESC }},
             where: {{
-              team: {{ handle: {{ _eq: "{program_handle}" }} }},
-              report: {{ title: {{ _icontains: "{vuln_keyword}" }} }}
+              team: {{ handle: {{ _eq: "{escaped_program}" }} }},
+              report: {{ title: {{ _icontains: "{escaped_keyword}" }} }}
             }}
           ) {{
             nodes {{

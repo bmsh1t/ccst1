@@ -19,11 +19,3 @@ If you're using Codex or another agent-capable tool, additional project-scoped h
 Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
 
 <!-- TRELLIS:END -->
-
-## Codex Agent Profile
-
-- 普通 Codex 子代理默认使用全局 `/root/.codex/agents/default.toml`。
-- 原生 Agent 派发使用 `agent_type="default"`、`fork_turns="none"`，不覆盖
-  `model` 或 `reasoning_effort`。
-- `trellis-implement`、`trellis-check` 和 `trellis-research` 仅作为显式
-  Trellis 角色保留；当前项目的 `codex.dispatch_mode` 继续使用 `inline`。
