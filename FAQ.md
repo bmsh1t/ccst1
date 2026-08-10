@@ -145,8 +145,8 @@ target. If you must switch, run:
 
 It should not. The current project contract is:
 
-- A new target only keeps the scanner's built-in XSS lane skip by default. If a
-  run truly needs the XSS lane included, use `--scanner-full` explicitly.
+- XSS is delegated to recon/validation rather than the active vulnerability
+  scanner; `--scanner-full` does not enable a Nuclei XSS scan.
 - Skip/ignore directives, focus lanes, and excluded bug classes only apply when
   explicitly declared for the current target in the current Claude Code turn.
 - `/pickup` reads target-level history and structured findings only. It does

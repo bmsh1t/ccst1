@@ -88,8 +88,8 @@ specific next evidence action.
 
 Temporary focus/skip instructions are not long-term rules.
 
-- New target default keeps only the scanner's built-in XSS lane skip; use
-  scanner full when the current run must include XSS.
+- XSS evidence is delegated to recon/validation; scanner full does not enable a
+  Nuclei XSS scan.
 - Temporary skips are per-current-target and per-current-invocation only.
 - Only the current user turn can set a temporary module skip for the current
   target.

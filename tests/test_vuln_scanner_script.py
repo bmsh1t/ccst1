@@ -46,15 +46,16 @@ def test_vuln_scanner_bash_syntax_is_valid():
     assert result.returncode == 0, result.stderr + result.stdout
 
 
-def test_vuln_scanner_uses_nuclei_for_xss_without_removed_reflective_lane():
+def test_vuln_scanner_does_not_execute_dalfox_or_nuclei_xss():
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     text = script.read_text(encoding="utf-8")
 
     assert "run_with_timeout()" in text
     assert "timeout_bin()" in text
     assert "dal" + "fox" not in text.lower()
-    assert "-tags xss" in text
-    assert 'xss/nuclei_xss.txt' in text
+    assert "-tags xss" not in text
+    assert "nuclei XSS" not in text
+    assert 'xss/nuclei_xss.txt' not in text
     assert "run_with_timeout" in text
 
 
@@ -532,7 +533,7 @@ def test_vuln_scanner_requires_finding_index_before_completion(tmp_path):
     assert not (findings_dir / "summary.json").exists()
 
 
-def test_vuln_scanner_skips_xss_by_default(tmp_path):
+def test_vuln_scanner_delegates_xss_by_default(tmp_path):
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     recon_dir = tmp_path / "recon" / "example.com"
     live_dir = recon_dir / "live"
@@ -560,8 +561,8 @@ def test_vuln_scanner_skips_xss_by_default(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "Default skip: xss (use --full to include)" in result.stdout
-    assert "Skipping XSS checks (default; use --full to include)" in result.stdout
+    assert "Default skip: xss (XSS is handled by recon/validation)" in result.stdout
+    assert "Skipping XSS scanner lane (handled by recon/validation)" in result.stdout
 
     summary = json.loads((findings_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["mode"] == "standard"
@@ -600,7 +601,7 @@ def test_vuln_scanner_full_mode_includes_xss_by_default(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Default skip: xss" not in result.stdout
     assert "Skipping XSS checks" not in result.stdout
-    assert "Check 1: XSS Detection" in result.stdout
+    assert "XSS checks are delegated" in result.stdout
 
     summary = json.loads((findings_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["mode"] == "full"

@@ -23,7 +23,7 @@ python3 tools/context_pack.py --target target.com
 python3 tools/hunt.py --target target.com --scan-only      # recon exists → scan cached surface
 python3 tools/hunt.py --target target.com                  # recon if needed, then scan
 python3 tools/hunt.py --target target.com --quick          # lower-cost path
-python3 tools/hunt.py --target target.com --scan-only --scanner-full  # expanded scanner coverage; includes XSS unless skipped
+python3 tools/hunt.py --target target.com --scan-only --scanner-full  # expanded scanner coverage; XSS is handled by recon/validation
 ```
 
 Auth-aware examples:
@@ -141,8 +141,8 @@ python3 tools/hunt.py --target target.com --scan-only --scanner-skip module1,mod
 ALLOW_UNSAFE_HTTP_TESTS=1 python3 tools/hunt.py --target target.com --scan-only --scanner-full  # opt-in for side-effectful upload/MFA/SAML POST probes and PUT/PATCH method probes
 ```
 
-- Standard/quick scanner skips XSS by default.
-- `--scanner-full` expands active lanes and includes XSS unless explicitly skipped.
+- XSS is not an active vuln-scanner lane; recon/validation provide its evidence.
+- `--scanner-full` expands supported scanner lanes but does not enable a Nuclei XSS scan.
 - `--scanner-skip` is per invocation only; do not inherit it across targets or sessions.
 - Side-effect-capable scanner templates such as PUT/DELETE/PATCH method
   tampering, upload canary POST, MFA/OTP POST, and forged SAML POST are skipped

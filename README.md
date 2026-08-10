@@ -219,8 +219,8 @@ python3 tools/hunt.py --target target.com --agent --resume latest
 python3 tools/hunt.py --target target.com --agent --resume <session_id>
 ```
 
-Fresh target hygiene: new targets keep only the scanner's built-in XSS lane
-skip; use `--scanner-full` when the current run must include XSS. Temporary
+Fresh target hygiene: scanner module skip settings remain per-run; use
+`--scanner-full` for the scanner's full set of supported lanes. Temporary
 instructions such as “skip/ignore this module”, focus lanes, or excluded bug
 classes apply only to the current target and the current Claude Code turn where
 they were explicitly stated. They are not persisted through `/pickup`, README
@@ -641,7 +641,7 @@ closeable only after mapping to one of the canonical coverage cells above.
 | `h1_race.py` | Race conditions (TOCTOU, limit overrun) |
 | `zero_day_fuzzer.py` | Logic bugs, edge cases, access control |
 | `cve_hunter.py` | Tech fingerprinting + known CVE matching |
-| `vuln_scanner.sh` | Active candidate scanner: upload canaries, SQLi timing, Nuclei XSS/SSTI, MFA/SAML |
+| `vuln_scanner.sh` | Active candidate scanner: upload canaries, SQLi timing, SSTI, MFA/SAML |
 | `bypass_403.sh` | Bounded 401/403 path, proxy-route, and access-limit replay with optional AI plan |
 | `hai_probe.py` | AI chatbot IDOR, prompt injection |
 | `hai_payload_builder.py` | Prompt injection payload generator |

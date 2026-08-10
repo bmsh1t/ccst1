@@ -2336,7 +2336,7 @@ Examples:
         default="",
         help=(
             "Temporary comma-separated vuln scanner modules to skip for this invocation only; "
-            "standard/quick scanner runs already skip xss by default, --scanner-full includes xss, "
+            "XSS is delegated to recon/validation; --scanner-full does not enable a Nuclei XSS lane, "
             "and this value is never inherited across targets/sessions"
         ),
     )

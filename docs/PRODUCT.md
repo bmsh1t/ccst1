@@ -874,7 +874,7 @@ cp .env.example .env
 ```bash
 python3 tools/hunt.py --target target.com --recon-only
 python3 tools/hunt.py --target target.com
-python3 tools/hunt.py --target target.com --scan-only --scanner-full  # 包含默认跳过的 XSS lane
+python3 tools/hunt.py --target target.com --scan-only --scanner-full  # 扩展支持的扫描 lane；XSS 由 recon/validation 处理
 # 仅当前命令显式需要临时排除时使用；默认不继承跳过项
 python3 tools/hunt.py --target target.com --scan-only --scanner-skip module1,module2
 python3 tools/source_hunt.py --target target.com --repo-path /path/to/repo

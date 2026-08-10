@@ -1245,7 +1245,6 @@ show "(none)" or are empty, answer "No findings — nothing to interpret." and s
         redirect_params = self._read_file_sample(str(findings_path / "redirects/redirect_params_manual.txt"), 800)
         ssrf_params     = self._read_file_sample(str(findings_path / "ssrf/ssrf_params_manual.txt"), 800)
         unauth_api      = self._read_file_sample(str(findings_path / "auth_bypass/unauth_api_access.txt"), 1500)
-        xss_findings    = self._read_file_sample(str(findings_path / "xss/nuclei_xss.txt"), 800)
         takeover        = self._read_file_sample(str(findings_path / "takeover/nuclei_takeover.txt"), 800)
         graphql         = self._read_file_sample(str(findings_path / "graphql/introspection.txt"), 800)
         cves            = self._read_file_sample(str(findings_path / "cves/nuclei_cves_all.txt"), 1500)
@@ -1265,7 +1264,6 @@ CORS reflection: {cors_findings or "(none)"}
 Open redirect params: {redirect_params or "(none)"}
 SSRF params: {ssrf_params or "(none)"}
 Unauthenticated API endpoints: {unauth_api or "(none)"}
-XSS findings: {xss_findings or "(none)"}
 Subdomain takeover: {takeover or "(none)"}
 GraphQL introspection: {graphql or "(none)"}
 CVE hits: {cves or "(none)"}

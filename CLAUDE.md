@@ -147,7 +147,7 @@ LOAD -> REVIEW EVIDENCE -> ENRICH -> ATTACK -> CHAIN -> RECORD -> VALIDATE CANDI
 - Read target history, cached recon, structured findings, and `/surface` output first; enrich app-like targets with
   browser/source/JS lanes before another broad scanner pass.
 - Keep validation gates for Candidates only; Leads/Signals with a concrete next evidence action stay open.
-- New target default keeps only the scanner's built-in XSS lane skip; use `--scanner-full` when the current run must include XSS.
+- XSS evidence is delegated to recon/validation; `--scanner-full` does not enable a Nuclei XSS scan.
 - Temporary skips are per-current-target and per-current-invocation only; only the current user turn can exclude a lane.
   Do not inherit them from previous targets, `/pickup`, README examples, or non-resumed agent traces.
 - External bounty method/rate/accepted-impact notes are audit-only; see `rules/hunting.md` for target isolation.

@@ -3,7 +3,8 @@
 # Vulnerability Scanner
 # Automated vulnerability checks against recon results
 # Usage: ./vuln_scanner.sh <recon_dir> [--quick] [--full] [--skip module1,module2]
-# Standard and quick mode skip the XSS lane by default. Use --full to include it.
+# The scanner keeps the legacy XSS skip/config surface. XSS evidence is supplied
+# by other recon and validation tools.
 #
 # Coverage matrix feedback:
 #   On completion this script writes findings/<target>/scanner_pass.json,
@@ -376,7 +377,7 @@ echo "  Findings: $FINDINGS_DIR"
 echo "  Mode: $SCAN_MODE"
 echo "  Skip: ${SKIP_CHECKS:-none}"
 if [ -n "$DEFAULT_SKIP_CHECKS" ]; then
-    echo "  Default skip: $DEFAULT_SKIP_CHECKS (use --full to include)"
+    echo "  Default skip: $DEFAULT_SKIP_CHECKS (XSS is handled by recon/validation)"
 fi
 bb_auth_active && bb_auth_banner
 echo "============================================="
@@ -1124,28 +1125,12 @@ if skip_has xss; then
     if has_skip "$USER_SKIP_CHECKS" all || has_skip "$USER_SKIP_CHECKS" xss; then
         log_warn "Skipping XSS checks (--skip)"
     elif has_skip "$DEFAULT_SKIP_CHECKS" xss; then
-        log_warn "Skipping XSS checks (default; use --full to include)"
+        log_warn "Skipping XSS scanner lane (handled by recon/validation)"
     else
         log_warn "Skipping XSS checks (--skip)"
     fi
 else
-    log_info "Check 1: XSS Detection"
-
-    # Nuclei XSS templates
-    if command -v nuclei &>/dev/null; then
-        log_step "Running nuclei XSS templates..."
-        cat "$NUCLEI_TARGETS" | run_nuclei \
-            -tags xss \
-            -severity low,medium,high,critical \
-            -silent \
-            -rate-limit "$RATE_LIMIT" \
-            -concurrency "$THREADS" \
-            "${BB_AUTH_ARGS[@]}" \
-            -output "$FINDINGS_DIR/xss/nuclei_xss.txt" 2>/dev/null || true
-
-        NUCLEI_XSS=$(count_findings "$FINDINGS_DIR/xss/nuclei_xss.txt")
-        [ "$NUCLEI_XSS" -gt 0 ] && log_vuln "Nuclei found $NUCLEI_XSS XSS issues" || log_done "Nuclei XSS: clean"
-    fi
+    log_info "XSS checks are delegated to recon and validation tools"
 fi
 
 # ============================================================

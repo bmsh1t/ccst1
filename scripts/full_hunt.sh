@@ -7,7 +7,7 @@
 # This runs:
 #   Phase 1: Passive Recon (subdomains, URLs, tech)
 #   Phase 2: Content Discovery (dirs, params, JS analysis)
-#   Phase 3: Vulnerability Scanning (nuclei, XSS, CORS)
+#   Phase 3: Vulnerability Scanning (nuclei, CORS)
 #
 # Options:
 #   --quick       Skip slow scans (default: full)
