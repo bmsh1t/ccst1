@@ -70,13 +70,11 @@ echo "[*] Installing tools via Go..."
 
 GO_TOOLS=(
     "github.com/lc/gau/v2/cmd/gau@latest"
-    "github.com/hahwul/dalfox/v2@latest"
     "github.com/haccer/subjack@latest"
 )
 
 GO_TOOL_NAMES=(
     "gau"
-    "dalfox"
     "subjack"
 )
 
@@ -183,7 +181,7 @@ echo "============================================="
 echo "[*] Installation Verification"
 echo "============================================="
 
-ALL_TOOLS=(subfinder httpx nuclei ffuf nmap amass gau dalfox subjack sisakulint)
+ALL_TOOLS=(subfinder httpx nuclei ffuf nmap amass gau subjack sisakulint)
 INSTALLED=0
 MISSING=0
 

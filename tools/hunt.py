@@ -1072,7 +1072,7 @@ def _batch_recon_result(canonical_target, recon_ok, started, *, ctf_mode=False):
 
 def check_tools():
     """Check which tools are installed."""
-    tools = ["subfinder", "httpx", "nuclei", "ffuf", "nmap", "amass", "gau", "dalfox", "subjack", "eburst"]
+    tools = ["subfinder", "httpx", "nuclei", "ffuf", "nmap", "amass", "gau", "subjack", "eburst"]
     installed = []
     missing = []
 

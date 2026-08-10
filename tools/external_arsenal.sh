@@ -59,7 +59,6 @@ ARSENAL_TOOLS=(
   "x8|param|cargo install x8|github.com/Sh1Yo/x8"
   # ── Vuln scanning ───────────────────────────────────────────────────────
   "nuclei|scan|GOBIN=\$HOME/go/bin go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest|github.com/projectdiscovery/nuclei"
-  "dalfox|xss|GOBIN=\$HOME/go/bin go install github.com/hahwul/dalfox/v2@latest|github.com/hahwul/dalfox"
   "xsstrike|xss|pipx install XSStrike  # or git clone|github.com/s0md3v/XSStrike"
   "ghauri|sqli|pipx install ghauri|github.com/r0oth3x49/ghauri"
   "sqlmap|sqli|brew install sqlmap|github.com/sqlmapproject/sqlmap"

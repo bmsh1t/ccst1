@@ -668,29 +668,6 @@ def parse_nuclei_line(line):
     return result
 
 
-def parse_dalfox_line(line):
-    """Parse a dalfox output line."""
-    parts = line.strip()
-    if not parts:
-        return None
-
-    result = {
-        "raw": parts,
-        "url": "",
-        "payload": "",
-        "severity": "medium"
-    }
-
-    url_match = re.search(r'(https?://\S+)', parts)
-    if url_match:
-        result["url"] = url_match.group(1)
-
-    if "POC" in parts or "Verified" in parts:
-        result["severity"] = "high"
-
-    return result
-
-
 def extract_domain(url):
     """Extract domain from URL."""
     match = re.search(r'https?://([^/]+)', url)
@@ -1267,11 +1244,7 @@ def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
                 if not line:
                     continue
 
-                # Parse based on source
-                if "dalfox" in filename:
-                    finding = parse_dalfox_line(line)
-                else:
-                    finding = parse_nuclei_line(line)
+                finding = parse_nuclei_line(line)
 
                 if not finding or not finding.get("url"):
                     continue

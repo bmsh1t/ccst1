@@ -402,7 +402,7 @@ Every 20 minutes ask yourself: **"Am I making progress?"**
 | Mapping: Dorks | Manual Google Dorks | Custom per-target queries find what automation misses |
 | Discovery: Fuzz | `ffuf -ac` + `cewl` custom wordlist | Auto-calibrate filtering + target-specific words beat generic lists |
 | Discovery: Path pattern | `context-pack path-pattern` + bounded target wordlist | Reuse target naming conventions and management-surface records instead of generic spray |
-| Discovery: XSS | `kxss` -> `dalfox` | Filter (which params reflect?) -> scan (only reflective params) |
+| Discovery: XSS | Browser/source evidence + manual sink review | Identify HTML, template, stored, and DOM contexts before validation |
 | Discovery: SQLi | `ghauri` | Modern blind SQLi on ID-like parameters |
 | Discovery: Hidden SQLi surface | `context-pack sqli` + manual replay | Header/path/sibling hidden params before heavier tools |
 | Discovery: SSRF | `interactsh-client` | Self-hosted OOB listener for blind SSRF/XXE/RCE |

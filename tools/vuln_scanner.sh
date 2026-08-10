@@ -1131,50 +1131,6 @@ if skip_has xss; then
 else
     log_info "Check 1: XSS Detection"
 
-    # Dalfox — automated XSS scanner
-    if command -v dalfox &>/dev/null && [ -s "$PARAM_URLS" ]; then
-        DAL_LIMIT=$(scan_limit 30 100 200)
-        DAL_MAX_TIME=$(scan_limit 300 900 1200)
-        DAL_DEDUP_FILE=$(mktemp "${TMPDIR:-/tmp}/dalfox_dedup_XXXXXX.txt")
-
-        python3 - "$PARAM_URLS" "$DAL_DEDUP_FILE" <<'PY' 2>/dev/null || cp "$PARAM_URLS" "$DAL_DEDUP_FILE"
-import sys
-from urllib.parse import parse_qs, urlparse
-
-seen = set()
-with open(sys.argv[1], encoding="utf-8", errors="replace") as fin, open(sys.argv[2], "w", encoding="utf-8") as fout:
-    for line in fin:
-        url = line.strip()
-        if not url:
-            continue
-        try:
-            parsed = urlparse(url)
-            key = (parsed.scheme, parsed.netloc, parsed.path, frozenset(parse_qs(parsed.query).keys()))
-        except Exception:
-            key = url
-        if key in seen:
-            continue
-        seen.add(key)
-        fout.write(url + "\n")
-PY
-
-        ORIG_COUNT=$(wc -l < "$PARAM_URLS" 2>/dev/null || echo 0)
-        DEDUP_COUNT=$(wc -l < "$DAL_DEDUP_FILE" 2>/dev/null || echo 0)
-        log_step "Running dalfox on $DAL_LIMIT URLs (deduped $ORIG_COUNT → $DEDUP_COUNT, timeout: ${DAL_MAX_TIME}s)..."
-        head -"$DAL_LIMIT" "$DAL_DEDUP_FILE" | run_with_timeout "$DAL_MAX_TIME" dalfox pipe \
-            --silence \
-            --no-color \
-            --worker "${DALFOX_WORKERS:-5}" \
-            --delay "${DALFOX_DELAY:-100}" \
-            --timeout 10 \
-            "${BB_AUTH_ARGS[@]}" \
-            --output "$FINDINGS_DIR/xss/dalfox_results.txt" 2>/dev/null || true
-        rm -f "$DAL_DEDUP_FILE"
-
-        DALFOX_COUNT=$(count_findings "$FINDINGS_DIR/xss/dalfox_results.txt")
-        [ "$DALFOX_COUNT" -gt 0 ] && log_vuln "Dalfox found $DALFOX_COUNT potential XSS" || log_done "Dalfox: no XSS found"
-    fi
-
     # Nuclei XSS templates
     if command -v nuclei &>/dev/null; then
         log_step "Running nuclei XSS templates..."

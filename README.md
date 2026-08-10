@@ -155,7 +155,7 @@ same target at a different cadence.
 When a target needs a logged-in cookie, bearer token, or repeatable custom
 headers, keep the auth context in one place and pass it through the local hunt
 CLI. The auth session propagates into Python-side fetches and the shell recon /
-scanner pipeline (`httpx`, `katana`, `ffuf`, `nuclei`, `dalfox`, `curl`) when
+scanner pipeline (`httpx`, `katana`, `ffuf`, `nuclei`, `curl`) when
 those tools support headers. See `docs/auth-sessions.md` for the full auth flow
 and reusable file formats.
 
@@ -457,7 +457,7 @@ documents the preferred model class for each role.
 
 - **Auth-aware hunting.** Set a session once (`--cookie`, `--bearer`, env vars,
   or `.private/target.json`) and every downstream tool that takes auth —
-  `httpx`, `katana`, `ffuf`, `nuclei`, `dalfox`, plus the SQLi/SSTI/upload PoC
+  `httpx`, `katana`, `ffuf`, `nuclei`, plus the SQLi/SSTI/upload PoC
   probes — carries it. Most paying bugs (IDOR, BOLA, mass assignment, SSRF
   behind a login) only exist after login; the default pipeline used to miss
   them. See [`docs/auth-sessions.md`](docs/auth-sessions.md).
@@ -641,7 +641,7 @@ closeable only after mapping to one of the canonical coverage cells above.
 | `h1_race.py` | Race conditions (TOCTOU, limit overrun) |
 | `zero_day_fuzzer.py` | Logic bugs, edge cases, access control |
 | `cve_hunter.py` | Tech fingerprinting + known CVE matching |
-| `vuln_scanner.sh` | Active candidate scanner: upload canaries, SQLi timing, dalfox/SSTI, MFA/SAML, nuclei |
+| `vuln_scanner.sh` | Active candidate scanner: upload canaries, SQLi timing, Nuclei XSS/SSTI, MFA/SAML |
 | `bypass_403.sh` | Bounded 401/403 path, proxy-route, and access-limit replay with optional AI plan |
 | `hai_probe.py` | AI chatbot IDOR, prompt injection |
 | `hai_payload_builder.py` | Prompt injection payload generator |

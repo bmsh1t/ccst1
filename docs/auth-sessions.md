@@ -4,7 +4,7 @@ Most paying bugs (IDOR, BOLA, privilege escalation, auth bypass, mass-assignment
 SSRF behind a login) only exist *behind* a session. The default recon and vuln
 pipeline runs anonymous, so those classes are invisible until you log in. This
 doc explains how to plumb a session into the entire pipeline once and have
-every downstream tool — `httpx`, `katana`, `ffuf`, `nuclei`, `dalfox`, the
+every downstream tool — `httpx`, `katana`, `ffuf`, `nuclei`, the
 SQLi / SSTI / upload PoC probes — send your auth headers automatically.
 
 ## Quick start
@@ -78,7 +78,6 @@ the same case-state owner.
 | nuclei templates | nuclei | **Yes** |
 | SQLi PoC verifier | curl timing probes | **Yes** |
 | Upload PoC | curl multipart | **Yes** |
-| XSS scanner | dalfox | **Yes** |
 | SSTI probes | curl | **Yes** |
 | CMS detection | curl | **Yes** |
 | **MFA workflow-skip test** | curl | **No, intentionally** |
@@ -101,7 +100,7 @@ All `tools/hunt.py` runs accept:
 ```
 
 `scripts/full_hunt.sh` keeps its existing `--cookie` / `--token` flags. They
-now flow through to httpx, katana, ffuf, nuclei, and dalfox.
+now flow through to httpx, katana, ffuf, and nuclei.
 
 ## Env vars
 

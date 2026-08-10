@@ -87,7 +87,7 @@ shodan: [YOUR_SHODAN_KEY]
 EOF
 
 # 4. Verify all tools installed
-which subfinder httpx dnsx nuclei katana waybackurls gau dalfox ffuf anew gf interactsh-client
+which subfinder httpx dnsx nuclei katana waybackurls gau ffuf anew gf interactsh-client
 ```
 
 ---

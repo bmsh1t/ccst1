@@ -293,15 +293,6 @@ else
     warn "nuclei not found — skipping automated vuln scan"
 fi
 
-# ── XSS scan ─────────────────────────────────────────────────────────────────
-if [ "$(check_tool dalfox)" = true ] && [ -s "$OUT/vulns/gf_xss.txt" ]; then
-    log "Testing XSS candidates with dalfox..."
-    cat "$OUT/vulns/gf_xss.txt" | dalfox pipe \
-        "${BB_AUTH_ARGS[@]}" \
-        -o "$OUT/vulns/xss_found.txt" --silence 2>/dev/null
-    ok "XSS found: $(wc -l < $OUT/vulns/xss_found.txt)"
-fi
-
 # ── CORS scan ─────────────────────────────────────────────────────────────────
 log "Checking CORS misconfiguration..."
 CORS_RESULT=$(curl -sk "$TARGETURL/api/" \
@@ -359,14 +350,12 @@ echo ""
     echo -e "${YELLOW}  JS endpoints:       $(wc -l < $OUT/js/js_endpoints.txt)${RESET}"
 [ -f "$OUT/vulns/nuclei_critical_high.txt" ] && \
     echo -e "${RED}  Nuclei critical/high: $(wc -l < $OUT/vulns/nuclei_critical_high.txt)${RESET}"
-[ -f "$OUT/vulns/xss_found.txt" ] && \
-    echo -e "${RED}  XSS found:          $(wc -l < $OUT/vulns/xss_found.txt)${RESET}"
 
 echo ""
 echo -e "${BOLD}  Next steps:${RESET}"
 echo -e "  1. Check $OUT/vulns/ for automated findings"
 echo -e "  2. Open $OUT/reports/dork_report.html for Google dorking"
-echo -e "  3. Manually test: $OUT/vulns/gf_*.txt (IDOR, SSRF, SQLi)"
+echo -e "  3. Manually test: $OUT/vulns/gf_*.txt (IDOR, SSRF, SQLi, XSS)"
 echo -e "  4. Analyze JS: $OUT/js/js_endpoints.txt"
 echo -e "  5. Test JWT attacks if auth endpoints found"
 sep

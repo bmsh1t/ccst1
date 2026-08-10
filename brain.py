@@ -1245,7 +1245,7 @@ show "(none)" or are empty, answer "No findings — nothing to interpret." and s
         redirect_params = self._read_file_sample(str(findings_path / "redirects/redirect_params_manual.txt"), 800)
         ssrf_params     = self._read_file_sample(str(findings_path / "ssrf/ssrf_params_manual.txt"), 800)
         unauth_api      = self._read_file_sample(str(findings_path / "auth_bypass/unauth_api_access.txt"), 1500)
-        xss_findings    = self._read_file_sample(str(findings_path / "xss/dalfox_results.txt"), 800)
+        xss_findings    = self._read_file_sample(str(findings_path / "xss/nuclei_xss.txt"), 800)
         takeover        = self._read_file_sample(str(findings_path / "takeover/nuclei_takeover.txt"), 800)
         graphql         = self._read_file_sample(str(findings_path / "graphql/introspection.txt"), 800)
         cves            = self._read_file_sample(str(findings_path / "cves/nuclei_cves_all.txt"), 1500)
@@ -1733,7 +1733,6 @@ NEXT ACTION: <one concrete action>
         "naabu":        "go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
         "cdncheck":     "go install github.com/projectdiscovery/cdncheck/cmd/cdncheck@latest",
         "ffuf":         "go install github.com/ffuf/ffuf/v2@latest",
-        "dalfox":       "go install github.com/hahwul/dalfox/v2@latest",
         "anew":         "go install github.com/tomnomnom/anew@latest",
         "gau":          "go install github.com/lc/gau/v2/cmd/gau@latest",
         "waybackurls":  "go install github.com/tomnomnom/waybackurls@latest",
@@ -2121,7 +2120,7 @@ Based on this:
 
 Output a bash script (#!/bin/bash) with 8–15 targeted commands.
 Rules:
-- Use real tool names: nuclei, dalfox, sqlmap, ffuf, gau, katana, curl
+- Use real tool names: nuclei, sqlmap, ffuf, gau, katana, curl
 - Each command must be targeted at a specific host or endpoint from the data above
 - Include flags/payloads appropriate for the tech stack detected
 - Comment each command with what it is testing

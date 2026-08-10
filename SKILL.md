@@ -239,7 +239,6 @@ Client -> CDN -> Load Balancer -> App Server -> Database
 | katana | Crawl |
 | waybackurls | Archive URLs |
 | gau | Known URLs |
-| dalfox | XSS scanner |
 | ffuf | Fuzzer |
 | anew | Dedup append |
 | qsreplace | Replace param values |

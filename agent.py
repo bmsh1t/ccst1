@@ -378,7 +378,7 @@ _ALL_TOOL_SPECS: list[dict] = [
             "name": "run_vuln_scan",
             "description": (
                 "Run the core vulnerability scanner. Tests active upload canaries, SQLi timing, "
-                "dalfox/SSTI, CVEs, misconfigs, exposure, takeover, IDOR/auth bypass candidates, "
+                "SSTI, CVEs, misconfigs, exposure, takeover, IDOR/auth bypass candidates, "
                 "MFA, and SAML/SSO checks. Standard/quick runs skip the XSS lane by default; "
                 "use full=true for expanded scanner limits and to include XSS unless scanner_skip "
                 "explicitly contains xss. scanner_skip should stay unset unless the current "

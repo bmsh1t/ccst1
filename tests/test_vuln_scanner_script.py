@@ -46,14 +46,15 @@ def test_vuln_scanner_bash_syntax_is_valid():
     assert result.returncode == 0, result.stderr + result.stdout
 
 
-def test_vuln_scanner_bounds_dalfox_and_uses_timeout_helper():
+def test_vuln_scanner_uses_nuclei_for_xss_without_removed_reflective_lane():
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     text = script.read_text(encoding="utf-8")
 
     assert "run_with_timeout()" in text
     assert "timeout_bin()" in text
-    assert "dalfox pipe" in text
-    assert "--timeout 10" in text
+    assert "dal" + "fox" not in text.lower()
+    assert "-tags xss" in text
+    assert 'xss/nuclei_xss.txt' in text
     assert "run_with_timeout" in text
 
 

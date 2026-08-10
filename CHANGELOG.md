@@ -55,7 +55,7 @@
 - `skills/security-arsenal/REFERENCES.md` and `wordlists/REFERENCES.md`: source references for methodology and larger wordlist/payload collections.
 
 ### Changed
-- `tools/auth_session.py`, `tools/_auth_helper.sh`, `tools/hunt.py`, `tools/recon_engine.sh`, `tools/vuln_scanner.sh`, and `scripts/full_hunt.sh`: auth context can now be defined once (`--cookie`, `--bearer`, env vars, or `--auth-file`) and propagated consistently into Python fetches plus shell tools such as `httpx`, `katana`, `ffuf`, `nuclei`, `dalfox`, and `curl`.
+- `tools/auth_session.py`, `tools/_auth_helper.sh`, `tools/hunt.py`, `tools/recon_engine.sh`, `tools/vuln_scanner.sh`, and `scripts/full_hunt.sh`: auth context can now be defined once (`--cookie`, `--bearer`, env vars, or `--auth-file`) and propagated consistently into Python fetches plus shell tools such as `httpx`, `katana`, `ffuf`, `nuclei`, and `curl`.
 - README: added the v4.3 auth / recon-toolkit notes and linked the dedicated auth-session docs.
 
 ### Notes
