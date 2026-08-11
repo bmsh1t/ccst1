@@ -15,6 +15,7 @@
 #   --scan-only   Only run Phase 3 (needs existing recon)
 #   --token JWT   Include Bearer token in scans
 #   --cookie STR  Include Cookie header in scans
+#   BBHUNT_ENABLE_AMASS=1  Opt in to passive Amass enumeration
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -e
@@ -32,6 +33,10 @@ COOKIE=""
 QUICK=false
 RECON_ONLY=false
 SCAN_ONLY=false
+AMASS_ENABLED=false
+case "${BBHUNT_ENABLE_AMASS:-0}" in
+    1|true|TRUE|yes|YES|on|ON) AMASS_ENABLED=true ;;
+esac
 
 # Wordlists (adjust paths to match your install)
 WL_DIRS="/opt/SecLists/Discovery/Web-Content/directory-list-2.3-medium.txt"
@@ -142,7 +147,10 @@ else
     warn "subfinder not found — skipping"
 fi
 
-if [ "$(check_tool amass)" = true ] && [ "$QUICK" = false ]; then
+if [ "$QUICK" = false ] && [ "$AMASS_ENABLED" = false ]; then
+    warn "Amass disabled by default — set BBHUNT_ENABLE_AMASS=1 to enable"
+fi
+if [ "$(check_tool amass)" = true ] && [ "$QUICK" = false ] && [ "$AMASS_ENABLED" = true ]; then
     amass enum -passive -d "$TARGET" -o "$OUT/subdomains/amass.txt" 2>/dev/null
     ok "Amass: $(wc -l < $OUT/subdomains/amass.txt 2>/dev/null || echo 0) subdomains"
 fi

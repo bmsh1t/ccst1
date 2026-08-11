@@ -29,4 +29,6 @@ def test_full_hunt_uses_auth_helper_for_shell_tools():
     assert 'katana -u "$TARGETURL" -d 3 -jc -kf all "${BB_AUTH_ARGS[@]}"' in text
     assert 'ffuf -u "$TARGETURL/FUZZ" -w "$WL_DIRS"' in text
     assert 'nuclei -u "$TARGETURL"' in text
+    assert 'BBHUNT_ENABLE_AMASS' in text
+    assert 'Amass disabled by default' in text
     assert 'curl -sk "$TARGETURL/api/" \\' in text

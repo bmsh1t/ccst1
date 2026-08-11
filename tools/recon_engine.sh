@@ -683,6 +683,10 @@ case "$RECON_MODE_FLAG" in
         exit 2
         ;;
 esac
+AMASS_ENABLED=0
+if [ "$RECON_PROFILE" != "quick" ] && env_truthy "${BBHUNT_ENABLE_AMASS:-0}"; then
+    AMASS_ENABLED=1
+fi
 RECON_STARTED_EPOCH=$(date +%s)
 RECON_SOFT_BUDGET_SECONDS="${BBHUNT_RECON_SOFT_BUDGET_SECONDS:-1800}"
 require_positive_integer BBHUNT_RECON_SOFT_BUDGET_SECONDS "$RECON_SOFT_BUDGET_SECONDS"
@@ -1460,7 +1464,7 @@ collect_assetfinder() {
 
 collect_amass() {
     local output="$1"
-    [ "$RECON_PROFILE" != "quick" ] || return 4
+    [ "$AMASS_ENABLED" -eq 1 ] || return 4
     command -v amass >/dev/null 2>&1 || return 3
     run_with_timeout 300 amass enum -passive -d "$TARGET" \
         -o "$output" \
@@ -1749,6 +1753,8 @@ if [ "$TARGET_KIND" != "domain" ]; then
     SUBDOMAIN_ARTIFACT="recon/${RECON_TARGET_KEY}/live/discovery_hosts.txt"
     SUBS_TOTAL=0
 fi
+SUBDOMAIN_SOURCES="subfinder,assetfinder"
+[ "$AMASS_ENABLED" -eq 1 ] && SUBDOMAIN_SOURCES+=",amass"
 record_recon_phase \
     subdomain_enum \
     "$SUBDOMAIN_STATUS" \
@@ -1759,7 +1765,8 @@ emit_claude_hint \
     phase                subdomain_enum \
     target_kind          "$TARGET_KIND" \
     subdomain_total      "$SUBS_TOTAL" \
-    sources              "subfinder,assetfinder${QUICK_MODE:+ (quick: amass skipped)}" \
+    sources              "$SUBDOMAIN_SOURCES" \
+    amass_enabled       "$([ "$AMASS_ENABLED" -eq 1 ] && echo true || echo false)" \
     passive_only         "true"
 emit_claude_hint_actions \
     "bash tools/takeover_scanner.sh recon/${RECON_TARGET_KEY}/subdomains/all.txt   # dangling CNAME quick wins" \

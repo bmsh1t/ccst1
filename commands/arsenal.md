@@ -18,7 +18,7 @@ Inspect the external tool inventory used by this plugin.
 
 `tools/external_arsenal.sh` knows about ~50 tools across:
 
-- **Recon** — subfinder, amass, assetfinder, bbot, theHarvester, dnsrecon, massdns, puredns, shuffledns, knockpy
+- **Recon** — subfinder, opt-in amass, assetfinder, bbot, theHarvester, dnsrecon, massdns, puredns, shuffledns, knockpy
 - **Probing** — httpx, dnsx, naabu, smap, aquatone, eyewitness
 - **Crawling** — katana, gau, waybackurls, waymore, hakrawler, gospider, cariddi
 - **Fuzzing** — ffuf, feroxbuster, gobuster, arjun, x8

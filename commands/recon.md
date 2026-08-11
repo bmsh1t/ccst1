@@ -32,6 +32,15 @@ python3 tools/hunt.py --target targets.txt --recon-only            # primary-dom
 bash tools/recon_engine.sh target.com                              # direct full entrypoint (legacy-compatible)
 ```
 
+Amass passive enumeration is disabled by default because it can dominate recon
+runtime. Enable it explicitly for a run when the extra subdomain source is worth
+the cost:
+
+```bash
+BBHUNT_ENABLE_AMASS=1 python3 tools/hunt.py --target target.com --recon-only
+BBHUNT_ENABLE_AMASS=1 bash tools/recon_engine.sh target.com
+```
+
 `hunt.py --recon-only` 默认使用 normal profile；quick/normal 都完整保留 raw surface，只把逐 bundle
 正则提取、secret grep 和递归 JS 链接分析交给 Surface/Action Queue。裸
 `recon_engine.sh TARGET` 保持原 full 行为；Source Map 源文件恢复和动态 chunk 重建继续由
@@ -97,7 +106,7 @@ coverage.
 
 The integrated `tools/recon_engine.sh` path may run, when available:
 
-- subdomain sources: `subfinder`, `assetfinder`, `amass`, `crt.sh`, optional credential-gated `Chaos`, wayback-derived hosts, `puredns`；独立被动源并行、父流程按 target scope 统一合并
+- subdomain sources: `subfinder`, `assetfinder`, opt-in `amass`, `crt.sh`, optional credential-gated `Chaos`, wayback-derived hosts, `puredns`；独立被动源并行、父流程按 target scope 统一合并
 - live probing and fingerprinting: ProjectDiscovery `httpx`, bounded `wafw00f` sampling with durable `live/waf_context.json` context, optional origin hints, lightweight ports/services
 - URL collection: `katana`, `gau`, `waymore`
 - URL denoising: non-destructive `_filtered` URL views plus `urls/filter.log`; raw `urls/all.txt` is preserved

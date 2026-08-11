@@ -264,6 +264,9 @@ def test_recon_engine_has_timeout_compat_helper():
     assert "timeout_bin()" in text
     assert "gtimeout" in text
     assert "run_with_timeout()" in text
+    assert 'AMASS_ENABLED=0' in text
+    assert 'env_truthy "${BBHUNT_ENABLE_AMASS:-0}"' in text
+    assert '[ "$AMASS_ENABLED" -eq 1 ] || return 4' in text
     assert "run_with_timeout 300 amass enum -passive" in text
     assert 'NAABU_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 120 || echo 300)' in text
     assert 'run_with_timeout "$HTTPX_RUN_TIMEOUT" "$HTTPX_BIN"' in text
@@ -1186,6 +1189,7 @@ def test_recon_engine_caps_katana_and_amass_collectors():
     text = script.read_text(encoding="utf-8")
 
     assert 'collect_amass()' in text
+    assert 'BBHUNT_ENABLE_AMASS:-0' in text
     assert 'run_with_timeout 300 amass enum -passive -d "$TARGET"' in text
 
     assert 'collect_katana_urls()' in text
