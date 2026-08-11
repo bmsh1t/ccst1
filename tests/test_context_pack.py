@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import context_pack as context_pack_module
-from context_pack import SKILL_PATHS, build_context_pack, format_context_pack
+from context_pack import SKILL_CATALOG, SKILL_PATHS, build_context_pack, format_context_pack
 from evidence_ledger import record_entry
 from surface_projection import build_surface_input_manifest, write_surface_projection
 
@@ -116,6 +116,36 @@ def test_context_pack_never_defaults_to_security_arsenal_skill():
     """Arsenal stays an on-demand reference layer, not a default selected Skill."""
     assert "security-arsenal" not in SKILL_PATHS
     assert all("skills/security-arsenal/SKILL.md" != path for path in SKILL_PATHS.values())
+
+
+def test_skill_catalog_covers_repository_and_derives_primary_routes():
+    repo = Path(__file__).resolve().parents[1]
+    disk_skills = {
+        path.parent.name for path in (repo / "skills").glob("*/SKILL.md")
+    }
+
+    assert set(SKILL_CATALOG) == disk_skills
+    assert set(SKILL_PATHS) == {
+        "bb-methodology",
+        "bug-bounty",
+        "credential-attack",
+        "triage-validation",
+        "web2-recon",
+        "web2-vuln-classes",
+    }
+
+
+def test_explicit_primary_skill_names_precede_generic_validation_words(tmp_path):
+    for skill_id in SKILL_PATHS:
+        pack = build_context_pack(
+            tmp_path,
+            target="target.com",
+            focus=f"{skill_id} candidate validation",
+        )
+
+        assert pack["selected_skill_id"] == skill_id
+        assert pack["selected_skill"] == SKILL_PATHS[skill_id]
+        assert pack["skill_route"]["required_dimensions"]
 
 
 def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):

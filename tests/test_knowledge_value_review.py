@@ -10,6 +10,9 @@ import yaml
 from knowledge_value_review import audit_matrix, build_matrix, write_matrix
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _repo(tmp_path: Path) -> Path:
     cards = []
     for card_id, tags in (("first-card", ["authz", "role"]), ("second-card", ["authz", "tenant"])):
@@ -115,3 +118,10 @@ def test_matrix_audit_rejects_registry_projection_drift(tmp_path: Path) -> None:
 
     assert result["ok"] is False
     assert any("layer differs from registry" in item for item in result["errors"])
+
+
+def test_repository_matrix_covers_every_active_card() -> None:
+    result = audit_matrix(REPO_ROOT)
+
+    assert result["ok"] is True
+    assert result["cards"] == result["registry_cards"] == 57

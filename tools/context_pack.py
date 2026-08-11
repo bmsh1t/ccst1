@@ -53,20 +53,90 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
+SKILL_ROUTE_MODES = {"primary", "direct-only", "reference-only", "report-only"}
+
+SKILL_CATALOG = {
+    "bb-methodology": {
+        "path": "skills/bb-methodology/SKILL.md",
+        "route_mode": "primary",
+        "required_dimensions": ["hypothesis", "coverage", "pivot", "stop_condition"],
+    },
+    "bug-bounty": {
+        "path": "skills/bug-bounty/SKILL.md",
+        "route_mode": "primary",
+        "required_dimensions": ["scope", "evidence", "hypothesis", "next_action"],
+    },
+    "credential-attack": {
+        "path": "skills/credential-attack/SKILL.md",
+        "route_mode": "primary",
+        "required_dimensions": [
+            "entry_signal",
+            "user_source",
+            "mode_contract",
+            "preflight",
+            "stop_condition",
+            "evidence_resume",
+        ],
+    },
+    "triage-validation": {
+        "path": "skills/triage-validation/SKILL.md",
+        "route_mode": "primary",
+        "required_dimensions": ["baseline", "variant", "impact", "replay"],
+    },
+    "web2-recon": {
+        "path": "skills/web2-recon/SKILL.md",
+        "route_mode": "primary",
+        "required_dimensions": ["surface", "source", "browser", "scope"],
+    },
+    "web2-vuln-classes": {
+        "path": "skills/web2-vuln-classes/SKILL.md",
+        "route_mode": "primary",
+        "required_dimensions": [
+            "vulnerability_family",
+            "parameter",
+            "encoding",
+            "auth",
+            "sibling",
+            "workflow",
+            "chain",
+        ],
+    },
+    "cicd-security": {
+        "path": "skills/cicd-security/SKILL.md",
+        "route_mode": "direct-only",
+    },
+    "meme-coin-audit": {
+        "path": "skills/meme-coin-audit/SKILL.md",
+        "route_mode": "direct-only",
+    },
+    "mobile-pentest": {
+        "path": "skills/mobile-pentest/SKILL.md",
+        "route_mode": "direct-only",
+    },
+    "web3-audit": {
+        "path": "skills/web3-audit/SKILL.md",
+        "route_mode": "direct-only",
+    },
+    "security-arsenal": {
+        "path": "skills/security-arsenal/SKILL.md",
+        "route_mode": "reference-only",
+    },
+    "report-writing": {
+        "path": "skills/report-writing/SKILL.md",
+        "route_mode": "report-only",
+    },
+}
+
 SKILL_PATHS = {
-    "bb-methodology": "skills/bb-methodology/SKILL.md",
-    "bug-bounty": "skills/bug-bounty/SKILL.md",
-    "triage-validation": "skills/triage-validation/SKILL.md",
-    "web2-recon": "skills/web2-recon/SKILL.md",
-    "web2-vuln-classes": "skills/web2-vuln-classes/SKILL.md",
+    skill_id: item["path"]
+    for skill_id, item in SKILL_CATALOG.items()
+    if item["route_mode"] == "primary"
 }
 
 SKILL_TEST_DIMENSIONS = {
-    "bb-methodology": ["hypothesis", "coverage", "pivot", "stop_condition"],
-    "bug-bounty": ["scope", "evidence", "hypothesis", "next_action"],
-    "triage-validation": ["baseline", "variant", "impact", "replay"],
-    "web2-recon": ["surface", "source", "browser", "scope"],
-    "web2-vuln-classes": ["vulnerability_family", "parameter", "encoding", "auth", "sibling", "workflow", "chain"],
+    skill_id: list(item["required_dimensions"])
+    for skill_id, item in SKILL_CATALOG.items()
+    if item["route_mode"] == "primary"
 }
 
 
@@ -97,7 +167,6 @@ KNOWN_SKILL_OR_FOCUS = {
     "forgot-password",
     "account-recovery",
     "username-enumeration",
-    "credential-attack",
     "brute-force",
     "lockout",
     "idor",
@@ -1237,6 +1306,12 @@ def _text_blob(
     return "\n".join(piece for piece in pieces if piece)
 
 
+def _explicit_primary_skill(focus: str) -> str:
+    match = re.match(r"\s*([a-z0-9]+(?:-[a-z0-9]+)*)", focus.casefold())
+    skill = match.group(1) if match else ""
+    return skill if skill in SKILL_PATHS else ""
+
+
 def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goal_memory: dict) -> tuple[str, str]:
     focus_l = focus.lower()
     blob_l = blob.lower()
@@ -1258,6 +1333,9 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
         for key in ("phase", "mode", "state", "status")
     ).lower()
 
+    explicit_skill = _explicit_primary_skill(focus)
+    if explicit_skill:
+        return explicit_skill, f"用户显式命名 primary Skill：{explicit_skill}。"
     if (
         "triage-validation" in focus_l
         or re.search(r"\b(validate|validation|candidate)\b", focus_l)

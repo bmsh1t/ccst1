@@ -511,6 +511,35 @@
       "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
     },
     {
+      "card_id": "custom-protocol-state-recovery",
+      "card_path": "knowledge/cards/custom-protocol-state-recovery.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "custom-binary-protocol",
+        "protocol-reverse",
+        "binary-frame",
+        "message-dictionary",
+        "state-recovery"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡帮助 `web2-recon` 从非 HTTP 或私有 RPC 证据恢复最小消息语义和会话状态，产出可复核的帧布局、消息字典、状态转换与下一步。它不提供通用 dissector、fuzzer 或 replay runner。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/custom-protocol-state-recovery.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
       "card_id": "dead-ends",
       "card_path": "knowledge/cards/dead-ends.md",
       "layer": "reference",
@@ -711,6 +740,35 @@
       "model_profile": "claude-cli/static-review/2026-07-13",
       "evidence_refs": [
         "knowledge/cards/insecure-deserialization.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "js-runtime-signature-reconstruction",
+      "card_path": "knowledge/cards/js-runtime-signature-reconstruction.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "js-reverse",
+        "client-signature",
+        "request-initiator",
+        "runtime-hook",
+        "first-divergence"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡帮助 `web2-recon` 把浏览器中不透明的参数生成链压缩为可复核的请求形状、调用链、样本输入输出和环境依赖。它不承诺专用逆向工具，不创建新的 finding 或运行时状态。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/js-runtime-signature-reconstruction.md"
       ],
       "ab_required": false,
       "ab_status": "not-required-static-review",
@@ -1031,6 +1089,35 @@
       "model_profile": "claude-cli/static-review/2026-07-13",
       "evidence_refs": [
         "knowledge/cards/proxy-cache-boundaries.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "public-package-artifact-intelligence",
+      "card_path": "knowledge/cards/public-package-artifact-intelligence.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "package-registry",
+        "package-history",
+        "published-artifact",
+        "container-image",
+        "historical-release"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡为 `web2-recon` 提供一个按信号加载、时间有界的公开生态情报分支。它复用现有 Source Hunt、Intel、Target Memory 和证据流程，不拥有新的资产图、置信度或 finding 生命周期。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/public-package-artifact-intelligence.md"
       ],
       "ab_required": false,
       "ab_status": "not-required-static-review",
@@ -1525,6 +1612,38 @@
       "model_profile": "claude-cli/static-review/2026-07-13",
       "evidence_refs": [
         "knowledge/cards/websocket-realtime-api.md"
+      ],
+      "ab_required": false,
+      "ab_status": "not-required-static-review",
+      "ab_success_criteria": "仅在争议或准备晋升时执行 hard-case baseline/enhanced A/B；本轮不声称 lift。"
+    },
+    {
+      "card_id": "wordpress-surface-intelligence",
+      "card_path": "knowledge/cards/wordpress-surface-intelligence.md",
+      "layer": "reference",
+      "load": "signal-only",
+      "maturity": "draft",
+      "trigger_tags": [
+        "wordpress",
+        "wp-json",
+        "wp-content",
+        "wp-admin",
+        "admin-ajax",
+        "xmlrpc",
+        "wordpress-plugin",
+        "wordpress-theme"
+      ],
+      "source_refs_count": 0,
+      "source_strength": "none",
+      "unique_value": "本卡给 `web2-recon` 和漏洞验证提供 WordPress 特定的 inventory、版本和权限边界检查。它复用 现有 `/intel`、Action Queue 和 Finding 生命周期，不创建 WordPress 专用状态、解析器或自动漏洞执行。",
+      "overlap_with": [],
+      "ai_likely_known": "partial",
+      "disposition": "keep-draft",
+      "reason": "静态职责/边界复核通过；保留按需价值，但没有 live A/B 或正式增量证据，保持 draft。",
+      "reviewer": "Codex",
+      "model_profile": "claude-cli/static-review/2026-07-13",
+      "evidence_refs": [
+        "knowledge/cards/wordpress-surface-intelligence.md"
       ],
       "ab_required": false,
       "ab_status": "not-required-static-review",
