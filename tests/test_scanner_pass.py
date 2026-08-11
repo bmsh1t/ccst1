@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 from tools.coverage_matrix import (
     VULN_CLASSES,
     _apply_scanner_pass,
+    high_risk_lane_summary,
     load_matrix,
     rebuild_matrix,
     save_matrix,
@@ -192,6 +193,28 @@ class TestScannerPassWriter:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestCoverageMatrixScannerPass:
+    def test_high_risk_lane_summary_is_explicit_without_calling_unknown_clean(self):
+        cells = {vuln_class: {"status": "untested"} for vuln_class in VULN_CLASSES}
+        cells["SSRF"]["scanner_swept"] = True
+        cells["RCE"] = {"status": "tested_finding", "evidence_ref": "evidence/rce"}
+        matrix = {
+            "endpoints": [{
+                "endpoint": "/api/fetch",
+                "weight": 5.0,
+                "observed_params": ["url"],
+                "cells": cells,
+            }],
+        }
+
+        lanes = high_risk_lane_summary(matrix)
+
+        assert lanes["RCE"]["disposition"] == "candidate"
+        assert lanes["NoSQLi"]["alias_of"] == "SQLi"
+        assert lanes["Deserialization"]["alias_of"] == "RCE"
+        assert lanes["SSRF"]["disposition"] == "queued"
+        assert lanes["XXE"]["disposition"] == "unassessed"
+        assert lanes["XXE"]["untested"] == 1
+
     def test_url_target_rebuild_uses_canonical_storage_key(self, fake_repo):
         """URL targets must share the recon/findings/evidence storage key.
 

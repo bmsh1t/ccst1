@@ -5,7 +5,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import runtime_phase_exec
@@ -172,11 +171,18 @@ def test_direct_phase_runner_returns_busy_without_starting_child(tmp_path, monke
 def test_direct_phase_runner_marks_child_lock_ownership(tmp_path, monkeypatch):
     captured = {}
 
-    def fake_run(command, *, env, check):
-        captured.update({"command": command, "env": env, "check": check})
-        return SimpleNamespace(returncode=17)
+    class FakeProc:
+        returncode = 17
+        pid = 1234
 
-    monkeypatch.setattr(runtime_phase_exec.subprocess, "run", fake_run)
+        def wait(self):
+            return self.returncode
+
+    def fake_popen(command, *, env, start_new_session):
+        captured.update({"command": command, "env": env, "start_new_session": start_new_session})
+        return FakeProc()
+
+    monkeypatch.setattr(runtime_phase_exec.subprocess, "Popen", fake_popen)
     code = runtime_phase_exec.run_phase_command(
         tmp_path,
         "target.com",
@@ -188,6 +194,42 @@ def test_direct_phase_runner_marks_child_lock_ownership(tmp_path, monkeypatch):
     assert captured["command"] == ["scanner", "--quick"]
     assert captured["env"]["BBHUNT_RUNTIME_PHASE_LOCKED"] == "scan"
     assert captured["env"]["BBHUNT_RUNTIME_LOCK_TARGET"] == "target.com"
+    assert captured["start_new_session"] is True
+    state = load_runtime_state(tmp_path, "target.com")
+    assert state["mode"] == "scan_failed"
+    assert state["last_executed_workflow"] == "run_vuln_scan_failed"
+
+
+def test_direct_phase_runner_terminates_child_on_interrupt(tmp_path, monkeypatch):
+    captured = []
+
+    class FakeProc:
+        returncode = None
+        pid = 1235
+
+        def wait(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        runtime_phase_exec.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProc(),
+    )
+    monkeypatch.setattr(
+        runtime_phase_exec,
+        "_terminate_process_group",
+        lambda proc: captured.append(proc),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        runtime_phase_exec.run_phase_command(
+            tmp_path,
+            "target.com",
+            "scan",
+            ["scanner", "--deep"],
+        )
+
+    assert captured
     state = load_runtime_state(tmp_path, "target.com")
     assert state["mode"] == "scan_failed"
     assert state["last_executed_workflow"] == "run_vuln_scan_failed"

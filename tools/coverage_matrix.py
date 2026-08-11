@@ -116,6 +116,17 @@ VULN_CLASSES = (
     "GraphQL", "OAuth", "Upload", "Webhook", "JWT",
     "SQLi", "XXE", "RCE", "Path", "CSRF",
 )
+# Families with a shared evidence cell.  Keeping these as aliases avoids a
+# second matrix taxonomy while still making the high-risk coverage report
+# explicit about NoSQLi, SSTI, command injection, and deserialisation.
+HIGH_RISK_LANE_ALIASES = {
+    "NoSQLi": "SQLi",
+    "SSTI": "RCE",
+    "CommandInjection": "RCE",
+    "Deserialization": "RCE",
+    "LFI": "Path",
+    "RFI": "Path",
+}
 COVERAGE_BUILD_VERSION = 3
 COVERAGE_PROJECTION_SCHEMA_VERSION = 1
 COVERAGE_PROJECTION_KIND = "coverage_matrix_projection"
@@ -560,6 +571,9 @@ def save_matrix_projection(
         "source_fingerprint": str(matrix.get("source_fingerprint") or ""),
         "matrix_binding": _file_binding(matrix_path),
         "summary": dict(matrix.get("summary") or _compute_summary(matrix)),
+        "high_risk_lanes": dict(
+            matrix.get("high_risk_lanes") or high_risk_lane_summary(matrix)
+        ),
         "high_value_gaps": high_value_gaps_from_matrix(matrix)[:COVERAGE_PROJECTION_GAP_LIMIT],
         "endpoints": endpoints,
     }
@@ -596,13 +610,17 @@ def load_matrix_projection(
     endpoints = payload.get("endpoints")
     gaps = payload.get("high_value_gaps")
     summary = payload.get("summary")
+    high_risk_lanes = payload.get("high_risk_lanes")
     if not isinstance(endpoints, list) or not isinstance(gaps, list) or not isinstance(summary, dict):
         return None
+    if not isinstance(high_risk_lanes, dict):
+        high_risk_lanes = high_risk_lane_summary({"endpoints": endpoints})
     return {
         "target": target,
         "vuln_classes": list(VULN_CLASSES),
         "source_fingerprint": source_fingerprint,
         "summary": summary,
+        "high_risk_lanes": high_risk_lanes,
         "endpoints": endpoints,
         "_coverage_gaps": gaps,
         "_coverage_projection": True,
@@ -622,6 +640,7 @@ def save_matrix(target: str, matrix: dict, repo_root: Path | str | None = None) 
     repo = Path(repo_root) if repo_root else BASE_DIR
     matrix["last_updated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     matrix["summary"] = _compute_summary(matrix)
+    matrix["high_risk_lanes"] = high_risk_lane_summary(matrix)
     path = _matrix_path(repo, target)
     _write_json_atomic(path, matrix)
     save_matrix_projection(target, matrix, repo)
@@ -1161,6 +1180,83 @@ def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WE
             gaps.append(gap)
     gaps.sort(key=_gap_sort_key)
     return gaps
+
+
+def high_risk_lane_summary(
+    matrix: dict,
+    *,
+    min_weight: float = DEFAULT_MIN_WEIGHT,
+) -> dict[str, dict]:
+    """Project an explicit disposition for every canonical high-risk family.
+
+    This is a reporting/queue hint, not a scanner verdict.  In particular,
+    ``unassessed`` means the endpoint has no family-specific evidence yet; it
+    must never be treated as clean or N/A by closure.
+    """
+    endpoints = [item for item in matrix.get("endpoints", []) if isinstance(item, dict)]
+    gaps = high_value_gaps_from_matrix(matrix, min_weight=min_weight)
+    relevant_by_class: dict[str, int] = {}
+    for gap in gaps:
+        try:
+            relevance = int(gap.get("relevance_score", 0) or 0)
+        except (TypeError, ValueError):
+            relevance = 0
+        if relevance > 0:
+            vuln_class = str(gap.get("vuln_class") or "")
+            relevant_by_class[vuln_class] = relevant_by_class.get(vuln_class, 0) + 1
+
+    result: dict[str, dict] = {}
+    for vuln_class in VULN_CLASSES:
+        cells = [
+            ep.get("cells", {}).get(vuln_class)
+            for ep in endpoints
+            if isinstance(ep.get("cells"), dict)
+            and isinstance(ep.get("cells", {}).get(vuln_class), dict)
+        ]
+        counts = {
+            "tested_clean": sum(cell.get("status") == "tested_clean" for cell in cells),
+            "tested_finding": sum(cell.get("status") == "tested_finding" for cell in cells),
+            "untested": sum(cell.get("status", "untested") == "untested" for cell in cells),
+            "n_a": sum(cell.get("status") == "n_a" for cell in cells),
+            "blocked": sum(cell.get("status") == "blocked" for cell in cells),
+            "scanner_swept": sum(bool(cell.get("scanner_swept")) for cell in cells),
+        }
+        total = len(cells)
+        if not total:
+            disposition = "not_observed"
+            reason = "no target-owned endpoint entered the coverage matrix"
+        elif counts["tested_finding"]:
+            disposition = "candidate"
+            reason = "finding-grade evidence requires validation"
+        elif counts["blocked"]:
+            disposition = "blocked"
+            reason = "one or more family checks are explicitly blocked"
+        elif counts["n_a"] == total:
+            disposition = "not_applicable"
+            reason = "all endpoint cells have an explicit N/A reason"
+        elif counts["untested"] == 0:
+            disposition = "tested"
+            reason = "every endpoint cell has an evidence-grade terminal state"
+        elif relevant_by_class.get(vuln_class) or counts["scanner_swept"]:
+            disposition = "queued"
+            reason = "family-shaped surface remains, or scanner context needs focused validation"
+        else:
+            disposition = "unassessed"
+            reason = "no family-specific input evidence; AI must triage N/A versus a focused lane"
+        result[vuln_class] = {
+            "disposition": disposition,
+            "reason": reason,
+            "endpoint_count": total,
+            "relevant_gap_count": relevant_by_class.get(vuln_class, 0),
+            **counts,
+        }
+    for alias, canonical in HIGH_RISK_LANE_ALIASES.items():
+        result[alias] = {
+            **result[canonical],
+            "alias_of": canonical,
+            "reason": f"shared coverage cell: {canonical}; keep the technique explicit during triage",
+        }
+    return result
 
 
 def _ensure_endpoint(matrix: dict, endpoint: str, weight: float) -> dict:

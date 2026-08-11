@@ -200,33 +200,72 @@ def run_argv(argv, cwd=None, timeout=600, env=None):
 
 def _kill_process_group(proc):
     """Best-effort termination for a spawned subprocess session."""
+    if proc is None:
+        return
     try:
         pgid = os.getpgid(proc.pid)
-    except Exception:
+    except BaseException:
         return
 
     try:
         os.killpg(pgid, signal.SIGTERM)
-    except Exception:
-        return
+    except BaseException:
+        pass
 
     try:
         proc.wait(timeout=3)
         return
     except subprocess.TimeoutExpired:
         pass
-    except Exception:
-        return
+    except BaseException:
+        pass
 
     try:
         os.killpg(pgid, signal.SIGKILL)
-    except Exception:
-        return
+    except BaseException:
+        pass
 
     try:
         proc.wait(timeout=3)
-    except Exception:
+    except BaseException:
         return
+
+
+def _install_child_signal_handlers(proc):
+    """Forward parent termination to a spawned process group.
+
+    The handler raises ``KeyboardInterrupt`` after the group is cleaned so the
+    caller's existing failure-state path still runs.  Signal registration is
+    best-effort for library callers running outside the main thread.
+    """
+    previous = {}
+
+    def _forward(_signum, _frame):
+        _kill_process_group(proc)
+        raise KeyboardInterrupt
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, _forward)
+    except (ValueError, RuntimeError):
+        for signum, handler in previous.items():
+            try:
+                signal.signal(signum, handler)
+            except (ValueError, RuntimeError):
+                pass
+        return None
+    return previous
+
+
+def _restore_child_signal_handlers(previous):
+    if not previous:
+        return
+    for signum, handler in previous.items():
+        try:
+            signal.signal(signum, handler)
+        except (ValueError, RuntimeError):
+            pass
 
 
 def classify_target(target):
@@ -1163,6 +1202,8 @@ def run_recon(domain, quick=False, deep=False):
     recon_flag = "--quick" if quick else "--deep" if deep else "--normal"
 
     # Run with live output
+    proc = None
+    signal_handlers = None
     try:
         child_env = _runtime_child_env("CHAOS_API_KEY")
         child_env["BBHUNT_RUNTIME_PHASE_LOCKED"] = "recon"
@@ -1179,6 +1220,7 @@ def run_recon(domain, quick=False, deep=False):
             start_new_session=True,
             pass_fds=_RUNTIME_PHASE_LOCK_FDS,
         )
+        signal_handlers = _install_child_signal_handlers(proc)
         timeout = 1800 if quick else 14400 if deep else 7200
         if target_info["kind"] == "list":
             per_target = 900 if quick else 14400 if deep else 7200
@@ -1199,6 +1241,12 @@ def run_recon(domain, quick=False, deep=False):
         _kill_process_group(proc)
         log("err", f"Recon timed out for {normalized_target}")
         return False
+    except BaseException:
+        _kill_process_group(proc)
+        log("err", f"Recon interrupted for {normalized_target}")
+        raise
+    finally:
+        _restore_child_signal_handlers(signal_handlers)
 
 
 def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
@@ -1219,6 +1267,8 @@ def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
         scanner_flags.extend(["--skip", scanner_skip])
     cmd = ["bash", script, recon_dir, *scanner_flags]
 
+    proc = None
+    signal_handlers = None
     try:
         child_env = _runtime_child_env()
         child_env["BBHUNT_RUNTIME_PHASE_LOCKED"] = "scan"
@@ -1231,12 +1281,19 @@ def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
             start_new_session=True,
             pass_fds=_RUNTIME_PHASE_LOCK_FDS,
         )
+        signal_handlers = _install_child_signal_handlers(proc)
         proc.wait(timeout=1800)
         return proc.returncode == 0
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
         log("err", f"Vulnerability scan timed out for {domain}")
         return False
+    except BaseException:
+        _kill_process_group(proc)
+        log("err", f"Vulnerability scan interrupted for {domain}")
+        raise
+    finally:
+        _restore_child_signal_handlers(signal_handlers)
 
 
 def _run_nuclei_scan(urls, *, tags, output_path, severity=None, rate_limit=20, concurrency=10):
@@ -1952,14 +2009,23 @@ def run_zero_day_fuzzer(domain, deep=False):
         cmd.append("--deep")
         cmd.append("--adaptive-budget")
 
+    proc = None
+    signal_handlers = None
     try:
         proc = subprocess.Popen(cmd, shell=False, cwd=BASE_DIR, start_new_session=True)
+        signal_handlers = _install_child_signal_handlers(proc)
         proc.wait(timeout=900)
         return proc.returncode == 0
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
         log("err", f"Zero-day fuzzer timed out for {domain}")
         return False
+    except BaseException:
+        _kill_process_group(proc)
+        log("err", f"Zero-day fuzzer interrupted for {domain}")
+        raise
+    finally:
+        _restore_child_signal_handlers(signal_handlers)
 
 
 def read_browser_surface(domain):
@@ -2100,20 +2166,20 @@ def _hunt_target_impl(
                 result["recon"] = run_recon(domain, quick=quick, deep=True)
             else:
                 result["recon"] = run_recon(domain, quick=quick)
-        except Exception:
-            if recon_only:
-                # recon phase 已经退出（异常也是退出）。先覆盖 running marker，
-                # 避免下一轮 autopilot 被旧 `recon_running` 卡住；异常继续向上抛。
-                _persist_runtime_state(
-                    canonical_target,
-                    mode="recon_only",
-                    current_stage="recon",
-                    last_completed_step="run_recon",
-                    recon_completed=False,
-                    scan_completed=False,
-                    reports_generated=0,
-                    ctf_mode=ctf_mode,
-                )
+        except BaseException:
+            # KeyboardInterrupt/SIGTERM are BaseException paths.  Always close
+            # the marker before re-raising so a killed phase cannot look active
+            # to the next autopilot round.
+            _persist_runtime_state(
+                canonical_target,
+                mode="recon_only" if recon_only else ("quick" if quick else "full"),
+                current_stage="recon",
+                last_completed_step="run_recon",
+                recon_completed=False,
+                scan_completed=False,
+                reports_generated=0,
+                ctf_mode=ctf_mode,
+            )
             raise
         if not result["recon"]:
             log("warn", f"Recon had issues for {canonical_target}, continuing anyway...")
@@ -2177,7 +2243,7 @@ def _hunt_target_impl(
             scanner_full=scanner_full,
             scanner_skip=scanner_skip,
         )
-    except Exception:
+    except BaseException:
         # scanner phase 已经退出（异常也是退出）。先覆盖 running marker，
         # 避免下一轮 autopilot 等待一个已经崩掉的 scan-only 进程。
         _persist_runtime_state(

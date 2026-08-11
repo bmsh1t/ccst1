@@ -451,6 +451,28 @@ def test_run_vuln_scan_kills_process_group_when_wait_times_out(monkeypatch, tmp_
     assert captured
 
 
+def test_run_vuln_scan_kills_process_group_when_interrupted(monkeypatch, tmp_path):
+    recon_root = tmp_path / "recon"
+    (recon_root / "example.com").mkdir(parents=True)
+    monkeypatch.setattr(hunt, "RECON_DIR", str(recon_root))
+    captured = []
+
+    class FakeProc:
+        pid = 6161
+        returncode = None
+
+        def wait(self, timeout=None):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(hunt.subprocess, "Popen", lambda *args, **kwargs: FakeProc())
+    monkeypatch.setattr(hunt, "_kill_process_group", lambda proc: captured.append(proc))
+
+    with pytest.raises(KeyboardInterrupt):
+        hunt.run_vuln_scan("example.com")
+
+    assert captured
+
+
 def test_generate_reports_uses_cidr_storage_dirs(monkeypatch, tmp_path):
     findings_root = tmp_path / "findings"
     reports_root = tmp_path / "reports"

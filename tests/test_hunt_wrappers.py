@@ -1061,3 +1061,26 @@ def test_classic_hunt_target_scan_exception_closes_running_marker(monkeypatch, t
     assert runtime_updates[-1][1]["mode"] == "scan_only"
     assert runtime_updates[-1][1]["last_completed_step"] == "run_vuln_scan"
     assert runtime_updates[-1][1]["scan_completed"] is False
+
+
+def test_classic_hunt_target_scan_interrupt_closes_running_marker(monkeypatch, tmp_path):
+    domain = "example.com"
+    runtime_updates = []
+    recon_dir = tmp_path / "recon" / domain
+    recon_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
+    monkeypatch.setattr(hunt, "run_recon", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("recon must not run")))
+    monkeypatch.setattr(hunt, "run_vuln_scan", lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt))
+    monkeypatch.setattr(
+        hunt,
+        "_persist_runtime_state",
+        lambda target, **kwargs: runtime_updates.append((target, kwargs)),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        hunt.hunt_target(domain, scan_only=True)
+
+    assert runtime_updates[0][1]["mode"] == "scan_running"
+    assert runtime_updates[-1][1]["mode"] == "scan_only"
+    assert runtime_updates[-1][1]["scan_completed"] is False
