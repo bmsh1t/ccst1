@@ -148,6 +148,39 @@ def test_context_pack_exposes_registry_metadata_for_selected_cards(tmp_path):
     assert "Knowledge card capabilities:" in format_context_pack(pack)
 
 
+def test_context_pack_exposes_bounded_historical_patterns_as_advisory(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="api-idor",
+        surface_state={
+            "available": True,
+            "memory": {
+                "pattern_suggestions": [
+                    "target.com: current target replay [IDOR]",
+                    "alpha.com: numeric ID swap [IDOR]",
+                    "beta.com: sibling export replay [IDOR]",
+                    "alpha.com: numeric ID swap [IDOR]",
+                    "gamma.com: tenant header pivot [Authz]",
+                    "delta.com: legacy API comparison [Authz]",
+                ]
+            },
+        },
+        coverage_state=([], {}),
+    )
+
+    assert pack["historical_patterns"] == [
+        "numeric ID swap [IDOR]",
+        "sibling export replay [IDOR]",
+        "tenant header pivot [Authz]",
+    ]
+    assert pack["source_summary"]["historical_patterns"] == 3
+    output = format_context_pack(pack)
+    assert "Historical patterns (advisory; require current-target evidence):" in output
+    historical_output = output.split("- Historical patterns", 1)[1].split("- Required checks", 1)[0]
+    assert not any(domain in historical_output for domain in ("target.com", "alpha.com", "beta.com", "gamma.com", "delta.com"))
+
+
 def test_context_pack_exposes_runner_candidates_without_marking_report_ready(tmp_path):
     validation_dir = tmp_path / "evidence" / "target.com" / "validation" / "idor-basket"
     validation_dir.mkdir(parents=True)

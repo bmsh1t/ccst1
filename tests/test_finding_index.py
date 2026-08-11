@@ -1482,7 +1482,7 @@ def test_report_generator_uses_write_sink_auth_bypass_narrative(monkeypatch, tmp
     assert "returned HTTP 200" not in report_text
 
 
-def test_report_generator_skips_unvalidated_and_already_reported_structured_findings(
+def test_report_generator_keeps_validated_lower_severity_and_skips_unvalidated_findings(
     monkeypatch,
     tmp_path,
 ):
@@ -1508,7 +1508,7 @@ def test_report_generator_skips_unvalidated_and_already_reported_structured_find
                         "id": "validated_pending",
                         "type": "idor",
                         "url": "https://example.com/api/users/2",
-                        "severity": "high",
+                        "severity": "low",
                         "validation_status": "validated",
                         "report_status": "not_generated",
                         "raw": "validated candidate",

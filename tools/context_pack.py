@@ -3050,6 +3050,22 @@ def build_context_pack(
     local_intel = _load_local_intel(repo, target_key)
     blob = _text_blob(focus, goal_memory, ranked, gaps, findings, local_intel)
     skill, why_skill = _select_skill(focus, blob, ranked, findings, goal_memory)
+    historical_patterns = []
+    for item in ((ranked.get("memory") or {}).get("pattern_suggestions") or []):
+        lesson = str(item).strip()
+        provenance, separator, stripped_lesson = lesson.partition(": ")
+        if separator:
+            try:
+                same_target = canonical_target_value(provenance).casefold() == resolved_target.casefold()
+            except ValueError:
+                same_target = False
+            if same_target:
+                continue
+            lesson = stripped_lesson.strip()
+        if lesson and lesson not in historical_patterns:
+            historical_patterns.append(lesson)
+        if len(historical_patterns) == 3:
+            break
     registry = _load_capability_registry(repo)
     cards, deferred_cards = _select_cards_and_deferred(
         blob,
@@ -3100,6 +3116,7 @@ def build_context_pack(
         "deferred_knowledge_cards": deferred_cards,
         "deferred_knowledge_card_capabilities": _card_capabilities(deferred_cards, repo, registry=registry),
         "reference_hints": _reference_hints(cards, blob, focus, skill),
+        "historical_patterns": historical_patterns,
         "required_checks": checks,
         "evidence_anchors": _build_evidence_anchors(ranked, goal_memory, gaps, findings, local_intel)
         + _runner_candidate_anchors(runner_candidates)
@@ -3137,6 +3154,7 @@ def build_context_pack(
             "coverage_gaps": len(gaps),
             "findings": len(findings),
             "validation_runner_candidates": len(runner_candidates),
+            "historical_patterns": len(historical_patterns),
             **_local_intel_source_summary(local_intel),
             **_ledger_source_summary(evidence_summary),
         },
@@ -3184,6 +3202,8 @@ def format_context_pack(pack: dict) -> str:
             )
             for item in pack.get("reference_hints", [])
         ]),
+        "- Historical patterns (advisory; require current-target evidence):",
+        *_format_list(pack.get("historical_patterns", [])),
         "- Required checks:",
         *_format_list(pack["required_checks"]),
         "- Evidence anchors:",

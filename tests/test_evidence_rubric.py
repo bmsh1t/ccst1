@@ -38,6 +38,38 @@ def test_idor_rubric_returns_missing_next_actions_for_weak_signal():
     assert any("two-actor" in action for action in result["next_actions"])
 
 
+def test_multi_condition_candidate_waits_for_linked_dimensions():
+    finding = {
+        "type": "sqli",
+        "summary": "baseline and single-variable parameter perturbation captured",
+        "metadata": {
+            "tested_dimensions": ["input_and_baseline"],
+            "evidence_refs": ["evidence/TARGET/validation/baseline.json"],
+        },
+    }
+
+    weak = evaluate_candidate_evidence(finding)
+    finding["metadata"].update({
+        "tested_dimensions": [
+            "input_and_baseline",
+            "stable_differential_signal",
+            "reproducibility",
+            "safe_impact",
+        ],
+        "controlled_difference": "stable PostgreSQL syntax error repeated 3/3",
+        "impact": "read-only DB fingerprint with a non-destructive controlled marker",
+        "evidence_refs": [
+            "evidence/TARGET/validation/baseline.json",
+            "evidence/TARGET/validation/variant.json",
+        ],
+    })
+    linked = evaluate_candidate_evidence(finding)
+
+    assert weak["ready"] is False
+    assert linked["ready"] is True
+    assert linked["status"] == "candidate-ready"
+
+
 def test_authz_public_admin_config_exposure_does_not_require_actor_diff():
     finding = {
         "type": "auth_bypass",

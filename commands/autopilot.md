@@ -31,6 +31,8 @@ exact first-contact browser/source/workflow seed for the canonical target.
 Treat the supplied target set as the active execution target set; `ctf_mode` is the
 authoritative lab target record. External policy is advisory audit/replay context;
 do not require public-program, written-permission, or ownership-confirmation.
+Target isolation follows a new target default: the built-in XSS lane skip is explicit,
+and `/pickup` does **not** replay previous target skips or scanner decisions.
 `/autopilot` runs inline in the current Claude session as the sole controller and does not create/resume legacy `agent_session.json`; specialists default to zero.
 At most one bounded specialist may be invoked through Claude Code's `Agent` tool for one evidence question. The invoked specialist must not spawn nested agents, run full recon/scans, write final closure, or control finish. After using one, this invocation cannot call a second specialist.
 Bootstrap emits one `state.lane_contract` pointer. Before executing a named lane, read only
@@ -46,18 +48,45 @@ existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> RE
 Every invocation is state-first. Bootstrap `ctf_mode`, compact `state`, and advisory
 `capabilities` are the only initial inputs. Branch only after that state read;
 missing/stale/invalid is work, not no surface. State tools are not a pre-flight checklist.
-For each iteration: consume structured `next_action` and the durable Action Queue; use bounded `next_step`, then choose
-one smallest evidence-producing action, execute it, write evidence, then refresh bounded state before choosing again:
+For each iteration, keep the reasoning loop explicit:
+`inspect candidate/context -> AI choose and activate one hypothesis -> claim -> execute one
+bounded action -> read Runner observation -> AI resolve one continuation or kill -> refresh
+bounded state`. The controller must consume structured `next_action` and the durable Action Queue; use bounded
+`next_step`, and never treat a single negative request as permission to move on:
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
 ```
+For substantive candidates, claim the exact action with the evidence-backed activation contract
+before replay (surface review, runtime wait, recovery, and reporting remain versionless):
+```bash
+cd -- <repo_root_shell> && python3 tools/action_queue.py claim --target <target_shell> --id <id> --metadata-json '<activation-object>'
+```
+The activation object records `depth_contract_version=1`, target-specific `hypothesis_id`, open
+`family`/`technique`, selected Skill/knowledge references, one `active_dimension`,
+`expected_learning`, `kill_condition`, `risk_tier`, and the bounded hypothesis action cap. The
+Queue computes execution identity and rejects same endpoint/method/family/technique/
+actor/object/workflow/dimension work without new evidence or a recorded repeat reason. After the
+deterministic Runner writes `last_outcome`, `tested_dimensions`, replayable evidence refs,
+operation ID, and a bounded observation, it keeps the versioned action `running`. An explicit
+`observation_kind=baseline_only` records the safe baseline for the next AI decision but cannot
+support a kill.
+The AI then resolves it with exactly one evidence-backed continuation (`sibling`, `bypass`,
+`identity`, `object`, `parser`, `transport`, `workflow`, `chain`, `rotation`, or `blocked`) or a
+supported `kill_condition_met=true`; missing outcome write-back, tested dimensions, or the next
+decision leaves the action recoverable and blocks exhaustion. Materialize at most one continuation
+child while preserving the versioned hypothesis, activation, parent, and evidence lineage.
 In deep mode, a concrete API/browser-XHR surface requires an evidence-linked
 depth pack: run the observed GET/query path and the observed POST JSON/form path
 when applicable. GET-only is not API completion; OPTIONS/HEAD remain passive
 checks, and default probing never adds PUT/PATCH/DELETE. After a negative result,
 record the selected sibling/variant/actor/workflow/chain dimension plus
 `hypothesis`, `tested_dimensions`, `expected_learning`, `kill_condition`, and `next_question` in the
-existing Action Queue metadata (for manual write-back, use `tools/action_queue.py add --metadata-json '{"hypothesis_id":"H-1","tested_dimensions":["sibling"],"expected_learning":"...","kill_condition":"...","next_question":"..."}'`; the parser accepts only a JSON object and rejects credential-bearing fields before any queue write; this is the existing Action Queue, not a new state owner). A partial tool cursor or unused depth dimension
+existing Action Queue metadata. For legacy/versionless manual actions only, use
+`tools/action_queue.py add --metadata-json '{"hypothesis_id":"H-1","tested_dimensions":["sibling"],"expected_learning":"...","kill_condition":"...","next_question":"..."}'`;
+the parser accepts only a JSON object and rejects credential-bearing fields before any queue write.
+For `depth_contract_version=1`, Runner owns `last_outcome`, `tested_dimensions`, and
+`runner_operation_id`; AI claim/resolve metadata must not fabricate them. This is the existing Action
+Queue, not a new state owner. A partial tool cursor or unused depth dimension
 is resumable work, not tested-clean.
 
 Deep lanes keep the normal per-invocation caps unless `--deep` is active. In deep
@@ -73,12 +102,16 @@ before persistence. AI may override the selected Skill, but must record the
 replacement route and reason in the same metadata. Hand-written advisory queue
 items remain compatible when `route_required` is not set.
 
-When resolving an existing action, preserve the same structured metadata through
-`tools/action_queue.py resolve --metadata-json`; `last_outcome`,
-`tested_dimensions`, `next_question`, `expected_learning`, `kill_condition`, and
-`pivot_hints` merge into the existing action metadata without creating another
-state owner. The JSON must be an object and must not contain credentials or
-authorization headers.
+When resolving a legacy/versionless action, preserve its structured metadata through
+`tools/action_queue.py resolve --metadata-json`; `last_outcome`, `tested_dimensions`,
+`next_question`, `expected_learning`, `kill_condition`, and `pivot_hints` keep their compatible
+merge behavior. A versioned AI resolve supplies only one continuation or supported kill plus optional
+bounded capability primitives; it consumes Runner-owned observation fields already on the action.
+The JSON must be an object and must not contain credentials or authorization headers.
+If Checkpoint projects `capability-chain-review`, treat it as advisory: do not execute the primitive
+directly. If one bounded chain is executable, add one normal versioned chain action with the persisted
+parent/hypothesis/evidence lineage before resolving the review; otherwise resolve it as blocked/dead-end.
+The review never changes existing running, validation, candidate, report, or Closure priority.
 
 Named action mechanics, replay commands, recon continuation, list selection, and owner
 write-back rules live in the selected lane section. Claim durable queue work before replay;
@@ -205,4 +238,32 @@ Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and ad
 When `max_lanes` was reached, pass `--max-lanes-reached`; it always requires handoff. A pending report is a closure asset, not a stop signal. Active durable work, pending validation/report, partial browser/source/intel, or untouched high-value work means `handoff/partial`, never `finish/complete/exhausted`.
 Checkpoint unresolved work in the existing Action Queue instead of passive TODOs.
 Passing `check_autopilot_run.py` proves state-chain integrity, not target exhaustion.
-End with target, mode, strongest evidence, findings/candidates, blockers/dead ends, and next best action. If the bounded invocation reached `max_lanes`, its terminal handoff overrides target exhaustion; unresolved durable work is expected.
+Only in the final handoff/finish response of each bounded `/autopilot` invocation,
+perform exactly one compact, presentation-only promotion review using only the
+classification criteria in `knowledge/promotion-rules.md` and
+`rules/retrospective.md`, not their write-back commands. Here, “round” means one
+bounded invocation, not an individual lane, replay, or checkpoint. Always show a
+`Memory recommendations` section with exactly these buckets:
+
+```text
+- promote: evidence-backed, transferable route/evidence/stop-condition lesson, or none + reason
+- target-only: useful current-target lead/dead-end/handoff that should not enter global knowledge, or none
+- reject: noisy, unverified, sensitive, duplicated, or overfit material, or none
+```
+
+A promotion recommendation must cite a locatable target-owned evidence reference and state the
+target layer (`knowledge card`, `Skill`, `Rule`, or `Tool`), why the lesson is high-value, its
+transferability, one next action, and one stop/validation condition. Prefer lessons that recur,
+change route selection, prevent a repeated false positive, or expose a rare reusable connector.
+Never recommend a single-target fact or unsupported hypothesis for global promotion. This is a
+visible AI recommendation only: do not write target memory, edit knowledge/Skills/Rules, create a
+pending candidate, or call `/remember`; any write-back or promotion remains a separate existing
+reviewed workflow. This review must not change routing or lane selection, action budgets, Action
+Queue state, evidence/finding lifecycle, closure verdict, the next action, or any existing project
+capability.
+When no new reusable lesson was produced, emit `promote: none — no new transferable lesson` and
+keep the other buckets to one concise line each; do not repeat the full review inside the loop.
+End with target, mode, strongest evidence, findings/candidates, blockers/dead ends, that single
+section, and next best action; do not summarize the recommendations elsewhere. If the bounded
+invocation reached `max_lanes`, its terminal handoff overrides target exhaustion; unresolved
+durable work is expected.

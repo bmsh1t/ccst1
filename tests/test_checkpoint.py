@@ -10,11 +10,20 @@ import pytest
 
 import checkpoint as checkpoint_module
 import finding_index
-from action_queue import _checkpoint_item_to_action, _dedupe_key, load_queue, save_queue
+from action_queue import (
+    _checkpoint_item_to_action,
+    _dedupe_key,
+    build_action,
+    ingest_checkpoint,
+    load_queue,
+    resolve_action,
+    save_queue,
+)
 from checkpoint import (
     _build_next_action_queue,
     _bounded_next_proposals,
     _actor_gap_enrichment_proposal,
+    _capability_chain_review_item,
     _coverage_gap_validation_path,
     _decision_for_action,
     _dead_end_proposals,
@@ -65,6 +74,63 @@ def _seed_recon(repo_root: Path, target: str, urls: list[str]) -> None:
         encoding="utf-8",
     )
     (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+
+
+def _seed_capability_parent(
+    repo_root: Path,
+    *,
+    target: str = "target.com",
+    primitive: dict | None = None,
+    continuation_kind: str = "",
+    chain_child: bool = False,
+) -> dict:
+    evidence_ref = f"evidence/{target}/validation/primitive.json"
+    evidence_path = repo_root / evidence_ref
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_text(json.dumps({"difference": "stable"}), encoding="utf-8")
+    metadata = {
+        "depth_contract_version": 1,
+        "hypothesis_id": "H-primitive",
+        "capability_primitives": [
+            primitive
+            or {
+                "capability": "cross-workflow object selector",
+                "evidence_ref": evidence_ref,
+                "continuation_hint": "compare the linked download workflow",
+            }
+        ],
+    }
+    if continuation_kind:
+        metadata["continuation"] = {"kind": continuation_kind}
+    parent = build_action(
+        target=target,
+        action_type="validation",
+        evidence="Controlled replay recorded one reusable capability.",
+        next_question="Can the capability support one bounded chain?",
+        action="Preserve the result and review its chain value.",
+        metadata=metadata,
+    )
+    parent.update({"id": "AQ-0001", "status": "tested"})
+    queue = load_queue(repo_root, target)
+    queue["actions"].append(parent)
+    if chain_child:
+        child = build_action(
+            target=target,
+            action_type="hypothesis-continuation",
+            evidence="The parent already selected a chain continuation.",
+            next_question="Does the linked chain produce a controlled difference?",
+            action="Execute the existing chain child.",
+            metadata={
+                "depth_contract_version": 1,
+                "hypothesis_id": "H-primitive",
+                "parent_action_id": parent["id"],
+                "continuation_kind": "chain",
+            },
+        )
+        child.update({"id": "AQ-0002", "status": "queued"})
+        queue["actions"].append(child)
+    save_queue(repo_root, target, queue)
+    return parent
 
 
 def _claim_round_lane_worker(repo_root, target, lane, max_lanes, output):
@@ -2362,6 +2428,11 @@ def test_checkpoint_queues_cross_evidence_convergence(tmp_path):
         item["command_hint"] == "focused replay with browser/JS/source evidence"
         for item in checkpoint["next_action_queue"]
     )
+    convergence = next(
+        item for item in checkpoint["next_action_queue"] if item["type"] == "evidence-convergence"
+    )
+    assert convergence["metadata"]["activation_required"] is True
+    assert len(convergence["metadata"]["evidence_refs"]) >= 2
 
 
 def test_next_proposals_skip_ranked_surface_when_endpoint_already_has_tested_finding():
@@ -2431,6 +2502,148 @@ def test_next_proposals_skip_ranked_surface_when_ledger_has_tested_clean():
         "Review surface candidate https://api.target.com/rest/admin/application-version" in item
         for item in proposals
     )
+
+
+def test_capability_chain_review_projection_has_stable_identity_and_bounded_lineage(tmp_path):
+    parent = _seed_capability_parent(tmp_path)
+
+    first = _capability_chain_review_item(tmp_path, "target.com")
+    second = _capability_chain_review_item(tmp_path, "target.com")
+
+    assert first == second
+    assert first["type"] == "capability-chain-review"
+    assert first["source_id"] == parent["id"]
+    assert len(first["metadata"]["generation"]) == 64
+    assert first["metadata"]["generation"] == first["metadata"]["primitive_fingerprint"]
+    assert first["metadata"]["parent_action_id"] == parent["id"]
+    assert first["metadata"]["parent_hypothesis_id"] == "H-primitive"
+    assert first["metadata"]["primitive_lineage"] == {
+        "capability": "cross-workflow object selector",
+        "evidence_ref": "evidence/target.com/validation/primitive.json",
+        "continuation_hint": "compare the linked download workflow",
+    }
+    assert "activation_required" not in first
+    assert "depth_contract_version" not in first["metadata"]
+    assert "hypothesis_id" not in first["metadata"]
+    assert _decision_for_action(first["type"]) == "continue"
+
+
+@pytest.mark.parametrize("case", ["no-hint", "off-target", "immediate-chain", "existing-child"])
+def test_capability_chain_review_projection_rejects_ineligible_primitives(tmp_path, case):
+    primitive = None
+    continuation_kind = ""
+    chain_child = False
+    if case == "no-hint":
+        primitive = {
+            "capability": "cross-workflow object selector",
+            "evidence_ref": "evidence/target.com/validation/primitive.json",
+        }
+    elif case == "off-target":
+        foreign = tmp_path / "evidence" / "other.test" / "validation" / "primitive.json"
+        foreign.parent.mkdir(parents=True)
+        foreign.write_text("{}", encoding="utf-8")
+        primitive = {
+            "capability": "cross-workflow object selector",
+            "evidence_ref": "evidence/other.test/validation/primitive.json",
+            "continuation_hint": "compare the linked download workflow",
+        }
+    elif case == "immediate-chain":
+        continuation_kind = "chain"
+    else:
+        chain_child = True
+    _seed_capability_parent(
+        tmp_path,
+        primitive=primitive,
+        continuation_kind=continuation_kind,
+        chain_child=chain_child,
+    )
+
+    assert _capability_chain_review_item(tmp_path, "target.com") == {}
+
+
+def test_capability_chain_review_checkpoint_ingest_is_idempotent_and_final_suppresses_replay(tmp_path):
+    _seed_capability_parent(tmp_path)
+    review = _capability_chain_review_item(tmp_path, "target.com")
+
+    ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [review]})
+    assert _capability_chain_review_item(tmp_path, "target.com") == {}
+    ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": []})
+    queue = load_queue(tmp_path, "target.com")
+    reviews = [item for item in queue["actions"] if item["type"] == "capability-chain-review"]
+    assert len(reviews) == 1
+
+    resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=reviews[0]["id"],
+        status="dead-end",
+        result="No bounded in-scope chain remained.",
+    )
+    assert _capability_chain_review_item(tmp_path, "target.com") == {}
+    ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": []})
+    reviews = [
+        item for item in load_queue(tmp_path, "target.com")["actions"]
+        if item["type"] == "capability-chain-review"
+    ]
+    assert len(reviews) == 1
+    assert reviews[0]["status"] == "dead-end"
+
+
+def test_capability_chain_review_serializes_distinct_primitives_and_dedupes_equivalents(tmp_path):
+    parent = _seed_capability_parent(tmp_path)
+    second_ref = "evidence/target.com/validation/second-primitive.json"
+    second_path = tmp_path / second_ref
+    second_path.parent.mkdir(parents=True, exist_ok=True)
+    second_path.write_text(json.dumps({"difference": "stable second"}), encoding="utf-8")
+    queue = load_queue(tmp_path, "target.com")
+    parent_metadata = queue["actions"][0]["metadata"]
+    parent_metadata["capability_primitives"].extend([
+        {
+            "capability": "  CROSS-WORKFLOW   OBJECT SELECTOR ",
+            "evidence_ref": "evidence/target.com/validation/primitive.json",
+            "continuation_hint": " Compare   the linked DOWNLOAD workflow ",
+        },
+        {
+            "capability": "parser-controlled export format",
+            "evidence_ref": second_ref,
+            "continuation_hint": "compare one alternate export parser",
+        },
+    ])
+    save_queue(tmp_path, "target.com", queue)
+
+    fingerprints = []
+    capabilities = []
+    for _ in range(2):
+        review = _capability_chain_review_item(tmp_path, "target.com")
+        assert review == _capability_chain_review_item(tmp_path, "target.com")
+        assert review["source_id"] == parent["id"]
+        fingerprints.append(review["metadata"]["primitive_fingerprint"])
+        capabilities.append(review["metadata"]["primitive_lineage"]["capability"])
+        ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [review]})
+        durable = next(
+            item for item in load_queue(tmp_path, "target.com")["actions"]
+            if item["type"] == "capability-chain-review" and item["status"] == "queued"
+        )
+        resolve_action(
+            tmp_path,
+            target="target.com",
+            action_id=durable["id"],
+            status="dead-end",
+            result="No bounded in-scope chain remained for this primitive.",
+        )
+
+    assert len(set(fingerprints)) == 2
+    assert set(capabilities) == {
+        "cross-workflow object selector",
+        "parser-controlled export format",
+    }
+    assert _capability_chain_review_item(tmp_path, "target.com") == {}
+    reviews = [
+        item for item in load_queue(tmp_path, "target.com")["actions"]
+        if item["type"] == "capability-chain-review"
+    ]
+    assert len(reviews) == 2
+    assert all(item["status"] == "dead-end" for item in reviews)
 
 
 def test_next_proposals_rolls_past_covered_ranked_surfaces():

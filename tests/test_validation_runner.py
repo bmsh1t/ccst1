@@ -262,6 +262,7 @@ def test_authz_public_exposure_creates_bundle_and_ledger(monkeypatch, tmp_path):
     ledger = tmp_path / "memory" / "evidence" / key / "ledger.jsonl"
     assert summary["result"] == "tested_finding"
     assert summary["candidate_ready"] is True
+    assert summary["observation_kind"] == "baseline_only"
     assert "admin" in summary["markers"]
     assert "configuration" in summary["markers"]
     assert "oauth" in summary["markers"]
@@ -297,6 +298,7 @@ def test_authz_public_exposure_without_sensitive_marker_is_clean(monkeypatch, tm
     assert summary["result"] == "tested_clean"
     assert summary["markers"] == []
     assert summary["candidate_ready"] is False
+    assert summary["observation_kind"] == "baseline_only"
 
 
 def test_authz_public_exposure_challenge_catalog_keywords_do_not_promote(monkeypatch, tmp_path):
@@ -936,6 +938,34 @@ def test_queue_endpoint_match_normalizes_trailing_slash_without_path_suffix_matc
         legacy_suffix,
         ["/api/Users"],
     ) is False
+
+
+def test_queue_endpoint_match_prefers_running_versioned_hypothesis_over_advisory_review():
+    endpoint = "https://target.test/rest/admin"
+    versioned = {
+        "id": "AQ-VERSIONED",
+        "status": "running",
+        "type": "coverage-gap",
+        "metadata": {
+            "endpoint": "/rest/admin",
+            "depth_contract_version": 1,
+        },
+    }
+    advisory = {
+        "id": "AQ-ADVISORY",
+        "status": "queued",
+        "type": "surface-review",
+        "metadata": {"endpoint": "/rest/admin"},
+    }
+
+    matches, match_kind = validation_runner._select_queue_actions_for_summary(
+        {"actions": [advisory, versioned]},
+        {"url": endpoint},
+        "tested",
+    )
+
+    assert [item["id"] for item in matches] == ["AQ-VERSIONED"]
+    assert match_kind == "versioned_endpoint"
 
 
 def test_authz_public_exposure_cli_syncs_finding_and_action_queue(monkeypatch, tmp_path, capsys):

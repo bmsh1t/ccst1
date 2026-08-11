@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import action_queue as action_queue_module
 from action_queue import (
     add_manual_action,
     build_action,
@@ -391,6 +392,38 @@ def test_surface_review_does_not_preempt_report_when_no_substantive_work(tmp_pat
     assert select_next_action(load_queue(tmp_path, "target.com"))["type"] == "report"
 
 
+@pytest.mark.parametrize(
+    ("other_type", "other_status"),
+    [
+        ("runtime-recovery", "running"),
+        ("validation", "queued"),
+        ("candidate-evidence-gap", "candidate"),
+        ("report", "queued"),
+    ],
+)
+def test_capability_chain_review_never_preempts_existing_owner_work(other_type, other_status):
+    review = build_action(
+        target="target.com",
+        action_type="capability-chain-review",
+        evidence="A persisted capability primitive needs bounded chain review.",
+        next_question="Does one evidence-backed chain remain?",
+        action="Review one primitive.",
+        priority=999,
+    )
+    review["id"] = "AQ-REVIEW"
+    other = build_action(
+        target="target.com",
+        action_type=other_type,
+        evidence="Existing owner work remains open.",
+        next_question="Can the existing work be completed?",
+        action="Complete the existing owner work.",
+        priority=1,
+    )
+    other.update({"id": "AQ-OWNER", "status": other_status})
+
+    assert select_next_action({"actions": [review, other]})["id"] == other["id"]
+
+
 def test_surface_review_with_runner_replay_preempts_report(tmp_path):
     checkpoint = {
         "next_action_queue": [
@@ -707,6 +740,98 @@ def test_ingest_checkpoint_retires_stale_checkpoint_queued_actions(tmp_path):
     assert "checkpoint refresh" in stale["result"].lower()
 
 
+def test_ingest_checkpoint_preserves_running_versioned_hypothesis(tmp_path):
+    ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "H-ADMIN",
+                    "priority": 99,
+                    "type": "coverage-gap",
+                    "status": "ready",
+                    "action": "Replay the admin configuration boundary.",
+                    "command_hint": "focused authz replay",
+                    "source": "checkpoint",
+                    "source_id": "admin-authz",
+                    "metadata": {
+                        "endpoint": "/rest/admin/application-configuration",
+                        "depth_contract_version": 1,
+                        "hypothesis_id": "H-admin-config",
+                    },
+                }
+            ]
+        },
+    )
+    queue = load_queue(tmp_path, "target.com")
+    queue["actions"][0]["status"] = "running"
+    save_queue(tmp_path, "target.com", queue)
+
+    refreshed = ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "NEW-ACTION",
+                    "priority": 80,
+                    "type": "coverage-gap",
+                    "status": "ready",
+                    "action": "Review a different evidence-backed lane.",
+                    "command_hint": "focused replay",
+                }
+            ]
+        },
+    )
+    saved = load_queue(tmp_path, "target.com")
+    preserved = next(item for item in saved["actions"] if item["id"] == "AQ-0001")
+
+    assert refreshed["stats"]["retired_stale"] == 0
+    assert preserved["status"] == "running"
+    assert preserved["metadata"]["hypothesis_id"] == "H-admin-config"
+
+
+def test_ingest_checkpoint_retires_stale_running_versionless_action(tmp_path):
+    ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [{
+                "id": "LEGACY",
+                "priority": 80,
+                "type": "coverage-gap",
+                "status": "ready",
+                "action": "Replay the legacy queued check.",
+                "command_hint": "focused replay",
+            }]
+        },
+    )
+    queue = load_queue(tmp_path, "target.com")
+    queue["actions"][0]["status"] = "running"
+    save_queue(tmp_path, "target.com", queue)
+
+    refreshed = ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [{
+                "id": "NEW",
+                "priority": 70,
+                "type": "coverage-gap",
+                "status": "ready",
+                "action": "Review current checkpoint work.",
+                "command_hint": "focused replay",
+            }]
+        },
+    )
+    saved = load_queue(tmp_path, "target.com")
+    legacy = next(item for item in saved["actions"] if item["id"] == "AQ-0001")
+
+    assert refreshed["stats"]["retired_stale"] == 1
+    assert legacy["status"] == "n/a"
+
+
 def test_ingest_checkpoint_retires_stale_partial_validation_candidate(tmp_path):
     stale_checkpoint = {
         "next_action_queue": [
@@ -970,6 +1095,15 @@ def test_resolve_kill_condition_closes_hypothesis_without_pivots(tmp_path):
     assert not any(item["type"] == "hypothesis-pivot" for item in queue["actions"])
     parent = queue["actions"][0]
     assert parent["metadata"]["hypothesis_status"] == "closed"
+
+
+def test_target_owned_evidence_ref_rejects_resolver_path_outside_repo(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        action_queue_module,
+        "_locatable_evidence_ref",
+        lambda *_args: "/tmp/foreign/evidence.json",
+    )
+    assert action_queue_module._target_owned_evidence_ref(tmp_path, "api.target.com", "foreign") == ""
 
 
 @pytest.mark.parametrize("metadata_json", ["not-json", "[]", "null", '"text"'])

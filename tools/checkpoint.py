@@ -29,16 +29,18 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.autopilot_args import MAX_LANES
     from tools.action_queue import (
+        ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES,
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
+        _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
         ingest_checkpoint as ingest_action_queue_checkpoint,
         load_queue as load_action_queue,
         select_next_action as action_queue_select_next_action,
     )
     from tools.autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint
     from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import class_relevance, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection
+    from tools.coverage_matrix import class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
@@ -57,16 +59,18 @@ try:
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
     from action_queue import (  # type: ignore
+        ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES,
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
+        _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
         ingest_checkpoint as ingest_action_queue_checkpoint,
         load_queue as load_action_queue,
         select_next_action as action_queue_select_next_action,
     )
     from autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint  # type: ignore
     from context_pack import build_context_pack  # type: ignore
-    from coverage_matrix import class_relevance, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
+    from coverage_matrix import class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
@@ -706,6 +710,9 @@ def _coverage_gap_validation_path(gap: dict) -> str:
 
 def _matrix_summary(matrix: dict, gaps: list[dict]) -> dict:
     endpoints = matrix.get("endpoints") or []
+    lane_summary = matrix.get("high_risk_lanes")
+    if not isinstance(lane_summary, dict):
+        lane_summary = high_risk_lane_summary(matrix)
     stored = matrix.get("summary") if isinstance(matrix.get("summary"), dict) else {}
     if stored and matrix.get("_coverage_projection"):
         return {
@@ -717,6 +724,7 @@ def _matrix_summary(matrix: dict, gaps: list[dict]) -> dict:
             "n_a": int(stored.get("n_a", 0) or 0),
             "high_value_gaps_count": int(stored.get("high_value_gaps_count", len(gaps)) or 0),
             "actionable_high_value_gaps_count": len(_actionable_coverage_gaps(gaps)),
+            "high_risk_lanes": lane_summary,
         }
     total_cells = 0
     counts = {
@@ -744,6 +752,7 @@ def _matrix_summary(matrix: dict, gaps: list[dict]) -> dict:
         **counts,
         "high_value_gaps_count": len(gaps),
         "actionable_high_value_gaps_count": len(_actionable_coverage_gaps(gaps)),
+        "high_risk_lanes": lane_summary,
     }
 
 
@@ -1244,6 +1253,7 @@ ACTION_DECISIONS = {
     "evidence-convergence": "hunt",
     "workflow-lead-review": "hunt",
     "sibling-chain-review": "hunt",
+    "capability-chain-review": "continue",
     "source-enrichment": "enrich",
     "js-enrichment": "enrich",
     "browser-enrichment": "enrich",
@@ -2499,6 +2509,29 @@ def _next_proposals(
                 )
             )
 
+    lane_summary = matrix.get("high_risk_lanes")
+    if not isinstance(lane_summary, dict):
+        lane_summary = high_risk_lane_summary(matrix)
+    lane_order = (
+        "SQLi", "NoSQLi", "SSRF", "XXE", "RCE", "SSTI", "CommandInjection",
+        "Deserialization", "LFI", "Path", "Upload", "IDOR", "Authz", "GraphQL",
+        "OAuth", "JWT", "CSRF", "Race", "Webhook", "XSS",
+    )
+    lane_review = [
+        f"{name}={lane_summary[name].get('disposition')}"
+        for name in lane_order
+        if isinstance(lane_summary.get(name), dict)
+        and lane_summary[name].get("disposition") in {"queued", "unassessed", "not_observed", "blocked"}
+    ]
+    if lane_review and state.get("has_recon") and matrix.get("endpoints"):
+        proposals.append(
+            "High-risk lane review: {lanes}. For every listed family, use the smallest "
+            "evidence-producing interface test (SQLi/NoSQLi, SSRF URL-fetch/OAST, "
+            "XXE XML parser, RCE/SSTI/command/upload, authz/IDOR, GraphQL/OAuth/JWT, "
+            "Path/CSRF/Race/Webhook) or record an explicit blocked/not_applicable reason; "
+            "never treat unassessed as clean.".format(lanes=", ".join(lane_review[:12]))
+        )
+
     for gap in _checkpoint_coverage_gaps(coverage_gaps, matrix):
         if _ledger_covers_cell(
             covered_ledger_cells,
@@ -2656,6 +2689,8 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         return "actor-gap", 96, "focused replay + tools/evidence_ledger.py record"
     if "action-gated scanner lane" in lowered or "unsafe-skipped scanner lane" in lowered:
         return "action-gated-review", 93, "review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate"
+    if "high-risk lane review" in lowered:
+        return "high-risk-lane-review", 92, "focused interface test or explicit blocked/not_applicable disposition"
     if "secondary-sweep lead" in lowered:
         if "[public-metadata]" in lowered:
             return "secondary-sweep", 52, "review public metadata only for unusual fields or chain pivots"
@@ -3005,6 +3040,257 @@ def _attach_skill_route(actions: list[dict], skill_route: dict | None) -> list[d
     return actions
 
 
+_ACTIVATABLE_ACTION_TYPES = {
+    "validation", "candidate-evidence-gap", "case-state-validation", "actor-gap",
+    "coverage-gap", "evidence-convergence", "json-inject-review", "sql-matrix-review",
+}
+_ACTIVATION_EVIDENCE_ROOTS = {".private", "evidence", "findings", "recon", "reports"}
+
+
+def _capability_chain_review_item(repo: Path, target: str) -> dict:
+    """Project one unreviewed, evidence-backed primitive from the durable Queue."""
+    queue = load_action_queue(repo, target)
+    actions = [item for item in queue.get("actions", []) if isinstance(item, dict)]
+    reviews = [item for item in actions if str(item.get("type") or "") == "capability-chain-review"]
+    if any(str(item.get("status") or "queued") in ACTION_QUEUE_ACTIVE_STATUSES for item in reviews):
+        return {}
+
+    reviewed = {
+        (
+            str(item.get("source_id") or ""),
+            str((item.get("metadata") or {}).get("generation") or ""),
+        )
+        for item in reviews
+        if str(item.get("status") or "") in ACTION_QUEUE_ACTIVE_STATUSES | ACTION_QUEUE_FINAL_STATUSES
+        and isinstance(item.get("metadata"), dict)
+    }
+    chain_parents = {
+        str((item.get("metadata") or {}).get("parent_action_id") or "")
+        for item in actions
+        if isinstance(item.get("metadata"), dict)
+        and str((item.get("metadata") or {}).get("continuation_kind") or "").lower() == "chain"
+    }
+    candidates: list[tuple[str, str, dict, dict]] = []
+    for parent in actions:
+        parent_id = str(parent.get("id") or "").strip()
+        metadata = parent.get("metadata") if isinstance(parent.get("metadata"), dict) else {}
+        continuation = metadata.get("continuation") if isinstance(metadata.get("continuation"), dict) else {}
+        if (
+            not parent_id
+            or metadata.get("depth_contract_version") != 1
+            or str(parent.get("status") or "") not in ACTION_QUEUE_FINAL_STATUSES
+            or str(continuation.get("kind") or "").lower() == "chain"
+            or parent_id in chain_parents
+        ):
+            continue
+        primitives = metadata.get("capability_primitives")
+        if not isinstance(primitives, list):
+            continue
+        for raw in primitives:
+            if not isinstance(raw, dict):
+                continue
+            capability = re.sub(r"\s+", " ", str(raw.get("capability") or "")).strip()[:240]
+            hint = re.sub(r"\s+", " ", str(raw.get("continuation_hint") or "")).strip()[:300]
+            evidence_ref = action_queue_target_owned_evidence_ref(repo, target, raw.get("evidence_ref"))
+            if not capability or not hint or not evidence_ref:
+                continue
+            primitive = {
+                "capability": capability,
+                "evidence_ref": evidence_ref,
+                "continuation_hint": hint,
+            }
+            normalized = {
+                "capability": capability.casefold(),
+                "evidence_ref": evidence_ref,
+                "continuation_hint": hint.casefold(),
+            }
+            fingerprint = hashlib.sha256(
+                json.dumps(normalized, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if (parent_id, fingerprint) not in reviewed:
+                candidates.append((parent_id, fingerprint, parent, primitive))
+
+    if not candidates:
+        return {}
+    parent_id, fingerprint, parent, primitive = min(candidates, key=lambda item: (item[0], item[1]))
+    parent_metadata = parent.get("metadata") if isinstance(parent.get("metadata"), dict) else {}
+    return {
+        "id": f"CHAIN-{parent_id}-{fingerprint[:12]}",
+        "priority": 40,
+        "type": "capability-chain-review",
+        "status": "ready",
+        "action": (
+            f"Review capability primitive from {parent_id}: {primitive['capability']}. "
+            f"Assess one bounded continuation: {primitive['continuation_hint']}"
+        ),
+        "command_hint": "add one normal versioned chain action before resolving this review, or record dead-end/blocked",
+        "redline_required": False,
+        "stop_condition": "materialize at most one evidence-backed chain action or record dead-end/blocked",
+        "source": "hypothesis-loop",
+        "source_id": parent_id,
+        "metadata": {
+            "generation": fingerprint,
+            "parent_action_id": parent_id,
+            "parent_hypothesis_id": str(parent_metadata.get("hypothesis_id") or "")[:160],
+            "primitive_lineage": primitive,
+            "primitive_fingerprint": fingerprint,
+        },
+    }
+
+
+def _target_owned_context_refs(repo: Path, target: str, action: dict, context: dict) -> list[str]:
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    candidates = [
+        metadata.get("evidence_ref"),
+        metadata.get("summary_path"),
+        metadata.get("artifact"),
+        *(context.get("must_read") or []),
+    ]
+    target_key = target_storage_key(canonical_target_value(target))
+    candidates.extend([
+        f"recon/{target_key}/surface/summary.json",
+        f"evidence/{target_key}/coverage_matrix.json",
+    ])
+    refs: list[str] = []
+    for raw in candidates:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        path = Path(value)
+        if not path.is_absolute():
+            path = repo / path
+        try:
+            relative = path.resolve().relative_to(repo.resolve())
+        except (OSError, ValueError):
+            continue
+        if (
+            not relative.parts
+            or relative.parts[0] not in _ACTIVATION_EVIDENCE_ROOTS
+            or target_key not in relative.parts
+            or not path.is_file()
+        ):
+            continue
+        ref = str(relative)
+        if ref not in refs:
+            refs.append(ref)
+        if len(refs) >= 4:
+            break
+    return refs
+
+
+def _activation_endpoint(action: dict, *, repo: Path | None = None, refs: list[str] | None = None) -> str:
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    endpoint = str(metadata.get("endpoint") or metadata.get("url") or "").strip()
+    if not endpoint:
+        candidates = metadata.get("candidates") if isinstance(metadata.get("candidates"), list) else []
+        if candidates and isinstance(candidates[0], dict):
+            endpoint = str(candidates[0].get("endpoint") or "").strip()
+    if endpoint:
+        return endpoint.rstrip(".,;)")
+    text = " ".join(str(action.get(key) or "") for key in ("action", "command_hint"))
+    match = re.search(r"https?://[^\s,;]+|(?<![A-Za-z0-9])/[A-Za-z0-9][^\s,;]*", text)
+    if match:
+        return match.group(0).rstrip(".,;)")
+    for ref in refs or []:
+        if repo is None:
+            break
+        try:
+            evidence = (repo / ref).read_text(encoding="utf-8", errors="ignore")[:120_000]
+        except OSError:
+            continue
+        match = re.search(r"https?://[^\s\"',;]+|\"(?:path|route|endpoint)\"\s*:\s*\"([^\"]+)\"", evidence)
+        if match:
+            return (match.group(1) or match.group(0)).rstrip(".,;)")
+    return ""
+
+
+def _activation_method(action: dict, *, repo: Path | None = None, refs: list[str] | None = None) -> str:
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    method = str(metadata.get("method") or "").strip().upper()
+    text = " ".join(
+        str(value or "")
+        for value in (metadata.get("replay_draft"), action.get("action"), action.get("command_hint"))
+    )
+    if not method:
+        match = re.search(r"(?:--method\s+|\b)(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\b", text, re.I)
+        method = match.group(1).upper() if match else ""
+    if not method and str(action.get("type") or "") == "json-inject-review":
+        method = "POST"
+    if not method and str(action.get("type") or "") == "sql-matrix-review":
+        method = "POST" if str(metadata.get("lane") or "") == "form" else "GET"
+    if not method and "validation_runner.py" in text:
+        method = "GET"
+    if not method:
+        for ref in refs or []:
+            if repo is None:
+                break
+            try:
+                evidence = (repo / ref).read_text(encoding="utf-8", errors="ignore")[:120_000]
+            except OSError:
+                continue
+            match = re.search(r"\"method\"\s*:\s*\"(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\"", evidence, re.I)
+            if match:
+                method = match.group(1).upper()
+                break
+    return method
+
+
+def _activation_input_boundary(action: dict, endpoint: str) -> str:
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    for key in ("input_boundary", "field", "object_ref", "backlog_id", "vuln_class"):
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            return value[:160]
+    parsed = urlparse(endpoint)
+    query = parsed.query if parsed.scheme or parsed.netloc else endpoint.partition("?")[2]
+    if query:
+        return query.split("=", 1)[0][:160]
+    return "endpoint" if endpoint else ""
+
+
+def _attach_activation_context(
+    actions: list[dict],
+    *,
+    repo: Path,
+    target: str,
+    context: dict,
+) -> list[dict]:
+    route = context.get("skill_route") if isinstance(context.get("skill_route"), dict) else {}
+    knowledge_refs = [str(value) for value in (context.get("knowledge_cards") or []) if str(value).strip()][:4]
+    seeds = [str(value).strip() for value in (context.get("hypothesis_seeds") or []) if str(value).strip()]
+    if not route or not knowledge_refs:
+        return actions
+    for action in actions:
+        if not isinstance(action, dict) or str(action.get("type") or "") not in _ACTIVATABLE_ACTION_TYPES:
+            continue
+        metadata = action.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            continue
+        refs = _target_owned_context_refs(repo, target, action, context)
+        endpoint = _activation_endpoint(action, repo=repo, refs=refs)
+        method = _activation_method(action, repo=repo, refs=refs)
+        boundary = _activation_input_boundary(action, endpoint)
+        action_type = str(action.get("type") or "")
+        if action_type == "evidence-convergence" and len(refs) < 2:
+            continue
+        if not refs or not endpoint or not method or not boundary:
+            continue
+        metadata.update({
+            "activation_required": True,
+            "knowledge_refs": knowledge_refs,
+            "evidence_ref": refs[-1],
+            "evidence_refs": refs,
+            "baseline_ref": refs[0],
+            "hypothesis_seed": (seeds[0] if seeds else str(action.get("action") or ""))[:500],
+            "max_hypothesis_actions_cap": 4,
+            "endpoint": endpoint,
+            "method": method,
+            "input_boundary": boundary,
+        })
+        action["activation_required"] = True
+    return actions
+
+
 def _json_inject_queue_item(state: dict) -> dict:
     projection = state.get("json_inject") or {}
     status = str(projection.get("status") or "")
@@ -3301,6 +3587,14 @@ def _handoff_summary(
     stats = _surface_stats(state)
     findings = _structured_findings(state)
     actor_matrix = evidence_summary.get("actor_matrix") or {}
+    lane_summary = coverage_summary.get("high_risk_lanes") or {}
+    lane_counts = {
+        status: sum(
+            1 for item in lane_summary.values()
+            if isinstance(item, dict) and item.get("disposition") == status
+        )
+        for status in ("candidate", "tested", "queued", "blocked", "not_applicable", "unassessed", "not_observed")
+    }
     parts = [
         f"Decision={decision}",
         f"next_action={next_action or state.get('next_action', '-')}",
@@ -3313,6 +3607,7 @@ def _handoff_summary(
         f"observation_stale={stats['observation_stale']}",
         f"coverage_gaps={coverage_summary.get('high_value_gaps_count', 0)}",
         f"actionable_coverage_gaps={coverage_summary.get('actionable_high_value_gaps_count', 0)}",
+        "high_risk_lanes=" + ",".join(f"{key}:{value}" for key, value in lane_counts.items()),
         f"actor_gaps={actor_matrix.get('gap_count', 0)}",
         f"runner_candidates={len(state.get('validation_runner_candidates') or [])}",
     ]
@@ -3543,6 +3838,15 @@ def build_checkpoint(
     if sibling_item:
         next_action_queue.append(sibling_item)
     _attach_skill_route(next_action_queue, context.get("skill_route"))
+    _attach_activation_context(
+        next_action_queue,
+        repo=repo,
+        target=resolved_target,
+        context=context,
+    )
+    chain_review = _capability_chain_review_item(repo, resolved_target)
+    if chain_review:
+        next_action_queue.append(chain_review)
     next_action_queue = _filter_final_action_queue_items(
         repo,
         resolved_target,
@@ -3593,6 +3897,8 @@ def build_checkpoint(
             "selected_skill": context.get("selected_skill", ""),
             "skill_route": context.get("skill_route", {}),
             "knowledge_cards": context.get("knowledge_cards", []),
+            "evidence_anchors": context.get("evidence_anchors", []),
+            "hypothesis_seeds": context.get("hypothesis_seeds", []),
             "reference_hints": context.get("reference_hints", []),
             "required_checks": context.get("required_checks", []),
             "contradictions": context.get("contradictions", []),
@@ -3605,7 +3911,16 @@ def build_checkpoint(
         },
         "coverage": {
             "summary": coverage_summary,
+            "high_risk_lanes": coverage_summary.get("high_risk_lanes", {}),
             "high_value_gaps": gaps[:10],
+            "window": {
+                "total": len(gaps),
+                "returned": min(len(gaps), 10),
+                "remaining": max(0, len(gaps) - 10),
+                "digest": hashlib.sha256(
+                    json.dumps(gaps, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()[:16],
+            },
         },
         "case_state": {
             "actors": case_state.get("actors", 0),
@@ -3757,6 +4072,11 @@ def format_checkpoint(checkpoint: dict) -> str:
         f"  - endpoints: {summary.get('endpoints', 0)}",
         f"  - high-value gaps: {summary.get('high_value_gaps_count', 0)}",
         f"  - actionable high-value gaps: {summary.get('actionable_high_value_gaps_count', 0)}",
+        "  - high-risk lanes: " + ", ".join(
+            f"{name}={item.get('disposition', 'unknown')}"
+            for name, item in (coverage.get("high_risk_lanes") or {}).items()
+            if isinstance(item, dict)
+        ),
         "- Case state:",
         f"  - actors: {case_state.get('actors', 0)}",
         f"  - sessions: {case_state.get('sessions', 0)}",

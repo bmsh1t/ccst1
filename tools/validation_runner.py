@@ -39,6 +39,8 @@ try:
     from tools.action_queue import (
         ACTIVE_STATUSES,
         _resolve_action_in_queue,
+        _target_owned_evidence_ref,
+        _validate_observed_difference,
         load_queue,
         queue_mutation_lock,
         save_queue,
@@ -74,6 +76,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES,
         _resolve_action_in_queue,
+        _target_owned_evidence_ref,
+        _validate_observed_difference,
         load_queue,
         queue_mutation_lock,
         save_queue,
@@ -618,6 +622,15 @@ def _select_queue_actions_for_summary(
         matched = [item for item in actions if matcher(item)]
         active = [item for item in matched if str(item.get("status") or "queued") in ACTIVE_STATUSES]
         if active:
+            versioned_running = [
+                item
+                for item in active
+                if str(item.get("status") or "") == "running"
+                and isinstance(item.get("metadata"), dict)
+                and item["metadata"].get("depth_contract_version") == 1
+            ]
+            if versioned_running:
+                return versioned_running, "versioned_endpoint" if match_kind == "endpoint" else match_kind
             return active, match_kind
         final = [
             item for item in matched
@@ -929,6 +942,73 @@ def _patch_candidate_queue_followup_in_queue(
     return {"patched": True}
 
 
+def _runner_observed_difference(summary: dict[str, Any]) -> str:
+    explicit = str(
+        summary.get("observed_difference")
+        or summary.get("difference_summary")
+        or ""
+    ).strip()
+    if explicit:
+        return " ".join(explicit.split())[:500]
+    observations: list[str] = []
+    runs = summary.get("runs") if isinstance(summary.get("runs"), list) else []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        diff = run.get("diff") if isinstance(run.get("diff"), dict) else {}
+        text = str(diff.get("summary") or run.get("summary") or "").strip()
+        if text:
+            observations.append(" ".join(text.split()))
+            continue
+        changed = diff.get("changed") if isinstance(diff.get("changed"), dict) else {}
+        if changed:
+            observations.append(json.dumps(changed, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+            continue
+        fields = {
+            key: run.get(key)
+            for key in (
+                "status", "marker_found", "owner_status", "peer_status",
+                "owner_success", "peer_success", "peer_denied", "exact_body_match",
+                "private_body_match", "strong_access",
+            )
+            if key in run
+        }
+        if fields:
+            observations.append(json.dumps(fields, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+    if observations:
+        return " | ".join(observations)[:500]
+    return ""
+
+
+def _runner_baseline_observation(summary: dict[str, Any]) -> str:
+    """Describe an explicit baseline-only replay without inventing a diff.
+
+    Some safe lanes intentionally execute one anonymous baseline request first.
+    That response is useful for the next AI decision, but it must remain marked
+    as baseline-only so Queue resolve can require a continuation rather than
+    treating it as a supported kill.
+    """
+    if str(summary.get("observation_kind") or "").strip().lower() != "baseline_only":
+        return ""
+    baseline = summary.get("baseline") if isinstance(summary.get("baseline"), dict) else {}
+    if not baseline:
+        return ""
+    fields = {
+        key: baseline.get(key)
+        for key in ("status", "body_length", "content_type", "body_sha256")
+        if baseline.get(key) not in (None, "")
+    }
+    marker_sources = summary.get("marker_sources")
+    if isinstance(marker_sources, dict):
+        body_markers = marker_sources.get("body")
+        if isinstance(body_markers, list):
+            fields["body_marker_count"] = len(body_markers)
+    if not fields:
+        return ""
+    encoded = json.dumps(fields, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return f"baseline-only observation; no controlled variant; response={encoded}"[:500]
+
+
 def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
     target = str(summary.get("target") or "").strip()
     result = str(summary.get("result") or "").strip()
@@ -951,6 +1031,13 @@ def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str,
         matched = matches[0]
         operation_id = str(summary.get("operation_id") or "").strip()
         metadata = matched.get("metadata") if isinstance(matched.get("metadata"), dict) else {}
+        if metadata.get("activation_required") and metadata.get("depth_contract_version") != 1:
+            return {
+                "status": "blocked",
+                "reason": "substantive queue action must be activated at claim before runner sync",
+                "id": str(matched.get("id") or ""),
+                "match_kind": match_kind,
+            }
         if operation_id and str(metadata.get("runner_operation_id") or "") == operation_id:
             return {
                 "status": "deduplicated",
@@ -958,7 +1045,103 @@ def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str,
                 "operation_id": operation_id,
                 "match_kind": match_kind,
             }
-        summary_ref = str(summary.get("summary_path") or "")
+        summary_ref = _target_owned_evidence_ref(repo_root, target, summary.get("summary_path"))
+        if metadata.get("depth_contract_version") == 1:
+            if not operation_id:
+                return {
+                    "status": "blocked",
+                    "reason": "versioned runner observation requires operation_id",
+                    "id": str(matched.get("id") or ""),
+                }
+            ledger = summary.get("ledger_record") if isinstance(summary.get("ledger_record"), dict) else {}
+            evidence_ref = _target_owned_evidence_ref(
+                repo_root, target, ledger.get("evidence_ref") or summary_ref
+            )
+            if not summary_ref or not evidence_ref:
+                return {
+                    "status": "blocked",
+                    "reason": "versioned runner observation requires target-owned summary and evidence refs",
+                    "id": str(matched.get("id") or ""),
+                }
+            if str(matched.get("status") or "") != "running":
+                return {
+                    "status": "blocked",
+                    "reason": "versioned queue action must be running after an activation claim",
+                    "id": str(matched.get("id") or ""),
+                }
+            active_dimension = str(metadata.get("active_dimension") or "").strip()
+            if not active_dimension:
+                return {
+                    "status": "blocked",
+                    "reason": "versioned queue action is missing active_dimension",
+                    "id": str(matched.get("id") or ""),
+                }
+            observed_at = str(summary.get("generated_at") or now_utc())
+            prior_outcome = metadata.get("last_outcome") if isinstance(metadata.get("last_outcome"), dict) else {}
+            prior_at = str(prior_outcome.get("at") or "")
+            if prior_at and observed_at and observed_at < prior_at:
+                return {
+                    "status": "stale",
+                    "reason": "runner outcome is older than the persisted last_outcome",
+                    "id": str(matched.get("id") or ""),
+                    "operation_id": operation_id,
+                }
+            observed_difference = _runner_observed_difference(summary)
+            observation_kind = "controlled_difference"
+            if not observed_difference:
+                observed_difference = _runner_baseline_observation(summary)
+                if observed_difference:
+                    observation_kind = "baseline_only"
+            if not observed_difference:
+                return {
+                    "status": "blocked",
+                    "reason": "versioned runner observation requires a controlled response difference",
+                    "id": str(matched.get("id") or ""),
+                    "operation_id": operation_id,
+                }
+            try:
+                observed_difference = _validate_observed_difference(observed_difference)
+            except ValueError:
+                return {
+                    "status": "blocked",
+                    "reason": "versioned runner observation contains credential or header values",
+                    "id": str(matched.get("id") or ""),
+                    "operation_id": operation_id,
+                }
+            outcome_metadata = {
+                "runner_operation_id": operation_id,
+                "tested_dimensions": [active_dimension],
+                "last_outcome": {
+                    "status": result,
+                    "summary_ref": summary_ref,
+                    "evidence_ref": evidence_ref,
+                    "observed_difference": observed_difference,
+                    "observation_kind": observation_kind,
+                    "operation_id": operation_id,
+                    "at": observed_at,
+                },
+            }
+            resolved = _resolve_action_in_queue(
+                repo_root,
+                target=target,
+                queue=queue,
+                action_id=str(matched.get("id") or ""),
+                status="running",
+                result=f"validation-runner-observation={result}; summary={summary_ref}",
+                notes=f"runner={summary.get('lane', '')}",
+                metadata=outcome_metadata,
+                runner_observation=True,
+            )
+            path = save_queue(repo_root, target, queue)
+            return {
+                "status": "updated",
+                "id": resolved.get("id", ""),
+                "ids": [str(resolved.get("id") or "")],
+                "updated_count": 1,
+                "action_status": resolved.get("status", ""),
+                "match_kind": match_kind,
+                "path": str(path),
+            }
         resolved = _resolve_action_in_queue(
             repo_root,
             target=target,
@@ -1052,8 +1235,8 @@ def sync_runner_artifacts(summary: dict[str, Any], *, repo_root: Path) -> dict[s
     statuses = {str(item.get("status") or "") for item in updates.values()}
     if statuses & {"error", "ambiguous", "blocked"}:
         status = "partial"
-    elif statuses <= {"skipped", "deduplicated"}:
-        status = "deduplicated" if "deduplicated" in statuses else "skipped"
+    elif statuses <= {"skipped", "deduplicated", "stale"}:
+        status = "deduplicated" if statuses & {"deduplicated", "stale"} else "skipped"
     else:
         status = "updated"
     return {"status": status, "operation_id": str(summary.get("operation_id") or ""), **updates}
@@ -1862,6 +2045,7 @@ def run_authz_public_exposure(
         "generated_at": now_utc(),
         "result": result,
         "candidate_ready": candidate_ready,
+        "observation_kind": "baseline_only",
         "markers": markers,
         "marker_sources": marker_sources,
         "baseline": _response_snapshot(response),

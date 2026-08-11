@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import copy
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -79,7 +80,7 @@ EVIDENCE_REF_KEYS = {
 }
 EVIDENCE_ROOTS = {".private", "evidence", "findings", "recon", "reports"}
 REPORT_ACTION_TYPES = {"report"}
-ADVISORY_REVIEW_ACTION_TYPES = {"surface-review"}
+ADVISORY_REVIEW_ACTION_TYPES = {"surface-review", "capability-chain-review"}
 LOW_EVIDENCE_SURFACE_REVIEW_MARKERS = (
     "reason: top advisory score",
     "reason: top advisory score (low-evidence fallback)",
@@ -107,6 +108,21 @@ SENSITIVE_METADATA_KEYS = {
     "set_cookie",
 }
 STRUCTURED_METADATA_LIST_FIELDS = {"tested_dimensions", "pivot_hints"}
+RUNNER_OBSERVATION_FIELDS = {"last_outcome", "tested_dimensions", "runner_operation_id"}
+DEPTH_CONTRACT_VERSION = 1
+RISK_TIERS = {"low", "medium", "high", "critical"}
+CONTINUATION_KINDS = {
+    "sibling", "bypass", "identity", "object", "parser", "transport",
+    "workflow", "chain", "rotation", "blocked",
+}
+MAX_CAPABILITY_PRIMITIVES = 3
+SENSITIVE_OBSERVATION_VALUE_RE = re.compile(
+    r"\b(?:authorization|cookie|set-cookie|x-api-key)\b\s*[\"']?\s*[:=]\s*[\"']?\s*\S+|"
+    r"\bbearer\s+[A-Za-z0-9._~+/=-]{3,}|"
+    r"\b(?:(?:access|id|refresh)[_-]?token|token|password|api[-_ ]?key)\b"
+    r"\s*[\"']?\s*[:=]\s*[\"']?\s*\S+",
+    re.I,
+)
 
 
 def now_utc() -> str:
@@ -164,6 +180,180 @@ def _merge_action_metadata(existing: Any, incoming: dict | None) -> dict:
             merged[key] = outcome
         else:
             merged[key] = copy.deepcopy(value)
+    return _validate_action_metadata(merged)
+
+
+def _bounded_metadata_text(value: Any, field: str, *, limit: int = 500) -> str:
+    text = _compact_text(value, limit + 1)
+    if not text:
+        raise ValueError(f"Action Queue depth contract requires {field}")
+    if len(text) > limit:
+        raise ValueError(f"Action Queue depth contract {field} exceeds {limit} characters")
+    return text
+
+
+def _validate_observed_difference(value: Any) -> str:
+    text = _bounded_metadata_text(value, "last_outcome.observed_difference")
+    if SENSITIVE_OBSERVATION_VALUE_RE.search(text):
+        raise ValueError("Action Queue observed difference cannot contain credential or header values")
+    return text
+
+
+def _target_owned_evidence_ref(repo_root: Path | str, target: str, value: Any) -> str:
+    ref = _locatable_evidence_ref(repo_root, str(value or ""))
+    if not ref:
+        return ""
+    repo = Path(repo_root).resolve()
+    try:
+        relative = Path(ref).resolve().relative_to(repo)
+    except (OSError, ValueError):
+        return ""
+    if target_storage_key(canonical_target_value(target)) not in relative.parts:
+        return ""
+    return str(relative)
+
+
+def _execution_key(metadata: dict) -> str:
+    endpoint = str(metadata.get("endpoint") or metadata.get("url") or "").strip()
+    parsed_endpoint = urllib.parse.urlsplit(endpoint)
+    if parsed_endpoint.scheme and parsed_endpoint.netloc:
+        endpoint = (
+            f"{parsed_endpoint.scheme.lower()}://{parsed_endpoint.netloc.lower()}"
+            f"{parsed_endpoint.path.rstrip('/') or '/'}"
+            f"{('?' + parsed_endpoint.query) if parsed_endpoint.query else ''}"
+        )
+    else:
+        endpoint = endpoint.split("#", 1)[0].rstrip("/") or "/"
+    fields = {
+        "endpoint": endpoint,
+        "method": str(metadata.get("method") or "").strip().upper(),
+        "family": str(metadata.get("family") or "").strip().lower(),
+        "technique": str(metadata.get("technique") or "").strip().lower(),
+        "actor": str(metadata.get("actor") or "").strip().lower(),
+        "object_scope": str(metadata.get("object_scope") or "").strip().lower(),
+        "workflow": str(metadata.get("workflow") or "").strip().lower(),
+        "active_dimension": str(metadata.get("active_dimension") or "").strip().lower(),
+    }
+    if not all(fields[key] for key in ("endpoint", "method", "family", "technique", "active_dimension")):
+        raise ValueError("Action Queue depth contract lacks execution identity fields")
+    encoded = json.dumps(fields, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return f"depth-v1:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _validate_execution_repeat(queue: dict, item: dict, metadata: dict) -> None:
+    key = str(metadata.get("execution_key") or "")
+    evidence_ref = str(metadata.get("evidence_ref") or "")
+    for other in queue.get("actions", []):
+        if not isinstance(other, dict) or str(other.get("id") or "") == str(item.get("id") or ""):
+            continue
+        other_metadata = other.get("metadata") if isinstance(other.get("metadata"), dict) else {}
+        if str(other_metadata.get("execution_key") or "") != key:
+            continue
+        if str(other_metadata.get("evidence_ref") or "") == evidence_ref:
+            raise ValueError("Action Queue depth contract refuses duplicate execution with the same evidence")
+        if not _compact_text(metadata.get("repeat_reason"), 500):
+            raise ValueError("Action Queue depth contract requires repeat_reason for changed evidence")
+
+
+def _prepare_claim_metadata(
+    repo_root: Path | str,
+    target: str,
+    queue: dict,
+    item: dict,
+    incoming: dict | None,
+) -> dict:
+    existing = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    incoming = incoming or {}
+    if (
+        "activation_required" in incoming
+        and incoming.get("activation_required") != existing.get("activation_required")
+    ):
+        raise ValueError("Action Queue claim cannot override activation_required")
+    versioned_claim = (
+        existing.get("activation_required")
+        or existing.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
+        or incoming.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
+    )
+    runner_fields = RUNNER_OBSERVATION_FIELDS.intersection(incoming)
+    if versioned_claim and runner_fields:
+        raise ValueError(
+            "Action Queue claim cannot supply Runner-owned observation fields: "
+            + ", ".join(sorted(runner_fields))
+        )
+    merged = _merge_action_metadata(existing, incoming)
+    if not merged.get("activation_required") and merged.get("depth_contract_version") != DEPTH_CONTRACT_VERSION:
+        return merged
+
+    if merged.get("depth_contract_version") != DEPTH_CONTRACT_VERSION:
+        raise ValueError("Action Queue claim requires depth_contract_version=1 activation metadata")
+    for field in (
+        "hypothesis_id", "family", "technique", "active_dimension",
+        "expected_learning", "kill_condition", "decision_reason", "input_boundary",
+    ):
+        merged[field] = _bounded_metadata_text(merged.get(field), field)
+    merged["endpoint"] = _bounded_metadata_text(
+        merged.get("endpoint") or merged.get("url"), "endpoint"
+    )
+    merged["method"] = _bounded_metadata_text(merged.get("method"), "method", limit=16).upper()
+
+    route = merged.get("skill_route") if isinstance(merged.get("skill_route"), dict) else {}
+    if not route:
+        raise ValueError("Action Queue depth contract requires a selected skill_route")
+    required_dimensions = [
+        str(value).strip() for value in route.get("required_dimensions", []) if str(value).strip()
+    ]
+    if merged["active_dimension"] not in required_dimensions and not merged.get("decision_reason"):
+        raise ValueError("Action Queue active_dimension must come from the selected Skill route")
+    original_route = existing.get("skill_route") if isinstance(existing.get("skill_route"), dict) else {}
+    if route != original_route and not _compact_text(merged.get("skill_override_reason"), 500):
+        raise ValueError("Action Queue Skill override requires skill_override_reason")
+
+    available_refs = {
+        str(value).strip() for value in existing.get("knowledge_refs", []) if str(value).strip()
+    }
+    selected_refs = merged.get("selected_knowledge_refs")
+    if not isinstance(selected_refs, list) or not selected_refs or any(not str(value).strip() for value in selected_refs):
+        raise ValueError("Action Queue depth contract requires selected_knowledge_refs")
+    selected_refs = list(dict.fromkeys(str(value).strip() for value in selected_refs))
+    knowledge_override_reason = _compact_text(merged.get("knowledge_override_reason"), 500)
+    if not available_refs and not knowledge_override_reason:
+        raise ValueError("Action Queue depth contract requires activation knowledge_refs")
+    if available_refs and not set(selected_refs).issubset(available_refs) and not knowledge_override_reason:
+        raise ValueError("Action Queue knowledge override requires knowledge_override_reason")
+    merged["selected_knowledge_refs"] = selected_refs
+
+    evidence_ref = _target_owned_evidence_ref(repo_root, target, merged.get("evidence_ref"))
+    baseline_ref = _target_owned_evidence_ref(repo_root, target, merged.get("baseline_ref"))
+    if not evidence_ref or not baseline_ref:
+        raise ValueError("Action Queue depth contract requires target-owned evidence_ref and baseline_ref")
+    merged["evidence_ref"] = evidence_ref
+    merged["baseline_ref"] = baseline_ref
+
+    risk_tier = str(merged.get("risk_tier") or "").strip().lower()
+    if risk_tier not in RISK_TIERS:
+        raise ValueError("Action Queue depth contract risk_tier is invalid")
+    merged["risk_tier"] = risk_tier
+    cap = merged.get("max_hypothesis_actions")
+    stored_cap = existing.get("max_hypothesis_actions_cap")
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+        raise ValueError("Action Queue depth contract max_hypothesis_actions must be a positive integer")
+    if isinstance(stored_cap, bool) or not isinstance(stored_cap, int) or stored_cap < 1 or cap > stored_cap:
+        raise ValueError("Action Queue depth contract exceeds the stored hypothesis action cap")
+
+    hypothesis_id = merged["hypothesis_id"]
+    current_count = sum(
+        isinstance(action, dict)
+        and str((action.get("metadata") or {}).get("hypothesis_id") or "") == hypothesis_id
+        and str(action.get("id") or "") != str(item.get("id") or "")
+        for action in queue.get("actions", [])
+    )
+    if not existing.get("hypothesis_id") and current_count >= cap:
+        raise ValueError("Action Queue hypothesis action budget is exhausted")
+
+    merged["execution_key"] = _execution_key(merged)
+    merged["activation_required"] = False
+    merged["hypothesis_status"] = "open"
+    _validate_execution_repeat(queue, item, merged)
     return _validate_action_metadata(merged)
 
 
@@ -229,6 +419,151 @@ def _hypothesis_pivot_actions(item: dict, *, status: str, result: str) -> list[d
             )
         )
     return actions
+
+
+def _validate_capability_primitives(
+    repo_root: Path | str,
+    target: str,
+    value: Any,
+) -> list[dict]:
+    if value in (None, []):
+        return []
+    if not isinstance(value, list) or len(value) > MAX_CAPABILITY_PRIMITIVES:
+        raise ValueError(f"Action Queue accepts at most {MAX_CAPABILITY_PRIMITIVES} capability primitives")
+    primitives: list[dict] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise ValueError("Action Queue capability primitive must be an object")
+        evidence_ref = _target_owned_evidence_ref(repo_root, target, raw.get("evidence_ref"))
+        if not evidence_ref:
+            raise ValueError("Action Queue capability primitive requires target-owned evidence_ref")
+        primitive = {
+            "capability": _bounded_metadata_text(raw.get("capability"), "capability", limit=240),
+            "evidence_ref": evidence_ref,
+        }
+        hint = _compact_text(raw.get("continuation_hint"), 300)
+        if hint:
+            primitive["continuation_hint"] = hint
+        primitives.append(primitive)
+    return primitives
+
+
+def _versioned_continuation_action(item: dict, metadata: dict, continuation: dict) -> dict:
+    kind = str(continuation.get("kind") or "").strip().lower()
+    dimension = _bounded_metadata_text(continuation.get("dimension"), "continuation.dimension", limit=120)
+    question = _bounded_metadata_text(continuation.get("question"), "continuation.question")
+    expected_learning = _bounded_metadata_text(
+        continuation.get("expected_learning"), "continuation.expected_learning"
+    )
+    reason = _bounded_metadata_text(continuation.get("reason"), "continuation.reason")
+    child_metadata = copy.deepcopy(metadata)
+    for key in (
+        "continuation", "kill_condition_met", "kill_reason", "last_outcome",
+        "tested_dimensions", "runner_operation_id", "execution_key",
+    ):
+        child_metadata.pop(key, None)
+    child_metadata.update({
+        # Keep the child on the versioned path.  The prior AI resolve supplies
+        # the bounded activation context; claim still validates it before the
+        # child becomes executable.
+        "activation_required": True,
+        "active_dimension": dimension,
+        "expected_learning": expected_learning,
+        "decision_reason": reason,
+        "parent_action_id": str(item.get("id") or ""),
+        "continuation_kind": kind,
+        "next_question": question,
+        "hypothesis_status": "open",
+    })
+    last_outcome = metadata.get("last_outcome") if isinstance(metadata.get("last_outcome"), dict) else {}
+    child_metadata["baseline_ref"] = str(last_outcome.get("summary_ref") or metadata.get("baseline_ref") or "")
+    child_metadata["evidence_ref"] = str(last_outcome.get("evidence_ref") or last_outcome.get("summary_ref") or "")
+    child_metadata["execution_key"] = _execution_key(child_metadata)
+    return build_action(
+        target=str(item.get("target") or ""),
+        action_type="hypothesis-continuation",
+        evidence=f"{kind} continuation from {item.get('id', '')}: {reason}",
+        next_question=question,
+        action=f"Execute one bounded {kind} continuation for dimension {dimension} and preserve replay evidence.",
+        priority=max(50, int(item.get("priority", 50) or 50) - 5),
+        evidence_type="hypothesis-continuation",
+        source="hypothesis-loop",
+        source_id=f"{item.get('id', '')}:{metadata.get('hypothesis_id', '')}:{kind}:{dimension}",
+        stop_condition=str(metadata.get("kill_condition") or DEFAULT_STOP_CONDITION),
+        metadata=child_metadata,
+    )
+
+
+def _versioned_terminal_plan(
+    repo_root: Path | str,
+    target: str,
+    queue: dict,
+    item: dict,
+    normalized_status: str,
+    incoming: dict,
+    merged: dict,
+) -> dict:
+    if merged.get("depth_contract_version") != DEPTH_CONTRACT_VERSION or normalized_status not in FINAL_STATUSES:
+        return {}
+
+    outcome = merged.get("last_outcome") if isinstance(merged.get("last_outcome"), dict) else {}
+    summary_ref = _target_owned_evidence_ref(repo_root, target, outcome.get("summary_ref"))
+    evidence_ref = _target_owned_evidence_ref(
+        repo_root, target, outcome.get("evidence_ref") or outcome.get("summary_ref")
+    )
+    if not summary_ref or not evidence_ref:
+        raise ValueError("Action Queue versioned resolve requires replayable last_outcome evidence")
+    observed = _validate_observed_difference(outcome.get("observed_difference"))
+    _bounded_metadata_text(outcome.get("operation_id"), "last_outcome.operation_id", limit=160)
+    _bounded_metadata_text(outcome.get("at"), "last_outcome.at", limit=80)
+    active_dimension = str(merged.get("active_dimension") or "").strip()
+    tested = {
+        str(value).strip() for value in merged.get("tested_dimensions", []) if str(value).strip()
+    }
+    if not active_dimension or active_dimension not in tested:
+        raise ValueError("Action Queue versioned resolve requires the active dimension in tested_dimensions")
+    outcome["summary_ref"] = summary_ref
+    outcome["evidence_ref"] = evidence_ref
+    outcome["observed_difference"] = observed
+    merged["last_outcome"] = outcome
+
+    kill = incoming.get("kill_condition_met") is True
+    continuation = incoming.get("continuation") if isinstance(incoming.get("continuation"), dict) else None
+    if kill == bool(continuation):
+        raise ValueError("Action Queue versioned resolve requires exactly one continuation or supported kill")
+    if kill and str(outcome.get("observation_kind") or "").strip().lower() == "baseline_only":
+        raise ValueError("Action Queue baseline-only observation requires a continuation before kill")
+    merged["capability_primitives"] = _validate_capability_primitives(
+        repo_root, target, incoming.get("capability_primitives", merged.get("capability_primitives"))
+    )
+    if kill:
+        merged["kill_reason"] = _bounded_metadata_text(
+            incoming.get("kill_reason") or incoming.get("decision_reason"), "kill_reason"
+        )
+        return {"decision": "kill"}
+
+    kind = str(continuation.get("kind") or "").strip().lower()
+    if kind not in CONTINUATION_KINDS:
+        raise ValueError("Action Queue continuation kind is invalid")
+    continuation = copy.deepcopy(continuation)
+    continuation["kind"] = kind
+    for field in ("dimension", "question", "expected_learning", "reason"):
+        _bounded_metadata_text(continuation.get(field), f"continuation.{field}")
+    merged["continuation"] = continuation
+    if kind == "rotation":
+        return {"decision": "rotation"}
+
+    cap = int(merged.get("max_hypothesis_actions", 0) or 0)
+    hypothesis_id = str(merged.get("hypothesis_id") or "")
+    action_count = sum(
+        isinstance(action, dict)
+        and str((action.get("metadata") or {}).get("hypothesis_id") or "") == hypothesis_id
+        for action in queue.get("actions", [])
+    )
+    if action_count >= cap:
+        raise ValueError("Action Queue hypothesis action budget is exhausted")
+    child = _versioned_continuation_action(item, merged, continuation)
+    return {"decision": "continuation", "child": child}
 
 
 def queue_path(repo_root: Path | str, target: str) -> Path:
@@ -514,7 +849,7 @@ def _action_sort_key(action: dict) -> tuple:
 
 
 def _is_advisory_review_action(action: dict) -> bool:
-    """Return True for surface review items that are not exact runner work.
+    """Return True for advisory review items that are not exact runner work.
 
     Older queues may still contain `ranked-surface` items from before the
     AI-first rename. Treat them as advisory unless the command hint already
@@ -932,7 +1267,7 @@ def upsert_generated_action(queue: dict, action: dict) -> dict:
 
 
 def _retire_stale_checkpoint_actions(queue: dict, fresh_actions: list[dict]) -> int:
-    """Retire queued/running checkpoint TODOs that disappeared from the latest checkpoint.
+    """Retire unclaimed checkpoint TODOs that disappeared from the latest checkpoint.
 
     只处理仍未分类的 checkpoint 源 action，避免旧噪声在 queue 里长期滞留。
     candidate-evidence-gap/validated/manual 等人工推进过的条目不自动改状态。
@@ -954,6 +1289,11 @@ def _retire_stale_checkpoint_actions(queue: dict, fresh_actions: list[dict]) -> 
             continue
         status = str(item.get("status") or "queued")
         action_type = str(item.get("type") or "")
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        # Only activated versioned work survives a checkpoint refresh.  Legacy
+        # running TODO retirement keeps its existing behavior.
+        if status == "running" and metadata.get("depth_contract_version") == DEPTH_CONTRACT_VERSION:
+            continue
         stale_checkpoint_todo = status in {"queued", "running"}
         stale_partial_validation = status == "candidate" and action_type == "validation"
         if not (stale_checkpoint_todo or stale_partial_validation):
@@ -1181,11 +1521,34 @@ def select_next_action_for_target(
     return select_next_action(queue if queue is not None else load_queue(repo_root, target))
 
 
-def claim_next_action(repo_root: Path | str, target: str) -> dict:
+def claim_next_action(
+    repo_root: Path | str,
+    target: str,
+    *,
+    action_id: str = "",
+    metadata: dict | None = None,
+) -> dict:
     """Atomically claim queued work or resume the current running action."""
+    metadata = _validate_action_metadata(metadata)
     with queue_mutation_lock(repo_root, target):
         queue = load_queue(repo_root, target)
-        selected = select_next_action_for_target(repo_root, target, queue)
+        wait_action = runtime_wait_action(repo_root, target)
+        if wait_action in {"wait_recon", "wait_scan"}:
+            selected = _runtime_wait_queue_action(wait_action, target)
+        elif action_id:
+            selected = next(
+                (
+                    item for item in queue.get("actions", [])
+                    if isinstance(item, dict)
+                    and str(item.get("id") or "") == action_id
+                    and str(item.get("status") or "queued") in ACTIVE_STATUSES
+                ),
+                None,
+            )
+            if selected is None:
+                raise KeyError(f"active action not found: {action_id}")
+        else:
+            selected = select_next_action(queue)
         if not selected:
             return {}
         if selected.get("id") == "runtime-wait":
@@ -1193,6 +1556,14 @@ def claim_next_action(repo_root: Path | str, target: str) -> dict:
 
         previous = str(selected.get("status") or "queued")
         claim_status = "resumed" if previous == "running" else "selected"
+        prepared_metadata = _prepare_claim_metadata(
+            repo_root, target, queue, selected, metadata
+        )
+        metadata_changed = prepared_metadata != (
+            selected.get("metadata") if isinstance(selected.get("metadata"), dict) else {}
+        )
+        if prepared_metadata:
+            selected["metadata"] = prepared_metadata
         if previous == "queued":
             selected["status"] = "running"
             selected["attempts"] = int(selected.get("attempts", 0) or 0) + 1
@@ -1200,6 +1571,9 @@ def claim_next_action(repo_root: Path | str, target: str) -> dict:
             queue["actions"].sort(key=_action_sort_key)
             save_queue(repo_root, target, queue)
             claim_status = "claimed"
+        elif metadata_changed:
+            selected["updated_at"] = now_utc()
+            save_queue(repo_root, target, queue)
         return {
             **copy.deepcopy(selected),
             "claim_status": claim_status,
@@ -1245,6 +1619,7 @@ def _resolve_action_in_queue(
     result: str = "",
     notes: str = "",
     metadata: dict | None = None,
+    runner_observation: bool = False,
 ) -> dict:
     """在调用方已持有 queue lock 时修改一个 action。"""
     normalized = _normalize_status(status)
@@ -1255,6 +1630,17 @@ def _resolve_action_in_queue(
         if str(item.get("id") or "") != action_id:
             continue
         previous = str(item.get("status") or "queued")
+        existing_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        versioned = (
+            existing_metadata.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
+            or metadata.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
+        )
+        runner_fields = RUNNER_OBSERVATION_FIELDS.intersection(metadata)
+        if versioned and runner_fields and not runner_observation:
+            raise ValueError(
+                "Action Queue resolve cannot supply Runner-owned observation fields: "
+                + ", ".join(sorted(runner_fields))
+            )
         if normalized in TERMINAL_EVIDENCE_STATUSES:
             evidence_ref = _locatable_evidence_ref(repo_root, result)
             if not evidence_ref:
@@ -1262,6 +1648,21 @@ def _resolve_action_in_queue(
                     f"action status {normalized!r} requires a locatable evidence reference in result"
                 )
         merged_metadata = _merge_action_metadata(item.get("metadata"), metadata)
+        if (
+            merged_metadata.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
+            and normalized in FINAL_STATUSES
+            and previous != "running"
+        ):
+            raise ValueError("Action Queue versioned resolve requires a running claimed action")
+        terminal_plan = _versioned_terminal_plan(
+            repo_root,
+            target,
+            queue,
+            item,
+            normalized,
+            metadata,
+            merged_metadata,
+        )
         item["status"] = normalized
         item["updated_at"] = now_utc()
         item["result"] = _compact_text(result or item.get("result", ""), 1000)
@@ -1270,16 +1671,29 @@ def _resolve_action_in_queue(
             item["metadata"] = merged_metadata
         if previous != "running" and normalized in {"running", "tested", "dead-end", "blocked", "lead", "signal", "candidate", "validated"}:
             item["attempts"] = int(item.get("attempts", 0) or 0) + 1
-        pivot_actions = _hypothesis_pivot_actions(
-            item,
-            status=normalized,
-            result=item.get("result", ""),
-        )
-        pivot_stats = upsert_actions(queue, pivot_actions) if pivot_actions else {"added": 0, "updated": 0, "skipped_final": 0}
-        if pivot_actions:
-            item.setdefault("metadata", {})["hypothesis_status"] = "open"
-        elif isinstance(item.get("metadata"), dict) and item["metadata"].get("kill_condition_met") is True:
-            item["metadata"]["hypothesis_status"] = "closed"
+        if terminal_plan:
+            child = terminal_plan.get("child")
+            pivot_stats = upsert_actions(queue, [child]) if isinstance(child, dict) else {
+                "added": 0, "updated": 0, "skipped_final": 0,
+            }
+            item.setdefault("metadata", {})["hypothesis_status"] = {
+                "kill": "closed",
+                "rotation": "rotated",
+                "continuation": "open",
+            }[terminal_plan["decision"]]
+        else:
+            pivot_actions = _hypothesis_pivot_actions(
+                item,
+                status=normalized,
+                result=item.get("result", ""),
+            )
+            pivot_stats = upsert_actions(queue, pivot_actions) if pivot_actions else {
+                "added": 0, "updated": 0, "skipped_final": 0,
+            }
+            if pivot_actions:
+                item.setdefault("metadata", {})["hypothesis_status"] = "open"
+            elif isinstance(item.get("metadata"), dict) and item["metadata"].get("kill_condition_met") is True:
+                item["metadata"]["hypothesis_status"] = "closed"
         coverage_update = _sync_coverage_matrix_for_action(repo_root, target, item, normalized)
         unsafe_review_update = _sync_unsafe_skipped_review_for_action(repo_root, target, item, normalized)
         queue["actions"].sort(key=_action_sort_key)
@@ -1429,6 +1843,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     claim = sub.add_parser("claim", help="Atomically claim or resume the highest-priority action.")
     claim.add_argument("--target", required=True)
+    claim.add_argument("--id", default="", help="Claim one explicit active action instead of the default.")
+    claim.add_argument(
+        "--metadata-json",
+        default=None,
+        help="Versioned AI activation metadata merged atomically before claim.",
+    )
     claim.add_argument("--json", action="store_true")
 
     resolve = sub.add_parser("resolve", help="Resolve or reclassify one action.")
@@ -1503,7 +1923,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if action else 1
 
         if args.command == "claim":
-            action = claim_next_action(repo, args.target)
+            metadata = _parse_metadata_json(args.metadata_json)
+            action = claim_next_action(
+                repo,
+                args.target,
+                action_id=args.id,
+                metadata=metadata,
+            )
             _print(action if args.json else format_action(action), as_json=args.json)
             return 0 if action else 1
 
