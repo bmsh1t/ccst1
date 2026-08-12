@@ -34,6 +34,7 @@ from checkpoint import (
     _ledger_covers_cell,
     _matrix_summary,
     _next_proposals,
+    _project_knowledge_effect_trace,
     _sibling_queue_item,
     _workflow_lead_queue_items,
     _ranked_surface_replay_draft,
@@ -200,6 +201,62 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     assert checkpoint["runtime_witness"]["path"] == "state/target.com/checkpoint_latest.json"
     assert witness["kind"] == "autopilot_checkpoint_witness"
     assert witness["context_pack"]["selected_skill"] == checkpoint["context_pack"]["selected_skill"]
+
+
+def test_checkpoint_projects_visible_knowledge_effect_stages(tmp_path):
+    checkpoint = {
+        "context_pack": {
+            "knowledge_cards": ["sqli-hidden-surfaces"],
+            "hypothesis_seeds": ["Compare a header, path segment, and sibling parameter."],
+        }
+    }
+    suggestion = _project_knowledge_effect_trace(checkpoint, [])
+    assert suggestion == {
+        "suggestion": "sqli-hidden-surfaces / Compare a header, path segment, and sibling parameter.",
+        "action": "pending",
+        "result": "pending",
+    }
+
+    action = {
+        "id": "AQ-0123",
+        "status": "running",
+        "attempts": 1,
+        "updated_at": "2026-08-11T00:00:01Z",
+        "action": "Compare one controlled X-Forwarded-For pair.",
+        "metadata": {"selected_knowledge_refs": ["sqli-hidden-surfaces"]},
+    }
+    selected = _project_knowledge_effect_trace(checkpoint, [action])
+    assert selected["action"] == "AQ-0123 / Compare one controlled X-Forwarded-For pair."
+    assert selected["result"] == "pending"
+    queued_child = {
+        **action,
+        "id": "AQ-0124",
+        "status": "queued",
+        "updated_at": "2026-08-11T00:00:02Z",
+        "action": "Inherited continuation that has not been selected.",
+    }
+    assert _project_knowledge_effect_trace(checkpoint, [action, queued_child]) == selected
+
+    action["status"] = "tested"
+    action["metadata"]["last_outcome"] = {
+        "status": "tested_clean",
+        "summary_ref": "evidence/target.test/validation/header/summary.json",
+    }
+    resolved = _project_knowledge_effect_trace(checkpoint, [action])
+    assert resolved["result"] == (
+        "tested_clean / evidence/target.test/validation/header/summary.json"
+    )
+
+    checkpoint["target"] = "target.test"
+    save_queue(tmp_path, "target.test", {"actions": [action]})
+    sync_checkpoint_action_queue(tmp_path, checkpoint)
+    assert checkpoint["knowledge_effect_trace"] == resolved
+
+    output = format_checkpoint(checkpoint)
+    assert output.count("Knowledge effect:") == 1
+    assert "sqli-hidden-surfaces" in output
+    assert "-> AQ-0123" in output
+    assert "-> tested_clean" in output
 
 
 def test_round_guard_blocks_only_after_three_identical_records(monkeypatch, tmp_path):

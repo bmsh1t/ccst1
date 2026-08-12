@@ -554,6 +554,11 @@ def sync_checkpoint_action_queue(
     if not isinstance(result, dict):
         raise ValueError("action queue owner returned an invalid sync result")
     checkpoint["action_queue_sync"] = result
+    queue = load_action_queue(repo, target)
+    checkpoint["knowledge_effect_trace"] = _project_knowledge_effect_trace(
+        checkpoint,
+        queue.get("actions", []),
+    )
     witness = write_checkpoint_witness(repo, target, checkpoint)
     checkpoint["runtime_witness"] = {
         "schema_version": witness["payload"]["schema_version"],
@@ -4027,6 +4032,62 @@ def _fmt_action_queue(items: list[dict]) -> list[str]:
     return lines
 
 
+def _project_knowledge_effect_trace(checkpoint: dict, actions: list[dict]) -> dict:
+    context = checkpoint.get("context_pack") if isinstance(checkpoint.get("context_pack"), dict) else {}
+    cards = [str(item).strip() for item in context.get("knowledge_cards", []) if str(item).strip()]
+    if not cards:
+        return {}
+
+    matched: list[tuple[str, int, dict]] = []
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
+            continue
+        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+        selected = [str(item).strip() for item in metadata.get("selected_knowledge_refs", []) if str(item).strip()]
+        if not set(selected).intersection(cards):
+            continue
+        if str(action.get("status") or "queued") == "queued":
+            continue
+        matched.append((str(action.get("updated_at") or action.get("created_at") or ""), index, action))
+
+    selected_action = max(matched, default=("", -1, {}))[-1]
+    metadata = (
+        selected_action.get("metadata")
+        if isinstance(selected_action.get("metadata"), dict)
+        else {}
+    )
+    selected_refs = [
+        str(item).strip()
+        for item in metadata.get("selected_knowledge_refs", [])
+        if str(item).strip() in cards
+    ]
+    card = selected_refs[0] if selected_refs else cards[0]
+    seeds = [str(item).strip() for item in context.get("hypothesis_seeds", []) if str(item).strip()]
+    seed = str(metadata.get("hypothesis_seed") or (seeds[0] if seeds else "")).strip()
+    suggestion = card + (f" / {re.sub(r'\s+', ' ', seed)[:80]}" if seed else "")
+
+    action_text = "pending"
+    result_text = "pending"
+    if selected_action:
+        action_text = "{id} / {action}".format(
+            id=selected_action.get("id", ""),
+            action=re.sub(r"\s+", " ", str(selected_action.get("action") or "")).strip()[:100],
+        ).rstrip(" / ")
+        outcome = metadata.get("last_outcome") if isinstance(metadata.get("last_outcome"), dict) else {}
+        outcome_status = str(outcome.get("status") or "").strip()
+        evidence_ref = str(
+            outcome.get("summary_ref") or outcome.get("evidence_ref") or ""
+        ).strip()[:160]
+        if outcome_status or evidence_ref:
+            result_text = outcome_status or str(selected_action.get("status") or "observed")
+            if evidence_ref:
+                result_text += f" / {evidence_ref}"
+        elif str(selected_action.get("status") or "") in ACTION_QUEUE_FINAL_STATUSES:
+            result_text = str(selected_action.get("status"))
+
+    return {"suggestion": suggestion, "action": action_text, "result": result_text}
+
+
 def format_checkpoint(checkpoint: dict) -> str:
     coverage = checkpoint.get("coverage") or {}
     summary = coverage.get("summary") or {}
@@ -4037,6 +4098,9 @@ def format_checkpoint(checkpoint: dict) -> str:
     evidence = checkpoint.get("evidence_ledger") or {}
     actor_matrix = evidence.get("actor_matrix") or {}
     queue_sync = checkpoint.get("action_queue_sync") or {}
+    knowledge_trace = checkpoint.get("knowledge_effect_trace")
+    if not isinstance(knowledge_trace, dict):
+        knowledge_trace = _project_knowledge_effect_trace(checkpoint, [])
     claim_sync = checkpoint.get("root_finding_claim_sync") or {}
     queue_sync_text = "not run"
     if queue_sync:
@@ -4056,6 +4120,11 @@ def format_checkpoint(checkpoint: dict) -> str:
         f"- Selected skill: {context.get('selected_skill', '')}",
         "- Knowledge cards:",
         *_fmt_list([str(item) for item in context.get("knowledge_cards", [])]),
+        "- Knowledge effect: {suggestion} -> {action} -> {result}".format(
+            suggestion=knowledge_trace.get("suggestion", "pending"),
+            action=knowledge_trace.get("action", "pending"),
+            result=knowledge_trace.get("result", "pending"),
+        ),
         "- Contradictions:",
         *_fmt_list([
             str(item) for item in context.get("contradictions", [])

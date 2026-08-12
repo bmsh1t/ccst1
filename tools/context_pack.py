@@ -2451,9 +2451,9 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         ])
     if CARD_PATHS["sqli-hidden-surfaces"] in cards:
         seeds.extend([
-            "显式查询语义输入是 SQLi 第一顺位 baseline：搜索、筛选、分类、排序、分页、报表、导出、对象选择、租户/范围限定等参数或路径段都应先做只读成对扰动。",
-            "SQLi 不只看显式 query/body 参数；按证据检查请求元数据、路由片段、cookie/session、跨接口隐藏参数或二阶输入是否进入查询、日志、审计或风控链路。",
-            "从目标材料提取高信号输入面，每次只扰动一个输入点，比较稳定的状态码、长度、错误、排序、字段集合或布尔差异。",
+            "SQLi 先保留显式查询语义输入 baseline：搜索、筛选、排序、分页、报表、导出和租户范围；再判 query context，字符串值位才用 `'`/`''`，数字用类型/布尔 control，标识符用合法 A/合法 B/无效名称，列表看容器与重复参数，二阶看 store/trigger。",
+            "请求元数据 Header 先画 client -> edge/proxy -> application -> store/query，区分代理覆盖、规范化、直接查询和二阶输入；path 优先保持 route shape，并证明合法值、不存在值和扰动仍进入同一 handler。",
+            "Sibling 参数按 B baseline -> B+A 原始参数束 -> A整束 `'` 值 vs A整束 `''` 值 -> 二分移除/逐字段隔离 -> query-context control；整束对照只负责发现隐藏分支，分别判断被接收、业务生效、影响查询和可注入，不能从参数生效直接升级 SQLi。",
         ])
     if CARD_PATHS["nosql-query-injection"] in cards:
         seeds.extend([
@@ -3171,7 +3171,7 @@ def build_context_pack(
         SKILL_PATHS[skill],
         "knowledge/index.md",
         ledger_path,
-    ] + _local_intel_paths(local_intel) + [
+    ] + cards + _local_intel_paths(local_intel) + [
         str(item.get("summary_path") or "")
         for item in runner_candidates[:6]
         if item.get("summary_path")

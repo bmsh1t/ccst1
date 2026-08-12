@@ -11,6 +11,7 @@ from tools.knowledge_registry import load_registry
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CARD_IDS = (
+    "sqli-hidden-surfaces",
     "payment-callback-idempotency",
     "cicd-trust-boundaries",
     "cloud-control-plane-pivots",
@@ -32,6 +33,61 @@ def test_specialized_cards_are_registered_and_strict_audit_clean():
     report = audit_repository(REPO_ROOT)
     assert report.errors == 0
     assert report.warnings == 0
+
+
+def test_sqli_hidden_surface_card_stays_bounded_and_preserves_core_branches(tmp_path):
+    card_path = REPO_ROOT / "knowledge" / "cards" / "sqli-hidden-surfaces.md"
+    card = card_path.read_text(encoding="utf-8")
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="SQLi request metadata path segment sibling params order-by identifier",
+    )
+
+    assert pack["knowledge_cards"][0] == "knowledge/cards/sqli-hidden-surfaces.md"
+    assert pack["knowledge_cards"][0] in pack["must_read"]
+    assert len(pack["knowledge_cards"]) <= 2
+    assert any(
+        item["id"] == "sqli-hidden-surfaces"
+        and item["layer"] == "core"
+        and item["purpose"] == "validate"
+        for item in pack["knowledge_card_capabilities"]
+    )
+    assert len(card.splitlines()) <= 170
+    for marker in (
+        "X-Forwarded-For",
+        "/tenant/{id}",
+        "`/a/'` vs `/a/''`",
+        "完整参数束，例如 `?limit=1&xxxid=100`",
+        "B?limit='&xxxid='",
+        "B?limit=''&xxxid=''",
+        "整束对照只用于激活隐藏 binder/query branch",
+        "client -> edge/proxy -> application",
+        "仍进入同一 handler",
+        "不能从参数生效直接跳到 SQLi",
+        "单独记录信息泄露",
+        "非参数化查询位置",
+        "Parser、编码与结构化载体",
+        "store、trigger、control",
+        "反事实 control",
+        "强 Signal",
+        "输入来源 -> binder/parser/store",
+        "endpoint、method、input、source evidence、query context 和 next question",
+    ):
+        assert marker in card
+    assert any(
+        "字符串值位才用" in seed and "分页" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
+    assert any(
+        "edge/proxy" in seed and "不存在值" in seed and "同一 handler" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
+    assert any(
+        "B baseline" in seed and "A整束 `'` 值 vs A整束 `''` 值" in seed
+        and "可注入" in seed
+        for seed in pack["hypothesis_seeds"]
+    )
 
 
 def test_specialized_focus_routes_to_incremental_card_without_budget_growth(tmp_path):

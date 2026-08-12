@@ -47,112 +47,81 @@ source_refs:
 - Parser/encoding 差异：XML entity、URL/Unicode 编码、大小写、分隔符或 content-type 转换可能绕过前置过滤，解码后才进入后端 SQL 查询。
 - SQLi 也别只盯值位：`ORDER BY`、列名/表名、占位符名、事务控制和跨表字段这类非参数化位置，经常是“看起来参数化了但实际没保护到”的盲区。
 - SQLi 读到认证相关表时，不只停在 email/hash/schema；主动检查是否存在 MFA/TOTP secret、reset token、API key、session seed、OAuth link secret、step-up token 等认证连接器字段。
-- 若认证连接器字段可读，再评估是否能低影响串成 `数据提取 -> step-up/MFA/reset/token 流程 -> victim session/role proof`；报告时不打印 secret、一次性验证码或完整 token。
+- 若认证连接器字段可读，再评估能否低影响串成 `数据提取 -> step-up/MFA/reset/token 流程 -> victim session/role proof`；报告时不打印 secret、一次性验证码或完整 token。
 - 验证顺序：baseline -> 单变量扰动 -> 稳定差异 -> 最小证据 -> 必要时再工具化确认。
 - 只把可复现的状态码、长度、错误类型、排序、布尔响应、字段集合或 DBMS 指纹差异作为信号。
 - 单次 500、WAF/路由差异、缓存 miss 或不可复现异常不能升级为 Candidate。
 - 大 payload、绕过矩阵和工具参数按需读取 `knowledge/payloads/sqli-low-risk-probes.md`。
-- 深挖时优先使用本卡和 `knowledge/payloads/sqli-low-risk-probes.md` 中已蒸馏的 Header、
-  EXIF/QR/XML、二阶、parser/DBMS 差异和证据模型；历史 CTF 来源只在审计文档中追溯，不进入默认上下文。
 
-## 能力定位
+## 技巧与薄判断层
 
-本卡用于 SQLi 测试中常规 query/body 参数无信号时，补充非显式输入面、跨接口参数、请求元数据和二阶链路的联想方向。输出候选假设、发散问题和最小验证提示，供当前 SQLi lane 选择使用。
+### 1. 请求元数据
 
-## 核心原则
+- **操作**：从目标证据选取被应用信任、记录或消费的 Header/cookie/trace 字段；对可能进入字符串查询的位置做 `baseline -> ' -> ''` 成对比较。
+- **判断**：先确认 `client -> edge/proxy -> application` 的最终值；代理覆盖、重复 Header 合并或日志写入只证明传输/存储，不证明 SQL sink。
+- **转向**：当前响应无差异但值进入日志、风控或报表时，保存唯一无害 marker，转 `store -> trigger` 二阶验证。
 
-- 显式 query/body 参数无信号时，不代表 SQLi lane 已完成；需要回看所有“请求可控、前端未显式传、被存储后再使用、或被服务端转换后进入查询构造”的输入面。
-- 标准验证链路是输入面枚举 -> baseline -> 单变量扰动 -> 稳定差异 -> 最小证据 -> 必要时再工具化确认。
-- 请求元数据、路由片段、cookie/session 线索、跨接口参数、导入/上传字段、日志/审计/风控/搜索/排序/报表等，都是非显式输入面的例子，不是固定清单。
-- 自动化默认不固定打某几个 header 或路径，不做长时间 time-based 枚举、高并发探测、破坏性写入、真实数据修改或批量导出。
+### 2. 路径段
 
-## 思路分支
+- **操作**：保持 method、suffix 和路由形状，对 `/a/b/c` 逐段单变量比较：`/a/'` vs `/a/''`，再 `/a/b/'` vs `/a/b/''`。
+- **判断**：用合法值、不存在值和扰动证明请求仍进入同一 handler；统一 404、SPA fallback 或 rewrite 差异不是 SQL 信号。
+- **转向**：引号只造成框架错误、系统路径/源码泄露时，单独记录信息泄露；继续 SQLi 需要查询特异差异。
 
-- 输入面扩展：把“用户可控输入”从 query/body 扩展到请求元数据、路径/路由变量、cookie、内容协商字段、前端未传但后端读取的参数、以及二阶存储/日志触发链路。
-- 同业务横向复用：从 sibling endpoint、JS/source、浏览器 XHR、历史请求和 schema 中提取参数/字段名，验证同一业务查询函数是否存在未暴露分支。
-- 差异闭环：只把可复现的状态码、长度、错误类型、排序、布尔响应、字段集合或 DBMS 指纹差异作为信号；单次 500 或 WAF/路由差异只记 Signal/Dead End。
-- 二阶建模：如果输入先进入日志、审计、风控、统计或报表，再在后台查询中触发差异，必须记录 store step 和 trigger step。
-- 认证连接器链：如果 SQLi 可读用户、认证、MFA、reset、token、session、OAuth/linking 表或字段，不要只把它当“数据泄露”；优先判断这些字段是否能驱动后续认证流程并形成可验证 session/role 差异。
-- 工具化门槛：只有出现稳定 baseline-vs-perturbation 差异后，才考虑交给 sqlmap/ghauri/人工 payload 矩阵做低风险确认。
+### 3. Sibling 参数束
 
-## 技巧家族 / Payload 家族
+- **操作**：从 A 的真实请求取得完整参数束，例如 `?limit=1&xxxid=100`；原样附到同业务 B，再按顺序比较：
+  `B baseline -> B?limit=1&xxxid=100 -> B?limit='&xxxid=' -> B?limit=''&xxxid=''`。
+- **判断**：整束对照只用于激活隐藏 binder/query branch；稳定变化后再二分移除、逐字段隔离，分别区分“被接收、业务生效、影响查询、可注入”，不能从参数生效直接跳到 SQLi。
+- **转向**：B 与 A 无共享资源、handler、schema 或 query builder 证据时，停止追加参数，不构造通用字典。
 
-- 请求元数据扰动：针对被服务端信任、记录或转换的 header / cookie / trace id 做低风险成对扰动。
-- 路由变量扰动：逐段建模 path segment、rewrite 后路径、slug、租户/分类/报表类型等服务端查询输入。
-- sibling 参数迁移：从同业务接口提取高信号参数，少量迁移到 B 接口，再做单变量差异验证。
-- 二阶触发链路：区分 store step 和 trigger step，重点看日志、审计、风控、统计、报表、搜索索引、导入预览。
-- Parser/encoding 绕过：如果 XML/JSON/form/multipart/content-type 转换路径不同，尝试低风险等价扰动；例如 XML entity 编码后的 SQL 片段可能先过 WAF，再由 XML parser 解码进入查询。
-- 低风险 probe 家族：单引号/双单引号、括号、布尔等价、编码等价、排序/字段集合差异；长 payload 和工具矩阵见 deep refs。
+### 4. 非参数化查询位置
 
-## 候选形态示例
+- **操作**：发现排序列/方向、投影字段、动态表/列名、`GROUP BY` 或分页表达式时，用合法 A、合法 B、无效标识符做对照；不要对标识符机械使用引号。
+- **判断**：排序变化只证明字段被消费；未知列/别名/ORM 错误随输入变化，或稳定 DBMS 差异，才支持继续确认。
 
-这些只是联想种子，不是固定字典；只有目标材料、请求语义、JS/source、
-历史请求、相邻接口或稳定差异支持时才优先尝试。
+### 5. Parser、编码与结构化载体
 
-- 请求元数据：`X-Forwarded-For`、`X-Real-IP`、`Forwarded`、`User-Agent`、`Referer`、`Accept-Language`、追踪 ID、客户端版本字段。
-- 路由片段：`/user/{slug}`、`/tenant/{id}`、`/report/{type}`、`/search/{keyword}`、CMS slug、分类名、地区码、版本号。
-- sibling 参数复用：把 A 接口里的 `sort`、`order`、`status`、`type`、`orgId`、`tenantId`、`scope` 少量喂给同业务 B 接口。
-- 二阶链路：登录日志、访问审计、风控黑白名单、统计报表、搜索索引、导入预览、上传 metadata。
-- 认证连接器：MFA/TOTP secret、recovery/reset token、email verification token、API key、OAuth/link secret、session seed、remember-me secret、step-up/challenge token 相关字段；这些是链路候选，不是默认枚举目标。
-- 编码/parser 形态：XML entity、URL/Unicode 编码、大小写/注释/分隔符变体、JSON/form/XML content-type 差异；示例只是候选，不代表默认绕过矩阵。
-- 低风险扰动形态：单引号、双单引号、括号、布尔等价扰动或编码等价扰动；必须单变量对照，不能高频 time-based。
+- **操作**：确认 query/form/JSON/XML/multipart、EXIF/QR 等载体的解析链；一次只改变一个编码、字符集、容器或 metadata 字段，比较 raw input、规范化值和查询响应。
+- **判断**：只有前置过滤看到的值与 query builder 消费的值不同，才是 parser differential；WAF 接受/拒绝、上传成功或 QR 解码成功本身不是 SQLi。
+- **转向**：没有 parser/source 证据时不加载绕过矩阵；把载体交给对应 upload/XML/browser 路径。
 
-## 默认不执行的动作
+### 6. 二阶 SQLi
 
-- 不把具体 header、路径格式、参数名、payload 或工具选择写成必选流程。
-- 不把请求元数据、路由片段、跨接口隐藏参数或二阶链路视为穷尽列表；它们只是“非显式输入面”的常见示例。
-- 不执行高频 time-based、OOB 扩大验证、批量数据枚举、破坏性写入或会影响真实业务状态的动作。
-- 不在公开报告中打印可用 secret、一次性验证码、完整 session/JWT/API key；只记录字段存在性、长度/指纹、流程状态和身份差异，原始敏感证据留在本地 evidence。
+- **操作**：记录 `写入 endpoint/字段 -> 持久化或队列 -> 触发 endpoint/job -> 可观察差异`；使用测试账号、唯一无敏感 marker 和已知异步窗口，分别保存 store、trigger、control。
+- **判断**：写入成功、后台展示变化或一次异步错误只是 Signal；重复触发且差异与 marker 关联，才进入 Candidate。
 
-## 适用场景
+### 7. 已确认 SQLi 的影响转向
 
-- 常规 query/body 参数没有 SQLi 信号，但目标存在复杂 API、日志、风控、搜索、权限或资源查询逻辑。
-- recon、JS、浏览器 XHR 或 source-intel 显示同一业务有多个 sibling endpoint。
-- 目标有代理/WAF/CDN、客户端识别、审计日志、访问统计、黑白名单、风控、报表或后台管理功能。
-- `/autopilot --deep` 中 SQLi lane 不能只停在 `?id=`、`q=`、`search=` 等显式参数。
+- 认证/MFA/reset/session/OAuth 字段是影响评估，不是默认枚举目标；只在自有/授权测试账号上证明中间 token/step-up 到 session/role 的低影响差异。
+- 公开报告只记录字段存在性、长度/指纹、流程状态和身份差异，不打印 secret、一次性验证码或完整 token。
 
 ## 触发信号
 
-- 请求元数据被后端信任、转换或记录，例如代理链、客户端标识、来源、内容协商、追踪 ID、cookie/session 辅助字段等。
-- URL path segment、路由变量或 rewrite 规则可能承载资源名、slug、租户、地区、分类、权限路径、版本或 CMS 路由。
-- 某接口有高信号参数，另一个同业务接口前端未传这些参数，但后端可能共享查询函数或字段绑定。
-- JS/source/browser 流量暴露了内部、管理、配置、导出、搜索、报表、审计、统计等同业务 endpoint。
-- 单引号、双单引号、括号或编码后的等价扰动导致状态码、长度、错误、排序或响应结构稳定变化。
-
-## 补充 Checklist
-
-- 是否只测试了 query/body，而没有回看请求元数据、路径变量、cookie/session 或 trace/client 字段？
-- 是否从 JS/source/browser XHR、历史请求、schema、OpenAPI/Postman 泄露中提取了同业务参数？
-- 是否对 path segment 逐段建模，而不是把所有路径差异都当作路由 404？
-- 是否考虑了日志、审计、风控、搜索、排序、报表、导入/上传 metadata 的二阶查询？
-- 如果能读认证相关表/字段，是否检查了 MFA/TOTP secret、reset/recovery token、session/token seed、OAuth/linking secret 等“能继续驱动认证流程”的连接器？
-- 是否把疑似信号写回 action queue，避免只在总结里写“后续测试 SQLi”？
-
-## 发散问题
-
-- 后端是否把请求元数据、cookie、追踪 ID、客户端来源、路径变量或导入字段写入日志表，或用于风控/审计/报表查询？
-- 路由中间件是否把 path segment、rewrite 后的路径或 slug 抠出来做资源、权限、分类、租户或 CMS 查询？
-- 同业务接口的参数是否能横向复用，触发后端公共查询函数里的隐藏分支？
-- JS/source/browser 里出现但 UI 当前路径不传的参数，是否仍被后端读取？
-- SQLi 可读出的字段是否能和登录、MFA、reset、invite、OAuth linking、remember-me 或 token refresh 流程对接，形成可证明的 session/role 改变？
-- 响应差异是数据库语法/布尔/类型差异，还是只是路由/WAF/缓存差异？
+- source/schema/错误显示字段进入动态查询、排序、投影、标识符或后台检索。
+- 同业务 endpoint 参数集合不同，但共享资源、handler、schema 或 query builder。
+- JS/XHR/browser 流量出现 UI 当前路径未传、服务端仍绑定的字段。
+- store 后的值被审计、统计、报表、搜索索引或异步任务再次查询。
 
 ## 最小验证
 
-- 先列出目标相关输入面：显式参数、请求元数据、cookie/session 辅助字段、path/routing segment、JS/source-derived 参数、导入/上传字段、stored/log-backed 二阶输入。
-- 对低风险、只读请求做成对扰动，比对 baseline、单引号、双单引号、括号或等价编码后的状态、长度、错误、排序、字段集合和时间。
-- 对 path/routing segment 逐段建模；每次只改变一个 segment，确认差异不是路由 404、缓存 miss 或 WAF 规则。
-- 从已知接口提取参数集，将同业务 sibling endpoint 追加少量高信号参数，再对单个参数做成对扰动。
-- 对所有疑似信号先做 2-3 次稳定性复测，再决定是否交给 `sqlmap -r` 或 `ghauri`。
-- 优先记录最小证据：请求、响应差异、受影响输入面、DBMS 指纹或稳定布尔差异。
-- 读到认证连接器字段时，用自有/授权测试账号或靶场账号做最小链路验证：先证明字段可读，再证明中间 token/step-up/reset/MFA 流程可被驱动，最后只用只读身份页或低影响 endpoint 证明 session/role 差异。
+- 选择目标证据最强且影响最低的一个输入面；保存稳定 baseline、合法 control 和反事实 control，只改变一个输入/转换维度。
+- 归一化动态字段后比较错误、布尔、字段集合、排序、结果范围和 DBMS/ORM 指纹；复测 2-3 次并交换请求顺序。
+- 记录 `why now/endpoint/method/input/source evidence/query context/baseline/control/observed difference/positive meaning/negative pivot/stop condition/evidence ref`。
+
+## 常见误判 / 死路
+
+- 每个假设写成 `输入来源 -> binder/parser/store -> 查询位置 -> 预期差异 -> control -> 下一问题`。
+- 分开判断：输入可达、binder 接收、查询消费、查询可注入、业务影响；前一层不能替代后一层。
+- 强 Signal：DB/ORM 查询错误、可重复布尔反转、输入一致的标识符错误、DBMS 指纹或二阶 trigger 关联。
+- 弱 Signal：单次 500、长度/排序变化、WAF block、统一 404、缓存 miss、超时或普通业务空结果。
+- 无稳定差异、只改变路由/WAF、无法关联查询，或需要破坏性写入/批量枚举时停止并转相邻机制。
 
 ## 晋升到 Skill / Queue 的条件
 
-- 只是“可能有隐藏 SQLi 输入面”时，保留为知识启发，由当前 SQLi lane 决定是否继续。
-- 出现稳定 baseline-vs-perturbation 差异时，交给 `web2-vuln-classes` 做 SQLi lane 深入验证。
-- 出现明确 endpoint/input/next question 时，写入 `tools/action_queue.py`，类型可标记为 `sqli-hidden-surface`。
-- 需要二阶触发、认证态、浏览器态或 source 证据时，转对应 Skill / browser / source enrichment，而不是盲打 payload。
+- 只有类别推测：保持知识建议，不创建 Action。
+- 有明确 endpoint、method、input、source evidence、query context 和 next question：可写入 Action Queue。
+- 有稳定 baseline-vs-perturbation 差异：交给 `web2-vuln-classes` 深入验证。
+- 需要 parser、二阶、认证态、browser 或 source 证据：转对应深层路径，不在本卡扩大枚举。
 
 ## 关联 Skills
 
@@ -161,23 +130,8 @@ source_refs:
 - `bb-methodology`
 - `triage-validation`
 
-## 停止条件
-
-- 单引号/双单引号/括号扰动只产生 WAF、路由 404、缓存 miss 或不稳定网络抖动。
-- 非显式输入面无法稳定影响响应，且没有错误、布尔、时间、排序或字段集合差异。
-- 继续验证需要破坏性写入、批量请求、高延迟 time-based 枚举或真实数据修改。
-- 只有一次性报错，无法复现或无法关联到数据库查询。
-- 认证连接器字段只是 masked、空值、不可用历史值，或后续 step-up/reset/MFA 流程绑定了不可绕过的服务端状态。
-
-## 检查要求
-
-- 不要只凭 500 或报错文本升级为 Candidate，必须有稳定对照。
-- time-based 只能作为最后确认路径，必须有 control 请求，不能用高并发或长时间 sleep。
-- 如果输入面位于日志、审计、风控等二阶路径，必须记录 store step 和 trigger step。
-- 报告前必须说明攻击者可控输入、查询影响、可复现差异和实际业务影响。
-
 ## 可晋升经验
 
-- 某类请求元数据在特定框架、网关或业务系统中反复进入 SQL 查询。
-- 某类 path/routing segment 命名与数据库资源查询强相关。
-- 某类参数集可以跨 sibling endpoint 复用并触发隐藏后端分支。
+- 同类框架/网关中某输入面多次出现稳定查询差异，并有可复现 evidence ref。
+- 某 path/routing 变量或 sibling 参数在不同 endpoint 重复触发同类后端分支。
+- 晋升时记录适用条件、原始操作、反例、最小验证和停止条件，不保存目标特定值。
