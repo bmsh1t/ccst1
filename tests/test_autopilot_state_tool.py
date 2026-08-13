@@ -7,6 +7,7 @@ import time
 
 import autopilot_state as autopilot_state_module
 import finding_index
+from action_queue import claim_next_action, ingest_checkpoint, resolve_action
 from tools import surface as surface_module
 from tools.surface_projection import build_surface_input_manifest, write_surface_projection
 from memory.hunt_journal import HuntJournal
@@ -124,6 +125,57 @@ def test_asset_scope_workflow_review_routes_autopilot_to_durable_queue(tmp_path)
 
     assert state["action_queue_next"]["id"] == "AQ-0001"
     assert state["next_action"] == "resume_action_queue"
+
+
+def test_queue_resolution_rebuilds_state_from_durable_owner_facts(tmp_path):
+    target = "target.com"
+    memory_dir = tmp_path / "hunt-memory"
+    ingest_checkpoint(
+        tmp_path,
+        target,
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "AQ-OWNER",
+                    "priority": 90,
+                    "type": "workflow-lead-review",
+                    "status": "ready",
+                    "action": "Review one durable owner fact.",
+                    "metadata": {"category": "asset-scope-review"},
+                }
+            ]
+        },
+    )
+    before = build_autopilot_state(str(tmp_path), target, memory_dir=str(memory_dir))
+    witness_path = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness_path.parent.mkdir(parents=True, exist_ok=True)
+    witness_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "kind": "autopilot_checkpoint_witness",
+            "target": target,
+            "action_queue": {"synchronized": True, "next_id": before["action_queue_next"]["id"]},
+        }),
+        encoding="utf-8",
+    )
+    claim = claim_next_action(tmp_path, target)
+    resolved = resolve_action(
+        tmp_path,
+        target=target,
+        action_id=claim["id"],
+        status="blocked",
+        result="Bounded owner review is unavailable.",
+    )
+    after = build_autopilot_state(str(tmp_path), target, memory_dir=str(memory_dir))
+
+    assert before["next_action"] == "resume_action_queue"
+    assert before["action_queue_next"]["id"] == claim["id"]
+    assert resolved["next"] == {}
+    assert after["action_queue_next"] == {}
+    assert after["next_action"] != "resume_action_queue"
+    closure = load_closure_projection(str(tmp_path), after, max_lanes_reached=False)
+    assert closure.get("round_progress", {}) == {}
+    assert closure.get("checkpoint_health", {}).get("status") == "valid"
 
 
 def test_pending_cidr_continuation_routes_back_to_recon():

@@ -43,6 +43,14 @@ def _resolve_unsafe_review_worker(repo_root, target, action_id, output):
         output.put(str(exc))
 
 
+def _claim_action_worker(repo_root, target, output):
+    try:
+        claimed = claim_next_action(repo_root, target)
+        output.put((claimed.get("id", ""), claimed.get("claim_status", ""), ""))
+    except Exception as exc:  # pragma: no cover - surfaced through parent assertion
+        output.put(("", "error", str(exc)))
+
+
 def _checkpoint() -> dict:
     return {
         "next_action_queue": [
@@ -116,6 +124,49 @@ def test_claim_is_atomic_and_resumes_running_before_new_queued_work(tmp_path):
     assert running["attempts"] == 1
     assert running["notes"] == "preserve replay context"
     assert next(item for item in queue["actions"] if item["id"] == queued_id)["status"] == "queued"
+
+
+def test_concurrent_claims_grant_one_new_execution_permit(tmp_path):
+    target = "target.com"
+    ingest_checkpoint(
+        tmp_path,
+        target,
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "AQ-ONLY",
+                    "priority": 90,
+                    "type": "workflow-lead-review",
+                    "status": "ready",
+                    "action": "Review one durable owner fact.",
+                    "metadata": {"category": "asset-scope-review"},
+                }
+            ]
+        },
+    )
+
+    context = multiprocessing.get_context("fork")
+    output = context.Queue()
+    workers = [
+        context.Process(target=_claim_action_worker, args=(str(tmp_path), target, output))
+        for _ in range(12)
+    ]
+    for process in workers:
+        process.start()
+    results = [output.get(timeout=15) for _ in workers]
+    for process in workers:
+        process.join(timeout=15)
+
+    queue = load_queue(tmp_path, target)
+    action = queue["actions"][0]
+
+    assert all(process.exitcode == 0 for process in workers)
+    assert all(not error for _, _, error in results)
+    assert {action_id for action_id, _, _ in results} == {action["id"]}
+    assert [status for _, status, _ in results].count("claimed") == 1
+    assert [status for _, status, _ in results].count("resumed") == len(workers) - 1
+    assert action["status"] == "running"
+    assert action["attempts"] == 1
 
 
 def test_checkpoint_generated_action_is_idempotent_by_generation(tmp_path):

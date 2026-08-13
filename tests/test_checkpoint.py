@@ -577,6 +577,67 @@ def test_round_closure_rejects_unfinished_lane(monkeypatch, tmp_path):
         record_round_closure(tmp_path, target)
 
 
+def test_evidence_before_terminal_heartbeat_remains_an_unfinished_lane(monkeypatch, tmp_path):
+    target = "target.com"
+    evidence_ref = "findings/target.com/poc/sql/summary.json"
+    evidence_path = tmp_path / evidence_ref
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text(json.dumps({"result": "tested_clean"}), encoding="utf-8")
+
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=1)
+    resumed = begin_round(tmp_path, target, max_lanes=1)
+    lane = resumed["round_progress"]["lanes"][0]
+
+    monkeypatch.setattr(
+        checkpoint_module,
+        "build_autopilot_state",
+        lambda *_args, **_kwargs: {"target": target, "resolved_target": target},
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "load_closure_projection",
+        lambda *_args, **_kwargs: {"verdict": "handoff", "reasons": ["lane_pending"]},
+    )
+
+    assert evidence_path.is_file()
+    assert resumed["status"] == "resumed"
+    assert lane["status"] == "started"
+    assert lane["evidence_ref"] == ""
+    with pytest.raises(ValueError, match="unfinished lanes: sqli:/api/search"):
+        record_round_closure(tmp_path, target)
+
+
+def test_checkpoint_witness_atomic_replace_failure_preserves_previous_bytes(tmp_path, monkeypatch):
+    target = "target.com"
+    first = checkpoint_module.write_checkpoint_witness(
+        tmp_path,
+        target,
+        {"context_pack": {"selected_skill": "skills/web2-recon/SKILL.md"}},
+    )
+    path = Path(first["path"])
+    previous = path.read_bytes()
+    original_replace = Path.replace
+
+    def fail_witness_replace(self, destination):
+        if self.parent == path.parent and self.name.startswith(f".{path.name}."):
+            raise OSError("synthetic checkpoint replace failure")
+        return original_replace(self, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_witness_replace)
+
+    with pytest.raises(OSError, match="synthetic checkpoint replace failure"):
+        checkpoint_module.write_checkpoint_witness(
+            tmp_path,
+            target,
+            {"context_pack": {"selected_skill": "skills/web2-vuln-classes/SKILL.md"}},
+        )
+
+    assert path.read_bytes() == previous
+    assert json.loads(path.read_text(encoding="utf-8"))["kind"] == "autopilot_checkpoint_witness"
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+
+
 def test_round_begin_normalizes_legacy_claimed_lanes_as_unfinished(tmp_path):
     target = "target.com"
     first = begin_round(tmp_path, target, max_lanes=1)

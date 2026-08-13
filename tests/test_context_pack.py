@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import context_pack as context_pack_module
+from autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint
 from context_pack import SKILL_CATALOG, SKILL_PATHS, build_context_pack, format_context_pack
 from evidence_ledger import record_entry
 from surface_projection import build_surface_input_manifest, write_surface_projection
@@ -110,6 +111,76 @@ def test_context_pack_reuses_exact_surface_projection(tmp_path, monkeypatch):
     assert pack["source_summary"]["surface_available"] is True
     assert pack["source_summary"]["p1"] == 1
     assert any("admin/orders" in item for item in pack["evidence_anchors"])
+
+
+def test_state_and_context_projection_are_semantically_repeatable(tmp_path):
+    target = "target.com"
+    memory_dir = tmp_path / "hunt-memory"
+    first_state = build_autopilot_state(str(tmp_path), target, memory_dir=str(memory_dir))
+    second_state = build_autopilot_state(str(tmp_path), target, memory_dir=str(memory_dir))
+    first_pack = build_context_pack(
+        tmp_path,
+        target=target,
+        memory_dir=str(memory_dir),
+        surface_state=first_state["surface"],
+    )
+    second_pack = build_context_pack(
+        tmp_path,
+        target=target,
+        memory_dir=str(memory_dir),
+        surface_state=second_state["surface"],
+    )
+    first_closure_state = {
+        **first_state,
+        "next_action": "handoff",
+        "json_inject": {"status": "partial", "input_fingerprint": "a" * 64, "request_count": 1},
+    }
+    second_closure_state = {
+        **second_state,
+        "next_action": "handoff",
+        "json_inject": {"status": "partial", "input_fingerprint": "a" * 64, "request_count": 1},
+    }
+    first_closure = load_closure_projection(
+        str(tmp_path), first_closure_state, max_lanes_reached=False
+    )
+    second_closure = load_closure_projection(
+        str(tmp_path), second_closure_state, max_lanes_reached=False
+    )
+
+    assert {
+        key: first_state[key]
+        for key in ("next_action", "action_queue_next", "surface_projection", "sql_matrix")
+    } == {
+        key: second_state[key]
+        for key in ("next_action", "action_queue_next", "surface_projection", "sql_matrix")
+    }
+    assert {
+        key: first_pack[key]
+        for key in (
+            "selected_skill_id",
+            "knowledge_cards",
+            "deferred_knowledge_cards",
+            "hypothesis_seeds",
+            "source_summary",
+        )
+    } == {
+        key: second_pack[key]
+        for key in (
+            "selected_skill_id",
+            "knowledge_cards",
+            "deferred_knowledge_cards",
+            "hypothesis_seeds",
+            "source_summary",
+        )
+    }
+    assert {
+        key: first_closure[key] for key in ("verdict", "reasons", "can_claim_exhausted")
+    } == {
+        key: second_closure[key] for key in ("verdict", "reasons", "can_claim_exhausted")
+    }
+    assert stagnation_fingerprint(first_closure_state, first_closure) == stagnation_fingerprint(
+        second_closure_state, second_closure
+    )
 
 
 def test_context_pack_never_defaults_to_security_arsenal_skill():
