@@ -186,6 +186,15 @@ def test_versioned_hypothesis_contract_keeps_runner_observation_fields_tool_owne
     assert "when resolving a legacy/versionless action" in command
 
 
+def test_versioned_claim_uses_the_stored_cap_without_guessing_retries():
+    command = " ".join(_read("commands/autopilot.md").split()).lower()
+
+    assert "read that stored cap from the selected action before claim" in command
+    assert "never include `max_hypothesis_actions_cap` in claim metadata" in command
+    assert "refresh and re-ingest the checkpoint action" in command
+    assert "instead of guessing fields or retrying the same contract" in command
+
+
 def test_durable_queue_work_is_claimed_before_replay():
     command = _read("docs/autopilot-lanes.md")
 

@@ -63,7 +63,13 @@ cd -- <repo_root_shell> && python3 tools/action_queue.py claim --target <target_
 ```
 The activation object records `depth_contract_version=1`, target-specific `hypothesis_id`, open
 `family`/`technique`, selected Skill/knowledge references, one `active_dimension`,
-`expected_learning`, `kill_condition`, `risk_tier`, and the bounded hypothesis action cap. The
+`expected_learning`, `kill_condition`, `risk_tier`, and `max_hypothesis_actions` no greater than the
+queued item's `metadata.max_hypothesis_actions_cap`. Read that stored cap from the selected Action
+before claim. The stored cap is Queue-owned: never include `max_hypothesis_actions_cap` in claim
+metadata or try to repair/increase it during claim. If it is missing, refresh and re-ingest the
+checkpoint action; if it is invalid, stop and preserve it for Action Queue owner repair. If claim
+exits non-zero, inspect its stderr and the stored Action once, then stop that claim path instead of
+guessing fields or retrying the same contract. The
 Queue computes execution identity and rejects same endpoint/method/family/technique/
 actor/object/workflow/dimension work without new evidence or a recorded repeat reason. After the
 deterministic Runner writes `last_outcome`, `tested_dimensions`, replayable evidence refs,

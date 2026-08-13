@@ -161,6 +161,79 @@ def test_versioned_claim_cannot_disable_required_activation(tmp_path):
     assert load_queue(tmp_path, TARGET)["actions"][0]["status"] == "queued"
 
 
+def test_versioned_claim_reports_missing_stored_cap_without_writing(tmp_path):
+    baseline = f"evidence/{TARGET}/correlation/baseline.json"
+    context = _activation_context(baseline)
+    context.pop("max_hypothesis_actions_cap")
+    action_id, queue_path = _queued_depth_action(tmp_path, context=context)
+    before = queue_path.read_bytes()
+
+    with pytest.raises(ValueError, match="AQ-0001 lacks max_hypothesis_actions_cap"):
+        claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=_activation())
+
+    assert queue_path.read_bytes() == before
+    assert load_queue(tmp_path, TARGET)["actions"][0]["status"] == "queued"
+
+
+def test_versioned_claim_cannot_override_queue_owned_cap(tmp_path):
+    action_id, queue_path = _queued_depth_action(tmp_path)
+    before = queue_path.read_bytes()
+
+    with pytest.raises(ValueError, match="cannot override Queue-owned max_hypothesis_actions_cap"):
+        claim_next_action(
+            tmp_path,
+            TARGET,
+            action_id=action_id,
+            metadata={**_activation(), "max_hypothesis_actions_cap": 100},
+        )
+
+    assert queue_path.read_bytes() == before
+    assert load_queue(tmp_path, TARGET)["actions"][0]["metadata"]["max_hypothesis_actions_cap"] == 3
+
+
+def test_versioned_claim_accepts_redundant_matching_stored_cap(tmp_path):
+    action_id, _queue_path = _queued_depth_action(tmp_path)
+
+    claimed = claim_next_action(
+        tmp_path,
+        TARGET,
+        action_id=action_id,
+        metadata={**_activation(), "max_hypothesis_actions_cap": 3},
+    )
+
+    assert claimed["status"] == "running"
+    assert claimed["metadata"]["max_hypothesis_actions_cap"] == 3
+
+
+def test_versioned_claim_reports_invalid_stored_cap_without_writing(tmp_path):
+    baseline = f"evidence/{TARGET}/correlation/baseline.json"
+    context = {**_activation_context(baseline), "max_hypothesis_actions_cap": "three"}
+    action_id, queue_path = _queued_depth_action(tmp_path, context=context)
+    before = queue_path.read_bytes()
+
+    with pytest.raises(ValueError, match="AQ-0001 has invalid max_hypothesis_actions_cap"):
+        claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=_activation())
+
+    assert queue_path.read_bytes() == before
+    assert load_queue(tmp_path, TARGET)["actions"][0]["status"] == "queued"
+
+
+def test_versioned_claim_reports_requested_cap_above_stored_cap_without_writing(tmp_path):
+    action_id, queue_path = _queued_depth_action(tmp_path)
+    before = queue_path.read_bytes()
+
+    with pytest.raises(ValueError, match="exceeds the stored hypothesis action cap"):
+        claim_next_action(
+            tmp_path,
+            TARGET,
+            action_id=action_id,
+            metadata={**_activation(), "max_hypothesis_actions": 4},
+        )
+
+    assert queue_path.read_bytes() == before
+    assert load_queue(tmp_path, TARGET)["actions"][0]["status"] == "queued"
+
+
 @pytest.mark.parametrize("stored_route", [None, ALT_ROUTE], ids=["missing", "different"])
 def test_claimed_skill_route_override_requires_reason(tmp_path, stored_route):
     baseline = f"evidence/{TARGET}/correlation/baseline.json"

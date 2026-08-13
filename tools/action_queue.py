@@ -291,6 +291,15 @@ def _prepare_claim_metadata(
         or existing.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
         or incoming.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
     )
+    if (
+        versioned_claim
+        and "max_hypothesis_actions_cap" in incoming
+        and incoming.get("max_hypothesis_actions_cap") != existing.get("max_hypothesis_actions_cap")
+    ):
+        raise ValueError(
+            "Action Queue claim cannot override Queue-owned max_hypothesis_actions_cap; "
+            "read the stored cap or refresh and re-ingest a missing checkpoint action"
+        )
     runner_fields = RUNNER_OBSERVATION_FIELDS.intersection(incoming)
     if versioned_claim and runner_fields:
         raise ValueError(
@@ -354,7 +363,17 @@ def _prepare_claim_metadata(
     stored_cap = existing.get("max_hypothesis_actions_cap")
     if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
         raise ValueError("Action Queue depth contract max_hypothesis_actions must be a positive integer")
-    if isinstance(stored_cap, bool) or not isinstance(stored_cap, int) or stored_cap < 1 or cap > stored_cap:
+    if stored_cap is None:
+        raise ValueError(
+            f"Action Queue queued item {item.get('id', '')} lacks max_hypothesis_actions_cap; "
+            "refresh or re-ingest the queued action before claim"
+        )
+    if isinstance(stored_cap, bool) or not isinstance(stored_cap, int) or stored_cap < 1:
+        raise ValueError(
+            f"Action Queue queued item {item.get('id', '')} has invalid max_hypothesis_actions_cap; "
+            "preserve it for Action Queue owner repair before claim"
+        )
+    if cap > stored_cap:
         raise ValueError("Action Queue depth contract exceeds the stored hypothesis action cap")
 
     hypothesis_id = merged["hypothesis_id"]
