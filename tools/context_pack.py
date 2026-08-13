@@ -555,6 +555,11 @@ CUSTOM_PROTOCOL_STATE_RE = re.compile(
     re.I,
 )
 
+TELERIK_DIALOG_SIGNAL_RE = re.compile(
+    r"\b(?:telerik|asyncupload|serializedparameters|dialogparameters)\b",
+    re.I,
+)
+
 PRESIGNED_URL_CAPABILITY_RE = re.compile(
     r"\b(?:pre[-_ ]?signed|presigned|signed)[-_ ]?(?:url|download|upload)\b|"
     r"\b(?:s3|blob|object[-_ ]?storage)\b[\s\S]{0,120}"
@@ -1225,7 +1230,13 @@ def _local_intel_blob(local_intel: dict) -> list[str]:
     pieces.extend(browser.get("api_endpoints") or [])
     pieces.extend(browser.get("params") or [])
     for form in (browser.get("forms") or [])[:5]:
-        pieces.append(f"{form.get('method', '')} {form.get('action', '')}")
+        pieces.append(
+            "{method} {action} {fields}".format(
+                method=form.get("method", ""),
+                action=form.get("action", ""),
+                fields=" ".join(str(field) for field in (form.get("hidden_fields") or [])),
+            )
+        )
 
     js_intel = local_intel.get("js_intel") or {}
     for endpoint in (js_intel.get("endpoints") or [])[:10]:
@@ -1987,6 +1998,8 @@ def _select_cards_and_deferred(
         or "deserialize" in focus_l
         or "signed-object" in focus_l
         or "viewstate" in focus_l
+        or "__viewstate" in blob.lower()
+        or _has_telerik_dialog_signal(blob)
         or re.search(r"\b(deserialization|deserialize|serialized|signed[-_ ]?object|rememberme|remember[-_ ]?me|viewstate|ysoserial|pickle|java[-_ ]?serialized|php[-_ ]?serialize)\b", blob, re.I)
     ):
         priority.append("insecure-deserialization")
@@ -2178,7 +2191,9 @@ def _local_intel_anchors(local_intel: dict) -> list[str]:
     for form in (browser.get("forms") or [])[:2]:
         method = str(form.get("method") or "").strip() or "GET"
         action = str(form.get("action") or "").strip() or "(current page)"
-        anchors.append(f"Browser form: {method} {action}")
+        hidden_fields = [str(field) for field in (form.get("hidden_fields") or []) if str(field).strip()]
+        suffix = f" hidden_fields={','.join(hidden_fields[:4])}" if hidden_fields else ""
+        anchors.append(f"Browser form: {method} {action}{suffix}")
 
     js_intel = local_intel.get("js_intel") or {}
     for endpoint in (js_intel.get("endpoints") or [])[:3]:
@@ -2261,6 +2276,10 @@ def _has_browser_intel(local_intel: dict) -> bool:
     )
 
 
+def _has_telerik_dialog_signal(value: str) -> bool:
+    return bool(TELERIK_DIALOG_SIGNAL_RE.search(value))
+
+
 def _local_intel_hypothesis_seeds(local_intel: dict) -> list[str]:
     seeds: list[str] = []
     browser = local_intel.get("browser") or {}
@@ -2284,6 +2303,22 @@ def _local_intel_hypothesis_seeds(local_intel: dict) -> list[str]:
     if browser.get("forms"):
         seeds.append(
             "表单 action / method 可作为 CSRF、SameSite、服务端权限绑定线索；默认不提交真实状态改变动作。"
+        )
+    viewstate_forms = [
+        form for form in (browser.get("forms") or [])
+        if any(str(field).lower() == "__viewstate" for field in (form.get("hidden_fields") or []))
+    ]
+    if viewstate_forms:
+        seeds.append(
+            "ViewState 表单先保存同页新鲜 GET 基线及 __VIEWSTATEGENERATOR/__EVENTVALIDATION 字段名；仅对 __VIEWSTATE 做一次格式 control 与单字节 tamper replay，比较同一页面/流程的稳定拒绝或状态差异；MAC 一致拒绝即停止，不提交业务状态改变。"
+        )
+    form_fields = " ".join(
+        str(field) for form in (browser.get("forms") or [])
+        for field in (form.get("hidden_fields") or [])
+    )
+    if _has_telerik_dialog_signal(f"{browser_blob}\n{form_fields}"):
+        seeds.append(
+            "Telerik DialogParameters/AsyncUpload 证据先保留一份目标归属的正常响应私有副本，再运行 tools/telerik_knownkey.py 以项目内 Badsecrets ASP.NET/Telerik 密钥集离线比对。命中只说明 ConfigurationHashKey 复用信号，必须另行证明受控影响，不能自动晋升 Candidate 或 Finding。"
         )
 
     js_intel = local_intel.get("js_intel") or {}
@@ -2503,7 +2538,11 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "数据类型篡改和应用功能 gadget 分开验证：boolean/string/integer/null 变化只看服务端类型语义差异；delete/read/write 等二阶功能要证明对象字段如何流入既有业务动作，先停在测试资源和原始请求/响应证据。",
         ])
         if re.search(r"\bviewstate\b|__viewstate", blob, re.I):
-            seeds.append("ViewState 按格式/页面绑定识别 -> MAC/签名/加密完整性 -> 服务端真实消费/状态影响三阶段判断；可见、可解码或 MAC error 都不能单独证明可利用。")
+            seeds.append("ViewState 按格式/页面绑定识别 -> MAC/签名/加密完整性 -> 服务端真实消费/状态影响三阶段判断；保存同页新鲜 baseline 后只做格式 control 和单字节 tamper replay；可见、可解码或 MAC error 都不能单独证明可利用。")
+        if _has_telerik_dialog_signal(blob):
+            seeds.append(
+                "Telerik DialogParameters/AsyncUpload 证据先保留一份目标归属的正常响应私有副本，再运行 tools/telerik_knownkey.py 以项目内 Badsecrets ASP.NET/Telerik 密钥集离线比对。命中只说明 ConfigurationHashKey 复用信号，必须另行证明受控影响，不能自动晋升 Candidate 或 Finding。"
+            )
     if CARD_PATHS["controlled-rce-impact"] in cards:
         seeds.extend([
             "RCE/命令执行/SSTI/反序列化先证明 primitive，再证明执行身份和影响边界；默认不写文件、不持久化、不批量读取。",
@@ -3127,6 +3166,7 @@ def build_context_pack(
     runner_candidates = load_validation_runner_candidate_pool(repo, resolved_target)
     local_intel = _load_local_intel(repo, target_key)
     blob = _text_blob(focus, goal_memory, ranked, gaps, findings, local_intel)
+    telerik_dialog_signal = _has_telerik_dialog_signal(blob)
     skill, why_skill = _select_skill(focus, blob, ranked, findings, goal_memory)
     historical_patterns = []
     for item in ((ranked.get("memory") or {}).get("pattern_suggestions") or []):
@@ -3171,7 +3211,7 @@ def build_context_pack(
         SKILL_PATHS[skill],
         "knowledge/index.md",
         ledger_path,
-    ] + cards + _local_intel_paths(local_intel) + [
+    ] + cards + (["tools/telerik_knownkey.py"] if telerik_dialog_signal else []) + _local_intel_paths(local_intel) + [
         str(item.get("summary_path") or "")
         for item in runner_candidates[:6]
         if item.get("summary_path")
@@ -3233,6 +3273,7 @@ def build_context_pack(
             "findings": len(findings),
             "validation_runner_candidates": len(runner_candidates),
             "historical_patterns": len(historical_patterns),
+            "telerik_dialog_signal": telerik_dialog_signal,
             **_local_intel_source_summary(local_intel),
             **_ledger_source_summary(evidence_summary),
         },

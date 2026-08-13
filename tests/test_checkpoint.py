@@ -2561,6 +2561,31 @@ def test_next_proposals_skip_ranked_surface_when_ledger_has_tested_clean():
     )
 
 
+def test_next_proposals_emit_bounded_viewstate_integrity_review():
+    proposals = _next_proposals(
+        state={"has_recon": True, "surface": {}, "recommended_targets": []},
+        coverage_gaps=[],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={
+            "hypothesis_seeds": [
+                "ViewState 表单先保存同页新鲜 GET 基线及 __VIEWSTATEGENERATOR/__EVENTVALIDATION 字段名；"
+                "仅对 __VIEWSTATE 做一次格式 control 与单字节 tamper replay。"
+            ],
+            "contradictions": [],
+        },
+        evidence_summary={},
+    )
+
+    review = next(item for item in proposals if item.startswith("ViewState integrity review:"))
+    assert "single-byte __VIEWSTATE tamper" in review
+    assert "without submitting a business action" in review
+    action_type, priority, hint = checkpoint_module._classify_next_action(review, "target.com")
+    assert action_type == "viewstate-integrity-review"
+    assert priority == 93
+    assert "no business submit" in hint
+
+
 def test_capability_chain_review_projection_has_stable_identity_and_bounded_lineage(tmp_path):
     parent = _seed_capability_parent(tmp_path)
 

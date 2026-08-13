@@ -73,3 +73,43 @@ def test_browser_surface_parses_wrapped_mcp_data_envelope(tmp_path):
     assert (browser_dir / "browser_params.txt").read_text(encoding="utf-8").splitlines() == [
         "https://target.local/api/orders?id=123 :: id"
     ]
+
+
+def test_browser_surface_keeps_hidden_field_names_without_values(tmp_path):
+    snapshot_path = tmp_path / "page.html"
+    snapshot_path.write_text(
+        '<form action="/account" method="post">'
+        '<input type="hidden" name="__VIEWSTATE" value="sensitive-state-value">'
+        '<input name="__VIEWSTATEGENERATOR" type="hidden" value="ABC123">'
+        '<input type="hidden" name="__EVENTVALIDATION" value="secret-event-value">'
+        '</form>',
+        encoding="utf-8",
+    )
+
+    browser_surface.write_browser_surface(
+        recon_root=tmp_path / "recon",
+        target_key="target.local",
+        snapshot_path=snapshot_path,
+    )
+
+    forms = json.loads((tmp_path / "recon" / "target.local" / "browser" / "forms.json").read_text(encoding="utf-8"))
+    assert forms["forms"] == [{
+        "action": "/account",
+        "method": "POST",
+        "hidden_fields": ["__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION"],
+    }]
+    assert "sensitive-state-value" not in json.dumps(forms)
+
+
+def test_browser_surface_keeps_unclosed_form_as_a_surface_signal(tmp_path):
+    snapshot_path = tmp_path / "partial.html"
+    snapshot_path.write_text('<form action="/login" method="post">', encoding="utf-8")
+
+    browser_surface.write_browser_surface(
+        recon_root=tmp_path / "recon",
+        target_key="target.local",
+        snapshot_path=snapshot_path,
+    )
+
+    forms = json.loads((tmp_path / "recon" / "target.local" / "browser" / "forms.json").read_text(encoding="utf-8"))
+    assert forms["forms"] == [{"action": "/login", "method": "POST"}]

@@ -946,6 +946,8 @@ def _evidence_vuln_classes(coverage_gaps: list[dict], context_pack: dict) -> lis
             classes.append("Authz")
         if "graphql" in card_text:
             classes.append("GraphQL")
+        if "insecure-deserialization" in card_text:
+            classes.append("Deserialization")
     return _dedupe([item for item in classes if item])[:3] or ["IDOR", "Authz"]
 
 
@@ -2484,6 +2486,20 @@ def _next_proposals(
     )
     covered_ledger_cells = _ledger_covered_cells(evidence_summary, matrix)
 
+    viewstate_seed = next(
+        (
+            str(seed) for seed in (context_pack.get("hypothesis_seeds") or [])
+            if "ViewState 表单先保存同页新鲜 GET 基线" in str(seed)
+        ),
+        "",
+    )
+    if viewstate_seed:
+        proposals.append(
+            "ViewState integrity review: browser evidence exposes __VIEWSTATE. "
+            "Save one fresh same-page GET baseline with __VIEWSTATEGENERATOR/__EVENTVALIDATION, then replay only a format control and single-byte __VIEWSTATE tamper; compare stable response/flow without submitting a business action. "
+            "Stop condition: uniform MAC/signature rejection or no repeatable consume/state difference."
+        )
+
     repo_source_summary = state.get("repo_source_summary") or {}
     secret_findings = int(repo_source_summary.get("secret_findings", 0) or 0)
     if secret_findings > 0:
@@ -2696,6 +2712,8 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
         return "action-gated-review", 93, "review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate"
     if "high-risk lane review" in lowered:
         return "high-risk-lane-review", 92, "focused interface test or explicit blocked/not_applicable disposition"
+    if "viewstate integrity review" in lowered:
+        return "viewstate-integrity-review", 93, "fresh same-page baseline plus one format control and one-byte ViewState tamper; no business submit"
     if "secondary-sweep lead" in lowered:
         if "[public-metadata]" in lowered:
             return "secondary-sweep", 52, "review public metadata only for unusual fields or chain pivots"

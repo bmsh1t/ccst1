@@ -301,11 +301,22 @@ def _extract_forms(snapshot_path: Path | None) -> dict:
         return {"status": "not_available", "forms": [], "note": "No DOM/snapshot artifact was available."}
     text = snapshot_path.read_text(encoding="utf-8", errors="replace")
     forms = []
-    for match in re.finditer(r"<form\b(?P<attrs>[^>]*)>", text, re.I):
+    for match in re.finditer(r"<form\b(?P<attrs>[^>]*)>(?P<body>.*?)(?:</form\s*>|(?=<form\b)|\Z)", text, re.I | re.S):
         attrs = match.group("attrs")
         action = _first_string(*(m.group(1) for m in re.finditer(r'action=["\']([^"\']+)["\']', attrs, re.I)))
         method = _first_string(*(m.group(1) for m in re.finditer(r'method=["\']([^"\']+)["\']', attrs, re.I))) or "GET"
-        forms.append({"action": action, "method": method.upper()})
+        form = {"action": action, "method": method.upper()}
+        hidden_fields = []
+        for input_match in re.finditer(r"<input\b(?P<attrs>[^>]*)>", match.group("body"), re.I):
+            input_attrs = input_match.group("attrs")
+            if not re.search(r'type\s*=\s*["\']hidden["\']', input_attrs, re.I):
+                continue
+            name = _first_string(*(m.group(1) for m in re.finditer(r'name=["\']([^"\']+)["\']', input_attrs, re.I)))
+            if name and name not in hidden_fields:
+                hidden_fields.append(name)
+        if hidden_fields:
+            form["hidden_fields"] = hidden_fields
+        forms.append(form)
     if forms:
         return {"status": "extracted", "forms": forms, "note": "Extracted from form tags in snapshot text."}
     return {

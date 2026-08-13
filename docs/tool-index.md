@@ -101,6 +101,7 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/hai_payload_builder.py` ⚠️ underused | Need payload library / LLM-shaped injection | VAPT payload library + LLM prompt-injection generator |
 | `tools/hai_probe.py` ⚠️ underused | Target appears to expose AI Copilot | Probe + fingerprint HackerOne-style AI Copilot endpoints |
 | `tools/sneaky_bits.py` ⚠️ underused | Need invisible/Unicode bypass payloads | U+2062 / U+2064 encoder for filter bypass |
+| `tools/telerik_knownkey.py` ⚠️ manual-only | Captured Telerik `SerializedParameters` | Offline vendored Badsecrets default-key check; no HTTP or state write |
 | `tools/h1_run.sh` ⚠️ underused | Multi-tool ladder run | HackerOne 20-day-hunt master ladder |
 | `tools/token_scanner.py` | Smart contract / token audit | Token red-flag scanner — meme coin rug vectors |
 

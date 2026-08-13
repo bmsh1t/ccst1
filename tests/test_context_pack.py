@@ -1408,6 +1408,41 @@ def test_browser_observed_context_becomes_actionable_pack_evidence(tmp_path):
     assert "No browser-observed XHR/API context loaded." not in pack["unknowns"]
 
 
+def test_browser_viewstate_form_routes_to_concrete_integrity_seed(tmp_path):
+    _seed_recon(tmp_path, "target.com", [])
+    browser_dir = tmp_path / "recon" / "target.com" / "browser"
+    (browser_dir / "forms.json").write_text(
+        json.dumps({
+            "status": "extracted",
+            "forms": [{
+                "method": "POST",
+                "action": "/account",
+                "hidden_fields": ["__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION"],
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    pack = build_context_pack(tmp_path, target="target.com")
+
+    assert pack["knowledge_cards"][0] == "knowledge/cards/insecure-deserialization.md"
+    assert any("Browser form: POST /account hidden_fields=__VIEWSTATE" in item for item in pack["evidence_anchors"])
+    assert any("ViewState 表单先保存同页新鲜 GET 基线" in seed for seed in pack["hypothesis_seeds"])
+
+
+def test_telerik_browser_signal_routes_to_offline_known_key_check_only(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://app.target.com/Telerik.Web.UI.WebResource.axd?type=rau"])
+
+    pack = build_context_pack(tmp_path, target="target.com")
+
+    assert pack["knowledge_cards"][0] == "knowledge/cards/insecure-deserialization.md"
+    assert "tools/telerik_knownkey.py" in pack["must_read"]
+    seed = next(seed for seed in pack["hypothesis_seeds"] if "telerik_knownkey.py" in seed)
+    assert "项目内 Badsecrets ASP.NET/Telerik 密钥集" in seed
+    assert "不能自动晋升 Candidate 或 Finding" in seed
+    assert pack["source_summary"]["telerik_dialog_signal"] is True
+
+
 def test_js_and_source_intel_are_loaded_as_context_pack_evidence(tmp_path):
     _seed_recon(tmp_path, "target.com", ["https://app.target.com/graphql"])
     js_intel_dir = tmp_path / "findings" / "target.com" / "js_intel"
