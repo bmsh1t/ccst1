@@ -11,7 +11,6 @@ ARTICLE_DERIVED_CARDS = [
     "knowledge/cards/auth-hidden-switches.md",
     "knowledge/cards/missing-parameter-discovery.md",
     "knowledge/cards/path-pattern-management-exposure.md",
-    "knowledge/cards/sqli-hidden-surfaces.md",
 ]
 
 
@@ -176,10 +175,16 @@ def test_hidden_sqli_surfaces_are_part_of_skill_flow():
     assert "not a fixed checklist" in web2
     assert "knowledge/cards/sqli-hidden-surfaces.md" in bug_bounty
     assert "Hidden SQLi surface" in methodology
-    assert "## 候选形态示例" in card
+    assert "## 技巧与薄判断层" in card
     assert "X-Forwarded-For" in card
-    assert "sibling 参数复用" in card
+    assert "baseline -> ' -> ''" in card
+    assert "/a/'` vs `/a/''" in card
+    assert "B baseline -> B?limit=1&xxxid=100 -> B?limit='&xxxid=' -> B?limit=''&xxxid=''" in card
+    assert "sibling 参数迁移" in card
     assert "不是固定字典" in card
+    assert "## 最小验证" in card
+    assert "## 常见误判 / 死路" in card
+    assert "## 可晋升经验" in card
 
 
 def test_hidden_auth_switches_are_part_of_skill_flow():

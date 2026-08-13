@@ -129,17 +129,17 @@ def test_sqli_article_card_uses_v2_structure_and_payload_pack():
     assert "deep_refs:" in card
     assert "knowledge/payloads/sqli-low-risk-probes.md" in card
     assert "/root/tool/ccst/ctf-skills" not in card
-    assert "已蒸馏的 Header" in card
     assert "## Quick Recall" in card
+    assert "## 技巧与薄判断层" in card
     assert "Header 示例是候选形态，不是固定字典" in card
     assert "sibling 参数迁移" in card
     assert "XML entity" in card
     assert "parser 解码" in payload_pack
-    assert "## 技巧家族 / Payload 家族" in card
-    assert "## 补充 Checklist" in card
+    assert "## 触发信号" in card
     assert "## 最小验证" in card
+    assert "## 常见误判 / 死路" in card
     assert "## 晋升到 Skill / Queue 的条件" in card
-    assert "sqli-hidden-surface" in card
+    assert "## 可晋升经验" in card
 
     assert "id: sqli-low-risk-probes" in payload_pack
     assert "type: payload-pack" in payload_pack
