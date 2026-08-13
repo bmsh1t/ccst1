@@ -24,9 +24,11 @@ CANDIDATES_DIR = BASE_DIR / "knowledge" / "candidates"
 LIFECYCLE_PATH = CANDIDATES_DIR / "lifecycle.jsonl"
 STATUSES = {"pending", "reviewed", "promoted", "rejected", "superseded"}
 TERMINAL_STATUSES = {"promoted", "rejected", "superseded"}
-EVENTS = {"staged", "reviewed", "promoted", "rejected", "superseded"}
+EVENTS = {"staged", "reviewed", "promoted", "rejected", "superseded", "corroborated"}
 TARGET_SOURCE = "target-memory"
 LOCAL_REF_RE = re.compile(r"^(?P<path>[^#]+)(?:#L(?P<line>[1-9][0-9]*))?$")
+MAX_RECALL_SIGNALS = 8
+MAX_RECALL_SIGNAL_LENGTH = 120
 
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
@@ -137,6 +139,10 @@ def _event(
     reason: str = "",
     card_id: str = "",
     replacement: str = "",
+    kind: str = "",
+    title: str = "",
+    summary: str = "",
+    recall_signals: list[str] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -158,7 +164,38 @@ def _event(
         payload["card_id"] = card_id
     if replacement:
         payload["replacement"] = replacement
+    if kind:
+        payload["kind"] = normalize_experience_kind(kind, default="useful-pattern")
+    if title:
+        payload["title"] = scrub_experience_text(title).strip()[:240]
+    if summary:
+        payload["summary"] = scrub_experience_text(summary).strip()[:600]
+    if recall_signals is not None:
+        payload["recall_signals"] = _normalize_recall_signals(recall_signals)
     return payload
+
+
+def _normalize_recall_signals(values: list[str]) -> list[str]:
+    signals: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError("recall signals must be non-empty strings")
+        value = raw.strip()
+        if len(value) > MAX_RECALL_SIGNAL_LENGTH:
+            raise ValueError(
+                f"recall signals must be at most {MAX_RECALL_SIGNAL_LENGTH} characters"
+            )
+        scrubbed = scrub_experience_text(value).strip()
+        if scrubbed != value:
+            raise ValueError("recall signals must not contain email or token values")
+        key = value.casefold()
+        if key not in seen:
+            seen.add(key)
+            signals.append(value)
+    if not 1 <= len(signals) <= MAX_RECALL_SIGNALS:
+        raise ValueError(f"recall signals must contain 1-{MAX_RECALL_SIGNALS} values")
+    return signals
 
 
 def _validate_local_ref(repo_root: Path, reference: str) -> str | None:
@@ -312,7 +349,7 @@ def _render_candidate(
             "## 候选元数据",
             "",
             f"- candidate_id: `{candidate_id}`",
-            f"- status: `pending`",
+            "- status: `pending`",
             f"- kind: `{kind}`",
             f"- target card: `{card_id or '待人工决定'}`",
             "",
@@ -345,7 +382,7 @@ def _state_map(path: Path = LIFECYCLE_PATH) -> tuple[dict[str, dict[str, Any]], 
         return states, errors
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         return states, [f"cannot read lifecycle log: {exc}"]
     transitions = {
         "reviewed": ("pending", "reviewed"),
@@ -377,6 +414,34 @@ def _state_map(path: Path = LIFECYCLE_PATH) -> tuple[dict[str, dict[str, Any]], 
             if item.get("from_status") is not None or item.get("to_status") != "pending":
                 errors.append(f"{candidate_id}: staged must transition null -> pending")
                 continue
+            if "recall_signals" in item:
+                errors.append(f"{candidate_id}: staged must not define recall_signals")
+                continue
+            invalid_projection = False
+            for field, limit in (("title", 240), ("summary", 600)):
+                if field not in item:
+                    continue
+                value = item[field]
+                if (
+                    not isinstance(value, str)
+                    or not value
+                    or scrub_experience_text(value).strip()[:limit] != value
+                ):
+                    errors.append(f"{candidate_id}: staged {field} is not a safe projection")
+                    invalid_projection = True
+                    break
+            if invalid_projection:
+                continue
+            if "kind" in item:
+                try:
+                    normalized_kind = normalize_experience_kind(
+                        item["kind"], default="useful-pattern"
+                    )
+                except ValueError:
+                    normalized_kind = ""
+                if not isinstance(item["kind"], str) or normalized_kind != item["kind"]:
+                    errors.append(f"{candidate_id}: staged kind is not normalized")
+                    continue
             states[candidate_id] = dict(item)
             states[candidate_id]["status"] = "pending"
             continue
@@ -385,6 +450,75 @@ def _state_map(path: Path = LIFECYCLE_PATH) -> tuple[dict[str, dict[str, Any]], 
             continue
         if current.get("status") in TERMINAL_STATUSES:
             errors.append(f"{candidate_id}: transition after terminal status")
+            continue
+        if action == "corroborated":
+            if any(
+                field in item
+                for field in ("kind", "title", "summary", "recall_signals")
+            ):
+                errors.append(f"{candidate_id}: corroborated contains unsupported fields")
+                continue
+            if (
+                item.get("from_status") != current.get("status")
+                or item.get("to_status") != current.get("status")
+            ):
+                errors.append(f"{candidate_id}: corroborated must preserve status")
+                continue
+            if item.get("candidate_path") != current.get("candidate_path"):
+                errors.append(f"{candidate_id}: candidate_path changed during lifecycle")
+                continue
+            new_sources = item.get("sources")
+            new_refs = item.get("evidence_refs")
+            if not isinstance(new_sources, list) or not new_sources:
+                errors.append(f"{candidate_id}: corroborated requires sources")
+                continue
+            if (
+                not isinstance(new_refs, list)
+                or not new_refs
+                or any(not isinstance(reference, str) for reference in new_refs)
+                or normalize_evidence_refs(new_refs) != new_refs
+            ):
+                errors.append(f"{candidate_id}: corroborated requires evidence_refs")
+                continue
+            existing_targets = {
+                canonical_target_value(str(source.get("target") or "")).casefold()
+                for source in current.get("sources") or []
+                if isinstance(source, dict) and source.get("type") == TARGET_SOURCE
+            }
+            invalid_source = False
+            for source in new_sources:
+                if not isinstance(source, dict) or source.get("type") != TARGET_SOURCE:
+                    invalid_source = True
+                    break
+                source_target = canonical_target_value(
+                    str(source.get("target") or "")
+                ).casefold()
+                if (
+                    not isinstance(source.get("target"), str)
+                    or source_target != source["target"].casefold()
+                    or not isinstance(source.get("entry_id"), str)
+                    or not source["entry_id"]
+                    or source_target in existing_targets
+                    or any(
+                        source_target in signal.casefold()
+                        for signal in current.get("recall_signals") or []
+                    )
+                ):
+                    invalid_source = True
+                    break
+                existing_targets.add(source_target)
+            if invalid_source:
+                errors.append(f"{candidate_id}: corroborated source must add an independent target")
+                continue
+            merged = dict(current)
+            merged["sources"] = list(merged.get("sources") or [])
+            for source in new_sources:
+                if source not in merged["sources"]:
+                    merged["sources"].append(source)
+            merged["evidence_refs"] = normalize_evidence_refs(
+                list(merged.get("evidence_refs") or []) + new_refs
+            )
+            states[candidate_id] = merged
             continue
         expected_from, expected_to = transitions[action]
         if current.get("status") != expected_from or item.get("from_status") != expected_from:
@@ -395,6 +529,42 @@ def _state_map(path: Path = LIFECYCLE_PATH) -> tuple[dict[str, dict[str, Any]], 
         if item.get("to_status") != expected_to:
             errors.append(f"{candidate_id}: {action} has invalid to_status")
             continue
+        if action == "reviewed" and "recall_signals" in item:
+            if not str(item.get("reviewer") or "").strip() or not str(
+                item.get("reason") or ""
+            ).strip():
+                errors.append(f"{candidate_id}: reviewed recall_signals require human review")
+                continue
+            raw_signals = item.get("recall_signals")
+            if not isinstance(raw_signals, list):
+                errors.append(f"{candidate_id}: reviewed recall_signals must be a list")
+                continue
+            try:
+                normalized_signals = _normalize_recall_signals(raw_signals)
+            except ValueError as exc:
+                errors.append(f"{candidate_id}: invalid recall_signals: {exc}")
+                continue
+            if normalized_signals != raw_signals:
+                errors.append(f"{candidate_id}: reviewed recall_signals are not normalized")
+                continue
+            source_targets = {
+                canonical_target_value(str(source.get("target") or "")).casefold()
+                for source in current.get("sources") or []
+                if isinstance(source, dict) and source.get("type") == TARGET_SOURCE
+            }
+            if any(
+                source_target and source_target in signal.casefold()
+                for source_target in source_targets
+                for signal in normalized_signals
+            ):
+                errors.append(f"{candidate_id}: reviewed recall_signals contain a source target")
+                continue
+        elif action != "reviewed" and "recall_signals" in item:
+            errors.append(f"{candidate_id}: {action} must not define recall_signals")
+            continue
+        if any(field in item for field in ("sources", "evidence_refs", "kind", "title", "summary")):
+            errors.append(f"{candidate_id}: {action} contains unsupported fields")
+            continue
         if item.get("candidate_path") and item.get("candidate_path") != current.get("candidate_path"):
             errors.append(f"{candidate_id}: candidate_path changed during lifecycle")
             continue
@@ -403,6 +573,13 @@ def _state_map(path: Path = LIFECYCLE_PATH) -> tuple[dict[str, dict[str, Any]], 
         merged["status"] = expected_to
         states[candidate_id] = merged
     return states, errors
+
+
+def load_candidate_states_diagnostic(
+    path: Path = LIFECYCLE_PATH,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Replay candidate lifecycle without exposing its JSONL schema to consumers."""
+    return _state_map(path)
 
 
 def _validate_state_sources(repo_root: Path, state: dict[str, Any]) -> list[str]:
@@ -511,6 +688,9 @@ def stage_candidate(
                 candidate_path=_relative(candidate_path, repo),
                 sources=sources,
                 evidence_refs=refs,
+                kind=normalized_kind,
+                title=clean_title,
+                summary=clean_summary,
             ),
             path=event_path,
         )
@@ -578,6 +758,7 @@ def _transition(
     card_id: str = "",
     replacement: str = "",
     evidence_refs: list[str] | None = None,
+    recall_signals: list[str] | None = None,
 ) -> dict[str, Any]:
     repo = Path(repo_root).resolve()
     event_path = lifecycle_path or (repo / "knowledge" / "candidates" / "lifecycle.jsonl")
@@ -595,6 +776,19 @@ def _transition(
         raise ValueError("reviewer and reason are required")
     if action == "superseded" and not replacement.strip():
         raise ValueError("superseded requires replacement candidate/card")
+    if action == "reviewed" and recall_signals is not None:
+        recall_signals = _normalize_recall_signals(recall_signals)
+        source_targets = {
+            canonical_target_value(str(source.get("target") or "")).casefold()
+            for source in state.get("sources") or []
+            if isinstance(source, dict) and source.get("type") == TARGET_SOURCE
+        }
+        if any(
+            source_target and source_target in signal.casefold()
+            for source_target in source_targets
+            for signal in recall_signals
+        ):
+            raise ValueError("recall signals must not contain source target values")
     refs = normalize_evidence_refs(evidence_refs)
     errors = validate_evidence_refs(repo, refs)
     if errors:
@@ -636,6 +830,7 @@ def _transition(
         card_id=card_id,
         replacement=replacement,
         evidence_refs=None,
+        recall_signals=recall_signals if action == "reviewed" and recall_signals else None,
     )
     if refs:
         payload["review_evidence_refs"] = refs
@@ -764,6 +959,49 @@ def audit_candidates(
     result["ok"] = not result["errors"]
     return result
 
+def corroborate(
+    candidate_id: str,
+    *,
+    target: str,
+    entry_id: str,
+    repo_root: Path | str = BASE_DIR,
+    lifecycle_path: Path | None = None,
+) -> dict[str, Any]:
+    repo = Path(repo_root).resolve()
+    path = lifecycle_path or repo / "knowledge" / "candidates" / "lifecycle.jsonl"
+    states, errors = _state_map(path)
+    if errors:
+        raise ValueError("cannot corroborate invalid lifecycle: " + "; ".join(errors))
+    state = states.get(candidate_id)
+    if not state or state.get("status") not in {"pending", "reviewed"}:
+        raise ValueError("candidate is not corroboratable")
+    source, refs, source_errors = _resolve_sources(repo, [[target, entry_id]])
+    if source_errors:
+        raise ValueError("; ".join(source_errors))
+    existing_targets = {
+        canonical_target_value(str(item.get("target") or "")).casefold()
+        for item in state.get("sources", [])
+        if isinstance(item, dict) and item.get("type") == TARGET_SOURCE
+    }
+    if source[0]["target"].casefold() in existing_targets:
+        raise ValueError("candidate already has a source from this target")
+    if any(
+        source[0]["target"].casefold() in signal.casefold()
+        for signal in state.get("recall_signals") or []
+    ):
+        raise ValueError("new source target conflicts with a recall signal")
+    payload = _event(
+        candidate_id=candidate_id,
+        action="corroborated",
+        from_status=state["status"],
+        to_status=state["status"],
+        candidate_path=str(state.get("candidate_path") or ""),
+        sources=source,
+        evidence_refs=refs,
+    )
+    _append_event(payload, path=path)
+    return payload
+
 
 def _cmd_stage(args: argparse.Namespace) -> int:
     try:
@@ -803,6 +1041,7 @@ def _cmd_transition(args: argparse.Namespace, action: str) -> int:
             card_id=getattr(args, "card_id", ""),
             replacement=getattr(args, "replacement", ""),
             evidence_refs=getattr(args, "evidence_ref", []),
+            recall_signals=getattr(args, "recall_signal", None),
             repo_root=BASE_DIR,
         )
     except ValueError as exc:
@@ -820,6 +1059,19 @@ def _cmd_audit(args: argparse.Namespace) -> int:
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 1
+
+def _cmd_corroborate(args: argparse.Namespace) -> int:
+    try:
+        payload = corroborate(
+            args.candidate_id,
+            target=args.target,
+            entry_id=args.entry_id,
+        )
+    except ValueError as exc:
+        print(f"[corroborate] {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -847,11 +1099,20 @@ def build_parser() -> argparse.ArgumentParser:
         item.add_argument("--reviewer", required=True)
         item.add_argument("--reason", required=True)
         item.add_argument("--evidence-ref", action="append", default=[])
+        if action == "reviewed":
+            item.add_argument("--recall-signal", action="append", default=None)
         if action == "promoted":
             item.add_argument("--card-id", required=True)
         if action == "superseded":
             item.add_argument("--replacement", required=True)
         item.set_defaults(func=lambda args, a=action: _cmd_transition(args, a))
+    corroborate_parser = sub.add_parser(
+        "corroborate", help="append an independent target-memory source"
+    )
+    corroborate_parser.add_argument("candidate_id")
+    corroborate_parser.add_argument("--target", required=True)
+    corroborate_parser.add_argument("--entry-id", required=True)
+    corroborate_parser.set_defaults(func=_cmd_corroborate)
 
     audit = sub.add_parser("audit", help="audit lifecycle and promoted cards")
     audit.add_argument("--strict", action="store_true")

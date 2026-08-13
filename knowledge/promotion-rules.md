@@ -125,6 +125,21 @@ Promote to Skill / Queue when: 什么时候交给 Skill 或 action queue
 - 是否和 `rules/` 冲突
 - 是否能帮助 Skills 层做更好的分支选择
 
+### 跨目标 advisory 召回
+
+Candidate 通过人工 `reviewed` 后，可以附加少量 `recall_signals`，例如机制词、框架名或可
+观察的证据形态。信号不是晋升证明，也不是自动执行规则；它只让其他目标的 Context Pack
+在当前证据直接命中时显示一条 advisory。信号可选，旧 Candidate 不需迁移。
+
+Context Pack 固定只读 `reviewed` Candidate，排除来源包含当前目标的 Candidate，最多显示一条
+且不占正式 Card 预算；不暴露来源目标、Candidate 路径或 evidence refs，并标记需要当前目标
+证据。它不会直接生成 Action、Finding 或 Closure。
+
+后续目标出现同一可复用模式时，使用 `knowledge_candidates.py corroborate` 将目标记忆条目和
+evidence refs 追加到原 Candidate。该操作只扩展来源链，状态保持 `pending` 或 `reviewed`；重复
+目标、缺证据、损坏 lifecycle 和终态 Candidate 均拒绝。仍需人工决定是否 review、promote 或
+提升正式 Card maturity。
+
 正式卡晋升后的治理不写回 candidate lifecycle：
 
 - `knowledge/candidates/lifecycle.jsonl` 只回答候选是否 pending/reviewed/promoted。

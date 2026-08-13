@@ -98,7 +98,187 @@ def test_stage_candidate_requires_evidence_and_preserves_sources(tmp_path):
     assert not errors
     assert states[candidate_id]["status"] == "pending"
     assert states[candidate_id]["evidence_refs"] == ["memory/evidence/example/ledger.jsonl"]
+    assert states[candidate_id]["kind"] == "validation-technique"
+    assert states[candidate_id]["title"] == "Role diff"
+    assert states[candidate_id]["summary"].startswith("Compare one actor")
     assert "example.com" in path.read_text(encoding="utf-8")
+
+
+def test_review_recall_signals_are_optional_normalized_and_safe(tmp_path):
+    repo = _repo_with_evidence(tmp_path)
+    entry_id = _seed_target(repo, "example.com")
+    lifecycle = repo / "knowledge" / "candidates" / "lifecycle.jsonl"
+    candidate_id, _ = candidates.stage_candidate(
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+        kind="validation-technique",
+        title="Hidden binder",
+        summary="Transfer a sibling parameter bundle before reducing fields.",
+        source_pairs=[["example.com", entry_id]],
+    )
+
+    candidates._transition(
+        candidate_id,
+        action="reviewed",
+        reviewer="human",
+        reason="Reusable after review.",
+        recall_signals=["hidden binder", "隐藏参数", "Hidden Binder"],
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+    )
+    states, errors = candidates._state_map(lifecycle)
+
+    assert not errors
+    assert states[candidate_id]["recall_signals"] == ["hidden binder", "隐藏参数"]
+
+
+@pytest.mark.parametrize(
+    "signals,error",
+    [
+        (["example.com hidden binder"], "source target"),
+        (["hidden binder", " "], "non-empty strings"),
+        (["x" * 121], "at most 120"),
+        (["A" * 32], "email or token"),
+    ],
+)
+def test_review_rejects_unsafe_recall_signals_without_appending(
+    tmp_path, signals, error
+):
+    repo = _repo_with_evidence(tmp_path)
+    entry_id = _seed_target(repo, "example.com")
+    lifecycle = repo / "knowledge" / "candidates" / "lifecycle.jsonl"
+    candidate_id, _ = candidates.stage_candidate(
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+        kind="useful-pattern",
+        title="Safe projection",
+        summary="Only reviewed, reusable text belongs in runtime hints.",
+        source_pairs=[["example.com", entry_id]],
+    )
+    before = lifecycle.read_bytes()
+
+    with pytest.raises(ValueError, match=error):
+        candidates._transition(
+            candidate_id,
+            action="reviewed",
+            reviewer="human",
+            reason="Review attempt.",
+            recall_signals=signals,
+            repo_root=repo,
+            lifecycle_path=lifecycle,
+        )
+
+    assert lifecycle.read_bytes() == before
+
+
+def test_review_without_recall_signals_preserves_legacy_behavior(tmp_path):
+    repo = _repo_with_evidence(tmp_path)
+    entry_id = _seed_target(repo, "example.com")
+    lifecycle = repo / "knowledge" / "candidates" / "lifecycle.jsonl"
+    candidate_id, _ = candidates.stage_candidate(
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+        kind="useful-pattern",
+        title="Manual only",
+        summary="This reviewed candidate remains outside runtime recall.",
+        source_pairs=[["example.com", entry_id]],
+    )
+
+    candidates._transition(
+        candidate_id,
+        action="reviewed",
+        reviewer="human",
+        reason="Keep manual-only compatibility.",
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+    )
+    states, errors = candidates._state_map(lifecycle)
+
+    assert not errors
+    assert states[candidate_id]["status"] == "reviewed"
+    assert "recall_signals" not in states[candidate_id]
+
+
+def test_replay_rejects_recall_signals_on_staged_event(tmp_path):
+    lifecycle = tmp_path / "knowledge" / "candidates" / "lifecycle.jsonl"
+    event = candidates._event(
+        candidate_id="cand-malformed",
+        action="staged",
+        from_status=None,
+        to_status="pending",
+        candidate_path="knowledge/candidates/cand-malformed.md",
+        kind="useful-pattern",
+        title="Malformed projection",
+        summary="Staging cannot pre-authorize runtime recall.",
+        recall_signals=["hidden binder"],
+    )
+    candidates._append_event(event, path=lifecycle)
+
+    _, errors = candidates._state_map(lifecycle)
+
+    assert errors
+
+
+def test_replay_rejects_review_event_overwriting_staged_fields(tmp_path):
+    repo = _repo_with_evidence(tmp_path)
+    entry_id = _seed_target(repo, "example.com")
+    lifecycle = repo / "knowledge" / "candidates" / "lifecycle.jsonl"
+    candidate_id, _ = candidates.stage_candidate(
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+        kind="useful-pattern",
+        title="Owner-bound projection",
+        summary="Only staged owns display text and only review owns recall signals.",
+        source_pairs=[["example.com", entry_id]],
+    )
+    event = candidates._event(
+        candidate_id=candidate_id,
+        action="reviewed",
+        from_status="pending",
+        to_status="reviewed",
+        candidate_path=f"knowledge/candidates/{candidate_id}.md",
+        reviewer="human",
+        reason="Malformed fixture.",
+    )
+    event.update({"title": "Replacement title", "sources": []})
+    candidates._append_event(event, path=lifecycle)
+
+    _, errors = candidates._state_map(lifecycle)
+
+    assert errors
+
+
+def test_replay_rejects_non_normalized_corroboration_evidence(tmp_path):
+    lifecycle = tmp_path / "knowledge" / "candidates" / "lifecycle.jsonl"
+    staged = candidates._event(
+        candidate_id="cand-malformed",
+        action="staged",
+        from_status=None,
+        to_status="pending",
+        candidate_path="knowledge/candidates/cand-malformed.md",
+        sources=[
+            {"type": "target-memory", "target": "one.example", "entry_id": "tm-one"}
+        ],
+        evidence_refs=["evidence/one.json"],
+    )
+    corroborated = candidates._event(
+        candidate_id="cand-malformed",
+        action="corroborated",
+        from_status="pending",
+        to_status="pending",
+        candidate_path="knowledge/candidates/cand-malformed.md",
+        sources=[
+            {"type": "target-memory", "target": "two.example", "entry_id": "tm-two"}
+        ],
+        evidence_refs=["evidence/two.json"],
+    )
+    corroborated["evidence_refs"] = ["evidence/two.json", "evidence/two.json"]
+    candidates._append_event(staged, path=lifecycle)
+    candidates._append_event(corroborated, path=lifecycle)
+
+    _, errors = candidates._state_map(lifecycle)
+
+    assert errors
 
 
 def test_stage_cross_target_candidate_records_two_sources(tmp_path):
@@ -119,6 +299,194 @@ def test_stage_cross_target_candidate_records_two_sources(tmp_path):
         "one.example",
         "two.example",
     }
+
+
+@pytest.mark.parametrize("reviewed", [False, True])
+def test_corroborate_appends_independent_source_without_changing_status(
+    tmp_path, reviewed
+):
+    repo = _repo_with_evidence(tmp_path)
+    first = _seed_target(repo, "one.example")
+    second = _seed_target(repo, "two.example")
+    lifecycle = repo / "knowledge" / "candidates" / "lifecycle.jsonl"
+    candidate_id, _ = candidates.stage_candidate(
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+        kind="validation-technique",
+        title="Cross-target replay",
+        summary="Independent evidence can corroborate the same candidate.",
+        source_pairs=[["one.example", first]],
+    )
+    if reviewed:
+        candidates._transition(
+            candidate_id,
+            action="reviewed",
+            reviewer="human",
+            reason="Reviewed before corroboration.",
+            recall_signals=["cross-target replay"],
+            repo_root=repo,
+            lifecycle_path=lifecycle,
+        )
+
+    candidates.corroborate(
+        candidate_id,
+        target="two.example",
+        entry_id=second,
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+    )
+    states, errors = candidates._state_map(lifecycle)
+
+    assert not errors
+    assert states[candidate_id]["status"] == ("reviewed" if reviewed else "pending")
+    assert {item["target"] for item in states[candidate_id]["sources"]} == {
+        "one.example",
+        "two.example",
+    }
+
+
+def test_corroborate_rejects_duplicate_target_without_appending(tmp_path):
+    repo = _repo_with_evidence(tmp_path)
+    first = _seed_target(repo, "one.example")
+    lifecycle = repo / "knowledge" / "candidates" / "lifecycle.jsonl"
+    candidate_id, _ = candidates.stage_candidate(
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+        kind="useful-pattern",
+        title="No duplicate target",
+        summary="One target cannot corroborate itself with another entry.",
+        source_pairs=[["one.example", first]],
+    )
+    before = lifecycle.read_bytes()
+
+    with pytest.raises(ValueError, match="already has a source"):
+        candidates.corroborate(
+            candidate_id,
+            target="https://one.example/path",
+            entry_id=first,
+            repo_root=repo,
+            lifecycle_path=lifecycle,
+        )
+
+    assert lifecycle.read_bytes() == before
+
+
+def test_corroborate_rejects_target_embedded_in_reviewed_signal_without_appending(
+    tmp_path,
+):
+    repo = _repo_with_evidence(tmp_path)
+    first = _seed_target(repo, "one.example")
+    second = _seed_target(repo, "two.example")
+    lifecycle = repo / "knowledge" / "candidates" / "lifecycle.jsonl"
+    candidate_id, _ = candidates.stage_candidate(
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+        kind="validation-technique",
+        title="Signal/source isolation",
+        summary="Later evidence sources cannot become routing signals.",
+        source_pairs=[["one.example", first]],
+    )
+    candidates._transition(
+        candidate_id,
+        action="reviewed",
+        reviewer="human",
+        reason="Reviewed before the second source existed.",
+        recall_signals=["two.example response marker"],
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+    )
+    before = lifecycle.read_bytes()
+
+    with pytest.raises(ValueError, match="conflicts with a recall signal"):
+        candidates.corroborate(
+            candidate_id,
+            target="two.example",
+            entry_id=second,
+            repo_root=repo,
+            lifecycle_path=lifecycle,
+        )
+
+    assert lifecycle.read_bytes() == before
+
+
+def test_corroborate_rejects_source_without_evidence_without_appending(tmp_path):
+    repo = _repo_with_evidence(tmp_path)
+    first = _seed_target(repo, "one.example")
+    second = _seed_target(repo, "two.example", evidence=None)
+    lifecycle = repo / "knowledge" / "candidates" / "lifecycle.jsonl"
+    candidate_id, _ = candidates.stage_candidate(
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+        kind="validation-technique",
+        title="Evidence-bound corroboration",
+        summary="Every independent source needs a local evidence reference.",
+        source_pairs=[["one.example", first]],
+    )
+    before = lifecycle.read_bytes()
+
+    with pytest.raises(ValueError, match="no evidence_refs"):
+        candidates.corroborate(
+            candidate_id,
+            target="two.example",
+            entry_id=second,
+            repo_root=repo,
+            lifecycle_path=lifecycle,
+        )
+
+    assert lifecycle.read_bytes() == before
+
+
+def test_corroborate_rejects_terminal_or_invalid_lifecycle_without_appending(tmp_path):
+    repo = _repo_with_evidence(tmp_path)
+    first = _seed_target(repo, "one.example")
+    second = _seed_target(repo, "two.example")
+    lifecycle = repo / "knowledge" / "candidates" / "lifecycle.jsonl"
+    candidate_id, _ = candidates.stage_candidate(
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+        kind="dead-end",
+        title="Terminal candidate",
+        summary="Terminal candidates cannot receive corroboration.",
+        source_pairs=[["one.example", first]],
+    )
+    candidates._transition(
+        candidate_id,
+        action="reviewed",
+        reviewer="human",
+        reason="Reviewed.",
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+    )
+    candidates._transition(
+        candidate_id,
+        action="rejected",
+        reviewer="human",
+        reason="Not reusable.",
+        repo_root=repo,
+        lifecycle_path=lifecycle,
+    )
+    before = lifecycle.read_bytes()
+    with pytest.raises(ValueError, match="not corroboratable"):
+        candidates.corroborate(
+            candidate_id,
+            target="two.example",
+            entry_id=second,
+            repo_root=repo,
+            lifecycle_path=lifecycle,
+        )
+    assert lifecycle.read_bytes() == before
+
+    lifecycle.write_bytes(before + b"not-json\n")
+    corrupt = lifecycle.read_bytes()
+    with pytest.raises(ValueError, match="invalid lifecycle"):
+        candidates.corroborate(
+            candidate_id,
+            target="two.example",
+            entry_id=second,
+            repo_root=repo,
+            lifecycle_path=lifecycle,
+        )
+    assert lifecycle.read_bytes() == corrupt
 
 
 def test_stage_invalid_source_does_not_create_candidate(tmp_path):

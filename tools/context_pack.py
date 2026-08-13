@@ -28,6 +28,7 @@ try:
         load_card_metadata_by_file,
         load_card_paths,
     )
+    from tools.knowledge_candidates import load_candidate_states_diagnostic
     from tools.structured_findings import (
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
@@ -44,6 +45,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_card_metadata_by_file,
         load_card_paths,
     )
+    from knowledge_candidates import load_candidate_states_diagnostic  # type: ignore
     from structured_findings import (  # type: ignore
         format_validation_runner_candidate_lines,
         load_validation_runner_candidate_pool,
@@ -3147,6 +3149,78 @@ def _reference_hints(cards: list[str], blob: str, focus: str, skill: str) -> lis
     return hints
 
 
+def _redact_candidate_source_targets(value: str, targets: list[str]) -> str:
+    redacted = str(value or "")
+    for target in sorted(set(targets), key=len, reverse=True):
+        if target:
+            redacted = re.sub(re.escape(target), "[source-target]", redacted, flags=re.I)
+    return redacted
+
+
+def _reviewed_candidate_hints(
+    repo_root: Path,
+    *,
+    target: str,
+    evidence_blob: str,
+) -> tuple[list[dict], int, int]:
+    states, errors = load_candidate_states_diagnostic(
+        repo_root / "knowledge" / "candidates" / "lifecycle.jsonl"
+    )
+    if errors:
+        return [], 0, 0
+
+    target_key = target.casefold()
+    haystack = evidence_blob.casefold()
+    pool = 0
+    matches: list[tuple[int, str, dict]] = []
+    for state in states.values():
+        if state.get("status") != "reviewed" or not all(
+            state.get(field) for field in ("kind", "title", "summary")
+        ):
+            continue
+        target_sources = [
+            source
+            for source in state.get("sources") or []
+            if isinstance(source, dict) and source.get("type") == "target-memory"
+        ]
+        if not target_sources:
+            continue
+        source_targets = [
+            canonical_target_value(str(source.get("target") or ""))
+            for source in target_sources
+        ]
+        if any(source_target.casefold() == target_key for source_target in source_targets):
+            continue
+        pool += 1
+        signal_matches = [
+            signal
+            for signal in state.get("recall_signals") or []
+            if isinstance(signal, str) and signal.casefold() in haystack
+        ]
+        if not signal_matches:
+            continue
+        candidate_id = str(state.get("candidate_id") or "")
+        matches.append(
+            (
+                max(len(signal) for signal in signal_matches),
+                candidate_id,
+                {
+                    "candidate_id": candidate_id,
+                    "kind": str(state.get("kind")),
+                    "title": _redact_candidate_source_targets(
+                        str(state.get("title")), source_targets
+                    )[:160],
+                    "summary": _redact_candidate_source_targets(
+                        str(state.get("summary")), source_targets
+                    )[:400],
+                    "advisory": "require current-target evidence",
+                },
+            )
+        )
+    selected = [item[2] for item in sorted(matches, key=lambda item: (-item[0], item[1]))[:1]]
+    return selected, pool, len(matches)
+
+
 def build_context_pack(
     repo_root: Path | str = BASE_DIR,
     *,
@@ -3166,6 +3240,11 @@ def build_context_pack(
     runner_candidates = load_validation_runner_candidate_pool(repo, resolved_target)
     local_intel = _load_local_intel(repo, target_key)
     blob = _text_blob(focus, goal_memory, ranked, gaps, findings, local_intel)
+    (
+        reviewed_candidate_hints,
+        reviewed_candidate_pool,
+        reviewed_candidate_matches,
+    ) = _reviewed_candidate_hints(repo, target=resolved_target, evidence_blob=blob)
     telerik_dialog_signal = _has_telerik_dialog_signal(blob)
     skill, why_skill = _select_skill(focus, blob, ranked, findings, goal_memory)
     historical_patterns = []
@@ -3235,6 +3314,7 @@ def build_context_pack(
         "deferred_knowledge_card_capabilities": _card_capabilities(deferred_cards, repo, registry=registry),
         "reference_hints": _reference_hints(cards, blob, focus, skill),
         "historical_patterns": historical_patterns,
+        "reviewed_candidate_hints": reviewed_candidate_hints,
         "required_checks": checks,
         "evidence_anchors": _build_evidence_anchors(ranked, goal_memory, gaps, findings, local_intel)
         + _runner_candidate_anchors(runner_candidates)
@@ -3273,6 +3353,9 @@ def build_context_pack(
             "findings": len(findings),
             "validation_runner_candidates": len(runner_candidates),
             "historical_patterns": len(historical_patterns),
+            "reviewed_candidate_pool": reviewed_candidate_pool,
+            "reviewed_candidate_matches": reviewed_candidate_matches,
+            "reviewed_candidate_hints": len(reviewed_candidate_hints),
             "telerik_dialog_signal": telerik_dialog_signal,
             **_local_intel_source_summary(local_intel),
             **_ledger_source_summary(evidence_summary),
@@ -3323,6 +3406,16 @@ def format_context_pack(pack: dict) -> str:
         ]),
         "- Historical patterns (advisory; require current-target evidence):",
         *_format_list(pack.get("historical_patterns", [])),
+        (
+            "- Reviewed candidate hints "
+            "(pool={pool}, matches={matches}, selected={selected}; "
+            "advisory; require current-target evidence):"
+        ).format(
+            pool=(pack.get("source_summary") or {}).get("reviewed_candidate_pool", 0),
+            matches=(pack.get("source_summary") or {}).get("reviewed_candidate_matches", 0),
+            selected=(pack.get("source_summary") or {}).get("reviewed_candidate_hints", 0),
+        ),
+        *_format_list([f"{item.get('candidate_id')}: {item.get('title')} — {item.get('summary')}" for item in pack.get("reviewed_candidate_hints", [])]),
         "- Required checks:",
         *_format_list(pack["required_checks"]),
         "- Evidence anchors:",

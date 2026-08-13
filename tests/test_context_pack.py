@@ -10,6 +10,9 @@ from autopilot_state import build_autopilot_state, load_closure_projection, stag
 from context_pack import SKILL_CATALOG, SKILL_PATHS, build_context_pack, format_context_pack
 from evidence_ledger import record_entry
 from surface_projection import build_surface_input_manifest, write_surface_projection
+from tools import knowledge_candidates as candidates
+from tools.experience_schema import make_entry_id
+from tools.target_paths import target_storage_key
 
 
 def _seed_recon(repo_root: Path, target: str, urls: list[str]) -> None:
@@ -48,6 +51,71 @@ def _seed_target_memory(repo_root: Path, target: str, payload: dict) -> None:
     merged = {"target": target}
     merged.update(payload)
     (target_dir / f"{target}.json").write_text(json.dumps(merged), encoding="utf-8")
+
+
+def _seed_reviewed_candidate(
+    repo_root: Path,
+    *,
+    source_target: str,
+    title: str,
+    summary: str,
+    signals: list[str] | None,
+) -> str:
+    evidence_ref = f"memory/evidence/{target_storage_key(source_target)}/ledger.jsonl"
+    evidence = repo_root / evidence_ref
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text('{"result":"tested_clean"}\n', encoding="utf-8")
+    entry_id = make_entry_id(
+        target=source_target,
+        field="useful_patterns",
+        text=summary,
+        evidence_refs=[evidence_ref],
+    )
+    target_path = (
+        repo_root
+        / "memory"
+        / "goals"
+        / "targets"
+        / f"{target_storage_key(source_target)}.json"
+    )
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target": source_target,
+                "useful_patterns": [
+                    {
+                        "entry_id": entry_id,
+                        "kind": "validation-technique",
+                        "text": summary,
+                        "evidence_refs": [evidence_ref],
+                    }
+                ],
+                "dead_ends": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    lifecycle = repo_root / "knowledge" / "candidates" / "lifecycle.jsonl"
+    candidate_id, _ = candidates.stage_candidate(
+        repo_root=repo_root,
+        lifecycle_path=lifecycle,
+        kind="validation-technique",
+        title=title,
+        summary=summary,
+        source_pairs=[[source_target, entry_id]],
+    )
+    candidates._transition(
+        candidate_id,
+        action="reviewed",
+        reviewer="human",
+        reason="Reviewed for bounded cross-target recall.",
+        recall_signals=signals,
+        repo_root=repo_root,
+        lifecycle_path=lifecycle,
+    )
+    return candidate_id
 
 
 def _hint_paths(pack: dict) -> list[str]:
@@ -280,6 +348,307 @@ def test_context_pack_exposes_bounded_historical_patterns_as_advisory(tmp_path):
     assert "Historical patterns (advisory; require current-target evidence):" in output
     historical_output = output.split("- Historical patterns", 1)[1].split("- Required checks", 1)[0]
     assert not any(domain in historical_output for domain in ("target.com", "alpha.com", "beta.com", "gamma.com", "delta.com"))
+
+
+def test_context_pack_recalls_reviewed_candidate_from_english_focus(tmp_path):
+    candidate_id = _seed_reviewed_candidate(
+        tmp_path,
+        source_target="source.example",
+        title="Hidden binder from source.example",
+        summary="Move a complete sibling parameter bundle before reducing fields.",
+        signals=["hidden binder", "sibling parameter bundle"],
+    )
+
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="Review the hidden binder on an internal API",
+    )
+    output = format_context_pack(pack)
+
+    assert pack["reviewed_candidate_hints"] == [
+        {
+            "candidate_id": candidate_id,
+            "kind": "validation-technique",
+            "title": "Hidden binder from [source-target]",
+            "summary": "Move a complete sibling parameter bundle before reducing fields.",
+            "advisory": "require current-target evidence",
+        }
+    ]
+    assert pack["source_summary"]["reviewed_candidate_pool"] == 1
+    assert pack["source_summary"]["reviewed_candidate_matches"] == 1
+    assert pack["source_summary"]["reviewed_candidate_hints"] == 1
+    assert "pool=1, matches=1, selected=1" in output
+    assert "source.example" not in output
+
+
+def test_context_pack_redacts_source_target_before_bounding_hint(tmp_path):
+    _seed_reviewed_candidate(
+        tmp_path,
+        source_target="private-origin.example",
+        title="x" * 155 + "private-origin.example",
+        summary="Bound source-target removal before truncating display text.",
+        signals=["hidden binder"],
+    )
+
+    pack = build_context_pack(
+        tmp_path, target="target.com", focus="hidden binder"
+    )
+
+    assert "privat" not in pack["reviewed_candidate_hints"][0]["title"]
+
+
+def test_context_pack_recalls_chinese_signal_from_target_evidence(tmp_path):
+    _seed_target_memory(
+        tmp_path,
+        "target.com",
+        {"active_leads": [{"text": "发现隐藏参数可能进入共享查询函数"}]},
+    )
+    candidate_id = _seed_reviewed_candidate(
+        tmp_path,
+        source_target="source.example",
+        title="共享查询函数参数迁移",
+        summary="先整束迁移，再缩减到实际生效字段。",
+        signals=["隐藏参数", "共享查询函数"],
+    )
+
+    pack = build_context_pack(tmp_path, target="target.com")
+
+    assert pack["reviewed_candidate_hints"][0]["candidate_id"] == candidate_id
+    assert pack["source_summary"]["reviewed_candidate_matches"] == 1
+
+
+def test_context_pack_candidate_nonmatches_are_visible_but_not_selected(tmp_path):
+    _seed_reviewed_candidate(
+        tmp_path,
+        source_target="source.example",
+        title="Header-only replay",
+        summary="Use a narrow header replay when the proxy signal is present.",
+        signals=["x-forwarded-for"],
+    )
+
+    pack = build_context_pack(tmp_path, target="target.com", focus="api authorization")
+    output = format_context_pack(pack)
+
+    assert pack["reviewed_candidate_hints"] == []
+    assert pack["source_summary"]["reviewed_candidate_pool"] == 1
+    assert pack["source_summary"]["reviewed_candidate_matches"] == 0
+    assert "pool=1, matches=0, selected=0" in output
+
+
+def test_context_pack_excludes_reviewed_candidate_without_recall_signals(tmp_path):
+    _seed_reviewed_candidate(
+        tmp_path,
+        source_target="source.example",
+        title="Legacy reviewed candidate",
+        summary="A review without explicit signals remains manual-only.",
+        signals=None,
+    )
+
+    pack = build_context_pack(
+        tmp_path, target="target.com", focus="Legacy reviewed candidate"
+    )
+
+    assert pack["reviewed_candidate_hints"] == []
+    assert pack["source_summary"]["reviewed_candidate_pool"] == 1
+    assert pack["source_summary"]["reviewed_candidate_matches"] == 0
+
+
+def test_context_pack_excludes_legacy_candidate_without_safe_projection(tmp_path):
+    lifecycle = tmp_path / "knowledge" / "candidates" / "lifecycle.jsonl"
+    staged = candidates._event(
+        candidate_id="cand-legacy",
+        action="staged",
+        from_status=None,
+        to_status="pending",
+        candidate_path="knowledge/candidates/cand-legacy.md",
+        sources=[
+            {
+                "type": "target-memory",
+                "target": "source.example",
+                "entry_id": "tm-legacy",
+            }
+        ],
+        evidence_refs=["evidence/legacy.json"],
+    )
+    reviewed = candidates._event(
+        candidate_id="cand-legacy",
+        action="reviewed",
+        from_status="pending",
+        to_status="reviewed",
+        candidate_path="knowledge/candidates/cand-legacy.md",
+        reviewer="human",
+        reason="Legacy review fixture.",
+        recall_signals=["legacy binder"],
+    )
+    candidates._append_event(staged, path=lifecycle)
+    candidates._append_event(reviewed, path=lifecycle)
+
+    pack = build_context_pack(
+        tmp_path, target="target.com", focus="legacy binder"
+    )
+
+    assert pack["reviewed_candidate_hints"] == []
+    assert pack["source_summary"]["reviewed_candidate_pool"] == 0
+
+
+def test_context_pack_excludes_pending_terminal_and_corpus_only_candidates(tmp_path):
+    evidence = tmp_path / "memory" / "evidence" / "source" / "ledger.jsonl"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text('{}\n', encoding="utf-8")
+    source_target = "source.example"
+    summary = "Matching candidate fixture."
+    entry_id = make_entry_id(
+        target=source_target,
+        field="useful_patterns",
+        text=summary,
+        evidence_refs=["memory/evidence/source/ledger.jsonl"],
+    )
+    _seed_target_memory(
+        tmp_path,
+        source_target,
+        {
+            "useful_patterns": [
+                {
+                    "entry_id": entry_id,
+                    "kind": "validation-technique",
+                    "text": summary,
+                    "evidence_refs": ["memory/evidence/source/ledger.jsonl"],
+                }
+            ]
+        },
+    )
+    lifecycle = tmp_path / "knowledge" / "candidates" / "lifecycle.jsonl"
+    pending, _ = candidates.stage_candidate(
+        repo_root=tmp_path,
+        lifecycle_path=lifecycle,
+        kind="validation-technique",
+        title="Pending candidate",
+        summary=summary,
+        source_pairs=[[source_target, entry_id]],
+    )
+    terminal, _ = candidates.stage_candidate(
+        repo_root=tmp_path,
+        lifecycle_path=lifecycle,
+        kind="dead-end",
+        title="Terminal candidate",
+        summary=summary,
+        source_pairs=[[source_target, entry_id]],
+    )
+    candidates._transition(
+        terminal,
+        action="reviewed",
+        reviewer="human",
+        reason="Reviewed fixture.",
+        recall_signals=["matching signal"],
+        repo_root=tmp_path,
+        lifecycle_path=lifecycle,
+    )
+    candidates._transition(
+        terminal,
+        action="rejected",
+        reviewer="human",
+        reason="Terminal fixture.",
+        repo_root=tmp_path,
+        lifecycle_path=lifecycle,
+    )
+    corpus_staged = candidates._event(
+        candidate_id="cand-corpus",
+        action="staged",
+        from_status=None,
+        to_status="pending",
+        candidate_path="knowledge/candidates/cand-corpus.md",
+        sources=[{"type": "corpus-report", "report_id": "1"}],
+        evidence_refs=["corpus-report:1"],
+        kind="validation-technique",
+        title="Corpus candidate",
+        summary=summary,
+    )
+    corpus_reviewed = candidates._event(
+        candidate_id="cand-corpus",
+        action="reviewed",
+        from_status="pending",
+        to_status="reviewed",
+        candidate_path="knowledge/candidates/cand-corpus.md",
+        reviewer="human",
+        reason="Reviewed corpus fixture.",
+        recall_signals=["matching signal"],
+    )
+    candidates._append_event(corpus_staged, path=lifecycle)
+    candidates._append_event(corpus_reviewed, path=lifecycle)
+
+    pack = build_context_pack(
+        tmp_path, target="target.com", focus="matching signal"
+    )
+
+    assert pending != terminal
+    assert pack["reviewed_candidate_hints"] == []
+    assert pack["source_summary"]["reviewed_candidate_pool"] == 0
+
+
+def test_context_pack_excludes_current_target_and_legacy_or_corrupt_candidates(tmp_path):
+    _seed_reviewed_candidate(
+        tmp_path,
+        source_target="target.com",
+        title="Current target only",
+        summary="Current target experience must not validate itself.",
+        signals=["authorization boundary"],
+    )
+    pack = build_context_pack(
+        tmp_path, target="target.com", focus="authorization boundary"
+    )
+    assert pack["reviewed_candidate_hints"] == []
+    assert pack["source_summary"]["reviewed_candidate_pool"] == 0
+
+    lifecycle = tmp_path / "knowledge" / "candidates" / "lifecycle.jsonl"
+    lifecycle.write_text("not-json\n", encoding="utf-8")
+    corrupt = build_context_pack(
+        tmp_path, target="target.com", focus="authorization boundary"
+    )
+    assert corrupt["reviewed_candidate_hints"] == []
+    assert corrupt["source_summary"]["reviewed_candidate_pool"] == 0
+
+    lifecycle.write_bytes(b"\xff\xfe\x00")
+    invalid_encoding = build_context_pack(
+        tmp_path, target="target.com", focus="authorization boundary"
+    )
+    assert invalid_encoding["reviewed_candidate_hints"] == []
+    assert invalid_encoding["source_summary"]["reviewed_candidate_pool"] == 0
+
+
+def test_context_pack_candidate_limit_does_not_change_card_budget(tmp_path):
+    baseline = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="api hidden binder sibling parameter bundle",
+    )
+    first = _seed_reviewed_candidate(
+        tmp_path,
+        source_target="first.example",
+        title="Binder candidate",
+        summary="Short signal candidate.",
+        signals=["hidden binder"],
+    )
+    second = _seed_reviewed_candidate(
+        tmp_path,
+        source_target="second.example",
+        title="Parameter bundle candidate",
+        summary="Longer signal candidate.",
+        signals=["sibling parameter bundle"],
+    )
+
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="api hidden binder sibling parameter bundle",
+    )
+
+    assert pack["source_summary"]["reviewed_candidate_pool"] == 2
+    assert pack["source_summary"]["reviewed_candidate_matches"] == 2
+    assert [item["candidate_id"] for item in pack["reviewed_candidate_hints"]] == [second]
+    assert first != second
+    assert pack["knowledge_cards"] == baseline["knowledge_cards"]
+    assert pack["deferred_knowledge_cards"] == baseline["deferred_knowledge_cards"]
 
 
 def test_context_pack_exposes_runner_candidates_without_marking_report_ready(tmp_path):

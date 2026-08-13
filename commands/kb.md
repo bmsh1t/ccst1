@@ -121,6 +121,11 @@ python3 tools/knowledge_candidates.py stage \
 python3 tools/knowledge_candidates.py list
 python3 tools/knowledge_candidates.py review <candidate-id> \
   --reviewer human --reason "已在两个目标复核，补齐停止条件"
+python3 tools/knowledge_candidates.py review <candidate-id> \
+  --reviewer human --reason "已确认可跨目标提示" \
+  --recall-signal "hidden binder" --recall-signal "隐藏参数"
+python3 tools/knowledge_candidates.py corroborate <candidate-id> \
+  --target second.example --entry-id <target-memory-entry-id>
 python3 tools/knowledge_candidates.py promote <candidate-id> \
   --card-id <registered-card-id> \
   --reviewer human --reason "正式卡已注册并通过严格知识质量门"
@@ -134,6 +139,16 @@ python3 tools/knowledge_candidates.py audit --strict
 
 状态只能按 `pending -> reviewed -> promoted|rejected|superseded` 迁移；`promote`
 会检查正式卡存在、registry 登记和 `knowledge_audit.py --strict`，不会覆盖同名卡。
+
+`--recall-signal` 是可选的人工确认信号，最多 8 个。只有 `reviewed` Candidate 且当前
+Context Pack 证据命中信号、来源不包含当前目标时，才显示最多一条 advisory；它不进入
+`must_read`、正式 Card 预算、Action、Finding 或 Closure。没有信号的旧 Candidate 仍可按
+原流程 review/promote，但不会运行时提示。
+
+`corroborate` 只向同一 lifecycle JSONL 追加尚未出现的独立目标来源和 evidence refs，保持
+`pending`/`reviewed` 状态；重复目标、缺证据、损坏日志和终态 Candidate 会拒绝且不写入。
+它不会自动 review、promote、修改 Card maturity 或修改 Skill/Rules。Context Pack 会显示
+reviewed pool、匹配数和选中数，便于区分没有候选与未命中信号。
 
 候选晋升后，正式卡另有独立的治理日志，不复用 candidate 状态：
 
