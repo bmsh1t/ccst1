@@ -77,6 +77,13 @@ def _seed_recon(repo_root: Path, target: str, urls: list[str]) -> None:
     (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
 
 
+def _write_round_evidence(repo_root: Path, evidence_ref: str, content: str = "{}") -> Path:
+    path = repo_root / evidence_ref
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def _seed_capability_parent(
     repo_root: Path,
     *,
@@ -302,6 +309,7 @@ def test_round_lane_budget_resumes_and_dedupes_claims_across_invocations(tmp_pat
 def test_round_lane_requires_explicit_round_begin(tmp_path):
     target = "target.com"
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    evidence_ref = "findings/target.com/poc/sql.json"
 
     with pytest.raises(ValueError, match="run --round-begin first"):
         record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=1)
@@ -309,13 +317,14 @@ def test_round_lane_requires_explicit_round_begin(tmp_path):
 
     begin_round(tmp_path, target, max_lanes=1)
     record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=1)
+    _write_round_evidence(tmp_path, evidence_ref)
     record_round_lane_result(
         tmp_path,
         target,
         lane="sqli:/api/search",
         status="completed",
         decision="tested clean",
-        evidence_ref="findings/target.com/poc/sql.json",
+        evidence_ref=evidence_ref,
         next_action="none",
     )
     record_round_closure(tmp_path, target)
@@ -327,8 +336,10 @@ def test_round_lane_requires_explicit_round_begin(tmp_path):
 def test_round_lane_result_survives_resume_and_terminal_replay_is_idempotent(tmp_path):
     target = "target.com"
     lane = "sqli:/api/search"
+    evidence_ref = "findings/target.com/poc/sql_parameter/summary.json"
     begin_round(tmp_path, target, max_lanes=2)
     record_round_lane(tmp_path, target, lane=lane, max_lanes=2)
+    _write_round_evidence(tmp_path, evidence_ref)
 
     result = record_round_lane_result(
         tmp_path,
@@ -336,7 +347,7 @@ def test_round_lane_result_survives_resume_and_terminal_replay_is_idempotent(tmp
         lane=lane,
         status="completed",
         decision="tested-clean after boolean pair",
-        evidence_ref="findings/target.com/poc/sql_parameter/summary.json",
+        evidence_ref=evidence_ref,
         next_action="review authz:/api/orders/:id",
     )
     replay = record_round_lane_result(
@@ -345,7 +356,7 @@ def test_round_lane_result_survives_resume_and_terminal_replay_is_idempotent(tmp
         lane=lane,
         status="completed",
         decision="tested-clean after boolean pair",
-        evidence_ref="findings/target.com/poc/sql_parameter/summary.json",
+        evidence_ref=evidence_ref,
         next_action="review authz:/api/orders/:id",
     )
     resumed = begin_round(tmp_path, target, max_lanes=2)
@@ -367,7 +378,7 @@ def test_round_lane_result_survives_resume_and_terminal_replay_is_idempotent(tmp
             lane=lane,
             status="completed",
             decision="different decision",
-            evidence_ref="findings/target.com/poc/sql_parameter/summary.json",
+            evidence_ref=evidence_ref,
             next_action="none",
         )
 
@@ -388,7 +399,7 @@ def test_round_lane_result_requires_claim_and_completed_evidence(tmp_path):
         )
 
     record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=1)
-    with pytest.raises(ValueError, match="locatable evidence_ref"):
+    with pytest.raises(ValueError, match="target-owned, non-empty evidence_ref"):
         record_round_lane_result(
             tmp_path,
             target,
@@ -398,6 +409,42 @@ def test_round_lane_result_requires_claim_and_completed_evidence(tmp_path):
             evidence_ref="none",
             next_action="none",
         )
+
+
+@pytest.mark.parametrize("case", ["missing", "empty", "off_target", "outside_repo"])
+def test_completed_round_lane_rejects_invalid_evidence_without_mutating_lane(tmp_path, case):
+    target = "target.com"
+    lane = "sqli:/api/search"
+    refs = {
+        "missing": "findings/target.com/poc/missing.json",
+        "empty": "findings/target.com/poc/empty.json",
+        "off_target": "findings/other.example/poc/summary.json",
+        "outside_repo": str(tmp_path.parent / "outside-summary.json"),
+    }
+    evidence_ref = refs[case]
+    if case == "empty":
+        _write_round_evidence(tmp_path, evidence_ref, "")
+    elif case == "off_target":
+        _write_round_evidence(tmp_path, evidence_ref)
+    elif case == "outside_repo":
+        Path(evidence_ref).write_text("{}", encoding="utf-8")
+
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+
+    with pytest.raises(ValueError, match="target-owned, non-empty evidence_ref"):
+        record_round_lane_result(
+            tmp_path,
+            target,
+            lane=lane,
+            status="completed",
+            decision="tested clean",
+            evidence_ref=evidence_ref,
+            next_action="none",
+        )
+
+    resumed = begin_round(tmp_path, target, max_lanes=1)
+    assert resumed["round_progress"]["lanes"][0]["status"] == "started"
 
 
 def test_round_lane_result_cli_records_bounded_heartbeat(tmp_path, capsys):
@@ -455,6 +502,7 @@ def test_round_lane_heartbeat_is_atomic_under_concurrent_processes(tmp_path):
     assert all(item["status"] == "started" for item in progress["lanes"])
 
     lane = progress["claimed_lanes"][0]
+    _write_round_evidence(tmp_path, "findings/target.com/poc/concurrent/summary.json")
     finish_output = context.Queue()
     finishers = [
         context.Process(
@@ -508,13 +556,15 @@ def test_round_lane_heartbeat_survives_repeated_interrupt_cycles(monkeypatch, tm
         for index, lane in enumerate(lane_ids):
             if index:
                 record_round_lane(tmp_path, target, lane=lane, max_lanes=3)
+            evidence_ref = f"findings/target.com/poc/round-{round_index}/lane-{index}.json"
+            _write_round_evidence(tmp_path, evidence_ref)
             record_round_lane_result(
                 tmp_path,
                 target,
                 lane=lane,
                 status="completed",
                 decision=f"round {round_index} lane {index} completed",
-                evidence_ref=f"findings/target.com/poc/round-{round_index}/lane-{index}.json",
+                evidence_ref=evidence_ref,
                 next_action="none",
             )
 
@@ -527,15 +577,17 @@ def test_round_lane_heartbeat_survives_repeated_interrupt_cycles(monkeypatch, tm
 
 def test_round_closure_completes_budget_and_next_begin_starts_new_round(monkeypatch, tmp_path):
     target = "target.com"
+    evidence_ref = "findings/target.com/poc/sql_parameter/summary.json"
     first = begin_round(tmp_path, target, max_lanes=1)
     record_round_lane(tmp_path, target, lane="sqli:/api/search", max_lanes=1)
+    _write_round_evidence(tmp_path, evidence_ref)
     record_round_lane_result(
         tmp_path,
         target,
         lane="sqli:/api/search",
         status="completed",
         decision="tested clean",
-        evidence_ref="findings/target.com/poc/sql_parameter/summary.json",
+        evidence_ref=evidence_ref,
         next_action="none",
     )
     monkeypatch.setattr(
@@ -556,6 +608,74 @@ def test_round_closure_completes_budget_and_next_begin_starts_new_round(monkeypa
     assert completed["round_progress"]["budget_reached"] is True
     assert second["status"] == "started"
     assert second["round_progress"]["round_id"] != first["round_progress"]["round_id"]
+
+
+def test_round_closure_rejects_completed_lane_after_evidence_disappears(monkeypatch, tmp_path):
+    target = "target.com"
+    lane = "sqli:/api/search"
+    evidence_ref = "findings/target.com/poc/sql_parameter/summary.json"
+    evidence_path = _write_round_evidence(tmp_path, evidence_ref)
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+    record_round_lane_result(
+        tmp_path,
+        target,
+        lane=lane,
+        status="completed",
+        decision="tested clean",
+        evidence_ref=evidence_ref,
+        next_action="none",
+    )
+    evidence_path.unlink()
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    previous = witness.read_bytes()
+    monkeypatch.setattr(
+        checkpoint_module,
+        "build_autopilot_state",
+        lambda *_args, **_kwargs: {"target": target, "resolved_target": target},
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "load_closure_projection",
+        lambda *_args, **_kwargs: {"verdict": "handoff", "reasons": ["next_action_pending"]},
+    )
+
+    with pytest.raises(ValueError, match="cannot start or resume a round"):
+        begin_round(tmp_path, target, max_lanes=1)
+    with pytest.raises(ValueError, match="invalid completed lane evidence: sqli:/api/search"):
+        record_round_closure(tmp_path, target)
+
+    assert witness.read_bytes() == previous
+
+
+def test_new_round_does_not_overwrite_closed_round_with_invalid_evidence(tmp_path):
+    target = "target.com"
+    lane = "sqli:/api/search"
+    evidence_ref = "findings/target.com/poc/sql_parameter/summary.json"
+    evidence_path = _write_round_evidence(tmp_path, evidence_ref)
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+    record_round_lane_result(
+        tmp_path,
+        target,
+        lane=lane,
+        status="completed",
+        decision="tested clean",
+        evidence_ref=evidence_ref,
+        next_action="none",
+    )
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    payload = json.loads(witness.read_text(encoding="utf-8"))
+    payload["round_progress"]["status"] = "completed"
+    payload["round_progress"]["completed_at"] = "2026-08-01T00:02:00Z"
+    witness.write_text(json.dumps(payload), encoding="utf-8")
+    evidence_path.unlink()
+    previous = witness.read_bytes()
+
+    with pytest.raises(ValueError, match="cannot start or resume a round with invalid completed lane evidence"):
+        begin_round(tmp_path, target, max_lanes=1)
+
+    assert witness.read_bytes() == previous
 
 
 def test_round_closure_rejects_unfinished_lane(monkeypatch, tmp_path):

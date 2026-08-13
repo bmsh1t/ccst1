@@ -213,6 +213,23 @@ def _target_owned_evidence_ref(repo_root: Path | str, target: str, value: Any) -
     return str(relative)
 
 
+def _target_owned_nonempty_evidence_ref(
+    repo_root: Path | str,
+    target: str,
+    value: Any,
+) -> str:
+    """Return a target-owned evidence file only when it contains bytes."""
+    ref = _target_owned_evidence_ref(repo_root, target, value)
+    if not ref:
+        return ""
+    try:
+        if (Path(repo_root) / ref).stat().st_size <= 0:
+            return ""
+    except OSError:
+        return ""
+    return ref
+
+
 def _execution_key(metadata: dict) -> str:
     endpoint = str(metadata.get("endpoint") or metadata.get("url") or "").strip()
     parsed_endpoint = urllib.parse.urlsplit(endpoint)

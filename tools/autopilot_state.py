@@ -21,9 +21,21 @@ if TOOLS_DIR not in sys.path:
 
 from memory.target_profile import default_memory_dir  # noqa: E402
 try:
-    from tools.action_queue import ACTIVE_STATUSES, FINAL_STATUSES, load_queue, select_next_action
+    from tools.action_queue import (
+        ACTIVE_STATUSES,
+        FINAL_STATUSES,
+        _target_owned_nonempty_evidence_ref,
+        load_queue,
+        select_next_action,
+    )
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from action_queue import ACTIVE_STATUSES, FINAL_STATUSES, load_queue, select_next_action
+    from action_queue import (  # type: ignore
+        ACTIVE_STATUSES,
+        FINAL_STATUSES,
+        _target_owned_nonempty_evidence_ref,
+        load_queue,
+        select_next_action,
+    )
 try:
     from tools.intel_continuation import apply_intel_continuation, inspect_intel_continuation
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -289,7 +301,12 @@ def _load_checkpoint_witness(path: Path) -> dict:
     return payload
 
 
-def _checkpoint_round_projection(witness: dict) -> dict:
+def _checkpoint_round_projection(
+    witness: dict,
+    *,
+    repo_root: str | Path,
+    target: str,
+) -> dict:
     progress = witness.get("round_progress")
     if progress is None:
         return {}
@@ -359,13 +376,22 @@ def _checkpoint_round_projection(witness: dict) -> dict:
             any(not item.get(field) for field in ("decision", "evidence_ref", "next_action"))
             or not isinstance(lane.get("finished_at"), str)
             or not lane.get("finished_at")
-            or (lane_status == "completed" and item.get("evidence_ref") == "none")
         ):
             raise ValueError("checkpoint terminal round lane is incomplete")
         projected_lanes.append(item)
     if [item["id"] for item in projected_lanes] != claimed:
         raise ValueError("checkpoint round_progress lane identities are invalid")
     unfinished = [item["id"] for item in projected_lanes if item["status"] == "started"]
+    invalid_evidence = [
+        item["id"]
+        for item in projected_lanes
+        if item["status"] == "completed"
+        and not _target_owned_nonempty_evidence_ref(
+            repo_root,
+            target,
+            item.get("evidence_ref"),
+        )
+    ]
     if progress["status"] == "completed" and unfinished:
         raise ValueError("checkpoint completed round has unfinished lanes")
     return {
@@ -375,6 +401,7 @@ def _checkpoint_round_projection(witness: dict) -> dict:
         "claimed_count": len(claimed),
         "budget_reached": bool(progress.get("budget_reached")),
         "unfinished_lanes": unfinished,
+        "invalid_evidence_lanes": invalid_evidence,
         "latest_lane": projected_lanes[-1] if projected_lanes else {},
     }
 
@@ -2887,7 +2914,11 @@ def build_closure_projection(
         action = "handoff"
     round_progress = state.get("round_progress") or {}
     round_active = round_progress.get("status") == "active"
-    if round_active and round_progress.get("unfinished_lanes"):
+    if round_progress.get("invalid_evidence_lanes"):
+        action = "repair_round_lane_evidence"
+        verdict = "handoff"
+        reasons.append("round_lane_evidence_invalid")
+    elif round_active and round_progress.get("unfinished_lanes"):
         action = "resume_round_lane"
         verdict = "handoff"
         reasons.append("round_lane_unfinished")
@@ -3194,7 +3225,11 @@ def load_closure_projection(
     checkpoint_health = {"status": "valid"}
     try:
         witness = _load_checkpoint_witness(witness_path)
-        round_progress = _checkpoint_round_projection(witness)
+        round_progress = _checkpoint_round_projection(
+            witness,
+            repo_root=repo_root,
+            target=target,
+        )
     except ValueError as exc:
         witness = {}
         round_progress = {}

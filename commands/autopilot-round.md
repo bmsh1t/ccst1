@@ -102,7 +102,7 @@ cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> -
 ```
 
 Keep decision, evidence reference, and next action bounded and single-line.
-Use a locatable owner artifact for every completed lane; a blocked lane may use
+Use an existing, non-empty, target-owned repository artifact for every completed lane; a blocked lane may use
 literal `none` when it has no evidence, and any terminal lane may use `none`
 when it has no next action. Never store raw responses,
 prompts, credentials, tokens, cookies, or authorization headers in the heartbeat.
@@ -110,6 +110,7 @@ The terminal write is idempotent; a conflicting rewrite or write failure stops
 target work. The heartbeat is recovery context, not a second action owner:
 write every unresolved terminal `next_action` through its existing owner or the
 Action Queue before round closure. A round with any `started` lane cannot close.
+A round with invalid completed-lane evidence cannot close either.
 
 After every terminal lane heartbeat, use the canonical `--loop-check --json` guard.
 When the lane budget is consumed, checkpoint the completed batch and durable

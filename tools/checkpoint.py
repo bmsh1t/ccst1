@@ -33,6 +33,7 @@ try:
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
+        _target_owned_nonempty_evidence_ref as action_queue_target_owned_nonempty_evidence_ref,
         _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
         ingest_checkpoint as ingest_action_queue_checkpoint,
         load_queue as load_action_queue,
@@ -63,6 +64,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
+        _target_owned_nonempty_evidence_ref as action_queue_target_owned_nonempty_evidence_ref,
         _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
         ingest_checkpoint as ingest_action_queue_checkpoint,
         load_queue as load_action_queue,
@@ -302,12 +304,39 @@ def _round_progress(payload: dict) -> dict:
     return progress
 
 
+def _invalid_completed_lane_evidence(
+    repo_root: Path | str,
+    target: str,
+    lanes: list[dict],
+) -> list[str]:
+    return [
+        str(lane.get("id") or "")
+        for lane in lanes
+        if lane.get("status") == "completed"
+        and not action_queue_target_owned_nonempty_evidence_ref(
+            repo_root,
+            target,
+            lane.get("evidence_ref"),
+        )
+    ]
+
+
 def begin_round(repo_root: Path | str, target: str, *, max_lanes: int) -> dict:
     """Start a round or resume the active round after an interrupted invocation."""
     path = _checkpoint_witness_path(repo_root, target)
     with checkpoint_witness_lock(repo_root, target):
         payload = _load_checkpoint_witness(path) or _new_checkpoint_witness(target)
         progress = _round_progress(payload)
+        invalid_evidence = _invalid_completed_lane_evidence(
+            repo_root,
+            target,
+            progress.get("lanes") or [],
+        )
+        if invalid_evidence:
+            raise ValueError(
+                "cannot start or resume a round with invalid completed lane evidence: "
+                + ", ".join(invalid_evidence)
+            )
         if progress.get("status") == "active":
             status = "resumed"
         else:
@@ -392,9 +421,6 @@ def record_round_lane_result(
     terminal_decision = _round_lane_text(decision, "decision", max_length=500)
     terminal_evidence = _round_lane_text(evidence_ref, "evidence_ref", max_length=500)
     terminal_next = _round_lane_text(next_action, "next_action", max_length=1000)
-    if terminal_status == "completed" and terminal_evidence == "none":
-        raise ValueError("completed round lane requires a locatable evidence_ref")
-
     path = _checkpoint_witness_path(repo_root, target)
     with checkpoint_witness_lock(repo_root, target):
         payload = _load_checkpoint_witness(path)
@@ -405,6 +431,16 @@ def record_round_lane_result(
         lane_record = next((item for item in lanes if item.get("id") == lane_id), None)
         if lane_record is None:
             raise ValueError(f"round lane was not claimed: {lane_id}")
+        if terminal_status == "completed":
+            terminal_evidence = action_queue_target_owned_nonempty_evidence_ref(
+                repo_root,
+                target,
+                terminal_evidence,
+            )
+            if not terminal_evidence:
+                raise ValueError(
+                    "completed round lane requires target-owned, non-empty evidence_ref"
+                )
         expected = {
             "status": terminal_status,
             "decision": terminal_decision,
@@ -514,6 +550,16 @@ def record_round_closure(repo_root: Path | str, target: str) -> dict:
         else:
             payload.pop("round_guard", None)
         progress = _round_progress(payload)
+        invalid_evidence = _invalid_completed_lane_evidence(
+            repo,
+            resolved_target,
+            progress.get("lanes") or [],
+        )
+        if invalid_evidence:
+            raise ValueError(
+                "cannot close round with invalid completed lane evidence: "
+                + ", ".join(invalid_evidence)
+            )
         unfinished = [
             str(item.get("id") or "")
             for item in (progress.get("lanes") or [])

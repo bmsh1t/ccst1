@@ -5,6 +5,8 @@ import hashlib
 import sys
 import time
 
+import pytest
+
 import autopilot_state as autopilot_state_module
 import finding_index
 from action_queue import claim_next_action, ingest_checkpoint, resolve_action
@@ -339,10 +341,14 @@ def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
     started = load_closure_projection(
         str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
     )
+    evidence_ref = "findings/target.com/poc/sql_parameter/summary.json"
+    evidence_path = tmp_path / evidence_ref
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_text("{}", encoding="utf-8")
     progress["lanes"][0].update({
         "status": "completed",
         "decision": "tested clean",
-        "evidence_ref": "findings/target.com/poc/sql_parameter/summary.json",
+        "evidence_ref": evidence_ref,
         "next_action": "none",
         "finished_at": "2026-08-01T00:01:00Z",
         "updated_at": "2026-08-01T00:01:00Z",
@@ -368,18 +374,78 @@ def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
     assert closed["can_claim_exhausted"] is True
 
 
-def test_round_projection_preserves_budget_after_lane_field_projection():
+@pytest.mark.parametrize(
+    "evidence_ref",
+    ["findings/target.com/poc/missing.json", "none"],
+)
+def test_closure_handoffs_legacy_completed_lane_with_invalid_evidence(
+    tmp_path,
+    evidence_ref,
+):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text(json.dumps({
+        "round_progress": {
+            "schema_version": 1,
+            "round_id": "round-legacy",
+            "status": "completed",
+            "max_lanes": 1,
+            "claimed_lanes": ["sqli:/api/search"],
+            "lanes": [{
+                "schema_version": 1,
+                "id": "sqli:/api/search",
+                "status": "completed",
+                "decision": "tested clean",
+                "evidence_ref": evidence_ref,
+                "next_action": "none",
+                "started_at": "2026-08-01T00:00:00Z",
+                "updated_at": "2026-08-01T00:01:00Z",
+                "finished_at": "2026-08-01T00:01:00Z",
+            }],
+            "claimed_count": 1,
+            "remaining_lanes": 0,
+            "budget_reached": True,
+            "started_at": "2026-08-01T00:00:00Z",
+            "updated_at": "2026-08-01T00:01:00Z",
+            "completed_at": "2026-08-01T00:01:00Z",
+        }
+    }), encoding="utf-8")
+    previous = witness.read_bytes()
+
+    closure = load_closure_projection(
+        str(tmp_path),
+        {"target": target, "resolved_target": target, "next_action": "handoff"},
+        max_lanes_reached=False,
+        apply_round_guard=False,
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"] == ["round_lane_evidence_invalid"]
+    assert closure["next_action"] == "repair_round_lane_evidence"
+    assert closure["round_progress"]["invalid_evidence_lanes"] == ["sqli:/api/search"]
+    assert witness.read_bytes() == previous
+
+
+def test_round_projection_preserves_budget_after_lane_field_projection(tmp_path):
+    target = "target.com"
+    evidence_ref = "evidence/target.com/summary.json"
+    evidence_path = tmp_path / evidence_ref
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text("{}", encoding="utf-8")
     lane = {
         "schema_version": 1,
         "id": "validate:example",
         "status": "completed",
         "decision": "tested clean",
-        "evidence_ref": "evidence/target.com/summary.json",
+        "evidence_ref": evidence_ref,
         "next_action": "none",
         "finished_at": "2026-08-01T00:01:00Z",
     }
-    projection = _checkpoint_round_projection({
-        "round_progress": {
+    projection = _checkpoint_round_projection(
+        {"round_progress": {
             "schema_version": 1,
             "round_id": "round-test",
             "status": "completed",
@@ -389,8 +455,10 @@ def test_round_projection_preserves_budget_after_lane_field_projection():
             "claimed_count": 1,
             "remaining_lanes": 2,
             "budget_reached": False,
-        }
-    })
+        }},
+        repo_root=tmp_path,
+        target=target,
+    )
 
     assert projection["max_lanes"] == 3
 
