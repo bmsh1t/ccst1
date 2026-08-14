@@ -272,46 +272,6 @@ def test_add_actor_session_object_and_summary(tmp_path):
     assert summary["objects"] == 1
 
 
-def test_isolated_payment_object_requires_boundary_and_records_cleanup(tmp_path):
-    target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
-
-    with pytest.raises(ValueError, match="payment or billing"):
-        target_case_state.add_isolated_object(
-            tmp_path,
-            TARGET,
-            object_ref="order_123",
-            object_type="order",
-            owner_actor="user_a",
-            endpoint=f"{TARGET}/orders/123",
-            cleanup_endpoint=f"{TARGET}/orders/123",
-            private_marker="marker-123",
-        )
-
-    obj = target_case_state.add_isolated_object(
-        tmp_path,
-        TARGET,
-        object_ref="payment_123",
-        owner_actor="user_a",
-        endpoint=f"{TARGET}/payments/123",
-        cleanup_endpoint=f"{TARGET}/payments/123",
-        private_marker="marker-123",
-        side_effects="none",
-    )
-    assert obj["isolation"] == "disposable"
-    assert target_case_state.isolated_object_readiness(
-        target_case_state.load_case_state(tmp_path, TARGET), "payment_123"
-    )["ready"] is True
-
-    cleaned = target_case_state.cleanup_object(
-        tmp_path, TARGET, object_ref="payment_123", status="completed"
-    )
-    assert cleaned["status"] == "cleaned"
-    assert cleaned["cleanup_status"] == "completed"
-    assert target_case_state.isolated_object_readiness(
-        target_case_state.load_case_state(tmp_path, TARGET), "payment_123"
-    )["ready"] is False
-
-
 def test_add_session_imports_multi_header_auth_file(tmp_path):
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
     auth_file = tmp_path / "auth.json"
@@ -522,11 +482,11 @@ def test_sqli_runner_requires_parameter_and_variant_and_builds_command(tmp_path)
     assert command[command.index("--variant-value") + 1] == "'"
 
 
-def test_unknown_runner_fails_closed(tmp_path):
+def test_retired_payment_race_runner_fails_closed(tmp_path):
     target_case_state.add_backlog(
         tmp_path,
         TARGET,
-        runner="future-runner",
+        runner="payment-race",
         endpoint=f"{TARGET}/api",
         priority="critical",
     )

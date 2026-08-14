@@ -17,7 +17,6 @@ AI 仍负责选择 hypothesis、解释业务影响、决定是否升级/降级�
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import re
@@ -64,12 +63,7 @@ try:
     from tools.response_diff import diff_responses, snapshot_response
     from tools.browser_surface import public_url_shape
     from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
-    from tools.target_case_state import (
-        cleanup_object,
-        complete_backlog,
-        isolated_object_readiness,
-        load_case_state,
-    )
+    from tools.target_case_state import complete_backlog, load_case_state
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
@@ -101,12 +95,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from response_diff import diff_responses, snapshot_response  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
-    from target_case_state import (  # type: ignore
-        cleanup_object,
-        complete_backlog,
-        isolated_object_readiness,
-        load_case_state,
-    )
+    from target_case_state import complete_backlog, load_case_state  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
 
@@ -148,7 +137,6 @@ LANE_TO_VULN_CLASS = {
     "sqli_result_diff": "SQLi",
     "marker_replay": "RCE",
     "idor_actor_pair": "IDOR",
-    "payment_race": "Race",
 }
 
 
@@ -3238,208 +3226,6 @@ def run_idor_actor_pair(
     return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
-def run_payment_race(
-    *,
-    repo_root: Path,
-    target: str,
-    object_ref: str,
-    url: str = "",
-    method: str = "PATCH",
-    owner_headers: dict[str, str] | None = None,
-    body: str = "",
-    timeout: int = 10,
-    finding_id: str = "",
-    repeat: int = 2,
-    no_ledger: bool = False,
-    browser_observed: bool = False,
-    redline_checked: bool = False,
-    identity_v2: dict[str, Any] | None = None,
-    owner_session: AuthSession | None = None,
-) -> dict[str, Any]:
-    """Run a two-request payment replay only against a disposable object."""
-    target_value = canonical_target_value(target)
-    state = load_case_state(repo_root, target_value)
-    readiness = isolated_object_readiness(state, object_ref)
-    finding_id = finding_id or _default_finding_id("payment-race", url or object_ref)
-    bundle = _bundle_dir(repo_root, target_value, finding_id)
-    private_bundle = _private_bundle_dir(repo_root, target_value, bundle)
-
-    def blocked(reason: str, **extra: Any) -> dict[str, Any]:
-        summary = {
-            "schema_version": SCHEMA_VERSION,
-            "lane": "payment_race",
-            "target": target_value,
-            "finding_id": finding_id,
-            "object_ref": object_ref,
-            "generated_at": now_utc(),
-            "result": "blocked",
-            "blocked_reason": reason,
-            "candidate_ready": False,
-            "bounded_repeat": 2,
-            "cleanup": {"status": "not_started"},
-            "side_effects": (readiness.get("object") or {}).get("side_effects", ""),
-            "ai_next": {
-                "hypothesis": "a disposable payment object may accept conflicting owner replays",
-                "next_action": "repair the isolated object, owner session, redline, or cleanup prerequisite before replay",
-                "stop_condition": "No disposable object, explicit redline, bounded request pair, or completed cleanup.",
-            },
-        }
-        summary.update(extra)
-        summary_path = bundle / "summary.json"
-        return _finalize_runner_summary(summary, summary_path, repo_root)
-
-    if not readiness.get("ready"):
-        return blocked(str(readiness.get("reason") or "isolated payment object is unavailable"))
-    if not redline_checked:
-        return blocked("state-changing validation requires --redline-checked before any request")
-    obj = readiness["object"]
-    endpoint = str(url or obj.get("endpoint") or "").strip()
-    if not endpoint:
-        return blocked("isolated payment object endpoint is missing")
-    owner_actor = str(obj.get("owner_actor") or "").strip()
-    headers = dict(owner_headers or {})
-    if not _request_headers(owner_session, endpoint, headers):
-        try:
-            _session_id, headers = _case_state_session_header(state, owner_actor)
-        except ValueError as exc:
-            return blocked(str(exc))
-    try:
-        requested_repeat = int(repeat or 2)
-    except (TypeError, ValueError):
-        return blocked("repeat must be an integer", requested_repeat=repeat)
-    if requested_repeat < 2:
-        return blocked("payment-race requires at least two concurrent requests", requested_repeat=requested_repeat)
-    repeat = min(requested_repeat, 2)
-    method_u = str(method or "PATCH").upper()
-    write_private_json(
-        private_bundle / "inputs.json",
-        {"object_ref": object_ref, "url": endpoint, "method": method_u, "repeat": repeat},
-    )
-
-    responses: list[dict[str, Any]] = []
-    request_error = ""
-    try:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [
-                pool.submit(
-                    request_once,
-                    target=target_value,
-                    url=endpoint,
-                    method=method_u,
-                    headers=headers,
-                    body=body,
-                    timeout=timeout,
-                    session=owner_session,
-                )
-                for _ in range(repeat)
-            ]
-            responses = [future.result() for future in futures]
-    except Exception as exc:  # network failure is a durable blocked outcome
-        request_error = str(exc)
-
-    runs = []
-    for index, response in enumerate(responses, 1):
-        artifacts = _write_raw_http(private_bundle, f"race.{index}.", response, repo_root)
-        runs.append({
-            "iteration": index,
-            "status": response["status"],
-            "body_sha256": hashlib.sha256(response["body"].encode("utf-8")).hexdigest(),
-            "artifacts": artifacts,
-        })
-
-    cleanup_result: dict[str, Any] = {"status": "not_started"}
-    cleanup_error = ""
-    cleanup_endpoint = str(obj.get("cleanup_endpoint") or "").strip()
-    try:
-        cleanup_response = request_once(
-            target=target_value,
-            url=cleanup_endpoint,
-            method=str(obj.get("cleanup_method") or "DELETE").upper(),
-            headers=headers,
-            timeout=timeout,
-            session=owner_session,
-        )
-        cleanup_ok = _is_success_status(cleanup_response["status"]) or cleanup_response["status"] == 404
-        cleanup_result = {"status": "completed" if cleanup_ok else "failed", "http_status": cleanup_response["status"]}
-        cleanup_object(
-            repo_root,
-            target_value,
-            object_ref=object_ref,
-            status="completed" if cleanup_ok else "failed",
-            notes="payment-race cleanup request recorded",
-        )
-    except Exception as exc:
-        cleanup_error = str(exc)
-        cleanup_result = {"status": "failed", "error": cleanup_error}
-        try:
-            cleanup_object(repo_root, target_value, object_ref=object_ref, status="failed", notes=cleanup_error)
-        except Exception:
-            pass
-
-    if request_error or cleanup_result.get("status") != "completed" or len(responses) < 1:
-        return blocked(
-            request_error or cleanup_error or "payment object cleanup failed",
-            runs=runs,
-            cleanup=cleanup_result,
-        )
-
-    changed = any(
-        response["status"] != responses[0]["status"] or response["body"] != responses[0]["body"]
-        for response in responses[1:]
-    )
-    result = "candidate" if changed else "tested_clean"
-    evidence_ref = _rel(bundle / "summary.json", repo_root)
-    ledger = _record_ledger_if_needed(
-        repo_root=repo_root,
-        no_ledger=no_ledger,
-        target=target_value,
-        endpoint=endpoint,
-        method=method_u,
-        vuln_class="Race",
-        actor=owner_actor or "owner",
-        object_scope="own_object",
-        variant="parallel_replay",
-        result=result,
-        source="validation-runner:payment-race",
-        evidence_ref=evidence_ref,
-        notes="bounded two-request replay against disposable payment object; cleanup recorded",
-        browser_observed=browser_observed,
-        redline_checked=redline_checked,
-        state_changing=True,
-        identity_v2=identity_v2,
-    )
-    summary = {
-        "schema_version": SCHEMA_VERSION,
-        "lane": "payment_race",
-        "target": target_value,
-        "finding_id": finding_id,
-        "object_ref": object_ref,
-        "url": public_url_shape(endpoint),
-        "method": method_u,
-        "generated_at": now_utc(),
-        "result": result,
-        "candidate_ready": changed,
-        "bounded_repeat": repeat,
-        "runs": runs,
-        "cleanup": cleanup_result,
-        "side_effects": obj.get("side_effects", ""),
-        "redline_checked": redline_checked,
-        "evidence_rubric": compact_evidence_rubric(evaluate_candidate_evidence({
-            "type": "race",
-            "url": endpoint,
-            "summary": "bounded payment object replay produced a response differential" if changed else "bounded payment object replay was stable",
-        })),
-        "ledger_record": ledger,
-        "ai_next": {
-            "hypothesis": "parallel owner replays may commit one disposable payment object twice",
-            "next_action": "review raw race responses and cleanup evidence, then send the candidate through /validate",
-            "stop_condition": "No stable response differential, or the object cleanup is incomplete.",
-        },
-    }
-    summary_path = bundle / "summary.json"
-    return _finalize_runner_summary(summary, summary_path, repo_root)
-
-
 def run_idor_skeleton(
     *,
     repo_root: Path,
@@ -3592,20 +3378,6 @@ def build_parser() -> argparse.ArgumentParser:
     idor = sub.add_parser("idor-skeleton", help="Create a two-actor IDOR validation skeleton")
     add_common(idor)
     idor.add_argument("--endpoint", required=True)
-
-    payment = sub.add_parser("payment-race", help="Run a bounded replay against an isolated payment object")
-    add_common(payment)
-    add_cli_args(payment)
-    payment.add_argument("--object-ref", required=True)
-    payment.add_argument("--url", default="")
-    payment.add_argument("--method", default="PATCH")
-    payment.add_argument("--owner-header", action="append", default=[])
-    payment.add_argument("--body", default="")
-    payment.add_argument("--timeout", type=int, default=10)
-    payment.add_argument("--repeat", type=int, default=2)
-    payment.add_argument("--browser-observed", action="store_true")
-    payment.add_argument("--no-ledger", action="store_true")
-    add_request_facts(payment)
     return parser
 
 
@@ -3790,24 +3562,6 @@ def main(argv: list[str] | None = None) -> int:
             target=args.target,
             endpoint=args.endpoint,
             finding_id=args.finding_id,
-        )
-    elif args.lane == "payment-race":
-        summary = run_payment_race(
-            repo_root=repo_root,
-            target=args.target,
-            object_ref=args.object_ref,
-            url=args.url,
-            method=args.method,
-            owner_headers=parse_headers(args.owner_header),
-            body=args.body,
-            timeout=args.timeout,
-            finding_id=args.finding_id,
-            repeat=args.repeat,
-            no_ledger=args.no_ledger,
-            browser_observed=args.browser_observed,
-            redline_checked=args.redline_checked,
-            identity_v2=identity_v2,
-            owner_session=auth_session,
         )
     else:  # pragma: no cover - argparse guards this
         raise ValueError(f"unknown lane: {args.lane}")
