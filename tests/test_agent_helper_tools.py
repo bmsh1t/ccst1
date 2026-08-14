@@ -3,6 +3,7 @@
 import json
 
 import agent
+from memory.target_profile import make_target_profile
 from tools import intel_engine
 
 
@@ -28,16 +29,15 @@ def test_dispatch_autopilot_state_reads_combined_bootstrap_context(tmp_hunt_dir,
     (recon_dir / "js").mkdir(parents=True)
     (tmp_hunt_dir / "targets" / "target-com.json").write_text(
         json.dumps(
-            {
-                "target": "target.com",
-                "tech_stack": ["nextjs", "graphql"],
-                "tested_endpoints": [],
-                "untested_endpoints": ["/graphql"],
-                "findings": [],
-                "hunt_sessions": 2,
-                "total_time_minutes": 30,
-                "schema_version": 1,
-            }
+            make_target_profile(
+                "target.com",
+                tech_stack=["nextjs", "graphql"],
+                tested_endpoints=[],
+                untested_endpoints=["/graphql"],
+                findings=[],
+                hunt_sessions=2,
+                total_time_minutes=30,
+            )
         ),
         encoding="utf-8",
     )
@@ -67,15 +67,14 @@ def test_dispatch_guard_status_reads_breaker_state(monkeypatch, tmp_hunt_dir, tm
 
     (tmp_hunt_dir / "targets" / "target-com.json").write_text(
         json.dumps(
-            {
-                "target": "target.com",
-                "scope_snapshot": {
+            make_target_profile(
+                "target.com",
+                scope_snapshot={
                     "in_scope": ["api.target.com"],
                     "breaker_threshold": 1,
                     "breaker_cooldown": 30,
                 },
-                "schema_version": 1,
-            }
+            )
         ),
         encoding="utf-8",
     )
@@ -179,16 +178,15 @@ def test_dispatch_surface_summary_ranks_cached_recon(tmp_hunt_dir, tmp_path):
     (recon_dir / "js").mkdir(parents=True)
     (tmp_hunt_dir / "targets" / "target-com.json").write_text(
         json.dumps(
-            {
-                "target": "target.com",
-                "tech_stack": ["graphql"],
-                "tested_endpoints": [],
-                "untested_endpoints": ["/graphql"],
-                "findings": [],
-                "hunt_sessions": 1,
-                "total_time_minutes": 10,
-                "schema_version": 1,
-            }
+            make_target_profile(
+                "target.com",
+                tech_stack=["graphql"],
+                tested_endpoints=[],
+                untested_endpoints=["/graphql"],
+                findings=[],
+                hunt_sessions=1,
+                total_time_minutes=10,
+            )
         ),
         encoding="utf-8",
     )

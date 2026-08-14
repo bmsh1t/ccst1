@@ -8,11 +8,29 @@ import pytest
 import remember
 from memory.hunt_journal import HuntJournal
 from memory.pattern_db import PatternDB
-from memory.target_profile import load_target_profile, make_target_profile, save_target_profile
+from memory.target_profile import load_target_profile, make_target_profile, save_target_profile, target_profile_path
 from remember import remember_finding
 
 
 class TestRememberFinding:
+
+    def test_corrupt_profile_fails_without_rebuild_or_journal_write(self, tmp_hunt_dir):
+        path = target_profile_path(tmp_hunt_dir, "target.com")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{broken", encoding="utf-8")
+        original = path.read_bytes()
+
+        with pytest.raises(ValueError, match=str(path)):
+            remember_finding(
+                memory_dir=tmp_hunt_dir,
+                target="target.com",
+                vuln_class="idor",
+                endpoint="/orders/1",
+                result="confirmed",
+            )
+
+        assert path.read_bytes() == original
+        assert not (tmp_hunt_dir / "journal.jsonl").exists()
 
     def test_writes_journal_updates_profile_and_saves_pattern(self, tmp_hunt_dir, sample_target_profile):
         save_target_profile(tmp_hunt_dir, sample_target_profile)

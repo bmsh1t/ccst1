@@ -12,6 +12,7 @@ from pathlib import Path
 import hunt
 import pytest
 from memory.hunt_journal import HuntJournal
+from memory.target_profile import target_profile_path
 from tools.auth_session import AuthSession
 
 
@@ -990,6 +991,20 @@ def test_classic_hunt_target_batch_profile_exception_closes_running_marker(monke
     assert runtime_updates[-1][1]["mode"] == "batch_recon"
     assert runtime_updates[-1][1]["last_completed_step"] == "run_recon_batch"
     assert runtime_updates[-1][1]["recon_completed"] is True
+
+
+def test_target_profile_update_does_not_rebuild_corrupt_history(monkeypatch, tmp_path):
+    memory_dir = tmp_path / "hunt-memory"
+    path = target_profile_path(memory_dir, "target.com")
+    path.parent.mkdir(parents=True)
+    path.write_text("{broken", encoding="utf-8")
+    original = path.read_bytes()
+    monkeypatch.setattr(hunt, "HUNT_MEMORY_DIR", str(memory_dir))
+
+    with pytest.raises(ValueError, match=str(path)):
+        hunt._update_target_profile("target.com")
+
+    assert path.read_bytes() == original
 
 
 def test_classic_hunt_target_scan_only_skips_enrichment_and_runs_scan(monkeypatch, tmp_path):

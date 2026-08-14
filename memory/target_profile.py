@@ -6,6 +6,7 @@ This is the persistent state used by resume/intel-style workflows.
 
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -94,17 +95,21 @@ def make_target_profile(
 
 
 def load_target_profile(memory_dir: str | Path, target: str) -> dict | None:
-    """Load and validate a target profile. Returns None if missing/invalid."""
+    """Load and validate a target profile. Returns None only when missing."""
     path = target_profile_path(memory_dir, target)
     if not path.exists():
         return None
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            profile = json.load(f)
+        profile = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"unable to read target profile {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid target profile JSON {path}: {exc.msg}") from exc
+    try:
         return validate_target_profile(profile)
-    except (OSError, json.JSONDecodeError, SchemaError):
-        return None
+    except SchemaError as exc:
+        raise ValueError(f"invalid target profile {path}: {exc}") from exc
 
 
 def save_target_profile(memory_dir: str | Path, profile: dict) -> Path:
@@ -112,7 +117,26 @@ def save_target_profile(memory_dir: str | Path, profile: dict) -> Path:
     validated = validate_target_profile(profile)
     path = target_profile_path(memory_dir, validated["target"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(validated, f, indent=2)
-        f.write("\n")
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(json.dumps(validated, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
     return path
