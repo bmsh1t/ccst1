@@ -85,8 +85,32 @@ class TestFromEnv:
 
 class TestFromFile:
 
-    def test_missing_file_returns_empty(self, tmp_path):
-        assert AuthSession.from_file(tmp_path / "nope.json").is_empty()
+    def test_missing_file_raises_with_path(self, tmp_path):
+        path = tmp_path / "nope.json"
+        with pytest.raises(ValueError, match=str(path)):
+            AuthSession.from_file(path)
+
+    def test_non_file_path_raises_with_path(self, tmp_path):
+        with pytest.raises(ValueError, match=str(tmp_path)):
+            AuthSession.from_file(tmp_path)
+
+    def test_invalid_utf8_raises_with_path(self, tmp_path):
+        path = tmp_path / "auth.json"
+        path.write_bytes(b"\xff")
+
+        with pytest.raises(ValueError, match=str(path)):
+            AuthSession.from_file(path)
+
+    def test_invalid_json_error_does_not_echo_auth_material(self, tmp_path):
+        path = tmp_path / "auth.json"
+        secret = "SECRET_FILE_VALUE"
+        path.write_text('{"cookie": "' + secret, encoding="utf-8")
+
+        with pytest.raises(ValueError) as exc_info:
+            AuthSession.from_file(path)
+
+        assert str(path) in str(exc_info.value)
+        assert secret not in str(exc_info.value)
 
     def test_json_cookie_bearer_apikey(self, tmp_path):
         path = tmp_path / "auth.json"
@@ -225,6 +249,43 @@ class TestTargetScope:
         assert session.headers_for_url("https://example.com/me") == {"Cookie": "s=1"}
         assert session.headers_for_url("http://example.com/me") == {}
 
+    def test_conflicting_source_targets_fail_before_header_merge(self, tmp_path):
+        import json
+
+        secret = "SECRET_TARGET_B"
+        auth_file = tmp_path / "auth.json"
+        auth_file.write_text(json.dumps({
+            "target": "target-b.test",
+            "cookie": secret,
+        }), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="auth source target mismatch") as exc_info:
+            AuthSession.from_sources(
+                env={ENV_TARGET: "target-a.test", ENV_BEARER: "target-a-token"},
+                file=auth_file,
+            )
+
+        assert secret not in str(exc_info.value)
+
+    def test_same_target_sources_still_merge(self, tmp_path):
+        import json
+
+        auth_file = tmp_path / "auth.json"
+        auth_file.write_text(json.dumps({
+            "target": "target.test",
+            "cookie": "file-cookie",
+        }), encoding="utf-8")
+
+        session = AuthSession.from_sources(
+            env={ENV_TARGET: "target.test", ENV_BEARER: "env-token"},
+            file=auth_file,
+        )
+
+        assert session.headers_dict() == {
+            "Authorization": "Bearer env-token",
+            "Cookie": "file-cookie",
+        }
+
     def test_rebinding_to_another_target_drops_headers_and_origins(self):
         session = AuthSession(
             ["Authorization: Bearer secret"],
@@ -338,6 +399,48 @@ class TestCliArgs:
         args = self._parser().parse_args(["--auth-file", str(path)])
         session = session_from_args(args, env={})
         assert session.headers_dict() == {"Cookie": "session=abc"}
+
+    def test_auth_file_target_mismatch_is_not_downgraded_to_anonymous(self, tmp_path):
+        import json
+
+        parser = self._parser()
+        parser.add_argument("--target")
+        path = tmp_path / "auth.json"
+        path.write_text(json.dumps({
+            "target": "target-b.test",
+            "cookie": "SECRET_TARGET_B",
+        }), encoding="utf-8")
+        args = parser.parse_args([
+            "--target",
+            "target-a.test",
+            "--auth-file",
+            str(path),
+        ])
+
+        with pytest.raises(ValueError, match="auth source target mismatch") as exc_info:
+            session_from_args(args, env={})
+
+        assert "SECRET_TARGET_B" not in str(exc_info.value)
+
+    def test_unbound_auth_file_does_not_turn_stale_env_target_into_file_mismatch(self, tmp_path):
+        parser = self._parser()
+        parser.add_argument("--target")
+        path = tmp_path / "auth.json"
+        path.write_text('{"cookie": "fresh-cookie"}', encoding="utf-8")
+        args = parser.parse_args([
+            "--target",
+            "target-a.test",
+            "--auth-file",
+            str(path),
+            "--auth-from-env",
+        ])
+
+        session = session_from_args(
+            args,
+            env={ENV_TARGET: "target-b.test", ENV_BEARER: "stale-token"},
+        ).bind_target(args.target)
+
+        assert session.is_empty()
 
     def test_env_auto_detect_without_flag(self):
         args = self._parser().parse_args([])

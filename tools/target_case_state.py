@@ -1279,14 +1279,16 @@ def _run_command(argv: list[str] | None = None) -> int:
     elif args.cmd == "add-actor":
         _print_json(add_actor(repo_root, args.target, actor=args.actor, role=args.role, label=args.label, notes=args.notes))
     elif args.cmd == "add-session":
-        imported_headers = AuthSession.from_sources(
+        imported_session = AuthSession.from_sources(
             env={},
             file=args.auth_file or None,
             headers=args.header,
             cookie=args.cookie or None,
             bearer=args.bearer or None,
             api_key=args.api_key or None,
-        ).headers_dict()
+            target=args.target,
+        )
+        imported_headers = imported_session.bind_target(args.target).headers_dict()
         _print_json(add_session(
             repo_root,
             args.target,

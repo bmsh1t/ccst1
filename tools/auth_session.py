@@ -206,17 +206,37 @@ class AuthSession:
         """Load from a JSON file (preferred) or a .env-style key=value file."""
         file_path = Path(path)
         if not file_path.exists():
-            return cls()
+            raise ValueError(f"auth file does not exist: {file_path}")
+        if not file_path.is_file():
+            raise ValueError(f"auth file is not a regular file: {file_path}")
 
-        text = file_path.read_text(encoding="utf-8")
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"unable to read auth file {file_path}: {exc}") from exc
         session = cls()
         stripped = text.lstrip()
 
+        def add_file_header(value) -> None:
+            try:
+                session.add_header(value)
+            except (AttributeError, ValueError) as exc:
+                raise ValueError(f"auth file {file_path}: invalid header entry") from exc
+
+        def add_file_credential(callback, *values) -> None:
+            try:
+                callback(*values)
+            except (AttributeError, ValueError) as exc:
+                raise ValueError(f"auth file {file_path}: invalid credential entry") from exc
+
         if stripped.startswith("{") or stripped.startswith("["):
-            data = json.loads(text)
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid auth file JSON {file_path}: {exc.msg}") from exc
             if isinstance(data, list):
                 for header in data:
-                    session.add_header(header)
+                    add_file_header(header)
                 return session
             if not isinstance(data, dict):
                 raise ValueError(f"auth file {file_path}: top level must be object or array")
@@ -228,13 +248,17 @@ class AuthSession:
                     session._allowed_origins.append(normalized)
 
             for header in data.get("headers", []) or []:
-                session.add_header(header)
+                add_file_header(header)
             if data.get("cookie"):
-                session.add_cookie(data["cookie"])
+                add_file_credential(session.add_cookie, data["cookie"])
             if data.get("bearer"):
-                session.add_bearer(data["bearer"])
+                add_file_credential(session.add_bearer, data["bearer"])
             if data.get("api_key"):
-                session.add_api_key(data["api_key"], data.get("api_key_header", "X-API-Key"))
+                add_file_credential(
+                    session.add_api_key,
+                    data["api_key"],
+                    data.get("api_key_header", "X-API-Key"),
+                )
             return session
 
         for line in text.splitlines():
@@ -245,14 +269,14 @@ class AuthSession:
             key = key.strip()
             value = value.strip().strip('"').strip("'")
             if key == ENV_COOKIE or key == "COOKIE":
-                session.add_cookie(value)
+                add_file_credential(session.add_cookie, value)
             elif key == ENV_BEARER or key in ("BEARER", "TOKEN"):
-                session.add_bearer(value)
+                add_file_credential(session.add_bearer, value)
             elif key == ENV_API_KEY or key == "API_KEY":
-                session.add_api_key(value)
+                add_file_credential(session.add_api_key, value)
             elif key == ENV_HEADER_IN or key == "AUTH_HEADER":
                 for header in value.splitlines():
-                    session.add_header(header)
+                    add_file_header(header)
 
         return session
 
@@ -266,12 +290,32 @@ class AuthSession:
         bearer: str | None = None,
         api_key: str | None = None,
         scope_context: ScopeContext | None = None,
+        target: str | None = None,
     ) -> "AuthSession":
         """Merge env + file + explicit args. Explicit wins on name collisions."""
         session = cls.from_env(env)
         session.bind_scope(scope_context)
         if file:
             file_session = cls.from_file(file)
+            requested_target = canonical_target_value(target or "")
+            if (
+                session._target
+                and file_session._target
+                and session._target != file_session._target
+            ):
+                raise ValueError(
+                    "auth source target mismatch: "
+                    f"{session._target[:200]} != {file_session._target[:200]}"
+                )
+            if (
+                requested_target
+                and file_session._target
+                and requested_target != file_session._target
+            ):
+                raise ValueError(
+                    "auth source target mismatch: "
+                    f"{file_session._target[:200]} != {requested_target[:200]}"
+                )
             for header in file_session.headers_list():
                 session.add_header(header)
             if not session._target and file_session._target:
@@ -431,6 +475,7 @@ def add_cli_args(parser, *, include_cookie: bool = True) -> None:
 def session_from_args(args, env: dict[str, str] | None = None) -> AuthSession:
     """Build an AuthSession from an argparse namespace."""
     env = env if env is not None else os.environ
+    target = str(getattr(args, "target", "") or "").strip()
     explicit_source = bool(
         getattr(args, "auth_file", None)
         or getattr(args, "auth_header", [])
@@ -458,8 +503,8 @@ def session_from_args(args, env: dict[str, str] | None = None) -> AuthSession:
         cookie=getattr(args, "cookie", None),
         bearer=getattr(args, "bearer", None),
         api_key=getattr(args, "api_key", None),
+        target=target,
     )
-    target = str(getattr(args, "target", "") or "").strip()
     if target:
         try:
             session.bind_scope(ScopeContext.from_target(target))

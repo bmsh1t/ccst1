@@ -114,6 +114,39 @@ def test_add_session_cli_redacts_auth_material_from_stdout(tmp_path, capsys):
     assert secret in target_case_state.load_case_state(tmp_path, TARGET)["sessions"]["sess_a"]["headers"]["Authorization"]
 
 
+def test_add_session_cli_rejects_cross_target_auth_file_without_state_write(tmp_path, capsys):
+    target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
+    secret = "SECRET_OTHER_TARGET"
+    auth_file = tmp_path / "other-auth.json"
+    auth_file.write_text(json.dumps({
+        "target": "other.test",
+        "cookie": secret,
+    }), encoding="utf-8")
+
+    rc = target_case_state.main([
+        "add-session",
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        TARGET,
+        "--session",
+        "sess_a",
+        "--actor",
+        "user_a",
+        "--auth-file",
+        str(auth_file),
+    ])
+    captured = capsys.readouterr()
+
+    assert rc == 2
+    assert captured.out == ""
+    assert "auth source target mismatch" in captured.err
+    assert secret not in captured.err
+    assert target_case_state.load_case_state(tmp_path, TARGET)["sessions"] == {}
+    private_root = tmp_path / ".private" / "case-state"
+    assert not private_root.exists() or not list(private_root.rglob("*.json"))
+
+
 def test_case_state_public_file_contains_private_ref_only(tmp_path):
     target_case_state.add_actor(tmp_path, TARGET, actor="user_a", role="user")
     target_case_state.add_session(
