@@ -451,7 +451,6 @@ authz-public-exposure
 sqli-result-diff
 marker-replay
 idor-actor-pair
-idor-skeleton
 ```
 
 目标增强：

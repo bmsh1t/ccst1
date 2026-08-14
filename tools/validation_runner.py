@@ -8,7 +8,6 @@ Validation Runner v1 intentionally stays small:
 - sqli-result-diff: baseline vs single-variable perturbation, structural diff.
 - marker-replay: exact request replay plus inert marker evidence check.
 - idor-actor-pair: owner vs peer exact replay plus response diff and evidence gate.
-- idor-skeleton: create a two-actor evidence bundle skeleton without guessing sessions.
 
 AI 仍负责选择 hypothesis、解释业务影响、决定是否升级/降级；本工具只负责稳定
 执行 replay / diff / evidence bundle / ledger 写入。
@@ -3226,48 +3225,6 @@ def run_idor_actor_pair(
     return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
-def run_idor_skeleton(
-    *,
-    repo_root: Path,
-    target: str,
-    endpoint: str,
-    finding_id: str = "",
-) -> dict[str, Any]:
-    finding_id = finding_id or _default_finding_id("idor-skeleton", endpoint)
-    bundle = _bundle_dir(repo_root, target, finding_id)
-    private_bundle = _private_bundle_dir(repo_root, target, bundle)
-    skeleton = {
-        "schema_version": SCHEMA_VERSION,
-        "lane": "idor_actor_pair_skeleton",
-        "target": canonical_target_value(target),
-        "finding_id": finding_id,
-        "endpoint": public_url_shape(endpoint),
-        "generated_at": now_utc(),
-        "result": "skeleton",
-        "candidate_ready": False,
-        "required_artifacts": {
-            "owner_baseline_request": _rel(private_bundle / "owner.baseline.request.txt", repo_root),
-            "owner_baseline_response": _rel(private_bundle / "owner.baseline.response.txt", repo_root),
-            "peer_variant_request": _rel(private_bundle / "peer.variant.request.txt", repo_root),
-            "peer_variant_response": _rel(private_bundle / "peer.variant.response.txt", repo_root),
-            "diff": _rel(bundle / "diff.json", repo_root),
-        },
-        "ai_next": {
-            "hypothesis": "server may trust object id without rebinding it to current actor",
-            "next_action": "Capture owner baseline with a test-owned object, replay the same object id as peer/lower-role, then diff status/body/object ownership fields.",
-            "stop_condition": "No second actor/session, no test-owned object, or stable 403/404/no sensitive field delta.",
-        },
-    }
-    _write_text(
-        bundle / "README.md",
-        "# IDOR actor-pair validation skeleton\n\n"
-        "Fill the four request/response files with test-owned actor A/B evidence, "
-        "then run a response diff and record the ledger entry.\n",
-    )
-    summary_path = bundle / "summary.json"
-    return _finalize_runner_summary(skeleton, summary_path, repo_root)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run deterministic validation evidence lanes")
     sub = parser.add_subparsers(dest="lane", required=True)
@@ -3375,9 +3332,6 @@ def build_parser() -> argparse.ArgumentParser:
     idor_pair.add_argument("--no-ledger", action="store_true")
     idor_pair.add_argument("--complete-case-state", action="store_true", help="Write result back to case_state backlog after replay")
 
-    idor = sub.add_parser("idor-skeleton", help="Create a two-actor IDOR validation skeleton")
-    add_common(idor)
-    idor.add_argument("--endpoint", required=True)
     return parser
 
 
@@ -3556,13 +3510,6 @@ def main(argv: list[str] | None = None) -> int:
                 evidence_ref=str(summary.get("summary_path") or ""),
                 notes="auto-written by validation_runner --complete-case-state",
             )
-    elif args.lane == "idor-skeleton":
-        summary = run_idor_skeleton(
-            repo_root=repo_root,
-            target=args.target,
-            endpoint=args.endpoint,
-            finding_id=args.finding_id,
-        )
     else:  # pragma: no cover - argparse guards this
         raise ValueError(f"unknown lane: {args.lane}")
     if identity_v2 is not None and summary.get("ledger_record") is None:

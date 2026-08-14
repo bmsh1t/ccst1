@@ -1985,24 +1985,6 @@ def test_idor_actor_pair_from_case_state_requires_peer_session(tmp_path):
         )
 
 
-def test_idor_skeleton_writes_required_actor_pair_artifacts(tmp_path):
-    summary = validation_runner.run_idor_skeleton(
-        repo_root=tmp_path,
-        target="https://target.test",
-        endpoint="https://target.test/api/orders/123",
-        finding_id="IDOR-1",
-    )
-
-    bundle = (tmp_path / summary["summary_path"]).parent
-    assert summary["lane"] == "idor_actor_pair_skeleton"
-    assert summary["candidate_ready"] is False
-    assert "owner_baseline_request" in summary["required_artifacts"]
-    assert "peer_variant_response" in summary["required_artifacts"]
-    assert (bundle / "README.md").is_file()
-    assert (bundle / "summary.json").is_file()
-    assert ".private/validation" in summary["required_artifacts"]["owner_baseline_request"]
-
-
 def test_request_once_rejects_off_target_before_open(monkeypatch):
     called = False
 
