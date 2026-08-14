@@ -2361,7 +2361,7 @@ def _local_intel_hypothesis_seeds(local_intel: dict) -> list[str]:
     ]
     if viewstate_forms:
         seeds.append(
-            "ViewState 表单先保存同页新鲜 GET 基线及 __VIEWSTATEGENERATOR/__EVENTVALIDATION 字段名；仅对 __VIEWSTATE 做一次格式 control 与单字节 tamper replay，比较同一页面/流程的稳定拒绝或状态差异；MAC 一致拒绝即停止，不提交业务状态改变。"
+            "ViewState 表单先保存同页新鲜 GET 基线及 __VIEWSTATEGENERATOR/__EVENTVALIDATION 字段名；先对目标归属的响应私有副本运行 tools/aspnet_viewstate_knownkey.py，用项目内 7436 条 machineKey 资源记录做离线检查，再对 __VIEWSTATE 做一次格式 control 与单字节 tamper replay。该分支独立于 Telerik；没有 Telerik WebResource.axd 不能把 ViewState/反序列化标为 N/A，known-key 未命中也只关闭弱 key 分支；需要受控验证时可显式读取匹配 key。"
         )
     form_fields = " ".join(
         str(field) for form in (browser.get("forms") or [])
@@ -2589,7 +2589,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "数据类型篡改和应用功能 gadget 分开验证：boolean/string/integer/null 变化只看服务端类型语义差异；delete/read/write 等二阶功能要证明对象字段如何流入既有业务动作，先停在测试资源和原始请求/响应证据。",
         ])
         if re.search(r"\bviewstate\b|__viewstate", blob, re.I):
-            seeds.append("ViewState 按格式/页面绑定识别 -> MAC/签名/加密完整性 -> 服务端真实消费/状态影响三阶段判断；保存同页新鲜 baseline 后只做格式 control 和单字节 tamper replay；可见、可解码或 MAC error 都不能单独证明可利用。")
+            seeds.append("ViewState 按格式/页面绑定识别 -> machineKey 离线检查 -> MAC/签名/加密完整性 -> 服务端真实消费/状态影响分阶段判断；先对目标归属的响应私有副本运行 tools/aspnet_viewstate_knownkey.py，再做格式 control 和单字节 tamper replay。该分支独立于 Telerik；没有 Telerik WebResource.axd 不能标为 N/A，known-key 未命中也只关闭弱 key 分支；受控验证可用 --reveal-key 取得匹配 key。")
         if _has_telerik_dialog_signal(blob):
             seeds.append(
                 "Telerik DialogParameters/AsyncUpload 证据先保留一份目标归属的正常响应私有副本，再运行 tools/telerik_knownkey.py 以项目内 Badsecrets ASP.NET/Telerik 密钥集离线比对。命中只说明 ConfigurationHashKey 复用信号，必须另行证明受控影响，不能自动晋升 Candidate 或 Finding。"
@@ -3295,6 +3295,7 @@ def build_context_pack(
         reviewed_candidate_matches,
     ) = _reviewed_candidate_hints(repo, target=resolved_target, evidence_blob=blob)
     telerik_dialog_signal = _has_telerik_dialog_signal(blob)
+    viewstate_signal = bool(re.search(r"\bviewstate\b|__viewstate", blob, re.I))
     skill, why_skill = _select_skill(focus, blob, ranked, findings, goal_memory)
     historical_patterns = []
     for item in ((ranked.get("memory") or {}).get("pattern_suggestions") or []):
@@ -3339,7 +3340,7 @@ def build_context_pack(
         SKILL_PATHS[skill],
         "knowledge/index.md",
         ledger_path,
-    ] + cards + (["tools/telerik_knownkey.py"] if telerik_dialog_signal else []) + _local_intel_paths(local_intel) + [
+    ] + cards + (["tools/aspnet_viewstate_knownkey.py"] if viewstate_signal else []) + (["tools/telerik_knownkey.py"] if telerik_dialog_signal else []) + _local_intel_paths(local_intel) + [
         str(item.get("summary_path") or "")
         for item in runner_candidates[:6]
         if item.get("summary_path")
@@ -3406,6 +3407,7 @@ def build_context_pack(
             "reviewed_candidate_pool": reviewed_candidate_pool,
             "reviewed_candidate_matches": reviewed_candidate_matches,
             "reviewed_candidate_hints": len(reviewed_candidate_hints),
+            "viewstate_signal": viewstate_signal,
             "telerik_dialog_signal": telerik_dialog_signal,
             **_local_intel_source_summary(local_intel),
             **_ledger_source_summary(evidence_summary),

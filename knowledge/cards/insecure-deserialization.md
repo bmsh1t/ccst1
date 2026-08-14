@@ -24,6 +24,7 @@ deep_refs:
 - 先识别格式和完整性保护：Java/PHP/Python/.NET/Node serialized blob、remember-me、session、state、ViewState、导入/导出对象。
 - ViewState 必须按“格式/页面绑定可识别 → MAC/签名/加密完整性 → 服务端真实消费或状态影响”三阶段判断；
   `__VIEWSTATE` 存在、可解码或错误文案都不能单独证明可利用反序列化。
+- `__VIEWSTATE` 本身独立触发 machineKey 分支：先对目标归属的响应副本运行 `tools/aspnet_viewstate_knownkey.py`，用项目内 7436 条 machineKey 资源记录离线检查；不依赖 Telerik endpoint。
 - 反序列化错误、类名、类型栈、OAST callback、签名校验差异都是 sink 线索，不等于 RCE。
 - 有签名/加密时先测试 tamper 是否被拒绝，再考虑弱密钥、key reuse、算法或框架配置。
 - URLDNS/OAST 类 probe 可证明 Java 反序列化触发，但命令 gadget 需要单独证据和受控验证。
@@ -49,6 +50,7 @@ deep_refs:
 - Integrity test：单字节 tamper、重放、过期、跨账号复制、签名错误差异。
 - ViewState gate：先确认页面/控件状态格式和 generator/user/page binding，再确认 MAC/签名/加密是否
   稳定拒绝 tamper，最后用低影响字段、类型错误或 OAST 证明后端实际 deserialize/consume。
+- Known machineKey：保存同页响应、页面 URL、generator 和必要的私有 session cookie，离线检查默认 key；命中后可显式读取匹配 key 做受控验证，未命中只关闭 known-key 分支。
 - State tamper：对象字段可改时，优先测试 role、tenant、feature flag、price/quantity 等业务状态边界。
 - Type semantics：boolean/string/integer/null、数组/对象边界和 loose comparison 差异只证明类型语义，不直接等同于权限绕过。
 - Sink proof：类型错误、OAST callback、URLDNS、反序列化日志，证明服务端真的反序列化。
@@ -77,7 +79,7 @@ deep_refs:
 
 - 保存合法 blob baseline，做单字节 tamper 或无害字段变化，比较拒绝方式。
 - ViewState 保存同一页面的新鲜 baseline、generator/event-validation 和用户/session 绑定；分别测试
-  格式损坏与完整性损坏，只有出现真实消费/状态差异后才考虑更深验证。
+  machineKey、格式损坏与完整性损坏；key 命中后用匹配 key 做最小受控验证，否则只有出现真实消费/状态差异才继续深入。
 - 对 unsigned object，只改自有/测试对象中的低影响字段，证明服务端接受和业务边界。
 - 对 blind sink，用一次性 OAST token 或类型错误证明触发，不直接上命令 gadget。
 - Candidate 前需要格式证据、完整性结论、可 replay 请求和明确业务/RCE 影响路径。
@@ -88,6 +90,7 @@ deep_refs:
 - 看到 serialized magic bytes 不代表可篡改；签名和用户绑定可能完整。
 - `__VIEWSTATE` 可见、base64 可解码、MAC error 或跨节点偶发错误都不等于可利用；缺少 tamper 接受、
   sink 或状态影响时保持格式/配置 Signal。
+- 没有 Telerik `WebResource.axd` 只关闭 Telerik 专属分支，不能把仍存在 `__VIEWSTATE` 的 ViewState/machineKey 或整个反序列化方向标为 N/A。
 - OAST callback 只证明 sink，不证明命令执行。
 - Gadget 工具失败不代表没有漏洞；也可能是 classpath、签名或触发路径不匹配。
 

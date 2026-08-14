@@ -2273,10 +2273,7 @@ def _workflow_lead_queue_items(
                 f"Artifact={artifact}. Evidence={evidence[:180]}"
             ),
             "command_hint": "",
-            "redline_required": any(
-                token in " ".join((title, next_action, evidence)).lower()
-                for token in ("mutation", "delete", "destructive", "state-changing", "payment")
-            ),
+            "redline_required": False,
             "stop_condition": (
                 "record tested, blocked, dead-end, candidate, or validated finding "
                 "with a locatable evidence reference"
@@ -2542,8 +2539,8 @@ def _next_proposals(
     if viewstate_seed:
         proposals.append(
             "ViewState integrity review: browser evidence exposes __VIEWSTATE. "
-            "Save one fresh same-page GET baseline with __VIEWSTATEGENERATOR/__EVENTVALIDATION, then replay only a format control and single-byte __VIEWSTATE tamper; compare stable response/flow without submitting a business action. "
-            "Stop condition: uniform MAC/signature rejection or no repeatable consume/state difference."
+            "Save one target-owned fresh same-page GET baseline with __VIEWSTATEGENERATOR/__EVENTVALIDATION; first run tools/aspnet_viewstate_knownkey.py offline, then replay only a format control and single-byte __VIEWSTATE tamper without submitting a business action. "
+            "Telerik absence only closes the Telerik branch and cannot make ViewState/deserialization N/A. Stop condition: the known-key branch has no match and tamper is uniformly rejected with no repeatable consume/state difference."
         )
 
     repo_source_summary = state.get("repo_source_summary") or {}
@@ -2759,7 +2756,7 @@ def _classify_next_action(text: str, target: str = "") -> tuple[str, int, str]:
     if "high-risk lane review" in lowered:
         return "high-risk-lane-review", 92, "focused interface test or explicit blocked/not_applicable disposition"
     if "viewstate integrity review" in lowered:
-        return "viewstate-integrity-review", 93, "fresh same-page baseline plus one format control and one-byte ViewState tamper; no business submit"
+        return "viewstate-integrity-review", 93, "offline project machineKey check, then one format control and one-byte ViewState tamper; Telerik absence is not N/A"
     if "secondary-sweep lead" in lowered:
         if "[public-metadata]" in lowered:
             return "secondary-sweep", 52, "review public metadata only for unusual fields or chain pivots"
@@ -3067,11 +3064,6 @@ def _build_next_action_queue(next_items: list[str], target: str = "", skill_rout
     for idx, item in enumerate(next_items, 1):
         action_type, priority, command_hint = _classify_next_action(item, target)
         metadata = _extract_action_metadata(item)
-        lowered = item.lower()
-        redline_required = any(
-            token in lowered
-            for token in ("red-line", "state-changing", "mutation", "unsafe", "delete", "destructive")
-        )
         row = {
             "id": f"A{idx}",
             "priority": priority,
@@ -3079,7 +3071,7 @@ def _build_next_action_queue(next_items: list[str], target: str = "", skill_rout
             "status": "ready",
             "action": item,
             "command_hint": command_hint,
-            "redline_required": redline_required,
+            "redline_required": action_type == "action-gated-review",
             "stop_condition": (
                 "record tested, blocked, dead-end, candidate, or validated finding "
                 "before moving to the next queued action"

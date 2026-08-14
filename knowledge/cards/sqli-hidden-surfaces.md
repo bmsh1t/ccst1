@@ -42,7 +42,7 @@ source_refs:
 - 常规 query/body 参数无信号时，不代表 SQLi lane 已完成；继续检查非显式输入面。
 - 优先从目标证据出发：请求元数据、path/routing segment、cookie/session、JS/source/browser 参数、导入/上传字段、日志/审计/风控/报表链路。
 - Header 示例是候选形态，不是固定字典：`X-Forwarded-For`、`X-Real-IP`、`Forwarded`、`User-Agent`、`Referer`。
-- 路径示例是候选形态，不是固定字典：`/tenant/{id}`、`/report/{type}`、`/search/{keyword}`、slug、分类、地区码。
+- 路径候选必须从 recon/browser/source 或已有请求中已观察到的真实路径逐级派生；`/tenant/{id}`、`/report/{type}`、slug 等只说明候选形态，不是固定字典。
 - sibling 参数迁移：从 A 接口提取 `sort`、`order`、`status`、`type`、`orgId`、`tenantId` 等少量高信号字段，喂给同业务 B 接口。
 - Parser/encoding 差异：XML entity、URL/Unicode 编码、大小写、分隔符或 content-type 转换可能绕过前置过滤，解码后才进入后端 SQL 查询。
 - SQLi 也别只盯值位：`ORDER BY`、列名/表名、占位符名、事务控制和跨表字段这类非参数化位置，经常是“看起来参数化了但实际没保护到”的盲区。
@@ -63,7 +63,7 @@ source_refs:
 
 ### 2. 路径段
 
-- **操作**：保持 method、suffix 和路由形状，对 `/a/b/c` 逐段单变量比较：`/a/'` vs `/a/''`，再 `/a/b/'` vs `/a/b/''`。
+- **操作**：从真实已观察路径的各级前缀做单变量成对比较，例如 `/<observed-prefix>/'` vs `/<observed-prefix>/''`，再 `/<observed-prefix>/<observed-segment>/'` vs `/<observed-prefix>/<observed-segment>/''`；尖括号内容仅为占位说明，禁止无目标证据时机械请求 `/a`、`/a/b`，并保持 method、query/body/auth 等其余上下文不变。
 - **判断**：用合法值、不存在值和扰动证明请求仍进入同一 handler；统一 404、SPA fallback 或 rewrite 差异不是 SQL 信号。
 - **转向**：引号只造成框架错误、系统路径/源码泄露时，单独记录信息泄露；继续 SQLi 需要查询特异差异。
 

@@ -57,7 +57,9 @@ def test_sqli_hidden_surface_card_stays_bounded_and_preserves_core_branches(tmp_
     for marker in (
         "X-Forwarded-For",
         "/tenant/{id}",
-        "`/a/'` vs `/a/''`",
+        "真实已观察路径的各级前缀",
+        "`/<observed-prefix>/'` vs `/<observed-prefix>/''`",
+        "禁止无目标证据时机械请求 `/a`、`/a/b`",
         "完整参数束，例如 `?limit=1&xxxid=100`",
         "B?limit='&xxxid='",
         "B?limit=''&xxxid=''",
@@ -231,7 +233,7 @@ def test_framework_signals_route_to_existing_owners_with_negative_gates(tmp_path
         (
             "ASP.NET __VIEWSTATE ViewState MAC signed serialized object",
             "knowledge/cards/insecure-deserialization.md",
-            ("三阶段", "可利用"),
+            ("分阶段判断", "真实消费/状态影响"),
         ),
         (
             "legacy authentication mobile login SOAP XMLRPC alternate auth surface",

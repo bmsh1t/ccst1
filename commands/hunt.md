@@ -138,18 +138,15 @@ A callback is a Signal. Promote to Candidate only after you can tie it to a spec
 ```bash
 python3 tools/hunt.py --target target.com --scan-only --scanner-full
 python3 tools/hunt.py --target target.com --scan-only --scanner-skip module1,module2
-ALLOW_UNSAFE_HTTP_TESTS=1 python3 tools/hunt.py --target target.com --scan-only --scanner-full  # opt-in for side-effectful upload/MFA/SAML POST probes and PUT/PATCH method probes
+ALLOW_UNSAFE_HTTP_TESTS=1 python3 tools/hunt.py --target target.com --scan-only --scanner-full  # opt-in for PUT/PATCH/DELETE method probes
 ```
 
 - XSS is not an active vuln-scanner lane; recon/validation provide its evidence.
 - `--scanner-full` expands supported scanner lanes but does not enable a Nuclei XSS scan.
 - `--scanner-skip` is per invocation only; do not inherit it across targets or sessions.
-- Side-effect-capable scanner templates such as PUT/DELETE/PATCH method
-  tampering, upload canary POST, MFA/OTP POST, and forged SAML POST are skipped
-  unless `ALLOW_UNSAFE_HTTP_TESTS=1` is set for that invocation. This scanner
-  guard does not forbid AI-guided replay of browser-observed POST, GraphQL read
-  queries, search/filter POSTs, preview/validate-only flows, or test-owned
-  reversible actions.
+- PUT/DELETE/PATCH scanner probes are skipped unless `ALLOW_UNSAFE_HTTP_TESTS=1`
+  is set for that invocation. Upload, MFA/OTP and SAML `POST` validation is not
+  skipped by technique or label alone.
 
 ## Guardrails For Live Actions
 

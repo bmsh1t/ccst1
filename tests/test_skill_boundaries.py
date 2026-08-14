@@ -178,7 +178,9 @@ def test_hidden_sqli_surfaces_are_part_of_skill_flow():
     assert "## 技巧与薄判断层" in card
     assert "X-Forwarded-For" in card
     assert "baseline -> ' -> ''" in card
-    assert "/a/'` vs `/a/''" in card
+    assert "真实已观察路径的各级前缀" in card
+    assert "`/<observed-prefix>/'` vs `/<observed-prefix>/''`" in card
+    assert "禁止无目标证据时机械请求 `/a`、`/a/b`" in card
     assert "B baseline -> B?limit=1&xxxid=100 -> B?limit='&xxxid=' -> B?limit=''&xxxid=''" in card
     assert "sibling 参数迁移" in card
     assert "不是固定字典" in card

@@ -1949,7 +1949,14 @@ def test_browser_viewstate_form_routes_to_concrete_integrity_seed(tmp_path):
 
     assert pack["knowledge_cards"][0] == "knowledge/cards/insecure-deserialization.md"
     assert any("Browser form: POST /account hidden_fields=__VIEWSTATE" in item for item in pack["evidence_anchors"])
-    assert any("ViewState 表单先保存同页新鲜 GET 基线" in seed for seed in pack["hypothesis_seeds"])
+    seed = next(seed for seed in pack["hypothesis_seeds"] if "ViewState 表单先保存同页新鲜 GET 基线" in seed)
+    assert "tools/aspnet_viewstate_knownkey.py" in seed
+    assert "独立于 Telerik" in seed
+    assert "不能把 ViewState/反序列化标为 N/A" in seed
+    assert "tools/aspnet_viewstate_knownkey.py" in pack["must_read"]
+    assert "tools/telerik_knownkey.py" not in pack["must_read"]
+    assert pack["source_summary"]["viewstate_signal"] is True
+    assert pack["source_summary"]["telerik_dialog_signal"] is False
 
 
 def test_telerik_browser_signal_routes_to_offline_known_key_check_only(tmp_path):

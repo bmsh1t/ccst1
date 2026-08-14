@@ -1081,26 +1081,6 @@ def _sync_unsafe_skipped_review_for_action(
     }
 
 
-def _redline_required(text: str) -> bool:
-    lowered = text.lower()
-    tokens = (
-        "red-line",
-        "unsafe",
-        "mutation",
-        "state-changing",
-        "write",
-        "delete",
-        "credential",
-        "spray",
-        "race",
-        "actor",
-        "role",
-        "payment",
-        "order",
-    )
-    return any(token in lowered for token in tokens)
-
-
 def build_action(
     *,
     target: str,
@@ -1119,7 +1099,6 @@ def build_action(
     metadata: dict | None = None,
 ) -> dict:
     metadata = _validate_action_metadata(metadata)
-    text_for_redline = " ".join([action_type, evidence, next_question, action, command_hint])
     ts = now_utc()
     built = {
         "schema_version": SCHEMA_VERSION,
@@ -1136,7 +1115,7 @@ def build_action(
         "source": _compact_text(source, 80),
         "source_id": _compact_text(source_id, 80),
         "safety": _compact_text(safety, 120) or "non_destructive",
-        "redline_required": _redline_required(text_for_redline) if redline_required is None else bool(redline_required),
+        "redline_required": bool(redline_required),
         "stop_condition": _compact_text(stop_condition, 400) or DEFAULT_STOP_CONDITION,
         "attempts": 0,
         "created_at": ts,

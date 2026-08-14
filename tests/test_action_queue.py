@@ -966,7 +966,7 @@ def test_ingest_checkpoint_retires_stale_partial_validation_candidate(tmp_path):
     assert select_next_action(saved)["metadata"]["finding_id"] == "F-new"
 
 
-def test_manual_action_add_and_resolve_to_candidate(tmp_path):
+def test_manual_role_replay_is_not_marked_redline_by_keywords(tmp_path):
     added = add_manual_action(
         tmp_path,
         target="api.target.com",
@@ -983,7 +983,7 @@ def test_manual_action_add_and_resolve_to_candidate(tmp_path):
     queue = load_queue(tmp_path, "api.target.com")
     action = select_next_action(queue)
     assert action["id"] == "AQ-0001"
-    assert action["redline_required"] is True
+    assert action["redline_required"] is False
 
     resolved = resolve_action(
         tmp_path,

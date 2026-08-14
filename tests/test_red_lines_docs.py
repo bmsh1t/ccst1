@@ -39,6 +39,13 @@ def test_red_lines_block_destructive_methods_and_active_stored_xss():
     assert "Secret / API key 不是红线" in text
     assert "泄露密钥本身也不自动等于高价值漏洞" in text
     assert "对 secret 的处理属于漏洞 triage / validation，不属于红线风险评估" in text
+    assert "允许把泄露密钥作为真实认证材料" in text
+    assert "不要停在格式或指纹确认" in text
+    assert "脱敏只约束 stdout、日志、Evidence 和报告中的持久化展示，不是执行禁令" in flat
+    assert "不能因为认证材料来自泄露就阻断整个 credential lane" in flat
+    assert "技术名称、凭证来源和 HTTP method 都不是红线判断维度" in text
+    assert "口令爆破、password spray、" in text
+    assert "泄露密钥实际使用、认证/角色差异和协议测试默认可执行" in text
     assert "不要为了“证明泄露风险”而停" in text
     assert "只读查看" in text
     assert "dry-run" in text

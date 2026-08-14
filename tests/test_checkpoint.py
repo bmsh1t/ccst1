@@ -2759,12 +2759,15 @@ def test_next_proposals_emit_bounded_viewstate_integrity_review():
     )
 
     review = next(item for item in proposals if item.startswith("ViewState integrity review:"))
+    assert "tools/aspnet_viewstate_knownkey.py" in review
     assert "single-byte __VIEWSTATE tamper" in review
     assert "without submitting a business action" in review
+    assert "cannot make ViewState/deserialization N/A" in review
     action_type, priority, hint = checkpoint_module._classify_next_action(review, "target.com")
     assert action_type == "viewstate-integrity-review"
     assert priority == 93
-    assert "no business submit" in hint
+    assert "machineKey" in hint
+    assert "Telerik absence is not N/A" in hint
 
 
 def test_capability_chain_review_projection_has_stable_identity_and_bounded_lineage(tmp_path):
