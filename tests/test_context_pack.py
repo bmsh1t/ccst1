@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import context_pack as context_pack_module
 from autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint
 from context_pack import SKILL_CATALOG, SKILL_PATHS, build_context_pack, format_context_pack
@@ -699,6 +701,86 @@ def test_context_pack_defers_extra_case_router_cards_instead_of_dropping(tmp_pat
     assert "knowledge/cards/connection-string-injection.md" in (
         pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
     )
+
+
+@pytest.mark.parametrize(
+    "focus, expected_first",
+    [
+        (
+            "SQLi request metadata hidden parameter",
+            "knowledge/cards/sqli-hidden-surfaces.md",
+        ),
+        (
+            "cloud metadata service SSRF internal",
+            "knowledge/cards/cloud-control-plane-pivots.md",
+        ),
+        (
+            "JWKS OIDC token verification",
+            "knowledge/cards/auth-sso-token-edge-cases.md",
+        ),
+    ],
+)
+def test_collision_terms_keep_specific_recall_stable_and_explained(
+    tmp_path,
+    focus,
+    expected_first,
+):
+    first = build_context_pack(tmp_path, target="target.com", focus=focus)
+    second = build_context_pack(tmp_path, target="target.com", focus=focus)
+
+    assert first["knowledge_cards"][0] == expected_first
+    assert first["knowledge_cards"] == second["knowledge_cards"]
+    assert first["deferred_knowledge_cards"] == second["deferred_knowledge_cards"]
+    assert first["knowledge_card_recall"] == second["knowledge_card_recall"]
+    assert len(first["knowledge_cards"]) <= 2
+    all_cards = first["knowledge_cards"] + first["deferred_knowledge_cards"]
+    assert len(all_cards) == len(set(all_cards))
+    selected_recall = [
+        item for item in first["knowledge_card_recall"] if item["status"] == "selected"
+    ]
+    assert [item["file"] for item in selected_recall] == first["knowledge_cards"]
+    assert all("selected within card budget" in item["reason"] for item in selected_recall)
+
+
+def test_generic_collision_word_does_not_take_a_core_card_slot(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="application metadata page documentation",
+    )
+    all_cards = pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+
+    assert pack["knowledge_cards"] == ["knowledge/cards/coverage-prompts.md"]
+    assert not {
+        "knowledge/cards/information-disclosure-source-config.md",
+        "knowledge/cards/sqli-hidden-surfaces.md",
+        "knowledge/cards/ssrf-internal-impact.md",
+    }.intersection(all_cards)
+    assert pack["knowledge_card_recall"] == [
+        {
+            "file": "knowledge/cards/coverage-prompts.md",
+            "id": "coverage-prompts",
+            "status": "selected",
+            "rank": 1,
+            "reason": "coverage or routing fallback; selected within card budget",
+        }
+    ]
+    assert "Knowledge card recall:" in format_context_pack(pack)
+
+
+def test_collision_recall_marks_budgeted_cards_as_deferred(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://target.com/"])
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="cloud metadata service SSRF internal",
+    )
+    recall_by_file = {item["file"]: item for item in pack["knowledge_card_recall"]}
+
+    deferred = "knowledge/cards/ssrf-url-fetch.md"
+    assert deferred in pack["deferred_knowledge_cards"]
+    assert recall_by_file[deferred]["status"] == "deferred"
+    assert "deferred by card budget" in recall_by_file[deferred]["reason"]
 
 
 def test_reference_hints_are_added_only_for_evidence_specific_details(tmp_path):

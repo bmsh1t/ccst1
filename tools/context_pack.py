@@ -1765,7 +1765,7 @@ def _select_cards_and_deferred(
     repo_root: Path | str = BASE_DIR,
     *,
     registry: dict[str, dict[str, str]] | None = None,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[dict[str, object]]]:
     focus_cards = _cards_from_focus(focus)
     cards: list[str] = list(focus_cards)
     for pattern, names in DISTILLED_TOKEN_TO_CARDS:
@@ -2083,6 +2083,19 @@ def _select_cards_and_deferred(
     if not priority and re.search(r"\b(graphql|gql|mutation|subscription|introspection|global[_-]?id)\b", blob, re.I):
         priority.append("graphql")
     cards = _dedupe(focus_cards + priority + cards)
+    ranked_names = list(cards)
+    source_by_name = {
+        name: (
+            "explicit focus matched"
+            if name in focus_cards
+            else "specific routing signal matched"
+            if name in priority
+            else "coverage or routing fallback"
+            if name == "coverage-prompts"
+            else "context evidence signal matched"
+        )
+        for name in ranked_names
+    }
     preserved_deferred: list[str] = []
     if not ranked.get("available"):
         before_fallback = cards
@@ -2097,12 +2110,48 @@ def _select_cards_and_deferred(
         preserved_deferred = [name for name in before_fallback if name not in cards]
     candidate_paths = [CARD_PATHS[name] for name in _dedupe(cards) if name in CARD_PATHS]
     selected, deferred = _budget_knowledge_cards(candidate_paths, repo_root, registry=registry)
-    deferred.extend(
+    fallback_deferred = [
         CARD_PATHS[name]
         for name in preserved_deferred
         if name in CARD_PATHS and CARD_PATHS[name] not in selected + deferred
+    ]
+    deferred.extend(fallback_deferred)
+    ranked_paths = _dedupe(
+        [CARD_PATHS[name] for name in ranked_names if name in CARD_PATHS]
+        + selected
+        + deferred
     )
-    return selected, deferred
+    selected_set = set(selected)
+    deferred_set = set(deferred)
+    fallback_deferred_set = set(fallback_deferred)
+    selected_case_router = sum(
+        _card_capability(path, repo_root, registry=registry)["layer"] == "case-router"
+        for path in selected
+    )
+    recall: list[dict[str, object]] = []
+    for rank, path in enumerate(ranked_paths, 1):
+        if path not in selected_set and path not in deferred_set:
+            continue
+        capability = _card_capability(path, repo_root, registry=registry)
+        card_id = str(capability["id"])
+        status = "selected" if path in selected_set else "deferred"
+        reason = source_by_name.get(card_id, "context evidence signal matched")
+        if status == "selected":
+            reason += "; selected within card budget"
+        elif path in fallback_deferred_set:
+            reason += "; deferred by unavailable-surface fallback"
+        elif capability["layer"] == "case-router" and selected_case_router:
+            reason += "; deferred by case-router budget"
+        else:
+            reason += "; deferred by card budget"
+        recall.append({
+            "file": path,
+            "id": card_id,
+            "status": status,
+            "rank": rank,
+            "reason": reason,
+        })
+    return selected, deferred, recall
 
 
 def _select_cards(
@@ -2114,7 +2163,7 @@ def _select_cards(
     focus: str,
     repo_root: Path | str = BASE_DIR,
 ) -> list[str]:
-    selected, _ = _select_cards_and_deferred(blob, skill, ranked, gaps, goal_memory, focus, repo_root)
+    selected, _, _ = _select_cards_and_deferred(blob, skill, ranked, gaps, goal_memory, focus, repo_root)
     return selected
 
 
@@ -3264,7 +3313,7 @@ def build_context_pack(
         if len(historical_patterns) == 3:
             break
     registry = _load_capability_registry(repo)
-    cards, deferred_cards = _select_cards_and_deferred(
+    cards, deferred_cards, knowledge_card_recall = _select_cards_and_deferred(
         blob,
         skill,
         ranked,
@@ -3312,6 +3361,7 @@ def build_context_pack(
         "knowledge_card_capabilities": _card_capabilities(cards, repo, registry=registry),
         "deferred_knowledge_cards": deferred_cards,
         "deferred_knowledge_card_capabilities": _card_capabilities(deferred_cards, repo, registry=registry),
+        "knowledge_card_recall": knowledge_card_recall,
         "reference_hints": _reference_hints(cards, blob, focus, skill),
         "historical_patterns": historical_patterns,
         "reviewed_candidate_hints": reviewed_candidate_hints,
@@ -3396,6 +3446,16 @@ def format_context_pack(pack: dict) -> str:
         ]),
         "- Deferred knowledge cards:",
         *_format_list(pack.get("deferred_knowledge_cards", [])),
+        "- Knowledge card recall:",
+        *_format_list([
+            "{file} — {status} rank={rank}; {reason}".format(
+                file=item.get("file", ""),
+                status=item.get("status", ""),
+                rank=item.get("rank", ""),
+                reason=item.get("reason", ""),
+            )
+            for item in pack.get("knowledge_card_recall", [])
+        ]),
         "- Reference hints:",
         *_format_list([
             "{path} — {when}".format(
