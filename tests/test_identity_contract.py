@@ -34,6 +34,14 @@ def test_closure_encoding_is_deterministic_and_round_trips():
     assert key.canonical_encoding == json.dumps(key.to_dict(), sort_keys=True, separators=(",", ":"))
     assert ClosureCellKey.from_dict(key.to_dict()) == key
     assert key.dimension_map == {"method": "POST", "parameter": "q"}
+    assert build_closure_cell(
+        "/api/users", "nosqli", {"method": "POST", "parameter": "q"}
+    ).family == "SQLi"
+    assert build_closure_cell(
+        "/api/users",
+        "deserialization",
+        {"method": "POST", "input_field": "blob", "sink": "pickle"},
+    ).family == "RCE"
 
 
 def test_persisted_identity_requires_v2_kinds_and_versions():

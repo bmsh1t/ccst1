@@ -93,6 +93,24 @@ class TestEmptyMatrix:
         with pytest.raises(ValueError, match="invalid coverage matrix JSON"):
             load_matrix("x.com", repo_root=tmp_path)
 
+    def test_load_recomputes_legacy_high_risk_alias_statuses(self, tmp_path):
+        matrix = _empty_matrix("x.com")
+        matrix["high_risk_lanes"] = {
+            "RCE": {"disposition": "tested"},
+            "Deserialization": {"disposition": "tested", "alias_of": "RCE"},
+        }
+        path = tmp_path / "evidence" / "x.com" / "coverage_matrix.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(matrix), encoding="utf-8")
+
+        loaded = load_matrix("x.com", repo_root=tmp_path)
+
+        assert set(loaded["high_risk_lanes"]) == set(VULN_CLASSES)
+        assert "Deserialization" not in loaded["high_risk_lanes"]
+        assert loaded["high_risk_lanes"]["RCE"]["techniques"] == [
+            "SSTI", "CommandInjection", "Deserialization",
+        ]
+
     def test_cli_reports_corrupt_matrix_with_stable_exit(self, tmp_path, capsys):
         path = tmp_path / "evidence" / "x.com" / "coverage_matrix.json"
         path.parent.mkdir(parents=True)
@@ -1271,7 +1289,8 @@ class TestVulnClassNormalization:
 
     def test_sqli_aliases(self):
         for alias in ("sql-injection", "sqlinjection", "sqlblind",
-                      "sqli-blind", "sqli-time", "blindsqli",
+                      "sqli-blind", "sqli-time", "blindsqli", "nosqli",
+                      "nosql-injection",
                       "SQL-INJECTION", "Sqli"):
             assert normalize_vuln_class(alias) == "SQLi", alias
 

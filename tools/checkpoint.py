@@ -2577,23 +2577,28 @@ def _next_proposals(
     if not isinstance(lane_summary, dict):
         lane_summary = high_risk_lane_summary(matrix)
     lane_order = (
-        "SQLi", "NoSQLi", "SSRF", "XXE", "RCE", "SSTI", "CommandInjection",
-        "Deserialization", "LFI", "Path", "Upload", "IDOR", "Authz", "GraphQL",
-        "OAuth", "JWT", "CSRF", "Race", "Webhook", "XSS",
+        "SQLi", "SSRF", "XXE", "RCE", "Path", "Upload", "IDOR", "Authz",
+        "GraphQL", "OAuth", "JWT", "CSRF", "Race", "Webhook", "XSS",
     )
-    lane_review = [
-        f"{name}={lane_summary[name].get('disposition')}"
-        for name in lane_order
-        if isinstance(lane_summary.get(name), dict)
-        and lane_summary[name].get("disposition") in {"queued", "unassessed", "not_observed", "blocked"}
-    ]
+    lane_review = []
+    for name in lane_order:
+        lane = lane_summary.get(name)
+        if (
+            not isinstance(lane, dict)
+            or lane.get("disposition") not in {"queued", "unassessed", "not_observed", "blocked"}
+        ):
+            continue
+        techniques = [str(value) for value in lane.get("techniques", []) if str(value).strip()]
+        label = f"{name}[{','.join(techniques)}]" if techniques else name
+        lane_review.append(f"{label}={lane.get('disposition')}")
     if lane_review and state.get("has_recon") and matrix.get("endpoints"):
         proposals.append(
             "High-risk lane review: {lanes}. For every listed family, use the smallest "
             "evidence-producing interface test (SQLi/NoSQLi, SSRF URL-fetch/OAST, "
-            "XXE XML parser, RCE/SSTI/command/upload, authz/IDOR, GraphQL/OAuth/JWT, "
-            "Path/CSRF/Race/Webhook) or record an explicit blocked/not_applicable reason; "
-            "never treat unassessed as clean.".format(lanes=", ".join(lane_review[:12]))
+            "XXE XML parser, RCE/SSTI/command/deserialization/upload, authz/IDOR, "
+            "GraphQL/OAuth/JWT, Path/LFI/RFI, CSRF/Race/Webhook/XSS) or record an "
+            "explicit blocked/not_applicable reason; never treat unassessed as clean."
+            .format(lanes=", ".join(lane_review))
         )
 
     for gap in _checkpoint_coverage_gaps(coverage_gaps, matrix):

@@ -20,40 +20,72 @@ CLOSED_LEDGER_RESULTS = {
 }
 CLOSED_MATRIX_STATUSES = {"tested_clean", "tested_finding", "n_a"}
 
-_VULN_ALIAS = {
-    "idor": "IDOR",
-    "authz": "Authz",
+
+CANONICAL_VULN_CLASSES = (
+    "IDOR", "SSRF", "XSS", "Race", "Authz",
+    "GraphQL", "OAuth", "Upload", "Webhook", "JWT",
+    "SQLi", "XXE", "RCE", "Path", "CSRF",
+)
+
+VULN_CLASS_ALIASES = {
+    **{vuln_class.lower(): vuln_class for vuln_class in CANONICAL_VULN_CLASSES},
     "auth": "Authz",
     "access": "Authz",
     "access-control": "Authz",
     "auth-bypass": "Authz",
+    "authentication-bypass": "Authz",
+    "authorization-bypass": "Authz",
     "public-exposure": "Authz",
     "business-logic": "Authz",
-    "sqli": "SQLi",
+    "businesslogic": "Authz",
+    "mfa": "Authz",
+    "saml": "Authz",
     "sql": "SQLi",
     "sql-injection": "SQLi",
-    "xss": "XSS",
+    "sqlinjection": "SQLi",
+    "sqlblind": "SQLi",
+    "sqli-blind": "SQLi",
+    "sqli-time": "SQLi",
+    "blindsqli": "SQLi",
+    "nosqli": "SQLi",
+    "nosql-injection": "SQLi",
+    "nosqlinjection": "SQLi",
     "cross-site-scripting": "XSS",
-    "ssrf": "SSRF",
-    "race": "Race",
+    "xss-dom": "XSS",
+    "dom-xss": "XSS",
+    "domxss": "XSS",
+    "prototype-pollution": "XSS",
+    "prototypepollution": "XSS",
+    "pp": "XSS",
     "toctou": "Race",
-    "graphql": "GraphQL",
-    "oauth": "OAuth",
-    "jwt": "JWT",
-    "csrf": "CSRF",
-    "upload": "Upload",
     "file-upload": "Upload",
-    "webhook": "Webhook",
     "openredirect": "OpenRedirect",
     "open-redirect": "OpenRedirect",
     "redirect": "OpenRedirect",
-    "rce": "RCE",
+    "oscommand": "RCE",
+    "os-command": "RCE",
+    "cmdinjection": "RCE",
+    "cmd-injection": "RCE",
+    "commandinjection": "RCE",
     "ssti": "RCE",
     "command-injection": "RCE",
-    "path": "Path",
+    "deser": "RCE",
+    "deserialization": "RCE",
+    "unserialize": "RCE",
+    "template-injection": "RCE",
+    "templateinjection": "RCE",
     "lfi": "Path",
+    "rfi": "Path",
+    "pathtraversal": "Path",
     "path-traversal": "Path",
-    "xxe": "XXE",
+    "directory-traversal": "Path",
+    "directorytraversal": "Path",
+    "csrf-token": "CSRF",
+    "xsrf": "CSRF",
+    "xxe-blind": "XXE",
+    "xml-injection": "XXE",
+    "xmlinjection": "XXE",
+    "xinclude": "XXE",
     "workflow": "Workflow",
 }
 
@@ -66,7 +98,7 @@ def canonical_vuln_class(vuln_hint: str) -> str:
     value = str(vuln_hint or "").strip().lower().replace("_", "-")
     if not value or value == "generic":
         return ""
-    return _VULN_ALIAS.get(value, "")
+    return VULN_CLASS_ALIASES.get(value, "")
 
 
 def extract_endpoint_parts(value: str) -> tuple[str, str]:

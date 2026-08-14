@@ -96,7 +96,12 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.attack_probe_filter import is_attack_probe, sanitize_attack_probe_url
-    from tools.closure_resolver import extract_endpoint_path
+    from tools.closure_resolver import (
+        CANONICAL_VULN_CLASSES,
+        VULN_CLASS_ALIASES as CLOSURE_VULN_CLASS_ALIASES,
+        canonical_vuln_class,
+        extract_endpoint_path,
+    )
     from tools.finding_index import load_finding_index, upsert_finding
     from tools.recon_filters import has_malformed_path
     from tools.surface_index import iter_surface_index, load_surface_index_status
@@ -104,103 +109,33 @@ try:
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
     from attack_probe_filter import is_attack_probe, sanitize_attack_probe_url  # type: ignore
-    from closure_resolver import extract_endpoint_path  # type: ignore
+    from closure_resolver import (  # type: ignore
+        CANONICAL_VULN_CLASSES,
+        VULN_CLASS_ALIASES as CLOSURE_VULN_CLASS_ALIASES,
+        canonical_vuln_class,
+        extract_endpoint_path,
+    )
     from finding_index import load_finding_index, upsert_finding  # type: ignore
     from recon_filters import has_malformed_path  # type: ignore
     from surface_index import iter_surface_index, load_surface_index_status  # type: ignore
     from surface_weights import value_weight  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
-VULN_CLASSES = (
-    "IDOR", "SSRF", "XSS", "Race", "Authz",
-    "GraphQL", "OAuth", "Upload", "Webhook", "JWT",
-    "SQLi", "XXE", "RCE", "Path", "CSRF",
-)
-# Families with a shared evidence cell.  Keeping these as aliases avoids a
-# second matrix taxonomy while still making the high-risk coverage report
-# explicit about NoSQLi, SSTI, command injection, and deserialisation.
-HIGH_RISK_LANE_ALIASES = {
-    "NoSQLi": "SQLi",
-    "SSTI": "RCE",
-    "CommandInjection": "RCE",
-    "Deserialization": "RCE",
-    "LFI": "Path",
-    "RFI": "Path",
+VULN_CLASSES = CANONICAL_VULN_CLASSES
+VULN_CLASS_ALIASES = {
+    alias: canonical
+    for alias, canonical in CLOSURE_VULN_CLASS_ALIASES.items()
+    if canonical in VULN_CLASSES
+}
+HIGH_RISK_LANE_TECHNIQUES = {
+    "SQLi": ("NoSQLi",),
+    "RCE": ("SSTI", "CommandInjection", "Deserialization"),
+    "Path": ("LFI", "RFI"),
 }
 COVERAGE_BUILD_VERSION = 3
-COVERAGE_PROJECTION_SCHEMA_VERSION = 1
+COVERAGE_PROJECTION_SCHEMA_VERSION = 2
 COVERAGE_PROJECTION_KIND = "coverage_matrix_projection"
 COVERAGE_PROJECTION_GAP_LIMIT = 1000
-
-# Operator-side aliases. The KEY is the lowercased form of an alias
-# the operator might type; the VALUE is the canonical name from
-# VULN_CLASSES that gets stored on disk. This is intentionally
-# curated (not Levenshtein-fuzzy) so behaviour is predictable.
-#
-# Aliases also include the canonical names lowercased so case-folding
-# alone resolves correctly without a separate code path.
-VULN_CLASS_ALIASES = {
-    # Case-insensitive matches for the canonical names
-    **{vc.lower(): vc for vc in VULN_CLASSES},
-    # finding_index 的流程类型归入授权覆盖面；具体 JWT/SAML 等显式 vuln_class 优先。
-    "auth_bypass": "Authz",
-    "auth-bypass": "Authz",
-    "authentication_bypass": "Authz",
-    "authentication-bypass": "Authz",
-    "authorization_bypass": "Authz",
-    "authorization-bypass": "Authz",
-    "business_logic": "Authz",
-    "business-logic": "Authz",
-    "businesslogic": "Authz",
-    "mfa": "Authz",
-    "saml": "Authz",
-    # Path traversal family
-    "lfi": "Path",
-    "rfi": "Path",
-    "pathtraversal": "Path",
-    "path-traversal": "Path",
-    "path_traversal": "Path",
-    "directory-traversal": "Path",
-    "directorytraversal": "Path",
-    # finding 可能使用连字符或下划线形式的上传类型名。
-    "file-upload": "Upload",
-    "file_upload": "Upload",
-    # RCE umbrella
-    "oscommand": "RCE",
-    "os-command": "RCE",
-    "cmdinjection": "RCE",
-    "cmd-injection": "RCE",
-    "commandinjection": "RCE",
-    "command-injection": "RCE",
-    "deser": "RCE",
-    "deserialization": "RCE",
-    "unserialize": "RCE",
-    "ssti": "RCE",
-    "template-injection": "RCE",
-    "templateinjection": "RCE",
-    # XSS variants
-    "xss-dom": "XSS",
-    "dom-xss": "XSS",
-    "domxss": "XSS",
-    "prototype-pollution": "XSS",
-    "prototypepollution": "XSS",
-    "pp": "XSS",
-    # SQLi variants
-    "sql-injection": "SQLi",
-    "sqlinjection": "SQLi",
-    "sqlblind": "SQLi",
-    "sqli-blind": "SQLi",
-    "sqli-time": "SQLi",
-    "blindsqli": "SQLi",
-    # CSRF variants
-    "csrf-token": "CSRF",
-    "xsrf": "CSRF",
-    # XXE variants
-    "xxe-blind": "XXE",
-    "xml-injection": "XXE",
-    "xmlinjection": "XXE",
-    "xinclude": "XXE",
-}
 
 
 def normalize_vuln_class(name: str) -> str:
@@ -214,11 +149,9 @@ def normalize_vuln_class(name: str) -> str:
     Raises `ValueError` on unrecognised input with a message that
     lists the canonical names so the operator can pick the right one.
     """
-    if name in VULN_CLASSES:
-        return name
-    key = name.strip().lower()
-    if key in VULN_CLASS_ALIASES:
-        return VULN_CLASS_ALIASES[key]
+    canonical = canonical_vuln_class(name)
+    if canonical in VULN_CLASSES:
+        return canonical
     raise ValueError(
         f"unknown vuln_class: {name!r}. "
         f"Canonical names: {', '.join(VULN_CLASSES)}. "
@@ -425,6 +358,7 @@ def load_matrix(target: str, repo_root: Path | str | None = None) -> dict:
         raise ValueError(f"coverage matrix {path} must contain one object")
     if not isinstance(data.get("endpoints"), list):
         raise ValueError(f"coverage matrix {path} endpoints must be a list")
+    data["high_risk_lanes"] = high_risk_lane_summary(data)
     return data
 
 
@@ -571,9 +505,7 @@ def save_matrix_projection(
         "source_fingerprint": str(matrix.get("source_fingerprint") or ""),
         "matrix_binding": _file_binding(matrix_path),
         "summary": dict(matrix.get("summary") or _compute_summary(matrix)),
-        "high_risk_lanes": dict(
-            matrix.get("high_risk_lanes") or high_risk_lane_summary(matrix)
-        ),
+        "high_risk_lanes": high_risk_lane_summary(matrix),
         "high_value_gaps": high_value_gaps_from_matrix(matrix)[:COVERAGE_PROJECTION_GAP_LIMIT],
         "endpoints": endpoints,
     }
@@ -1250,12 +1182,9 @@ def high_risk_lane_summary(
             "relevant_gap_count": relevant_by_class.get(vuln_class, 0),
             **counts,
         }
-    for alias, canonical in HIGH_RISK_LANE_ALIASES.items():
-        result[alias] = {
-            **result[canonical],
-            "alias_of": canonical,
-            "reason": f"shared coverage cell: {canonical}; keep the technique explicit during triage",
-        }
+        techniques = HIGH_RISK_LANE_TECHNIQUES.get(vuln_class)
+        if techniques:
+            result[vuln_class]["techniques"] = list(techniques)
     return result
 
 

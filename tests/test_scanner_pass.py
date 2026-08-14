@@ -208,9 +208,12 @@ class TestCoverageMatrixScannerPass:
 
         lanes = high_risk_lane_summary(matrix)
 
+        assert set(lanes) == set(VULN_CLASSES)
         assert lanes["RCE"]["disposition"] == "candidate"
-        assert lanes["NoSQLi"]["alias_of"] == "SQLi"
-        assert lanes["Deserialization"]["alias_of"] == "RCE"
+        assert lanes["SQLi"]["techniques"] == ["NoSQLi"]
+        assert lanes["RCE"]["techniques"] == ["SSTI", "CommandInjection", "Deserialization"]
+        assert lanes["Path"]["techniques"] == ["LFI", "RFI"]
+        assert "Deserialization" not in lanes
         assert lanes["SSRF"]["disposition"] == "queued"
         assert lanes["XXE"]["disposition"] == "unassessed"
         assert lanes["XXE"]["untested"] == 1
