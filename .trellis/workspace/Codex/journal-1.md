@@ -1935,3 +1935,26 @@ Completed a worktree-first, HEAD-attributed read-only audit; documented five ver
 ### Status
 
 [OK] **Completed**
+
+
+## Session 65: Upload、认证与目标状态边界加固
+
+**Date**: 2026-08-14
+**Task**: Upload、认证与目标状态边界加固
+**Branch**: `main`
+
+### Summary
+
+可执行上传 canary 改为显式审批；AuthSession 拒绝跨目标显式来源和不可用 auth file；target profile 使用原子替换并对损坏状态 fail-fast。完整测试 3390 passed。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a2cca49` | (see git log) |
+| `6a59128` | (see git log) |
+| `6a6e661` | (see git log) |
+
+### Status
+
+[OK] **Completed**
