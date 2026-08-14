@@ -37,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime
@@ -1456,21 +1457,26 @@ class HuntMemory:
         self._load()
 
     def _load(self) -> None:
-        if os.path.isfile(self.session_file):
-            try:
-                data = json.loads(Path(self.session_file).read_text())
-                self.working_memory   = data.get("working_memory", "")
-                self.findings_log     = data.get("findings_log", [])
-                self.observation_buf  = data.get("observation_buf", [])[-10:]
-                self.completed_steps  = data.get("completed_steps", [])
-                self.step_count       = data.get("step_count", 0)
-                # (P5-B9 R2/R3) Restore bootstrap_context across resume.
-                # Older session files won't have these keys; default to empty.
-                self.bootstrap_context = data.get("bootstrap_context", "") or ""
-                bs = data.get("bootstrap_state", {})
-                self.bootstrap_state = bs if isinstance(bs, dict) else {}
-            except Exception:
-                pass
+        path = Path(self.session_file)
+        if not path.is_file():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cannot load agent session {path}: invalid JSON or unreadable file") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Cannot load agent session {path}: expected a JSON object")
+
+        self.working_memory   = data.get("working_memory", "")
+        self.findings_log     = data.get("findings_log", [])
+        self.observation_buf  = data.get("observation_buf", [])[-10:]
+        self.completed_steps  = data.get("completed_steps", [])
+        self.step_count       = data.get("step_count", 0)
+        # (P5-B9 R2/R3) Restore bootstrap_context across resume.
+        # Older session files won't have these keys; default to empty.
+        self.bootstrap_context = data.get("bootstrap_context", "") or ""
+        bs = data.get("bootstrap_state", {})
+        self.bootstrap_state = bs if isinstance(bs, dict) else {}
 
     def save(self) -> None:
         Path(self.session_file).parent.mkdir(parents=True, exist_ok=True)
@@ -1486,7 +1492,29 @@ class HuntMemory:
             "bootstrap_state":   self.bootstrap_state if isinstance(self.bootstrap_state, dict) else {},
             "saved_at":        datetime.now().isoformat(),
         }
-        Path(self.session_file).write_text(json.dumps(data, indent=2))
+        path = Path(self.session_file)
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=str(path.parent),
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temp_path = Path(handle.name)
+                handle.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            temp_path.replace(path)
+        except Exception:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
+            raise
 
     def update_bootstrap_context(self, new_context: str,
                                  *, audit_path: Path | str | None = None) -> dict:

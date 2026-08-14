@@ -97,6 +97,41 @@ class TestBackwardsCompat:
         m = HuntMemory(str(sess))
         assert m.bootstrap_state == {}
 
+    def test_corrupt_session_fails_fast_without_replacing_bytes(self, tmp_path):
+        from agent import HuntMemory
+
+        sess = tmp_path / "agent_session.json"
+        original = b'{"working_memory":'
+        sess.write_bytes(original)
+
+        with pytest.raises(RuntimeError, match=str(sess)):
+            HuntMemory(str(sess))
+
+        assert sess.read_bytes() == original
+
+    def test_save_replace_failure_preserves_previous_bytes(self, tmp_path, monkeypatch):
+        from agent import HuntMemory
+
+        sess = tmp_path / "agent_session.json"
+        memory = HuntMemory(str(sess))
+        memory.working_memory = "before"
+        memory.save()
+        previous = sess.read_bytes()
+        memory.working_memory = "after"
+        original_replace = Path.replace
+
+        def fail_replace(self, target):
+            if self.parent == sess.parent and self.name.startswith(f".{sess.name}."):
+                raise OSError("synthetic replace failure")
+            return original_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+        with pytest.raises(OSError, match="synthetic replace failure"):
+            memory.save()
+
+        assert sess.read_bytes() == previous
+        assert list(sess.parent.glob(f".{sess.name}.*.tmp")) == []
+
 
 # ---------------------------------------------------------------------
 #  R4 — Audit log on update
