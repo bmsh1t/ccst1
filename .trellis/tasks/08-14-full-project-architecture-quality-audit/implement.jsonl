@@ -1,0 +1,14 @@
+{"file":".trellis/spec/backend/index.md","reason":"Full backend guideline and contract index for the repository-wide audit."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Canonical entry, owner, runtime-artifact and legacy boundary map."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Persistence, identity, atomic write, corruption and concurrency contracts."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Error propagation, CLI exit and fail-fast expectations."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Cross-repository quality, AI/tool, evidence and test invariants."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Logging, JSONL, rotation and sensitive-data boundaries."}
+{"file":".trellis/spec/backend/scope-context.md","reason":"Target scope, canonical identity, exclusions and resume boundaries."}
+{"file":".trellis/spec/backend/contracts/runtime-autopilot.md","reason":"Primary runtime, bootstrap, drift, long-run and subprocess contracts."}
+{"file":".trellis/spec/backend/contracts/recon-surface.md","reason":"Recon completeness, surface projections, context and knowledge routing contracts."}
+{"file":".trellis/spec/backend/contracts/browser-js.md","reason":"Browser evidence and JavaScript intelligence boundaries."}
+{"file":".trellis/spec/backend/contracts/validation-evidence.md","reason":"Validation runner, evidence and cross-owner reconciliation contracts."}
+{"file":".trellis/spec/backend/contracts/lifecycle-state.md","reason":"Finding, checkpoint, case, observation and Action Queue lifecycle contracts."}
+{"file":".trellis/spec/backend/contracts/integrations.md","reason":"External integration, auth, timeout and adapter contracts."}
+{"file":".trellis/tasks/08-14-full-project-architecture-quality-audit/research/planning-inventory.md","reason":"Confirmed product boundaries, code surfaces and baseline decision."}
