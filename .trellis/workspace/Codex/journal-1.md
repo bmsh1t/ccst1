@@ -1958,3 +1958,24 @@ Completed a worktree-first, HEAD-attributed read-only audit; documented five ver
 ### Status
 
 [OK] **Completed**
+
+
+## Session 66: Architecture maintenance cost review
+
+**Date**: 2026-08-14
+**Task**: Architecture maintenance cost review
+**Branch**: `main`
+
+### Summary
+
+Audited the current architecture and maintenance cost, verified resolved state/auth/knowledge debt, identified one P2 Legacy session durability issue, and archived the Trellis task.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3e5b75d` | (see git log) |
+
+### Status
+
+[OK] **Completed**
