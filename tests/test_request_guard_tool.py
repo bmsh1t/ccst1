@@ -1,8 +1,22 @@
 """Tests for tools/request_guard.py."""
 
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 from memory.audit_log import AuditLog
 from memory.target_profile import make_target_profile, save_target_profile
-from request_guard import format_guard_output, load_guard_status, preflight_request, record_request
+from request_guard import (
+    format_guard_output,
+    guard_state_path,
+    load_guard_state,
+    load_guard_status,
+    preflight_request,
+    record_request,
+    save_guard_state,
+)
 
 
 def _save_profile(tmp_hunt_dir, target="target.com", scope_snapshot=None):
@@ -18,6 +32,92 @@ def _save_profile(tmp_hunt_dir, target="target.com", scope_snapshot=None):
             },
         ),
     )
+
+
+class TestRequestGuardPersistence:
+
+    def test_corrupt_json_fails_with_path_without_rebuild(self, tmp_hunt_dir):
+        path = guard_state_path(tmp_hunt_dir, "target.com")
+        path.parent.mkdir(parents=True)
+        path.write_text("{broken", encoding="utf-8")
+        original = path.read_bytes()
+
+        with pytest.raises(ValueError, match="invalid request guard state JSON") as exc_info:
+            preflight_request(
+                memory_dir=tmp_hunt_dir,
+                target="target.com",
+                url="https://target.com/",
+                method="GET",
+                sleep=False,
+                now_ts=100.0,
+            )
+
+        assert str(path) in str(exc_info.value)
+        assert path.read_bytes() == original
+
+    def test_invalid_state_shape_fails_with_path(self, tmp_hunt_dir):
+        path = guard_state_path(tmp_hunt_dir, "target.com")
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"target": "target.com", "hosts": []}), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="hosts must be an object") as exc_info:
+            load_guard_state(tmp_hunt_dir, "target.com")
+
+        assert str(path) in str(exc_info.value)
+
+    def test_atomic_replace_failure_preserves_old_state_and_retry_converges(
+        self,
+        tmp_hunt_dir,
+        monkeypatch,
+    ):
+        old_state = {
+            "settings": {"breaker_threshold": 2},
+            "hosts": {"api.target.com": {"failures": 1}},
+        }
+        path = save_guard_state(tmp_hunt_dir, "target.com", old_state)
+        old_bytes = path.read_bytes()
+        new_state = {
+            "settings": {"breaker_threshold": 2},
+            "hosts": {"api.target.com": {"failures": 2}},
+        }
+        real_replace = Path.replace
+
+        def fail_replace(_self, _target):
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+        with pytest.raises(OSError, match="simulated replace failure"):
+            save_guard_state(tmp_hunt_dir, "target.com", new_state)
+
+        assert path.read_bytes() == old_bytes
+        assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+
+        monkeypatch.setattr(Path, "replace", real_replace)
+        save_guard_state(tmp_hunt_dir, "target.com", new_state)
+        assert load_guard_state(tmp_hunt_dir, "target.com")["hosts"]["api.target.com"]["failures"] == 2
+
+    def test_cli_reports_corrupt_state_without_traceback(self, tmp_hunt_dir):
+        path = guard_state_path(tmp_hunt_dir, "target.com")
+        path.parent.mkdir(parents=True)
+        path.write_text("{broken", encoding="utf-8")
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).parents[1] / "tools" / "request_guard.py"),
+                "status",
+                "--memory-dir",
+                str(tmp_hunt_dir),
+                "--target",
+                "target.com",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert completed.returncode == 2
+        assert str(path) in completed.stderr
+        assert "Traceback" not in completed.stderr
 
 
 class TestRequestGuardPreflight:

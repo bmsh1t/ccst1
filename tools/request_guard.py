@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,28 +79,46 @@ def load_guard_state(memory_dir: str | Path, target: str) -> dict:
         return {"target": target, "settings": {}, "hosts": {}}
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {"target": target, "settings": {}, "hosts": {}}
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"unable to read request guard state {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid request guard state JSON {path}: {exc.msg}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"request guard state {path} must contain one object")
 
     hosts = {}
-    for host, item in (raw.get("hosts") or {}).items():
-        if not isinstance(host, str) or not isinstance(item, dict):
-            continue
-        hosts[host] = {
-            "last_request_ts": float(item.get("last_request_ts", 0.0) or 0.0),
-            "failures": max(0, int(item.get("failures", 0) or 0)),
-            "tripped_until": float(item.get("tripped_until", 0.0) or 0.0),
-            "last_error": str(item.get("last_error", "") or ""),
-        }
+    raw_hosts = raw.get("hosts", {})
+    if not isinstance(raw_hosts, dict):
+        raise ValueError(f"request guard state {path} hosts must be an object")
+    try:
+        for host, item in raw_hosts.items():
+            if not isinstance(host, str) or not host or not isinstance(item, dict):
+                raise ValueError("host entries must map non-empty strings to objects")
+            hosts[host] = {
+                "last_request_ts": float(item.get("last_request_ts", 0.0) or 0.0),
+                "failures": max(0, int(item.get("failures", 0) or 0)),
+                "tripped_until": float(item.get("tripped_until", 0.0) or 0.0),
+                "last_error": str(item.get("last_error", "") or ""),
+            }
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid request guard state {path}: {exc}") from exc
 
     settings = {}
-    raw_settings = raw.get("settings") or {}
-    if isinstance(raw_settings, dict):
+    raw_settings = raw.get("settings", {})
+    if not isinstance(raw_settings, dict):
+        raise ValueError(f"request guard state {path} settings must be an object")
+    try:
         for key in ("recon_rps", "test_rps", "breaker_threshold", "breaker_cooldown"):
-            if key in raw_settings:
-                settings[key] = raw_settings[key]
+            if key not in raw_settings:
+                continue
+            if key == "breaker_threshold":
+                settings[key] = max(1, int(raw_settings[key]))
+            else:
+                minimum = 1.0 if key == "breaker_cooldown" else 0.1
+                settings[key] = max(minimum, float(raw_settings[key]))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid request guard state {path}: {exc}") from exc
 
     return {"target": target, "settings": settings, "hosts": hosts}
 
@@ -112,9 +131,29 @@ def save_guard_state(memory_dir: str | Path, target: str, state: dict) -> Path:
         "settings": state.get("settings", {}),
         "hosts": state.get("hosts", {}),
     }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
-        f.write("\n")
+    serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise
     return path
 
 
@@ -752,4 +791,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, ValueError) as exc:
+        print(f"request_guard.py: error: {exc}", file=sys.stderr)
+        raise SystemExit(2)
