@@ -32,6 +32,73 @@ def _skip_modules_except(*enabled_modules: str) -> str:
     return ",".join(module for module in SCANNER_SKIP_MODULES if module not in enabled)
 
 
+def _run_upload_gate_fixture(tmp_path: Path, *, approved: bool):
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    run_dir = tmp_path / ("approved" if approved else "default")
+    recon_dir = run_dir / "recon" / "upload.test"
+    findings_dir = run_dir / "findings"
+    shim_dir = run_dir / "bin"
+    curl_log = run_dir / "curl.log"
+    (recon_dir / "live").mkdir(parents=True)
+    shim_dir.mkdir(parents=True)
+    (recon_dir / "live" / "urls.txt").write_text("https://upload.test\n", encoding="utf-8")
+
+    curl_shim = shim_dir / "curl"
+    curl_shim.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$CURL_LOG\"\n"
+        "is_form=0\n"
+        "is_head=0\n"
+        "url=''\n"
+        "for arg in \"$@\"; do\n"
+        "  [ \"$arg\" = '-F' ] && is_form=1\n"
+        "  [ \"$arg\" = '-I' ] && is_head=1\n"
+        "  case \"$arg\" in http://*|https://*) url=\"$arg\" ;; esac\n"
+        "done\n"
+        "[ \"$is_form\" = 1 ] && exit 0\n"
+        "if [ \"$is_head\" = 1 ]; then printf 'Server: PHP\\n'; exit 0; fi\n"
+        "case \"$url\" in\n"
+        "  */non_existent_*) printf '404' ;;\n"
+        "  */upload.php) printf '200' ;;\n"
+        "  */proof_*.php) printf 'RCE-VAL-49' ;;\n"
+        "  *) printf '404' ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    curl_shim.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update({
+        "CURL_LOG": str(curl_log),
+        "FINDINGS_OUT_DIR": str(findings_dir),
+        "PATH": f"{shim_dir}:/usr/bin:/bin",
+        "BBHUNT_RUNTIME_PHASE_LOCKED": "scan",
+        "BBHUNT_RUNTIME_LOCK_TARGET": "upload.test",
+    })
+    if approved:
+        env["ALLOW_UNSAFE_HTTP_TESTS"] = "1"
+    else:
+        env.pop("ALLOW_UNSAFE_HTTP_TESTS", None)
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(script),
+            str(recon_dir),
+            "--quick",
+            "--skip",
+            _skip_modules_except("upload"),
+        ],
+        cwd=script.resolve().parent.parent,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    return result, findings_dir, curl_log.read_text(encoding="utf-8")
+
+
 def test_vuln_scanner_bash_syntax_is_valid():
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
 
@@ -72,21 +139,45 @@ def test_vuln_scanner_marks_auth_flows_for_manual_review():
     assert "relaystate" in text
 
 
-def test_vuln_scanner_gates_unsafe_method_probes_by_default():
+def test_vuln_scanner_gates_unsafe_methods_and_upload_action_by_default():
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     text = script.read_text(encoding="utf-8")
 
     assert "scanner_probe_guard()" in text
     assert "SafeMethodPolicy" in text
+    assert "action_requires_opt_in" in text
     assert "ALLOW_UNSAFE_HTTP_TESTS" in text
     assert "require_approval" in text
     assert "Skipping $label" in text
     assert "manual_review/unsafe_skipped.txt" in text
+    assert "post_action_requires_opt_in" not in text
     assert ': > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"' in text
     assert 'scanner_probe_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes"' in text
-    assert 'scanner_probe_guard "POST" "$upload_url" "upload canary probe"' in text
+    assert 'scanner_probe_guard "POST" "$upload_url" "upload canary probe" "1"' in text
     assert 'scanner_probe_guard "POST" "$BASE" "MFA rate-limit probe"' in text
     assert 'scanner_probe_guard "POST" "$ACS_URL" "SAML signature-stripping probe"' in text
+
+
+def test_upload_canary_requires_explicit_opt_in_without_losing_approved_path(tmp_path):
+    default, default_findings, default_curl = _run_upload_gate_fixture(tmp_path, approved=False)
+
+    assert default.returncode == 0, default.stderr + default.stdout
+    assert "-F " not in default_curl
+    assert "[UPLOAD-CANDIDATE] https://upload.test/upload.php" in (
+        default_findings / "upload" / "active_upload_probe.txt"
+    ).read_text(encoding="utf-8")
+    skipped = (default_findings / "manual_review" / "unsafe_skipped.txt").read_text(encoding="utf-8")
+    assert "label=upload canary probe" in skipped
+    assert not (default_findings / "manual_review" / "upload_cleanup.txt").exists()
+
+    approved, approved_findings, approved_curl = _run_upload_gate_fixture(tmp_path, approved=True)
+
+    assert approved.returncode == 0, approved.stderr + approved.stdout
+    assert "-F file=@" in approved_curl
+    cleanup = (approved_findings / "manual_review" / "upload_cleanup.txt").read_text(encoding="utf-8")
+    assert "status=cleanup_unverified" in cleanup
+    assert "kind=executed" in cleanup
+    assert "reason=no verified remote delete contract" in cleanup
 
 
 def test_vuln_scanner_supports_auth_session_env():

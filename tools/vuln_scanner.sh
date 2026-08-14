@@ -258,39 +258,26 @@ scanner_probe_guard() {
     local method="$1"
     local url="$2"
     local label="$3"
+    local action_requires_opt_in="${4:-0}"
     local guard_output decision reason
 
-    # Broad scanner templates are conservative by action, not by POST itself.
-    # POST is common for read/search/GraphQL/browser-observed APIs and is not a
-    # risk signal by method alone. Specific scanner actions that may write files,
-    # trigger OTP/auth attempts, or forge SAML responses still require an
-    # explicit per-invocation opt-in via ALLOW_UNSAFE_HTTP_TESTS=1.
-    guard_output=$(PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$method" "$url" "$label" <<'PY'
+    # POST is a normal validation method. Explicitly side-effect-capable actions
+    # and methods outside the shared safe set require per-invocation approval.
+    guard_output=$(PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$method" "$url" "$label" "$action_requires_opt_in" <<'PY'
 import sys
 from memory.audit_log import SafeMethodPolicy
 
 method = (sys.argv[1] or "").upper()
 url = sys.argv[2] if len(sys.argv) > 2 else ""
-label = (sys.argv[3] if len(sys.argv) > 3 else "").lower()
+label = sys.argv[3] if len(sys.argv) > 3 else method
+action_requires_opt_in = len(sys.argv) > 4 and sys.argv[4] == "1"
 policy = SafeMethodPolicy()
-post_action_requires_opt_in = (
-    method == "POST"
-    and any(token in label for token in (
-        "upload",
-        "mfa",
-        "otp",
-        "2fa",
-        "saml",
-        "signature",
-        "response-manipulation",
-    ))
-)
-if policy.is_safe(method) and not post_action_requires_opt_in:
+if policy.is_safe(method) and not action_requires_opt_in:
     print("allow")
     print("")
-elif post_action_requires_opt_in:
+elif action_requires_opt_in:
     print("require_approval")
-    print(f"Scanner action {label or method} may create side effects and requires ALLOW_UNSAFE_HTTP_TESTS=1")
+    print(f"Scanner action {label} may create side effects and requires ALLOW_UNSAFE_HTTP_TESTS=1")
 else:
     print("require_approval")
     print(f"Side-effect-capable scanner method {method} for {url} requires ALLOW_UNSAFE_HTTP_TESTS=1")
@@ -323,6 +310,7 @@ PY
 }
 
 mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,metasploit,manual_review,.tmp}
+UPLOAD_CLEANUP_FILE="$FINDINGS_DIR/manual_review/upload_cleanup.txt"
 : > "$FINDINGS_DIR/mfa/findings.txt"
 MFA_REVIEW_FILE="$FINDINGS_DIR/manual_review/mfa_review.txt"
 : > "$MFA_REVIEW_FILE"
@@ -366,6 +354,7 @@ rm -f \
     "$FINDINGS_DIR/.summary.json.tmp" \
     "$NUCLEI_FAILURE_MARKER"
 : > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
+: > "$UPLOAD_CLEANUP_FILE"
 : > "$FINDINGS_DIR/manual_review/open_200_api.txt"
 : > "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
 : > "$FINDINGS_DIR/manual_review/external_chain_context.txt"
@@ -806,8 +795,9 @@ verify_sqli_poc() {
 verify_upload_poc() {
     local upload_url="$1"
     local base_url ts headers ext payload canary canary_path param dir probe_url resp
+    local observed_url observed_kind cleanup_reason
 
-    if ! scanner_probe_guard "POST" "$upload_url" "upload canary probe"; then
+    if ! scanner_probe_guard "POST" "$upload_url" "upload canary probe" "1"; then
         return 1
     fi
 
@@ -835,6 +825,8 @@ verify_upload_poc() {
 
     for param in file upload FileData userfile image; do
         curl -sk "${BB_AUTH_ARGS[@]}" -F "${param}=@${canary_path}" --max-time 10 "$upload_url" >/dev/null 2>&1 || true
+        observed_url=""
+        observed_kind="unobserved"
 
         for dir in "/" "/uploads/" "/files/" "/media/" "/temp/" "/images/" "/wp-content/uploads/"; do
             probe_url="${base_url}${dir}${canary}"
@@ -843,15 +835,38 @@ verify_upload_poc() {
             if printf '%s\n' "$resp" | grep -q "RCE-VAL-49"; then
                 log_crit "  [POC-RCE-CONFIRMED] Code execution verified: $probe_url"
                 echo "[RCE-POC] $probe_url" >> "$FINDINGS_DIR/upload/verified_rce_pocs.txt"
-                rm -f "$canary_path"
-                return 0
+                observed_url="$probe_url"
+                observed_kind="executed"
+                break
             fi
 
             if printf '%s\n' "$resp" | grep -q "RCE-VAL-"; then
                 log_vuln "  [POC-UPLOAD-ONLY] File saved but not executed: $probe_url"
                 echo "[UPLOAD-ONLY-POC] $probe_url" >> "$FINDINGS_DIR/upload/verified_upload_pocs.txt"
+                observed_url="$probe_url"
+                observed_kind="stored"
             fi
         done
+
+        if [ -n "$observed_url" ]; then
+            cleanup_reason="no verified remote delete contract"
+        else
+            observed_url="unknown"
+            cleanup_reason="remote object path was not observed"
+        fi
+        printf '%s\tstatus=cleanup_unverified\tendpoint=%s\tfield=%s\tfilename=%s\tobserved=%s\tkind=%s\treason=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$upload_url" \
+            "$param" \
+            "$canary" \
+            "$observed_url" \
+            "$observed_kind" \
+            "$cleanup_reason" >> "$UPLOAD_CLEANUP_FILE"
+
+        if [ "$observed_kind" = "executed" ]; then
+            rm -f "$canary_path"
+            return 0
+        fi
     done
 
     rm -f "$canary_path"
@@ -1566,6 +1581,9 @@ fi
 
 if [ ! -s "$FINDINGS_DIR/manual_review/unsafe_skipped.txt" ]; then
     rm -f "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
+fi
+if [ ! -s "$UPLOAD_CLEANUP_FILE" ]; then
+    rm -f "$UPLOAD_CLEANUP_FILE"
 fi
 if [ ! -s "$FINDINGS_DIR/manual_review/open_200_api.txt" ]; then
     rm -f "$FINDINGS_DIR/manual_review/open_200_api.txt"
