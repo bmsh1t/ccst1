@@ -3,10 +3,12 @@
 import json
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
+import runtime_state as runtime_state_module
 import runtime_phase_exec
 
 from tools.recon_adapter import ReconAdapter
@@ -92,6 +94,68 @@ def test_update_runtime_state_preserves_existing_file_when_atomic_replace_fails(
     assert loaded["mode"] == "scan_running"
     assert loaded["last_executed_workflow"] == "run_scan_started"
     assert not list(state_file.parent.glob(".session.json.*.tmp"))
+
+
+def test_corrupt_runtime_state_is_not_treated_as_empty_or_overwritten(tmp_path):
+    state_file = tmp_path / "state" / "target.com" / "session.json"
+    state_file.parent.mkdir(parents=True)
+    state_file.write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid runtime state JSON"):
+        load_runtime_state(tmp_path, "target.com")
+    with pytest.raises(ValueError, match="invalid runtime state JSON"):
+        update_runtime_state(tmp_path, "target.com", mode="agent")
+
+    assert state_file.read_text(encoding="utf-8") == "{broken"
+
+
+def test_concurrent_runtime_updates_preserve_disjoint_fields(tmp_path, monkeypatch):
+    original_load = runtime_state_module.load_runtime_state
+    first_read = threading.Event()
+    release_first = threading.Event()
+    second_read = threading.Event()
+    read_count = 0
+    read_count_lock = threading.Lock()
+
+    def coordinated_load(repo_root, target):
+        nonlocal read_count
+        payload = original_load(repo_root, target)
+        with read_count_lock:
+            read_count += 1
+            current_read = read_count
+        if current_read == 1:
+            first_read.set()
+            assert release_first.wait(timeout=5)
+        elif current_read == 2:
+            second_read.set()
+        return payload
+
+    monkeypatch.setattr(runtime_state_module, "load_runtime_state", coordinated_load)
+    workers = [threading.Thread(
+        target=update_runtime_state,
+        args=(tmp_path, "target.com"),
+        kwargs={"mode": "agent"},
+    )]
+    workers[0].start()
+    assert first_read.wait(timeout=5)
+
+    workers.append(threading.Thread(
+        target=update_runtime_state,
+        args=(tmp_path, "target.com"),
+        kwargs={"enrichment_tools": ["browser"]},
+    ))
+    workers[1].start()
+    assert not second_read.wait(timeout=0.1)
+    release_first.set()
+
+    for worker in workers:
+        worker.join(timeout=5)
+
+    assert all(not worker.is_alive() for worker in workers)
+    assert second_read.is_set()
+    loaded = original_load(tmp_path, "target.com")
+    assert loaded["mode"] == "agent"
+    assert loaded["enrichment_tools"] == ["browser"]
 
 
 def test_persisted_fields_whitelist_is_explicit():

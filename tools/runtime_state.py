@@ -301,6 +301,19 @@ def state_path(repo_root: str | Path, target: str) -> Path:
     return _state_dir(repo_root, target) / "session.json"
 
 
+@contextmanager
+def runtime_state_mutation_lock(repo_root: str | Path, target: str):
+    """Serialize one target's runtime-state read/modify/write sequence."""
+    lock_path = _state_dir(repo_root, target) / "locks" / "session.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _migrate_legacy_payload(payload: dict) -> dict:
     """Rename v1 fields and drop deprecated ones. Bumps schema_version."""
     migrated = dict(payload)
@@ -321,10 +334,12 @@ def load_runtime_state(repo_root: str | Path, target: str) -> dict:
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    except OSError as exc:
+        raise ValueError(f"unable to read runtime state {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid runtime state JSON {path}: {exc.msg}") from exc
     if not isinstance(payload, dict):
-        return {}
+        raise ValueError(f"runtime state {path} must contain one object")
     if payload.get("schema_version", 1) < SCHEMA_VERSION:
         return _migrate_legacy_payload(payload)
     return payload
@@ -409,37 +424,38 @@ def update_runtime_state(repo_root: str | Path, target: str, **fields) -> dict:
     `last_executed_workflow` for backward compatibility with existing callers.
     """
     resolved_target = canonical_target_value(target)
-    payload = load_runtime_state(repo_root, resolved_target)
+    with runtime_state_mutation_lock(repo_root, resolved_target):
+        payload = load_runtime_state(repo_root, resolved_target)
 
-    # Auto-rename legacy kwargs so existing call sites keep working.
-    for old, new in LEGACY_FIELD_RENAMES.items():
-        if old in fields and new not in fields:
-            fields[new] = fields.pop(old)
-        else:
-            fields.pop(old, None)
+        # Auto-rename legacy kwargs so existing call sites keep working.
+        for old, new in LEGACY_FIELD_RENAMES.items():
+            if old in fields and new not in fields:
+                fields[new] = fields.pop(old)
+            else:
+                fields.pop(old, None)
 
-    # Apply only whitelisted fields. Drop any deprecated/unknown ones quietly.
-    filtered = {k: v for k, v in fields.items() if k in PERSISTED_FIELDS}
+        # Apply only whitelisted fields. Drop any deprecated/unknown ones quietly.
+        filtered = {k: v for k, v in fields.items() if k in PERSISTED_FIELDS}
 
-    payload.update(
-        {
-            "schema_version": SCHEMA_VERSION,
-            "target": resolved_target,
-            "storage_key": target_storage_key(resolved_target),
-            **filtered,
-            "updated_at": _now_utc(),
-        }
-    )
-    # Final scrub: ensure no deprecated field survives in payload (e.g. from
-    # an older session.json that wasn't migrated yet at load time).
-    for field in DEPRECATED_FIELDS:
-        payload.pop(field, None)
-    for legacy in LEGACY_FIELD_RENAMES:
-        payload.pop(legacy, None)
+        payload.update(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "target": resolved_target,
+                "storage_key": target_storage_key(resolved_target),
+                **filtered,
+                "updated_at": _now_utc(),
+            }
+        )
+        # Final scrub: ensure no deprecated field survives in payload (e.g. from
+        # an older session.json that wasn't migrated yet at load time).
+        for field in DEPRECATED_FIELDS:
+            payload.pop(field, None)
+        for legacy in LEGACY_FIELD_RENAMES:
+            payload.pop(legacy, None)
 
-    path = state_path(repo_root, resolved_target)
-    _write_json_atomic(path, payload)
-    return payload
+        path = state_path(repo_root, resolved_target)
+        _write_json_atomic(path, payload)
+        return payload
 
 
 def _line_count(path: Path) -> int:

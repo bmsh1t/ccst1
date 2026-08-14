@@ -101,6 +101,23 @@ def test_state_read_error_is_structured_without_traceback(monkeypatch, tmp_path)
     assert "state" not in payload
 
 
+def test_corrupt_runtime_state_stops_bootstrap_without_overwrite(monkeypatch, tmp_path):
+    state_file = tmp_path / "state" / "example.test" / "session.json"
+    state_file.parent.mkdir(parents=True)
+    state_file.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(autopilot_bootstrap, "compare_runtime", _clean_runtime)
+    monkeypatch.setattr(autopilot_bootstrap, "build_capability_profile", _capabilities)
+
+    payload = autopilot_bootstrap.build_autopilot_bootstrap(
+        ["example.test"], repo_root=tmp_path, runtime_root=tmp_path / "runtime"
+    )
+
+    assert payload["action"] == "stop_state_error"
+    assert payload["error"]["type"] == "ValueError"
+    assert "invalid runtime state JSON" in payload["error"]["reason"]
+    assert state_file.read_text(encoding="utf-8") == "{broken"
+
+
 def test_runtime_read_error_is_structured_before_target_state(monkeypatch, tmp_path):
     monkeypatch.setattr(
         autopilot_bootstrap,
