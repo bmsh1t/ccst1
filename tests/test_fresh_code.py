@@ -8,6 +8,7 @@ Network calls are mocked via monkeypatch on _http_get.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -83,10 +84,11 @@ class TestFetchCtLogSubdomains:
 
 class TestExtractChangelogSnippets:
     def test_extracts_h2_headings(self):
-        html = "<html><h2>2026-05-01 Release</h2><p>foo</p><h2>2026-05-15 Patch</h2></html>"
+        recent = (datetime.now(timezone.utc) - timedelta(days=10)).date().isoformat()
+        html = f"<html><h2>{recent} Release</h2><p>foo</p><h2>{recent} Patch</h2></html>"
         snippets = _extract_changelog_snippets(html, days=90)
         # At least one snippet picked up with the heading text
-        assert any("2026-05" in s for s in snippets)
+        assert any(recent in s for s in snippets)
 
     def test_filters_old_dates(self):
         html = "<html><h2>2020-01-01 Old release</h2></html>"

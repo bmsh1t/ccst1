@@ -7,6 +7,34 @@ from tools import param_discovery
 from tools.auth_session import AuthSession
 
 
+def test_cli_missing_auth_file_stops_before_discovery(tmp_path, monkeypatch, capsys):
+    called = False
+
+    def fail_discovery(**_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("missing auth input must stop before target I/O")
+
+    missing = tmp_path / "missing-auth.json"
+    monkeypatch.setattr(param_discovery, "discover_parameters", fail_discovery)
+
+    rc = param_discovery.main([
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        "target.test",
+        "--url",
+        "https://target.test/search",
+        "--auth-file",
+        str(missing),
+    ])
+    captured = capsys.readouterr()
+
+    assert rc == 2
+    assert called is False
+    assert str(missing) in captured.err
+
+
 def test_param_discovery_rejects_off_target_before_tool(tmp_path, monkeypatch):
     called = False
 
