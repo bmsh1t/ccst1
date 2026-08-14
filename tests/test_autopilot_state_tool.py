@@ -230,6 +230,52 @@ def test_closure_finishes_only_for_gap_free_handoff_state():
     assert closure["reasons"] == []
 
 
+@pytest.mark.parametrize(
+    "legacy_state",
+    [
+        {"verdict": "SUBMIT"},
+        {"verdict": "CHAIN"},
+        {"verdict": "FINISH: Hunt complete."},
+        {"finish": True},
+    ],
+)
+def test_legacy_verdict_cannot_author_formal_closure(legacy_state):
+    closure = build_closure_projection(
+        {"next_action": "handoff", **legacy_state},
+        None,
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"] == ["coverage_missing"]
+
+
+def test_checkpoint_witness_verdict_cannot_author_formal_closure(tmp_path):
+    target = "target.com"
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True)
+    witness.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "kind": "autopilot_checkpoint_witness",
+            "target": target,
+            "verdict": "finish",
+            "can_claim_exhausted": True,
+        }),
+        encoding="utf-8",
+    )
+
+    closure = load_closure_projection(
+        str(tmp_path),
+        {"target": target, "resolved_target": target, "next_action": "handoff"},
+        max_lanes_reached=False,
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"] == ["coverage_missing"]
+
+
 def test_corrupt_checkpoint_witness_becomes_recovery_handoff(tmp_path):
     witness_path = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
     witness_path.parent.mkdir(parents=True)

@@ -10,6 +10,11 @@ evidence signal) before executing that lane. Do not load this whole file into
 every invocation. Every lane remains subject to the controller's Scope/Auth,
 evidence, checkpoint, Action Queue, loop-guard, and finish contracts.
 
+Add a dedicated lane only when shared runners cannot express the required input,
+observation, or evidence semantics and the execution is stable, repeatable, and
+reusable across targets. Keep one-off target cases as bounded AI-selected evidence
+actions. Ordinary Card changes do not require a new lane.
+
 ## State And Queue
 
 - `run_recon`: when `state.recon.cidr_continuation.status=pending`, continue once with

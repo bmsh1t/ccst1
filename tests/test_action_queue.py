@@ -26,6 +26,7 @@ from action_queue import (
     summarize_queue,
 )
 from coverage_matrix import load_matrix, mark_cell
+from finding_index import write_finding_index
 from runtime_state import runtime_phase_lock, update_runtime_state
 
 
@@ -83,7 +84,25 @@ def _checkpoint() -> dict:
     }
 
 
+def _snapshot_files(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 def test_ingest_checkpoint_persists_and_prioritizes(tmp_path):
+    finding_root = tmp_path / "findings" / "target.com"
+    ledger_root = tmp_path / "memory" / "evidence" / "target.com"
+    write_finding_index(finding_root, target="target.com")
+    ledger_root.mkdir(parents=True)
+    (ledger_root / "ledger.jsonl").touch()
+    owner_snapshots = {
+        root: _snapshot_files(root)
+        for root in (finding_root, ledger_root)
+    }
+
     result = ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
 
     assert result["stats"]["added"] == 2
@@ -93,6 +112,17 @@ def test_ingest_checkpoint_persists_and_prioritizes(tmp_path):
     queue = load_queue(tmp_path, "target.com")
     assert summarize_queue(queue)["active"] == 2
     assert (tmp_path / "state" / "target.com" / "action_queue.json").is_file()
+    assert {root: _snapshot_files(root) for root in owner_snapshots} == owner_snapshots
+
+    claimed = claim_next_action(tmp_path, "target.com")
+    resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=claimed["id"],
+        status="blocked",
+        result="Owner review deferred without a Finding or Evidence conclusion.",
+    )
+    assert {root: _snapshot_files(root) for root in owner_snapshots} == owner_snapshots
 
 
 def test_claim_is_atomic_and_resumes_running_before_new_queued_work(tmp_path):
