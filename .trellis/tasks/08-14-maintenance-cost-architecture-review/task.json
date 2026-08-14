@@ -1,0 +1,30 @@
+{
+  "id": "maintenance-cost-architecture-review",
+  "name": "maintenance-cost-architecture-review",
+  "title": "Review architecture and maintenance cost",
+  "description": "Review the current architecture and maintenance cost against HEAD, track resolved debt, and rank remaining incremental governance work.",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "read-only architecture and maintenance-cost review",
+  "package": null,
+  "priority": "P2",
+  "creator": "Codex",
+  "assignee": "Codex",
+  "createdAt": "2026-08-14",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "planning_class": "complex",
+    "dispatch_mode": "inline",
+    "subagents": "disabled-by-user"
+  }
+}
