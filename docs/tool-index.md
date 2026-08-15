@@ -243,7 +243,7 @@ When deprecating a tool: keep the row but prefix label with `(deprecated)`.
 
 ## Related References
 
-- `rules/hunting.md` — canonical state model + lane semantics
+- `rules/hunting.md` — canonical hunt semantics + lane routing
 - `rules/tool-ai-boundary.md` — AI judges, tools preserve evidence
 - `commands/autopilot.md` — autonomous loop execution contract
 - `docs/v4.4.2-autopilot-capability-gaps.md` — historical capability-gap notes

@@ -838,6 +838,51 @@ def test_checkpoint_reuses_surface_state_for_context_pack(tmp_path, monkeypatch)
     assert registry_loads == 1
 
 
+def test_checkpoint_reuses_action_queue_snapshot(tmp_path, monkeypatch):
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/users/1"])
+    _seed_capability_parent(tmp_path)
+    load_queue = checkpoint_module.load_action_queue
+    queue_loads = 0
+
+    def count_queue_loads(*args, **kwargs):
+        nonlocal queue_loads
+        queue_loads += 1
+        return load_queue(*args, **kwargs)
+
+    monkeypatch.setattr(checkpoint_module, "load_action_queue", count_queue_loads)
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
+
+    assert queue_loads == 1
+    assert any(item["type"] == "capability-chain-review" for item in checkpoint["next_action_queue"])
+
+
+def test_checkpoint_reuses_case_state_owner_snapshot(tmp_path, monkeypatch):
+    add_object(
+        tmp_path,
+        "target.com",
+        object_ref="order_123",
+        object_type="order",
+        object_id="123",
+        endpoint="https://api.target.com/orders/123",
+    )
+    case_state_globals = checkpoint_module.build_case_state_summary.__globals__
+    load_case_state = case_state_globals["load_case_state"]
+    state_loads = 0
+
+    def count_state_loads(*args, **kwargs):
+        nonlocal state_loads
+        state_loads += 1
+        return load_case_state(*args, **kwargs)
+
+    monkeypatch.setitem(case_state_globals, "load_case_state", count_state_loads)
+
+    summary = checkpoint_module._case_state_summary(tmp_path, "target.com")
+
+    assert state_loads == 1
+    assert summary["object_samples"][0]["object_ref"] == "order_123"
+
+
 def test_checkpoint_reuses_fresh_coverage_matrix(tmp_path, monkeypatch):
     _seed_recon(tmp_path, "target.com", ["https://target.com/api/users/1"])
     first = build_checkpoint(tmp_path, target="target.com")
@@ -3432,7 +3477,7 @@ def test_ranked_surface_proposal_includes_replay_draft_and_metadata():
     assert "--method \"POST\"" in skeleton
     assert "--vuln-class \"IDOR\"" in skeleton
     assert "--actor \"anonymous\"" in skeleton
-    assert "--variant \"context_prereq\"" in skeleton
+    assert "--variant \"baseline\"" in skeleton
     assert "--browser-observed" in skeleton
     assert "--state-changing" not in skeleton
     assert "--redline-checked" not in skeleton
@@ -3537,7 +3582,7 @@ def test_ranked_surface_auth_workflow_requires_exact_request_before_role_replay(
 
     action = _build_next_action_queue([ranked_text], "target.com")[0]
     skeleton = action["metadata"]["ledger_record_skeleton"]
-    assert "--variant \"exact_request_required\"" in skeleton
+    assert "--variant \"baseline\"" in skeleton
     assert "--actor \"anonymous\"" in skeleton
     assert "capture exact observed method" in skeleton
 
@@ -3579,8 +3624,8 @@ def test_ranked_surface_redirect_parameter_uses_parameter_behavior_first():
 
     action = _build_next_action_queue([ranked_text], "target.com")[0]
     skeleton = action["metadata"]["ledger_record_skeleton"]
-    assert "--vuln-class \"OpenRedirect\"" in skeleton
-    assert "--variant \"parameter_behavior\"" in skeleton
+    assert "--vuln-class \"Authz\"" in skeleton
+    assert "--variant \"replay\"" in skeleton
     assert "--actor \"anonymous\"" in skeleton
 
 
@@ -3616,7 +3661,7 @@ def test_ranked_surface_parent_prefix_uses_route_prefix_triage():
 
     action = _build_next_action_queue([ranked_text], "target.com")[0]
     skeleton = action["metadata"]["ledger_record_skeleton"]
-    assert "--variant \"route_prefix_triage\"" in skeleton
+    assert "--variant \"baseline\"" in skeleton
     assert "--actor \"anonymous\"" in skeleton
     assert "route prefix triage" in skeleton
 
@@ -3742,8 +3787,8 @@ def test_ranked_surface_placeholder_object_uses_case_state_object():
     action = _build_next_action_queue([ranked_text], "target.com")[0]
     skeleton = action["metadata"]["ledger_record_skeleton"]
     assert "--endpoint \"/rest/basket/6\"" in skeleton
-    assert "--object-scope \"basket_6\"" in skeleton
-    assert "--variant \"object_replay\"" in skeleton
+    assert "--object-scope \"own_object\"" in skeleton
+    assert "--variant \"id_swap\"" in skeleton
     assert "/rest/basket/NaN" not in skeleton
 
 
@@ -3984,7 +4029,7 @@ def test_ranked_surface_path_only_authz_uses_baseline_first():
     skeleton = action["metadata"]["ledger_record_skeleton"]
     assert '--actor "anonymous"' in skeleton
     assert '--object-scope "none"' in skeleton
-    assert '--variant "unauth_baseline"' in skeleton
+    assert '--variant "baseline"' in skeleton
 
 
 def test_checkpoint_surfaces_context_contradictions_without_queueing_them(tmp_path):

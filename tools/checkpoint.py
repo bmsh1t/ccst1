@@ -41,14 +41,14 @@ try:
     )
     from tools.autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint
     from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection
+    from tools.coverage_matrix import class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
     from tools.closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path
     from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
     from tools.structured_findings import format_validation_runner_candidate_lines
-    from tools.target_case_state import load_case_state, summary as build_case_state_summary
+    from tools.target_case_state import summary as build_case_state_summary
     from tools.target_memory import (
         read_json as read_target_memory_json,
         target_memory_mutation_lock,
@@ -72,14 +72,14 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint  # type: ignore
     from context_pack import build_context_pack  # type: ignore
-    from coverage_matrix import class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
+    from coverage_matrix import class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
     from closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path  # type: ignore
     from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
-    from target_case_state import load_case_state, summary as build_case_state_summary  # type: ignore
+    from target_case_state import summary as build_case_state_summary  # type: ignore
     from target_memory import (  # type: ignore
         read_json as read_target_memory_json,
         target_memory_mutation_lock,
@@ -1099,21 +1099,6 @@ def _case_state_summary(repo_root: Path | str, target: str) -> dict:
     避免 checkpoint 把丢失的 actor/session/object/backlog 误判为空状态。
     """
     payload = build_case_state_summary(repo_root, target)
-    state = load_case_state(repo_root, target)
-    objects = state.get("objects") if isinstance(state.get("objects"), dict) else {}
-    if isinstance(payload, dict):
-        payload["object_samples"] = [
-            {
-                "object_ref": str(ref),
-                "type": str(obj.get("type") or ""),
-                "object_id": str(obj.get("object_id") or ""),
-                "endpoint": str(obj.get("endpoint") or ""),
-                "owner_actor": str(obj.get("owner_actor") or ""),
-                "private_marker": str(obj.get("private_marker") or ""),
-            }
-            for ref, obj in list(objects.items())[:8]
-            if isinstance(obj, dict)
-        ]
     return payload if isinstance(payload, dict) else {}
 
 
@@ -1575,40 +1560,10 @@ def _ranked_surface_vuln_hint(entry: dict, url: str) -> str:
 
 
 def _canonical_vuln_for_ledger(vuln_hint: str) -> str:
-    value = str(vuln_hint or "").strip().lower().replace("_", "-")
-    mapping = {
-        "idor": "IDOR",
-        "authz": "Authz",
-        "auth": "Authz",
-        "access-control": "Authz",
-        "business-logic": "Authz",
-        "sqli": "SQLi",
-        "sql": "SQLi",
-        "sql-injection": "SQLi",
-        "xss": "XSS",
-        "cross-site-scripting": "XSS",
-        "ssrf": "SSRF",
-        "race": "Race",
-        "toctou": "Race",
-        "graphql": "GraphQL",
-        "oauth": "OAuth",
-        "jwt": "JWT",
-        "csrf": "CSRF",
-        "upload": "Upload",
-        "file-upload": "Upload",
-        "webhook": "Webhook",
-        "openredirect": "OpenRedirect",
-        "open-redirect": "OpenRedirect",
-        "redirect": "OpenRedirect",
-        "rce": "RCE",
-        "ssti": "RCE",
-        "command-injection": "RCE",
-        "path": "Path",
-        "lfi": "Path",
-        "path-traversal": "Path",
-        "xxe": "XXE",
-    }
-    return mapping.get(value, "Authz")
+    try:
+        return normalize_vuln_class(vuln_hint)
+    except ValueError:
+        return "Authz"
 
 
 def _case_state_has_role_replay_context(case_state: dict | None) -> bool:
@@ -1994,8 +1949,6 @@ def _ranked_surface_ledger_skeleton(
     auth_workflow_first = _ranked_surface_auth_workflow_first(url, js_methods)
     parameter_behavior_first = _ranked_surface_parameter_behavior_first(url, query_keys)
     route_prefix_first = _ranked_surface_route_prefix_first(state, url, query_keys)
-    if parameter_behavior_first:
-        vuln_class = "OpenRedirect"
     placeholder_guidance = _placeholder_object_replay_guidance(url, case_state, target)
     placeholder_object = _case_state_object_for_surface(url, case_state) if placeholder_guidance else {}
     role_replay_ready = (
@@ -2017,23 +1970,21 @@ def _ranked_surface_ledger_skeleton(
         else "unknown"
     )
     if placeholder_object.get("object_ref"):
-        object_scope = str(placeholder_object.get("object_ref") or "unknown")
+        object_scope = "own_object"
     if placeholder_object.get("endpoint"):
         endpoint = _normalise_endpoint_path(str(placeholder_object.get("endpoint") or ""))
     if placeholder_guidance:
-        variant = "concrete_object_required" if not placeholder_object.get("endpoint") else "object_replay"
-    elif baseline_first:
-        variant = "unauth_baseline"
-    elif context_prereq:
-        variant = "context_prereq"
+        variant = "id_swap" if placeholder_object.get("endpoint") else "baseline"
+    elif baseline_first or context_prereq:
+        variant = "baseline"
     elif browser_state_first:
         variant = "browser_observed"
     elif auth_workflow_first:
-        variant = "exact_request_required"
+        variant = "baseline"
     elif parameter_behavior_first:
-        variant = "parameter_behavior"
+        variant = "replay"
     elif route_prefix_first:
-        variant = "route_prefix_triage"
+        variant = "baseline"
     elif role_replay_ready:
         variant = "role_diff"
     else:
@@ -3114,9 +3065,13 @@ _ACTIVATABLE_ACTION_TYPES = {
 _ACTIVATION_EVIDENCE_ROOTS = {".private", "evidence", "findings", "recon", "reports"}
 
 
-def _capability_chain_review_item(repo: Path, target: str) -> dict:
+def _capability_chain_review_item(
+    repo: Path,
+    target: str,
+    queue: dict | None = None,
+) -> dict:
     """Project one unreviewed, evidence-backed primitive from the durable Queue."""
-    queue = load_action_queue(repo, target)
+    queue = queue if queue is not None else load_action_queue(repo, target)
     actions = [item for item in queue.get("actions", []) if isinstance(item, dict)]
     reviews = [item for item in actions if str(item.get("type") or "") == "capability-chain-review"]
     if any(str(item.get("status") or "queued") in ACTION_QUEUE_ACTIVE_STATUSES for item in reviews):
@@ -3576,12 +3531,18 @@ def _sql_matrix_queue_items(state: dict, target: str) -> list[dict]:
     return items
 
 
-def _filter_final_action_queue_items(repo_root: Path, target: str, items: list[dict]) -> list[dict]:
+def _filter_final_action_queue_items(
+    repo_root: Path,
+    target: str,
+    items: list[dict],
+    existing: dict | None = None,
+) -> list[dict]:
     """Remove checkpoint actions already closed in persistent action_queue state."""
-    try:
-        existing = load_action_queue(repo_root, target)
-    except Exception:  # pragma: no cover - checkpoint should stay best-effort
-        return items
+    if existing is None:
+        try:
+            existing = load_action_queue(repo_root, target)
+        except Exception:  # pragma: no cover - checkpoint should stay best-effort
+            return items
 
     def is_final_for_checkpoint(action: dict) -> bool:
         """Return whether a persisted action should suppress checkpoint work.
@@ -4025,13 +3986,15 @@ def build_checkpoint(
         target=resolved_target,
         context=context,
     )
-    chain_review = _capability_chain_review_item(repo, resolved_target)
+    queue_snapshot = load_action_queue(repo, resolved_target)
+    chain_review = _capability_chain_review_item(repo, resolved_target, queue_snapshot)
     if chain_review:
         next_action_queue.append(chain_review)
     next_action_queue = _filter_final_action_queue_items(
         repo,
         resolved_target,
         next_action_queue,
+        queue_snapshot,
     )
     knowledge_signal_item = _knowledge_signal_review_item(
         context,
@@ -4043,6 +4006,7 @@ def build_checkpoint(
             repo,
             resolved_target,
             [knowledge_signal_item],
+            queue_snapshot,
         ))
     dead_ends = _dead_end_proposals(state, gaps)
     runtime_wait_action = str(state.get("next_action") or "")

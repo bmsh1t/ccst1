@@ -40,6 +40,8 @@ Bootstrap emits one `state.lane_contract` pointer. Before executing a named lane
 `docs/autopilot-lanes.md`; it is execution detail, not a second controller. Every lane still
 inherits this command's Scope/Auth, evidence, checkpoint, Action Queue, loop-guard, and finish
 contracts.
+Before active hunting begins, load `rules/hunting.md` for its canonical hunting
+semantics. The default context pack intentionally does not load this rule.
 ## State Consumption Loop
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT

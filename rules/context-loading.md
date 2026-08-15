@@ -25,7 +25,6 @@ skills/runtime-protocol.md
 knowledge/index.md
 rules/red-lines.md
 rules/coverage-gate.md
-rules/tool-ai-boundary.md
 ```
 
 如果 `memory/goals/active.json` 不存在，先根据用户当前目标建立或询问目标上下文。
@@ -45,6 +44,7 @@ rules/tool-ai-boundary.md
 | Race / 并发状态差异 | `knowledge/cards/race-conditions.md` |
 | 连续低价值方向 | `knowledge/cards/dead-ends.md` |
 | 证据命中深度 Web 路由 | `rules/playbook-router.md` |
+| 工具编排或 AI 优先级判断 | `rules/tool-ai-boundary.md` |
 | Candidate 验证 | `skills/triage-validation/SKILL.md`, `rules/reporting.md` |
 
 ## 默认不加载

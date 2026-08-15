@@ -552,7 +552,18 @@ def test_vuln_scanner_keeps_scan_incomplete_when_nuclei_fails(tmp_path):
     shim_dir.mkdir()
     (live_dir / "urls.txt").write_text("https://nuclei-failure.example:9\n", encoding="utf-8")
     nuclei_shim = shim_dir / "nuclei"
-    nuclei_shim.write_text("#!/bin/sh\nexit 124\n", encoding="utf-8")
+    nuclei_shim.write_text(
+        "#!/bin/sh\n"
+        "output=''\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = '-output' ]; then shift; output=\"$1\"; fi\n"
+        "  shift\n"
+        "done\n"
+        "[ -z \"$output\" ] || printf '%s\\n' "
+        "'[CVE-test] [http] [high] https://nuclei-failure.example:9/test' > \"$output\"\n"
+        "exit 124\n",
+        encoding="utf-8",
+    )
     nuclei_shim.chmod(0o755)
 
     env = os.environ.copy()
@@ -579,7 +590,11 @@ def test_vuln_scanner_keeps_scan_incomplete_when_nuclei_fails(tmp_path):
     assert result.returncode != 0
     assert "Nuclei lane failed" in result.stdout
     assert "scan remains incomplete" in result.stdout
+    assert "CVEs: incomplete" in result.stdout
+    assert "CVEs: clean" not in result.stdout
     assert not (findings_dir / "summary.json").exists()
+    index = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    assert any(item["url"] == "https://nuclei-failure.example:9/test" for item in index["findings"])
 
 
 def test_vuln_scanner_requires_finding_index_before_completion(tmp_path):

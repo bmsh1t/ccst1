@@ -98,22 +98,11 @@ When a bug class lives behind login, keep authenticated coverage active. Use `se
 audit artifacts to diff attacker vs victim behavior. Reference `docs/auth-sessions.md` and
 `docs/auth.example.json`.
 
-### Finding State Model
+### Finding Lifecycle
 
-Use this model. `rules/hunting.md` is canonical; this skill keeps the execution reminder:
-
-```text
-Lead -> Signal -> Candidate -> Validated Finding -> Report
-```
-
-- **Lead**: plausible endpoint, source-intel hypothesis, anomaly, or chain seed with a next evidence action.
-- **Signal**: observed behavior that might matter but needs replay, victim proof, or impact confirmation.
-- **Candidate**: enough concrete evidence exists to run `/triage` or `/validate`.
-- **Validated Finding**: passed the 7-Question Gate and pre-submission gates.
-- **Report**: human-reviewed report draft or submission package.
-
-The gates are pre-report controls. Do not use them to erase raw hunt leads. Demote,
-rotate, or drop items with an explicit reason.
+`rules/coverage-gate.md` owns lifecycle states and transition reasons. Preserve
+exploration leads with a next evidence action; `/triage` and `/validate` decide
+whether a Candidate is report-ready.
 
 ### Target Isolation
 
@@ -167,7 +156,7 @@ When a target has patterned paths, filenames, API prefixes, parameters, subdomai
 observed naming pattern -> bounded target wordlist -> read-only surface baseline -> structured record/config extraction -> secondary recon or secret Candidate
 ```
 
-Do not convert this lane directly into password brute force, cloud-console import, server takeover, or real infrastructure enumeration. Password testing is allowed as a separate controlled `/spray` / `credential-attack` workflow when the operator or `/autopilot` selects that lane under `rules/red-lines.md`.
+Do not convert this lane directly into password brute force, cloud-console import, server takeover, or real infrastructure enumeration. Password testing is a separate `/spray` / `credential-attack` workflow when current evidence selects that lane.
 
 ### Phase 2: Learn
 

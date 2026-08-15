@@ -52,12 +52,10 @@ python3 tools/evidence_ledger.py record \
   --evidence-ref recon/target.com/browser/xhr_endpoints.txt:1
 ```
 
-状态改变动作必须先过红线检查。HTTP method 本身不是红线：POST 常用于只读查询、
-搜索、GraphQL query 和浏览器观察到的 API replay。只有具体动作会写入/删除/
-改变真实业务状态时，才需要按红线处理，例如 PUT/PATCH/DELETE、GraphQL mutation、
-admin action、payment action、upload canary、OTP/MFA 尝试、SAML 伪造提交等。
-这类动作只有使用测试资源、可回滚、低频且符合 `rules/red-lines.md` 时，才可以
-记录为已测试：
+会改写真实数据、配置或业务状态的动作必须先过红线检查。HTTP method 本身不是红线：
+POST 常用于只读查询、搜索、GraphQL query 和浏览器观察到的 API replay；OTP/MFA、
+SAML 等也只按具体动作效果判断。自动流程对实际会改写状态的 `PUT`、`PATCH`、`DELETE`
+保留 action gate，记录其验证结果前必须已有 `rules/red-lines.md` 决策。
 
 ```bash
 python3 tools/evidence_ledger.py record \
@@ -69,7 +67,7 @@ python3 tools/evidence_ledger.py record \
   --object-scope own \
   --variant role_diff \
   --result blocked_redline \
-  --notes "真实角色修改有破坏性，保持 Lead，需测试组织授权"
+  --notes "真实角色修改有破坏性，保持 Lead，需可清理测试资源"
 ```
 
 如果安全完成了状态改变类验证，必须加：

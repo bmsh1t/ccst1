@@ -38,6 +38,7 @@ def test_vuln_normalization_unknown_and_generic_fail_open():
     assert canonical_vuln_class("deserialization") == "RCE"
     assert canonical_vuln_class("nosqli") == "SQLi"
     assert canonical_vuln_class("rfi") == "Path"
+    assert canonical_vuln_class("open-redirect") == "Authz"
     assert canonical_vuln_class("generic") == ""
     assert canonical_vuln_class("totally-unknown") == ""
     assert canonical_vuln_class("") == ""

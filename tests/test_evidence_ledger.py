@@ -447,12 +447,13 @@ def test_actor_matrix_reports_missing_then_covered_checks(tmp_path):
     assert second["actor_matrix"]["gap_count"] < first["actor_matrix"]["gap_count"]
 
 
-def test_state_changing_record_without_redline_check_is_flagged(tmp_path):
+@pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE"])
+def test_state_changing_record_without_redline_check_is_flagged(tmp_path, method):
     entry = record_entry(
         tmp_path,
         target="target.com",
         endpoint="/api/accounts/42/role",
-        method="PATCH",
+        method=method,
         vuln_class="Authz",
         actor="low_role",
         object_scope="own",
@@ -466,7 +467,7 @@ def test_state_changing_record_without_redline_check_is_flagged(tmp_path):
         target="target.com",
         focus_endpoints=["/api/accounts/42/role"],
         vuln_classes=["Authz"],
-        method="PATCH",
+        method=method,
     )
 
     assert entry["result"] == "blocked_redline"

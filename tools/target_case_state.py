@@ -778,8 +778,13 @@ def _recovery_next_action(item: dict[str, Any]) -> str:
     return "capture the missing prerequisite before creating a fresh validation backlog"
 
 
-def next_action(repo_root: str | Path, target: str) -> dict[str, Any]:
-    state = load_case_state(repo_root, target)
+def next_action(
+    repo_root: str | Path,
+    target: str,
+    *,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    state = state if state is not None else load_case_state(repo_root, target)
     active = [
         item for item in state.get("validation_backlog", [])
         if str(item.get("status") or "pending") in ACTIVE_BACKLOG_STATUSES
@@ -970,11 +975,12 @@ def complete_backlog(
 
 def summary(repo_root: str | Path, target: str) -> dict[str, Any]:
     state = load_case_state(repo_root, target)
-    next_item = next_action(repo_root, target)
+    next_item = next_action(repo_root, target, state=state)
     pending = [
         item for item in state.get("validation_backlog", [])
         if str(item.get("status") or "pending") in ACTIVE_BACKLOG_STATUSES
     ]
+    objects = state.get("objects") if isinstance(state.get("objects"), dict) else {}
     return {
         "target": state.get("target"),
         "target_key": state.get("target_key"),
@@ -984,6 +990,18 @@ def summary(repo_root: str | Path, target: str) -> dict[str, Any]:
         "open_hypotheses": len([h for h in state.get("hypotheses", []) if h.get("status") == "open"]),
         "pending_validation_backlog": len(pending),
         "top_next_action": next_item,
+        "object_samples": [
+            {
+                "object_ref": str(ref),
+                "type": str(obj.get("type") or ""),
+                "object_id": str(obj.get("object_id") or ""),
+                "endpoint": str(obj.get("endpoint") or ""),
+                "owner_actor": str(obj.get("owner_actor") or ""),
+                "private_marker": str(obj.get("private_marker") or ""),
+            }
+            for ref, obj in list(objects.items())[:8]
+            if isinstance(obj, dict)
+        ],
     }
 
 

@@ -1,6 +1,7 @@
 # Hunting Rules
 
-These rules are always active. Breaking them wastes time and reduces payout rate.
+These are the canonical hunting semantics. Load this rule for `/hunt`,
+`/autopilot`, or a hunting Skill; it is not part of every default context pack.
 
 `rules/red-lines.md` has higher priority for concrete side-effect decisions,
 not for authorization, ownership, or target-scope adjudication. Do not perform
@@ -69,14 +70,8 @@ Core discipline:
 
 Browser-state work:
 
-1. Use chrome-devtools MCP for deep live DevTools, Network, Console, DOM,
-   performance, and runtime inspection.
-2. Use Playwright MCP for page interaction, authenticated sessions, forms,
-   screenshots, and multi-actor workflows.
-3. Import MCP artifacts with
-   `python3 tools/browser_mcp_import.py --target <target> --network-json <file> --url <page-url>`
-   so `recon/<target>/browser/`, `/surface`, `/checkpoint`, and `/autopilot`
-   can continue using the same browser-observed API surface.
+Use `CLAUDE.md#tool-and-mcp-routing` for tool choice. `commands/hunt.md` and
+`docs/autopilot-lanes.md` own entrypoint-specific capture and artifact import.
 
 Value-first coverage model:
 
@@ -112,42 +107,17 @@ Value-first coverage model:
 
 Completeness discipline:
 
-- Before finish, handoff, or "no finding" summaries, inspect coverage matrix
-  Evidence Ledger state, and Target Case State.
-- For high-value access-control or workflow surfaces, do not stop at
-  owner/baseline. Consider anonymous, owner, peer, low_role, cross_tenant,
-  method/version/token/origin differences.
-- If actor/object/replay gaps remain, do not claim complete access-control or
-  workflow coverage. State the remaining gaps and next safe evidence action.
-- If `tools/target_case_state.py summary --target <target> --json` shows active
-  validation backlog, either run/resolve the recommended case-state action or
-  state the AI override reason and write back a newer hypothesis/backlog.
-- If case state is missing or stale, do not stop; continue discovery through
-  surface/browser/JS/source/recon evidence and create or enrich case state only
-  when it improves the next replay.
-- If object IDs are visible but case state is empty, run
-  `python3 tools/case_state_seed.py --target <target> --json` and review the
-  generated add-actor/add-object/add-backlog drafts.
-- If a candidate appears, move to validation. Do not call it a finding until
-  validation gates pass.
-- If no candidate appears, report the state precisely as lead, signal,
-  dead-end, blocked, not-applicable, or unknown. Do not inflate confidence.
+Before finish, handoff, or "no finding" summaries, apply
+`rules/coverage-gate.md`. In particular, actor/object/replay gaps remain open;
+consider anonymous, owner, peer, low_role, cross_tenant, and relevant
+method/version/token/origin differences. Target Case State improves continuity but never blocks discovery; continue without treating missing case state as a blocker.
 
 Validation discipline:
 
-- Prove practical impact with the lowest-risk evidence that answers the
-  question.
-- Prefer read-only diffs, test resources, dry-run/preview/validate-only modes,
-  minimal replay, and A/B role comparison.
-- Prefer `validation_runner.py ... --from-case-state` for actor/object-sensitive
-  Authz/IDOR/business-logic validation when case state is ready; if it is not
-  ready, collect the missing actor/session/object/private-marker evidence or
-  use a manual fallback without treating missing case state as a blocker.
-- State-changing actions, funds, orders, permissions, members, deletion,
-  notifications, webhooks, CI/CD, and production configuration changes must
-  pass `rules/red-lines.md` first.
-- Do not "fully exploit" by destroying, polluting, deleting, charging,
-  refunding, transferring, notifying, or irreversibly changing target data.
+Use `rules/red-lines.md` for side-effect decisions and
+`skills/triage-validation/SKILL.md` for candidate proof. Prefer the lowest-risk
+evidence that answers the question; do not let missing case state block an
+otherwise valid discovery path.
 
 Bounty mindset:
 
@@ -165,9 +135,11 @@ This tool is intended to operate directly on the current task's supplied target
 set. Treat the target list from the current command as the active execution
 context.
 
-This file is the canonical source for shared hunting semantics: the finding
-state model, target-isolation defaults, and CTF/lab lane handling. Commands,
-agents, and skills may summarize it, but should not fork these meanings.
+This file is the canonical source for hunt-specific exploration semantics:
+target-isolation defaults, CTF/lab handling, prioritization, and scanner
+completion. `rules/coverage-gate.md` owns coverage states and completion;
+`rules/red-lines.md` owns side-effect decisions; `rules/reporting.md` owns
+report quality.
 
 Operate as a security researcher / vulnerability hunter, not as a generic
 compliance auditor:
@@ -208,15 +180,7 @@ user turn says so. Only the current user turn can exclude a lane.
 
 ---
 
-## 1. USE THE PROVIDED TARGET SET DIRECTLY
-
-Treat the supplied target, IP, CIDR, or host list as the active execution
-target set.
-
-Optional helpers such as `/scope`, target profiles, or `scope_snapshot.json`
-may still be useful as notes, but they are not execution gates.
-
-## 2. NEVER HUNT THEORETICAL BUGS
+## 1. Practical Hunt Loop
 
 > "Can an attacker do this RIGHT NOW, against a real user, causing real harm?"
 > If NO — do not write it up as a finding. During exploration, keep it only
@@ -230,40 +194,19 @@ NOT a bug: "Could theoretically allow..."
 NOT a bug: "Wrong but no practical impact"
 NOT a bug: "3+ preconditions all simultaneously required"
 NOT a bug: Dead/unreachable code
-NOT a bug: SSRF with DNS callback only
+NOT a finding: SSRF with DNS callback only
 ```
 
-## 3. KEEP EXPLORATION SEPARATE FROM VALIDATION
+Keep exploration separate from validation: preserve a plausible Lead or Signal
+only with one concrete next evidence action. The lifecycle names and transition
+requirements are defined by `rules/coverage-gate.md`; `/validate` and
+`rules/reporting.md` decide whether a Candidate becomes report-ready.
 
-Use this state model consistently:
+Target profiles, target-history notes, target-note snapshots, ownership hints,
+rate limits, cooldowns, and method notes are advisory context. They can affect
+ordering and replay strategy, but never whether a hunt may continue.
 
-```text
-Lead -> Signal -> Candidate -> Validated Finding -> Report
-```
-
-- **Lead**: a plausible endpoint, code path, anomaly, or source-intel
-  hypothesis. Keep it only with the next evidence action.
-- **Signal**: observed behavior that might matter, but still needs replay,
-  impact, or victim proof.
-- **Candidate**: enough concrete evidence exists to run `/triage` or
-  `/validate`.
-- **Validated Finding**: the 7-Question Gate and all 4 pre-submission gates
-  pass.
-- **Report**: a human-reviewed draft or submission package.
-
-The 7-Question Gate and 4 gates are pre-report/pre-submit validation controls.
-Do not use them as an exploration kill-switch for raw leads, anomalies,
-hypotheses, or chain seeds. During hunt, preserve plausible leads with their
-next evidence action; before `/report`, reject or downgrade any candidate that
-does not pass validation.
-
-## 4. KEEP TARGET NOTES ADVISORY
-
-Target profiles, target-history notes, target-note snapshots, ownership hints, rate
-limits, cooldowns, and method notes are advisory context. They can influence
-ordering and replay strategy, but not whether execution may continue.
-
-## 5. 5-MINUTE LOW-SIGNAL TRIAGE
+## 2. Low-Signal Rotation
 
 If a target surface shows nothing interesting after 5 minutes, treat that as
 low signal for the current timebox, not proof that the surface has no attack
@@ -280,7 +223,7 @@ Reopen immediately when fresh browser/XHR traffic, source/JS routes,
 authenticated workflow, API docs, object IDs, WebSocket/GraphQL, or business
 context creates a concrete next evidence action.
 
-## 6. AUTOMATION COLLECTS AND REPLAYS; AI DECIDES
+## 3. Automation Collects; AI Decides
 
 Use automation for repeatable collection, normalization, raw-evidence capture,
 and bounded replay/diff. Use AI reasoning for hypothesis generation, surface
@@ -302,7 +245,7 @@ Scanner and replay output is evidence, not an attack-surface verdict.
   不表示历史 URL 全量扫描、tested-clean、目标安全或攻击面耗尽。
   killed/stopped/timeout/non-zero 都是 incomplete，不得解释为零发现或 scanner complete。
 
-## 7. IMPACT-FIRST HUNTING
+## 4. Hunt Priorities
 
 Ask: "What's the worst thing that could happen if auth was broken here?"
 
@@ -311,30 +254,12 @@ feature if it can connect to auth, roles, objects, payments, admin/config,
 exports, integrations, or another chain step.
 If the answer is "admin access, PII exfil, fund theft" → hunt there.
 
-## 8. HUNT LESS-SATURATED BUG CLASSES
+Map crown jewels and understand the business domain before expanding breadth.
+Evidence selects the family; no generic competition heuristic creates a skip.
+Recent release or commit evidence may raise priority, but freshness alone is
+not a finding.
 
-Bug bounty / VAPT prioritization only:
-
-High competition (deprioritize unless target-specific): XSS, SSRF basics, open redirect alone
-Low competition: Cache poisoning, race conditions, business logic, HTTP smuggling, CI/CD
-
-This is an ordering heuristic, not a persistent exclusion. For local / CTF / lab targets,
-do not add skips because a bug class is common, noisy, or was skipped on a
-previous target.
-
-## 9. DEPTH OVER BREADTH
-
-One target deeply understood > ten targets shallowly tested.
-
-```
-Read disclosed reports on demand when target, technology, or workflow evidence
-suggests they can change the current hypothesis; do not block hunting on an
-arbitrary report count
-Understand the business domain
-Map the crown jewels (what would hurt the company most?)
-```
-
-## 10. THE SIBLING RULE
+### Sibling Rule
 
 Check a bounded set of evidence-linked siblings. Derive them from a shared
 handler, object/action family, browser traffic, JS/source route, or API docs;
@@ -342,7 +267,7 @@ do not brute-force every guessed sibling merely because its name is plausible.
 
 This rule explains 30% of all paid IDOR/auth bugs.
 
-## 11. A→B SIGNAL METHOD
+### A-to-B Signal Method
 
 When you confirm bug A → stop → hunt for B and C before writing the report.
 
@@ -353,108 +278,36 @@ Time-box: 20 minutes on B. If not confirmed, keep B as a chain candidate only
 when it has a concrete next evidence action, report A only if A is validated,
 and move on.
 
-## 12. NEW == UNREVIEWED
-
-Features < 30 days old have the lowest security maturity.
-Monitor GitHub commits. Hunt new features first.
-
-## 13. PAYMENT LANE REQUIRES SIDE-EFFECT CONTROL, NOT DEFAULT SKIP
+### Workflow Surfaces
 
 Payment, billing, refund, credit, wallet, coupon, gift-card, and fund-transfer
 workflows are high-value attack surfaces. Explore their objects, authorization,
 state transitions, previews, calculations, and test-owned reversible flows.
-Require the applicable red-line confirmation before a real charge, refund,
-transfer, balance mutation, or other irreversible side effect; do not turn that
-side-effect gate into a blanket skip of the lane.
+For any state-changing proof, use `rules/red-lines.md`; it is not a blanket
+skip of the lane.
 
-## 14. 20-MINUTE ROTATION RULE
+### Rotation
 
 Every 20 min ask: "Am I making progress?"
 No → rotate to next endpoint, subdomain, or vuln class.
 Fresh context finds more bugs than brute force.
 
-## 15. BUSINESS IMPACT > VULN CLASS
+Ask for business impact before severity. Run `/validate` before report writing;
+report quality is owned by `rules/reporting.md`.
 
-Clickjacking is usually $0 but MetaMask paid $120K for one.
-Ask: "What's the business impact?" before estimating severity.
+## 5. Specialist Routing
 
-## 16. VALIDATE BEFORE WRITING
+- Mobile package or mobile API evidence: `skills/mobile-pentest/SKILL.md`.
+- Public-repository or workflow evidence: `skills/cicd-security/SKILL.md` and
+  `knowledge/cards/cicd-trust-boundaries.md`.
+- SSO, SAMLResponse, RelayState, NameID, ACS, or XML auth evidence:
+  `skills/web2-vuln-classes/SKILL.md` and
+  `knowledge/cards/auth-sso-token-edge-cases.md`; duplicate Assertion or signed
+  versus consumed-object evidence also loads
+  `knowledge/cards/signature-scope-mismatch.md`.
+- Credential material: `commands/secrets-hunt.md`; it remains a Signal until
+  target ownership, usable permission, and concrete impact are proven.
 
-Run /validate before starting a report. Gate 0 is 30 seconds.
-It takes 30 seconds to reject a bad report candidate. A report takes 30
-minutes to write. This strictness protects `/report`; it must not erase useful
-exploration leads that still have a clear next evidence step.
-
-## 17. CREDENTIAL LEAKS NEED EXPLOITATION PROOF
-
-Finding an API key = Signal, not a report by itself.
-Proving a target-owned key is valid and creates real security impact can become
-Medium/High, depending on usable permissions and target impact.
-
-Do minimal validity/permission proof, then decide whether it is a Candidate. Do not
-treat "leakage risk" as the objective; hunt for a concrete vulnerability and
-impact path.
-
-## 18. MOBILE = DIFFERENT ATTACK SURFACE
-
-Mobile apps expose endpoints that the web app doesn't. Always decompile the APK/IPA when the app or mobile API is part of the supplied target context:
-- Hardcoded secrets in `strings` output that web recon never finds
-- API endpoints in decompiled source that aren't in the web JS
-- Deep-link handlers with injection points
-- WebView `addJavascriptInterface` = JS→Java bridge (RCE on API < 17)
-- Certificate pinning bypass via Frida/objection → MitM all traffic
-
-```bash
-# Quick check without rooted device
-apktool d target.apk -o target_src
-grep -rn "api_key\|secret\|password\|token\|Authorization\|Bearer" target_src/ --include="*.smali" --include="*.xml"
-grep -rn "https://" target_src/ | grep -v "schema\|xmlns\|android\|google" | head -50
-```
-
-## 19. CI/CD IS ATTACK SURFACE
-
-GitHub Actions / GitLab CI pipelines often have critical secrets. Check BEFORE writing any report on a target with public repos.
-
-```bash
-# Clone target's public GitHub org repos, then:
-find . -name "*.yml" -path "*/.github/workflows/*" | xargs grep -l "pull_request_target\|secrets\."
-
-# Key dangerous patterns:
-# 1. pull_request_target + checkout of PR branch = attacker code runs with repo secrets
-# 2. ${{ github.event.issue.title }} in run: block = expression injection = secret exfil
-# 3. artifact download without hash check = artifact poisoning
-# 4. self-hosted runners = escape to org infrastructure
-```
-
-**Expression injection validation posture:**
-
-Do not default to secret exfiltration. First prove the workflow command-injection
-or expression-injection boundary with non-sensitive output, a controlled marker,
-or a dry-run/test repository when available. Escalate to secret or privileged
-workflow proof only when lower-risk evidence cannot establish impact, the current
-target context allows it, and `rules/red-lines.md` passes.
-
-If workflow command execution with access to org secrets is proven → likely
-Critical impact. Keep the PoC minimal, preserve logs, and avoid leaking real
-secret values unless that is the only necessary proof path.
-
-## 20. SAML / SSO = HIGHEST AUTH BUG DENSITY
-
-SAML implementations are notoriously buggy. If target uses SSO, always test:
-- XML signature wrapping (XSW) — valid signature, injected assertion
-- Comment injection — `admin<!---->@company.com` = sign as admin
-- XML external entity in SAML assertion
-- Signature stripping (remove signature, server still accepts)
-- NameID manipulation — change email in unsigned field
-
-```bash
-# Capture SAML assertion (base64 decode from SAMLResponse parameter)
-echo "SAMLResponse_VALUE" | base64 -d | xmllint --format -
-
-# Test comment injection in NameID
-# Change: <NameID>user@company.com</NameID>
-# To:     <NameID>admin<!---->@company.com</NameID>
-# Or:     <NameID Format="...">admin@company.com</NameID> (duplicate element)
-```
-
-> SAML bugs frequently pay High–Critical because they enable SSO bypass across the entire platform.
+Specialist Skills and knowledge cards own procedures. A routing signal is not a
+finding; keep it as a Lead or Signal until the applicable validation contract
+is satisfied.

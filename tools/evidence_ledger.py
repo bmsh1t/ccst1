@@ -478,7 +478,7 @@ def record_entry(
                 missing_fields=identity_result.missing_fields,
                 conflicts=conflicts,
             )
-    requires_redline = method_u == "PATCH" and bool(entry["state_changing"])
+    requires_redline = method_u in {"PUT", "PATCH", "DELETE"} and bool(entry["state_changing"])
     if requires_redline and not entry["redline_checked"] and normalized_result in COVERING_RESULTS:
         entry["requested_result"] = normalized_result
         entry["result"] = "blocked_redline"

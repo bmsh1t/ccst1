@@ -26,10 +26,9 @@ skills/security-arsenal/references/
 为什么某个外部模式没有吸收，读取 `docs/ctf-web-distillation-audit.md`，不要把它
 当作运行时 playbook。
 
-弱口令爆破不是绝对红线，但不走本 Web playbook router 的 payload 利用路径；
-当登录面是合理突破口或其他高价值 lane 缺乏进展时，转
-`skills/credential-attack/` / `/spray` 受控口令流程，并按
-`rules/red-lines.md` 的自主选择条件、限速、审计和停止条件执行。
+弱口令测试不是红线，也不走本 Web playbook router 的通用验证输入路径。出现
+有价值的登录面时，按证据转 `skills/credential-attack/` 或 `/spray`；该 lane 自己
+负责选择条件、执行节奏、审计和停止条件。
 
 ## Signal → Reference → Tool
 

@@ -18,6 +18,9 @@ def test_evidence_ledger_command_documents_summary_and_record():
     assert "memory/evidence/<target>/ledger.jsonl" in text
     assert "Actor Matrix" in text
     assert "rules/red-lines.md" in text
+    assert "OTP/MFA、\nSAML 等也只按具体动作效果判断" in text
+    assert "实际会改写状态的 `PUT`、`PATCH`、`DELETE`" in text
+    assert "测试组织授权" not in text
 
 
 def test_checkpoint_reads_evidence_ledger_before_handoff():

@@ -1035,6 +1035,7 @@ def test_classic_hunt_target_scan_only_skips_enrichment_and_runs_scan(monkeypatc
 
     assert result["recon"] is False
     assert result["scan"] is True
+    assert result["scan_attempted"] is True
     assert "enrichment" not in result
     assert calls == [("scan", domain)]
     assert result["reports"] == 0
@@ -1043,6 +1044,33 @@ def test_classic_hunt_target_scan_only_skips_enrichment_and_runs_scan(monkeypatc
     assert runtime_updates[0][1]["last_completed_step"] == "run_scan_started"
     assert runtime_updates[-1][1]["mode"] == "scan_only"
     assert runtime_updates[-1][1]["last_completed_step"] == "run_vuln_scan"
+
+
+def test_classic_hunt_target_scan_failure_is_visible(monkeypatch, tmp_path, capsys):
+    domain = "example.com"
+    runtime_updates = []
+    (tmp_path / "recon" / domain).mkdir(parents=True)
+
+    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
+    monkeypatch.setattr(hunt, "run_vuln_scan", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(hunt, "_update_target_profile", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hunt, "_auto_log_session_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hunt,
+        "_persist_runtime_state",
+        lambda target, **kwargs: runtime_updates.append((target, kwargs)),
+    )
+
+    result = hunt.hunt_target(domain, scan_only=True)
+    hunt.print_dashboard([result])
+    output = capsys.readouterr().out
+
+    assert result["success"] is False
+    assert result["scan"] is False
+    assert result["scan_attempted"] is True
+    assert runtime_updates[-1][1]["mode"] == "scan_failed"
+    assert runtime_updates[-1][1]["last_completed_step"] == "run_vuln_scan_failed"
+    assert "Scan: Failed" in output
 
 
 def test_classic_hunt_target_scan_exception_closes_running_marker(monkeypatch, tmp_path):
@@ -1073,8 +1101,8 @@ def test_classic_hunt_target_scan_exception_closes_running_marker(monkeypatch, t
 
     assert runtime_updates[0][1]["mode"] == "scan_running"
     assert runtime_updates[0][1]["last_completed_step"] == "run_scan_started"
-    assert runtime_updates[-1][1]["mode"] == "scan_only"
-    assert runtime_updates[-1][1]["last_completed_step"] == "run_vuln_scan"
+    assert runtime_updates[-1][1]["mode"] == "scan_failed"
+    assert runtime_updates[-1][1]["last_completed_step"] == "run_vuln_scan_failed"
     assert runtime_updates[-1][1]["scan_completed"] is False
 
 
@@ -1097,5 +1125,6 @@ def test_classic_hunt_target_scan_interrupt_closes_running_marker(monkeypatch, t
         hunt.hunt_target(domain, scan_only=True)
 
     assert runtime_updates[0][1]["mode"] == "scan_running"
-    assert runtime_updates[-1][1]["mode"] == "scan_only"
+    assert runtime_updates[-1][1]["mode"] == "scan_failed"
+    assert runtime_updates[-1][1]["last_completed_step"] == "run_vuln_scan_failed"
     assert runtime_updates[-1][1]["scan_completed"] is False

@@ -330,7 +330,7 @@ run_nuclei() {
         nuclei "$@" || rc=$?
     fi
     [ "$rc" -eq 0 ] || mark_nuclei_failure "$rc"
-    return 0
+    return "$rc"
 }
 
 run_nuclei_timeout() {
@@ -343,6 +343,20 @@ run_nuclei_timeout() {
         timeout --preserve-status "$limit" nuclei "$@" || rc=$?
     fi
     [ "$rc" -eq 0 ] || mark_nuclei_failure "$rc"
+    return "$rc"
+}
+
+log_nuclei_outcome() {
+    local rc="$1"
+    local count="$2"
+    local finding_label="$3"
+    local clean_label="$4"
+    [ "$count" -eq 0 ] || log_vuln "$finding_label: $count"
+    if [ "$rc" -ne 0 ]; then
+        log_warn "$clean_label: incomplete (Nuclei exit=$rc)"
+    elif [ "$count" -eq 0 ]; then
+        log_done "$clean_label: clean"
+    fi
     return 0
 }
 
@@ -1216,15 +1230,16 @@ fi
 # Nuclei takeover templates
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     log_step "Running nuclei takeover templates..."
+    NUCLEI_RC=0
     cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags takeover \
         -silent \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/takeover/nuclei_takeover.txt" 2>/dev/null || true
+        -output "$FINDINGS_DIR/takeover/nuclei_takeover.txt" 2>/dev/null || NUCLEI_RC=$?
 
     NUCLEI_TK=$(count_findings "$FINDINGS_DIR/takeover/nuclei_takeover.txt")
-    [ "$NUCLEI_TK" -gt 0 ] && log_vuln "Nuclei found $NUCLEI_TK takeover issues" || log_done "Nuclei takeover: clean"
+    log_nuclei_outcome "$NUCLEI_RC" "$NUCLEI_TK" "Nuclei takeover issues" "Nuclei takeover"
 fi
 else
     log_warn "Skipping takeover checks (--skip)"
@@ -1240,38 +1255,41 @@ log_info "Check 3: Misconfigurations"
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     # CORS misconfigurations
     log_step "Checking CORS misconfigurations..."
+    NUCLEI_RC=0
     cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags cors \
         -silent \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/misconfig/cors.txt" 2>/dev/null || true
+        -output "$FINDINGS_DIR/misconfig/cors.txt" 2>/dev/null || NUCLEI_RC=$?
     CORS_COUNT=$(count_findings "$FINDINGS_DIR/misconfig/cors.txt")
-    [ "$CORS_COUNT" -gt 0 ] && log_vuln "CORS misconfigs: $CORS_COUNT" || log_done "CORS: clean"
+    log_nuclei_outcome "$NUCLEI_RC" "$CORS_COUNT" "CORS misconfigs" "CORS"
 
     # Security headers
     log_step "Checking security headers..."
+    NUCLEI_RC=0
     cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags headers,missing-headers \
         -severity medium,high,critical \
         -silent \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/misconfig/headers.txt" 2>/dev/null || true
+        -output "$FINDINGS_DIR/misconfig/headers.txt" 2>/dev/null || NUCLEI_RC=$?
     HDR_COUNT=$(count_findings "$FINDINGS_DIR/misconfig/headers.txt")
-    [ "$HDR_COUNT" -gt 0 ] && log_vuln "Header issues: $HDR_COUNT" || log_done "Headers: clean"
+    log_nuclei_outcome "$NUCLEI_RC" "$HDR_COUNT" "Header issues" "Headers"
 
     # General misconfigurations
     log_step "Running misconfiguration templates..."
+    NUCLEI_RC=0
     cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags misconfig \
         -severity medium,high,critical \
         -silent \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/misconfig/general.txt" 2>/dev/null || true
+        -output "$FINDINGS_DIR/misconfig/general.txt" 2>/dev/null || NUCLEI_RC=$?
     MISC_COUNT=$(count_findings "$FINDINGS_DIR/misconfig/general.txt")
-    [ "$MISC_COUNT" -gt 0 ] && log_vuln "Misconfigs: $MISC_COUNT" || log_done "General misconfig: clean"
+    log_nuclei_outcome "$NUCLEI_RC" "$MISC_COUNT" "Misconfigs" "General misconfig"
 fi
 
 run_iis_shortname_checks
@@ -1289,39 +1307,42 @@ log_info "Check 4: Sensitive Data Exposure"
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     # Exposed files (.git, .env, backups, etc.)
     log_step "Checking for exposed files (.git, .env, backups)..."
+    NUCLEI_RC=0
     cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags exposure,file \
         -severity low,medium,high,critical \
         -silent \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/exposure/exposed_files.txt" 2>/dev/null || true
+        -output "$FINDINGS_DIR/exposure/exposed_files.txt" 2>/dev/null || NUCLEI_RC=$?
     EXP_COUNT=$(count_findings "$FINDINGS_DIR/exposure/exposed_files.txt")
-    [ "$EXP_COUNT" -gt 0 ] && log_vuln "Exposed files: $EXP_COUNT" || log_done "Exposed files: clean"
+    log_nuclei_outcome "$NUCLEI_RC" "$EXP_COUNT" "Exposed files" "Exposed files"
 
     # Exposed panels (admin, debug, etc.)
     log_step "Checking for exposed panels..."
+    NUCLEI_RC=0
     cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags panel,login \
         -severity medium,high,critical \
         -silent \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/exposure/panels.txt" 2>/dev/null || true
+        -output "$FINDINGS_DIR/exposure/panels.txt" 2>/dev/null || NUCLEI_RC=$?
     PANEL_COUNT=$(count_findings "$FINDINGS_DIR/exposure/panels.txt")
-    [ "$PANEL_COUNT" -gt 0 ] && log_vuln "Exposed panels: $PANEL_COUNT" || log_done "Panels: clean"
+    log_nuclei_outcome "$NUCLEI_RC" "$PANEL_COUNT" "Exposed panels" "Panels"
 
     # Technology detection & default credentials
     log_step "Checking for default credentials..."
+    NUCLEI_RC=0
     cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags default-login \
         -severity high,critical \
         -silent \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/exposure/default_creds.txt" 2>/dev/null || true
+        -output "$FINDINGS_DIR/exposure/default_creds.txt" 2>/dev/null || NUCLEI_RC=$?
     CRED_COUNT=$(count_findings "$FINDINGS_DIR/exposure/default_creds.txt")
-    [ "$CRED_COUNT" -gt 0 ] && log_vuln "Default creds: $CRED_COUNT" || log_done "Default creds: clean"
+    log_nuclei_outcome "$NUCLEI_RC" "$CRED_COUNT" "Default creds" "Default creds"
 fi
 
 # Manual check: sensitive paths from recon
@@ -1365,15 +1386,16 @@ log_info "Check 5: SSRF Detection"
 
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     log_step "Running nuclei SSRF templates..."
+    NUCLEI_RC=0
     cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags ssrf \
         -severity medium,high,critical \
         -silent \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/ssrf/nuclei_ssrf.txt" 2>/dev/null || true
+        -output "$FINDINGS_DIR/ssrf/nuclei_ssrf.txt" 2>/dev/null || NUCLEI_RC=$?
     SSRF_COUNT=$(count_findings "$FINDINGS_DIR/ssrf/nuclei_ssrf.txt")
-    [ "$SSRF_COUNT" -gt 0 ] && log_vuln "SSRF issues: $SSRF_COUNT" || log_done "SSRF: clean"
+    log_nuclei_outcome "$NUCLEI_RC" "$SSRF_COUNT" "SSRF issues" "SSRF"
 fi
 
 # Flag URL parameters for manual SSRF testing
@@ -1405,6 +1427,7 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
         CVE_TIMEOUT="${BB_CVE_TIMEOUT:-600}"
     fi
     log_step "Running nuclei CVE templates (max ${CVE_TIMEOUT}s)..."
+    NUCLEI_RC=0
     run_nuclei_timeout "$CVE_TIMEOUT" \
         -l "$NUCLEI_TARGETS" \
         -tags cve \
@@ -1413,9 +1436,9 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
         -rate-limit "$RATE_LIMIT" \
         -concurrency "$THREADS" \
         "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/cves/nuclei_cves.txt" 2>/dev/null || true
+        -output "$FINDINGS_DIR/cves/nuclei_cves.txt" 2>/dev/null || NUCLEI_RC=$?
     CVE_COUNT=$(count_findings "$FINDINGS_DIR/cves/nuclei_cves.txt")
-    [ "$CVE_COUNT" -gt 0 ] && log_vuln "CVEs found: $CVE_COUNT" || log_done "CVEs: clean"
+    log_nuclei_outcome "$NUCLEI_RC" "$CVE_COUNT" "CVEs found" "CVEs"
 fi
 else
     log_warn "Skipping CVE checks (--skip)"
@@ -1430,15 +1453,16 @@ log_info "Check 7: Open Redirects"
 
 if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
     log_step "Running nuclei redirect templates..."
+    NUCLEI_RC=0
     cat "$NUCLEI_TARGETS" | run_nuclei \
         -tags redirect \
         -severity low,medium,high \
         -silent \
         -rate-limit "$RATE_LIMIT" \
         "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/redirects/nuclei_redirects.txt" 2>/dev/null || true
+        -output "$FINDINGS_DIR/redirects/nuclei_redirects.txt" 2>/dev/null || NUCLEI_RC=$?
     REDIR_COUNT=$(count_findings "$FINDINGS_DIR/redirects/nuclei_redirects.txt")
-    [ "$REDIR_COUNT" -gt 0 ] && log_vuln "Open redirects: $REDIR_COUNT" || log_done "Redirects: clean"
+    log_nuclei_outcome "$NUCLEI_RC" "$REDIR_COUNT" "Open redirects" "Redirects"
 fi
 
 # Flag redirect parameters for manual testing
@@ -1795,6 +1819,11 @@ FINDING_SUMMARY_JSON_TMP="$FINDINGS_DIR/.summary.json.tmp"
 FINDING_INDEX_JSON="$FINDINGS_DIR/findings.json"
 
 if [ -s "$NUCLEI_FAILURE_MARKER" ]; then
+    if python3 "$BASE_DIR/tools/finding_index.py" "$FINDINGS_DIR" --target "$TARGET" --output "$FINDING_INDEX_JSON" >/dev/null; then
+        log_warn "Preserved partial scanner candidates in $FINDING_INDEX_JSON"
+    else
+        log_warn "Unable to preserve partial scanner candidates"
+    fi
     log_err "One or more Nuclei lanes failed; scan remains incomplete"
     exit 1
 fi

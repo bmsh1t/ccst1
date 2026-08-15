@@ -19,6 +19,9 @@ Before running active probes, load the minimal context pack:
 python3 tools/context_pack.py --target target.com
 ```
 
+For this hunting entrypoint, also read `rules/hunting.md`. It is the canonical
+hunting semantics and is loaded on demand rather than by every context pack.
+
 ```bash
 python3 tools/hunt.py --target target.com --scan-only      # recon exists → scan cached surface
 python3 tools/hunt.py --target target.com                  # recon if needed, then scan

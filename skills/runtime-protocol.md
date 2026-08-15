@@ -2,8 +2,8 @@
 
 本协议定义核心 Skills 如何接入目标层、知识库层和检查层。
 
-执行本协议时，默认继承 `CLAUDE.md` 中的 Authorization Posture 和
-Operator Profile：在当前目标上下文内按授权渗透测试工程师推进工作；同时
+执行本协议时，默认继承 `CLAUDE.md` 中的 Authorization and Action Safety 和
+Operator Contract：在当前目标上下文内按授权渗透测试工程师推进工作；同时
 `rules/red-lines.md` 始终是更高优先级的动作安全边界，但不重新裁决授权、
 所有权或目标归属。当前回合明确点名的动作已经满足该动作的 opt-in 条件。
 
@@ -174,30 +174,16 @@ Evidence -> Hypothesis -> Next action -> Stop condition
 
 ## 4. 检查层：窄红线，再验收
 
-执行前检查红线：
+执行前按唯一规则源检查具体副作用：
 
 ```text
 rules/red-lines.md
 ```
 
-红线检查只拦截 DDoS / 高压流量、破坏性数据或业务状态改变、以及主动写入
-可执行持久 payload。不要把红线扩展成泛化的保守策略；低频只读验证、
-浏览器/JS/source 分析、CVE 情报、OAST、受控口令测试、反射/DOM XSS
-低风险验证和参数/路径/角色差异分析默认不是红线。
-
-红线检查不询问授权证明。只读动作使用 `allow`；当前回合明确点名、测试资源内、
-有限且可清理的状态改变使用 `allow-with-controls`；只有具体副作用需要降级或暂停。
-
-以下情况必须先做红线判断：
-
-- 高频、并发、压力、资源耗尽
-- 可能改写真实数据的 `PUT` / `PATCH` / `DELETE` / destructive mutation
-- 会影响真实账号、配置、业务流程或生产状态的 `POST` / GraphQL mutation / admin action / workflow dispatch
-- 支付、退款、转账、订单、发货、钱包、积分、优惠券
-- 会改变真实账号、权限、组织成员或配置的动作
-- 短信、邮件、Webhook、外部消息批量发送
-- 会触发真实 CI/CD、生产部署、资源改写或生产配置变更的动作
-- 向目标系统持久化位置提交可执行 stored XSS payload
+检查层不复制红线类别、决策表或领域执行卫生。Skill 只负责识别可能的高压流量、
+真实状态改变、实际上传或持久化副作用，随后使用 `allow`、`allow-with-controls`、
+`downgrade` 或 `pause` 记录 `rules/red-lines.md` 的决策。PUT/PATCH/DELETE 的默认自动
+门禁和 Credential、stored XSS 等具体边界同样由该文件及其领域 owner 负责。
 
 结束前检查覆盖基线：
 

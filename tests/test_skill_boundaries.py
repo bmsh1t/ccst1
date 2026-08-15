@@ -315,14 +315,17 @@ def test_path_pattern_management_exposure_is_part_of_skill_flow():
 
 
 def test_controlled_credential_testing_is_not_an_absolute_red_line():
-    red_lines = (REPO_ROOT / "rules" / "red-lines.md").read_text(encoding="utf-8")
+    credential_skill = (REPO_ROOT / "skills" / "credential-attack" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    spray = (REPO_ROOT / "commands" / "spray.md").read_text(encoding="utf-8")
     router = (REPO_ROOT / "rules" / "playbook-router.md").read_text(encoding="utf-8")
 
-    assert "受控口令测试不是红线" in red_lines
-    assert "口令爆破、默认凭据检查、password spray 本身不是绝对红线" in red_lines
-    assert "`/autopilot`" in red_lines
-    assert "可以在证据驱动下选择该 lane" in red_lines
-    assert "弱口令爆破不是绝对红线" in router
+    assert "发现登录页、组件名或 SSO 品牌都不自动触发 Spray" in credential_skill
+    assert "dry-run preflight 和停止条件" in credential_skill
+    assert "默认首个 valid 停止" in credential_skill
+    assert "首个 rate-limit/guard/ambiguous 停止" in spray
+    assert "弱口令测试不是红线" in router
 
 
 def test_autopilot_can_select_controlled_credential_lane():

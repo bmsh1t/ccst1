@@ -547,8 +547,8 @@ Recon 阶段只生成有界目标词表和只读线索：
 ```
 
 不要把管理面登录页在 recon 阶段直接转成口令爆破；口令测试先记录为
-credential lead，只有当 operator 或 `/autopilot` 按 `rules/red-lines.md`
-选择 credential lane 时，才进入受控 `/spray` / `credential-attack`。疑似
+credential lead，只有当当前证据选择 credential lane 时，才进入
+`/spray` / `credential-attack`。疑似
 access key/secret 只进入最小证据和验证计划，不导入云管平台、不接管资源。
 
 ---

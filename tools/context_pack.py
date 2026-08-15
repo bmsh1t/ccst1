@@ -2436,7 +2436,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         seeds.extend([
             "登录接口是否存在 UI 未传但后端读取的隐藏认证参数、模式、来源、渠道、provider 或 feature flag，能切换认证分支。",
             "留意管理员预留特权参数或内部账号分支，例如 isAdmin/admin/source/provider/soap 这类目标相关 selector；它们是联想种子，不是固定字典。",
-            "本 lane 先做自有/测试账号 baseline 与单变量隐藏参数差异；若登录成为主要突破口，按 red-lines 的自主选择条件切到 /spray 或 credential-attack 受控流程。",
+            "本 lane 先做自有/测试账号 baseline 与单变量隐藏参数差异；若登录成为主要突破口，按证据切到 /spray 或 credential-attack 受控流程。",
         ])
         if LEGACY_AUTH_SURFACE_RE.search(blob):
             seeds.append("旧 REST/mobile/SOAP/XMLRPC/native auth 只在同一测试账号下比较 MFA、SSO、限速、session、role 策略；端点可达、200/401 或方法列表都不是绕过。")

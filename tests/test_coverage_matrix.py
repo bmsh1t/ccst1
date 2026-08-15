@@ -1303,6 +1303,10 @@ class TestVulnClassNormalization:
         for alias in ("csrf-token", "xsrf"):
             assert normalize_vuln_class(alias) == "CSRF", alias
 
+    def test_open_redirect_aliases(self):
+        for alias in ("openredirect", "open-redirect", "redirect"):
+            assert normalize_vuln_class(alias) == "Authz", alias
+
     def test_unknown_raises_with_helpful_message(self):
         with pytest.raises(ValueError) as excinfo:
             normalize_vuln_class("totally-bogus-name")

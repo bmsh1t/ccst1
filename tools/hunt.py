@@ -1961,8 +1961,8 @@ def print_dashboard(results):
     for r in results:
         status_icon = f"{GREEN}OK{NC}" if r["success"] else f"{RED}FAIL{NC}"
         print(f"  [{status_icon}] {r['domain']}")
-        print(f"       Recon: {'Done' if r.get('recon') else 'Skipped'} | "
-              f"Scan: {'Done' if r.get('scan') else 'Skipped'} | "
+        print(f"       Recon: {'Done' if r.get('recon') else 'Failed' if r.get('recon_attempted') else 'Skipped'} | "
+              f"Scan: {'Done' if r.get('scan') else 'Failed' if r.get('scan_attempted') else 'Skipped'} | "
               f"Reports: {r.get('reports', 0)}")
         if r.get("autopilot_mode"):
             print(f"       Autopilot mode: {r['autopilot_mode']}")
@@ -2134,7 +2134,9 @@ def _hunt_target_impl(
         "domain": canonical_target,
         "success": True,
         "recon": False,
+        "recon_attempted": False,
         "scan": False,
+        "scan_attempted": False,
         "reports": 0,
         "ctf_mode": ctf_mode,
     }
@@ -2161,6 +2163,7 @@ def _hunt_target_impl(
         )
 
     if not scan_only:
+        result["recon_attempted"] = True
         try:
             if deep:
                 result["recon"] = run_recon(domain, quick=quick, deep=True)
@@ -2237,6 +2240,7 @@ def _hunt_target_impl(
         enrichment_tools=result.get("enrichment", []),
     )
     try:
+        result["scan_attempted"] = True
         result["scan"] = run_vuln_scan(
             canonical_target,
             quick=quick,
@@ -2248,9 +2252,9 @@ def _hunt_target_impl(
         # 避免下一轮 autopilot 等待一个已经崩掉的 scan-only 进程。
         _persist_runtime_state(
             canonical_target,
-            mode="scan_only" if scan_only else ("quick" if quick else "full"),
+            mode="scan_failed",
             current_stage="scan",
-            last_completed_step="run_vuln_scan",
+            last_completed_step="run_vuln_scan_failed",
             recon_completed=recon_available,
             scan_completed=False,
             reports_generated=0,
@@ -2261,13 +2265,20 @@ def _hunt_target_impl(
         )
         raise
 
+    scan_mode = (
+        "scan_only" if scan_only else ("quick" if quick else "full")
+    ) if result["scan"] else "scan_failed"
+    scan_workflow = "run_vuln_scan" if result["scan"] else "run_vuln_scan_failed"
+    if not result["scan"]:
+        result["success"] = False
+
     # phase 退出后立即覆盖 running marker；后续 CVE/zero-day/profile
     # 失败也不会把 `run_scan_started` 留给下一轮 autopilot。
     _persist_runtime_state(
         canonical_target,
-        mode="scan_only" if scan_only else ("quick" if quick else "full"),
+        mode=scan_mode,
         current_stage="scan",
-        last_completed_step="run_vuln_scan",
+        last_completed_step=scan_workflow,
         recon_completed=recon_available,
         scan_completed=result["scan"],
         reports_generated=0,
@@ -2303,9 +2314,9 @@ def _hunt_target_impl(
 
     _persist_runtime_state(
         canonical_target,
-        mode="scan_only" if scan_only else ("quick" if quick else "full"),
+        mode=scan_mode,
         current_stage="report" if result["reports"] else "scan",
-        last_completed_step="run_vuln_scan",
+        last_completed_step=scan_workflow,
         recon_completed=recon_available,
         scan_completed=result["scan"],
         reports_generated=result["reports"],

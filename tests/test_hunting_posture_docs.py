@@ -30,6 +30,17 @@ def test_hunting_rules_tie_depth_to_coverage_and_actor_matrix():
     assert "anonymous, owner, peer, low_role, cross_tenant" in text
 
 
+def test_hunting_rules_delegate_lifecycle_and_side_effect_owners():
+    text = _read("rules/hunting.md")
+
+    assert "lifecycle names and transition" in text
+    assert "`rules/coverage-gate.md`" in text
+    assert "Use `rules/red-lines.md` for side-effect decisions" in text
+    assert "`CLAUDE.md#tool-and-mcp-routing`" in text
+    assert "`docs/autopilot-lanes.md`" in text
+    assert "Lead -> Signal -> Candidate" not in text
+
+
 def test_hunting_rules_use_value_first_comprehensive_vuln_coverage():
     text = _read("rules/hunting.md")
 
@@ -40,6 +51,8 @@ def test_hunting_rules_use_value_first_comprehensive_vuln_coverage():
     assert "unsafe deserialization" in text
     assert "Browser-observed APIs, JS/source-derived routes" in text
     assert "evidence sources" in text
+    assert "Recent release or commit evidence may raise priority" in text
+    assert "knowledge/cards/signature-scope-mismatch.md" in text
 
 
 def test_bb_methodology_references_high_intensity_hunting_posture():

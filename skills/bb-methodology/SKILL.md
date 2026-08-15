@@ -16,7 +16,8 @@ Master orchestrator for hunting sessions. Combines the 5-phase non-linear workfl
 3. 当路线需要更多思路时，读取 `knowledge/index.md`，最多选择 1-2 张相关知识卡；按当前证据和高价值漏洞族覆盖模型路由，不固定偏向某几个漏洞类别。
 4. 任何高压流量、并发、状态改变或真实业务影响动作，先按 `rules/red-lines.md` 降级或暂停。
 5. 结束前按 `rules/coverage-gate.md` 交代 covered / blocked / unknown / next actions。
-6. 高强度 hunt 遵守 `rules/hunting.md#high-intensity-hunting-posture`：
+6. 选择本 Skill 时按需加载 `rules/hunting.md`；高强度 hunt 遵守
+   `rules/hunting.md#high-intensity-hunting-posture`：
    深度来自证据循环、角色/对象差异、覆盖和复盘，不来自高压流量、凑步骤或破坏性利用。
 
 ---
