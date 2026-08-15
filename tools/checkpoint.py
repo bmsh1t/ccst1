@@ -1307,6 +1307,7 @@ ACTION_DECISIONS = {
     "workflow-lead-review": "hunt",
     "sibling-chain-review": "hunt",
     "capability-chain-review": "continue",
+    "knowledge-signal-review": "continue",
     "source-enrichment": "enrich",
     "js-enrichment": "enrich",
     "browser-enrichment": "enrich",
@@ -3357,6 +3358,120 @@ def _attach_activation_context(
     return actions
 
 
+def _knowledge_signal_review_item(context: dict, actions: list[dict], target: str) -> dict:
+    """Keep specific recalled cards visible when no surviving action carries them."""
+    represented: set[str] = set()
+    for action in actions:
+        metadata = (
+            action.get("metadata")
+            if isinstance(action, dict) and isinstance(action.get("metadata"), dict)
+            else {}
+        )
+        for key in ("knowledge_refs", "selected_knowledge_refs"):
+            values = metadata.get(key)
+            if not isinstance(values, list):
+                continue
+            represented.update(
+                str(value).strip()
+                for value in values
+                if str(value).strip()
+            )
+
+    recalls: list[dict] = []
+    for raw in context.get("knowledge_card_recall", []) or []:
+        if not isinstance(raw, dict):
+            continue
+        file = str(raw.get("file") or "").strip()
+        card_id = str(raw.get("id") or "").strip()
+        status = str(raw.get("status") or "").strip().lower()
+        reason = re.sub(r"\s+", " ", str(raw.get("reason") or "")).strip()
+        try:
+            rank = int(raw.get("rank", 0) or 0)
+        except (TypeError, ValueError):
+            rank = 0
+        if (
+            not file
+            or status not in {"selected", "deferred"}
+            or reason.split(";", 1)[0].strip().lower() == "coverage or routing fallback"
+            or represented.intersection({file, card_id})
+        ):
+            continue
+        recalls.append({
+            "file": file,
+            "id": card_id,
+            "status": status,
+            "rank": rank,
+            "reason": reason,
+        })
+
+    ordered: list[dict] = []
+    seen_files: set[str] = set()
+    for recall in sorted(recalls, key=lambda item: (item["rank"], item["file"], item["id"])):
+        if recall["file"] not in seen_files:
+            ordered.append(recall)
+            seen_files.add(recall["file"])
+    if not ordered:
+        return {}
+
+    anchors = [
+        re.sub(r"\s+", " ", str(value)).strip()[:500]
+        for value in (context.get("evidence_anchors") or [])
+        if str(value).strip()
+    ][:8]
+    seeds = [
+        re.sub(r"\s+", " ", str(value)).strip()[:500]
+        for value in (context.get("hypothesis_seeds") or [])
+        if str(value).strip()
+    ][:8]
+    generation = hashlib.sha256(
+        json.dumps(
+            {
+                "target": canonical_target_value(target),
+                "recall": ordered,
+                "evidence_anchors": anchors,
+                "hypothesis_seeds": seeds,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    visible = [
+        "{id} [{status}: {reason}]".format(
+            id=item["id"] or Path(item["file"]).stem,
+            status=item["status"],
+            reason=item["reason"].split(";", 1)[0][:120],
+        )
+        for item in ordered[:4]
+    ]
+    remaining = len(ordered) - len(visible)
+    summary = ", ".join(visible) + (f"; {remaining} more in metadata" if remaining else "")
+    return {
+        "id": f"KNOWLEDGE-SIGNAL-{generation[:12]}",
+        "priority": 91,
+        "type": "knowledge-signal-review",
+        "status": "ready",
+        "action": (
+            f"Review unrepresented knowledge signals: {summary}. "
+            "Choose at most one evidence-backed hypothesis, or record why the "
+            "signals are deferred or not applicable."
+        ),
+        "command_hint": "review recall reasons and current evidence anchors before adding one bounded queue action",
+        "redline_required": False,
+        "stop_condition": (
+            "materialize at most one evidence-backed action or record "
+            "deferred/not-applicable with evidence"
+        ),
+        "source": "knowledge-recall",
+        "source_id": "unrepresented-signals",
+        "metadata": {
+            "generation": generation,
+            "knowledge_refs": [item["file"] for item in ordered],
+            "knowledge_card_recall": ordered,
+        },
+    }
+
+
 def _json_inject_queue_item(state: dict) -> dict:
     projection = state.get("json_inject") or {}
     status = str(projection.get("status") or "")
@@ -3918,6 +4033,17 @@ def build_checkpoint(
         resolved_target,
         next_action_queue,
     )
+    knowledge_signal_item = _knowledge_signal_review_item(
+        context,
+        next_action_queue,
+        resolved_target,
+    )
+    if knowledge_signal_item:
+        next_action_queue.extend(_filter_final_action_queue_items(
+            repo,
+            resolved_target,
+            [knowledge_signal_item],
+        ))
     dead_ends = _dead_end_proposals(state, gaps)
     runtime_wait_action = str(state.get("next_action") or "")
     if runtime_wait_action in {"wait_recon", "wait_scan"}:

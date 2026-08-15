@@ -80,7 +80,9 @@ EVIDENCE_REF_KEYS = {
 }
 EVIDENCE_ROOTS = {".private", "evidence", "findings", "recon", "reports"}
 REPORT_ACTION_TYPES = {"report"}
-ADVISORY_REVIEW_ACTION_TYPES = {"surface-review", "capability-chain-review"}
+ADVISORY_REVIEW_ACTION_TYPES = {
+    "surface-review", "capability-chain-review", "knowledge-signal-review",
+}
 LOW_EVIDENCE_SURFACE_REVIEW_MARKERS = (
     "reason: top advisory score",
     "reason: top advisory score (low-evidence fallback)",

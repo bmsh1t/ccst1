@@ -32,6 +32,7 @@ from checkpoint import (
     _ledger_candidate_proposals,
     _ledger_covered_cells,
     _ledger_covers_cell,
+    _knowledge_signal_review_item,
     _matrix_summary,
     _next_proposals,
     _project_knowledge_effect_trace,
@@ -3046,6 +3047,212 @@ def test_next_proposals_keeps_ranked_surface_candidates_after_secondary_sweeps()
     ranked = [item for item in proposals if item.startswith("Review surface candidate ")]
     assert len(ranked) == 4
     assert any(urls[-1] in item for item in ranked)
+
+
+@pytest.mark.parametrize(
+    ("card_id", "card_file"),
+    [
+        ("nosql-query-injection", "knowledge/cards/nosql-query-injection.md"),
+        ("server-side-template-injection", "knowledge/cards/server-side-template-injection.md"),
+        ("insecure-deserialization", "knowledge/cards/insecure-deserialization.md"),
+        ("path-traversal-file-read", "knowledge/cards/path-traversal-file-read.md"),
+        ("ssrf-url-fetch", "knowledge/cards/ssrf-url-fetch.md"),
+        ("sqli-hidden-surfaces", "knowledge/cards/sqli-hidden-surfaces.md"),
+    ],
+)
+def test_specific_knowledge_recalls_use_one_generic_review_path(card_id, card_file):
+    item = _knowledge_signal_review_item(
+        {
+            "knowledge_card_recall": [{
+                "file": card_file,
+                "id": card_id,
+                "status": "selected",
+                "rank": 1,
+                "reason": "specific routing signal matched; selected within card budget",
+            }],
+            "evidence_anchors": ["Observed a parser-specific input boundary."],
+            "hypothesis_seeds": ["Compare one controlled parser variant."],
+        },
+        [],
+        "target.com",
+    )
+
+    assert item["type"] == "knowledge-signal-review"
+    assert item["source"] == "knowledge-recall"
+    assert item["metadata"]["knowledge_refs"] == [card_file]
+    assert _decision_for_action(item["type"]) == "continue"
+
+
+def test_knowledge_signal_review_is_grouped_stable_and_excludes_fallbacks():
+    recalls = [
+        {
+            "file": "knowledge/cards/fourth.md",
+            "id": "fourth",
+            "status": "deferred",
+            "rank": 4,
+            "reason": "context evidence signal matched; deferred by card budget",
+        },
+        {
+            "file": "knowledge/cards/first.md",
+            "id": "first",
+            "status": "selected",
+            "rank": 1,
+            "reason": "explicit focus matched; selected within card budget",
+        },
+        {
+            "file": "knowledge/cards/coverage-prompts.md",
+            "id": "coverage-prompts",
+            "status": "selected",
+            "rank": 2,
+            "reason": "coverage or routing fallback; selected within card budget",
+        },
+        {
+            "file": "knowledge/cards/already-carried.md",
+            "id": "already-carried",
+            "status": "selected",
+            "rank": 3,
+            "reason": "specific routing signal matched; selected within card budget",
+        },
+        {
+            "file": "knowledge/cards/carried-by-file.md",
+            "id": "carried-by-file",
+            "status": "selected",
+            "rank": 3,
+            "reason": "specific routing signal matched; selected within card budget",
+        },
+        *[
+            {
+                "file": f"knowledge/cards/extra-{rank}.md",
+                "id": f"extra-{rank}",
+                "status": "deferred",
+                "rank": rank,
+                "reason": "context evidence signal matched; deferred by card budget",
+            }
+            for rank in range(5, 9)
+        ],
+    ]
+    context = {
+        "knowledge_card_recall": list(reversed(recalls)),
+        "evidence_anchors": ["anchor"],
+        "hypothesis_seeds": ["seed"],
+    }
+    actions = [{"metadata": {
+        "knowledge_refs": ["knowledge/cards/carried-by-file.md"],
+        "selected_knowledge_refs": ["already-carried"],
+    }}]
+
+    first = _knowledge_signal_review_item(context, actions, "target.com")
+    second = _knowledge_signal_review_item(context, actions, "target.com")
+
+    assert first == second
+    assert first["metadata"]["knowledge_refs"] == [
+        "knowledge/cards/first.md",
+        "knowledge/cards/fourth.md",
+        "knowledge/cards/extra-5.md",
+        "knowledge/cards/extra-6.md",
+        "knowledge/cards/extra-7.md",
+        "knowledge/cards/extra-8.md",
+    ]
+    assert len(first["metadata"]["knowledge_card_recall"]) == 6
+    assert "2 more in metadata" in first["action"]
+    assert "explicit focus matched" in first["action"]
+    assert "coverage-prompts" not in first["action"]
+    assert _knowledge_signal_review_item(
+        {"knowledge_card_recall": [recalls[2]]},
+        [],
+        "target.com",
+    ) == {}
+
+
+def test_knowledge_signal_review_terminal_generation_suppression_and_reopen(tmp_path):
+    context = {
+        "knowledge_card_recall": [{
+            "file": "knowledge/cards/server-side-template-injection.md",
+            "id": "server-side-template-injection",
+            "status": "selected",
+            "rank": 1,
+            "reason": "specific routing signal matched; selected within card budget",
+        }],
+        "evidence_anchors": ["template parameter observed"],
+        "hypothesis_seeds": ["compare one template expression"],
+    }
+    first = _knowledge_signal_review_item(context, [], "target.com")
+    ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [first]})
+    action = next(
+        item for item in load_queue(tmp_path, "target.com")["actions"]
+        if item["type"] == "knowledge-signal-review"
+    )
+    resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=action["id"],
+        status="dead-end",
+        result="No bounded hypothesis remained for the current evidence.",
+    )
+
+    assert _filter_final_action_queue_items(tmp_path, "target.com", [first]) == []
+
+    changed = {**context, "evidence_anchors": ["new template engine marker observed"]}
+    reopened = _knowledge_signal_review_item(changed, [], "target.com")
+    assert reopened["metadata"]["generation"] != first["metadata"]["generation"]
+    assert _filter_final_action_queue_items(tmp_path, "target.com", [reopened]) == [reopened]
+
+
+@pytest.mark.parametrize("family_status", ["tested", "not_applicable"])
+def test_checkpoint_preserves_ssti_recall_after_rce_family_closure(
+    tmp_path,
+    monkeypatch,
+    family_status,
+):
+    card = "knowledge/cards/server-side-template-injection.md"
+    cell_status = "tested_clean" if family_status == "tested" else "n_a"
+    monkeypatch.setattr(
+        checkpoint_module,
+        "load_matrix_projection",
+        lambda *_args, **_kwargs: {
+            "endpoints": [{
+                "endpoint": "/render",
+                "cells": {"RCE": {"status": cell_status, "reason": "bounded family closure"}},
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "build_context_pack",
+        lambda *_args, **_kwargs: {
+            "phase": "hunt",
+            "selected_skill": "skills/web2-vuln-classes/SKILL.md",
+            "skill_route": {},
+            "knowledge_cards": [card],
+            "knowledge_card_recall": [{
+                "file": card,
+                "id": "server-side-template-injection",
+                "status": "selected",
+                "rank": 1,
+                "reason": "specific routing signal matched; selected within card budget",
+            }],
+            "evidence_anchors": ["POST /render accepts a template-shaped field"],
+            "hypothesis_seeds": ["compare one inert expression"],
+            "reference_hints": [],
+            "required_checks": [],
+            "contradictions": [],
+        },
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
+    review = next(
+        item for item in checkpoint["next_action_queue"]
+        if item["type"] == "knowledge-signal-review"
+    )
+    ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint)
+    durable = [
+        item for item in load_queue(tmp_path, "target.com")["actions"]
+        if item["type"] == "knowledge-signal-review"
+    ]
+
+    assert checkpoint["coverage"]["high_risk_lanes"]["RCE"]["disposition"] == family_status
+    assert review["metadata"]["knowledge_refs"] == [card]
+    assert len(durable) == 1
 
 
 def test_artifact_backed_high_workflow_leads_become_durable_queue_items(tmp_path):
