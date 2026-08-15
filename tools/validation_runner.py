@@ -130,6 +130,7 @@ RUNNER_RESULT_TO_QUEUE_STATUS = {
 }
 QUEUE_UPGRADE_TARGET_STATUSES = {"candidate", "validated"}
 QUEUE_UPGRADABLE_FINAL_STATUSES = {"tested", "dead-end", "blocked"}
+NON_RUNNER_FOLLOWUP_ACTION_TYPES = {"report", "sibling-chain-review"}
 LANE_TO_VULN_CLASS = {
     "authz_public_exposure": "Authz",
     "authz_role_replay": "Authz",
@@ -1003,11 +1004,46 @@ def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str,
     if not target or not queue_status:
         return {"status": "skipped", "reason": "missing target or non-final runner result"}
 
+    # A runner replay is evidence refresh, not permission to reopen a finding
+    # that the canonical owner has already finalized.  Without this guard an
+    # old tested_finding summary can upgrade a dead-end Queue action back to
+    # candidate after /validate rejected or confirmed the finding.
+    finding_id = str(summary.get("finding_id") or "").strip()
+    if finding_id:
+        findings_dir = _findings_dir(repo_root, target)
+        finding = _find_existing_finding(findings_dir, finding_id)
+        validation_status = str(finding.get("validation_status") or "").strip().lower()
+        if validation_status in {"validated", "rejected"} and verify_finalized_finding_owner_provenance(
+            findings_dir,
+            finding,
+            target=target,
+        ).get("valid"):
+            return {
+                "status": "deduplicated",
+                "reason": f"finding validation already finalized: {validation_status}",
+                "finding_id": finding_id,
+                "validation_status": validation_status,
+            }
+
     with queue_mutation_lock(repo_root, target):
         queue = load_queue(repo_root, target)
         matches, match_kind = _select_queue_actions_for_summary(queue, summary, queue_status)
         if not matches:
             return {"status": "skipped", "reason": "no matching active or upgradable action"}
+        # Checkpoint may add report/sibling follow-ups after the runner action
+        # has already converged.  They are not the replay's owner action and
+        # must not turn an otherwise idempotent replay into an ambiguity.
+        if (
+            str(summary.get("operation_id") or "").strip()
+            and match_kind == "finding_id"
+            and all(str(item.get("type") or "") in NON_RUNNER_FOLLOWUP_ACTION_TYPES for item in matches)
+        ):
+            return {
+                "status": "deduplicated",
+                "reason": "only non-runner follow-up actions match finalized runner evidence",
+                "operation_id": str(summary.get("operation_id") or "").strip(),
+                "ids": [str(item.get("id") or "") for item in matches if item.get("id")],
+            }
         if len(matches) > 1:
             return {
                 "status": "ambiguous",

@@ -973,6 +973,58 @@ def test_runner_sync_does_not_downgrade_validated_finding(monkeypatch, tmp_path,
     assert findings["findings"][0]["evidence_rubric"]["status"] == "candidate-ready"
 
 
+def test_runner_replay_does_not_reopen_finalized_queue_action(monkeypatch, tmp_path):
+    summary, queue_path, key = _runner_reconciliation_fixture(monkeypatch, tmp_path)
+    first = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert first["status"] == "updated"
+
+    findings_dir = tmp_path / "findings" / key
+    finding_index.update_finding_status(
+        findings_dir,
+        "AUTHZ-RECONCILE",
+        validation_status="validated",
+        report_status="not_generated",
+    )
+    queue = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue["actions"][0]["status"] = "dead-end"
+    queue_path.write_text(json.dumps(queue), encoding="utf-8")
+
+    replay = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    persisted_queue = json.loads(queue_path.read_text(encoding="utf-8"))
+
+    assert replay["status"] == "deduplicated"
+    assert replay["action_queue"]["status"] == "deduplicated"
+    assert persisted_queue["actions"][0]["status"] == "dead-end"
+
+
+def test_runner_replay_ignores_report_and_sibling_followups(monkeypatch, tmp_path):
+    summary, queue_path, _ = _runner_reconciliation_fixture(monkeypatch, tmp_path)
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["status"] == "updated"
+
+    queue = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue["actions"][0]["status"] = "n/a"
+    finding_id = summary["finding_id"]
+    queue["actions"].extend(
+        [
+            {"id": "AQ-REPORT", "status": "queued", "type": "report", "metadata": {"finding_id": finding_id}},
+            {
+                "id": "AQ-SIBLING",
+                "status": "queued",
+                "type": "sibling-chain-review",
+                "metadata": {"finding_id": finding_id},
+            },
+        ]
+    )
+    queue_path.write_text(json.dumps(queue), encoding="utf-8")
+
+    replay = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    persisted = json.loads(queue_path.read_text(encoding="utf-8"))
+
+    assert replay["status"] == "deduplicated"
+    assert replay["action_queue"]["status"] == "deduplicated"
+    assert {item["status"] for item in persisted["actions"][1:]} == {"queued"}
+
+
 def test_runner_sync_completes_missing_claim_identity_without_creating_second_finding(tmp_path):
     import finding_index
 
