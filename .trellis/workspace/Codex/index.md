@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 68
-- **Last Active**: 2026-08-15
+- **Total Sessions**: 69
+- **Last Active**: 2026-08-17
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~49 | Active |
+| `journal-2.md` | ~70 | Active |
 | `journal-1.md` | ~1981 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 69 | 2026-08-17 | Autopilot full-flow pressure test | `76b4488` | `main` |
 | 68 | 2026-08-15 | Autopilot pressure test and monotonic replay fix | `f481262` | `main` |
 | 67 | 2026-08-15 | Preserve technique signals after family closure | `828fdb3` | `main` |
 | 66 | 2026-08-14 | Architecture maintenance cost review | `3e5b75d` | `main` |
