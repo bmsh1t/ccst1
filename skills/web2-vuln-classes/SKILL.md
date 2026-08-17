@@ -37,6 +37,7 @@ Load these cards through `context_pack.py`; do not read all of them manually.
 | Lane | Knowledge card |
 |---|---|
 | API testing / docs / parser/auth matrix | `knowledge/cards/api-testing-workflow.md` |
+| Cross-component validation/storage/consumption views | `knowledge/cards/view-differential.md` |
 | OData query / navigation / batch boundary | `knowledge/cards/odata-query-boundaries.md` |
 | IDOR / BOLA / object authorization | `knowledge/cards/api-idor.md` |
 | Business logic / state machine | `knowledge/cards/business-logic-state-machines.md` |

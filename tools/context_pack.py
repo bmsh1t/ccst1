@@ -453,6 +453,23 @@ API_PARSER_DIFF_RE = re.compile(
     re.I,
 )
 
+JSON_VIEW_DIFFERENTIAL_RE = re.compile(
+    r"(?:\b(view[-_ ]?differential|validation view|consumption view|verified view|executed view|"
+    r"canonicalization gap|validate[-_ ]?(?:proxy|store)|json[-_ ]?parser[-_ ]?differential|"
+    r"(?:unpaired|lone)[-_ ]?(?:utf[-_ ]?16[-_ ]?)?surrogate|unicode[-_ ]?truncation|"
+    r"parse[-_ ]+seriali[sz]e(?:[-_ ]+round[-_ ]?trip)?[-_ ]+mismatch|"
+    r"duplicate[-_ ]?(?:json[-_ ]?)?key.{0,120}(?:first|last|validation|consumption|parser)|"
+    r"(?:first[-_ ]?key.{0,120}last[-_ ]?key|last[-_ ]?key.{0,120}first[-_ ]?key))\b|"
+    r"\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f][0-9a-f]{2})|"
+    r"(?<!\\ud[89ab][0-9a-f]{2})\\ud[c-f][0-9a-f]{2}|"
+    r"(?:校验|验证|消费|执行)视图|规范化(?:差异|碰撞)|"
+    r"(?:未配对(?:UTF[-_ ]?16)?|孤立)代理(?:对|字符)|(?:Unicode|字符)[-_ ]?截断|"
+    r"解析(?:后)?(?:与|和)?(?:重新)?序列化(?:结果)?不一致|"
+    r"重复(?:的)?(?:JSON)?键.{0,120}(?:首键|末键|校验|验证|消费|解析)|"
+    r"(?:首键.{0,120}末键|末键.{0,120}首键))",
+    re.I,
+)
+
 BROWSER_CLIENT_BOUNDARY_RE = re.compile(
     r"\b("
     r"cors|csrf|xsrf|same[-_ ]?site|origin|referer|clickjacking|"
@@ -693,7 +710,7 @@ DISTILLED_TOKEN_TO_CARDS = (
     (re.compile(r"\b(subdomain[-_ ]?takeover|dangling[-_ ]?(?:dns|cname)|dns[-_ ]?trust|mx[-_ ]?record|email[-_ ]?spoof|spf|dkim|dmarc)\b", re.I), ("dns-email-trust-boundaries",)),
     (re.compile(r"\b(signature[-_ ]?scope[-_ ]?mismatch|signed bytes|consumption object|xsw|duplicate assertion)\b", re.I), ("signature-scope-mismatch",)),
     (re.compile(r"\b(oauth[-_ ]?sso[-_ ]?trust|email trust|audience confusion|redirect_uri trust)\b", re.I), ("auth-sso-token-edge-cases",)),
-    (re.compile(r"\b(view[-_ ]?differential|validation view|consumption view|verified view|executed view|canonicalization gap)\b", re.I), ("view-differential",)),
+    (JSON_VIEW_DIFFERENTIAL_RE, ("view-differential",)),
     (re.compile(r"\b(h2 crlf|h2 request[-_ ]?splitting|pseudo-header injection|response queue poisoning|non[-_ ]?url crlf)\b", re.I), ("proxy-cache-boundaries",)),
     (re.compile(r"\b(allowlist|whitelist|path normalization|prefix check|starts?with|weak string|dot[-_ ]?segment|url normalization)\b", re.I), ("path-allowlist-normalization",)),
     (re.compile(r"\b(sanitizer|dompurify|mxss|mutation[-_ ]?xss|parser[-_ ]?xss|html parser|second decode)\b", re.I), ("xss-client-injection",)),
@@ -1518,9 +1535,39 @@ def _has_upload_execution_signal(text: str) -> bool:
     )
 
 
+def _has_json_view_differential_candidate_signal(text: str) -> bool:
+    """Pre-test signal: one sensitive structured value crosses processing views."""
+
+    return bool(
+        text
+        and re.search(
+            r"\b(?:json|api|request[-_ ]?body|structured[-_ ]?(?:input|data)|schema)\b|"
+            r"JSON|接口|请求体|结构化",
+            text,
+            re.I,
+        )
+        and (
+            API_PARAMETER_FIELD_RE.search(text)
+            or re.search(r"角色|租户|权限|金额|数量|状态|配额|范围|管理员", text)
+        )
+        and re.search(
+            r"(?:\b(?:store[ds]?|persist(?:ed|ence)?|write|written|forward(?:ed)?|queue[ds]?)\b"
+            r".{0,160}\b(?:read[-_ ]?back|read|consume[dr]?|worker|backend|permission|admin)\b|"
+            r"\b(?:validation|validator|gateway|proxy)\b.{0,160}"
+            r"\b(?:backend|consumer|worker|permission|admin)\b|"
+            r"(?:写入|存储|持久化|转发|入队).{0,160}(?:读取|消费|后端|工作器|权限|管理)|"
+            r"(?:校验|验证|网关|代理).{0,160}(?:后端|消费|执行|权限|管理))",
+            text,
+            re.I,
+        )
+    )
+
+
 def _cards_from_focus(focus: str) -> list[str]:
     focus_l = focus.lower()
     cards = ["web-llm-tool-chains"] if _has_web_llm_agent_signal(focus) else []
+    if _has_json_view_differential_candidate_signal(focus):
+        cards.append("view-differential")
     for pattern, names in DISTILLED_TOKEN_TO_CARDS:
         if pattern.search(focus):
             cards.extend(names)
@@ -1676,6 +1723,7 @@ def _cards_from_focus(focus: str) -> list[str]:
             and not _has_api_parameter_handling_signal(focus)
             and "xml-parser" not in focus_l
             and "xxe" not in focus_l
+            and not JSON_VIEW_DIFFERENTIAL_RE.search(focus)
         )
     ):
         cards.append("upload-parser")
@@ -1776,6 +1824,8 @@ def _select_cards_and_deferred(
             if names == ("browser-client-boundaries",) and _has_proxy_cache_boundary_signal(blob):
                 continue
             cards.extend(names)
+    if _has_json_view_differential_candidate_signal(blob):
+        cards.append("view-differential")
     target_memory = goal_memory.get("target") or {}
     if len(target_memory.get("dead_ends") or []) >= 2:
         cards.append("dead-ends")

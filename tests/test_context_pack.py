@@ -2068,6 +2068,13 @@ def test_distilled_knowledge_cards_route_from_explicit_focus_without_recon(tmp_p
         ("signature scope mismatch saml jwt jku kid duplicate assertion", "knowledge/cards/signature-scope-mismatch.md"),
         ("oauth sso trust email redirect_uri account takeover", "knowledge/cards/auth-sso-token-edge-cases.md"),
         ("view differential validation view consumption view canonicalization gap", "knowledge/cards/view-differential.md"),
+        ("writable JSON role field is persisted then read by permission API and admin API", "knowledge/cards/view-differential.md"),
+        ("validate-store superadmin unpaired surrogate JSON parser", "knowledge/cards/view-differential.md"),
+        ("validate-proxy duplicate JSON key qty first key last key", "knowledge/cards/view-differential.md"),
+        ("JSON parse serialize round-trip mismatch across services", "knowledge/cards/view-differential.md"),
+        ("Validate-Store 未配对代理对导致角色规范化差异", "knowledge/cards/view-differential.md"),
+        ("重复JSON键在校验视图和消费视图分别使用首键末键", "knowledge/cards/view-differential.md"),
+        ("JSON解析后重新序列化结果不一致", "knowledge/cards/view-differential.md"),
         ("request smuggling h2 crlf te header injection response queue", "knowledge/cards/proxy-cache-boundaries.md"),
         ("path allowlist normalization weak string prefix bypass", "knowledge/cards/path-allowlist-normalization.md"),
         ("sanitizer parser xss dompurify mutation-xss second decode", "knowledge/cards/xss-client-injection.md"),
@@ -2092,6 +2099,75 @@ def test_distilled_knowledge_cards_route_from_explicit_focus_without_recon(tmp_p
     for focus, expected_card in cases:
         pack = build_context_pack(tmp_path, target="target.com", focus=focus)
         assert pack["knowledge_cards"][0] == expected_card
+
+
+def test_json_view_differential_routing_is_precise_and_budgeted(tmp_path):
+    collision = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="validate-proxy duplicate JSON key scalar array object first key last key",
+    )
+    assert collision["knowledge_cards"][0] == "knowledge/cards/view-differential.md"
+    assert "knowledge/cards/type-confusion-controlflow.md" in collision["deferred_knowledge_cards"]
+    assert "knowledge/cards/upload-parser.md" not in (
+        collision["knowledge_cards"] + collision["deferred_knowledge_cards"]
+    )
+    assert sum(
+        item["layer"] == "case-router"
+        for item in collision["knowledge_card_capabilities"]
+    ) == 1
+
+    ordinary = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="ordinary JSON API response schema",
+    )
+    assert "knowledge/cards/view-differential.md" not in (
+        ordinary["knowledge_cards"] + ordinary["deferred_knowledge_cards"]
+    )
+
+    ordinary_role = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="ordinary JSON API profile response includes a role field",
+    )
+    assert "knowledge/cards/view-differential.md" not in (
+        ordinary_role["knowledge_cards"] + ordinary_role["deferred_knowledge_cards"]
+    )
+
+    pretest = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="可写 JSON 角色字段先存储，再由权限 API 和管理 API 读取",
+    )
+    assert pretest["knowledge_cards"][0] == "knowledge/cards/view-differential.md"
+
+    stored = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="Validate-Store superadmin unpaired surrogate JSON parser",
+    )
+    assert stored["knowledge_cards"][0] == "knowledge/cards/view-differential.md"
+    assert "knowledge/cards/upload-parser.md" not in (
+        stored["knowledge_cards"] + stored["deferred_knowledge_cards"]
+    )
+
+    raw_surrogate = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus=r'匿名提交 {"role":"superadmin\ud888"} 后 Admin API 截断并授予权限',
+    )
+    assert raw_surrogate["knowledge_cards"][0] == "knowledge/cards/view-differential.md"
+
+    valid_surrogate_pair = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus=r'普通 JSON 昵称 {"name":"user\ud83d\ude00"}',
+    )
+    assert "knowledge/cards/view-differential.md" not in (
+        valid_surrogate_pair["knowledge_cards"]
+        + valid_surrogate_pair["deferred_knowledge_cards"]
+    )
 
 
 def test_public_package_history_routes_to_bounded_recon_intelligence(tmp_path):
