@@ -662,6 +662,46 @@ def test_bootstrap_projects_bounded_intel_continuation_details():
     assert "do-not-project" not in encoded
 
 
+def test_bootstrap_routes_bounded_intel_group_review():
+    state = _state("/tmp/repo", "example.test")
+    state["next_action"] = "review_intel_group"
+    state["intel_continuation"] = {
+        "action": "review_intel_group",
+        "reason": "long-tail advisory facts remain",
+        "review_group": {
+            "group_key": "givewp@4.16.3",
+            "component": {"name": "givewp", "version": "4.16.3"},
+            "advisory_count": 20,
+            "representative_count": 3,
+            "omitted_count": 17,
+            "reactivate_when": "new route evidence",
+            "owner_binding": {"size": 100, "mtime_ns": 2},
+            "query_command": "python3 tools/intel_artifact.py query --target example.test --component givewp --limit 8",
+            "queue_metadata": {
+                "intel_group_key": "givewp@4.16.3",
+                "intel_owner_binding": {"size": 100, "mtime_ns": 2},
+            },
+            "raw": ["do-not-project"] * 20,
+        },
+        "review_projection": {
+            "available": True,
+            "path": "/tmp/repo/recon/example.test/intel-review.json",
+            "group_count": 1,
+            "advisory_count": 20,
+            "omitted_group_count": 0,
+            "owner_binding": {"size": 100, "mtime_ns": 2},
+            "raw": "do-not-project",
+        },
+    }
+
+    compact = autopilot_bootstrap.compact_autopilot_state(state)
+
+    assert compact["lane_contract"]["id"] == "software-intel"
+    assert compact["intel_continuation"]["review_group"]["omitted_count"] == 17
+    assert compact["intel_continuation"]["review_group"]["queue_metadata"]["intel_group_key"] == "givewp@4.16.3"
+    assert "do-not-project" not in json.dumps(compact["intel_continuation"])
+
+
 def test_bootstrap_projects_bounded_cidr_continuation():
     state = _state("/tmp/repo", "10.0.0.0/19")
     state["recon_artifacts"]["cidr_continuation"] = {

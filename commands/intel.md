@@ -82,6 +82,23 @@ When it returns `test_advisory_applicability`, add the advisory to the existing
 raw evidence, and resolve the same action. A blocked provider or unavailable
 source is recorded as `blocked`/handoff; it is never treated as clean.
 
+When it returns `review_intel_group`, the bounded sidecar has closed its
+representatives but still has raw advisory facts outside the default context.
+Use the read-only query to inspect the group a page at a time; the query never
+mutates Intel state:
+
+```bash
+python3 tools/intel_artifact.py query --target TARGET --component COMPONENT \
+  [--version VERSION] [--host HOST] [--severity HIGH|CRITICAL] \
+  [--applicability affected|likely|unknown] [--kev] [--cursor CURSOR] --limit 8
+```
+
+After reviewing the pages, use the existing `tools/action_queue.py` add/resolve
+commands. For a group-level disposition, keep `intel_group_key` and the exact
+`intel_owner_binding` from state in metadata; do not create a finding merely
+because an advisory exists. An owner refresh invalidates the old group
+disposition and makes the group reviewable again.
+
 ## How To Use The Output
 
 - CVE/advisory hits → review `applicability`, KEV/EPSS, source references, and

@@ -237,6 +237,27 @@ def _compact_intel_continuation(value: object) -> dict[str, Any]:
             "score_hint": advisory.get("score_hint", 0),
             "source_refs": source_refs,
         }
+    raw_group = continuation.get("review_group")
+    group = raw_group if isinstance(raw_group, dict) else {}
+    raw_component = group.get("component") if isinstance(group.get("component"), dict) else {}
+    compact_group = {}
+    if group:
+        compact_group = {
+            "group_key": str(group.get("group_key") or ""),
+            "component": {
+                "name": str(raw_component.get("name") or ""),
+                "version": str(raw_component.get("version") or ""),
+            },
+            "advisory_count": int(group.get("advisory_count", 0) or 0),
+            "representative_count": int(group.get("representative_count", 0) or 0),
+            "omitted_count": int(group.get("omitted_count", 0) or 0),
+            "reactivate_when": str(group.get("reactivate_when") or "")[:240],
+            "owner_binding": group.get("owner_binding") if isinstance(group.get("owner_binding"), dict) else {},
+            "query_command": str(group.get("query_command") or "")[:500],
+            "queue_metadata": group.get("queue_metadata") if isinstance(group.get("queue_metadata"), dict) else {},
+        }
+    raw_projection = continuation.get("review_projection")
+    projection = raw_projection if isinstance(raw_projection, dict) else {}
     return {
         "action": str(continuation.get("action") or "complete"),
         "reason": str(continuation.get("reason") or ""),
@@ -251,6 +272,15 @@ def _compact_intel_continuation(value: object) -> dict[str, Any]:
             if isinstance(item, dict)
         ],
         "advisory": compact_advisory,
+        "review_group": compact_group,
+        "review_projection": {
+            "available": bool(projection.get("available")),
+            "path": str(projection.get("path") or "")[:300],
+            "group_count": int(projection.get("group_count", 0) or 0),
+            "advisory_count": int(projection.get("advisory_count", 0) or 0),
+            "omitted_group_count": int(projection.get("omitted_group_count", 0) or 0),
+            "owner_binding": projection.get("owner_binding") if isinstance(projection.get("owner_binding"), dict) else {},
+        },
     }
 
 
@@ -305,7 +335,7 @@ def _lane_contract_projection(state: dict[str, Any]) -> dict[str, str]:
         lane = "state-and-queue"
     elif action == "resume_case_state":
         lane = "workflow-case"
-    elif action in {"run_intel", "collect_web_intel", "test_advisory_applicability"}:
+    elif action in {"run_intel", "collect_web_intel", "test_advisory_applicability", "review_intel_group"}:
         lane = "software-intel"
     elif state.get("browser_required"):
         lane = "browser-source-js"

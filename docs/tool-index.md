@@ -18,6 +18,7 @@
 | `tools/cve_hunter.py` | Explicit compatibility CVE-template probe | Rebuild Intel v2, then run the legacy Nuclei CVE pass; do not pair with default `/intel` |
 | `tools/cve_scan.sh` | Pre-engagement nuclei sweep | Fast nuclei pass scoped to known CVE templates |
 | `tools/intel_engine.py` | Versioned component/service review | `/intel` owner — OSV/GHSA/NVD, KEV/EPSS, local signals, atomic `intel.json` |
+| `tools/intel_artifact.py` | AI selects an omitted advisory group or filter | Read-only, bounded, cursor-paged query over the complete `intel.json`; never writes findings or Queue |
 | `tools/technology_inventory.py` | Multiple consumers need reliable httpx/Nmap tech, version, service, or CPE data | Shared JSONL/text/Nmap parser and atomic component inventory owner |
 | `tools/web_intel_artifact.py` | Official-source gap | Verified Web Intel recorder: TTL, source groups, atomic index |
 | `tools/fresh_code.py` | Recent feature or code-change signal may change the attack surface | Bounded recent code/feature intelligence; record leads, do not auto-run it |

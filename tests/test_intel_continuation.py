@@ -4,11 +4,18 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import intel_engine
 import tools.intel_continuation as intel_continuation_module
 
 from tools.action_queue import add_manual_action, resolve_action, save_queue
-from tools.intel_artifact import load_intel_review_projection, write_intel_artifact
+from tools.intel_artifact import (
+    IntelArtifactError,
+    load_intel_review_projection,
+    query_intel_advisories,
+    write_intel_artifact,
+)
 from tools.intel_continuation import apply_intel_continuation, inspect_intel_continuation
 from tools.technology_inventory import load_or_build_inventory
 from tools.web_intel_artifact import load_web_intel_projection, record_web_intel
@@ -142,6 +149,173 @@ def test_intel_review_sidecar_is_bounded_and_stable(tmp_path, monkeypatch):
     monkeypatch.setattr(intel_continuation_module, "read_intel_artifact", fail_full_read)
     state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
     assert state["action"] == "test_advisory_applicability"
+
+
+def test_intel_query_is_stable_paged_and_read_only(tmp_path):
+    _prepare_inventory(tmp_path)
+    advisories = []
+    for index in range(5):
+        advisory = _advisory()
+        advisory["id"] = f"CVE-2026-{63030 + index}"
+        advisory["aliases"] = [advisory["id"]]
+        advisory["score_hint"] = 100 - index
+        advisory["kev"] = index == 0
+        advisories.append(advisory)
+    not_affected = _advisory()
+    not_affected["id"] = "CVE-2026-63999"
+    not_affected["aliases"] = [not_affected["id"]]
+    not_affected["applicability"] = "not_affected"
+    advisories.append(not_affected)
+    for index in range(33):
+        advisory = _advisory()
+        advisory["id"] = f"CVE-2026-{65000 + index}"
+        advisory["aliases"] = [advisory["id"]]
+        advisory["component"] = {
+            **advisory["component"],
+            "name": f"component-{index:02d}",
+            "version": "1.0",
+        }
+        advisories.append(advisory)
+    _write_intel(tmp_path, _intel(advisories=advisories))
+    owner = tmp_path / "recon" / "target.test" / "intel.json"
+    sidecar = tmp_path / "recon" / "target.test" / "intel-review.json"
+    owner_bytes = owner.read_bytes()
+    sidecar_bytes = sidecar.read_bytes()
+    projection = load_intel_review_projection(sidecar.parent, "target.test")
+
+    assert projection["total_group_count"] == 34
+    assert projection["group_count"] == 32
+    assert projection["omitted_group_count"] == 2
+    assert len(projection["omitted_groups"]) == 2
+
+    first = query_intel_advisories(owner, component="givewp", version="4.16.3", limit=2)
+    second = query_intel_advisories(
+        owner,
+        component="givewp",
+        version="4.16.3",
+        limit=2,
+        cursor=first["next_cursor"],
+    )
+
+    assert first["total_matches"] == 5
+    assert [item["id"] for item in first["items"]] == [
+        "CVE-2026-63030",
+        "CVE-2026-63031",
+    ]
+    assert [item["id"] for item in second["items"]] == [
+        "CVE-2026-63032",
+        "CVE-2026-63033",
+    ]
+    assert set(item["id"] for item in first["items"]).isdisjoint(
+        item["id"] for item in second["items"]
+    )
+    filtered = query_intel_advisories(
+        owner,
+        host="target.test",
+        severity="critical",
+        applicability="affected",
+        kev=True,
+        include_stale=True,
+        limit=32,
+    )
+    assert [item["id"] for item in filtered["items"]] == ["CVE-2026-63030"]
+    assert owner.read_bytes() == owner_bytes
+    assert sidecar.read_bytes() == sidecar_bytes
+
+
+def test_intel_query_rejects_stale_cursor_after_owner_refresh(tmp_path):
+    _prepare_inventory(tmp_path)
+    advisories = [_advisory(), {**_advisory(), "id": "CVE-2026-64000", "aliases": ["CVE-2026-64000"], "score_hint": 1}]
+    _write_intel(tmp_path, _intel(advisories=advisories))
+    owner = tmp_path / "recon" / "target.test" / "intel.json"
+    first = query_intel_advisories(owner, component="givewp", limit=1)
+    refreshed = _intel(advisories=advisories + [{**_advisory(), "id": "CVE-2026-65000", "aliases": ["CVE-2026-65000"], "score_hint": 1}])
+    _write_intel(tmp_path, refreshed)
+
+    with pytest.raises(IntelArtifactError, match="stale"):
+        query_intel_advisories(owner, component="givewp", limit=1, cursor=first["next_cursor"])
+
+
+def test_omitted_intel_group_requires_review_then_closes_by_queue(tmp_path):
+    _prepare_inventory(tmp_path)
+    advisories = []
+    for index in range(5):
+        advisory = _advisory()
+        advisory["id"] = f"CVE-2026-{63030 + index}"
+        advisory["aliases"] = [advisory["id"]]
+        advisory["score_hint"] = 100 - index
+        advisories.append(advisory)
+    _write_intel(tmp_path, _intel(advisories=advisories))
+
+    initial = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+    assert initial["action"] == "test_advisory_applicability"
+    sidecar = load_intel_review_projection(tmp_path / "recon" / "target.test", "target.test")
+    representatives = sidecar["groups"][0]["representatives"]
+    for advisory in representatives:
+        added = add_manual_action(
+            tmp_path,
+            target="target.test",
+            action_type="intel-advisory",
+            evidence=f"{advisory['id']} reviewed against GiveWP 4.16.3",
+            next_question="Is the advisory route reachable?",
+            action=f"Review {advisory['id']}",
+            metadata={
+                "advisory_id": advisory["id"],
+                "component": "givewp",
+                "version": "4.16.3",
+            },
+        )
+        action_id = next(
+            item["id"]
+            for item in added["queue"]["actions"]
+            if (item.get("metadata") or {}).get("advisory_id") == advisory["id"]
+        )
+        resolve_action(
+            tmp_path,
+            target="target.test",
+            action_id=action_id,
+            status="tested",
+            result=f"{advisory['id']} route not reachable",
+        )
+
+    group_state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+    assert group_state["action"] == "review_intel_group"
+    group = group_state["review_group"]
+    assert group["group_key"] == "givewp@4.16.3"
+    assert group["omitted_count"] == 2
+    assert "intel_artifact.py query" in group["query_command"]
+
+    added = add_manual_action(
+        tmp_path,
+        target="target.test",
+        action_type="intel-advisory",
+        evidence="GiveWP group long-tail reviewed; no reachable advisory route",
+        next_question="Does the group need reactivation after a new owner refresh?",
+        action="Review omitted GiveWP Intel group",
+        metadata=group["queue_metadata"],
+    )
+    group_action_id = next(
+        item["id"]
+        for item in added["queue"]["actions"]
+        if (item.get("metadata") or {}).get("intel_group_key") == group["group_key"]
+    )
+    resolve_action(
+        tmp_path,
+        target="target.test",
+        action_id=group_action_id,
+        status="tested",
+        result="GiveWP group reviewed with no reachable advisory route",
+    )
+    assert inspect_intel_continuation(tmp_path, "target.test", now=NOW)["action"] == "complete"
+
+    refreshed = _intel(advisories=advisories + [{
+        **_advisory(),
+        "id": "CVE-2026-65000",
+        "aliases": ["CVE-2026-65000"],
+        "score_hint": 1,
+    }])
+    _write_intel(tmp_path, refreshed)
+    assert inspect_intel_continuation(tmp_path, "target.test", now=NOW)["action"] == "review_intel_group"
 
 
 def test_official_gap_triggers_web_intel(tmp_path):

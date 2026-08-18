@@ -1056,6 +1056,7 @@ def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
         "run_intel",
         "collect_web_intel",
         "test_advisory_applicability",
+        "review_intel_group",
     }:
         return False
     tracked = int(guard_status.get("tracked_hosts", 0) or 0)
@@ -1222,6 +1223,19 @@ def _describe_next_step(state: dict) -> str:
             id=advisory.get("id", "the top advisory"),
             name=component.get("name", "component"),
             version=component.get("version") or "unknown",
+        )
+    if action == "review_intel_group":
+        group = (state.get("intel_continuation") or {}).get("review_group") or {}
+        component = group.get("component") if isinstance(group.get("component"), dict) else {}
+        return (
+            "review omitted Intel group {group_key} for {name}@{version}: query the bounded "
+            "raw advisory pages, then record one existing Action Queue final disposition or "
+            "one exact applicability action before continuing. Query: {query}"
+        ).format(
+            group_key=group.get("group_key", "the group"),
+            name=component.get("name", "component"),
+            version=component.get("version") or "unknown",
+            query=group.get("query_command", "python3 tools/intel_artifact.py query --target TARGET"),
         )
     if action == "report_finding":
         followup = (state.get("structured_findings") or {}).get("next_report") or {}
@@ -1665,6 +1679,7 @@ def _build_enrichment_hints(
         "run_intel",
         "collect_web_intel",
         "test_advisory_applicability",
+        "review_intel_group",
     }:
         return "", []
 
@@ -2411,6 +2426,7 @@ def _build_domain_autopilot_state(
             "run_intel",
             "collect_web_intel",
             "test_advisory_applicability",
+            "review_intel_group",
         }
         else []
     )
@@ -2439,7 +2455,7 @@ def _build_domain_autopilot_state(
         )
     else:
         next_tool_hint, enrichment_hints = "", []
-    if next_action in {"run_intel", "collect_web_intel", "test_advisory_applicability"}:
+    if next_action in {"run_intel", "collect_web_intel", "test_advisory_applicability", "review_intel_group"}:
         next_tool_hint = next_action
         enrichment_hints = [{
             "tool": next_action,

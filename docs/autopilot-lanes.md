@@ -23,7 +23,7 @@ actions. Ordinary Card changes do not require a new lane.
 - `validate_finding`: call `/validate` only when state returns `validate_finding`. The non-TTY owner is `python3 tools/validate.py --target <target_shell> --finding-id <id> --decision-json <json_file_shell> --json`; the JSON file path is never inline.
 - `resume_action_queue`: run `python3 tools/action_queue.py claim --target <target_shell>`, perform the claimed or resumed durable replay, then run `python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>` and refresh.
 - `resume_case_state`: follow `state.case_state.top_next_action`; run its redacted validation command when ready. Otherwise enrich or create the owner backlog with `tools/target_case_state.py`, write back through that owner, then refresh.
-- `review_validation_candidate`, `complete_report_draft`, `run_intel`, `collect_web_intel`, `test_advisory_applicability`, and `recon_no_live_hosts` retain their owner-defined stop/write-back semantics.
+- `review_validation_candidate`, `complete_report_draft`, `run_intel`, `collect_web_intel`, `test_advisory_applicability`, `review_intel_group`, and `recon_no_live_hosts` retain their owner-defined stop/write-back semantics.
 - If `state.root_claim_next` exists, run `/checkpoint` so `finding_index` creates the canonical candidate and queue action, refresh, then use the canonical ID.
 - Matching deterministic replay follows `docs/evidence-runners.md` and `python3 tools/validation_runner.py <lane> --target <target_shell> ...`; its first positional argument is `<lane>` and it never accepts `--decision-json`.
 - For a readable text list or schema-v1 JSON Scope manifest, run batch recon only for `run_batch_recon`; never scan the list/manifest file itself. Stop on `invalid_batch_target` or `batch_failed`; otherwise select one completed `in_scope` asset, preserve bootstrap `scope_ref/scope_hash`, and rerun `autopilot_state.py --target <domain> --bounded`. Unlisted discovery remains context/review, and `out_of_scope` always wins.
@@ -45,6 +45,13 @@ actions. Ordinary Card changes do not require a new lane.
 
 - Known software: concrete version -> `tools/intel_engine.py`; select a reachable advisory before targeted probe and refresh state. WordPress/WPScan: `knowledge/cards/wordpress-surface-intelligence.md`. Exchange/OWA/EWS/Autodiscover evidence -> `python3 tools/eburst_lane.py --target <target_shell>` for the bounded interface check; use `/spray` for reviewed credentials.
 - If a concrete component/version appears, query advisory sources, map affected/fixed ranges, and record `applicability`, source failure/staleness, and route reachability separately. Do not pair default Intel with `tools/cve_hunter.py`; use `/scan-cves`, `tools/cve_scan.sh`, or that compatibility entry only after AI selects a reachable advisory.
+- `review_intel_group` is an AI review handoff, not a new scanner lane. Use the bounded
+  read-only query (`python3 tools/intel_artifact.py query --target <target_shell> --component <component> [--version <version>] --cursor <cursor>`)
+  to page omitted advisory facts. Then add or resolve one existing `intel-advisory`
+  Action Queue item with `intel_group_key` and the returned `intel_owner_binding`; use
+  `tested` for reviewed/no actionable item, `dead-end`/`n/a` for dismissed, and
+  `blocked` for deferred provider or evidence work. Never treat the group index alone
+  as a finding or tested-clean result.
 
 ## SQL JSON And WAF
 

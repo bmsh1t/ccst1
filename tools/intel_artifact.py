@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import argparse
+import base64
+import hashlib
 import json
 import os
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 try:
@@ -20,6 +24,9 @@ SOURCE_STATUSES = {"ok", "partial", "unavailable", "error"}
 COVERAGE_STATUSES = {"ready", "partial", "unavailable", "error"}
 REVIEW_ITEM_LIMIT = 16
 REVIEW_GROUP_LIMIT = 32
+INTEL_QUERY_PAGE_LIMIT = 8
+INTEL_QUERY_MAX_PAGE_LIMIT = 32
+OMITTED_GROUP_INDEX_LIMIT = 128
 NOT_APPLICABLE_VALUES = {
     "not_affected",
     "not-affected",
@@ -211,6 +218,212 @@ def _bounded_list(value: object, limit: int) -> list:
     return list(value)[:limit] if isinstance(value, list) else []
 
 
+def _owner_binding(path: Path) -> dict[str, int]:
+    stat = path.stat()
+    return {
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "ctime_ns": stat.st_ctime_ns,
+        "st_dev": stat.st_dev,
+        "st_ino": stat.st_ino,
+    }
+
+
+def _query_filters(
+    *,
+    component: str = "",
+    version: str = "",
+    host: str = "",
+    severity: str = "",
+    applicability: str = "",
+    kev: bool = False,
+    include_stale: bool = False,
+) -> dict[str, object]:
+    normalized_severity = str(severity or "").strip().upper()
+    if normalized_severity == "MODERATE":
+        normalized_severity = "MEDIUM"
+    normalized_applicability = normalize_advisory_applicability(applicability) if applicability else ""
+    return {
+        "component": str(component or "").strip().lower(),
+        "version": str(version or "").strip().lower(),
+        "host": str(host or "").strip().lower(),
+        "severity": normalized_severity,
+        "applicability": normalized_applicability,
+        "kev": bool(kev),
+        "include_stale": bool(include_stale),
+    }
+
+
+def _query_fingerprint(filters: dict[str, object]) -> str:
+    material = json.dumps(filters, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def _cursor_token(*, owner_binding: dict[str, int], filters: dict[str, object], offset: int) -> str:
+    payload = {
+        "owner_binding": owner_binding,
+        "filters": _query_fingerprint(filters),
+        "offset": offset,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return base64.urlsafe_b64encode(encoded.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(
+    cursor: object,
+    *,
+    owner_binding: dict[str, int],
+    filters: dict[str, object],
+) -> int:
+    if cursor in (None, "", 0):
+        return 0
+    try:
+        raw = str(cursor)
+        padding = "=" * (-len(raw) % 4)
+        payload = json.loads(base64.urlsafe_b64decode((raw + padding).encode("ascii")))
+    except (ValueError, TypeError, json.JSONDecodeError, UnicodeError) as exc:
+        raise IntelArtifactError("invalid Intel query cursor") from exc
+    if not isinstance(payload, dict):
+        raise IntelArtifactError("invalid Intel query cursor")
+    if payload.get("owner_binding") != owner_binding or payload.get("filters") != _query_fingerprint(filters):
+        raise IntelArtifactError("Intel query cursor is stale for this owner or filter")
+    try:
+        offset = int(payload.get("offset"))
+    except (TypeError, ValueError) as exc:
+        raise IntelArtifactError("invalid Intel query cursor offset") from exc
+    if offset < 0:
+        raise IntelArtifactError("invalid Intel query cursor offset")
+    return offset
+
+
+def _query_sort_key(item: dict) -> tuple:
+    severity = {"UNKNOWN": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+    applicability = {"unknown": 0, "likely": 1, "affected": 2}
+    component = item.get("component") if isinstance(item.get("component"), dict) else {}
+    return (
+        -severity.get(str(item.get("severity") or "UNKNOWN").upper(), 0),
+        -applicability.get(normalize_advisory_applicability(item.get("applicability")), 0),
+        -_score_hint(item),
+        str(component.get("name") or "").lower(),
+        str(component.get("version") or "").lower(),
+        str(item.get("id") or ""),
+    )
+
+
+def _query_matches(item: dict, filters: dict[str, object]) -> bool:
+    component = item.get("component") if isinstance(item.get("component"), dict) else {}
+    component_name = str(component.get("name") or "").strip().lower()
+    display_name = str(component.get("display_name") or "").strip().lower()
+    if filters["component"] and filters["component"] not in {component_name, display_name}:
+        return False
+    if filters["version"] and str(component.get("version") or "").strip().lower() != filters["version"]:
+        return False
+    if filters["host"]:
+        values = [
+            *(component.get("hosts") or []),
+            *(component.get("urls") or []),
+        ]
+        normalized_hosts = set()
+        for value in values:
+            text = str(value or "").strip().lower()
+            if not text:
+                continue
+            parsed = urllib.parse.urlparse(text if "://" in text else f"//{text}")
+            normalized_hosts.add(text)
+            if parsed.hostname:
+                normalized_hosts.add(parsed.hostname.lower())
+            if parsed.netloc:
+                normalized_hosts.add(parsed.netloc.lower())
+        if filters["host"] not in normalized_hosts:
+            return False
+    if filters["severity"] and str(item.get("severity") or "UNKNOWN").upper() != filters["severity"]:
+        return False
+    if filters["applicability"] and normalize_advisory_applicability(item.get("applicability")) != filters["applicability"]:
+        return False
+    if filters["kev"] and not bool(item.get("kev")):
+        return False
+    return True
+
+
+def _project_query_item(item: dict) -> dict:
+    projected = project_intel_review_items([item], limit=1, include_stale=True)
+    if not projected:
+        return {}
+    result = projected[0]
+    result.update({
+        "fixed_versions": _bounded_list(item.get("fixed_versions"), 8),
+        "affected_ranges": _bounded_list(item.get("affected_ranges"), 8),
+        "poc_available": bool(item.get("poc_available")),
+        "nuclei_templates": _bounded_list(item.get("nuclei_templates"), 8),
+        "local_evidence_refs": _bounded_list(item.get("local_evidence_refs"), 8),
+    })
+    return result
+
+
+def query_intel_advisories(
+    path: str | Path,
+    *,
+    component: str = "",
+    version: str = "",
+    host: str = "",
+    severity: str = "",
+    applicability: str = "",
+    kev: bool = False,
+    cursor: object = "",
+    limit: int = INTEL_QUERY_PAGE_LIMIT,
+    include_stale: bool = False,
+) -> dict:
+    """Read a bounded, deterministic page from the complete Intel owner."""
+    owner_path = Path(path)
+    before = _owner_binding(owner_path)
+    payload = read_intel_artifact(owner_path)
+    after = _owner_binding(owner_path)
+    if before != after:
+        raise IntelArtifactError("intel.json changed during query")
+    filters = _query_filters(
+        component=component,
+        version=version,
+        host=host,
+        severity=severity,
+        applicability=applicability,
+        kev=kev,
+        include_stale=include_stale,
+    )
+    try:
+        page_limit = int(limit)
+    except (TypeError, ValueError) as exc:
+        raise IntelArtifactError("invalid Intel query page limit") from exc
+    page_limit = max(1, min(page_limit, INTEL_QUERY_MAX_PAGE_LIMIT))
+    offset = _decode_cursor(cursor, owner_binding=after, filters=filters)
+    candidates = [
+        item
+        for item in payload.get("advisories") or []
+        if isinstance(item, dict)
+        and _is_review_candidate(item, include_stale=include_stale)
+        and _query_matches(item, filters)
+    ]
+    candidates.sort(key=_query_sort_key)
+    page = candidates[offset:offset + page_limit]
+    next_offset = offset + len(page)
+    next_cursor = (
+        _cursor_token(owner_binding=after, filters=filters, offset=next_offset)
+        if next_offset < len(candidates)
+        else None
+    )
+    return {
+        "status": "ok",
+        "owner_path": str(owner_path),
+        "owner_binding": after,
+        "query": filters,
+        "total_matches": len(candidates),
+        "offset": offset,
+        "limit": page_limit,
+        "items": [_project_query_item(item) for item in page],
+        "next_cursor": next_cursor,
+        "has_more": next_cursor is not None,
+    }
+
+
 def _bounded_texts(value: object, limit: int = 64) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -348,6 +561,7 @@ def build_intel_review_projection(
         ),
     )
     selected = ordered[:max(0, limit)]
+    omitted = ordered[max(0, limit):]
     stat = owner_path.stat()
     inventory = payload.get("inventory") if isinstance(payload.get("inventory"), dict) else {}
     gaps = payload.get("intel_gaps") if isinstance(payload.get("intel_gaps"), dict) else {}
@@ -362,6 +576,22 @@ def build_intel_review_projection(
         "group_count": len(selected),
         "total_group_count": len(ordered),
         "truncated_group_count": max(0, len(ordered) - len(selected)),
+        "omitted_groups": [
+            {
+                "group_key": group.get("group_key", ""),
+                "component": group.get("component", {}),
+                "advisory_count": int(group.get("advisory_count", 0) or 0),
+                "representative_count": int(group.get("representative_count", 0) or 0),
+                "omitted_count": int(group.get("omitted_count", 0) or 0),
+                "max_score_hint": max(
+                    (_score_hint(item) for item in group.get("representatives") or []),
+                    default=0,
+                ),
+                "reactivate_when": str(group.get("reactivate_when") or "")[:240],
+            }
+            for group in omitted[:OMITTED_GROUP_INDEX_LIMIT]
+        ],
+        "omitted_group_count": len(omitted),
         "groups": selected,
         "items": [
             item
@@ -410,22 +640,13 @@ def load_intel_review_projection(recon_dir: str | Path, target: str) -> dict | N
         return None
     groups = payload.get("groups")
     items = payload.get("items")
-    if not isinstance(groups, list) or not isinstance(items, list):
+    omitted_groups = payload.get("omitted_groups")
+    if not isinstance(groups, list) or not isinstance(items, list) or not isinstance(omitted_groups, list):
         return None
     binding = payload.get("owner_binding") if isinstance(payload.get("owner_binding"), dict) else {}
     owner_path = Path(recon_dir) / "intel.json"
     try:
-        stat = owner_path.stat()
-        matches = all(
-            int(binding.get(key, -1)) == int(getattr(stat, attribute))
-            for key, attribute in (
-                ("size", "st_size"),
-                ("mtime_ns", "st_mtime_ns"),
-                ("ctime_ns", "st_ctime_ns"),
-                ("st_dev", "st_dev"),
-                ("st_ino", "st_ino"),
-            )
-        )
+        matches = binding == _owner_binding(owner_path)
     except (OSError, TypeError, ValueError):
         matches = False
     if not matches:
@@ -540,3 +761,47 @@ def load_intel_projection(recon_dir: str | Path) -> dict:
         "sources": [],
         "coverage_status": "missing",
     }
+
+
+def _query_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Read bounded pages from a target Intel artifact")
+    sub = parser.add_subparsers(dest="command", required=True)
+    query = sub.add_parser("query", help="Query advisory facts without modifying artifacts")
+    query.add_argument("--target", required=True)
+    query.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[1]))
+    query.add_argument("--component", default="")
+    query.add_argument("--version", default="")
+    query.add_argument("--host", default="")
+    query.add_argument("--severity", default="")
+    query.add_argument("--applicability", default="")
+    query.add_argument("--kev", action="store_true")
+    query.add_argument("--include-stale", action="store_true")
+    query.add_argument("--cursor", default="")
+    query.add_argument("--limit", type=int, default=INTEL_QUERY_PAGE_LIMIT)
+    return parser
+
+
+def _query_cli(argv: list[str] | None = None) -> int:
+    args = _query_parser().parse_args(argv)
+    try:
+        result = query_intel_advisories(
+            intel_artifact_path(args.repo_root, args.target),
+            component=args.component,
+            version=args.version,
+            host=args.host,
+            severity=args.severity,
+            applicability=args.applicability,
+            kev=args.kev,
+            cursor=args.cursor,
+            limit=args.limit,
+            include_stale=args.include_stale,
+        )
+    except (IntelArtifactError, OSError, ValueError) as exc:
+        print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_query_cli())

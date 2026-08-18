@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -57,6 +58,7 @@ GENERIC_ACTIONS = {
     "hunt_p2",
     "handoff",
 }
+GROUP_DISPOSITION_KEY = "__intel_groups__"
 INTEL_REFRESH_TTL_SECONDS = DEFAULT_COMPONENT_TTL_SECONDS
 _SEVERITY_RANK = {"UNKNOWN": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 _APPLICABILITY_RANK = {"unknown": 0, "likely": 1, "affected": 2}
@@ -114,6 +116,11 @@ def _final_queue_dispositions(repo_root: str | Path, target: str) -> dict[str, l
             ensure_ascii=False,
         )
         disposition = {"metadata": metadata, "material": material.lower()}
+        group_key = str(metadata.get("intel_group_key") or "").strip()
+        if group_key:
+            disposition["group_key"] = group_key
+            disposition["owner_binding"] = metadata.get("intel_owner_binding")
+            dispositions.setdefault(GROUP_DISPOSITION_KEY, []).append(disposition)
         for match in _IDENTIFIER_RE.finditer(material):
             dispositions.setdefault(match.group(0).upper(), []).append(disposition)
     return dispositions
@@ -227,6 +234,24 @@ def _has_final_disposition(item: dict, dispositions: dict[str, list[dict]]) -> b
     return False
 
 
+def _has_group_final_disposition(
+    group: dict,
+    dispositions: dict[str, list[dict]],
+    owner_binding: dict | None,
+) -> bool:
+    group_key = str(group.get("group_key") or "").strip()
+    if not group_key:
+        return False
+    for disposition in dispositions.get(GROUP_DISPOSITION_KEY, []):
+        if str(disposition.get("group_key") or "") != group_key:
+            continue
+        recorded_binding = disposition.get("owner_binding")
+        if isinstance(owner_binding, dict) and recorded_binding != owner_binding:
+            continue
+        return True
+    return False
+
+
 def _bound_inventory_sources(repo: Path, inventory: dict) -> list[tuple[dict, Path]]:
     """只检查 owner 实际绑定的 raw 输入，避免兼容副本制造刷新循环。"""
     sources = inventory.get("sources") if isinstance(inventory.get("sources"), list) else []
@@ -257,6 +282,44 @@ def _high_value_advisory(item: dict) -> bool:
     )
 
 
+def _pending_review_groups(
+    projection: dict | None,
+    dispositions: dict[str, list[dict]],
+) -> list[dict]:
+    if not isinstance(projection, dict):
+        return []
+    owner_binding = projection.get("owner_binding")
+    owner_binding = owner_binding if isinstance(owner_binding, dict) else {}
+    candidates: list[dict] = []
+    for group in projection.get("groups") or []:
+        if isinstance(group, dict) and int(group.get("omitted_count", 0) or 0) > 0:
+            candidates.append(group)
+    candidates.extend(
+        group for group in projection.get("omitted_groups") or [] if isinstance(group, dict)
+    )
+    indexed_count = len(projection.get("omitted_groups") or [])
+    omitted_group_count = int(projection.get("omitted_group_count", 0) or 0)
+    if omitted_group_count > indexed_count:
+        candidates.append({
+            "group_key": "__remaining_intel_groups__",
+            "component": {},
+            "advisory_count": int(projection.get("advisory_count", 0) or 0),
+            "representative_count": 0,
+            "omitted_count": 0,
+            "reactivate_when": "page the bounded group index and raw advisories until every remaining group has a disposition",
+        })
+    pending = []
+    seen = set()
+    for group in candidates:
+        group_key = str(group.get("group_key") or "").strip()
+        if not group_key or group_key in seen:
+            continue
+        seen.add(group_key)
+        if not _has_group_final_disposition(group, dispositions, owner_binding):
+            pending.append(group)
+    return pending
+
+
 def inspect_intel_continuation(
     repo_root: str | Path,
     target: str,
@@ -280,6 +343,11 @@ def inspect_intel_continuation(
         "recommended": [],
         "blocked": [],
         "advisory": {},
+        "review_group": {},
+        "review_projection": {
+            "available": False,
+            "path": str(recon_dir / "intel-review.json"),
+        },
     }
     # Bootstrap 不解析 raw recon。inventory 由 /surface、/intel 或 recon
     # finalizer 显式构建；只有 owner artifact 存在后才开启 continuation。
@@ -331,6 +399,21 @@ def inspect_intel_continuation(
             "reason": "the software/service inventory is newer than intel.json",
         }
     review_projection = load_intel_review_projection(recon_dir, resolved_target)
+    owner_binding = (
+        review_projection.get("owner_binding")
+        if isinstance(review_projection, dict)
+        and isinstance(review_projection.get("owner_binding"), dict)
+        else {}
+    )
+    if review_projection is not None:
+        base["review_projection"] = {
+            "available": True,
+            "path": str(recon_dir / "intel-review.json"),
+            "group_count": int(review_projection.get("group_count", 0) or 0),
+            "advisory_count": int(review_projection.get("advisory_count", 0) or 0),
+            "omitted_group_count": int(review_projection.get("omitted_group_count", 0) or 0),
+            "owner_binding": owner_binding,
+        }
     if review_projection is not None:
         intel = review_projection
     else:
@@ -454,6 +537,8 @@ def inspect_intel_continuation(
                 "path": str(recon_dir / "intel-review.json"),
                 "group_count": int((review_projection or {}).get("group_count", 0) or 0),
                 "advisory_count": int((review_projection or {}).get("advisory_count", len(advisories)) or 0),
+                "omitted_group_count": int((review_projection or {}).get("omitted_group_count", 0) or 0),
+                "owner_binding": (review_projection or {}).get("owner_binding", {}),
             },
         }
     if stale_advisories:
@@ -469,6 +554,50 @@ def inspect_intel_continuation(
                 }
                 for item in stale_advisories[:4]
             ],
+        }
+    pending_groups = _pending_review_groups(review_projection, final_dispositions)
+    if pending_groups:
+        group = pending_groups[0]
+        component = group.get("component") if isinstance(group.get("component"), dict) else {}
+        component_name = str(component.get("name") or "").strip()
+        component_version = str(component.get("version") or "").strip()
+        query_parts = [
+            "python3 tools/intel_artifact.py query",
+            "--target", shlex.quote(resolved_target),
+        ]
+        if component_name:
+            query_parts.extend(("--component", shlex.quote(component_name)))
+        if component_version:
+            query_parts.extend(("--version", shlex.quote(component_version)))
+        return {
+            **base,
+            "action": "review_intel_group",
+            "reason": "bounded Intel representatives are closed but an advisory group still has unreviewed long-tail facts",
+            "review_group": {
+                "group_key": str(group.get("group_key") or ""),
+                "component": {
+                    "name": component_name,
+                    "version": component_version,
+                },
+                "advisory_count": int(group.get("advisory_count", 0) or 0),
+                "representative_count": int(group.get("representative_count", 0) or 0),
+                "omitted_count": int(group.get("omitted_count", 0) or 0),
+                "reactivate_when": str(group.get("reactivate_when") or "")[:240],
+                "owner_binding": owner_binding if isinstance(owner_binding, dict) else {},
+                "query_command": " ".join(query_parts) + " --limit 8",
+                "queue_metadata": {
+                    "intel_group_key": str(group.get("group_key") or ""),
+                    "intel_owner_binding": owner_binding if isinstance(owner_binding, dict) else {},
+                },
+            },
+            "review_projection": {
+                "available": True,
+                "path": str(recon_dir / "intel-review.json"),
+                "group_count": int((review_projection or {}).get("group_count", 0) or 0),
+                "advisory_count": int((review_projection or {}).get("advisory_count", len(advisories)) or 0),
+                "omitted_group_count": int((review_projection or {}).get("omitted_group_count", 0) or 0),
+                "owner_binding": owner_binding if isinstance(owner_binding, dict) else {},
+            },
         }
     # Web Intel 只补充官方源没有覆盖的内容，不能抢占已有高危/受影响 advisory。
     if gaps.get("web_search_recommended") and recommended:

@@ -1299,6 +1299,7 @@ ACTION_DECISIONS = {
     "run_intel": "enrich",
     "collect_web_intel": "enrich",
     "test_advisory_applicability": "enrich",
+    "review_intel_group": "enrich",
     "context-review": "checkpoint",
     "action-gated-review": "checkpoint",
     "handoff": "handoff",
