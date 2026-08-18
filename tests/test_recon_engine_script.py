@@ -264,6 +264,9 @@ def test_recon_engine_has_timeout_compat_helper():
     assert "timeout_bin()" in text
     assert "gtimeout" in text
     assert "run_with_timeout()" in text
+    assert "dir_fuzz_remaining_seconds()" in text
+    assert 'BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS' in text
+    assert 'FFUF_PHASE_DEADLINE_SECONDS=$((SECONDS + DIR_FUZZ_HARD_BUDGET_SECONDS))' in text
     assert 'AMASS_ENABLED=0' in text
     assert 'env_truthy "${BBHUNT_ENABLE_AMASS:-0}"' in text
     assert '[ "$AMASS_ENABLED" -eq 1 ] || return 4' in text
@@ -456,7 +459,10 @@ def test_recon_engine_streams_one_compressed_ffuf_artifact_without_coverage_merg
     text = script.read_text(encoding="utf-8")
 
     assert 'FFUF_RESULT_ARTIFACT="$RECON_DIR/dirs/ffuf_results.jsonl.gz"' in text
-    assert '-s -json 2>> "$FFUF_LOG" | gzip -c >> "$FFUF_RESULT_TMP"' in text
+    assert 'run_with_timeout "$FFUF_MAIN_TIMEOUT" ffuf -u "${FFUF_BASE_URL}/FUZZ"' in text
+    assert 'FFUF_HOST_RUN_TMP="$(mktemp' in text
+    assert 'gzip -c "$FFUF_HOST_RUN_TMP" >> "$FFUF_RESULT_TMP"' in text
+    assert 'FFUF_INTERRUPTED=1' in text
     assert '--summarize-ffuf' in text
     assert '--controls "$FFUF_CONTROL_TMP"' in text
     assert '--control-failed "$FFUF_CONTROL_FAILED"' in text

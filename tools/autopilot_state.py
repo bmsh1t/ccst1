@@ -253,6 +253,29 @@ def _filter_ranked_placeholders(ranked: dict) -> dict:
     return filtered
 
 
+def _filter_legacy_memory_candidates(ranked: dict, resume_targets: list[str]) -> dict:
+    """Keep stale target-memory hints visible, but out of active steering.
+
+    Surface remains lossless.  Only candidates explicitly labeled as a legacy
+    memory continuation are suppressed when the current session has no focus;
+    scanner, browser, source, intel, and fresh-surface signals remain eligible.
+    """
+    filtered = dict(ranked or {})
+    if resume_targets:
+        return filtered
+    for key in ("review_pool", "p1", "p2"):
+        filtered[key] = [
+            item
+            for item in (ranked.get(key) or [])
+            if not (
+                isinstance(item, dict)
+                and str(item.get("review_reason") or "").strip().lower()
+                == "target-memory continuation"
+            )
+        ]
+    return filtered
+
+
 APP_LIKE_HINT_TOKENS = (
     "login",
     "register",
@@ -824,19 +847,19 @@ def _build_recommended_targets(
 
 
 def _build_resume_targets(summary: dict | None) -> list[str]:
-    """Prefer continuing the latest session focus, then fall back to untested endpoints."""
+    """Return only the latest session's explicit focus for automatic continuation.
+
+    ``untested_endpoints`` remains available in the read-only resume summary, but
+    it is legacy inventory rather than proof that the next session should replay
+    those paths.  Autopilot must use durable queue/finding/surface evidence for
+    new work instead of reviving stale inventory indefinitely.
+    """
     if not summary:
         return []
 
     latest_session = summary.get("latest_session_summary") or {}
     preview = [item for item in latest_session.get("endpoints_preview", []) if item]
-    if preview:
-        return list(dict.fromkeys(preview))[:3]
-
-    untested = [item for item in summary.get("untested_endpoints", []) if item]
-    if not untested:
-        return []
-    return untested[:3]
+    return list(dict.fromkeys(preview))[:3]
 
 
 def _pick_next_action(
@@ -2244,6 +2267,10 @@ def _build_domain_autopilot_state(
     guard_status = facts.get("guard_status") or {}
     tripped_hosts = facts.get("tripped_hosts") or []
     resume_targets = facts.get("resume_targets") or []
+    ranked_for_action = _filter_legacy_memory_candidates(
+        ranked_for_next,
+        resume_targets,
+    )
 
     tech_stack = []
     if resume_summary and resume_summary.get("tech_stack"):
@@ -2255,7 +2282,7 @@ def _build_domain_autopilot_state(
 
     primary_next_action = _pick_next_action(
         has_recon,
-        ranked_for_next,
+        ranked_for_action,
         resume_summary,
         facts.get("structured_findings"),
         facts.get("validation_runner_next"),
@@ -2284,7 +2311,7 @@ def _build_domain_autopilot_state(
     next_action = apply_intel_continuation(primary_next_action, intel_continuation)
     surface_review_candidates = (
         _build_recommended_targets(
-            _candidate_items_for_next_action(ranked_for_next, next_action),
+            _candidate_items_for_next_action(ranked_for_action, next_action),
             guard_status,
             resume_targets,
             prefer_resume_targets=next_action == "continue_last_focus",

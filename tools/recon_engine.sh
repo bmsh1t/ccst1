@@ -240,6 +240,15 @@ run_with_timeout() {
     fi
 }
 
+dir_fuzz_remaining_seconds() {
+    local remaining=$((FFUF_PHASE_DEADLINE_SECONDS - SECONDS))
+    if [ "$remaining" -gt 0 ]; then
+        printf '%s\n' "$remaining"
+    else
+        printf '0\n'
+    fi
+}
+
 require_positive_integer() {
     local name="$1"
     local value="$2"
@@ -690,6 +699,14 @@ fi
 RECON_STARTED_EPOCH=$(date +%s)
 RECON_SOFT_BUDGET_SECONDS="${BBHUNT_RECON_SOFT_BUDGET_SECONDS:-1800}"
 require_positive_integer BBHUNT_RECON_SOFT_BUDGET_SECONDS "$RECON_SOFT_BUDGET_SECONDS"
+if [ -n "${BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS:-}" ]; then
+    DIR_FUZZ_HARD_BUDGET_SECONDS="$BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS"
+elif [ "$RECON_PROFILE" = "quick" ]; then
+    DIR_FUZZ_HARD_BUDGET_SECONDS=300
+else
+    DIR_FUZZ_HARD_BUDGET_SECONDS=900
+fi
+require_positive_integer BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS "$DIR_FUZZ_HARD_BUDGET_SECONDS"
 BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "recon" ] || [ "${BBHUNT_RUNTIME_LOCK_TARGET:-}" != "$TARGET" ]; then
@@ -2954,6 +2971,7 @@ FFUF_ATTEMPTED=0
 FFUF_SUCCEEDED=0
 FFUF_FAILED=0
 FFUF_CONTROL_FAILED=0
+FFUF_INTERRUPTED=0
 FFUF_OBSERVATIONS=0
 FFUF_PARSE_ERRORS=0
 FFUF_SAMPLE_COUNT=0
@@ -2978,10 +2996,13 @@ FFUF_SKIP_REASON=""
 FFUF_SUMMARY_OK="false"
 DIR_FUZZ_STATUS="skipped"
 FFUF_LOG="$RECON_DIR/logs/ffuf.log"
+FFUF_PHASE_DEADLINE_SECONDS=$((SECONDS + DIR_FUZZ_HARD_BUDGET_SECONDS))
 : > "$FFUF_LOG"
 
 if ! command -v ffuf >/dev/null 2>&1; then
     FFUF_SKIP_REASON="ffuf not installed"
+elif [ -z "$(timeout_bin)" ]; then
+    FFUF_SKIP_REASON="timeout utility unavailable"
 elif [ ! -s "$RECON_DIR/live/urls.txt" ]; then
     FFUF_SKIP_REASON="no live URLs"
 else
@@ -3063,6 +3084,11 @@ if [ -n "$WORDLIST" ]; then
 
     while IFS= read -r url && [ "$FFUF_ATTEMPTED" -lt "$MAX_FUZZ" ]; do
         [ -n "$url" ] || continue
+        FFUF_REMAINING_SECONDS="$(dir_fuzz_remaining_seconds)"
+        if [ "$FFUF_REMAINING_SECONDS" -le 0 ]; then
+            FFUF_INTERRUPTED=1
+            break
+        fi
         if ! FFUF_BASE_URL="$(url_append_base "$url")"; then
             log_warn "Skipping invalid FFUF base URL: $url"
             continue
@@ -3077,7 +3103,16 @@ if [ -n "$WORDLIST" ]; then
         printf '__bbhunt_missing_%s_%s\n__bbhunt_missing_%s_%s\n' \
             "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" > "$FFUF_CONTROL_WORDLIST_TMP"
 
-        if ffuf -u "${FFUF_BASE_URL}/FUZZ" \
+        FFUF_CONTROL_TIMEOUT="$(dir_fuzz_remaining_seconds)"
+        if [ "$FFUF_CONTROL_TIMEOUT" -le 0 ]; then
+            FFUF_INTERRUPTED=1
+            printf '%s\tfailed\n' "$FFUF_BASE_URL" >> "$FFUF_TARGET_RESULTS_TMP"
+            rm -f "$FFUF_CONTROL_WORDLIST_TMP" "$FFUF_CONTROL_RUN_TMP"
+            FFUF_CONTROL_WORDLIST_TMP=""
+            FFUF_CONTROL_RUN_TMP=""
+            break
+        fi
+        if run_with_timeout "$FFUF_CONTROL_TIMEOUT" ffuf -u "${FFUF_BASE_URL}/FUZZ" \
             -w "$FFUF_CONTROL_WORDLIST_TMP" \
             -mc all \
             -s -json \
@@ -3106,8 +3141,15 @@ if [ -n "$WORDLIST" ]; then
                 log_warn "SPA fallback observed for $FFUF_BASE_URL (two FFUF controls returned 200 size=$SPA_FALLBACK_SIZE); filtering that size"
             fi
         else
+            FFUF_CONTROL_EXIT=$?
+            if [ -s "$FFUF_CONTROL_RUN_TMP" ]; then
+                cat "$FFUF_CONTROL_RUN_TMP" >> "$FFUF_CONTROL_TMP"
+            fi
             FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + 1))
             FFUF_HOST_CONTROL_OK=0
+            if [ "$FFUF_CONTROL_EXIT" -eq 124 ] || [ "$FFUF_CONTROL_EXIT" -eq 130 ]; then
+                FFUF_INTERRUPTED=1
+            fi
             log_warn "FFUF random-miss controls failed for $url; continuing without a fallback size filter"
         fi
         rm -f "$FFUF_CONTROL_WORDLIST_TMP" "$FFUF_CONTROL_RUN_TMP"
@@ -3115,8 +3157,16 @@ if [ -n "$WORDLIST" ]; then
         FFUF_CONTROL_RUN_TMP=""
 
         log_step "Fuzzing: $FFUF_BASE_URL"
+        FFUF_MAIN_TIMEOUT="$(dir_fuzz_remaining_seconds)"
+        if [ "$FFUF_MAIN_TIMEOUT" -le 0 ]; then
+            FFUF_INTERRUPTED=1
+            printf '%s\tfailed\n' "$FFUF_BASE_URL" >> "$FFUF_TARGET_RESULTS_TMP"
+            break
+        fi
         if [ "$FFUF_USE_GZIP" = "true" ]; then
-            if ffuf -u "${FFUF_BASE_URL}/FUZZ" \
+            FFUF_HOST_RUN_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf-host-run.XXXXXX")"
+            FFUF_HOST_EXIT=0
+            if run_with_timeout "$FFUF_MAIN_TIMEOUT" ffuf -u "${FFUF_BASE_URL}/FUZZ" \
                 -w "$WORDLIST" \
                 -mc 200,301,302,403,405 \
                 -ac \
@@ -3125,15 +3175,32 @@ if [ -n "$WORDLIST" ]; then
                 -rate "$RATE_LIMIT" \
                 -timeout 10 \
                 "${BB_URL_AUTH_ARGS[@]}" \
-                -s -json 2>> "$FFUF_LOG" | gzip -c >> "$FFUF_RESULT_TMP"; then
-                FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + 1))
-                FFUF_HOST_MAIN_OK=1
+                -s -json > "$FFUF_HOST_RUN_TMP" 2>> "$FFUF_LOG"; then
+                :
+            else
+                FFUF_HOST_EXIT=$?
+            fi
+            if gzip -c "$FFUF_HOST_RUN_TMP" >> "$FFUF_RESULT_TMP"; then
+                if [ "$FFUF_HOST_EXIT" -eq 0 ]; then
+                    FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + 1))
+                    FFUF_HOST_MAIN_OK=1
+                else
+                    FFUF_FAILED=$((FFUF_FAILED + 1))
+                    if [ "$FFUF_HOST_EXIT" -eq 124 ] || [ "$FFUF_HOST_EXIT" -eq 130 ]; then
+                        FFUF_INTERRUPTED=1
+                        log_warn "FFUF interrupted for $url; any valid partial JSONL remains in the evidence artifact"
+                    else
+                        log_warn "FFUF failed for $url; any valid partial JSONL remains in the evidence artifact"
+                    fi
+                fi
             else
                 FFUF_FAILED=$((FFUF_FAILED + 1))
-                log_warn "FFUF failed for $url; any valid partial JSONL remains in the evidence artifact"
+                log_warn "Could not append FFUF evidence for $url"
             fi
+            rm -f "$FFUF_HOST_RUN_TMP"
+            FFUF_HOST_RUN_TMP=""
         else
-            if ffuf -u "${FFUF_BASE_URL}/FUZZ" \
+            if run_with_timeout "$FFUF_MAIN_TIMEOUT" ffuf -u "${FFUF_BASE_URL}/FUZZ" \
                 -w "$WORDLIST" \
                 -mc 200,301,302,403,405 \
                 -ac \
@@ -3146,8 +3213,14 @@ if [ -n "$WORDLIST" ]; then
                 FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + 1))
                 FFUF_HOST_MAIN_OK=1
             else
+                FFUF_MAIN_EXIT=$?
                 FFUF_FAILED=$((FFUF_FAILED + 1))
-                log_warn "FFUF failed for $url; any valid partial JSONL remains in the evidence artifact"
+                if [ "$FFUF_MAIN_EXIT" -eq 124 ] || [ "$FFUF_MAIN_EXIT" -eq 130 ]; then
+                    FFUF_INTERRUPTED=1
+                    log_warn "FFUF interrupted for $url; any valid partial JSONL remains in the evidence artifact"
+                else
+                    log_warn "FFUF failed for $url; any valid partial JSONL remains in the evidence artifact"
+                fi
             fi
         fi
         if [ "$FFUF_HOST_MAIN_OK" -eq 1 ] && [ "$FFUF_HOST_CONTROL_OK" -eq 1 ]; then
@@ -3237,7 +3310,7 @@ if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
     DIR_FUZZ_STATUS="ok"
     if [ "$FFUF_FAILED" -gt 0 ] || [ "$FFUF_CONTROL_FAILED" -gt 0 ] || \
        [ "$FFUF_PARSE_ERRORS" -gt 0 ] || [ "$FFUF_SUMMARY_OK" != "true" ] || \
-       [ "$FFUF_TARGET_RECORD_STATUS" != "ok" ]; then
+       [ "$FFUF_TARGET_RECORD_STATUS" != "ok" ] || [ "$FFUF_INTERRUPTED" -gt 0 ]; then
         DIR_FUZZ_STATUS="partial"
     fi
     log_done "Directory fuzzing complete: attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED observations=$FFUF_OBSERVATIONS"
@@ -3245,7 +3318,7 @@ else
     log_warn "Directory fuzzing skipped: ${FFUF_SKIP_REASON:-no runnable inputs}"
 fi
 
-FFUF_PHASE_NOTE="bounded host sampling with rotation; attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED parse_errors=$FFUF_PARSE_ERRORS target_selection=$FFUF_TARGET_SELECTION_STATUS target_record=$FFUF_TARGET_RECORD_STATUS pending=$FFUF_TARGET_PENDING; not complete directory coverage"
+FFUF_PHASE_NOTE="bounded host sampling with rotation; budget=${DIR_FUZZ_HARD_BUDGET_SECONDS}s; attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED interrupted=$FFUF_INTERRUPTED parse_errors=$FFUF_PARSE_ERRORS target_selection=$FFUF_TARGET_SELECTION_STATUS target_record=$FFUF_TARGET_RECORD_STATUS pending=$FFUF_TARGET_PENDING; not complete directory coverage"
 [ -n "$FFUF_SKIP_REASON" ] && FFUF_PHASE_NOTE="$FFUF_PHASE_NOTE; skipped_reason=$FFUF_SKIP_REASON"
 record_recon_phase \
     dir_fuzz \
@@ -3259,6 +3332,8 @@ emit_claude_hint \
     hosts_attempted      "$FFUF_ATTEMPTED" \
     hosts_succeeded      "$FFUF_SUCCEEDED" \
     hosts_failed         "$FFUF_FAILED" \
+    interrupted           "$FFUF_INTERRUPTED" \
+    hard_budget_seconds   "$DIR_FUZZ_HARD_BUDGET_SECONDS" \
     target_selection     "$FFUF_TARGET_SELECTION_STATUS" \
     target_record        "$FFUF_TARGET_RECORD_STATUS" \
     pending_targets      "$FFUF_TARGET_PENDING" \

@@ -20,6 +20,7 @@ from autopilot_state import (
     _build_recommended_targets,
     _checkpoint_round_projection,
     _filter_ranked_placeholders,
+    _filter_legacy_memory_candidates,
     _is_substantive_queue_action,
     _load_closure_projection,
     _load_loop_guard_projection,
@@ -69,6 +70,26 @@ def test_browser_context_discovery_queue_item_is_substantive():
             "evidence_type": "generic",
         }
     )
+
+
+def test_legacy_memory_surface_hints_stay_visible_but_do_not_steer_without_focus():
+    ranked = {
+        "review_pool": [
+            {"url": "https://target.test/old", "review_reason": "target-memory continuation"},
+            {"url": "https://target.test/live", "review_reason": "scanner lead requiring AI triage"},
+        ],
+        "p1": [
+            {"url": "https://target.test/old", "review_reason": "target-memory continuation"},
+            {"url": "https://target.test/live", "review_reason": "scanner lead requiring AI triage"},
+        ],
+    }
+
+    filtered = _filter_legacy_memory_candidates(ranked, [])
+
+    assert [item["url"] for item in filtered["review_pool"]] == ["https://target.test/live"]
+    assert [item["url"] for item in filtered["p1"]] == ["https://target.test/live"]
+    assert ranked["review_pool"][0]["url"] == "https://target.test/old"
+    assert _filter_legacy_memory_candidates(ranked, ["/old"]) == ranked
 
 
 def test_deep_js_review_queue_item_is_substantive():
@@ -3263,7 +3284,7 @@ class TestAutopilotState:
         assert "[high] idor: Admin export IDOR" in output
         assert "Next: swap order_id under a lower-privileged session" in output
 
-    def test_prefers_resume_untested_when_recent_session_has_no_endpoint_preview(self, tmp_path):
+    def test_legacy_untested_inventory_does_not_reactivate_autopilot(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
         (recon_dir / "live").mkdir(parents=True)
@@ -3298,8 +3319,12 @@ class TestAutopilotState:
         )
 
         state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
-        assert state["next_action"] == "resume_untested"
-        assert state["resume_targets"] == ["/graphql", "/api/v2/report?id=123"]
+        assert state["next_action"] != "resume_untested"
+        assert state["resume_targets"] == []
+        assert state["resume_summary"]["untested_endpoints"] == [
+            "/graphql",
+            "/api/v2/report?id=123",
+        ]
 
     def test_formats_state(self):
         output = format_autopilot_state({
