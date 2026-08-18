@@ -20,6 +20,7 @@ from pathlib import Path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(BASE_DIR)
 sys.path.insert(0, BASE_DIR)
+sys.path.insert(0, REPO_ROOT)
 
 # 与 Osmedeus 01-osint.yaml 的 toolsDir 约定对齐，默认复用 $HOME/Tools。
 SHARED_TOOLS_DIR = os.environ.get(
@@ -28,6 +29,7 @@ SHARED_TOOLS_DIR = os.environ.get(
 )
 
 from learn import severity_order
+from memory.target_profile import load_target_profile
 try:
     from tools.intel_artifact import (
         INTEL_SCHEMA_VERSION,
@@ -112,26 +114,13 @@ def load_memory_context(memory_dir: str, target: str) -> dict:
 
     resolved_target = canonical_target_value(target)
 
-    # Load target profile
-    targets_dir = os.path.join(memory_dir, "targets")
-    if os.path.isdir(targets_dir):
-        # Normalize target name to filename
-        target_file = (
-            resolved_target.replace(".", "-").replace("/", "-").replace("\\", "-")
-            + ".json"
-        )
-        target_path = os.path.join(targets_dir, target_file)
-        if os.path.isfile(target_path):
-            try:
-                with open(target_path) as f:
-                    profile = json.load(f)
-                context["tested_endpoints"] = profile.get("tested_endpoints", [])
-                context["findings"] = profile.get("findings", [])
-                context["tech_stack"] = profile.get("tech_stack", [])
-                context["last_hunted"] = profile.get("last_hunted")
-                context["hunt_sessions"] = profile.get("hunt_sessions", 0)
-            except (json.JSONDecodeError, OSError):
-                pass
+    profile = load_target_profile(memory_dir, resolved_target)
+    if profile is not None:
+        context["tested_endpoints"] = profile.get("tested_endpoints", [])
+        context["findings"] = profile.get("findings", [])
+        context["tech_stack"] = profile.get("tech_stack", [])
+        context["last_hunted"] = profile.get("last_hunted")
+        context["hunt_sessions"] = profile.get("hunt_sessions", 0)
 
     # Load journal entries for this target to find tested CVEs
     journal_path = os.path.join(memory_dir, "journal.jsonl")
@@ -662,26 +651,14 @@ def _kev_matches_component(kev_item: dict, component: dict) -> bool:
     """将 KEV vendor/product 绑定到已观测或声明的组件，避免全目录污染。"""
     if not component_is_advisory_product(component):
         return False
-    vendor = _kev_label(kev_item.get("vendorProject"))
     product = _kev_label(kev_item.get("product"))
     labels = {
         _kev_label(component.get("name")),
         _kev_label(component.get("display_name")),
+        *(_kev_label(item) for item in component.get("aliases") or []),
     }
     labels.discard("")
-    if not labels:
-        return False
-    # Fortinet product names share the `Forti*` family prefix (FortiOS,
-    # FortiGate, FortiSandbox, ...), while KEV stores vendor and product apart.
-    if vendor == "fortinet" and any(label.startswith("forti") for label in labels):
-        return True
-    return bool(
-        product
-        and any(
-            product == label or (len(label) >= 5 and (product in label or label in product))
-            for label in labels
-        )
-    )
+    return bool(product and product in labels)
 
 
 def merge_kev_only_advisories(
@@ -692,47 +669,49 @@ def merge_kev_only_advisories(
     """把官方 NVD 尚未返回、但 KEV 已收录的目标组件 CVE 变成 advisory lead。"""
     existing = set()
     for advisory in advisories:
-        existing.update(_identifiers(advisory))
+        existing.update(
+            (identifier, _component_key(advisory.get("component") or {}))
+            for identifier in _identifiers(advisory)
+        )
     items = kev.get("items") if isinstance(kev.get("items"), dict) else {}
     candidates: list[dict] = []
     for cve_id, raw in items.items():
         if not isinstance(raw, dict):
             continue
         identifier = str(cve_id or raw.get("cveID") or "").strip().upper()
-        if not identifier or identifier in existing:
-            continue
-        component = next(
-            (item for item in components if _kev_matches_component(raw, item)),
-            None,
-        )
-        if component is None:
+        if not identifier:
             continue
         summary = str(raw.get("shortDescription") or raw.get("vulnerabilityName") or "").strip()
         notes = str(raw.get("notes") or "").strip()
-        candidates.append({
-            "id": identifier,
-            "aliases": [identifier],
-            "source": "kev",
-            "component": dict(component),
-            "applicability": "unknown",
-            "severity": "UNKNOWN",
-            "cvss": None,
-            "summary": summary[:500],
-            "published": str(raw.get("dateAdded") or "").strip(),
-            "modified": "",
-            "fixed_versions": [],
-            "affected_ranges": [],
-            "poc_available": False,
-            "kev_only": True,
-            "source_refs": [{
-                "source": "kev",
+        for component in components:
+            component_key = _component_key(component)
+            identity = (identifier, component_key)
+            if identity in existing or not _kev_matches_component(raw, component):
+                continue
+            candidates.append({
                 "id": identifier,
-                "url": f"https://nvd.nist.gov/vuln/detail/{identifier}",
-                "references": [notes] if notes else [],
-                "fetched_at": str(kev.get("fetched_at") or ""),
-            }],
-        })
-        existing.add(identifier)
+                "aliases": [identifier],
+                "source": "kev",
+                "component": dict(component),
+                "applicability": "unknown",
+                "severity": "UNKNOWN",
+                "cvss": None,
+                "summary": summary[:500],
+                "published": str(raw.get("dateAdded") or "").strip(),
+                "modified": "",
+                "fixed_versions": [],
+                "affected_ranges": [],
+                "poc_available": False,
+                "kev_only": True,
+                "source_refs": [{
+                    "source": "kev",
+                    "id": identifier,
+                    "url": f"https://nvd.nist.gov/vuln/detail/{identifier}",
+                    "references": [notes] if notes else [],
+                    "fetched_at": str(kev.get("fetched_at") or ""),
+                }],
+            })
+            existing.add(identity)
     return candidates
 
 
@@ -1093,6 +1072,16 @@ def _web_intel_gap_projection(
         for item in advisories
         if isinstance(item, dict) and isinstance(item.get("component"), dict)
     }
+    applicable_advisory_components = {
+        (
+            str((item.get("component") or {}).get("name") or "").strip().lower(),
+            str((item.get("component") or {}).get("version") or "").strip(),
+        )
+        for item in advisories
+        if isinstance(item, dict)
+        and isinstance(item.get("component"), dict)
+        and item.get("applicability") in {"affected", "likely"}
+    }
     covered_subjects = {
         str(item or "").strip().lower()
         for item in web_projection.get("covered_subjects") or []
@@ -1108,7 +1097,7 @@ def _web_intel_gap_projection(
     for component in build_component_queries(components):
         name = str(component.get("name") or "").strip().lower()
         version = str(component.get("version") or "").strip()
-        if not name or (name, version) in advisory_components:
+        if not name or (name, version) in applicable_advisory_components:
             continue
         if not (
             version
@@ -1131,7 +1120,13 @@ def _web_intel_gap_projection(
                 "reason": "an unexpired Web Intel query is blocked or failed",
             })
             continue
-        reasons = ["official sources returned no advisory for this observed asset"]
+        reasons = [
+            (
+                "official sources did not establish advisory applicability for this observed asset"
+                if (name, version) in advisory_components
+                else "official sources returned no advisory for this observed asset"
+            )
+        ]
         if official_statuses & {"partial", "error", "unavailable"}:
             reasons.append("one or more official sources are degraded")
         recommended.append({
@@ -1529,13 +1524,13 @@ def main(argv: list[str] | None = None) -> int:
     techs = [t.strip() for t in args.tech.split(",") if t.strip()] if args.tech else []
 
     # Load memory context before enforcing --tech so standalone /intel can reuse prior recon/hunt state.
-    memory = load_memory_context(args.memory_dir, resolved_target)
     try:
+        memory = load_memory_context(args.memory_dir, resolved_target)
         techs = resolve_tech_stack(resolved_target, techs, memory, repo_root=args.repo_root)
     except (OSError, TechnologyInventoryError, ValueError) as exc:
         return _emit_cli_error(
             target=resolved_target,
-            message=f"technology inventory failed: {exc}",
+            message=f"memory or technology inventory failed: {exc}",
             json_mode=args.json,
             code=1,
         )

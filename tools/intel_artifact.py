@@ -472,6 +472,8 @@ def project_intel_source_coverage_gaps(sources: object, limit: int = 8) -> list[
                 "fetched_results": int(gap.get("fetched_results", 0) or 0),
                 "next_start_index": int(gap.get("next_start_index", 0) or 0),
                 "next_cursor": str(gap.get("next_cursor") or "")[:2000],
+                "next_page": int(gap.get("next_page", 0) or 0),
+                "initial_query_pending": bool(gap.get("initial_query_pending")),
                 "reason": str(gap.get("reason") or "")[:240],
                 "owner_binding": binding,
             })

@@ -298,7 +298,9 @@ def _pending_review_groups(
         group for group in projection.get("omitted_groups") or [] if isinstance(group, dict)
     )
     for gap in projection.get("source_coverage_gaps") or []:
-        if not isinstance(gap, dict) or not str(gap.get("next_cursor") or ""):
+        if not isinstance(gap, dict):
+            continue
+        if not str(gap.get("next_cursor") or "") and not bool(gap.get("initial_query_pending")):
             continue
         component = gap.get("component") if isinstance(gap.get("component"), dict) else {}
         total = int(gap.get("total_results", 0) or 0)
@@ -594,7 +596,8 @@ def inspect_intel_continuation(
                 query_parts.extend(("--keyword", shlex.quote(str(source_query["keywordSearch"]))))
             if source_query.get("cpeName"):
                 query_parts.extend(("--cpe", shlex.quote(str(source_query["cpeName"]))))
-            query_parts.extend(("--cursor", shlex.quote(str(group.get("next_cursor") or ""))))
+            if group.get("next_cursor"):
+                query_parts.extend(("--cursor", shlex.quote(str(group.get("next_cursor") or ""))))
         else:
             query_parts = [
                 "python3 tools/intel_artifact.py query",

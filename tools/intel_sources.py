@@ -33,6 +33,8 @@ DEFAULT_KEV_TTL_SECONDS = 6 * 60 * 60
 DEFAULT_EPSS_TTL_SECONDS = 24 * 60 * 60
 EPSS_BATCH_SIZE = 100
 DEFAULT_COMPONENT_CONCURRENCY = 4
+DEFAULT_GITHUB_RESULTS_PER_PAGE = 100
+DEFAULT_GITHUB_PAGE_LIMIT = 2
 DEFAULT_NVD_MAX_SECONDS = 120.0
 DEFAULT_NVD_REQUEST_MAX_SECONDS = 25.0
 DEFAULT_NVD_RESULTS_PER_PAGE = 200
@@ -419,10 +421,12 @@ def nvd_query_policy(component: dict) -> dict:
         }
     if keyword and version:
         return {
-            "mode": "exact_version",
-            "reason": "observed product version",
+            # NVD keywordSearch cannot bind a product version. Keep this
+            # representative-page bounded until an exact CPE is available.
+            "mode": "versioned_keyword_fallback",
+            "reason": "observed version without an exact CPE",
             "query": {"keywordSearch": keyword},
-            "default_page_limit": None,
+            "default_page_limit": 1,
         }
     if keyword and component.get("allow_nvd_without_version") is True:
         return {
@@ -704,7 +708,10 @@ def fetch_github_advisories_for_components(
     ttl_seconds: int = DEFAULT_COMPONENT_TTL_SECONDS,
     now: datetime | None = None,
     max_workers: int = DEFAULT_COMPONENT_CONCURRENCY,
+    max_pages: int = DEFAULT_GITHUB_PAGE_LIMIT,
 ) -> dict:
+    if max_pages < 1:
+        raise ValueError("max_pages must be >= 1")
     component_queries = build_component_queries(components)
     queries = [
         item for item in component_queries
@@ -715,63 +722,90 @@ def fetch_github_advisories_for_components(
     cached_count = 0
     stale_count = 0
     fetched_at_values: list[str] = []
+    coverage_gaps: list[dict] = []
 
-    def fetch_component(component: dict) -> tuple[dict, dict | None, str]:
+    def fetch_component(component: dict) -> tuple[dict, list[dict], str, dict | None]:
         affects = component["package"]
         if component.get("version"):
             affects += f"@{component['version']}"
-        params = urllib.parse.urlencode({
-            "ecosystem": component["github_ecosystem"],
-            "affects": affects,
-            "per_page": 100,
-        })
-        url = f"{GITHUB_ADVISORY_URL}?{params}"
-        query = {"ecosystem": component["github_ecosystem"], "affects": affects, "per_page": 100}
-        try:
-            result = cached_json_request(
-                repo_root,
-                source="github-advisory",
-                query=query,
-                ttl_seconds=ttl_seconds,
-                request=lambda request_url=url: _require_array_response(
-                    fetcher(
-                        request_url,
-                        headers={"X-GitHub-Api-Version": "2022-11-28"},
-                        timeout=20,
+        results = []
+        for page in range(1, max_pages + 1):
+            query = {
+                "ecosystem": component["github_ecosystem"],
+                "affects": affects,
+                "per_page": DEFAULT_GITHUB_RESULTS_PER_PAGE,
+                "page": page,
+            }
+            url = f"{GITHUB_ADVISORY_URL}?{urllib.parse.urlencode(query)}"
+            try:
+                result = cached_json_request(
+                    repo_root,
+                    source="github-advisory",
+                    query=query,
+                    ttl_seconds=ttl_seconds,
+                    request=lambda request_url=url: _require_array_response(
+                        fetcher(
+                            request_url,
+                            headers={"X-GitHub-Api-Version": "2022-11-28"},
+                            timeout=20,
+                        ),
+                        source="github_advisory",
                     ),
-                    source="github_advisory",
-                ),
-                validate=lambda payload: _require_array_response(
-                    payload,
-                    source="github_advisory",
-                ),
-                now=now,
-            )
-        except IntelSourceError as exc:
-            return (
-                component,
-                None,
-                f"{component['name']}@{component.get('version') or '?'}: {exc}",
-            )
-        return component, result, ""
+                    validate=lambda payload: _require_array_response(
+                        payload,
+                        source="github_advisory",
+                    ),
+                    now=now,
+                )
+            except IntelSourceError as exc:
+                return (
+                    component,
+                    results,
+                    f"{component['name']}@{component.get('version') or '?'}: {exc}",
+                    None,
+                )
+            results.append(result)
+            payload = result["data"] if isinstance(result["data"], list) else []
+            if len(payload) < DEFAULT_GITHUB_RESULTS_PER_PAGE:
+                return component, results, "", None
+            if result["stale"] or result["error"]:
+                return component, results, "", None
+        gap = {
+            "source": "github_advisory",
+            "gap_key": f"github-advisory-long-tail:{component['name']}@{component.get('version') or 'unknown'}",
+            "query_mode": "package_version" if component.get("version") else "package",
+            "component": {
+                "name": component["name"],
+                "version": str(component.get("version") or ""),
+            },
+            "query": {
+                "ecosystem": component["github_ecosystem"],
+                "affects": affects,
+            },
+            "next_page": max_pages + 1,
+            "reason": f"GitHub Advisory results exceeded the bounded {max_pages}-page default",
+        }
+        return component, results, "", gap
 
-    for component, result, error in _map_queries_in_order(
+    for component, results, error, gap in _map_queries_in_order(
         queries,
         fetch_component,
         max_workers=max_workers,
     ):
-        if error or result is None:
+        if error:
             errors.append(error)
-            continue
-        cached_count += int(result["cached"])
-        stale_count += int(result["stale"])
-        fetched_at_values.append(str(result["fetched_at"]))
-        if result["error"]:
-            errors.append(f"{component['name']}@{component.get('version') or '?'}: {result['error']}")
-        payload = result["data"] if isinstance(result["data"], list) else []
-        for raw in payload:
-            if isinstance(raw, dict):
-                items.append(_github_item(raw, component, result["fetched_at"]))
+        for result in results:
+            cached_count += int(result["cached"])
+            stale_count += int(result["stale"])
+            fetched_at_values.append(str(result["fetched_at"]))
+            if result["error"]:
+                errors.append(f"{component['name']}@{component.get('version') or '?'}: {result['error']}")
+            payload = result["data"] if isinstance(result["data"], list) else []
+            for raw in payload:
+                if isinstance(raw, dict):
+                    items.append(_github_item(raw, component, result["fetched_at"]))
+        if gap is not None:
+            coverage_gaps.append(gap)
 
     return _source_envelope(
         "github_advisory",
@@ -782,6 +816,8 @@ def fetch_github_advisories_for_components(
         cached_count=cached_count,
         stale_count=stale_count,
         fetched_at_values=fetched_at_values,
+        coverage_gaps=coverage_gaps,
+        partial_reasons=[gap["reason"] for gap in coverage_gaps],
         now=now,
     )
 
@@ -1064,7 +1100,52 @@ def _nvd_coverage_gap(
             owner_binding=owner_binding,
             offset=fetched_results,
         ),
-        "reason": "versionless product default is limited to one representative NVD page",
+        "initial_query_pending": False,
+        "reason": (
+            "versioned product keyword fallback is limited to one representative NVD page"
+            if policy.get("mode") == "versioned_keyword_fallback"
+            else "versionless product default is limited to one representative NVD page"
+        ),
+        "owner_binding": owner_binding,
+    }
+
+
+def _nvd_deferred_gap(
+    component: dict,
+    policy: dict,
+    *,
+    start_index: int = 0,
+    total_results: int | None = None,
+    reason: str,
+) -> dict:
+    """Describe an NVD query/page deferred by the component or time budget."""
+    query = dict(policy["query"])
+    total = int(total_results or 0)
+    owner_binding = _nvd_owner_binding(component, query, total) if total else {}
+    return {
+        "source": "nvd",
+        "gap_key": f"nvd-deferred:{str(component.get('name') or '').strip().lower()}@{str(component.get('version') or '').strip() or 'unknown'}",
+        "query_mode": str(policy.get("mode") or ""),
+        "component": {
+            "name": str(component.get("name") or "").strip().lower(),
+            "version": str(component.get("version") or "").strip(),
+        },
+        "query": query,
+        "total_results": total,
+        "fetched_results": start_index,
+        "next_start_index": start_index,
+        "next_cursor": (
+            _nvd_cursor_token(
+                component,
+                query,
+                owner_binding=owner_binding,
+                offset=start_index,
+            )
+            if total
+            else ""
+        ),
+        "initial_query_pending": not total and start_index == 0,
+        "reason": reason,
         "owner_binding": owner_binding,
     }
 
@@ -1223,16 +1304,33 @@ def fetch_nvd_for_components(
     stop_nvd = False
     pending = deque()
     for component, policy in queries:
-        pending.append((component, policy, 0))
+        pending.append((component, policy, 0, None))
+    for component, policy in eligible_queries[len(queries):]:
+        coverage_gaps.append(
+            _nvd_deferred_gap(
+                component,
+                policy,
+                reason="NVD component query deferred by the bounded component limit",
+            )
+        )
 
     while pending and not stop_nvd:
-        component, policy, start_index = pending.popleft()
+        component, policy, start_index, known_total = pending.popleft()
         base_query = dict(policy["query"])
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             partial_reasons.append(
                 f"NVD time budget exhausted after {max_seconds:g}s; "
                 "preserved cached/fetched pages for the next run"
+            )
+            coverage_gaps.append(
+                _nvd_deferred_gap(
+                    component,
+                    policy,
+                    start_index=start_index,
+                    total_results=known_total,
+                    reason="NVD page deferred by the source time budget",
+                )
             )
             break
         if start_index == 0:
@@ -1316,11 +1414,25 @@ def fetch_nvd_for_components(
                 )
             )
             partial_reasons.append(
-                f"bounded versionless NVD query for {component['name']}: "
+                f"bounded {str(policy.get('mode') or 'product').replace('_', ' ')} "
+                f"NVD query for {component['name']}: "
                 f"fetched {next_index} of {total_results} results"
             )
             continue
-        pending.append((component, policy, next_index))
+        pending.append((component, policy, next_index, total_results))
+
+    deferred_keys = {str(gap.get("gap_key") or "") for gap in coverage_gaps}
+    for component, policy, start_index, known_total in pending:
+        gap = _nvd_deferred_gap(
+            component,
+            policy,
+            start_index=start_index,
+            total_results=known_total,
+            reason="NVD query deferred after the provider stopped remaining work",
+        )
+        if gap["gap_key"] not in deferred_keys:
+            coverage_gaps.append(gap)
+            deferred_keys.add(gap["gap_key"])
 
     return _source_envelope(
         "nvd",
@@ -1334,7 +1446,7 @@ def fetch_nvd_for_components(
         stale_count=stale_count,
         fetched_at_values=fetched_at_values,
         coverage_gaps=coverage_gaps,
-        items_fresh=bool(coverage_gaps and not errors and not stale_count),
+        items_fresh=bool(items and coverage_gaps and not errors and not stale_count),
         now=now,
     )
 
@@ -1389,7 +1501,7 @@ def _source_envelope(
     }
     if coverage_gaps is not None:
         envelope["coverage_gaps"] = coverage_gaps
-    if items_fresh:
+    if items_fresh or bool(items and fetched_at_values and not stale_count):
         envelope["items_fresh"] = True
     return envelope
 

@@ -20,8 +20,10 @@ Web Search、Grok、smart-search、浏览器和其他 provider 只负责发现�
 
 ## 记录契约
 
-先核对正文，再提交 JSON。`body_verified=false` 的结果只保留 discovery lead，不能进入
-Intel merge。转载同一公告的 URL 使用同一个 `independent_source_group`，不能伪造多源确认。
+先核对正文，再提交 JSON。`body_verified=true` 必须同时提交正文原句 `body_excerpt`；owner
+保存 bounded 摘录并计算 SHA-256，将 claim 绑定到 query artifact。`body_verified=false` 的
+结果只保留 discovery lead，不能进入 Intel merge。转载同一公告的 URL 使用同一个
+`independent_source_group`，不能伪造多源确认。
 
 ```json
 {
@@ -36,6 +38,7 @@ Intel merge。转载同一公告的 URL 使用同一个 `independent_source_grou
     "source_tier": "A",
     "independent_source_group": "ORIGIN_GROUP",
     "body_verified": true,
+    "body_excerpt": "EXACT_BODY_QUOTE_SUPPORTING_THE_CLAIM",
     "claims": [{
       "identifiers": ["CVE-YYYY-NNNN"],
       "component": {"name": "COMPONENT", "version": "VERSION"},

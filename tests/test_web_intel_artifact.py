@@ -10,6 +10,7 @@ from tools.web_intel_artifact import (
     build_web_intel_source,
     load_web_intel_projection,
     normalize_web_intel_payload,
+    rebuild_web_intel_index,
     record_web_intel,
 )
 
@@ -31,6 +32,7 @@ def _payload(*, body_verified=True, version="4.16.3", group="vendor-advisory"):
             "source_tier": "A",
             "independent_source_group": group,
             "body_verified": body_verified,
+            "body_excerpt": "GiveWP 4.16.3 is affected; update to 4.16.4.",
             "claims": [{
                 "identifiers": ["CVE-2026-63030"],
                 "component": {
@@ -76,6 +78,49 @@ def test_verified_body_is_indexed_and_unverified_snippet_is_not(tmp_path):
     assert source["items"][0]["id"] == "CVE-2026-63030"
     assert source["items"][0]["applicability"] == "affected"
     assert source["items"][0]["source_refs"][0]["body_verified"] is True
+    assert len(source["items"][0]["source_refs"][0]["body_excerpt_sha256"]) == 64
+
+
+def test_unverified_only_query_is_incomplete_not_covered(tmp_path):
+    record_web_intel(
+        tmp_path,
+        "target.test",
+        _payload(body_verified=False),
+        now=NOW,
+    )
+
+    projection = load_web_intel_projection(tmp_path, "target.test", now=NOW)
+
+    assert projection["status"] == "partial"
+    assert projection["verified_claims"] == []
+    assert projection["covered_subjects"] == []
+    assert projection["blocked_subjects"] == ["givewp@4.16.3"]
+    source = build_web_intel_source(projection, _components())
+    assert source["status"] == "partial"
+    assert source["items"] == []
+
+
+def test_body_verified_requires_bound_body_excerpt(tmp_path):
+    payload = _payload()
+    payload["results"][0].pop("body_excerpt")
+
+    with pytest.raises(WebIntelArtifactError, match="body_excerpt"):
+        record_web_intel(tmp_path, "target.test", payload, now=NOW)
+
+
+def test_modified_body_excerpt_invalidates_verified_claim(tmp_path):
+    path, _index = record_web_intel(tmp_path, "target.test", _payload(), now=NOW)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    saved["results"][0]["body_excerpt"] = "Different body content"
+    path.write_text(json.dumps(saved), encoding="utf-8")
+
+    rebuilt = rebuild_web_intel_index(tmp_path, "target.test")
+    projection = load_web_intel_projection(tmp_path, "target.test", now=NOW)
+
+    assert rebuilt["stats"]["verified_claim_count"] == 0
+    assert rebuilt["stats"]["invalid_count"] == 1
+    assert projection["status"] == "invalid"
+    assert projection["verified_claims"] == []
 
 
 def test_same_independent_group_is_deduped_across_republished_results(tmp_path):

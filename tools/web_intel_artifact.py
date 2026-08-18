@@ -176,6 +176,14 @@ def _normalize_result(raw: object) -> dict | None:
     if tier not in SOURCE_TIERS:
         tier = "C"
     verified = bool(raw.get("body_verified"))
+    body_excerpt = str(raw.get("body_excerpt") or "").strip()[:2000]
+    if verified and not body_excerpt:
+        raise WebIntelArtifactError("body_verified web intel results require body_excerpt")
+    body_excerpt_sha256 = (
+        hashlib.sha256(body_excerpt.encode("utf-8")).hexdigest()
+        if body_excerpt
+        else ""
+    )
     origin_url = _canonical_url(raw.get("origin_url"))
     group = str(raw.get("independent_source_group") or origin_url or url).strip()
     raw_claims = raw.get("claims", [])
@@ -194,6 +202,8 @@ def _normalize_result(raw: object) -> dict | None:
         "source_tier": tier,
         "independent_source_group": group,
         "body_verified": verified,
+        "body_excerpt": body_excerpt,
+        "body_excerpt_sha256": body_excerpt_sha256,
         # 未核对正文的 claim 只保留在 query artifact；index 不会提升它。
         "claims": claims[:16],
     }
@@ -267,6 +277,15 @@ def validate_web_intel_payload(payload: object) -> dict:
         raise WebIntelArtifactError("web intel status is invalid")
     if not isinstance(payload.get("results"), list):
         raise WebIntelArtifactError("web intel results must be an array")
+    for result in payload.get("results") or []:
+        if not isinstance(result, dict) or not result.get("body_verified"):
+            continue
+        body_excerpt = str(result.get("body_excerpt") or "")
+        body_excerpt_sha256 = str(result.get("body_excerpt_sha256") or "")
+        if not body_excerpt or body_excerpt_sha256 != hashlib.sha256(
+            body_excerpt.encode("utf-8")
+        ).hexdigest():
+            raise WebIntelArtifactError("body_verified result has an invalid body excerpt binding")
     if _parse_utc(payload.get("fetched_at")) is None or _parse_utc(payload.get("expires_at")) is None:
         raise WebIntelArtifactError("web intel timestamps are invalid")
     return payload
@@ -295,6 +314,12 @@ def _verified_claim_projection(query_hash: str, payload: dict) -> list[dict]:
     for result in payload.get("results") or []:
         if not isinstance(result, dict) or not result.get("body_verified"):
             continue
+        body_excerpt = str(result.get("body_excerpt") or "")
+        body_excerpt_sha256 = str(result.get("body_excerpt_sha256") or "")
+        if not body_excerpt or body_excerpt_sha256 != hashlib.sha256(
+            body_excerpt.encode("utf-8")
+        ).hexdigest():
+            continue
         group = str(result.get("independent_source_group") or result.get("url") or "").strip()
         for claim in result.get("claims") or []:
             if not isinstance(claim, dict):
@@ -321,6 +346,7 @@ def _verified_claim_projection(query_hash: str, payload: dict) -> list[dict]:
                     "source_tier": result.get("source_tier", "C"),
                     "independent_source_group": group,
                     "body_verified": True,
+                    "body_excerpt_sha256": body_excerpt_sha256,
                 },
             })
     return projected
@@ -499,10 +525,35 @@ def load_web_intel_projection(
     claims = [
         item
         for item in payload.get("verified_claims") or []
-        if isinstance(item, dict) and str(item.get("query_hash") or "") in successful_hashes
+        if isinstance(item, dict)
+        and str(item.get("query_hash") or "") in successful_hashes
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            str((item.get("source") or {}).get("body_excerpt_sha256") or ""),
+        )
     ]
-    if successful_entries:
+    verified_hashes = {
+        str(item.get("query_hash") or "")
+        for item in claims
+        if str(item.get("query_hash") or "")
+    }
+    verified_entries = [
+        item for item in successful_entries
+        if str(item.get("query_hash") or "") in verified_hashes
+    ]
+    verified_subjects = {
+        str(item.get("subject") or "").strip().lower()
+        for item in verified_entries
+        if str(item.get("subject") or "").strip()
+    }
+    incomplete_entries = [
+        item for item in successful_entries
+        if str(item.get("subject") or "").strip().lower() not in verified_subjects
+    ]
+    if verified_entries:
         status = "partial" if blocked_entries else "ready"
+    elif incomplete_entries:
+        status = "partial"
     elif any(item.get("status") == "blocked" for item in blocked_entries):
         status = "blocked"
     elif blocked_entries:
@@ -525,12 +576,12 @@ def load_web_intel_projection(
         "verified_claims": claims[:MAX_VERIFIED_CLAIMS],
         "covered_subjects": list(dict.fromkeys(
             str(item.get("subject") or "").strip().lower()
-            for item in successful_entries
+            for item in verified_entries
             if str(item.get("subject") or "").strip()
         )),
         "blocked_subjects": list(dict.fromkeys(
             str(item.get("subject") or "").strip().lower()
-            for item in blocked_entries
+            for item in [*blocked_entries, *incomplete_entries]
             if str(item.get("subject") or "").strip()
         )),
         "stats": payload.get("stats") if isinstance(payload.get("stats"), dict) else {},
@@ -674,6 +725,7 @@ def build_web_intel_source(projection: dict, components: list[dict]) -> dict:
                     "source_tier": source.get("source_tier", "C"),
                     "independent_source_group": group,
                     "body_verified": True,
+                    "body_excerpt_sha256": source.get("body_excerpt_sha256", ""),
                     "query_hash": claim.get("query_hash", ""),
                     "fetched_at": claim.get("fetched_at", ""),
                 }],

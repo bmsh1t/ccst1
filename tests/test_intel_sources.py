@@ -547,6 +547,49 @@ def test_github_package_without_observed_version_stays_unknown(tmp_path):
     assert result["items"][0]["applicability"] == "unknown"
 
 
+def test_github_advisory_stops_after_short_page(tmp_path):
+    pages = []
+
+    def fetcher(url, **_kwargs):
+        query = intel_sources.urllib.parse.parse_qs(
+            intel_sources.urllib.parse.urlparse(url).query
+        )
+        pages.append(int(query["page"][0]))
+        return [{"ghsa_id": "GHSA-short-page"}]
+
+    result = intel_sources.fetch_github_advisories_for_components(
+        [_component()], tmp_path, fetcher=fetcher, now=NOW
+    )
+
+    assert pages == [1]
+    assert result["status"] == "ok"
+    assert result["coverage_gaps"] == []
+
+
+def test_github_advisory_bounded_pages_emit_coverage_gap(tmp_path):
+    pages = []
+
+    def fetcher(url, **_kwargs):
+        query = intel_sources.urllib.parse.parse_qs(
+            intel_sources.urllib.parse.urlparse(url).query
+        )
+        page = int(query["page"][0])
+        pages.append(page)
+        return [
+            {"ghsa_id": f"GHSA-{page:04d}-{index:04d}-test"}
+            for index in range(100)
+        ]
+
+    result = intel_sources.fetch_github_advisories_for_components(
+        [_component()], tmp_path, fetcher=fetcher, now=NOW
+    )
+
+    assert pages == [1, 2]
+    assert result["status"] == "partial"
+    assert result["items_fresh"] is True
+    assert result["coverage_gaps"][0]["next_page"] == 3
+
+
 def test_nvd_component_limit_is_explicit_partial_coverage(tmp_path):
     components = [
         _component(name=f"Product {index}", version="1.0")
@@ -564,9 +607,13 @@ def test_nvd_component_limit_is_explicit_partial_coverage(tmp_path):
     assert result["stats"]["eligible_queries"] == 3
     assert result["stats"]["attempted_queries"] == 2
     assert "queried 2 of 3" in result["error"]
+    gap = result["coverage_gaps"][0]
+    assert gap["component"] == {"name": "product 2", "version": "1.0"}
+    assert gap["initial_query_pending"] is True
+    assert gap["next_cursor"] == ""
 
 
-def test_nvd_fetches_all_reported_pages(tmp_path):
+def test_exact_cpe_nvd_query_fetches_all_reported_pages(tmp_path):
     starts = []
 
     def fetcher(url, **_kwargs):
@@ -586,8 +633,10 @@ def test_nvd_fetches_all_reported_pages(tmp_path):
             "vulnerabilities": rows,
         }
 
+    component = _component(name="Product", version="1.0")
+    component["cpe"] = "cpe:2.3:a:vendor:product:1.0:*:*:*:*:*:*:*"
     result = intel_sources.fetch_nvd_for_components(
-        [_component(name="Product", version="1.0")],
+        [component],
         tmp_path,
         fetcher=fetcher,
         now=NOW,
@@ -600,6 +649,39 @@ def test_nvd_fetches_all_reported_pages(tmp_path):
         "CVE-2026-0002",
         "CVE-2026-0003",
     ]
+
+
+def test_versioned_keyword_fallback_fetches_one_page_and_emits_cursor_gap(tmp_path):
+    calls = []
+
+    def fetcher(url, **_kwargs):
+        query = intel_sources.urllib.parse.parse_qs(
+            intel_sources.urllib.parse.urlparse(url).query
+        )
+        calls.append(int(query["startIndex"][0]))
+        return {
+            "totalResults": 401,
+            "startIndex": 0,
+            "vulnerabilities": [
+                {"cve": {"id": f"CVE-2026-{index:04d}"}}
+                for index in range(200)
+            ],
+        }
+
+    result = intel_sources.fetch_nvd_for_components(
+        [_component(name="Product", version="1.0")],
+        tmp_path,
+        fetcher=fetcher,
+        now=NOW,
+    )
+
+    assert calls == [0]
+    assert result["status"] == "partial"
+    assert result["items_fresh"] is True
+    gap = result["coverage_gaps"][0]
+    assert gap["query_mode"] == "versioned_keyword_fallback"
+    assert gap["component"] == {"name": "product", "version": "1.0"}
+    assert "versioned product keyword fallback" in gap["reason"]
 
 
 def test_versionless_product_fetches_one_page_and_emits_cursor_gap(tmp_path):
@@ -749,11 +831,10 @@ def test_nvd_paginates_components_round_robin_with_bounded_pages(tmp_path):
     assert calls == [
         ("Product One", 0, 200),
         ("Product Two", 0, 200),
-        ("Product One", 1, 200),
-        ("Product Two", 1, 200),
     ]
-    assert result["status"] == "ok"
+    assert result["status"] == "partial"
     assert result["stats"]["attempted_queries"] == 2
+    assert len(result["coverage_gaps"]) == 2
 
 
 def test_nvd_request_wall_timeout_continues_other_components(tmp_path, monkeypatch):
@@ -802,8 +883,10 @@ def test_nvd_time_budget_preserves_fetched_pages_as_partial(tmp_path, monkeypatc
             "vulnerabilities": [{"cve": {"id": "CVE-2026-0001"}}],
         }
 
+    component = _component(name="Product", version="1.0")
+    component["cpe"] = "cpe:2.3:a:vendor:product:1.0:*:*:*:*:*:*:*"
     result = intel_sources.fetch_nvd_for_components(
-        [_component(name="Product", version="1.0")],
+        [component],
         tmp_path,
         fetcher=fetcher,
         now=NOW,
@@ -814,6 +897,10 @@ def test_nvd_time_budget_preserves_fetched_pages_as_partial(tmp_path, monkeypatc
     assert result["status"] == "partial"
     assert [item["id"] for item in result["items"]] == ["CVE-2026-0001"]
     assert "time budget exhausted after 120s" in result["error"]
+    gap = result["coverage_gaps"][0]
+    assert gap["next_start_index"] == 1
+    assert gap["next_cursor"]
+    assert gap["initial_query_pending"] is False
 
 
 def test_nvd_next_run_reuses_cached_page_and_continues_pagination(tmp_path, monkeypatch):
@@ -831,10 +918,12 @@ def test_nvd_next_run_reuses_cached_page_and_continues_pagination(tmp_path, monk
             "vulnerabilities": [{"cve": {"id": f"CVE-2026-000{start + 1}"}}],
         }
 
+    component = _component(name="Product", version="1.0")
+    component["cpe"] = "cpe:2.3:a:vendor:product:1.0:*:*:*:*:*:*:*"
     first_ticks = iter([0.0, 0.0, 2.0])
     monkeypatch.setattr(intel_sources.time, "monotonic", lambda: next(first_ticks))
     first = intel_sources.fetch_nvd_for_components(
-        [_component(name="Product", version="1.0")],
+        [component],
         tmp_path,
         fetcher=fetcher,
         max_seconds=1,
@@ -844,7 +933,7 @@ def test_nvd_next_run_reuses_cached_page_and_continues_pagination(tmp_path, monk
     second_ticks = iter([10.0, 10.0, 10.0])
     monkeypatch.setattr(intel_sources.time, "monotonic", lambda: next(second_ticks))
     second = intel_sources.fetch_nvd_for_components(
-        [_component(name="Product", version="1.0")],
+        [component],
         tmp_path,
         fetcher=fetcher,
         max_seconds=1,

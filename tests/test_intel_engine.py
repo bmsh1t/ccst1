@@ -24,11 +24,13 @@ def memory_dir(tmp_path):
     # Target profile
     profile = {
         "target": "target.com",
+        "first_hunted": "2026-03-20T00:00:00Z",
         "tech_stack": ["nextjs", "graphql", "postgresql"],
         "tested_endpoints": ["/api/v1/users", "/api/v1/login"],
         "findings": [{"vuln_class": "idor", "severity": "high"}],
-        "last_hunted": "2026-03-24",
+        "last_hunted": "2026-03-24T00:00:00Z",
         "hunt_sessions": 3,
+        "schema_version": 1,
     }
     (targets_dir / "target-com.json").write_text(json.dumps(profile))
 
@@ -92,7 +94,7 @@ class TestLoadMemoryContext:
     def test_loads_target_profile(self, memory_dir):
         ctx = load_memory_context(str(memory_dir), "target.com")
         assert ctx["tech_stack"] == ["nextjs", "graphql", "postgresql"]
-        assert ctx["last_hunted"] == "2026-03-24"
+        assert ctx["last_hunted"] == "2026-03-24T00:00:00Z"
         assert ctx["hunt_sessions"] == 3
         assert "/api/v1/users" in ctx["tested_endpoints"]
 
@@ -100,7 +102,13 @@ class TestLoadMemoryContext:
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir()
         (targets_dir / "127-0-0-1:3002.json").write_text(
-            json.dumps({"target": "127.0.0.1:3002", "tech_stack": ["flask"]}),
+            json.dumps({
+                "target": "127.0.0.1:3002",
+                "first_hunted": "2026-03-20T00:00:00Z",
+                "last_hunted": "2026-03-24T00:00:00Z",
+                "tech_stack": ["flask"],
+                "schema_version": 1,
+            }),
             encoding="utf-8",
         )
         (tmp_path / "journal.jsonl").write_text(
@@ -144,6 +152,16 @@ class TestLoadMemoryContext:
         ctx = load_memory_context(str(memory_dir), "target.com")
         # Should still load the valid entries
         assert "CVE-2026-1234" in ctx["tested_cves"]
+
+    def test_corrupted_target_profile_fails_with_path(self, memory_dir):
+        path = memory_dir / "targets" / "target-com.json"
+        path.write_text("{", encoding="utf-8")
+        original = path.read_bytes()
+
+        with pytest.raises(ValueError, match=str(path)):
+            load_memory_context(str(memory_dir), "target.com")
+
+        assert path.read_bytes() == original
 
     def test_load_recon_tech_stack_uses_cidr_storage_key(self, tmp_path, monkeypatch):
         recon_file = tmp_path / "recon" / "1.2.3.0_24" / "live" / "httpx_full.txt"
@@ -904,14 +922,17 @@ class TestIntelV2Pipeline:
         assert merged[0]["aliases"] == ["CVE-2026-0002", "GHSA-TEST-0002"]
         assert len(merged[0]["source_refs"]) == 3
 
-    def test_kev_only_fortinet_advisory_is_added_before_nvd_enrichment(self):
-        component = {
-            "name": "fortios",
-            "display_name": "FortiOS",
-            "version": "7.2.8",
-            "host": "fortinet",
-            "source": "declared_tech_stack",
-        }
+    def test_kev_only_advisory_binds_each_exact_product_component(self):
+        components = [
+            {
+                "name": "fortios",
+                "display_name": "FortiOS",
+                "version": version,
+                "host": "fortinet",
+                "source": "declared_tech_stack",
+            }
+            for version in ("7.2.8", "7.4.4")
+        ]
         kev = {
             "source": "kev",
             "fetched_at": "2026-07-16T00:00:00Z",
@@ -919,7 +940,7 @@ class TestIntelV2Pipeline:
                 "CVE-2026-39808": {
                     "cveID": "CVE-2026-39808",
                     "vendorProject": "Fortinet",
-                    "product": "FortiSandbox",
+                    "product": "FortiOS",
                     "dateAdded": "2026-07-16",
                     "shortDescription": "Fortinet FortiSandbox OS command injection",
                     "notes": "https://fortiguard.fortinet.com/psirt/FG-IR-26-100",
@@ -932,18 +953,38 @@ class TestIntelV2Pipeline:
             },
         }
 
-        candidates = intel_engine.merge_kev_only_advisories([], kev, [component])
+        candidates = intel_engine.merge_kev_only_advisories([], kev, components)
         enriched = intel_engine.enrich_advisories(
             candidates,
             kev,
             {"items": {"CVE-2026-39808": {"score": 0.42, "percentile": 0.8}}},
         )
 
-        assert [item["id"] for item in candidates] == ["CVE-2026-39808"]
+        assert [item["id"] for item in candidates] == [
+            "CVE-2026-39808",
+            "CVE-2026-39808",
+        ]
         assert enriched[0]["kev"] is True
         assert enriched[0]["epss"] == 0.42
         assert enriched[0]["kev_only"] is True
-        assert enriched[0]["component"]["name"] == "fortios"
+        assert [item["component"]["version"] for item in enriched] == ["7.2.8", "7.4.4"]
+
+    def test_kev_product_family_prefix_does_not_cross_bind(self):
+        component = {
+            "name": "fortios",
+            "display_name": "FortiOS",
+            "version": "7.2.8",
+        }
+        kev = {
+            "items": {
+                "CVE-2026-39808": {
+                    "vendorProject": "Fortinet",
+                    "product": "FortiSandbox",
+                },
+            },
+        }
+
+        assert intel_engine.merge_kev_only_advisories([], kev, [component]) == []
 
     def test_kev_vendor_name_does_not_bind_managed_cloud_banner(self):
         component = {
@@ -1064,6 +1105,7 @@ class TestIntelV2Pipeline:
                 "source_tier": "A",
                 "independent_source_group": "vendor-givewp-2026",
                 "body_verified": True,
+                "body_excerpt": "GiveWP 4.16.3 is affected; update to 4.16.4.",
                 "claims": [{
                     "identifiers": ["CVE-2026-63030"],
                     "component": {"name": "givewp", "version": "4.16.3"},
@@ -1105,11 +1147,36 @@ class TestIntelV2Pipeline:
                 },
             ],
             [{"source": "nvd", "status": "ok"}],
-            [{"component": {"name": "givewp", "version": "4.16.2"}}],
+            [{
+                "component": {"name": "givewp", "version": "4.16.2"},
+                "applicability": "affected",
+            }],
             {"covered_subjects": [], "blocked_subjects": [], "status": "missing"},
         )
 
         assert [item["subject"] for item in gaps["recommended"]] == ["givewp@4.16.3"]
+
+    def test_unknown_official_advisory_keeps_web_intel_gap_open(self):
+        gaps = intel_engine._web_intel_gap_projection(
+            [{
+                "name": "givewp",
+                "display_name": "GiveWP",
+                "version": "4.16.3",
+                "kind": "web_component",
+            }],
+            [{"source": "nvd", "status": "ok"}],
+            [{
+                "id": "CVE-2026-63030",
+                "component": {"name": "givewp", "version": "4.16.3"},
+                "applicability": "unknown",
+                "source_names": ["nvd"],
+            }],
+            {"covered_subjects": [], "blocked_subjects": [], "status": "missing"},
+        )
+
+        assert gaps["web_search_recommended"] is True
+        assert gaps["recommended"][0]["subject"] == "givewp@4.16.3"
+        assert "did not establish advisory applicability" in gaps["recommended"][0]["reasons"][0]
 
     def test_blocked_web_intel_is_preserved_as_gap_not_clean_result(self, tmp_path):
         live = tmp_path / "recon" / "target.com" / "live"

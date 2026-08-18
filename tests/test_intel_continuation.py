@@ -298,6 +298,35 @@ def test_nvd_source_gap_uses_existing_review_continuation(tmp_path):
     assert "--cursor CURSOR" in state["review_group"]["query_command"]
 
 
+def test_deferred_initial_nvd_query_continuation_has_no_empty_cursor(tmp_path):
+    _prepare_inventory(tmp_path)
+    payload = _intel()
+    payload["sources"][0].update({
+        "status": "partial",
+        "coverage_gaps": [{
+            "source": "nvd",
+            "gap_key": "nvd-deferred:givewp@4.16.3",
+            "query_mode": "versioned_keyword_fallback",
+            "component": {"name": "givewp", "version": "4.16.3"},
+            "query": {"keywordSearch": "GiveWP"},
+            "initial_query_pending": True,
+            "reason": "component limit",
+        }],
+    })
+    _write_intel(tmp_path, payload)
+
+    sidecar = load_intel_review_projection(
+        tmp_path / "recon" / "target.test", "target.test"
+    )
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert sidecar["source_coverage_gaps"][0]["initial_query_pending"] is True
+    assert state["action"] == "review_intel_group"
+    command = state["review_group"]["query_command"]
+    assert "tools/intel_sources.py nvd-page" in command
+    assert "--cursor" not in command
+
+
 def test_omitted_intel_group_requires_review_then_closes_by_queue(tmp_path):
     _prepare_inventory(tmp_path)
     advisories = []
