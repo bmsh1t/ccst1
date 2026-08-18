@@ -73,6 +73,10 @@ actively generate new evidence。
 - **Validation mode**：只有 Candidate 质量足够时进入验证。使用最低影响证据
   证明实际安全影响，并在红线允许范围内完成 `/validate` 或报告前 gate。
 
+每次在三种模式之间切换，先做一次 compact transition review：`Evidence state /
+Next question / Stop condition / Red-line status`。复核结果继续写入现有 Evidence 或
+Action Queue，不新增 transition 字段或第二套状态机。
+
 AI override 是能力上限保护：当前 Skill 可以跳过默认路线、组合多张知识卡、
 创建新的 action 类型，或把 Discovery / Exploitation / Validation 顺序局部
 重排；但必须说明原因、red-line status、下一步验证动作和停止条件。Skill route

@@ -11,12 +11,12 @@ def _read(relative_path: str) -> str:
 
 
 def test_autopilot_requires_known_software_intelligence_lane():
-    text = _read("commands/autopilot.md")
+    text = _read("docs/autopilot-lanes.md")
     intel = _read("commands/intel.md")
 
     assert "Known software" in text
     assert "tools/intel_engine.py" in text
-    assert "AI must select a reachable" in text
+    assert "select a reachable advisory" in text
     assert "collect_web_intel" in intel
     assert "test_advisory_applicability" in intel
     assert "tools/web_intel_artifact.py" in intel
@@ -55,7 +55,7 @@ def test_autopilot_agent_inherits_known_software_lane():
 
 
 def test_wordpress_wpscan_is_explicitly_on_demand_and_bounded():
-    command = _read("commands/autopilot.md")
+    command = _read("docs/autopilot-lanes.md")
     agent = _read("agents/autopilot.md")
     card = _read("knowledge/cards/wordpress-surface-intelligence.md")
 

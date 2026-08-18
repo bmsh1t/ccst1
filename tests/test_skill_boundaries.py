@@ -169,6 +169,20 @@ def test_payload_reference_requires_stateful_chain_continuity():
     assert "显式恢复" in reference
 
 
+def test_runtime_protocol_keeps_compact_mode_transition_review():
+    runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+
+    assert "compact transition review" in runtime
+    for marker in (
+        "Evidence state",
+        "Next question",
+        "Stop condition",
+        "Red-line status",
+        "不新增 transition 字段或第二套状态机",
+    ):
+        assert marker in runtime
+
+
 def test_hidden_sqli_surfaces_are_part_of_skill_flow():
     runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")
@@ -336,13 +350,12 @@ def test_controlled_credential_testing_is_not_an_absolute_red_line():
 
 
 def test_autopilot_can_select_controlled_credential_lane():
-    autopilot = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    autopilot = (REPO_ROOT / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
     spray = (REPO_ROOT / "commands" / "spray.md").read_text(encoding="utf-8")
     tool_index = (REPO_ROOT / "docs" / "tool-index.md").read_text(encoding="utf-8")
 
-    assert "- Credential Lane:" in autopilot
-    assert "`/autopilot` may select" in autopilot
-    assert "Password brute force, default credential checks, and password spray are not" in autopilot
+    assert "Credential Lane may be selected" in autopilot
+    assert "Password brute force, default credential checks, and password spray are not mandatory last lanes" in autopilot
     assert "Controlled credential spray" in spray
     assert "Credential breakthrough lane selected" in tool_index
 

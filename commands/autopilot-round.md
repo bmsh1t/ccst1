@@ -148,5 +148,5 @@ cron job from this wrapper.
 
 One loop owns one target. Interrupted turns resume from checkpoint/state, not a
 legacy agent session. All `commands/autopilot.md` pause boundaries remain
-unchanged: never auto-submit reports or cross its destructive, irreversible,
-target, credential, or current-turn confirmation boundaries.
+unchanged: never auto-submit reports or cross its red-line, target, or credential
+boundaries.

@@ -76,12 +76,13 @@ def test_runtime_protocol_preserves_discovery_driven_exploration():
 
 
 def test_autopilot_docs_keep_discovery_as_first_class_mode():
-    command = _read("commands/autopilot.md")
+    command = _read("commands/autopilot.md") + _read("skills/runtime-protocol.md")
     agent = _read("agents/autopilot.md")
+    command_lower = command.lower()
 
-    assert "Discovery / Exploitation / Validation Modes" in command
-    assert "evidence-driven depth does not" in command
-    assert "Actively generate new evidence" in command
+    assert "Discovery / Exploitation / Validation modes" in command
+    assert "evidence-driven depth does not" in command_lower
+    assert "actively generate new evidence" in command_lower
     assert "AI override" in command
     assert "skills/runtime-protocol.md" in command
     for marker in (
@@ -95,7 +96,7 @@ def test_autopilot_docs_keep_discovery_as_first_class_mode():
 
 
 def test_case_state_first_docs_do_not_make_it_a_hard_rail():
-    command = _read("commands/autopilot.md")
+    command = _read("commands/autopilot.md") + _read("docs/autopilot-lanes.md")
     agent = _read("agents/autopilot.md")
     validate = _read("commands/validate.md")
     hunting = _read("rules/hunting.md")

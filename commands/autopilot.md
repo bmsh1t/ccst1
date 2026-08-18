@@ -126,95 +126,25 @@ write-back rules live in the selected lane section. Claim durable queue work bef
 never treat prose or a raw endpoint as evidence. If `state.root_claim_next` exists, run `/checkpoint`
 so `finding_index` creates the canonical candidate and queue action before using
 its ID. Refresh state after every owner write-back.
-On-demand index (references only): `run_recon` uses
-`python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only`;
-`prepare_surface_context` uses `python3 tools/surface.py --target <target_shell> --refresh`;
-usable cache inspection may read `tools/context_pack.py` and
-`tools/observation_inventory.py summary`; breadth uses
-`python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick`.
-`wait_recon` / `wait_scan`: wait or poll; Runtime phase locks are the final duplicate-launch guard.
-`collect_candidate_evidence` preserves `missing_labels` and `next_actions`;
-`resume_action_queue` claims before replay with
-`python3 tools/action_queue.py claim --target <target_shell>`, then
-`python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why> [--metadata-json <object>]`;
-`validate_finding` remains state-gated: Do not call `/validate` until state returns `validate_finding`;
-the non-TTY owner is `python3 tools/validate.py --target <target_shell> --finding-id <id> --decision-json <json_file_shell> --json`; the JSON file path is never inline.
-Deterministic replay is
-`python3 tools/validation_runner.py <lane> --target <target_shell> ...` (its first positional
-argument is `<lane>` and it never accepts `--decision-json`). For a readable text list or JSON
-Scope manifest, keep the parent `scope_ref/scope_hash` attached to each selected asset. Every
-listed `in_scope` asset may enter surface/context/browser/scan/hunt; an `out_of_scope` match always
-wins. Keep unlisted discovery URLs as `external-chain-context` or `scope-review` until the
-manifest/list is explicitly updated. Never scan the list or manifest file itself. When selecting
-one asset, first run `python3 tools/autopilot_continuation.py create --parent-target <scope_ref> --selected-target <domain> [--auth-file <auth_file_shell>]`, then invoke `/autopilot <domain> --context-file=<returned-path>`; bootstrap validates and applies the parent Scope/Auth before bounded state or target I/O.
-Browser imports use
-`tools/browser_mcp_import.py` with `--auth-required` for authenticated captures. JS packing uses
-`tools/deep_js_packer.py` only with concrete evidence; JS volume alone is not a trigger;
-partial/unavailable stays open. DNS expansion
-uses `tools/dns_expand.py --reason` only when evidence triggers it; host count alone is not a trigger.
-Known software uses `tools/intel_engine.py`; AI must select a reachable advisory before a targeted
-probe, and use `knowledge/cards/wordpress-surface-intelligence.md` for WordPress context.
-Focused fuzz is an optional AI-selected discovery action via `skills/web2-recon/SKILL.md`.
-`Discovery / Exploitation / Validation Modes`: evidence-driven depth does not mean evidence-only
-testing; Actively generate new evidence and let AI override ordering with reason and write-back.
-AI override may skip, reorder, combine, or invent a better evidence action.
-`Case-State First, Not Case-State Only`: case-state-validation and case-state-enrichment are
-continuity, not a scope gate; stale state does not block AI override. `Credential Lane`: `/autopilot` may select
-through `skills/credential-attack/`; Password brute force, default credential checks, and password spray are not
-absolute red lines or a mandatory last lane.
-Byte-exact work uses `tools/sender_semantics.py --require` and `tools/smuggling_executor.py --variant`.
-Red-line checks are narrow side-effect checks, not authorization or ownership gates; active stored
-XSS payload, change real account or permission state, and trigger CI/CD/deployment side effects require current-turn intent.
-`tools/observation_inventory.py summary` remains advisory; never route every untouched observation
-to a Skill. SQL/JSON/WAF and 401/403 details, including `tools/json_inject_probe`,
-`tools/sql_parameter_probe`, and `tools/bypass_403.sh`, are in the selected lane contract.
 ## Execution Invariants
 Expert Hunter Autopilot is AI-first: Claude judges priority, impact, chain fit,
-promotion, reopen, and finish. Tools preserve schema, raw evidence, replay,
-diffs, and durable state. Follow `rules/tool-ai-boundary.md`; rankings, cards,
-scanner output, coverage gaps, and runner labels are advisory and reopenable.
+promotion, reopen, and finish; deterministic owners preserve schema, evidence,
+replay, and durable state. Follow `skills/runtime-protocol.md`,
+`rules/tool-ai-boundary.md`, `rules/red-lines.md`, and
+`rules/hunting.md#broad-scanner-input-and-completion-contract`.
 Super-pentester priority is business impact > workflow evidence > crown-jewel
-hypothesis > scanner/coverage hints. Scanner quick is a breadth sensor and
-advisory lead source; scanner-negative is not completion. Follow
-`rules/hunting.md#broad-scanner-input-and-completion-contract`: never feed raw
-historical corpora directly to general nuclei, never repeat breadth only because
-Deep mode or raw volume is large, and treat killed/stopped/timeout/non-zero as
-incomplete. Bounded Surface is the default window, not an AI capability limit.
-General Nuclei breadth is origin-deduplicated and bounded to 50/100/200 targets
-for quick/standard/full (`BB_NUCLEI_MAX_TARGETS` overrides); `summary.json`
-records available and selected origin counts. Long-tail paths/components/CVEs
-need a reviewed evidence-backed list.
-Business Model Read: before recon or after first recon, maintain
-`evidence/<target>/business_model.md` using the `agent.py` directive.
+hypothesis > scanner/coverage hints. Scanner quick is an advisory breadth sensor,
+and scanner-negative is not completion.
+Business Model Read: maintain `evidence/<target>/business_model.md` with the
+`agent.py` directive before recon or after first recon.
 Promote Lead -> Signal -> Candidate -> Validated Finding only with practical,
 replayable raw request/response or a locatable evidence ref. Canonical finding
 writes go through `finding_index` and `/validate`, never direct `findings.json`
-edits. A root claim is an unvalidated candidate input; tool/browser success and
-terminal prose are not lifecycle transitions. Partial/blocked is unresolved,
-not tested-clean. A report draft with placeholders is not report-ready.
+edits. Partial/blocked is unresolved, not tested-clean; placeholder reports are
+not report-ready.
 Four-layer memory is the external brain, not the steering wheel:
-`target memory / target case state -> skill routing -> knowledge cards -> checks`.
-When a linked case-state backlog is blocked, state projects `recover_hypothesis`
-with an empty replay command; record the bounded recovery step before creating a
-fresh backlog and never replay the blocked runner implicitly.
-Use `reference_hints` and 1-2 matching knowledge cards/on-demand references; do
-not let them drive first contact. Observation top-K, `remaining`, and untouched
-long tail are completeness windows. Never route every untouched observation to
-a Skill or treat the window as closure.
-Use `/observations` to reopen evidence-driven long-tail work.
-## Evidence-Triggered Lane Pointers
-Before unusual helpers, scan `docs/tool-index.md` once and read only the selected
-section of `docs/autopilot-lanes.md`. Discovery is evidence-generating, not evidence-only:
-AI may skip, reorder, combine, or invent a better evidence action, but must record the reason,
-red-line status, stop condition, and write-back. The lane document covers browser/source/JS,
-software/intel, SQL/JSON/WAF, access limits, workflow/timing, credentials, asset expansion,
-and wire/live-action boundaries. Canonical contracts remain
-`skills/runtime-protocol.md`, `rules/red-lines.md`, `rules/coverage-gate.md`, `rules/hunting.md`,
-`rules/tool-ai-boundary.md`, `rules/web-intel.md`, `knowledge/index.md`,
-`tools/checkpoint.py`, `tools/action_queue.py`, `tools/coverage_matrix.py`,
-`tools/evidence_ledger.py`, and `docs/evidence-runners.md`.
-- Discovery / Exploitation / Validation Modes use the same evidence rubric and write-back.
-- Credential Lane: use only the controlled lane contract; missing hygiene becomes queued work.
+`target memory / case state -> Skill -> 1-2 matching cards/references -> checks`.
+These are decision inputs, not first-contact controllers or closure evidence.
 Legacy-only `--parallel`, `--max-parallel`, `--parallel-hypotheses`,
 `--self-review`, and `--calibrate-patterns` are invalid inline. Use
 `python3 agent.py --target <target_shell> ...`; baseline legacy runs use
@@ -246,32 +176,18 @@ Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and ad
 When `max_lanes` was reached, pass `--max-lanes-reached`; it always requires handoff. A pending report is a closure asset, not a stop signal. Active durable work, pending validation/report, partial browser/source/intel, or untouched high-value work means `handoff/partial`, never `finish/complete/exhausted`.
 Checkpoint unresolved work in the existing Action Queue instead of passive TODOs.
 Passing `check_autopilot_run.py` proves state-chain integrity, not target exhaustion.
-Only in the final handoff/finish response of each bounded `/autopilot` invocation,
-perform exactly one compact, presentation-only promotion review using only the
-classification criteria in `knowledge/promotion-rules.md` and
-`rules/retrospective.md`, not their write-back commands. Here, “round” means one
-bounded invocation, not an individual lane, replay, or checkpoint. Always show a
-`Memory recommendations` section with exactly these buckets:
+In the final handoff/finish response, use the classification criteria (not the
+write commands) in `knowledge/promotion-rules.md` and `rules/retrospective.md`
+to emit exactly one presentation-only section per bounded invocation:
 
 ```text
-- promote: evidence-backed, transferable route/evidence/stop-condition lesson, or none + reason
-- target-only: useful current-target lead/dead-end/handoff that should not enter global knowledge, or none
+Memory recommendations
+- promote: transferable lesson, or none + reason
+- target-only: current-target fact or handoff, or none
 - reject: noisy, unverified, sensitive, duplicated, or overfit material, or none
 ```
 
-A promotion recommendation must cite a locatable target-owned evidence reference and state the
-target layer (`knowledge card`, `Skill`, `Rule`, or `Tool`), why the lesson is high-value, its
-transferability, one next action, and one stop/validation condition. Prefer lessons that recur,
-change route selection, prevent a repeated false positive, or expose a rare reusable connector.
-Never recommend a single-target fact or unsupported hypothesis for global promotion. This is a
-visible AI recommendation only: do not write target memory, edit knowledge/Skills/Rules, create a
-pending candidate, or call `/remember`; any write-back or promotion remains a separate existing
-reviewed workflow. This review must not change routing or lane selection, action budgets, Action
-Queue state, evidence/finding lifecycle, closure verdict, the next action, or any existing project
-capability.
-When no new reusable lesson was produced, emit `promote: none — no new transferable lesson` and
-keep the other buckets to one concise line each; do not repeat the full review inside the loop.
-End with target, mode, strongest evidence, findings/candidates, blockers/dead ends, that single
-section, and next best action; do not summarize the recommendations elsewhere. If the bounded
-invocation reached `max_lanes`, its terminal handoff overrides target exhaustion; unresolved
-durable work is expected.
+Promotion requires a locatable target-owned evidence ref, destination layer, reusable value,
+one next action, and one stop/validation condition. Recommendations never write state or alter
+routing, budgets, Queue/finding lifecycle, closure, or next action. End with target, mode,
+strongest evidence, findings/candidates, blockers/dead ends, this section, and the next best action.

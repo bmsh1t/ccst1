@@ -22,12 +22,12 @@ def test_observations_slash_command_is_neutral_and_bounded():
 
 
 def test_autopilot_command_and_agent_consume_summary_without_auto_routing():
-    command = _read("commands/autopilot.md")
+    command = _read("commands/autopilot.md") + _read("docs/autopilot-lanes.md")
     agent = _read("agents/autopilot.md")
 
     assert "observation_inventory.py summary" in command
     assert "/observations" in command
-    assert "Never route every untouched observation to a Skill" in " ".join(command.split())
+    assert "attention windows, not closure" in " ".join(command.split())
     assert "observation_inventory" in agent
     assert "Never auto-route or enqueue the full inventory" in agent
 

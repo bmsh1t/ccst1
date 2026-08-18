@@ -68,7 +68,7 @@ These tools are memory and execution aids, not a pre-flight checklist. Empty/sta
 - `case_state_seed.py` suggests add-actor/add-object/add-backlog commands from cached object-like endpoints; it does not auto-write.
 - Knowledge cards come from `knowledge/index.md`; load only matching cards and `reference_hints` from context-pack when evidence needs on-demand references.
 - Red-line, coverage, and tool/AI boundary semantics live in `rules/red-lines.md`, `rules/coverage-gate.md`, `rules/hunting.md`, and `rules/tool-ai-boundary.md`.
-- Red-line checks are narrow side-effect checks, not authorization or ownership gates. HTTP method alone is not a red line; block or downgrade only the concrete destructive, irreversible, high-pressure, persistent-payload, or real-business side effect.
+- Apply `rules/red-lines.md` to concrete side effects; authorization context and technique labels are not red-line decisions.
 - Resolve queue items with `tools/action_queue.py resolve` after the smallest safe evidence-producing step.
 
 ## Case-State First, Not Case-State Only
@@ -119,9 +119,9 @@ AI override is part of the operating model: skip a default lane, combine knowled
 Use the provided target set as the active execution target set. `ctf_mode: true` in `config.json` means full local/lab coverage. External program/scope text is optional context, not an execution gate.
 
 A current-turn request that names an action already supplies its opt-in. Do not
-ask for a separate authorization or ownership statement. Red-line review only
-classifies concrete side effects as allow, allow-with-controls, downgrade, or
-pause. Pause only for ambiguous target identity, unavailable credentials that
+ask for a separate authorization or ownership statement. `rules/red-lines.md`
+classifies concrete side effects. Separately stop for ambiguous target identity,
+unavailable credentials that
 cannot be derived through the controlled Credential Lane, report submission, a
 new target not present in the current input/context, or irreversible/high-pressure
 effects that cannot be bounded or rolled back.
@@ -205,7 +205,7 @@ Deep mode:
   produce a resumable queue action or an explicit blocked/dead-end reason.
 - Finish only with a concrete Deep Exhaustion Checklist: recon/state and `/surface` consulted; coverage matrix rebuilt; Evidence Ledger / actor matrix reviewed; scanner-negative results received manual follow-up; JS/source/browser/exposure context used or ruled out; high-value vuln-family directions tested, blocked, not applicable, or listed with reasons.
 
-Deep mode never overrides Live-Action Boundaries: irreversible lifecycle writes, real money movement, bulk external sends, report submission, active stored XSS payload submission, and destructive mutations still require explicit current-turn operator intent. Method is a signal, not the boundary: browser-observed POST, GraphQL read queries, search/filter POSTs, preview/validate-only flows, and test-owned reversible actions can be valid evidence paths.
+Deep mode follows `rules/red-lines.md` for action boundaries.
 
 ## Credential Lane
 Password brute force, default credential checks, and password spray are not absolute red lines. Credential testing is a controlled high-risk lane when bounded and evidence-driven.
@@ -218,11 +218,8 @@ If self-owned lab/authorized account setup needs email verification, use `/root/
 
 Canonical source: `rules/red-lines.md`.
 
-- Never submit reports directly.
-- Do not run DDoS/high-pressure traffic, destructive behavior, real data modification/deletion/corruption, real account/permission/CI/CD/business side effects, or active stored XSS payload submission.
-- Controlled credential testing, OAST, read-only replay, CVE lookup, browser/JS/source analysis, and low-risk reflected/DOM XSS checks are not red lines when bounded and non-destructive.
-- Payment/order/permission/CI/CD surfaces remain high-value; avoid only the concrete side effect, use dry-run/preview/validate-only/inert/test-owned alternatives.
-- Current-turn action wording is sufficient opt-in; this section does not ask for separate authorization proof.
+- Never submit reports automatically; never execute destructive actions.
+- Sensitive business surfaces remain high-value; preserve an unexecuted destructive action as blocked or untested, never tested-clean.
 - If all live hosts are cooling down or guarded, pivot to cached evidence, JS/source review, context packing, checkpointing, and coverage accounting; do not default to residential IP rotation, WAF evasion, or social engineering.
 
 ## Specialist Handoff Contract

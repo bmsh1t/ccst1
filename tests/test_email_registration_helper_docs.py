@@ -23,7 +23,7 @@ def test_auth_sessions_documents_optional_mail_receiver_setup():
 
 
 def test_autopilot_mentions_mail_receiver_without_turning_it_into_attack_lane():
-    command = _read("commands/autopilot.md")
+    command = _read("docs/autopilot-lanes.md")
     agent = _read("agents/autopilot.md")
     auth_sessions = _read("docs/auth-sessions.md")
 

@@ -144,7 +144,7 @@ def test_smuggling_executor_cli_reports_variant(capsys):
 
 
 def test_autopilot_docs_route_byte_exact_work_to_sender_semantics():
-    command_text = open("commands/autopilot.md", encoding="utf-8").read()
+    command_text = open("docs/autopilot-lanes.md", encoding="utf-8").read()
     agent_text = open("agents/autopilot.md", encoding="utf-8").read()
 
     assert "tools/sender_semantics.py --require" in command_text

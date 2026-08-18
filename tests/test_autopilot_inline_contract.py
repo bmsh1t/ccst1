@@ -107,7 +107,8 @@ def test_bounded_deep_invocation_handoffs_instead_of_expanding_new_lanes():
     assert "invocation_batch.bounded" in command
     assert "browser/source discoveries become next-invocation work, not lane n+1" in " ".join(command.split()).lower()
     assert "after lane N do not execute a newly discovered queue item" in command
-    assert "terminal handoff overrides target exhaustion" in command
+    assert "When `max_lanes` was reached" in command
+    assert "it always requires handoff" in command
     assert "checkpoint/sync durable queue" in agent
 
 
@@ -156,26 +157,18 @@ def test_finish_contract_surfaces_high_value_memory_recommendations_without_auto
     command = " ".join(text.split()).lower()
 
     assert command.count("memory recommendations") == 1
-    assert "only in the final handoff/finish response of each bounded `/autopilot` invocation" in command
-    assert "perform exactly one compact, presentation-only promotion review" in command
-    assert "round” means one bounded invocation, not an individual lane, replay, or checkpoint" in command
+    assert "in the final handoff/finish response" in command
+    assert "exactly one presentation-only section per bounded invocation" in command
     assert "- promote:" in command
     assert "- target-only:" in command
     assert "- reject:" in command
-    assert "locatable target-owned evidence reference" in command
-    assert "why the lesson is high-value" in command
+    assert "locatable target-owned evidence ref" in command
+    assert "reusable value" in command
     assert "one next action" in command
     assert "one stop/validation condition" in command
-    assert "not their write-back commands" in command
-    assert "do not write target memory, edit knowledge/skills/rules" in command
-    assert "create a pending candidate" in command
-    assert "call `/remember`; any write-back or promotion remains a separate existing reviewed workflow" in command
-    assert "must not change routing or lane selection, action budgets" in command
-    assert "action queue state" in command
-    assert "closure verdict, the next action, or any existing project capability" in command
-    assert "no new reusable lesson was produced" in command
-    assert "do not repeat the full review inside the loop" in command
-    assert "do not summarize the recommendations elsewhere" in command
+    assert "not the write commands" in command
+    assert "recommendations never write state" in command
+    assert "alter routing, budgets, queue/finding lifecycle, closure, or next action" in command
 
 
 def test_versioned_hypothesis_contract_keeps_runner_observation_fields_tool_owned():

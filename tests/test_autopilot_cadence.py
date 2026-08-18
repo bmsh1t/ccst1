@@ -11,6 +11,8 @@ import pathlib
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 COMMAND = REPO_ROOT / "commands" / "autopilot.md"
 AGENT = REPO_ROOT / "agents" / "autopilot.md"
+LANES = REPO_ROOT / "docs" / "autopilot-lanes.md"
+RUNTIME = REPO_ROOT / "skills" / "runtime-protocol.md"
 
 
 def _read(path: pathlib.Path) -> str:
@@ -25,14 +27,14 @@ def test_autopilot_routes_lane_detail_on_demand():
 
     assert "state.lane_contract.ref" in command
     assert "docs/autopilot-lanes.md" in command
-    assert "read only the selected" in " ".join(command.split()).lower()
+    assert "read only" in " ".join(command.split()).lower()
     assert agent  # optional specialist prompt remains a separate entry point
 
 
 def test_autopilot_references_canonical_runtime_layers():
     command = _read(COMMAND)
     agent = _read(AGENT)
-    combined = f"{command}\n{agent}"
+    combined = "\n".join((command, agent, _read(LANES), _read(RUNTIME)))
 
     for marker in (
         "tools/context_pack.py",
@@ -70,8 +72,7 @@ def test_autopilot_uses_context_pack_reference_hints_without_embedding_tables():
 
 def test_autopilot_keeps_decision_loop_without_legacy_cadence_bulk():
     command = _read(COMMAND)
-    lanes = _read(REPO_ROOT / "docs" / "autopilot-lanes.md")
-    flat = " ".join(f"{command}\n{lanes}".split())
+    flat = " ".join(f"{command}\n{_read(LANES)}\n{_read(RUNTIME)}".split())
 
     for marker in (
         "Expert Hunter Autopilot",
@@ -79,8 +80,8 @@ def test_autopilot_keeps_decision_loop_without_legacy_cadence_bulk():
         "LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT",
         "State Consumption Loop",
         "Execution Invariants",
-        "Discovery / Exploitation / Validation Modes",
-        "Evidence-Triggered Lane Pointers",
+        "Discovery / Exploitation / Validation modes",
+        "state.lane_contract.ref",
         "Credential Lane",
         "Transition And Finish Contract",
     ):

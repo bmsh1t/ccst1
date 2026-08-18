@@ -12,18 +12,18 @@ def _read(relative_path: str) -> str:
 
 def test_slash_command_reads_state_before_any_long_phase():
     text = " ".join(_read("commands/autopilot.md").split())
+    lanes = " ".join(_read("docs/autopilot-lanes.md").split())
     bootstrap = text.index("tools/autopilot_bootstrap.py")
     preflight = text.index("## Runtime Preflight")
     capabilities = text.index("advisory capability profile", preflight)
     state_contract = text.index("compact target state", preflight)
     startup = text.index("Every invocation is state-first")
     state_read = text.index("python3 tools/autopilot_state.py --target <target_shell>", startup)
-    recon = text.index("python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only", state_read)
-    surface = text.index("tools/surface.py", state_read)
-    scan = text.index("python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick", state_read)
-
-    assert bootstrap < preflight < capabilities < state_contract < state_read < recon < surface < scan
-    assert "Runtime phase locks are the final duplicate-launch guard" in text
+    assert bootstrap < preflight < capabilities < state_contract < state_read
+    assert "python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only" in lanes
+    assert "tools/surface.py" in lanes
+    assert "python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick" in lanes
+    assert "Runtime phase locks are the final duplicate-launch guard" in lanes
 
 
 def test_slash_command_runtime_preflight_is_read_only_and_fail_fast():
@@ -53,12 +53,13 @@ def test_slash_command_consumes_capabilities_as_advisory_only():
 
 
 def test_slash_command_preserves_parent_scope_for_multi_asset_handoff():
-    text = " ".join(_read("commands/autopilot.md").split())
+    text = " ".join(_read("docs/autopilot-lanes.md").split())
 
-    assert "text list or JSON Scope manifest" in text
-    assert "Never scan the list or manifest file itself" in text
-    assert "keep the parent `scope_ref/scope_hash`" in text
-    assert "Every listed `in_scope` asset may enter surface/context/browser/scan/hunt" in text
+    assert "text list or schema-v1 JSON Scope manifest" in text
+    assert "never scan the list/manifest file itself" in text
+    assert "parent `scope_ref/scope_hash`" in text
+    assert "tools/autopilot_continuation.py create" in text
+    assert "`out_of_scope` always wins" in text
 
 
 def test_optional_agent_uses_the_same_state_first_contract():
@@ -70,7 +71,9 @@ def test_optional_agent_uses_the_same_state_first_contract():
 
 
 def test_command_and_optional_agent_share_candidate_evidence_routing():
-    command = " ".join(_read("commands/autopilot.md").split())
+    command = " ".join(
+        (_read("commands/autopilot.md") + _read("docs/autopilot-lanes.md")).split()
+    )
     agent = " ".join(_read("agents/autopilot.md").split())
 
     for text in (command, agent):
@@ -78,5 +81,5 @@ def test_command_and_optional_agent_share_candidate_evidence_routing():
         assert "missing_labels" in text
         assert "next_actions" in text
         assert "validate_finding" in text
-    assert "Do not call `/validate` until state returns `validate_finding`" in command
+    assert "call `/validate` only when state returns `validate_finding`" in command
     assert "Use `/validate` only after state returns `validate_finding`" in agent

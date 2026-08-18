@@ -64,11 +64,14 @@ def test_web2_recon_uses_existing_isolated_artifact_and_memory_contracts():
 
 
 def test_autopilot_entries_keep_focused_fuzz_ai_selected_and_non_automatic():
-    command = " ".join(_read("commands/autopilot.md").split()).lower()
+    command = " ".join(
+        (_read("commands/autopilot.md") + _read("docs/autopilot-lanes.md")).split()
+    ).lower()
     agent = " ".join(_read("agents/autopilot.md").split()).lower()
     skill = " ".join(_read("skills/web2-recon/SKILL.md").split()).lower()
 
-    assert "focused fuzz is an optional ai-selected discovery action" in command
+    assert "focused fuzz" in command
+    assert "optional ai-selected discovery actions" in command
     assert "skills/web2-recon/skill.md" in command
     for marker in (
         "one concrete template and bounded, deduplicated wordlist",

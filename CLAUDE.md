@@ -57,8 +57,8 @@ Target state / Evidence -> Coverage Matrix -> Skill / Context Router
 - Candidate lifecycle：`/triage`、`/validate`、`/chain`、`/report`、`/remember`。
 - Specialized workflows：按证据选择 Web3、token、credential、browser/JS、CI/CD 或移动端 Skill；
   不因目录中存在某个专项就默认执行。
-- Governance/maintenance：`/check-redlines`、`/check-coverage`、`/checkpoint`、
-  `/retrospect`、`/sync-check`、`/memory-gc`。
+- Governance/maintenance：`/check-coverage`、`/checkpoint`、`/retrospect`、
+  `/sync-check`、`/memory-gc`。
 
 Legacy CVE/report entrypoints remain available as compatibility paths; `/intel`
 and `/report` are primary. Command discovery comes from `commands/`, not a

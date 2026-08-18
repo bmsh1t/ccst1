@@ -12,56 +12,46 @@ def _read(relative_path: str) -> str:
 
 def test_red_lines_are_narrow_damage_boundaries():
     text = _read("rules/red-lines.md")
+    flat = " ".join(text.split())
 
-    assert "## 红线最小化原则" in text
-    assert "红线只拦截会伤害目标系统、真实用户或真实业务状态的动作" in text
-    assert "状态改变方法不是天然红线" in text
-    assert "不要因为“看起来敏感”而阻断 AI 的正常测试路线" in text
+    assert "唯一原则：不要执行会伤害目标系统、真实用户或真实业务状态的破坏性动作" in text
+    assert "漏洞类别、CVE/PoC、产品、凭证来源、HTTP method" in text
+    assert "`exploit`、`payload` 和版本不确定性都不是红线理由" in text
+    assert "三项均为 no 时直接 `allow`" in flat
     assert "allow-with-controls" in text
     assert "常规高价值路线已经产生稳定" not in text
 
 
 def test_red_lines_block_destructive_methods_and_active_stored_xss():
     text = _read("rules/red-lines.md")
-    flat = " ".join(text.split())
 
     assert "DDoS、高压流量、资源耗尽或服务中断" in text
-    assert "会不会修改、删除、篡改、污染真实数据/配置/业务状态？" in text
-    assert "或触发真实副作用" not in text
-    assert "对真实数据执行会落库的 `DELETE` / `PATCH` / `PUT`" in text
-    assert "账号、权限、组织成员、配置和 CI/CD 是高价值攻击面，不是天然高风险" in flat
-    assert "风险来自具体" in text
-    assert "动作效果" in text
-    assert "自动流程不得直接执行 `PUT`、`PATCH`、`DELETE` 或实际文件上传" in text
-    assert "OTP/SAML 协议验证和 OAST 等仍按实际副作用判断，不做全局禁用" in text
-    assert "技术名称、凭证来源和 HTTP method 都不是红线判断维度" in text
-    assert "口令爆破、password spray、" in text
-    assert "泄露密钥实际使用、认证/角色差异和协议测试默认可执行" in text
-    assert "只读查看" in text
-    assert "dry-run" in text
-    assert "preview" in text
-    assert "validate-only" in text
-    assert "默认不主动测试存储型 XSS" in text
-    assert "不得主动向评论、资料、工单、消息、富文本" in text
-    assert "提交可执行 stored XSS payload" in text
+    assert "不可控地修改、删除或污染真实数据、账号、权限、配置或业务状态" in text
+    assert "写入会执行、持久化并影响真实用户的内容" in text
+    assert "实际 `PUT`、`PATCH`、`DELETE` 或文件上传先进入 checkpoint" in text
+    assert "这是人工复核门禁" in text
+    assert "自动流程默认不提交可执行 stored XSS" in text
+    assert "stored XSS" in text
+    assert "测试资源" in text and "清理方式" in text and "当前回合明确 opt-in" in text
 
 
-def test_check_redlines_command_is_not_a_broad_permission_gate():
-    text = _read("commands/check-redlines.md")
+def test_bounded_non_destructive_checks_are_allowed():
+    text = _read("rules/red-lines.md")
 
-    assert "伤害目标系统、真实数据或真实用户" in text
-    assert "红线检查是窄边界安全检查，不是泛化权限闸门" in text
-    assert "具体边界和四级决策只读取 `rules/red-lines.md`" in text
-    assert "redline_required" in text
-    assert "Stored-XSS persistence risk" in text
-    assert "Low-risk alternative" in text
-    assert "Controls: 频率、测试资源、停止条件、回滚或清理方式" in text
-    assert "## 决策规则" not in text
+    assert "有界、低频且无破坏性副作用的检测默认允许" in text
+    assert "`blocked: insufficient-evidence`，不是红线" in text
+
+
+def test_manual_redline_wrapper_is_removed():
+    assert not (REPO_ROOT / "commands" / "check-redlines.md").exists()
+    assert "/check-redlines" not in _read("CLAUDE.md")
+    assert "commands/check-redlines.md" not in _read("rules/red-lines.md")
 
 
 def test_autopilot_and_runtime_keep_red_lines_minimal():
     runtime = _read("skills/runtime-protocol.md")
     command = _read("commands/autopilot.md")
+    lanes = _read("docs/autopilot-lanes.md")
     agent = _read("agents/autopilot.md")
 
     assert "窄红线" in runtime
@@ -71,16 +61,12 @@ def test_autopilot_and_runtime_keep_red_lines_minimal():
     assert "Credential、stored XSS" in runtime
     assert "secret 外传" not in runtime
 
-    for text in (command, agent):
-        flat = " ".join(text.split())
+    command_flat = " ".join(f"{command}\n{lanes}".split())
+    agent_flat = " ".join(agent.split())
 
-        assert "Red-line checks are narrow side-effect checks, not authorization or ownership gates" in flat
-        assert "active stored XSS payload" in flat
-        assert "Controlled credential testing" in flat or "Password brute force" in flat
-        assert "not red lines" in flat or "absolute red lines" in flat
-
-    command_flat = " ".join(command.split())
-    assert "absolute red lines or a mandatory last lane" in command_flat
-    assert "change real account or permission state" in command_flat
-    assert "trigger CI/CD/deployment side effects" in command_flat
+    assert "Apply `rules/red-lines.md` to the concrete action" in command_flat
+    assert "`rules/red-lines.md` classifies concrete side effects" in agent_flat
+    assert "Deep mode follows `rules/red-lines.md` for action boundaries" in agent_flat
+    assert "dry-run/preview/validate-only/inert" not in agent
+    assert "not mandatory last lanes" in command_flat
     assert "Other high-value lanes are blocked" not in command

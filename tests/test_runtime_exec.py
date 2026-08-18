@@ -137,6 +137,39 @@ def test_run_argv_command_timeout_reuses_partial_output_cleanup():
     assert "command timed out after 0.1s" in stderr.lower()
 
 
+def test_run_argv_command_idle_timeout_preserves_output_and_kills_group():
+    script = "import time; print('ready', flush=True); time.sleep(30)"
+
+    success, stdout, stderr = runtime_exec.run_argv_command_split(
+        [sys.executable, "-c", script],
+        timeout=5,
+        idle_timeout=0.25,
+    )
+
+    assert success is False
+    assert stdout == "ready\n"
+    assert "no output for 0.25s (idle timeout)" in stderr.lower()
+
+
+def test_run_argv_command_activity_resets_idle_timeout():
+    script = (
+        "import time; "
+        "print('one', flush=True); time.sleep(0.1); "
+        "print('two', flush=True); time.sleep(0.1); "
+        "print('three', flush=True)"
+    )
+
+    success, stdout, stderr = runtime_exec.run_argv_command_split(
+        [sys.executable, "-c", script],
+        timeout=2,
+        idle_timeout=0.5,
+    )
+
+    assert success is True
+    assert stdout == "one\ntwo\nthree\n"
+    assert stderr == ""
+
+
 
 def test_run_shell_command_returns_combined_output(monkeypatch):
     class FakeProc:

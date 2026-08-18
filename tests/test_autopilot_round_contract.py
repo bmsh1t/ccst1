@@ -187,7 +187,7 @@ def test_round_keeps_existing_report_and_live_action_boundaries():
 
     assert "All `commands/autopilot.md` pause boundaries remain unchanged" in command
     assert "never auto-submit reports" in command
-    assert "destructive, irreversible, target, credential, or current-turn confirmation boundaries" in command
+    assert "red-line, target, or credential" in command
 
 
 def test_bootstrap_errors_stop_and_cancel_without_target_work():

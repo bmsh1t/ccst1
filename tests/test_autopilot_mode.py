@@ -86,7 +86,7 @@ def test_deep_mode_requires_method_and_hypothesis_depth_packs():
 
 def test_case_state_recovery_docs_forbid_implicit_replay():
     root = Path(__file__).resolve().parents[1]
-    for relative in ("agents/autopilot.md", "commands/autopilot.md"):
+    for relative in ("agents/autopilot.md", "docs/autopilot-lanes.md"):
         text = (root / relative).read_text(encoding="utf-8")
         assert "recover_hypothesis" in text
         assert "empty replay command" in text
@@ -1254,8 +1254,10 @@ def test_autopilot_command_md_has_tool_index_prelude():
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
-    assert "## Evidence-Triggered Lane Pointers" in text
-    assert "docs/tool-index.md" in text
+    lanes = (md.parents[1] / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
+    assert "state.lane_contract.ref" in text
+    assert "docs/autopilot-lanes.md" in text
+    assert "docs/tool-index.md" in lanes
 
 
 def test_autopilot_command_md_bootstraps_state_first_then_branches():
@@ -1264,20 +1266,20 @@ def test_autopilot_command_md_bootstraps_state_first_then_branches():
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
+    lanes = (md.parents[1] / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
 
     assert "Every invocation is state-first" in text
     normalized = " ".join(text.split())
-    assert "python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only" in normalized
     assert "Branch only after that state" in normalized
     assert "python3 tools/autopilot_state.py --target <target_shell>" in text
     assert "python3 tools/autopilot_state.py --target <target_shell> --bounded" in text
-    assert "tools/context_pack.py" in text
     assert "Bootstrap `ctf_mode`, compact `state`" in text
-    assert normalized.index("python3 tools/autopilot_state.py --target <target_shell>") < normalized.index("python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only")
-    assert "`wait_recon` / `wait_scan`: wait or poll" in text
-    assert "Runtime phase locks are the final duplicate-launch guard" in normalized
+    assert "python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only" in lanes
+    assert "tools/context_pack.py" in lanes
+    assert "`wait_recon` / `wait_scan`: wait or poll" in lanes
+    assert "Runtime phase locks are the final duplicate-launch guard" in lanes
     assert "the only initial inputs" in normalized
-    assert "1-2 matching knowledge cards" in text
+    assert "1-2 matching cards/references" in text
 
 
 def test_autopilot_command_md_uses_checkpoint_tool_for_writeback():
@@ -1286,8 +1288,9 @@ def test_autopilot_command_md_uses_checkpoint_tool_for_writeback():
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
+    lanes = (md.parents[1] / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
 
-    assert "tools/checkpoint.py" in text
+    assert "tools/checkpoint.py" in lanes
     assert "run `/checkpoint`" in text
     assert "canonical candidate and queue action" in text
 
@@ -1298,13 +1301,15 @@ def test_autopilot_command_md_requires_next_action_queue_consumption():
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
+    lanes = (md.parents[1] / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
+    controller = f"{text}\n{lanes}"
 
-    assert "consume structured `next_action` and the durable Action" in text
-    assert "resume_action_queue" in text
-    assert "python3 tools/surface.py --target <target_shell> --refresh" in text
-    assert "python3 tools/action_queue.py claim --target <target_shell>" in text
-    assert "python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>" in text
-    assert "instead of passive TODOs" in text
+    assert "consume structured `next_action` and the durable Action" in controller
+    assert "resume_action_queue" in controller
+    assert "python3 tools/surface.py --target <target_shell> --refresh" in controller
+    assert "python3 tools/action_queue.py claim --target <target_shell>" in controller
+    assert "python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>" in controller
+    assert "instead of passive TODOs" in controller
 
 
 def test_autopilot_command_md_finish_is_invariant_check_not_checklist():
@@ -1325,6 +1330,7 @@ def test_autopilot_command_md_finish_is_invariant_check_not_checklist():
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
+    lanes = (md.parents[1] / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
     # Old heading MUST be gone.
     assert "## Finish Pre-checklist" not in text
     # New compact transition/finish section must remain present.
@@ -1353,10 +1359,12 @@ def test_autopilot_command_routes_helpers_through_canonical_owners():
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
+    lanes = (md.parents[1] / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
     # Old state machine heading MUST be gone.
     assert "## Sub-agent State Machine" not in text
     assert "## Question -> Tool Reference" not in text
-    assert "docs/tool-index.md" in text
+    assert "docs/autopilot-lanes.md" in text
+    assert "docs/tool-index.md" in lanes
     assert "at most one bounded specialist" in text.lower()
     for agent_name in ("recon-ranker", "js-reader", "validator", "chain-builder", "report-writer"):
         assert (Path(__file__).resolve().parents[1] / "agents" / f"{agent_name}.md").is_file()
@@ -1380,13 +1388,14 @@ def test_autopilot_command_md_defines_deep_as_value_first_comprehensive_depth():
 
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
-    flat = " ".join(text.split())
+    lanes = (md.parents[1] / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
+    flat = " ".join(f"{text}\n{lanes}".split())
 
     assert "`--deep` is a value-first comprehensive depth flag" in flat
     assert "not a checklist or favorite bug class" in flat
     assert "rules/hunting.md" in text
     assert "tools/coverage_matrix.py" in text
-    assert "tools/evidence_ledger.py" in text
+    assert "tools/evidence_ledger.py" in lanes
     hunting = (Path(__file__).resolve().parent.parent / "rules" / "hunting.md").read_text(encoding="utf-8")
     assert "Value-first coverage model" in hunting
     assert "Do not prioritize by a fixed favorite bug class" in hunting
@@ -1469,25 +1478,35 @@ def test_autopilot_prompts_keep_broad_scanner_bounded_without_limiting_ai():
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
-    for relative_path in ("commands/autopilot.md", "agents/autopilot.md"):
-        text = (root / relative_path).read_text(encoding="utf-8")
+    command = (root / "commands/autopilot.md").read_text(encoding="utf-8")
+    lanes = (root / "docs/autopilot-lanes.md").read_text(encoding="utf-8")
+    hunting = (root / "rules/hunting.md").read_text(encoding="utf-8")
+    agent = (root / "agents/autopilot.md").read_text(encoding="utf-8")
+    for text in (f"{command}\n{lanes}\n{hunting}", f"{agent}\n{hunting}"):
         flat = " ".join(text.split())
         assert "rules/hunting.md#broad-scanner-input-and-completion-contract" in text
         normalized = " ".join(text.split())
         assert "tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick" in normalized or "tools/hunt.py --target <target_shell> --scan-only --quick" in normalized
-        assert "never feed raw historical corpora directly to general nuclei" in flat
         assert (
             "never repeat breadth only because Deep mode or raw volume is large" in flat
             or "A successful quick pass is not repeated because Deep mode or raw URL volume is large" in flat
+            or "已成功完成的 quick breadth 不因 Deep 模式" in flat
         )
-        assert "Bounded Surface is the default window, not an AI capability limit" in flat
+        assert (
+            "Bounded Surface is the default window, not an AI capability limit" in flat
+            or "bounded Surface/projection 只是默认消费窗口，不是 AI 能力上限" in flat
+        )
         assert "targeted lists/templates" in flat or "rules/hunting.md" in text
-        assert "treat killed/stopped/timeout/non-zero as incomplete" in flat or "killed/stopped/timeout/non-zero is incomplete" in flat
+        assert (
+            "treat killed/stopped/timeout/non-zero as incomplete" in flat
+            or "killed/stopped/timeout/non-zero is incomplete" in flat
+            or "killed/stopped/timeout/non-zero 都是 incomplete" in flat
+        )
 
-    hunting = (root / "rules/hunting.md").read_text(encoding="utf-8")
     assert "urls/all.txt" in hunting
     assert "all_historical.txt" in hunting
     assert "gau、wayback、waymore" in hunting
+    assert "raw corpus 是完整" in hunting
     assert "Surface page/source/shape" in hunting
     assert "targeted templates" in hunting
     assert "input 正常走到 consolidation" in hunting
@@ -1499,8 +1518,10 @@ def test_autopilot_prompts_separate_runner_replay_from_final_validation():
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
-    for relative_path in ("commands/autopilot.md", "agents/autopilot.md"):
-        text = (root / relative_path).read_text(encoding="utf-8")
+    command = (root / "commands/autopilot.md").read_text(encoding="utf-8")
+    lanes = (root / "docs/autopilot-lanes.md").read_text(encoding="utf-8")
+    agent = (root / "agents/autopilot.md").read_text(encoding="utf-8")
+    for text in (f"{command}\n{lanes}", agent):
         assert "python3 tools/validation_runner.py <lane> --target" in text
         normalized = " ".join(text.split())
         assert "its first positional argument is `<lane>`" in normalized
@@ -1512,5 +1533,5 @@ def test_autopilot_prompts_separate_runner_replay_from_final_validation():
 def test_autopilot_authenticated_browser_capture_requires_state_marker():
     from pathlib import Path
 
-    text = (Path(__file__).resolve().parents[1] / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    text = (Path(__file__).resolve().parents[1] / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
     assert "`--auth-required` for authenticated captures" in " ".join(text.split())

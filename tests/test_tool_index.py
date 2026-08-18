@@ -46,7 +46,9 @@ def test_tool_index_flags_underused_tools():
 
 def test_autopilot_md_references_tool_index():
     text = AUTOPILOT_MD.read_text(encoding="utf-8")
-    assert "tool-index.md" in text, "commands/autopilot.md must reference tool-index.md"
+    lanes = (AUTOPILOT_MD.parents[1] / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
+    assert "autopilot-lanes.md" in text
+    assert "tool-index.md" in lanes
 
 
 def test_claude_md_canonical_references_includes_tool_index():

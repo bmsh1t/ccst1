@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -102,19 +103,83 @@ def _spawn(
     )
 
 
+def _validate_idle_timeout(idle_timeout: int | float | None) -> None:
+    if idle_timeout is None:
+        return
+    if (
+        isinstance(idle_timeout, bool)
+        or not isinstance(idle_timeout, (int, float))
+        or idle_timeout <= 0
+    ):
+        raise ValueError("idle_timeout must be a positive number or None")
+
+
+def _communicate_with_idle_timeout(
+    proc: subprocess.Popen[str],
+    *,
+    timeout: int | float,
+    idle_timeout: int | float,
+) -> tuple[str, str, str | None]:
+    started = last_activity = time.monotonic()
+    stdout = stderr = ""
+    poll_interval = min(1.0, idle_timeout / 4)
+
+    while True:
+        now = time.monotonic()
+        total_remaining = timeout - (now - started)
+        idle_remaining = idle_timeout - (now - last_activity)
+        if total_remaining <= 0:
+            return stdout, stderr, "total"
+        if idle_remaining <= 0:
+            return stdout, stderr, "idle"
+
+        try:
+            final_stdout, final_stderr = proc.communicate(
+                timeout=min(total_remaining, idle_remaining, poll_interval)
+            )
+            return _to_text(final_stdout), _to_text(final_stderr), None
+        except subprocess.TimeoutExpired as exc:
+            partial_stdout = _to_text(exc.output)
+            partial_stderr = _to_text(exc.stderr)
+            if partial_stdout != stdout or partial_stderr != stderr:
+                stdout, stderr = partial_stdout, partial_stderr
+                last_activity = time.monotonic()
+
+
 def _run_command_split(
     cmd: str | Sequence[str],
     *,
     shell: bool,
     cwd: str | None = None,
     timeout: int | float = 600,
+    idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str]:
+    _validate_idle_timeout(idle_timeout)
     try:
         proc = _spawn(cmd, shell=shell, cwd=cwd, env=env)
     except OSError as exc:
         return False, "", str(exc)
     try:
+        if idle_timeout is not None:
+            stdout, stderr, timeout_kind = _communicate_with_idle_timeout(
+                proc,
+                timeout=timeout,
+                idle_timeout=idle_timeout,
+            )
+            if timeout_kind is None:
+                return proc.returncode == 0, stdout, stderr
+
+            cleanup_stdout, cleanup_stderr = _terminate_process_group(proc)
+            stdout = _merge_timeout_stream(stdout, cleanup_stdout)
+            stderr = _merge_timeout_stream(stderr, cleanup_stderr)
+            message = (
+                f"Command timed out after {timeout}s"
+                if timeout_kind == "total"
+                else f"Command produced no output for {idle_timeout}s (idle timeout)"
+            )
+            return False, stdout, _append_message(stderr, message)
+
         stdout, stderr = proc.communicate(timeout=timeout)
         return proc.returncode == 0, _to_text(stdout), _to_text(stderr)
     except subprocess.TimeoutExpired as exc:
@@ -140,9 +205,17 @@ def _run_shell_command_split(
     *,
     cwd: str | None = None,
     timeout: int | float = 600,
+    idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str]:
-    return _run_command_split(cmd, shell=True, cwd=cwd, timeout=timeout, env=env)
+    return _run_command_split(
+        cmd,
+        shell=True,
+        cwd=cwd,
+        timeout=timeout,
+        idle_timeout=idle_timeout,
+        env=env,
+    )
 
 
 def _normalize_argv(argv: Sequence[str]) -> list[str]:
@@ -161,9 +234,16 @@ def run_shell_command(
     *,
     cwd: str | None = None,
     timeout: int | float = 600,
+    idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
 ) -> tuple[bool, str]:
-    success, stdout, stderr = _run_shell_command_split(cmd, cwd=cwd, timeout=timeout, env=env)
+    success, stdout, stderr = _run_shell_command_split(
+        cmd,
+        cwd=cwd,
+        timeout=timeout,
+        idle_timeout=idle_timeout,
+        env=env,
+    )
     return success, stdout + stderr
 
 
@@ -172,9 +252,16 @@ def run_shell_command_split(
     *,
     cwd: str | None = None,
     timeout: int | float = 600,
+    idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str]:
-    return _run_shell_command_split(cmd, cwd=cwd, timeout=timeout, env=env)
+    return _run_shell_command_split(
+        cmd,
+        cwd=cwd,
+        timeout=timeout,
+        idle_timeout=idle_timeout,
+        env=env,
+    )
 
 
 def run_argv_command(
@@ -182,9 +269,16 @@ def run_argv_command(
     *,
     cwd: str | None = None,
     timeout: int | float = 600,
+    idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
 ) -> tuple[bool, str]:
-    success, stdout, stderr = run_argv_command_split(argv, cwd=cwd, timeout=timeout, env=env)
+    success, stdout, stderr = run_argv_command_split(
+        argv,
+        cwd=cwd,
+        timeout=timeout,
+        idle_timeout=idle_timeout,
+        env=env,
+    )
     return success, stdout + stderr
 
 
@@ -193,6 +287,7 @@ def run_argv_command_split(
     *,
     cwd: str | None = None,
     timeout: int | float = 600,
+    idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str]:
     return _run_command_split(
@@ -200,5 +295,6 @@ def run_argv_command_split(
         shell=False,
         cwd=cwd,
         timeout=timeout,
+        idle_timeout=idle_timeout,
         env=env,
     )
