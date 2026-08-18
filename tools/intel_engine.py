@@ -29,7 +29,14 @@ SHARED_TOOLS_DIR = os.environ.get(
 
 from learn import severity_order
 try:
-    from tools.intel_artifact import INTEL_SCHEMA_VERSION, IntelArtifactError, write_intel_artifact
+    from tools.intel_artifact import (
+        INTEL_SCHEMA_VERSION,
+        IntelArtifactError,
+        project_intel_gap_items,
+        project_intel_review_items,
+        project_intel_source_coverage_gaps,
+        write_intel_artifact,
+    )
     from tools.intel_sources import (
         build_component_queries,
         component_is_advisory_product,
@@ -48,7 +55,14 @@ try:
     )
     from tools.web_intel_artifact import build_web_intel_source, load_web_intel_projection
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from intel_artifact import INTEL_SCHEMA_VERSION, IntelArtifactError, write_intel_artifact  # type: ignore
+    from intel_artifact import (  # type: ignore
+        INTEL_SCHEMA_VERSION,
+        IntelArtifactError,
+        project_intel_gap_items,
+        project_intel_review_items,
+        project_intel_source_coverage_gaps,
+        write_intel_artifact,
+    )
     from intel_sources import (  # type: ignore
         build_component_queries,
         component_is_advisory_product,
@@ -1098,8 +1112,12 @@ def _web_intel_gap_projection(
             continue
         if not (
             version
-            or component.get("allow_nvd_without_version")
             or component.get("nvd_cpe")
+            or component.get("allow_nvd_without_version")
+            or (
+                component.get("nvd_keyword")
+                and "network_service" in (component.get("kinds") or [])
+            )
         ):
             continue
         subject = f"{name}@{version}" if version else name
@@ -1389,6 +1407,91 @@ def format_output(target: str, intel: dict) -> str:
     return "\n".join(lines)
 
 
+def _cli_source_projection(source: dict) -> dict:
+    projected = {
+        key: source.get(key)
+        for key in ("source", "status", "fetched_at", "cached", "stale", "items_fresh")
+        if key in source
+    }
+    if source.get("error"):
+        projected["error"] = str(source.get("error") or "")[:500]
+    stats = source.get("stats") if isinstance(source.get("stats"), dict) else {}
+    projected["stats"] = {
+        str(key): stats[key]
+        for key in (
+            "eligible_queries",
+            "attempted_queries",
+            "total_components",
+            "item_count",
+            "cached_queries",
+            "stale_queries",
+            "error_count",
+        )
+        if key in stats
+    }
+    return projected
+
+
+def build_cli_json_projection(intel: dict, *, artifact_path: str = "") -> dict:
+    """Return the bounded machine projection; the artifact remains the full owner."""
+    advisories = [item for item in intel.get("advisories") or [] if isinstance(item, dict)]
+    source_gaps = project_intel_source_coverage_gaps(intel.get("sources"))
+    inventory = intel.get("inventory") if isinstance(intel.get("inventory"), dict) else {}
+    gaps = intel.get("intel_gaps") if isinstance(intel.get("intel_gaps"), dict) else {}
+    identity = intel.get("identity_intel") if isinstance(intel.get("identity_intel"), dict) else {}
+    total = len(advisories)
+    return {
+        "schema_version": 1,
+        "kind": "intel_cli_summary",
+        "target": str(intel.get("target") or ""),
+        "generated_at": str(intel.get("generated_at") or ""),
+        "coverage_status": intel.get("coverage_status", "error"),
+        "artifact_path": artifact_path,
+        "inventory": {
+            "status": inventory.get("status", ""),
+            "fingerprint": inventory.get("fingerprint", ""),
+            "component_count": len(inventory.get("components") or []),
+        },
+        "sources": [
+            _cli_source_projection(source)
+            for source in (intel.get("sources") or [])[:8]
+            if isinstance(source, dict)
+        ],
+        "source_coverage_gaps": source_gaps,
+        "intel_gaps": {
+            "web_search_recommended": bool(gaps.get("web_search_recommended")),
+            "recommended": project_intel_gap_items(gaps.get("recommended")),
+            "blocked": project_intel_gap_items(gaps.get("blocked")),
+        },
+        "advisory_count": total,
+        "truncated_advisory_count": max(0, total - 16),
+        "advisories": project_intel_review_items(advisories, limit=16, include_stale=True),
+        "critical": project_intel_review_items(intel.get("critical") or [], limit=8, include_stale=True),
+        "high": project_intel_review_items(intel.get("high") or [], limit=8, include_stale=True),
+        "info": project_intel_review_items(intel.get("info") or [], limit=8, include_stale=True),
+        "stats": {
+            str(key): value
+            for key, value in (intel.get("stats") or {}).items()
+            if str(key) in {
+                "component_count",
+                "advisory_count",
+                "affected_count",
+                "likely_count",
+                "unknown_count",
+                "kev_count",
+                "epss_count",
+                "nuclei_signal_count",
+            }
+        },
+        "total": int(intel.get("total", total) or 0),
+        "identity_intel": {
+            key: identity.get(key)
+            for key in ("status", "emailfinder_status", "email_count", "leaksearch_status", "leak_line_count")
+            if key in identity
+        },
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="On-demand intel for a target")
     parser.add_argument("--target", required=True, help="Target domain")
@@ -1473,7 +1576,14 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.json:
-        print(json.dumps(intel, ensure_ascii=False, indent=2))
+        print(json.dumps(
+            build_cli_json_projection(
+                intel,
+                artifact_path=str(Path(args.repo_root) / "recon" / target_storage_key(resolved_target) / "intel.json"),
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ))
     else:
         print(format_output(resolved_target, intel))
     coverage = intel.get("coverage_status")

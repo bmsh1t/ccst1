@@ -76,12 +76,15 @@ def _with_advisory_source_freshness(payload: dict) -> dict:
         for source in payload.get("sources") or []
         if isinstance(source, dict) and str(source.get("source") or "").strip()
     }
-    degraded = {
-        name
-        for name, source in sources.items()
-        if str(source.get("status") or "").strip().lower() in STALE_ADVISORY_STATUSES
-        or bool(source.get("stale"))
-    }
+    degraded = set()
+    for name, source in sources.items():
+        status = str(source.get("status") or "").strip().lower()
+        if (
+            bool(source.get("stale"))
+            or status in {"stale", "invalid", "error", "unavailable"}
+            or (status == "partial" and not bool(source.get("items_fresh")))
+        ):
+            degraded.add(name)
     if not degraded:
         return payload
     result = dict(payload)
@@ -430,7 +433,7 @@ def _bounded_texts(value: object, limit: int = 64) -> list[str]:
     return [str(item or "")[:240] for item in value if str(item or "").strip()][:limit]
 
 
-def _bounded_gap_items(value: object, limit: int = 8) -> list[dict]:
+def project_intel_gap_items(value: object, limit: int = 8) -> list[dict]:
     if not isinstance(value, list):
         return []
     fields = ("subject", "intent", "query", "component", "version", "reason")
@@ -439,6 +442,42 @@ def _bounded_gap_items(value: object, limit: int = 8) -> list[dict]:
         for item in value[:limit]
         if isinstance(item, dict)
     ]
+
+
+def project_intel_source_coverage_gaps(sources: object, limit: int = 8) -> list[dict]:
+    result = []
+    for source in sources if isinstance(sources, list) else []:
+        if not isinstance(source, dict):
+            continue
+        source_name = str(source.get("source") or "")[:40]
+        for gap in source.get("coverage_gaps") or []:
+            if not isinstance(gap, dict):
+                continue
+            component = gap.get("component") if isinstance(gap.get("component"), dict) else {}
+            query = gap.get("query") if isinstance(gap.get("query"), dict) else {}
+            binding = gap.get("owner_binding") if isinstance(gap.get("owner_binding"), dict) else {}
+            result.append({
+                "source": source_name,
+                "gap_key": str(gap.get("gap_key") or "")[:160],
+                "query_mode": str(gap.get("query_mode") or "")[:40],
+                "component": {
+                    "name": str(component.get("name") or "")[:160],
+                    "version": str(component.get("version") or "")[:80],
+                },
+                "query": {
+                    str(key)[:40]: str(value)[:500]
+                    for key, value in list(query.items())[:4]
+                },
+                "total_results": int(gap.get("total_results", 0) or 0),
+                "fetched_results": int(gap.get("fetched_results", 0) or 0),
+                "next_start_index": int(gap.get("next_start_index", 0) or 0),
+                "next_cursor": str(gap.get("next_cursor") or "")[:2000],
+                "reason": str(gap.get("reason") or "")[:240],
+                "owner_binding": binding,
+            })
+            if len(result) >= limit:
+                return result
+    return result
 
 
 def _is_review_candidate(item: object, *, include_stale: bool = False) -> bool:
@@ -605,9 +644,10 @@ def build_intel_review_projection(
         },
         "intel_gaps": {
             "web_search_recommended": bool(gaps.get("web_search_recommended")),
-            "recommended": _bounded_gap_items(gaps.get("recommended")),
-            "blocked": _bounded_gap_items(gaps.get("blocked")),
+            "recommended": project_intel_gap_items(gaps.get("recommended")),
+            "blocked": project_intel_gap_items(gaps.get("blocked")),
         },
+        "source_coverage_gaps": project_intel_source_coverage_gaps(payload.get("sources")),
         "web_intel": {
             "status": str(web_intel.get("status") or "")[:80],
             "fingerprint": str(web_intel.get("fingerprint") or "")[:128],
@@ -641,7 +681,13 @@ def load_intel_review_projection(recon_dir: str | Path, target: str) -> dict | N
     groups = payload.get("groups")
     items = payload.get("items")
     omitted_groups = payload.get("omitted_groups")
-    if not isinstance(groups, list) or not isinstance(items, list) or not isinstance(omitted_groups, list):
+    source_gaps = payload.get("source_coverage_gaps", [])
+    if (
+        not isinstance(groups, list)
+        or not isinstance(items, list)
+        or not isinstance(omitted_groups, list)
+        or not isinstance(source_gaps, list)
+    ):
         return None
     binding = payload.get("owner_binding") if isinstance(payload.get("owner_binding"), dict) else {}
     owner_path = Path(recon_dir) / "intel.json"

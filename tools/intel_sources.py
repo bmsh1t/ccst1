@@ -6,12 +6,15 @@
 
 from __future__ import annotations
 
+import argparse
+import base64
 import hashlib
 import json
 import os
 import re
 import signal
 import ssl
+import sys
 import tempfile
 import time
 import urllib.error
@@ -33,6 +36,8 @@ DEFAULT_COMPONENT_CONCURRENCY = 4
 DEFAULT_NVD_MAX_SECONDS = 120.0
 DEFAULT_NVD_REQUEST_MAX_SECONDS = 25.0
 DEFAULT_NVD_RESULTS_PER_PAGE = 200
+DEFAULT_NVD_QUERY_PAGE_LIMIT = 8
+MAX_NVD_QUERY_PAGE_LIMIT = 32
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 GITHUB_ADVISORY_URL = "https://api.github.com/advisories"
@@ -363,10 +368,14 @@ def build_component_queries(components: list[dict]) -> list[dict]:
             **_mapping_for_name(name),
         })
         kind = str(component.get("kind") or "").strip()
-        if kind == "network_service":
-            # Nmap 已给出产品身份时允许 product-level 回退；没有 product 的
-            # unknown_service 已在上方排除。
+        if kind and kind not in item.get("kinds", []):
+            item.setdefault("kinds", []).append(kind)
+        if component.get("allow_nvd_without_version") is True:
+            # 只有来源或显式调用方选择了 product-level 查询时才放宽无版本 NVD。
             item["allow_nvd_without_version"] = True
+            item["nvd_keyword"] = str(
+                component.get("nvd_keyword") or item.get("nvd_keyword") or item["display_name"]
+            ).strip()
         if version and not item.get("nvd_keyword"):
             # 未登记生态映射的新组件仍可做保守的 NVD product fallback；
             # 没有版本时不自动放宽，避免 CDN/header 标签制造大量关键词噪声。
@@ -394,6 +403,40 @@ def build_component_queries(components: list[dict]) -> list[dict]:
         if cpe.startswith("cpe:2.3:"):
             item["nvd_cpe"] = cpe
     return list(grouped.values())
+
+
+def nvd_query_policy(component: dict) -> dict:
+    """Return the one source-expansion policy for an NVD component query."""
+    keyword = str(component.get("nvd_keyword") or "").strip()
+    cpe_name = str(component.get("nvd_cpe") or "").strip()
+    version = str(component.get("version") or "").strip()
+    if cpe_name:
+        return {
+            "mode": "exact_cpe",
+            "reason": "observed CPE identity",
+            "query": {"cpeName": cpe_name},
+            "default_page_limit": None,
+        }
+    if keyword and version:
+        return {
+            "mode": "exact_version",
+            "reason": "observed product version",
+            "query": {"keywordSearch": keyword},
+            "default_page_limit": None,
+        }
+    if keyword and component.get("allow_nvd_without_version") is True:
+        return {
+            "mode": "versionless_product",
+            "reason": "named product without observed version",
+            "query": {"keywordSearch": keyword},
+            "default_page_limit": 1,
+        }
+    return {
+        "mode": "skip",
+        "reason": "generic or versionless component has no explicit product query",
+        "query": {},
+        "default_page_limit": 0,
+    }
 
 
 def _severity(value: object) -> str:
@@ -878,6 +921,270 @@ def _nvd_item(raw: dict, component: dict, fetched_at: str) -> dict | None:
     }
 
 
+def _nvd_query_fingerprint(component: dict, query: dict) -> str:
+    material = {
+        "source": "nvd",
+        "component": {
+            "name": str(component.get("name") or "").strip().lower(),
+            "version": str(component.get("version") or "").strip(),
+        },
+        "query": query,
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+
+
+def _nvd_owner_binding(component: dict, query: dict, total_results: int) -> dict:
+    return {
+        "source": "nvd",
+        "query_fingerprint": _nvd_query_fingerprint(component, query),
+        "total_results": total_results,
+    }
+
+
+def _nvd_cursor_token(
+    component: dict,
+    query: dict,
+    *,
+    owner_binding: dict,
+    offset: int,
+) -> str:
+    payload = {
+        "schema_version": 1,
+        "source": "nvd",
+        "query_fingerprint": _nvd_query_fingerprint(component, query),
+        "owner_binding": owner_binding,
+        "offset": offset,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return base64.urlsafe_b64encode(encoded.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_nvd_cursor(cursor: object, component: dict, query: dict) -> tuple[int, dict | None]:
+    if cursor in (None, "", 0):
+        return 0, None
+    try:
+        raw = str(cursor)
+        padding = "=" * (-len(raw) % 4)
+        payload = json.loads(base64.urlsafe_b64decode((raw + padding).encode("ascii")))
+    except (ValueError, TypeError, json.JSONDecodeError, UnicodeError) as exc:
+        raise IntelSourceError("invalid NVD page cursor") from exc
+    if not isinstance(payload, dict) or payload.get("source") != "nvd":
+        raise IntelSourceError("invalid NVD page cursor")
+    if payload.get("query_fingerprint") != _nvd_query_fingerprint(component, query):
+        raise IntelSourceError("NVD page cursor is stale for this component or query")
+    try:
+        offset = int(payload.get("offset"))
+    except (TypeError, ValueError) as exc:
+        raise IntelSourceError("invalid NVD page cursor offset") from exc
+    binding = payload.get("owner_binding")
+    if offset < 0 or not isinstance(binding, dict):
+        raise IntelSourceError("invalid NVD page cursor")
+    return offset, binding
+
+
+def _fetch_nvd_page(
+    base_query: dict,
+    repo_root: str | Path,
+    *,
+    start_index: int,
+    results_per_page: int,
+    request_timeout: float,
+    fetcher: JsonFetcher,
+    ttl_seconds: int,
+    now: datetime | None,
+) -> tuple[dict, list, int, int]:
+    query = {
+        **base_query,
+        "resultsPerPage": results_per_page,
+        "startIndex": start_index,
+    }
+    url = f"{NVD_CVE_URL}?{urllib.parse.urlencode(query)}"
+    api_key = os.environ.get("NVD_API_KEY", "").strip()
+    result = cached_json_request(
+        repo_root,
+        source="nvd",
+        query=query,
+        ttl_seconds=ttl_seconds,
+        request=lambda: _require_object_collection(
+            _call_with_wall_timeout(
+                lambda: fetcher(
+                    url,
+                    timeout=request_timeout,
+                    headers={"apiKey": api_key} if api_key else None,
+                ),
+                request_timeout,
+            ),
+            source="nvd",
+            field="vulnerabilities",
+        ),
+        validate=lambda payload: _require_object_collection(
+            payload,
+            source="nvd",
+            field="vulnerabilities",
+        ),
+        now=now,
+    )
+    payload = result["data"] if isinstance(result["data"], dict) else {}
+    page = list(payload.get("vulnerabilities") or [])[:results_per_page]
+    try:
+        total_results = int(payload.get("totalResults"))
+    except (TypeError, ValueError):
+        total_results = start_index + len(page)
+    try:
+        response_start = int(payload.get("startIndex", start_index))
+    except (TypeError, ValueError):
+        response_start = start_index
+    return result, page, max(0, total_results), response_start
+
+
+def _nvd_coverage_gap(
+    component: dict,
+    policy: dict,
+    *,
+    total_results: int,
+    fetched_results: int,
+) -> dict:
+    query = dict(policy["query"])
+    owner_binding = _nvd_owner_binding(component, query, total_results)
+    name = str(component.get("name") or "").strip().lower()
+    version = str(component.get("version") or "").strip()
+    return {
+        "source": "nvd",
+        "gap_key": f"nvd-long-tail:{name}@{version or 'unknown'}",
+        "query_mode": str(policy.get("mode") or ""),
+        "component": {"name": name, "version": version},
+        "query": query,
+        "total_results": total_results,
+        "fetched_results": fetched_results,
+        "next_start_index": fetched_results,
+        "next_cursor": _nvd_cursor_token(
+            component,
+            query,
+            owner_binding=owner_binding,
+            offset=fetched_results,
+        ),
+        "reason": "versionless product default is limited to one representative NVD page",
+        "owner_binding": owner_binding,
+    }
+
+
+def _project_nvd_page_item(item: dict) -> dict:
+    component = item.get("component") if isinstance(item.get("component"), dict) else {}
+    return {
+        "id": item.get("id", ""),
+        "aliases": list(item.get("aliases") or [])[:8],
+        "component": {
+            "name": component.get("name", ""),
+            "display_name": component.get("display_name", ""),
+            "version": component.get("version", ""),
+        },
+        "applicability": item.get("applicability", "unknown"),
+        "severity": item.get("severity", "UNKNOWN"),
+        "cvss": item.get("cvss"),
+        "summary": str(item.get("summary") or "")[:500],
+        "published": item.get("published", ""),
+        "modified": item.get("modified", ""),
+        "fixed_versions": list(item.get("fixed_versions") or [])[:8],
+        "source_refs": [
+            {
+                "source": ref.get("source", ""),
+                "id": ref.get("id", ""),
+                "url": ref.get("url", ""),
+                "fetched_at": ref.get("fetched_at", ""),
+            }
+            for ref in (item.get("source_refs") or [])[:4]
+            if isinstance(ref, dict)
+        ],
+    }
+
+
+def query_nvd_page(
+    component: dict,
+    repo_root: str | Path,
+    *,
+    cursor: object = "",
+    limit: int = DEFAULT_NVD_QUERY_PAGE_LIMIT,
+    fetcher: JsonFetcher = fetch_json,
+    ttl_seconds: int = DEFAULT_COMPONENT_TTL_SECONDS,
+    now: datetime | None = None,
+) -> dict:
+    """Fetch one explicit, bounded NVD page without mutating target state."""
+    try:
+        page_limit = int(limit)
+    except (TypeError, ValueError) as exc:
+        raise IntelSourceError("invalid NVD page limit") from exc
+    page_limit = max(1, min(page_limit, MAX_NVD_QUERY_PAGE_LIMIT))
+
+    explicit = dict(component)
+    if not explicit.get("version") and not explicit.get("cpe"):
+        explicit["allow_nvd_without_version"] = True
+    queries = build_component_queries([explicit])
+    if not queries:
+        raise IntelSourceError("component is not eligible for an NVD product query")
+    normalized = queries[0]
+    policy = nvd_query_policy(normalized)
+    if policy["mode"] == "skip":
+        raise IntelSourceError(str(policy["reason"]))
+    base_query = dict(policy["query"])
+    start_index, expected_binding = _decode_nvd_cursor(cursor, normalized, base_query)
+    result, page, total_results, response_start = _fetch_nvd_page(
+        base_query,
+        repo_root,
+        start_index=start_index,
+        results_per_page=page_limit,
+        request_timeout=DEFAULT_NVD_REQUEST_MAX_SECONDS,
+        fetcher=fetcher,
+        ttl_seconds=ttl_seconds,
+        now=now,
+    )
+    if response_start != start_index:
+        raise IntelSourceError(
+            f"NVD pagination start mismatch: requested {start_index}, received {response_start}"
+        )
+    owner_binding = _nvd_owner_binding(normalized, base_query, total_results)
+    if expected_binding is not None and expected_binding != owner_binding:
+        raise IntelSourceError("NVD page cursor is stale for this source result set")
+    items = []
+    for raw in page:
+        if isinstance(raw, dict):
+            item = _nvd_item(raw, normalized, result["fetched_at"])
+            if item is not None:
+                items.append(_project_nvd_page_item(item))
+    next_index = start_index + len(page)
+    next_cursor = (
+        _nvd_cursor_token(
+            normalized,
+            base_query,
+            owner_binding=owner_binding,
+            offset=next_index,
+        )
+        if page and next_index < total_results
+        else None
+    )
+    return {
+        "status": "partial" if result["stale"] or result["error"] else "ok",
+        "source": "nvd",
+        "query_mode": policy["mode"],
+        "query": base_query,
+        "component": {
+            "name": normalized.get("name", ""),
+            "version": normalized.get("version", ""),
+        },
+        "owner_binding": owner_binding,
+        "total_results": total_results,
+        "fetched_results": len(page),
+        "offset": start_index,
+        "limit": page_limit,
+        "items": items,
+        "next_cursor": next_cursor,
+        "has_more": next_cursor is not None,
+        "cached": bool(result["cached"]),
+        "stale": bool(result["stale"]),
+        "error": str(result["error"] or ""),
+    }
+
+
 def fetch_nvd_for_components(
     components: list[dict],
     repo_root: str | Path,
@@ -892,15 +1199,12 @@ def fetch_nvd_for_components(
         raise ValueError("max_components must be >= 1")
     if max_seconds <= 0:
         raise ValueError("max_seconds must be > 0")
+    component_queries = build_component_queries(components)
     eligible_queries = []
-    for item in build_component_queries(components):
-        keyword = str(item.get("nvd_keyword") or "").strip()
-        cpe_name = str(item.get("nvd_cpe") or "").strip()
-        if not keyword and not cpe_name:
-            continue
-        if not item.get("version") and not item.get("allow_nvd_without_version"):
-            continue
-        eligible_queries.append(item)
+    for item in component_queries:
+        policy = nvd_query_policy(item)
+        if policy["mode"] != "skip":
+            eligible_queries.append((item, policy))
     queries = eligible_queries[:max_components]
     partial_reasons = []
     if len(eligible_queries) > len(queries):
@@ -913,20 +1217,17 @@ def fetch_nvd_for_components(
     cached_count = 0
     stale_count = 0
     fetched_at_values: list[str] = []
+    coverage_gaps: list[dict] = []
     attempted_queries = 0
     deadline = time.monotonic() + max_seconds
     stop_nvd = False
-    api_key = os.environ.get("NVD_API_KEY", "").strip()
     pending = deque()
-    for component in queries:
-        cpe_name = str(component.get("nvd_cpe") or "").strip()
-        base_query = {"cpeName": cpe_name} if cpe_name else {
-            "keywordSearch": component["nvd_keyword"]
-        }
-        pending.append((component, base_query, 0))
+    for component, policy in queries:
+        pending.append((component, policy, 0))
 
     while pending and not stop_nvd:
-        component, base_query, start_index = pending.popleft()
+        component, policy, start_index = pending.popleft()
+        base_query = dict(policy["query"])
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             partial_reasons.append(
@@ -936,39 +1237,19 @@ def fetch_nvd_for_components(
             break
         if start_index == 0:
             attempted_queries += 1
-        query = {
-            **base_query,
-            "resultsPerPage": DEFAULT_NVD_RESULTS_PER_PAGE,
-            "startIndex": start_index,
-        }
-        url = f"{NVD_CVE_URL}?{urllib.parse.urlencode(query)}"
         request_timeout = max(
             0.01,
             min(DEFAULT_NVD_REQUEST_MAX_SECONDS, remaining),
         )
         try:
-            result = cached_json_request(
+            result, page, total_results, response_start = _fetch_nvd_page(
+                base_query,
                 repo_root,
-                source="nvd",
-                query=query,
+                start_index=start_index,
+                results_per_page=DEFAULT_NVD_RESULTS_PER_PAGE,
+                request_timeout=request_timeout,
+                fetcher=fetcher,
                 ttl_seconds=ttl_seconds,
-                request=lambda request_url=url: _require_object_collection(
-                    _call_with_wall_timeout(
-                        lambda: fetcher(
-                            request_url,
-                            timeout=request_timeout,
-                            headers={"apiKey": api_key} if api_key else None,
-                        ),
-                        request_timeout,
-                    ),
-                    source="nvd",
-                    field="vulnerabilities",
-                ),
-                validate=lambda payload: _require_object_collection(
-                    payload,
-                    source="nvd",
-                    field="vulnerabilities",
-                ),
                 now=now,
             )
         except IntelSourceError as exc:
@@ -1000,8 +1281,6 @@ def fetch_nvd_for_components(
                 )
             else:
                 errors.append(detail)
-        payload = result["data"] if isinstance(result["data"], dict) else {}
-        page = payload.get("vulnerabilities") or []
         for raw in page:
             if isinstance(raw, dict):
                 item = _nvd_item(raw, component, result["fetched_at"])
@@ -1012,14 +1291,6 @@ def fetch_nvd_for_components(
         if stop_nvd:
             break
 
-        try:
-            total_results = int(payload.get("totalResults"))
-        except (TypeError, ValueError):
-            total_results = start_index + len(page)
-        try:
-            response_start = int(payload.get("startIndex", start_index))
-        except (TypeError, ValueError):
-            response_start = start_index
         if response_start != start_index:
             partial_reasons.append(
                 f"NVD pagination start mismatch for {component['name']}: "
@@ -1035,19 +1306,35 @@ def fetch_nvd_for_components(
                 f"received {next_index} of {total_results} results"
             )
             continue
-        pending.append((component, base_query, next_index))
+        if policy.get("default_page_limit") == 1:
+            coverage_gaps.append(
+                _nvd_coverage_gap(
+                    component,
+                    policy,
+                    total_results=total_results,
+                    fetched_results=next_index,
+                )
+            )
+            partial_reasons.append(
+                f"bounded versionless NVD query for {component['name']}: "
+                f"fetched {next_index} of {total_results} results"
+            )
+            continue
+        pending.append((component, policy, next_index))
 
     return _source_envelope(
         "nvd",
         items,
         eligible=len(eligible_queries),
         attempted=attempted_queries,
-        total_components=len(build_component_queries(components)),
+        total_components=len(component_queries),
         errors=errors,
         partial_reasons=partial_reasons,
         cached_count=cached_count,
         stale_count=stale_count,
         fetched_at_values=fetched_at_values,
+        coverage_gaps=coverage_gaps,
+        items_fresh=bool(coverage_gaps and not errors and not stale_count),
         now=now,
     )
 
@@ -1064,6 +1351,8 @@ def _source_envelope(
     cached_count: int,
     stale_count: int,
     fetched_at_values: list[str],
+    coverage_gaps: list[dict] | None = None,
+    items_fresh: bool = False,
     now: datetime | None,
 ) -> dict:
     attempted = eligible if attempted is None else attempted
@@ -1080,7 +1369,7 @@ def _source_envelope(
     else:
         status = "ok"
         error = ""
-    return {
+    envelope = {
         "source": source,
         "status": status,
         "fetched_at": min((value for value in fetched_at_values if value), default=_iso_utc(now)),
@@ -1098,6 +1387,11 @@ def _source_envelope(
             "error_count": len(errors),
         },
     }
+    if coverage_gaps is not None:
+        envelope["coverage_gaps"] = coverage_gaps
+    if items_fresh:
+        envelope["items_fresh"] = True
+    return envelope
 
 
 def fetch_advisory_sources(
@@ -1266,3 +1560,46 @@ def fetch_epss(
         "items": scores,
         "stats": {"item_count": len(scores), "batch_count": len(batches)},
     }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Bounded Intel source queries")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    page = subparsers.add_parser("nvd-page", help="Read one explicit NVD result page")
+    page.add_argument("--component", required=True)
+    page.add_argument("--display-name", default="")
+    page.add_argument("--version", default="")
+    page.add_argument("--keyword", default="")
+    page.add_argument("--cpe", default="")
+    page.add_argument("--cursor", default="")
+    page.add_argument("--limit", type=int, default=DEFAULT_NVD_QUERY_PAGE_LIMIT)
+    page.add_argument("--repo-root", default=str(Path(__file__).resolve().parent.parent))
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    component = {
+        "name": args.component,
+        "display_name": args.display_name or args.component,
+        "version": args.version,
+        "nvd_keyword": args.keyword,
+        "cpe": args.cpe,
+    }
+    try:
+        result = query_nvd_page(
+            component,
+            args.repo_root,
+            cursor=args.cursor,
+            limit=args.limit,
+        )
+    except (IntelSourceError, OSError, ValueError) as exc:
+        print(f"intel source error: {exc}", file=sys.stderr)
+        print(json.dumps({"status": "error", "source": "nvd", "error": str(exc)}))
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

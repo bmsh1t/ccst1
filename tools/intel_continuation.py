@@ -297,6 +297,26 @@ def _pending_review_groups(
     candidates.extend(
         group for group in projection.get("omitted_groups") or [] if isinstance(group, dict)
     )
+    for gap in projection.get("source_coverage_gaps") or []:
+        if not isinstance(gap, dict) or not str(gap.get("next_cursor") or ""):
+            continue
+        component = gap.get("component") if isinstance(gap.get("component"), dict) else {}
+        total = int(gap.get("total_results", 0) or 0)
+        fetched = int(gap.get("fetched_results", 0) or 0)
+        candidates.append({
+            "group_key": str(gap.get("gap_key") or ""),
+            "component": component,
+            "advisory_count": total,
+            "representative_count": fetched,
+            "omitted_count": max(0, total - fetched),
+            "reactivate_when": "target evidence justifies another bounded source page",
+            "source": str(gap.get("source") or ""),
+            "source_query": gap.get("query") if isinstance(gap.get("query"), dict) else {},
+            "source_owner_binding": (
+                gap.get("owner_binding") if isinstance(gap.get("owner_binding"), dict) else {}
+            ),
+            "next_cursor": str(gap.get("next_cursor") or ""),
+        })
     indexed_count = len(projection.get("omitted_groups") or [])
     omitted_group_count = int(projection.get("omitted_group_count", 0) or 0)
     if omitted_group_count > indexed_count:
@@ -412,6 +432,7 @@ def inspect_intel_continuation(
             "group_count": int(review_projection.get("group_count", 0) or 0),
             "advisory_count": int(review_projection.get("advisory_count", 0) or 0),
             "omitted_group_count": int(review_projection.get("omitted_group_count", 0) or 0),
+            "source_coverage_gap_count": len(review_projection.get("source_coverage_gaps") or []),
             "owner_binding": owner_binding,
         }
     if review_projection is not None:
@@ -561,14 +582,28 @@ def inspect_intel_continuation(
         component = group.get("component") if isinstance(group.get("component"), dict) else {}
         component_name = str(component.get("name") or "").strip()
         component_version = str(component.get("version") or "").strip()
-        query_parts = [
-            "python3 tools/intel_artifact.py query",
-            "--target", shlex.quote(resolved_target),
-        ]
-        if component_name:
-            query_parts.extend(("--component", shlex.quote(component_name)))
-        if component_version:
-            query_parts.extend(("--version", shlex.quote(component_version)))
+        if group.get("source") == "nvd":
+            source_query = group.get("source_query") if isinstance(group.get("source_query"), dict) else {}
+            query_parts = [
+                "python3 tools/intel_sources.py nvd-page",
+                "--component", shlex.quote(component_name),
+            ]
+            if component_version:
+                query_parts.extend(("--version", shlex.quote(component_version)))
+            if source_query.get("keywordSearch"):
+                query_parts.extend(("--keyword", shlex.quote(str(source_query["keywordSearch"]))))
+            if source_query.get("cpeName"):
+                query_parts.extend(("--cpe", shlex.quote(str(source_query["cpeName"]))))
+            query_parts.extend(("--cursor", shlex.quote(str(group.get("next_cursor") or ""))))
+        else:
+            query_parts = [
+                "python3 tools/intel_artifact.py query",
+                "--target", shlex.quote(resolved_target),
+            ]
+            if component_name:
+                query_parts.extend(("--component", shlex.quote(component_name)))
+            if component_version:
+                query_parts.extend(("--version", shlex.quote(component_version)))
         return {
             **base,
             "action": "review_intel_group",
@@ -588,6 +623,11 @@ def inspect_intel_continuation(
                 "queue_metadata": {
                     "intel_group_key": str(group.get("group_key") or ""),
                     "intel_owner_binding": owner_binding if isinstance(owner_binding, dict) else {},
+                    "intel_source_owner_binding": (
+                        group.get("source_owner_binding")
+                        if isinstance(group.get("source_owner_binding"), dict)
+                        else {}
+                    ),
                 },
             },
             "review_projection": {
@@ -596,6 +636,7 @@ def inspect_intel_continuation(
                 "group_count": int((review_projection or {}).get("group_count", 0) or 0),
                 "advisory_count": int((review_projection or {}).get("advisory_count", len(advisories)) or 0),
                 "omitted_group_count": int((review_projection or {}).get("omitted_group_count", 0) or 0),
+                "source_coverage_gap_count": len((review_projection or {}).get("source_coverage_gaps") or []),
                 "owner_binding": owner_binding if isinstance(owner_binding, dict) else {},
             },
         }

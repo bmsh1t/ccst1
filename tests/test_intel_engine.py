@@ -644,8 +644,52 @@ class TestStandaloneTechResolution:
 
         captured = capsys.readouterr()
         assert result == 0
-        assert json.loads(captured.out) == payload
+        output = json.loads(captured.out)
+        assert output["kind"] == "intel_cli_summary"
+        assert output["target"] == "target.com"
+        assert output["coverage_status"] == "partial"
+        assert output["advisory_count"] == 0
         assert "intel: target=target.com" in captured.err
+
+    def test_cli_projection_bounds_advisories_and_keeps_source_gaps(self):
+        advisory = {
+            "id": "CVE-2026-0001",
+            "component": {"name": "wordpress", "version": ""},
+            "applicability": "unknown",
+            "severity": "HIGH",
+            "summary": "lead",
+            "score_hint": 1,
+            "source_refs": [],
+        }
+        payload = {
+            "target": "target.com",
+            "generated_at": "2026-08-18T00:00:00Z",
+            "coverage_status": "partial",
+            "inventory": {"status": "ready", "components": []},
+            "sources": [{
+                "source": "nvd",
+                "status": "partial",
+                "coverage_gaps": [{
+                    "gap_key": "nvd-long-tail:wordpress@unknown",
+                    "next_cursor": "CURSOR",
+                    "total_results": 401,
+                    "fetched_results": 200,
+                } for _ in range(20)],
+            }],
+            "intel_gaps": {"recommended": [], "blocked": []},
+            "advisories": [dict(advisory, id=f"CVE-2026-{index:04d}") for index in range(20)],
+            "critical": [],
+            "high": [],
+            "info": [],
+            "stats": {"advisory_count": 20},
+            "total": 20,
+        }
+
+        output = intel_engine.build_cli_json_projection(payload)
+
+        assert len(output["advisories"]) == 16
+        assert output["truncated_advisory_count"] == 4
+        assert len(output["source_coverage_gaps"]) == 8
 
     def test_json_mode_returns_nonzero_for_full_source_failure(self, monkeypatch, capsys):
         payload = {

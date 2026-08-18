@@ -14,6 +14,7 @@ from tools.intel_artifact import (
     IntelArtifactError,
     load_intel_review_projection,
     query_intel_advisories,
+    read_intel_artifact,
     write_intel_artifact,
 )
 from tools.intel_continuation import apply_intel_continuation, inspect_intel_continuation
@@ -234,6 +235,67 @@ def test_intel_query_rejects_stale_cursor_after_owner_refresh(tmp_path):
 
     with pytest.raises(IntelArtifactError, match="stale"):
         query_intel_advisories(owner, component="givewp", limit=1, cursor=first["next_cursor"])
+
+
+def test_coverage_limited_source_keeps_fetched_advisory_fresh(tmp_path):
+    _prepare_inventory(tmp_path)
+    payload = _intel(advisories=[_advisory()])
+    payload["sources"][0].update({
+        "status": "partial",
+        "items_fresh": True,
+        "coverage_gaps": [{
+            "source": "nvd",
+            "gap_key": "nvd-long-tail:givewp@4.16.3",
+            "component": {"name": "givewp", "version": "4.16.3"},
+            "query": {"keywordSearch": "GiveWP"},
+            "total_results": 401,
+            "fetched_results": 200,
+            "next_start_index": 200,
+            "next_cursor": "CURSOR",
+            "owner_binding": {"source": "nvd", "total_results": 401},
+        }],
+    })
+    _write_intel(tmp_path, payload)
+
+    stored = read_intel_artifact(
+        tmp_path / "recon" / "target.test" / "intel.json"
+    )
+
+    assert stored["advisories"][0].get("stale") is not True
+
+
+def test_nvd_source_gap_uses_existing_review_continuation(tmp_path):
+    _prepare_inventory(tmp_path)
+    payload = _intel()
+    payload["sources"][0].update({
+        "status": "partial",
+        "items_fresh": True,
+        "coverage_gaps": [{
+            "source": "nvd",
+            "gap_key": "nvd-long-tail:givewp@unknown",
+            "query_mode": "versionless_product",
+            "component": {"name": "givewp", "version": ""},
+            "query": {"keywordSearch": "GiveWP"},
+            "total_results": 401,
+            "fetched_results": 200,
+            "next_start_index": 200,
+            "next_cursor": "CURSOR",
+            "reason": "bounded representative page",
+            "owner_binding": {"source": "nvd", "total_results": 401},
+        }],
+    })
+    _write_intel(tmp_path, payload)
+
+    sidecar = load_intel_review_projection(
+        tmp_path / "recon" / "target.test", "target.test"
+    )
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert sidecar["source_coverage_gaps"][0]["next_cursor"] == "CURSOR"
+    assert state["action"] == "review_intel_group"
+    assert state["review_group"]["group_key"] == "nvd-long-tail:givewp@unknown"
+    assert "tools/intel_sources.py nvd-page" in state["review_group"]["query_command"]
+    assert "--cursor CURSOR" in state["review_group"]["query_command"]
 
 
 def test_omitted_intel_group_requires_review_then_closes_by_queue(tmp_path):

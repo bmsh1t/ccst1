@@ -5,6 +5,8 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from tools import intel_sources
 
 
@@ -95,6 +97,7 @@ def test_network_service_uses_cpe_and_unknown_port_is_not_queryable(tmp_path):
     assert queries[0]["name"] == "openssh"
     assert queries[0]["ports"] == [22]
     assert queries[0]["nvd_cpe"].startswith("cpe:2.3:a:openbsd:openssh:9.1")
+    assert intel_sources.nvd_query_policy(queries[0])["mode"] == "exact_cpe"
 
     urls = []
     result = intel_sources.fetch_nvd_for_components(
@@ -107,6 +110,31 @@ def test_network_service_uses_cpe_and_unknown_port_is_not_queryable(tmp_path):
     assert len(urls) == 1
     assert "cpeName=" in urls[0]
     assert "6379" not in urls[0]
+
+
+def test_versionless_network_service_does_not_expand_product_history(tmp_path):
+    calls = []
+    service = {
+        "name": "Acme Gateway",
+        "display_name": "Acme Gateway",
+        "version": "",
+        "kind": "network_service",
+        "host": "svc.target.test",
+    }
+
+    result = intel_sources.fetch_nvd_for_components(
+        [service],
+        tmp_path,
+        fetcher=lambda url, **_kwargs: calls.append(url) or {"vulnerabilities": []},
+        now=NOW,
+    )
+
+    assert calls == []
+    assert result["status"] == "unavailable"
+    assert result["stats"]["eligible_queries"] == 0
+    assert intel_sources.nvd_query_policy(
+        intel_sources.build_component_queries([service])[0]
+    )["mode"] == "skip"
 
 
 def test_osv_exact_version_is_affected_and_cached(tmp_path):
@@ -572,6 +600,124 @@ def test_nvd_fetches_all_reported_pages(tmp_path):
         "CVE-2026-0002",
         "CVE-2026-0003",
     ]
+
+
+def test_versionless_product_fetches_one_page_and_emits_cursor_gap(tmp_path):
+    calls = []
+
+    def fetcher(url, **_kwargs):
+        query = intel_sources.urllib.parse.parse_qs(
+            intel_sources.urllib.parse.urlparse(url).query
+        )
+        calls.append(int(query["startIndex"][0]))
+        return {
+            "totalResults": 401,
+            "startIndex": 0,
+            "vulnerabilities": [
+                {"cve": {"id": f"CVE-2026-{index:04d}"}}
+                for index in range(200)
+            ],
+        }
+
+    result = intel_sources.fetch_nvd_for_components(
+        [_component(name="wordpress", version="")],
+        tmp_path,
+        fetcher=fetcher,
+        now=NOW,
+    )
+
+    assert calls == [0]
+    assert result["status"] == "partial"
+    assert result["items_fresh"] is True
+    assert len(result["items"]) == 200
+    gap = result["coverage_gaps"][0]
+    assert gap["query"] == {"keywordSearch": "WordPress"}
+    assert gap["total_results"] == 401
+    assert gap["fetched_results"] == 200
+    assert gap["next_start_index"] == 200
+    assert gap["next_cursor"]
+
+
+def test_explicit_nvd_page_is_stable_read_only_and_cursor_bound(tmp_path):
+    component = _component(name="wordpress", version="")
+
+    initial = intel_sources.fetch_nvd_for_components(
+        [component],
+        tmp_path,
+        fetcher=lambda _url, **_kwargs: {
+            "totalResults": 203,
+            "startIndex": 0,
+            "vulnerabilities": [
+                {"cve": {"id": f"CVE-2026-{index:04d}"}}
+                for index in range(200)
+            ],
+        },
+        now=NOW,
+    )
+    cursor = initial["coverage_gaps"][0]["next_cursor"]
+    calls = []
+
+    def fetch_page(url, **_kwargs):
+        query = intel_sources.urllib.parse.parse_qs(
+            intel_sources.urllib.parse.urlparse(url).query
+        )
+        calls.append((int(query["startIndex"][0]), int(query["resultsPerPage"][0])))
+        return {
+            "totalResults": 203,
+            "startIndex": 200,
+            "vulnerabilities": [
+                {"cve": {"id": "CVE-2026-0200"}},
+                {"cve": {"id": "CVE-2026-0201"}},
+            ],
+        }
+
+    first = intel_sources.query_nvd_page(
+        component,
+        tmp_path,
+        cursor=cursor,
+        limit=2,
+        fetcher=fetch_page,
+        now=NOW,
+    )
+    replay = intel_sources.query_nvd_page(
+        component,
+        tmp_path,
+        cursor=cursor,
+        limit=2,
+        fetcher=fetch_page,
+        now=NOW,
+    )
+
+    assert calls == [(200, 2)]
+    assert [item["id"] for item in first["items"]] == ["CVE-2026-0200", "CVE-2026-0201"]
+    assert replay["items"] == first["items"]
+    assert replay["next_cursor"] == first["next_cursor"]
+    assert not (tmp_path / "recon").exists()
+    assert not (tmp_path / "findings").exists()
+
+    with pytest.raises(intel_sources.IntelSourceError, match="stale"):
+        intel_sources.query_nvd_page(
+            _component(name="drupal", version=""),
+            tmp_path,
+            cursor=cursor,
+            fetcher=fetch_page,
+            now=NOW,
+        )
+
+    with pytest.raises(intel_sources.IntelSourceError, match="source result set"):
+        intel_sources.query_nvd_page(
+            component,
+            tmp_path,
+            cursor=cursor,
+            limit=2,
+            ttl_seconds=0,
+            fetcher=lambda _url, **_kwargs: {
+                "totalResults": 204,
+                "startIndex": 200,
+                "vulnerabilities": [{"cve": {"id": "CVE-2026-0200"}}],
+            },
+            now=NOW + timedelta(seconds=1),
+        )
 
 
 def test_nvd_paginates_components_round_robin_with_bounded_pages(tmp_path):

@@ -21,6 +21,10 @@ python3 tools/intel_engine.py --target target.com --tech next.js:15.2.1,graphql
 python3 tools/intel_engine.py --target target.com --json
 ```
 
+`--json` is a bounded machine summary. The complete normalized owner remains at
+`recon/<target>/intel.json`; the summary exposes `source_coverage_gaps` for
+explicit long-tail review rather than copying the full advisory owner to stdout.
+
 `--program` remains accepted for compatibility, but target/program disclosure
 research is owned by `tools/disclosure_search.py` and the `disclosed-researcher`
 workflow rather than the component advisory artifact.
@@ -31,6 +35,9 @@ workflow rather than the component advisory artifact.
   legacy text plus Nmap service/version/CPE artifacts, preserving observed
   component versions, ports, protocols, and host/URL evidence. A port without
   product identity is retained as an inventory observation but is not queried as a CVE.
+  A named product without a version gets one bounded NVD representative page only
+  when its mapping explicitly allows it; generic service/banner identities are
+  skipped for product-wide NVD expansion.
 - Queries exact package/version data from OSV where an ecosystem mapping exists,
   supplements it with GitHub Advisory, and uses NVD as a keyword fallback.
 - Enriches matching CVEs with CISA KEV and batched EPSS data. Existing canonical
@@ -92,6 +99,19 @@ python3 tools/intel_artifact.py query --target TARGET --component COMPONENT \
   [--version VERSION] [--host HOST] [--severity HIGH|CRITICAL] \
   [--applicability affected|likely|unknown] [--kev] [--cursor CURSOR] --limit 8
 ```
+
+For a versionless product NVD coverage gap, use the cursor from the source gap
+with the explicit read-only source pager. It only caches the requested NVD page
+and never writes `intel.json`, Finding, or Queue state:
+
+```bash
+python3 tools/intel_sources.py nvd-page --component COMPONENT \
+  [--version VERSION] [--keyword KEYWORD] [--cursor CURSOR] --limit 8
+```
+
+The cursor is bound to the normalized component/query and the NVD result-set
+size. A changed query or result set is rejected as stale; a page with
+`has_more=true` is not complete coverage.
 
 After reviewing the pages, use the existing `tools/action_queue.py` add/resolve
 commands. For a group-level disposition, keep `intel_group_key` and the exact
