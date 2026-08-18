@@ -68,6 +68,7 @@ try:
         verify_finalized_finding_owner_provenance,
     )
     from tools.runtime_state import (
+        _derive_current_status,
         inspect_recon_artifacts,
         inspect_recon_artifacts_fast,
         inspect_browser_evidence,
@@ -93,6 +94,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         verify_finalized_finding_owner_provenance,
     )
     from runtime_state import (  # type: ignore
+        _derive_current_status,
         inspect_recon_artifacts,
         inspect_recon_artifacts_fast,
         inspect_browser_evidence,
@@ -273,6 +275,81 @@ def _filter_legacy_memory_candidates(ranked: dict, resume_targets: list[str]) ->
                 == "target-memory continuation"
             )
         ]
+    return filtered
+
+
+def _is_stale_finalized_scanner_candidate(item: dict) -> bool:
+    """Return true only when scanner evidence has an explicit final disposition.
+
+    This is deliberately evidence-based: a static-looking path or a low score is
+    not enough to suppress a candidate. New browser/JS/source/intel evidence keeps
+    the item active and lets Claude reassess it.
+    """
+    findings = item.get("scanner_findings")
+    if not isinstance(findings, list) or not findings or item.get("new_observation"):
+        return False
+    if any(
+        item.get(key)
+        for key in (
+            "evidence_convergence",
+            "browser_observed",
+            "js_intel_observed",
+            "source_intel_observed",
+        )
+    ):
+        return False
+    # A version advisory from OSV/NVD is useful context, but does not bind a
+    # static asset to reachable behavior. Keep only route/browser/source-bound
+    # Intel signals in the active pool; generic dependency matches remain in a
+    # bounded deferred packet for AI reactivation.
+    for signal in item.get("intel_signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        if any(signal.get(key) for key in ("endpoint", "route", "browser_observed", "source_evidence")):
+            return False
+    for finding in findings:
+        if not isinstance(finding, dict):
+            return False
+        validation = str(finding.get("validation_status") or "").strip().lower()
+        report = str(finding.get("report_status") or "").strip().lower()
+        if validation != "rejected" and report != "generated":
+            return False
+    return True
+
+
+def _filter_stale_finalized_scanner_candidates(ranked: dict) -> dict:
+    """Keep finalized scanner rows visible, but out of active AI steering."""
+    filtered = dict(ranked or {})
+    deferred = []
+    seen = set()
+    for key in ("review_pool", "p1", "p2"):
+        kept = []
+        for item in ranked.get(key) or []:
+            if isinstance(item, dict) and _is_stale_finalized_scanner_candidate(item):
+                url = str(item.get("url") or item.get("path") or "").strip()
+                if url and url not in seen:
+                    seen.add(url)
+                    deferred_item = {
+                        "url": url,
+                        "reason": "scanner disposition finalized; generic Intel is advisory-only until route evidence exists",
+                        "reactivate_when": "new observation, browser/JS/source evidence, route-bound Intel, or changed finding disposition",
+                    }
+                    signals = item.get("intel_signals") or []
+                    if signals:
+                        deferred_item["intel_packet"] = [
+                            {
+                                "id": str(signal.get("id") or ""),
+                                "source": str(signal.get("source") or ""),
+                                "applicability": str(signal.get("applicability") or "unknown"),
+                            }
+                            for signal in signals[:4]
+                            if isinstance(signal, dict)
+                        ]
+                    deferred.append(deferred_item)
+                continue
+            kept.append(item)
+        filtered[key] = kept
+    filtered["deferred_surface_candidates"] = deferred[:8]
     return filtered
 
 
@@ -2175,6 +2252,20 @@ def _load_autopilot_control_facts(
         and not bool(recon_artifacts.get("ready"))
     )
     scan_in_progress = _runtime_scan_in_progress(repo_root, resolved_target, runtime_state)
+    runtime_derived = _derive_current_status(
+        Path(repo_root),
+        resolved_target,
+        runtime_state,
+        recon_artifacts,
+        {
+            key: int((structured_findings or {}).get(key, 0) or 0)
+            for key in (
+                "pending_validation",
+                "owner_revalidation_pending",
+                "validated_pending_report",
+            )
+        },
+    )
     recon_completed_no_live_hosts = _recon_completed_without_live_hosts(
         runtime_state,
         recon_artifacts,
@@ -2225,6 +2316,7 @@ def _load_autopilot_control_facts(
         "validation_runner_next": validation_runner_next,
         "action_queue_next": action_queue_next,
         "runtime_state": runtime_state,
+        "runtime_derived": runtime_derived,
         "recon_artifacts": recon_artifacts,
         "dir_fuzz_rotation": dir_fuzz_rotation,
         "recon_in_progress": recon_in_progress,
@@ -2267,9 +2359,8 @@ def _build_domain_autopilot_state(
     guard_status = facts.get("guard_status") or {}
     tripped_hosts = facts.get("tripped_hosts") or []
     resume_targets = facts.get("resume_targets") or []
-    ranked_for_action = _filter_legacy_memory_candidates(
-        ranked_for_next,
-        resume_targets,
+    ranked_for_action = _filter_stale_finalized_scanner_candidates(
+        _filter_legacy_memory_candidates(ranked_for_next, resume_targets)
     )
 
     tech_stack = []
@@ -2396,6 +2487,7 @@ def _build_domain_autopilot_state(
         "validation_runner_next": facts.get("validation_runner_next") or {},
         "action_queue_next": facts.get("action_queue_next") or {},
         "action_queue": {"next": facts.get("action_queue_next") or {}},
+        "runtime_derived": facts.get("runtime_derived") or {},
         "target_goal_memory": facts.get("target_goal_memory") or {},
         "memory_candidate_next": facts.get("memory_candidate_next") or {},
         "resume_summary": resume_summary,
@@ -2415,6 +2507,7 @@ def _build_domain_autopilot_state(
         "resume_targets": resume_targets,
         "surface_review_candidates": surface_review_candidates,
         "recommended_targets": surface_review_candidates,
+        "deferred_surface_candidates": ranked_for_action.get("deferred_surface_candidates", []),
         "recent_guard_advisories": recent_guard_advisories[:3],
         "recent_guard_blocks": recent_guard_advisories[:3],
     }
@@ -3456,6 +3549,7 @@ def format_autopilot_state(state: dict) -> str:
     pivot_hint = str(state.get("pivot_hint", "") or "").strip()
     structured_findings = state.get("structured_findings") or {}
     runtime_state = state.get("runtime_state") or {}
+    runtime_derived = state.get("runtime_derived") or {}
     recon_artifacts = state.get("recon_artifacts") or {}
     target_goal_memory = state.get("target_goal_memory") or {}
     target_memory = target_goal_memory.get("target") or {}
@@ -3494,6 +3588,8 @@ def format_autopilot_state(state: dict) -> str:
         runtime_mode = str(runtime_state.get("mode", "") or "").strip()
         if runtime_workflow:
             lines.append(f"Last Workflow: {runtime_workflow}" + (f" (mode: {runtime_mode})" if runtime_mode else ""))
+        if runtime_derived:
+            lines.append(f"Current Derived Status: {runtime_derived.get('status', 'unknown')} ({runtime_derived.get('reason', '')})")
         if state.get("scan_in_progress"):
             lines.append("Scan: in progress")
         if recon_artifacts.get("available"):
@@ -3615,6 +3711,8 @@ def format_autopilot_state(state: dict) -> str:
     runtime_mode = str(runtime_state.get("mode", "") or "").strip()
     if runtime_workflow:
         lines.append(f"Last Workflow: {runtime_workflow}" + (f" (mode: {runtime_mode})" if runtime_mode else ""))
+    if runtime_derived:
+        lines.append(f"Current Derived Status: {runtime_derived.get('status', 'unknown')} ({runtime_derived.get('reason', '')})")
     if active_goal_memory or target_memory:
         lines.extend(_format_target_goal_memory_lines(active_goal_memory, target_memory))
     next_tool_hint = str(state.get("next_tool_hint", "") or "").strip()
@@ -3803,6 +3901,15 @@ def format_autopilot_state(state: dict) -> str:
             reason = f" [{item['review_reason']}]" if item.get("review_reason") else ""
             lines.append(
                 f"{idx}. {item['url']} — {item['suggested']} (score hint {item['score']}){reason}{suffix}"
+            )
+    deferred_candidates = state.get("deferred_surface_candidates") or []
+    if deferred_candidates:
+        lines.append("")
+        lines.append("Deferred scanner signals (raw evidence retained; AI reactivation conditions):")
+        for item in deferred_candidates[:3]:
+            lines.append(
+                f"- {item.get('url', '')}: {item.get('reason', '')}; "
+                f"reactivate when {item.get('reactivate_when', 'new evidence exists')}"
             )
 
     closure_line = _format_closure_line(state)

@@ -465,6 +465,55 @@ def _line_count(path: Path) -> int:
         return sum(1 for line in handle if line.strip())
 
 
+def _derive_queue_state(repo_root: Path, target: str) -> dict:
+    """Read only the durable queue projection needed for runtime status."""
+    path = _state_dir(repo_root, target) / "action_queue.json"
+    if not path.is_file():
+        return {"status": "missing", "active": 0, "final": 0, "total": 0}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"status": "invalid", "active": 0, "final": 0, "total": 0, "error": str(exc)[:300]}
+    actions = payload.get("actions") if isinstance(payload, dict) else None
+    if not isinstance(actions, list):
+        return {"status": "invalid", "active": 0, "final": 0, "total": 0, "error": "actions must be a list"}
+    active_statuses = {"queued", "running", "lead", "signal", "candidate"}
+    final_statuses = {"tested", "dead-end", "blocked", "validated", "reported", "n/a"}
+    active = sum(1 for item in actions if isinstance(item, dict) and str(item.get("status") or "queued") in active_statuses)
+    final = sum(1 for item in actions if isinstance(item, dict) and str(item.get("status") or "") in final_statuses)
+    return {"status": "valid", "active": active, "final": final, "total": len(actions)}
+
+
+def _derive_current_status(
+    repo_root: Path,
+    target: str,
+    persisted: dict,
+    recon: dict,
+    findings: dict,
+) -> dict:
+    queue = _derive_queue_state(repo_root, target)
+    failure_breadcrumb = {
+        key: persisted.get(key)
+        for key in ("mode", "last_executed_workflow", "updated_at")
+        if persisted.get(key)
+    }
+    if runtime_phase_in_progress(repo_root, target, "recon", persisted) or runtime_phase_in_progress(
+        repo_root, target, "scan", persisted
+    ):
+        return {"status": "running", "reason": "an active recon or scan phase owns the target lock", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+    if queue.get("status") == "invalid":
+        return {"status": "partial", "reason": "action queue projection is invalid", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+    if findings.get("owner_revalidation_pending") or findings.get("pending_validation"):
+        return {"status": "findings_pending", "reason": "findings still require validation or owner revalidation", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+    if findings.get("validated_pending_report"):
+        return {"status": "report_pending", "reason": "validated findings still require report closure", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+    if queue.get("active", 0):
+        return {"status": "action_pending", "reason": "durable queue still has active work", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+    if recon.get("ready"):
+        return {"status": "complete", "reason": "recon is ready and finding/queue owners have no pending work", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+    return {"status": "unavailable", "reason": "no current recon closure is available", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+
+
 # `/recon` 的 exposure 产物是给 Claude CLI 做“注意力增强”的情报层。
 # 这里仅统计缓存是否有料，不把它并入 surface_inputs_ready，避免把
 # autopilot 的 next_action 变成强制 exploit 自动化。
@@ -990,11 +1039,12 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
     finding counts. Replaces ad-hoc combinations across surface.py / resume.py /
     autopilot_state.py.
 
-    Returns four layers:
+    Returns five layers:
       - persisted: contents of session.json (post v1→v2 migration)
       - recon: inspect_recon_artifacts() result
       - findings: counts derived from finding_index
       - evidence: presence flags for browser/js_intel/source_intel artifacts
+      - derived: current status from recon/finding/queue owners plus failure breadcrumb
     """
     repo_root_p = Path(repo_root)
     storage_key = target_storage_key(target)
@@ -1060,4 +1110,5 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
         "recon": recon,
         "findings": findings,
         "evidence": evidence,
+        "derived": _derive_current_status(repo_root_p, target, persisted, recon, findings),
     }

@@ -158,6 +158,21 @@ def test_summary_exposes_bounded_present_untouched_new_sample(tmp_path):
     assert summary["new_sample"][0]["status"] == "untouched"
 
 
+def test_external_observation_is_retained_but_not_active_by_default(tmp_path):
+    recon_dir, _urls = _write_recon(tmp_path, count=1)
+    with (recon_dir / "urls" / "all.txt").open("a", encoding="utf-8") as handle:
+        handle.write("https://blog.example.net/reference\n")
+
+    payload = sync_inventory(tmp_path, "target.com")
+    external = next(item for item in payload["observations"] if "example.net" in item["value"])
+    summary = summarize_inventory(payload)
+
+    assert external["ownership"] == "external"
+    assert external["active_default"] is False
+    assert external["value"] not in {item["value"] for item in summary["new_sample"]}
+    assert summary["external_untouched"] >= 1
+
+
 def test_invalid_state_fails_explicitly_without_overwriting_file(tmp_path):
     path = inventory_path(tmp_path, "target.com")
     path.parent.mkdir(parents=True)

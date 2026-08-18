@@ -5,9 +5,10 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import intel_engine
+import tools.intel_continuation as intel_continuation_module
 
 from tools.action_queue import add_manual_action, resolve_action, save_queue
-from tools.intel_artifact import write_intel_artifact
+from tools.intel_artifact import load_intel_review_projection, write_intel_artifact
 from tools.intel_continuation import apply_intel_continuation, inspect_intel_continuation
 from tools.technology_inventory import load_or_build_inventory
 from tools.web_intel_artifact import load_web_intel_projection, record_web_intel
@@ -95,6 +96,52 @@ def test_inventory_without_intel_triggers_run_intel(tmp_path):
     state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
     assert state["action"] == "run_intel"
     assert "has not processed" in state["reason"]
+
+
+def test_intel_review_sidecar_is_bounded_and_stable(tmp_path, monkeypatch):
+    _prepare_inventory(tmp_path)
+    advisories = []
+    for index in range(5):
+        advisory = _advisory()
+        advisory["id"] = f"CVE-2026-{63030 + index}"
+        advisory["aliases"] = [advisory["id"]]
+        advisory["score_hint"] = 100 - index
+        advisories.append(advisory)
+    other = _advisory()
+    other["id"] = "CVE-2026-64000"
+    other["aliases"] = [other["id"]]
+    other["component"] = {**other["component"], "name": "other", "version": "1.0"}
+    advisories.append(other)
+    payload = _intel(advisories=advisories)
+    _write_intel(tmp_path, payload)
+
+    sidecar = load_intel_review_projection(
+        tmp_path / "recon" / "target.test", "target.test"
+    )
+    assert sidecar["group_count"] == 2
+    assert sidecar["advisory_count"] == 6
+    givewp = next(group for group in sidecar["groups"] if group["group_key"] == "givewp@4.16.3")
+    assert givewp["advisory_count"] == 5
+    assert givewp["representative_count"] == 3
+    assert givewp["omitted_count"] == 2
+    assert len(sidecar["items"]) == 4
+
+    path = tmp_path / "recon" / "target.test" / "intel-review.json"
+    first_size = path.stat().st_size
+    _write_intel(tmp_path, payload)
+    refreshed = load_intel_review_projection(
+        tmp_path / "recon" / "target.test", "target.test"
+    )
+    assert refreshed["groups"] == sidecar["groups"]
+    assert refreshed["items"] == sidecar["items"]
+    assert path.stat().st_size == first_size
+
+    def fail_full_read(*_args, **_kwargs):
+        raise AssertionError("valid sidecar must avoid parsing the full intel owner")
+
+    monkeypatch.setattr(intel_continuation_module, "read_intel_artifact", fail_full_read)
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+    assert state["action"] == "test_advisory_applicability"
 
 
 def test_official_gap_triggers_web_intel(tmp_path):

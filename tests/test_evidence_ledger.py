@@ -48,6 +48,26 @@ def test_record_entry_writes_normalized_ledger_row(tmp_path):
     assert rows[0]["replayed"] is True
 
 
+def test_parent_summary_aggregates_child_ledger_without_copying_events(tmp_path):
+    record_entry(
+        tmp_path,
+        target="api.target.com",
+        endpoint="/api/users",
+        method="GET",
+        vuln_class="Authz",
+        result="tested_clean",
+    )
+
+    summary = build_summary(tmp_path, target="target.com")
+    aggregate = summary["aggregate_closure"]
+
+    assert aggregate["child_count"] == 1
+    assert aggregate["children"][0]["target"] == "api.target.com"
+    assert aggregate["children"][0]["entry_count"] == 1
+    assert aggregate["entry_count"] == 1
+    assert not ledger_path(tmp_path, "target.com").exists()
+
+
 def test_v2_projection_preserves_sql_parameter_identity(tmp_path):
     first = record_entry(
         tmp_path,

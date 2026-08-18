@@ -978,6 +978,7 @@ def build_summary(
     focus_endpoints: list[str | dict] | None = None,
     vuln_classes: list[str] | None = None,
     method: str = "GET",
+    _include_aggregate: bool = True,
 ) -> dict:
     resolved_target = canonical_target_value(target)
     diagnostics = load_entries_diagnostic(repo_root, resolved_target)
@@ -1018,7 +1019,7 @@ def build_summary(
             "reason": f"ledger_{diagnostics.get('status')}",
         }
 
-    return {
+    summary = {
         "target": resolved_target,
         "path": str(path),
         "path_exists": path.is_file(),
@@ -1051,6 +1052,83 @@ def build_summary(
             record_command(resolved_target, row)
             for row in actor_gaps[:5]
         ],
+    }
+    if _include_aggregate:
+        summary["aggregate_closure"] = _build_aggregate_closure(
+            repo_root,
+            resolved_target,
+            local_summary=summary,
+        )
+    return summary
+
+
+def _build_aggregate_closure(
+    repo_root: Path | str,
+    target: str,
+    *,
+    local_summary: dict,
+) -> dict:
+    """Derive a parent-target closure view from child Ledger owners.
+
+    Child JSONL files remain the only event owners. The parent projection only
+    carries bounded counts, closure cells, and source paths, so rebuilding it
+    cannot duplicate or move child evidence.
+    """
+    resolved = canonical_target_value(target)
+    evidence_root = Path(repo_root) / "memory" / "evidence"
+    children = []
+    suffix = "." + resolved.lower().rstrip(".")
+    if evidence_root.is_dir():
+        for path in sorted(evidence_root.glob("*/ledger.jsonl")):
+            child = path.parent.name
+            if child.lower() == resolved.lower() or not child.lower().endswith(suffix):
+                continue
+            child_summary = build_summary(
+                repo_root,
+                target=child,
+                _include_aggregate=False,
+            )
+            children.append(
+                {
+                    "target": child,
+                    "ledger_path": str(path),
+                    "entry_count": int(child_summary.get("entry_count", 0) or 0),
+                    "ledger_status": child_summary.get("ledger_status", "missing"),
+                    "result_counts": dict(child_summary.get("result_counts") or {}),
+                    "closed_cells": [
+                        {**cell, "source_target": child}
+                        for cell in (child_summary.get("closed_cells_v2") or [])[:32]
+                    ],
+                }
+            )
+    local_exists = bool(local_summary.get("path_exists"))
+    result_counts = {result: 0 for result in RESULTS}
+    for result, count in (local_summary.get("result_counts") or {}).items():
+        result_counts[result] = result_counts.get(result, 0) + int(count or 0)
+    for child in children:
+        for result, count in child["result_counts"].items():
+            result_counts[result] = result_counts.get(result, 0) + int(count or 0)
+    return {
+        "status": "derived",
+        "target": resolved,
+        "local_ledger": str(local_summary.get("path") or ""),
+        "local_ledger_exists": local_exists,
+        "children": children[:64],
+        "child_count": len(children),
+        "entry_count": int(local_summary.get("entry_count", 0) or 0)
+        + sum(int(child["entry_count"] or 0) for child in children),
+        "result_counts": result_counts,
+        "closed_cells": [
+            *[
+                {**cell, "source_target": resolved}
+                for cell in (local_summary.get("closed_cells_v2") or [])[:32]
+            ],
+            *[
+                cell
+                for child in children
+                for cell in child.get("closed_cells") or []
+            ],
+        ][:64],
     }
 
 

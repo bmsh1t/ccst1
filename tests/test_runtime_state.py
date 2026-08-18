@@ -445,13 +445,33 @@ def test_derive_state_view_returns_all_layers(tmp_path):
     update_runtime_state(tmp_path, "target.com", mode="agent",
                         last_executed_workflow="run_recon")
     view = derive_state_view(tmp_path, "target.com")
-    assert set(view.keys()) == {"persisted", "recon", "findings", "evidence"}
+    assert set(view.keys()) == {"persisted", "recon", "findings", "evidence", "derived"}
     assert view["persisted"]["mode"] == "agent"
     # recon dir doesn't exist → unavailable
     assert view["recon"]["available"] is False
     # finding counts default to 0
     assert view["findings"]["structured_total"] == 0
     assert view["evidence"]["browser_evidence_present"] is False
+    assert view["derived"]["status"] == "unavailable"
+
+
+def test_derived_status_prefers_ready_artifacts_over_scan_failure_breadcrumb(tmp_path, monkeypatch):
+    update_runtime_state(
+        tmp_path,
+        "target.com",
+        mode="scan_failed",
+        last_executed_workflow="run_vuln_scan_failed",
+    )
+    monkeypatch.setattr(
+        runtime_state_module,
+        "inspect_recon_artifacts",
+        lambda *_args, **_kwargs: {"ready": True},
+    )
+
+    view = derive_state_view(tmp_path, "target.com")
+
+    assert view["derived"]["status"] == "complete"
+    assert view["derived"]["failure_breadcrumb"]["mode"] == "scan_failed"
 
 
 def test_inspect_recon_artifacts_reports_ready_cache(tmp_path):

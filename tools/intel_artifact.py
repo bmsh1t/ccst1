@@ -15,9 +15,11 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 
 INTEL_SCHEMA_VERSION = 2
+INTEL_REVIEW_SCHEMA_VERSION = 1
 SOURCE_STATUSES = {"ok", "partial", "unavailable", "error"}
 COVERAGE_STATUSES = {"ready", "partial", "unavailable", "error"}
 REVIEW_ITEM_LIMIT = 16
+REVIEW_GROUP_LIMIT = 32
 NOT_APPLICABLE_VALUES = {
     "not_affected",
     "not-affected",
@@ -164,6 +166,12 @@ def intel_artifact_path(repo_root: str | Path, target: str) -> Path:
     return Path(repo_root) / "recon" / target_storage_key(resolved_target) / "intel.json"
 
 
+def intel_review_path(repo_root: str | Path, target: str) -> Path:
+    """Return the bounded AI-facing projection beside the lossless artifact."""
+    resolved_target = canonical_target_value(target)
+    return Path(repo_root) / "recon" / target_storage_key(resolved_target) / "intel-review.json"
+
+
 def write_intel_artifact(repo_root: str | Path, target: str, payload: dict) -> Path:
     validated = validate_intel_artifact(payload)
     resolved_target = canonical_target_value(target)
@@ -173,6 +181,13 @@ def write_intel_artifact(repo_root: str | Path, target: str, payload: dict) -> P
         )
     path = intel_artifact_path(repo_root, resolved_target)
     _write_json_atomic(path, validated)
+    _write_json_atomic(
+        intel_review_path(repo_root, resolved_target),
+        build_intel_review_projection(
+            _with_advisory_source_freshness(validated),
+            owner_path=path,
+        ),
+    )
     return path
 
 
@@ -196,12 +211,30 @@ def _bounded_list(value: object, limit: int) -> list:
     return list(value)[:limit] if isinstance(value, list) else []
 
 
-def project_intel_review_items(items: list[dict], *, limit: int = REVIEW_ITEM_LIMIT) -> list[dict]:
+def _is_review_candidate(item: object, *, include_stale: bool = False) -> bool:
+    return bool(
+        isinstance(item, dict)
+        and (
+            advisory_is_actionable(item)
+            or (
+                include_stale
+                and normalize_advisory_applicability(item.get("applicability"))
+                != "not_affected"
+            )
+        )
+    )
+
+
+def project_intel_review_items(
+    items: list[dict],
+    *,
+    limit: int = REVIEW_ITEM_LIMIT,
+    include_stale: bool = False,
+) -> list[dict]:
     """生成有界、可追溯的 advisory review 投影，不携带无界原始响应。"""
     candidates = [
-        item
-        for item in items
-        if isinstance(item, dict) and advisory_is_actionable(item)
+        item for item in items
+        if _is_review_candidate(item, include_stale=include_stale)
     ]
     candidates.sort(key=lambda item: (-_score_hint(item), str(item.get("id") or "")))
     projected = []
@@ -239,8 +272,146 @@ def project_intel_review_items(items: list[dict], *, limit: int = REVIEW_ITEM_LI
             "source_names": _bounded_list(item.get("source_names"), 8),
             "source_refs": source_refs[:8],
             "already_tested": bool(item.get("already_tested")),
+            "stale": bool(item.get("stale")),
+            "source_status": str(item.get("source_status") or ""),
         })
     return projected
+
+
+def build_intel_review_projection(
+    payload: dict,
+    *,
+    owner_path: Path,
+    limit: int = REVIEW_GROUP_LIMIT,
+) -> dict:
+    """Build a bounded, component/version-grouped packet for AI steering.
+
+    ``intel.json`` remains the complete raw/normalized owner.  This sidecar is
+    deliberately small: one representative per observed component/version
+    group, with counts and reactivation hints instead of one queue row per CVE.
+    """
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for item in payload.get("advisories") or []:
+        if not _is_review_candidate(item, include_stale=True):
+            continue
+        component = item.get("component") if isinstance(item.get("component"), dict) else {}
+        key = (
+            str(component.get("name") or "").strip().lower(),
+            str(component.get("version") or "").strip(),
+        )
+        if not key[0]:
+            continue
+        grouped.setdefault(key, []).append(item)
+    groups = []
+    for key, raw_items in grouped.items():
+        representatives = project_intel_review_items(
+            raw_items,
+            limit=3,
+            include_stale=True,
+        )
+        groups.append(
+            {
+                "group_key": f"{key[0]}@{key[1]}" if key[1] else key[0],
+                "component": {
+                    "name": key[0],
+                    "version": key[1],
+                },
+                "advisory_count": len(raw_items),
+                "representative_count": len(representatives),
+                "omitted_count": max(0, len(raw_items) - len(representatives)),
+                "representatives": representatives,
+                "reactivate_when": "new route/browser/source evidence binds the dependency to reachable target behavior",
+            }
+        )
+    ordered = sorted(
+        groups,
+        key=lambda group: (
+            -max((_score_hint(item) for item in group["representatives"]), default=0),
+            group["group_key"],
+        ),
+    )
+    selected = ordered[:max(0, limit)]
+    stat = owner_path.stat()
+    inventory = payload.get("inventory") if isinstance(payload.get("inventory"), dict) else {}
+    gaps = payload.get("intel_gaps") if isinstance(payload.get("intel_gaps"), dict) else {}
+    web_intel = payload.get("web_intel") if isinstance(payload.get("web_intel"), dict) else {}
+    stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+    return {
+        "schema_version": INTEL_REVIEW_SCHEMA_VERSION,
+        "target": str(payload.get("target") or ""),
+        "generated_at": str(payload.get("generated_at") or ""),
+        "advisory_count": len(list(payload.get("advisories") or [])),
+        "review_candidate_count": sum(len(items) for items in grouped.values()),
+        "group_count": len(selected),
+        "total_group_count": len(ordered),
+        "truncated_group_count": max(0, len(ordered) - len(selected)),
+        "groups": selected,
+        "items": [
+            item
+            for group in selected
+            for item in group.get("representatives") or []
+        ],
+        "coverage_status": str(payload.get("coverage_status") or "error"),
+        "inventory": {
+            "status": str(inventory.get("status") or ""),
+            "fingerprint": str(inventory.get("fingerprint") or ""),
+        },
+        "intel_gaps": {
+            "web_search_recommended": bool(gaps.get("web_search_recommended")),
+            "recommended": _bounded_list(gaps.get("recommended"), 8),
+            "blocked": _bounded_list(gaps.get("blocked"), 8),
+        },
+        "web_intel": {
+            key: web_intel.get(key, [] if key.endswith("subjects") else "")
+            for key in ("status", "fingerprint", "covered_subjects", "blocked_subjects")
+        },
+        "stats": {"component_count": int(stats.get("component_count", 0) or 0)},
+        "owner_binding": {
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "ctime_ns": stat.st_ctime_ns,
+            "st_dev": stat.st_dev,
+            "st_ino": stat.st_ino,
+        },
+    }
+
+
+def load_intel_review_projection(recon_dir: str | Path, target: str) -> dict | None:
+    """Read the bounded sidecar, returning ``None`` for legacy artifacts."""
+    path = Path(recon_dir) / "intel-review.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("schema_version") != INTEL_REVIEW_SCHEMA_VERSION:
+        return None
+    if canonical_target_value(str(payload.get("target") or "")) != canonical_target_value(target):
+        return None
+    groups = payload.get("groups")
+    items = payload.get("items")
+    if not isinstance(groups, list) or not isinstance(items, list):
+        return None
+    binding = payload.get("owner_binding") if isinstance(payload.get("owner_binding"), dict) else {}
+    owner_path = Path(recon_dir) / "intel.json"
+    try:
+        stat = owner_path.stat()
+        matches = all(
+            int(binding.get(key, -1)) == int(getattr(stat, attribute))
+            for key, attribute in (
+                ("size", "st_size"),
+                ("mtime_ns", "st_mtime_ns"),
+                ("ctime_ns", "st_ctime_ns"),
+                ("st_dev", "st_dev"),
+                ("st_ino", "st_ino"),
+            )
+        )
+    except (OSError, TypeError, ValueError):
+        matches = False
+    if not matches:
+        return None
+    return payload
 
 
 def load_intel_projection(recon_dir: str | Path) -> dict:

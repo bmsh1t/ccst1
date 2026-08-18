@@ -6,6 +6,7 @@ Corrupted lines are skipped with a warning, not a crash.
 """
 
 import fcntl
+import hashlib
 import json
 import os
 import sys
@@ -18,6 +19,9 @@ from memory.schemas import (
     make_session_summary_entry,
     validate_journal_entry,
 )
+
+
+_DIAGNOSTIC_FINGERPRINTS: set[str] = set()
 
 
 class HuntJournal:
@@ -73,6 +77,7 @@ class HuntJournal:
             return []
 
         entries = []
+        invalid_rows = []
         with open(self.path, "r", encoding="utf-8") as f:
             for lineno, line in enumerate(f, 1):
                 line = line.strip()
@@ -81,23 +86,34 @@ class HuntJournal:
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError as e:
-                    print(
-                        f"WARNING: journal line {lineno} is corrupted (skipping): {e}",
-                        file=sys.stderr,
-                    )
+                    invalid_rows.append((lineno, f"corrupted: {e}"))
                     continue
 
                 if validate:
                     try:
                         validate_journal_entry(entry)
                     except SchemaError as e:
-                        print(
-                            f"WARNING: journal line {lineno} failed validation (skipping): {e}",
-                            file=sys.stderr,
-                        )
+                        invalid_rows.append((lineno, f"failed validation: {e}"))
                         continue
 
                 entries.append(entry)
+
+        if invalid_rows:
+            try:
+                stat = self.path.stat()
+                fingerprint = hashlib.sha256(
+                    f"{self.path}:{stat.st_size}:{stat.st_mtime_ns}:{len(invalid_rows)}".encode()
+                ).hexdigest()
+            except OSError:
+                fingerprint = str(self.path)
+            if fingerprint not in _DIAGNOSTIC_FINGERPRINTS:
+                _DIAGNOSTIC_FINGERPRINTS.add(fingerprint)
+                first_line, first_reason = invalid_rows[0]
+                print(
+                    f"WARNING: journal {self.path} has {len(invalid_rows)} invalid rows "
+                    f"(first line {first_line}: {first_reason}); valid rows retained",
+                    file=sys.stderr,
+                )
 
         return entries
 

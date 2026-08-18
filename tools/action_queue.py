@@ -838,6 +838,40 @@ def _next_id(actions: list[dict]) -> str:
     return f"AQ-{highest + 1:04d}"
 
 
+def _legacy_action_id(action: dict, index: int) -> str:
+    """Stable in-memory identity for legacy rows that predate ``id``."""
+    material = "|".join(
+        str(value or "")
+        for value in (
+            _dedupe_key(action),
+            action.get("source_id"),
+            action.get("created_at"),
+            index,
+        )
+    )
+    return f"LEGACY-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _ensure_active_action_ids(queue: dict) -> int:
+    """Attach stable IDs only to active legacy rows in the current projection."""
+    assigned = 0
+    for index, item in enumerate(queue.get("actions", [])):
+        if (
+            isinstance(item, dict)
+            and not str(item.get("id") or "").strip()
+            and str(item.get("status") or "queued") in ACTIVE_STATUSES
+        ):
+            item["id"] = _legacy_action_id(item, index)
+            item.setdefault("metadata", {})["legacy_identity"] = True
+            assigned += 1
+    return assigned
+
+
+def _action_identity(item: dict, index: int) -> str:
+    value = str(item.get("id") or "").strip()
+    return value or _legacy_action_id(item, index)
+
+
 def _status_rank(status: str) -> int:
     if status == "running":
         return 0
@@ -1480,6 +1514,7 @@ def _runtime_wait_queue_action(wait_action: str, target: str) -> dict:
 
 
 def select_next_action(queue: dict) -> dict:
+    _ensure_active_action_ids(queue)
     final_identities = _final_action_identities(queue)
     candidates = [
         item for item in queue.get("actions", [])
@@ -1555,15 +1590,18 @@ def claim_next_action(
         elif action_id:
             selected = next(
                 (
-                    item for item in queue.get("actions", [])
+                    item for index, item in enumerate(queue.get("actions", []))
                     if isinstance(item, dict)
-                    and str(item.get("id") or "") == action_id
+                    and _action_identity(item, index) == action_id
                     and str(item.get("status") or "queued") in ACTIVE_STATUSES
                 ),
                 None,
             )
             if selected is None:
                 raise KeyError(f"active action not found: {action_id}")
+            if not str(selected.get("id") or "").strip():
+                selected["id"] = action_id
+                selected.setdefault("metadata", {})["legacy_identity"] = True
         else:
             selected = select_next_action(queue)
         if not selected:
@@ -1641,10 +1679,10 @@ def _resolve_action_in_queue(
     """在调用方已持有 queue lock 时修改一个 action。"""
     normalized = _normalize_status(status)
     metadata = _validate_action_metadata(metadata)
-    for item in queue.get("actions", []):
+    for index, item in enumerate(queue.get("actions", [])):
         if not isinstance(item, dict):
             continue
-        if str(item.get("id") or "") != action_id:
+        if _action_identity(item, index) != action_id:
             continue
         previous = str(item.get("status") or "queued")
         existing_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
@@ -1738,6 +1776,7 @@ def summarize_queue(
     target: str | None = None,
 ) -> dict:
     actions = [item for item in queue.get("actions", []) if isinstance(item, dict)]
+    legacy_missing_id = sum(1 for item in actions if not str(item.get("id") or "").strip())
     by_status = Counter(str(item.get("status") or "queued") for item in actions)
     by_type = Counter(str(item.get("type") or "next-action") for item in actions)
     active = [item for item in actions if str(item.get("status") or "queued") in ACTIVE_STATUSES]
@@ -1754,6 +1793,7 @@ def summarize_queue(
         "final": len(final),
         "by_status": dict(sorted(by_status.items())),
         "by_type": dict(sorted(by_type.items())),
+        "legacy_missing_id": legacy_missing_id,
         "next_id": (selected or {}).get("id", ""),
     }
 

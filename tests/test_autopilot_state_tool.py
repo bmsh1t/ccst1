@@ -21,6 +21,7 @@ from autopilot_state import (
     _checkpoint_round_projection,
     _filter_ranked_placeholders,
     _filter_legacy_memory_candidates,
+    _filter_stale_finalized_scanner_candidates,
     _is_substantive_queue_action,
     _load_closure_projection,
     _load_loop_guard_projection,
@@ -90,6 +91,56 @@ def test_legacy_memory_surface_hints_stay_visible_but_do_not_steer_without_focus
     assert [item["url"] for item in filtered["p1"]] == ["https://target.test/live"]
     assert ranked["review_pool"][0]["url"] == "https://target.test/old"
     assert _filter_legacy_memory_candidates(ranked, ["/old"]) == ranked
+
+
+def test_finalized_scanner_candidates_are_deferred_without_hiding_raw_surface():
+    ranked = {
+        "review_pool": [
+            {
+                "url": "https://target.test/static/bundle.js",
+                "scanner_findings": [
+                    {"validation_status": "rejected", "report_status": "not_generated"}
+                ],
+            },
+            {
+                "url": "https://target.test/api/orders",
+                "scanner_findings": [
+                    {"validation_status": "rejected", "report_status": "not_generated"}
+                ],
+                "new_observation": True,
+            },
+        ],
+        "p1": [],
+        "p2": [],
+    }
+
+    filtered = _filter_stale_finalized_scanner_candidates(ranked)
+
+    assert filtered["review_pool"] == [ranked["review_pool"][1]]
+    assert filtered["deferred_surface_candidates"][0]["url"].endswith("bundle.js")
+    assert ranked["review_pool"][0]["url"].endswith("bundle.js")
+
+
+def test_generic_intel_does_not_activate_finalized_static_candidate():
+    generic = {
+        "url": "https://target.test/static/bundle.js",
+        "scanner_findings": [{"validation_status": "rejected", "report_status": "not_generated"}],
+        "intel_signals": [{"id": "CVE-1", "source": "osv", "applicability": "affected"}],
+    }
+    route_bound = {
+        "url": "https://target.test/static/bundle.js",
+        "scanner_findings": [{"validation_status": "rejected", "report_status": "not_generated"}],
+        "intel_signals": [{"id": "CVE-2", "source": "osv", "route": "/api/orders", "applicability": "affected"}],
+    }
+
+    filtered = _filter_stale_finalized_scanner_candidates({
+        "review_pool": [generic, route_bound],
+        "p1": [],
+        "p2": [],
+    })
+
+    assert filtered["review_pool"] == [route_bound]
+    assert filtered["deferred_surface_candidates"][0]["intel_packet"][0]["id"] == "CVE-1"
 
 
 def test_deep_js_review_queue_item_is_substantive():

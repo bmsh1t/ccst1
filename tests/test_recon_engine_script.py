@@ -275,6 +275,40 @@ def test_recon_engine_has_timeout_compat_helper():
     assert 'run_with_timeout "$HTTPX_RUN_TIMEOUT" "$HTTPX_BIN"' in text
     assert 'run_with_timeout "$NMAP_RUN_TIMEOUT" nmap' in text
     assert '--max-rate "$RATE_LIMIT"' in text
+    assert "recon_budget_checkpoint()" in text
+    assert "recon_record_budget_on_exit()" in text
+    assert 'RECON_BUDGET_EXHAUSTED=1' in text
+    assert 'stopped_before_phase=' in text
+    assert 'trap \'cleanup_auth_tmpfiles; recon_record_budget_on_exit\' EXIT' in text
+    assert text.count("recon_budget_checkpoint ") >= 10
+
+
+def test_recon_budget_checkpoint_stops_before_scheduling_next_phase(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    block = "recon_budget_checkpoint() {" + text.split(
+        "recon_budget_checkpoint() {", 1
+    )[1].split("dir_fuzz_remaining_seconds() {", 1)[0]
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -euo pipefail\n"
+            "log_warn() { printf '%s\\n' \"$*\"; }\n"
+            "RECON_STARTED_EPOCH=$(( $(date +%s) - 10 ))\n"
+            "RECON_SOFT_BUDGET_SECONDS=5\n"
+            "RECON_BUDGET_EXHAUSTED=0\n"
+            "RECON_BUDGET_STOP_PHASE=''\n"
+            + block
+            + "recon_budget_checkpoint js_analysis\n",
+        ],
+        cwd=script.parent.parent,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 124
+    assert "stopping before scheduling more work" in completed.stdout
 
 
 def test_recon_engine_supports_auth_session_env():

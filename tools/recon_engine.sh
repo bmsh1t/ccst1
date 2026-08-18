@@ -240,6 +240,32 @@ run_with_timeout() {
     fi
 }
 
+recon_budget_checkpoint() {
+    local phase="$1"
+    local elapsed=$(( $(date +%s) - RECON_STARTED_EPOCH ))
+    if [ "$elapsed" -lt "$RECON_SOFT_BUDGET_SECONDS" ]; then
+        return 0
+    fi
+    RECON_BUDGET_EXHAUSTED=1
+    RECON_BUDGET_STOP_PHASE="$phase"
+    log_warn "Recon soft budget exhausted before ${phase} (${elapsed}s/${RECON_SOFT_BUDGET_SECONDS}s); stopping before scheduling more work"
+    return 124
+}
+
+recon_record_budget_on_exit() {
+    if [ "${RECON_BUDGET_EXHAUSTED:-0}" -ne 1 ] || [ "${RECON_BUDGET_RECORD_WRITTEN:-0}" -eq 1 ]; then
+        return 0
+    fi
+    local elapsed=$(( $(date +%s) - RECON_STARTED_EPOCH ))
+    record_recon_phase \
+        run_budget \
+        partial \
+        "recon/${RECON_TARGET_KEY:-}/recon_manifest.jsonl" \
+        0 \
+        "stopped_before_phase=${RECON_BUDGET_STOP_PHASE:-unknown}; elapsed_seconds=${elapsed}; soft_budget_seconds=${RECON_SOFT_BUDGET_SECONDS}; raw surface preserved"
+    RECON_BUDGET_RECORD_WRITTEN=1
+}
+
 dir_fuzz_remaining_seconds() {
     local remaining=$((FFUF_PHASE_DEADLINE_SECONDS - SECONDS))
     if [ "$remaining" -gt 0 ]; then
@@ -699,6 +725,9 @@ fi
 RECON_STARTED_EPOCH=$(date +%s)
 RECON_SOFT_BUDGET_SECONDS="${BBHUNT_RECON_SOFT_BUDGET_SECONDS:-1800}"
 require_positive_integer BBHUNT_RECON_SOFT_BUDGET_SECONDS "$RECON_SOFT_BUDGET_SECONDS"
+RECON_BUDGET_EXHAUSTED=0
+RECON_BUDGET_RECORD_WRITTEN=0
+RECON_BUDGET_STOP_PHASE=""
 if [ -n "${BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS:-}" ]; then
     DIR_FUZZ_HARD_BUDGET_SECONDS="$BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS"
 elif [ "$RECON_PROFILE" = "quick" ]; then
@@ -723,7 +752,7 @@ SHARED_TOOLS_DIR="${BBHUNT_TOOLS_DIR:-${OSMEDEUS_TOOLS_DIR:-$HOME/Tools}}"
 # shellcheck source=tools/_auth_helper.sh
 . "$(dirname "$0")/_auth_helper.sh"
 bb_auth_bind_target "$TARGET"
-trap cleanup_auth_tmpfiles EXIT
+trap 'cleanup_auth_tmpfiles; recon_record_budget_on_exit' EXIT
 
 # Prefer Go-installed/security-tool bins over similarly named package-manager CLIs.
 export PATH="$HOME/.local/bin:$HOME/go/bin:$SHARED_TOOLS_DIR/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -1630,6 +1659,7 @@ record_recon_phase \
 # ============================================================
 # Phase 1: Subdomain Enumeration
 # ============================================================
+recon_budget_checkpoint subdomain_enum
 log_info "Phase 1: Subdomain Enumeration"
 
 if [ "$TARGET_KIND" = "domain" ]; then
@@ -1793,6 +1823,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 2: HTTP Probing
 # ============================================================
+recon_budget_checkpoint http_probe
 echo ""
 log_info "Phase 2: HTTP Probing"
 
@@ -1992,6 +2023,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 2.5: WAF Fingerprinting
 # ============================================================
+recon_budget_checkpoint waf_fp
 echo ""
 log_info "Phase 2.5: WAF Fingerprinting"
 
@@ -2200,6 +2232,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 2.6: Origin Discovery
 # ============================================================
+recon_budget_checkpoint origin_discovery
 echo ""
 log_info "Phase 2.6: Origin Discovery"
 
@@ -2336,6 +2369,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 3: Port Scanning
 # ============================================================
+recon_budget_checkpoint port_scan
 echo ""
 log_info "Phase 3: Port Scanning"
 
@@ -2579,6 +2613,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 4: URL Collection
 # ============================================================
+recon_budget_checkpoint url_collection
 echo ""
 log_info "Phase 4: URL Collection"
 
@@ -2649,6 +2684,7 @@ record_recon_phase \
 # ============================================================
 # Phase 4.5: URL Denoising (non-destructive)
 # ============================================================
+recon_budget_checkpoint url_denoising
 echo ""
 log_info "Phase 4.5: URL Denoising"
 
@@ -2733,6 +2769,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 5: JS Analysis
 # ============================================================
+recon_budget_checkpoint js_analysis
 echo ""
 log_info "Phase 5: JavaScript Analysis"
 
@@ -2961,6 +2998,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 6: Directory Fuzzing
 # ============================================================
+recon_budget_checkpoint dir_fuzz
 echo ""
 log_info "Phase 6: Directory Fuzzing"
 
@@ -3351,6 +3389,7 @@ emit_claude_hint \
 # ============================================================
 # Phase 6.5: Config File Exposure Check
 # ============================================================
+recon_budget_checkpoint config_exposure
 echo ""
 log_info "Phase 6.5: Config File Exposure Check"
 
@@ -3419,6 +3458,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 6.6: Exposure Candidate Correlation
 # ============================================================
+recon_budget_checkpoint exposure_candidates
 echo ""
 log_info "Phase 6.6: Exposure Candidate Correlation"
 
@@ -3533,6 +3573,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 6.7: API Leak Detection
 # ============================================================
+recon_budget_checkpoint api_leak_detection
 echo ""
 log_info "Phase 6.7: API Leak Detection"
 
@@ -3674,6 +3715,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 6.7.5: API Candidate Validation (Denoising)
 # ============================================================
+recon_budget_checkpoint api_candidate_validation
 echo ""
 log_info "Phase 6.7.5: API Candidate Validation"
 
@@ -3719,6 +3761,7 @@ record_recon_phase \
 # ============================================================
 # Phase 6.7.6: OpenAPI Semantic Extraction
 # ============================================================
+recon_budget_checkpoint openapi_semantics
 echo ""
 log_info "Phase 6.7.6: OpenAPI Semantic Extraction"
 
@@ -3767,6 +3810,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 6.8: Identity and Cloud Intel
 # ============================================================
+recon_budget_checkpoint identity_cloud_intel
 echo ""
 log_info "Phase 6.8: Identity and Cloud Intel"
 
@@ -3899,6 +3943,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 7: Parameter Discovery
 # ============================================================
+recon_budget_checkpoint param_disco
 echo ""
 log_info "Phase 7: Parameter Discovery"
 
@@ -3953,6 +3998,7 @@ emit_claude_hint_actions \
 # ============================================================
 # Phase 8: CI/CD Workflow Scan (auto-detect GitHub org)
 # ============================================================
+recon_budget_checkpoint cicd
 log_info "Phase 8: CI/CD Workflow Scan"
 
 GITHUB_ORGS=""
@@ -4076,6 +4122,7 @@ record_recon_phase \
     "recon/${RECON_TARGET_KEY}/recon_manifest.jsonl" \
     0 \
     "elapsed_seconds=${RECON_ELAPSED_SECONDS}; soft_budget_seconds=${RECON_SOFT_BUDGET_SECONDS}; soft target never deletes raw surface"
+RECON_BUDGET_RECORD_WRITTEN=1
 emit_claude_hint \
     phase               run_budget \
     profile             "$RECON_PROFILE" \

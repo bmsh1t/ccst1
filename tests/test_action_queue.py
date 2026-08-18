@@ -1589,6 +1589,41 @@ def test_high_value_actions_sort_ahead_of_generic_actions(tmp_path):
     assert select_next_action(queue)["id"] == "AQ-0002"
 
 
+def test_legacy_active_action_gets_stable_id_on_claim_and_resolve(tmp_path):
+    queue = load_queue(tmp_path, "target.com")
+    queue["actions"] = [{
+        "status": "queued",
+        "priority": 70,
+        "type": "legacy-follow-up",
+        "evidence": "Legacy action without a durable id.",
+        "next_question": "Can the evidence be closed?",
+        "action": "Review the bounded evidence packet.",
+        "created_at": "2026-01-01T00:00:00Z",
+        "dedupe_key": "legacy-follow-up",
+    }]
+    save_queue(tmp_path, "target.com", queue)
+
+    selected = select_next_action(load_queue(tmp_path, "target.com"))
+    legacy_id = selected["id"]
+    assert legacy_id.startswith("LEGACY-")
+    assert select_next_action(load_queue(tmp_path, "target.com"))["id"] == legacy_id
+    assert summarize_queue(load_queue(tmp_path, "target.com"))["legacy_missing_id"] == 1
+
+    claimed = claim_next_action(tmp_path, "target.com", action_id=legacy_id)
+    assert claimed["id"] == legacy_id
+    saved = load_queue(tmp_path, "target.com")
+    assert saved["actions"][0]["id"] == legacy_id
+
+    resolved = resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=legacy_id,
+        status="blocked",
+        result="bounded evidence is insufficient",
+    )
+    assert resolved["status"] == "blocked"
+
+
 def test_candidate_evidence_gap_sorts_ahead_of_plain_validation(tmp_path):
     queue = load_queue(tmp_path, "target.com")
     queue["actions"] = [

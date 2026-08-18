@@ -92,6 +92,16 @@ class TestJournalRead:
         entries = journal.read_all(validate=True)
         assert len(entries) == 1
 
+    def test_repeated_read_emits_one_bounded_corruption_warning(self, journal_path, capsys):
+        journal_path.write_text("{broken\n", encoding="utf-8")
+        journal = HuntJournal(journal_path)
+
+        assert journal.read_all() == []
+        assert journal.read_all() == []
+
+        captured = capsys.readouterr()
+        assert captured.err.count("WARNING: journal") == 1
+
     def test_read_without_validation(self, journal_path):
         # Write a raw JSON line that wouldn't pass schema validation
         with open(journal_path, "w") as f:

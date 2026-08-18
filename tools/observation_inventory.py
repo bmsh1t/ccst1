@@ -14,11 +14,13 @@ import hashlib
 import heapq
 import json
 import os
+import re
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import urlsplit
 
 try:
     from tools.target_paths import canonical_target_value, target_storage_key
@@ -28,6 +30,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 SCHEMA_VERSION = 1
 SUMMARY_SCHEMA_VERSION = 1
+CLASSIFICATION_VERSION = 1
 SUMMARY_KIND = "observation_inventory_summary"
 STALE_AFTER_SECONDS = 2 * 24 * 60 * 60
 ALLOWED_STATUSES = frozenset({"untouched", "reviewing", "reviewed", "parked"})
@@ -247,6 +250,26 @@ def _source_files(recon_dir: Path) -> list[tuple[str, Path, Path]]:
     return files
 
 
+def _classify_observation(target: str, kind: str, value: str, sources: list[str]) -> dict:
+    """Classify provenance without deciding vulnerability value or priority."""
+    source_text = " ".join(str(item or "") for item in sources).lower()
+    if kind == "infra":
+        return {"ownership": "infra", "source_class": "scanner", "active_default": False}
+    candidate = str(value or "").strip()
+    url_match = re.search(r"https?://[^\s\t]+", candidate, re.IGNORECASE)
+    host = ""
+    if url_match:
+        try:
+            host = str(urlsplit(url_match.group(0)).hostname or "").lower().rstrip(".")
+        except ValueError:
+            host = ""
+    target_value = str(target or "").strip().lower().rstrip(".")
+    if host and host != target_value and not host.endswith("." + target_value):
+        return {"ownership": "external", "source_class": "raw", "active_default": False}
+    source_class = "browser" if "browser/" in source_text else "scanner"
+    return {"ownership": "target-owned", "source_class": source_class, "active_default": True}
+
+
 def _source_fingerprint(files: list[tuple[str, Path, Path]]) -> str:
     """使用 path/stat identity 判断 recon artifact 是否发生变化。"""
     digest = hashlib.sha256()
@@ -342,6 +365,16 @@ def sync_inventory(
             if source not in row["sources"]:
                 row["sources"].append(source)
 
+        for row in current.values():
+            row.update(
+                _classify_observation(
+                    resolved,
+                    str(row.get("kind") or ""),
+                    str(row.get("value") or ""),
+                    list(row.get("sources") or []),
+                )
+            )
+
         merged = []
         for observation_id, row in current.items():
             previous = existing.pop(observation_id, None)
@@ -368,6 +401,14 @@ def sync_inventory(
                 item.setdefault("status", "untouched")
                 item.setdefault("notes", "")
                 item.setdefault("first_seen", timestamp)
+                item.update(
+                    _classify_observation(
+                        resolved,
+                        str(item.get("kind") or ""),
+                        str(item.get("value") or ""),
+                        list(item.get("sources") or []),
+                    )
+                )
             merged.append(item)
 
         for previous in existing.values():
@@ -416,12 +457,17 @@ def summarize_inventory(
     current_time = now or datetime.now(timezone.utc)
     observations = [item for item in payload.get("observations", []) if isinstance(item, dict)]
     counts = {status: 0 for status in sorted(ALLOWED_STATUSES)}
+    ownership_counts = {"target-owned": 0, "external": 0, "scanner": 0, "infra": 0}
+    active_untouched = 0
     by_kind: dict[str, dict[str, int]] = {}
     stale_ids = set()
     present = 0
     for item in observations:
         status = str(item.get("status") or "untouched")
         kind = str(item.get("kind") or "unknown")
+        ownership = str(item.get("ownership") or "target-owned")
+        if ownership in ownership_counts:
+            ownership_counts[ownership] += 1
         counts[status] = counts.get(status, 0) + 1
         kind_counts = by_kind.setdefault(
             kind,
@@ -445,6 +491,8 @@ def summarize_inventory(
             kind_counts["present"] += 1
             if status == "untouched":
                 kind_counts["present_untouched"] += 1
+                if bool(item.get("active_default", ownership == "target-owned")):
+                    active_untouched += 1
         if _is_stale(item, current_time, stale_after_seconds):
             stale_ids.add(str(item.get("id") or ""))
             kind_counts["stale"] += 1
@@ -486,6 +534,7 @@ def summarize_inventory(
         if bool(item.get("present", True))
         and str(item.get("status") or "untouched") == "untouched"
         and int(item.get("seen_count", 0) or 0) == 1
+        and bool(item.get("active_default", str(item.get("ownership") or "target-owned") == "target-owned"))
     )
     new_sample = [
         {
@@ -506,6 +555,9 @@ def summarize_inventory(
         "total": len(observations),
         "present": present,
         "untouched": counts.get("untouched", 0),
+        "active_untouched": active_untouched,
+        "external_untouched": max(0, counts.get("untouched", 0) - active_untouched),
+        "ownership_counts": ownership_counts,
         "reviewing": counts.get("reviewing", 0),
         "reviewed": counts.get("reviewed", 0),
         "parked": counts.get("parked", 0),
@@ -536,6 +588,9 @@ def _summary_error(
         "total": 0,
         "present": 0,
         "untouched": 0,
+        "active_untouched": 0,
+        "external_untouched": 0,
+        "ownership_counts": {},
         "reviewing": 0,
         "reviewed": 0,
         "parked": 0,
@@ -552,6 +607,9 @@ def _summary_error(
             "total",
             "present",
             "untouched",
+            "active_untouched",
+            "external_untouched",
+            "ownership_counts",
             "reviewing",
             "reviewed",
             "parked",
@@ -584,6 +642,7 @@ def _write_inventory_summary(
         "storage_key": target_storage_key(resolved),
         "source_fingerprint": str(payload.get("source_fingerprint") or ""),
         "page_order": str(payload.get("page_order") or ""),
+        "classification_version": CLASSIFICATION_VERSION,
         "inventory_binding": dict(inventory_binding),
         "generated_at": _now_utc(),
         "summary": summary,
@@ -642,7 +701,11 @@ def peek_inventory_summary(repo_root: str | Path, target: str) -> dict:
     if not isinstance(sidecar, dict):
         return _summary_error(repo_root, resolved, status="invalid", reason="root-not-object")
     summary = sidecar.get("summary") if isinstance(sidecar.get("summary"), dict) else {}
-    if sidecar.get("kind") != SUMMARY_KIND or sidecar.get("schema_version") != SUMMARY_SCHEMA_VERSION:
+    if (
+        sidecar.get("kind") != SUMMARY_KIND
+        or sidecar.get("schema_version") != SUMMARY_SCHEMA_VERSION
+        or sidecar.get("classification_version") != CLASSIFICATION_VERSION
+    ):
         return _summary_error(
             repo_root,
             resolved,

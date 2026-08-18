@@ -14,6 +14,7 @@ try:
         IntelArtifactError,
         advisory_is_actionable,
         advisory_is_stale,
+        load_intel_review_projection,
         normalize_advisory_applicability,
         read_intel_artifact,
     )
@@ -31,6 +32,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         IntelArtifactError,
         advisory_is_actionable,
         advisory_is_stale,
+        load_intel_review_projection,
         normalize_advisory_applicability,
         read_intel_artifact,
     )
@@ -328,14 +330,18 @@ def inspect_intel_continuation(
             "action": "run_intel",
             "reason": "the software/service inventory is newer than intel.json",
         }
-    try:
-        intel = read_intel_artifact(intel_path)
-    except IntelArtifactError as exc:
-        return {
-            **base,
-            "action": "run_intel",
-            "reason": f"intel.json is invalid: {exc}",
-        }
+    review_projection = load_intel_review_projection(recon_dir, resolved_target)
+    if review_projection is not None:
+        intel = review_projection
+    else:
+        try:
+            intel = read_intel_artifact(intel_path)
+        except IntelArtifactError as exc:
+            return {
+                **base,
+                "action": "run_intel",
+                "reason": f"intel.json is invalid: {exc}",
+            }
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     generated_at = _parse_utc(intel.get("generated_at"))
     if generated_at is None or (current - generated_at).total_seconds() > INTEL_REFRESH_TTL_SECONDS:
@@ -386,7 +392,15 @@ def inspect_intel_continuation(
     recommended = [item for item in gaps.get("recommended") or [] if isinstance(item, dict)]
     blocked = [item for item in gaps.get("blocked") or [] if isinstance(item, dict)]
     final_dispositions = _final_queue_dispositions(repo, resolved_target)
-    advisories = [item for item in intel.get("advisories") or [] if isinstance(item, dict)]
+    advisories = [
+        item
+        for item in (
+            (review_projection or {}).get("items")
+            if review_projection is not None
+            else intel.get("advisories") or []
+        )
+        if isinstance(item, dict)
+    ]
     stale_advisories = [
         item for item in advisories
         if advisory_is_stale(item)
@@ -427,6 +441,12 @@ def inspect_intel_continuation(
                 "severity": selected.get("severity", "UNKNOWN"),
                 "score_hint": selected.get("score_hint", 0),
                 "source_refs": list(selected.get("source_refs") or [])[:5],
+            },
+            "review_projection": {
+                "available": review_projection is not None,
+                "path": str(recon_dir / "intel-review.json"),
+                "group_count": int((review_projection or {}).get("group_count", 0) or 0),
+                "advisory_count": int((review_projection or {}).get("advisory_count", len(advisories)) or 0),
             },
         }
     if stale_advisories:
