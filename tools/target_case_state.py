@@ -65,6 +65,7 @@ RUNNER_CONTRACTS = {
     "authz-public-exposure": ("endpoint",),
     "authz-role-replay": ("endpoint", "owner_actor", "peer_actor"),
     "sqli-result-diff": ("endpoint", "param", "variant_value"),
+    "request-diff": ("request_spec_ref", "active_dimension", "classifier"),
     "marker-replay": ("endpoint", "expect_marker"),
     "idor-actor-pair": ("endpoint", "owner_actor", "peer_actor"),
 }
@@ -522,6 +523,9 @@ def add_backlog(
     baseline_value: str = "",
     variant_value: str = "",
     expect_marker: str = "",
+    request_spec_ref: str = "",
+    active_dimension: str = "",
+    classifier: str = "",
     method: str = "GET",
     status: str = "pending",
     backlog_id: str = "",
@@ -562,6 +566,9 @@ def add_backlog(
             "baseline_value": str(baseline_value or ""),
             "variant_value": str(variant_value or ""),
             "expect_marker": str(expect_marker or ""),
+            "request_spec_ref": str(request_spec_ref or ""),
+            "active_dimension": str(active_dimension or ""),
+            "classifier": str(classifier or ""),
             "method": str(method or "GET").upper(),
             "created_at": now_utc(),
         }
@@ -719,6 +726,8 @@ def _build_generic_command(target: str, item: dict[str, Any], details: dict[str,
         ])
         if str(item.get("baseline_value") or ""):
             parts.extend(["--baseline-value", item.get("baseline_value")])
+    elif runner == "request-diff":
+        parts.extend(["--request-spec", item.get("request_spec_ref") or ""])
     elif runner == "marker-replay":
         parts.extend(["--expect-marker", item.get("expect_marker") or ""])
     return " ".join(_quote(part) for part in parts if part != "")
@@ -1108,6 +1117,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--baseline-value", default="")
     p.add_argument("--variant-value", default="")
     p.add_argument("--expect-marker", default="")
+    p.add_argument("--request-spec-ref", default="")
+    p.add_argument("--active-dimension", default="")
+    p.add_argument("--classifier", default="")
     p.add_argument("--method", default="GET")
     p.add_argument("--status", default="pending")
     p.add_argument("--hypothesis-id", default="")
@@ -1200,6 +1212,9 @@ def _run_command(argv: list[str] | None = None) -> int:
             baseline_value=args.baseline_value,
             variant_value=args.variant_value,
             expect_marker=args.expect_marker,
+            request_spec_ref=args.request_spec_ref,
+            active_dimension=args.active_dimension,
+            classifier=args.classifier,
             method=args.method,
             status=args.status,
             hypothesis_id=args.hypothesis_id,

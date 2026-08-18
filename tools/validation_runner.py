@@ -5,6 +5,7 @@ Validation Runner v1 intentionally stays small:
 
 - authz-public-exposure: one anonymous/read-only request, sensitive exposure check.
 - authz-role-replay: anonymous/owner/peer replay on the same surface from case_state.
+- request-diff: AI-supplied exact baseline/variant replay across one input dimension.
 - sqli-result-diff: baseline vs single-variable perturbation, structural diff.
 - marker-replay: exact request replay plus inert marker evidence check.
 - idor-actor-pair: owner vs peer exact replay plus response diff and evidence gate.
@@ -60,6 +61,7 @@ try:
         public_exposure_markers as shared_public_exposure_markers,
     )
     from tools.response_diff import diff_responses, snapshot_response
+    from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
     from tools.browser_surface import public_url_shape
     from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
     from tools.target_case_state import complete_backlog, load_case_state
@@ -92,6 +94,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         public_exposure_markers as shared_public_exposure_markers,
     )
     from response_diff import diff_responses, snapshot_response  # type: ignore
+    from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
     from target_case_state import complete_backlog, load_case_state  # type: ignore
@@ -138,6 +141,21 @@ LANE_TO_VULN_CLASS = {
     "marker_replay": "RCE",
     "idor_actor_pair": "IDOR",
 }
+
+
+def _request_body_text(body: Any, headers: dict[str, str]) -> str:
+    """Serialize a text/JSON body without inventing an input value."""
+    if body in (None, ""):
+        return ""
+    if isinstance(body, str):
+        return body
+    content_type = next(
+        (value for key, value in headers.items() if key.lower() == "content-type"),
+        "",
+    ).lower()
+    if "application/x-www-form-urlencoded" in content_type and isinstance(body, dict):
+        return urllib.parse.urlencode(body, doseq=True)
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":"))
 
 
 def _dedupe_keep_order(items: list[str]) -> list[str]:
@@ -1366,7 +1384,7 @@ def request_once(
     url: str,
     method: str = "GET",
     headers: dict[str, str] | None = None,
-    body: str = "",
+    body: Any = "",
     timeout: int = 10,
     max_body_bytes: int = MAX_RESPONSE_BYTES,
     session: AuthSession | None = None,
@@ -1378,9 +1396,10 @@ def request_once(
         raise ValueError("max_body_bytes must be positive")
     method_u = str(method or "GET").upper()
     headers = _request_headers(session, url, headers)
-    data = body.encode("utf-8") if body else None
+    body_text = _request_body_text(body, headers)
+    data = body_text.encode("utf-8") if body_text else None
     request = urllib.request.Request(url, data=data, headers=headers, method=method_u)
-    request_text = _format_request(method_u, url, headers, body)
+    request_text = _format_request(method_u, url, headers, body_text)
     redirect_handler = _TargetRedirectHandler(
         target,
         session=session,
@@ -1918,6 +1937,7 @@ def _record_ledger_if_needed(
     redline_checked: bool,
     state_changing: bool | None = None,
     identity_v2: dict[str, Any] | None = None,
+    operation_material: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if no_ledger:
         return None
@@ -1939,7 +1959,7 @@ def _record_ledger_if_needed(
         "notes": notes,
         "identity_v2": identity_v2,
     }
-    operation_id = _runner_operation_id({
+    operation_id = _runner_operation_id(operation_material or {
         "target": canonical_target_value(target),
         "endpoint": public_url_shape(endpoint),
         "method": str(method or "GET").upper(),
@@ -2669,6 +2689,315 @@ def run_authz_role_replay(
     return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
+def _merge_request_headers(request: dict[str, Any], extra: dict[str, str] | None) -> dict[str, str]:
+    headers = {str(key): str(value) for key, value in (request.get("headers") or {}).items()}
+    for key, value in (extra or {}).items():
+        existing = next((name for name in headers if name.lower() == key.lower()), None)
+        if existing is not None:
+            del headers[existing]
+        headers[str(key)] = str(value)
+    return headers
+
+
+def _classifier_vuln_class(classifier: str, explicit: str = "") -> str:
+    aliases = {"nosqli": "SQLi", "ssti": "RCE", "command-injection": "RCE", "lfi": "Path"}
+    if explicit:
+        return aliases.get(str(explicit).strip().lower(), explicit)
+    return {
+        "sqli": "SQLi",
+        "nosqli": "SQLi",
+        "idor": "IDOR",
+        "authz": "Authz",
+        "ssrf": "SSRF",
+        "xxe": "XXE",
+        "xss": "XSS",
+        "ssti": "SSTI",
+        "rce": "RCE",
+    }.get(str(classifier or "").lower(), "")
+
+
+LEDGER_VULN_CLASSES = {
+    "IDOR", "SSRF", "XSS", "Race", "Authz", "GraphQL", "OAuth", "Upload",
+    "Webhook", "JWT", "SQLi", "XXE", "RCE", "Path", "CSRF", "Workflow",
+}
+
+
+def _request_pair_materiality(run: dict[str, Any]) -> bool:
+    changed = run.get("diff", {}).get("changed", {})
+    return bool(
+        changed.get("json_count")
+        or changed.get("status")
+        or changed.get("json_fields")
+        or abs(int(run.get("diff", {}).get("body_length", {}).get("delta", 0) or 0)) > 20
+    )
+
+
+def _request_pair_spec_view(spec: dict[str, Any]) -> dict[str, Any]:
+    def view(request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "method": request["method"],
+            "url": public_url_shape(request["url"]),
+            "header_names": sorted(str(key).lower() for key in request.get("headers", {})),
+        }
+
+    return {
+        "baseline": view(spec["baseline_request"]),
+        "variant": view(spec["variant_request"]),
+        "active_dimension": spec["active_dimension"],
+        "evidence_shape": spec["evidence_shape"],
+        "classifier": spec["classifier"],
+        "vuln_class": _classifier_vuln_class(spec["classifier"], spec.get("vuln_class", "")),
+        "expected_signal": spec.get("expected_signal", ""),
+    }
+
+
+def _request_pair_active_value(spec: dict[str, Any], request: dict[str, Any]) -> str:
+    dimension = str(spec.get("active_dimension") or "")
+    if dimension.startswith("query:"):
+        name = dimension[6:].strip()
+        values = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(request["url"]).query,
+            keep_blank_values=True,
+        ).get(name, [""])
+        return str(values[0] if values else "")
+    if dimension.startswith("cookie:"):
+        name = dimension[7:].strip()
+        cookie_header = next((str(value) for key, value in request.get("headers", {}).items() if key.lower() == "cookie"), "")
+        return next((value.strip() for item in cookie_header.split(";") if "=" in item for key, value in [item.split("=", 1)] if key.strip() == name), "")
+    if dimension.startswith("header:"):
+        name = dimension[7:].strip().lower()
+        return next((str(value) for key, value in request.get("headers", {}).items() if key.lower() == name), "")
+    if dimension.startswith("path:"):
+        return urllib.parse.urlsplit(request["url"]).path
+    return _request_body_text(request.get("body", ""), request.get("headers", {}))
+
+
+def run_request_diff(
+    *,
+    repo_root: Path,
+    target: str,
+    request_spec: dict[str, Any],
+    timeout: int = 10,
+    finding_id: str = "",
+    repeat: int | None = None,
+    no_ledger: bool = False,
+    browser_observed: bool = False,
+    state_changing: bool | None = None,
+    redline_checked: bool = False,
+    identity_v2: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    session: AuthSession | None = None,
+    lane: str = "request_diff",
+    source: str = "validation-runner:request-diff",
+) -> dict[str, Any]:
+    """Replay an AI-selected exact pair and persist shared diff evidence."""
+    try:
+        spec = validate_request_pair(request_spec)
+    except RequestPairError as exc:
+        if not str(exc).startswith("manual_required:"):
+            raise
+        finding_id = finding_id or "request-diff-manual"
+        bundle = _bundle_dir(repo_root, target, finding_id)
+        summary = {
+            "schema_version": SCHEMA_VERSION,
+            "lane": lane,
+            "target": canonical_target_value(target),
+            "finding_id": finding_id,
+            "result": "manual_required",
+            "candidate_ready": False,
+            "manual_required": str(exc),
+            "evidence_shape": "request_diff",
+            "classifier": str(request_spec.get("classifier") or "generic") if isinstance(request_spec, dict) else "generic",
+            "ai_next": {
+                "hypothesis": "request requires a sender that preserves its wire representation",
+                "next_action": "Use a reviewed sender or browser/manual replay and retain raw evidence.",
+                "stop_condition": "Do not mark unsupported wire input as tested_clean.",
+            },
+        }
+        return _finalize_runner_summary(summary, bundle / "summary.json", repo_root)
+
+    baseline = spec["baseline_request"]
+    variant = spec["variant_request"]
+    effective_state = _validate_request_facts(state_changing, redline_checked, baseline["method"])
+    _validate_request_facts(state_changing, redline_checked, variant["method"])
+    if not url_belongs_to_target(baseline["url"], target) or not url_belongs_to_target(variant["url"], target):
+        raise ValueError("request pair contains an off-target URL")
+    finding_id = finding_id or _default_finding_id(lane, baseline["url"])
+    bundle = _bundle_dir(repo_root, target, finding_id)
+    private_bundle = _private_bundle_dir(repo_root, target, bundle)
+    pair_digest = request_pair_digest(spec)
+    header_overlay_digest = hashlib.sha256(
+        json.dumps(headers or {}, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest() if headers else ""
+    auth_session_id = session.session_id() if session is not None else ""
+    write_private_json(private_bundle / "inputs.json", spec)
+    repeat_count = max(1, int(repeat if repeat is not None else spec["repeat"]))
+    runs: list[dict[str, Any]] = []
+    for idx in range(1, repeat_count + 1):
+        base_headers = _merge_request_headers(baseline, headers)
+        variant_headers = _merge_request_headers(variant, headers)
+        base = request_once(
+            target=target,
+            url=baseline["url"],
+            method=baseline["method"],
+            headers=base_headers,
+            body=baseline["body"],
+            timeout=timeout,
+            session=session,
+        )
+        variant_response = request_once(
+            target=target,
+            url=variant["url"],
+            method=variant["method"],
+            headers=variant_headers,
+            body=variant["body"],
+            timeout=timeout,
+            session=session,
+        )
+        prefix = "" if repeat_count == 1 else f"{idx}."
+        base_artifacts = _write_raw_http(private_bundle, f"{prefix}baseline.", base, repo_root)
+        variant_artifacts = _write_raw_http(private_bundle, f"{prefix}variant.", variant_response, repo_root)
+        diff = _response_diff(base, variant_response)
+        run: dict[str, Any] = {
+            "iteration": idx,
+            "baseline_url": public_url_shape(baseline["url"]),
+            "variant_url": public_url_shape(variant["url"]),
+            "active_dimension": spec["active_dimension"],
+            "artifacts": {
+                "baseline_request": base_artifacts["request"],
+                "baseline_response": base_artifacts["response"],
+                "baseline_identity": base_artifacts["identity"],
+                "variant_request": variant_artifacts["request"],
+                "variant_response": variant_artifacts["response"],
+                "variant_identity": variant_artifacts["identity"],
+            },
+            **diff,
+        }
+        if spec["classifier"] == "sqli":
+            run["sqli_evidence"] = _sqli_run_evidence(
+                variant_value=_request_pair_active_value(spec, variant),
+                baseline_body=base["body"],
+                variant_body=variant_response["body"],
+                diff=diff["diff"],
+            )
+        runs.append(run)
+
+    material = [_request_pair_materiality(run) for run in runs]
+    classifier = spec["classifier"]
+    sqli_reasons = _dedupe_keep_order([
+        reason for run in runs for reason in (run.get("sqli_evidence", {}).get("reasons") or [])
+    ])
+    sqli_ambiguous = _dedupe_keep_order([
+        reason for run in runs for reason in (run.get("sqli_evidence", {}).get("ambiguous") or [])
+    ])
+    probe_shape = all(bool(run.get("sqli_evidence", {}).get("features")) for run in runs) if classifier == "sqli" else None
+    strong = all(bool(run.get("sqli_evidence", {}).get("strong")) for run in runs) if classifier == "sqli" else False
+    candidate_ready = bool(classifier == "sqli" and probe_shape and all(material) and strong)
+    result = "tested_finding" if candidate_ready else ("candidate" if any(material) and classifier != "sqli" else "tested_clean")
+    vuln_class = _classifier_vuln_class(classifier, spec.get("vuln_class", ""))
+    diff_path = bundle / "diff.json"
+    _write_json(diff_path, {"runs": runs, "request_pair": _request_pair_spec_view(spec)})
+    diff_summaries = [str(run.get("diff", {}).get("summary") or "") for run in runs]
+    finding = {
+        "type": str(vuln_class or classifier or "request_diff").lower().replace("-", "_"),
+        "url": public_url_shape(baseline["url"]),
+        "summary": f"baseline vs variant request diff on {spec['active_dimension']}; material={all(material)}",
+        "raw": "REQUEST-DIFF-VERIFIED stable controlled replay" if candidate_ready else "controlled request diff requires review",
+        "confidence": "high" if candidate_ready else "medium",
+    }
+    rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))
+    if candidate_ready:
+        rubric["status"] = "candidate-ready"
+    elif result == "candidate":
+        rubric["status"] = "candidate"
+        rubric["ready"] = False
+        rubric["summary"] = f"{classifier}:candidate material response difference requires AI classification"
+    else:
+        rubric.update({
+            "status": "tested-clean",
+            "ready": False,
+            "score": 0,
+            "missing": ["stable_material_diff"],
+            "missing_labels": ["stable material response diff"],
+        })
+    if vuln_class in LEDGER_VULN_CLASSES:
+        ledger = _record_ledger_if_needed(
+            repo_root=repo_root,
+            no_ledger=no_ledger,
+            target=target,
+            endpoint=baseline["url"],
+            method=baseline["method"],
+            vuln_class=vuln_class,
+            actor="anonymous",
+            object_scope="none",
+            variant="replay",
+            result=result,
+            source=source,
+            evidence_ref=_rel(diff_path, repo_root),
+            notes=f"request-diff classifier={classifier}; {'; '.join(diff_summaries[:3])}",
+            browser_observed=browser_observed,
+            redline_checked=redline_checked,
+            state_changing=effective_state,
+            identity_v2=identity_v2,
+            operation_material={
+                "target": canonical_target_value(target),
+                "lane": lane,
+                "finding_id": finding_id,
+                "request_spec_sha256": pair_digest,
+                "header_overlay_sha256": header_overlay_digest,
+                "auth_session_id": auth_session_id,
+                "classifier": classifier,
+                "vuln_class": vuln_class,
+                "evidence_shape": spec["evidence_shape"],
+                "active_dimension": spec["active_dimension"],
+                "repeat": repeat_count,
+            },
+        )
+    elif no_ledger:
+        ledger = None
+    else:
+        ledger = {
+            "write_status": "skipped",
+            "reason": "request-diff classifier has no canonical Ledger family; provide vuln_class",
+        }
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "lane": lane,
+        "target": canonical_target_value(target),
+        "finding_id": finding_id,
+        "url": public_url_shape(baseline["url"]),
+        "method": baseline["method"],
+        "generated_at": now_utc(),
+        "result": result,
+        "candidate_ready": candidate_ready,
+        "state_changing": effective_state,
+        "redline_checked": redline_checked,
+        "evidence_shape": spec["evidence_shape"],
+        "classifier": classifier,
+        "vuln_class": vuln_class,
+        "active_dimension": spec["active_dimension"],
+        "expected_signal": spec["expected_signal"],
+        "request_spec_sha256": pair_digest,
+        "header_overlay_sha256": header_overlay_digest,
+        "auth_session_id": auth_session_id,
+        "request_pair": _request_pair_spec_view(spec),
+        "repeat": repeat_count,
+        "material_runs": sum(1 for item in material if item),
+        "runs": runs,
+        "artifacts": {"diff": _rel(diff_path, repo_root)},
+        "evidence_rubric": rubric,
+        "ledger_record": ledger,
+        "sqli_evidence": {"strong": bool(strong), "reasons": sqli_reasons, "ambiguous": sqli_ambiguous},
+        "ai_next": {
+            "hypothesis": f"{classifier} classifier may explain a stable response difference on {spec['active_dimension']}",
+            "next_action": "Review raw baseline/variant evidence; use /validate or a dedicated timing/OAST sender only when the signal requires it.",
+            "stop_condition": "No stable material difference across repeats, or the difference is attributable to normal application/WAF behavior.",
+        },
+    }
+    summary_path = bundle / "summary.json"
+    return _finalize_runner_summary(summary, summary_path, repo_root)
+
+
 def _replace_query_param(url: str, param: str, value: str) -> str:
     parsed = urllib.parse.urlparse(url)
     pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
@@ -2690,10 +3019,10 @@ def run_sqli_result_diff(
     *,
     repo_root: Path,
     target: str,
-    url: str,
-    param: str,
-    baseline_value: str,
-    variant_value: str,
+    url: str = "",
+    param: str = "",
+    baseline_value: str = "",
+    variant_value: str = "",
     method: str = "GET",
     headers: dict[str, str] | None = None,
     timeout: int = 10,
@@ -2703,179 +3032,79 @@ def run_sqli_result_diff(
     browser_observed: bool = False,
     identity_v2: dict[str, Any] | None = None,
     session: AuthSession | None = None,
+    request_spec: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if method.upper() != "GET":
-        raise ValueError("sqli-result-diff v1 supports GET query parameters only")
-    finding_id = finding_id or _default_finding_id("sqli-result-diff", url)
-    bundle = _bundle_dir(repo_root, target, finding_id)
-    private_bundle = _private_bundle_dir(repo_root, target, bundle)
-    repeat = max(1, int(repeat or 1))
-    baseline_url = _replace_query_param(url, param, baseline_value)
-    variant_url = _replace_query_param(url, param, variant_value)
-    write_private_json(
-        private_bundle / "inputs.json",
-        {"url": url, "param": param, "baseline_value": baseline_value, "variant_value": variant_value},
+    """Compatibility wrapper; SQLi is a classifier on the shared request diff."""
+    if request_spec is None:
+        if method.upper() != "GET":
+            raise ValueError("sqli-result-diff compatibility wrapper supports GET; use request-diff for exact POST/body pairs")
+        request_spec = {
+            "schema_version": 1,
+            "baseline_request": {"method": "GET", "url": _replace_query_param(url, param, baseline_value), "headers": headers or {}},
+            "variant_request": {"method": "GET", "url": _replace_query_param(url, param, variant_value), "headers": headers or {}},
+            "active_dimension": f"query:{param}",
+            "evidence_shape": "request_diff",
+            "classifier": "sqli",
+            "vuln_class": "SQLi",
+            "expected_signal": "stable DB/parser/boolean/union/result expansion",
+            "repeat": repeat,
+        }
+    summary = run_request_diff(
+        repo_root=repo_root,
+        target=target,
+        request_spec=request_spec,
+        timeout=timeout,
+        finding_id=finding_id,
+        repeat=repeat,
+        no_ledger=no_ledger,
+        browser_observed=browser_observed,
+        redline_checked=True,
+        identity_v2=identity_v2,
+        headers=headers,
+        session=session,
+        lane="sqli_result_diff",
+        source="validation-runner:sqli-result-diff",
     )
-    runs: list[dict[str, Any]] = []
-
-    for idx in range(1, repeat + 1):
-        base = request_once(
-            target=target,
-            url=baseline_url,
-            method=method,
-            headers=headers,
-            timeout=timeout,
-            session=session,
-        )
-        variant = request_once(
-            target=target,
-            url=variant_url,
-            method=method,
-            headers=headers,
-            timeout=timeout,
-            session=session,
-        )
-        prefix = "" if repeat == 1 else f"{idx}."
-        base_artifacts = _write_raw_http(private_bundle, f"{prefix}baseline.", base, repo_root)
-        variant_artifacts = _write_raw_http(private_bundle, f"{prefix}variant.", variant, repo_root)
-        diff = _response_diff(base, variant)
-        sqli_evidence = _sqli_run_evidence(
-            variant_value=variant_value,
-            baseline_body=base["body"],
-            variant_body=variant["body"],
-            diff=diff["diff"],
-        )
-        runs.append({
-            "iteration": idx,
-            "baseline_url": public_url_shape(baseline_url),
-            "variant_url": public_url_shape(variant_url),
-            "artifacts": {
-                "baseline_request": base_artifacts["request"],
-                "baseline_response": base_artifacts["response"],
-                "baseline_identity": base_artifacts["identity"],
-                "variant_request": variant_artifacts["request"],
-                "variant_response": variant_artifacts["response"],
-                "variant_identity": variant_artifacts["identity"],
-            },
-            **diff,
-            "sqli_evidence": sqli_evidence,
-        })
-
-    material = [
-        bool(run.get("diff", {}).get("changed", {}).get("json_count"))
-        or bool(run.get("diff", {}).get("changed", {}).get("status"))
-        or bool(run.get("diff", {}).get("changed", {}).get("json_fields"))
-        or abs(int(run.get("diff", {}).get("body_length", {}).get("delta", 0) or 0)) > 20
-        for run in runs
-    ]
-    probe_shape = looks_like_sqli_probe(variant_value)
-    strong_sqli_evidence = [bool(run.get("sqli_evidence", {}).get("strong")) for run in runs]
-    candidate_ready = probe_shape and all(material) and all(strong_sqli_evidence)
-    result = "tested_finding" if candidate_ready else "tested_clean"
-    diff_summaries = [str(run.get("diff", {}).get("summary") or "") for run in runs]
-    sqli_reasons = _dedupe_keep_order([
-        reason
-        for run in runs
-        for reason in (run.get("sqli_evidence", {}).get("reasons") or [])
-    ])
-    sqli_ambiguous = _dedupe_keep_order([
-        reason
-        for run in runs
-        for reason in (run.get("sqli_evidence", {}).get("ambiguous") or [])
-    ])
-    finding = {
-        "type": "sqli",
-        "url": public_url_shape(url),
-        "summary": (
-            f"baseline vs single-variable perturbation on {param}; "
-            f"stable differential={all(material)}; strong SQLi evidence={candidate_ready}; "
-            f"{'; '.join(diff_summaries)}"
-        ),
-        "raw": "SQLI-POC-VERIFIED read-only baseline perturbation repeat stable"
-        if candidate_ready else "read-only SQLi perturbation did not produce strong SQLi evidence",
-        "confidence": "high" if candidate_ready else "medium",
-    }
-    rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))
-    if not candidate_ready:
+    normalized = validate_request_pair(request_spec)
+    baseline_value = str(baseline_value or _request_pair_active_value(normalized, normalized["baseline_request"]))
+    active_value = _request_pair_active_value(normalized, normalized["variant_request"])
+    variant_value = str(variant_value or active_value)
+    probe_shape = looks_like_sqli_probe(active_value)
+    material = [_request_pair_materiality(run) for run in summary.get("runs", [])]
+    summary.update({
+        "redline_checked": True,
+        "param": param,
+        "baseline_value_length": len(str(baseline_value).encode("utf-8", errors="replace")),
+        "baseline_value_sha256": hashlib.sha256(str(baseline_value).encode("utf-8", errors="replace")).hexdigest(),
+        "variant_value_length": len(variant_value.encode("utf-8", errors="replace")),
+        "variant_value_sha256": hashlib.sha256(variant_value.encode("utf-8", errors="replace")).hexdigest(),
+        "probe_shape": probe_shape,
+    })
+    if summary.get("result") != "tested_finding":
         missing = ["strong_sqli_signal"]
-        missing_labels = ["DB error / boolean expansion / union-field / NoSQL operator confirmation"]
+        labels = ["DB error / boolean expansion / union-field / NoSQL operator confirmation"]
         if not probe_shape:
             missing.insert(0, "injection_shaped_probe")
-            missing_labels.insert(0, "injection-shaped probe")
+            labels.insert(0, "injection-shaped probe")
         if not all(material):
             missing.insert(0, "stable_material_diff")
-            missing_labels.insert(0, "stable material response diff")
+            labels.insert(0, "stable material response diff")
+        rubric = summary.setdefault("evidence_rubric", {})
         rubric.update({
             "status": "tested-clean",
             "ready": False,
             "score": 0,
             "missing": missing,
-            "missing_labels": missing_labels,
+            "missing_labels": labels,
             "next_actions": [
                 "Do not promote quote-only result shrinkage; require DB error, boolean true/false pair, result expansion, added fields, or a dedicated timing lane.",
             ],
             "summary": "sqli:tested-clean score=0 missing=" + ",".join(missing),
         })
-    diff_path = bundle / "diff.json"
-    _write_json(diff_path, {"runs": runs})
-    notes = (
-        f"Validation runner SQLi result diff on param={param!r}: "
-        f"{'; '.join(diff_summaries[:3])}."
-    )
-    ledger = _record_ledger_if_needed(
-        repo_root=repo_root,
-        no_ledger=no_ledger,
-        target=target,
-        endpoint=url,
-        method=method,
-        vuln_class="SQLi",
-        actor="anonymous",
-        object_scope="none",
-        variant="replay",
-        result=result,
-        source="validation-runner:sqli-result-diff",
-        evidence_ref=_rel(diff_path, repo_root),
-        notes=notes,
-        browser_observed=browser_observed,
-        redline_checked=True,
-        identity_v2=identity_v2,
-    )
-    summary = {
-        "schema_version": SCHEMA_VERSION,
-        "lane": "sqli_result_diff",
-        "target": canonical_target_value(target),
-        "finding_id": finding_id,
-        "url": public_url_shape(url),
-        "method": method.upper(),
-        "param": param,
-        "baseline_value_length": len(baseline_value.encode("utf-8", errors="replace")),
-        "baseline_value_sha256": hashlib.sha256(baseline_value.encode("utf-8", errors="replace")).hexdigest(),
-        "variant_value_length": len(variant_value.encode("utf-8", errors="replace")),
-        "variant_value_sha256": hashlib.sha256(variant_value.encode("utf-8", errors="replace")).hexdigest(),
-        "generated_at": now_utc(),
-        "result": result,
-        "candidate_ready": candidate_ready,
-        "state_changing": False,
-        "redline_checked": True,
-        "probe_shape": probe_shape,
-        "sqli_evidence": {
-            "strong": candidate_ready,
-            "reasons": sqli_reasons,
-            "ambiguous": sqli_ambiguous,
-        },
-        "repeat": repeat,
-        "runs": runs,
-        "artifacts": {"diff": _rel(diff_path, repo_root)},
-        "evidence_rubric": rubric,
-        "ledger_record": ledger,
-        "ai_next": {
-            "hypothesis": "single input perturbation changes server-side query result shape",
-            "next_action": "If diff is stable and read-only, run /validate or add one minimal DBMS/type confirmation only when needed.",
-            "stop_condition": "No stable status/count/field/length difference across repeats, or differences are attributable to WAF/router/cache noise.",
-        },
-    }
-    summary_path = bundle / "summary.json"
-    return _finalize_runner_summary(summary, summary_path, repo_root)
+    summary_path = _summary_path(summary, repo_root)
+    if summary_path is not None:
+        _write_json(summary_path, summary)
+    return summary
 
 
 def run_marker_replay(
@@ -3329,6 +3558,20 @@ def build_parser() -> argparse.ArgumentParser:
     sqli.add_argument("--browser-observed", action="store_true")
     sqli.add_argument("--no-ledger", action="store_true")
 
+    request_diff = sub.add_parser(
+        "request-diff",
+        help="Replay an AI-supplied exact baseline/variant request pair",
+    )
+    add_common(request_diff)
+    add_cli_args(request_diff)
+    request_diff.add_argument("--request-spec", required=True, help="JSON file containing schema-v1 baseline/variant requests")
+    request_diff.add_argument("--header", action="append", default=[], help="Header overlay applied to both requests")
+    request_diff.add_argument("--timeout", type=int, default=10)
+    request_diff.add_argument("--repeat", type=int, default=None)
+    request_diff.add_argument("--browser-observed", action="store_true")
+    add_request_facts(request_diff)
+    request_diff.add_argument("--no-ledger", action="store_true")
+
     marker = sub.add_parser("marker-replay", help="Replay exact request and check for an inert marker")
     add_common(marker)
     add_cli_args(marker)
@@ -3387,7 +3630,29 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--identity-v2-json must contain a valid ClosureCellKey v2: {exc}")
     repo_root = Path(args.repo_root)
     auth_session = session_from_args(args).bind_target(args.target)
-    if args.lane == "authz-public-exposure":
+    if args.lane == "request-diff":
+        try:
+            request_spec = json.loads(Path(args.request_spec).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"--request-spec must point to a JSON object: {exc}")
+        if not isinstance(request_spec, dict):
+            parser.error("--request-spec must contain a JSON object")
+        summary = run_request_diff(
+            repo_root=repo_root,
+            target=args.target,
+            request_spec=request_spec,
+            timeout=args.timeout,
+            finding_id=args.finding_id,
+            repeat=args.repeat,
+            no_ledger=args.no_ledger,
+            browser_observed=args.browser_observed,
+            state_changing=args.state_changing,
+            redline_checked=args.redline_checked,
+            identity_v2=identity_v2,
+            headers=parse_headers(args.header),
+            session=auth_session,
+        )
+    elif args.lane == "authz-public-exposure":
         summary = run_authz_public_exposure(
             repo_root=repo_root,
             target=args.target,

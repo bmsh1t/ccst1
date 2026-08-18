@@ -482,6 +482,23 @@ def test_sqli_runner_requires_parameter_and_variant_and_builds_command(tmp_path)
     assert command[command.index("--variant-value") + 1] == "'"
 
 
+def test_request_diff_runner_uses_spec_reference_without_copying_request_values(tmp_path):
+    target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="request-diff",
+        request_spec_ref="evidence/target.test/request-pair.json",
+        active_dimension="body:/filter/name",
+        classifier="sqli",
+        method="POST",
+        priority="high",
+    )
+    item = target_case_state.next_action(tmp_path, TARGET)
+    assert item["ready"] is True
+    assert "--request-spec evidence/target.test/request-pair.json" in item["command"]
+    assert "PAYLOAD" not in json.dumps(item)
+
+
 def test_retired_payment_race_runner_fails_closed(tmp_path):
     target_case_state.add_backlog(
         tmp_path,

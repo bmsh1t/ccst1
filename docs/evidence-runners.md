@@ -23,9 +23,49 @@ python3 tools/validation_runner.py authz-public-exposure \
   --browser-observed
 ```
 
+### Request diff (shared evidence primitive)
+
+Claude chooses the exact baseline/variant pair and one active input dimension;
+the runner only validates scope/auth facts, replays both requests, stores raw
+evidence privately, and writes the existing Ledger/Finding/Queue projections.
+`classifier` is a signal label, not a fixed input generator. Query, form, JSON,
+XML/text, header/cookie, and path pairs can use the same contract. Unsupported
+multipart, compressed, protobuf, and gRPC wire bodies return `manual_required`
+without being marked clean. Use a canonical `vuln_class` when the pair must
+close a Ledger family; an unclassified pair remains reviewable evidence.
+
+```json
+{
+  "schema_version": 1,
+  "baseline_request": {
+    "method": "POST",
+    "url": "https://TARGET/api/search",
+    "headers": {"Content-Type": "application/json"},
+    "body": {"filter": {"name": "SAMPLE"}}
+  },
+  "variant_request": {
+    "method": "POST",
+    "url": "https://TARGET/api/search",
+    "headers": {"Content-Type": "application/json"},
+    "body": {"filter": {"name": "PAYLOAD"}}
+  },
+  "active_dimension": "body:/filter/name",
+  "evidence_shape": "request_diff",
+  "classifier": "sqli",
+  "expected_signal": "CHECK_FN",
+  "repeat": 2
+}
+```
+
+```bash
+python3 tools/validation_runner.py request-diff \
+  --target TARGET --request-spec REQUEST_SPEC.json --repeat 2
+```
+
 ### SQLi / NoSQLi result diff
 
-用于只读 baseline vs 单变量 perturbation。不要把 quote-only shrinkage 当发现；需要稳定 DB/parser/boolean/union/result-expansion 等强信号。
+旧命令仍保留，作为 `request-diff` 的 SQLi 兼容 wrapper。不要把 quote-only
+shrinkage 当发现；需要稳定 DB/parser/boolean/union/result-expansion 等强信号。
 
 ```bash
 python3 tools/validation_runner.py sqli-result-diff \

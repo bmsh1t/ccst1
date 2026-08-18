@@ -1537,6 +1537,99 @@ def test_sqli_result_diff_quote_only_result_shrink_is_not_finding(monkeypatch, t
     assert "strong_sqli_signal" in summary["evidence_rubric"]["missing"]
 
 
+def test_request_diff_replays_post_json_with_sql_classifier(monkeypatch, tmp_path):
+    def fake_request_once(**kwargs):
+        body = kwargs["body"]
+        name = body["filter"]["name"] if isinstance(body, dict) else ""
+        count = 3 if "select" in name.lower() or "or" in name.lower() else 1
+        return _fake_response(kwargs["url"], body=json.dumps({"data": [{"id": index} for index in range(count)]}))
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec={
+            "schema_version": 1,
+            "baseline_request": {
+                "method": "POST",
+                "url": "https://target.test/api/search",
+                "headers": {"Content-Type": "application/json"},
+                "body": {"filter": {"name": "SAMPLE"}},
+            },
+            "variant_request": {
+                "method": "POST",
+                "url": "https://target.test/api/search",
+                "headers": {"Content-Type": "application/json"},
+                "body": {"filter": {"name": "' OR 1=1 --"}},
+            },
+            "active_dimension": "body:/filter/name",
+            "evidence_shape": "request_diff",
+            "classifier": "sqli",
+            "vuln_class": "SQLi",
+            "repeat": 2,
+        },
+        finding_id="SQLI-POST-JSON",
+        repeat=2,
+    )
+
+    assert summary["method"] == "POST"
+    assert summary["active_dimension"] == "body:/filter/name"
+    assert summary["evidence_shape"] == "request_diff"
+    assert summary["classifier"] == "sqli"
+    assert summary["result"] == "tested_finding"
+    assert summary["ledger_record"]["write_status"] in {"written", "deduplicated", "updated"}
+    assert all(run["method"] if "method" in run else True for run in summary["runs"])
+
+
+def test_request_diff_marks_multipart_manual_required_without_request(monkeypatch, tmp_path):
+    def fail_request(**kwargs):
+        raise AssertionError("unsupported wire body must not be sent")
+
+    monkeypatch.setattr(validation_runner, "request_once", fail_request)
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec={
+            "baseline_request": {
+                "method": "POST",
+                "url": "https://target.test/upload",
+                "headers": {"Content-Type": "multipart/form-data"},
+                "body": "binary",
+            },
+            "variant_request": {
+                "method": "POST",
+                "url": "https://target.test/upload",
+                "headers": {"Content-Type": "multipart/form-data"},
+                "body": "other",
+            },
+            "active_dimension": "body:/file",
+        },
+        finding_id="UPLOAD-MANUAL",
+    )
+
+    assert summary["result"] == "manual_required"
+    assert "multipart" in summary["manual_required"]
+
+
+def test_request_diff_replay_keeps_operation_id_and_one_ledger_event(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body='{"data":[{"id":1},{"id":2}]}'),
+    )
+    spec = {
+        "baseline_request": {"method": "POST", "url": "https://target.test/api/search", "body": {"q": "SAMPLE"}},
+        "variant_request": {"method": "POST", "url": "https://target.test/api/search", "body": {"q": "PAYLOAD"}},
+        "active_dimension": "body:/q",
+        "classifier": "sqli",
+    }
+    first = validation_runner.run_request_diff(repo_root=tmp_path, target="https://target.test", request_spec=spec, finding_id="PAIR-IDEMPOTENT")
+    second = validation_runner.run_request_diff(repo_root=tmp_path, target="https://target.test", request_spec=spec, finding_id="PAIR-IDEMPOTENT")
+    ledger = tmp_path / "memory" / "evidence" / _target_key("https://target.test") / "ledger.jsonl"
+    assert first["operation_id"] == second["operation_id"]
+    assert len(ledger.read_text(encoding="utf-8").splitlines()) == 1
+
+
 def test_marker_replay_creates_bundle_and_ledger(monkeypatch, tmp_path):
     monkeypatch.setattr(
         validation_runner,

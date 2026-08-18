@@ -448,6 +448,8 @@ score =
 
 ```text
 authz-public-exposure
+authz-role-replay
+request-diff
 sqli-result-diff
 marker-replay
 idor-actor-pair

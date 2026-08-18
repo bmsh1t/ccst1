@@ -26,6 +26,9 @@ actions. Ordinary Card changes do not require a new lane.
 - `review_validation_candidate`, `complete_report_draft`, `run_intel`, `collect_web_intel`, `test_advisory_applicability`, `review_intel_group`, and `recon_no_live_hosts` retain their owner-defined stop/write-back semantics.
 - If `state.root_claim_next` exists, run `/checkpoint` so `finding_index` creates the canonical candidate and queue action, refresh, then use the canonical ID.
 - Matching deterministic replay follows `docs/evidence-runners.md` and `python3 tools/validation_runner.py <lane> --target <target_shell> ...`; its first positional argument is `<lane>` and it never accepts `--decision-json`.
+- `request-diff` is the shared request-pair primitive. AI supplies the exact
+  baseline/variant and `active_dimension`; SQLi/NoSQLi/etc. are classifiers, not
+  separate fixed-input lanes. Unsupported wire formats remain `manual_required`.
 - For a readable text list or schema-v1 JSON Scope manifest, run batch recon only for `run_batch_recon`; never scan the list/manifest file itself. Stop on `invalid_batch_target` or `batch_failed`. For one completed `in_scope` asset, run `python3 tools/autopilot_continuation.py create --parent-target <scope_ref> --selected-target <domain> [--auth-file <auth_file_shell>]`, then invoke `/autopilot <domain> --context-file=<returned-path>`; bootstrap validates the parent `scope_ref/scope_hash` before target I/O. Unlisted discovery remains context/review, and `out_of_scope` always wins.
 
 ## Recon And Surface

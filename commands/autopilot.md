@@ -42,6 +42,11 @@ inherits this command's Scope/Auth, evidence, checkpoint, Action Queue, loop-gua
 contracts.
 Before active hunting begins, load `rules/hunting.md` for its canonical hunting
 semantics. The default context pack intentionally does not load this rule.
+Tool discovery stays in `docs/tool-index.md`; concrete evidence may select
+`tools/dns_expand.py --reason`, `tools/deep_js_packer.py`,
+`tools/disclosure_search.py`, or `tools/sibling_generator.py` without loading
+their full documentation here; host count alone is not a trigger, JS volume
+alone is not a trigger, and partial/unavailable tool output remains open.
 ## State Consumption Loop
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT

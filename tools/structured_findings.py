@@ -95,6 +95,11 @@ def _compact_runner_summary(payload: dict, path: Path, repo_root: Path) -> dict:
     return {
         "id": str(payload.get("finding_id") or path.parent.name or "").strip(),
         "lane": str(payload.get("lane") or "").strip(),
+        "evidence_shape": str(payload.get("evidence_shape") or "").strip(),
+        "classifier": str(payload.get("classifier") or "").strip(),
+        "vuln_class": str(payload.get("vuln_class") or "").strip(),
+        "active_dimension": str(payload.get("active_dimension") or "").strip(),
+        "request_spec_sha256": str(payload.get("request_spec_sha256") or "").strip(),
         "result": str(payload.get("result") or "").strip(),
         "candidate_ready": bool(payload.get("candidate_ready")),
         "url": str(payload.get("url") or "").strip(),
@@ -142,8 +147,14 @@ def _url_path_only(value: str) -> str:
     return _url_path_query(value).split("?", 1)[0]
 
 
-def _runner_lane_type(lane: str) -> str:
+def _runner_lane_type(lane: str, explicit_vuln_class: str = "") -> str:
     """Map runner lane names to structured finding type families."""
+    explicit = str(explicit_vuln_class or "").strip().lower().replace("-", "_")
+    if explicit:
+        return {
+            "authz": "auth_bypass",
+            "authorization": "auth_bypass",
+        }.get(explicit, explicit)
     lane_l = str(lane or "").strip().lower()
     if lane_l.startswith("authz_"):
         return "auth_bypass"
@@ -158,8 +169,10 @@ def _runner_lane_type(lane: str) -> str:
     return ""
 
 
-def _runner_lane_vuln_class(lane: str) -> str:
+def _runner_lane_vuln_class(lane: str, explicit_vuln_class: str = "") -> str:
     """Map runner lane names to evidence-ledger vulnerability classes."""
+    if explicit_vuln_class:
+        return str(explicit_vuln_class).strip().lower()
     lane_l = str(lane or "").strip().lower()
     if lane_l.startswith("authz_"):
         return "authz"
@@ -293,7 +306,10 @@ def _runner_candidate_is_finalized(compact: dict, finalized: dict[str, set]) -> 
     if summary_path and summary_path in finalized.get("artifacts", set()):
         return True
 
-    lane_type = _runner_lane_type(str(compact.get("lane") or ""))
+    lane_type = _runner_lane_type(
+        str(compact.get("lane") or ""),
+        str(compact.get("vuln_class") or ""),
+    )
     path_query = _url_path_query(str(compact.get("url") or ""))
     return bool(lane_type and path_query and (path_query, lane_type) in finalized.get("url_types", set()))
 
@@ -301,7 +317,10 @@ def _runner_candidate_is_finalized(compact: dict, finalized: dict[str, set]) -> 
 def _runner_candidate_is_closed_by_ledger(compact: dict, closed: set[tuple[str, str, str]]) -> bool:
     method = str(compact.get("method") or "GET").strip().upper() or "GET"
     endpoint = _url_path_only(str(compact.get("url") or ""))
-    vuln = _runner_lane_vuln_class(str(compact.get("lane") or ""))
+    vuln = _runner_lane_vuln_class(
+        str(compact.get("lane") or ""),
+        str(compact.get("vuln_class") or ""),
+    )
     return bool(method and endpoint and vuln and (method, endpoint, vuln) in closed)
 
 
