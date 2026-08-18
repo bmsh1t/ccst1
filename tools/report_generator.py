@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -37,6 +38,34 @@ except ImportError:  # pragma: no cover - package import path
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
+
+
+def _write_text_atomic(path: str | Path, content: str) -> None:
+    """Replace one report index file without exposing a partial document."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(destination.parent),
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(destination)
+    except Exception:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+        raise
 
 
 def _report_action_matches(action, finding, report_file):
@@ -1346,24 +1375,38 @@ def write_report_index(report_dir, target_name, total_reports, report_index):
         report_index.sort(key=lambda x: severity_order.get(x["severity"], 5))
 
         index_file = os.path.join(report_dir, "INDEX.json")
-        with open(index_file, "w") as f:
-            json.dump({
-                "target": target_name,
-                "generated_at": datetime.now().isoformat(),
-                "total_reports": total_reports,
-                "reports": report_index
-            }, f, indent=2)
+        _write_text_atomic(
+            index_file,
+            json.dumps(
+                {
+                    "target": target_name,
+                    "generated_at": datetime.now().isoformat(),
+                    "total_reports": total_reports,
+                    "reports": report_index,
+                },
+                indent=2,
+            )
+            + "\n",
+        )
 
         # Also generate a summary markdown
         summary_file = os.path.join(report_dir, "SUMMARY.md")
-        with open(summary_file, "w") as f:
-            f.write(f"# Bug Bounty Report Summary — {target_name}\n\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-            f.write(f"Total findings: {total_reports}\n\n")
-            f.write("| # | Severity | Type | Title | URL |\n")
-            f.write("|---|----------|------|-------|-----|\n")
-            for r in report_index:
-                f.write(f"| {r['id']} | {r['severity'].upper()} | {r['type']} | {r['title'][:50]} | {r['url'][:60]} |\n")
+        summary_lines = [
+            f"# Bug Bounty Report Summary — {target_name}\n",
+            "\n",
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
+            "\n",
+            f"Total findings: {total_reports}\n",
+            "\n",
+            "| # | Severity | Type | Title | URL |\n",
+            "|---|----------|------|-------|-----|\n",
+        ]
+        summary_lines.extend(
+            f"| {r['id']} | {r['severity'].upper()} | {r['type']} | "
+            f"{r['title'][:50]} | {r['url'][:60]} |\n"
+            for r in report_index
+        )
+        _write_text_atomic(summary_file, "".join(summary_lines))
 
     return total_reports, report_index
 

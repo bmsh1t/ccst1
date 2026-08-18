@@ -1676,7 +1676,7 @@ def test_explicit_xss_focus_without_recon_routes_to_xss_card(tmp_path):
     assert pack["selected_skill"] == "skills/web2-vuln-classes/SKILL.md"
     assert pack["knowledge_cards"] == ["knowledge/cards/xss-client-injection.md"]
     assert any("XSS" in seed or "真实浏览器执行证据" in seed for seed in pack["hypothesis_seeds"])
-    assert "rules/playbook-router.md" in pack["required_checks"]
+    assert "rules/playbook-router.md" not in pack["required_checks"]
 
 
 def test_explicit_csp_focus_without_recon_routes_to_xss_and_browser_cards(tmp_path):
@@ -1700,7 +1700,7 @@ def test_explicit_api_testing_focus_without_recon_routes_to_api_workflow(tmp_pat
         "knowledge/cards/api-idor.md",
     ]
     assert any("API testing" in seed or "endpoint+method+auth matrix" in seed for seed in pack["hypothesis_seeds"])
-    assert "rules/playbook-router.md" in pack["required_checks"]
+    assert "rules/playbook-router.md" not in pack["required_checks"]
 
 
 def test_explicit_business_logic_focus_without_recon_routes_to_logic_card(tmp_path):
@@ -1714,7 +1714,7 @@ def test_explicit_business_logic_focus_without_recon_routes_to_logic_card(tmp_pa
     assert pack["knowledge_cards"] == ["knowledge/cards/business-logic-state-machines.md"]
     assert any("业务逻辑" in seed or "状态机 baseline" in seed for seed in pack["hypothesis_seeds"])
     assert any("业务逻辑无结果" in angle for angle in pack["alternative_angles"])
-    assert "rules/playbook-router.md" in pack["required_checks"]
+    assert "rules/playbook-router.md" not in pack["required_checks"]
 
 
 def test_explicit_password_reset_focus_without_recon_routes_to_auth_recovery_card(tmp_path):
@@ -1731,7 +1731,7 @@ def test_explicit_password_reset_focus_without_recon_routes_to_auth_recovery_car
     ]
     assert any("密码重置" in seed or "reset token" in seed for seed in pack["hypothesis_seeds"])
     assert any("认证恢复无结果" in angle for angle in pack["alternative_angles"])
-    assert "rules/playbook-router.md" in pack["required_checks"]
+    assert "rules/playbook-router.md" not in pack["required_checks"]
 
 
 def test_explicit_web_llm_focus_without_recon_routes_to_llm_card(tmp_path):

@@ -46,9 +46,11 @@ evidence action, or drop it.**
 2. **NO THEORETICAL REPORTS** -- "Can an attacker steal funds, leak PII, takeover account, or execute code RIGHT NOW?" If no, do not report it yet.
 3. **SEPARATE HUNTING FROM VALIDATION** -- preserve leads/signals during exploration; run the 7-Question Gate BEFORE writing any report
 4. **Validate before writing** -- check CHANGELOG, design docs, deployment scripts FIRST
-5. **One bug class at a time** -- go deep, don't spray
+5. **Default to one focused bug class** -- go deep, then expand when evidence,
+   coverage, or queue state requires it; do not spray without a hypothesis
 6. **Verify data isn't already public** -- check web UI in incognito before reporting API "leaks"
-7. **5-MINUTE RULE** -- if a target shows nothing after 5 min probing (all 401/403/404), MOVE ON
+7. **No-information heuristic** -- repeated 401/403/404 without route or
+   evidence change is a rotation signal, not a fixed timer
 8. **IMPACT-FIRST HUNTING** -- ask "what's the worst thing if auth was broken?" If nothing valuable, skip target
 9. **CREDENTIAL LEAKS need exploitation proof** -- finding keys isn't enough, must PROVE what they access
 10. **STOP SHALLOW RECON SPIRALS** -- don't probe 403s, don't grep for analytics keys, don't check staging domains that lead nowhere
@@ -56,7 +58,8 @@ evidence action, or drop it.**
 12. **UNDERSTAND THE TARGET DEEPLY** -- before hunting, learn the app like a real user
 13. **DON'T OVER-RELY ON AUTOMATION** -- automated scans hit WAFs, trigger rate limits, find the same bugs everyone else finds
 14. **HUNT LESS-SATURATED VULN CLASSES** -- XSS/SSRF/XXE have the most competition. Expand into: cache poisoning, Android/mobile vulns, business logic, race conditions, OAuth/OIDC chains, CI/CD pipeline attacks
-15. **ONE-HOUR RULE** -- stuck on one target for an hour with no progress? SWITCH CONTEXT
+15. **Progress heuristic** -- if the same progress fingerprint repeats and no
+   queue action or evidence changes, switch context or reopen a sibling
 16. **TWO-EYE APPROACH** -- combine systematic testing (checklist) with anomaly detection (watch for unexpected behavior)
 17. **T-SHAPED KNOWLEDGE** -- go DEEP in one area and BROAD across everything else
 
@@ -511,7 +514,7 @@ HIGHEST PRIORITY (crown jewel x easiest entry):
 - GET /api/export returns 200 even when session cookie is missing
 - Response time: POST /api/check-user -> 150ms (exists) vs 8ms (doesn't)
 
-## Rabbit Holes (time-boxed, max 15 min each)
+## Rabbit Holes (stop on repeated no-information)
 - [ ] 10 min: JWT kid injection on auth endpoint
 
 ## Confirmed Bugs
@@ -1051,7 +1054,7 @@ Read your report as if you're a tired triager at 5pm on a Friday. Does it pass?
 [ ] I have evidence (screenshot, response, video)
 ```
 
-### Gate 1: Impact Validation (2 minutes)
+### Gate 1: Impact Validation (suggested attention budget)
 ```
 [ ] I can answer: "What can an attacker DO that they couldn't before?"
 [ ] The answer is more than "see non-sensitive data"
@@ -1059,7 +1062,7 @@ Read your report as if you're a tired triager at 5pm on a Friday. Does it pass?
 [ ] I'm not relying on the user doing something unlikely
 ```
 
-### Gate 2: Deduplication Check (5 minutes)
+### Gate 2: Deduplication Check (suggested attention budget)
 ```
 [ ] Searched HackerOne Hacktivity for this program + similar bug title
 [ ] Searched GitHub issues for target repo
@@ -1067,7 +1070,7 @@ Read your report as if you're a tired triager at 5pm on a Friday. Does it pass?
 [ ] This is not a "known issue" in their changelog or public docs
 ```
 
-### Gate 3: Report Quality (10 minutes)
+### Gate 3: Report Quality (suggested attention budget)
 ```
 [ ] Title: One sentence, contains vuln class + location + impact
 [ ] Steps to reproduce: Copy-pasteable HTTP request

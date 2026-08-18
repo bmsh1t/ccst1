@@ -11,7 +11,9 @@ Load these for every complex task or context pack:
 - `rules/red-lines.md` — action side-effect decisions.
 - `rules/coverage-gate.md` — coverage states and completion claims.
 
-`tools/context_pack.py::_required_checks()` owns this default list.
+`rules/context-loading.md` is loaded by the entrypoint as the assembly contract;
+`tools/context_pack.py::_required_checks()` owns the runtime execution checks
+and does not repeat the assembly rule.
 
 ## On-Demand Read
 
@@ -36,11 +38,11 @@ contract, but must not redefine it.
 | `context-loading.md` | `tools/context_pack.py` |
 | `red-lines.md` | `tools/evidence_ledger.py` |
 | `coverage-gate.md` | `tools/coverage_matrix.py` |
-| `hunting.md` | `skills/bb-methodology/SKILL.md` |
+| `hunting.md` | `rules/hunting.md` |
 | `playbook-router.md` | `tools/context_pack.py` |
 | `reporting.md` | `skills/triage-validation/SKILL.md` |
 | `retrospective.md` | `commands/retrospect.md` |
-| `tool-ai-boundary.md` | `skills/runtime-protocol.md` |
+| `tool-ai-boundary.md` | `rules/tool-ai-boundary.md` |
 | `web-intel.md` | `tools/web_intel_artifact.py` |
 
 When a contract changes, update its owner and this index in the same change.

@@ -208,10 +208,10 @@ ordering and replay strategy, but never whether a hunt may continue.
 
 ## 2. Low-Signal Rotation
 
-If a target surface shows nothing interesting after 5 minutes, treat that as
-low signal for the current timebox, not proof that the surface has no attack
-value. Deprioritize it, preserve the observed hosts/paths/notes, and record the
-evidence that would justify reopening.
+If a target surface produces no new route, differential, or evidence across
+the current bounded actions, treat it as low signal, not proof that the surface
+has no attack value. Deprioritize it, preserve the observed hosts/paths/notes,
+and record the evidence that would justify reopening.
 
 Low-signal indicators:
 - All hosts return 403 or static pages
@@ -274,9 +274,10 @@ When you confirm bug A → stop → hunt for B and C before writing the report.
 A confirmed bug = signal that the developer made a class of mistake.
 They made it elsewhere too. Finding B costs 10x less than finding A.
 
-Time-box: 20 minutes on B. If not confirmed, keep B as a chain candidate only
-when it has a concrete next evidence action, report A only if A is validated,
-and move on.
+Use a bounded evidence budget for B. If progress stops, keep B as a chain
+candidate only when it has a concrete next evidence action; report A only if A
+is validated, then rotate according to the current queue, fingerprint, and
+budget state.
 
 ### Workflow Surfaces
 
@@ -288,9 +289,10 @@ skip of the lane.
 
 ### Rotation
 
-Every 20 min ask: "Am I making progress?"
-No → rotate to next endpoint, subdomain, or vuln class.
-Fresh context finds more bugs than brute force.
+After each bounded action ask: "Did this add evidence or reduce uncertainty?"
+If the answer is no across the current progress fingerprint, rotate to the
+next endpoint, subdomain, or vuln class. Fresh context is preferred to brute
+force, but a high-information lane may continue beyond a clock heuristic.
 
 Ask for business impact before severity. Run `/validate` before report writing;
 report quality is owned by `rules/reporting.md`.

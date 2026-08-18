@@ -23,6 +23,13 @@ def test_bug_bounty_skill_routes_methodology_instead_of_duplicating_it():
     assert "# TOP 1% HACKER MINDSET" not in bug_bounty
     assert "## PART 1: MINDSET" in methodology
     assert "### Phase 0: SESSION START" in methodology
+    assert "Frame untested branches neutrally" in methodology
+    assert "State competing branches explicitly" in methodology
+    assert "next action must be sufficient to" in methodology
+    assert "make its kill condition decidable" in methodology
+    assert "Do not put an unobserved downstream consumer in a" in methodology
+    assert "leave impact open" in methodology
+    assert "evidence-ready Candidate enters validation before optional severity" in bug_bounty
 
 
 def test_triage_validation_keeps_seven_question_gate_shape():

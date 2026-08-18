@@ -105,12 +105,10 @@ CONTEXT PACK
   - memory/goals/targets/example.com.json
   - skills/runtime-protocol.md
   - skills/web2-vuln-classes/SKILL.md
-  - knowledge/index.md
 - Knowledge cards:
   - knowledge/cards/api-idor.md
   - knowledge/cards/auth-access.md
 - Required checks:
-  - rules/context-loading.md
   - rules/red-lines.md
   - rules/coverage-gate.md
 - Evidence anchors:
@@ -142,6 +140,9 @@ CONTEXT PACK
   - python3 tools/target_memory.py lead "Evidence: ... Why it matters: ... Next action: ... Stop condition: ..." --target example.com
 - AI override: Claude may choose another skill, knowledge card, or path if the evidence supports it...
 ```
+
+`knowledge/index.md` remains an on-demand catalog when the selected Card or
+recall reason is insufficient; it is not part of the default `Must read` set.
 
 ## Skill / Focus 路由
 

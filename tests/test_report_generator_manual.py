@@ -251,3 +251,41 @@ def test_legacy_incremental_reports_use_unique_ids_without_overwrite(monkeypatch
 
     assert original.read_text(encoding="utf-8") == "historical report\n"
     assert (report_dir / "sqli_002.md").is_file()
+
+
+def test_report_index_replace_failure_preserves_previous_bytes(monkeypatch, tmp_path):
+    report_dir = tmp_path / "reports" / "target.test"
+    report_dir.mkdir(parents=True)
+    index_file = report_dir / "INDEX.json"
+    summary_file = report_dir / "SUMMARY.md"
+    old_index = b'{"target":"old","reports":[]}\n'
+    old_summary = b"old summary\n"
+    index_file.write_bytes(old_index)
+    summary_file.write_bytes(old_summary)
+
+    original_replace = Path.replace
+
+    def fail_index_replace(self, destination):
+        if self.name.startswith(".INDEX.json."):
+            raise OSError("simulated interrupted replace")
+        return original_replace(self, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_index_replace)
+
+    with pytest.raises(OSError, match="simulated interrupted replace"):
+        report_generator.write_report_index(
+            str(report_dir),
+            "target.test",
+            1,
+            [{
+                "id": "xss_001",
+                "severity": "medium",
+                "type": "xss",
+                "title": "Example",
+                "url": "https://target.test/",
+            }],
+        )
+
+    assert index_file.read_bytes() == old_index
+    assert summary_file.read_bytes() == old_summary
+    assert not list(report_dir.glob(".INDEX.json.*.tmp"))

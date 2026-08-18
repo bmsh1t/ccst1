@@ -2219,15 +2219,34 @@ def _select_cards(
 
 def _required_checks(skill: str, blob: str) -> list[str]:
     checks = [
-        "rules/context-loading.md",
         "rules/red-lines.md",
         "rules/coverage-gate.md",
     ]
     if skill == "triage-validation":
         checks.append("rules/reporting.md")
+    # Router guidance is useful for parser/proxy/encoding and other boundary
+    # evidence, not for a bare vulnerability-family keyword. Cards and Skills
+    # remain responsible for ordinary family routing.
+    structural_router_signal = re.search(
+        r"\b(?:proxy|gateway|upstream|downstream|waf|encoding|decode|unicode|"
+        r"normaliz(?:e|ation)|canonical(?:ization)?|truncat(?:e|ion)|boundary|"
+        r"differential|duplicate[-_ ]?(?:key|parameter|header)|content[-_ ]?type|"
+        r"media[-_ ]?type|method[-_ ]?(?:override|swap|differential)|parser|parse|"
+        r"deseriali[sz]|request[-_ ]?smuggling|cache[-_ ]?(?:key|poison|deception)|"
+        r"multipart|oast|callback|redirect[-_ ]?uri|view[-_ ]?(?:differential|validation|"
+        r"consumption)|first[-_ ]?key|last[-_ ]?key|csp|sandbox|dangling[-_ ]?markup)\b",
+        blob,
+        re.I,
+    )
     if (
-        re.search(r"\b(jwt|oauth|graphql|api[-_ ]?testing|api[-_ ]?test|business[-_ ]?logic|logic[-_ ]?flaws?|state[-_ ]?machine|workflow[-_ ]?validation|password[-_ ]?reset|forgot[-_ ]?password|account[-_ ]?recovery|username[-_ ]?enum(?:eration)?|credential[-_ ]?attack|brute[-_ ]?force|lockout|access[-_ ]?control|method[-_ ]?based[-_ ]?access|referer[-_ ]?based[-_ ]?access|url[-_ ]?based[-_ ]?access|ssrf|upload|url[-_ ]?fetch|webhook|xxe|xml[-_ ]?parser|path[-_ ]?traversal|lfi|file[-_ ]?read|ssti|deserialization|deserialize|nosql|host[-_ ]?header|request[-_ ]?smuggling|cache[-_ ]?(?:poisoning|deception)|cors|csrf|clickjacking|open[-_ ]?redirect|cookie[-_ ]?manipulation|dom[-_ ]?clobbering|xss|csp|content[-_ ]?security[-_ ]?policy|dom[-_ ]?xss|websocket|information[-_ ]?disclosure|web[-_ ]?llm)\b", blob, re.I)
+        structural_router_signal
         or any(pattern.search(blob) for pattern in API_AUTHZ_REFINEMENT_RES)
+        or any(pattern.search(blob) for pattern in (
+            BROWSER_CLIENT_BOUNDARY_RE,
+            WEBSOCKET_REALTIME_RE,
+            ODATA_BOUNDARY_RE,
+            LDAP_XPATH_BOUNDARY_RE,
+        ))
         or _has_web_llm_agent_signal(blob)
     ):
         checks.append("rules/playbook-router.md")
@@ -3388,7 +3407,6 @@ def build_context_pack(
         goal_memory["target_path"],
         "skills/runtime-protocol.md",
         SKILL_PATHS[skill],
-        "knowledge/index.md",
         ledger_path,
     ] + cards + (["tools/aspnet_viewstate_knownkey.py"] if viewstate_signal else []) + (["tools/telerik_knownkey.py"] if telerik_dialog_signal else []) + _local_intel_paths(local_intel) + [
         str(item.get("summary_path") or "")

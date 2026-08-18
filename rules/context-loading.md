@@ -22,7 +22,6 @@
 CLAUDE.md
 memory/goals/active.json
 skills/runtime-protocol.md
-knowledge/index.md
 rules/red-lines.md
 rules/coverage-gate.md
 ```
@@ -62,6 +61,9 @@ rules/coverage-gate.md
 ## 知识库加载限制
 
 一次只加载 1-2 张知识卡。只有当当前证据继续扩展时，才加载更多。
+
+`knowledge/index.md` 是按需目录，不是每轮全文必读项；先使用
+`knowledge_card_recall`、选中 Card 和 `reference_hints`，只有召回无法解释当前证据时才读取目录。
 
 知识卡必须服务于当前 Skill，不能反过来让知识库主导任务。
 
