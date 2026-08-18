@@ -1,0 +1,40 @@
+{
+  "id": "intel-source-bounds",
+  "name": "intel-source-bounds",
+  "title": "Bound Intel source expansion without losing on-demand depth",
+  "description": "Prevent versionless product-level NVD queries from materializing an unbounded advisory universe while preserving explicit AI-driven long-tail paging and coverage-gap truthfulness.",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "tools/intel_sources.py, tools/intel_engine.py, tools/intel_artifact.py, tests, operator docs",
+  "package": "backend",
+  "priority": "P1",
+  "creator": "Codex",
+  "assignee": "Codex",
+  "createdAt": "2026-08-18",
+  "completedAt": "2026-08-18",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "2779e72",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "tools/intel_sources.py",
+    "tools/intel_engine.py",
+    "tools/intel_artifact.py",
+    "tools/intel_continuation.py",
+    "tests/test_intel_sources.py",
+    "tests/test_intel_engine.py",
+    "tests/test_intel_continuation.py",
+    "commands/intel.md",
+    "agents/autopilot.md"
+  ],
+  "notes": "No subagents. Do not delete historical Intel, backups or evidence. Do not introduce a database, event bus, new writer abstraction or broad architecture refactor.",
+  "meta": {
+    "planning_class": "complex",
+    "dispatch_mode": "inline",
+    "subagents": "disabled-by-user"
+  }
+}

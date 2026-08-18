@@ -27,3 +27,34 @@ routing and operator documentation.
 ### Status
 
 [OK] **Completed and pushed to `ccst1/main`**
+
+## Session 71: Bound Intel source expansion
+
+**Date**: 2026-08-18
+**Task**: Bound versionless NVD source expansion without losing explicit AI depth
+**Branch**: `main`
+
+### Summary
+
+Stopped default product-wide NVD expansion for generic versionless services,
+limited explicitly mapped versionless products to one representative page with
+machine-readable coverage gaps, and added cursor-bound read-only NVD paging.
+The existing Intel review sidecar and Autopilot continuation route those gaps
+without creating one Queue action per advisory. Normal Intel `--json` output is
+a bounded summary; the canonical artifact remains the owner.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2779e72` | fix: bound versionless NVD source expansion |
+
+### Testing
+
+- [OK] 563 focused Intel, Autopilot state, Checkpoint, Queue, Surface and docs tests
+- [OK] Python compilation and `git diff --check`
+- [OK] No external target request or historical artifact cleanup
+
+### Status
+
+[OK] **Completed and pushed to `ccst1/main`**
