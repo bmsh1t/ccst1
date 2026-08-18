@@ -1,4 +1,0 @@
-{"file":"../ccst/.trellis/spec/backend/contracts/runtime-autopilot.md","reason":"Verify no duplicate controller, stale resume route, or runtime wait regression."}
-{"file":"../ccst/.trellis/spec/backend/contracts/recon-surface.md","reason":"Verify bounded deep recon, partial semantics, raw evidence preservation, and scanner completion markers."}
-{"file":"../ccst/.trellis/spec/backend/contracts/lifecycle-state.md","reason":"Verify Queue/Observation/Ledger ownership, idempotency, and derived closure behavior."}
-{"file":"../ccst/.trellis/spec/backend/contracts/validation-evidence.md","reason":"Verify evidence remains reviewable and no advisory cleanup is mistaken for tested-clean."}
