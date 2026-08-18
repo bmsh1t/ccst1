@@ -1,0 +1,4 @@
+{"file":"../ccst/.trellis/spec/backend/contracts/runtime-autopilot.md","reason":"Autopilot next-action precedence, runtime markers, and single-controller continuation contract."}
+{"file":"../ccst/.trellis/spec/backend/contracts/recon-surface.md","reason":"Recon raw artifact, bounded scanner input, incomplete-run, and Intel advisory completeness contracts."}
+{"file":"../ccst/.trellis/spec/backend/contracts/lifecycle-state.md","reason":"Observation, Action Queue, Ledger, and lifecycle owner boundaries."}
+{"file":"../ccst/.trellis/spec/backend/database-guidelines.md","reason":"Atomic JSON/JSONL persistence, corruption behavior, and migration rules."}
