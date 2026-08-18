@@ -35,3 +35,16 @@ def test_mfa_observations_are_manual_review_only():
     assert 'MFA_REVIEW_FILE="$FINDINGS_DIR/manual_review/mfa_review.txt"' in scanner
     assert '>> "$MFA_REVIEW_FILE"' in scanner
     assert '>> "$FINDINGS_DIR/mfa/findings.txt"' not in scanner
+
+
+def test_nuclei_lanes_are_bounded_and_stop_after_timeout():
+    scanner = SCANNER_PATH.read_text()
+
+    assert 'NUCLEI_LANE_TIMEOUT="${BB_NUCLEI_LANE_TIMEOUT:-30}"' in scanner
+    assert '"$timeout_cmd" --preserve-status "$NUCLEI_LANE_TIMEOUT" nuclei' in scanner
+    assert '124|137|143) NUCLEI_ABORT=1' in scanner
+    assert 'if [ "$NUCLEI_ABORT" = "1" ]; then' in scanner
+    assert 'cat "$NUCLEI_TARGETS" | run_nuclei' not in scanner
+    assert '-tags exposure,file' not in scanner
+    assert '-tags panel,login' not in scanner
+    assert '-tags default-login' not in scanner

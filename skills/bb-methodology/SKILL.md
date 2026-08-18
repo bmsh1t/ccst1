@@ -395,7 +395,7 @@ Every 20 minutes ask yourself: **"Am I making progress?"**
 | Recon: URLs | `gau` + `waymore` -> `katana` -> `uro` | Archive (forgotten endpoints) -> active crawl (JS-rendered) -> deduplicate |
 | Recon: JS | `jsluice` + `mantra` + `trufflehog --only-verified` | Extract URLs/secrets -> find API keys -> verify keys actually work |
 | Recon: Ports | `naabu` (wide) -> `rustscan` (deep) | Fast top-1000 sweep -> full 65535 on interesting targets |
-| Recon: Scan | `nuclei -tags cve` -> `nuclei -tags takeover` | Known CVEs first -> then takeover (act immediately) |
+| Recon: Scan | `nuclei -tags cve` | Known CVEs first; takeover signals remain manual/subjack review |
 | Mapping: Params | `arjun` + `paramspider` + ParamMiner | Discover hidden params + mine archives + cache headers |
 | Mapping: Missing params | `context-pack missing-param` + target-material words + low-rate diff/grouping | Turn missing/null/schema/validator signals into target-specific hidden parameter candidates |
 | Mapping: Hidden auth params | `context-pack auth-hidden` + browser/source review | Find login branch switches without credential brute force |
