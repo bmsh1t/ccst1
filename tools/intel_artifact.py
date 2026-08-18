@@ -211,6 +211,23 @@ def _bounded_list(value: object, limit: int) -> list:
     return list(value)[:limit] if isinstance(value, list) else []
 
 
+def _bounded_texts(value: object, limit: int = 64) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item or "")[:240] for item in value if str(item or "").strip()][:limit]
+
+
+def _bounded_gap_items(value: object, limit: int = 8) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    fields = ("subject", "intent", "query", "component", "version", "reason")
+    return [
+        {key: str(item.get(key) or "")[:240] for key in fields if item.get(key)}
+        for item in value[:limit]
+        if isinstance(item, dict)
+    ]
+
+
 def _is_review_candidate(item: object, *, include_stale: bool = False) -> bool:
     return bool(
         isinstance(item, dict)
@@ -358,12 +375,14 @@ def build_intel_review_projection(
         },
         "intel_gaps": {
             "web_search_recommended": bool(gaps.get("web_search_recommended")),
-            "recommended": _bounded_list(gaps.get("recommended"), 8),
-            "blocked": _bounded_list(gaps.get("blocked"), 8),
+            "recommended": _bounded_gap_items(gaps.get("recommended")),
+            "blocked": _bounded_gap_items(gaps.get("blocked")),
         },
         "web_intel": {
-            key: web_intel.get(key, [] if key.endswith("subjects") else "")
-            for key in ("status", "fingerprint", "covered_subjects", "blocked_subjects")
+            "status": str(web_intel.get("status") or "")[:80],
+            "fingerprint": str(web_intel.get("fingerprint") or "")[:128],
+            "covered_subjects": _bounded_texts(web_intel.get("covered_subjects")),
+            "blocked_subjects": _bounded_texts(web_intel.get("blocked_subjects")),
         },
         "stats": {"component_count": int(stats.get("component_count", 0) or 0)},
         "owner_binding": {

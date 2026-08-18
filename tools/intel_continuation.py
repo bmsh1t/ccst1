@@ -377,14 +377,21 @@ def inspect_intel_continuation(
                 "action": "run_intel",
                 "reason": "Web Intel evidence has not been merged into intel.json",
             }
-        for field in ("status", "covered_subjects", "blocked_subjects"):
-            default = [] if field.endswith("subjects") else ""
-            if current_web.get(field, default) != web_intel.get(field, default):
-                return {
-                    **base,
-                    "action": "run_intel",
-                    "reason": "Web Intel TTL/status changed since intel.json was generated",
-                }
+        if review_projection is None:
+            for field in ("status", "covered_subjects", "blocked_subjects"):
+                default = [] if field.endswith("subjects") else ""
+                if current_web.get(field, default) != web_intel.get(field, default):
+                    return {
+                        **base,
+                        "action": "run_intel",
+                        "reason": "Web Intel TTL/status changed since intel.json was generated",
+                    }
+        elif current_web.get("status", "") != web_intel.get("status", ""):
+            return {
+                **base,
+                "action": "run_intel",
+                "reason": "Web Intel TTL/status changed since intel.json was generated",
+            }
     if int((intel.get("stats") or {}).get("component_count", 0) or 0) <= 0:
         return base
 
