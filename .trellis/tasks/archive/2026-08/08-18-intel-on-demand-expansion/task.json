@@ -1,0 +1,33 @@
+{
+  "id": "intel-on-demand-expansion",
+  "name": "intel-on-demand-expansion",
+  "title": "Enable on-demand Intel advisory expansion",
+  "description": "Keep intel-review.json bounded for default context while allowing AI to query and review every raw advisory group on demand without changing the raw owner or adding a second state owner.",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "tools/intel_artifact.py, tools/intel_continuation.py, tools/autopilot_bootstrap.py, tools/autopilot_state.py, commands/intel.md, tests",
+  "package": "backend",
+  "priority": "P1",
+  "creator": "Codex",
+  "assignee": "Codex",
+  "createdAt": "2026-08-18",
+  "completedAt": "2026-08-18",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "6a46c93",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "tools/intel_artifact.py",
+    "tools/intel_continuation.py",
+    "tools/autopilot_bootstrap.py",
+    "tools/autopilot_state.py",
+    "commands/intel.md",
+    "tests/test_intel_continuation.py"
+  ],
+  "notes": "Completed without modifying hunt.md runtime drift or unrelated dirty worktree files. Verified 413 related tests, Python compilation and git diff checks.",
+  "meta": {}
+}
