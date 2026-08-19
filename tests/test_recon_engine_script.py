@@ -268,6 +268,8 @@ def test_recon_engine_has_timeout_compat_helper():
     assert 'BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS' in text
     assert 'FFUF_EFFECTIVE_BUDGET_SECONDS="$DIR_FUZZ_HARD_BUDGET_SECONDS"' in text
     assert 'FFUF_PHASE_DEADLINE_SECONDS=$((SECONDS + FFUF_EFFECTIVE_BUDGET_SECONDS))' in text
+    assert 'elif [ "$RECON_PROFILE" = "deep" ]; then' in text
+    assert 'RECON_SOFT_BUDGET_SECONDS=3600' in text
     assert 'AMASS_ENABLED=0' in text
     assert 'env_truthy "${BBHUNT_ENABLE_AMASS:-0}"' in text
     assert '[ "$AMASS_ENABLED" -eq 1 ] || return 4' in text
