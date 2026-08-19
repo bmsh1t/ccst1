@@ -2264,9 +2264,11 @@ def _load_autopilot_control_facts(
         else inspect_recon_artifacts(repo_root, resolved_target)
     )
     dir_fuzz_rotation = load_rotation_status(repo_root, resolved_target)
-    recon_in_progress = (
-        _runtime_recon_in_progress(repo_root, resolved_target, runtime_state)
-        and not bool(recon_artifacts.get("ready"))
+    # An active phase lock wins over partial artifacts. Recon publishes files
+    # incrementally, so readiness is not a completion signal while the runner
+    # still owns the target lock.
+    recon_in_progress = _runtime_recon_in_progress(
+        repo_root, resolved_target, runtime_state
     )
     scan_in_progress = _runtime_scan_in_progress(repo_root, resolved_target, runtime_state)
     runtime_derived = _derive_current_status(

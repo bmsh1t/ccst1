@@ -3786,6 +3786,35 @@ class TestAutopilotState:
         assert orphaned["recon_in_progress"] is False
         assert orphaned["next_action"] == "run_recon"
 
+    def test_active_recon_lock_preempts_surface_when_partial_artifacts_are_ready(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://target.com [200] [Home] [Apache] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text(
+            "https://target.com/search?q=sample\n",
+            encoding="utf-8",
+        )
+        update_runtime_state(
+            repo_root,
+            "target.com",
+            mode="recon_running",
+            last_executed_workflow="run_recon_started",
+        )
+
+        with runtime_phase_lock(repo_root, "target.com", "recon"):
+            state = build_autopilot_state(
+                str(repo_root), "target.com", memory_dir=str(tmp_path / "hunt-memory")
+            )
+
+        assert state["recon_artifacts"]["ready"] is True
+        assert state["recon_in_progress"] is True
+        assert state["next_action"] == "wait_recon"
+
     def test_recon_running_marker_preempts_validation_followup(self, tmp_path):
         findings_dir = tmp_path / "findings" / "target.com"
         findings_dir.mkdir(parents=True)

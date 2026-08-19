@@ -2834,24 +2834,24 @@ PY
         JS_ANALYSIS_STATUS="ok"
         log_step "Extracting endpoints from JS files (top 50)..."
 
+        JS_RESPONSE_TMP="$RECON_DIR/js/.response.tmp"
+        : > "$RECON_DIR/js/endpoints_raw.txt"
         head -50 "$JS_REQUEST_TARGETS" | while IFS= read -r js_url; do
+            [ -n "$js_url" ] || continue
             bb_auth_args_for_url "$js_url"
-            curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
-                sed -nE 's/.*["'"'"']([a-zA-Z0-9_/.-]*(\/[a-zA-Z0-9_/.-]+)+)["'"'"'].*/\1/p' \
-                >> "$RECON_DIR/js/endpoints_raw.txt" 2>/dev/null || true
+            : > "$JS_RESPONSE_TMP"
+            curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url" -o "$JS_RESPONSE_TMP" 2>/dev/null || true
+            sed -nE 's/.*["'"'"']([a-zA-Z0-9_/.-]*(\/[a-zA-Z0-9_/.-]+)+)["'"'"'].*/\1/p' \
+                "$JS_RESPONSE_TMP" >> "$RECON_DIR/js/endpoints_raw.txt" 2>/dev/null || true
+            grep -Eio "([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)[\"'[:space:]]*[:=][\"'[:space:]]*[\"' ]?([A-Za-z0-9_./+=:-]{8,})" \
+                "$JS_RESPONSE_TMP" >> "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null || true
         done
+        rm -f "$JS_RESPONSE_TMP"
 
         if [ -f "$RECON_DIR/js/endpoints_raw.txt" ]; then
             sort -u "$RECON_DIR/js/endpoints_raw.txt" > "$RECON_DIR/js/endpoints.txt"
             log_done "JS endpoints: $(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null || echo 0)"
 
-            # Extract potential secrets from JS
-            head -50 "$JS_REQUEST_TARGETS" | while IFS= read -r js_url; do
-                bb_auth_args_for_url "$js_url"
-                curl -s "${BB_URL_AUTH_ARGS[@]}" --max-time 10 "$js_url" 2>/dev/null | \
-                    grep -oiE '([a-zA-Z0-9_-]*(api[_-]?key|apiKey|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key|secretKey|token)[a-zA-Z0-9_-]*)["'\''[:space:]]*[:=]["'\''[:space:]]*["'\'' ]?([A-Za-z0-9_./+=:-]{8,})' \
-                    >> "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null || true
-            done
             if [ -s "$RECON_DIR/js/potential_secrets.txt" ]; then
                 sort -u "$RECON_DIR/js/potential_secrets.txt" -o "$RECON_DIR/js/potential_secrets.txt"
                 log_warn "Potential secrets found in JS: $(wc -l < "$RECON_DIR/js/potential_secrets.txt")"

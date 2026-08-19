@@ -524,6 +524,11 @@ def test_recon_engine_js_secret_regex_handles_camelcase_and_spacing():
     assert "[:space:]" in text
     assert "sk_test" not in text  # 不为单一厂商/样例硬编码
     assert "potential_secrets.txt" in text
+    js_block = text.split('log_step "Extracting endpoints from JS files (top 50)..."', 1)[1].split(
+        'LINKFINDER_MAX_JS=', 1
+    )[0]
+    assert js_block.count("head -50") == 1
+    assert js_block.count("curl -s") == 1
 
 
 def test_recon_engine_supports_primary_domain_batch_and_domain_waymore():
