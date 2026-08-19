@@ -77,6 +77,8 @@ def test_round_reuses_the_bootstrap_and_canonical_controller_contract():
     assert "Do not execute its embedded bootstrap again" in normalized
     assert "run_recon" not in command
     assert "validate_finding" not in command
+    assert "`stop_invalid_scope`" in command
+    assert "`stop_invalid_context`" in command
 
 
 def test_terminal_precheck_is_state_only_and_precedes_target_work():

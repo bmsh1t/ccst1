@@ -22,7 +22,8 @@ parser is the only argument owner.
 ## Bootstrap Gate
 
 Obey bootstrap `action`. Only `continue` may proceed. For `ask_target`,
-`stop_invalid_arguments`, `stop_runtime_drift`, `stop_runtime_error`, or
+`stop_invalid_arguments`, `stop_invalid_scope`, `stop_invalid_context`,
+`stop_runtime_drift`, `stop_runtime_error`, or
 `stop_state_error`, preserve the bounded reason, apply the terminal cron
 cleanup, emit `STATUS: ERROR reason=<bounded-summary>`, and stop. Do not sync
 runtime automatically and do not perform a target action first.
