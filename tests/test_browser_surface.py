@@ -75,6 +75,42 @@ def test_browser_surface_parses_wrapped_mcp_data_envelope(tmp_path):
     ]
 
 
+def test_browser_surface_publishes_method_and_body_shape_without_values(tmp_path):
+    requests_path = tmp_path / "requests.json"
+    secret = "PRIVATE_GRAPHQL_VALUE"
+    requests_path.write_text(
+        json.dumps({
+            "requests": [{
+                "url": "https://target.local/graphql",
+                "method": "POST",
+                "resourceType": "fetch",
+                "postData": json.dumps({
+                    "query": "mutation Update($id:ID!){update(id:$id)}",
+                    "variables": {"id": secret},
+                }),
+            }]
+        }),
+        encoding="utf-8",
+    )
+
+    summary = browser_surface.write_browser_surface(
+        recon_root=tmp_path / "recon",
+        target_key="target.local",
+        requests_path=requests_path,
+    )
+
+    shapes = json.loads(
+        (tmp_path / "recon" / "target.local" / "browser" / "request_shapes.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary["counts"]["request_shapes"] == 1
+    assert shapes[0]["method"] == "POST"
+    assert shapes[0]["postData"]["body_type"] == "graphql"
+    assert "id" in shapes[0]["postData"]["graphql_variables"]
+    assert secret not in json.dumps(shapes)
+
+
 def test_browser_surface_keeps_hidden_field_names_without_values(tmp_path):
     snapshot_path = tmp_path / "page.html"
     snapshot_path.write_text(

@@ -102,7 +102,7 @@ which subfinder httpx dnsx nuclei katana waybackurls gau ffuf anew gf interactsh
 - All subdomains return 403 or static marketing pages
 - No API endpoints visible in URLs
 - No JavaScript bundles with interesting endpoint paths
-- nuclei returns 0 medium/high findings
+- The bounded scanner and dedicated probes return no new high-value leads
 - No forms, no authentication, no user data
 
 Record why the surface is low-signal and what would reopen it. Reopen quickly if
@@ -154,8 +154,10 @@ gau $TARGET --subs | anew /tmp/urls.txt
 
 echo "[+] Total URLs: $(wc -l < /tmp/urls.txt)"
 
-# Step 6: Nuclei scan
-nuclei -l /tmp/live.txt -t ~/nuclei-templates/ -severity critical,high,medium -o /tmp/nuclei.txt
+# Step 6: Optional targeted template pass
+# The normal scanner keeps Nuclei disabled unless a component/CVE justifies it;
+# use /scan-cves or the CVE lane env flag.
+BBHUNT_ENABLE_NUCLEI_CVES=1 bash tools/vuln_scanner.sh "recon/$TARGET" --quick
 ```
 
 ### AI-selected DNS expansion
@@ -220,7 +222,7 @@ mkdir -p $RECON_DIR
 /tmp/subs.txt         → $RECON_DIR/subdomains.txt
 /tmp/live.txt         → $RECON_DIR/live-hosts.txt
 /tmp/urls.txt         → $RECON_DIR/urls.txt
-/tmp/nuclei.txt       → $RECON_DIR/nuclei.txt
+# Optional Nuclei CVE output → $RECON_DIR/../findings/$TARGET/cves/
 ```
 
 ---

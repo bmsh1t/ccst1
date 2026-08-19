@@ -53,12 +53,15 @@ try:
         iter_surface_index,
         load_surface_index_status,
         surface_shape,
+        surface_request_shape,
+        surface_safe_preview,
+        surface_value_summary,
     )
     from tools.surface_projection import (
         build_surface_input_manifest,
         write_surface_projection,
     )
-    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.target_paths import compact_url, canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import ClosureResolver, canonical_endpoint_path  # type: ignore
     from coverage_matrix import load_matrix  # type: ignore
@@ -78,10 +81,11 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     )
     from recon_adapter import ReconAdapter
     from runtime_state import inspect_recon_artifacts, load_runtime_state
-    from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, surface_shape
+    from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, surface_shape, surface_request_shape, surface_safe_preview, surface_value_summary
     from surface_projection import build_surface_input_manifest, write_surface_projection
-    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from target_paths import compact_url, canonical_target_value, target_storage_key, url_belongs_to_target
 try:
+    from tools.browser_surface import public_url_shape
     from tools.high_value_signals import classify_high_value_signal, summarize_high_value_signal
     from tools.intel_artifact import advisory_is_actionable, normalize_advisory_applicability
     from tools.surface_js_intel import (
@@ -97,6 +101,7 @@ try:
         source_intel_counts,
     )
 except ImportError:  # pragma: no cover - top-level tools/ import
+    from browser_surface import public_url_shape  # type: ignore
     from high_value_signals import classify_high_value_signal, summarize_high_value_signal
     from intel_artifact import advisory_is_actionable, normalize_advisory_applicability  # type: ignore
     from surface_js_intel import (
@@ -139,6 +144,35 @@ def _read_json_object(path: Path) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _load_browser_request_shapes(recon_dir: Path) -> dict[str, list[dict]]:
+    """Load the public, value-free request metadata projection when present."""
+    path = recon_dir / "browser" / "request_shapes.json"
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, list):
+        return {}
+    result: dict[str, list[dict]] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("url") or "").strip()
+        if not key:
+            continue
+        result.setdefault(key, []).append(
+            {
+                "method": str(item.get("method") or "GET").upper(),
+                "resource_type": str(item.get("resourceType") or "").lower(),
+                "status": item.get("status", ""),
+                "body": item.get("postData") if isinstance(item.get("postData"), dict) else {},
+            }
+        )
+    return result
 
 
 def unsafe_skipped_id(line: str) -> str:
@@ -973,7 +1007,7 @@ def _add_review_item(
     url = str(item.get("url") or "").strip()
     if not url or url in seen or len(pool) >= REVIEW_POOL_LIMIT:
         return False
-    shape_id = str(surface_shape(url).get("id") or url)
+    shape_id = str(_candidate_semantic_shape(item).get("id") or url)
     if shape_counts is not None and shape_counts.get(shape_id, 0) >= 2:
         return False
     seen.add(url)
@@ -1070,6 +1104,32 @@ def _category_review_reason(item: dict, groups: tuple[str, ...]) -> str:
     if item.get("target_memory_hits"):
         return "target-memory continuation"
     return "high-value category: " + "/".join(groups[:4])
+
+
+def _candidate_semantic_shape(item: dict) -> dict:
+    """Build a semantic identity from URL plus optional observed request metadata."""
+    observed = item.get("request_shapes") if isinstance(item.get("request_shapes"), list) else []
+    if not observed:
+        return surface_shape(str(item.get("url") or ""))
+    methods = sorted({str(entry.get("method") or "GET").upper() for entry in observed if isinstance(entry, dict)})
+    content_types = set()
+    body_parameter_names = set()
+    graphql_operations = set()
+    for entry in observed:
+        if not isinstance(entry, dict):
+            continue
+        body = entry.get("body") if isinstance(entry.get("body"), dict) else {}
+        if body.get("content_type_hint"):
+            content_types.add(str(body["content_type_hint"]).lower())
+        body_parameter_names.update(str(name) for name in body.get("parameter_names") or [] if str(name))
+        graphql_operations.update(str(name) for name in body.get("graphql_operations") or [] if str(name))
+    return surface_request_shape(
+        str(item.get("url") or ""),
+        method="|".join(methods) or "GET",
+        content_type="|".join(sorted(content_types)),
+        body_parameter_names=body_parameter_names,
+        graphql_operations=graphql_operations,
+    )
 
 
 def _build_review_pool(
@@ -1560,6 +1620,7 @@ def load_surface_context(
         }
 
     hosts, status403_hosts = _read_httpx_hosts(recon_dir, target)
+    browser_request_shapes = _load_browser_request_shapes(recon_dir)
     surface_index_status = load_surface_index_status(repo_root, target)
     use_surface_index = surface_index_status.get("status") == "valid"
     # Payload-marker handling: never lose the endpoint/parameter surface during
@@ -1696,6 +1757,7 @@ def load_surface_context(
         "js_endpoints": js_endpoints,
         "browser_xhr_urls": browser_xhr_urls,
         "browser_api_urls": browser_api_urls,
+        "browser_request_shapes": browser_request_shapes,
         "surface_index": surface_index_status,
         "scanner_findings": scanner_findings,
         "ledger_entries": ledger_entries,
@@ -1784,7 +1846,7 @@ class _DiverseBoundedCandidateFrontier:
     def add(self, item: dict, sequence: int) -> None:
         self._overall.add(item, sequence)
         url = str(item.get("url") or "")
-        shape_id = str(surface_shape(url).get("id") or url)
+        shape_id = str(_candidate_semantic_shape(item).get("id") or url)
         current = self._shapes.get(shape_id)
         if current is not None:
             if self._better_representative(sequence, item, current[0], current[1]):
@@ -1896,11 +1958,105 @@ class _SurfaceCandidateFrontiers:
         ]
 
 
+def _enrich_bounded_candidates(candidates: list[dict]) -> None:
+    """Attach bounded value metadata only after the streaming frontier is selected."""
+    seen: set[str] = set()
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        item.setdefault("semantic_shape", _candidate_semantic_shape(item))
+        summary = surface_value_summary(url)
+        if summary.get("signal_count"):
+            item["value_summary"] = summary
+
+
+def _build_semantic_surface(context: dict, candidates: list[dict]) -> list[dict]:
+    """Summarize selected shapes without creating lifecycle state."""
+    groups: dict[str, dict] = {}
+    base_ids: set[str] = set()
+    for item in candidates:
+        if not isinstance(item, dict) or not str(item.get("url") or ""):
+            continue
+        semantic = item.get("semantic_shape") or _candidate_semantic_shape(item)
+        shape_id = str(semantic.get("id") or "")
+        if not shape_id:
+            continue
+        base_id = str(semantic.get("url_shape_id") or shape_id)
+        base_ids.add(base_id)
+        entry = groups.setdefault(
+            shape_id,
+            {
+                "shape_id": shape_id,
+                "url_shape_id": base_id,
+                "path_template": semantic.get("path_template", ""),
+                "parameter_names": [name for name, _count in semantic.get("parameter_multiset", [])],
+                "methods": [method for method in str(semantic.get("method") or "").split("|") if method],
+                "content_types": [value for value in str(semantic.get("content_type") or "").split("|") if value],
+                "candidate_count": 0,
+                "active_variant_count": 0,
+                "sources": set(),
+                "representatives": [],
+                "value_classes": set(),
+            },
+        )
+        entry["candidate_count"] += 1
+        entry["representatives"].append((int(item.get("score", 0) or 0), str(item.get("url") or "")))
+        for signal in (item.get("value_summary") or {}).get("signals", []):
+            entry["value_classes"].update(str(value) for value in signal.get("classes", []) if str(value))
+        for source in ("browser" if item.get("browser_observed") else "", "js" if item.get("js_intel_observed") else "", "source" if item.get("source_intel_observed") else "", "scanner" if item.get("scanner_findings") else ""):
+            if source:
+                entry["sources"].add(source)
+
+    index_status = context.get("surface_index") or {}
+    if index_status.get("status") == "valid" and base_ids:
+        index_repo = context.get("repo_root") or Path(BASE_DIR)
+        entries_by_base: dict[str, list[dict]] = {}
+        for entry in groups.values():
+            base_id = str(entry.get("url_shape_id") or "")
+            if base_id:
+                entries_by_base.setdefault(base_id, []).append(entry)
+        for row in iter_surface_index(index_repo, context["target"]):
+            base_id = str(row.get("shape_id") or "")
+            entries = entries_by_base.get(base_id)
+            if not entries:
+                continue
+            row_sources = {str(value) for value in row.get("sources", []) if str(value)}
+            for entry in entries:
+                entry["active_variant_count"] += 1
+                entry["sources"].update(row_sources)
+    else:
+        for entry in groups.values():
+            entry["active_variant_count"] = entry["candidate_count"]
+
+    storage_key = target_storage_key(context["target"])
+    raw_reference = ""
+    for suffix in ("all.txt", "all.txt.gz"):
+        candidate = Path(context.get("recon_dir") or "") / "urls" / "raw" / suffix
+        if candidate.is_file():
+            raw_reference = f"recon/{storage_key}/urls/raw/{suffix}"
+            break
+    result = []
+    for entry in groups.values():
+        representatives = sorted(entry.pop("representatives"), key=lambda value: (-value[0], value[1]))
+        entry["representative_url"] = compact_url(representatives[0][1]) if representatives else ""
+        entry["candidate_urls"] = [compact_url(url) for _score, url in representatives[:2]]
+        entry["sources"] = sorted(entry["sources"])
+        entry["value_classes"] = sorted(entry["value_classes"])
+        if raw_reference:
+            entry["raw_reference"] = raw_reference
+        result.append(entry)
+    return sorted(result, key=lambda item: (-int(item.get("candidate_count", 0)), item.get("shape_id", "")))[:REVIEW_POOL_LIMIT]
+
+
 def _iter_rankable_surface_rows(
     context: dict,
     js_intel_urls: dict[str, list[dict]],
     source_intel_urls: dict[str, list[dict]],
-) -> Iterator[tuple[str, set[str], int]]:
+) -> Iterator[tuple[str, set[str], int, bool | None]]:
     """统一 legacy list 与 exact index，保持 URL first-seen tie-breaker。"""
     index_status = context.get("surface_index") or {}
     extra_sources: dict[str, set[str]] = {}
@@ -1916,7 +2072,7 @@ def _iter_rankable_surface_rows(
         # 保留内存。
         index_repo = context.get("repo_root") or Path(BASE_DIR)
         max_sequence = -1
-        probe_rows: dict[str, tuple[int, set[str]]] = {}
+        probe_rows: dict[str, tuple[int, set[str], bool | None]] = {}
         for row in iter_surface_index(index_repo, context["target"]):
             raw_url = str(row.get("url") or "")
             sequence = int(row.get("sequence", 0) or 0)
@@ -1927,12 +2083,16 @@ def _iter_rankable_surface_rows(
             if not safe_url or safe_url == raw_url:
                 continue
             sources = {str(value) for value in (row.get("sources") or []) if str(value)}
+            target_owned = row.get("target_owned") if isinstance(row.get("target_owned"), bool) else None
             previous = probe_rows.get(safe_url)
             if previous is None:
-                probe_rows[safe_url] = (sequence, sources)
+                probe_rows[safe_url] = (sequence, sources, target_owned)
             else:
                 previous[1].update(sources)
-                probe_rows[safe_url] = (min(sequence, previous[0]), previous[1])
+                previous_target_owned = previous[2]
+                if previous_target_owned is None:
+                    previous_target_owned = target_owned
+                probe_rows[safe_url] = (min(sequence, previous[0]), previous[1], previous_target_owned)
 
         for row in iter_surface_index(index_repo, context["target"]):
             raw_url = str(row.get("url") or "")
@@ -1946,16 +2106,19 @@ def _iter_rankable_surface_rows(
                 sources.update(probe_match[1])
             if raw_url in extra_sources:
                 sources.update(extra_sources.pop(raw_url))
-            yield raw_url, sources, sequence
+            target_owned = row.get("target_owned") if isinstance(row.get("target_owned"), bool) else None
+            if probe_match is not None and target_owned is None:
+                target_owned = probe_match[2]
+            yield raw_url, sources, sequence, target_owned
 
         # Probe-shaped rows 数量通常很小；只对该子集做 safe URL 合并，避免
         # 为全部 30 万正常 URL 维护 Python seen set。
-        for safe_url, (sequence, sources) in sorted(probe_rows.items(), key=lambda item: item[1][0]):
+        for safe_url, (sequence, sources, target_owned) in sorted(probe_rows.items(), key=lambda item: item[1][0]):
             if safe_url in extra_sources:
                 sources.update(extra_sources.pop(safe_url))
-            yield safe_url, sources, sequence
+            yield safe_url, sources, sequence, target_owned
         for offset, (url, sources) in enumerate(extra_sources.items(), 1):
-            yield url, set(sources), max_sequence + offset
+            yield url, set(sources), max_sequence + offset, None
         return
 
     api_urls = list(context.get("api_urls") or [])
@@ -2004,7 +2167,7 @@ def _iter_rankable_surface_rows(
                 sources_by_url[url] = set()
             sources_by_url[url].add(source)
     for sequence, url in enumerate(ordered):
-        yield url, sources_by_url[url], sequence
+        yield url, sources_by_url[url], sequence, None
 
 
 def rank_surface(context: dict) -> dict:
@@ -2037,6 +2200,7 @@ def rank_surface(context: dict) -> dict:
         pattern_techniques.append(f"{item.get('target', '')}: {technique} [{vuln_class}]{suffix}")
 
     browser_urls = set(context.get("browser_xhr_urls", []) + context.get("browser_api_urls", []))
+    browser_request_shapes = context.get("browser_request_shapes") or {}
     api_urls = set(context.get("api_urls") or [])
     new_observations = {
         str(item.get("value") or "").strip(): item
@@ -2090,12 +2254,13 @@ def rank_surface(context: dict) -> dict:
         for url, items in source_intel_urls.items()
     }
 
-    for raw_url, source_tags, sequence in _iter_rankable_surface_rows(
+    for raw_url, source_tags, sequence, indexed_target_owned in _iter_rankable_surface_rows(
         context,
         js_intel_urls,
         source_intel_urls,
     ):
-        if not url_belongs_to_target(raw_url, context["target"]):
+        target_owned = indexed_target_owned
+        if target_owned is False or (target_owned is None and not url_belongs_to_target(raw_url, context["target"])):
             external_context_count += 1
             external_context_sample.append((sequence, raw_url))
             external_context_sample.sort(key=lambda item: item[0])
@@ -2393,10 +2558,44 @@ def rank_surface(context: dict) -> dict:
             )
             suggested = _scanner_suggestion(top_scanner_finding, suggested)
 
+        observed_request_shapes = list(
+            browser_request_shapes.get(public_url_shape(raw_url), [])
+            if isinstance(browser_request_shapes, dict)
+            else []
+        )
+        for endpoint in matching_js_intel_endpoints:
+            method = str(endpoint.get("method") or "").upper()
+            if method:
+                observed_request_shapes.append({
+                    "method": method,
+                    "resource_type": "js",
+                    "body": endpoint.get("body_shape") if isinstance(endpoint.get("body_shape"), dict) else {},
+                })
+        for hypothesis in matching_source_intel_hypotheses:
+            method = str(hypothesis.get("method") or "").upper()
+            if method:
+                observed_request_shapes.append({
+                    "method": method,
+                    "resource_type": "source",
+                    "body": hypothesis.get("body_shape") if isinstance(hypothesis.get("body_shape"), dict) else {},
+                })
+        deduped_request_shapes = []
+        seen_request_shapes = set()
+        for request_shape in observed_request_shapes:
+            if not isinstance(request_shape, dict):
+                continue
+            key = json.dumps(request_shape, ensure_ascii=False, sort_keys=True)
+            if key in seen_request_shapes:
+                continue
+            seen_request_shapes.add(key)
+            deduped_request_shapes.append(request_shape)
+
         entry = {
             "url": raw_url,
             "host": host,
             "path": path,
+            "source_names": sorted(source_tags),
+            "raw_evidence": "raw" in source_tags,
             "score": score,
             "score_breakdown": score_breakdown,
             "reasons": reasons,
@@ -2404,6 +2603,11 @@ def rank_surface(context: dict) -> dict:
             "tech_stack": context["hosts"].get(host, {}).get("tech_stack", []),
             "tested": path in tested_endpoints,
         }
+        if deduped_request_shapes:
+            entry["request_shapes"] = deduped_request_shapes[:8]
+            entry["semantic_shape"] = _candidate_semantic_shape(entry)
+        else:
+            entry["semantic_shape"] = _candidate_semantic_shape(entry)
         evidence_refs: list[str] = []
         if browser_observed:
             evidence_refs.extend([
@@ -2605,10 +2809,20 @@ def rank_surface(context: dict) -> dict:
 
     p1 = [item for _sequence, item in frontiers.p1.values()]
     p2 = [item for _sequence, item in frontiers.p2.values()]
+    _enrich_bounded_candidates([*bounded_candidates, *p1, *p2])
     review_pool = _build_review_pool(bounded_candidates, ffuf_review_candidates)
+    semantic_surface = _build_semantic_surface(context, [*bounded_candidates, *p1, *p2])
     observation_inventory = context.get("observation_inventory") or {}
     index_summary = (context.get("surface_index") or {}).get("summary") or {}
     browser_source_counts = index_summary.get("source_counts") or {}
+    filter_summary = _read_json_object(Path(context.get("recon_dir") or "") / "urls" / "filter_summary.json")
+    raw_url_count = int((index_summary.get("source_counts") or {}).get("raw", 0) or 0)
+    active_url_count = int(filter_summary.get("kept", 0) or (index_summary.get("source_counts") or {}).get("active", 0) or 0)
+    reactivated_count = sum(
+        1
+        for item in bounded_candidates
+        if item.get("raw_evidence") and _has_actionable_review_evidence(item)
+    )
 
     return {
         "available": True,
@@ -2618,6 +2832,7 @@ def rank_surface(context: dict) -> dict:
         "p1": p1,
         "p2": p2,
         "review_pool": review_pool,
+        "semantic_surface": semantic_surface,
         "observation_inventory": observation_inventory,
         "kill": _dedupe_keep_order([json.dumps(item, sort_keys=True) for item in kill]),
         "memory": {
@@ -2669,6 +2884,17 @@ def rank_surface(context: dict) -> dict:
             "p1": len(p1),
             "p2": len(p2),
             "review_pool": len(review_pool),
+            "semantic_shape_count": len(semantic_surface),
+            "semantic_variant_count": sum(
+                int(item.get("active_variant_count", 0) or 0)
+                for item in semantic_surface
+            ),
+            "raw_urls": raw_url_count,
+            "exact_unique": int(index_summary.get("unique_urls", 0) or 0),
+            "semantic_shapes": int(index_summary.get("shape_count", 0) or 0),
+            "active_candidates": active_url_count,
+            "dormant_noise": max(0, raw_url_count - active_url_count),
+            "reactivated_by_evidence": reactivated_count,
             "kill": len(kill),
             "observation_total": int(observation_inventory.get("total", 0) or 0),
             "observation_untouched": int(observation_inventory.get("untouched", 0) or 0),
@@ -2853,7 +3079,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
         for idx, item in enumerate(review_pool[:10], 1):
             reason = ", ".join(item.get("reasons", [])[:2])
             review_reason = str(item.get("review_reason") or "surface evidence").strip()
-            lines.append(f"{idx}. {item['url']} — {review_reason}; {reason}")
+            lines.append(f"{idx}. {surface_safe_preview(item['url'])} — {review_reason}; {reason}")
             lines.append(f"   Score hint: {_format_score_breakdown(item)}")
             lines.append(f"   Suggested evidence path: {item['suggested']}")
     else:
@@ -2866,7 +3092,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
     if ranked["p1"]:
         for idx, item in enumerate(ranked["p1"], 1):
             reason = ", ".join(item["reasons"][:2])
-            lines.append(f"{idx}. {item['url']} — {reason}")
+            lines.append(f"{idx}. {surface_safe_preview(item['url'])} — {reason}")
             if item["tech_stack"]:
                 lines.append(f"   Tech: {', '.join(item['tech_stack'])}")
             if item.get("browser_observed"):
@@ -2890,7 +3116,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
     if ranked["p2"]:
         for idx, item in enumerate(ranked["p2"], 1):
             reason = ", ".join(item["reasons"][:2])
-            lines.append(f"{idx}. {item['url']} — {reason}")
+            lines.append(f"{idx}. {surface_safe_preview(item['url'])} — {reason}")
             if item.get("browser_observed"):
                 lines.append("   Source: browser-observed XHR/API")
             if item.get("js_intel_observed"):
@@ -2963,7 +3189,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
                     f"[{finding.get('severity', '-')}/{finding.get('confidence', '-')}] "
                     f"{finding.get('type', '-')} "
                     f"status={finding.get('validation_status', '-')}/{finding.get('report_status', '-')} "
-                    f"→ {item['url']}"
+                    f"→ {surface_safe_preview(item['url'])}"
                 )
                 shown += 1
                 if shown >= 5:
@@ -3013,7 +3239,7 @@ def format_surface_output(ranked: dict, target: str) -> str:
                 label = signal.get("id") or signal.get("summary") or signal.get("source", "intel")
                 lines.append(
                     f"- {signal.get('class', '-')} "
-                    f"[{signal.get('severity', '-')}] → {item['url']} :: {str(label)[:90]}"
+                    f"[{signal.get('severity', '-')}] → {surface_safe_preview(item['url'])} :: {str(label)[:90]}"
                 )
                 shown += 1
                 if shown >= 5:

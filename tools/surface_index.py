@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """构建可删除的完整 Surface URL 索引。
 
-索引只对完全相同的原始 URL 做 destructive dedupe，并合并来源。参数值、
+索引只对完全相同的 URL 做 destructive dedupe，并合并来源。参数值、
 顺序、重复 key、编码、scheme/port/path case 等变体始终保留为独立行。
-shape 仅用于统计和后续导航，不参与删除或 finding 生命周期。
+新运行的 raw URL union 作为 ``raw`` 来源并入同一索引；它只增加可查询证据，
+不改变 Active 执行视图。shape 仅用于统计和后续导航，不参与删除或 finding 生命周期。
 """
 
 from __future__ import annotations
@@ -37,7 +38,18 @@ SUMMARY_KIND = "surface_exact_url_index_summary"
 MAX_PAGE_LIMIT = 1000
 CURSOR_SCHEMA_VERSION = 1
 
-URL_ARTIFACT_SPECS = (
+ACTIVE_URL_ARTIFACT_SPECS = (
+    ("active", Path("urls/all.txt")),
+    ("js_inventory", Path("urls/js_files.txt")),
+    ("api", Path("urls/api_endpoints.txt")),
+    ("param", Path("urls/with_params.txt")),
+    ("browser_xhr", Path("browser/xhr_endpoints.txt")),
+    ("browser_api", Path("browser/api_endpoints.txt")),
+)
+RAW_URL_ARTIFACT_SPECS = (
+    ("raw", Path("urls/raw/all.txt")),
+)
+LEGACY_URL_ARTIFACT_SPECS = (
     ("gau", Path("urls/gau.txt")),
     ("wayback", Path("urls/wayback.txt")),
     ("waymore", Path("urls/waymore.txt")),
@@ -48,6 +60,14 @@ URL_ARTIFACT_SPECS = (
     ("browser_xhr", Path("browser/xhr_endpoints.txt")),
     ("browser_api", Path("browser/api_endpoints.txt")),
 )
+LEGACY_FILTERED_URL_ARTIFACT_SPECS = (
+    ("active", Path("urls/all_filtered.txt")),
+    ("js_inventory", Path("urls/js_files_filtered.txt")),
+    ("api", Path("urls/api_endpoints_filtered.txt")),
+    ("param", Path("urls/with_params_filtered.txt")),
+    ("browser_xhr", Path("browser/xhr_endpoints.txt")),
+    ("browser_api", Path("browser/api_endpoints.txt")),
+)
 JS_ENDPOINT_PATH = Path("js/endpoints.txt")
 HTTPX_PATH = Path("live/httpx_full.txt")
 
@@ -55,6 +75,12 @@ _UUID_SEGMENT_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
 )
 _HEX_SEGMENT_RE = re.compile(r"^[0-9a-fA-F]{16,}$")
+_OPAQUE_PARAMETER_RE = re.compile(
+    r"(?:^|[_-])(access|api|auth|csrf|hash|hmac|jwt|nonce|refresh|reset|sig|signature|state|token)(?:$|[_-])",
+    re.I,
+)
+_BASE64_VALUE_RE = re.compile(r"^[A-Za-z0-9+/=_-]+$")
+_JWT_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class SurfaceIndexError(RuntimeError):
@@ -90,9 +116,10 @@ def _input_paths(repo_root: Path, target: str) -> list[tuple[str, Path]]:
     key = target_storage_key(target)
     recon_dir = repo_root / "recon" / key
     findings = repo_root / "findings" / key / "findings.json"
+    specs = _url_artifact_specs(recon_dir)
     paths = [
         (label, _artifact_path(recon_dir, relative))
-        for label, relative in URL_ARTIFACT_SPECS
+        for label, relative in specs
     ]
     paths.extend(
         [
@@ -102,6 +129,23 @@ def _input_paths(repo_root: Path, target: str) -> list[tuple[str, Path]]:
         ]
     )
     return paths
+
+
+def _url_artifact_specs(recon_dir: Path) -> tuple[tuple[str, Path], ...]:
+    """Use the canonical Active view; legacy targets get a read-only fallback."""
+    active = recon_dir / "urls" / "all.txt"
+    raw_dir = recon_dir / "urls" / "raw"
+    filtered = recon_dir / "urls" / "all_filtered.txt"
+    if raw_dir.is_dir():
+        # A new run owns the raw staging directory even when filtering failed;
+        # never fall back to collector raw files in that case.  Index raw union
+        # alongside Active so it remains queryable without becoming scanner input.
+        return RAW_URL_ARTIFACT_SPECS + ACTIVE_URL_ARTIFACT_SPECS
+    if active.is_file() and not filtered.is_file():
+        return ACTIVE_URL_ARTIFACT_SPECS
+    if filtered.is_file():
+        return LEGACY_FILTERED_URL_ARTIFACT_SPECS
+    return LEGACY_URL_ARTIFACT_SPECS
 
 
 def build_surface_index_input_manifest(repo_root: str | Path, target: str) -> dict:
@@ -203,7 +247,7 @@ def _source_iterators(repo_root: Path, target: str) -> list[tuple[str, Iterable[
     recon_dir = repo_root / "recon" / key
     sources: list[tuple[str, Iterable[str]]] = [
         (label, _iter_lines(_artifact_path(recon_dir, relative)))
-        for label, relative in URL_ARTIFACT_SPECS
+        for label, relative in _url_artifact_specs(recon_dir)
     ]
     # 与 legacy rank_surface 的 first-seen 顺序保持一致：scanner 先于 JS。
     sources.append(("scanner", _iter_scanner_urls(repo_root / "findings" / key / "findings.json")))
@@ -310,6 +354,122 @@ def surface_shape(value: str) -> dict:
         "raw_parameter_names": raw_names,
         "variant_flags": flags,
     }
+
+
+def _value_classes(name: str, raw_value: str, decoded_value: str) -> list[str]:
+    """Classify query values without retaining their contents."""
+    classes: list[str] = []
+    if not decoded_value:
+        classes.append("empty")
+    if len(decoded_value) >= 128:
+        classes.append("long")
+    if "%" in raw_value or "+" in raw_value:
+        classes.append("encoded")
+    if _OPAQUE_PARAMETER_RE.search(name):
+        classes.append("opaque-name")
+
+    segments = decoded_value.split(".")
+    if len(segments) == 3 and all(_JWT_SEGMENT_RE.fullmatch(part) for part in segments):
+        classes.append("jwt-like")
+
+    if len(decoded_value) >= 16 and _BASE64_VALUE_RE.fullmatch(decoded_value):
+        classes.append("base64-like")
+
+    stripped = decoded_value.lstrip()
+    if stripped.startswith(("{", "[")):
+        try:
+            json.loads(decoded_value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+        else:
+            classes.append("json")
+    if re.search(r"\b(?:query|mutation|subscription)\b\s*[A-Za-z_][A-Za-z0-9_]*?\s*[{(]", decoded_value):
+        classes.append("graphql")
+    return list(dict.fromkeys(classes))
+
+
+def surface_value_summary(value: str, *, max_parameters: int = 8) -> dict:
+    """Return bounded, non-secret query-value metadata for AI-facing projections.
+
+    Raw values remain available through the URL index; this summary exposes only
+    names, lengths, classes and short digests so long tokens do not consume the
+    default Claude context.
+    """
+    parsed = urlparse(str(value or ""))
+    parts = parsed.query.split("&") if parsed.query else []
+    signals = []
+    for part in parts:
+        raw_name, separator, raw_value = part.partition("=")
+        decoded_name = unquote_plus(raw_name)
+        decoded_value = unquote_plus(raw_value) if separator else ""
+        classes = _value_classes(decoded_name, raw_value, decoded_value)
+        if not classes or classes == ["empty"]:
+            continue
+        signals.append(
+            {
+                "name": decoded_name[:80],
+                "length": len(decoded_value),
+                "sha256": hashlib.sha256(decoded_value.encode("utf-8", errors="replace")).hexdigest()[:12],
+                "classes": classes,
+            }
+        )
+    bounded = signals[: max(0, int(max_parameters))]
+    return {
+        "parameter_count": len(parts),
+        "signal_count": len(signals),
+        "truncated": len(signals) > len(bounded),
+        "signals": bounded,
+    }
+
+
+def surface_request_shape(
+    value: str,
+    *,
+    method: str = "GET",
+    content_type: str = "",
+    body_parameter_names: Iterable[str] = (),
+    graphql_operations: Iterable[str] = (),
+) -> dict:
+    """Extend URL semantics with observed request metadata when available."""
+    url_shape = surface_shape(value)
+    payload = {
+        "scheme": url_shape["scheme"],
+        "authority": url_shape["authority"],
+        "path_template": url_shape["path_template"],
+        "parameter_multiset": url_shape["parameter_multiset"],
+        "method": str(method or "GET").upper(),
+        "content_type": str(content_type or "").lower(),
+        "body_parameter_names": sorted({str(name) for name in body_parameter_names if str(name)}),
+        "graphql_operations": sorted({str(name) for name in graphql_operations if str(name)}),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "id": hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24],
+        **payload,
+        "url_shape_id": url_shape["id"],
+    }
+
+
+def surface_safe_preview(value: str, *, limit: int = 240) -> str:
+    """Render a bounded URL preview without exposing opaque query values."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    query_parts = []
+    for part in parsed.query.split("&") if parsed.query else []:
+        raw_name, separator, raw_value = part.partition("=")
+        name = unquote_plus(raw_name)[:80]
+        decoded_value = unquote_plus(raw_value) if separator else ""
+        classes = _value_classes(name, raw_value, decoded_value)
+        sensitive = bool(
+            set(classes).intersection({"opaque-name", "long", "encoded", "jwt-like", "base64-like", "json", "graphql"})
+        )
+        query_parts.append(name + ("=..." if separator and sensitive else f"={raw_value}" if separator else ""))
+    preview = parsed._replace(query="&".join(query_parts), fragment="").geturl()
+    if len(preview) <= max(64, int(limit)):
+        return preview
+    return preview[: max(64, int(limit)) - 3] + "..."
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:

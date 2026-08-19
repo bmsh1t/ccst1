@@ -37,14 +37,15 @@ def test_mfa_observations_are_manual_review_only():
     assert '>> "$FINDINGS_DIR/mfa/findings.txt"' not in scanner
 
 
-def test_nuclei_lanes_are_bounded_and_stop_after_timeout():
+def test_nuclei_cve_lane_is_bounded_and_stops_after_timeout():
     scanner = SCANNER_PATH.read_text()
 
-    assert 'NUCLEI_LANE_TIMEOUT="${BB_NUCLEI_LANE_TIMEOUT:-30}"' in scanner
-    assert '"$timeout_cmd" --preserve-status "$NUCLEI_LANE_TIMEOUT" nuclei' in scanner
-    assert '124|137|143) NUCLEI_ABORT=1' in scanner
-    assert 'if [ "$NUCLEI_ABORT" = "1" ]; then' in scanner
-    assert 'cat "$NUCLEI_TARGETS" | run_nuclei' not in scanner
+    assert 'run_nuclei_timeout()' in scanner
+    assert 'CVE_TIMEOUT="${BB_CVE_TIMEOUT:-180}"' in scanner
+    assert '"$timeout_cmd" --preserve-status "$limit" nuclei' in scanner
+    assert 'NUCLEI_FAILURE_MARKER=' in scanner
+    assert 'cat "$NUCLEI_TARGETS"' not in scanner
+    assert 'run_nuclei()' not in scanner
     assert '-tags exposure,file' not in scanner
     assert '-tags panel,login' not in scanner
     assert '-tags default-login' not in scanner

@@ -218,6 +218,8 @@ def _body_shape(body: object) -> dict:
     if body in (None, "", [], {}):
         return {
             "kind": "request-body-shape",
+            "body_type": "empty",
+            "content_type_hint": "",
             "parameter_names": [],
             "graphql_operations": [],
             "graphql_variables": [],
@@ -236,8 +238,26 @@ def _body_shape(body: object) -> dict:
         )
     )
     variables = _dedupe_keep_order(re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", raw))
+    try:
+        parsed_json = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        parsed_json = None
+    if operations:
+        body_type = "graphql"
+        content_type_hint = "application/graphql"
+    elif parsed_json is not None:
+        body_type = "json"
+        content_type_hint = "application/json"
+    elif "=" in raw and parse_qsl(raw, keep_blank_values=True):
+        body_type = "form"
+        content_type_hint = "application/x-www-form-urlencoded"
+    else:
+        body_type = "text"
+        content_type_hint = "text/plain"
     return {
         "kind": "request-body-shape",
+        "body_type": body_type,
+        "content_type_hint": content_type_hint,
         "parameter_names": _dedupe_keep_order(_body_param_keys(body)),
         "graphql_operations": operations,
         "graphql_variables": variables,
@@ -343,6 +363,7 @@ def write_browser_surface(
 
     requests = [_parse_request_item(item) for item in _request_items(_load_json(req_path))]
     requests = [item for item in requests if item.get("url")]
+    request_shapes = public_request_shapes(requests)
     xhr_urls = _dedupe_keep_order([item["url"] for item in requests if _is_xhr_like(item)])
     api_urls = _dedupe_keep_order([item["url"] for item in requests if _is_api_url(item["url"]) or item["url"] in xhr_urls])
     params = _dedupe_keep_order([line for item in requests for line in _param_lines(item["url"], item.get("body", ""))])
@@ -354,6 +375,7 @@ def write_browser_surface(
         "browser_params": str(browser_dir / "browser_params.txt"),
         "forms": str(browser_dir / "forms.json"),
         "summary": str(browser_dir / "summary.json"),
+        "request_shapes": str(browser_dir / "request_shapes.json"),
     }
     if merge_existing:
         # MCP captures are often incremental: a login/order/admin workflow capture
@@ -362,10 +384,35 @@ def write_browser_surface(
         xhr_urls = _dedupe_keep_order(_read_existing_lines(Path(artifacts["xhr_endpoints"])) + xhr_urls)
         api_urls = _dedupe_keep_order(_read_existing_lines(Path(artifacts["api_endpoints"])) + api_urls)
         params = _dedupe_keep_order(_read_existing_lines(Path(artifacts["browser_params"])) + params)
+        try:
+            previous_shapes = json.loads(Path(artifacts["request_shapes"]).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous_shapes = []
+        if isinstance(previous_shapes, list):
+            request_shapes = previous_shapes + request_shapes
+        unique_shapes = {}
+        for shape in request_shapes:
+            if not isinstance(shape, dict):
+                continue
+            key = json.dumps(
+                {
+                    "url": shape.get("url", ""),
+                    "method": shape.get("method", "GET"),
+                    "postData": shape.get("postData", {}),
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            unique_shapes[key] = shape
+        request_shapes = list(unique_shapes.values())
     _write_lines(Path(artifacts["xhr_endpoints"]), xhr_urls)
     _write_lines(Path(artifacts["api_endpoints"]), api_urls)
     _write_lines(Path(artifacts["browser_params"]), params)
     Path(artifacts["forms"]).write_text(json.dumps(forms, indent=2) + "\n", encoding="utf-8")
+    Path(artifacts["request_shapes"]).write_text(
+        json.dumps(request_shapes, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     summary = {
         "target_key": target_key,
@@ -379,6 +426,7 @@ def write_browser_surface(
             "api_endpoints": len(api_urls),
             "browser_params": len(params),
             "forms": len(forms.get("forms", [])),
+            "request_shapes": len(request_shapes),
         },
         "artifacts": artifacts,
         "forms_status": forms.get("status", ""),

@@ -1,4 +1,7 @@
+import json
 from pathlib import Path
+
+import pytest
 
 from tools import recon_filters
 
@@ -81,6 +84,8 @@ def test_filter_urls_batch_logs_external_urls_and_keeps_original_input(tmp_path)
         "removed_duplicates": 0,
         "removed_cache_only": 0,
         "removed_shape_overflow": 0,
+        "sanitized_attack_probes": 0,
+        "normalized_cache_params": 0,
     }
     assert out.read_text(encoding="utf-8").splitlines() == [
         "https://example.com/",
@@ -130,7 +135,7 @@ def test_filter_urls_batch_removes_invalid_and_cache_only_duplicates(tmp_path):
     assert stats["removed_duplicates"] == 3
     assert stats["removed_cache_only"] == 2
     assert out.read_text(encoding="utf-8").splitlines() == [
-        "https://example.com/items?id=1&utm_source=a",
+        "https://example.com/items?id=1",
         "https://example.com/items?id=2#first",
     ]
 
@@ -146,6 +151,21 @@ def test_filter_urls_batch_bounds_repeated_surface_shapes(tmp_path):
     assert stats["kept"] == 3
     assert stats["removed_shape_overflow"] == 9
     assert len(out.read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_filter_urls_batch_keeps_all_shape_variants_by_default(tmp_path):
+    src = tmp_path / "all.txt"
+    out = tmp_path / "active.txt"
+    src.write_text(
+        "\n".join(f"https://example.com/users/{value}?view=full" for value in range(20, 32)) + "\n",
+        encoding="utf-8",
+    )
+
+    stats = recon_filters.filter_urls_batch(src, out, "example.com")
+
+    assert stats["kept"] == 12
+    assert stats["removed_shape_overflow"] == 0
+    assert len(out.read_text(encoding="utf-8").splitlines()) == 12
 
 
 def test_filter_urls_batch_logs_encoding_artifacts(tmp_path):
@@ -246,3 +266,74 @@ def test_filter_urls_batch_demotes_unbalanced_path_without_changing_raw_input(tm
     assert out.read_text(encoding="utf-8").splitlines() == [valid]
     assert src.read_text(encoding="utf-8").splitlines() == [malformed, valid]
     assert f"[MALFORMED_PATH] {malformed}" in log.read_text(encoding="utf-8")
+
+
+def test_active_view_sanitizes_probe_and_cache_values_without_dropping_shape(tmp_path):
+    src = tmp_path / "raw.txt"
+    out = tmp_path / "active.txt"
+    summary = tmp_path / "filter_summary.json"
+    log = tmp_path / "filter.log"
+    opaque = "A" * 1200
+    src.write_text(
+        "\n".join(
+            [
+                "https://example.com/search?q=<script>alert(1)</script>&utm_source=x",
+                f"https://example.com/import?token={opaque}",
+                "https://example.com/import?token=B",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    stats = recon_filters.filter_urls_batch(
+        src, out, "example.com", log_file=log, summary_file=summary, max_per_shape=2
+    )
+
+    assert stats["sanitized_attack_probes"] == 1
+    assert stats["normalized_cache_params"] == 1
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "https://example.com/search?q=__probe__"
+    assert lines[1].startswith("https://example.com/import?token=")
+    assert len(lines[1]) > 1000
+    assert lines[2] == "https://example.com/import?token=B"
+    payload = json.loads(summary.read_text(encoding="utf-8"))
+    assert payload["kept"] == 3
+    assert len(log.read_text(encoding="utf-8").splitlines()) <= 64
+    assert payload["output_sha256"]
+
+
+def test_active_view_keeps_encoded_and_duplicate_query_variants(tmp_path):
+    src = tmp_path / "raw.txt"
+    out = tmp_path / "active.txt"
+    src.write_text(
+        "\n".join(
+            [
+                "https://example.com/search?q=a%2Fb",
+                "https://example.com/search?q=a+b",
+                "https://example.com/search?id=1&id=2",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    recon_filters.filter_urls_batch(src, out, "example.com")
+
+    assert out.read_text(encoding="utf-8").splitlines() == [
+        "https://example.com/search?q=a%2Fb",
+        "https://example.com/search?q=a+b",
+        "https://example.com/search?id=1&id=2",
+    ]
+
+
+def test_filter_publication_failure_preserves_previous_active(tmp_path):
+    src = tmp_path / "missing.txt"
+    out = tmp_path / "active.txt"
+    out.write_text("https://example.com/previous\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError):
+        recon_filters.filter_urls_batch(src, out, "example.com")
+
+    assert out.read_text(encoding="utf-8") == "https://example.com/previous\n"
+    assert not list(tmp_path.glob(".active.txt.*.tmp"))

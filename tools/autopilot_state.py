@@ -83,6 +83,7 @@ try:
     from tools.target_paths import (
         canonical_target_value,
         classify_target,
+        compact_url,
         migrate_legacy_list_storage,
         target_list_entries,
         target_storage_key,
@@ -109,6 +110,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from target_paths import (  # type: ignore
         canonical_target_value,
         classify_target,
+        compact_url,
         migrate_legacy_list_storage,
         target_list_entries,
         target_storage_key,
@@ -1136,7 +1138,7 @@ def _describe_next_step(state: dict) -> str:
                 "collect candidate evidence for finding {id} on {url}; rubric={status}, "
                 "missing={missing}. Next evidence step: {step}. Rerun state before /validate.".format(
                     id=candidate.get("id", "-"),
-                    url=candidate.get("url", ""),
+                    url=compact_url(candidate.get("url", "")),
                     status=rubric.get("status", "needs-evidence"),
                     missing=", ".join(missing) or "candidate evidence",
                     step=evidence_step,
@@ -1164,7 +1166,7 @@ def _describe_next_step(state: dict) -> str:
     if action == "validate_finding":
         followup = (state.get("structured_findings") or {}).get("next_validation") or {}
         if followup:
-            return f"validate structured finding {followup.get('id')} on {followup.get('url')}."
+            return f"validate structured finding {followup.get('id')} on {compact_url(followup.get('url', ''))}."
         memory_candidate = state.get("memory_candidate_next") or {}
         if memory_candidate:
             return (
@@ -1348,7 +1350,7 @@ def _build_guard_hint(guard_status: dict, recommended_targets: list[dict]) -> st
         if ready_target:
             return (
                 f"cooling hosts: {cooling}; prefer the ready host "
-                f"{ready_target.get('host', '')} via {ready_target.get('url', '')}"
+                f"{ready_target.get('host', '')} via {compact_url(ready_target.get('url', ''))}"
             )
         return (
             f"all tracked hot hosts are cooling down: {cooling}; do not rotate IPs, "
@@ -1357,7 +1359,7 @@ def _build_guard_hint(guard_status: dict, recommended_targets: list[dict]) -> st
         )
 
     if ready_target and int(guard_status.get("tracked_hosts", 0) or 0) > 0:
-        return f"prefer the ready host {ready_target.get('host', '')} via {ready_target.get('url', '')}"
+        return f"prefer the ready host {ready_target.get('host', '')} via {compact_url(ready_target.get('url', ''))}"
 
     return ""
 
@@ -1367,7 +1369,7 @@ def _format_recent_guard_advisory(item: dict) -> str:
     notes = str(item.get("notes", "") or "").strip()
     if notes:
         return notes
-    endpoint = str(item.get("endpoint", "") or "").strip()
+    endpoint = compact_url(str(item.get("endpoint", "") or "").strip())
     action = str(item.get("action", "") or "").strip()
     if action and endpoint:
         return f"{action} :: {endpoint}"
@@ -3501,7 +3503,7 @@ def _format_root_finding_claim_lines(claims: list[dict]) -> list[str]:
                 id=item.get("id", "-"),
                 severity=item.get("severity", "medium"),
                 type=item.get("type", "finding"),
-                url=item.get("url", ""),
+                url=compact_url(item.get("url", "")),
                 source=item.get("source_file", ""),
                 missing=missing or "none",
             )
@@ -3916,7 +3918,7 @@ def format_autopilot_state(state: dict) -> str:
             )
             reason = f" [{item['review_reason']}]" if item.get("review_reason") else ""
             lines.append(
-                f"{idx}. {item['url']} — {item['suggested']} (score hint {item['score']}){reason}{suffix}"
+                f"{idx}. {compact_url(item['url'])} — {item['suggested']} (score hint {item['score']}){reason}{suffix}"
             )
     deferred_candidates = state.get("deferred_surface_candidates") or []
     if deferred_candidates:
@@ -3924,7 +3926,7 @@ def format_autopilot_state(state: dict) -> str:
         lines.append("Deferred scanner signals (raw evidence retained; AI reactivation conditions):")
         for item in deferred_candidates[:3]:
             lines.append(
-                f"- {item.get('url', '')}: {item.get('reason', '')}; "
+                f"- {compact_url(item.get('url', ''))}: {item.get('reason', '')}; "
                 f"reactivate when {item.get('reactivate_when', 'new evidence exists')}"
             )
 

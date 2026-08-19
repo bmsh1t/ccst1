@@ -217,7 +217,7 @@ Low-signal indicators:
 - All hosts return 403 or static pages
 - No API endpoints with ID parameters
 - No JavaScript bundles with interesting paths
-- nuclei returns 0 medium/high findings
+- The bounded scanner and dedicated probes return no new high-value leads
 
 Reopen immediately when fresh browser/XHR traffic, source/JS routes,
 authenticated workflow, API docs, object IDs, WebSocket/GraphQL, or business
@@ -241,6 +241,9 @@ Scanner and replay output is evidence, not an attack-surface verdict.
 - bounded Surface/projection 只是默认消费窗口，不是 AI 能力上限。需要长尾证据时，
   可按 Surface page/source/shape 分页、用 `rg` 查询 raw artifact，或根据具体组件、
   CVE、路径、参数和行为证据构造专项列表并运行 targeted templates。
+- 集成 scanner 的 Nuclei supplement 默认关闭；显式启用时只接收有界 origin，主要用于
+  已选组件/版本的 CVE 验证。SQLi/SSRF 默认使用现有 SQL/JSON probes、request-diff
+  和 OAST 路由，不经 Nuclei 复跑。
 - `summary.json` 只证明本轮选定的 live/priority scanner input 正常走到 consolidation；
   不表示历史 URL 全量扫描、tested-clean、目标安全或攻击面耗尽。
   killed/stopped/timeout/non-zero 都是 incomplete，不得解释为零发现或 scanner complete。

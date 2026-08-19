@@ -7,7 +7,15 @@ Recon 工具链产生大量噪音(外部 URL、路径爆炸、文档误判为 AP
 
 ### 对现有 recon 应用降噪
 ```bash
-# 1. 过滤 URL (外部域名 + 路径爆炸)
+# 1. 对 raw URL 做一次兼容性重建（正常 Recon 已自动完成）
+python3 tools/recon_filters.py \
+    recon/<target>/urls/raw/all.txt \
+    recon/<target>/urls/all.txt \
+    <target> \
+    --summary-file recon/<target>/urls/filter_summary.json \
+    --log-file recon/<target>/urls/filter.log
+
+# 兼容旧目录（没有 urls/raw/all.txt 时）
 python3 tools/recon_filters.py \
     recon/<target>/urls/all.txt \
     recon/<target>/urls/all_filtered.txt \
@@ -39,9 +47,12 @@ python3 tools/surface.py --target <target>
 - `/api/search?v=2` → 识别为 API version,保留测试
 - `/assets/main.js?v=123` → 识别为 cache param,降权
 
-### 3. 原始文件保留
-**改进**: URL 降噪写入 `all_filtered.txt`; API 候选验证写入 `.validated`
-**影响**: `all.txt` 和原始候选文件保留,可手动审查误杀或文档 secrets
+### 3. Active 与 raw 生命周期
+**改进**: 原始 URL 先进入 `urls/raw/` staging，过滤成功后原子发布到 Active `urls/all.txt`；
+`all_filtered.txt` 仅作为兼容投影。
+**影响**: Coverage、scanner 默认只消费 Active；Surface exact index 同时索引
+Active 与 `urls/raw/all.txt[.gz]`，把 raw-only URL 作为可重建的低优先级证据，必要时按
+shape/source 重新激活。Closure 前仍可直接查询 raw，Closure 后可用引用感知 GC 清理未引用归档。
 
 ### 4. 过滤日志
 **改进**: 记录所有被过滤的 URL 到 log 文件
@@ -55,7 +66,11 @@ python3 tools/surface.py --target <target>
 1. 过滤外部域名 URL (非目标子域)
 2. 检测路径爆炸 (重复路径片段 ≥4 次)
 3. 过滤编码/HTML 片段噪音
-4. 提供 context-aware cache 参数判断 helper; 批量过滤默认不删除 cache 参数
+4. 提供 context-aware cache 参数判断 helper; Active 代表 URL 删除 tracking/cachebuster 参数
+5. 对历史 probe URL 只保留 endpoint/parameter shape，值替换为 `__probe__`
+6. 原子写 Active 文件，输出 `filter_summary.json`（计数、hash、有限样本）
+7. 默认不按 shape 截断；`--max-per-shape N` 仅用于明确接受有损的临时投影
+8. Surface 为候选补充语义 shape、opaque/JWT/JSON/GraphQL 值摘要和原始引用，不保存值本身
 
 **用法**:
 ```bash
@@ -134,6 +149,16 @@ cat recon/<target>/exposure/api_leak_candidates.txt \
 # 用 TruffleHog 扫描这些文档
 ```
 
+### Closure 后清理 raw 归档
+
+```bash
+python3 tools/recon_artifact_gc.py --repo-root . --target <target>
+python3 tools/recon_artifact_gc.py --repo-root . --target <target> --apply
+```
+
+命令默认 dry-run；Closure 未明确允许耗尽、状态损坏或引用无法读取时拒绝清理。
+清理只作用于 `urls/raw/` 与 collector 归档，不删除 Active URL、Surface、Coverage、Finding 或 Ledger。
+
 ## 分环境建议
 
 ### CTF/Lab 环境 (零遗漏优先)
@@ -154,6 +179,9 @@ python3 tools/recon_filters.py \
 python3 tools/recon_filters.py \
     recon/<target>/urls/all.txt recon/<target>/urls/all_filtered.txt <target> \
     --log-file recon/<target>/urls/filter.log
+
+# 默认保留所有对象/参数实例；只有明确需要有损临时投影时才设置 shape 上限。
+# python3 tools/recon_filters.py ... --max-per-shape 8
 
 bash tools/validate_api_candidates.sh \
     recon/<target>/exposure/api_leak_candidates.txt \

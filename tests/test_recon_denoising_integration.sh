@@ -93,7 +93,7 @@ if [[ $PHASE_45 -ge 1 ]] && [[ $PHASE_675 -ge 1 ]] && [[ $FILTER_CALLS -ge 1 ]] 
     echo "Next steps:"
     echo "  1. Test on a small target: bash tools/recon_engine.sh -t test.com"
     echo "  2. Check logs: recon/test.com/urls/filter.log"
-    echo "  3. Verify raw all.txt is preserved and all_filtered.txt is generated"
+echo "  3. Verify Active all.txt is published and urls/raw/ remains available before Closure"
 else
     echo "Status: ❌ Integration INCOMPLETE"
     echo ""

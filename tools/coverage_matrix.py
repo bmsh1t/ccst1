@@ -1218,7 +1218,7 @@ def rebuild_matrix(
     """Populate the matrix from cached recon URLs + findings.
 
     Two endpoint sources are scanned:
-      1. recon/<target>/urls/all.txt — bulk discovery surface, gated
+      1. recon/<target>/urls/all.txt — filtered Active discovery surface, gated
          by `min_weight_to_include` (default 1.0) to avoid bloat from
          marketing/CDN URLs.
       2. findings/<target>/findings.json — endpoints discovered
@@ -1255,12 +1255,21 @@ def rebuild_matrix(
     target_key = _storage_key(target)
     urls_dir = repo / "recon" / target_key / "urls"
     urls: list[str] = []
-    # Discovery-first: consume the denoised URL set first when present, but
-    # merge raw all.txt as a lossless backstop. SPA/noise filtering is allowed
-    # to reduce replay priority; it must not erase endpoints from coverage.
+    # Active is the canonical, filtered view. Older recon directories may only
+    # have *_filtered.txt plus raw all.txt, so retain that read-only fallback.
     filtered_set: set[str] = set()
     filtered_path = urls_dir / "all_filtered.txt"
-    for urls_path in (filtered_path, urls_dir / "all.txt"):
+    active_path = urls_dir / "all.txt"
+    active_is_canonical = active_path.is_file() and (
+        (urls_dir / "raw").is_dir() or not filtered_path.is_file()
+    )
+    if active_is_canonical:
+        source_paths = (active_path,)
+    elif filtered_path.is_file():
+        source_paths = (filtered_path,)
+    else:
+        source_paths = tuple(path for path in (filtered_path, active_path) if path.is_file())
+    for urls_path in source_paths:
         if not urls_path.is_file():
             continue
         try:

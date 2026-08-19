@@ -106,7 +106,7 @@ Evaluate each endpoint/host against these signals:
 | Tech stack matches past successful hunts | High | Memory-informed |
 | Recently deployed feature | High | New = unreviewed |
 | Has disclosed reports for similar vuln class | Med | Proven attack surface |
-| Low nuclei findings | Low | Might be hardened OR untested |
+| No bounded scanner leads | Low | Might be hardened OR untested |
 | GraphQL/WebSocket endpoint | High | Often under-tested |
 
 ## Feature Age Detection

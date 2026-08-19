@@ -589,7 +589,7 @@ def test_recon_engine_adds_project_aligned_exposure_candidate_correlation():
     assert 'EXTERNAL_SERVICE_HOSTS="$RECON_DIR/exposure/external_service_hosts.txt"' in text
     assert "API_DOC_RE=" in text
     assert "CLOUD_SERVICE_RE=" in text
-    assert 'collect_exposure_candidates "$RECON_DIR/urls/all.txt" "urls"' in text
+    assert 'collect_exposure_candidates "$RAW_URLS_STAGING" "urls-raw"' in text
     assert 'collect_exposure_candidates "$RECON_DIR/js/linkfinder_endpoints.txt" "linkfinder"' in text
     assert "phase                exposure_candidates" in text
     assert 'log_info "Phase 6.7: API Leak Detection"' in text
@@ -629,9 +629,9 @@ def test_recon_engine_denoising_is_non_destructive():
     text = script.read_text(encoding="utf-8")
 
     assert 'log_info "Phase 4.5: URL Denoising"' in text
-    assert "raw files preserved" in text
+    assert "raw URL staging" in text
     assert '"$RECON_DIR/urls/all.txt" \\' in text
-    assert '"$RECON_DIR/urls/all_filtered.txt" \\' in text
+    assert '"$RECON_DIR/urls/all.txt" \\' in text
     assert '--log-file "$URL_FILTER_LOG_ABS"' in text
     assert 'URL_FILTER_LOG="recon/${RECON_TARGET_KEY}/urls/filter.log"' in text
     assert 'with_params_filtered.txt' in text
@@ -666,7 +666,7 @@ def test_recon_engine_records_phase_manifest_without_value_judgment():
     assert "not tested clean" in text
     assert "bounded host sampling" in text
     assert "not complete directory coverage" in text
-    assert "raw all.txt remains the lossless backstop" in text
+    assert "raw URL staging is retained until Active publication" in text
 
 
 def test_recon_engine_profiles_collectors_and_normal_js_handoff():
@@ -988,10 +988,10 @@ def test_recon_engine_defaults_to_post_run_raw_url_compression():
     assert "BBHUNT_RECON_POST_COMPRESS" in text
     assert 'env_truthy "${BBHUNT_RECON_POST_COMPRESS:-1}"' in text
     assert "BBHUNT_RECON_COMPRESS_MIN_MB" in text
-    assert "for src in gau wayback waymore katana; do" in text
+    assert 'for file in "$recon_dir/urls/raw/all.txt"' in text
     assert 'gzip -9 -f "$file"' in text
     assert 'post_compress_raw_recon_urls "$RECON_DIR"' in text
-    assert 'note                 "all.txt/with_params.txt/exposure/live/subdomains preserved"' in text
+    assert 'note                 "Active all.txt/with_params.txt/exposure/live/subdomains preserved' in text
     assert "rm -f" not in text[text.index("post_compress_raw_recon_urls()"):text.index("cleanup_auth_tmpfiles()")]
 
 

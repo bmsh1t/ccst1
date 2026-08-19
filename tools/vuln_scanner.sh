@@ -245,16 +245,6 @@ else
     SCAN_MODE="standard"
 fi
 
-# Bound each Nuclei lane independently. A stalled template lane must not hold
-# the whole scanner open; the failure marker keeps the run explicitly partial.
-if [ "$SCAN_MODE" = "quick" ]; then
-    NUCLEI_LANE_TIMEOUT="${BB_NUCLEI_LANE_TIMEOUT:-30}"
-elif [ "$SCAN_MODE" = "full" ]; then
-    NUCLEI_LANE_TIMEOUT="${BB_NUCLEI_LANE_TIMEOUT:-300}"
-else
-    NUCLEI_LANE_TIMEOUT="${BB_NUCLEI_LANE_TIMEOUT:-120}"
-fi
-
 if [ "$FULL_MODE" != "--full" ]; then
     DEFAULT_SKIP_CHECKS="xss"
 fi
@@ -325,7 +315,6 @@ UPLOAD_CLEANUP_FILE="$FINDINGS_DIR/manual_review/upload_cleanup.txt"
 MFA_REVIEW_FILE="$FINDINGS_DIR/manual_review/mfa_review.txt"
 : > "$MFA_REVIEW_FILE"
 NUCLEI_FAILURE_MARKER="$FINDINGS_DIR/.tmp/nuclei_failed"
-NUCLEI_ABORT=0
 
 mark_nuclei_failure() {
     local rc="$1"
@@ -333,17 +322,16 @@ mark_nuclei_failure() {
     log_warn "Nuclei lane failed (exit=$rc); scan remains incomplete"
 }
 
-run_nuclei() {
+run_nuclei_timeout() {
+    local limit="$1"
+    shift
     local rc=0 timeout_cmd
-    if [ "$NUCLEI_ABORT" = "1" ]; then
-        return 124
-    fi
     timeout_cmd="$(timeout_bin)"
     if [ -n "$timeout_cmd" ]; then
         if bb_auth_active; then
-            "$timeout_cmd" --preserve-status "$NUCLEI_LANE_TIMEOUT" nuclei -fhr "$@" || rc=$?
+            "$timeout_cmd" --preserve-status "$limit" nuclei -fhr "$@" || rc=$?
         else
-            "$timeout_cmd" --preserve-status "$NUCLEI_LANE_TIMEOUT" nuclei "$@" || rc=$?
+            "$timeout_cmd" --preserve-status "$limit" nuclei "$@" || rc=$?
         fi
     elif bb_auth_active; then
         nuclei -fhr "$@" || rc=$?
@@ -351,28 +339,6 @@ run_nuclei() {
         nuclei "$@" || rc=$?
     fi
     [ "$rc" -eq 0 ] || mark_nuclei_failure "$rc"
-    case "$rc" in
-        124|137|143) NUCLEI_ABORT=1 ;;
-    esac
-    return "$rc"
-}
-
-run_nuclei_timeout() {
-    local limit="$1"
-    shift
-    local rc=0
-    if [ "$NUCLEI_ABORT" = "1" ]; then
-        return 124
-    fi
-    if bb_auth_active; then
-        timeout --preserve-status "$limit" nuclei -fhr "$@" || rc=$?
-    else
-        timeout --preserve-status "$limit" nuclei "$@" || rc=$?
-    fi
-    [ "$rc" -eq 0 ] || mark_nuclei_failure "$rc"
-    case "$rc" in
-        124|137|143) NUCLEI_ABORT=1 ;;
-    esac
     return "$rc"
 }
 
@@ -435,8 +401,10 @@ write_summary_json() {
 
     python3 - "$TARGET" "$SESSION_ID" "$SCAN_MODE" "$RECON_DIR" "$FINDINGS_DIR" \
         "$SKIP_CHECKS" "$LIVE_COUNT" "$ORDERED_SCAN" "$NUCLEI_TARGETS_ALL" \
-        "$NUCLEI_TARGETS" "$NUCLEI_TARGET_LIMIT" "$output_path" <<'PY'
+        "$NUCLEI_TARGETS" "$NUCLEI_TARGET_LIMIT" \
+        "$NUCLEI_CVE_ENABLED" "$NUCLEI_CVE_STATUS" "$output_path" <<'PY'
 import json
+import gzip
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -444,7 +412,7 @@ from pathlib import Path
 (
     target, session_id, scan_mode, recon_dir, findings_dir, skip_checks,
     live_count, ordered_scan, nuclei_targets_all, nuclei_targets,
-    nuclei_target_limit, output_path,
+    nuclei_target_limit, nuclei_cve_enabled, nuclei_cve_status, output_path,
 ) = sys.argv[1:]
 findings_root = Path(findings_dir)
 recon_root = Path(recon_dir)
@@ -477,6 +445,16 @@ def count_lines(path: Path) -> int:
 
     with path.open(encoding="utf-8", errors="replace") as handle:
         return sum(1 for line in handle if line.rstrip("\n"))
+
+
+def count_raw_urls(root: Path) -> int:
+    for path in (root / "urls" / "raw" / "all.txt", root / "urls" / "raw" / "all.txt.gz"):
+        if not path.is_file():
+            continue
+        opener = gzip.open if path.name.endswith(".gz") else Path.open
+        with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
+            return sum(1 for line in handle if line.rstrip("\n"))
+    return 0
 
 
 def count_matching_lines(path: Path, marker: str) -> int:
@@ -547,7 +525,8 @@ summary = {
     "recon_dir": recon_dir,
     "findings_dir": findings_dir,
     "input_contract": "live-priority-targets",
-    "raw_url_count": count_lines(recon_root / "urls" / "all.txt"),
+    "raw_url_count": count_raw_urls(recon_root),
+    "active_url_count": count_lines(recon_root / "urls" / "all.txt"),
     "parameter_url_count": count_lines(recon_root / "urls" / "with_params.txt"),
     "live_count": int(live_count or 0),
     "ordered_scan_count": count_lines(ordered_scan_path),
@@ -556,6 +535,12 @@ summary = {
     "nuclei_target_count": count_lines(nuclei_targets_path),
     "nuclei_target_limit": int(nuclei_target_limit),
     "nuclei_targets_truncated": count_lines(nuclei_targets_all_path) > count_lines(nuclei_targets_path),
+    "nuclei_cve": {
+        "enabled": nuclei_cve_enabled == "1",
+        "status": nuclei_cve_status,
+        "input": "origin-bounded",
+        "candidate_count": count_lines(nuclei_targets_path),
+    },
     "skipped_checks": [],
     "categories": category_summary,
     "totals": {
@@ -986,6 +971,11 @@ case "$NUCLEI_TARGET_LIMIT" in
 esac
 NUCLEI_TARGETS_ALL="$FINDINGS_DIR/.tmp/nuclei_targets_all.txt"
 NUCLEI_TARGETS="$FINDINGS_DIR/.tmp/nuclei_targets.txt"
+NUCLEI_CVE_ENABLED=0
+case "${BBHUNT_ENABLE_NUCLEI_CVES:-0}" in
+    1|true|TRUE|yes|YES|on|ON) NUCLEI_CVE_ENABLED=1 ;;
+esac
+NUCLEI_CVE_STATUS="disabled"
 python3 - "$ORDERED_SCAN" "$NUCLEI_TARGETS_ALL" "$NUCLEI_TARGETS" "$NUCLEI_TARGET_LIMIT" <<'PY'
 import sys
 from pathlib import Path
@@ -1065,6 +1055,10 @@ if bb_auth_active; then
     SENSITIVE_PATHS_FILTERED="$AUTH_SENSITIVE_PATHS"
 fi
 
+if [ "$NUCLEI_CVE_ENABLED" = "1" ]; then
+    NUCLEI_CVE_STATUS="ready"
+fi
+
 # ============================================================
 # Check 0: Upload Surface Discovery
 # ============================================================
@@ -1121,17 +1115,6 @@ fi
 echo ""
 if ! skip_has sqli; then
     log_info "Check 0.5: SQL Injection"
-
-    if command -v nuclei &>/dev/null; then
-        log_step "Running nuclei SQLi templates..."
-        run_nuclei -l "$NUCLEI_TARGETS" \
-            -tags sqli \
-            -severity medium,high,critical \
-            -silent \
-            -rate-limit "$RATE_LIMIT" \
-            "${BB_AUTH_ARGS[@]}" \
-            -output "$FINDINGS_DIR/sqli/nuclei_sqli.txt" 2>/dev/null || true
-    fi
 
     if [ -s "$PARAM_URLS" ]; then
         SQLI_LIMIT=$(scan_limit 5 10 20)
@@ -1319,20 +1302,6 @@ echo ""
 if ! skip_has ssrf; then
 log_info "Check 5: SSRF Detection"
 
-if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
-    log_step "Running nuclei SSRF templates..."
-    NUCLEI_RC=0
-    run_nuclei -l "$NUCLEI_TARGETS" \
-        -tags ssrf \
-        -severity medium,high,critical \
-        -silent \
-        -rate-limit "$RATE_LIMIT" \
-        "${BB_AUTH_ARGS[@]}" \
-        -output "$FINDINGS_DIR/ssrf/nuclei_ssrf.txt" 2>/dev/null || NUCLEI_RC=$?
-    SSRF_COUNT=$(count_findings "$FINDINGS_DIR/ssrf/nuclei_ssrf.txt")
-    log_nuclei_outcome "$NUCLEI_RC" "$SSRF_COUNT" "SSRF issues" "SSRF"
-fi
-
 # Flag URL parameters for manual SSRF testing
 if [ -s "$RECON_DIR/params/interesting_params.txt" ]; then
     grep -iE '(url|redirect|dest|uri|path|file|doc|load|link|src|source|target|callback|domain|site|feed|rurl|return|next)' \
@@ -1351,7 +1320,7 @@ echo ""
 if ! skip_has cves; then
 log_info "Check 6: Known CVEs"
 
-if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
+if [ "$NUCLEI_CVE_ENABLED" = "1" ] && command -v nuclei &>/dev/null && [ -s "$NUCLEI_TARGETS" ]; then
     # Cap total CVE scan time: quick=180s, standard/full=600s. Without this,
     # nuclei -tags cve against a target with hundreds of URLs can run for
     # >90 min, causing hunt.py orchestration to time out. Honor BB_CVE_TIMEOUT
@@ -1374,8 +1343,18 @@ if command -v nuclei &>/dev/null && [ -s "$LIVE_URLS" ]; then
         -output "$FINDINGS_DIR/cves/nuclei_cves.txt" 2>/dev/null || NUCLEI_RC=$?
     CVE_COUNT=$(count_findings "$FINDINGS_DIR/cves/nuclei_cves.txt")
     log_nuclei_outcome "$NUCLEI_RC" "$CVE_COUNT" "CVEs found" "CVEs"
+    [ "$NUCLEI_RC" -eq 0 ] && NUCLEI_CVE_STATUS="complete" || NUCLEI_CVE_STATUS="incomplete"
+elif [ "$NUCLEI_CVE_ENABLED" = "1" ] && [ ! -s "$NUCLEI_TARGETS" ]; then
+    NUCLEI_CVE_STATUS="not_applicable"
+    log_done "Nuclei CVE: not applicable (no origin targets)"
+elif [ "$NUCLEI_CVE_ENABLED" = "1" ]; then
+    NUCLEI_CVE_STATUS="unavailable"
+    log_warn "Optional nuclei CVE lane unavailable; use tools/cve_scan.sh when nuclei is installed"
+else
+    log_info "Nuclei CVE lane disabled; use /scan-cves after AI selects an applicable component"
 fi
 else
+NUCLEI_CVE_STATUS="skipped"
     log_warn "Skipping CVE checks (--skip)"
 fi
 

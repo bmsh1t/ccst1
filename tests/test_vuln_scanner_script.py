@@ -189,7 +189,11 @@ def test_vuln_scanner_supports_auth_session_env():
     assert 'bb_auth_bind_target "$SCANNER_AUTH_TARGET"' in text
     assert 'bb_auth_filter_file "$ORDERED_SCAN" "$AUTH_ORDERED_SCAN"' in text
     assert '"${BB_AUTH_ARGS[@]}"' in text
-    assert 'nuclei -l "$NUCLEI_TARGETS"' in text
+    assert 'run_nuclei_timeout "$CVE_TIMEOUT"' in text
+    assert 'BBHUNT_ENABLE_NUCLEI_SQLI' not in text
+    assert 'BBHUNT_ENABLE_NUCLEI_SSRF' not in text
+    assert 'nuclei_sqli_targets' not in text
+    assert 'nuclei_ssrf_targets' not in text
     assert 'curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null --max-time 20 "$url"' in text
     assert 'nuclei -fhr "$@"' in text
 
@@ -317,10 +321,17 @@ def test_vuln_scanner_writes_structured_summary_json(tmp_path):
     assert summary["mode"] == "quick"
     assert summary["input_contract"] == "live-priority-targets"
     assert summary["raw_url_count"] == 0
+    assert summary["active_url_count"] == 0
     assert summary["parameter_url_count"] == 0
     assert summary["live_count"] == 1
     assert summary["ordered_scan_count"] == 1
     assert summary["skipped_checks"] == ["all"]
+    assert summary["nuclei_cve"] == {
+        "enabled": False,
+        "status": "skipped",
+        "input": "origin-bounded",
+        "candidate_count": 1,
+    }
     assert summary["totals"]["findings"] == 0
     assert summary["totals"]["high_value"]["verified_sqli_pocs"] == 0
     assert "mfa" in summary["categories"]
@@ -356,6 +367,8 @@ def test_vuln_scanner_keeps_historical_corpus_out_of_ordered_scan(tmp_path):
         for index in range(19_000)
     )
     (urls_dir / "all.txt").write_text(raw_urls, encoding="utf-8")
+    (urls_dir / "raw").mkdir()
+    (urls_dir / "raw" / "all.txt").write_text(raw_urls, encoding="utf-8")
     (urls_dir / "with_params.txt").write_text(
         "https://large.example/a?id=1\n"
         "https://large.example/a?id=2\n"
@@ -381,6 +394,7 @@ def test_vuln_scanner_keeps_historical_corpus_out_of_ordered_scan(tmp_path):
     summary = json.loads((findings_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["input_contract"] == "live-priority-targets"
     assert summary["raw_url_count"] == 19_000
+    assert summary["active_url_count"] == 19_000
     assert summary["parameter_url_count"] == 4
     assert summary["ordered_scan_count"] == 3
     assert summary["nuclei_target_available_count"] == 3
@@ -569,6 +583,7 @@ def test_vuln_scanner_keeps_scan_incomplete_when_nuclei_fails(tmp_path):
     env = os.environ.copy()
     env["FINDINGS_OUT_DIR"] = str(findings_dir)
     env["BB_CVE_TIMEOUT"] = "1"
+    env["BBHUNT_ENABLE_NUCLEI_CVES"] = "1"
     env["PATH"] = f"{shim_dir}:/usr/bin:/bin"
 
     result = subprocess.run(

@@ -38,6 +38,9 @@ class TestIsAttackProbe:
     def test_sqli_or_1_eq_1(self):
         assert is_attack_probe("/login?user=admin'+OR+1=1--")
 
+    def test_sqli_or_1_eq_1_without_quote(self):
+        assert is_attack_probe("/login?user=admin OR 1=1--")
+
     def test_sqli_quote_or_quote(self):
         assert is_attack_probe("/u?id=1' OR '1'='1")
 

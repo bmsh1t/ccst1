@@ -228,3 +228,22 @@ def test_projection_preserves_browser_and_js_evidence_refs(tmp_path):
     assert loaded["status"] == "valid"
     assert loaded["surface"]["evidence_refs"]["browser"]
     assert loaded["surface"]["evidence_refs"]["js"]
+
+
+def test_projection_keeps_rebuildable_semantic_surface(tmp_path):
+    _write_surface_inputs(tmp_path)
+    ranked = _ranked()
+    ranked["semantic_surface"] = [{
+        "shape_id": "shape-1",
+        "url_shape_id": "url-shape-1",
+        "candidate_count": 1,
+        "active_variant_count": 12,
+        "representative_url": "https://api.target.com/orders?id=...",
+        "raw_reference": "recon/target.com/urls/raw/all.txt.gz",
+    }]
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", ranked, manifest=manifest)
+
+    loaded = load_surface_projection(tmp_path, "target.com")
+    assert loaded["status"] == "valid"
+    assert loaded["surface"]["semantic_surface"][0]["active_variant_count"] == 12

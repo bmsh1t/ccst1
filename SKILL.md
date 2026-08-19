@@ -341,8 +341,10 @@ cat /tmp/live.txt | awk '{print $1}' | katana -d 3 -silent | anew /tmp/urls.txt
 echo TARGET | waybackurls | anew /tmp/urls.txt
 gau TARGET | anew /tmp/urls.txt
 
-# Step 4: Nuclei scan
-nuclei -l /tmp/live.txt -severity critical,high,medium -silent -o /tmp/nuclei.txt
+# Step 4: Optional targeted template pass
+# The integrated scanner keeps Nuclei disabled by default. Use /scan-cves for
+# an AI-selected component/advisory, or enable a bounded compatibility lane.
+BBHUNT_ENABLE_NUCLEI_CVES=1 bash tools/vuln_scanner.sh "recon/$TARGET" --quick
 
 # Step 5: JS secrets
 cat /tmp/urls.txt | grep "\.js$" | sort -u > /tmp/jsfiles.txt

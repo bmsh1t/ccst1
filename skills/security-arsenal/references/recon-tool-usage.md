@@ -10,7 +10,7 @@ Load this file when the task needs concrete command shapes for recon, endpoint d
 | `dnsx` | DNS resolution |
 | `httpx` | Live host probing and tech hints |
 | `katana`, `waybackurls`, `gau` | URL collection |
-| `nuclei` | Template-based finding leads |
+| `nuclei` | Explicit, bounded template-based finding leads |
 | `ffuf` | Bounded fuzzing and parameter discovery |
 | `anew`, `qsreplace`, `gf` | Deduplication, parameter shaping, pattern filtering |
 | `interactsh-client` | Controlled OOB callbacks when authorized |
@@ -26,7 +26,8 @@ cat /tmp/subs.txt | dnsx -silent | httpx -silent -status-code -title -tech-detec
 cat /tmp/live.txt | awk '{print $1}' | katana -d 3 -silent | anew /tmp/urls.txt
 echo TARGET | waybackurls | anew /tmp/urls.txt
 gau TARGET | anew /tmp/urls.txt
-nuclei -l /tmp/live.txt -severity critical,high,medium -silent -o /tmp/nuclei.txt
+# Optional compatibility pass: use target-owned origins, never the raw URL corpus.
+BBHUNT_ENABLE_NUCLEI_CVES=1 bash tools/vuln_scanner.sh recon/TARGET --quick --skip sqli,ssrf
 ```
 
 Stop condition: no live surfaces under the supplied target set, repeated 401/403/404 with no route delta, or any next step requiring real-user enumeration without current-turn opt-in.

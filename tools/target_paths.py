@@ -8,10 +8,54 @@ import json
 import os
 import re
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 
 _HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+URL_DISPLAY_LIMIT = 240
+
+
+def compact_url(value: str, *, limit: int = URL_DISPLAY_LIMIT) -> str:
+    """Bound an AI-facing URL preview without changing replay identity."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    limit = max(64, int(limit))
+    if len(raw) <= limit:
+        return raw
+
+    digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:12]
+    marker = f"[url_len={len(raw)} sha256={digest}]"
+    try:
+        parsed = urlsplit(raw)
+        # Userinfo is never useful for routing and may contain credentials.
+        authority = parsed.netloc.rsplit("@", 1)[-1]
+        prefix = f"{parsed.scheme}://{authority}" if parsed.scheme or authority else ""
+        path = parsed.path or "/"
+        if len(path) > 120:
+            path = path[:80] + "...[path]..." + path[-24:]
+        query_parts = []
+        if parsed.query:
+            raw_parts = parsed.query.split("&")
+            for part in raw_parts[:8]:
+                key, separator, _value = part.partition("=")
+                key = key[:48] or "(empty)"
+                query_parts.append(key + ("=..." if separator else ""))
+            remaining = len(raw_parts) - len(query_parts)
+            if remaining > 0:
+                query_parts.append(f"...(+{remaining} params)")
+        preview = prefix + path
+        if query_parts:
+            preview += "?" + "&".join(query_parts)
+    except (TypeError, ValueError, UnicodeError):
+        preview = raw
+
+    available = limit - len(marker) - 1
+    if available <= 4:
+        return marker[:limit]
+    if len(preview) > available:
+        preview = preview[: available - 3] + "..."
+    return f"{preview} {marker}"
 
 
 def _parse_port(value: str) -> int:

@@ -401,7 +401,7 @@ class TestRebuildMatrix:
         assert admin_ep["source_count"] == 1
         assert admin_ep["weight"] >= 3.0
 
-    def test_rebuild_uses_raw_all_as_lossless_backstop_for_filtered_urls(self, tmp_path):
+    def test_rebuild_uses_filtered_view_when_legacy_raw_backstop_exists(self, tmp_path):
         _seed_recon_with_filtered(
             tmp_path,
             "x.com",
@@ -417,7 +417,7 @@ class TestRebuildMatrix:
         endpoints = [ep["endpoint"] for ep in matrix["endpoints"]]
 
         assert "/api/v1/admin/users" in endpoints
-        assert "/api/v1/orders/123" in endpoints
+        assert "/api/v1/orders/123" not in endpoints
 
     def test_rebuild_does_not_restore_logged_js_path_artifact_from_raw_backstop(self, tmp_path):
         artifact = "https://x.com/i.visualViewport.scale/i.document.do"

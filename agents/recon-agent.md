@@ -147,7 +147,7 @@ If Burp MCP is NOT available, skip this section entirely — all recon works wit
 After running, if:
 - All hosts return 403 or static pages
 - 0 API endpoints with ID parameters
-- 0 nuclei medium/high findings
+- No new high-value leads from the bounded scanner or dedicated probes
 - No interesting JavaScript bundles
 
 → Report: "Target surface is low-signal in this recon timebox. Preserve the

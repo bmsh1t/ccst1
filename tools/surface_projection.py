@@ -192,6 +192,7 @@ def _bounded_surface(ranked: dict) -> dict:
         "js_intel",
         "source_intel",
         "browser",
+        "semantic_surface",
         "evidence_refs",
         "stats",
     )

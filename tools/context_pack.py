@@ -34,8 +34,9 @@ try:
         load_validation_runner_candidate_pool,
     )
     from tools.surface import load_surface_context, rank_surface
+    from tools.surface_index import surface_safe_preview
     from tools.surface_projection import load_surface_projection
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import compact_url, canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
     from closure_resolver import ClosureResolver  # type: ignore
@@ -51,8 +52,9 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         load_validation_runner_candidate_pool,
     )
     from surface import load_surface_context, rank_surface  # type: ignore
+    from surface_index import surface_safe_preview  # type: ignore
     from surface_projection import load_surface_projection  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_paths import compact_url, canonical_target_value, target_storage_key  # type: ignore
 
 
 SKILL_ROUTE_MODES = {"primary", "direct-only", "reference-only", "report-only"}
@@ -1198,10 +1200,12 @@ def _finding_is_candidate(finding: dict) -> bool:
     return bool(finding.get("id") or finding.get("type") or finding.get("endpoint") or finding.get("url"))
 
 
-def _finding_anchor(finding: dict) -> str:
+def _finding_anchor(finding: dict, *, compact: bool = False) -> str:
     label = str(finding.get("id") or finding.get("type") or finding.get("title") or "finding").strip()
     vuln = str(finding.get("vuln_class") or finding.get("class") or finding.get("category") or "").strip()
     endpoint = str(finding.get("endpoint") or finding.get("url") or "").strip()
+    if compact:
+        endpoint = compact_url(endpoint)
     status = str(finding.get("validation_status") or finding.get("report_status") or finding.get("status") or "").strip()
     parts = [label]
     if vuln:
@@ -1315,9 +1319,23 @@ def _text_blob(
             pieces.append(_entry_text(item))
     review_items = ranked.get("review_pool") or (ranked.get("p1", [])[:5] + ranked.get("p2", [])[:3])
     for item in review_items[:8]:
+        semantic = item.get("semantic_shape") if isinstance(item.get("semantic_shape"), dict) else {}
+        request_shapes = item.get("request_shapes") if isinstance(item.get("request_shapes"), list) else []
+        request_hint = ""
+        if request_shapes:
+            request_bits = []
+            for shape in request_shapes[:2]:
+                if not isinstance(shape, dict):
+                    continue
+                body = shape.get("body") if isinstance(shape.get("body"), dict) else {}
+                request_bits.append(
+                    f"{str(shape.get('method') or 'GET').upper()} {body.get('content_type_hint') or ''}".strip()
+                )
+            request_hint = " ".join(request_bits)
         pieces.extend([
-            str(item.get("url") or ""),
+            surface_safe_preview(str(item.get("url") or "")),
             str(item.get("path") or ""),
+            f"semantic={semantic.get('path_template', '')} params={','.join(str(name) for name, _count in semantic.get('parameter_multiset', [])[:12])} {request_hint}".strip(),
             " ".join(str(reason) for reason in item.get("reasons", [])[:3]),
             str(item.get("suggested") or ""),
         ])
@@ -2272,11 +2290,18 @@ def _hypothesis(goal_memory: dict) -> str:
 
 
 def _surface_anchor(item: dict) -> str:
-    url = str(item.get("url") or "").strip()
+    url = surface_safe_preview(str(item.get("url") or "").strip())
     reasons = ", ".join(str(reason) for reason in (item.get("reasons") or [])[:2])
     score = item.get("score")
     review_reason = str(item.get("review_reason") or "surface evidence").strip()
-    return f"Surface review {url} score_hint={score} reason={review_reason}; {reasons}".strip()
+    value_summary = item.get("value_summary") if isinstance(item.get("value_summary"), dict) else {}
+    value_bits = []
+    for signal in (value_summary.get("signals") or [])[:3]:
+        classes = "/".join(str(value) for value in signal.get("classes", [])[:3] if str(value))
+        name = str(signal.get("name") or "param")[:40]
+        value_bits.append(f"{name}:{classes or 'structured'}:{signal.get('length', '?')}")
+    value_hint = f" values={','.join(value_bits)}" if value_bits else ""
+    return f"Surface review {url} score_hint={score} reason={review_reason}{value_hint}; {reasons}".strip()
 
 
 def _gap_anchor(gap: dict) -> str:
@@ -2294,7 +2319,7 @@ def _runner_candidate_anchors(candidates: list[dict]) -> list[str]:
                 lane=item.get("lane", ""),
                 result=item.get("result", ""),
                 method=item.get("method", "GET"),
-                url=item.get("url", ""),
+                url=compact_url(item.get("url", "")),
                 rubric=rubric_suffix,
             )
         )
@@ -2305,7 +2330,7 @@ def _local_intel_anchors(local_intel: dict) -> list[str]:
     anchors: list[str] = []
     browser = local_intel.get("browser") or {}
     for url in (browser.get("xhr_endpoints") or [])[:3]:
-        anchors.append(f"Browser XHR/API: {url}")
+        anchors.append(f"Browser XHR/API: {compact_url(url)}")
     for line in (browser.get("params") or [])[:3]:
         anchors.append(f"Browser param: {line}")
     for form in (browser.get("forms") or [])[:2]:
@@ -2382,7 +2407,7 @@ def _build_evidence_anchors(
     for gap in gaps[:5]:
         anchors.append(_gap_anchor(gap))
     for finding in findings[:3]:
-        anchors.append(f"Finding: {_finding_anchor(finding)}")
+        anchors.append(f"Finding: {_finding_anchor(finding, compact=True)}")
     return _dedupe(anchors)[:12] or ["No strong local evidence anchor yet; start from target memory and recon freshness."]
 
 

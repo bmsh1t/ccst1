@@ -6,18 +6,27 @@ Reduces false positives in URL collection and exposure detection.
 
 from collections import Counter
 import argparse
+import hashlib
+import json
+import os
 from pathlib import Path
 import re
 import sys
-from urllib.parse import parse_qsl, urlencode, urlparse
+import tempfile
+from urllib.parse import parse_qsl, unquote_plus, urlencode, urlparse, urlunsplit
 
 try:
+    from tools.attack_probe_filter import is_attack_probe, sanitize_attack_probe_url
     from tools.surface_index import surface_shape
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from attack_probe_filter import is_attack_probe, sanitize_attack_probe_url  # type: ignore
     from surface_index import surface_shape  # type: ignore
 
 
-DEFAULT_MAX_PER_SHAPE = 8
+# Active is a lossless replay inventory after semantic noise removal. A shape
+# cap is still available for callers that explicitly want a bounded projection.
+DEFAULT_MAX_PER_SHAPE = 0
+DEFAULT_LOG_SAMPLE_LIMIT = 64
 
 
 def _normalize_domain(value):
@@ -67,11 +76,63 @@ def _append_log(log_file, lines):
     try:
         path = Path(log_file)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
+        with path.open("a", encoding="utf-8") as handle:
             for line in lines:
-                f.write(line.rstrip("\n") + "\n")
+                handle.write(line.rstrip("\n") + "\n")
     except OSError:
         return
+
+
+def _atomic_replace_text(path: Path, content: str) -> None:
+    """Publish a small text artifact without exposing a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def _active_url(url: str) -> tuple[str, bool]:
+    """Return a replay-safe representative while preserving endpoint shape."""
+    value = sanitize_attack_probe_url(url) if is_attack_probe(url) else str(url or "").strip()
+    had_authority = value.startswith("//") or "://" in value
+    try:
+        parsed = urlparse(value if "://" in value or value.startswith("//") else f"//{value}")
+        if not parsed.query:
+            return value, value != url
+        meaningful_parts = []
+        for part in parsed.query.split("&"):
+            key_raw, separator, _item = part.partition("=")
+            key = unquote_plus(key_raw)
+            if not is_cache_param_in_context(value, key):
+                meaningful_parts.append(part if separator else key_raw)
+        query = "&".join(meaningful_parts)
+        if query == parsed.query:
+            return value, value != url
+        normalized = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
+        if not had_authority and normalized.startswith("//"):
+            normalized = normalized[2:]
+        return normalized, value != url or normalized != value
+    except (TypeError, ValueError):
+        return value, value != url
 
 
 def _is_in_scope_or_relative(url, target_domain):
@@ -378,7 +439,9 @@ def is_cache_param(param_name):
 def filter_urls_batch(input_file, output_file, target_domain,
                      remove_external=True, remove_path_explosion=True,
                      explosion_threshold=4, log_file=None,
-                     max_per_shape=DEFAULT_MAX_PER_SHAPE):
+                     max_per_shape=DEFAULT_MAX_PER_SHAPE,
+                     summary_file=None,
+                     max_log_samples=DEFAULT_LOG_SAMPLE_LIMIT):
     """
     Batch filter URLs from file.
 
@@ -389,7 +452,8 @@ def filter_urls_batch(input_file, output_file, target_domain,
         remove_external: Remove external URLs
         remove_path_explosion: Remove path explosion URLs
         explosion_threshold: Path explosion detection threshold (default: 4)
-        log_file: Optional file to log all filtered URLs for review
+        log_file: Optional file to log filtered URLs for review
+        max_per_shape: Optional explicit cap; zero keeps all distinct URLs
 
     Returns:
         Dict with stats (total, kept, removed_external, removed_explosion)
@@ -398,81 +462,130 @@ def filter_urls_batch(input_file, output_file, target_domain,
              'removed_encoding_errors': 0, 'removed_html_encoding': 0,
              'removed_js_path_artifacts': 0, 'removed_malformed_paths': 0,
              'removed_invalid': 0, 'removed_duplicates': 0, 'removed_cache_only': 0,
-             'removed_shape_overflow': 0}
+             'removed_shape_overflow': 0, 'sanitized_attack_probes': 0,
+             'normalized_cache_params': 0}
     dedupe_keys = set()
     shape_counts = Counter()
+    log_samples: dict[str, list[str]] = {}
     log_handle = None
     if log_file:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_handle = log_path.open("a", encoding="utf-8")
+        log_handle = log_path.open("w", encoding="utf-8")
 
     def reject(counter, label, url):
         stats[counter] += 1
-        if log_handle:
+        samples = log_samples.setdefault(label, [])
+        should_log = len(samples) < max(0, int(max_log_samples))
+        if should_log:
+            samples.append(url)
+        if log_handle and should_log:
             log_handle.write(f"[{label}] {url}\n")
 
+    input_path = Path(input_file)
+    output_path = Path(output_file)
+    output_temp: Path | None = None
+    output_digest = hashlib.sha256()
     try:
-        with open(input_file, "r", encoding="utf-8", errors="ignore") as source, open(
-            output_file, "w", encoding="utf-8"
-        ) as output:
-            for raw in source:
-                url = raw.strip()
-                if not url:
-                    continue
-                stats['total'] += 1
-                if is_invalid_url(url):
-                    reject('removed_invalid', 'INVALID_URL', url)
-                    continue
-                if has_url_encoding_error(url):
-                    reject('removed_encoding_errors', 'ENCODING_ERROR', url)
-                    continue
-                if has_malformed_path(url):
-                    reject('removed_malformed_paths', 'MALFORMED_PATH', url)
-                    continue
-                if has_html_unicode_encoding(url):
-                    reject('removed_html_encoding', 'HTML_ENCODING', url)
-                    continue
-                if has_js_path_artifact(url):
-                    reject('removed_js_path_artifacts', 'JS_PATH_ARTIFACT', url)
-                    continue
-                if remove_external and not _is_in_scope_or_relative(url, target_domain):
-                    reject('removed_external', 'EXTERNAL', url)
-                    continue
-                if remove_path_explosion and detect_path_explosion(url, explosion_threshold):
-                    reject('removed_explosion', 'PATH_EXPLOSION', url)
-                    continue
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "wb", dir=str(output_path.parent), prefix=f".{output_path.name}.", suffix=".tmp", delete=False
+        ) as staged:
+            output_temp = Path(staged.name)
+            with input_path.open("r", encoding="utf-8", errors="ignore") as source:
+                for raw in source:
+                    original_url = raw.strip()
+                    if not original_url:
+                        continue
+                    url = original_url
+                    probe_url = sanitize_attack_probe_url(url) if is_attack_probe(url) else url
+                    if probe_url != url:
+                        stats['sanitized_attack_probes'] += 1
+                        url = probe_url
+                    stats['total'] += 1
+                    if is_invalid_url(url):
+                        reject('removed_invalid', 'INVALID_URL', original_url)
+                        continue
+                    if has_url_encoding_error(url):
+                        reject('removed_encoding_errors', 'ENCODING_ERROR', original_url)
+                        continue
+                    if has_malformed_path(url):
+                        reject('removed_malformed_paths', 'MALFORMED_PATH', original_url)
+                        continue
+                    if has_html_unicode_encoding(url):
+                        reject('removed_html_encoding', 'HTML_ENCODING', original_url)
+                        continue
+                    if has_js_path_artifact(url):
+                        reject('removed_js_path_artifacts', 'JS_PATH_ARTIFACT', original_url)
+                        continue
+                    if remove_external and not _is_in_scope_or_relative(url, target_domain):
+                        reject('removed_external', 'EXTERNAL', original_url)
+                        continue
+                    if remove_path_explosion and detect_path_explosion(url, explosion_threshold):
+                        reject('removed_explosion', 'PATH_EXPLOSION', original_url)
+                        continue
 
-                key = _dedupe_key(url)
-                if key in dedupe_keys:
-                    reject('removed_duplicates', 'DUPLICATE_URL', url)
-                    if _has_cache_param(url):
-                        stats['removed_cache_only'] += 1
-                    continue
-                dedupe_keys.add(key)
-                shape_id = str(surface_shape(url).get("id") or "")
-                if max_per_shape and shape_id and shape_counts[shape_id] >= max_per_shape:
-                    reject('removed_shape_overflow', 'SHAPE_OVERFLOW', url)
-                    continue
-                if shape_id:
-                    shape_counts[shape_id] += 1
-                output.write(url + "\n")
-                stats['kept'] += 1
+                    active_url, changed = _active_url(url)
+                    if _has_cache_param(url) and changed:
+                        stats['normalized_cache_params'] += 1
+                    key = _dedupe_key(active_url)
+                    if key in dedupe_keys:
+                        reject('removed_duplicates', 'DUPLICATE_URL', original_url)
+                        if _has_cache_param(url):
+                            stats['removed_cache_only'] += 1
+                        continue
+                    dedupe_keys.add(key)
+                    shape_id = str(surface_shape(active_url).get("id") or "")
+                    if max_per_shape and shape_id and shape_counts[shape_id] >= max_per_shape:
+                        reject('removed_shape_overflow', 'SHAPE_OVERFLOW', original_url)
+                        continue
+                    if shape_id:
+                        shape_counts[shape_id] += 1
+                    encoded = f"{active_url}\n".encode("utf-8")
+                    staged.write(encoded)
+                    output_digest.update(encoded)
+                    stats['kept'] += 1
+            staged.flush()
+            os.fsync(staged.fileno())
+        os.replace(output_temp, output_path)
+        output_temp = None
     finally:
         if log_handle:
             log_handle.close()
+        if output_temp is not None:
+            try:
+                output_temp.unlink()
+            except FileNotFoundError:
+                pass
+    if summary_file:
+        summary = {
+            "schema_version": 1,
+            "input": str(input_path),
+            "output": str(output_path),
+            "total": stats["total"],
+            "kept": stats["kept"],
+            "removed": stats["total"] - stats["kept"],
+            "output_sha256": output_digest.hexdigest(),
+            "max_per_shape": max_per_shape,
+            "log_sample_limit": max_log_samples,
+            "stats": stats,
+            "log_samples": log_samples,
+        }
+        _atomic_replace_text(Path(summary_file), json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
 
     return stats
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Filter recon URL noise into a separate output file.",
+        description="Publish a filtered Active recon URL view.",
     )
     parser.add_argument("input_file")
     parser.add_argument("output_file")
     parser.add_argument("target_domain")
     parser.add_argument("--log-file", default=None)
+    parser.add_argument("--summary-file", default=None)
+    parser.add_argument("--max-log-samples", type=int, default=DEFAULT_LOG_SAMPLE_LIMIT)
     parser.add_argument("--explosion-threshold", type=int, default=4)
     parser.add_argument("--max-per-shape", type=int, default=DEFAULT_MAX_PER_SHAPE)
     parser.add_argument("--no-remove-external", action="store_true")
@@ -485,6 +598,8 @@ def main(argv=None):
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     if args.max_per_shape < 0:
         parser.error("--max-per-shape must be >= 0")
+    if args.max_log_samples < 0:
+        parser.error("--max-log-samples must be >= 0")
 
     stats = filter_urls_batch(
         args.input_file,
@@ -495,6 +610,8 @@ def main(argv=None):
         explosion_threshold=args.explosion_threshold,
         log_file=args.log_file,
         max_per_shape=args.max_per_shape,
+        summary_file=args.summary_file,
+        max_log_samples=args.max_log_samples,
     )
     kept_percent = (stats['kept'] / stats['total'] * 100) if stats['total'] else 0.0
 
@@ -510,6 +627,8 @@ def main(argv=None):
     print(f"  Removed duplicate URLs: {stats['removed_duplicates']}")
     print(f"  Removed cache-only duplicates: {stats['removed_cache_only']}")
     print(f"  Removed shape overflow: {stats['removed_shape_overflow']}")
+    print(f"  Sanitized historical probes: {stats['sanitized_attack_probes']}")
+    print(f"  Normalized cache parameters: {stats['normalized_cache_params']}")
     print(f"  Kept: {stats['kept']} ({kept_percent:.1f}%)")
     return 0
 

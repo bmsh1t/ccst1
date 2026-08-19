@@ -76,11 +76,22 @@ PAYLOAD_MARKERS: list[re.Pattern] = [
 SAFE_PROBE_VALUE = "__probe__"
 NOSQL_OPERATOR_KEY_RE = re.compile(r"\[\$[A-Za-z0-9_:-]+\]", re.I)
 PATH_PROBE_SEGMENT_RE = re.compile(r"(?i)(?:%5c%22|%5c\\?\"|\\%22)")
+_PROBE_FAST_HINT_RE = re.compile(
+    r"(?:union|sleep|benchmark|%27|'|\b(?:or|and)\s*\d+\s*=|or\+|and\+|%20or%20|%20and%20|<|%3c|"
+    r"onerror|onload|javascript:|data:text/html|%5c|%22|\\|\.\./|%2e|%2f|"
+    r"etc/|/proc/|windows/|eval|system|phpinfo|cat |\$\(|<\?xml|<!entity|"
+    r"\$\{|%24%7b|\{\{|<%=|#\{|\[\$|%24where|%5b%24)",
+    re.I,
+)
 
 
 def is_attack_probe(url: str) -> bool:
     """Return True if a URL contains payload markers rather than stable surface."""
     if not url:
+        return False
+    # Most recon URLs are ordinary paths. Avoid running every payload regex
+    # unless a cheap marker search says one can possibly match.
+    if _PROBE_FAST_HINT_RE.search(url) is None:
         return False
     return any(pattern.search(url) for pattern in PAYLOAD_MARKERS)
 

@@ -151,12 +151,31 @@ build_filtered_first_backstop() {
     local raw="$2"
     local output="$3"
 
-    # filtered 只决定优先级，raw 作为无损兜底追加，避免降噪误删导致后续 JS/参数证据变薄。
+    # 兼容旧目录：优先使用 filtered 视图，并对同一 Active inventory 做 exact 去重。
     : > "$output"
     {
         [ -s "$filtered" ] && cat "$filtered"
         [ -s "$raw" ] && cat "$raw"
     } 2>/dev/null | awk 'NF && !seen[$0]++' > "$output" || true
+}
+
+publish_url_view() {
+    local source="$1"
+    local output="$2"
+    local pattern="${3:-}"
+    local temporary
+    local rc=0
+    temporary="$(mktemp "${output}.XXXXXX")"
+    if [ -n "$pattern" ]; then
+        grep -iE "$pattern" "$source" > "$temporary" 2>/dev/null || rc=$?
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+            rm -f "$temporary"
+            return "$rc"
+        fi
+    else
+        cp "$source" "$temporary"
+    fi
+    mv -f "$temporary" "$output"
 }
 
 build_target_owned_input() {
@@ -471,8 +490,8 @@ post_compress_raw_recon_urls() {
     local total_after=0
     local src file before after gz_size
 
-    # 默认开启无损压缩：只压缩已并入 all.txt 的原始采集源，
-    # 不动 all.txt/with_params.txt/exposure/live/subdomains，避免影响后续 AI 分析。
+    # 默认开启无损压缩：只压缩 raw URL 证据和原始 collector 源，
+    # 不动 Active all.txt/with_params.txt/exposure/live/subdomains。
     # 如需保留原始 .txt 文件形态，可设置 BBHUNT_RECON_POST_COMPRESS=0。
     if ! env_truthy "${BBHUNT_RECON_POST_COMPRESS:-1}"; then
         return 0
@@ -488,9 +507,11 @@ post_compress_raw_recon_urls() {
     echo ""
     log_info "Post-run storage guard: compress raw URL source files"
 
-    for src in gau wayback waymore katana; do
-        file="$recon_dir/urls/${src}.txt"
+    for file in "$recon_dir/urls/raw/all.txt" \
+        "$recon_dir/urls/gau.txt" "$recon_dir/urls/wayback.txt" \
+        "$recon_dir/urls/waymore.txt" "$recon_dir/urls/katana.txt"; do
         [ -f "$file" ] || continue
+        src="$(basename "$file" .txt)"
 
         before=$(wc -c < "$file" 2>/dev/null | tr -d ' ' || echo 0)
         if [ "${before:-0}" -lt "$min_bytes" ]; then
@@ -526,9 +547,9 @@ post_compress_raw_recon_urls() {
         post_compress        "enabled" \
         compressed_raw_files "$compressed" \
         min_size_mb          "$min_mb" \
-        note                 "all.txt/with_params.txt/exposure/live/subdomains preserved"
+        note                 "Active all.txt/with_params.txt/exposure/live/subdomains preserved; raw URL archive is gzip evidence"
     emit_claude_hint_actions \
-        "continue analysis from recon/${RECON_TARGET_KEY}/urls/all.txt and *_filtered.txt; raw source .gz files are evidence archives" \
+        "continue analysis from recon/${RECON_TARGET_KEY}/urls/all.txt; raw URL/source .gz files are evidence archives" \
         "if disk remains tight, review large recon logs before deleting any recon intelligence"
 }
 
@@ -1353,6 +1374,9 @@ PY
 )"
 RECON_DIR="$BASE_DIR/recon/$RECON_TARGET_KEY"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+RAW_URL_DIR="$RECON_DIR/urls/raw"
+RAW_URLS_STAGING="$RAW_URL_DIR/.all.${TIMESTAMP}.txt"
+RAW_URLS_ARCHIVE="$RAW_URL_DIR/all.txt"
 THREADS="${BB_THREADS:-20}"
 RATE_LIMIT="${BB_RATE_LIMIT:-50}"  # requests per second
 SUBFINDER_THREADS="${SUBFINDER_THREADS:-50}"
@@ -1377,7 +1401,7 @@ if [ -z "$HTTPX_BIN" ]; then
     log_warn "Install hint: GOBIN=\"\$HOME/go/bin\" go install github.com/projectdiscovery/httpx/cmd/httpx@latest"
 fi
 
-mkdir -p "$RECON_DIR"/{subdomains,live,ports,urls,js,dirs,params,exposure,logs}
+mkdir -p "$RECON_DIR"/{subdomains,live,ports,urls,js,dirs,params,exposure,logs} "$RAW_URL_DIR"
 RECON_MANIFEST="$RECON_DIR/recon_manifest.jsonl"
 CIDR_OFFSET=0
 if [ "$TARGET_KIND" = "cidr" ]; then
@@ -1452,18 +1476,7 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/ports/open_host_ports_nmap.txt"
 : > "$RECON_DIR/ports/open_host_ports_explicit.txt"
 : > "$RECON_DIR/urls/katana_targets.txt"
-: > "$RECON_DIR/urls/all.txt"
-: > "$RECON_DIR/urls/all_filtered.txt"
-: > "$RECON_DIR/urls/with_params.txt"
-: > "$RECON_DIR/urls/with_params_filtered.txt"
-: > "$RECON_DIR/urls/with_params_analysis.txt"
-: > "$RECON_DIR/urls/js_files.txt"
-: > "$RECON_DIR/urls/js_files_filtered.txt"
 : > "$RECON_DIR/urls/js_files_analysis.txt"
-: > "$RECON_DIR/urls/api_endpoints.txt"
-: > "$RECON_DIR/urls/api_endpoints_filtered.txt"
-: > "$RECON_DIR/urls/sensitive_paths.txt"
-: > "$RECON_DIR/urls/sensitive_paths_filtered.txt"
 : > "$RECON_DIR/js/endpoints.txt"
 : > "$RECON_DIR/js/endpoints_raw.txt"
 : > "$RECON_DIR/js/potential_secrets.txt"
@@ -2630,56 +2643,32 @@ start_collector katana "$RECON_DIR/urls/katana.txt" \
     "recon/${RECON_TARGET_KEY}/urls/katana.txt" collect_katana_urls
 wait_collector_group
 
-# Merge only primary collector outputs. Do not glob every urls/*.txt here:
-# derived files from previous runs (with_params/js/api/_filtered) must not feed
-# back into the raw URL corpus.
+# Merge only primary collector outputs into a run-scoped raw staging file.
+# Derived Active files from previous runs must never feed back into this corpus.
 {
     [ -s "$RECON_DIR/live/urls.txt" ] && cat "$RECON_DIR/live/urls.txt"
     [ -s "$RECON_DIR/live/seed_urls.txt" ] && cat "$RECON_DIR/live/seed_urls.txt"
     for url_source in gau wayback waymore katana; do
         append_artifact "$RECON_DIR/urls/${url_source}.txt"
     done
-} 2>/dev/null | sort -u > "$RECON_DIR/urls/all.txt" 2>/dev/null || true
-log_done "Total unique URLs: $(wc -l < "$RECON_DIR/urls/all.txt" 2>/dev/null || echo 0)"
+} 2>/dev/null | sort -u > "${RAW_URLS_STAGING}.tmp" 2>/dev/null
+mv -f "${RAW_URLS_STAGING}.tmp" "$RAW_URLS_STAGING"
+RAW_URLS_TOTAL=$(wc -l < "$RAW_URLS_STAGING" 2>/dev/null | tr -d ' ' || echo 0)
+log_done "Raw URL staging: $RAW_URLS_TOTAL unique URL(s)"
 
-# Filter interesting URLs
-: > "$RECON_DIR/urls/with_params.txt"
-: > "$RECON_DIR/urls/js_files.txt"
-: > "$RECON_DIR/urls/api_endpoints.txt"
-: > "$RECON_DIR/urls/sensitive_paths.txt"
-
-if [ -s "$RECON_DIR/urls/all.txt" ]; then
-    # URLs with parameters (potential injection points)
-    grep '?' "$RECON_DIR/urls/all.txt" > "$RECON_DIR/urls/with_params.txt" 2>/dev/null || true
-    log_done "URLs with parameters: $(wc -l < "$RECON_DIR/urls/with_params.txt" 2>/dev/null || echo 0)"
-
-    # JS files
-    grep -iE '\.js(\?|$)' "$RECON_DIR/urls/all.txt" > "$RECON_DIR/urls/js_files.txt" 2>/dev/null || true
-    log_done "JS files: $(wc -l < "$RECON_DIR/urls/js_files.txt" 2>/dev/null || echo 0)"
-
-    # API endpoints
-    grep -iE '(/api/|/v[0-9]+/|/graphql|/rest/)' "$RECON_DIR/urls/all.txt" > "$RECON_DIR/urls/api_endpoints.txt" 2>/dev/null || true
-    log_done "API endpoints: $(wc -l < "$RECON_DIR/urls/api_endpoints.txt" 2>/dev/null || echo 0)"
-
-    # Potentially sensitive paths
-    grep -iE '\.(env|config|xml|json|yaml|yml|bak|backup|old|orig|sql|db|log|txt|conf|ini|htaccess|htpasswd|git)' \
-        "$RECON_DIR/urls/all.txt" > "$RECON_DIR/urls/sensitive_paths.txt" 2>/dev/null || true
-    log_done "Sensitive paths: $(wc -l < "$RECON_DIR/urls/sensitive_paths.txt" 2>/dev/null || echo 0)"
-fi
-
-URLS_TOTAL=$(wc -l < "$RECON_DIR/urls/all.txt" 2>/dev/null | tr -d ' ' || echo 0)
-URLS_PARAMS=$(wc -l < "$RECON_DIR/urls/with_params.txt" 2>/dev/null | tr -d ' ' || echo 0)
-URLS_JS=$(wc -l < "$RECON_DIR/urls/js_files.txt" 2>/dev/null | tr -d ' ' || echo 0)
-URLS_API=$(wc -l < "$RECON_DIR/urls/api_endpoints.txt" 2>/dev/null | tr -d ' ' || echo 0)
-URLS_SENS=$(wc -l < "$RECON_DIR/urls/sensitive_paths.txt" 2>/dev/null | tr -d ' ' || echo 0)
+URLS_TOTAL=0
+URLS_PARAMS=0
+URLS_JS=0
+URLS_API=0
+URLS_SENS=0
 URL_COLLECTION_STATUS="ok"
-[ "$URLS_TOTAL" -eq 0 ] && URL_COLLECTION_STATUS="partial"
+[ "$RAW_URLS_TOTAL" -eq 0 ] && URL_COLLECTION_STATUS="partial"
 record_recon_phase \
     url_collection \
     "$URL_COLLECTION_STATUS" \
-    "recon/${RECON_TARGET_KEY}/urls/all.txt" \
-    "$URLS_TOTAL" \
-    "raw URL corpus is authoritative; filtered files are priority views only"
+    "recon/${RECON_TARGET_KEY}/urls/raw/all.txt" \
+    "$RAW_URLS_TOTAL" \
+    "raw URL staging is retained until Active publication; Active all.txt is published after filtering"
 
 # ============================================================
 # Phase 4.5: URL Denoising (non-destructive)
@@ -2695,47 +2684,53 @@ URLS_API_FILTERED=0
 URLS_SENS_FILTERED=0
 URL_FILTER_LOG="recon/${RECON_TARGET_KEY}/urls/filter.log"
 URL_FILTER_LOG_ABS="$RECON_DIR/urls/filter.log"
-URL_FILTER_SUMMARY="$RECON_DIR/urls/filter_summary.txt"
+URL_FILTER_SUMMARY="$RECON_DIR/urls/filter_summary.json"
+URL_FILTER_STDOUT="$RECON_DIR/urls/filter_summary.txt"
 URL_DENOISE_STATUS="skipped"
 
-# Avoid stale filtered artifacts when recon is rerun in the same target dir.
-: > "$RECON_DIR/urls/all_filtered.txt"
-: > "$RECON_DIR/urls/with_params_filtered.txt"
-: > "$RECON_DIR/urls/js_files_filtered.txt"
-: > "$RECON_DIR/urls/api_endpoints_filtered.txt"
-: > "$RECON_DIR/urls/sensitive_paths_filtered.txt"
-
-if [ -s "$RECON_DIR/urls/all.txt" ] && [ -f "$BASE_DIR/tools/recon_filters.py" ]; then
-    log_step "Filtering URL noise into auxiliary *_filtered files (raw files preserved)..."
-    URL_DENOISE_STATUS="ok"
-
-    : > "$URL_FILTER_LOG_ABS"
-    : > "$URL_FILTER_SUMMARY"
-
-    python3 "$BASE_DIR/tools/recon_filters.py" \
+if [ -f "$RAW_URLS_STAGING" ] && [ -f "$BASE_DIR/tools/recon_filters.py" ]; then
+    log_step "Filtering raw URL staging and atomically publishing Active URL views..."
+    URL_FILTER_STDOUT_TMP="${URL_FILTER_STDOUT}.tmp"
+    if python3 "$BASE_DIR/tools/recon_filters.py" \
+        "$RAW_URLS_STAGING" \
         "$RECON_DIR/urls/all.txt" \
-        "$RECON_DIR/urls/all_filtered.txt" \
         "$TARGET" \
         --log-file "$URL_FILTER_LOG_ABS" \
-        >> "$URL_FILTER_SUMMARY" 2>&1 || true
-
-    if [ -f "$RECON_DIR/urls/all_filtered.txt" ]; then
-        grep '?' "$RECON_DIR/urls/all_filtered.txt" > "$RECON_DIR/urls/with_params_filtered.txt" 2>/dev/null || true
-        grep -iE '\.js(\?|$)' "$RECON_DIR/urls/all_filtered.txt" > "$RECON_DIR/urls/js_files_filtered.txt" 2>/dev/null || true
-        grep -iE '(/api/|/v[0-9]+/|/graphql|/rest/)' "$RECON_DIR/urls/all_filtered.txt" > "$RECON_DIR/urls/api_endpoints_filtered.txt" 2>/dev/null || true
-        grep -iE '\.(env|config|xml|json|yaml|yml|bak|backup|old|orig|sql|db|log|txt|conf|ini|htaccess|htpasswd|git)' \
-            "$RECON_DIR/urls/all_filtered.txt" > "$RECON_DIR/urls/sensitive_paths_filtered.txt" 2>/dev/null || true
-
-        URLS_FILTERED=$(wc -l < "$RECON_DIR/urls/all_filtered.txt" 2>/dev/null | tr -d ' ' || echo 0)
-        URLS_PARAMS_FILTERED=$(wc -l < "$RECON_DIR/urls/with_params_filtered.txt" 2>/dev/null | tr -d ' ' || echo 0)
-        URLS_JS_FILTERED=$(wc -l < "$RECON_DIR/urls/js_files_filtered.txt" 2>/dev/null | tr -d ' ' || echo 0)
-        URLS_API_FILTERED=$(wc -l < "$RECON_DIR/urls/api_endpoints_filtered.txt" 2>/dev/null | tr -d ' ' || echo 0)
-        URLS_SENS_FILTERED=$(wc -l < "$RECON_DIR/urls/sensitive_paths_filtered.txt" 2>/dev/null | tr -d ' ' || echo 0)
-
-        log_done "Denoising complete: raw all.txt preserved; filtered URLs: $URLS_FILTERED; review $URL_FILTER_LOG"
+        --summary-file "$URL_FILTER_SUMMARY" \
+        > "$URL_FILTER_STDOUT_TMP" 2>&1; then
+        mv -f "$URL_FILTER_STDOUT_TMP" "$URL_FILTER_STDOUT"
+        URL_DENOISE_STATUS="ok"
+        publish_url_view "$RECON_DIR/urls/all.txt" "$RECON_DIR/urls/with_params.txt" '.*\?.*'
+        cp "$RECON_DIR/urls/with_params.txt" "$RECON_DIR/urls/with_params_analysis.txt.tmp"
+        mv -f "$RECON_DIR/urls/with_params_analysis.txt.tmp" "$RECON_DIR/urls/with_params_analysis.txt"
+        publish_url_view "$RECON_DIR/urls/all.txt" "$RECON_DIR/urls/js_files.txt" '\.js(\?|$)'
+        publish_url_view "$RECON_DIR/urls/all.txt" "$RECON_DIR/urls/api_endpoints.txt" '(/api/|/v[0-9]+/|/graphql|/rest/)'
+        publish_url_view "$RECON_DIR/urls/all.txt" "$RECON_DIR/urls/sensitive_paths.txt" '\.(env|config|xml|json|yaml|yml|bak|backup|old|orig|sql|db|log|txt|conf|ini|htaccess|htpasswd|git)'
+        cp "$RECON_DIR/urls/all.txt" "$RECON_DIR/urls/all_filtered.txt.tmp"
+        mv -f "$RECON_DIR/urls/all_filtered.txt.tmp" "$RECON_DIR/urls/all_filtered.txt"
+        cp "$RECON_DIR/urls/with_params.txt" "$RECON_DIR/urls/with_params_filtered.txt.tmp"
+        mv -f "$RECON_DIR/urls/with_params_filtered.txt.tmp" "$RECON_DIR/urls/with_params_filtered.txt"
+        cp "$RECON_DIR/urls/js_files.txt" "$RECON_DIR/urls/js_files_filtered.txt.tmp"
+        mv -f "$RECON_DIR/urls/js_files_filtered.txt.tmp" "$RECON_DIR/urls/js_files_filtered.txt"
+        cp "$RECON_DIR/urls/api_endpoints.txt" "$RECON_DIR/urls/api_endpoints_filtered.txt.tmp"
+        mv -f "$RECON_DIR/urls/api_endpoints_filtered.txt.tmp" "$RECON_DIR/urls/api_endpoints_filtered.txt"
+        cp "$RECON_DIR/urls/sensitive_paths.txt" "$RECON_DIR/urls/sensitive_paths_filtered.txt.tmp"
+        mv -f "$RECON_DIR/urls/sensitive_paths_filtered.txt.tmp" "$RECON_DIR/urls/sensitive_paths_filtered.txt"
+        URLS_FILTERED=$(wc -l < "$RECON_DIR/urls/all.txt" 2>/dev/null | tr -d ' ' || echo 0)
+        URLS_PARAMS_FILTERED=$(wc -l < "$RECON_DIR/urls/with_params.txt" 2>/dev/null | tr -d ' ' || echo 0)
+        URLS_JS_FILTERED=$(wc -l < "$RECON_DIR/urls/js_files.txt" 2>/dev/null | tr -d ' ' || echo 0)
+        URLS_API_FILTERED=$(wc -l < "$RECON_DIR/urls/api_endpoints.txt" 2>/dev/null | tr -d ' ' || echo 0)
+        URLS_SENS_FILTERED=$(wc -l < "$RECON_DIR/urls/sensitive_paths.txt" 2>/dev/null | tr -d ' ' || echo 0)
+        URLS_TOTAL="$URLS_FILTERED"
+        URLS_PARAMS="$URLS_PARAMS_FILTERED"
+        URLS_JS="$URLS_JS_FILTERED"
+        URLS_API="$URLS_API_FILTERED"
+        URLS_SENS="$URLS_SENS_FILTERED"
+        log_done "Active URL publication complete: $URLS_FILTERED URL(s); raw staging retained for evidence"
     else
+        rm -f "$URL_FILTER_STDOUT_TMP"
         URL_DENOISE_STATUS="partial"
-        log_warn "Denoising produced no filtered URL file; raw all.txt preserved"
+        log_warn "URL filtering failed; previous Active URL files were preserved"
     fi
 else
     log_warn "Skipping denoising - recon_filters.py not found or no URLs collected"
@@ -2744,9 +2739,9 @@ fi
 record_recon_phase \
     url_denoising \
     "$URL_DENOISE_STATUS" \
-    "recon/${RECON_TARGET_KEY}/urls/all_filtered.txt" \
+    "recon/${RECON_TARGET_KEY}/urls/all.txt" \
     "$URLS_FILTERED" \
-    "non-destructive priority view; raw all.txt remains the lossless backstop"
+    "Active filtered URL view; raw URL staging/archive remains available for Closure and targeted review"
 
 emit_claude_hint \
     phase                url_collection \
@@ -3495,7 +3490,7 @@ collect_exposure_candidates() {
         | sed "s|^|[$label] |" >> "$EXTERNAL_SERVICE_HOSTS" || true
 }
 
-collect_exposure_candidates "$RECON_DIR/urls/all.txt" "urls"
+collect_exposure_candidates "$RAW_URLS_STAGING" "urls-raw"
 collect_exposure_candidates "$RECON_DIR/js/endpoints.txt" "js"
 collect_exposure_candidates "$RECON_DIR/js/linkfinder_endpoints.txt" "linkfinder"
 collect_exposure_candidates "$RECON_DIR/js/potential_secrets.txt" "js-secrets"
@@ -3985,7 +3980,7 @@ record_recon_phase \
     "$PARAM_DISCOVERY_STATUS" \
     "recon/${RECON_TARGET_KEY}/params/unique_params.txt" \
     "$UNIQUE_PARAMS" \
-    "parameter input uses filtered-first ordering plus raw with_params.txt backstop"
+    "parameter input uses the published Active with_params.txt view; raw URL archive remains separate"
 emit_claude_hint \
     phase                param_disco \
     unique_params        "$UNIQUE_PARAMS" \
@@ -4091,6 +4086,9 @@ emit_claude_hint_actions \
 # ============================================================
 # Optional post-run storage guard
 # ============================================================
+if [ -f "$RAW_URLS_STAGING" ]; then
+    mv -f "$RAW_URLS_STAGING" "$RAW_URLS_ARCHIVE"
+fi
 post_compress_raw_recon_urls "$RECON_DIR"
 
 # Surface index/projection 是可重建派生视图。收尾失败不能抹掉已完成的

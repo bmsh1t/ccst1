@@ -41,7 +41,8 @@ BBHUNT_ENABLE_AMASS=1 python3 tools/hunt.py --target target.com --recon-only
 BBHUNT_ENABLE_AMASS=1 bash tools/recon_engine.sh target.com
 ```
 
-`hunt.py --recon-only` 默认使用 normal profile；quick/normal 都完整保留 raw surface，只把逐 bundle
+`hunt.py --recon-only` 默认使用 normal profile；quick/normal 都保留 raw 证据归档；Coverage/scanner
+仍把 Active surface 交给执行消费者，Surface index 同时提供 raw-only 的可重建证据投影；只把逐 bundle
 正则提取、secret grep 和递归 JS 链接分析交给 Surface/Action Queue。裸
 `recon_engine.sh TARGET` 保持原 full 行为；Source Map 源文件恢复和动态 chunk 重建继续由
 后续 `/js-read` 深度 lane 按证据选择。Shuji 只消费有效的 v3 Source Map；
@@ -109,8 +110,8 @@ The integrated `tools/recon_engine.sh` path may run, when available:
 - subdomain sources: `subfinder`, `assetfinder`, opt-in `amass`, `crt.sh`, optional credential-gated `Chaos`, wayback-derived hosts, `puredns`；独立被动源并行、父流程按 target scope 统一合并
 - live probing and fingerprinting: ProjectDiscovery `httpx`, bounded `wafw00f` sampling with durable `live/waf_context.json` context, optional origin hints, lightweight ports/services
 - URL collection: `katana`, `gau`, `waymore`
-- URL denoising: non-destructive `_filtered` URL views plus `urls/filter.log`; raw `urls/all.txt` is preserved
-- Storage guard: large raw collector source files (`katana`/`gau`/`waymore`/`wayback`) are gzip-compressed after `all.txt` and `_filtered` files are built; set `BBHUNT_RECON_POST_COMPRESS=0` to keep source `.txt` files
+- URL denoising: raw collector output is staged, then atomically published as the filtered Active `urls/all.txt`; distinct object/parameter instances are retained by default, and `*_filtered.txt` remains a compatibility projection
+- Storage guard: raw URL union is kept under `urls/raw/` until Closure, then gzip-compressed with collector sources; bounded `filter.log` samples and `filter_summary.json` retain the counts/hash without duplicating the corpus
 - JS/API extraction: quick/normal 保留完整 JS inventory 并生成多类别有界 `js/deep_candidates.txt`，但不主动请求 bundle；full/deep 仅从 `js/request_targets.txt` 使用有界、限速、scope-filtered 的 xnLinkFinder，失败、不兼容 scope 或认证上下文回退逐 URL LinkFinder；所有 profile 都保留 raw backstop
 - bounded directory/parameter fuzzing and config discovery with timeout guards
 - exposure candidates: API docs, config files, cloud storage, S3 buckets, third-party hosted assets
@@ -120,6 +121,16 @@ The integrated `tools/recon_engine.sh` path may run, when available:
 - CI/CD hints when repo/workflow artifacts are available
 
 These are recon signals, not vulnerability conclusions. They feed `/surface`, `/hunt`, `/intel`, and `/autopilot`.
+
+After the target's Closure is complete, inspect raw-archive cleanup before applying it:
+
+```bash
+python3 tools/recon_artifact_gc.py --repo-root . --target target.com
+python3 tools/recon_artifact_gc.py --repo-root . --target target.com --apply
+```
+
+The cleanup command is fail-closed on incomplete/corrupt Closure state and never removes
+Active URL views or finding/ledger artifacts.
 
 `ctf_mode` in `config.json` keeps the supplied target set as the active lab
 target record. Recon-discovered subdomains, URLs, JS, params, and exposure
@@ -135,7 +146,8 @@ recon/<target>/
 ├── live/urls.txt
 ├── live/discovery_hosts.txt
 ├── ports/
-├── urls/all.txt
+├── urls/all.txt                         # Active, filtered, replay-safe view
+├── urls/raw/all.txt[.gz]                # Closure-before raw evidence archive
 ├── urls/all_filtered.txt
 ├── urls/with_params.txt
 ├── urls/with_params_filtered.txt
@@ -146,6 +158,8 @@ recon/<target>/
 ├── urls/api_endpoints.txt
 ├── urls/api_endpoints_filtered.txt
 ├── urls/filter.log
+├── urls/filter_summary.json
+├── browser/request_shapes.json           # value-free method/body/GraphQL request shapes
 ├── js/endpoints.txt
 ├── js/potential_secrets.txt
 ├── js/deep_candidates.txt

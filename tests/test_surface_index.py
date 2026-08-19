@@ -17,8 +17,11 @@ from tools.surface_index import (
     load_surface_index_status,
     page_surface_index,
     surface_index_manifest_path,
+    surface_request_shape,
+    surface_safe_preview,
+    surface_value_summary,
 )
-from tools.surface import load_surface_context, rank_surface
+from tools.surface import _build_semantic_surface, load_surface_context, rank_surface
 
 
 def _write_inputs(repo_root):
@@ -97,6 +100,163 @@ def test_collector_sources_and_gzip_merge_exact_url_provenance(tmp_path):
         rows[base]["sources"]
     )
     assert rows["https://api.target.com/static/app.js"]["sources"] == ["js_inventory"]
+
+
+def test_active_inventory_excludes_collector_raw_sources(tmp_path):
+    recon, _base, _variants = _write_inputs(tmp_path)
+    (recon / "urls" / "raw").mkdir()
+    (recon / "urls" / "all.txt").write_text(
+        "https://api.target.com/active\n", encoding="utf-8"
+    )
+    (recon / "urls" / "gau.txt").write_text(
+        "https://api.target.com/raw-only\n", encoding="utf-8"
+    )
+
+    result = build_surface_index(tmp_path, "target.com")
+    rows = {item["url"]: item for item in iter_surface_index(tmp_path, "target.com")}
+
+    assert "https://api.target.com/active" in rows
+    assert "https://api.target.com/raw-only" not in rows
+    assert "gau" not in result["summary"]["source_counts"]
+
+
+def test_raw_staging_marker_prevents_legacy_collector_fallback(tmp_path):
+    recon = tmp_path / "recon" / "target.com"
+    (recon / "urls" / "raw").mkdir(parents=True)
+    (recon / "urls" / "gau.txt").write_text(
+        "https://target.com/raw-only\n", encoding="utf-8"
+    )
+    (recon / "live").mkdir()
+    (recon / "live" / "httpx_full.txt").write_text(
+        "https://target.com [200]\n", encoding="utf-8"
+    )
+
+    result = build_surface_index(tmp_path, "target.com")
+
+    assert result["summary"]["unique_urls"] == 0
+
+
+def test_raw_union_is_indexed_without_becoming_legacy_collector_fallback(tmp_path):
+    recon, _base, _variants = _write_inputs(tmp_path)
+    (recon / "urls" / "raw").mkdir()
+    (recon / "urls" / "raw" / "all.txt").write_text(
+        "https://api.target.com/raw-only?token=SECRET_VALUE\n", encoding="utf-8"
+    )
+    build_surface_index(tmp_path, "target.com")
+    rows = {item["url"]: item for item in iter_surface_index(tmp_path, "target.com")}
+
+    assert "https://api.target.com/raw-only?token=SECRET_VALUE" in rows
+    assert rows["https://api.target.com/raw-only?token=SECRET_VALUE"]["sources"] == ["raw"]
+
+
+def test_value_summary_keeps_shape_and_digest_without_value(tmp_path):
+    url = "https://api.target.com/reset?token=" + ("A" * 180) + "&query=%7B%22id%22%3A1%7D"
+    summary = surface_value_summary(url)
+    assert summary["parameter_count"] == 2
+    assert summary["signals"][0]["name"] == "token"
+    assert "opaque-name" in summary["signals"][0]["classes"]
+    assert summary["signals"][0]["length"] == 180
+    assert "A" * 20 not in json.dumps(summary)
+    assert "json" in summary["signals"][1]["classes"]
+
+
+def test_safe_preview_redacts_opaque_and_long_query_values():
+    preview = surface_safe_preview(
+        "https://target.com/reset?token=short-secret&account_id=42&note=" + ("x" * 180)
+    )
+    assert "token=..." in preview
+    assert "account_id=42" in preview
+    assert "note=..." in preview
+    assert "short-secret" not in preview
+
+
+def test_request_shape_adds_method_and_body_dimensions():
+    shape = surface_request_shape(
+        "https://api.target.com/graphql?trace=1",
+        method="POST",
+        content_type="application/json",
+        body_parameter_names=["variables", "id"],
+        graphql_operations=["User"],
+    )
+    assert shape["method"] == "POST"
+    assert shape["content_type"] == "application/json"
+    assert shape["body_parameter_names"] == ["id", "variables"]
+    assert shape["graphql_operations"] == ["User"]
+
+
+def test_ranked_surface_carries_browser_request_shape_and_value_summary(tmp_path):
+    recon, base, _variants = _write_inputs(tmp_path)
+    (recon / "browser" / "request_shapes.json").write_text(
+        json.dumps([
+            {
+                "url": "https://api.target.com/orders?id=",
+                "method": "POST",
+                "resourceType": "fetch",
+                "postData": {
+                    "body_type": "json",
+                    "content_type_hint": "application/json",
+                    "parameter_names": ["amount"],
+                    "graphql_operations": [],
+                    "graphql_variables": [],
+                },
+            }
+        ]),
+        encoding="utf-8",
+    )
+    build_surface_index(tmp_path, "target.com")
+    ranked = rank_surface(load_surface_context(tmp_path, "target.com"))
+    item = next(candidate for candidate in ranked["review_pool"] if candidate["url"] == base)
+
+    assert item["request_shapes"][0]["method"] == "POST"
+    assert item["semantic_shape"]["method"] == "POST"
+    assert item["semantic_shape"]["content_type"] == "application/json"
+
+
+def test_semantic_surface_counts_all_method_groups_for_one_url_shape(tmp_path):
+    _recon, base, _variants = _write_inputs(tmp_path)
+    build_surface_index(tmp_path, "target.com")
+    get_shape = surface_request_shape(base, method="GET")
+    post_shape = surface_request_shape(base, method="POST", content_type="application/json")
+
+    semantic = _build_semantic_surface(
+        {
+            "target": "target.com",
+            "repo_root": tmp_path,
+            "recon_dir": str(tmp_path / "recon" / "target.com"),
+            "surface_index": load_surface_index_status(tmp_path, "target.com"),
+        },
+        [
+            {"url": base, "score": 10, "semantic_shape": get_shape},
+            {"url": base, "score": 9, "semantic_shape": post_shape},
+        ],
+    )
+
+    groups = {item["shape_id"]: item for item in semantic}
+    assert set(groups) == {get_shape["id"], post_shape["id"]}
+    assert groups[get_shape["id"]]["active_variant_count"] > 0
+    assert groups[post_shape["id"]]["active_variant_count"] == groups[get_shape["id"]]["active_variant_count"]
+
+
+def test_large_raw_union_stays_queryable_while_high_value_tail_is_reactivated(tmp_path):
+    recon = tmp_path / "recon" / "target.com"
+    (recon / "urls" / "raw").mkdir(parents=True)
+    (recon / "live").mkdir()
+    (recon / "live" / "httpx_full.txt").write_text(
+        "https://target.com [200] [HTML] [Python] [100]\n", encoding="utf-8"
+    )
+    raw_lines = [f"https://target.com/archive/{index}?utm_source=collector" for index in range(20000)]
+    raw_lines.append("https://target.com/admin/export?account_id=42&token=" + ("x" * 160))
+    (recon / "urls" / "raw" / "all.txt").write_text("\n".join(raw_lines) + "\n", encoding="utf-8")
+    (recon / "urls" / "all.txt").write_text("https://target.com/\n", encoding="utf-8")
+    (recon / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+
+    build_surface_index(tmp_path, "target.com")
+    ranked = rank_surface(load_surface_context(tmp_path, "target.com"))
+
+    assert ranked["stats"]["raw_urls"] == 20001
+    assert ranked["stats"]["exact_unique"] >= 20001
+    assert ranked["stats"]["semantic_shapes"] >= 3
+    assert any("/admin/export" in item["url"] for item in ranked["review_pool"])
 
 
 def test_empty_plain_collector_does_not_hide_existing_gzip_archive(tmp_path):
