@@ -3031,7 +3031,13 @@ FFUF_SKIP_REASON=""
 FFUF_SUMMARY_OK="false"
 DIR_FUZZ_STATUS="skipped"
 FFUF_LOG="$RECON_DIR/logs/ffuf.log"
-FFUF_PHASE_DEADLINE_SECONDS=$((SECONDS + DIR_FUZZ_HARD_BUDGET_SECONDS))
+FFUF_EFFECTIVE_BUDGET_SECONDS="$DIR_FUZZ_HARD_BUDGET_SECONDS"
+RECON_ELAPSED_NOW=$(( $(date +%s) - RECON_STARTED_EPOCH ))
+RECON_REMAINING_SECONDS=$((RECON_SOFT_BUDGET_SECONDS - RECON_ELAPSED_NOW))
+if [ "$RECON_REMAINING_SECONDS" -lt "$FFUF_EFFECTIVE_BUDGET_SECONDS" ]; then
+    FFUF_EFFECTIVE_BUDGET_SECONDS="$RECON_REMAINING_SECONDS"
+fi
+FFUF_PHASE_DEADLINE_SECONDS=$((SECONDS + FFUF_EFFECTIVE_BUDGET_SECONDS))
 : > "$FFUF_LOG"
 
 if ! command -v ffuf >/dev/null 2>&1; then
@@ -3353,7 +3359,7 @@ else
     log_warn "Directory fuzzing skipped: ${FFUF_SKIP_REASON:-no runnable inputs}"
 fi
 
-FFUF_PHASE_NOTE="bounded host sampling with rotation; budget=${DIR_FUZZ_HARD_BUDGET_SECONDS}s; attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED interrupted=$FFUF_INTERRUPTED parse_errors=$FFUF_PARSE_ERRORS target_selection=$FFUF_TARGET_SELECTION_STATUS target_record=$FFUF_TARGET_RECORD_STATUS pending=$FFUF_TARGET_PENDING; not complete directory coverage"
+FFUF_PHASE_NOTE="bounded host sampling with rotation; budget=${FFUF_EFFECTIVE_BUDGET_SECONDS}s (hard=${DIR_FUZZ_HARD_BUDGET_SECONDS}s); attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED interrupted=$FFUF_INTERRUPTED parse_errors=$FFUF_PARSE_ERRORS target_selection=$FFUF_TARGET_SELECTION_STATUS target_record=$FFUF_TARGET_RECORD_STATUS pending=$FFUF_TARGET_PENDING; not complete directory coverage"
 [ -n "$FFUF_SKIP_REASON" ] && FFUF_PHASE_NOTE="$FFUF_PHASE_NOTE; skipped_reason=$FFUF_SKIP_REASON"
 record_recon_phase \
     dir_fuzz \
@@ -3367,9 +3373,10 @@ emit_claude_hint \
     hosts_attempted      "$FFUF_ATTEMPTED" \
     hosts_succeeded      "$FFUF_SUCCEEDED" \
     hosts_failed         "$FFUF_FAILED" \
-    interrupted           "$FFUF_INTERRUPTED" \
-    hard_budget_seconds   "$DIR_FUZZ_HARD_BUDGET_SECONDS" \
-    target_selection     "$FFUF_TARGET_SELECTION_STATUS" \
+   interrupted           "$FFUF_INTERRUPTED" \
+   hard_budget_seconds   "$DIR_FUZZ_HARD_BUDGET_SECONDS" \
+    effective_budget_seconds "$FFUF_EFFECTIVE_BUDGET_SECONDS" \
+   target_selection     "$FFUF_TARGET_SELECTION_STATUS" \
     target_record        "$FFUF_TARGET_RECORD_STATUS" \
     pending_targets      "$FFUF_TARGET_PENDING" \
     observations         "$FFUF_OBSERVATIONS" \
