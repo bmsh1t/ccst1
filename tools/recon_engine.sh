@@ -1379,6 +1379,7 @@ RAW_URLS_STAGING="$RAW_URL_DIR/.all.${TIMESTAMP}.txt"
 RAW_URLS_ARCHIVE="$RAW_URL_DIR/all.txt"
 THREADS="${BB_THREADS:-20}"
 RATE_LIMIT="${BB_RATE_LIMIT:-50}"  # requests per second
+FFUF_RATE_LIMIT="${BBHUNT_FFUF_RATE_LIMIT:-100}"  # FFUF-only requests per second
 SUBFINDER_THREADS="${SUBFINDER_THREADS:-50}"
 GAU_THREADS="${GAU_THREADS:-20}"
 JS_CANDIDATE_LIMIT="${BBHUNT_RECON_JS_CANDIDATE_LIMIT:-800}"
@@ -1386,6 +1387,7 @@ OPENAPI_PLATFORM_HOST_BUDGET="${BBHUNT_OPENAPI_MAX_PLATFORM_HOSTS:-20}"
 RECON_COMPRESS_MIN_MB="${BBHUNT_RECON_COMPRESS_MIN_MB:-5}"
 require_positive_integer BB_THREADS "$THREADS"
 require_positive_integer BB_RATE_LIMIT "$RATE_LIMIT"
+require_positive_integer BBHUNT_FFUF_RATE_LIMIT "$FFUF_RATE_LIMIT"
 require_positive_integer SUBFINDER_THREADS "$SUBFINDER_THREADS"
 require_positive_integer GAU_THREADS "$GAU_THREADS"
 require_positive_integer BBHUNT_RECON_JS_CANDIDATE_LIMIT "$JS_CANDIDATE_LIMIT"
@@ -3150,7 +3152,7 @@ if [ -n "$WORDLIST" ]; then
             -mc all \
             -s -json \
             -t 1 \
-            -rate "$RATE_LIMIT" \
+            -rate "$FFUF_RATE_LIMIT" \
             -timeout 10 \
             "${BB_URL_AUTH_ARGS[@]}" \
             > "$FFUF_CONTROL_RUN_TMP" 2>> "$FFUF_LOG"; then
@@ -3205,7 +3207,7 @@ if [ -n "$WORDLIST" ]; then
                 -ac \
                 "${FFUF_FILTER_ARGS[@]}" \
                 -t "$THREADS" \
-                -rate "$RATE_LIMIT" \
+                -rate "$FFUF_RATE_LIMIT" \
                 -timeout 10 \
                 "${BB_URL_AUTH_ARGS[@]}" \
                 -s -json > "$FFUF_HOST_RUN_TMP" 2>> "$FFUF_LOG"; then
@@ -3239,7 +3241,7 @@ if [ -n "$WORDLIST" ]; then
                 -ac \
                 "${FFUF_FILTER_ARGS[@]}" \
                 -t "$THREADS" \
-                -rate "$RATE_LIMIT" \
+                -rate "$FFUF_RATE_LIMIT" \
                 -timeout 10 \
                 "${BB_URL_AUTH_ARGS[@]}" \
                 -s -json >> "$FFUF_RESULT_TMP" 2>> "$FFUF_LOG"; then

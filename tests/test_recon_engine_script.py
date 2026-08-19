@@ -275,6 +275,8 @@ def test_recon_engine_has_timeout_compat_helper():
     assert 'run_with_timeout "$HTTPX_RUN_TIMEOUT" "$HTTPX_BIN"' in text
     assert 'run_with_timeout "$NMAP_RUN_TIMEOUT" nmap' in text
     assert '--max-rate "$RATE_LIMIT"' in text
+    assert 'FFUF_RATE_LIMIT="${BBHUNT_FFUF_RATE_LIMIT:-100}"' in text
+    assert text.count('-rate "$FFUF_RATE_LIMIT"') == 3
     assert "recon_budget_checkpoint()" in text
     assert "recon_record_budget_on_exit()" in text
     assert 'RECON_BUDGET_EXHAUSTED=1' in text
