@@ -98,11 +98,9 @@ LOAD -> REVIEW EVIDENCE -> ENRICH -> TEST -> CHAIN -> RECORD
 ```
 
 - Claude CLI `/autopilot` runs inline in the current Claude session，并且是唯一 target-state controller；
-  不隐式创建或恢复 legacy `agent_session.json`。
+  不隐式创建第二套 target-state session。
 - Specialist 默认关闭，最多使用一个不嵌套的有界 evidence task；当前 session 始终负责
   Checkpoint、写回和结束判断。
-- `python3 tools/hunt.py --target <target> --agent [--resume ...]` 是隔离 session/trace 的
-  legacy local-agent runtime，不与内联 `/autopilot` 混用。
 - Runtime drift 通过 `/sync-check` 查看；advisory 不阻塞，critical drift 才阻塞，且不得自动同步。
 
 ## Egress Proxy (Resin)

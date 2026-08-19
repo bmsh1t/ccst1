@@ -26,6 +26,18 @@ def test_slash_command_reads_state_before_any_long_phase():
     assert "Runtime phase locks are the final duplicate-launch guard" in lanes
 
 
+def test_fresh_recon_uses_its_selected_lane_without_extra_docs():
+    command = " ".join(_read("commands/autopilot.md").split())
+    lanes = _read("docs/autopilot-lanes.md")
+    recon_lane = lanes.split("## Recon And Surface", 1)[1].split("## Browser Source And JS", 1)[0]
+
+    assert "Fresh Recon is not active hunting" in command
+    assert "when `state.next_action=run_recon`" in command
+    assert "`run_recon`: execute directly from this lane" in recon_lane
+    assert "python3 tools/hunt.py --target <target_shell>" in recon_lane
+    assert "Append `arguments.recon_flags` exactly" in recon_lane
+
+
 def test_slash_command_runtime_preflight_is_read_only_and_fail_fast():
     text = _read("commands/autopilot.md")
     preflight = text.split("## Runtime Preflight", 1)[1].split("## State Consumption Loop", 1)[0]

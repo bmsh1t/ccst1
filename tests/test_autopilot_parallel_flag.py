@@ -86,10 +86,3 @@ def test_agent_py_imports_parallel_module():
     assert "--parallel" in text
     assert "--max-parallel" in text
     assert "--worker-timeout-secs" in text
-
-
-def test_autopilot_md_documents_new_flags():
-    """B6 AC bullet — commands/autopilot.md mentions the new flags."""
-    md = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
-    assert "--parallel" in md, "commands/autopilot.md missing --parallel docs"
-    assert "--max-parallel" in md, "commands/autopilot.md missing --max-parallel docs"

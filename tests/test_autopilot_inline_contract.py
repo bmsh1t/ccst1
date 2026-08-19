@@ -37,9 +37,8 @@ def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
     assert "git rev-parse --show-toplevel" in text
     assert "Authoritative bootstrap contract (do not reinterpret)" in normalized
     assert "Only `continue` may act" in normalized
-    assert "invalid inline" in normalized
-    assert "python3 agent.py --target <target_shell>" in normalized
-    assert "python3 tools/hunt.py --target <target_shell> --agent" in normalized
+    assert "python3 agent.py --target <target_shell>" not in normalized
+    assert "python3 tools/hunt.py --target <target_shell> --agent" not in normalized
     assert "repo_root_shell" in normalized
     assert '"$ARGUMENTS"' not in text
 
@@ -250,12 +249,8 @@ def test_operator_docs_separate_inline_autopilot_from_legacy_agent_sessions():
     readme = " ".join(_read("README.md").split())
     product = " ".join(_read("docs/PRODUCT.md").split())
 
-    for text in (claude, readme):
-        assert "current Claude session" in text
-
-    for text in (claude, readme, product):
-        assert "tools/hunt.py" in text
-        assert "--agent" in text
+    assert "current Claude session" in claude
+    assert "current Claude session" in readme
 
     assert "当前 Claude 会话" in product
     assert "Continue this target in the current Claude session" in readme

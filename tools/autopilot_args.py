@@ -40,22 +40,6 @@ CHECKPOINT_TRIGGERS = {
     "yolo": "checkpoint only on blocker, handoff, or finish",
 }
 BOOLEAN_FLAGS = {"--quick": "quick", "--deep": "deep"}
-LEGACY_BOOLEAN_FLAGS = {
-    "--agent",
-    "--calibrate-patterns",
-    "--parallel",
-    "--parallel-hypotheses",
-    "--self-review",
-}
-LEGACY_VALUE_FLAGS = {
-    "--max-parallel",
-    "--resume",
-    "--worker-timeout-secs",
-}
-LEGACY_RUNTIME_HINT = (
-    "Use `python3 agent.py --target <target> ...` for legacy local-agent flags; "
-    "`python3 tools/hunt.py --target <target> --agent` remains the baseline entry."
-)
 DYNAMIC_SHELL_FALLBACKS = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
 
 
@@ -90,13 +74,6 @@ def _effective_argv(argv: Sequence[str]) -> list[str]:
         ):
             return []
     return effective
-
-
-def _legacy_flag_name(token: str) -> str | None:
-    flag_name = token.split("=", 1)[0]
-    if flag_name in LEGACY_BOOLEAN_FLAGS or flag_name in LEGACY_VALUE_FLAGS:
-        return flag_name
-    return None
 
 
 def _resolve_target(target_input: str, cwd: str | os.PathLike[str] | None) -> dict[str, str]:
@@ -256,27 +233,6 @@ def parse_autopilot_args(
                     )
                 )
             index += 1
-            continue
-
-        legacy_flag = _legacy_flag_name(token)
-        if legacy_flag:
-            errors.append(
-                _error(
-                    "legacy_only_flag",
-                    f"{legacy_flag} is not available in inline /autopilot. {LEGACY_RUNTIME_HINT}",
-                    token=token,
-                    hint=LEGACY_RUNTIME_HINT,
-                )
-            )
-            if (
-                legacy_flag in LEGACY_VALUE_FLAGS
-                and "=" not in token
-                and index + 1 < len(effective_argv)
-                and not effective_argv[index + 1].startswith("-")
-            ):
-                index += 2
-            else:
-                index += 1
             continue
 
         if token.startswith("-"):

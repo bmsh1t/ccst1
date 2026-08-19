@@ -41,7 +41,9 @@ Bootstrap emits one `state.lane_contract` pointer. Before executing a named lane
 inherits this command's Scope/Auth, evidence, checkpoint, Action Queue, loop-guard, and finish
 contracts.
 Before active hunting begins, load `rules/hunting.md` for its canonical hunting
-semantics. The default context pack intentionally does not load this rule.
+semantics. Fresh Recon is not active hunting: when `state.next_action=run_recon`,
+execute the selected lane directly; refresh state after it completes. The
+default context pack intentionally does not load this rule.
 Tool discovery stays in `docs/tool-index.md`; concrete evidence may select
 `tools/dns_expand.py --reason`, `tools/deep_js_packer.py`,
 `tools/disclosure_search.py`, or `tools/sibling_generator.py` without loading
@@ -63,6 +65,9 @@ bounded state`. The controller must consume structured `next_action` and the dur
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
 ```
+When `next_action=run_recon`, immediately run the selected Recon command from
+the lane contract with `arguments.recon_flags`, then refresh bounded state. Do
+not perform another context or documentation pass before that action.
 For substantive candidates, claim the exact action with the evidence-backed activation contract
 before replay (surface review, runtime wait, recovery, and reporting remain versionless):
 ```bash
@@ -140,8 +145,10 @@ replay, and durable state. Follow `skills/runtime-protocol.md`,
 Super-pentester priority is business impact > workflow evidence > crown-jewel
 hypothesis > scanner/coverage hints. Scanner quick is an advisory breadth sensor,
 and scanner-negative is not completion.
-Business Model Read: maintain `evidence/<target>/business_model.md` with the
-`agent.py` directive before recon or after first recon.
+Business Model Read: after fresh Recon starts, write or refresh
+`evidence/<target>/business_model.md` from observed application purpose, actors,
+private objects, trust boundaries, sensitive workflows, and likely crown jewels.
+A fresh file may be reused for 30 days.
 Promote Lead -> Signal -> Candidate -> Validated Finding only with practical,
 replayable raw request/response or a locatable evidence ref. Canonical finding
 writes go through `finding_index` and `/validate`, never direct `findings.json`
@@ -150,10 +157,6 @@ not report-ready.
 Four-layer memory is the external brain, not the steering wheel:
 `target memory / case state -> Skill -> 1-2 matching cards/references -> checks`.
 These are decision inputs, not first-contact controllers or closure evidence.
-Legacy-only `--parallel`, `--max-parallel`, `--parallel-hypotheses`,
-`--self-review`, and `--calibrate-patterns` are invalid inline. Use
-`python3 agent.py --target <target_shell> ...`; baseline legacy runs use
-`python3 tools/hunt.py --target <target_shell> --agent`.
 ## Transition And Finish Contract
 Apply `arguments.checkpoint_trigger`: paranoid after each substantive state
 change, normal after a coherent lane batch, yolo only on blocker/handoff/finish.

@@ -287,7 +287,7 @@ def test_invalid_core_arguments_stop_before_runtime_actions(argv, expected_codes
 
 
 @pytest.mark.parametrize(
-    "legacy_argv",
+    "unsupported_argv",
     (
         ["--parallel"],
         ["--parallel-hypotheses"],
@@ -299,18 +299,14 @@ def test_invalid_core_arguments_stop_before_runtime_actions(argv, expected_codes
         ["--agent"],
     ),
 )
-def test_legacy_only_flags_are_rejected_with_direct_runtime_hint(legacy_argv):
+def test_unsupported_flags_are_rejected_without_legacy_runtime_routing(unsupported_argv):
     payload = autopilot_args.parse_autopilot_args(
-        ["example.test", *legacy_argv]
+        ["example.test", *unsupported_argv]
     )
 
     assert payload["valid"] is False
     assert payload["action"] == "stop_invalid_arguments"
-    legacy_error = next(
-        error for error in payload["errors"] if error["code"] == "legacy_only_flag"
-    )
-    assert "agent.py --target <target>" in legacy_error["hint"]
-    assert "tools/hunt.py --target <target> --agent" in legacy_error["hint"]
+    assert any(error["code"] == "unknown_flag" for error in payload["errors"])
 
 
 def test_invalid_target_command_syntax_stops_before_shell_projection():

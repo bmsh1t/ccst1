@@ -17,8 +17,6 @@ actions. Ordinary Card changes do not require a new lane.
 
 ## State And Queue
 
-- `run_recon`: when `state.recon.cidr_continuation.status=pending`, continue once with
-  `BBHUNT_CIDR_OFFSET=<next_offset> python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only`; otherwise omit the offset. Keep exact recon flags; never restart a pending CIDR at zero or discard prior pages. If `state.dir_fuzz_rotation.pending=true`, rerun the same bounded Recon so its FFUF target ledger advances to the next live services; `live/urls.txt` remains the complete source.
 - `wait_recon` / `wait_scan`: wait or poll, then refresh state. Runtime phase locks are the final duplicate-launch guard.
 - `validate_finding`: call `/validate` only when state returns `validate_finding`. The non-TTY owner is `python3 tools/validate.py --target <target_shell> --finding-id <id> --decision-json <json_file_shell> --json`; the JSON file path is never inline.
 - `resume_action_queue`: run `python3 tools/action_queue.py claim --target <target_shell>`, perform the claimed or resumed durable replay, then run `python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>` and refresh.
@@ -33,6 +31,9 @@ actions. Ordinary Card changes do not require a new lane.
 
 ## Recon And Surface
 
+- `run_recon`: execute directly from this lane. When
+  `state.recon.cidr_continuation.status=pending`, continue once with
+  `BBHUNT_CIDR_OFFSET=<next_offset> python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --recon-only`; otherwise omit the offset. Append `arguments.recon_flags` exactly. Never restart a pending CIDR at zero or discard prior pages. If `state.dir_fuzz_rotation.pending=true`, rerun the same bounded Recon so its FFUF target ledger advances to the next live services; `live/urls.txt` remains the complete source.
 - Before a breadth helper, inspect `tools/surface.py`, `tools/context_pack.py`, and `tools/observation_inventory.py summary` when a usable cache exists. A later breadth pass is `python3 tools/hunt.py --target <target_shell> [--auth-file <auth_file_shell>] --scan-only --quick`.
 - General Nuclei breadth is origin-deduplicated and capped at 50/100/200 targets for quick/standard/full (`BB_NUCLEI_MAX_TARGETS` overrides); `summary.json` records available and selected origin counts. Long-tail paths, components, and CVEs require a reviewed evidence-backed list.
 - `prepare_surface_context`: run one explicit `python3 tools/surface.py --target <target_shell> --refresh`, verify its bounded projection, load context, then refresh state.

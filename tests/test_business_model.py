@@ -78,14 +78,13 @@ class TestBusinessModelInAutopilotCommand:
         # New heading shape must reference Business Model Read.
         assert "Business Model Read" in text
 
-    def test_business_model_pointer_present(self):
-        """commands/autopilot.md must point to the agent.py directive
-        without duplicating it — checks pointer is present."""
+    def test_inline_business_model_contract_is_self_contained(self):
+        """Inline Autopilot must not depend on the legacy agent controller."""
         text = self._autopilot_md()
         assert "business_model.md" in text
-        # Pointer to agent.py system prompt presence (idea check)
-        lowered = text.lower()
-        assert "agent.py" in lowered or "system prompt" in lowered
+        section = text.split("Business Model Read:", 1)[1].split("Promote Lead", 1)[0]
+        assert "after fresh Recon starts" in section
+        assert "30 days" in section
 
     def test_no_taxonomy_enumeration_added(self):
         """C1 anti-options[] check: the autopilot.md must NOT enumerate a
