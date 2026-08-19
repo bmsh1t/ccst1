@@ -21,6 +21,7 @@ The bootstrap already ran arguments, read-only runtime compare, advisory capabil
 tools never block, trigger installation or request it, count as tested-clean, or hide material
 limits in the handoff. Use the matching `capabilities.lanes` record only to explain local readiness or choose a viable fallback; it never overrides the owner-selected Action Queue/state lane. Within one invocation, do not rerun the same failed source/tool; preserve
 cached/stale evidence as partial/blocked. `tools/external_arsenal.sh --versions` is diagnostics-only, never startup.
+For browser work, select one active backend for the invocation from evidence before the first MCP call: Chrome DevTools MCP for deep Network/Runtime/Console/performance, or Playwright MCP for interaction/auth/workflow capture. Keep the other backend available for a later invocation. Never probe both for availability, and never run both browser backends concurrently. Reuse a matching selected-backend session and close stale pages before opening a new context. Do not close or switch an authenticated/stateful workflow mid-lane; switch only after its evidence and recoverable state are persisted, and close the current native session first.
 Run project commands as `cd -- <repo_root_shell> && ...`. Use
 `arguments.target_shell`, expand `arguments.hunt_auth_flags` (or
 `--auth-file <arguments.auth_file_shell>`) only when present, and apply
@@ -28,6 +29,12 @@ Run project commands as `cd -- <repo_root_shell> && ...`. Use
 `quick`, `deep`, and `invocation_batch` exactly. `--quick` lowers recon cost;
 never skips browser/source/validation or implies completion. `arguments.seed_url` is an
 exact first-contact browser/source/workflow seed for the canonical target.
+Before the first network lane for a public target, inspect `config.json.resin`; when enabled,
+follow `docs/resin-proxy.md` to export one stable sticky environment via `CredentialStore`.
+When the same baseline cannot access the target through sticky and the issue is exit-related rather than
+path/auth/application behavior, select one new sticky account and replay it once; keep that account for subsequent
+commands. Use rotate only on explicit request; bypass it for localhost/private targets, never print the token, and
+never persist proxy setup or state.
 Treat the supplied target set as the active execution target set; `ctf_mode` is the
 authoritative lab target record. External policy is advisory audit/replay context;
 do not require public-program, written-permission, or ownership-confirmation.
@@ -173,7 +180,7 @@ class. With `invocation_batch.bounded`, execute at most `max_lanes` named
 substantive lanes; after lane N do not execute a newly discovered queue item.
 Checkpoint/sync the durable queue, state the handoff, and end. Browser/source
 discoveries become next-invocation work, not lane N+1.
-Finish on evidence state, not a tool checklist. `working_hypothesis` must be resolved, blocked, dead-end, Candidate, or Validated Finding. Check `oast_listen` when used; resolve or record high-value action-gated scanner leads and every matrix gap.
+Finish on evidence state, not a tool checklist. `working_hypothesis` must be resolved, blocked, dead-end, Candidate, or Validated Finding. Check `oast_listen` when used; resolve or record high-value action-gated scanner leads and every matrix gap. If Playwright/Chrome MCP was used, persist/import the required artifacts and close the native browser session before handoff or finish; a failed/unavailable close is `partial`/`blocked`, never a reason to open another session.
 Immediately before any target-exhaustion claim, run the ordered coverage review and explicit read-only verdict below; an absent or empty matrix never proof of coverage. Consult available `evidence/<target>/intelligence.md`, browser, JS, source, and exposure evidence.
 ```bash
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>

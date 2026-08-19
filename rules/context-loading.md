@@ -92,6 +92,8 @@ rules/coverage-gate.md
 - surface summary
 
 不要默认读取原始大日志、完整 HTML、完整响应包或所有 JSONL。
+需要展开时使用 `surface_index.py page`、摘要或固定行/记录范围；完整原始文件只在验证一条
+具体证据时按引用读取，不能用无界 `cat`、`grep` 或 `jq` 重新装入上下文。
 
 ## 输出上下文包
 

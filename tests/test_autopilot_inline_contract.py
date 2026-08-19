@@ -126,6 +126,16 @@ def test_browser_first_use_probe_retries_only_transient_session_failures():
     assert "checkpoint the blocker in the existing action queue" in command
     assert "pivot to js/source/api evidence" in command
     assert "next invocation, after repair, or on explicit operator retry" in command
+    assert "select one active backend for the invocation" in command
+    assert "never run both browser backends concurrently" in command
+    assert "never probe both" in command
+    assert "reuse a matching" in command
+    assert "close stale" in command
+    assert "do not close or switch an authenticated/stateful workflow mid-lane" in command
+    assert "switch only after its evidence and recoverable state are persisted" in command
+    assert "close the current native session first" in command
+    assert "close the native browser session before handoff or finish" in command
+    assert "do not open a second session to replace an unclosed one" in command
 
 
 def test_incomplete_durable_state_is_handoff_not_target_exhaustion():

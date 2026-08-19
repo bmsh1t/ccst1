@@ -84,6 +84,8 @@ hand-maintained list here.
 - 外部研究按需使用 Grok Search 或 Smartsearch；先选一个，结果不足或冲突时再使用另一个。
 - 先复用 target history、cached recon、structured findings、browser/JS/source 索引和
   `/surface` 输出，再决定是否需要新的宽扫。
+- 原始 `all.txt`、JSONL、HTML 和完整响应保留在本地；默认只读摘要、分页或固定范围，
+  具体验证再按引用展开单条证据，不把完整 corpus 复制进上下文。
 - Validation gate 只用于 Candidate；有具体下一证据动作的 Lead/Signal 保持开放。
 - Temporary skips are per-current-target and per-current-invocation only；不得从旧目标、
   `/pickup`、README 示例或未恢复的 legacy trace 继承。
