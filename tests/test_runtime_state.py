@@ -826,6 +826,46 @@ def test_inspect_recon_artifacts_accepts_compact_ffuf_surface(tmp_path):
     assert payload["ffuf_needs_summary"] is False
 
 
+def test_recon_budget_projection_uses_latest_record_and_preserves_advisory_status(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com"
+    recon_dir.mkdir(parents=True)
+    manifest = recon_dir / "recon_manifest.jsonl"
+    partial = {
+        "record_type": "recon_phase",
+        "phase": "run_budget",
+        "status": "partial",
+        "note": "stopped_during_phase=url_collection; elapsed_seconds=37; soft_budget_seconds=30; soft_budget_status=advisory_exceeded",
+        "recorded_at": "2026-08-20T00:00:00Z",
+    }
+    completed = {
+        "record_type": "recon_phase",
+        "phase": "run_budget",
+        "status": "ok",
+        "note": "elapsed_seconds=45; soft_budget_seconds=30; soft_budget_status=advisory_exceeded",
+        "recorded_at": "2026-08-20T00:01:00Z",
+    }
+    manifest.write_text(
+        "{not-json}\n" + json.dumps(partial) + "\n" + json.dumps(completed) + "\n",
+        encoding="utf-8",
+    )
+
+    full = inspect_recon_artifacts(tmp_path, "target.com")["run_budget"]
+    fast = inspect_recon_artifacts_fast(tmp_path, "target.com")["run_budget"]
+
+    assert full == fast
+    assert full["status"] == "ok"
+    assert full["partial"] is False
+    assert full["elapsed_seconds"] == 45
+    assert full["soft_budget_seconds"] == 30
+    assert full["advisory_exceeded"] is True
+
+    manifest.write_text(json.dumps(partial) + "\n", encoding="utf-8")
+    interrupted = inspect_recon_artifacts(tmp_path, "target.com")["run_budget"]
+
+    assert interrupted["partial"] is True
+    assert interrupted["stopped_phase"] == "url_collection"
+
+
 def test_inspect_recon_artifacts_reports_legacy_ffuf_without_parsing_it(tmp_path):
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)

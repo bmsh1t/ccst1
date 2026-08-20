@@ -678,6 +678,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
             "host_inventory_ready": False,
             "surface_inputs_ready": False,
             "recon_dir": str(recon_dir),
+            "run_budget": _run_budget_state(recon_dir),
             "counts": {},
             "missing": ["recon directory"],
             "warnings": [],
@@ -739,6 +740,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     )
 
     http_probe = _http_probe_state(recon_dir)
+    run_budget = _run_budget_state(recon_dir)
     cidr_continuation = _cidr_continuation_state(recon_dir, target)
     ready = host_inventory_ready or surface_inputs_ready
 
@@ -752,6 +754,10 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         warnings.append("HTTP probing completed successfully with zero live hosts")
     elif http_probe.get("outcome") in {"timeout", "failure", "partial", "skipped", "unavailable"}:
         warnings.append(f"HTTP probing is incomplete: {http_probe.get('outcome')}")
+    if run_budget.get("partial"):
+        warnings.append(
+            f"Recon run is incomplete: {run_budget.get('stopped_phase') or 'unknown phase'}"
+        )
     if cidr_continuation.get("status") == "invalid":
         warnings.append(f"CIDR continuation is invalid: {cidr_continuation.get('reason')}")
     if asset_relations.get("error"):
@@ -767,6 +773,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "host_inventory_ready": host_inventory_ready,
         "surface_inputs_ready": surface_inputs_ready,
         "http_probe": http_probe,
+        "run_budget": run_budget,
         "cidr_continuation": cidr_continuation,
         "recon_dir": str(recon_dir),
         "counts": counts,
@@ -789,8 +796,8 @@ def _artifact_has_bytes(path: Path) -> bool:
         return False
 
 
-def _http_probe_state(recon_dir: Path) -> dict:
-    """Project the latest HTTP probing phase without conflating zero with failure."""
+def _latest_recon_phase_record(recon_dir: Path, phase: str) -> dict:
+    """Read the last record for one Recon phase, ignoring malformed journal rows."""
     manifest = recon_dir / "recon_manifest.jsonl"
     latest: dict = {}
     try:
@@ -803,11 +810,62 @@ def _http_probe_state(recon_dir: Path) -> dict:
                 if (
                     isinstance(item, dict)
                     and item.get("record_type") == "recon_phase"
-                    and item.get("phase") == "http_probing"
+                    and item.get("phase") == phase
                 ):
                     latest = item
     except OSError:
         pass
+    return latest
+
+
+def _run_budget_state(recon_dir: Path) -> dict:
+    """Project the latest run budget without treating advisory telemetry as partial."""
+    latest = _latest_recon_phase_record(recon_dir, "run_budget")
+    if not latest:
+        return {
+            "status": "missing",
+            "partial": False,
+            "stopped_phase": "",
+            "elapsed_seconds": None,
+            "soft_budget_seconds": None,
+            "soft_budget_status": "unknown",
+            "advisory_exceeded": False,
+            "recorded_at": "",
+        }
+
+    note_fields = {}
+    for value in str(latest.get("note") or "").split(";"):
+        key, separator, field_value = value.strip().partition("=")
+        if separator:
+            note_fields[key.strip()] = field_value.strip()
+
+    def _nonnegative_int(key: str) -> int | None:
+        try:
+            return max(0, int(note_fields.get(key, "")))
+        except (TypeError, ValueError):
+            return None
+
+    status = str(latest.get("status") or "").strip().lower() or "unknown"
+    soft_budget_status = note_fields.get("soft_budget_status", "unknown")
+    return {
+        "status": status,
+        "partial": status in {"partial", "failed", "failure", "error", "incomplete"},
+        "stopped_phase": (
+            note_fields.get("stopped_before_phase")
+            or note_fields.get("stopped_during_phase")
+            or ""
+        ),
+        "elapsed_seconds": _nonnegative_int("elapsed_seconds"),
+        "soft_budget_seconds": _nonnegative_int("soft_budget_seconds"),
+        "soft_budget_status": soft_budget_status,
+        "advisory_exceeded": soft_budget_status == "advisory_exceeded",
+        "recorded_at": str(latest.get("recorded_at") or ""),
+    }
+
+
+def _http_probe_state(recon_dir: Path) -> dict:
+    """Project the latest HTTP probing phase without conflating zero with failure."""
+    latest = _latest_recon_phase_record(recon_dir, "http_probing")
 
     if not latest:
         return {"status": "missing", "outcome": "missing", "count": 0}
@@ -876,6 +934,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
             "host_inventory_ready": False,
             "surface_inputs_ready": False,
             "recon_dir": str(recon_dir),
+            "run_budget": _run_budget_state(recon_dir),
             "counts": {},
             "counts_exact": False,
             "asset_relations": {
@@ -950,6 +1009,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         )
     ) or ffuf_ready or findings_ready or source_intel_ready
     http_probe = _http_probe_state(recon_dir)
+    run_budget = _run_budget_state(recon_dir)
     cidr_continuation = _cidr_continuation_state(recon_dir, target)
     asset_relations = _asset_relation_state(recon_dir, target)
     ready = host_inventory_ready or surface_inputs_ready
@@ -963,6 +1023,10 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         warnings.append("HTTP probing completed successfully with zero live hosts")
     elif http_probe.get("outcome") in {"timeout", "failure", "partial", "skipped", "unavailable"}:
         warnings.append(f"HTTP probing is incomplete: {http_probe.get('outcome')}")
+    if run_budget.get("partial"):
+        warnings.append(
+            f"Recon run is incomplete: {run_budget.get('stopped_phase') or 'unknown phase'}"
+        )
     if cidr_continuation.get("status") == "invalid":
         warnings.append(f"CIDR continuation is invalid: {cidr_continuation.get('reason')}")
     if asset_relations.get("error"):
@@ -978,6 +1042,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         "host_inventory_ready": host_inventory_ready,
         "surface_inputs_ready": surface_inputs_ready,
         "http_probe": http_probe,
+        "run_budget": run_budget,
         "cidr_continuation": cidr_continuation,
         "recon_dir": str(recon_dir),
         "counts": counts,

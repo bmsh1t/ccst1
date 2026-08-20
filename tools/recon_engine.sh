@@ -262,26 +262,33 @@ run_with_timeout() {
 recon_budget_checkpoint() {
     local phase="$1"
     local elapsed=$(( $(date +%s) - RECON_STARTED_EPOCH ))
+    RECON_BUDGET_CURRENT_PHASE="$phase"
     if [ "$elapsed" -lt "$RECON_SOFT_BUDGET_SECONDS" ]; then
         return 0
     fi
-    RECON_BUDGET_EXHAUSTED=1
-    RECON_BUDGET_STOP_PHASE="$phase"
-    log_warn "Recon soft budget exhausted before ${phase} (${elapsed}s/${RECON_SOFT_BUDGET_SECONDS}s); stopping before scheduling more work"
-    return 124
+    if [ "${RECON_BUDGET_ADVISORY_EXCEEDED:-0}" -eq 0 ]; then
+        log_warn "Recon soft budget exceeded before ${phase} (${elapsed}s/${RECON_SOFT_BUDGET_SECONDS}s); continuing coverage within per-tool limits"
+    fi
+    RECON_BUDGET_ADVISORY_EXCEEDED=1
+    return 0
 }
 
 recon_record_budget_on_exit() {
-    if [ "${RECON_BUDGET_EXHAUSTED:-0}" -ne 1 ] || [ "${RECON_BUDGET_RECORD_WRITTEN:-0}" -eq 1 ]; then
+    local exit_code="${1:-0}"
+    if [ "$exit_code" -eq 0 ] || [ "${RECON_BUDGET_RECORD_WRITTEN:-0}" -eq 1 ]; then
         return 0
     fi
     local elapsed=$(( $(date +%s) - RECON_STARTED_EPOCH ))
+    local soft_budget_status="within_budget"
+    if [ "${RECON_BUDGET_ADVISORY_EXCEEDED:-0}" -eq 1 ] || [ "$elapsed" -ge "$RECON_SOFT_BUDGET_SECONDS" ]; then
+        soft_budget_status="advisory_exceeded"
+    fi
     record_recon_phase \
         run_budget \
         partial \
         "recon/${RECON_TARGET_KEY:-}/recon_manifest.jsonl" \
         0 \
-        "stopped_before_phase=${RECON_BUDGET_STOP_PHASE:-unknown}; elapsed_seconds=${elapsed}; soft_budget_seconds=${RECON_SOFT_BUDGET_SECONDS}; raw surface preserved"
+        "stopped_during_phase=${RECON_BUDGET_CURRENT_PHASE:-unknown}; elapsed_seconds=${elapsed}; soft_budget_seconds=${RECON_SOFT_BUDGET_SECONDS}; soft_budget_status=${soft_budget_status}; raw surface preserved"
     RECON_BUDGET_RECORD_WRITTEN=1
 }
 
@@ -752,9 +759,9 @@ else
     RECON_SOFT_BUDGET_SECONDS=1800
 fi
 require_positive_integer BBHUNT_RECON_SOFT_BUDGET_SECONDS "$RECON_SOFT_BUDGET_SECONDS"
-RECON_BUDGET_EXHAUSTED=0
+RECON_BUDGET_ADVISORY_EXCEEDED=0
 RECON_BUDGET_RECORD_WRITTEN=0
-RECON_BUDGET_STOP_PHASE=""
+RECON_BUDGET_CURRENT_PHASE=""
 if [ -n "${BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS:-}" ]; then
     DIR_FUZZ_HARD_BUDGET_SECONDS="$BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS"
 elif [ "$RECON_PROFILE" = "quick" ]; then
@@ -779,7 +786,7 @@ SHARED_TOOLS_DIR="${BBHUNT_TOOLS_DIR:-${OSMEDEUS_TOOLS_DIR:-$HOME/Tools}}"
 # shellcheck source=tools/_auth_helper.sh
 . "$(dirname "$0")/_auth_helper.sh"
 bb_auth_bind_target "$TARGET"
-trap 'cleanup_auth_tmpfiles; recon_record_budget_on_exit' EXIT
+trap 'exit_code=$?; cleanup_auth_tmpfiles; recon_record_budget_on_exit "$exit_code"; exit "$exit_code"' EXIT
 
 # Prefer Go-installed/security-tool bins over similarly named package-manager CLIs.
 export PATH="$HOME/.local/bin:$HOME/go/bin:$SHARED_TOOLS_DIR/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -3038,11 +3045,6 @@ FFUF_SUMMARY_OK="false"
 DIR_FUZZ_STATUS="skipped"
 FFUF_LOG="$RECON_DIR/logs/ffuf.log"
 FFUF_EFFECTIVE_BUDGET_SECONDS="$DIR_FUZZ_HARD_BUDGET_SECONDS"
-RECON_ELAPSED_NOW=$(( $(date +%s) - RECON_STARTED_EPOCH ))
-RECON_REMAINING_SECONDS=$((RECON_SOFT_BUDGET_SECONDS - RECON_ELAPSED_NOW))
-if [ "$RECON_REMAINING_SECONDS" -lt "$FFUF_EFFECTIVE_BUDGET_SECONDS" ]; then
-    FFUF_EFFECTIVE_BUDGET_SECONDS="$RECON_REMAINING_SECONDS"
-fi
 FFUF_PHASE_DEADLINE_SECONDS=$((SECONDS + FFUF_EFFECTIVE_BUDGET_SECONDS))
 : > "$FFUF_LOG"
 
@@ -4128,20 +4130,23 @@ record_recon_phase \
 
 RECON_ELAPSED_SECONDS=$(( $(date +%s) - RECON_STARTED_EPOCH ))
 RECON_BUDGET_STATUS="ok"
-[ "$RECON_ELAPSED_SECONDS" -gt "$RECON_SOFT_BUDGET_SECONDS" ] && RECON_BUDGET_STATUS="partial"
+RECON_SOFT_BUDGET_STATUS="within_budget"
+if [ "$RECON_BUDGET_ADVISORY_EXCEEDED" -eq 1 ] || [ "$RECON_ELAPSED_SECONDS" -ge "$RECON_SOFT_BUDGET_SECONDS" ]; then
+    RECON_SOFT_BUDGET_STATUS="advisory_exceeded"
+fi
 record_recon_phase \
     run_budget \
     "$RECON_BUDGET_STATUS" \
     "recon/${RECON_TARGET_KEY}/recon_manifest.jsonl" \
     0 \
-    "elapsed_seconds=${RECON_ELAPSED_SECONDS}; soft_budget_seconds=${RECON_SOFT_BUDGET_SECONDS}; soft target never deletes raw surface"
+    "elapsed_seconds=${RECON_ELAPSED_SECONDS}; soft_budget_seconds=${RECON_SOFT_BUDGET_SECONDS}; soft_budget_status=${RECON_SOFT_BUDGET_STATUS}; soft target never deletes raw surface"
 RECON_BUDGET_RECORD_WRITTEN=1
 emit_claude_hint \
     phase               run_budget \
     profile             "$RECON_PROFILE" \
     elapsed_seconds     "$RECON_ELAPSED_SECONDS" \
     soft_budget_seconds "$RECON_SOFT_BUDGET_SECONDS" \
-    soft_budget_status  "$RECON_BUDGET_STATUS"
+    soft_budget_status  "$RECON_SOFT_BUDGET_STATUS"
 
 # ============================================================
 # Summary

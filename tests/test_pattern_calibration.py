@@ -290,7 +290,7 @@ class TestCliMain:
 
 class TestDocsMention:
     def test_autopilot_md_mentions_calibrate_patterns(self):
-        md = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
+        md = (REPO_ROOT / "docs" / "v4.5-mode-flags.md").read_text(encoding="utf-8")
         # Per B12d AC bullet
         assert "calibrate" in md.lower() or "--calibrate-patterns" in md
 

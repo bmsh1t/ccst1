@@ -282,13 +282,14 @@ def test_recon_engine_has_timeout_compat_helper():
     assert text.count('-rate "$FFUF_RATE_LIMIT"') == 3
     assert "recon_budget_checkpoint()" in text
     assert "recon_record_budget_on_exit()" in text
-    assert 'RECON_BUDGET_EXHAUSTED=1' in text
-    assert 'stopped_before_phase=' in text
-    assert 'trap \'cleanup_auth_tmpfiles; recon_record_budget_on_exit\' EXIT' in text
+    assert 'RECON_BUDGET_ADVISORY_EXCEEDED=1' in text
+    assert 'stopped_during_phase=' in text
+    assert 'recon_record_budget_on_exit "$exit_code"' in text
+    assert "RECON_REMAINING_SECONDS" not in text
     assert text.count("recon_budget_checkpoint ") >= 10
 
 
-def test_recon_budget_checkpoint_stops_before_scheduling_next_phase(tmp_path):
+def test_recon_budget_checkpoint_keeps_later_phases_schedulable(tmp_path):
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
     block = "recon_budget_checkpoint() {" + text.split(
@@ -302,18 +303,18 @@ def test_recon_budget_checkpoint_stops_before_scheduling_next_phase(tmp_path):
             "log_warn() { printf '%s\\n' \"$*\"; }\n"
             "RECON_STARTED_EPOCH=$(( $(date +%s) - 10 ))\n"
             "RECON_SOFT_BUDGET_SECONDS=5\n"
-            "RECON_BUDGET_EXHAUSTED=0\n"
-            "RECON_BUDGET_STOP_PHASE=''\n"
+            "RECON_BUDGET_ADVISORY_EXCEEDED=0\n"
             + block
-            + "recon_budget_checkpoint js_analysis\n",
+            + "recon_budget_checkpoint js_analysis\nprintf 'later phase scheduled\\n'\n",
         ],
         cwd=script.parent.parent,
         text=True,
         capture_output=True,
         check=False,
     )
-    assert completed.returncode == 124
-    assert "stopping before scheduling more work" in completed.stdout
+    assert completed.returncode == 0
+    assert "continuing coverage within per-tool limits" in completed.stdout
+    assert "later phase scheduled" in completed.stdout
 
 
 def test_recon_engine_supports_auth_session_env():

@@ -2973,6 +2973,9 @@ def _explicit_partial_reason(state: dict) -> str:
     """Keep a stale handoff state from hiding durable work owned elsewhere."""
     if state.get("recon_in_progress") or state.get("scan_in_progress"):
         return "runtime_phase_active"
+    run_budget = (state.get("recon_artifacts") or {}).get("run_budget") or {}
+    if run_budget.get("partial"):
+        return "recon_incomplete"
     continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
     if continuation.get("status") == "invalid":
         return "cidr_continuation_invalid"

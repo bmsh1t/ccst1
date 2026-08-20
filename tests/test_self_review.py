@@ -268,7 +268,7 @@ class TestDisqualifierRecording:
 
 
 # ---------------------------------------------------------------------
-#  Docs: --self-review mentioned in commands/validate.md and autopilot.md
+#  Docs: --self-review mentioned in commands/validate.md and the legacy flag reference
 # ---------------------------------------------------------------------
 
 class TestDocsMention:
@@ -280,7 +280,7 @@ class TestDocsMention:
         assert "--self-review" in text or "self-review" in text.lower()
 
     def test_autopilot_md_mentions_self_review(self):
-        text = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
+        text = (REPO_ROOT / "docs" / "v4.5-mode-flags.md").read_text(encoding="utf-8")
         assert "--self-review" in text or "self-review" in text.lower()
 
 

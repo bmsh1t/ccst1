@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from pathlib import Path
 
@@ -430,9 +432,17 @@ def test_run_vuln_scan_passes_scanner_full_and_skip_flags(monkeypatch, tmp_path)
 
 def test_run_vuln_scan_kills_process_group_when_wait_times_out(monkeypatch, tmp_path):
     recon_root = tmp_path / "recon"
+    findings_root = tmp_path / "findings"
     stored_recon_dir = recon_root / "example.com"
     stored_recon_dir.mkdir(parents=True)
+    category_dir = findings_root / "example.com" / "sqli"
+    category_dir.mkdir(parents=True)
+    (category_dir / "timebased_candidates.txt").write_text(
+        "[SQLI-POC-VERIFIED] url=https://example.com/item?id=1\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(hunt, "RECON_DIR", str(recon_root))
+    monkeypatch.setattr(hunt, "FINDINGS_DIR", str(findings_root))
 
     captured = []
 
@@ -449,6 +459,10 @@ def test_run_vuln_scan_kills_process_group_when_wait_times_out(monkeypatch, tmp_
 
     assert hunt.run_vuln_scan("example.com") is False
     assert captured
+    findings = json.loads((findings_root / "example.com" / "findings.json").read_text())
+    assert findings["total"] == 1
+    assert not (findings_root / "example.com" / "summary.json").exists()
+    assert not (findings_root / "example.com" / "scanner_pass.json").exists()
 
 
 def test_run_vuln_scan_kills_process_group_when_interrupted(monkeypatch, tmp_path):
@@ -456,6 +470,7 @@ def test_run_vuln_scan_kills_process_group_when_interrupted(monkeypatch, tmp_pat
     (recon_root / "example.com").mkdir(parents=True)
     monkeypatch.setattr(hunt, "RECON_DIR", str(recon_root))
     captured = []
+    finalized = []
 
     class FakeProc:
         pid = 6161
@@ -466,11 +481,13 @@ def test_run_vuln_scan_kills_process_group_when_interrupted(monkeypatch, tmp_pat
 
     monkeypatch.setattr(hunt.subprocess, "Popen", lambda *args, **kwargs: FakeProc())
     monkeypatch.setattr(hunt, "_kill_process_group", lambda proc: captured.append(proc))
+    monkeypatch.setattr(hunt, "_finalize_interrupted_scan", lambda target: finalized.append(target))
 
     with pytest.raises(KeyboardInterrupt):
         hunt.run_vuln_scan("example.com")
 
     assert captured
+    assert finalized == ["example.com"]
 
 
 def test_generate_reports_uses_cidr_storage_dirs(monkeypatch, tmp_path):

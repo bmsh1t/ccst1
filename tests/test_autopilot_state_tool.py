@@ -302,6 +302,29 @@ def test_closure_finishes_only_for_gap_free_handoff_state():
     assert closure["reasons"] == []
 
 
+def test_closure_handoffs_only_for_partial_recon_budget():
+    interrupted = build_closure_projection(
+        {
+            "next_action": "handoff",
+            "recon_artifacts": {"run_budget": {"status": "partial", "partial": True}},
+        },
+        _closure_matrix(),
+    )
+    completed_slow = build_closure_projection(
+        {
+            "next_action": "handoff",
+            "recon_artifacts": {
+                "run_budget": {"status": "ok", "partial": False, "advisory_exceeded": True}
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert interrupted["verdict"] == "handoff"
+    assert interrupted["reasons"] == ["recon_incomplete"]
+    assert completed_slow["verdict"] == "finish"
+
+
 @pytest.mark.parametrize(
     "legacy_state",
     [

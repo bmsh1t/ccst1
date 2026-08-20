@@ -307,7 +307,7 @@ class TestCliFlag:
 
 class TestDocsMention:
     def test_autopilot_md_mentions_parallel_hypotheses(self):
-        text = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
+        text = (REPO_ROOT / "docs" / "v4.5-mode-flags.md").read_text(encoding="utf-8")
         assert "--parallel-hypotheses" in text
 
 

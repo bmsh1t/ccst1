@@ -1286,14 +1286,30 @@ def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
         return proc.returncode == 0
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
+        _finalize_interrupted_scan(domain)
         log("err", f"Vulnerability scan timed out for {domain}")
         return False
     except BaseException:
         _kill_process_group(proc)
+        _finalize_interrupted_scan(domain)
         log("err", f"Vulnerability scan interrupted for {domain}")
         raise
     finally:
         _restore_child_signal_handlers(signal_handlers)
+
+
+def _finalize_interrupted_scan(domain):
+    """Preserve flushed scanner candidates without publishing completion markers."""
+    target = classify_target(domain)["target"]
+    findings_dir = _resolve_findings_dir(domain)
+    try:
+        from tools.finding_index import write_finding_index
+
+        payload = write_finding_index(findings_dir, target=target)
+    except Exception as exc:  # Best-effort recovery must not change scan failure semantics.
+        log("warn", f"Unable to preserve interrupted scanner candidates for {target}: {exc}")
+        return
+    log("warn", f"Preserved {payload['total']} interrupted scanner candidate(s) in {findings_dir}")
 
 
 def _run_nuclei_scan(urls, *, tags, output_path, severity=None, rate_limit=20, concurrency=10):

@@ -43,8 +43,10 @@ BBHUNT_ENABLE_AMASS=1 bash tools/recon_engine.sh target.com
 
 `hunt.py --recon-only` 默认使用 normal profile；quick/normal 都保留 raw 证据归档；Coverage/scanner
 `--deep` 使用 3600 秒默认 Recon 软预算（normal/full 为 1800 秒）；通过
-`BBHUNT_RECON_SOFT_BUDGET_SECONDS` 可按环境覆盖。预算耗尽时保留原始产物并以 partial
-状态交接，后续 `/surface` 或下一轮 Autopilot 可继续消费未完成面。
+`BBHUNT_RECON_SOFT_BUDGET_SECONDS` 可按环境覆盖。软预算只是覆盖遥测阈值：超过后仍继续
+后续阶段，且不会把完整运行误报为 partial；父进程超时、工具中断或非零失败才以 partial
+状态交接。所有已产生的原始产物都会保留，后续 `/surface` 或下一轮 Autopilot 可继续消费
+未完成面。
 仍把 Active surface 交给执行消费者，Surface index 同时提供 raw-only 的可重建证据投影；只把逐 bundle
 正则提取、secret grep 和递归 JS 链接分析交给 Surface/Action Queue。裸
 `recon_engine.sh TARGET` 保持原 full 行为；Source Map 源文件恢复和动态 chunk 重建继续由
