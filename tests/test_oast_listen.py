@@ -313,6 +313,21 @@ def test_status_with_no_instances(isolated_findings, capsys):
     assert "no OAST instances" in captured.out
 
 
+def test_cleanup_reuses_stop_for_recorded_targets(isolated_findings, monkeypatch, capsys):
+    for target in ("live.example", "stale.example"):
+        paths = oast_listen._paths(target)
+        paths["base"].mkdir(parents=True)
+        paths["pid"].write_text("1234")
+    (isolated_findings / "not-oast").mkdir()
+    stopped = []
+    monkeypatch.setattr(oast_listen, "cmd_stop", lambda target: stopped.append(target) or 0)
+
+    assert oast_listen.main(["cleanup"]) == 0
+
+    assert stopped == ["live.example", "stale.example"]
+    assert "checked 2 recorded listener(s)" in capsys.readouterr().err
+
+
 # ─── Normalization helper ───────────────────────────────────────────────────
 def test_iso_to_unix_handles_z_suffix():
     ts = oast_listen._iso_to_unix("2026-05-13T08:30:00Z")

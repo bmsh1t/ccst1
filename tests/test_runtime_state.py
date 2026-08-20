@@ -455,7 +455,7 @@ def test_derive_state_view_returns_all_layers(tmp_path):
     assert view["derived"]["status"] == "unavailable"
 
 
-def test_derived_status_prefers_ready_artifacts_over_scan_failure_breadcrumb(tmp_path, monkeypatch):
+def test_derived_status_preserves_scan_failure_over_ready_artifacts(tmp_path, monkeypatch):
     update_runtime_state(
         tmp_path,
         "target.com",
@@ -470,8 +470,26 @@ def test_derived_status_prefers_ready_artifacts_over_scan_failure_breadcrumb(tmp
 
     view = derive_state_view(tmp_path, "target.com")
 
-    assert view["derived"]["status"] == "complete"
+    assert view["derived"]["status"] == "partial"
+    assert "scanner phase failed" in view["derived"]["reason"]
     assert view["derived"]["failure_breadcrumb"]["mode"] == "scan_failed"
+
+
+def test_derived_status_exposes_partial_recon_budget(tmp_path, monkeypatch):
+    update_runtime_state(tmp_path, "target.com", mode="recon", last_executed_workflow="run_recon")
+    monkeypatch.setattr(
+        runtime_state_module,
+        "inspect_recon_artifacts",
+        lambda *_args, **_kwargs: {
+            "ready": True,
+            "run_budget": {"partial": True, "stopped_phase": "url_collection"},
+        },
+    )
+
+    view = derive_state_view(tmp_path, "target.com")
+
+    assert view["derived"]["status"] == "partial"
+    assert "recon run exceeded" in view["derived"]["reason"]
 
 
 def test_inspect_recon_artifacts_reports_ready_cache(tmp_path):

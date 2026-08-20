@@ -27,6 +27,7 @@ Subcommands:
   start    Launch listener; print callback URL.
   poll     Drain new callbacks since the last poll (or all if --since 0).
   stop     Terminate listener (SIGTERM then SIGKILL after 3s).
+  cleanup  Stop every repository-recorded listener (used at session end).
   status   List all known OAST instances and their liveness.
   payloads Print blind-class payloads with the active OAST URL substituted.
 
@@ -690,6 +691,22 @@ def cmd_status() -> int:
     return 0
 
 
+def cmd_cleanup() -> int:
+    """Stop only listeners recorded under this repository's findings root."""
+    if not FINDINGS_ROOT.is_dir():
+        return 0
+    failures = 0
+    stopped = 0
+    for target_dir in sorted(FINDINGS_ROOT.iterdir()):
+        if not target_dir.is_dir() or not (target_dir / "oast" / "pid").is_file():
+            continue
+        stopped += 1
+        if cmd_stop(target_dir.name) != 0:
+            failures += 1
+    _log_ok(f"OAST cleanup checked {stopped} recorded listener(s).")
+    return 1 if failures else 0
+
+
 def _resolve_vuln_class(name: str) -> Optional[str]:
     """Map user input to a canonical OAST_PAYLOAD_TEMPLATES key.
 
@@ -823,6 +840,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_stop = sub.add_parser("stop", help="Terminate listener (SIGTERM then SIGKILL).")
     p_stop.add_argument("--target", required=True)
 
+    sub.add_parser("cleanup", help="Stop all repository-recorded listeners.")
     sub.add_parser("status", help="List all known OAST instances and liveness.")
 
     p_payloads = sub.add_parser(
@@ -899,6 +917,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_poll(args.target, args.since_ts)
     if args.cmd == "stop":
         return cmd_stop(args.target)
+    if args.cmd == "cleanup":
+        return cmd_cleanup()
     if args.cmd == "status":
         return cmd_status()
     if args.cmd == "payloads":

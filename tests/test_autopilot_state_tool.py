@@ -321,8 +321,10 @@ def test_closure_handoffs_only_for_partial_recon_budget():
     )
 
     assert interrupted["verdict"] == "handoff"
-    assert interrupted["reasons"] == ["recon_incomplete"]
+    assert interrupted["reasons"] == ["recon_budget_partial"]
+    assert interrupted["recon_budget_partial"] is True
     assert completed_slow["verdict"] == "finish"
+    assert completed_slow["recon_budget_partial"] is False
 
 
 @pytest.mark.parametrize(

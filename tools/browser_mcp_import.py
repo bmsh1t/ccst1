@@ -11,10 +11,13 @@ browser_surface 索引。
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
+import inspect
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -438,6 +441,48 @@ def _write_json(path: Path, payload: Any) -> None:
             temp_path.unlink(missing_ok=True)
 
 
+def _rollback_failed_capture(func):
+    """Remove only this import's capture directories when publishing fails."""
+    signature = inspect.signature(func)
+
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        target_key = target_storage_key(str(bound.arguments["target"]))
+        evidence_root = Path(bound.arguments["evidence_root"])
+        public_parent = evidence_root / target_key / "browser"
+        private_parent = evidence_root.parent / ".private" / "browser" / target_key
+        before_public = set(public_parent.iterdir()) if public_parent.is_dir() else None
+        before_private = set(private_parent.iterdir()) if private_parent.is_dir() else None
+
+        def rollback(parent: Path, before: set[Path] | None) -> None:
+            def remove(path: Path) -> None:
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
+
+            if not parent.exists():
+                return
+            if before is None:
+                remove(parent)
+                return
+            for child in list(parent.iterdir()):
+                if child not in before:
+                    remove(child)
+
+        try:
+            return func(*args, **kwargs)
+        except BaseException:
+            rollback(public_parent, before_public)
+            rollback(private_parent, before_private)
+            raise
+
+    return wrapped
+
+
+@_rollback_failed_capture
 def import_mcp_browser_evidence(
     *,
     target: str,

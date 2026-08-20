@@ -179,6 +179,8 @@ def test_tracked_claude_hook_contract_is_complete():
     events = {item.get("event") for item in hooks}
     assert {"SessionStart", "SessionStop", "Stop"} <= events
     assert all(str(item.get("command") or "").strip() for item in hooks)
+    session_stop = next(item for item in hooks if item.get("event") == "SessionStop")
+    assert "tools/oast_listen.py cleanup" in session_stop["command"]
 
 
 def test_claude_code_prompt_files_are_utf8_and_not_corrupted():

@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 import browser_mcp_import
 from tools.action_queue import load_queue
 from tools import vision_browser
@@ -519,6 +521,28 @@ def test_failed_browser_envelope_is_not_ready_even_with_requests(tmp_path):
     assert summary["status"] == "error"
     assert summary["success"] is False
     assert readiness["ready"] is False
+
+
+def test_failed_browser_import_rolls_back_new_capture_artifacts(tmp_path, monkeypatch):
+    network_path = tmp_path / "network.json"
+    network_path.write_text(json.dumps([{"url": "https://target.local/api/me"}]), encoding="utf-8")
+
+    def fail_surface_write(*_args, **_kwargs):
+        raise OSError("surface fixture failure")
+
+    monkeypatch.setattr(browser_mcp_import, "write_browser_surface", fail_surface_write)
+    with pytest.raises(OSError, match="surface fixture failure"):
+        browser_mcp_import.import_mcp_browser_evidence(
+            target="target.local",
+            network_path=network_path,
+            evidence_root=tmp_path / "evidence",
+            recon_root=tmp_path / "recon",
+        )
+
+    public_browser = tmp_path / "evidence" / "target.local" / "browser"
+    private_browser = tmp_path / ".private" / "browser" / "target.local"
+    assert not list(public_browser.glob("*") if public_browser.is_dir() else [])
+    assert not list(private_browser.glob("*") if private_browser.is_dir() else [])
 
 
 def test_browser_mcp_import_merges_incremental_surface_instead_of_erasing(tmp_path):

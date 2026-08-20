@@ -220,6 +220,7 @@ def test_localhost_sequential_fresh_resume_batch_queue_runner_and_checkpoint(
             "rotation_hint",
             "ledger_health",
             "checkpoint_health",
+            "recon_budget_partial",
         )
     }
     assert closure_payload["closure"]["reasons"] == ["max_lanes_reached"]

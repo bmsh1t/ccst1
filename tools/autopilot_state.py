@@ -2975,7 +2975,7 @@ def _explicit_partial_reason(state: dict) -> str:
         return "runtime_phase_active"
     run_budget = (state.get("recon_artifacts") or {}).get("run_budget") or {}
     if run_budget.get("partial"):
-        return "recon_incomplete"
+        return "recon_budget_partial"
     continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
     if continuation.get("status") == "invalid":
         return "cidr_continuation_invalid"
@@ -3035,6 +3035,8 @@ def build_closure_projection(
     ledger_health = state.get("_ledger_health") if isinstance(state.get("_ledger_health"), dict) else {}
     checkpoint_health = state.get("_checkpoint_health") if isinstance(state.get("_checkpoint_health"), dict) else {}
     ledger_projection = state.get("_ledger_projection") if isinstance(state.get("_ledger_projection"), dict) else {}
+    run_budget = (state.get("recon_artifacts") or {}).get("run_budget") or {}
+    recon_budget_partial = bool(run_budget.get("partial"))
     ledger_status = str(ledger_health.get("status") or "missing").strip().lower()
     surface_review = state.get("surface_review_completion") or {}
     surface_projection = state.get("surface_projection")
@@ -3187,6 +3189,7 @@ def build_closure_projection(
     result = {
         "verdict": verdict,
         "can_claim_exhausted": verdict == "finish",
+        "recon_budget_partial": recon_budget_partial,
         "reasons": reasons[:3],
         "next_action": action,
         "rotation_hint": _rotation_hint(ledger_entries or []),
@@ -4035,6 +4038,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
             "rotation_hint",
             "ledger_health",
             "checkpoint_health",
+            "recon_budget_partial",
             "stagnation_fingerprint",
             "error",
             "round_progress",

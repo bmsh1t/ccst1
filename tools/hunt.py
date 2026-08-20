@@ -1249,6 +1249,23 @@ def run_recon(domain, quick=False, deep=False):
         _restore_child_signal_handlers(signal_handlers)
 
 
+def _scanner_timeout_seconds(*, quick: bool = False, scanner_full: bool = False) -> int:
+    """Return a mode-aware outer budget while keeping an operator override."""
+    env_name = (
+        "BBHUNT_SCANNER_FULL_TIMEOUT"
+        if scanner_full
+        else "BBHUNT_SCANNER_QUICK_TIMEOUT"
+        if quick
+        else "BBHUNT_SCANNER_TIMEOUT"
+    )
+    default = 14400 if scanner_full else 1800 if quick else 7200
+    raw = os.environ.get(env_name) or os.environ.get("BBHUNT_SCANNER_TIMEOUT")
+    try:
+        return max(60, int(raw)) if raw else default
+    except (TypeError, ValueError):
+        return default
+
+
 def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
     """Run vulnerability scanner on recon results."""
     recon_dir = _resolve_recon_dir(domain)
@@ -1282,7 +1299,7 @@ def run_vuln_scan(domain, quick=False, scanner_full=False, scanner_skip=""):
             pass_fds=_RUNTIME_PHASE_LOCK_FDS,
         )
         signal_handlers = _install_child_signal_handlers(proc)
-        proc.wait(timeout=1800)
+        proc.wait(timeout=_scanner_timeout_seconds(quick=quick, scanner_full=scanner_full))
         return proc.returncode == 0
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)

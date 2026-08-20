@@ -389,7 +389,7 @@ def test_run_vuln_scan_uses_cidr_storage_dir(monkeypatch, tmp_path):
     assert "1.2.3.0/24" not in captured["cmd"]
     assert captured["cwd"] == hunt.BASE_DIR
     assert captured["start_new_session"] is True
-    assert captured["timeout"] == 1800
+    assert captured["timeout"] == 7200
 
 
 def test_run_vuln_scan_passes_scanner_full_and_skip_flags(monkeypatch, tmp_path):
@@ -428,6 +428,27 @@ def test_run_vuln_scan_passes_scanner_full_and_skip_flags(monkeypatch, tmp_path)
     assert captured["cmd"][captured["cmd"].index("--skip") + 1] == "xss,ssti,mfa"
     assert str(stored_recon_dir) in captured["cmd"]
     assert captured["shell"] is False
+    assert captured["timeout"] == 14400
+
+
+def test_run_vuln_scan_allows_mode_timeout_override(monkeypatch, tmp_path):
+    recon_root = tmp_path / "recon"
+    (recon_root / "example.com").mkdir(parents=True)
+    monkeypatch.setattr(hunt, "RECON_DIR", str(recon_root))
+    monkeypatch.setenv("BBHUNT_SCANNER_TIMEOUT", "2400")
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            captured["timeout"] = timeout
+            return 0
+
+    monkeypatch.setattr(hunt.subprocess, "Popen", lambda *args, **kwargs: FakeProc())
+
+    assert hunt.run_vuln_scan("example.com") is True
+    assert captured["timeout"] == 2400
 
 
 def test_run_vuln_scan_kills_process_group_when_wait_times_out(monkeypatch, tmp_path):

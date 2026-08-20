@@ -509,6 +509,10 @@ def _derive_current_status(
         return {"status": "report_pending", "reason": "validated findings still require report closure", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
     if queue.get("active", 0):
         return {"status": "action_pending", "reason": "durable queue still has active work", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+    if str(persisted.get("mode") or "").strip().lower() == "scan_failed":
+        return {"status": "partial", "reason": "last scanner phase failed; preserved results require review", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
+    if (recon.get("run_budget") or {}).get("partial"):
+        return {"status": "partial", "reason": "recon run exceeded its budget and remains resumable", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
     if recon.get("ready"):
         return {"status": "complete", "reason": "recon is ready and finding/queue owners have no pending work", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
     return {"status": "unavailable", "reason": "no current recon closure is available", "queue": queue, "failure_breadcrumb": failure_breadcrumb}
