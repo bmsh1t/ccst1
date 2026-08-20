@@ -1296,6 +1296,67 @@ def _local_intel_blob(local_intel: dict) -> list[str]:
     return [piece for piece in pieces if str(piece).strip()]
 
 
+def _ranked_tech_stack(ranked: dict, *, limit: int = 12) -> list[str]:
+    """Return a small, ordered technology projection from ranked candidates."""
+
+    values: list[str] = []
+    sources = [ranked.get("tech_stack")]
+    for key in ("review_pool", "p1", "p2"):
+        items = ranked.get(key) or []
+        sources.extend(
+            item.get("tech_stack")
+            for item in items[:16]
+            if isinstance(item, dict)
+        )
+    for source in sources:
+        if isinstance(source, str):
+            source = [source]
+        if not isinstance(source, (list, tuple)):
+            continue
+        for item in source:
+            name = item.get("name") if isinstance(item, dict) else item
+            name = str(name or "").strip()
+            if name and name.casefold() not in {value.casefold() for value in values}:
+                values.append(name)
+                if len(values) >= limit:
+                    return values
+    return values
+
+
+def _routing_blob_without_tech_stack(blob: str) -> str:
+    """Keep the tech projection visible without treating it as raw evidence."""
+
+    return re.sub(r"(?im)^tech_stack=[^\n]*\n?", "", blob)
+
+
+NODE_RUNTIME_RE = re.compile(
+    r"\b(?:node(?:\.js|js)?|express|next\.js|nestjs|koa|hapi|fastify)\b", re.I
+)
+NODE_POLLUTION_RE = re.compile(
+    r"\b(?:prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|vm2?|happy[-_ ]?dom|jsdom)\b",
+    re.I,
+)
+NODE_STRUCTURAL_INPUT_RE = re.compile(
+    r"\b(?:merge|deep[-_ ]?(?:set|merge)|nested[-_ ]?json|json[-_ ]?(?:body|input)|application/json|"
+    r"lodash|\bqs\b|\bflat\b|dot[-_ ]?prop|set[-_ ]?value|config[-_ ]?(?:input|object|merge))\b",
+    re.I,
+)
+
+
+def _has_node_card_signal(focus: str, blob: str, tech_stack: list[str]) -> bool:
+    """Require a concrete Node input/primitive signal for inferred stack routing."""
+
+    if NODE_RUNTIME_RE.search(focus) or NODE_POLLUTION_RE.search(focus):
+        return True
+    evidence_blob = _routing_blob_without_tech_stack(blob)
+    if NODE_POLLUTION_RE.search(evidence_blob):
+        return True
+    return bool(
+        NODE_RUNTIME_RE.search(" ".join(tech_stack))
+        and NODE_STRUCTURAL_INPUT_RE.search(evidence_blob)
+    )
+
+
 def _text_blob(
     focus: str,
     goal_memory: dict,
@@ -1305,6 +1366,7 @@ def _text_blob(
     local_intel: dict,
 ) -> str:
     pieces: list[str] = [focus]
+    tech_stack = _ranked_tech_stack(ranked)
     active = goal_memory.get("active") or {}
     target_memory = goal_memory.get("target") or {}
     for key in ("active_goal", "current_hypothesis", "phase", "mode"):
@@ -1345,6 +1407,8 @@ def _text_blob(
         pieces.append(f"{gap.get('endpoint')} {gap.get('vuln_class')}")
     for finding in findings[:5]:
         pieces.append(_finding_anchor(finding))
+    if tech_stack:
+        pieces.append("tech_stack=" + " ".join(tech_stack))
     pieces.extend(_local_intel_blob(local_intel))
     return "\n".join(piece for piece in pieces if piece)
 
@@ -1828,11 +1892,15 @@ def _select_cards_and_deferred(
     registry: dict[str, dict[str, str]] | None = None,
 ) -> tuple[list[str], list[str], list[dict[str, object]]]:
     focus_cards = _cards_from_focus(focus)
+    tech_stack = _ranked_tech_stack(ranked)
+    node_card_signal = _has_node_card_signal(focus, blob, tech_stack)
     cards: list[str] = list(focus_cards)
     for pattern, names in DISTILLED_TOKEN_TO_CARDS:
         if pattern.search(blob):
             cards.extend(names)
     for pattern, names in TOKEN_TO_CARDS:
+        if names == ("node-prototype-pollution",) and not node_card_signal:
+            continue
         if pattern.search(blob):
             if names == ("browser-client-boundaries",) and _has_proxy_cache_boundary_signal(blob):
                 continue
@@ -2128,21 +2196,16 @@ def _select_cards_and_deferred(
         or re.search(r"\b(information[-_ ]?disclosure|info[-_ ]?disclosure|debug|stack[-_ ]?trace|source[-_ ]?map|\.map|backup|\.bak|git[-_ ]?leak|directory[-_ ]?listing|robots\.txt|security\.txt|version[-_ ]?leak|error[-_ ]?leak)\b", blob, re.I)
     ):
         priority.append("information-disclosure-source-config")
-    if (
-        re.search(r"\b(?:node\.js|nodejs)\b", focus_l)
-        or re.search(r"\bexpress\b", focus_l)
-        or "prototype-pollution" in focus_l
-        or "proto-pollution" in focus_l
-        or "__proto__" in focus_l
-        or "constructor.prototype" in focus_l
-        or re.search(r"\bvm2?\b", focus_l)
-        or re.search(
-            r"\b(node\.js|nodejs|express|next\.js|nestjs|koa|hapi|fastify|prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|lodash|qs|flat|deep[-_ ]?extend|dot[-_ ]?prop|set[-_ ]?value|vm2?|happy[-_ ]?dom|jsdom)\b",
-            blob,
-            re.I,
-        )
-    ):
+    if node_card_signal:
         priority.append("node-prototype-pollution")
+    wordpress_signal = re.search(
+        r"\b(?:wordpress|wp[-_ ]?json|wp[-_ ]?content|wp[-_ ]?admin|admin[-_ ]?ajax|xmlrpc(?:\.php)?|"
+        r"wordpress[-_ ]?(?:plugin|theme))\b",
+        " ".join(tech_stack) + "\n" + _routing_blob_without_tech_stack(blob),
+        re.I,
+    )
+    if wordpress_signal:
+        priority.append("wordpress-surface-intelligence")
     if not priority and re.search(r"\b(graphql|gql|mutation|subscription|introspection|global[_-]?id)\b", blob, re.I):
         priority.append("graphql")
     cards = _dedupe(focus_cards + priority + cards)
@@ -3377,6 +3440,7 @@ def build_context_pack(
     findings = _load_findings(repo, target_key)
     runner_candidates = load_validation_runner_candidate_pool(repo, resolved_target)
     local_intel = _load_local_intel(repo, target_key)
+    tech_stack = _ranked_tech_stack(ranked)
     blob = _text_blob(focus, goal_memory, ranked, gaps, findings, local_intel)
     (
         reviewed_candidate_hints,
@@ -3441,6 +3505,7 @@ def build_context_pack(
         "active_goal": _active_goal(goal_memory),
         "current_hypothesis": _hypothesis(goal_memory),
         "focus": focus,
+        "tech_stack": tech_stack,
         "selected_skill": SKILL_PATHS[skill],
         "selected_skill_id": skill,
         "why_this_skill": why_skill,
@@ -3482,6 +3547,7 @@ def build_context_pack(
         ),
         "source_summary": {
             "surface_available": bool(ranked.get("available")),
+            "tech_stack": tech_stack,
             "p1": (ranked.get("stats") or {}).get("p1", 0),
             "p2": (ranked.get("stats") or {}).get("p2", 0),
             "workflow_leads": len(_json_list(ranked.get("workflow_leads"))),
@@ -3517,6 +3583,7 @@ def format_context_pack(pack: dict) -> str:
         f"- Phase: {pack['phase']}",
         f"- Active goal: {pack.get('active_goal') or '-'}",
         f"- Current hypothesis: {pack.get('current_hypothesis') or '-'}",
+        f"- Tech stack: {', '.join(pack.get('tech_stack') or []) or '-'}",
         f"- Selected skill: {pack['selected_skill']}",
         f"- Why this skill: {pack['why_this_skill']}",
         f"- Required test dimensions: {', '.join((pack.get('skill_route') or {}).get('required_dimensions', []))}",

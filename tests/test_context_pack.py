@@ -1235,6 +1235,84 @@ def test_node_prototype_focus_routes_to_node_card(tmp_path):
     assert any("inert marker" in seed or "merge/path-set" in seed for seed in pack["hypothesis_seeds"])
 
 
+def test_ranked_technology_stack_is_visible_without_bare_high_risk_routing(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        surface_state={
+            "available": True,
+            "review_pool": [{
+                "url": "https://api.target.com/profile",
+                "path": "/profile",
+                "tech_stack": ["Java", "PHP", "Spring"],
+                "reasons": [],
+                "suggested": "review endpoint",
+            }],
+            "p1": [],
+            "p2": [],
+            "stats": {"p1": 0, "p2": 0, "review_pool": 1},
+        },
+    )
+
+    all_cards = pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+    assert pack["tech_stack"] == ["Java", "PHP", "Spring"]
+    assert "Tech stack: Java, PHP, Spring" in format_context_pack(pack)
+    assert "knowledge/cards/insecure-deserialization.md" not in all_cards
+    assert "knowledge/cards/sqli-hidden-surfaces.md" not in all_cards
+
+
+def test_node_stack_plus_json_shape_routes_to_node_card(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        surface_state={
+            "available": True,
+            "review_pool": [{
+                "url": "https://api.target.com/api/preferences",
+                "path": "/api/preferences",
+                "tech_stack": ["Node.js", "Express"],
+                "request_shapes": [{
+                    "method": "POST",
+                    "body": {"content_type_hint": "application/json"},
+                }],
+                "reasons": [],
+                "suggested": "review JSON merge behavior",
+            }],
+            "p1": [],
+            "p2": [],
+            "stats": {"p1": 0, "p2": 0, "review_pool": 1},
+        },
+    )
+
+    assert "knowledge/cards/node-prototype-pollution.md" in (
+        pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+    )
+
+
+def test_wordpress_stack_routes_to_existing_inventory_card(tmp_path):
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        surface_state={
+            "available": True,
+            "review_pool": [{
+                "url": "https://target.com/wp-json/",
+                "path": "/wp-json/",
+                "tech_stack": ["WordPress"],
+                "reasons": [],
+                "suggested": "review REST surface",
+            }],
+            "p1": [],
+            "p2": [],
+            "stats": {"p1": 0, "p2": 0, "review_pool": 1},
+        },
+    )
+
+    assert "knowledge/cards/wordpress-surface-intelligence.md" in (
+        pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+    )
+
+
 def test_explicit_focus_wins_over_mixed_background_signals(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://login.target.com/oauth/callback?code=abc&state=xyz",
