@@ -1,7 +1,7 @@
-"""tests/test_phase5_wiring.py — P5-W1 wiring contract tests.
+"""Legacy local-agent P5-W1 wiring contract tests.
 
-Verifies that the 5 Phase-4 primitives are now wired into the agent.py
-autopilot execution path, gated by their respective CLI flags. Each
+Verifies that the 5 Phase-4 primitives remain wired into the agent.py
+legacy execution path, gated by their respective CLI flags. Each
 primitive's logic is already tested in its own test file; this suite
 covers only the wire-up contract:
 

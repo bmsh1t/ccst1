@@ -1,4 +1,4 @@
-"""tests/test_pattern_calibration.py — B12d acceptance tests."""
+"""Legacy local-agent B12d acceptance tests."""
 
 from __future__ import annotations
 
@@ -289,7 +289,7 @@ class TestCliMain:
 # ---------------------------------------------------------------------
 
 class TestDocsMention:
-    def test_autopilot_md_mentions_calibrate_patterns(self):
+    def test_legacy_flag_reference_mentions_calibrate_patterns(self):
         md = (REPO_ROOT / "docs" / "v4.5-mode-flags.md").read_text(encoding="utf-8")
         # Per B12d AC bullet
         assert "calibrate" in md.lower() or "--calibrate-patterns" in md

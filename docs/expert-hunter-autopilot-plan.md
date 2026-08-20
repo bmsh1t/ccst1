@@ -1,4 +1,10 @@
-# Expert Hunter Autopilot Plan
+# Expert Hunter Autopilot Design Reference
+
+> Current runtime entry: Claude CLI inline `/autopilot`, with
+> `commands/autopilot.md` and `docs/autopilot-lanes.md` as the executable
+> contracts. `agent.py`/`tools/hunt.py --agent` remain explicit legacy
+> compatibility paths. The phases below record design decisions and
+> validation history; they are not a pending implementation checklist.
 
 ## 1. 一句话目标
 

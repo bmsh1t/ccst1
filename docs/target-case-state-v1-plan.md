@@ -1,6 +1,6 @@
-# Target Case State v1 规划
+# Target Case State v1 Current Contract
 
-> 本文保留 v1 的历史字段说明；当前实现不会把认证头写入公共
+> 本文记录当前 target case state 契约和实现边界；当前实现不会把认证头写入公共
 > `state/<target_key>/case_state.json`。`add-session` 将头值写入
 > `.private/case-state/<target_key>/sessions/`，公共 session 只保留 metadata 与
 > `private_ref`，验证器通过 `load_case_state()` 读取内存态。
@@ -77,7 +77,7 @@ A. Evidence / Execution Plane
 B. Learning / Promotion Plane
 ```
 
-本规划落点：
+当前实现落点：
 
 ```text
 Target Memory 增强
@@ -442,7 +442,7 @@ score =
 如果失败，下一条链路是什么？
 ```
 
-## 9. Validation Runner 集成规划
+## 9. Validation Runner 集成契约
 
 当前已有 runner lane：
 
@@ -484,7 +484,7 @@ private marker
 --expect-marker ...
 ```
 
-## 10. Checkpoint 集成规划
+## 10. Checkpoint 集成契约
 
 checkpoint 读取：
 
@@ -796,7 +796,7 @@ socket.io/?sid=... -> no_seed_candidates
 owner baseline invalid + peer invalid -> result=dead_end, not tested_clean
 ```
 
-## 12. 测试规划
+## 12. 覆盖与验证
 
 新增：
 
@@ -878,15 +878,9 @@ UI
 10. `next` 输出不是 checklist，而是带 hypothesis / why_now / exact replay / downgrade / chain extension 的 AI 编排动作
 11. 失败后能给出聪明的替代链路，而不是机械停止
 
-## 15. 推荐执行顺序
+## 15. 维护边界
 
-先做 Phase A。
-
-原因：
-
-- 最小可回退
-- 不影响现有稳定链路
-- 可以先验证状态模型是否真的好用
-- 后续再接 validation runner / checkpoint
-
-如果 Phase A 做完发现实际输出没价值，则停止，不继续扩大。
+Phase A-G 已落地并由对应工具、Checkpoint 和 Runner 测试覆盖。维护时继续
+复用现有 Target Memory、Evidence Ledger、Action Queue 和 Checkpoint owner；
+不要把 case state 扩展成第二套全局状态机。新增字段必须先有当前消费者和
+回归测试，敏感认证材料仍只能留在 `.private/case-state/`。

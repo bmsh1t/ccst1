@@ -1,10 +1,10 @@
-"""tests/test_self_review.py — B12c acceptance tests.
+"""Legacy local-agent B12c acceptance tests.
 
 Covers:
   R1   red_team worker spawn (via B6 primitive, mocked subprocess)
   R2   review output schema (VERDICT line + free-text rationale)
   R3   parent decision branching across 3 verdicts
-  R4   --self-review CLI flag wired into agent.py
+  R4   --self-review CLI flag wired into the legacy agent.py entrypoint
   R5   audit-log payload carries verdict + worker_id + parent_session
 """
 
@@ -279,7 +279,7 @@ class TestDocsMention:
         text = path.read_text(encoding="utf-8")
         assert "--self-review" in text or "self-review" in text.lower()
 
-    def test_autopilot_md_mentions_self_review(self):
+    def test_legacy_flag_reference_mentions_self_review(self):
         text = (REPO_ROOT / "docs" / "v4.5-mode-flags.md").read_text(encoding="utf-8")
         assert "--self-review" in text or "self-review" in text.lower()
 
