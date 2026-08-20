@@ -21,6 +21,7 @@ if BASE_DIR not in sys.path:
 
 from memory.pattern_db import PatternDB
 from memory.target_profile import default_memory_dir, load_target_profile
+from tools.target_memory import load_goal_memory
 try:
     from tools.closure_resolver import ClosureResolver, canonical_endpoint_path
     from tools.coverage_matrix import load_matrix
@@ -542,19 +543,7 @@ def _build_manual_review_lead_hints(findings_dir: Path, storage_key: str) -> lis
 
 def _load_target_goal_memory(repo_root: Path, target: str) -> dict:
     """Load Claude CLI target memory without depending on the writer module globals."""
-    resolved_target = canonical_target_value(target)
-    goals_dir = repo_root / "memory" / "goals"
-    active = _read_json_object(goals_dir / "active.json")
-    target_memory = _read_json_object(
-        goals_dir / "targets" / f"{target_storage_key(resolved_target)}.json"
-    )
-    active_target = canonical_target_value(str(active.get("target", "") or ""))
-    active_matches = bool(active_target and active_target == resolved_target)
-    return {
-        "active": active if active_matches else {},
-        "target": target_memory,
-        "active_matches": active_matches,
-    }
+    return load_goal_memory(repo_root, target)
 
 
 def _target_memory_entries(target_goal_memory: dict, field: str) -> list[dict]:

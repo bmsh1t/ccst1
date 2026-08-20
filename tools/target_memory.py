@@ -43,6 +43,21 @@ GOALS_DIR = BASE_DIR / "memory" / "goals"
 ACTIVE_PATH = GOALS_DIR / "active.json"
 TARGETS_DIR = GOALS_DIR / "targets"
 SESSIONS_DIR = GOALS_DIR / "sessions"
+TARGET_MEMORY_LIST_FIELDS = (
+    "scope_notes",
+    "active_leads",
+    "dead_ends",
+    "next_actions",
+    "useful_patterns",
+    "session_handoffs",
+)
+TARGET_MEMORY_STRING_FIELDS = (
+    "mode",
+    "phase",
+    "active_goal",
+    "current_hypothesis",
+)
+TARGET_MEMORY_SKILL_FIELDS = ("selected_skills", "knowledge_focus")
 
 
 def now_utc() -> str:
@@ -141,15 +156,71 @@ def display_path(path: Path) -> str:
 
 
 def load_active() -> dict:
-    return read_json(ACTIVE_PATH)
+    return load_active_file(ACTIVE_PATH)
 
 
-def load_target_memory(target: str) -> dict:
+def normalize_target_memory(
+    payload: dict,
+    *,
+    expected_target: str | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Validate and lazily normalize one target-memory object.
+
+    Missing optional fields are filled in memory only; reads never rewrite the
+    source file. This keeps legacy v1 files readable without hiding malformed
+    containers or cross-target data.
+    """
+    location = f" {path}" if path is not None else ""
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid target memory{location}: expected an object")
+    version = payload.get("schema_version", SCHEMA_VERSION)
+    if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION:
+        raise ValueError(f"invalid target memory{location}: unsupported schema_version")
+    raw_target = payload.get("target")
+    if not isinstance(raw_target, str) or not raw_target.strip():
+        raise ValueError(f"invalid target memory{location}: target is required")
+    target = canonical_target_value(raw_target)
+    if expected_target is not None:
+        resolved_expected = canonical_target_value(expected_target)
+        if target != resolved_expected:
+            raise ValueError(
+                f"invalid target memory{location}: target {target!r} does not match {resolved_expected!r}"
+            )
+
+    normalized = dict(payload)
+    normalized["schema_version"] = SCHEMA_VERSION
+    normalized["target"] = target
+    for field in TARGET_MEMORY_LIST_FIELDS:
+        value = normalized.get(field, [])
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise ValueError(f"invalid target memory{location}: {field} must be a list of objects")
+        normalized[field] = value
+    for field in TARGET_MEMORY_STRING_FIELDS:
+        value = normalized.get(field, "")
+        if not isinstance(value, str):
+            raise ValueError(f"invalid target memory{location}: {field} must be a string")
+        normalized[field] = value
+    for field in TARGET_MEMORY_SKILL_FIELDS:
+        value = normalized.get(field, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError(f"invalid target memory{location}: {field} must be a list of strings")
+        normalized[field] = value
+    return normalized
+
+
+def load_target_memory_file(path: Path, *, expected_target: str | None = None) -> dict:
+    """Load one target-memory file, returning ``{}`` only when it is missing."""
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    return normalize_target_memory(
+        read_json(path), expected_target=expected_target, path=path
+    )
+
+
+def new_target_memory(target: str) -> dict:
     canonical_target = canonical_target_value(target)
-    path = target_memory_path(canonical_target)
-    payload = read_json(path)
-    if payload:
-        return payload
     ts = now_utc()
     return {
         "schema_version": SCHEMA_VERSION,
@@ -167,15 +238,61 @@ def load_target_memory(target: str) -> dict:
     }
 
 
-def save_target_memory(payload: dict) -> Path:
-    path = target_memory_path(payload["target"])
-    with target_memory_mutation_lock(path):
-        payload["updated_at"] = now_utc()
-        write_json(path, payload)
-        return path
+def load_goal_memory(repo_root: str | Path, target: str) -> dict:
+    """Load the target-memory projection used by CLI coordinators."""
+    repo = Path(repo_root)
+    resolved_target = canonical_target_value(target)
+    goals_dir = repo / "memory" / "goals"
+    active_path = goals_dir / "active.json"
+    target_path = goals_dir / "targets" / f"{target_storage_key(resolved_target)}.json"
+    active = {}
+    if active_path.is_file():
+        active = load_active_file(active_path)
+    target_memory = load_target_memory_file(target_path, expected_target=resolved_target)
+    active_target = canonical_target_value(str(active.get("target", "") or ""))
+    active_matches = bool(active_target and active_target == resolved_target)
+    return {
+        "active": active if active_matches else {},
+        "raw_active": active,
+        "target": target_memory,
+        "active_matches": active_matches,
+    }
+
+
+def load_active_file(path: Path) -> dict:
+    """Load and validate an active-target pointer from an arbitrary repo root."""
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    payload = read_json(path)
+    version = payload.get("schema_version", SCHEMA_VERSION)
+    if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION:
+        raise ValueError(f"invalid active target memory {path}: unsupported schema_version")
+    target = payload.get("target")
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError(f"invalid active target memory {path}: target is required")
+    normalized = dict(payload)
+    normalized["schema_version"] = SCHEMA_VERSION
+    normalized["target"] = canonical_target_value(target)
+    for field in TARGET_MEMORY_STRING_FIELDS:
+        if field in normalized and not isinstance(normalized[field], str):
+            raise ValueError(f"invalid active target memory {path}: {field} must be a string")
+    for field in TARGET_MEMORY_SKILL_FIELDS:
+        value = normalized.get(field, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError(f"invalid active target memory {path}: {field} must be a list of strings")
+    return normalized
+
+
+def load_target_memory(target: str) -> dict:
+    canonical_target = canonical_target_value(target)
+    path = target_memory_path(canonical_target)
+    payload = load_target_memory_file(path, expected_target=canonical_target)
+    return payload or new_target_memory(canonical_target)
 
 
 def _save_target_memory_unlocked(payload: dict) -> Path:
+    payload = normalize_target_memory(payload)
     payload["updated_at"] = now_utc()
     path = target_memory_path(payload["target"])
     write_json(path, payload)
@@ -297,7 +414,11 @@ def write_handoff(args: argparse.Namespace) -> str:
         target_memory.setdefault("session_handoffs", []).append(
             {"ts": ts, "path": display_path(session_path), "summary": summary}
         )
-        _save_target_memory_unlocked(target_memory)
+        try:
+            _save_target_memory_unlocked(target_memory)
+        except Exception:
+            session_path.unlink(missing_ok=True)
+            raise
     return f"Handoff written: {display_path(session_path)}"
 
 

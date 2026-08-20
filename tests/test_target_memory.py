@@ -1,7 +1,8 @@
 """Target Memory publication and corruption contracts."""
 
-from pathlib import Path
+import json
 import multiprocessing
+from pathlib import Path
 
 import pytest
 
@@ -103,3 +104,74 @@ def test_target_memory_append_is_serialized_across_processes(tmp_path, monkeypat
     assert {item["text"] for item in payload["next_actions"]} == {
         f"next-{index}" for index in range(12)
     }
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", "1"),
+        ("target", []),
+        ("active_leads", {}),
+        ("next_actions", "bad"),
+    ],
+)
+def test_target_memory_rejects_invalid_schema_fields(tmp_path, monkeypatch, field, value):
+    monkeypatch.setattr(target_memory, "TARGETS_DIR", tmp_path / "targets")
+    path = target_memory.target_memory_path("target.com")
+    path.parent.mkdir(parents=True)
+    payload = {"schema_version": 1, "target": "target.com", field: value}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid target memory"):
+        target_memory.load_target_memory("target.com")
+
+
+def test_autopilot_target_memory_rejects_invalid_schema_fields(tmp_path):
+    path = tmp_path / "memory" / "goals" / "targets" / "target.com.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"schema_version": 1, "target": "target.com", "active_leads": {}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid target memory"):
+        load_target_goal_memory(str(tmp_path), "target.com")
+
+
+def test_target_memory_legacy_defaults_are_read_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(target_memory, "TARGETS_DIR", tmp_path / "targets")
+    path = target_memory.target_memory_path("target.com")
+    path.parent.mkdir(parents=True)
+    original = json.dumps(
+        {"target": "target.com", "active_leads": [{"text": "legacy lead"}]}
+    )
+    path.write_text(original, encoding="utf-8")
+
+    loaded = target_memory.load_target_memory("target.com")
+
+    assert loaded["schema_version"] == 1
+    assert loaded["active_leads"] == [{"text": "legacy lead"}]
+    assert loaded["next_actions"] == []
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_handoff_write_failure_removes_unindexed_session_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(target_memory, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(target_memory, "ACTIVE_PATH", tmp_path / "memory" / "goals" / "active.json")
+    monkeypatch.setattr(target_memory, "TARGETS_DIR", tmp_path / "memory" / "goals" / "targets")
+    monkeypatch.setattr(target_memory, "SESSIONS_DIR", tmp_path / "memory" / "goals" / "sessions")
+    original_write = target_memory.write_json
+
+    def fail_target_write(path, payload):
+        if Path(path).parent == target_memory.TARGETS_DIR:
+            raise OSError("synthetic target-memory write failure")
+        return original_write(path, payload)
+
+    monkeypatch.setattr(target_memory, "write_json", fail_target_write)
+
+    with pytest.raises(OSError, match="synthetic target-memory write failure"):
+        target_memory.write_handoff(
+            type("Args", (), {"target": "target.com", "summary": ["handoff"]})()
+        )
+
+    assert list(target_memory.SESSIONS_DIR.glob("*.md")) == []

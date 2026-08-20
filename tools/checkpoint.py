@@ -50,7 +50,8 @@ try:
     from tools.structured_findings import format_validation_runner_candidate_lines
     from tools.target_case_state import summary as build_case_state_summary
     from tools.target_memory import (
-        read_json as read_target_memory_json,
+        load_target_memory_file,
+        new_target_memory,
         target_memory_mutation_lock,
         write_handoff_file,
         write_json as write_target_memory_json,
@@ -81,7 +82,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from structured_findings import format_validation_runner_candidate_lines  # type: ignore
     from target_case_state import summary as build_case_state_summary  # type: ignore
     from target_memory import (  # type: ignore
-        read_json as read_target_memory_json,
+        load_target_memory_file,
+        new_target_memory,
         target_memory_mutation_lock,
         write_handoff_file,
         write_json as write_target_memory_json,
@@ -3769,24 +3771,6 @@ def _target_memory_path(repo_root: Path, target: str) -> Path:
     return repo_root / "memory" / "goals" / "targets" / f"{target_storage_key(target)}.json"
 
 
-def _empty_target_memory(target: str) -> dict:
-    ts = now_utc()
-    return {
-        "schema_version": 1,
-        "target": target,
-        "created_at": ts,
-        "updated_at": ts,
-        "mode": "hunt",
-        "phase": "unknown",
-        "scope_notes": [],
-        "active_leads": [],
-        "dead_ends": [],
-        "next_actions": [],
-        "useful_patterns": [],
-        "session_handoffs": [],
-    }
-
-
 def _append_unique_entries(memory: dict, field: str, entries: list[str], target: str) -> int:
     existing = {
         str(item.get("text") or "").strip()
@@ -3823,7 +3807,7 @@ def apply_target_memory(repo_root: Path | str, target: str, checkpoint: dict) ->
     resolved_target = canonical_target_value(target)
     path = _target_memory_path(repo, resolved_target)
     with target_memory_mutation_lock(path):
-        memory = read_target_memory_json(path) or _empty_target_memory(resolved_target)
+        memory = load_target_memory_file(path, expected_target=resolved_target) or new_target_memory(resolved_target)
         memory.setdefault("target", resolved_target)
 
         added = {

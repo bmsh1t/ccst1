@@ -167,9 +167,9 @@ try:
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_case_state import case_state_path, summary as build_case_state_summary  # type: ignore
 try:
-    from tools.target_memory import read_json as read_target_memory_json
+    from tools.target_memory import load_goal_memory
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from target_memory import read_json as read_target_memory_json  # type: ignore
+    from target_memory import load_goal_memory  # type: ignore
 
 
 
@@ -851,21 +851,7 @@ def _load_case_state_projection(repo_root: str, target: str) -> dict:
 
 def load_target_goal_memory(repo_root: str, target: str) -> dict:
     """Load the four-layer target memory for autopilot bootstrapping."""
-    resolved_target = canonical_target_value(target)
-    goals_dir = os.path.join(repo_root, "memory", "goals")
-    active = read_target_memory_json(Path(goals_dir) / "active.json")
-    target_memory = read_target_memory_json(
-        Path(goals_dir) / "targets" / f"{target_storage_key(resolved_target)}.json"
-    )
-
-    active_target = canonical_target_value(str(active.get("target", "") or ""))
-    active_matches = bool(active_target and active_target == resolved_target)
-
-    return {
-        "active": active if active_matches else {},
-        "target": target_memory,
-        "active_matches": active_matches,
-    }
+    return load_goal_memory(repo_root, target)
 
 
 def _matches_resume_target(url: str, resume_targets: list[str]) -> bool:

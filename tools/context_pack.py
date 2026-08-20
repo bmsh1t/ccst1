@@ -37,6 +37,7 @@ try:
     from tools.surface_index import surface_safe_preview
     from tools.surface_projection import load_surface_projection
     from tools.target_paths import compact_url, canonical_target_value, target_storage_key
+    from tools.target_memory import load_active_file, load_goal_memory
 except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
     from closure_resolver import ClosureResolver  # type: ignore
@@ -55,6 +56,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from surface_index import surface_safe_preview  # type: ignore
     from surface_projection import load_surface_projection  # type: ignore
     from target_paths import compact_url, canonical_target_value, target_storage_key  # type: ignore
+    from target_memory import load_active_file, load_goal_memory  # type: ignore
 
 
 SKILL_ROUTE_MODES = {"primary", "direct-only", "reference-only", "report-only"}
@@ -1070,7 +1072,7 @@ def _resolve_cli_args(args: argparse.Namespace, repo_root: Path) -> tuple[str, s
         focus_parts.append(args.focus)
 
     if not target:
-        active = _read_json_object(repo_root / "memory" / "goals" / "active.json")
+        active = load_active_file(repo_root / "memory" / "goals" / "active.json")
         target = str(active.get("target") or "").strip()
     if not target:
         raise SystemExit(
@@ -1082,20 +1084,13 @@ def _resolve_cli_args(args: argparse.Namespace, repo_root: Path) -> tuple[str, s
 
 
 def _load_goal_memory(repo_root: Path, target: str) -> dict:
-    target_key = target_storage_key(target)
-    active_path = repo_root / "memory" / "goals" / "active.json"
-    target_path = repo_root / "memory" / "goals" / "targets" / f"{target_key}.json"
-    active = _read_json_object(active_path)
-    target_memory = _read_json_object(target_path)
-    active_target = canonical_target_value(str(active.get("target") or ""))
-    return {
-        "active": active if active_target == target else {},
-        "raw_active": active,
-        "target": target_memory,
-        "active_matches": bool(active_target and active_target == target),
-        "active_path": _display(active_path, repo_root),
-        "target_path": _display(target_path, repo_root),
-    }
+    projection = load_goal_memory(repo_root, target)
+    projection["active_path"] = _display(repo_root / "memory" / "goals" / "active.json", repo_root)
+    projection["target_path"] = _display(
+        repo_root / "memory" / "goals" / "targets" / f"{target_storage_key(target)}.json",
+        repo_root,
+    )
+    return projection
 
 
 def _load_findings(repo_root: Path, target_key: str) -> list[dict]:
@@ -1378,7 +1373,7 @@ def _select_skill(focus: str, blob: str, ranked: dict, findings: list[dict], goa
     phase_blob = " ".join(
         str((source or {}).get(key) or "")
         for source in (active, target_memory)
-        for key in ("phase", "mode", "state", "status")
+        for key in ("phase", "mode")
     ).lower()
 
     explicit_skill = _explicit_primary_skill(focus)
