@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from tools.runtime_state import runtime_phase_lock
+
 
 SCANNER_SKIP_MODULES = [
     "upload",
@@ -111,6 +113,43 @@ def test_vuln_scanner_bash_syntax_is_valid():
     )
 
     assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_vuln_scanner_accepts_normalized_inherited_lock_for_url_manifest(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    target = "127.0.0.1:43123"
+    recon_dir = tmp_path / "recon" / target
+    findings_dir = tmp_path / "findings"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "recon_manifest.jsonl").write_text(
+        json.dumps({"record_type": "recon_phase", "target": f"http://{target}"}) + "\n",
+        encoding="utf-8",
+    )
+    (recon_dir / "live" / "urls.txt").write_text(f"http://{target}\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "FINDINGS_OUT_DIR": str(findings_dir),
+            "BBHUNT_RUNTIME_PHASE_LOCKED": "scan",
+            "BBHUNT_RUNTIME_LOCK_TARGET": target,
+        }
+    )
+    repo_root = script.resolve().parent.parent
+    with runtime_phase_lock(repo_root, target, "scan") as lock_path:
+        result = subprocess.run(
+            ["bash", str(script), str(recon_dir), "--quick", "--skip", _skip_modules_except()],
+            cwd=repo_root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    lock_path.unlink(missing_ok=True)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "runtime phase busy" not in result.stderr
 
 
 def test_vuln_scanner_does_not_execute_dalfox_or_nuclei_xss():

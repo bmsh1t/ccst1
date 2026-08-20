@@ -221,7 +221,15 @@ except OSError:
 print(target or fallback)
 PY
 )"
-if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "scan" ] || [ "${BBHUNT_RUNTIME_LOCK_TARGET:-}" != "$SCANNER_AUTH_TARGET" ]; then
+SCANNER_LOCK_TARGET="$(PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$SCANNER_AUTH_TARGET" <<'PY' 2>/dev/null || printf '%s\n' "$SCANNER_AUTH_TARGET"
+import sys
+
+from tools.target_paths import canonical_target_value
+
+print(canonical_target_value(sys.argv[1]))
+PY
+)"
+if [ "${BBHUNT_RUNTIME_PHASE_LOCKED:-}" != "scan" ] || [ "${BBHUNT_RUNTIME_LOCK_TARGET:-}" != "$SCANNER_LOCK_TARGET" ]; then
     PHASE_ARGS=("$RECON_DIR")
     [ -z "$QUICK_MODE" ] || PHASE_ARGS+=("$QUICK_MODE")
     [ -z "$FULL_MODE" ] || PHASE_ARGS+=("$FULL_MODE")
