@@ -173,6 +173,26 @@ identity, and cloud signals without re-enumerating everything.
 
 ---
 
+## Deprecated legacy campaign tools
+
+These scripts are retained for compatibility with old local runs. Do not route
+new work to them; they read the pre-Surface `findings/<target>/<type>/` tree or
+hard-code historical campaign targets. Use the current chain instead:
+`/autopilot` → `/surface` → `/hunt` → `/validate` → `/checkpoint`/`/report`.
+
+| Tool | Replacement |
+|---|---|
+| `tools/aggregate_scan_results.py` | `tools/autopilot_state.py` / `tools/finding_index.py` |
+| `tools/analyze_findings.py` | `tools/finding_index.py` / `tools/validate.py` |
+| `tools/analyze_partial_results.py` | `tools/runtime_state.py` / `tools/autopilot_state.py` |
+| `tools/scan_monitor.py` | `tools/runtime_state.py` / `tools/checkpoint.py` |
+| `tools/batch_hunt_prep.py` | `tools/surface.py` / `tools/surface_index.py` |
+| `tools/hunt_surface_extractor.py` | `tools/surface.py` |
+| `tools/findings_database_generator.py` | `tools/finding_index.py` |
+| `tools/validation_scheduler.py` | `tools/action_queue.py` / `tools/validation_runner.py` |
+
+---
+
 ## Quick-pick by symptom
 
 | Claude observes | First-pick tool |
