@@ -16,6 +16,9 @@ Formal arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep [--ma
 ## Runtime Preflight
 Obey bootstrap `action` before any other step. `ask_target` asks for the exact target;
 `stop_invalid_arguments` reports `arguments.errors`; `stop_invalid_scope`/`stop_invalid_context` report bounded `error` and stop; `stop_state_error`/`stop_runtime_error` report bounded `error` and stop; `stop_runtime_drift` reports compact critical runtime paths/counts, points to `/sync-check`, requests explicit confirmation before any sync, and stops. Advisory runtime drift is reported but does not block. Never sync automatically. Only `continue` may act.
+For the final response, apply the `CLAUDE.md` user-facing language contract: explain internal state
+in the user's language, keep exact field names only in commands/JSON when execution needs them,
+and do not repeat opaque bootstrap state or knowledge-card filenames as prose.
 The bootstrap already ran arguments, read-only runtime compare, advisory capability profile, then compact target state. Arguments/runtime remain the only blocking gates. Treat
 `capabilities` as advisory: `session_managed` names are not availability claims; use MCP only when visible in this Claude session and use a listed fallback otherwise. Missing/degraded
 tools never block, trigger installation or request it, count as tested-clean, or hide material

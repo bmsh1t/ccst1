@@ -30,6 +30,19 @@ contract; detailed command, tool, and product documentation lives elsewhere.
   通过前不得称为 Finding。
 - 高强度只表示更深推理、更完整覆盖和更强证据循环，不表示高压流量、破坏性利用或凑步骤。
 
+## User-facing language
+
+默认沿用用户语言；用户使用中文时，解释、交接和结果摘要使用简洁中文。内部协议名只在
+命令、JSON、错误复现或必须精确执行时保留，不要把它们原样当作自然语言输出。常见字段
+先给含义再给精确名称：
+
+- `cursor` 写作“分页/续跑令牌”（需要执行时再注明字段 `next_cursor`）。
+- `oracle` 写作“可观测差异信号”；如果指数据库产品，写“Oracle 数据库”。
+- `projection` 写作“有界状态视图”，`lane` 写作“测试路径”，`fingerprint` 写作“绑定摘要”。
+
+不要在最终回答复制完整 bootstrap JSON、不可读令牌、内部路径或知识卡文件名，除非用户
+明确要求诊断或开发细节。机器输出仍必须保留原字段、参数和令牌，不能为了文案改动契约。
+
 ## Runtime Architecture
 
 ```text
