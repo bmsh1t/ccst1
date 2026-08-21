@@ -15,44 +15,50 @@ def test_hunting_rules_define_high_intensity_without_high_pressure():
 
     assert "## High-Intensity Hunting Posture" in text
     assert "High intensity means deeper reasoning" in text
-    assert "never means high-pressure traffic" in text
-    assert "bypassing `rules/red-lines.md`" in text
-    assert "Do not use \"scanned\" as a synonym for \"tested.\"" in text
+    assert "It does not relax any owner boundary above" in text
+    assert "`rules/red-lines.md` owns concrete side-effect decisions" in text
+    assert "`rules/coverage-gate.md` owns lifecycle names" in text
 
 
 def test_hunting_rules_tie_depth_to_coverage_and_actor_matrix():
     text = _read("rules/hunting.md")
 
-    assert "Before finish, handoff, or \"no finding\" summaries" in text
-    assert "coverage matrix" in text
+    assert "family/actor coverage states" in text
     assert "Evidence Ledger" in text
-    assert "actor/object/replay gaps" in text
-    assert "anonymous, owner, peer, low_role, cross_tenant" in text
+    assert "all finish/handoff/no-finding claims" in text
+    assert "rules/coverage-gate.md" in text
 
 
 def test_hunting_rules_delegate_lifecycle_and_side_effect_owners():
     text = _read("rules/hunting.md")
 
-    assert "lifecycle names and transition" in text
-    assert "`rules/coverage-gate.md`" in text
-    assert "Use `rules/red-lines.md` for side-effect decisions" in text
-    assert "`CLAUDE.md#tool-and-mcp-routing`" in text
+    for owner in (
+        "`CLAUDE.md` owns authorization",
+        "`rules/red-lines.md` owns concrete side-effect decisions",
+        "`rules/coverage-gate.md` owns lifecycle names",
+        "`rules/tool-ai-boundary.md` owns the AI/tool split",
+        "`skills/runtime-protocol.md` owns mode transitions",
+        "`commands/autopilot.md` owns inline control",
+        "`skills/triage-validation/SKILL.md` owns candidate proof",
+        "`rules/reporting.md` owns reports",
+    ):
+        assert owner in text
     assert "`docs/autopilot-lanes.md`" in text
-    assert "Lead -> Signal -> Candidate" not in text
 
 
-def test_hunting_rules_use_value_first_comprehensive_vuln_coverage():
+def test_hunting_rules_keep_value_first_priorities_without_copying_coverage_owner():
     text = _read("rules/hunting.md")
 
     assert "Value-first coverage model" in text
     assert "Do not prioritize by a fixed favorite bug class" in text
-    assert "SQLi, NoSQLi, command injection, SSTI, RCE" in text
-    assert "SSRF, XXE, LFI/RFI/path traversal" in text
-    assert "unsafe deserialization" in text
     assert "Browser-observed APIs, JS/source-derived routes" in text
     assert "evidence sources" in text
+    assert "identity/access, injection/execution" in text
+    assert "infrastructure/supply-chain families" in text
+    assert "not an exhaustive capability boundary" in text
+    assert "Map crown jewels and business boundaries" in text
     assert "Recent release or commit evidence may raise priority" in text
-    assert "knowledge/cards/signature-scope-mismatch.md" in text
+    assert "Use `rules/coverage-gate.md` for family/actor coverage states" in text
 
 
 def test_bb_methodology_references_high_intensity_hunting_posture():
