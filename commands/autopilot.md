@@ -9,7 +9,7 @@ allowed-tools:
 ---
 # /autopilot
 <!-- AUTOPILOT_CRITICAL_RUNTIME_MANIFEST
-{"schema_version":1,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"commands","relative_path":"autopilot-round.md"},{"kind":"agents","relative_path":"autopilot.md"},{"kind":"skills","relative_path":"runtime-protocol.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*","mcp__fofamap__*"]}
+{"schema_version":1,"paths":[{"kind":"commands","relative_path":"autopilot.md"},{"kind":"commands","relative_path":"autopilot-round.md"},{"kind":"skills","relative_path":"runtime-protocol.md"}],"mcp_contracts":["mcp__Playwright__*","mcp__chrome-devtools__*","mcp__fofamap__*"]}
 AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->
 Authoritative bootstrap contract (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
 Formal arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep] [--max-lanes N] [--auth-file PATH] [--context-file=PATH]`, where `<target>` may be a domain/IP/CIDR, a readable text list, or a schema-v1 JSON Scope manifest. `--context-file` accepts only an owner-generated batch continuation under repository state.
@@ -42,6 +42,11 @@ Target isolation follows a new target default: the built-in XSS lane skip is exp
 and `/pickup` does **not** replay previous target skips or scanner decisions.
 `/autopilot` runs inline in the current Claude session as the sole controller and does not create/resume legacy `agent_session.json`; specialists default to zero.
 At most one bounded specialist may be invoked through Claude Code's `Agent` tool for one evidence question. The invoked specialist must not spawn nested agents, run full recon/scans, write final closure, or control finish. After using one, this invocation cannot call a second specialist.
+If bounded state exposes `enrichment_hints` with `tool=recon-ranker`, that is an
+opt-in read-only second opinion for a large, multi-source Surface only. Invoke it
+once only when the specialist slot is unused; it never runs requests, writes state,
+or replaces Claude's Queue, lane, validation, or Closure decisions. If the hint is
+absent, continue with the current projection directly.
 Bootstrap emits one `state.lane_contract` pointer. Before executing a named lane, read only
 `state.lane_contract.ref` (or the matching section for a newly observed signal) from
 `docs/autopilot-lanes.md`; it is execution detail, not a second controller. Every lane still

@@ -392,19 +392,18 @@ def test_real_claude_cli_runtime_drift_stops_before_state_projection(
     run_staged_claude,
     staged_claude_runtime,
 ):
-    agent_path = (
+    command_path = (
         staged_claude_runtime["home"]
         / ".claude"
-        / "agents"
-        / "claude-bug-bounty"
+        / "commands"
         / "autopilot.md"
     )
-    original = agent_path.read_text(encoding="utf-8")
-    agent_path.write_text(original + "\n<!-- staged drift -->\n", encoding="utf-8")
+    original = command_path.read_text(encoding="utf-8")
+    command_path.write_text(original + "\n<!-- staged drift -->\n", encoding="utf-8")
     try:
         payload = run_staged_claude("/autopilot runtime-drift-no-state.test")
     finally:
-        agent_path.write_text(original, encoding="utf-8")
+        command_path.write_text(original, encoding="utf-8")
 
     command_body = next(
         text for text in _message_texts(payload) if text.startswith("# /autopilot")

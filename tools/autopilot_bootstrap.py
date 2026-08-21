@@ -391,6 +391,15 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             continue
         if isinstance(item, dict):
             workflow_leads.append(_compact_candidate(item))
+    enrichment_hints = [
+        {
+            key: item[key]
+            for key in ("tool", "mode", "reason")
+            if item.get(key) not in (None, "")
+        }
+        for item in (state.get("enrichment_hints") or [])
+        if isinstance(item, dict) and item.get("tool") == "recon-ranker"
+    ][:1]
 
     compact_batch: dict[str, Any] = {}
     if batch:
@@ -573,6 +582,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             if isinstance(item, dict)
         ],
         "workflow_leads": workflow_leads,
+        "enrichment_hints": enrichment_hints,
     }
 
 

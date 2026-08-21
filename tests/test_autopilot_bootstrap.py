@@ -30,6 +30,61 @@ def test_compact_state_keeps_bounded_case_state_continuation():
     assert compact["case_state"]["top_next_action"]["backlog_id"] == "val_001"
 
 
+def test_compact_state_exposes_only_read_only_ranker_advisory():
+    compact = autopilot_bootstrap.compact_autopilot_state({
+        "next_action": "handoff",
+        "enrichment_hints": [
+            {
+                "tool": "recon-ranker",
+                "mode": "advisory",
+                "executable": False,
+                "reason": "valid Surface projection leaves a long tail",
+            },
+            {"tool": "run_js_read", "reason": "not part of startup projection"},
+        ],
+    })
+
+    assert compact["enrichment_hints"] == [{
+        "tool": "recon-ranker",
+        "mode": "advisory",
+        "reason": "valid Surface projection leaves a long tail",
+    }]
+
+
+def test_bootstrap_emits_ranker_advisory_for_valid_multi_source_long_tail(tmp_path):
+    _write_fast_recon(tmp_path)
+    ranked = {
+        "available": True,
+        "target": "target.com",
+        "p1": [],
+        "p2": [],
+        "review_pool": [{
+            "url": "https://api.target.com/orders",
+            "score": 5,
+            "tech_stack": ["nginx"],
+        }],
+        "browser": {"xhr_count": 1, "api_count": 0},
+        "source_intel": {"hypothesis_count": 1},
+        "stats": {
+            "total_candidates": 8,
+            "review_pool": 1,
+            "semantic_shape_count": 3,
+            "raw_urls": 8,
+            "observation_untouched": 2,
+        },
+    }
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", ranked, manifest=manifest)
+
+    state = autopilot_state_module.build_autopilot_bootstrap_state(
+        str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory")
+    )
+
+    assert state["enrichment_hints"][0]["tool"] == "recon-ranker"
+    assert state["enrichment_hints"][0]["mode"] == "advisory"
+    assert state["next_tool_hint"] == ""
+
+
 def test_compact_state_projects_only_the_next_lane_contract():
     recon = autopilot_bootstrap.compact_autopilot_state({"next_action": "run_recon"})
     assert recon["lane_contract"] == {

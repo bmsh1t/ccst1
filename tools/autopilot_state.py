@@ -1640,12 +1640,112 @@ def _format_infra_signal_lines(target: str, recon_artifacts: dict) -> list[str]:
     return lines
 
 
+def _build_ranker_advisory_hint(
+    *,
+    surface_projection: dict,
+    ranked: dict,
+    next_action: str,
+    browser_pending: bool = False,
+    source_pending: bool = False,
+    js_pending: bool = False,
+) -> dict:
+    """Offer the optional read-only ranker only for evidence-rich long tails."""
+    if str((surface_projection or {}).get("status") or "").strip().lower() != "valid":
+        return {}
+    if next_action in {
+        "run_recon",
+        "wait_recon",
+        "wait_scan",
+        "revalidate_finding_owner",
+        "collect_candidate_evidence",
+        "validate_finding",
+        "review_validation_candidate",
+        "resume_action_queue",
+        "prepare_surface_context",
+        "complete_report_draft",
+        "recon_no_live_hosts",
+        "report_finding",
+        "run_intel",
+        "collect_web_intel",
+        "test_advisory_applicability",
+        "review_intel_group",
+        "guard_safe_pivot",
+    }:
+        return {}
+    if browser_pending or source_pending or js_pending:
+        return {}
+
+    stats = ranked.get("stats") if isinstance(ranked.get("stats"), dict) else {}
+    review_count = int(stats.get("review_pool", 0) or 0)
+    shape_count = max(
+        int(stats.get("semantic_shape_count", 0) or 0),
+        int(stats.get("semantic_shapes", 0) or 0),
+    )
+    raw_count = max(
+        int(stats.get("raw_urls", 0) or 0),
+        int(stats.get("exact_unique", 0) or 0),
+    )
+    untouched = int(stats.get("observation_untouched", 0) or 0)
+    stale = int(stats.get("observation_stale", 0) or 0)
+    long_tail = bool(
+        untouched > 0
+        or stale > 0
+        or shape_count > max(review_count, 1)
+        or raw_count > max(review_count, 1)
+    )
+    if not long_tail:
+        return {}
+
+    signal_groups = 0
+    for section, keys in (
+        ("browser", ("xhr_count", "api_count")),
+        ("js_intel", ("endpoint_count", "lead_count", "graphql_count")),
+        ("source_intel", ("hypothesis_count", "route_count", "graphql_count")),
+        ("scanner", ("finding_count",)),
+        ("intel", ("signal_count",)),
+    ):
+        value = ranked.get(section) if isinstance(ranked.get(section), dict) else {}
+        if any(int(value.get(key, 0) or 0) > 0 for key in keys):
+            signal_groups += 1
+    if ranked.get("workflow_leads"):
+        signal_groups += 1
+    if any(
+        isinstance(item, dict) and item.get("tech_stack")
+        for item in (ranked.get("review_pool") or [])
+    ):
+        signal_groups += 1
+    if signal_groups < 2:
+        return {}
+
+    tail_labels = []
+    if untouched:
+        tail_labels.append(f"{untouched} untouched observations")
+    if stale:
+        tail_labels.append(f"{stale} stale observations")
+    if shape_count > max(review_count, 1):
+        tail_labels.append(f"{shape_count} semantic shapes")
+    if not tail_labels:
+        tail_labels.append(f"{raw_count} exact surface entries")
+    return {
+        "tool": "recon-ranker",
+        "mode": "advisory",
+        "executable": False,
+        "reason": (
+            "valid Surface projection leaves "
+            + ", ".join(tail_labels[:2])
+            + f" and {signal_groups} evidence groups; use one read-only ranker review "
+            "only if Claude needs a second opinion before selecting the next lane"
+        ),
+    }
+
+
 def _build_enrichment_hints(
     *,
     repo_root: str,
     resolved_target: str,
     surface_context: dict,
     ranked: dict,
+    surface_projection: dict | None = None,
     repo_source_available: bool,
     next_action: str,
     browser_evidence: dict | None = None,
@@ -1685,6 +1785,9 @@ def _build_enrichment_hints(
         os.path.join(findings_dir, "source_intel", "summary.md"),
         os.path.join(findings_dir, "source_intel", "hypotheses.jsonl"),
     )
+    browser_pending = not browser_ready and _has_browser_mcp_signal(surface_context, ranked)
+    source_pending = repo_source_available and not source_intel_ready
+    js_pending = not js_intel_ready and _has_js_read_signal(recon_dir, surface_context)
 
     hints = []
     if next_action == "guard_safe_pivot":
@@ -1711,7 +1814,17 @@ def _build_enrichment_hints(
         next_tool_hint = hints[0]["tool"] if hints else ""
         return next_tool_hint, hints
 
-    if not browser_ready and _has_browser_mcp_signal(surface_context, ranked):
+    ranker_hint = _build_ranker_advisory_hint(
+        surface_projection=surface_projection or {},
+        ranked=ranked,
+        next_action=next_action,
+        browser_pending=browser_pending,
+        source_pending=source_pending,
+        js_pending=js_pending,
+    )
+    if ranker_hint:
+        hints.append(ranker_hint)
+    if browser_pending:
         reason = (
             "authenticated browser capture is missing persisted state; recapture Network and complete state"
             if browser_evidence.get("auth_required") and browser_evidence.get("auth_state") != "present"
@@ -1721,18 +1834,25 @@ def _build_enrichment_hints(
             "tool": "collect_browser_mcp_evidence",
             "reason": reason,
         })
-    if repo_source_available and not source_intel_ready:
+    if source_pending:
         hints.append({
             "tool": "run_source_intel",
             "reason": "repo source artifacts exist, but source_intel artifacts have not been generated yet",
         })
-    if not js_intel_ready and _has_js_read_signal(recon_dir, surface_context):
+    if js_pending:
         hints.append({
             "tool": "run_js_read",
             "reason": "cached JS artifacts exist, but js_intel materials have not been prepared yet",
         })
 
-    next_tool_hint = hints[0]["tool"] if hints else ""
+    next_tool_hint = next(
+        (
+            str(item.get("tool") or "")
+            for item in hints
+            if item.get("executable", True) and item.get("tool") != "recon-ranker"
+        ),
+        "",
+    )
     return next_tool_hint, hints
 
 
@@ -2439,12 +2559,28 @@ def _build_domain_autopilot_state(
             resolved_target=resolved_target,
             surface_context=surface_context or {},
             ranked=ranked_for_next,
+            surface_projection=surface_projection,
             repo_source_available=bool(facts.get("repo_source_available")),
             next_action=next_action,
             browser_evidence=facts.get("browser_evidence") or {},
         )
     else:
-        next_tool_hint, enrichment_hints = "", []
+        # Bounded bootstrap reuses the same readiness checks but exposes only
+        # the non-executable specialist advisory.
+        _, bounded_hints = _build_enrichment_hints(
+            repo_root=str(facts["repo_root"]),
+            resolved_target=resolved_target,
+            surface_context=surface_context or {},
+            ranked=ranked_for_next,
+            surface_projection=surface_projection,
+            repo_source_available=bool(facts.get("repo_source_available")),
+            next_action=next_action,
+            browser_evidence=facts.get("browser_evidence") or {},
+        )
+        next_tool_hint = ""
+        enrichment_hints = [
+            item for item in bounded_hints if item.get("tool") == "recon-ranker"
+        ][:1]
     if next_action in {"run_intel", "collect_web_intel", "test_advisory_applicability", "review_intel_group"}:
         next_tool_hint = next_action
         enrichment_hints = [{
@@ -3057,6 +3193,10 @@ def build_closure_projection(
         action = "complete_round_closure"
         verdict = "handoff"
         reasons.append("round_closure_pending")
+    elif round_active:
+        action = "resume_round_lane"
+        verdict = "handoff"
+        reasons.append("round_lane_unclaimed")
     elif max_lanes_reached:
         verdict = "handoff"
         reasons.append("max_lanes_reached")

@@ -16,8 +16,9 @@ Authoritative round bootstrap (do not reinterpret): !`python3 "$(git rev-parse -
 Native fixed-loop prompt identity (do not reinterpret): `/autopilot-round $ARGUMENTS`
 
 Arguments are identical to `/autopilot`. Round defaults are
-`--normal --deep --max-lanes 8`; explicit formal arguments win. The bootstrap
-parser is the only argument owner.
+`--normal --deep --max-lanes 8`. Explicit formal arguments set the budget when
+starting a new round; resuming an active round keeps the checkpoint-owned
+`max_lanes`. The bootstrap parser is the only argument owner.
 
 ## Bootstrap Gate
 

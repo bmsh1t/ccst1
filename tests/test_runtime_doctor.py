@@ -13,6 +13,11 @@ AUTOPILOT_COMMAND = """repo command
 AUTOPILOT_CRITICAL_RUNTIME_MANIFEST -->
 """
 
+INLINE_AUTOPILOT_COMMAND = AUTOPILOT_COMMAND.replace(
+    '{"kind":"agents","relative_path":"autopilot.md"},',
+    "",
+)
+
 
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,8 +140,26 @@ def test_repository_autopilot_manifest_is_versioned_and_excludes_hackerone():
     assert manifest["schema_version"] == 1
     assert manifest["status"] == "valid"
     assert manifest["sha256"].startswith("sha256:")
-    assert {item["kind"] for item in manifest["paths"]} == {"commands", "agents", "skills"}
+    assert {item["kind"] for item in manifest["paths"]} == {"commands", "skills"}
     assert "hackerone" not in json.dumps(manifest).lower()
+
+
+def test_optional_agent_drift_does_not_block_inline_autopilot(tmp_path):
+    repo_root = _repo_fixture(tmp_path / "repo")
+    runtime_root = _runtime_fixture(tmp_path / "runtime")
+    _write(repo_root / "commands" / "autopilot.md", INLINE_AUTOPILOT_COMMAND)
+    _write(runtime_root / "commands" / "autopilot.md", INLINE_AUTOPILOT_COMMAND)
+
+    payload = runtime_doctor.compare_runtime(repo_root, runtime_root)
+
+    assert payload["critical_clean"] is True
+    assert payload["critical_drift"] == []
+    assert payload["missing_critical"] == []
+    assert payload["advisory_drift"] == [
+        {"kind": "commands", "status": "missing", "relative_path": "sync-check.md"},
+        {"kind": "commands", "status": "extra", "relative_path": "doctor.md"},
+        {"kind": "agents", "status": "diff", "relative_path": "autopilot.md"},
+    ]
 
 
 def test_missing_manifest_is_drift_even_when_runtime_files_match(tmp_path):

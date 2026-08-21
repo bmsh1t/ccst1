@@ -17,6 +17,8 @@ from memory.pattern_db import PatternDB
 from memory.schemas import make_journal_entry, make_pattern_entry
 from memory.target_profile import make_target_profile, save_target_profile
 from autopilot_state import (
+    _build_enrichment_hints,
+    _build_ranker_advisory_hint,
     _build_recommended_targets,
     _checkpoint_round_projection,
     _filter_ranked_placeholders,
@@ -41,6 +43,69 @@ from autopilot_state import (
 from request_guard import record_request
 from runtime_state import runtime_phase_lock, update_runtime_state
 from target_paths import target_storage_key
+
+
+def test_ranker_advisory_requires_valid_long_tail_and_multiple_evidence_groups(tmp_path):
+    ranked = {
+        "stats": {
+            "review_pool": 4,
+            "semantic_shape_count": 12,
+            "raw_urls": 40,
+            "observation_untouched": 3,
+            "observation_stale": 1,
+        },
+        "browser": {"xhr_count": 2, "api_count": 0},
+        "source_intel": {"hypothesis_count": 1},
+        "review_pool": [{"url": "https://target.test/orders", "tech_stack": ["nginx"]}],
+    }
+
+    hint = _build_ranker_advisory_hint(
+        surface_projection={"status": "valid"},
+        ranked=ranked,
+        next_action="handoff",
+    )
+
+    assert hint["tool"] == "recon-ranker"
+    assert hint["mode"] == "advisory"
+    assert hint["executable"] is False
+    assert "untouched observations" in hint["reason"]
+    assert _build_ranker_advisory_hint(
+        surface_projection={"status": "stale"},
+        ranked=ranked,
+        next_action="handoff",
+    ) == {}
+    assert _build_ranker_advisory_hint(
+        surface_projection={"status": "valid"},
+        ranked=ranked,
+        next_action="handoff",
+        browser_pending=True,
+    ) == {}
+
+
+def test_ranker_advisory_never_becomes_next_tool_hint(tmp_path):
+    next_tool, hints = _build_enrichment_hints(
+        repo_root=str(tmp_path),
+        resolved_target="target.test",
+        surface_context={},
+        ranked={
+            "stats": {
+                "review_pool": 1,
+                "semantic_shape_count": 3,
+                "raw_urls": 8,
+                "observation_untouched": 2,
+            },
+            "browser": {"xhr_count": 1},
+            "source_intel": {"hypothesis_count": 1},
+            "review_pool": [{"url": "https://target.test/orders", "tech_stack": ["nginx"]}],
+        },
+        surface_projection={"status": "valid"},
+        repo_source_available=False,
+        next_action="handoff",
+        browser_evidence={"ready": True},
+    )
+
+    assert next_tool == ""
+    assert [item["tool"] for item in hints] == ["recon-ranker"]
 
 
 def _record_owner_provenance(findings_dir, finding_id: str) -> None:
@@ -515,6 +580,39 @@ def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
     assert terminal["round_progress"]["latest_lane"]["decision"] == "tested clean"
     assert closed["verdict"] == "finish"
     assert closed["can_claim_exhausted"] is True
+
+
+def test_closure_does_not_finish_an_active_round_before_first_lane_claim(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text(json.dumps({
+        "round_progress": {
+            "schema_version": 1,
+            "round_id": "round-empty",
+            "status": "active",
+            "max_lanes": 2,
+            "claimed_lanes": [],
+            "lanes": [],
+            "claimed_count": 0,
+            "remaining_lanes": 2,
+            "budget_reached": False,
+            "started_at": "2026-08-01T00:00:00Z",
+            "updated_at": "2026-08-01T00:00:00Z",
+        }
+    }), encoding="utf-8")
+
+    closure = load_closure_projection(
+        str(tmp_path),
+        {"target": target, "resolved_target": target, "next_action": "handoff"},
+        max_lanes_reached=False,
+        apply_round_guard=False,
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["round_lane_unclaimed"]
+    assert closure["next_action"] == "resume_round_lane"
 
 
 @pytest.mark.parametrize(

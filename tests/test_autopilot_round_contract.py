@@ -133,6 +133,8 @@ def test_round_budget_is_checkpoint_owned_not_prompt_counted():
     command = _read("commands/autopilot-round.md")
     normalized = " ".join(command.split())
 
+    assert "Explicit formal arguments set the budget when starting a new round" in normalized
+    assert "resuming an active round keeps the checkpoint-owned `max_lanes`" in normalized
     assert "--round-begin --max-lanes <invocation_batch.max_lanes> --json" in command
     assert "--record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json" in command
     assert "--record-round-lane-result --lane <stable_lane_id> --lane-status <completed_or_blocked>" in command
