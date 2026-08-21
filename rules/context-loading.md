@@ -1,13 +1,6 @@
 # 上下文加载规则
 
-本规则用于解决 Claude CLI 上下文膨胀问题。默认只加载当前任务必要文件，不全量读取 Skills、知识库、日志或扫描结果。
-
-## 核心原则
-
-```text
-先装配上下文，再执行任务。
-```
-
+本规则用于控制 Claude CLI 上下文：默认只加载当前任务必要文件，不全量读取 Skills、知识库、日志或扫描结果。
 加载顺序固定为：
 
 ```text
@@ -46,7 +39,7 @@ rules/coverage-gate.md
 | 工具编排或 AI 优先级判断 | `rules/tool-ai-boundary.md` |
 | Candidate 验证 | `skills/triage-validation/SKILL.md`, `rules/reporting.md` |
 
-## 默认不加载
+## 加载边界
 
 除非当前任务明确需要，不要默认读取：
 
@@ -57,8 +50,6 @@ rules/coverage-gate.md
 - 全量 hunt journal / findings / recon 输出
 - 大体积扫描结果
 - 与当前目标、Skill、证据无关的历史会话
-
-## 知识库加载限制
 
 一次只加载 1-2 张知识卡。只有当当前证据继续扩展时，才加载更多。
 
@@ -127,10 +118,4 @@ CONTEXT PACK
 经验/技巧/bypass 进知识库，判断进 `evidence_rubric.py`，路由进 `context_pack.py`，
 下一步进 `checkpoint.py`，重复执行动作进 `tools/`，结果进 Evidence Ledger。
 
-## 禁止事项
-
-- 不要为了“更全面”默认读取所有 Skill。
-- 不要把知识库全量塞进上下文。
-- 不要把扫描日志当作上下文包主体。
-- 不要在没有目标层上下文时直接开始复杂任务。
-- 不要用上下文包绕过红线和覆盖基线。
+其余输入也遵守同一边界：不要把扫描日志当作上下文包主体，或在没有目标层上下文时直接开始复杂任务；不要用上下文包绕过红线和覆盖基线。

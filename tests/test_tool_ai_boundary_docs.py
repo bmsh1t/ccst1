@@ -10,11 +10,13 @@ def _read(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_tool_ai_boundary_rule_defines_ai_as_judgment_layer():
+def test_tool_ai_boundary_rule_keeps_tools_as_evidence_layer():
     text = _read("rules/tool-ai-boundary.md")
 
-    assert "AI judges. Tools preserve evidence." in text
-    assert "工具不得最终判断" in text
+    assert "工具负责证据、记忆、复现和格式一致性" in text
+    assert "工具不得替代判断" in text
+    assert "raw evidence" in text
+    assert "browser/source/JS" in text
     assert "advisory hint" in text
     assert "low-priority / reopenable" in text
     assert "no finding proven in this runner scope" in text

@@ -1,14 +1,6 @@
 # Web 渗透 Playbook Router（advisory）
 
-这个文件只做 Claude CLI 的注意力增强：看到某类 Web 渗透证据时，提示应该读取哪个本地参考、优先使用当前项目哪个工具。它不是状态机，不自动触发利用，不替代当前 `next_question` 驱动的判断。
-
-## 使用原则
-
-1. **先有证据，再查参考**：只有当前 recon、JS、source、browser、HTTP replay 或报错信息已经指向某类问题时才读取对应条目。
-2. **只用已蒸馏项目知识**：默认路由只指向本仓库知识卡、payload pack、playbook 和规则；外部原文只留审计追溯。
-3. **工具选择仍由 Claude 判断**：本表只给候选工具；如果当前证据不匹配，忽略本表。
-4. **不做 payload spray**：没有明确输入点、回显/侧信道、状态差异或可复现请求时，保持为 Lead，不升级。
-5. **报告前仍走验证门**：本表产出的都是 hypothesis fuel，只有当前目标复现证据才能进入 Candidate/Validated Finding。
+这个 advisory router 只在 recon、JS、source、browser、HTTP replay 或报错证据指向某类问题时，提示本地参考和候选工具；不自动触发执行，也不替代当前 `next_question` 的判断。只使用仓库内已蒸馏资产；没有明确输入点、回显/侧信道、状态差异或可复现请求时保持 Lead，报告前仍须通过验证门。
 
 ## Active reference 范围
 
