@@ -323,11 +323,18 @@ UPLOAD_CLEANUP_FILE="$FINDINGS_DIR/manual_review/upload_cleanup.txt"
 MFA_REVIEW_FILE="$FINDINGS_DIR/manual_review/mfa_review.txt"
 : > "$MFA_REVIEW_FILE"
 NUCLEI_FAILURE_MARKER="$FINDINGS_DIR/.tmp/nuclei_failed"
+SCANNER_PARTIAL_MARKER="$FINDINGS_DIR/.tmp/scanner_partial"
 
 mark_nuclei_failure() {
     local rc="$1"
     printf 'exit=%s\n' "$rc" >> "$NUCLEI_FAILURE_MARKER"
     log_warn "Nuclei lane failed (exit=$rc); scan remains incomplete"
+}
+
+mark_scanner_partial() {
+    local reason="$1"
+    printf '%s\n' "$reason" >> "$SCANNER_PARTIAL_MARKER"
+    log_warn "Scanner lane incomplete: $reason"
 }
 
 run_nuclei_timeout() {
@@ -370,7 +377,8 @@ rm -f \
     "$FINDINGS_DIR/summary.json" \
     "$FINDINGS_DIR/.summary.txt.tmp" \
     "$FINDINGS_DIR/.summary.json.tmp" \
-    "$NUCLEI_FAILURE_MARKER"
+    "$NUCLEI_FAILURE_MARKER" \
+    "$SCANNER_PARTIAL_MARKER"
 : > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
 : > "$UPLOAD_CLEANUP_FILE"
 : > "$FINDINGS_DIR/manual_review/open_200_api.txt"
@@ -614,6 +622,14 @@ scan_limit() {
     fi
 }
 
+iis_shortscan_total_timeout() {
+    if [ -n "${BBHUNT_IIS_SHORTSCAN_TOTAL_TIMEOUT:-}" ]; then
+        printf '%s\n' "$BBHUNT_IIS_SHORTSCAN_TOTAL_TIMEOUT"
+    else
+        scan_limit 120 600 1800
+    fi
+}
+
 iis_signature_grep() {
     grep -qiE 'Microsoft-IIS|X-AspNet-Version|X-AspNetMvc-Version|X-Powered-By:[[:space:]]*ASP\.NET|ASP\.NET'
 }
@@ -678,6 +694,7 @@ run_iis_shortname_checks() {
     local manual_file="$FINDINGS_DIR/manual_review/iis_shortnames.txt"
     local raw_dir="$FINDINGS_DIR/misconfig/iis_shortnames_raw"
     local iis_count url safe_name raw_out result_count=0
+    local total_timeout deadline_ms remaining_ms timeout_seconds shortscan_rc
 
     detect_iis_shortname_targets "$iis_targets" "$iis_trace"
     rm -f "$shortscan_findings" "$manual_file"
@@ -699,16 +716,40 @@ run_iis_shortname_checks() {
         return 0
     fi
 
+    total_timeout="$(iis_shortscan_total_timeout)"
+    case "$total_timeout" in
+        ''|*[!0-9]*)
+            log_warn "Invalid BBHUNT_IIS_SHORTSCAN_TOTAL_TIMEOUT; using mode default"
+            total_timeout="$(scan_limit 120 600 1800)"
+            ;;
+    esac
+    deadline_ms=$(( $(now_ms) + total_timeout * 1000 ))
+    log_step "IIS short filename total budget: ${total_timeout}s"
     mkdir -p "$raw_dir"
     while IFS= read -r url; do
         [ -z "$url" ] && continue
 
+        remaining_ms=$(( deadline_ms - $(now_ms) ))
+        if [ "$remaining_ms" -le 0 ]; then
+            mark_scanner_partial "IIS shortscan total deadline exhausted before $url"
+            printf '[IIS-SHORTNAME-REVIEW] %s | total shortscan budget exhausted; rerun: shortscan %s -s -p 1\n' \
+                "$url" "$url" >> "$manual_file"
+            continue
+        fi
+        timeout_seconds=$(( (remaining_ms + 999) / 1000 ))
+        [ "$timeout_seconds" -gt 900 ] && timeout_seconds=900
+
         safe_name=$(printf '%s\n' "$url" | tr '[:upper:]' '[:lower:]' | sed 's|[^a-z0-9]|_|g')
         raw_out="$raw_dir/${safe_name}.txt"
 
-        log_step "Running shortscan $url -s -p 1"
-        if ! run_with_timeout 900 shortscan "$url" -s -p 1 > "$raw_out" 2>&1; then
+        log_step "Running shortscan $url -s -p 1 (timeout ${timeout_seconds}s)"
+        shortscan_rc=0
+        run_with_timeout "$timeout_seconds" shortscan "$url" -s -p 1 > "$raw_out" 2>&1 || shortscan_rc=$?
+        if [ "$shortscan_rc" -ne 0 ]; then
             log_warn "shortscan did not complete cleanly for $url; saved output: $raw_out"
+            mark_scanner_partial "IIS shortscan incomplete for $url (exit=$shortscan_rc)"
+            printf '[IIS-SHORTNAME-REVIEW] %s | shortscan incomplete (exit=%s); rerun: shortscan %s -s -p 1\n' \
+                "$url" "$shortscan_rc" "$url" >> "$manual_file"
         fi
 
         if [ ! -s "$raw_out" ]; then
@@ -1726,13 +1767,17 @@ FINDING_SUMMARY_TMP="$FINDINGS_DIR/.summary.txt.tmp"
 FINDING_SUMMARY_JSON_TMP="$FINDINGS_DIR/.summary.json.tmp"
 FINDING_INDEX_JSON="$FINDINGS_DIR/findings.json"
 
-if [ -s "$NUCLEI_FAILURE_MARKER" ]; then
+if [ -s "$NUCLEI_FAILURE_MARKER" ] || [ -s "$SCANNER_PARTIAL_MARKER" ]; then
     if python3 "$BASE_DIR/tools/finding_index.py" "$FINDINGS_DIR" --target "$TARGET" --output "$FINDING_INDEX_JSON" >/dev/null; then
         log_warn "Preserved partial scanner candidates in $FINDING_INDEX_JSON"
     else
         log_warn "Unable to preserve partial scanner candidates"
     fi
-    log_err "One or more Nuclei lanes failed; scan remains incomplete"
+    if [ -s "$NUCLEI_FAILURE_MARKER" ]; then
+        log_err "One or more Nuclei lanes failed; scan remains incomplete"
+    else
+        log_err "One or more scanner lanes were interrupted; scan remains incomplete"
+    fi
     exit 1
 fi
 

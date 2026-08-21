@@ -208,13 +208,13 @@ _RELEVANCE_RULES: tuple[tuple[str, int, re.Pattern, str], ...] = (
     ("Authz", 5, re.compile(r"/(?:admin|staff|internal|backoffice|console|manage|management)(?:/|$|\b)", re.I), "admin/internal path"),
     ("IDOR", 6, re.compile(r"\b(userid|user_id|accountid|account_id|orgid|org_id|organizationid|organization_id|tenantid|tenant_id|workspaceid|workspace_id|customerid|customer_id|memberid|member_id|orderid|order_id|invoiceid|invoice_id|objectid|object_id|ownerid|owner_id)\b", re.I), "object/tenant identifier parameter"),
     ("IDOR", 3, re.compile(r"\b(id|uid|uuid|guid|account|accounts|tenant|tenants|org|organization|workspace|customer|customers|order|orders|invoice|invoices|user|users|member|members|profile|profiles)\b", re.I), "object reference path/parameter"),
-    ("SSRF", 8, re.compile(r"\b(url|uri|callback|callbackurl|callback_url|webhook|fetch|proxy|target|targeturl|target_url|host|hostname|domain|remote|endpoint|imageurl|image_url|avatarurl|avatar_url|feed|oembed|importurl|import_url|sourceurl|source_url)\b", re.I), "server-side fetch candidate parameter"),
+    ("SSRF", 8, re.compile(r"\b(url|uri|callback|callbackurl|callback_url|webhook|fetch|proxy|target|targeturl|target_url|host|hostname|domain|remote|endpoint|imageurl|image_url|avatarurl|avatar_url|oembed|importurl|import_url|sourceurl|source_url)\b", re.I), "server-side fetch candidate parameter"),
     ("SSRF", 5, re.compile(r"/(?:fetch|proxy|webhook|callback|oembed|import|integrations?)(?:/|$|\b)", re.I), "server-side fetch/webhook path"),
     ("Path", 8, re.compile(r"\b(file|filepath|file_path|filename|file_name|path|dir|directory|download|export|include|include_path|template|theme|locale|doc|document|attachment|archive)\b", re.I), "file/path selector"),
     ("Path", 6, re.compile(r"/(?:download|export|file|files|attachment|attachments|include|static|assets|preview)(?:/|$|\b)", re.I), "file download/read path"),
-    ("RCE", 9, re.compile(r"\b(cmd|command|exec|execute|shell|process|template|render|ssti|deserialize|deserialise|unserialize|pickle|yaml|workflow|job)\b", re.I), "code/template/deserialization execution candidate"),
+    ("RCE", 9, re.compile(r"\b(cmd|command|exec|execute|shell|template|render|ssti|deserialize|deserialise|unserialize|pickle|yaml|workflow|job)\b", re.I), "code/template/deserialization execution candidate"),
     ("RCE", 6, re.compile(r"/(?:render|template|preview|execute|exec|job|jobs|worker|debug)(?:/|$|\b)", re.I), "render/execution path"),
-    ("XXE", 8, re.compile(r"\b(xml|soap|wsdl|saml|xinclude|xxe|doctype|docx|xlsx|svg|rss|feed)\b", re.I), "XML/parser surface"),
+    ("XXE", 8, re.compile(r"\b(xml|soap|wsdl|saml|xinclude|xxe|doctype|docx|xlsx|svg)\b", re.I), "XML/parser surface"),
     ("Upload", 8, re.compile(r"\b(upload|import|file|filename|attachment|avatar|media|document|csv|xlsx|zip|archive)\b", re.I), "upload/import file surface"),
     ("GraphQL", 9, re.compile(r"\b(graphql|gql|query|mutation|operationname|operation_name|variables)\b|/graphql(?:/|$|\b)", re.I), "GraphQL operation surface"),
     ("OAuth", 8, re.compile(r"\b(oauth|oidc|saml|sso|redirecturi|redirect_uri|clientid|client_id|state|nonce|pkce|scope|callback)\b", re.I), "OAuth/OIDC/SAML flow surface"),
@@ -339,6 +339,7 @@ def _empty_matrix(target: str) -> dict:
             "high_value_gaps_count": 0,
         },
         "last_updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "policy_skips": {},
     }
 
 
@@ -377,6 +378,7 @@ def coverage_source_fingerprint(
         repo / "recon" / key / "urls" / "filter.log",
         repo / "findings" / key / "findings.json",
         repo / "findings" / key / "scanner_pass.json",
+        repo / "findings" / key / "summary.json",
     )
     items = []
     for path in paths:
@@ -506,6 +508,7 @@ def save_matrix_projection(
         "matrix_binding": _file_binding(matrix_path),
         "summary": dict(matrix.get("summary") or _compute_summary(matrix)),
         "high_risk_lanes": high_risk_lane_summary(matrix),
+        "policy_skips": dict(matrix.get("policy_skips") or {}),
         "high_value_gaps": high_value_gaps_from_matrix(matrix)[:COVERAGE_PROJECTION_GAP_LIMIT],
         "endpoints": endpoints,
     }
@@ -553,6 +556,7 @@ def load_matrix_projection(
         "source_fingerprint": source_fingerprint,
         "summary": summary,
         "high_risk_lanes": high_risk_lanes,
+        "policy_skips": dict(payload.get("policy_skips") or {}),
         "endpoints": endpoints,
         "_coverage_gaps": gaps,
         "_coverage_projection": True,
@@ -1492,6 +1496,7 @@ def rebuild_matrix(
     _apply_scanner_pass(target_key, repo, new_endpoints)
 
     matrix["endpoints"] = new_endpoints
+    matrix["policy_skips"] = _xss_policy_skip(repo, target_key, new_endpoints)
     matrix["source_fingerprint"] = coverage_source_fingerprint(
         target,
         repo,
@@ -1607,6 +1612,53 @@ def _apply_scanner_pass(
             "scanner_version": scanner_version,
         }
         cells[vc] = current
+
+
+def _xss_policy_skip(repo: Path, target_key: str, endpoints: list[dict]) -> dict:
+    """Expose default XSS delegation without closing its coverage cells."""
+    summary_path = repo / "findings" / target_key / "summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    skipped = summary.get("skipped_checks") if isinstance(summary, dict) else None
+    if not isinstance(skipped, list) or not any(
+        str(item).strip().lower() in {"xss", "all"} for item in skipped
+    ):
+        return {}
+    if any(
+        isinstance(endpoint, dict)
+        and isinstance(endpoint.get("cells"), dict)
+        and str((endpoint["cells"].get("XSS") or {}).get("status") or "untested") != "untested"
+        for endpoint in endpoints
+    ):
+        return {}
+
+    evidence_paths = (
+        repo / "recon" / target_key / "browser" / "xhr_endpoints.txt",
+        repo / "recon" / target_key / "browser" / "api_endpoints.txt",
+        repo / "findings" / target_key / "js_intel" / "hypotheses.json",
+    )
+    evidence_markers = re.compile(
+        r"\b(?:xss|dom[-_ ]?xss|reflected|innerhtml|outerhtml|insertadjacenthtml|document\.write)\b",
+        re.I,
+    )
+    for path in evidence_paths:
+        try:
+            if path.is_file() and evidence_markers.search(
+                path.read_text(encoding="utf-8", errors="replace")[:2_000_000]
+            ):
+                return {}
+        except OSError:
+            continue
+    return {
+        "XSS": {
+            "status": "skipped",
+            "coverage_status": "untested",
+            "reason": "scanner_default_skip",
+            "reactivate_when": "browser, JS, or reflection evidence appears; use full scanner or focused validation",
+        }
+    }
 
 
 def find_high_value_gaps(

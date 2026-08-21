@@ -7,6 +7,8 @@ import signal
 import subprocess
 import sys
 
+import pytest
+
 import cve_hunter
 import runtime_exec
 import zero_day_fuzzer
@@ -94,8 +96,8 @@ def test_run_argv_command_split_preserves_arguments_and_spawn_contract(monkeypat
     assert captured["kwargs"]["shell"] is False
     assert captured["kwargs"]["cwd"] == "/tmp/example"
     assert captured["kwargs"]["env"] == {"MODE": "test"}
-    assert captured["kwargs"]["stdout"] is subprocess.PIPE
-    assert captured["kwargs"]["stderr"] is subprocess.PIPE
+    assert captured["kwargs"]["stdout"] is not subprocess.PIPE
+    assert captured["kwargs"]["stderr"] is not subprocess.PIPE
     assert captured["kwargs"]["text"] is True
     assert captured["kwargs"]["start_new_session"] is True
     assert captured["timeout"] == 12
@@ -293,6 +295,28 @@ def test_run_shell_command_split_preserves_stdout_and_stderr(monkeypatch):
     assert stderr == "err"
 
 
+def test_run_argv_command_bounded_projection_preserves_full_artifacts(tmp_path):
+    script = "import sys; print('x' * 500); print('e' * 500, file=sys.stderr)"
+
+    success, stdout, stderr = runtime_exec.run_argv_command_split(
+        [sys.executable, "-c", script],
+        max_output_bytes=100,
+        output_artifact_dir=tmp_path / "command-output",
+    )
+
+    assert success is True
+    assert len(stdout.encode("utf-8")) <= 100
+    assert len(stderr.encode("utf-8")) <= 100
+    assert "output truncated" in stdout
+    assert (tmp_path / "command-output" / "stdout.txt").read_text().startswith("x" * 500)
+    assert (tmp_path / "command-output" / "stderr.txt").read_text().startswith("e" * 500)
+
+
+def test_run_argv_command_rejects_invalid_output_limit():
+    with pytest.raises(ValueError, match="max_output_bytes"):
+        runtime_exec.run_argv_command([sys.executable, "-c", "pass"], max_output_bytes=0)
+
+
 
 def test_run_shell_command_split_kills_process_group_on_timeout(monkeypatch):
     events = []
@@ -390,10 +414,11 @@ def test_trim_replayed_prefix_only_strips_confirmed_duplicate_prefix():
 def test_cve_hunter_run_cmd_returns_stdout_only_from_shared_helper(monkeypatch):
     captured = {}
 
-    def fake_run_shell_command_split(cmd, *, cwd=None, timeout=600):
+    def fake_run_shell_command_split(cmd, *, cwd=None, timeout=600, max_output_bytes=None):
         captured["cmd"] = cmd
         captured["cwd"] = cwd
         captured["timeout"] = timeout
+        captured["max_output_bytes"] = max_output_bytes
         return True, "stdout only\n", "stderr noise\n"
 
     monkeypatch.setattr(
@@ -406,16 +431,17 @@ def test_cve_hunter_run_cmd_returns_stdout_only_from_shared_helper(monkeypatch):
     success, output = cve_hunter.run_cmd("echo ok", timeout=12)
 
     assert (success, output) == (True, "stdout only")
-    assert captured == {"cmd": "echo ok", "cwd": None, "timeout": 12}
+    assert captured == {"cmd": "echo ok", "cwd": None, "timeout": 12, "max_output_bytes": None}
 
 
 def test_zero_day_fuzzer_run_cmd_delegates_to_split_shared_helper(monkeypatch):
     captured = {}
 
-    def fake_run_shell_command_split(cmd, *, cwd=None, timeout=600):
+    def fake_run_shell_command_split(cmd, *, cwd=None, timeout=600, max_output_bytes=None):
         captured["cmd"] = cmd
         captured["cwd"] = cwd
         captured["timeout"] = timeout
+        captured["max_output_bytes"] = max_output_bytes
         return False, "out", "err"
 
     monkeypatch.setattr(
@@ -428,16 +454,17 @@ def test_zero_day_fuzzer_run_cmd_delegates_to_split_shared_helper(monkeypatch):
     success, stdout, stderr = zero_day_fuzzer.run_cmd("echo nope", timeout=9)
 
     assert (success, stdout, stderr) == (False, "out", "err")
-    assert captured == {"cmd": "echo nope", "cwd": None, "timeout": 9}
+    assert captured == {"cmd": "echo nope", "cwd": None, "timeout": 9, "max_output_bytes": None}
 
 
 def test_zero_day_fuzzer_run_cmd_preserves_legacy_timeout_contract(monkeypatch):
     captured = {}
 
-    def fake_run_shell_command_split(cmd, *, cwd=None, timeout=600):
+    def fake_run_shell_command_split(cmd, *, cwd=None, timeout=600, max_output_bytes=None):
         captured["cmd"] = cmd
         captured["cwd"] = cwd
         captured["timeout"] = timeout
+        captured["max_output_bytes"] = max_output_bytes
         return False, "partial out\n", "partial err\nCommand timed out after 9s"
 
     monkeypatch.setattr(
@@ -450,4 +477,4 @@ def test_zero_day_fuzzer_run_cmd_preserves_legacy_timeout_contract(monkeypatch):
     success, stdout, stderr = zero_day_fuzzer.run_cmd("sleep 9", timeout=9)
 
     assert (success, stdout, stderr) == (False, "", "timeout")
-    assert captured == {"cmd": "sleep 9", "cwd": None, "timeout": 9}
+    assert captured == {"cmd": "sleep 9", "cwd": None, "timeout": 9, "max_output_bytes": None}

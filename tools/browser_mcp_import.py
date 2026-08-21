@@ -61,6 +61,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 DEFAULT_EVIDENCE_ROOT = BASE_DIR / "evidence"
 DEFAULT_RECON_ROOT = BASE_DIR / "recon"
 DEFAULT_FOCUSED_LIMIT = 8
+DEFAULT_BROWSER_IMPORT_MAX_BYTES = 32 * 1024 * 1024
 BROWSER_FRESHNESS_SECONDS = 24 * 60 * 60
 RAW_REQUEST_RE = re.compile(
     r"""
@@ -88,12 +89,44 @@ def _safe_label(value: str, default: str = "mcp") -> str:
     return cleaned.strip("._-")[:80] or default
 
 
+def _browser_import_max_bytes() -> int:
+    raw = os.environ.get("BBHUNT_BROWSER_IMPORT_MAX_BYTES", "")
+    if not raw:
+        return DEFAULT_BROWSER_IMPORT_MAX_BYTES
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("BBHUNT_BROWSER_IMPORT_MAX_BYTES must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError("BBHUNT_BROWSER_IMPORT_MAX_BYTES must be a positive integer")
+    return value
+
+
+def _check_import_input(path: str | Path | None) -> Path | None:
+    if not path:
+        return None
+    candidate = Path(path)
+    if not candidate.is_file():
+        return None
+    try:
+        size = candidate.stat().st_size
+    except OSError:
+        return None
+    limit = _browser_import_max_bytes()
+    if size > limit:
+        raise ValueError(
+            f"browser import input exceeds BBHUNT_BROWSER_IMPORT_MAX_BYTES: "
+            f"path={candidate} bytes={size} limit={limit}"
+        )
+    return candidate
+
+
 def _load_network_payload(path: str | Path | None) -> Any:
     """Load MCP network output, accepting both JSON and raw text listings."""
     if not path:
         return []
-    candidate = Path(path)
-    if not candidate.is_file():
+    candidate = _check_import_input(path)
+    if candidate is None:
         return []
     try:
         text = candidate.read_text(encoding="utf-8", errors="replace")
@@ -161,8 +194,8 @@ def _load_console_payload(path: str | Path | None) -> tuple[Any, str]:
     """读取 console 文件，同时保留需要进入私有证据层的原文。"""
     if not path:
         return [], ""
-    candidate = Path(path)
-    if not candidate.is_file():
+    candidate = _check_import_input(path)
+    if candidate is None:
         return [], ""
     try:
         raw = candidate.read_text(encoding="utf-8", errors="replace")
@@ -208,9 +241,10 @@ def _archive_private_artifact(
     source: str | Path | None,
     destination: Path,
 ) -> dict[str, Any]:
-    if not source or not Path(source).is_file():
+    source_path = _check_import_input(source)
+    if source_path is None:
         return {}
-    copied = copy_private_file(source, destination)
+    copied = copy_private_file(source_path, destination)
     return _private_file_meta(copied)
 
 
@@ -535,7 +569,8 @@ def import_mcp_browser_evidence(
 
     copied_snapshot = ""
     if snapshot_path and Path(snapshot_path).is_file():
-        raw_snapshot = Path(snapshot_path).read_text(encoding="utf-8", errors="replace")
+        snapshot_file = _check_import_input(snapshot_path)
+        raw_snapshot = snapshot_file.read_text(encoding="utf-8", errors="replace") if snapshot_file else ""
         artifacts["snapshot_private_txt"] = str(
             write_private_text(private_dir / "snapshot.txt", raw_snapshot)
         )
@@ -556,7 +591,9 @@ def import_mcp_browser_evidence(
 
     copied_screenshot = ""
     if screenshot_path and Path(screenshot_path).is_file():
-        copied_screenshot = str(copy_private_file(screenshot_path, private_dir / "screenshot.png"))
+        screenshot_file = _check_import_input(screenshot_path)
+        if screenshot_file is not None:
+            copied_screenshot = str(copy_private_file(screenshot_file, private_dir / "screenshot.png"))
         artifacts["screenshot_png"] = copied_screenshot
 
     private_artifacts = {}

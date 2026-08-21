@@ -956,6 +956,7 @@ def test_validate_browser_evidence_resolver_uses_last_capture(tmp_path, monkeypa
 def test_sync_validation_artifacts_records_ledger_and_resolves_queue(tmp_path):
     from action_queue import add_manual_action, load_queue
     from evidence_ledger import load_entries
+    from finding_index import upsert_finding
 
     add_manual_action(
         tmp_path,
@@ -967,6 +968,17 @@ def test_sync_validation_artifacts_records_ledger_and_resolves_queue(tmp_path):
         command_hint="python3 tools/validate.py --findings-dir findings/target.com --finding-id sqli_deadbeef",
         evidence_type="candidate-validation",
         stop_condition="Stop after validation-summary.json and submission-notes.md are written.",
+    )
+    upsert_finding(
+        tmp_path / "findings" / "target.com",
+        {
+            "id": "sqli_deadbeef",
+            "type": "sqli",
+            "url": "https://target.com/item?id=1",
+            "validation_status": "candidate",
+            "report_status": "not_generated",
+        },
+        target="target.com",
     )
     report_path = tmp_path / "findings" / "target.com-sqli" / "hackerone-report.md"
     report_path.parent.mkdir(parents=True)
@@ -999,6 +1011,23 @@ def test_sync_validation_artifacts_records_ledger_and_resolves_queue(tmp_path):
     assert action["status"] == "validated"
     assert "validation-summary=" in action["result"]
     assert "submission-notes=" in action["notes"]
+
+
+def test_sync_validation_artifacts_fails_closed_for_missing_linked_finding(tmp_path):
+    summary = {
+        "target": "target.com",
+        "endpoint": "https://target.com/item?id=1",
+        "vuln_class": "sqli",
+        "result": "confirmed",
+        "finding_id": "missing-finding",
+        "report_path": str(tmp_path / "findings" / "target.com" / "report.md"),
+    }
+
+    sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+
+    assert sync["status"] == "error"
+    assert sync["finding_index"]["status"] == "error"
+    assert sync["ledger"]["status"] == "skipped"
 
 
 def test_sync_validation_artifacts_uses_summary_method(tmp_path):
@@ -1260,6 +1289,23 @@ def test_mark_finding_validated_updates_finding_index(tmp_path):
     assert finding["validation_status"] == "validated"
     assert finding["validation_summary"] == str(summary_path)
     assert finding["validated_at"] == "2026-05-07T00:00:00Z"
+
+
+def test_mark_finding_validated_rejects_missing_canonical_finding(tmp_path):
+    findings_dir = tmp_path / "findings" / "target.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps({"schema_version": 1, "target": "target.com", "findings": []}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="canonical finding not found"):
+        validate.mark_finding_validated(
+            str(findings_dir),
+            "missing-finding",
+            {"all_gates_passed": True},
+            findings_dir / "validated" / "validation-summary.json",
+        )
 
 
 def test_update_runtime_state_after_validate_tracks_progress(tmp_path, monkeypatch):

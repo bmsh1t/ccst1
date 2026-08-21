@@ -669,9 +669,24 @@ def _semantic_queue_value(value: Any) -> Any:
     """只忽略 queue/action 自身时间戳，保留 metadata 内的证据字段。"""
     if not isinstance(value, dict):
         return value
-    semantic = {key: item for key, item in value.items() if key != "updated_at"}
+    semantic = {
+        key: item
+        for key, item in value.items()
+        if key not in {"created_at", "updated_at"}
+    }
     semantic["actions"] = [_semantic_action(action) for action in value.get("actions", [])]
     return semantic
+
+
+def queue_fingerprint(queue: dict) -> str:
+    """Return a stable generation for the semantic queue projection."""
+    encoded = json.dumps(
+        _semantic_queue_value(queue),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def save_queue(repo_root: Path | str, target: str, queue: dict) -> Path:
@@ -761,6 +776,11 @@ def _dedupe_key(action: dict) -> str:
         metadata.get("generation", ""),
         metadata.get("endpoint", ""),
         metadata.get("vuln_class", ""),
+        metadata.get("method", ""),
+        metadata.get("semantic_shape_id", ""),
+        metadata.get("auth_context", ""),
+        metadata.get("actor", ""),
+        metadata.get("object_scope", ""),
     ]
     raw = " ".join(_compact_text(part, limit=300).lower() for part in parts if part)
     return re.sub(r"[^a-z0-9:/?&._=-]+", " ", raw).strip()
@@ -778,6 +798,21 @@ def _normalise_identity_endpoint(value: str) -> str:
     return endpoint.rstrip("/").lower() or "/"
 
 
+def _action_identity_dimensions(metadata: dict) -> dict[str, str]:
+    """Return the execution dimensions that distinguish one lane from another."""
+    semantic_shape = metadata.get("semantic_shape_id")
+    if not semantic_shape and isinstance(metadata.get("semantic_shape"), dict):
+        semantic_shape = metadata["semantic_shape"].get("id")
+    return {
+        "method": str(metadata.get("method") or "").strip().upper(),
+        "vuln_class": str(metadata.get("vuln_class") or "").strip().lower(),
+        "semantic_shape_id": str(semantic_shape or "").strip().lower(),
+        "auth_context": str(metadata.get("auth_context") or "").strip().lower(),
+        "actor": str(metadata.get("actor") or "").strip().lower(),
+        "object_scope": str(metadata.get("object_scope") or "").strip().lower(),
+    }
+
+
 def _action_identities(action: dict) -> set[str]:
     """Stable identities used to suppress stale duplicate candidate actions."""
     metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
@@ -785,10 +820,30 @@ def _action_identities(action: dict) -> set[str]:
     finding_id = str(metadata.get("finding_id") or "").strip().lower()
     if finding_id:
         identities.add(f"finding:{finding_id}")
+    endpoint = ""
     for key in ("endpoint", "url"):
         endpoint = _normalise_identity_endpoint(str(metadata.get(key) or ""))
         if endpoint:
-            identities.add(f"endpoint:{endpoint}")
+            break
+    if not endpoint:
+        return identities
+
+    dimensions = _action_identity_dimensions(metadata)
+    if any(dimensions.values()):
+        encoded = json.dumps(
+            {"endpoint": endpoint, **dimensions},
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        identities.add(
+            f"execution:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:24]}"
+        )
+    else:
+        # Legacy rows predate vuln-class/auth/shape metadata. Keep their
+        # endpoint identity so old queues remain suppressible without making
+        # new, dimensioned lanes supersede one another.
+        identities.add(f"endpoint:{endpoint}")
     return identities
 
 
@@ -1795,6 +1850,7 @@ def summarize_queue(
         "by_type": dict(sorted(by_type.items())),
         "legacy_missing_id": legacy_missing_id,
         "next_id": (selected or {}).get("id", ""),
+        "fingerprint": queue_fingerprint(queue),
     }
 
 

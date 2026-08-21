@@ -1843,6 +1843,59 @@ def test_relevance_metadata_breaks_same_endpoint_coverage_ties(tmp_path):
     assert select_next_action(queue)["id"] == "AQ-0002"
 
 
+def test_action_identities_keep_vulnerability_and_auth_context_lanes_distinct():
+    endpoint = "https://target.com/api/orders/42"
+    idor = {
+        "metadata": {
+            "endpoint": endpoint,
+            "vuln_class": "IDOR",
+            "method": "GET",
+            "semantic_shape_id": "shape-orders-id",
+            "auth_context": "authenticated",
+            "actor": "user-a",
+            "object_scope": "tenant-a",
+        }
+    }
+    authz = {
+        "metadata": {
+            "endpoint": endpoint,
+            "vuln_class": "Authz",
+            "method": "GET",
+            "semantic_shape_id": "shape-orders-id",
+            "auth_context": "authenticated",
+            "actor": "user-a",
+            "object_scope": "tenant-a",
+        }
+    }
+
+    assert action_queue_module._action_identities(idor).isdisjoint(
+        action_queue_module._action_identities(authz)
+    )
+
+
+def test_legacy_action_identity_keeps_endpoint_compatibility():
+    action = {"metadata": {"endpoint": "https://target.com/api/orders/42"}}
+
+    assert action_queue_module._action_identities(action) == {"endpoint:/api/orders/42"}
+
+
+def test_queue_fingerprint_ignores_container_timestamps():
+    first = {
+        "schema_version": 1,
+        "target": "target.com",
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "actions": [],
+    }
+    second = {
+        **first,
+        "created_at": "2026-01-02T00:00:00Z",
+        "updated_at": "2026-01-02T00:00:00Z",
+    }
+
+    assert action_queue_module.queue_fingerprint(first) == action_queue_module.queue_fingerprint(second)
+
+
 def test_load_queue_rejects_corrupt_or_invalid_canonical_state(tmp_path):
     path = tmp_path / "state" / "target.com" / "action_queue.json"
     path.parent.mkdir(parents=True)

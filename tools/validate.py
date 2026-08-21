@@ -1546,11 +1546,11 @@ def ensure_report_output_path(output_path: str | Path) -> Path:
 
 
 def mark_finding_validated(findings_dir: str, finding_id: str, summary: dict, summary_path: str | Path) -> None:
-    """Best-effort update of findings.json after validation completes."""
+    """Update the canonical finding after validation completes."""
     if not findings_dir or not finding_id:
         return
     status = "validated" if validation_evidence_passed(summary) else "partial"
-    update_finding_status(
+    updated = update_finding_status(
         findings_dir,
         finding_id,
         validation_status=status,
@@ -1558,6 +1558,8 @@ def mark_finding_validated(findings_dir: str, finding_id: str, summary: dict, su
         validation_report_path=str(summary.get("report_path") or ""),
         validated_at=summary.get("validated_at", ""),
     )
+    if updated is None:
+        raise ValueError(f"canonical finding not found: {findings_dir}/{finding_id}")
 
 
 def _endpoint_path_for_method_match(value: str) -> str:
@@ -1803,6 +1805,30 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
         summary.get("report_path") or "",
         summary=summary,
     )
+    finding_id = str(summary.get("finding_id") or "").strip()
+    if finding_id:
+        findings_dir = repo / "findings" / target_storage_key(target)
+        try:
+            payload = load_finding_index(findings_dir, migrate_legacy=False)
+        except Exception as exc:
+            return {
+                "status": "error",
+                "reason": f"unable to load canonical finding index: {exc}",
+                "finding_index": {"status": "error", "finding_id": finding_id},
+                "ledger": {"status": "skipped"},
+                "action_queue": {"status": "skipped"},
+            }
+        if not any(
+            isinstance(item, dict) and str(item.get("id") or "") == finding_id
+            for item in payload.get("findings", [])
+        ):
+            return {
+                "status": "error",
+                "reason": f"canonical finding not found: {findings_dir}/{finding_id}",
+                "finding_index": {"status": "error", "finding_id": finding_id},
+                "ledger": {"status": "skipped"},
+                "action_queue": {"status": "skipped"},
+            }
     ledger_update: dict = {}
     queue_update: dict = {}
     finding_update: dict = {}
@@ -1877,8 +1903,10 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
     except Exception as exc:  # pragma: no cover - defensive best-effort path
         finding_update = {"status": "error", "error": str(exc)}
 
+    child_updates = (ledger_update, queue_update, finding_update)
+    overall_status = "error" if any(item.get("status") == "error" for item in child_updates) else "updated"
     return {
-        "status": "updated",
+        "status": overall_status,
         "ledger": ledger_update,
         "action_queue": queue_update,
         "finding_index": finding_update,

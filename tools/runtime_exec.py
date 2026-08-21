@@ -5,11 +5,14 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import tempfile
 import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 TERMINATION_GRACE_SECONDS = 3
+DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024
 
 
 def _to_text(value: Any) -> str:
@@ -23,6 +26,74 @@ def _to_text(value: Any) -> str:
 def _bounded_error(error: BaseException, limit: int = 240) -> str:
     message = " ".join(str(error).split())[:limit]
     return message or type(error).__name__
+
+
+def _validate_output_limit(max_output_bytes: int | None) -> None:
+    if max_output_bytes is None:
+        return
+    if (
+        isinstance(max_output_bytes, bool)
+        or not isinstance(max_output_bytes, int)
+        or max_output_bytes < 1
+    ):
+        raise ValueError("max_output_bytes must be a positive integer or None")
+
+
+def _clip_output(value: str, max_output_bytes: int | None) -> str:
+    text = _to_text(value)
+    if max_output_bytes is None:
+        return text
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= max_output_bytes:
+        return text
+    marker = f"\n...[output truncated; {len(encoded)} bytes total]...\n".encode("utf-8")
+    if len(marker) >= max_output_bytes:
+        return marker[:max_output_bytes].decode("utf-8", errors="ignore")
+    available = max_output_bytes - len(marker)
+    head_bytes = available // 2
+    tail_bytes = available - head_bytes
+    head = encoded[:head_bytes].decode("utf-8", errors="ignore")
+    tail = encoded[-tail_bytes:].decode("utf-8", errors="ignore") if tail_bytes else ""
+    return head + marker.decode("utf-8") + tail
+
+
+def _read_captured_output(path: Path, max_output_bytes: int) -> str:
+    """Read a bounded head/tail projection without materializing the stream."""
+    total = path.stat().st_size
+    if total <= max_output_bytes:
+        return path.read_bytes().decode("utf-8", errors="replace")
+    marker = f"\n...[output truncated; {total} bytes total]...\n".encode("utf-8")
+    if len(marker) >= max_output_bytes:
+        return marker[:max_output_bytes].decode("utf-8", errors="ignore")
+    available = max_output_bytes - len(marker)
+    head_size = available // 2
+    tail_size = available - head_size
+    with path.open("rb") as handle:
+        head = handle.read(head_size)
+        handle.seek(-tail_size, os.SEEK_END)
+        tail = handle.read(tail_size)
+    return (head + marker + tail).decode("utf-8", errors="replace")
+
+
+def _finalize_output(
+    stdout: str,
+    stderr: str,
+    *,
+    max_output_bytes: int | None,
+    output_artifact_dir: str | Path | None,
+) -> tuple[str, str]:
+    """Persist complete streams when requested, then return bounded projections."""
+    stdout = _to_text(stdout)
+    stderr = _to_text(stderr)
+    if output_artifact_dir:
+        root = Path(output_artifact_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "stdout.txt").write_text(stdout, encoding="utf-8")
+        (root / "stderr.txt").write_text(stderr, encoding="utf-8")
+    return (
+        _clip_output(stdout, max_output_bytes),
+        _clip_output(stderr, max_output_bytes),
+    )
 
 
 def _append_message(stream: str, message: str) -> str:
@@ -90,14 +161,16 @@ def _spawn(
     shell: bool = True,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
+    stdout: Any = subprocess.PIPE,
+    stderr: Any = subprocess.PIPE,
 ) -> subprocess.Popen[str]:
     return subprocess.Popen(
         cmd,
         shell=shell,
         cwd=cwd,
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=stdout,
+        stderr=stderr,
         text=True,
         start_new_session=True,
     )
@@ -154,12 +227,79 @@ def _run_command_split(
     timeout: int | float = 600,
     idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_artifact_dir: str | Path | None = None,
 ) -> tuple[bool, str, str]:
     _validate_idle_timeout(idle_timeout)
+    _validate_output_limit(max_output_bytes)
+    capture_tempdir: tempfile.TemporaryDirectory[str] | None = None
+    capture_handles: list[Any] = []
+    capture_paths: tuple[Path, Path] | None = None
+    capture_streams = max_output_bytes is not None and idle_timeout is None
     try:
-        proc = _spawn(cmd, shell=shell, cwd=cwd, env=env)
+        if capture_streams:
+            if output_artifact_dir:
+                capture_root = Path(output_artifact_dir)
+                capture_root.mkdir(parents=True, exist_ok=True)
+            else:
+                capture_tempdir = tempfile.TemporaryDirectory(prefix="ccst-runtime-output-")
+                capture_root = Path(capture_tempdir.name)
+            capture_paths = (capture_root / "stdout.txt", capture_root / "stderr.txt")
+            capture_handles = [path.open("w+b") for path in capture_paths]
+            proc = _spawn(
+                cmd,
+                shell=shell,
+                cwd=cwd,
+                env=env,
+                stdout=capture_handles[0],
+                stderr=capture_handles[1],
+            )
+        else:
+            proc = _spawn(cmd, shell=shell, cwd=cwd, env=env)
     except OSError as exc:
+        for handle in capture_handles:
+            handle.close()
+        if capture_tempdir is not None:
+            capture_tempdir.cleanup()
         return False, "", str(exc)
+
+    def read_capture() -> tuple[str, str]:
+        if not capture_streams or capture_paths is None:
+            return "", ""
+        for handle in capture_handles:
+            handle.flush()
+            handle.close()
+        return (
+            _read_captured_output(capture_paths[0], max_output_bytes),  # type: ignore[arg-type]
+            _read_captured_output(capture_paths[1], max_output_bytes),  # type: ignore[arg-type]
+        )
+
+    def finish(success: bool, stdout: str, stderr: str) -> tuple[bool, str, str]:
+        try:
+            if capture_streams:
+                captured_stdout, captured_stderr = read_capture()
+                # A fake process or a platform wrapper may still return streams
+                # directly; use them only when the capture file is empty.
+                stdout = captured_stdout or _to_text(stdout)
+                captured_stderr = captured_stderr or _to_text(stderr)
+                if stderr and captured_stderr != _to_text(stderr):
+                    captured_stderr = _append_message(captured_stderr, _to_text(stderr))
+                return success, stdout, captured_stderr
+            projected_stdout, projected_stderr = _finalize_output(
+                stdout,
+                stderr,
+                max_output_bytes=max_output_bytes,
+                output_artifact_dir=output_artifact_dir,
+            )
+        except OSError as exc:
+            projected_stdout = _clip_output(stdout, max_output_bytes)
+            projected_stderr = _append_message(
+                _clip_output(stderr, max_output_bytes),
+                f"output artifact write failed: {_bounded_error(exc)}",
+            )
+            success = False
+        return success, projected_stdout, projected_stderr
+
     try:
         if idle_timeout is not None:
             stdout, stderr, timeout_kind = _communicate_with_idle_timeout(
@@ -168,7 +308,7 @@ def _run_command_split(
                 idle_timeout=idle_timeout,
             )
             if timeout_kind is None:
-                return proc.returncode == 0, stdout, stderr
+                return finish(proc.returncode == 0, stdout, stderr)
 
             cleanup_stdout, cleanup_stderr = _terminate_process_group(proc)
             stdout = _merge_timeout_stream(stdout, cleanup_stdout)
@@ -178,10 +318,10 @@ def _run_command_split(
                 if timeout_kind == "total"
                 else f"Command produced no output for {idle_timeout}s (idle timeout)"
             )
-            return False, stdout, _append_message(stderr, message)
+            return finish(False, stdout, _append_message(stderr, message))
 
         stdout, stderr = proc.communicate(timeout=timeout)
-        return proc.returncode == 0, _to_text(stdout), _to_text(stderr)
+        return finish(proc.returncode == 0, stdout, stderr)
     except subprocess.TimeoutExpired as exc:
         stdout = _to_text(exc.output)
         stderr = _to_text(exc.stderr)
@@ -189,7 +329,7 @@ def _run_command_split(
         stdout = _merge_timeout_stream(stdout, cleanup_stdout)
         stderr = _merge_timeout_stream(stderr, cleanup_stderr)
         stderr = _append_message(stderr, f"Command timed out after {timeout}s")
-        return False, stdout, stderr
+        return finish(False, stdout, stderr)
     except Exception as exc:
         stdout = _to_text(getattr(exc, "output", None))
         stderr = _to_text(getattr(exc, "stderr", None))
@@ -197,7 +337,13 @@ def _run_command_split(
         stdout = _merge_timeout_stream(stdout, cleanup_stdout)
         stderr = _merge_timeout_stream(stderr, cleanup_stderr)
         stderr = _append_message(stderr, f"command failed: {_bounded_error(exc)}")
-        return False, stdout, stderr
+        return finish(False, stdout, stderr)
+    finally:
+        for handle in capture_handles:
+            if not handle.closed:
+                handle.close()
+        if capture_tempdir is not None:
+            capture_tempdir.cleanup()
 
 
 def _run_shell_command_split(
@@ -207,6 +353,8 @@ def _run_shell_command_split(
     timeout: int | float = 600,
     idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_artifact_dir: str | Path | None = None,
 ) -> tuple[bool, str, str]:
     return _run_command_split(
         cmd,
@@ -215,6 +363,8 @@ def _run_shell_command_split(
         timeout=timeout,
         idle_timeout=idle_timeout,
         env=env,
+        max_output_bytes=max_output_bytes,
+        output_artifact_dir=output_artifact_dir,
     )
 
 
@@ -236,6 +386,8 @@ def run_shell_command(
     timeout: int | float = 600,
     idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_artifact_dir: str | Path | None = None,
 ) -> tuple[bool, str]:
     success, stdout, stderr = _run_shell_command_split(
         cmd,
@@ -243,6 +395,8 @@ def run_shell_command(
         timeout=timeout,
         idle_timeout=idle_timeout,
         env=env,
+        max_output_bytes=max_output_bytes,
+        output_artifact_dir=output_artifact_dir,
     )
     return success, stdout + stderr
 
@@ -254,6 +408,8 @@ def run_shell_command_split(
     timeout: int | float = 600,
     idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_artifact_dir: str | Path | None = None,
 ) -> tuple[bool, str, str]:
     return _run_shell_command_split(
         cmd,
@@ -261,6 +417,8 @@ def run_shell_command_split(
         timeout=timeout,
         idle_timeout=idle_timeout,
         env=env,
+        max_output_bytes=max_output_bytes,
+        output_artifact_dir=output_artifact_dir,
     )
 
 
@@ -271,6 +429,8 @@ def run_argv_command(
     timeout: int | float = 600,
     idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_artifact_dir: str | Path | None = None,
 ) -> tuple[bool, str]:
     success, stdout, stderr = run_argv_command_split(
         argv,
@@ -278,6 +438,8 @@ def run_argv_command(
         timeout=timeout,
         idle_timeout=idle_timeout,
         env=env,
+        max_output_bytes=max_output_bytes,
+        output_artifact_dir=output_artifact_dir,
     )
     return success, stdout + stderr
 
@@ -289,6 +451,8 @@ def run_argv_command_split(
     timeout: int | float = 600,
     idle_timeout: int | float | None = None,
     env: dict[str, str] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_artifact_dir: str | Path | None = None,
 ) -> tuple[bool, str, str]:
     return _run_command_split(
         _normalize_argv(argv),
@@ -297,4 +461,6 @@ def run_argv_command_split(
         timeout=timeout,
         idle_timeout=idle_timeout,
         env=env,
+        max_output_bytes=max_output_bytes,
+        output_artifact_dir=output_artifact_dir,
     )

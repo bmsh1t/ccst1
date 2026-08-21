@@ -2505,7 +2505,7 @@ def _local_intel_hypothesis_seeds(local_intel: dict) -> list[str]:
         )
     if browser.get("forms"):
         seeds.append(
-            "表单 action / method 可作为 CSRF、SameSite、服务端权限绑定线索；默认不提交真实状态改变动作。"
+            "表单、SOAP 或 POST 本身不构成阻断；按实际副作用判断，只读、预览、校验以及测试自有且可回滚的动作可验证，PUT/PATCH/DELETE 先通过 checkpoint 的 red-line 门禁。"
         )
     viewstate_forms = [
         form for form in (browser.get("forms") or [])
@@ -3181,7 +3181,10 @@ def _ledger_vuln_classes(cards: list[str], blob: str) -> list[str]:
     if CARD_PATHS["websocket-realtime-api"] in cards or re.search(r"\b(websocket|cswsh|subscription)\b", blob, re.I):
         classes.append("Authz")
     if CARD_PATHS["information-disclosure-source-config"] in cards or re.search(r"\b(information[-_ ]?disclosure|debug|source[-_ ]?map|backup|stack[-_ ]?trace)\b", blob, re.I):
-        classes.extend(["Path", "Authz"])
+        # Public configuration/source exposure is an information/path lane.
+        # Do not manufacture an actor matrix row unless an independent authz
+        # signal matched above; the ledger has no InfoDisclosure family.
+        classes.append("Path")
     if CARD_PATHS["web-llm-tool-chains"] in cards or re.search(r"\b(web[-_ ]?llm|prompt[-_ ]?injection|rag|tool[-_ ]?call)\b", blob, re.I):
         classes.append("Authz")
     if CARD_PATHS["node-prototype-pollution"] in cards or re.search(r"\b(prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|vm2?)\b", blob, re.I):

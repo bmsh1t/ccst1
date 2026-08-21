@@ -38,7 +38,11 @@ FINDINGS_DIR = os.path.join(BASE_DIR, "findings")
 
 
 def run_cmd(cmd, timeout=15):
-    success, stdout, stderr = run_shell_command_split(cmd, timeout=timeout)
+    # HTTP response parsing needs the complete body; callers that only need a
+    # Claude-facing command summary use the bounded runtime default.
+    success, stdout, stderr = run_shell_command_split(
+        cmd, timeout=timeout, max_output_bytes=None
+    )
     if not success and "Command timed out after" in stderr:
         return False, "", "timeout"
     return success, stdout, stderr

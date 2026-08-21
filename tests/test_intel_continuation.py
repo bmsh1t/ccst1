@@ -106,6 +106,23 @@ def test_inventory_without_intel_triggers_run_intel(tmp_path):
     assert "has not processed" in state["reason"]
 
 
+def test_unavailable_advisory_coverage_with_queryable_inventory_reopens_intel(tmp_path):
+    _prepare_inventory(tmp_path)
+    payload = _intel()
+    payload["coverage_status"] = "unavailable"
+    payload["sources"] = [{
+        "source": "nvd",
+        "status": "unavailable",
+        "stats": {"eligible_queries": 1},
+    }]
+    _write_intel(tmp_path, payload)
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "run_intel"
+    assert "coverage is unavailable" in state["reason"]
+
+
 def test_intel_review_sidecar_is_bounded_and_stable(tmp_path, monkeypatch):
     _prepare_inventory(tmp_path)
     advisories = []

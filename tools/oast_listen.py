@@ -361,6 +361,20 @@ def _pid_matches_oast(pid: int, paths: dict[str, Path]) -> bool:
     return INTERACTSH_BIN in text and str(paths["callbacks"]) in text
 
 
+def _signal_listener(pid: int, sig: int) -> None:
+    """Signal only the recorded listener process group when available."""
+    try:
+        pgid = os.getpgid(pid)
+    except (AttributeError, OSError):
+        # Keep cleanup usable on platforms without process-group support.
+        os.kill(pid, sig)
+        return
+    try:
+        os.killpg(pgid, sig)
+    except (AttributeError, OSError):
+        os.kill(pid, sig)
+
+
 def _read_pid(p: Path) -> Optional[int]:
     if not p.is_file():
         return None
@@ -638,7 +652,7 @@ def cmd_stop(target: str) -> int:
                 paths[key].unlink()
         return 0
     try:
-        os.kill(pid, signal.SIGTERM)
+        _signal_listener(pid, signal.SIGTERM)
     except OSError as exc:
         _log_err(f"SIGTERM to {pid} failed: {exc}")
         return 1
@@ -648,7 +662,7 @@ def cmd_stop(target: str) -> int:
         time.sleep(0.1)
     if _pid_alive(pid):
         try:
-            os.kill(pid, signal.SIGKILL)
+            _signal_listener(pid, signal.SIGKILL)
         except OSError:
             pass
     for key in ("pid", "url", "backend"):

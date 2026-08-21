@@ -22,14 +22,19 @@ def test_red_lines_are_narrow_damage_boundaries():
     assert "常规高价值路线已经产生稳定" not in text
 
 
-def test_red_lines_block_destructive_methods_and_active_stored_xss():
+def test_red_lines_judge_outcomes_not_request_forms():
     text = _read("rules/red-lines.md")
+    flat = " ".join(text.split())
 
+    assert "动作按结果判断，不按形式判断" in text
+    assert "表单、SOAP、`POST`、生产环境或普通状态写入本身不是红线" in text
+    assert "`PUT`、`PATCH`、`DELETE` 仍禁止自动执行" in text
+    assert "只有能合理预见会造成下列" in flat
+    assert "实际破坏时才阻断" in flat
+    assert "不确定时先执行一次最小影响请求确认" in text
     assert "DDoS、高压流量、资源耗尽或服务中断" in text
     assert "不可控地修改、删除或污染真实数据、账号、权限、配置或业务状态" in text
-    assert "写入会执行、持久化并影响真实用户的内容" in text
-    assert "实际 `PUT`、`PATCH`、`DELETE` 或文件上传先进入 checkpoint" in text
-    assert "这是人工复核门禁" in text
+    assert "写入影响真实用户的内容" in text
     assert "自动流程默认不提交可执行 stored XSS" in text
     assert "stored XSS" in text
     assert "测试资源" in text and "清理方式" in text and "当前回合明确 opt-in" in text
@@ -57,7 +62,8 @@ def test_autopilot_and_runtime_keep_red_lines_minimal():
     assert "窄红线" in runtime
     assert "唯一规则源" in runtime
     assert "检查层不复制红线类别、决策表或领域执行卫生" in runtime
-    assert "PUT/PATCH/DELETE 的默认自动" in runtime
+    assert "HTTP method、表单、SOAP、上传或普通状态写入本身不构成" in runtime
+    assert "自动流程仍不直接执行 `PUT`、`PATCH`、`DELETE`" in runtime
     assert "Credential、stored XSS" in runtime
     assert "secret 外传" not in runtime
 

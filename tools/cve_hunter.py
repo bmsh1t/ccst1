@@ -28,12 +28,18 @@ FINDINGS_DIR = os.path.join(BASE_DIR, "findings")
 
 
 def run_cmd(cmd, timeout=30):
-    success, stdout, _stderr = run_shell_command_split(cmd, timeout=timeout)
+    # CVE/technology parsers consume the complete machine output; the shared
+    # wrapper still bounds ordinary Claude-facing commands by default.
+    success, stdout, _stderr = run_shell_command_split(
+        cmd, timeout=timeout, max_output_bytes=None
+    )
     return success, stdout.strip()
 
 
 def run_argv(argv, timeout=30):
-    success, stdout, _stderr = run_argv_command_split(argv, timeout=timeout)
+    success, stdout, _stderr = run_argv_command_split(
+        argv, timeout=timeout, max_output_bytes=None
+    )
     return success, stdout.strip()
 
 

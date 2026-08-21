@@ -27,6 +27,7 @@ from checkpoint import (
     _coverage_gap_validation_path,
     _decision_for_action,
     _dead_end_proposals,
+    _dedupe_artifact_category_items,
     _filter_final_action_queue_items,
     _lead_proposals,
     _ledger_candidate_proposals,
@@ -3455,6 +3456,28 @@ def test_artifact_backed_high_workflow_leads_become_durable_queue_items(tmp_path
     persisted = load_queue(tmp_path, "target.com")
     assert len(persisted["actions"]) == 1
     assert persisted["actions"][0]["source"] == "workflow-lead"
+
+
+def test_checkpoint_prefers_structured_workflow_lead_for_same_artifact_category():
+    artifact = "findings/target.com/manual_review/openapi.jsonl"
+    natural = _build_next_action_queue(
+        [
+            "Evidence: Workflow lead: OpenAPI auth boundary. Why it matters: API. "
+            "Category=openapi-semantics. Artifact=findings/target.com/manual_review/openapi.jsonl. "
+            "Next action: replay the declared operation."
+        ],
+        "target.com",
+    )[0]
+    structured = {
+        "source": "workflow-lead",
+        "type": "workflow-lead-review",
+        "metadata": {"artifact": artifact, "category": "openapi-semantics"},
+    }
+
+    deduped = _dedupe_artifact_category_items([natural, structured])
+
+    assert len(deduped) == 1
+    assert deduped[0]["source"] == "workflow-lead"
 
 
 def test_sql_matrix_candidates_become_generation_aware_durable_actions(tmp_path):

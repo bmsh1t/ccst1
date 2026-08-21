@@ -102,7 +102,8 @@ def test_bounded_deep_invocation_handoffs_instead_of_expanding_new_lanes():
     command = _read("commands/autopilot.md")
     agent = _read("agents/autopilot.md")
 
-    assert "[--max-lanes N]" in command
+    assert "[--deep [--max-lanes N]]" in command
+    assert "`--max-lanes` is valid only with `--deep`" in command
     assert "invocation_batch.bounded" in command
     assert "browser/source discoveries become next-invocation work, not lane n+1" in " ".join(command.split()).lower()
     assert "after lane N do not execute a newly discovered queue item" in command

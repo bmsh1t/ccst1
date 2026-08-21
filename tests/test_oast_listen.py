@@ -240,7 +240,9 @@ def test_stop_sends_sigterm_and_clears_state(isolated_findings, capsys):
     with patch.object(oast_listen, "os") as mock_os, patch.object(
         oast_listen, "_pid_alive", side_effect=fake_pid_alive
     ):
-        mock_os.kill = fake_kill
+        mock_os.getpgid.return_value = 4242
+        mock_os.killpg.side_effect = fake_kill
+        mock_os.kill = MagicMock()
         # signal module import is local in oast_listen — re-import via attribute.
         mock_os.SIGTERM = signal.SIGTERM
         mock_os.SIGKILL = signal.SIGKILL
@@ -248,6 +250,7 @@ def test_stop_sends_sigterm_and_clears_state(isolated_findings, capsys):
 
     assert rc == 0
     assert (4242, signal.SIGTERM) in kills
+    mock_os.kill.assert_not_called()
     assert not paths["pid"].is_file()
     assert not paths["url"].is_file()
     # callbacks.jsonl must be preserved across stop for post-mortem analysis.

@@ -9,7 +9,7 @@ import pytest
 
 import autopilot_state as autopilot_state_module
 import finding_index
-from action_queue import claim_next_action, ingest_checkpoint, resolve_action
+from action_queue import claim_next_action, ingest_checkpoint, load_queue, queue_fingerprint, resolve_action
 from tools import surface as surface_module
 from tools.surface_projection import build_surface_input_manifest, write_surface_projection
 from memory.hunt_journal import HuntJournal
@@ -367,6 +367,78 @@ def test_closure_finishes_only_for_gap_free_handoff_state():
     assert closure["reasons"] == []
 
 
+def test_closure_keeps_authorization_context_gap_explicit():
+    matrix = {
+        **_closure_matrix(),
+        "high_risk_lanes": {
+            "IDOR": {"disposition": "tested"},
+            "Authz": {"disposition": "tested"},
+            "GraphQL": {"disposition": "not_observed"},
+        },
+    }
+    closure = build_closure_projection(
+        {
+            "next_action": "handoff",
+            "case_state": {
+                "status": "valid",
+                "authz_coverage": {
+                    "status": "missing",
+                    "authenticated_actor_count": 0,
+                    "authenticated_session_count": 0,
+                },
+            },
+        },
+        matrix,
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["authz_context_missing"]
+    assert closure["authz_coverage"]["status"] == "missing"
+
+
+def test_closure_does_not_cross_close_distinct_vulnerability_lanes():
+    completion = autopilot_state_module._surface_review_completion(
+        {
+            "surface_review_candidates": [{
+                "url": "https://target.test/api/orders/1",
+                "vuln_class": "SQLi",
+            }],
+        },
+        _closure_matrix(),
+        {
+            "actions": [{
+                "status": "tested",
+                "metadata": {
+                    "endpoint": "https://target.test/api/orders/1",
+                    "vuln_class": "IDOR",
+                },
+            }],
+        },
+    )
+
+    assert completion["status"] == "unresolved"
+    assert completion["unresolved"] == [{
+        "url": "https://target.test/api/orders/1",
+        "reason": "review_outcome_missing",
+    }]
+
+
+def test_closure_blocks_case_state_canonical_conflict():
+    closure = build_closure_projection(
+        {
+            "next_action": "handoff",
+            "case_state": {
+                "status": "valid",
+                "canonical_conflict_count": 1,
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["case_state_canonical_conflict"]
+
+
 def test_closure_handoffs_only_for_partial_recon_budget():
     interrupted = build_closure_projection(
         {
@@ -436,6 +508,91 @@ def test_checkpoint_witness_verdict_cannot_author_formal_closure(tmp_path):
     assert closure["verdict"] == "handoff"
     assert closure["can_claim_exhausted"] is False
     assert closure["reasons"] == ["coverage_missing"]
+
+
+def test_stale_checkpoint_queue_fingerprint_forces_refresh_handoff(tmp_path):
+    target = "target.com"
+    ingest_checkpoint(
+        tmp_path,
+        target,
+        checkpoint={
+            "next_action_queue": [{
+                "id": "AQ-0001",
+                "type": "coverage-gap",
+                "action": "Review one durable coverage gap.",
+                "priority": 80,
+            }]
+        },
+    )
+    current = queue_fingerprint(load_queue(tmp_path, target))
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "kind": "autopilot_checkpoint_witness",
+            "target": target,
+            "action_queue": {
+                "synchronized": True,
+                "next_id": "AQ-0001",
+                "fingerprint": "stale-queue-generation",
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    closure = load_closure_projection(
+        str(tmp_path),
+        {"target": target, "resolved_target": target, "next_action": "handoff"},
+        max_lanes_reached=False,
+    )
+
+    assert closure["checkpoint_health"]["status"] == "stale"
+    assert "checkpoint_stale" in closure["reasons"]
+    assert closure["verdict"] == "handoff"
+    assert current != "stale-queue-generation"
+
+
+def test_checkpoint_cursor_missing_from_queue_is_stale_not_advanced(tmp_path):
+    target = "target.com"
+    ingest_checkpoint(
+        tmp_path,
+        target,
+        checkpoint={
+            "next_action_queue": [{
+                "id": "AQ-0001",
+                "type": "coverage-gap",
+                "action": "Review one durable coverage gap.",
+                "priority": 80,
+            }]
+        },
+    )
+    queue_path = tmp_path / "state" / target / "action_queue.json"
+    queue = json.loads(queue_path.read_text(encoding="utf-8"))
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "kind": "autopilot_checkpoint_witness",
+            "target": target,
+            "action_queue": {
+                "synchronized": True,
+                "next_id": "AQ-0001",
+                "fingerprint": queue_fingerprint(queue),
+            },
+        }),
+        encoding="utf-8",
+    )
+    queue["actions"] = []
+    queue_path.write_text(json.dumps(queue), encoding="utf-8")
+
+    closure = load_closure_projection(
+        str(tmp_path),
+        {"target": target, "resolved_target": target, "next_action": "handoff"},
+        max_lanes_reached=False,
+    )
+
+    assert closure["checkpoint_health"]["status"] == "stale"
+    assert "checkpoint_stale" in closure["reasons"]
 
 
 def test_corrupt_checkpoint_witness_becomes_recovery_handoff(tmp_path):
@@ -879,6 +1036,15 @@ def test_decision_projections_preserve_only_controller_fields():
     assert "surface" not in closure
 
 
+def test_surface_continuation_is_omitted_when_no_page_remains():
+    state = autopilot_state_module._surface_projection_with_continuation(
+        {"status": "valid", "reason": ""},
+        {"surface_index": {"continuation": {"available": False}}},
+    )
+
+    assert state == {"status": "valid", "reason": ""}
+
+
 def test_cli_projection_only_keeps_full_json_mode_available(monkeypatch, capsys):
     state = {
         "target": "target.com",
@@ -1005,9 +1171,21 @@ def test_matching_third_round_guard_blocks_partial_json_lane(tmp_path):
     fingerprint = base["stagnation_fingerprint"]
     witness = tmp_path / "state" / target / "checkpoint_latest.json"
     witness.parent.mkdir(parents=True, exist_ok=True)
-    witness.write_text(json.dumps({"round_guard": {
-        "fingerprint": fingerprint, "consecutive": 3, "threshold": 3,
-    }}), encoding="utf-8")
+    witness.write_text(json.dumps({
+        "round_guard": {
+            "fingerprint": fingerprint, "consecutive": 3, "threshold": 3,
+        },
+        "round_progress": {
+            "schema_version": 1,
+            "status": "completed",
+            "round_id": "round-3",
+            "max_lanes": 1,
+            "claimed_lanes": [],
+            "claimed_count": 0,
+            "remaining_lanes": 1,
+            "budget_reached": False,
+        },
+    }), encoding="utf-8")
 
     closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
 
@@ -1248,6 +1426,10 @@ def test_stagnation_fingerprint_resets_on_material_owner_state_changes():
         "_stagnation_coverage": "coverage-a",
         "_stagnation_ledger": "ledger-a",
         "action_queue_next": {"id": "AQ-1"},
+        "observation_inventory": {
+            "status": "valid",
+            "inventory_binding": {"sha256": "observation-a"},
+        },
         "surface_review_candidates": [{"url": "https://target.com/profile"}],
     }
     base = stagnation_fingerprint(state, closure)
@@ -1256,9 +1438,43 @@ def test_stagnation_fingerprint_resets_on_material_owner_state_changes():
         {"_stagnation_coverage": "coverage-b"},
         {"_stagnation_ledger": "ledger-b"},
         {"action_queue_next": {"id": "AQ-2"}},
+        {"observation_inventory": {
+            "status": "valid",
+            "inventory_binding": {"sha256": "observation-b"},
+        }},
         {"surface_review_candidates": [{"url": "https://target.com/settings"}]},
     ):
         assert stagnation_fingerprint({**state, **update}, closure) != base
+
+
+def test_stagnation_fingerprint_binds_queue_generation_but_ignores_round_recovery():
+    closure = {
+        "verdict": "handoff",
+        "reasons": ["next_action_pending"],
+        "next_action": "hunt_p1",
+    }
+    state = {
+        "target": "target.com",
+        "resolved_target": "target.com",
+        "_stagnation_queue": "queue-a",
+        "round_progress": {
+            "round_id": "round-a",
+            "status": "active",
+            "max_lanes": 2,
+            "claimed_count": 1,
+            "budget_reached": False,
+            "unfinished_lanes": ["lane-a"],
+            "invalid_evidence_lanes": [],
+            "latest_lane": {"id": "lane-a", "status": "started"},
+        },
+    }
+    base = stagnation_fingerprint(state, closure)
+
+    assert stagnation_fingerprint({**state, "_stagnation_queue": "queue-b"}, closure) != base
+    assert stagnation_fingerprint(
+        {**state, "round_progress": {**state["round_progress"], "round_id": "round-b"}},
+        closure,
+    ) == base
 
 
 def test_closure_prefers_compact_coverage_projection(tmp_path, monkeypatch):

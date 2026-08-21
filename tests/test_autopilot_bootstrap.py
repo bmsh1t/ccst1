@@ -30,6 +30,25 @@ def test_compact_state_keeps_bounded_case_state_continuation():
     assert compact["case_state"]["top_next_action"]["backlog_id"] == "val_001"
 
 
+def test_compact_state_exposes_surface_cursor_only_when_available():
+    compact = autopilot_bootstrap.compact_autopilot_state({
+        "surface_projection": {
+            "status": "valid",
+            "continuation": {
+                "available": True,
+                "next_cursor": "CURSOR",
+                "command": "python3 tools/surface_index.py page --cursor CURSOR",
+            },
+        },
+    })
+
+    assert compact["surface_projection"]["continuation"] == {
+        "available": True,
+        "next_cursor": "CURSOR",
+        "command": "python3 tools/surface_index.py page --cursor CURSOR",
+    }
+
+
 def test_compact_state_exposes_only_read_only_ranker_advisory():
     compact = autopilot_bootstrap.compact_autopilot_state({
         "next_action": "handoff",

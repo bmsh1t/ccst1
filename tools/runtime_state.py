@@ -21,7 +21,8 @@ v1 → v2 migration:
     is renamed to `last_executed_workflow`; deprecated bool/int fields are
     silently dropped. No callers need to be updated immediately — they can
     keep passing legacy field names to `update_runtime_state()` and the
-    whitelist will drop them with an audit-log entry.
+    whitelist will drop them. The persisted runtime state remains the only
+    owner; callers must not treat dropped fields as durable state.
 """
 
 from __future__ import annotations

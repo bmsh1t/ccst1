@@ -401,6 +401,28 @@ def test_tail_candidate_survives_large_index_and_bounded_frontiers(tmp_path):
     assert len(ranked["review_pool"]) <= 16
 
 
+def test_surface_projection_exposes_resumable_raw_page_cursor(tmp_path):
+    recon, _base, _variants = _write_inputs(tmp_path)
+    (recon / "urls" / "with_params.txt").write_text(
+        "\n".join(
+            [
+                "https://api.target.com/orders?id=1",
+                *[f"https://api.target.com/archive?id={index}" for index in range(60)],
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    build_surface_index(tmp_path, "target.com")
+    ranked = rank_surface(load_surface_context(tmp_path, "target.com"))
+    continuation = ranked["surface_index"]["continuation"]
+
+    assert continuation["available"] is True
+    assert continuation["next_cursor"]
+    assert "--cursor" not in continuation["command"]
+
+
 def test_probe_sanitization_does_not_duplicate_existing_exact_surface(tmp_path):
     recon = tmp_path / "recon" / "target.com"
     (recon / "live").mkdir(parents=True)

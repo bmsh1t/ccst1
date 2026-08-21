@@ -32,7 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import ExitStack
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urljoin, urlparse
@@ -83,6 +83,19 @@ _AUTH_SESSION: AuthSession | None = None
 _MANAGED_CREDENTIAL_KEYS = ("CHAOS_API_KEY", "H1_API_TOKEN", "RESIN_PROXY_TOKEN")
 # CLI 编排是单线程的；实际 recon/scan 子进程继承这些 fd，父进程退出时锁仍有效。
 _RUNTIME_PHASE_LOCK_FDS: tuple[int, ...] = ()
+
+
+@contextmanager
+def _phase_execution_lock(repo_root: str, target: str, phase: str):
+    """Own one long-running phase, releasing it before the next phase starts."""
+    global _RUNTIME_PHASE_LOCK_FDS
+    previous_lock_fds = _RUNTIME_PHASE_LOCK_FDS
+    with runtime_phase_lock(repo_root, target, phase, include_fd=True) as (_path, lock_fd):
+        _RUNTIME_PHASE_LOCK_FDS = (lock_fd,)
+        try:
+            yield
+        finally:
+            _RUNTIME_PHASE_LOCK_FDS = previous_lock_fds
 
 
 def resolve_autopilot_mode(args) -> str:
@@ -2162,6 +2175,7 @@ def _hunt_target_impl(
     """Run the full hunt pipeline on a single canonical target."""
     target_info = classify_target(domain)
     canonical_target = target_info["target"]
+    repo_root = os.path.dirname(os.path.abspath(RECON_DIR))
     started = time.monotonic()
     result = {
         "domain": canonical_target,
@@ -2183,25 +2197,27 @@ def _hunt_target_impl(
         batch_ready = os.path.isfile(os.path.join(_resolve_recon_dir(canonical_target), "batch_manifest.jsonl"))
         return _batch_recon_result(canonical_target, batch_ready, started, ctf_mode=ctf_mode)
 
-    if recon_only and not scan_only:
-        _persist_runtime_state(
-            canonical_target,
-            mode="recon_running",
-            current_stage="recon",
-            last_completed_step="run_recon_started",
-            recon_completed=False,
-            scan_completed=False,
-            reports_generated=0,
-            ctf_mode=ctf_mode,
-        )
-
     if not scan_only:
         result["recon_attempted"] = True
         try:
-            if deep:
-                result["recon"] = run_recon(domain, quick=quick, deep=True)
-            else:
-                result["recon"] = run_recon(domain, quick=quick)
+            with _phase_execution_lock(repo_root, canonical_target, "recon"):
+                if recon_only:
+                    _persist_runtime_state(
+                        canonical_target,
+                        mode="recon_running",
+                        current_stage="recon",
+                        last_completed_step="run_recon_started",
+                        recon_completed=False,
+                        scan_completed=False,
+                        reports_generated=0,
+                        ctf_mode=ctf_mode,
+                    )
+                if deep:
+                    result["recon"] = run_recon(domain, quick=quick, deep=True)
+                else:
+                    result["recon"] = run_recon(domain, quick=quick)
+        except RuntimePhaseBusy:
+            raise
         except BaseException:
             # KeyboardInterrupt/SIGTERM are BaseException paths.  Always close
             # the marker before re-raising so a killed phase cannot look active
@@ -2261,25 +2277,28 @@ def _hunt_target_impl(
     if not scan_only and recon_available:
         result["enrichment"] = _run_classic_enrichment_hints(canonical_target)
 
-    _persist_runtime_state(
-        canonical_target,
-        mode="scan_running",
-        current_stage="scan",
-        last_completed_step="run_scan_started",
-        recon_completed=recon_available,
-        scan_completed=False,
-        reports_generated=0,
-        ctf_mode=ctf_mode,
-        enrichment_tools=result.get("enrichment", []),
-    )
     try:
-        result["scan_attempted"] = True
-        result["scan"] = run_vuln_scan(
-            canonical_target,
-            quick=quick,
-            scanner_full=scanner_full,
-            scanner_skip=scanner_skip,
-        )
+        with _phase_execution_lock(repo_root, canonical_target, "scan"):
+            _persist_runtime_state(
+                canonical_target,
+                mode="scan_running",
+                current_stage="scan",
+                last_completed_step="run_scan_started",
+                recon_completed=recon_available,
+                scan_completed=False,
+                reports_generated=0,
+                ctf_mode=ctf_mode,
+                enrichment_tools=result.get("enrichment", []),
+            )
+            result["scan_attempted"] = True
+            result["scan"] = run_vuln_scan(
+                canonical_target,
+                quick=quick,
+                scanner_full=scanner_full,
+                scanner_skip=scanner_skip,
+            )
+    except RuntimePhaseBusy:
+        raise
     except BaseException:
         # scanner phase 已经退出（异常也是退出）。先覆盖 running marker，
         # 避免下一轮 autopilot 等待一个已经崩掉的 scan-only 进程。
@@ -2375,50 +2394,23 @@ def hunt_target(
     ctf_mode=False,
 ):
     """Run one target pipeline while preventing duplicate long phases."""
-    global _RUNTIME_PHASE_LOCK_FDS
     target_info = classify_target(domain)
     canonical_target = target_info["target"]
     execution_target = str(domain).strip() if "://" in str(domain) else canonical_target
     if not _active_auth_session().is_empty():
         _active_auth_session().bind_target(canonical_target)
-    phases = []
-    if target_info["kind"] == "list":
-        if not scan_only:
-            phases.append("recon")
-    elif recon_only:
-        phases.append("recon")
-    elif scan_only:
-        phases.append("scan")
-    else:
-        # Full classic runs reserve both phases in a fixed order. This avoids a
-        # second process starting scan while the first is still rebuilding recon.
-        phases.extend(("recon", "scan"))
-
-    repo_root = os.path.dirname(os.path.abspath(RECON_DIR))
-    with ExitStack() as stack:
-        lock_fds = []
-        for phase in phases:
-            _lock_path, lock_fd = stack.enter_context(
-                runtime_phase_lock(repo_root, canonical_target, phase, include_fd=True)
-            )
-            lock_fds.append(lock_fd)
-        previous_lock_fds = _RUNTIME_PHASE_LOCK_FDS
-        _RUNTIME_PHASE_LOCK_FDS = tuple(lock_fds)
-        try:
-            return _hunt_target_impl(
-                execution_target,
-                quick=quick,
-                deep=deep,
-                recon_only=recon_only,
-                scan_only=scan_only,
-                cve_hunt=cve_hunt,
-                zero_day=zero_day,
-                scanner_full=scanner_full,
-                scanner_skip=scanner_skip,
-                ctf_mode=ctf_mode,
-            )
-        finally:
-            _RUNTIME_PHASE_LOCK_FDS = previous_lock_fds
+    return _hunt_target_impl(
+        execution_target,
+        quick=quick,
+        deep=deep,
+        recon_only=recon_only,
+        scan_only=scan_only,
+        cve_hunt=cve_hunt,
+        zero_day=zero_day,
+        scanner_full=scanner_full,
+        scanner_skip=scanner_skip,
+        ctf_mode=ctf_mode,
+    )
 
 
 def main():

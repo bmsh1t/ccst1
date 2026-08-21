@@ -7,12 +7,28 @@ from memory.pattern_db import PatternDB
 from memory.schemas import make_pattern_entry
 from memory.target_profile import make_target_profile, save_target_profile
 from runtime_state import update_runtime_state
-from surface import format_surface_output, load_surface_context, rank_surface, unsafe_skipped_id
+from surface import (
+    _candidate_reason,
+    _is_websocket_endpoint,
+    format_surface_output,
+    load_surface_context,
+    rank_surface,
+    unsafe_skipped_id,
+)
 from tools.coverage_matrix import save_matrix
 from tools.recon_adapter import ReconAdapter
 
 
 class TestSurfaceContext:
+
+    def test_websocket_detection_requires_an_explicit_path_segment(self):
+        assert _is_websocket_endpoint("/ws")
+        assert _is_websocket_endpoint("/api/websocket/events")
+        assert _is_websocket_endpoint("https://api.target.com/ws?room=1")
+        assert not _is_websocket_endpoint("/news/")
+        assert not _is_websocket_endpoint("/workspace/1")
+        reason, _suggestion = _candidate_reason("/news/", [])
+        assert reason != "WebSocket candidate"
 
     def test_surface_ranking_consumes_coverage_matrix_closure(self, tmp_path):
         recon_dir = tmp_path / "recon" / "target.com"

@@ -883,6 +883,32 @@ def test_classic_hunt_target_continues_when_enrichment_hint_fails(monkeypatch, t
     assert result["reports"] == 0
 
 
+def test_classic_full_run_releases_recon_lock_before_scan(monkeypatch, tmp_path):
+    from runtime_state import runtime_phase_is_active
+
+    domain = "example.com"
+    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
+    monkeypatch.setattr(hunt, "run_recon", lambda *_args, **_kwargs: (
+        runtime_phase_is_active(tmp_path, domain, "recon")
+        and not runtime_phase_is_active(tmp_path, domain, "scan")
+    ))
+    monkeypatch.setattr(hunt, "run_vuln_scan", lambda *_args, **_kwargs: (
+        not runtime_phase_is_active(tmp_path, domain, "recon")
+        and runtime_phase_is_active(tmp_path, domain, "scan")
+    ))
+    monkeypatch.setattr(hunt, "_run_classic_enrichment_hints", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(hunt, "_update_target_profile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hunt, "_auto_log_session_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hunt, "_persist_runtime_state", lambda *_args, **_kwargs: None)
+
+    result = hunt.hunt_target(domain)
+
+    assert result["recon"] is True
+    assert result["scan"] is True
+    assert not runtime_phase_is_active(tmp_path, domain, "recon")
+    assert not runtime_phase_is_active(tmp_path, domain, "scan")
+
+
 def test_classic_hunt_target_recon_only_skips_enrichment_and_scan(monkeypatch):
     domain = "example.com"
     calls = []

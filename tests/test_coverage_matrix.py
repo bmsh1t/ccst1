@@ -49,6 +49,36 @@ def test_readme_names_the_canonical_web2_closure_taxonomy():
     assert "20 Web2 Bug Classes" not in text
 
 
+def test_weak_content_path_words_do_not_promote_high_value_server_side_classes():
+    assert class_relevance("/news/process", "RCE", [])["relevance_score"] == 0
+    assert class_relevance("/news/feed", "SSRF", [])["relevance_score"] == 0
+    assert class_relevance("/news/rss", "XXE", [])["relevance_score"] == 0
+    assert class_relevance("/api/execute", "RCE", [])["relevance_score"] > 0
+    assert class_relevance("/api/import", "SSRF", ["url"])["relevance_score"] > 0
+
+
+def test_default_xss_skip_is_visible_without_closing_coverage(tmp_path):
+    _seed_recon(tmp_path, "xss-policy.test", ["https://xss-policy.test/search?q=one"])
+    findings_dir = tmp_path / "findings" / "xss-policy.test"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "summary.json").write_text(
+        json.dumps({"skipped_checks": ["xss"]}), encoding="utf-8"
+    )
+
+    matrix = rebuild_matrix("xss-policy.test", repo_root=tmp_path)
+
+    assert matrix["policy_skips"]["XSS"]["status"] == "skipped"
+    assert all(item["cells"]["XSS"]["status"] == "untested" for item in matrix["endpoints"])
+
+    browser_dir = tmp_path / "recon" / "xss-policy.test" / "browser"
+    browser_dir.mkdir(parents=True)
+    (browser_dir / "xhr_endpoints.txt").write_text(
+        "https://xss-policy.test/search?q=one innerHTML reflection\n", encoding="utf-8"
+    )
+    refreshed = rebuild_matrix("xss-policy.test", repo_root=tmp_path)
+    assert refreshed["policy_skips"] == {}
+
+
 def _seed_recon(tmp_path: Path, target: str, urls: list[str]) -> None:
     urls_dir = tmp_path / "recon" / target / "urls"
     urls_dir.mkdir(parents=True)

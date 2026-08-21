@@ -193,6 +193,7 @@ def _bounded_surface(ranked: dict) -> dict:
         "source_intel",
         "browser",
         "semantic_surface",
+        "surface_index",
         "evidence_refs",
         "stats",
     )
@@ -202,6 +203,18 @@ def _bounded_surface(ranked: dict) -> dict:
     surface["review_pool"] = list(ranked.get("review_pool") or [])[:16]
     surface["kill"] = list(ranked.get("kill") or [])[:32]
     surface["workflow_leads"] = list(ranked.get("workflow_leads") or [])[:32]
+    index = ranked.get("surface_index") if isinstance(ranked.get("surface_index"), dict) else {}
+    continuation = index.get("continuation") if isinstance(index.get("continuation"), dict) else {}
+    surface["surface_index"] = {
+        "status": str(index.get("status") or "missing"),
+        "row_count": max(0, int(index.get("row_count", 0) or 0)),
+        "index_revision": str(index.get("index_revision") or "")[:64],
+        "continuation": {
+            "available": bool(continuation.get("available")),
+            "next_cursor": str(continuation.get("next_cursor") or "")[:512],
+            "command": str(continuation.get("command") or "")[:800],
+        },
+    }
     return surface
 
 

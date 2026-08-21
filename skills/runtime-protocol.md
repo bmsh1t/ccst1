@@ -184,10 +184,11 @@ Evidence -> Hypothesis -> Next action -> Stop condition
 rules/red-lines.md
 ```
 
-检查层不复制红线类别、决策表或领域执行卫生。Skill 只负责识别可能的高压流量、
-真实状态改变、实际上传或持久化副作用，随后使用 `allow`、`allow-with-controls`、
-`downgrade` 或 `pause` 记录 `rules/red-lines.md` 的决策。PUT/PATCH/DELETE 的默认自动
-门禁和 Credential、stored XSS 等具体边界同样由该文件及其领域 owner 负责。
+检查层不复制红线类别、决策表或领域执行卫生。Skill 只负责识别具体的破坏性结果，
+随后使用 `allow`、`allow-with-controls`、`downgrade` 或 `pause` 记录
+`rules/red-lines.md` 的决策。HTTP method、表单、SOAP、上传或普通状态写入本身不构成
+门禁；但自动流程仍不直接执行 `PUT`、`PATCH`、`DELETE`，这些动作必须先过 checkpoint。
+Credential、stored XSS 等具体边界仍由该文件及其领域 owner 负责。
 
 结束前检查覆盖基线：
 

@@ -1021,6 +1021,16 @@ def test_context_pack_surfaces_actor_matrix_gaps(tmp_path):
     assert "Actor matrix gaps:" in output
 
 
+def test_information_disclosure_route_does_not_create_authz_ledger_lane():
+    classes = context_pack_module._ledger_vuln_classes(
+        ["knowledge/cards/information-disclosure-source-config.md"],
+        "public source map information disclosure",
+    )
+
+    assert "Path" in classes
+    assert "Authz" not in classes
+
+
 def test_graphql_focus_routes_to_graphql_card(tmp_path):
     _seed_recon(tmp_path, "target.com", ["https://api.target.com/graphql"])
 
@@ -2004,6 +2014,12 @@ def test_browser_observed_context_becomes_actionable_pack_evidence(tmp_path):
     assert any("Browser XHR/API" in item and "order_id=42" in item for item in pack["evidence_anchors"])
     assert any("Browser param" in item and "order_id" in item for item in pack["evidence_anchors"])
     assert any("登录态" in item and "红线" in item for item in pack["hypothesis_seeds"])
+    assert any(
+        "表单、SOAP 或 POST 本身不构成阻断" in item
+        and "PUT/PATCH/DELETE" in item
+        and "checkpoint" in item
+        for item in pack["hypothesis_seeds"]
+    )
     assert any("Playwright" in item for item in pack["alternative_angles"])
     assert "No browser-observed XHR/API context loaded." not in pack["unknowns"]
 

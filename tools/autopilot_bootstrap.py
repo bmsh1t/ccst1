@@ -383,6 +383,20 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     case_state = state.get("case_state") or {}
     batch = state.get("batch") or {}
     intel_continuation = _compact_intel_continuation(state.get("intel_continuation"))
+    compact_surface_projection = {
+        key: surface_projection[key]
+        for key in ("status", "reason", "path", "refresh_command")
+        if surface_projection.get(key) not in (None, "")
+    }
+    raw_surface_continuation = surface_projection.get("continuation")
+    if isinstance(raw_surface_continuation, dict):
+        bounded_surface_continuation = {
+            key: raw_surface_continuation[key]
+            for key in ("available", "next_cursor", "command")
+            if raw_surface_continuation.get(key) not in (None, "")
+        }
+        if bounded_surface_continuation:
+            compact_surface_projection["continuation"] = bounded_surface_continuation
     workflow_leads = []
     for raw in ((state.get("surface") or {}).get("workflow_leads") or [])[:3]:
         try:
@@ -494,11 +508,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             for key in ("present", "ready", "status", "auth_required", "auth_state")
             if key in (state.get("browser_evidence") or {})
         },
-        "surface_projection": {
-            key: surface_projection[key]
-            for key in ("status", "reason", "path", "refresh_command")
-            if surface_projection.get(key) not in (None, "")
-        },
+        "surface_projection": compact_surface_projection,
         "observation_inventory": {
             key: observation_inventory[key]
             for key in (
@@ -567,7 +577,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
         "case_state": {
             key: case_state[key]
             for key in (
-                "status", "path", "actors", "sessions", "objects",
+                "status", "path", "actors", "sessions", "authz_coverage", "objects",
                 "open_hypotheses", "pending_validation_backlog", "top_next_action",
             )
             if key in case_state

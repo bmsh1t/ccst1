@@ -26,6 +26,7 @@ try:
         FINAL_STATUSES,
         _target_owned_nonempty_evidence_ref,
         load_queue,
+        queue_fingerprint,
         select_next_action,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -34,6 +35,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         FINAL_STATUSES,
         _target_owned_nonempty_evidence_ref,
         load_queue,
+        queue_fingerprint,
         select_next_action,
     )
 try:
@@ -508,6 +510,59 @@ def _checkpoint_round_projection(
     }
 
 
+def _checkpoint_queue_health(witness: dict, queue: dict) -> dict:
+    """Reject a checkpoint cursor that no longer describes the durable Queue."""
+    recorded = witness.get("action_queue") if isinstance(witness, dict) else None
+    if not isinstance(recorded, dict) or not recorded:
+        return {"status": "valid"}
+
+    def recorded_action_is_final() -> bool:
+        expected_id = str(recorded.get("next_id") or "").strip()
+        if not expected_id:
+            return False
+        return any(
+            isinstance(action, dict)
+            and str(action.get("id") or "") == expected_id
+            and str(action.get("status") or "").strip().lower() in FINAL_STATUSES
+            for action in queue.get("actions", [])
+        )
+
+    current_fingerprint = queue_fingerprint(queue)
+    expected_fingerprint = str(recorded.get("fingerprint") or "").strip()
+    if expected_fingerprint:
+        if expected_fingerprint != current_fingerprint:
+            current_next = str((select_next_action(queue) or {}).get("id") or "").strip()
+            if not current_next and recorded_action_is_final():
+                return {
+                    "status": "valid",
+                    "fingerprint": current_fingerprint,
+                    "reason": "queue advanced past the recorded checkpoint action",
+                }
+            return {
+                "status": "stale",
+                "reason": "checkpoint queue fingerprint differs from durable queue",
+                "expected_fingerprint": expected_fingerprint,
+                "current_fingerprint": current_fingerprint,
+            }
+        return {"status": "valid", "fingerprint": current_fingerprint}
+
+    expected_next = str(recorded.get("next_id") or "").strip()
+    current_next = str((select_next_action(queue) or {}).get("id") or "").strip()
+    if expected_next and expected_next != current_next:
+        if not current_next and recorded_action_is_final():
+            return {
+                "status": "valid",
+                "reason": "queue advanced past the recorded checkpoint action",
+            }
+        return {
+            "status": "stale",
+            "reason": "legacy checkpoint next_id differs from durable queue",
+            "expected_next_id": expected_next,
+            "current_next_id": current_next,
+        }
+    return {"status": "unverified", "reason": "checkpoint predates queue fingerprint"}
+
+
 def _load_json_inject_projection(repo_root: str, target: str) -> dict:
     """Read only the bounded JSON probe summary; malformed data stays partial."""
     path = Path(repo_root) / "findings" / target_storage_key(target) / "poc" / "json_inject" / "summary.json"
@@ -827,6 +882,14 @@ def _load_case_state_projection(repo_root: str, target: str) -> dict:
         return {"status": "missing", "path": str(path)}
     payload = build_case_state_summary(repo_root, target)
     top = payload.get("top_next_action") if isinstance(payload.get("top_next_action"), dict) else {}
+    canonical_conflict_count = int(payload.get("canonical_conflict_count", 0) or 0)
+    if canonical_conflict_count and str(top.get("next_action") or "none") == "none":
+        top = {
+            "next_action": "reconcile_case_state",
+            "ready": False,
+            "why_now": "Case State marks a backlog terminal while canonical findings are finalized",
+            "write_back": "reconcile the backlog outcome with the canonical finding owner before closure",
+        }
     allowed = {
         "next_action", "ready", "score", "backlog_id", "hypothesis_id", "runner", "hypothesis",
         "chain_context", "why_now", "vuln_class", "endpoint", "owner_actor",
@@ -838,6 +901,9 @@ def _load_case_state_projection(repo_root: str, target: str) -> dict:
     return {
         "status": "valid",
         "path": str(path),
+        "authz_coverage": payload.get("authz_coverage") if isinstance(payload.get("authz_coverage"), dict) else {},
+        "canonical_conflict_count": canonical_conflict_count,
+        "canonical_conflicts": payload.get("canonical_conflicts") if isinstance(payload.get("canonical_conflicts"), list) else [],
         **{
             key: int(payload.get(key, 0) or 0)
             for key in (
@@ -892,6 +958,7 @@ def _build_recommended_targets(
             "url": item.get("url", ""),
             "host": item.get("host", ""),
             "suggested": item.get("suggested", ""),
+            "vuln_class": item.get("vuln_class", ""),
             "score": item.get("score", 0),
             "review_reason": item.get("review_reason", ""),
             "review_index": index,
@@ -2655,6 +2722,25 @@ def _build_domain_autopilot_state(
     }
 
 
+def _surface_projection_with_continuation(
+    projection: dict,
+    ranked: dict,
+) -> dict:
+    """Carry the bounded raw-surface cursor into Claude's bootstrap state."""
+    result = dict(projection or {})
+    index = ranked.get("surface_index") if isinstance(ranked, dict) else {}
+    continuation = index.get("continuation") if isinstance(index, dict) else {}
+    if isinstance(continuation, dict):
+        bounded = {
+            "available": bool(continuation.get("available")),
+            "next_cursor": str(continuation.get("next_cursor") or "")[:512],
+            "command": str(continuation.get("command") or "")[:800],
+        }
+        if bounded["available"] or bounded["next_cursor"] or bounded["command"]:
+            result["continuation"] = bounded
+    return result
+
+
 def build_autopilot_bootstrap_state(
     repo_root: str,
     target: str,
@@ -2703,12 +2789,12 @@ def build_autopilot_bootstrap_state(
         facts,
         ranked,
         observation_inventory=observation_inventory,
-        surface_projection={
+        surface_projection=_surface_projection_with_continuation({
             "status": str(projection.get("status") or "invalid"),
             "reason": str(projection.get("reason") or ""),
             "path": str(projection.get("path") or ""),
             "refresh_command": f"python3 tools/surface.py --target {resolved_target} --refresh",
-        },
+        }, ranked),
         surface_context_required=(
             bool(facts.get("has_recon")) and projection.get("status") != "valid"
         ),
@@ -2774,11 +2860,11 @@ def build_autopilot_state(
         facts,
         ranked,
         observation_inventory=ranked.get("observation_inventory") or {},
-        surface_projection={
+        surface_projection=_surface_projection_with_continuation({
             "status": str(projection.get("status") or "computed"),
             "reason": str(projection.get("reason") or ""),
             "path": str(projection.get("path") or ""),
-        },
+        }, ranked),
         surface_context_required=(
             bool(facts.get("has_recon")) and projection.get("status") != "valid"
         ),
@@ -3026,9 +3112,43 @@ def _coverage_has_high_value_gaps(matrix: dict) -> bool:
     return bool(high_value_gaps_from_matrix(matrix))
 
 
-def _final_queue_endpoint_identities(queue: dict) -> set[str]:
-    """Return exact endpoint identities with a durable final queue outcome."""
-    identities: set[str] = set()
+def _authz_context_reason(case_state: dict, matrix: dict) -> str:
+    """Keep anonymous-only authorization review from claiming exhaustion."""
+    if str(case_state.get("status") or "") != "valid":
+        return ""
+    coverage = case_state.get("authz_coverage")
+    if not isinstance(coverage, dict) or str(coverage.get("status") or "") == "ready":
+        return ""
+    lanes = matrix.get("high_risk_lanes") if isinstance(matrix, dict) else None
+    if not isinstance(lanes, dict):
+        lanes = {}
+    relevant = any(
+        str((lanes.get(vuln_class) or {}).get("disposition") or "")
+        not in {"", "not_observed", "not_applicable"}
+        for vuln_class in ("IDOR", "Authz", "GraphQL")
+    )
+    if not lanes:
+        relevant = any(
+            isinstance(endpoint, dict)
+            and any(
+                isinstance((endpoint.get("cells") or {}).get(vuln_class), dict)
+                and (endpoint["cells"][vuln_class].get("status") not in {None, "n_a"})
+                for vuln_class in ("IDOR", "Authz", "GraphQL")
+            )
+            for endpoint in matrix.get("endpoints") or []
+        )
+    if not relevant:
+        return ""
+    return (
+        "authz_context_missing"
+        if str(coverage.get("status") or "") == "missing"
+        else "authz_context_incomplete"
+    )
+
+
+def _final_queue_execution_specs(queue: dict) -> list[dict[str, str]]:
+    """Return final Queue dimensions without collapsing vulnerability lanes."""
+    specs: list[dict[str, str]] = []
     for action in queue.get("actions") or []:
         if not isinstance(action, dict):
             continue
@@ -3039,8 +3159,13 @@ def _final_queue_endpoint_identities(queue: dict) -> set[str]:
             str(metadata.get("endpoint") or metadata.get("url") or "")
         )
         if endpoint:
-            identities.add(endpoint)
-    return identities
+            specs.append({
+                "endpoint": endpoint,
+                "vuln_class": str(metadata.get("vuln_class") or "").strip().lower(),
+                "semantic_shape_id": str(metadata.get("semantic_shape_id") or "").strip().lower(),
+                "auth_context": str(metadata.get("auth_context") or "").strip().lower(),
+            })
+    return specs
 
 
 def _surface_review_completion(
@@ -3071,7 +3196,7 @@ def _surface_review_completion(
         for gap in _coverage_gaps(matrix)
         if isinstance(gap, dict)
     }
-    final_identities = _final_queue_endpoint_identities(queue)
+    final_specs = _final_queue_execution_specs(queue)
     unresolved = []
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -3086,8 +3211,19 @@ def _surface_review_completion(
             unresolved.append({"url": url, "reason": "coverage_endpoint_missing"})
         elif endpoint in high_gap_paths:
             unresolved.append({"url": url, "reason": "coverage_gap_pending"})
-        elif endpoint_identity not in final_identities:
-            unresolved.append({"url": url, "reason": "review_outcome_missing"})
+        else:
+            candidate_class = str(candidate.get("vuln_class") or "").strip().lower()
+            candidate_shape = str(candidate.get("semantic_shape_id") or "").strip().lower()
+            candidate_auth = str(candidate.get("auth_context") or "").strip().lower()
+            matched = any(
+                spec["endpoint"] == endpoint_identity
+                and (not candidate_class or spec["vuln_class"] == candidate_class)
+                and (not candidate_shape or not spec["semantic_shape_id"] or spec["semantic_shape_id"] == candidate_shape)
+                and (not candidate_auth or not spec["auth_context"] or spec["auth_context"] == candidate_auth)
+                for spec in final_specs
+            )
+            if not matched:
+                unresolved.append({"url": url, "reason": "review_outcome_missing"})
     return {"status": "complete" if not unresolved else "unresolved", "unresolved": unresolved[:5]}
 
 
@@ -3172,7 +3308,8 @@ def build_closure_projection(
     case_state_pending = (
         str(case_state.get("status") or "missing") == "valid"
         and (
-            int(case_state.get("pending_validation_backlog", 0) or 0) > 0
+            int(case_state.get("canonical_conflict_count", 0) or 0) > 0
+            or int(case_state.get("pending_validation_backlog", 0) or 0) > 0
             or int(case_state.get("open_hypotheses", 0) or 0) > 0
             or str((case_state.get("top_next_action") or {}).get("next_action") or "none") != "none"
         )
@@ -3205,7 +3342,11 @@ def build_closure_projection(
         reasons.append(action)
     elif case_state_pending:
         verdict = "handoff"
-        reasons.append("case_state_work_pending")
+        reasons.append(
+            "case_state_canonical_conflict"
+            if int(case_state.get("canonical_conflict_count", 0) or 0) > 0
+            else "case_state_work_pending"
+        )
     elif surface_projection_pending:
         verdict = "handoff"
         reasons.append("surface_projection_pending")
@@ -3288,6 +3429,9 @@ def build_closure_projection(
         elif observation_reason:
             verdict = "handoff"
             reasons.append(observation_reason)
+        elif (authz_reason := _authz_context_reason(case_state, matrix)):
+            verdict = "handoff"
+            reasons.append(authz_reason)
         elif ledger_projection.get("identity_v2_follow_up_actions"):
             verdict = "handoff"
             reasons.append("identity_v2_follow_up_pending")
@@ -3306,9 +3450,11 @@ def build_closure_projection(
             reasons.insert(0, ledger_reason)
         if verdict == "finish":
             verdict = "handoff"
-    if str(checkpoint_health.get("status") or "") == "invalid":
-        if "checkpoint_invalid" not in reasons:
-            reasons.insert(0, "checkpoint_invalid")
+    checkpoint_status = str(checkpoint_health.get("status") or "")
+    if checkpoint_status in {"invalid", "stale"}:
+        checkpoint_reason = "checkpoint_stale" if checkpoint_status == "stale" else "checkpoint_invalid"
+        if checkpoint_reason not in reasons:
+            reasons.insert(0, checkpoint_reason)
         if verdict == "finish":
             verdict = "handoff"
 
@@ -3328,6 +3474,11 @@ def build_closure_projection(
             "shadow": ledger_projection.get("identity_v2_shadow") or {},
         },
     }
+    coverage_policy_skips = dict((matrix or {}).get("policy_skips") or {})
+    if coverage_policy_skips:
+        result["coverage_policy_skips"] = coverage_policy_skips
+    if isinstance(case_state.get("authz_coverage"), dict):
+        result["authz_coverage"] = case_state["authz_coverage"]
     if round_progress:
         result["round_progress"] = round_progress
     if ledger_health:
@@ -3348,8 +3499,11 @@ _STAGNANT_REASONS = {
     "intel_evidence_blocked",
     "json_evidence_partial",
     "sql_evidence_partial",
+    "authz_context_missing",
+    "authz_context_incomplete",
     "next_action_pending",
     "coverage_high_value_gaps",
+    "case_state_canonical_conflict",
 }
 
 
@@ -3420,6 +3574,10 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
         "observations": {
             "status": (state.get("observation_inventory") or {}).get("status"),
             "by_kind": (state.get("observation_inventory") or {}).get("by_kind") or {},
+            "revision": str(
+                ((state.get("observation_inventory") or {}).get("inventory_binding") or {}).get("sha256")
+                or ""
+            ),
         },
         "surface": {
             "candidates": surface_candidates,
@@ -3435,6 +3593,7 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
         "durable": {
             "active_actions": int(state.get("active_action_queue_count", 0) or 0),
             "queue_next": str((state.get("action_queue_next") or {}).get("id") or ""),
+            "queue_fingerprint": str(state.get("_stagnation_queue") or ""),
             "findings": {
                 key: (state.get("structured_findings") or {}).get(key)
                 for key in ("total", "pending_validation", "validated", "reported", "rejected")
@@ -3539,6 +3698,7 @@ def load_closure_projection(
             if include_round_projection
             else {}
         )
+        checkpoint_health = _checkpoint_queue_health(witness, queue)
     except ValueError as exc:
         witness = {}
         round_progress = {}
@@ -3565,6 +3725,7 @@ def load_closure_projection(
             queue,
         ),
         "_stagnation_coverage": _semantic_coverage_fingerprint(matrix),
+        "_stagnation_queue": queue_fingerprint(queue),
         "_stagnation_ledger": hashlib.sha256(
             json.dumps(ledger_entries, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         ).hexdigest(),
@@ -4056,6 +4217,9 @@ def format_autopilot_state(state: dict) -> str:
     lines.append(f"Surface review candidates: {surface.get('stats', {}).get('review_pool', 0)}")
     lines.append(f"Advisory first-review score hints: {surface.get('stats', {}).get('p1', 0)}")
     lines.append(f"Advisory follow-up score hints: {surface.get('stats', {}).get('p2', 0)}")
+    surface_continuation = (surface.get("surface_index") or {}).get("continuation") or {}
+    if surface_continuation.get("available") and surface_continuation.get("command"):
+        lines.append(f"Surface continuation: {surface_continuation['command']}")
 
     tripped_hosts = guard_status.get("tripped_hosts", [])
     if tripped_hosts:
@@ -4202,9 +4366,11 @@ def build_decision_projection(state: dict, kind: str) -> dict:
             "ledger_health",
             "checkpoint_health",
             "recon_budget_partial",
+            "authz_coverage",
             "stagnation_fingerprint",
             "error",
             "round_progress",
+            "coverage_policy_skips",
         )
         if key in closure
     }
@@ -4222,8 +4388,8 @@ def build_decision_projection(state: dict, kind: str) -> dict:
         ("browser_evidence", ("present", "ready")),
         ("repo_source_summary", ("status",)),
         ("observation_inventory", ("status", "reason", "untouched", "stale", "by_kind")),
-        ("surface_projection", ("status", "reason", "refresh_command")),
-        ("case_state", ("status", "actors", "sessions", "objects", "open_hypotheses", "pending_validation_backlog", "top_next_action")),
+        ("surface_projection", ("status", "reason", "refresh_command", "continuation")),
+        ("case_state", ("status", "actors", "sessions", "authz_coverage", "objects", "canonical_conflict_count", "canonical_conflicts", "open_hypotheses", "pending_validation_backlog", "top_next_action")),
     ):
         value = state.get(field) if isinstance(state.get(field), dict) else {}
         projection[field] = {key: value[key] for key in keys if key in value}

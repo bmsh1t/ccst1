@@ -640,6 +640,17 @@ def build_intel_review_projection(
             for item in group.get("representatives") or []
         ],
         "coverage_status": str(payload.get("coverage_status") or "error"),
+        "source_coverage": [
+            {
+                "source": str(source.get("source") or "")[:40],
+                "status": str(source.get("status") or "")[:40],
+                "eligible_queries": int((source.get("stats") or {}).get("eligible_queries", 0) or 0),
+                "error_count": int((source.get("stats") or {}).get("error_count", 0) or 0),
+            }
+            for source in payload.get("sources") or []
+            if isinstance(source, dict)
+            and source.get("source") in {"osv", "github_advisory", "nvd"}
+        ],
         "inventory": {
             "status": str(inventory.get("status") or ""),
             "fingerprint": str(inventory.get("fingerprint") or ""),

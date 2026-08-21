@@ -500,6 +500,41 @@ def inspect_intel_continuation(
             }
     if int((intel.get("stats") or {}).get("component_count", 0) or 0) <= 0:
         return base
+    coverage_status = str(intel.get("coverage_status") or "").strip().lower()
+    source_rows = (
+        intel.get("source_coverage")
+        if review_projection is not None
+        else intel.get("sources")
+    )
+    advisory_sources = [
+        item
+        for item in (source_rows or [])
+        if isinstance(item, dict)
+        and item.get("source") in {"osv", "github_advisory", "nvd"}
+    ]
+    if (
+        review_projection is not None
+        and coverage_status in {"unavailable", "error"}
+        and "source_coverage" not in intel
+    ):
+        return {
+            **base,
+            "action": "run_intel",
+            "reason": "Intel review projection predates source coverage status",
+        }
+    if coverage_status in {"unavailable", "error"} and any(
+        int(
+            item.get("eligible_queries")
+            or (item.get("stats") or {}).get("eligible_queries", 0)
+            or 0
+        ) > 0
+        for item in advisory_sources
+    ):
+        return {
+            **base,
+            "action": "run_intel",
+            "reason": "Intel advisory coverage is unavailable for the observed inventory",
+        }
 
     gaps = intel.get("intel_gaps") if isinstance(intel.get("intel_gaps"), dict) else {}
     recommended = [item for item in gaps.get("recommended") or [] if isinstance(item, dict)]

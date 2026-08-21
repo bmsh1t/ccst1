@@ -1219,13 +1219,18 @@ def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
 
             legacy_draft = not str(finding.get("validation_status") or "").strip()
             if finding.get("id") and not legacy_draft:
-                update_finding_status(
+                updated = update_finding_status(
                     findings_dir,
                     finding.get("id", ""),
                     report_status="generated",
                     report_file=report_file,
                     report_id=report_id,
                 )
+                if updated is None:
+                    raise ValueError(
+                        "canonical finding disappeared before report status update: "
+                        f"{findings_dir}/{finding.get('id', '')}"
+                    )
             queue_sync = (
                 {"status": "skipped", "reason": "legacy compatibility draft"}
                 if legacy_draft

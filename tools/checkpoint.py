@@ -31,12 +31,14 @@ try:
     from tools.action_queue import (
         ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES,
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
+        _action_identities as action_queue_action_identities,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
         _target_owned_nonempty_evidence_ref as action_queue_target_owned_nonempty_evidence_ref,
         _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
         ingest_checkpoint as ingest_action_queue_checkpoint,
         load_queue as load_action_queue,
+        queue_fingerprint as action_queue_fingerprint,
         select_next_action as action_queue_select_next_action,
     )
     from tools.autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint
@@ -63,12 +65,14 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES,
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
+        _action_identities as action_queue_action_identities,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
         _target_owned_nonempty_evidence_ref as action_queue_target_owned_nonempty_evidence_ref,
         _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
         ingest_checkpoint as ingest_action_queue_checkpoint,
         load_queue as load_action_queue,
+        queue_fingerprint as action_queue_fingerprint,
         select_next_action as action_queue_select_next_action,
     )
     from autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint  # type: ignore
@@ -522,12 +526,25 @@ def write_checkpoint_witness(
                 pass
         stats = queue_sync.get("stats") if isinstance(queue_sync.get("stats"), dict) else {}
         next_action = queue_sync.get("next") if isinstance(queue_sync.get("next"), dict) else {}
+        expected_fingerprint = str(
+            queue_sync.get("fingerprint")
+            or (queue_sync.get("summary") or {}).get("fingerprint")
+            or ""
+        )
+        if expected_fingerprint:
+            current_queue = load_action_queue(repo, resolved_target)
+            current_fingerprint = action_queue_fingerprint(current_queue)
+            if current_fingerprint != expected_fingerprint:
+                raise ValueError(
+                    "checkpoint queue changed before witness write; refresh checkpoint"
+                )
         payload["action_queue"] = {
             "synchronized": True,
             "path": queue_path,
             "added": int(stats.get("added", 0) or 0),
             "updated": int(stats.get("updated", 0) or 0),
             "next_id": str(next_action.get("id") or ""),
+            "fingerprint": expected_fingerprint,
         }
     with checkpoint_witness_lock(repo, resolved_target):
         previous = _load_checkpoint_witness(path)
@@ -625,6 +642,11 @@ def sync_checkpoint_action_queue(
         raise ValueError("action queue owner returned an invalid sync result")
     checkpoint["action_queue_sync"] = result
     queue = load_action_queue(repo, target)
+    queue_sync = checkpoint["action_queue_sync"]
+    queue_summary = queue_sync.setdefault("summary", {})
+    queue_summary["fingerprint"] = action_queue_fingerprint(queue)
+    queue_sync["fingerprint"] = queue_summary["fingerprint"]
+    queue_sync["next"] = action_queue_select_next_action(queue)
     checkpoint["knowledge_effect_trace"] = _project_knowledge_effect_trace(
         checkpoint,
         queue.get("actions", []),
@@ -1374,13 +1396,17 @@ def _lead_proposals(
         title = str(lead.get("title") or "").strip()
         next_action = str(lead.get("next_action") or "").strip()
         why = str(lead.get("rationale") or lead.get("category") or "workflow lead").strip()
+        category = str(lead.get("category") or "workflow").strip()
+        artifact = str(lead.get("artifact") or lead.get("evidence_ref") or "").strip()
         if title:
             proposals.append(
                 "Evidence: Workflow lead: {title}. Why it matters: {why}. "
-                "Next action: {next_action}. Stop condition: no reproducible "
+                "Category={category}. {artifact_clause}Next action: {next_action}. Stop condition: no reproducible "
                 "behavior difference or new evidence after focused replay.".format(
                     title=title[:180],
                     why=why[:180],
+                    category=category[:80],
+                    artifact_clause=(f"Artifact={artifact}. " if artifact else ""),
                     next_action=next_action[:180] or "inspect the linked artifact",
                 )
             )
@@ -3014,6 +3040,21 @@ def _extract_action_metadata(text: str) -> dict:
             "artifact": match.group("artifact").strip().rstrip("."),
         })
 
+    match = re.search(
+        r"Evidence:\s+Workflow lead:\s+(?P<title>.*?)[.]\s+Why it matters:.*?"
+        r"Category=(?P<category>[^.\s]+)\.\s+(?:Artifact=(?P<artifact>\S+)\.\s+)?"
+        r"Next action:",
+        value,
+        re.I,
+    )
+    if match:
+        metadata.update({
+            "lead_category": match.group("category").strip(),
+            "lead_title": match.group("title").strip(),
+        })
+        if match.group("artifact"):
+            metadata["artifact"] = match.group("artifact").strip().rstrip(".")
+
     match = re.match(
         r"(?:Continue top ranked surface|Review surface candidate)\s+(?P<url>\S+):\s*(?P<rest>.*)$",
         value,
@@ -3039,6 +3080,41 @@ def _extract_action_metadata(text: str) -> dict:
             metadata["ledger_record_skeleton"] = ledger_skeleton.strip()
 
     return metadata
+
+
+def _artifact_category_identity(item: dict) -> str:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    artifact = str(metadata.get("artifact") or "").strip()
+    category = str(
+        metadata.get("category")
+        or metadata.get("lead_category")
+        or ""
+    ).strip().lower()
+    if not artifact or not category:
+        return ""
+    normalized_artifact = artifact.replace("\\", "/").strip().rstrip("/").lower()
+    return f"{normalized_artifact}::{category}"
+
+
+def _dedupe_artifact_category_items(items: list[dict]) -> list[dict]:
+    """Keep one queue projection for each artifact/category lead."""
+    result: list[dict] = []
+    positions: dict[str, int] = {}
+    for item in items:
+        identity = _artifact_category_identity(item)
+        if not identity or identity not in positions:
+            if identity:
+                positions[identity] = len(result)
+            result.append(item)
+            continue
+        index = positions[identity]
+        existing = result[index]
+        if (
+            str(item.get("source") or "") == "workflow-lead"
+            and str(existing.get("source") or "") != "workflow-lead"
+        ):
+            result[index] = item
+    return result
 
 
 def _build_next_action_queue(next_items: list[str], target: str = "", skill_route: dict | None = None) -> list[dict]:
@@ -3589,19 +3665,7 @@ def _filter_final_action_queue_items(
 
     def action_identities(action: dict) -> set[str]:
         """Return stable finding/endpoint identities for stale candidate suppression."""
-        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-        identities: set[str] = set()
-        finding_id = str(metadata.get("finding_id") or "").strip().lower()
-        if finding_id:
-            identities.add(f"finding:{finding_id}")
-        for key in ("endpoint", "url"):
-            value = str(metadata.get(key) or "").strip()
-            if not value:
-                continue
-            endpoint = _normalise_endpoint_path(value).rstrip("/")
-            if endpoint:
-                identities.add(f"endpoint:{endpoint.lower()}")
-        return identities
+        return action_queue_action_identities(action)
 
     def from_existing_action(action: dict) -> dict:
         """把持久队列里的候选动作投影回 checkpoint item。"""
@@ -3997,6 +4061,7 @@ def build_checkpoint(
     chain_review = _capability_chain_review_item(repo, resolved_target, queue_snapshot)
     if chain_review:
         next_action_queue.append(chain_review)
+    next_action_queue = _dedupe_artifact_category_items(next_action_queue)
     next_action_queue = _filter_final_action_queue_items(
         repo,
         resolved_target,

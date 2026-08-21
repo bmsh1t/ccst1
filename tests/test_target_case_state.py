@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import target_case_state
+from target_paths import target_storage_key
 
 
 TARGET = "http://127.0.0.1:3002"
@@ -49,6 +50,7 @@ def _build_idor_state(tmp_path):
 
 def test_empty_state_initializes_shape(tmp_path):
     state = target_case_state.load_case_state(tmp_path, TARGET)
+    summary = target_case_state.summary(tmp_path, TARGET)
 
     assert state["schema_version"] == 1
     assert state["target"] == "127.0.0.1:3002"
@@ -57,6 +59,11 @@ def test_empty_state_initializes_shape(tmp_path):
     assert state["sessions"] == {}
     assert state["objects"] == {}
     assert state["validation_backlog"] == []
+    assert summary["authz_coverage"] == {
+        "status": "missing",
+        "authenticated_actor_count": 0,
+        "authenticated_session_count": 0,
+    }
 
 
 def test_existing_corrupt_state_fails_instead_of_resetting_to_empty(tmp_path):
@@ -269,6 +276,8 @@ def test_add_actor_session_object_and_summary(tmp_path):
     assert state["objects"]["order_123"]["private_marker"] == "owner@example.test"
     assert summary["actors"] == 2
     assert summary["sessions"] == 2
+    assert summary["authz_coverage"]["status"] == "ready"
+    assert summary["authz_coverage"]["authenticated_actor_count"] == 2
     assert summary["objects"] == 1
 
 
@@ -624,6 +633,95 @@ def test_complete_backlog_writes_result_and_evidence_ref(tmp_path):
     assert updated["status"] == "tested_finding"
     assert updated["evidence_ref"].endswith("summary.json")
     assert next_item["next_action"] == "none"
+
+
+@pytest.mark.parametrize("result", ["tested_clean", "dead_end"])
+def test_complete_backlog_cannot_contradict_owner_backed_finding(tmp_path, result):
+    from finding_index import upsert_finding
+
+    _build_idor_state(tmp_path)
+    endpoint = f"{TARGET}/rest/order-history/123"
+    backlog = target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="idor-actor-pair",
+        endpoint=endpoint,
+        owner_actor="user_a",
+        peer_actor="user_b",
+        object_ref="order_123",
+        priority="high",
+    )
+    upsert_finding(
+        tmp_path / "findings" / target_storage_key(TARGET),
+        {
+            "id": "idor-order-123",
+            "type": "idor",
+            "vuln_class": "IDOR",
+            "url": endpoint,
+            "validation_status": "validated",
+            "report_status": "not_generated",
+        },
+        target=TARGET,
+    )
+
+    with pytest.raises(ValueError, match="canonical finding is already finalized"):
+        target_case_state.complete_backlog(
+            tmp_path,
+            TARGET,
+            backlog_id=backlog["id"],
+            result=result,
+        )
+
+    state = target_case_state.load_case_state(tmp_path, TARGET)
+    assert state["validation_backlog"][0]["status"] == "pending"
+
+    state["validation_backlog"][0]["status"] = result
+    target_case_state.save_case_state(tmp_path, TARGET, state)
+    summary = target_case_state.summary(tmp_path, TARGET)
+
+    assert summary["canonical_conflict_count"] == 1
+    assert summary["canonical_conflicts"][0]["backlog_id"] == backlog["id"]
+
+
+@pytest.mark.parametrize("result", ["tested_clean", "dead_end"])
+def test_complete_backlog_blocks_unproven_final_finding_claim(tmp_path, result):
+    _build_idor_state(tmp_path)
+    endpoint = f"{TARGET}/rest/order-history/123"
+    backlog = target_case_state.add_backlog(
+        tmp_path,
+        TARGET,
+        runner="idor-actor-pair",
+        endpoint=endpoint,
+        owner_actor="user_a",
+        peer_actor="user_b",
+        object_ref="order_123",
+        priority="high",
+    )
+    findings_dir = tmp_path / "findings" / target_storage_key(TARGET)
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target": TARGET,
+            "findings": [{
+                "id": "unproven-idor",
+                "type": "idor",
+                "vuln_class": "IDOR",
+                "url": endpoint,
+                "validation_status": "validated",
+                "report_status": "not_generated",
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="canonical finding is already finalized"):
+        target_case_state.complete_backlog(
+            tmp_path,
+            TARGET,
+            backlog_id=backlog["id"],
+            result=result,
+        )
 
 
 def test_hypothesis_backlog_outcome_projects_recovery_without_replaying_failure(tmp_path):

@@ -104,6 +104,40 @@ def test_browser_mcp_import_writes_surface_and_evidence(tmp_path):
     assert forms["forms"] == [{"action": "/login", "method": "POST"}]
 
 
+def test_browser_mcp_import_rejects_oversized_input_before_capture_publish(tmp_path, monkeypatch):
+    network_path = tmp_path / "network.json"
+    network_path.write_text('{"requests": []}', encoding="utf-8")
+    monkeypatch.setenv("BBHUNT_BROWSER_IMPORT_MAX_BYTES", "4")
+
+    with pytest.raises(ValueError, match=r"path=.*network\.json.*bytes=.*limit=4"):
+        browser_mcp_import.import_mcp_browser_evidence(
+            target="target.local",
+            network_path=network_path,
+            evidence_root=tmp_path / "evidence",
+            recon_root=tmp_path / "recon",
+        )
+
+    browser_root = tmp_path / "evidence" / "target.local" / "browser"
+    assert not browser_root.exists()
+
+
+def test_browser_mcp_import_bounds_private_artifacts_and_rolls_back(tmp_path, monkeypatch):
+    state_path = tmp_path / "state.json"
+    state_path.write_bytes(b"x" * 8)
+    monkeypatch.setenv("BBHUNT_BROWSER_IMPORT_MAX_BYTES", "4")
+
+    with pytest.raises(ValueError, match=r"path=.*state\.json.*limit=4"):
+        browser_mcp_import.import_mcp_browser_evidence(
+            target="target.local",
+            state_path=state_path,
+            evidence_root=tmp_path / "evidence",
+            recon_root=tmp_path / "recon",
+        )
+
+    assert not (tmp_path / "evidence" / "target.local" / "browser").exists()
+    assert not (tmp_path / ".private" / "browser" / "target.local").exists()
+
+
 def test_normalize_mcp_network_accepts_har_entries():
     payload = {
         "log": {

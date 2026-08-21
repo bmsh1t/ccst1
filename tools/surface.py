@@ -53,6 +53,7 @@ try:
         build_surface_index,
         iter_surface_index,
         load_surface_index_status,
+        page_surface_index,
         surface_shape,
         surface_request_shape,
         surface_safe_preview,
@@ -82,7 +83,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     )
     from recon_adapter import ReconAdapter
     from runtime_state import inspect_recon_artifacts, load_runtime_state
-    from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, surface_shape, surface_request_shape, surface_safe_preview, surface_value_summary
+    from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, page_surface_index, surface_shape, surface_request_shape, surface_safe_preview, surface_value_summary
     from surface_projection import build_surface_input_manifest, write_surface_projection
     from target_paths import compact_url, canonical_target_value, target_storage_key, url_belongs_to_target
 try:
@@ -857,17 +858,29 @@ CONTEXTUAL_NUMERIC_ID_RE = re.compile(
     re.I,
 )
 
+WEBSOCKET_ENDPOINT_RE = re.compile(r"(?:^|/)(?:ws|websocket)(?:/|$)", re.I)
+
 
 def _has_contextual_numeric_id(path: str) -> bool:
     """Return true for numeric IDs with resource context, not bare `/<number>` pages."""
     return bool(CONTEXTUAL_NUMERIC_ID_RE.search(str(path or "")))
 
 
+def _is_websocket_endpoint(path: str) -> bool:
+    """Return true for an explicit WebSocket path segment, not a substring."""
+    raw = str(path or "").strip()
+    if not raw:
+        return False
+    parsed = urlparse(raw)
+    candidate = parsed.path or raw.split("?", 1)[0].split("#", 1)[0]
+    return bool(WEBSOCKET_ENDPOINT_RE.search(candidate))
+
+
 def _candidate_reason(path: str, query_keys: list[str]) -> tuple[str, str]:
     lower = path.lower()
     if "graphql" in lower:
         return "GraphQL surface", "field-level auth checks and mutation abuse"
-    if lower.startswith("/ws") or "websocket" in lower or lower.endswith("/ws"):
+    if _is_websocket_endpoint(path):
         return "WebSocket candidate", "authorization checks on subscribe/send actions"
     if any(key in {"id", "user_id", "account_id", "order_id"} or key.endswith("_id") for key in query_keys):
         return "ID-bearing parameter", "ID swap and sibling endpoint access control checks"
@@ -2306,7 +2319,7 @@ def rank_surface(context: dict) -> dict:
                     4,
                     path,
                 )
-        if "graphql" in path.lower() or "ws" in path.lower():
+        if "graphql" in path.lower() or _is_websocket_endpoint(path):
             score += _add_score_breakdown(
                 score_breakdown,
                 "attack_value",
@@ -2710,6 +2723,10 @@ def rank_surface(context: dict) -> dict:
 
         endpoint_path = canonical_endpoint_path(raw_url) or "/"
         ledger_vuln_hint = _surface_vuln_hint(path, suggested, query_keys)
+        if ledger_vuln_hint:
+            # Keep the best-effort lane hint with the bounded candidate so
+            # closure can distinguish Authz/IDOR/SQLi outcomes on one path.
+            entry["vuln_class"] = ledger_vuln_hint
         ledger_result = closure_resolver.closed_result(endpoint_path, ledger_vuln_hint)
         if ledger_result:
             # 终态只说明这个精确 lane 已处理，不代表 endpoint 无其他攻击面。
@@ -2802,7 +2819,31 @@ def rank_surface(context: dict) -> dict:
     review_pool = _build_review_pool(bounded_candidates, ffuf_review_candidates)
     semantic_surface = _build_semantic_surface(context, [*bounded_candidates, *p1, *p2])
     observation_inventory = context.get("observation_inventory") or {}
-    index_summary = (context.get("surface_index") or {}).get("summary") or {}
+    index_status = context.get("surface_index") or {}
+    index_summary = index_status.get("summary") or {}
+    index_manifest = index_status.get("manifest") if isinstance(index_status.get("manifest"), dict) else {}
+    index_binding = index_manifest.get("index_binding") if isinstance(index_manifest.get("index_binding"), dict) else {}
+    continuation = {"available": False, "next_cursor": "", "command": ""}
+    if str(index_status.get("status") or "") == "valid":
+        try:
+            first_page = page_surface_index(
+                context["repo_root"],
+                context["target"],
+                limit=50,
+                target_owned=True,
+            )
+            next_cursor = str(first_page.get("next_cursor") or "")
+            continuation = {
+                "available": bool(next_cursor),
+                "next_cursor": next_cursor,
+                "command": (
+                    "python3 tools/surface_index.py page "
+                    f"--target {context['target']} --limit 50 --target-owned"
+                ),
+            }
+        except (OSError, SurfaceIndexError, ValueError):
+            # Ranking remains usable; stale index status is already a refresh gate.
+            pass
     browser_source_counts = index_summary.get("source_counts") or {}
     filter_summary = _read_json_object(Path(context.get("recon_dir") or "") / "urls" / "filter_summary.json")
     raw_url_count = int((index_summary.get("source_counts") or {}).get("raw", 0) or 0)
@@ -2822,6 +2863,14 @@ def rank_surface(context: dict) -> dict:
         "p2": p2,
         "review_pool": review_pool,
         "semantic_surface": semantic_surface,
+        "surface_index": {
+            "status": str(index_status.get("status") or "missing"),
+            "row_count": int(index_status.get("row_count", 0) or 0),
+            "index_revision": str(index_binding.get("sha256") or ""),
+            "continuation": {
+                **continuation,
+            },
+        },
         "observation_inventory": observation_inventory,
         "kill": _dedupe_keep_order([json.dumps(item, sort_keys=True) for item in kill]),
         "memory": {

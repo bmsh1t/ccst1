@@ -29,10 +29,14 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.auth_session import AuthSession
+    from tools.closure_resolver import canonical_endpoint_identity
+    from tools.finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from tools.private_artifacts import private_artifact_dir, write_private_json
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from auth_session import AuthSession  # type: ignore
+    from closure_resolver import canonical_endpoint_identity  # type: ignore
+    from finding_index import load_finding_index, verify_finalized_finding_owner_provenance  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
@@ -787,6 +791,88 @@ def _recovery_next_action(item: dict[str, Any]) -> str:
     return "capture the missing prerequisite before creating a fresh validation backlog"
 
 
+def _case_vuln_identity(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return {
+        "authorization": "authz",
+        "authorization_bypass": "authz",
+        "authentication_bypass": "authz",
+        "access_control": "authz",
+    }.get(normalized, normalized)
+
+
+def _matching_final_findings(
+    repo_root: str | Path,
+    target: str,
+    state: dict[str, Any],
+    item: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return owner-backed findings that cover this backlog dimension.
+
+    Case State can suggest a clean result, but it must not close a dimension
+    already finalized by the canonical finding owner. Missing findings.json is
+    normal for a fresh case; malformed canonical state is deliberately allowed
+    to fail closed through the owner loader.
+    """
+    findings_dir = Path(repo_root) / "findings" / target_storage_key(target)
+    findings_path = findings_dir / "findings.json"
+    if not findings_path.is_file():
+        return []
+    payload = load_finding_index(findings_dir, migrate_legacy=False)
+    rows = payload.get("findings", []) if isinstance(payload, dict) else []
+    hypothesis = _linked_hypothesis(state, item)
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    hypothesis_metadata = hypothesis.get("metadata") if isinstance(hypothesis.get("metadata"), dict) else {}
+    finding_id = str(
+        item.get("finding_id")
+        or metadata.get("finding_id")
+        or hypothesis_metadata.get("finding_id")
+        or ""
+    ).strip()
+    endpoint = str(item.get("endpoint") or hypothesis.get("endpoint") or "").strip()
+    endpoint_key = canonical_endpoint_identity(endpoint) if endpoint else ""
+    vuln_class = item.get("vuln_class") or hypothesis.get("vuln_class")
+    if not vuln_class:
+        vuln_class = {
+            "idor-actor-pair": "IDOR",
+            "authz-role-replay": "Authz",
+            "authz-public-exposure": "Authz",
+            "sqli-result-diff": "SQLi",
+        }.get(str(item.get("runner") or "").strip().lower(), "")
+    vuln_key = _case_vuln_identity(vuln_class)
+    matches: list[dict[str, Any]] = []
+    for finding in rows:
+        if not isinstance(finding, dict):
+            continue
+        if finding_id:
+            identity_match = str(finding.get("id") or "").strip() == finding_id
+        else:
+            finding_endpoint = canonical_endpoint_identity(
+                str(finding.get("url") or finding.get("endpoint") or "")
+            )
+            finding_vuln = _case_vuln_identity(
+                finding.get("vuln_class") or finding.get("type") or finding.get("category")
+            )
+            identity_match = bool(
+                endpoint_key
+                and finding_endpoint == endpoint_key
+                and vuln_key
+                and finding_vuln == vuln_key
+            )
+        if not identity_match:
+            continue
+        provenance = verify_finalized_finding_owner_provenance(
+            findings_dir,
+            finding,
+            target=target,
+        )
+        if provenance.get("required"):
+            # An invalid owner claim is still an unresolved canonical claim;
+            # allowing a clean result here would hide the provenance repair.
+            matches.append(finding)
+    return matches
+
+
 def next_action(
     repo_root: str | Path,
     target: str,
@@ -950,6 +1036,18 @@ def complete_backlog(
     def mutate(state):
         for item in state.get("validation_backlog", []):
             if item.get("id") == backlog_id:
+                if result in {"tested_clean", "dead_end"}:
+                    finalized = _matching_final_findings(repo_root, target, state, item)
+                    if finalized:
+                        ids = ", ".join(
+                            str(row.get("id") or "")
+                            for row in finalized[:3]
+                            if str(row.get("id") or "")
+                        )
+                        raise ValueError(
+                            f"cannot mark backlog {backlog_id} {result}; canonical finding "
+                            f"is already finalized ({ids or 'unknown id'}); resolve the finding owner first"
+                        )
                 item["status"] = result
                 item["evidence_ref"] = str(evidence_ref or item.get("evidence_ref", "") or "")
                 item["notes"] = str(notes or item.get("notes", "") or "")
@@ -989,12 +1087,59 @@ def summary(repo_root: str | Path, target: str) -> dict[str, Any]:
         item for item in state.get("validation_backlog", [])
         if str(item.get("status") or "pending") in ACTIVE_BACKLOG_STATUSES
     ]
+    canonical_conflicts = []
+    for item in state.get("validation_backlog", []):
+        if (
+            not isinstance(item, dict)
+            or str(item.get("status") or "").lower() not in {"tested_clean", "dead_end"}
+        ):
+            continue
+        matches = _matching_final_findings(repo_root, target, state, item)
+        if matches:
+            canonical_conflicts.append({
+                "backlog_id": str(item.get("id") or ""),
+                "finding_ids": [
+                    str(row.get("id") or "")
+                    for row in matches[:3]
+                    if str(row.get("id") or "")
+                ],
+                "endpoint": str(item.get("endpoint") or ""),
+            })
     objects = state.get("objects") if isinstance(state.get("objects"), dict) else {}
+    authenticated_sessions = []
+    for session in state.get("sessions", {}).values():
+        if not isinstance(session, dict):
+            continue
+        actor_id = str(session.get("actor") or "")
+        actor = state.get("actors", {}).get(actor_id)
+        if not isinstance(actor, dict) or str(actor.get("role") or "anonymous").lower() == "anonymous":
+            continue
+        if str(session.get("validity") or "unknown").lower() in SESSION_INVALID:
+            continue
+        if session.get("headers") or (session.get("header_name") and session.get("header_value")):
+            authenticated_sessions.append(session)
+    authenticated_actor_ids = {
+        str(session.get("actor") or "") for session in authenticated_sessions
+    }
+    authenticated_session_count = len(authenticated_sessions)
+    if len(authenticated_actor_ids) >= 2:
+        authz_status = "ready"
+    elif authenticated_actor_ids:
+        authz_status = "partial"
+    else:
+        authz_status = "missing"
     return {
         "target": state.get("target"),
         "target_key": state.get("target_key"),
         "actors": len(state.get("actors", {})),
         "sessions": len(state.get("sessions", {})),
+        "authz_coverage": {
+            "status": authz_status,
+            "authenticated_actor_count": len(authenticated_actor_ids),
+            "authenticated_session_count": authenticated_session_count,
+        },
+        "canonical_conflict_count": len(canonical_conflicts),
+        "canonical_conflicts": canonical_conflicts[:8],
         "objects": len(state.get("objects", {})),
         "open_hypotheses": len([h for h in state.get("hypotheses", []) if h.get("status") == "open"]),
         "pending_validation_backlog": len(pending),
