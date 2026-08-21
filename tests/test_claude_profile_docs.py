@@ -40,6 +40,7 @@ def test_claude_md_operator_profile_is_evidence_driven_not_class_forcing():
 
 def test_resin_defaults_to_sticky_without_proxying_local_targets():
     claude = _read("CLAUDE.md")
+    command = _read("commands/autopilot.md")
     guide = _read("docs/resin-proxy.md")
     flat = " ".join(claude.split())
 
@@ -49,6 +50,8 @@ def test_resin_defaults_to_sticky_without_proxying_local_targets():
     assert "默认 mode 是 **sticky**" in guide
     assert "rotate 只在用户显式要求时使用" in guide
     assert "localhost / 内网 / RFC1918 始终 bypass" in guide
+    assert "use current evidence and the request budget to decide" in command
+    assert "不设固定上限" in guide
 
 
 def test_runtime_protocol_inherits_profile_without_rechecking_authorization():

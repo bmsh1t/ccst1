@@ -34,10 +34,9 @@ never skips browser/source/validation or implies completion. `arguments.seed_url
 exact first-contact browser/source/workflow seed for the canonical target.
 Before the first network lane for a public target, inspect `config.json.resin`; when enabled,
 follow `docs/resin-proxy.md` to export one stable sticky environment via `CredentialStore`.
-When the same baseline cannot access the target through sticky and the issue is exit-related rather than
-path/auth/application behavior, select one new sticky account and replay it once; keep that account for subsequent
-commands. Use rotate only on explicit request; bypass it for localhost/private targets, never print the token, and
-never persist proxy setup or state.
+When sticky access is blocked, use current evidence and the request budget to decide whether to reuse or switch
+available sticky account environments and how much to retry; impose no fixed count. Use rotate only on explicit
+request, bypass it for localhost/private targets, and never print the token or persist proxy setup.
 Treat the supplied target set as the active execution target set; `ctf_mode` is the
 authoritative lab target record. External policy is advisory audit/replay context;
 do not require public-program, written-permission, or ownership-confirmation.

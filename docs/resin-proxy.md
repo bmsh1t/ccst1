@@ -60,6 +60,7 @@ PY
 3. 其余公网目标流量默认 sticky，同一目标/任务复用 Account
 4. rotate 只在用户显式要求时使用
 5. **禁止**每个请求随机 Account
+6. 出口受阻时，根据当前证据和请求预算决定复用或切换可用 sticky env 及重试次数，不设固定上限
 
 ### sticky 的 Account
 
