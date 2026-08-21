@@ -65,6 +65,25 @@ def _write_inputs(repo_root):
     return recon, base, variants
 
 
+def test_js_relative_endpoints_join_against_origin_not_httpx_path(tmp_path):
+    recon = tmp_path / "recon" / "target.com"
+    (recon / "live").mkdir(parents=True)
+    (recon / "js").mkdir()
+    (recon / "live" / "httpx_full.txt").write_text(
+        "https://app.target.com/base/path [200]\n", encoding="utf-8"
+    )
+    endpoints = recon / "js" / "endpoints.txt"
+    endpoints.write_text("/api/users\napi/orders\n", encoding="utf-8")
+
+    origin = surface_index_module._default_host(recon)
+
+    assert origin == "https://app.target.com"
+    assert list(surface_index_module._iter_js_urls(endpoints, origin)) == [
+        "https://app.target.com/api/users",
+        "https://app.target.com/api/orders",
+    ]
+
+
 def test_exact_duplicates_merge_provenance_while_all_variants_remain(tmp_path):
     _recon, base, variants = _write_inputs(tmp_path)
 

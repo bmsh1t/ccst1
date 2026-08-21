@@ -80,6 +80,10 @@ record_recon_phase() {
     local count="${4:-0}"
     local note="${5:-}"
 
+    case "$status" in
+        partial|error|failed|incomplete) RECON_PHASE_PARTIAL=1 ;;
+    esac
+
     # Manifest 是阶段账本，不做价值判断；用于让 Claude 区分“无结果”和“未运行/跳过”。
     [ -n "${RECON_MANIFEST:-}" ] || return 0
     python3 - "$RECON_MANIFEST" "$TARGET" "${RECON_TARGET_KEY:-}" "$RECON_PROFILE" \
@@ -290,6 +294,15 @@ recon_record_budget_on_exit() {
         0 \
         "stopped_during_phase=${RECON_BUDGET_CURRENT_PHASE:-unknown}; elapsed_seconds=${elapsed}; soft_budget_seconds=${RECON_SOFT_BUDGET_SECONDS}; soft_budget_status=${soft_budget_status}; raw surface preserved"
     RECON_BUDGET_RECORD_WRITTEN=1
+}
+
+publish_raw_url_staging_on_exit() {
+    local staging="${RAW_URLS_STAGING:-}"
+    local archive="${RAW_URLS_ARCHIVE:-}"
+    [ -n "$staging" ] && [ -s "$staging" ] || return 0
+    [ -n "$archive" ] || return 0
+    mkdir -p "$(dirname "$archive")" 2>/dev/null || return 0
+    mv -f "$staging" "$archive" 2>/dev/null || true
 }
 
 dir_fuzz_remaining_seconds() {
@@ -762,6 +775,7 @@ require_positive_integer BBHUNT_RECON_SOFT_BUDGET_SECONDS "$RECON_SOFT_BUDGET_SE
 RECON_BUDGET_ADVISORY_EXCEEDED=0
 RECON_BUDGET_RECORD_WRITTEN=0
 RECON_BUDGET_CURRENT_PHASE=""
+RECON_PHASE_PARTIAL=0
 if [ -n "${BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS:-}" ]; then
     DIR_FUZZ_HARD_BUDGET_SECONDS="$BBHUNT_DIR_FUZZ_HARD_BUDGET_SECONDS"
 elif [ "$RECON_PROFILE" = "quick" ]; then
@@ -786,7 +800,9 @@ SHARED_TOOLS_DIR="${BBHUNT_TOOLS_DIR:-${OSMEDEUS_TOOLS_DIR:-$HOME/Tools}}"
 # shellcheck source=tools/_auth_helper.sh
 . "$(dirname "$0")/_auth_helper.sh"
 bb_auth_bind_target "$TARGET"
-trap 'exit_code=$?; cleanup_auth_tmpfiles; recon_record_budget_on_exit "$exit_code"; exit "$exit_code"' EXIT
+trap 'exit_code=$?; cleanup_auth_tmpfiles; publish_raw_url_staging_on_exit; recon_record_budget_on_exit "$exit_code"; exit "$exit_code"' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # Prefer Go-installed/security-tool bins over similarly named package-manager CLIs.
 export PATH="$HOME/.local/bin:$HOME/go/bin:$SHARED_TOOLS_DIR/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -1285,7 +1301,13 @@ PY
     echo "  Manifest:  $manifest"
     echo "============================================="
 
-    [ "$ok_count" -gt 0 ] || { [ "$chunk_mode" -eq 1 ] && [ "$remaining_total" -eq 0 ]; }
+    if [ "$fail_count" -gt 0 ]; then
+        return 1
+    fi
+    if [ "$ok_count" -gt 0 ]; then
+        return 0
+    fi
+    [ "$chunk_mode" -eq 1 ] && [ "$remaining_total" -eq 0 ]
 }
 
 if [ -f "$TARGET" ] && [ -r "$TARGET" ]; then
@@ -1706,7 +1728,9 @@ if [ "$TARGET_KIND" = "domain" ]; then
     wait_collector_group
 
     SUBDOMAIN_MERGED_TMP="$(mktemp "$RECON_DIR/subdomains/.all.XXXXXX")"
-    cat \
+    {
+        printf '%s\n' "$TARGET"
+        cat \
         "$RECON_DIR/subdomains/subfinder.txt" \
         "$RECON_DIR/subdomains/assetfinder.txt" \
         "$RECON_DIR/subdomains/amass.txt" \
@@ -1714,7 +1738,8 @@ if [ "$TARGET_KIND" = "domain" ]; then
         "$RECON_DIR/subdomains/chaos.txt" \
         "$RECON_DIR/subdomains/wayback_subs.txt" \
         "$RECON_DIR/subdomains/dns-expansion/resolved.txt" \
-        2>/dev/null | awk 'NF' | sort -u > "$SUBDOMAIN_MERGED_TMP" || true
+        2>/dev/null
+    } | awk 'NF' | sort -u > "$SUBDOMAIN_MERGED_TMP" || true
     build_target_owned_input "$SUBDOMAIN_MERGED_TMP" "$RECON_DIR/subdomains/all.txt" host
     rm -f "$SUBDOMAIN_MERGED_TMP"
     TOTAL_SUBS=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)
@@ -4130,6 +4155,7 @@ record_recon_phase \
 
 RECON_ELAPSED_SECONDS=$(( $(date +%s) - RECON_STARTED_EPOCH ))
 RECON_BUDGET_STATUS="ok"
+[ "${RECON_PHASE_PARTIAL:-0}" -eq 1 ] && RECON_BUDGET_STATUS="partial"
 RECON_SOFT_BUDGET_STATUS="within_budget"
 if [ "$RECON_BUDGET_ADVISORY_EXCEEDED" -eq 1 ] || [ "$RECON_ELAPSED_SECONDS" -ge "$RECON_SOFT_BUDGET_SECONDS" ]; then
     RECON_SOFT_BUDGET_STATUS="advisory_exceeded"

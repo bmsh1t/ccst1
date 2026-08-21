@@ -417,8 +417,7 @@ def is_cache_param(param_name):
         True if cache param, False otherwise
     """
     cache_params = [
-        'v', 'ver', 'version', 'bust', 'cache', '_', 'ts', 'timestamp',
-        'nc', 'nocache', 'rev', 'hash', 't', 'time', 'cachebuster',
+        'v', 'ver', 'version', 'bust', '_', 'nocache', 'cachebuster',
         'cb', 'random', 'rand', 'utm_source', 'utm_medium', 'utm_campaign',
         'utm_term', 'utm_content', 'fbclid', 'gclid', 'msclkid'
     ]

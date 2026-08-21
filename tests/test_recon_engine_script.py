@@ -680,6 +680,20 @@ def test_recon_engine_records_phase_manifest_without_value_judgment():
     assert "raw URL staging is retained until Active publication" in text
 
 
+def test_recon_engine_preserves_root_scope_and_partial_handoff_contract():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert "RECON_PHASE_PARTIAL=0" in text
+    assert "partial|error|failed|incomplete" in text
+    assert "printf '%s\\n' \"$TARGET\"" in text
+    assert "publish_raw_url_staging_on_exit" in text
+    assert "trap 'exit 143' TERM" in text
+    assert "trap 'exit 130' INT" in text
+    assert 'if [ "$fail_count" -gt 0 ]; then' in text
+    assert 'RECON_BUDGET_STATUS="partial"' in text
+
+
 def test_recon_engine_profiles_collectors_and_normal_js_handoff():
     text = (Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh").read_text(
         encoding="utf-8"

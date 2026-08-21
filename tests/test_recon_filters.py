@@ -115,6 +115,26 @@ def test_cache_param_detection_keeps_api_version_context():
     assert recon_filters.is_cache_param_in_context("https://example.com/static/app.js?v=1", "v") is True
 
 
+def test_business_lifecycle_parameters_are_not_treated_as_cache_noise(tmp_path):
+    src = tmp_path / "all.txt"
+    out = tmp_path / "all_filtered.txt"
+    urls = [
+        "https://example.com/oauth/callback?state=one",
+        "https://example.com/oauth/callback?state=two",
+        "https://example.com/download?hash=one",
+        "https://example.com/download?hash=two",
+        "https://example.com/api/search?nonce=one&timestamp=1",
+        "https://example.com/api/search?nonce=two&timestamp=2",
+    ]
+    src.write_text("\n".join(urls) + "\n", encoding="utf-8")
+
+    stats = recon_filters.filter_urls_batch(src, out, "example.com")
+
+    assert stats["kept"] == len(urls)
+    assert stats["removed_cache_only"] == 0
+    assert out.read_text(encoding="utf-8").splitlines() == urls
+
+
 def test_filter_urls_batch_removes_invalid_and_cache_only_duplicates(tmp_path):
     src = tmp_path / "all.txt"
     out = tmp_path / "all_filtered.txt"

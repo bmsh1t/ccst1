@@ -23,7 +23,7 @@ import sys
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import unquote_plus, urlparse
+from urllib.parse import unquote_plus, urljoin, urlparse, urlsplit, urlunsplit
 
 try:
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -210,6 +210,9 @@ def _default_host(recon_dir: Path) -> str:
     for line in _iter_lines(recon_dir / HTTPX_PATH):
         value = line.split()[0] if line.split() else ""
         if value:
+            parsed = urlsplit(value)
+            if parsed.scheme and parsed.netloc:
+                return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
             return value
     return ""
 
@@ -219,7 +222,7 @@ def _iter_js_urls(path: Path, default_host: str) -> Iterator[str]:
         if endpoint.startswith(("http://", "https://")):
             yield endpoint
         elif default_host:
-            yield default_host.rstrip("/") + endpoint
+            yield urljoin(default_host.rstrip("/") + "/", endpoint)
         else:
             yield endpoint
 
