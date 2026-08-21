@@ -1183,6 +1183,84 @@ def test_round_guard_ignores_coverage_rebuild_timestamp(tmp_path):
     assert first["stagnation_fingerprint"] == second["stagnation_fingerprint"]
 
 
+def test_next_action_pending_round_guard_rotates_and_candidate_change_resets(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    state = {
+        "target": target,
+        "resolved_target": target,
+        "next_action": "hunt_p1",
+        "surface_review_candidates": [{"url": f"https://{target}/profile"}],
+    }
+    base = _load_closure_projection(
+        str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
+    )
+    changed = _load_closure_projection(
+        str(tmp_path),
+        {**state, "surface_review_candidates": [{"url": f"https://{target}/settings"}]},
+        max_lanes_reached=False,
+        apply_round_guard=False,
+    )
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text(json.dumps({"round_guard": {
+        "fingerprint": base["stagnation_fingerprint"], "consecutive": 3, "threshold": 3,
+    }}), encoding="utf-8")
+
+    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+
+    assert base["reasons"] == ["next_action_pending"]
+    assert changed["stagnation_fingerprint"] != base["stagnation_fingerprint"]
+    assert closure["reasons"] == ["stagnant_prerequisite_rotation"]
+    assert closure["rotation_target"]["url"] == f"https://{target}/profile"
+
+
+def test_coverage_high_value_gap_round_guard_blocks_without_candidate(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="untested", final_review=False)
+    state = {"target": target, "resolved_target": target, "next_action": "handoff"}
+    base = _load_closure_projection(
+        str(tmp_path), state, max_lanes_reached=False, apply_round_guard=False
+    )
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text(json.dumps({"round_guard": {
+        "fingerprint": base["stagnation_fingerprint"], "consecutive": 3, "threshold": 3,
+    }}), encoding="utf-8")
+
+    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+
+    assert base["reasons"] == ["coverage_high_value_gaps"]
+    assert closure["verdict"] == "blocked"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"] == ["stagnant_prerequisite"]
+
+
+def test_stagnation_fingerprint_resets_on_material_owner_state_changes():
+    closure = {
+        "verdict": "handoff",
+        "reasons": ["next_action_pending"],
+        "next_action": "hunt_p1",
+    }
+    state = {
+        "target": "target.com",
+        "resolved_target": "target.com",
+        "_stagnation_coverage": "coverage-a",
+        "_stagnation_ledger": "ledger-a",
+        "action_queue_next": {"id": "AQ-1"},
+        "surface_review_candidates": [{"url": "https://target.com/profile"}],
+    }
+    base = stagnation_fingerprint(state, closure)
+
+    for update in (
+        {"_stagnation_coverage": "coverage-b"},
+        {"_stagnation_ledger": "ledger-b"},
+        {"action_queue_next": {"id": "AQ-2"}},
+        {"surface_review_candidates": [{"url": "https://target.com/settings"}]},
+    ):
+        assert stagnation_fingerprint({**state, **update}, closure) != base
+
+
 def test_closure_prefers_compact_coverage_projection(tmp_path, monkeypatch):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)

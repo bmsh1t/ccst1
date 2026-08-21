@@ -149,6 +149,16 @@ def test_round_budget_is_checkpoint_owned_not_prompt_counted():
     assert "never infer it from model-side counting" in normalized
 
 
+def test_round_claims_only_owner_selected_substantive_work():
+    command = " ".join(_read("commands/autopilot-round.md").split())
+
+    assert "execute the substantive work selected by the canonical Action Queue/state owner" in command
+    assert "For `hunt_p1`/`hunt_p2`, select one concrete bounded candidate yourself" in command
+    assert "instead of asking the operator to choose a direction" in command
+    assert "Never replace owner-selected work with passive `idle`, `no-change`, or monitoring lanes" in command
+    assert "`budget_exhausted` or `passive_lane_rejected` proceeds to final closure without target work" in command
+
+
 def test_status_projection_is_owner_driven_and_distinguishes_finish_outcomes():
     command = " ".join(_read("commands/autopilot-round.md").split())
 

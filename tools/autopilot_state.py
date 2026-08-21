@@ -3348,6 +3348,8 @@ _STAGNANT_REASONS = {
     "intel_evidence_blocked",
     "json_evidence_partial",
     "sql_evidence_partial",
+    "next_action_pending",
+    "coverage_high_value_gaps",
 }
 
 
@@ -3360,8 +3362,27 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
     reason = str(reasons[0] if reasons else "")
     if closure.get("verdict") != "handoff" or reason not in _STAGNANT_REASONS:
         return ""
+    target = str(state.get("resolved_target") or state.get("target") or "")
+    blocked_family = str((closure.get("rotation_hint") or {}).get("endpoint_family") or "")
+    surface_candidates = [
+        {
+            key: item.get(key)
+            for key in ("url", "review_reason", "new_observation")
+            if key in item
+        }
+        for item in (
+            state.get("surface_review_candidates")
+            or state.get("recommended_targets")
+            or []
+        )[:5]
+        if isinstance(item, dict)
+        and (url := str(item.get("url") or "").strip())
+        and url_belongs_to_target(url, target)
+        and _endpoint_family(url) != blocked_family
+    ]
+    surface_urls = {str(item.get("url") or "") for item in surface_candidates}
     payload = {
-        "target": str(state.get("resolved_target") or state.get("target") or ""),
+        "target": target,
         "reason": reason,
         "next_action": str(closure.get("next_action") or ""),
         "browser": {
@@ -3399,6 +3420,17 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
         "observations": {
             "status": (state.get("observation_inventory") or {}).get("status"),
             "by_kind": (state.get("observation_inventory") or {}).get("by_kind") or {},
+        },
+        "surface": {
+            "candidates": surface_candidates,
+            "unresolved": [
+                {key: item.get(key) for key in ("url", "reason") if key in item}
+                for item in (
+                    (state.get("surface_review_completion") or {}).get("unresolved")
+                    or []
+                )[:5]
+                if isinstance(item, dict) and str(item.get("url") or "") in surface_urls
+            ],
         },
         "durable": {
             "active_actions": int(state.get("active_action_queue_count", 0) or 0),
@@ -3455,6 +3487,7 @@ def load_closure_projection(
     *,
     max_lanes_reached: bool,
     apply_round_guard: bool = True,
+    include_round_projection: bool = True,
 ) -> dict:
     """Read existing closure inputs only for an explicit CLI request."""
     target = str(state.get("resolved_target") or state.get("target") or "")
@@ -3497,10 +3530,14 @@ def load_closure_projection(
     checkpoint_health = {"status": "valid"}
     try:
         witness = _load_checkpoint_witness(witness_path)
-        round_progress = _checkpoint_round_projection(
-            witness,
-            repo_root=repo_root,
-            target=target,
+        round_progress = (
+            _checkpoint_round_projection(
+                witness,
+                repo_root=repo_root,
+                target=target,
+            )
+            if include_round_projection
+            else {}
         )
     except ValueError as exc:
         witness = {}

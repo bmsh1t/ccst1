@@ -213,6 +213,15 @@ def _round_lane_text(value: str, field: str, *, max_length: int) -> str:
     return text
 
 
+def _is_passive_round_lane(lane_id: str) -> bool:
+    """Reject explicit idle/monitoring identities without blocking real verification."""
+    normalized = lane_id.lower()
+    return (
+        normalized.startswith(("idle:", "monitor:", "verify:idle", "verify:no-change"))
+        or "idle-no-change" in normalized
+    )
+
+
 def _round_lanes(progress: dict, claimed: list[str]) -> list[dict]:
     lanes = progress.get("lanes")
     if lanes is None:
@@ -379,6 +388,15 @@ def record_round_lane(
             lane_status = str(lane_record.get("status") or "started")
             status = "already_claimed" if lane_status == "started" else f"already_{lane_status}"
             allowed = lane_status == "started"
+        elif _is_passive_round_lane(lane_id):
+            return {
+                "status": "passive_lane_rejected",
+                "allowed": False,
+                "reason": "passive_lane_not_substantive",
+                "path": str(path),
+                "lane": {},
+                "round_progress": dict(progress),
+            }
         elif len(claimed) >= int(progress.get("max_lanes", max_lanes) or max_lanes):
             lane_record = {}
             status, allowed = "budget_exhausted", False
@@ -526,7 +544,11 @@ def record_round_closure(repo_root: Path | str, target: str) -> dict:
     resolved_target = canonical_target_value(target)
     state = build_autopilot_state(str(repo), resolved_target, bounded=True)
     closure = load_closure_projection(
-        str(repo), state, max_lanes_reached=False, apply_round_guard=False
+        str(repo),
+        state,
+        max_lanes_reached=False,
+        apply_round_guard=False,
+        include_round_projection=False,
     )
     fingerprint = stagnation_fingerprint(state, closure)
     path = _checkpoint_witness_path(repo, resolved_target)

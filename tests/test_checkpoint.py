@@ -307,6 +307,118 @@ def test_round_lane_budget_resumes_and_dedupes_claims_across_invocations(tmp_pat
     assert denied["allowed"] is False
 
 
+@pytest.mark.parametrize(
+    "lane",
+    [
+        "idle:wait",
+        "monitor:queue",
+        "verify:idle-state",
+        "verify:no-change-since-checkpoint",
+        "idle-no-change",
+        "candidate:idle-no-change-r4e2c64d",
+    ],
+)
+def test_new_passive_round_lane_is_rejected_without_budget_mutation(tmp_path, lane):
+    target = "target.com"
+    begin_round(tmp_path, target, max_lanes=2)
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    before = witness.read_bytes()
+
+    result = record_round_lane(tmp_path, target, lane=lane, max_lanes=2)
+
+    assert result["status"] == "passive_lane_rejected"
+    assert result["allowed"] is False
+    assert result["reason"] == "passive_lane_not_substantive"
+    assert result["round_progress"]["claimed_count"] == 0
+    assert result["round_progress"]["remaining_lanes"] == 2
+    assert witness.read_bytes() == before
+
+
+def test_generic_verify_lane_remains_substantive(tmp_path):
+    target = "target.com"
+    begin_round(tmp_path, target, max_lanes=1)
+
+    result = record_round_lane(
+        tmp_path, target, lane="verify:candidate-42", max_lanes=1
+    )
+
+    assert result["status"] == "claimed"
+    assert result["allowed"] is True
+
+
+def test_legacy_claimed_passive_lane_remains_recoverable(tmp_path):
+    target = "target.com"
+    lane = "idle:no-change"
+    begin_round(tmp_path, target, max_lanes=1)
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    payload = json.loads(witness.read_text(encoding="utf-8"))
+    payload["round_progress"].update({
+        "claimed_lanes": [lane],
+        "claimed_count": 1,
+        "remaining_lanes": 0,
+        "budget_reached": True,
+    })
+    payload["round_progress"].pop("lanes", None)
+    witness.write_text(json.dumps(payload), encoding="utf-8")
+
+    resumed = record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+    record_round_lane_result(
+        tmp_path,
+        target,
+        lane=lane,
+        status="blocked",
+        decision="legacy passive lane observed",
+        evidence_ref="none",
+        next_action="use owner-selected work",
+    )
+    terminal = record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+
+    assert resumed["status"] == "already_claimed"
+    assert resumed["allowed"] is True
+    assert terminal["status"] == "already_blocked"
+    assert terminal["allowed"] is False
+
+
+def test_round_closure_counts_underlying_post_round_next_action(monkeypatch, tmp_path):
+    target = "target.com"
+    state = {"target": target, "resolved_target": target, "next_action": "hunt_p1"}
+    calls = []
+    monkeypatch.setattr(checkpoint_module, "build_autopilot_state", lambda *_args, **_kwargs: state)
+
+    def fake_closure(*_args, include_round_projection=True, **_kwargs):
+        calls.append(include_round_projection)
+        return {
+            "verdict": "handoff",
+            "reasons": [
+                "round_closure_pending" if include_round_projection else "next_action_pending"
+            ],
+            "next_action": "complete_round_closure" if include_round_projection else "hunt_p1",
+        }
+
+    monkeypatch.setattr(checkpoint_module, "load_closure_projection", fake_closure)
+
+    counts = []
+    for index in range(3):
+        begin_round(tmp_path, target, max_lanes=1)
+        lane = f"candidate:{index}"
+        evidence_ref = f"findings/{target}/poc/round-{index}.json"
+        record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+        _write_round_evidence(tmp_path, evidence_ref)
+        record_round_lane_result(
+            tmp_path,
+            target,
+            lane=lane,
+            status="completed",
+            decision="bounded candidate reviewed",
+            evidence_ref=evidence_ref,
+            next_action="hunt_p1",
+        )
+        counts.append(record_round_closure(tmp_path, target)["round_guard"]["consecutive"])
+
+    assert calls == [False, False, False]
+    assert counts == [1, 2, 3]
+
+
 def test_round_lane_requires_explicit_round_begin(tmp_path):
     target = "target.com"
     witness = tmp_path / "state" / target / "checkpoint_latest.json"

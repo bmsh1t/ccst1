@@ -66,8 +66,13 @@ execute its embedded bootstrap again or restate its hunt, state, red-line,
 coverage, validation, report, queue, or closure rules here.
 
 Consume at most bootstrap `invocation_batch.max_lanes` substantive lanes. For
-each lane, derive `<stable_lane_id>` from its owner ID or stable
-`<lane-kind>:<endpoint-or-artifact>` identity, then claim the heartbeat:
+each lane, execute the substantive work selected by the canonical Action
+Queue/state owner. For `hunt_p1`/`hunt_p2`, select one concrete bounded candidate
+yourself; if none is executable, persist the existing blocker/handoff instead of
+asking the operator to choose a direction. Never replace owner-selected work with
+passive `idle`, `no-change`, or monitoring lanes. Derive `<stable_lane_id>` from
+the owner ID or stable `<lane-kind>:<endpoint-or-artifact>` identity, then claim
+the heartbeat:
 
 ```bash
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json
@@ -75,7 +80,8 @@ cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> -
 
 Execute only when `allowed=true`. `already_claimed` resumes interrupted work;
 `already_completed` or `already_blocked` must not replay target work.
-`budget_exhausted` proceeds to final closure.
+`budget_exhausted` or `passive_lane_rejected` proceeds to final closure without
+target work.
 
 After target work, record one terminal heartbeat:
 
