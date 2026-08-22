@@ -1015,6 +1015,42 @@ def _pick_next_action(
     return "handoff"
 
 
+def _hard_gate_projection(state: dict) -> dict:
+    """Return only target-state conditions that forbid cross-owner arbitration."""
+    action = str(state.get("next_action") or "")
+    if state.get("recon_in_progress"):
+        return {
+            "action": "wait_recon",
+            "reason": "the target recon phase lock is still held",
+        }
+    if state.get("scan_in_progress"):
+        return {
+            "action": "wait_scan",
+            "reason": "the target scan phase lock is still held",
+        }
+    if state.get("target_kind") == "list" and action in {
+        "invalid_batch_target",
+        "select_completed_domain",
+        "batch_failed",
+        "run_batch_recon",
+    }:
+        return {
+            "action": action,
+            "reason": "batch scope must resolve to one concrete target before hunting",
+        }
+    if action == "run_recon" and not state.get("has_recon"):
+        return {
+            "action": "run_recon",
+            "reason": "no target-owned recon inventory exists yet",
+        }
+    if action == "recon_no_live_hosts":
+        return {
+            "action": action,
+            "reason": "completed recon has no live host inventory",
+        }
+    return {}
+
+
 def _should_guard_safe_pivot(next_action: str, guard_status: dict) -> bool:
     """Return whether live probing should pause and cached-evidence work should continue."""
     if next_action in {
@@ -2227,7 +2263,7 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
     else:
         next_action = "run_batch_recon"
 
-    return {
+    state = {
         "target": target,
         "resolved_target": resolved_target,
         "target_kind": "list",
@@ -2255,6 +2291,11 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
             "scope_changed": scope_changed,
         },
     }
+    state["hard_gate"] = _hard_gate_projection(state)
+    state["fallback_action"] = next_action
+    state["priority_frontier"] = []
+    state["selection_mode"] = "hard_gate"
+    return state
 
 
 def _scope_identity(target: str) -> dict:
@@ -2552,7 +2593,7 @@ def _build_domain_autopilot_state(
     browser_required = bool(
         has_recon and _has_browser_mcp_signal(surface_context or {}, ranked_for_next)
     )
-    return {
+    state = {
         "target": target,
         "resolved_target": resolved_target,
         "target_kind": classify_target(resolved_target)["kind"],
@@ -2612,6 +2653,21 @@ def _build_domain_autopilot_state(
         "recent_guard_advisories": recent_guard_advisories[:3],
         "recent_guard_blocks": recent_guard_advisories[:3],
     }
+    state["hard_gate"] = _hard_gate_projection(state)
+    state["fallback_action"] = next_action
+    state["priority_frontier"] = (
+        [] if state["hard_gate"] else _build_priority_frontier(state, ranked_for_action)
+    )
+    state["selection_mode"] = (
+        "hard_gate"
+        if state["hard_gate"]
+        else "ai_priority"
+        if len(state["priority_frontier"]) > 1
+        else "direct"
+        if state["priority_frontier"]
+        else "fallback"
+    )
+    return state
 
 
 def _surface_projection_with_continuation(
@@ -3175,20 +3231,22 @@ def _frontier_item(
     expected_information_gain: str,
     stop_condition: str,
     item_id: str = "",
-    priority: int = 0,
+    priority: int | None = None,
 ) -> dict:
     """Build a bounded read-only action handoff from an existing owner."""
-    return {
+    item = {
         "owner": owner,
-        "id": item_id,
+        "id": " ".join(str(item_id or "").split())[:300],
         "action": " ".join(str(action or "").split())[:500],
         "evidence_ref": " ".join(str(evidence_ref or "").split())[:300],
         "expected_information_gain": " ".join(
             str(expected_information_gain or "").split()
         )[:300],
         "stop_condition": " ".join(str(stop_condition or "").split())[:300],
-        "priority": int(priority or 0),
     }
+    if priority is not None:
+        item["priority"] = int(priority or 0)
+    return item
 
 
 def _build_actionable_frontier(
@@ -3390,6 +3448,278 @@ def _build_actionable_frontier(
         seen.add(key)
         deduped.append(item)
     return deduped[:5]
+
+
+_FRONTIER_LANES = {
+    "action_queue": "state-and-queue",
+    "finding": "state-and-queue",
+    "finding-claim": "state-and-queue",
+    "validation-runner": "state-and-queue",
+    "target-memory": "state-and-queue",
+    "case_state": "workflow-timing-and-case-state",
+    "coverage": "recon-and-surface",
+    "surface": "recon-and-surface",
+    "surface-context": "recon-and-surface",
+    "recon": "recon-and-surface",
+    "intel": "software-and-intel",
+    "browser": "browser-source-and-js",
+    "source-intel": "browser-source-and-js",
+    "js-intel": "browser-source-and-js",
+    "json-inject": "sql-json-and-waf",
+    "sql-matrix": "sql-json-and-waf",
+}
+
+
+def _execution_frontier_item(item: dict, *, impact_hint: str = "") -> dict:
+    """Remove controller ranking while retaining owner facts for AI arbitration."""
+    projected = {key: value for key, value in item.items() if key != "priority"}
+    owner = str(projected.get("owner") or "")
+    projected.update({
+        "lane": _FRONTIER_LANES.get(owner, "controller"),
+        "impact_hint": " ".join(str(impact_hint or "").split())[:300],
+        "evidence_status": "owner-backed",
+        "closure_blocking": True,
+        "continuity": False,
+        "runnable": True,
+    })
+    return projected
+
+
+def _build_priority_frontier(state: dict, ranked: dict | None = None) -> list[dict]:
+    """Expose bounded owner heads for cross-owner AI selection without new state."""
+    target = str(state.get("resolved_target") or state.get("target") or "")
+    queue_next = (
+        state.get("action_queue_next")
+        if isinstance(state.get("action_queue_next"), dict)
+        else {}
+    )
+    case_next = (
+        (state.get("case_state") or {}).get("top_next_action")
+        if isinstance((state.get("case_state") or {}).get("top_next_action"), dict)
+        else {}
+    )
+    structured = (
+        state.get("structured_findings")
+        if isinstance(state.get("structured_findings"), dict)
+        else {}
+    )
+
+    other_items: list[dict] = []
+    for item in _build_actionable_frontier(state, None):
+        owner = str(item.get("owner") or "")
+        impact_hint = ""
+        if owner == "action_queue":
+            metadata = (
+                queue_next.get("metadata")
+                if isinstance(queue_next.get("metadata"), dict)
+                else {}
+            )
+            impact_hint = str(
+                metadata.get("business_impact")
+                or metadata.get("expected_learning")
+                or queue_next.get("next_question")
+                or queue_next.get("evidence")
+                or ""
+            )
+        elif owner == "finding":
+            finding_id = str(item.get("id") or "")
+            finding = next(
+                (
+                    structured.get(key)
+                    for key in (
+                        "next_owner_revalidation",
+                        "next_validation",
+                        "next_draft_completion",
+                        "next_report",
+                    )
+                    if isinstance(structured.get(key), dict)
+                    and str(structured[key].get("id") or "") == finding_id
+                ),
+                {},
+            )
+            impact_hint = " ".join(
+                str(finding.get(key) or "")
+                for key in ("severity", "confidence", "title", "impact")
+                if finding.get(key)
+            )
+        elif owner == "case_state":
+            impact_hint = str(
+                case_next.get("why_now")
+                or case_next.get("hypothesis")
+                or case_next.get("write_back")
+                or ""
+            )
+        other_items.append(
+            _execution_frontier_item(item, impact_hint=impact_hint)
+        )
+
+    runner = (
+        state.get("validation_runner_next")
+        if isinstance(state.get("validation_runner_next"), dict)
+        else {}
+    )
+    if runner:
+        other_items.append(_execution_frontier_item(_frontier_item(
+            owner="validation-runner",
+            item_id=str(runner.get("id") or runner.get("lane") or ""),
+            action=str(
+                runner.get("next_action")
+                or "review validation candidate and apply the canonical evidence gate"
+            ),
+            evidence_ref=str(runner.get("summary_path") or runner.get("evidence_ref") or ""),
+            expected_information_gain=str(
+                runner.get("rubric_summary")
+                or runner.get("classifier")
+                or "determine whether the runner evidence supports canonical validation"
+            ),
+            stop_condition="validate through the Finding owner or record a bounded downgrade",
+        ), impact_hint=str(
+            runner.get("vuln_class")
+            or runner.get("evidence_shape")
+            or runner.get("result")
+            or ""
+        )))
+
+    root_claim = (
+        state.get("root_finding_claim_next")
+        if isinstance(state.get("root_finding_claim_next"), dict)
+        else {}
+    )
+    if root_claim:
+        other_items.append(_execution_frontier_item(_frontier_item(
+            owner="finding-claim",
+            item_id=str(root_claim.get("id") or root_claim.get("claim_id") or ""),
+            action="collect locatable evidence and reconcile the claim through checkpoint",
+            evidence_ref=str(root_claim.get("source_file") or root_claim.get("claim_source_file") or ""),
+            expected_information_gain="determine whether the claim can enter the canonical Finding lifecycle",
+            stop_condition="record a canonical candidate or reject the unsupported claim",
+        ), impact_hint=str(root_claim.get("title") or root_claim.get("severity") or "")))
+
+    memory_candidate = (
+        state.get("memory_candidate_next")
+        if isinstance(state.get("memory_candidate_next"), dict)
+        else {}
+    )
+    if memory_candidate:
+        other_items.append(_execution_frontier_item(_frontier_item(
+            owner="target-memory",
+            item_id=str(memory_candidate.get("id") or ""),
+            action=str(
+                memory_candidate.get("action")
+                or "collect evidence for the legacy target-memory candidate"
+            ),
+            evidence_ref=str(memory_candidate.get("evidence_ref") or "target-memory"),
+            expected_information_gain="determine whether the legacy candidate has replayable evidence",
+            stop_condition="reconcile through the canonical Finding owner or record evidence missing",
+        ), impact_hint=str(memory_candidate.get("action") or "")))
+
+    continuation = (
+        (state.get("recon_artifacts") or {}).get("cidr_continuation")
+        if isinstance((state.get("recon_artifacts") or {}).get("cidr_continuation"), dict)
+        else {}
+    )
+    if continuation.get("status") == "pending":
+        other_items.append(_execution_frontier_item(_frontier_item(
+            owner="recon",
+            item_id=f"cidr:{continuation.get('next_offset', '')}",
+            action=f"continue bounded CIDR recon from offset {continuation.get('next_offset', 0)}",
+            evidence_ref=str(continuation.get("path") or f"recon/{target_storage_key(target)}/live/cidr_continuation.json"),
+            expected_information_gain=f"cover the remaining {continuation.get('remaining_hosts', 'unknown')} CIDR hosts",
+            stop_condition="advance or complete the durable cursor, or record its explicit blocker",
+        ), impact_hint="remaining target-owned CIDR coverage"))
+
+    intel = (
+        state.get("intel_continuation")
+        if isinstance(state.get("intel_continuation"), dict)
+        else {}
+    )
+    intel_action = str(intel.get("action") or "complete")
+    if intel_action != "complete":
+        advisory = intel.get("advisory") if isinstance(intel.get("advisory"), dict) else {}
+        review = (
+            intel.get("review_projection")
+            if isinstance(intel.get("review_projection"), dict)
+            else {}
+        )
+        other_items.append(_execution_frontier_item(_frontier_item(
+            owner="intel",
+            item_id=str(advisory.get("id") or intel_action),
+            action=intel_action,
+            evidence_ref=str(
+                review.get("path")
+                or intel.get("intel_path")
+                or intel.get("inventory_path")
+                or "software-intel"
+            ),
+            expected_information_gain=str(intel.get("reason") or "resolve the software intelligence gap"),
+            stop_condition="record applicability, a bounded blocker, or a final owner disposition",
+        ), impact_hint=" ".join(
+            str(advisory.get(key) or "")
+            for key in ("severity", "applicability", "id")
+            if advisory.get(key)
+        )))
+
+    projection = (
+        state.get("surface_projection")
+        if isinstance(state.get("surface_projection"), dict)
+        else {}
+    )
+    if state.get("has_recon") and str(projection.get("status") or "") != "valid":
+        other_items.append(_execution_frontier_item(_frontier_item(
+            owner="surface-context",
+            action=str(projection.get("refresh_command") or "prepare the target-owned Surface context"),
+            evidence_ref=str(projection.get("path") or "surface_projection"),
+            expected_information_gain="produce the bounded Surface candidates needed for evidence-led selection",
+            stop_condition="publish a valid projection or record the source blocker",
+        ), impact_hint="required discovery context"))
+
+    surface_items: list[dict] = []
+    surface_candidates = (
+        state.get("surface_review_candidates")
+        or state.get("recommended_targets")
+        or []
+    )
+    if not surface_candidates and isinstance(ranked, dict):
+        surface_candidates = _candidate_items_for_next_action(ranked, "hunt_p1")
+    for candidate in surface_candidates[:2]:
+        if not isinstance(candidate, dict):
+            continue
+        url = str(candidate.get("url") or "")
+        item = _execution_frontier_item(_frontier_item(
+            owner="surface",
+            item_id=url,
+            action=str(candidate.get("suggested") or f"review {url}"),
+            evidence_ref=str(projection.get("path") or "surface_projection"),
+            expected_information_gain=str(
+                candidate.get("review_reason")
+                or "determine whether this Surface candidate supports a concrete hypothesis"
+            ),
+            stop_condition="record evidence-backed Queue/Ledger disposition or park it without tested-clean",
+        ), impact_hint=str(
+            candidate.get("review_reason")
+            or candidate.get("suggested")
+            or candidate.get("vuln_class")
+            or ""
+        ))
+        item.update({
+            "evidence_status": "discovery",
+            "closure_blocking": False,
+            "runnable": not bool(candidate.get("tripped")),
+        })
+        surface_items.append(item)
+
+    deduped: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in [*other_items, *surface_items]:
+        key = (str(item.get("owner") or ""), str(item.get("id") or item.get("action") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    surface_count = min(2, sum(item.get("owner") == "surface" for item in deduped))
+    non_surface = [item for item in deduped if item.get("owner") != "surface"]
+    selected_surface = [item for item in deduped if item.get("owner") == "surface"][:surface_count]
+    return [*non_surface[: 8 - surface_count], *selected_surface]
 
 
 def build_closure_projection(
@@ -3991,6 +4321,38 @@ def _format_root_finding_claim_lines(claims: list[dict]) -> list[str]:
     return lines
 
 
+def _format_priority_frontier_lines(state: dict) -> list[str]:
+    """Render the bounded controller handoff without dumping owner payloads."""
+    mode = str(state.get("selection_mode") or "").strip()
+    hard_gate = state.get("hard_gate") if isinstance(state.get("hard_gate"), dict) else {}
+    lines = [f"Selection mode: {mode or 'fallback'}"]
+    if hard_gate:
+        action = str(hard_gate.get("action") or state.get("next_action") or "handoff").strip()
+        reason = " ".join(str(hard_gate.get("reason") or "").split())[:240]
+        lines.append(f"Hard gate: {action}" + (f" ({reason})" if reason else ""))
+        return lines
+
+    frontier = [item for item in (state.get("priority_frontier") or []) if isinstance(item, dict)]
+    if not frontier:
+        fallback = str(state.get("fallback_action") or state.get("next_action") or "handoff").strip()
+        lines.append(f"Fallback action: {fallback}")
+        return lines
+
+    lines.append("Priority frontier (AI selects; array order is not priority):")
+    for item in frontier[:3]:
+        owner = str(item.get("owner") or "controller").strip()
+        action = " ".join(str(item.get("action") or "").split())[:180]
+        item_id = str(item.get("id") or "").strip()
+        if item_id.startswith(("http://", "https://")):
+            item_id = compact_url(item_id)
+        suffix = f" [{item_id[:120]}]" if item_id else ""
+        status = "runnable" if item.get("runnable", True) else "blocked"
+        if not item.get("closure_blocking", True):
+            status += "; non-blocking"
+        lines.append(f"- {owner}: {action or 'owner action'}{suffix} ({status})")
+    return lines
+
+
 def format_autopilot_state(state: dict) -> str:
     """Format autopilot bootstrap state for terminal display."""
     if state.get("target_kind") == "list":
@@ -4009,6 +4371,7 @@ def format_autopilot_state(state: dict) -> str:
             f"Surface Ranking: {batch.get('surface_ranking', '')}",
             f"Manifest: {batch.get('manifest', '')}",
         ]
+        lines.extend(_format_priority_frontier_lines(state))
         scope = batch.get("scope") or state.get("scope") or {}
         if scope:
             lines.append(f"Scope: {scope.get('scope_ref', '')} ({scope.get('scope_hash', '')})")
@@ -4078,6 +4441,7 @@ def format_autopilot_state(state: dict) -> str:
             f"Memory: {'available' if state['has_memory'] else 'missing'}",
             f"Next action: {state['next_action']}",
         ]
+        lines.extend(_format_priority_frontier_lines(state))
         runtime_workflow = str(
             runtime_state.get("last_executed_workflow")
             or runtime_state.get("current_stage")
@@ -4199,6 +4563,7 @@ def format_autopilot_state(state: dict) -> str:
         f"Next action: {state['next_action']}",
         f"Next step: {_describe_next_step(state)}",
     ]
+    lines.extend(_format_priority_frontier_lines(state))
     if state.get("scan_in_progress"):
         lines.append("Scan: in progress")
     runtime_workflow = str(

@@ -55,7 +55,8 @@ Bootstrap emits one `state.lane_contract` pointer. Before executing a named lane
 inherits this command's Scope/Auth, evidence, checkpoint, Action Queue, loop-guard, and finish
 contracts.
 Before active hunting begins, load `rules/hunting.md` for its canonical hunting
-semantics. Fresh Recon is not active hunting: when `state.next_action=run_recon`,
+semantics. Fresh Recon is not active hunting: when `state.hard_gate.action=run_recon`
+(and when `state.next_action=run_recon` for older readers),
 execute the selected lane directly; refresh state after it completes. The
 default context pack intentionally does not load this rule.
 Tool discovery stays in `docs/tool-index.md`; concrete evidence may select
@@ -74,12 +75,19 @@ missing/stale/invalid is work, not no surface. State tools are not a pre-flight 
 For each iteration, keep the reasoning loop explicit:
 `inspect candidate/context -> AI choose and activate one hypothesis -> claim -> execute one
 bounded action -> read Runner observation -> AI resolve one continuation or kill -> refresh
-bounded state`. The controller must consume structured `next_action` and the durable Action Queue; use bounded
-`next_step`, and never treat a single negative request as permission to move on:
+bounded state`. Obey a non-empty `state.hard_gate` exactly. Otherwise choose one runnable item
+from `state.priority_frontier`; array order is not priority. Compare practical business impact,
+evidence strength, crown-jewel/chain fit, expected information gain, request cost, and starvation
+of `closure_blocking` work. A weaker historical Queue/Case/Resume item must not automatically
+preempt a stronger Surface/Finding/Intel candidate. Selection changes execution order only: it
+never bypasses the selected item's evidence/owner contract, relabels deferred work as tested-clean,
+or removes it from Closure. The controller must consume structured `next_action` and the durable Action Queue as
+compatibility projections and owner contracts. With one frontier item, execute it directly; with none, use
+`state.fallback_action` and bounded `next_step`. Never treat a single negative request as permission to move on:
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
 ```
-When `next_action=run_recon`, immediately run the selected Recon command from
+When the selected action is `run_recon`, immediately run the selected Recon command from
 the lane contract with `arguments.recon_flags`, then refresh bounded state. Do
 not perform another context or documentation pass before that action.
 For substantive candidates, claim the exact action with the evidence-backed activation contract
@@ -181,7 +189,7 @@ no-information results, resolve and rotate to one adjacent high-value lane.
 Refresh rotating form/session tokens from the legitimate baseline before replay.
 After every substantive lane, request the explicit read-only loop guard with `cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json`.
 Obey `loop_guard.verdict`. On `rotate`, do not continue the reported `endpoint_family` × `vuln_class` in this invocation; prefer its bounded `rotation_target` when present, or choose another adjacent high-value lane.
-`continue` preserves `loop_guard.next_action`. The guard never overrides runtime waits, candidate validation, report work, or durable Action Queue work; their authoritative next action remains in force.
+`continue` preserves owner state. The guard never overrides `state.hard_gate`, an already-claimed lane, or any selected item's evidence/owner constraints; otherwise refresh the frontier before selecting the next lane.
 `--deep` is a value-first comprehensive depth flag, not a checklist or favorite bug
 class. With `invocation_batch.bounded`, execute at most `max_lanes` named
 substantive lanes; after lane N do not execute a newly discovered queue item.

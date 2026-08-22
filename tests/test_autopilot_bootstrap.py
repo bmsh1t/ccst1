@@ -562,6 +562,39 @@ def test_bootstrap_state_is_compact_and_json_cli_is_single_line(monkeypatch, tmp
     assert "do-not-project" not in output
 
 
+def test_compact_state_projects_bounded_ai_priority_contract():
+    state = _state("/tmp/repo", "example.test")
+    state.update({
+        "fallback_action": "resume_action_queue",
+        "selection_mode": "ai_priority",
+        "hard_gate": {},
+        "priority_frontier": [{
+            "owner": "surface",
+            "id": "https://example.test/api/orders",
+            "lane": "recon-and-surface",
+            "action": "review object ownership",
+            "evidence_ref": "state/example.test/surface-projection.json",
+            "expected_information_gain": "resolve an object authorization boundary",
+            "impact_hint": "private order workflow",
+            "stop_condition": "record an evidence-backed disposition",
+            "evidence_status": "discovery",
+            "closure_blocking": False,
+            "continuity": False,
+            "runnable": True,
+            "raw": "do-not-project",
+        }],
+    })
+
+    compact = autopilot_bootstrap.compact_autopilot_state(state)
+
+    assert compact["fallback_action"] == "resume_action_queue"
+    assert compact["selection_mode"] == "ai_priority"
+    assert compact["hard_gate"] == {}
+    assert compact["priority_frontier"][0]["owner"] == "surface"
+    assert compact["priority_frontier"][0]["closure_blocking"] is False
+    assert "raw" not in compact["priority_frontier"][0]
+
+
 def test_capability_profile_runs_after_runtime_and_before_target_state(monkeypatch, tmp_path):
     calls = []
 
@@ -1071,6 +1104,8 @@ def test_compact_state_routes_persisted_software_inventory_to_intel(tmp_path):
 
     assert state["primary_next_action"] == "hunt_p1"
     assert state["next_action"] == "run_intel"
+    assert state["selection_mode"] == "ai_priority"
+    assert {item["owner"] for item in state["priority_frontier"]} >= {"intel", "surface"}
     assert state["next_tool_hint"] == "run_intel"
     assert "Intel v2 has not processed" in state["intel_continuation"]["reason"]
 

@@ -113,6 +113,7 @@ def _compact_candidate(item: dict[str, Any]) -> dict[str, Any]:
     """投影一个启动候选，丢弃完整 surface/runner payload。"""
     keys = (
         "id",
+        "owner",
         "target",
         "url",
         "method",
@@ -153,6 +154,12 @@ def _compact_candidate(item: dict[str, Any]) -> dict[str, Any]:
         "parent_scope_ref",
         "parent_scope_hash",
         "continuation_create_args",
+        "impact_hint",
+        "expected_information_gain",
+        "closure_blocking",
+        "evidence_status",
+        "continuity",
+        "runnable",
     )
     compact = {
         key: item[key]
@@ -456,6 +463,13 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             if key in (state.get("continuation") or {})
         },
         "next_action": next_action,
+        "fallback_action": str(state.get("fallback_action") or next_action),
+        "selection_mode": str(state.get("selection_mode") or "fallback"),
+        "hard_gate": {
+            key: (state.get("hard_gate") or {})[key]
+            for key in ("action", "reason")
+            if key in (state.get("hard_gate") or {})
+        },
         "next_step": describe_next_step(state),
         "lane_contract": _lane_contract_projection(state),
         "wait": next_action in {"wait_recon", "wait_scan"},
@@ -592,6 +606,11 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
                 or state.get("recommended_targets")
                 or []
             )[:5]
+            if isinstance(item, dict)
+        ],
+        "priority_frontier": [
+            _compact_candidate(item)
+            for item in (state.get("priority_frontier") or [])[:8]
             if isinstance(item, dict)
         ],
         "workflow_leads": workflow_leads,

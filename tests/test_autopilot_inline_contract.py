@@ -212,7 +212,7 @@ def test_case_state_continuation_has_an_explicit_controller_branch():
     assert "state.case_state.top_next_action" in command
 
 
-def test_substantive_lanes_obey_explicit_loop_guard_without_overriding_durable_work():
+def test_substantive_lanes_obey_explicit_loop_guard_without_bypassing_owner_constraints():
     command = " ".join(_read("commands/autopilot.md").split()).lower()
 
     assert "after every substantive lane" in command
@@ -220,7 +220,20 @@ def test_substantive_lanes_obey_explicit_loop_guard_without_overriding_durable_w
     assert "obey `loop_guard.verdict`" in command
     assert "do not continue the reported `endpoint_family` × `vuln_class`" in command
     assert "bounded `rotation_target` when present" in command
-    assert "never overrides runtime waits, candidate validation, report work, or durable action queue work" in command
+    assert "never overrides `state.hard_gate`, an already-claimed lane" in command
+    assert "refresh the frontier before selecting the next lane" in command
+
+
+def test_ai_priority_frontier_competes_across_owners_without_changing_evidence_rules():
+    command = " ".join(_read("commands/autopilot.md").split()).lower()
+
+    assert "choose one runnable item from `state.priority_frontier`" in command
+    assert "array order is not priority" in command
+    assert "business impact" in command
+    assert "expected information gain" in command
+    assert "a weaker historical queue/case/resume item must not automatically preempt" in command
+    assert "never bypasses the selected item's evidence/owner contract" in command
+    assert "use `state.fallback_action`" in command
 
 
 def test_failed_sources_and_tools_are_suppressed_within_one_invocation():

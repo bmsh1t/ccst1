@@ -18,6 +18,7 @@ from memory.schemas import make_journal_entry, make_pattern_entry
 from memory.target_profile import make_target_profile, save_target_profile
 from autopilot_state import (
     _build_enrichment_hints,
+    _build_priority_frontier,
     _build_ranker_advisory_hint,
     _build_recommended_targets,
     _checkpoint_round_projection,
@@ -324,6 +325,88 @@ def test_pending_cidr_continuation_routes_back_to_recon():
         None,
         cidr_continuation={"status": "pending", "next_offset": 4096},
     ) == "run_recon"
+
+
+def test_priority_frontier_exposes_queue_and_surface_without_cross_owner_score():
+    frontier = _build_priority_frontier({
+        "target": "target.com",
+        "resolved_target": "target.com",
+        "action_queue_next": {
+            "id": "AQ-1",
+            "status": "queued",
+            "priority": 100,
+            "action": "Replay the historical low-impact response pair.",
+            "evidence": "evidence/target.com/queue/raw.json",
+            "next_question": "Does the old response difference still reproduce?",
+            "stop_condition": "Record one stable replay disposition.",
+        },
+        "surface_projection": {
+            "status": "valid",
+            "path": "state/target.com/surface-projection.json",
+        },
+        "surface_review_candidates": [{
+            "url": "https://target.com/admin/export",
+            "suggested": "review privileged export authorization",
+            "review_reason": "crown-jewel workflow with a new authenticated observation",
+            "score": 12,
+        }],
+    })
+
+    assert [item["owner"] for item in frontier] == ["action_queue", "surface"]
+    assert all("priority" not in item for item in frontier)
+    assert frontier[0]["closure_blocking"] is True
+    assert frontier[1]["closure_blocking"] is False
+    assert frontier[1]["runnable"] is True
+
+
+def test_text_state_projects_frontier_and_ignores_unprojected_payload():
+    output = format_autopilot_state({
+        "target": "target.com",
+        "target_kind": "domain",
+        "has_recon": True,
+        "has_memory": False,
+        "next_action": "hunt_p1",
+        "fallback_action": "hunt_p1",
+        "selection_mode": "ai_priority",
+        "hard_gate": {},
+        "priority_frontier": [{
+            "owner": "surface",
+            "action": "review privileged export authorization",
+            "id": "https://target.com/admin/export",
+            "runnable": True,
+            "closure_blocking": False,
+            "raw": "do-not-project",
+        }],
+        "tech_stack": [],
+    })
+
+    assert "Selection mode: ai_priority" in output
+    assert "Priority frontier (AI selects; array order is not priority):" in output
+    assert "surface: review privileged export authorization" in output
+    assert "non-blocking" in output
+    assert "do-not-project" not in output
+
+
+def test_text_state_projects_hard_gate_without_frontier_payload():
+    output = format_autopilot_state({
+        "target": "target.com",
+        "target_kind": "domain",
+        "has_recon": False,
+        "has_memory": False,
+        "next_action": "wait_recon",
+        "fallback_action": "wait_recon",
+        "selection_mode": "hard_gate",
+        "hard_gate": {
+            "action": "wait_recon",
+            "reason": "the target recon phase lock is still held",
+            "raw": "do-not-project",
+        },
+        "priority_frontier": [],
+    })
+
+    assert "Hard gate: wait_recon (the target recon phase lock is still held)" in output
+    assert "Priority frontier" not in output
+    assert "do-not-project" not in output
 
 
 def _closure_matrix(*, status: str = "tested_clean") -> dict:
@@ -4305,6 +4388,9 @@ class TestAutopilotState:
             assert state["has_recon"] is False
             assert state["recon_in_progress"] is True
             assert state["next_action"] == "wait_recon"
+            assert state["hard_gate"]["action"] == "wait_recon"
+            assert state["selection_mode"] == "hard_gate"
+            assert state["priority_frontier"] == []
             assert "Recon: in progress" in output
             assert "wait/poll the existing /recon target.com run; do not launch another recon" in output
 

@@ -63,11 +63,13 @@ read and obey `commands/autopilot.md` as the sole controller contract. Do not
 execute its embedded bootstrap again or restate its hunt, state, red-line,
 coverage, validation, report, queue, or closure rules here.
 
-Consume at most bootstrap `invocation_batch.max_lanes` substantive lanes. For
-each lane, execute the substantive work selected by the canonical Action
-Queue/state owner. For `hunt_p1`/`hunt_p2`, select one concrete bounded candidate
-yourself; if none is executable, persist the existing blocker/handoff instead of
-asking the operator to choose a direction. Never replace owner-selected work with
+Consume at most bootstrap `invocation_batch.max_lanes` substantive lanes. Obey a
+non-empty bootstrap `state.hard_gate`; otherwise select one runnable item from
+`state.priority_frontier` using the canonical controller's value judgment. The
+frontier only changes cross-owner execution order; execute through the selected
+item's canonical owner and evidence contract. If no frontier item is executable,
+use `state.fallback_action` or persist the existing blocker/handoff instead of
+asking the operator to choose a direction. Never replace selected work with
 passive `idle`, `no-change`, or monitoring lanes. Derive `<stable_lane_id>` from
 the owner ID or stable `<lane-kind>:<endpoint-or-artifact>` identity, then claim
 the heartbeat:

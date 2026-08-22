@@ -146,13 +146,14 @@ def test_round_budget_is_checkpoint_owned_not_prompt_counted():
     assert "only ends target work for this invocation" in normalized
 
 
-def test_round_claims_only_owner_selected_substantive_work():
+def test_round_claims_only_ai_selected_owner_backed_substantive_work():
     command = " ".join(_read("commands/autopilot-round.md").split())
 
-    assert "execute the substantive work selected by the canonical Action Queue/state owner" in command
-    assert "For `hunt_p1`/`hunt_p2`, select one concrete bounded candidate yourself" in command
+    assert "select one runnable item from `state.priority_frontier`" in command
+    assert "execute through the selected item's canonical owner and evidence contract" in command
+    assert "use `state.fallback_action`" in command
     assert "instead of asking the operator to choose a direction" in command
-    assert "Never replace owner-selected work with passive `idle`, `no-change`, or monitoring lanes" in command
+    assert "Never replace selected work with passive `idle`, `no-change`, or monitoring lanes" in command
     assert "`budget_exhausted` or `passive_lane_rejected` proceeds to final closure without target work" in command
 
 
