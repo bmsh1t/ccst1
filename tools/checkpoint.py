@@ -28,6 +28,11 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.autopilot_args import MAX_LANES
+    from tools.checkpoint_witness import (
+        load_checkpoint_witness as _load_checkpoint_witness,
+        new_round_lane as _round_lane,
+        validate_round_progress as _round_progress,
+    )
     from tools.action_queue import (
         ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES,
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
@@ -62,6 +67,11 @@ try:
     from tools.experience_schema import make_entry_id
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
+    from checkpoint_witness import (  # type: ignore
+        load_checkpoint_witness as _load_checkpoint_witness,
+        new_round_lane as _round_lane,
+        validate_round_progress as _round_progress,
+    )
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES,
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
@@ -144,20 +154,6 @@ def checkpoint_witness_lock(repo_root: Path | str, target: str):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _load_checkpoint_witness(path: Path) -> dict:
-    if not path.is_file():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ValueError(f"unable to read checkpoint witness {path}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid checkpoint witness JSON {path}: {exc.msg}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError(f"checkpoint witness {path} must contain one object")
-    return payload
-
-
 def _new_checkpoint_witness(target: str) -> dict:
     resolved = canonical_target_value(target)
     return {
@@ -192,20 +188,6 @@ def _new_round_progress(max_lanes: int) -> dict:
     }
 
 
-def _round_lane(lane_id: str, *, started_at: str | None = None) -> dict:
-    timestamp = started_at or now_utc()
-    return {
-        "schema_version": 1,
-        "id": lane_id,
-        "status": "started",
-        "decision": "",
-        "evidence_ref": "",
-        "next_action": "",
-        "started_at": timestamp,
-        "updated_at": timestamp,
-    }
-
-
 def _round_lane_text(value: str, field: str, *, max_length: int) -> str:
     text = str(value or "").strip()
     if not text:
@@ -224,99 +206,6 @@ def _is_passive_round_lane(lane_id: str) -> bool:
         normalized.startswith(("idle:", "monitor:", "verify:idle", "verify:no-change"))
         or "idle-no-change" in normalized
     )
-
-
-def _round_lanes(progress: dict, claimed: list[str]) -> list[dict]:
-    lanes = progress.get("lanes")
-    if lanes is None:
-        started_at = str(progress.get("started_at") or now_utc())
-        lanes = [_round_lane(lane_id, started_at=started_at) for lane_id in claimed]
-        progress["lanes"] = lanes
-    if not isinstance(lanes, list):
-        raise ValueError("checkpoint round_progress lanes are invalid")
-    ids: list[str] = []
-    for lane in lanes:
-        if not isinstance(lane, dict) or lane.get("schema_version") != 1:
-            raise ValueError("checkpoint round_progress lane is invalid")
-        lane_id = lane.get("id")
-        status = lane.get("status")
-        if (
-            not isinstance(lane_id, str)
-            or not lane_id
-            or lane_id not in claimed
-            or status not in {"started", "completed", "blocked"}
-        ):
-            raise ValueError("checkpoint round_progress lane fields are invalid")
-        for field, limit in (("decision", 500), ("evidence_ref", 500), ("next_action", 1000)):
-            value = lane.get(field, "")
-            if not isinstance(value, str) or "\n" in value or "\r" in value or len(value) > limit:
-                raise ValueError("checkpoint round_progress lane fields are invalid")
-        for field in ("started_at", "updated_at"):
-            if not isinstance(lane.get(field), str) or not lane.get(field):
-                raise ValueError("checkpoint round_progress lane timestamps are invalid")
-        if status == "started":
-            if any(lane.get(field) for field in ("decision", "evidence_ref", "next_action", "finished_at")):
-                raise ValueError("checkpoint started round lane has terminal fields")
-        elif (
-            not isinstance(lane.get("finished_at"), str)
-            or not lane.get("finished_at")
-            or "\n" in lane.get("finished_at")
-            or "\r" in lane.get("finished_at")
-            or not lane.get("decision")
-            or not lane.get("evidence_ref")
-            or not lane.get("next_action")
-            or (status == "completed" and lane.get("evidence_ref") == "none")
-        ):
-            raise ValueError("checkpoint terminal round lane is incomplete")
-        ids.append(lane_id)
-    if ids != claimed:
-        raise ValueError("checkpoint round_progress lane identities are invalid")
-    return lanes
-
-
-def _round_progress(payload: dict) -> dict:
-    progress = payload.get("round_progress")
-    if progress is None:
-        return {}
-    if (
-        not isinstance(progress, dict)
-        or progress.get("schema_version") != 1
-        or progress.get("status") not in {"active", "completed"}
-    ):
-        raise ValueError("checkpoint round_progress is invalid")
-    limit = progress.get("max_lanes")
-    claimed = progress.get("claimed_lanes")
-    if (
-        isinstance(limit, bool)
-        or not isinstance(limit, int)
-        or not 1 <= limit <= MAX_LANES
-        or not isinstance(claimed, list)
-        or any(
-            not isinstance(item, str)
-            or not item
-            or len(item) > 200
-            or "\n" in item
-            or "\r" in item
-            for item in claimed
-        )
-        or len(set(claimed)) != len(claimed)
-        or len(claimed) > limit
-        or isinstance(progress.get("claimed_count"), bool)
-        or not isinstance(progress.get("claimed_count"), int)
-        or progress.get("claimed_count") != len(claimed)
-        or isinstance(progress.get("remaining_lanes"), bool)
-        or not isinstance(progress.get("remaining_lanes"), int)
-        or progress.get("remaining_lanes") != limit - len(claimed)
-        or not isinstance(progress.get("budget_reached"), bool)
-        or progress.get("budget_reached") != (len(claimed) >= limit)
-    ):
-        raise ValueError("checkpoint round_progress budget fields are invalid")
-    lanes = _round_lanes(progress, claimed)
-    if progress["status"] == "completed" and any(
-        item.get("status") == "started" for item in lanes
-    ):
-        raise ValueError("checkpoint completed round has unfinished lanes")
-    return progress
 
 
 def _invalid_completed_lane_evidence(
@@ -386,7 +275,7 @@ def record_round_lane(
         if progress.get("status") != "active":
             raise ValueError("round lane claim requires an active round; run --round-begin first")
         claimed = progress.get("claimed_lanes") if isinstance(progress.get("claimed_lanes"), list) else []
-        lanes = _round_lanes(progress, claimed)
+        lanes = progress["lanes"]
         if lane_id in claimed:
             lane_record = next(item for item in lanes if item.get("id") == lane_id)
             lane_status = str(lane_record.get("status") or "started")
@@ -451,7 +340,7 @@ def record_round_lane_result(
         progress = _round_progress(payload)
         if progress.get("status") != "active":
             raise ValueError("round lane result requires an active round")
-        lanes = _round_lanes(progress, progress.get("claimed_lanes") or [])
+        lanes = progress["lanes"]
         lane_record = next((item for item in lanes if item.get("id") == lane_id), None)
         if lane_record is None:
             raise ValueError(f"round lane was not claimed: {lane_id}")
@@ -1445,14 +1334,6 @@ def _lead_proposals(
                 "role boundary, or workflow evidence appears."
             )
     return _dedupe(proposals)[:3]
-
-
-def _active_contradictions(context_pack: dict) -> list[str]:
-    return [
-        str(item).strip()
-        for item in (context_pack.get("contradictions") or [])
-        if str(item).strip() and str(item).strip().lower() != "none detected."
-    ]
 
 
 def _canonicalize_url_path(value: str) -> str:
@@ -3997,7 +3878,6 @@ def build_checkpoint(
     )
     case_state = _case_state_summary(repo, resolved_target)
     actor_gaps = _actor_gaps(evidence_summary)
-    executable_actor_gaps = _actionable_actor_gaps(evidence_summary, case_state)
     case_state_proposal = _case_state_proposal(case_state)
     case_state_seed = _case_state_seed_summary(repo, resolved_target) if not case_state_proposal else {}
     case_state_seed_proposal = _case_state_seed_proposal(case_state_seed)

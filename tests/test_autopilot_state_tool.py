@@ -840,25 +840,40 @@ def test_round_projection_preserves_budget_after_lane_field_projection(tmp_path)
         "decision": "tested clean",
         "evidence_ref": evidence_ref,
         "next_action": "none",
+        "started_at": "2026-08-01T00:00:00Z",
+        "updated_at": "2026-08-01T00:01:00Z",
         "finished_at": "2026-08-01T00:01:00Z",
     }
+    progress = {
+        "schema_version": 1,
+        "round_id": "round-test",
+        "status": "completed",
+        "max_lanes": 3,
+        "claimed_lanes": ["validate:example"],
+        "lanes": [lane],
+        "claimed_count": 1,
+        "remaining_lanes": 2,
+        "budget_reached": False,
+    }
     projection = _checkpoint_round_projection(
-        {"round_progress": {
-            "schema_version": 1,
-            "round_id": "round-test",
-            "status": "completed",
-            "max_lanes": 3,
-            "claimed_lanes": ["validate:example"],
-            "lanes": [lane],
-            "claimed_count": 1,
-            "remaining_lanes": 2,
-            "budget_reached": False,
-        }},
+        {"round_progress": progress},
         repo_root=tmp_path,
         target=target,
     )
 
     assert projection["max_lanes"] == 3
+
+    invalid_budget = {**progress, "max_lanes": 33, "remaining_lanes": 32}
+    with pytest.raises(ValueError, match="budget fields are invalid"):
+        _checkpoint_round_projection(
+            {"round_progress": invalid_budget}, repo_root=tmp_path, target=target
+        )
+
+    invalid_timestamps = {**progress, "lanes": [{**lane, "started_at": ""}]}
+    with pytest.raises(ValueError, match="lane timestamps are invalid"):
+        _checkpoint_round_projection(
+            {"round_progress": invalid_timestamps}, repo_root=tmp_path, target=target
+        )
 
 
 def test_case_state_work_routes_bootstrap_and_blocks_exhausted_closure(tmp_path):
@@ -2189,7 +2204,7 @@ def test_normal_bounded_state_never_loads_closure_owners(tmp_path, monkeypatch):
         raise AssertionError("closure owner read")
 
     monkeypatch.setattr("autopilot_state.load_matrix", fail)
-    monkeypatch.setattr("autopilot_state.load_entries", fail)
+    monkeypatch.setattr("autopilot_state.load_entries_diagnostic", fail)
 
     state = build_autopilot_state(
         str(tmp_path), "target.com", memory_dir=str(tmp_path / "hunt-memory"), bounded=True

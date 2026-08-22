@@ -105,16 +105,31 @@ def test_bootstrap_emits_ranker_advisory_for_valid_multi_source_long_tail(tmp_pa
 
 
 def test_compact_state_projects_only_the_next_lane_contract():
-    recon = autopilot_bootstrap.compact_autopilot_state({"next_action": "run_recon"})
-    assert recon["lane_contract"] == {
-        "id": "recon-surface",
-        "ref": "docs/autopilot-lanes.md#recon-and-surface",
-        "reason": "discovery, surface, or evidence collection is next",
+    expected = {
+        "run_recon": "recon-surface",
+        "collect_candidate_evidence": "recon-surface",
+        "wait_recon": "state-and-queue",
+        "wait_scan": "state-and-queue",
+        "revalidate_finding_owner": "state-and-queue",
+        "resume_action_queue": "state-and-queue",
+        "report_finding": "state-and-queue",
+        "recon_no_live_hosts": "state-and-queue",
+        "resume_case_state": "workflow-case",
+        "run_intel": "software-intel",
+        "handoff": "controller",
     }
+    for action, lane in expected.items():
+        compact = autopilot_bootstrap.compact_autopilot_state({"next_action": action})
+        assert compact["lane_contract"]["id"] == lane
 
-    queue = autopilot_bootstrap.compact_autopilot_state({"next_action": "resume_action_queue"})
-    assert queue["lane_contract"]["id"] == "state-and-queue"
-    assert queue["lane_contract"]["ref"].startswith("docs/autopilot-lanes.md#")
+    recon = autopilot_bootstrap.compact_autopilot_state({"next_action": "run_recon"})
+    assert recon["lane_contract"]["ref"] == "docs/autopilot-lanes.md#recon-and-surface"
+
+    browser = autopilot_bootstrap.compact_autopilot_state({
+        "next_action": "handoff",
+        "browser_required": True,
+    })
+    assert browser["lane_contract"]["id"] == "browser-source-js"
 
 
 def test_compact_state_keeps_sql_matrix_and_js_lifecycle_projection():

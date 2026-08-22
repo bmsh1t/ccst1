@@ -39,6 +39,16 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         select_next_action,
     )
 try:
+    from tools.checkpoint_witness import (
+        load_checkpoint_witness as _load_checkpoint_witness,
+        validate_round_progress,
+    )
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from checkpoint_witness import (  # type: ignore
+        load_checkpoint_witness as _load_checkpoint_witness,
+        validate_round_progress,
+    )
+try:
     from tools.intel_continuation import apply_intel_continuation, inspect_intel_continuation
 except ImportError:  # pragma: no cover - direct tools/ execution
     from intel_continuation import apply_intel_continuation, inspect_intel_continuation  # type: ignore
@@ -129,7 +139,6 @@ try:
     )
     from tools.evidence_ledger import (
         build_current_cell_projection,
-        load_entries,
         load_entries_diagnostic,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -142,7 +151,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from evidence_ledger import (  # type: ignore
         build_current_cell_projection,
-        load_entries,
         load_entries_diagnostic,
     )
 try:
@@ -381,110 +389,26 @@ APP_LIKE_HINT_TOKENS = (
 HIGH_VALUE_OBSERVATION_KINDS = frozenset({"exposure", "infra"})
 
 
-def _read_json_file(path: str) -> dict:
-    """Read a JSON object from disk; return empty dict on missing or invalid data."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _load_checkpoint_witness(path: Path) -> dict:
-    if not path.is_file():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ValueError(f"unable to read checkpoint witness {path}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid checkpoint witness JSON {path}: {exc.msg}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError(f"checkpoint witness {path} must contain one object")
-    return payload
-
-
 def _checkpoint_round_projection(
     witness: dict,
     *,
     repo_root: str | Path,
     target: str,
 ) -> dict:
-    progress = witness.get("round_progress")
-    if progress is None:
+    progress = validate_round_progress(
+        witness,
+        allow_invalid_completed_evidence=True,
+    )
+    if not progress:
         return {}
-    if (
-        not isinstance(progress, dict)
-        or progress.get("schema_version") != 1
-        or progress.get("status") not in {"active", "completed"}
-    ):
-        raise ValueError("checkpoint round_progress is invalid")
-    claimed = progress.get("claimed_lanes")
-    limit = progress.get("max_lanes")
-    if (
-        isinstance(limit, bool)
-        or not isinstance(limit, int)
-        or limit < 1
-        or not isinstance(claimed, list)
-        or any(
-            not isinstance(item, str)
-            or not item
-            or len(item) > 200
-            or "\n" in item
-            or "\r" in item
-            for item in claimed
-        )
-        or len(claimed) > limit
-        or len(set(claimed)) != len(claimed)
-        or isinstance(progress.get("claimed_count"), bool)
-        or not isinstance(progress.get("claimed_count"), int)
-        or progress.get("claimed_count") != len(claimed)
-        or isinstance(progress.get("remaining_lanes"), bool)
-        or not isinstance(progress.get("remaining_lanes"), int)
-        or progress.get("remaining_lanes") != limit - len(claimed)
-        or not isinstance(progress.get("budget_reached"), bool)
-        or progress.get("budget_reached") != (len(claimed) >= limit)
-    ):
-        raise ValueError("checkpoint round_progress budget fields are invalid")
-    lanes = progress.get("lanes")
-    if lanes is None:
-        lanes = [{"schema_version": 1, "id": lane_id, "status": "started"} for lane_id in claimed]
-    if not isinstance(lanes, list):
-        raise ValueError("checkpoint round_progress lanes are invalid")
-    projected_lanes = []
-    for lane in lanes:
-        if not isinstance(lane, dict) or lane.get("schema_version") != 1:
-            raise ValueError("checkpoint round_progress lane is invalid")
-        lane_id = lane.get("id")
-        lane_status = lane.get("status")
-        if (
-            not isinstance(lane_id, str)
-            or lane_id not in claimed
-            or lane_status not in {"started", "completed", "blocked"}
-        ):
-            raise ValueError("checkpoint round_progress lane fields are invalid")
-        item = {"id": lane_id, "status": lane_status}
-        for field, field_limit in (("decision", 500), ("evidence_ref", 500), ("next_action", 1000)):
+    projected_lanes: list[dict] = []
+    for lane in progress["lanes"]:
+        item = {"id": lane["id"], "status": lane["status"]}
+        for field in ("decision", "evidence_ref", "next_action"):
             value = lane.get(field, "")
-            if not isinstance(value, str) or "\n" in value or "\r" in value or len(value) > field_limit:
-                raise ValueError("checkpoint round_progress lane fields are invalid")
             if value:
                 item[field] = value
-        if lane_status == "started" and (
-            any(item.get(field) for field in ("decision", "evidence_ref", "next_action"))
-            or lane.get("finished_at")
-        ):
-            raise ValueError("checkpoint started round lane has terminal fields")
-        if lane_status in {"completed", "blocked"} and (
-            any(not item.get(field) for field in ("decision", "evidence_ref", "next_action"))
-            or not isinstance(lane.get("finished_at"), str)
-            or not lane.get("finished_at")
-        ):
-            raise ValueError("checkpoint terminal round lane is incomplete")
         projected_lanes.append(item)
-    if [item["id"] for item in projected_lanes] != claimed:
-        raise ValueError("checkpoint round_progress lane identities are invalid")
     unfinished = [item["id"] for item in projected_lanes if item["status"] == "started"]
     invalid_evidence = [
         item["id"]
@@ -496,13 +420,11 @@ def _checkpoint_round_projection(
             item.get("evidence_ref"),
         )
     ]
-    if progress["status"] == "completed" and unfinished:
-        raise ValueError("checkpoint completed round has unfinished lanes")
     return {
         "status": progress["status"],
         "round_id": str(progress.get("round_id") or ""),
-        "max_lanes": limit,
-        "claimed_count": len(claimed),
+        "max_lanes": progress["max_lanes"],
+        "claimed_count": len(progress["claimed_lanes"]),
         "budget_reached": bool(progress.get("budget_reached")),
         "unfinished_lanes": unfinished,
         "invalid_evidence_lanes": invalid_evidence,
@@ -1349,40 +1271,6 @@ def _describe_next_step(state: dict) -> str:
 def describe_next_step(state: dict) -> str:
     """Return a single-line bounded next-step instruction for controllers."""
     return " ".join(_describe_next_step(state).split())[:500]
-
-
-def _runtime_recon_in_progress(
-    repo_root: str,
-    target: str,
-    runtime_state: dict,
-    *,
-    stale_after_seconds: int = 7200,
-) -> bool:
-    """兼容现有调用点的 shared runtime-state gate 包装。"""
-    return runtime_phase_in_progress(
-        repo_root,
-        target,
-        "recon",
-        runtime_state,
-        stale_after_seconds=stale_after_seconds,
-    )
-
-
-def _runtime_scan_in_progress(
-    repo_root: str,
-    target: str,
-    runtime_state: dict,
-    *,
-    stale_after_seconds: int = 7200,
-) -> bool:
-    """兼容现有调用点的 shared runtime-state gate 包装。"""
-    return runtime_phase_in_progress(
-        repo_root,
-        target,
-        "scan",
-        runtime_state,
-        stale_after_seconds=stale_after_seconds,
-    )
 
 
 def _candidate_items_for_next_action(ranked: dict, next_action: str) -> list[dict]:
@@ -2290,7 +2178,9 @@ def _build_batch_autopilot_state(repo_root: str, target: str, resolved_target: s
         if item in current_set and item not in processed
     ]
     runtime_state = load_runtime_state(repo_root, resolved_target)
-    recon_in_progress = _runtime_recon_in_progress(repo_root, resolved_target, runtime_state)
+    recon_in_progress = runtime_phase_in_progress(
+        repo_root, resolved_target, "recon", runtime_state
+    )
     candidates = _read_batch_ranked_targets(
         batch_dir / "high_value_targets.json",
         completed,
@@ -2440,10 +2330,12 @@ def _load_autopilot_control_facts(
     # An active phase lock wins over partial artifacts. Recon publishes files
     # incrementally, so readiness is not a completion signal while the runner
     # still owns the target lock.
-    recon_in_progress = _runtime_recon_in_progress(
-        repo_root, resolved_target, runtime_state
+    recon_in_progress = runtime_phase_in_progress(
+        repo_root, resolved_target, "recon", runtime_state
     )
-    scan_in_progress = _runtime_scan_in_progress(repo_root, resolved_target, runtime_state)
+    scan_in_progress = runtime_phase_in_progress(
+        repo_root, resolved_target, "scan", runtime_state
+    )
     runtime_derived = _derive_current_status(
         Path(repo_root),
         resolved_target,

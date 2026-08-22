@@ -317,20 +317,23 @@ def _lane_contract_projection(state: dict[str, Any]) -> dict[str, str]:
     action = str(state.get("next_action") or "")
     if action in {
         "run_recon",
-        "wait_recon",
         "run_batch_recon",
         "select_completed_domain",
-        "recon_no_live_hosts",
         "prepare_surface_context",
         "collect_candidate_evidence",
         "hunt_p1",
     }:
         lane = "recon-surface"
     elif action in {
+        "wait_recon",
+        "wait_scan",
+        "revalidate_finding_owner",
         "validate_finding",
         "resume_action_queue",
         "review_validation_candidate",
         "complete_report_draft",
+        "report_finding",
+        "recon_no_live_hosts",
     }:
         lane = "state-and-queue"
     elif action == "resume_case_state":
