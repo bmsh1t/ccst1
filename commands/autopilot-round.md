@@ -45,10 +45,8 @@ returned by bootstrap/state; these advisory facts never select or override
 STATUS.
 
 `finish` or `blocked` is terminal: project STATUS, apply terminal cron cleanup,
-emit, and stop without any target action. A `handoff` caused by
-`stagnant_prerequisite_rotation` remains `STATUS: CONTINUE`; use its bounded
-rotation target and leave the native loop active. Missing, damaged, inconsistent,
-or unknown closure is `STATUS: ERROR` after terminal cleanup.
+emit, and stop without any target action. Missing, damaged, inconsistent, or
+unknown closure is `STATUS: ERROR` after terminal cleanup.
 
 Start or resume the checkpoint-owned round budget:
 
@@ -109,14 +107,14 @@ round closure, then request the owner verdict in this order:
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell>
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-closure --json
-cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json [--max-lanes-reached]
+cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
 ```
 
-Include `--max-lanes-reached` only when the immediately preceding closure output
-has `round_progress.budget_reached` set to true; never infer it from model-side
-counting. After a successful bootstrap, closure owner fields alone select
-STATUS; model prose, scores, scanner output, gaps, and run-contract checks never
-override them.
+`round_progress.budget_reached` only ends target work for this invocation. The
+final verdict is recomputed from current Queue, Finding, Case State, coverage,
+and evidence owners; budget exhaustion alone never selects `STATUS: CONTINUE`.
+After a successful bootstrap, closure owner fields alone select STATUS; model
+prose, scores, scanner output, gaps, and run-contract checks never override them.
 
 ## Status Projection
 

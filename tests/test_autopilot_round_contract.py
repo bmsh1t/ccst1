@@ -98,8 +98,6 @@ def test_terminal_precheck_is_state_only_and_precedes_target_work():
     assert closure in precheck
     assert f"{closure} --max-lanes-reached" not in precheck
     assert "`finish` or `blocked` is terminal" in normalized_precheck
-    assert "`stagnant_prerequisite_rotation`" in normalized_precheck
-    assert "leave the native loop active" in normalized_precheck
     assert "apply terminal cron cleanup, emit, and stop" in normalized_precheck
     assert "For STATUS selection, read only `closure.verdict`" in normalized_precheck
     assert "For terminal residual blind spots only" in normalized_precheck
@@ -109,7 +107,7 @@ def test_terminal_precheck_is_state_only_and_precedes_target_work():
         assert active_path not in precheck
 
 
-def test_round_end_orders_checkpoint_coverage_and_lane_limited_closure():
+def test_round_end_orders_checkpoint_coverage_and_owner_closure():
     command = _read("commands/autopilot-round.md")
     normalized = " ".join(command.split())
     checkpoint = command.index("After the canonical checkpoint/write-back")
@@ -125,8 +123,7 @@ def test_round_end_orders_checkpoint_coverage_and_lane_limited_closure():
     assert "After every terminal lane heartbeat" in command
     assert "canonical `--loop-check --json` guard" in command
     assert "at most bootstrap `invocation_batch.max_lanes`" in normalized
-    assert "Include `--max-lanes-reached` only when the immediately preceding" in normalized
-    assert "never infer it from model-side counting" in normalized
+    assert "budget exhaustion alone never selects `STATUS: CONTINUE`" in normalized
 
 
 def test_round_budget_is_checkpoint_owned_not_prompt_counted():
@@ -146,7 +143,7 @@ def test_round_budget_is_checkpoint_owned_not_prompt_counted():
     assert "Action Queue before round closure" in normalized
     assert "Never store raw responses, prompts, credentials, tokens, cookies, or authorization headers" in normalized
     assert "`round_progress.budget_reached`" in command
-    assert "never infer it from model-side counting" in normalized
+    assert "only ends target work for this invocation" in normalized
 
 
 def test_round_claims_only_owner_selected_substantive_work():

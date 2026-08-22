@@ -3146,11 +3146,6 @@ def _explicit_partial_reason(state: dict) -> str:
         )
     ):
         return "finding_work_pending"
-    surface_review = state.get("surface_review_completion") or {}
-    if (
-        state.get("surface_review_candidates") or state.get("recommended_targets")
-    ) and surface_review.get("status") != "complete":
-        return "surface_work_pending"
     if state.get("resume_targets"):
         return "surface_work_pending"
 
@@ -3170,6 +3165,231 @@ def _observation_partial_reason(state: dict) -> str:
     ):
         return "observation_high_value_pending"
     return ""
+
+
+def _frontier_item(
+    *,
+    owner: str,
+    action: str,
+    evidence_ref: str,
+    expected_information_gain: str,
+    stop_condition: str,
+    item_id: str = "",
+    priority: int = 0,
+) -> dict:
+    """Build a bounded read-only action handoff from an existing owner."""
+    return {
+        "owner": owner,
+        "id": item_id,
+        "action": " ".join(str(action or "").split())[:500],
+        "evidence_ref": " ".join(str(evidence_ref or "").split())[:300],
+        "expected_information_gain": " ".join(
+            str(expected_information_gain or "").split()
+        )[:300],
+        "stop_condition": " ".join(str(stop_condition or "").split())[:300],
+        "priority": int(priority or 0),
+    }
+
+
+def _build_actionable_frontier(
+    state: dict,
+    matrix: dict | None,
+) -> list[dict]:
+    """Project executable work without creating a second state owner."""
+    target = str(state.get("resolved_target") or state.get("target") or "")
+    frontier: list[dict] = []
+
+    queue_next = state.get("action_queue_next") if isinstance(state.get("action_queue_next"), dict) else {}
+    if queue_next:
+        metadata = queue_next.get("metadata") if isinstance(queue_next.get("metadata"), dict) else {}
+        frontier.append(_frontier_item(
+            owner="action_queue",
+            item_id=str(queue_next.get("id") or ""),
+            action=str(queue_next.get("action") or queue_next.get("type") or "resume queued action"),
+            evidence_ref=str(
+                queue_next.get("evidence_ref")
+                or metadata.get("evidence_ref")
+                or queue_next.get("evidence")
+                or "action_queue"
+            ),
+            expected_information_gain=str(
+                queue_next.get("next_question")
+                or "resolve the queued evidence question"
+            ),
+            stop_condition=str(
+                queue_next.get("stop_condition")
+                or "record a terminal owner result or a bounded blocker"
+            ),
+            priority=int(queue_next.get("priority", 0) or 0),
+        ))
+
+    findings = state.get("structured_findings") if isinstance(state.get("structured_findings"), dict) else {}
+    for key, label in (
+        ("next_owner_revalidation", "revalidate finding owner"),
+        ("next_validation", "validate finding"),
+        ("next_draft_completion", "complete finding report draft"),
+        ("next_report", "report validated finding"),
+    ):
+        finding = findings.get(key) if isinstance(findings.get(key), dict) else {}
+        if not finding:
+            continue
+        finding_id = str(finding.get("id") or "")
+        evidence_ref = str(
+            finding.get("evidence_ref")
+            or finding.get("source_file")
+            or (
+                f"findings/{target_storage_key(target)}/findings.json#{finding_id}"
+                if finding_id else "findings"
+            )
+        )
+        frontier.append(_frontier_item(
+            owner="finding",
+            item_id=finding_id,
+            action=str(
+                finding.get("required_action")
+                or finding.get("action")
+                or label
+            ),
+            evidence_ref=evidence_ref,
+            expected_information_gain=str(
+                finding.get("next_question")
+                or finding.get("missing_evidence")
+                or "resolve the finding evidence gate"
+            ),
+            stop_condition=str(
+                finding.get("downgrade_rule")
+                or "record validated, candidate, dead-end, or blocked owner state"
+            ),
+            priority=100 if key in {"next_owner_revalidation", "next_validation"} else 90,
+        ))
+        break
+
+    case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
+    case_next = case_state.get("top_next_action") if isinstance(case_state.get("top_next_action"), dict) else {}
+    if str(case_next.get("next_action") or "none") != "none":
+        frontier.append(_frontier_item(
+            owner="case_state",
+            item_id=str(case_next.get("backlog_id") or case_next.get("hypothesis_id") or ""),
+            action=str(case_next.get("write_back") or case_next.get("next_action")),
+            evidence_ref=str(case_state.get("path") or f"state/{target_storage_key(target)}/case_state.json"),
+            expected_information_gain=str(
+                case_next.get("why_now") or case_next.get("hypothesis") or "resolve the Case State prerequisite"
+            ),
+            stop_condition=str(
+                case_next.get("stop_condition")
+                or "record the backlog as tested, candidate, blocked, or dead-end"
+            ),
+            priority=95,
+        ))
+
+    gaps = _coverage_gaps(matrix) if isinstance(matrix, dict) else []
+    if gaps:
+        gap = gaps[0]
+        endpoint = str(gap.get("endpoint") or "")
+        vuln_class = str(gap.get("vuln_class") or "")
+        frontier.append(_frontier_item(
+            owner="coverage",
+            item_id=f"{vuln_class}:{endpoint}",
+            action=f"Review the high-value {vuln_class} coverage gap at {endpoint}",
+            evidence_ref=str(
+                state.get("_coverage_evidence_ref")
+                or f"evidence/{target_storage_key(target)}/coverage_matrix.json"
+            ),
+            expected_information_gain=(
+                f"obtain a disposition for {vuln_class} on {endpoint}"
+            ),
+            stop_condition="record tested, blocked, dead-end, not_applicable, or candidate with evidence",
+            priority=80,
+        ))
+
+    json_inject = state.get("json_inject") if isinstance(state.get("json_inject"), dict) else {}
+    if str(json_inject.get("status") or "") in {"partial", "invalid_input", "candidate_pending"}:
+        frontier.append(_frontier_item(
+            owner="json-inject",
+            action="Resume the bounded JSON input evidence lane",
+            evidence_ref=str(json_inject.get("path") or "findings/json_inject/summary.json"),
+            expected_information_gain="resolve the pending JSON response or candidate signal",
+            stop_condition="record candidate, tested-clean, dead-end, or the explicit input blocker",
+            priority=75,
+        ))
+    for lane, item in (state.get("sql_matrix") or {}).items():
+        if not isinstance(item, dict) or str(item.get("status") or "") not in {"partial", "invalid_input", "candidate_pending"}:
+            continue
+        frontier.append(_frontier_item(
+            owner="sql-matrix",
+            item_id=str(lane),
+            action=f"Resume the bounded {lane} SQL evidence lane",
+            evidence_ref=str(item.get("path") or f"findings/sql_matrix/{lane}/summary.json"),
+            expected_information_gain="resolve the pending SQL response difference",
+            stop_condition="record candidate, tested-clean, dead-end, or the explicit input blocker",
+            priority=75,
+        ))
+    js_intel = state.get("js_intel") if isinstance(state.get("js_intel"), dict) else {}
+    if str(js_intel.get("status") or "") in {"prepared", "partial"}:
+        frontier.append(_frontier_item(
+            owner="js-intel",
+            action="Read and disposition the prepared JavaScript evidence",
+            evidence_ref=str(js_intel.get("path") or js_intel.get("hypotheses_path") or "findings/js_intel/materials.json"),
+            expected_information_gain="turn the prepared JS material into a bounded endpoint or parameter action",
+            stop_condition="record analyzed, blocked, dead-end, or not-applicable disposition",
+            priority=70,
+        ))
+    browser = state.get("browser_evidence") if isinstance(state.get("browser_evidence"), dict) else {}
+    if browser.get("present") and not browser.get("ready"):
+        frontier.append(_frontier_item(
+            owner="browser",
+            action="Repair or complete the existing browser evidence import",
+            evidence_ref=str(browser.get("path") or "findings/browser/mcp-readiness.json"),
+            expected_information_gain="persist the observed browser state and request evidence needed for replay",
+            stop_condition="import complete evidence or record the bounded browser blocker",
+            priority=70,
+        ))
+    source = state.get("repo_source_summary") if isinstance(state.get("repo_source_summary"), dict) else {}
+    if str(source.get("status") or "").lower() in {"partial", "blocked", "failed", "error", "incomplete", "confirmation_required"}:
+        artifacts = state.get("repo_source_artifacts") or []
+        target = str(state.get("resolved_target") or state.get("target") or "")
+        evidence_ref = str(
+            artifacts[0] if artifacts else f"findings/{target_storage_key(target)}/exposure/repo_source_meta.json"
+        )
+        if artifacts and not evidence_ref.startswith("findings/"):
+            evidence_ref = f"findings/{target_storage_key(target)}/exposure/{evidence_ref}"
+        frontier.append(_frontier_item(
+            owner="source-intel",
+            action="Complete or disposition the repository-source evidence review",
+            evidence_ref=evidence_ref,
+            expected_information_gain="resolve the source exposure status and any target-owned lead",
+            stop_condition="record source review complete, blocked, or confirmation-required",
+            priority=65,
+        ))
+
+    for hint in state.get("enrichment_hints") or []:
+        if not isinstance(hint, dict) or not hint.get("executable", True):
+            continue
+        tool = str(hint.get("tool") or "").strip()
+        if not tool or tool == "recon-ranker":
+            continue
+        frontier.append(_frontier_item(
+            owner="enrichment",
+            action=tool,
+            evidence_ref=str(
+                hint.get("evidence_ref")
+                or hint.get("path")
+                or "enrichment_artifacts"
+            ),
+            expected_information_gain=str(hint.get("reason") or "produce the missing enrichment artifact"),
+            stop_condition="artifact is written and its owner disposition is recorded",
+            priority=60,
+        ))
+
+    deduped: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in sorted(frontier, key=lambda row: (-row["priority"], row["owner"], row["id"])):
+        key = (str(item.get("owner") or ""), str(item.get("id") or item.get("action") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped[:5]
 
 
 def build_closure_projection(
@@ -3206,7 +3426,8 @@ def build_closure_projection(
             or str((case_state.get("top_next_action") or {}).get("next_action") or "none") != "none"
         )
     )
-    if action in {"hunt_p1", "hunt_p2"} and surface_review.get("status") == "complete":
+    actionable_frontier = _build_actionable_frontier(state, matrix)
+    if action in {"hunt_p1", "hunt_p2"} and not actionable_frontier:
         action = "handoff"
     round_progress = state.get("round_progress") or {}
     round_active = round_progress.get("status") == "active"
@@ -3226,9 +3447,6 @@ def build_closure_projection(
         action = "resume_round_lane"
         verdict = "handoff"
         reasons.append("round_lane_unclaimed")
-    elif max_lanes_reached:
-        verdict = "handoff"
-        reasons.append("max_lanes_reached")
     elif action in _TERMINAL_CLOSURE_ACTIONS:
         verdict = "blocked"
         reasons.append(action)
@@ -3336,6 +3554,32 @@ def build_closure_projection(
         else:
             verdict = "finish"
 
+    if verdict == "handoff" and not actionable_frontier:
+        reason = str(reasons[0] if reasons else "")
+        if reason in {"coverage_missing", "coverage_empty", "coverage_invalid"}:
+            target = str(state.get("resolved_target") or state.get("target") or "")
+            actionable_frontier = [_frontier_item(
+                owner="coverage",
+                action="Rebuild the coverage matrix and record the resulting gap disposition",
+                evidence_ref=str(
+                    state.get("_coverage_evidence_ref")
+                    or f"evidence/{target_storage_key(target)}/coverage_matrix.json"
+                ),
+                expected_information_gain="restore a valid bounded coverage projection",
+                stop_condition="record the rebuild as complete or blocked with its reason",
+                priority=80,
+            )]
+        elif reason == "surface_projection_pending":
+            projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
+            actionable_frontier = [_frontier_item(
+                owner="surface",
+                action="Refresh the target-owned Surface projection",
+                evidence_ref=str(projection.get("path") or "surface_projection"),
+                expected_information_gain="restore the bounded Surface index used for review",
+                stop_condition="publish a valid projection or record the source blocker",
+                priority=60,
+            )]
+
     if ledger_status in {"partial", "unreadable"}:
         ledger_reason = f"ledger_{ledger_status}"
         if ledger_reason not in reasons:
@@ -3353,11 +3597,15 @@ def build_closure_projection(
     result = {
         "verdict": verdict,
         "can_claim_exhausted": verdict == "finish",
+        "round_budget_reached": bool(
+            max_lanes_reached or round_progress.get("budget_reached")
+        ),
         "recon_budget_partial": recon_budget_partial,
         "reasons": reasons[:3],
         "next_action": action,
         "rotation_hint": _rotation_hint(ledger_entries or []),
         "surface_review": surface_review,
+        "actionable_frontier": actionable_frontier,
         "identity_v2": {
             "closed_cells": ledger_projection.get("closed_cells_v2") or [],
             "open_candidates": ledger_projection.get("open_candidates_v2") or [],
@@ -3394,6 +3642,7 @@ _STAGNANT_REASONS = {
     "authz_context_missing",
     "authz_context_incomplete",
     "next_action_pending",
+    "surface_work_pending",
     "coverage_high_value_gaps",
     "case_state_canonical_conflict",
 }
@@ -3409,91 +3658,93 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
     if closure.get("verdict") != "handoff" or reason not in _STAGNANT_REASONS:
         return ""
     target = str(state.get("resolved_target") or state.get("target") or "")
-    blocked_family = str((closure.get("rotation_hint") or {}).get("endpoint_family") or "")
-    surface_candidates = [
-        {
-            key: item.get(key)
-            for key in ("url", "review_reason", "new_observation")
-            if key in item
-        }
-        for item in (
-            state.get("surface_review_candidates")
-            or state.get("recommended_targets")
-            or []
-        )[:5]
-        if isinstance(item, dict)
-        and (url := str(item.get("url") or "").strip())
-        and url_belongs_to_target(url, target)
-        and _endpoint_family(url) != blocked_family
-    ]
-    surface_urls = {str(item.get("url") or "") for item in surface_candidates}
     payload = {
         "target": target,
         "reason": reason,
         "next_action": str(closure.get("next_action") or ""),
-        "browser": {
+    }
+    if reason.startswith("browser_evidence_"):
+        payload["browser"] = {
             key: (state.get("browser_evidence") or {}).get(key)
-            for key in ("present", "ready", "fingerprint", "status")
-        },
-        "source": {
+            for key in ("present", "ready", "status")
+        }
+    elif reason == "source_evidence_partial":
+        payload["source"] = {
             key: (state.get("repo_source_summary") or {}).get(key)
-            for key in ("status", "fingerprint", "input_fingerprint")
-        },
-        "intel": {
+            for key in ("status", "input_fingerprint")
+        }
+    elif reason == "intel_evidence_blocked":
+        payload["intel"] = {
             "blocked": (state.get("intel_continuation") or {}).get("blocked") or [],
             "reason": (state.get("intel_continuation") or {}).get("reason") or "",
-        },
-        "surface_projection": {
+        }
+    elif reason == "surface_projection_pending":
+        payload["surface_projection"] = {
             key: (state.get("surface_projection") or {}).get(key)
-            for key in ("status", "reason", "path")
-        },
-        "json": {
+            for key in ("status", "reason")
+        }
+    elif reason == "json_evidence_partial":
+        payload["json"] = {
             key: (state.get("json_inject") or {}).get(key)
-            for key in ("status", "input_fingerprint", "request_count", "transport_error_count")
-        },
-        "sql": {
+            for key in ("status", "input_fingerprint")
+        }
+    elif reason == "sql_evidence_partial":
+        payload["sql"] = {
             lane: {
                 key: item.get(key)
-                for key in ("status", "input_fingerprint", "request_count", "transport_error_count")
+                for key in ("status", "input_fingerprint")
             }
             for lane, item in (state.get("sql_matrix") or {}).items()
             if isinstance(item, dict)
-        },
-        "js": {
+        }
+    elif reason == "js_evidence_partial":
+        payload["js"] = {
             key: (state.get("js_intel") or {}).get(key)
             for key in ("status", "reason", "hypothesis_count")
-        },
-        "observations": {
-            "status": (state.get("observation_inventory") or {}).get("status"),
-            "by_kind": (state.get("observation_inventory") or {}).get("by_kind") or {},
-            "revision": str(
-                ((state.get("observation_inventory") or {}).get("inventory_binding") or {}).get("sha256")
+        }
+    elif reason.startswith("observation_"):
+        inventory = state.get("observation_inventory") or {}
+        by_kind = inventory.get("by_kind") if isinstance(inventory.get("by_kind"), dict) else {}
+        payload["observations"] = {
+            "status": inventory.get("status"),
+            "high_value_untouched": {
+                kind: int((by_kind.get(kind) or {}).get("present_untouched", 0) or 0)
+                for kind in HIGH_VALUE_OBSERVATION_KINDS
+            },
+        }
+    elif reason.startswith("authz_context_"):
+        payload["authz_coverage"] = (state.get("case_state") or {}).get("authz_coverage") or {}
+    elif reason == "coverage_high_value_gaps":
+        payload["coverage"] = str(state.get("_stagnation_coverage") or "")
+    elif reason == "case_state_canonical_conflict":
+        case_state = state.get("case_state") or {}
+        payload["case_state"] = {
+            "canonical_conflict_count": int(case_state.get("canonical_conflict_count", 0) or 0),
+            "canonical_conflicts": case_state.get("canonical_conflicts") or [],
+        }
+    elif reason == "next_action_pending":
+        findings = state.get("structured_findings") or {}
+        finding = next(
+            (
+                findings.get(key)
+                for key in (
+                    "next_owner_revalidation",
+                    "next_validation",
+                    "draft_completion_pending",
+                    "validated_pending_report",
+                )
+                if isinstance(findings.get(key), dict)
+            ),
+            {},
+        )
+        payload["owner"] = {
+            "queue_id": str((state.get("action_queue_next") or {}).get("id") or ""),
+            "finding_id": str(finding.get("id") or ""),
+            "case_action": str(
+                ((state.get("case_state") or {}).get("top_next_action") or {}).get("next_action")
                 or ""
             ),
-        },
-        "surface": {
-            "candidates": surface_candidates,
-            "unresolved": [
-                {key: item.get(key) for key in ("url", "reason") if key in item}
-                for item in (
-                    (state.get("surface_review_completion") or {}).get("unresolved")
-                    or []
-                )[:5]
-                if isinstance(item, dict) and str(item.get("url") or "") in surface_urls
-            ],
-        },
-        "durable": {
-            "active_actions": int(state.get("active_action_queue_count", 0) or 0),
-            "queue_next": str((state.get("action_queue_next") or {}).get("id") or ""),
-            "queue_fingerprint": str(state.get("_stagnation_queue") or ""),
-            "findings": {
-                key: (state.get("structured_findings") or {}).get(key)
-                for key in ("total", "pending_validation", "validated", "reported", "rejected")
-            },
-            "coverage": str(state.get("_stagnation_coverage") or ""),
-            "ledger": str(state.get("_stagnation_ledger") or ""),
-        },
-    }
+        }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -3507,27 +3758,29 @@ def _stagnation_continuation(state: dict, closure: dict) -> dict:
             "next_action": str(closure.get("next_action") or "handoff"),
             "rotation_target": {},
         }
-    hint = closure.get("rotation_hint") or {}
-    blocked_family = str(hint.get("endpoint_family") or "")
-    target = _rotation_target(state, blocked_family)
-    if not target:
-        return {}
-    return {
-        "reason": "stagnant_prerequisite_rotation",
-        "next_action": "rotate_to_adjacent_high_value_lane",
-        "rotation_target": target,
-    }
+    return {}
 
 
 def _semantic_coverage_fingerprint(matrix: dict | None) -> str:
-    """Hash coverage meaning, not rebuild timestamps."""
+    """Hash only unresolved high-value coverage meaning."""
     if not isinstance(matrix, dict):
         return ""
-    semantic = {
-        key: value
-        for key, value in matrix.items()
-        if key not in {"last_updated", "_coverage_projection"}
-    }
+    semantic = [
+        {
+            key: gap.get(key)
+            for key in (
+                "endpoint",
+                "vuln_class",
+                "observed_params",
+                "source_count",
+                "relevance_score",
+                "identity_v2",
+            )
+            if key in gap
+        }
+        for gap in _coverage_gaps(matrix)
+        if isinstance(gap, dict)
+    ]
     encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -3606,9 +3859,16 @@ def load_closure_projection(
         "_checkpoint_health": checkpoint_health,
         "_ledger_projection": ledger_projection,
         "enrichment_hints": enrichment_hints,
+        "_coverage_evidence_ref": f"evidence/{target_storage_key(target)}/coverage_matrix.json",
+        "action_queue_next": (
+            state.get("action_queue_next")
+            if isinstance(state.get("action_queue_next"), dict) and state.get("action_queue_next")
+            else _load_substantive_action_queue_next(repo_root, target)
+        ),
         "active_action_queue_count": sum(
             isinstance(item, dict)
             and str(item.get("status") or "queued").strip().lower() in ACTIVE_STATUSES
+            and _is_substantive_queue_action(item)
             for item in queue.get("actions") or []
         ),
         "surface_review_completion": _surface_review_completion(
@@ -3617,10 +3877,6 @@ def load_closure_projection(
             queue,
         ),
         "_stagnation_coverage": _semantic_coverage_fingerprint(matrix),
-        "_stagnation_queue": queue_fingerprint(queue),
-        "_stagnation_ledger": hashlib.sha256(
-            json.dumps(ledger_entries, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        ).hexdigest(),
     }
     closure = build_closure_projection(
         closure_state,
@@ -4263,6 +4519,9 @@ def build_decision_projection(state: dict, kind: str) -> dict:
             "error",
             "round_progress",
             "coverage_policy_skips",
+            "round_budget_reached",
+            "surface_review",
+            "actionable_frontier",
         )
         if key in closure
     }

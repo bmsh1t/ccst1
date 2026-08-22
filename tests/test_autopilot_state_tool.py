@@ -1041,6 +1041,7 @@ def test_decision_projections_preserve_only_controller_fields():
             "next_action",
             "rotation_hint",
             "round_progress",
+            "surface_review",
         )
     }
     assert closure["structured_findings"] == {"reported": 2}
@@ -1208,7 +1209,7 @@ def test_matching_third_round_guard_blocks_partial_json_lane(tmp_path):
     assert closure["reasons"] == ["stagnant_prerequisite"]
 
 
-def test_matching_third_round_guard_rotates_to_adjacent_target_surface(tmp_path):
+def test_matching_third_round_guard_does_not_revive_advisory_surface(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
     matrix_path = tmp_path / "evidence" / target / "coverage_matrix.json"
@@ -1260,10 +1261,9 @@ def test_matching_third_round_guard_rotates_to_adjacent_target_surface(tmp_path)
 
     closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
 
-    assert closure["verdict"] == "handoff"
-    assert closure["reasons"] == ["stagnant_prerequisite_rotation"]
-    assert closure["next_action"] == "rotate_to_adjacent_high_value_lane"
-    assert closure["rotation_target"]["url"] == "https://target.com/profile"
+    assert closure["verdict"] == "blocked"
+    assert closure["reasons"] == ["stagnant_prerequisite"]
+    assert "rotation_target" not in closure
 
 
 def test_matching_third_round_guard_preserves_authoritative_next_action(tmp_path):
@@ -1376,7 +1376,7 @@ def test_round_guard_ignores_coverage_rebuild_timestamp(tmp_path):
     assert first["stagnation_fingerprint"] == second["stagnation_fingerprint"]
 
 
-def test_next_action_pending_round_guard_rotates_and_candidate_change_resets(tmp_path):
+def test_next_action_pending_round_guard_ignores_candidate_window_churn(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     state = {
@@ -1394,18 +1394,11 @@ def test_next_action_pending_round_guard_rotates_and_candidate_change_resets(tmp
         max_lanes_reached=False,
         apply_round_guard=False,
     )
-    witness = tmp_path / "state" / target / "checkpoint_latest.json"
-    witness.parent.mkdir(parents=True, exist_ok=True)
-    witness.write_text(json.dumps({"round_guard": {
-        "fingerprint": base["stagnation_fingerprint"], "consecutive": 3, "threshold": 3,
-    }}), encoding="utf-8")
 
-    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
-
-    assert base["reasons"] == ["next_action_pending"]
-    assert changed["stagnation_fingerprint"] != base["stagnation_fingerprint"]
-    assert closure["reasons"] == ["stagnant_prerequisite_rotation"]
-    assert closure["rotation_target"]["url"] == f"https://{target}/profile"
+    assert base["verdict"] == "finish"
+    assert changed["verdict"] == "finish"
+    assert "stagnation_fingerprint" not in base
+    assert "stagnation_fingerprint" not in changed
 
 
 def test_coverage_high_value_gap_round_guard_blocks_without_candidate(tmp_path):
@@ -1429,7 +1422,7 @@ def test_coverage_high_value_gap_round_guard_blocks_without_candidate(tmp_path):
     assert closure["reasons"] == ["stagnant_prerequisite"]
 
 
-def test_stagnation_fingerprint_resets_on_material_owner_state_changes():
+def test_stagnation_fingerprint_resets_only_on_current_owner_change():
     closure = {
         "verdict": "handoff",
         "reasons": ["next_action_pending"],
@@ -1449,20 +1442,22 @@ def test_stagnation_fingerprint_resets_on_material_owner_state_changes():
     }
     base = stagnation_fingerprint(state, closure)
 
+    assert stagnation_fingerprint(
+        {**state, "action_queue_next": {"id": "AQ-2"}}, closure
+    ) != base
     for update in (
         {"_stagnation_coverage": "coverage-b"},
         {"_stagnation_ledger": "ledger-b"},
-        {"action_queue_next": {"id": "AQ-2"}},
         {"observation_inventory": {
             "status": "valid",
             "inventory_binding": {"sha256": "observation-b"},
         }},
         {"surface_review_candidates": [{"url": "https://target.com/settings"}]},
     ):
-        assert stagnation_fingerprint({**state, **update}, closure) != base
+        assert stagnation_fingerprint({**state, **update}, closure) == base
 
 
-def test_stagnation_fingerprint_binds_queue_generation_but_ignores_round_recovery():
+def test_stagnation_fingerprint_ignores_queue_rebuild_and_round_recovery():
     closure = {
         "verdict": "handoff",
         "reasons": ["next_action_pending"],
@@ -1485,7 +1480,7 @@ def test_stagnation_fingerprint_binds_queue_generation_but_ignores_round_recover
     }
     base = stagnation_fingerprint(state, closure)
 
-    assert stagnation_fingerprint({**state, "_stagnation_queue": "queue-b"}, closure) != base
+    assert stagnation_fingerprint({**state, "_stagnation_queue": "queue-b"}, closure) == base
     assert stagnation_fingerprint(
         {**state, "round_progress": {**state["round_progress"], "round_id": "round-b"}},
         closure,
@@ -1571,7 +1566,7 @@ def test_surface_candidate_blocks_closure_without_durable_review_outcome(tmp_pat
         str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
     )
 
-    assert closure["verdict"] == "handoff"
+    assert closure["verdict"] == "finish"
     assert closure["surface_review"]["status"] == "unresolved"
     assert closure["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
 
@@ -1607,8 +1602,8 @@ def test_surface_candidate_stays_unresolved_after_terminal_ledger_outcome(tmp_pa
         str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
     )
 
-    assert closure["verdict"] == "handoff"
-    assert closure["can_claim_exhausted"] is False
+    assert closure["verdict"] == "finish"
+    assert closure["can_claim_exhausted"] is True
     assert closure["surface_review"]["status"] == "unresolved"
     assert closure["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
 
@@ -1635,12 +1630,12 @@ def test_surface_candidate_query_is_not_closed_by_terminal_ledger_identity(tmp_p
     )
     exact = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
 
-    assert mismatch["verdict"] == "handoff"
+    assert mismatch["verdict"] == "finish"
     assert (
         mismatch["surface_review"]["unresolved"][0]["reason"]
         == "review_outcome_missing"
     )
-    assert exact["verdict"] == "handoff"
+    assert exact["verdict"] == "finish"
     assert exact["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
 
 
@@ -1657,11 +1652,7 @@ def test_surface_candidate_query_requires_exact_final_queue_identity(tmp_path):
     queue_path.write_text(json.dumps(queue), encoding="utf-8")
     exact = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
 
-    assert mismatch["verdict"] == "handoff"
-    assert (
-        mismatch["surface_review"]["unresolved"][0]["reason"]
-        == "review_outcome_missing"
-    )
+    assert mismatch["verdict"] == "finish"
     assert exact["verdict"] == "finish"
 
 
@@ -1690,7 +1681,7 @@ def test_surface_candidate_reopens_after_new_ledger_candidate(tmp_path):
         str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
     )
 
-    assert closure["verdict"] == "handoff"
+    assert closure["verdict"] == "finish"
     assert closure["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
 
 
@@ -1702,7 +1693,7 @@ def test_malformed_surface_candidate_fails_open_at_closure(tmp_path):
 
     closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
 
-    assert closure["verdict"] == "handoff"
+    assert closure["verdict"] == "finish"
     assert closure["surface_review"]["unresolved"] == [{"reason": "invalid_candidate"}]
 
 
@@ -1857,7 +1848,7 @@ def test_closure_never_finishes_for_invalid_coverage_or_explicit_durable_work():
     assert durable["reasons"] == ["durable_work_pending"]
 
 
-def test_closure_blocks_terminal_prerequisites_and_lane_limit_handoffs():
+def test_closure_recomputes_terminal_prerequisites_after_lane_limit():
     blocked = build_closure_projection(
         {"next_action": "recon_no_live_hosts"}, _closure_matrix()
     )
@@ -1867,13 +1858,80 @@ def test_closure_blocks_terminal_prerequisites_and_lane_limit_handoffs():
     terminal_lane_limited = build_closure_projection(
         {"next_action": "batch_failed"}, _closure_matrix(), max_lanes_reached=True
     )
+    gap_lane_limited = build_closure_projection(
+        {"next_action": "handoff"},
+        _closure_matrix(status="untested"),
+        max_lanes_reached=True,
+    )
 
     assert blocked["verdict"] == "blocked"
     assert blocked["reasons"] == ["recon_no_live_hosts"]
-    assert lane_limited["verdict"] == "handoff"
-    assert lane_limited["reasons"] == ["max_lanes_reached"]
-    assert terminal_lane_limited["verdict"] == "handoff"
-    assert terminal_lane_limited["reasons"] == ["max_lanes_reached"]
+    assert lane_limited["verdict"] == "finish"
+    assert lane_limited["round_budget_reached"] is True
+    assert lane_limited["reasons"] == []
+    assert terminal_lane_limited["verdict"] == "blocked"
+    assert terminal_lane_limited["reasons"] == ["batch_failed"]
+    assert gap_lane_limited["verdict"] == "handoff"
+    assert gap_lane_limited["reasons"] == ["coverage_high_value_gaps"]
+
+
+def test_budget_exhaustion_with_empty_frontier_finishes_without_handoff():
+    closure = build_closure_projection(
+        {"target": "target.com", "next_action": "handoff"},
+        _closure_matrix(),
+        max_lanes_reached=True,
+    )
+
+    assert closure["verdict"] == "finish"
+    assert closure["round_budget_reached"] is True
+    assert closure["actionable_frontier"] == []
+
+
+def test_actionable_frontier_preserves_queue_contract_fields():
+    closure = build_closure_projection(
+        {
+            "target": "target.com",
+            "next_action": "handoff",
+            "action_queue_next": {
+                "id": "AQ-1",
+                "type": "validation",
+                "action": "Replay the owner-selected validation.",
+                "evidence": "findings/target.com/poc/summary.json",
+                "next_question": "Does the peer response expose the owner marker?",
+                "stop_condition": "Stop after two stable repeats or a denial.",
+                "priority": 110,
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["durable_work_pending"]
+    assert closure["actionable_frontier"] == [{
+        "owner": "action_queue",
+        "id": "AQ-1",
+        "action": "Replay the owner-selected validation.",
+        "evidence_ref": "findings/target.com/poc/summary.json",
+        "expected_information_gain": "Does the peer response expose the owner marker?",
+        "stop_condition": "Stop after two stable repeats or a denial.",
+        "priority": 110,
+    }]
+
+
+def test_coverage_frontier_is_derived_without_marking_surface_clean():
+    closure = build_closure_projection(
+        {"target": "target.com", "next_action": "handoff"},
+        _closure_matrix(status="untested"),
+        max_lanes_reached=True,
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["coverage_high_value_gaps"]
+    assert closure["actionable_frontier"][0]["owner"] == "coverage"
+    assert closure["actionable_frontier"][0]["evidence_ref"].endswith(
+        "evidence/target.com/coverage_matrix.json"
+    )
+    assert "tested_clean" not in closure["actionable_frontier"][0]["action"]
 
 
 def test_closure_rotation_hint_never_changes_the_verdict():
@@ -2213,7 +2271,7 @@ def test_normal_bounded_state_never_loads_closure_owners(tmp_path, monkeypatch):
     assert state["next_action"] == "run_recon"
 
 
-def test_explicit_closure_checks_non_substantive_active_queue_work(tmp_path):
+def test_explicit_closure_defers_non_substantive_active_queue_work(tmp_path):
     target = "target.com"
     evidence_dir = tmp_path / "evidence" / target_storage_key(target)
     evidence_dir.mkdir(parents=True)
@@ -2241,6 +2299,44 @@ def test_explicit_closure_checks_non_substantive_active_queue_work(tmp_path):
     )
     assert state["action_queue_next"] == {}
     state["next_action"] = "handoff"
+    state["observation_inventory"] = {"status": "valid", "by_kind": {}}
+    closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+
+    assert closure["verdict"] == "finish"
+    assert closure["reasons"] == []
+
+
+def test_explicit_closure_keeps_substantive_surface_queue_work(tmp_path):
+    target = "target.com"
+    evidence_dir = tmp_path / "evidence" / target_storage_key(target)
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "coverage_matrix.json").write_text(
+        json.dumps(_closure_matrix()), encoding="utf-8"
+    )
+    queue_dir = tmp_path / "state" / target_storage_key(target)
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "action_queue.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target": target,
+            "actions": [{
+                "id": "AQ-0001",
+                "status": "queued",
+                "type": "surface-review",
+                "command_hint": "python3 tools/validation_runner.py marker-replay",
+                "evidence": "findings/target.com/poc/candidate.json",
+                "stop_condition": "record a terminal replay result",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    state = {
+        "target": target,
+        "resolved_target": target,
+        "next_action": "handoff",
+        "observation_inventory": {"status": "valid", "by_kind": {}},
+    }
+
     closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
 
     assert closure["verdict"] == "handoff"

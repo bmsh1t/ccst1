@@ -107,8 +107,8 @@ def test_bounded_deep_invocation_handoffs_instead_of_expanding_new_lanes():
     assert "invocation_batch.bounded" in command
     assert "browser/source discoveries become next-invocation work, not lane n+1" in " ".join(command.split()).lower()
     assert "after lane N do not execute a newly discovered queue item" in command
-    assert "When `max_lanes` was reached" in command
-    assert "it always requires handoff" in command
+    assert "Reaching `max_lanes` ends target work for this invocation" in command
+    assert "the budget alone never requires another round" in command
     assert "checkpoint/sync durable queue" in agent
 
 
@@ -142,7 +142,7 @@ def test_browser_first_use_probe_retries_only_transient_session_failures():
 def test_incomplete_durable_state_is_handoff_not_target_exhaustion():
     command = " ".join(_read("commands/autopilot.md").split()).lower()
 
-    assert "active durable work, pending validation/report" in command
+    assert "active substantive queue work, pending validation/report" in command
     assert "partial browser/source/intel, or untouched high-value work" in command
     assert "`handoff/partial`" in command
     assert "never `finish/complete/exhausted`" in command
@@ -159,7 +159,7 @@ def test_finish_contract_rebuilds_coverage_then_reads_explicit_closure_verdict()
     assert command.count(rebuild) == 1
     assert command.index(rebuild) < command.index(gaps) < command.index(closure)
     assert "only `verdict=finish` with `can_claim_exhausted=true`" in normalized
-    assert "--max-lanes-reached" in command
+    assert "the budget alone never requires another round" in command
 
 
 def test_finish_contract_surfaces_high_value_memory_recommendations_without_auto_promotion():

@@ -195,7 +195,7 @@ cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
 ```
 Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and advisory `closure.rotation_hint`. Only `verdict=finish` with `can_claim_exhausted=true` permits a `finish/complete/exhausted` claim; `handoff` preserves durable work and `blocked` records the terminal prerequisite blocker.
-When `max_lanes` was reached, pass `--max-lanes-reached`; it always requires handoff. A pending report is a closure asset, not a stop signal. Active durable work, pending validation/report, partial browser/source/intel, or untouched high-value work means `handoff/partial`, never `finish/complete/exhausted`.
+Reaching `max_lanes` ends target work for this invocation, then Closure recomputes from current owners; the budget alone never requires another round. A pending report is a closure asset, not a stop signal. Active substantive Queue work, pending validation/report, partial browser/source/intel, or untouched high-value work means `handoff/partial`, never `finish/complete/exhausted`.
 Checkpoint unresolved work in the existing Action Queue instead of passive TODOs.
 Passing `check_autopilot_run.py` proves state-chain integrity, not target exhaustion.
 In the final handoff/finish response, use the classification criteria (not the
