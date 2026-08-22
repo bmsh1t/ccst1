@@ -57,6 +57,47 @@ def _machine_decision(*, target: str, finding_id: str, endpoint: str, report_pat
     }
 
 
+def _seed_machine_preflight(tmp_path):
+    from finding_index import upsert_finding
+
+    target = "target.com"
+    finding_id = "sqli_preflight"
+    findings_dir = tmp_path / "findings" / target
+    evidence_ref = tmp_path / "evidence" / target / "validation" / "raw-pair.json"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text('{"baseline":"one","variant":"many"}\n', encoding="utf-8")
+    upsert_finding(
+        findings_dir,
+        {
+            "id": finding_id,
+            "type": "sqli",
+            "url": "https://target.com/rest/products/search?q=test",
+            "summary": "Candidate response difference.",
+            "source_file": str(evidence_ref),
+            "validation_status": "candidate",
+        },
+        target=target,
+    )
+    decision = _machine_decision(
+        target=target,
+        finding_id=finding_id,
+        endpoint="/rest/products/search?q=test",
+        report_path=f"findings/{target}/validated/preflight.md",
+        evidence_ref=str(evidence_ref),
+    )
+    decision_path = tmp_path / "machine-decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    return target, finding_id, findings_dir, decision_path
+
+
+def _file_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 def test_non_tty_validate_without_decision_fails_closed_before_state_write(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
     monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
@@ -67,6 +108,73 @@ def test_non_tty_validate_without_decision_fails_closed_before_state_write(tmp_p
     assert "non-TTY validation requires --decision-json" in capsys.readouterr().err
     assert not (tmp_path / "findings").exists()
     assert not (tmp_path / "state").exists()
+
+
+def test_machine_decision_preflight_success_is_read_only(tmp_path, monkeypatch, capsys):
+    target, finding_id, findings_dir, decision_path = _seed_machine_preflight(tmp_path)
+    before = _file_snapshot(tmp_path)
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+
+    exit_code = validate.main(
+        [
+            "--target",
+            target,
+            "--finding-id",
+            finding_id,
+            "--decision-json",
+            str(decision_path),
+            "--preflight",
+            "--json",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert output["status"] == "preflight_ok"
+    assert output["read_only"] is True
+    assert output["finding_id"] == finding_id
+    assert output["findings_dir"] == str(findings_dir)
+    assert _file_snapshot(tmp_path) == before
+    assert not (findings_dir / "validated").exists()
+
+
+def test_machine_decision_preflight_aggregates_errors_without_writes(tmp_path, monkeypatch, capsys):
+    target, finding_id, findings_dir, decision_path = _seed_machine_preflight(tmp_path)
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    decision["endpoint"] = "/wrong-path"
+    decision["gates"] = {}
+    decision["cvss"] = {}
+    decision["evidence"] = {"summary": "", "refs": [str(tmp_path / "missing.raw")]}
+    decision["report"] = {}
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    before = _file_snapshot(tmp_path)
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+
+    exit_code = validate.main(
+        [
+            "--target",
+            target,
+            "--finding-id",
+            finding_id,
+            "--decision-json",
+            str(decision_path),
+            "--preflight",
+            "--json",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    errors = output["errors"]
+    assert exit_code == 2
+    assert output["status"] == "preflight_invalid"
+    assert output["read_only"] is True
+    assert len(errors) >= 4
+    assert any("canonical finding endpoint" in error for error in errors)
+    assert any("decision.gates" in error for error in errors)
+    assert any("decision.cvss" in error for error in errors)
+    assert any("evidence.summary" in error for error in errors)
+    assert _file_snapshot(tmp_path) == before
+    assert not (findings_dir / "validated").exists()
 
 
 def test_non_tty_machine_decision_binds_canonical_finding_and_uses_owner(tmp_path, monkeypatch, capsys):

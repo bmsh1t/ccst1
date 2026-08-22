@@ -199,9 +199,13 @@ Finish on evidence state, not a tool checklist. `working_hypothesis` must be res
 Immediately before any target-exhaustion claim, run the ordered coverage review and explicit read-only verdict below; an absent or empty matrix never proof of coverage. Consult available `evidence/<target>/intelligence.md`, browser, JS, source, and exposure evidence.
 ```bash
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>
-cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell> --limit 50
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
 ```
+The bounded `find-gaps --limit 50` output is an AI review window only. Its
+`total` and `truncated` fields are advisory display metadata; the complete
+matrix remains the closure owner input, and a truncated window never means
+coverage is complete.
 Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and advisory `closure.rotation_hint`. Only `verdict=finish` with `can_claim_exhausted=true` permits a `finish/complete/exhausted` claim; `handoff` preserves durable work and `blocked` records the terminal prerequisite blocker.
 Reaching `max_lanes` ends target work for this invocation, then Closure recomputes from current owners; the budget alone never requires another round. A pending report is a closure asset, not a stop signal. Active substantive Queue work, pending validation/report, partial browser/source/intel, or untouched high-value work means `handoff/partial`, never `finish/complete/exhausted`.
 Checkpoint unresolved work in the existing Action Queue instead of passive TODOs.

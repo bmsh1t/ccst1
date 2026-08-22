@@ -96,6 +96,23 @@ def test_f3_truncates_large_gap_list(stub_coverage_matrix, monkeypatch):
     assert "... (15 more)" in msg
 
 
+def test_f3_blocks_on_truncated_gap_envelope(stub_coverage_matrix, monkeypatch):
+    gp = stub_coverage_matrix / "gaps.json"
+    gp.write_text(json.dumps({
+        "items": [{"endpoint": "/api/x0", "vuln_class": "IDOR", "weight": 2.0}],
+        "total": 20,
+        "returned": 1,
+        "truncated": True,
+    }))
+    monkeypatch.setenv("STUB_GAPS_FILE", str(gp))
+
+    passed, msg = _f3_coverage_gate("test.com", repo_root=stub_coverage_matrix)
+
+    assert passed is False
+    assert "output is truncated" in msg
+    assert "1 of 20" in msg
+
+
 def test_f3_treats_missing_matrix_tool_as_pass(tmp_path):
     """No tools/coverage_matrix.py → F3 cannot run, treat as pass with no warning."""
     fake_repo = tmp_path / "empty"

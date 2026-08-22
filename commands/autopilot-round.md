@@ -107,10 +107,15 @@ round closure, then request the owner verdict in this order:
 
 ```bash
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>
-cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell>
+cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell> --limit 50
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-closure --json
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
 ```
+
+The bounded `find-gaps --limit 50` output is an AI review window only. Its
+`total` and `truncated` fields are advisory display metadata; the complete
+matrix remains the closure owner input, and a truncated window never means
+coverage is complete.
 
 `round_progress.budget_reached` only ends target work for this invocation. The
 final verdict is recomputed from current Queue, Finding, Case State, coverage,

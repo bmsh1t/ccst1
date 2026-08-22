@@ -359,6 +359,66 @@ def test_priority_frontier_exposes_queue_and_surface_without_cross_owner_score()
     assert frontier[1]["runnable"] is True
 
 
+def test_priority_frontier_keeps_one_head_for_each_present_owner():
+    frontier = _build_priority_frontier({
+        "target": "target.com",
+        "resolved_target": "target.com",
+        "action_queue_next": {
+            "id": "AQ-1",
+            "action": "replay queue evidence",
+            "evidence": "evidence/target.com/queue.json",
+            "next_question": "does the owner response persist?",
+        },
+        "structured_findings": {
+            "next_validation": {
+                "id": "finding-1",
+                "required_action": "validate the candidate",
+                "evidence_ref": "findings/target.com/finding.json",
+            },
+        },
+        "validation_runner_next": {
+            "id": "runner-1",
+            "summary_path": "evidence/target.com/validation/summary.json",
+            "next_action": "review runner evidence",
+        },
+        "intel_continuation": {
+            "action": "test_advisory_applicability",
+            "reason": "version applicability is unresolved",
+        },
+        "case_state": {
+            "status": "valid",
+            "top_next_action": {
+                "next_action": "compare owner and peer",
+                "why_now": "a case obligation remains open",
+            },
+        },
+        "json_inject": {"status": "partial", "path": "findings/target.com/json.json"},
+        "surface_review_candidates": [{
+            "url": "https://target.com/admin/export",
+            "suggested": "review export authorization",
+        }],
+    })
+
+    owners = {item["owner"] for item in frontier}
+    assert owners >= {
+        "action_queue",
+        "finding",
+        "validation-runner",
+        "intel",
+        "surface",
+        "case_state",
+        "json-inject",
+    }
+    assert [item["owner"] for item in frontier[:5]] == [
+        "action_queue",
+        "finding",
+        "validation-runner",
+        "intel",
+        "surface",
+    ]
+    assert all("priority" not in item for item in frontier)
+
+
 def test_text_state_projects_frontier_and_ignores_unprojected_payload():
     output = format_autopilot_state({
         "target": "target.com",
@@ -1540,6 +1600,109 @@ def test_stagnation_fingerprint_resets_only_on_current_owner_change():
         assert stagnation_fingerprint({**state, **update}, closure) == base
 
 
+def test_next_action_stagnation_uses_owner_semantics_not_runtime_noise():
+    closure = {
+        "verdict": "handoff",
+        "reasons": ["next_action_pending"],
+        "next_action": "resume_action_queue",
+    }
+    state = {
+        "target": "target.com",
+        "resolved_target": "target.com",
+        "action_queue_next": {
+            "id": "AQ-1",
+            "status": "running",
+            "action": "replay owner response",
+            "evidence": "evidence/target.com/queue/summary.json",
+            "next_question": "does the peer response differ?",
+            "created_at": "2026-08-22T00:00:00Z",
+            "metadata": {
+                "tested_dimensions": ["identity"],
+                "last_outcome": {
+                    "status": "baseline_only",
+                    "observed_difference": "no peer difference",
+                    "evidence_ref": "evidence/target.com/queue/response.json",
+                    "at": "2026-08-22T00:01:00Z",
+                    "operation_id": "run-1",
+                },
+            },
+        },
+        "structured_findings": {
+            "next_validation": {
+                "id": "finding-1",
+                "status": "candidate",
+                "next_question": "is the claim reproducible?",
+                "evidence_ref": "findings/target.com/finding-1.json",
+            },
+        },
+        "case_state": {
+            "status": "valid",
+            "top_next_action": {
+                "next_action": "compare owner and peer",
+                "next_question": "does the private marker match?",
+                "status": "pending",
+            },
+        },
+    }
+    base = stagnation_fingerprint(state, closure)
+    noisy = {
+        **state,
+        "action_queue_next": {
+            **state["action_queue_next"],
+            "created_at": "2099-01-01T00:00:00Z",
+            "updated_at": "2099-01-01T00:00:01Z",
+            "rebuild_id": "rebuild-99",
+            "metadata": {
+                **state["action_queue_next"]["metadata"],
+                "last_outcome": {
+                    **state["action_queue_next"]["metadata"]["last_outcome"],
+                    "at": "2099-01-01T00:00:02Z",
+                    "operation_id": "run-99",
+                },
+            },
+        },
+    }
+    assert stagnation_fingerprint(noisy, closure) == base
+
+    for update in (
+        {"action_queue_next": {
+            **state["action_queue_next"],
+            "metadata": {
+                **state["action_queue_next"]["metadata"],
+                "tested_dimensions": ["identity", "method"],
+            },
+        }},
+        {"action_queue_next": {
+            **state["action_queue_next"],
+            "next_question": "does the role response differ?",
+        }},
+        {"action_queue_next": {
+            **state["action_queue_next"],
+            "metadata": {
+                **state["action_queue_next"]["metadata"],
+                "last_outcome": {
+                    **state["action_queue_next"]["metadata"]["last_outcome"],
+                    "observed_difference": "peer response exposes owner marker",
+                },
+            },
+        }},
+        {"structured_findings": {
+            "next_validation": {
+                **state["structured_findings"]["next_validation"],
+                "status": "needs-evidence",
+            },
+        }},
+        {"case_state": {
+            **state["case_state"],
+            "top_next_action": {
+                **state["case_state"]["top_next_action"],
+                "next_question": "does the private role marker match?",
+            },
+        }},
+    ):
+        assert stagnation_fingerprint({**state, **update}, closure) != base
+
+
 def test_stagnation_fingerprint_ignores_queue_rebuild_and_round_recovery():
     closure = {
         "verdict": "handoff",
@@ -1956,6 +2119,31 @@ def test_closure_recomputes_terminal_prerequisites_after_lane_limit():
     assert terminal_lane_limited["reasons"] == ["batch_failed"]
     assert gap_lane_limited["verdict"] == "handoff"
     assert gap_lane_limited["reasons"] == ["coverage_high_value_gaps"]
+
+
+def test_legacy_resume_preview_is_advisory_without_current_surface_binding():
+    state = {
+        "target": "target.com",
+        "next_action": "resume_untested",
+        "resume_targets": ["/legacy-endpoint"],
+    }
+    advisory = build_closure_projection(state, _closure_matrix())
+    assert advisory["verdict"] == "finish"
+    assert advisory["reasons"] == []
+
+    bound = build_closure_projection(
+        {
+            **state,
+            "surface_review_candidates": [{
+                "url": "https://target.com/legacy-endpoint",
+                "new_observation": True,
+            }],
+            "next_action": "handoff",
+        },
+        _closure_matrix(),
+    )
+    assert bound["verdict"] == "handoff"
+    assert bound["reasons"] == ["surface_work_pending"]
 
 
 def test_budget_exhaustion_with_empty_frontier_finishes_without_handoff():

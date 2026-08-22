@@ -610,7 +610,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
         ],
         "priority_frontier": [
             _compact_candidate(item)
-            for item in (state.get("priority_frontier") or [])[:8]
+            for item in (state.get("priority_frontier") or [])
             if isinstance(item, dict)
         ],
         "workflow_leads": workflow_leads,

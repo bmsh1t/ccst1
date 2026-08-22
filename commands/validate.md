@@ -107,6 +107,19 @@ statuses/bases in `seven_question_gate.questions`, `cvss.score`/`vector`, an
 the canonical row before any write occurs; the report path stays below that
 row's `findings/<target>/` directory.
 
+To check a decision before applying it, add `--preflight`. This reads the
+decision and canonical finding, reports all independent schema/binding errors,
+and never writes a report, summary, finding, ledger, queue, or runtime state:
+
+```bash
+python3 tools/validate.py --target <target> --finding-id <canonical-id> \
+  --decision-json /tmp/validate-decision.json --preflight --json
+```
+
+Successful preflight returns `status: "preflight_ok"`; invalid input returns
+exit `2` with `status: "preflight_invalid"` and an `errors` list. Remove
+`--preflight` to apply the unchanged validation path.
+
 The tool writes the summary, ledger/queue handoff and canonical status through
 their existing owners. `finding_index` also records a target-scoped owner
 mutation event, so a later runtime check can distinguish an owner mutation from

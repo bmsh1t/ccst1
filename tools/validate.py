@@ -10,6 +10,8 @@ Usage:
   python3 tools/validate.py --output findings/myreport.md
   python3 tools/validate.py --target target.com --finding-id sqli_abc \
       --decision-json /tmp/validation-decision.json --json
+  python3 tools/validate.py --target target.com --finding-id sqli_abc \
+      --decision-json /tmp/validation-decision.json --preflight --json
 """
 
 import argparse
@@ -118,6 +120,15 @@ CVSS_PARAMETER_KEYS = ("AV", "AC", "AT", "PR", "UI", "VC", "VI", "VA", "SC", "SI
 
 class ValidationInputUnavailable(RuntimeError):
     """Raised when an interactive validation prompt cannot safely read input."""
+
+
+class MachineDecisionPreflightError(ValueError):
+    """Raised when a read-only machine decision preflight finds invalid fields."""
+
+    def __init__(self, errors: Sequence[str]):
+        self.errors = tuple(str(error) for error in errors if str(error).strip())
+        super().__init__("; ".join(self.errors))
+
 
 # A validation skeleton is useful working material, but it is not a
 # submission-ready report until its concrete evidence sections are filled.
@@ -2409,6 +2420,107 @@ def _build_machine_validation_input(
     return info, prefill, findings_dir, report_path, report_content
 
 
+def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
+    """Read and validate a machine decision without creating or changing state."""
+    errors: list[str] = []
+
+    def capture(callback):
+        try:
+            return callback()
+        except (KeyError, OSError, ValueError) as exc:
+            errors.append(str(exc))
+            return None
+
+    loaded = capture(lambda: _load_machine_decision(args.decision_json))
+    if loaded is None:
+        raise MachineDecisionPreflightError(errors)
+    decision, decision_path = loaded
+
+    decision_target = capture(lambda: canonical_target_value(_required_text(decision.get("target"), "target")))
+    finding_id = capture(lambda: _required_text(decision.get("finding_id"), "finding_id"))
+    if finding_id is not None and finding_id != args.finding_id:
+        errors.append("decision.finding_id must exactly match --finding-id")
+
+    findings_dir = capture(
+        lambda: _resolve_machine_findings_dir(args, decision_target or "")
+    )
+    prefill = None
+    if findings_dir is not None and finding_id:
+        prefill = capture(
+            lambda: load_finding_prefill(
+                str(findings_dir),
+                finding_id,
+                migrate_legacy=False,
+            )
+        )
+        if prefill == {}:
+            errors.append(f"finding id not found in findings.json: {finding_id}")
+
+    if prefill:
+        if decision_target is not None:
+            indexed_target = canonical_target_value(str(prefill.get("target") or ""))
+            if indexed_target != decision_target:
+                errors.append("decision.target does not match the canonical findings index target")
+
+    decision_endpoint = capture(lambda: _required_text(decision.get("endpoint"), "endpoint"))
+    if prefill and decision_endpoint is not None and not _machine_endpoints_match(
+        decision_endpoint,
+        str(prefill.get("endpoint") or ""),
+    ):
+        errors.append("decision.endpoint does not match the canonical finding endpoint")
+
+    decision_vuln_class = capture(
+        lambda: _normalize_vuln_class(_required_text(decision.get("vuln_class"), "vuln_class"))
+    )
+    if prefill and decision_vuln_class is not None:
+        indexed_vuln_class = _normalize_vuln_class(prefill.get("vuln_type"))
+        if not decision_vuln_class or decision_vuln_class != indexed_vuln_class:
+            errors.append("decision.vuln_class does not match the canonical finding class")
+
+    capture(lambda: _parse_machine_gates(decision.get("gates")))
+    capture(lambda: _parse_machine_seven_questions(decision.get("seven_question_gate")))
+    capture(lambda: _parse_machine_cvss(decision.get("cvss")))
+    capture(lambda: _required_text(decision.get("impact"), "impact"))
+
+    evidence = decision.get("evidence")
+    if not isinstance(evidence, dict):
+        errors.append("decision.evidence must be an object")
+    else:
+        capture(lambda: _required_text(evidence.get("summary"), "evidence.summary"))
+        capture(lambda: _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=BASE_DIR))
+
+    report_result = capture(
+        lambda: _resolve_machine_report(
+            decision.get("report"),
+            findings_dir=findings_dir or BASE_DIR,
+            repo_root=BASE_DIR,
+        )
+    )
+    if report_result is not None and findings_dir is not None and finding_id:
+        report_path, report_content = report_result
+        capture(
+            lambda: _assert_machine_report_path_available(
+                findings_dir,
+                finding_id=finding_id,
+                report_path=report_path,
+                report_content=report_content,
+                repo_root=BASE_DIR,
+            )
+        )
+
+    if errors:
+        raise MachineDecisionPreflightError(errors)
+    return {
+        "status": "preflight_ok",
+        "read_only": True,
+        "decision_path": str(decision_path),
+        "target": decision_target,
+        "finding_id": finding_id,
+        "findings_dir": str(findings_dir),
+        "report_path": str(report_result[0]),
+    }
+
+
 def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
     """Apply an explicit non-TTY validation decision through existing owners only."""
     info, prefill, findings_dir, report_path, report_content = _build_machine_validation_input(args)
@@ -2460,6 +2572,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--decision-json",
         default="",
         help="Explicit machine-readable non-TTY validation decision bound to --finding-id.",
+    )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Read-only machine decision validation; aggregate errors without writing state.",
     )
     parser.add_argument("--json", action="store_true", help="Emit machine validation result as JSON.")
     parser.add_argument("--method", default="GET", help="HTTP method used by the validated replay evidence")
@@ -2679,6 +2796,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.preflight:
+            if not args.decision_json:
+                raise MachineDecisionPreflightError(("--preflight requires --decision-json",))
+            result = run_machine_preflight(args)
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            else:
+                print(
+                    "machine validation preflight ok "
+                    f"finding={result['finding_id']} report={result['report_path']}"
+                )
+            return 0
         if args.decision_json:
             result = run_machine_validation(args)
             if args.json:
@@ -2697,6 +2826,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "non-TTY validation requires --decision-json; no state was written"
             )
         return _run_interactive_validation(args, parser)
+    except MachineDecisionPreflightError as exc:
+        if args.preflight and args.json:
+            print(
+                json.dumps(
+                    {
+                        "status": "preflight_invalid",
+                        "read_only": True,
+                        "errors": list(exc.errors),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(f"validate preflight: {exc}", file=sys.stderr)
+        return 2
     except ValidationInputUnavailable as exc:
         print(f"validate: {exc}", file=sys.stderr)
         return 2

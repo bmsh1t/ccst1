@@ -126,6 +126,13 @@ def test_round_end_orders_checkpoint_coverage_and_owner_closure():
     assert "budget exhaustion alone never selects `STATUS: CONTINUE`" in normalized
 
 
+def test_round_gap_review_uses_bounded_display_window_without_changing_closure_order():
+    command = _read("commands/autopilot-round.md")
+    assert "python3 tools/coverage_matrix.py find-gaps --target <target_shell> --limit 50" in command
+    assert "The bounded `find-gaps --limit 50` output is an AI review window only." in command
+    assert "a truncated window never means" in command
+
+
 def test_round_budget_is_checkpoint_owned_not_prompt_counted():
     command = _read("commands/autopilot-round.md")
     normalized = " ".join(command.split())

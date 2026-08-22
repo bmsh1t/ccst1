@@ -9,6 +9,7 @@ import pytest
 
 from tools import surface as surface_module
 from tools.action_queue import ingest_checkpoint, load_queue, save_queue
+from tools.evidence_ledger import ledger_path, record_entry
 from tools.surface_index import SurfaceIndexError
 from tools.surface_projection import (
     build_surface_input_manifest,
@@ -90,6 +91,117 @@ def test_empty_checkpoint_sync_keeps_valid_projection(tmp_path):
     }
     assert queue_path.stat().st_ino == queue_inode
     assert (tmp_path / "findings" / "target.com" / ".locks" / "findings.lock").is_file()
+    assert load_surface_projection(tmp_path, "target.com")["status"] == "valid"
+
+
+def test_queue_claim_runner_writeback_and_timestamps_keep_projection_valid(tmp_path):
+    _write_surface_inputs(tmp_path)
+    queue = load_queue(tmp_path, "target.com")
+    queue["actions"] = [{
+        "id": "AQ-0001",
+        "target": "target.com",
+        "status": "queued",
+        "type": "coverage-gap",
+        "metadata": {"endpoint": "/orders/1", "vuln_class": "Authz"},
+        "next_question": "Before",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }]
+    queue_path = save_queue(tmp_path, "target.com", queue)
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", _ranked(), manifest=manifest)
+    before = build_surface_input_manifest(tmp_path, "target.com")
+
+    queue = load_queue(tmp_path, "target.com")
+    action = queue["actions"][0]
+    action["status"] = "running"
+    action["next_question"] = "After claim"
+    action["updated_at"] = "2026-08-22T00:00:00Z"
+    action.setdefault("metadata", {})["last_outcome"] = {
+        "status": "observed",
+        "at": "2026-08-22T00:00:01Z",
+        "evidence_ref": "evidence/trace.json",
+    }
+    queue["updated_at"] = "2026-08-22T00:00:02Z"
+    save_queue(tmp_path, "target.com", queue)
+
+    after = build_surface_input_manifest(tmp_path, "target.com")
+    assert before["fingerprint"] == after["fingerprint"]
+    assert queue_path.stat().st_ino != next(
+        item["st_ino"]
+        for item in before["items"]
+        if item["path"] == "state/target.com/action_queue.json"
+    )
+    assert load_surface_projection(tmp_path, "target.com")["status"] == "valid"
+
+
+def test_queue_final_endpoint_or_status_change_stales_projection(tmp_path):
+    _write_surface_inputs(tmp_path)
+    queue = load_queue(tmp_path, "target.com")
+    queue["actions"] = [{
+        "id": "AQ-0001",
+        "target": "target.com",
+        "status": "tested",
+        "type": "coverage-gap",
+        "metadata": {"endpoint": "/orders/1", "vuln_class": "Authz"},
+    }]
+    save_queue(tmp_path, "target.com", queue)
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", _ranked(), manifest=manifest)
+
+    queue = load_queue(tmp_path, "target.com")
+    queue["actions"][0]["status"] = "blocked"
+    queue["actions"][0]["metadata"]["endpoint"] = "/orders/2"
+    save_queue(tmp_path, "target.com", queue)
+
+    stale = load_surface_projection(tmp_path, "target.com")
+    assert stale["status"] == "stale"
+    assert stale["reason"] == "input-manifest-mismatch"
+
+
+def test_non_closing_ledger_append_keeps_projection_valid_but_closure_stales(tmp_path):
+    _write_surface_inputs(tmp_path)
+    path = ledger_path(tmp_path, "target.com")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", _ranked(), manifest=manifest)
+
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/orders/1",
+        vuln_class="Authz",
+        result="lead",
+    )
+    assert load_surface_projection(tmp_path, "target.com")["status"] == "valid"
+    raw_before_terminal = path.read_bytes()
+
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/orders/1",
+        vuln_class="Authz",
+        result="tested_clean",
+    )
+    stale = load_surface_projection(tmp_path, "target.com")
+    assert stale["status"] == "stale"
+    assert stale["reason"] == "input-manifest-mismatch"
+    assert path.read_bytes().startswith(raw_before_terminal)
+
+
+def test_first_non_closing_ledger_append_keeps_projection_valid(tmp_path):
+    _write_surface_inputs(tmp_path)
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", _ranked(), manifest=manifest)
+
+    record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/orders/1",
+        vuln_class="Authz",
+        result="lead",
+    )
+
     assert load_surface_projection(tmp_path, "target.com")["status"] == "valid"
 
 

@@ -16,8 +16,28 @@ from pathlib import Path
 from typing import Iterable
 
 try:
+    from tools.action_queue import (
+        ACTIVE_STATUSES,
+        _is_final_action,
+        _semantic_action,
+        load_queue,
+    )
+    from tools.evidence_ledger import (
+        build_current_cell_projection,
+        load_entries_diagnostic,
+    )
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from action_queue import (  # type: ignore
+        ACTIVE_STATUSES,
+        _is_final_action,
+        _semantic_action,
+        load_queue,
+    )
+    from evidence_ledger import (  # type: ignore
+        build_current_cell_projection,
+        load_entries_diagnostic,
+    )
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -29,6 +49,92 @@ MANIFEST_KIND = "surface_input_manifest"
 # `recon_manifest.jsonl` 在 projection 发布后写入，若纳入指纹会让刚发布的
 # projection 立即变 stale；原始 surface artifact 仍完整保留。
 _GENERATED_RECON_PARTS = frozenset({"surface", "recon_manifest.jsonl"})
+
+
+_QUEUE_TRANSIENT_FIELDS = frozenset({
+    "attempts",
+    "claim_status",
+    "claimed_at",
+    "claimed_by",
+    "created_at",
+    "last_outcome",
+    "next_question",
+    "runner_operation_id",
+    "tested_dimensions",
+    "updated_at",
+})
+
+
+def _without_queue_transients(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_queue_transients(child)
+            for key, child in value.items()
+            if key not in _QUEUE_TRANSIENT_FIELDS
+        }
+    if isinstance(value, list):
+        return [_without_queue_transients(child) for child in value]
+    return value
+
+
+def _semantic_action_queue(repo_root: Path, target: str) -> dict:
+    """Project Queue meaning while ignoring claim/runner write-back churn."""
+    queue = load_queue(repo_root, target)
+    semantic_queue = _without_queue_transients(queue)
+    if not isinstance(semantic_queue, dict):  # pragma: no cover - owner returns an object
+        return {"kind": "action_queue_semantic_projection", "queue": {}}
+    actions: list[dict] = []
+    for action in queue.get("actions", []):
+        if not isinstance(action, dict):
+            continue
+        semantic_action = _without_queue_transients(_semantic_action(action))
+        if not isinstance(semantic_action, dict):  # pragma: no cover - action is an object
+            continue
+        raw_status = str(action.get("status") or "queued")
+        semantic_action["status"] = raw_status if _is_final_action(action) else (
+            "active" if raw_status in ACTIVE_STATUSES else raw_status
+        )
+        actions.append(semantic_action)
+    actions.sort(key=lambda item: json.dumps(item, ensure_ascii=True, sort_keys=True))
+    semantic_queue["actions"] = actions
+    return {"kind": "action_queue_semantic_projection", "queue": semantic_queue}
+
+
+def _semantic_closed_cells(value: object) -> list[dict]:
+    """Keep closure identity/result while ignoring non-authoritative timestamps."""
+    if not isinstance(value, list):
+        return []
+    cells: list[dict] = []
+    for cell in value:
+        if not isinstance(cell, dict):
+            continue
+        cells.append(
+            {
+                key: cell[key]
+                for key in ("identity_v2", "endpoint", "vuln_class", "dimensions", "result")
+                if key in cell
+            }
+        )
+    cells.sort(key=lambda item: json.dumps(item, ensure_ascii=True, sort_keys=True))
+    return cells
+
+
+def _semantic_evidence_ledger(repo_root: Path, target: str) -> dict:
+    """Project the Ledger closure owner without rewriting or hashing raw rows."""
+    diagnostic = load_entries_diagnostic(repo_root, target)
+    projection = build_current_cell_projection(list(diagnostic.get("entries") or []))
+    return {
+        "kind": "evidence_ledger_closure_projection",
+        # Missing, empty, and lead-only ledgers all have the same Surface
+        # closure meaning. Corrupt/unreadable input must still invalidate it.
+        "status": (
+            "invalid"
+            if str(diagnostic.get("status") or "missing") in {"partial", "unreadable"}
+            else "ready"
+        ),
+        "closed_cells": _semantic_closed_cells(projection.get("closed_cells")),
+        "closed_cells_v2": _semantic_closed_cells(projection.get("closed_cells_v2")),
+    }
 
 
 def _now_utc() -> str:
@@ -112,6 +218,11 @@ def build_surface_input_manifest(
     """构建稳定输入 manifest；目录只记结构，普通文件记录 metadata。"""
     repo = Path(repo_root).resolve()
     resolved = canonical_target_value(target)
+    storage_key = target_storage_key(resolved)
+    semantic_paths = {
+        f"state/{storage_key}/action_queue.json": _semantic_action_queue,
+        f"memory/evidence/{storage_key}/ledger.jsonl": _semantic_evidence_ledger,
+    }
     items: list[dict] = []
     seen: set[str] = set()
     for root, skip_parts in _manifest_roots(repo, resolved, memory_dir=memory_dir):
@@ -138,7 +249,42 @@ def build_surface_input_manifest(
                 )
             items.append(item)
     items.sort(key=lambda item: (item["path"], item["kind"]))
-    encoded = json.dumps(items, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    semantic_parent_paths = {
+        parent.as_posix()
+        for path in semantic_paths
+        for parent in Path(path).parents
+        if parent.as_posix() != "."
+    }
+    fingerprint_items: list[dict] = []
+    for item in items:
+        semantic_input = semantic_paths.get(str(item["path"]))
+        if semantic_input is None:
+            if item["kind"] == "dir" and str(item["path"]) in semantic_parent_paths:
+                continue
+            fingerprint_items.append(item)
+            continue
+        fingerprint_items.append(
+            {
+                "path": item["path"],
+                "kind": item["kind"],
+                "semantic": semantic_input(repo, resolved),
+            }
+        )
+    present_paths = {str(item["path"]) for item in items}
+    for path, semantic_input in semantic_paths.items():
+        if path not in present_paths:
+            fingerprint_items.append({
+                "path": path,
+                "kind": "file",
+                "semantic": semantic_input(repo, resolved),
+            })
+    fingerprint_items.sort(key=lambda item: (item["path"], item["kind"]))
+    encoded = json.dumps(
+        fingerprint_items,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return {
         "kind": MANIFEST_KIND,
         "schema_version": SCHEMA_VERSION,
@@ -288,7 +434,7 @@ def load_surface_projection(
         return _projection_result(path, "invalid", "incomplete-projection")
     try:
         current = build_surface_input_manifest(repo_root, resolved, memory_dir=memory_dir)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return _projection_result(path, "invalid", f"manifest-error: {exc}")
     if str(payload.get("input_fingerprint") or "") != current["fingerprint"]:
         return _projection_result(path, "stale", "input-manifest-mismatch")

@@ -916,6 +916,94 @@ def _build_resume_targets(summary: dict | None) -> list[str]:
     return list(dict.fromkeys(preview))[:3]
 
 
+def _resume_targets_match_ranked_surface(
+    resume_targets: list[str] | None,
+    ranked: dict | None,
+    *,
+    target: str = "",
+) -> bool:
+    """Return whether a legacy preview still points at current Surface work."""
+    targets = [str(item or "").strip() for item in (resume_targets or []) if str(item or "").strip()]
+    if not targets or not isinstance(ranked, dict):
+        return False
+    for bucket in ("review_pool", "p1", "p2"):
+        for item in ranked.get(bucket) or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "")
+            if target and not url_belongs_to_target(url, target):
+                continue
+            if _matches_resume_target(url, targets):
+                return True
+    return False
+
+
+def _resume_targets_bound_to_surface(state: dict) -> bool:
+    """Treat legacy resume previews as advisory unless current Surface owns them."""
+    targets = state.get("resume_targets") or []
+    candidates = (
+        state.get("surface_review_candidates")
+        or state.get("recommended_targets")
+        or []
+    )
+    target = str(state.get("resolved_target") or state.get("target") or "")
+    if targets and isinstance(candidates, list) and any(
+        isinstance(item, dict)
+        and (
+            not target
+            or url_belongs_to_target(str(item.get("url") or ""), target)
+        )
+        and _matches_resume_target(str(item.get("url") or ""), targets)
+        for item in candidates
+    ):
+        return True
+
+    ranked = state.get("surface")
+    if _resume_targets_match_ranked_surface(
+        targets,
+        ranked,
+        target=str(state.get("resolved_target") or state.get("target") or ""),
+    ):
+        return True
+
+    # Older state snapshots may omit the current Surface projection. A
+    # target-owned Queue/Finding/Case item with the same endpoint and durable
+    # evidence is still a valid binding; preview text alone is not.
+    owners = []
+    queue = state.get("action_queue_next")
+    if not isinstance(queue, dict) or not queue:
+        action_queue = state.get("action_queue")
+        queue = action_queue.get("next") if isinstance(action_queue, dict) else None
+    if isinstance(queue, dict):
+        owners.append(queue)
+        metadata = queue.get("metadata")
+        if isinstance(metadata, dict):
+            owners.append(metadata)
+    findings = state.get("structured_findings")
+    if isinstance(findings, dict):
+        owners.extend(
+            item for item in findings.values()
+            if isinstance(item, dict)
+        )
+    case_state = state.get("case_state")
+    if isinstance(case_state, dict):
+        case_next = case_state.get("top_next_action")
+        if isinstance(case_next, dict):
+            owners.append(case_next)
+    return any(
+        isinstance(item, dict)
+        and any(
+            (
+                not target or url_belongs_to_target(str(item.get(key) or ""), target)
+            )
+            and _matches_resume_target(str(item.get(key) or ""), targets)
+            for key in ("url", "endpoint")
+        )
+        and any(str(item.get(key) or "").strip() for key in ("evidence_ref", "evidence", "summary_ref"))
+        for item in owners
+    )
+
+
 def _pick_next_action(
     has_recon: bool,
     ranked: dict,
@@ -934,6 +1022,7 @@ def _pick_next_action(
     cidr_continuation: dict | None = None,
     dir_fuzz_rotation_pending: bool = False,
     case_state_next: dict | None = None,
+    resume_targets_bound: bool = False,
 ) -> str:
     """Bias toward resumable session context before widening to surface review candidates."""
     structured_findings = structured_findings or {}
@@ -992,9 +1081,9 @@ def _pick_next_action(
     latest_session = (resume_summary or {}).get("latest_session_summary") or {}
     preview = [item for item in latest_session.get("endpoints_preview", []) if item]
 
-    if latest_session and preview and resume_targets:
+    if latest_session and preview and resume_targets and resume_targets_bound:
         return "continue_last_focus"
-    if latest_session and resume_targets:
+    if latest_session and resume_targets and resume_targets_bound:
         return "resume_untested"
 
     if surface_context_required or fresh_recon_ready:
@@ -1003,7 +1092,7 @@ def _pick_next_action(
         return "hunt_p1"
     if dir_fuzz_rotation_pending:
         return "run_recon"
-    if resume_targets:
+    if resume_targets and resume_targets_bound:
         return "resume_untested"
     if structured_findings.get("draft_completion_pending"):
         return "complete_report_draft"
@@ -2487,6 +2576,11 @@ def _build_domain_autopilot_state(
     ranked_for_action = _filter_stale_finalized_scanner_candidates(
         _filter_legacy_memory_candidates(ranked_for_next, resume_targets)
     )
+    resume_targets_bound = _resume_targets_match_ranked_surface(
+        resume_targets,
+        ranked_for_action,
+        target=resolved_target,
+    )
 
     tech_stack = []
     if resume_summary and resume_summary.get("tech_stack"):
@@ -2522,6 +2616,7 @@ def _build_domain_autopilot_state(
             (facts.get("dir_fuzz_rotation") or {}).get("pending")
         ),
         case_state_next=(facts.get("case_state") or {}).get("top_next_action") or {},
+        resume_targets_bound=resume_targets_bound,
     )
     intel_continuation = facts.get("intel_continuation") or {}
     next_action = apply_intel_continuation(primary_next_action, intel_continuation)
@@ -3202,7 +3297,7 @@ def _explicit_partial_reason(state: dict) -> str:
         )
     ):
         return "finding_work_pending"
-    if state.get("resume_targets"):
+    if state.get("resume_targets") and _resume_targets_bound_to_surface(state):
         return "surface_work_pending"
 
     return ""
@@ -3252,6 +3347,8 @@ def _frontier_item(
 def _build_actionable_frontier(
     state: dict,
     matrix: dict | None,
+    *,
+    limit: int | None = None,
 ) -> list[dict]:
     """Project executable work without creating a second state owner."""
     target = str(state.get("resolved_target") or state.get("target") or "")
@@ -3447,7 +3544,7 @@ def _build_actionable_frontier(
             continue
         seen.add(key)
         deduped.append(item)
-    return deduped[:5]
+    return deduped if limit is None else deduped[:limit]
 
 
 _FRONTIER_LANES = {
@@ -3505,7 +3602,7 @@ def _build_priority_frontier(state: dict, ranked: dict | None = None) -> list[di
     )
 
     other_items: list[dict] = []
-    for item in _build_actionable_frontier(state, None):
+    for item in _build_actionable_frontier(state, None, limit=None):
         owner = str(item.get("owner") or "")
         impact_hint = ""
         if owner == "action_queue":
@@ -3716,10 +3813,29 @@ def _build_priority_frontier(state: dict, ranked: dict | None = None) -> list[di
             continue
         seen.add(key)
         deduped.append(item)
-    surface_count = min(2, sum(item.get("owner") == "surface" for item in deduped))
-    non_surface = [item for item in deduped if item.get("owner") != "surface"]
-    selected_surface = [item for item in deduped if item.get("owner") == "surface"][:surface_count]
-    return [*non_surface[: 8 - surface_count], *selected_surface]
+    by_owner: dict[str, dict] = {}
+    owner_order: list[str] = []
+    for item in deduped:
+        owner = str(item.get("owner") or "controller")
+        if owner in by_owner:
+            continue
+        by_owner[owner] = item
+        owner_order.append(owner)
+
+    # Keep the important control-plane heads visible even when lower-priority
+    # owners produced a long list of actionable items. Remaining owners keep
+    # their first local head; no cross-owner score or static total is applied.
+    important_owners = (
+        "action_queue",
+        "finding",
+        "validation-runner",
+        "intel",
+        "surface",
+    )
+    ordered_owners = [
+        owner for owner in important_owners if owner in by_owner
+    ] + [owner for owner in owner_order if owner not in important_owners]
+    return [by_owner[owner] for owner in ordered_owners]
 
 
 def build_closure_projection(
@@ -3756,7 +3872,15 @@ def build_closure_projection(
             or str((case_state.get("top_next_action") or {}).get("next_action") or "none") != "none"
         )
     )
-    actionable_frontier = _build_actionable_frontier(state, matrix)
+    # A legacy session endpoint preview is advisory. It only becomes an
+    # executable continuation when current Surface state still owns the path.
+    if (
+        action in {"continue_last_focus", "resume_untested"}
+        and state.get("resume_targets")
+        and not _resume_targets_bound_to_surface(state)
+    ):
+        action = "handoff"
+    actionable_frontier = _build_actionable_frontier(state, matrix, limit=5)
     if action in {"hunt_p1", "hunt_p2"} and not actionable_frontier:
         action = "handoff"
     round_progress = state.get("round_progress") or {}
@@ -3978,6 +4102,155 @@ _STAGNANT_REASONS = {
 }
 
 
+def _stagnation_text(value: object, *, limit: int = 300) -> str:
+    """Keep semantic owner text bounded and stable across formatting changes."""
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _stagnation_dimensions(value: object) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        values = value
+    elif value:
+        values = [value]
+    else:
+        values = []
+    return sorted({
+        _stagnation_text(item, limit=120)
+        for item in values
+        if _stagnation_text(item, limit=120)
+    })[:8]
+
+
+def _stagnation_outcome(value: object) -> dict:
+    """Project outcome meaning while excluding operation/timestamp noise."""
+    if not isinstance(value, dict):
+        text = _stagnation_text(value)
+        return {"result": text} if text else {}
+    projected = {}
+    for key in (
+        "status",
+        "result",
+        "decision",
+        "observation_kind",
+        "observed_difference",
+        "evidence_ref",
+        "summary_ref",
+        "kill_condition_met",
+    ):
+        item = value.get(key)
+        if isinstance(item, bool):
+            projected[key] = item
+        elif item not in (None, "", [], {}):
+            text = _stagnation_text(item)
+            if text:
+                projected[key] = text
+    return projected
+
+
+def _stagnation_obligation(item: object, *, kind: str) -> dict:
+    """Return the small semantic contract for one current owner obligation."""
+    if not isinstance(item, dict):
+        return {}
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    outcome = item.get("last_outcome")
+    if not isinstance(outcome, dict):
+        outcome = metadata.get("last_outcome")
+    dimensions = item.get("tested_dimensions")
+    if dimensions in (None, "", []):
+        dimensions = metadata.get("tested_dimensions")
+    result = {
+        "kind": kind,
+        "id": _stagnation_text(item.get("id") or item.get("finding_id") or item.get("backlog_id"), limit=160),
+        "status": {
+            key: _stagnation_text(item.get(key) or metadata.get(key), limit=120)
+            for key in ("status", "validation_status", "report_status", "evidence_status", "rubric_status")
+            if _stagnation_text(item.get(key) or metadata.get(key), limit=120)
+        },
+        "action": _stagnation_text(
+            item.get("action")
+            or item.get("required_action")
+            or item.get("next_action")
+            or item.get("write_back")
+            or metadata.get("action"),
+        ),
+        "next_question": _stagnation_text(
+            item.get("next_question")
+            or metadata.get("next_question")
+            or item.get("why_now"),
+        ),
+        "evidence": {
+            key: _stagnation_text(item.get(key) or metadata.get(key), limit=240)
+            for key in ("evidence", "evidence_ref", "summary_ref")
+            if _stagnation_text(item.get(key) or metadata.get(key), limit=240)
+        },
+        "tested_dimensions": _stagnation_dimensions(dimensions),
+        "last_outcome": _stagnation_outcome(outcome),
+        "stop_condition": _stagnation_text(
+            item.get("stop_condition")
+            or metadata.get("stop_condition")
+            or item.get("kill_condition")
+            or metadata.get("kill_condition"),
+        ),
+    }
+    return {
+        key: value
+        for key, value in result.items()
+        if value not in ("", {}, [])
+    }
+
+
+def _stagnation_owner_obligations(state: dict) -> dict:
+    """Collect bounded Queue/Finding/Case semantics for no-progress detection."""
+    obligations = {}
+    queue = state.get("action_queue_next")
+    if not isinstance(queue, dict) or not queue:
+        action_queue = state.get("action_queue")
+        queue = action_queue.get("next") if isinstance(action_queue, dict) else None
+    if isinstance(queue, dict) and queue:
+        obligations["queue"] = _stagnation_obligation(queue, kind="action_queue")
+
+    findings = state.get("structured_findings")
+    if isinstance(findings, dict):
+        finding_items = []
+        for key in (
+            "next_owner_revalidation",
+            "next_validation",
+            "next_draft_completion",
+            "next_report",
+        ):
+            item = findings.get(key)
+            if isinstance(item, dict) and item:
+                finding_items.append(_stagnation_obligation(item, kind=key))
+        if finding_items:
+            obligations["findings"] = finding_items[:4]
+
+    case_state = state.get("case_state")
+    if isinstance(case_state, dict) and case_state:
+        case_next = case_state.get("top_next_action")
+        case_summary = _stagnation_obligation(
+            case_next if isinstance(case_next, dict) else case_state,
+            kind="case_state",
+        )
+        counts = {}
+        for key in (
+            "canonical_conflict_count",
+            "pending_validation_backlog",
+            "open_hypotheses",
+        ):
+            raw = case_state.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                counts[key] = int(raw or 0)
+            except (TypeError, ValueError):
+                counts[key] = _stagnation_text(raw, limit=80)
+        if counts:
+            case_summary["counts"] = counts
+        if case_summary:
+            obligations["case_state"] = case_summary
+    return obligations
+
+
 def stagnation_fingerprint(state: dict, closure: dict) -> str:
     """Fingerprint only explicit prerequisite blockers; other handoffs never count."""
     projected = str(closure.get("stagnation_fingerprint") or "")
@@ -4075,6 +4348,7 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
                 or ""
             ),
         }
+        payload["owner_semantics"] = _stagnation_owner_obligations(state)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

@@ -79,6 +79,7 @@ on extension; positional consumers may rely on the prefix):
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
 import json
 import os
@@ -509,7 +510,10 @@ def save_matrix_projection(
         "summary": dict(matrix.get("summary") or _compute_summary(matrix)),
         "high_risk_lanes": high_risk_lane_summary(matrix),
         "policy_skips": dict(matrix.get("policy_skips") or {}),
-        "high_value_gaps": high_value_gaps_from_matrix(matrix)[:COVERAGE_PROJECTION_GAP_LIMIT],
+        "high_value_gaps": high_value_gap_window_from_matrix(
+            matrix,
+            limit=COVERAGE_PROJECTION_GAP_LIMIT,
+        )[0],
         "endpoints": endpoints,
     }
     path = _projection_path(repo, target)
@@ -1086,7 +1090,13 @@ def _gap_sort_key(gap: dict) -> tuple:
 
 def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WEIGHT) -> list[dict]:
     """Return sorted untested high-value cells from an in-memory matrix."""
-    gaps: list[dict] = []
+    gaps = list(_iter_high_value_gaps(matrix, min_weight=min_weight))
+    gaps.sort(key=_gap_sort_key)
+    return gaps
+
+
+def _iter_high_value_gaps(matrix: dict, min_weight: float = DEFAULT_MIN_WEIGHT):
+    """Yield untested high-value cells without materializing the full result."""
     for ep in matrix.get("endpoints", []):
         if not isinstance(ep, dict):
             continue
@@ -1113,9 +1123,31 @@ def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WE
             if isinstance(cell.get("identity_v2"), dict):
                 gap["identity_v2"] = cell["identity_v2"]
             gap.update(class_relevance(endpoint, vc, observed_params))
-            gaps.append(gap)
-    gaps.sort(key=_gap_sort_key)
-    return gaps
+            yield gap
+
+
+def high_value_gap_window_from_matrix(
+    matrix: dict,
+    *,
+    min_weight: float = DEFAULT_MIN_WEIGHT,
+    limit: int,
+) -> tuple[list[dict], int]:
+    """Return the first ranked gap window and the exact full result count."""
+    if limit < 0:
+        raise ValueError("limit must be >= 0")
+    total = 0
+    selected: list[tuple[tuple, int, dict]] = []
+    for index, gap in enumerate(_iter_high_value_gaps(matrix, min_weight=min_weight)):
+        total += 1
+        if limit:
+            key = _gap_sort_key(gap)
+            entry = (key, index, gap)
+            if len(selected) < limit or entry[:2] < selected[-1][:2]:
+                bisect.insort(selected, entry)
+                if len(selected) > limit:
+                    selected.pop()
+    items = [entry[2] for entry in selected]
+    return items, total
 
 
 def high_risk_lane_summary(
@@ -1130,9 +1162,8 @@ def high_risk_lane_summary(
     must never be treated as clean or N/A by closure.
     """
     endpoints = [item for item in matrix.get("endpoints", []) if isinstance(item, dict)]
-    gaps = high_value_gaps_from_matrix(matrix, min_weight=min_weight)
     relevant_by_class: dict[str, int] = {}
-    for gap in gaps:
+    for gap in _iter_high_value_gaps(matrix, min_weight=min_weight):
         try:
             relevance = int(gap.get("relevance_score", 0) or 0)
         except (TypeError, ValueError):
@@ -1837,6 +1868,12 @@ def _run_command(argv: list[str] | None = None) -> int:
     p_gaps.add_argument("--target", required=True)
     p_gaps.add_argument("--repo-root", default=str(BASE_DIR))
     p_gaps.add_argument("--min-weight", type=float, default=DEFAULT_MIN_WEIGHT)
+    p_gaps.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="presentation limit; output includes total/truncated metadata",
+    )
 
     p_needs_triage = sub.add_parser(
         "needs-triage",
@@ -1874,15 +1911,31 @@ def _run_command(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "rebuild":
-        matrix = rebuild_matrix(
-            args.target,
-            repo_root=args.repo_root,
-            force_clean=args.force_clean,
-            min_weight_to_include=args.min_weight_to_include,
-        )
-        out = save_matrix(args.target, matrix, args.repo_root)
-        summary = matrix["summary"]
-        print(f"coverage_matrix written: {out}")
+        repo = Path(args.repo_root)
+        out = _matrix_path(repo, args.target)
+        reused = False
+        if not args.force_clean:
+            existing = load_matrix(args.target, repo)
+            if matrix_is_fresh(
+                args.target,
+                existing,
+                repo_root=repo,
+                min_weight_to_include=args.min_weight_to_include,
+            ):
+                matrix = existing
+                reused = True
+        if not reused:
+            matrix = rebuild_matrix(
+                args.target,
+                repo_root=repo,
+                force_clean=args.force_clean,
+                min_weight_to_include=args.min_weight_to_include,
+            )
+            out = save_matrix(args.target, matrix, repo)
+        elif load_matrix_projection(args.target, repo) is None:
+            save_matrix_projection(args.target, matrix, repo)
+        summary = matrix.get("summary") or _compute_summary(matrix)
+        print(f"coverage_matrix {'reused' if reused else 'written'}: {out}")
         print(
             f"  endpoints={len(matrix['endpoints'])}  cells={summary['total_cells']}  "
             f"untested={summary['untested']}  high_value_gaps={summary['high_value_gaps_count']}"
@@ -1890,8 +1943,26 @@ def _run_command(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "find-gaps":
-        gaps = find_high_value_gaps(args.target, args.repo_root, args.min_weight)
-        print(json.dumps(gaps, indent=2))
+        if args.limit is None:
+            payload = find_high_value_gaps(args.target, args.repo_root, args.min_weight)
+        else:
+            if args.limit < 0:
+                raise ValueError("--limit must be >= 0")
+            matrix = load_matrix(args.target, args.repo_root)
+            items, total = high_value_gap_window_from_matrix(
+                matrix,
+                min_weight=args.min_weight,
+                limit=args.limit,
+            )
+            payload = {
+                "target": args.target,
+                "items": items,
+                "total": total,
+                "returned": len(items),
+                "truncated": len(items) < total,
+                "limit": args.limit,
+            }
+        print(json.dumps(payload, indent=2))
         return 0
 
     if args.cmd == "needs-triage":

@@ -378,6 +378,63 @@ class TestRebuildMatrix:
             handle.write("\nhttps://x.com/api/users/2")
         assert matrix_is_fresh("x.com", matrix, repo_root=tmp_path) is False
 
+    def test_rebuild_cli_reuses_fresh_matrix_without_rebuild_or_write(self, tmp_path, monkeypatch, capsys):
+        _seed_recon(tmp_path, "x.com", ["https://x.com/api/users/1"])
+        args = ["rebuild", "--target", "x.com", "--repo-root", str(tmp_path)]
+
+        assert coverage_matrix_module.main(args) == 0
+        path = tmp_path / "evidence" / "x.com" / "coverage_matrix.json"
+        before = path.read_bytes()
+        before_mtime = path.stat().st_mtime_ns
+
+        def fail_rebuild(*_args, **_kwargs):
+            raise AssertionError("fresh matrix should be reused")
+
+        monkeypatch.setattr(coverage_matrix_module, "rebuild_matrix", fail_rebuild)
+
+        assert coverage_matrix_module.main(args) == 0
+        assert path.read_bytes() == before
+        assert path.stat().st_mtime_ns == before_mtime
+        assert "coverage_matrix reused:" in capsys.readouterr().out
+
+    def test_rebuild_cli_force_clean_ignores_fresh_matrix(self, tmp_path, capsys):
+        _seed_recon(tmp_path, "x.com", ["https://x.com/api/users/1"])
+        args = ["rebuild", "--target", "x.com", "--repo-root", str(tmp_path)]
+        assert coverage_matrix_module.main(args) == 0
+
+        matrix = load_matrix("x.com", repo_root=tmp_path)
+        matrix["endpoints"][0]["cells"]["XSS"] = {
+            "status": "n_a",
+            "reason": "operator annotation",
+        }
+        save_matrix("x.com", matrix, repo_root=tmp_path)
+
+        assert coverage_matrix_module.main(args + ["--force-clean"]) == 0
+        loaded = load_matrix("x.com", repo_root=tmp_path)
+        assert loaded["endpoints"][0]["cells"]["XSS"]["status"] == "untested"
+        assert "coverage_matrix written:" in capsys.readouterr().out
+
+    def test_rebuild_cli_repairs_missing_projection_for_fresh_matrix(self, tmp_path, monkeypatch):
+        _seed_recon(tmp_path, "x.com", ["https://x.com/api/users/1"])
+        args = ["rebuild", "--target", "x.com", "--repo-root", str(tmp_path)]
+        assert coverage_matrix_module.main(args) == 0
+        projection = tmp_path / "evidence" / "x.com" / "coverage_matrix-summary.json"
+        projection.unlink()
+
+        def fail_full_gap_materialization(*_args, **_kwargs):
+            raise AssertionError("projection repair should use a bounded gap window")
+
+        monkeypatch.setattr(
+            coverage_matrix_module,
+            "high_value_gaps_from_matrix",
+            fail_full_gap_materialization,
+        )
+
+        assert coverage_matrix_module.main(args) == 0
+
+        assert projection.is_file()
+        assert coverage_matrix_module.load_matrix_projection("x.com", tmp_path) is not None
+
     def test_rebuild_does_not_expand_ffuf_only_evidence(self, tmp_path):
         dirs = tmp_path / "recon" / "x.com" / "dirs"
         dirs.mkdir(parents=True)
@@ -768,6 +825,39 @@ class TestFindGaps:
     def test_empty_matrix_yields_empty_gaps(self, tmp_path):
         gaps = find_high_value_gaps("ghost.com", repo_root=tmp_path, min_weight=3.0)
         assert gaps == []
+
+    def test_cli_limit_is_presentation_only_and_reports_total(self, tmp_path, monkeypatch, capsys):
+        _seed_recon(tmp_path, "x.com", ["https://x.com/api/admin/users"])
+        save_matrix("x.com", rebuild_matrix("x.com", repo_root=tmp_path), repo_root=tmp_path)
+
+        full_rc = coverage_matrix_module.main([
+            "find-gaps", "--target", "x.com", "--repo-root", str(tmp_path),
+        ])
+        assert full_rc == 0
+        full = json.loads(capsys.readouterr().out)
+        assert isinstance(full, list)
+        assert len(full) > 1
+
+        def fail_full_gap_materialization(*_args, **_kwargs):
+            raise AssertionError("limited output should not materialize every gap")
+
+        monkeypatch.setattr(
+            coverage_matrix_module,
+            "high_value_gaps_from_matrix",
+            fail_full_gap_materialization,
+        )
+
+        limited_rc = coverage_matrix_module.main([
+            "find-gaps", "--target", "x.com", "--repo-root", str(tmp_path),
+            "--limit", "1",
+        ])
+        assert limited_rc == 0
+        limited = json.loads(capsys.readouterr().out)
+        assert limited["items"] == full[:1]
+        assert limited["total"] == len(full)
+        assert limited["returned"] == 1
+        assert limited["truncated"] is True
+
 
     def test_semantic_ranking_prioritizes_authz_over_generic_idor(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [

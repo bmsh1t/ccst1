@@ -595,6 +595,27 @@ def test_compact_state_projects_bounded_ai_priority_contract():
     assert "raw" not in compact["priority_frontier"][0]
 
 
+def test_compact_state_keeps_each_priority_frontier_owner_head():
+    frontier = [
+        {
+            "owner": f"owner-{index}",
+            "action": f"work-{index}",
+            "evidence_ref": f"evidence/{index}.json",
+            "expected_information_gain": f"resolve-{index}",
+            "stop_condition": f"stop-{index}",
+        }
+        for index in range(12)
+    ]
+
+    compact = autopilot_bootstrap.compact_autopilot_state({
+        "priority_frontier": frontier,
+    })
+
+    assert [item["owner"] for item in compact["priority_frontier"]] == [
+        item["owner"] for item in frontier
+    ]
+
+
 def test_capability_profile_runs_after_runtime_and_before_target_state(monkeypatch, tmp_path):
     calls = []
 

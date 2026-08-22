@@ -1331,6 +1331,25 @@ def _f3_coverage_gate(
         gaps = json.loads(result.stdout or "[]")
     except Exception:
         return True, "[AUDIT] F3 gate: coverage_matrix output was not JSON; skipping"
+    reported_total = None
+    if isinstance(gaps, dict):
+        envelope = gaps
+        items = envelope.get("items")
+        if not isinstance(items, list):
+            return True, "[AUDIT] F3 gate: coverage_matrix output not a list; skipping"
+        gaps = items
+        # A limited presentation is not a complete finish-gate answer.
+        try:
+            envelope_total = int(envelope.get("total", len(gaps)))
+        except (TypeError, ValueError):
+            envelope_total = len(gaps)
+        if bool(envelope.get("truncated")) or envelope_total > len(gaps):
+            return False, (
+                f"[SYSTEM] F3 finish-gate blocked: coverage_matrix output is truncated; "
+                f"showing {len(gaps)} of {envelope_total} high-value coverage gap(s) "
+                f"for target {target!r}. Re-run without --limit before finish."
+            )
+        reported_total = envelope_total
     if not isinstance(gaps, list):
         return True, "[AUDIT] F3 gate: coverage_matrix output not a list; skipping"
     if not gaps:
@@ -1343,7 +1362,8 @@ def _f3_coverage_gate(
         for g in sample
     ]
     msg = (
-        f"[SYSTEM] F3 finish-gate blocked: {len(gaps)} high-value coverage "
+        f"[SYSTEM] F3 finish-gate blocked: "
+        f"{reported_total if reported_total is not None else len(gaps)} high-value coverage "
         f"matrix gap(s) untested for target {target!r}.\n"
         + "\n".join(sample_lines)
         + (f"\n  ... ({len(gaps) - len(sample)} more)" if len(gaps) > len(sample) else "")
