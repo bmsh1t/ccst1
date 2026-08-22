@@ -437,9 +437,11 @@ def write_checkpoint_witness(
         }
     with checkpoint_witness_lock(repo, resolved_target):
         previous = _load_checkpoint_witness(path)
-        for field in ("round_guard", "round_progress"):
-            if isinstance(previous.get(field), dict):
-                payload[field] = previous[field]
+        progress = _round_progress(previous)
+        if isinstance(previous.get("round_guard"), dict):
+            payload["round_guard"] = previous["round_guard"]
+        if progress:
+            payload["round_progress"] = progress
         _write_json_atomic(path, payload)
     return {"path": str(path), "payload": payload}
 

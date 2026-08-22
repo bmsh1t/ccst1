@@ -872,6 +872,40 @@ def test_checkpoint_witness_atomic_replace_failure_preserves_previous_bytes(tmp_
     assert not list(path.parent.glob(f".{path.name}.*.tmp"))
 
 
+def test_checkpoint_witness_validates_preserved_round_before_rewrite(tmp_path):
+    target = "target.com"
+    begin_round(tmp_path, target, max_lanes=2)
+    claimed = record_round_lane(
+        tmp_path,
+        target,
+        lane="sqli:/api/search",
+        max_lanes=2,
+    )["round_progress"]
+
+    written = checkpoint_module.write_checkpoint_witness(
+        tmp_path,
+        target,
+        {"context_pack": {"selected_skill": "skills/web2-recon/SKILL.md"}},
+    )
+    path = Path(written["path"])
+
+    assert written["payload"]["round_progress"] == claimed
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["round_progress"]["claimed_count"] = 2
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    previous = path.read_bytes()
+
+    with pytest.raises(ValueError, match="round_progress budget fields are invalid"):
+        checkpoint_module.write_checkpoint_witness(
+            tmp_path,
+            target,
+            {"context_pack": {"selected_skill": "skills/web2-vuln-classes/SKILL.md"}},
+        )
+
+    assert path.read_bytes() == previous
+
+
 def test_round_begin_normalizes_legacy_claimed_lanes_as_unfinished(tmp_path):
     target = "target.com"
     first = begin_round(tmp_path, target, max_lanes=1)
