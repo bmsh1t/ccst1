@@ -4183,6 +4183,9 @@ def _stagnation_obligation(item: object, *, kind: str) -> dict:
             for key in ("evidence", "evidence_ref", "summary_ref")
             if _stagnation_text(item.get(key) or metadata.get(key), limit=240)
         },
+        "missing_evidence": _stagnation_dimensions(
+            item.get("missing_evidence") or metadata.get("missing_evidence")
+        ),
         "tested_dimensions": _stagnation_dimensions(dimensions),
         "last_outcome": _stagnation_outcome(outcome),
         "stop_condition": _stagnation_text(

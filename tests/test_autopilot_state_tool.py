@@ -1633,6 +1633,7 @@ def test_next_action_stagnation_uses_owner_semantics_not_runtime_noise():
                 "status": "candidate",
                 "next_question": "is the claim reproducible?",
                 "evidence_ref": "findings/target.com/finding-1.json",
+                "missing_evidence": ["control replay", "raw response"],
             },
         },
         "case_state": {
@@ -1690,6 +1691,12 @@ def test_next_action_stagnation_uses_owner_semantics_not_runtime_noise():
             "next_validation": {
                 **state["structured_findings"]["next_validation"],
                 "status": "needs-evidence",
+            },
+        }},
+        {"structured_findings": {
+            "next_validation": {
+                **state["structured_findings"]["next_validation"],
+                "missing_evidence": ["control replay"],
             },
         }},
         {"case_state": {
