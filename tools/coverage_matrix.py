@@ -1569,20 +1569,34 @@ def rebuild_matrix(
                 vc = str(finding.get("vuln_class") or finding.get("class") or "").strip()
                 if not ep_path or vc not in VULN_CLASSES:
                     continue
+                coverage_path = ep_path
+                if not any(
+                    isinstance(ep, dict) and ep.get("endpoint") == ep_path
+                    for ep in new_endpoints
+                ):
+                    template = _route_template(ep_path)
+                    if template != ep_path and (
+                        any(
+                            isinstance(ep, dict) and ep.get("endpoint") == template
+                            for ep in new_endpoints
+                        )
+                        or template in existing
+                    ):
+                        coverage_path = template
                 # ensure endpoint exists in matrix even if recon missed it
                 for ep in new_endpoints:
-                    if ep["endpoint"] == ep_path:
+                    if ep["endpoint"] == coverage_path:
                         ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(params))
-                        existing_ep = existing.get(ep_path)
-                        kind = _effective_endpoint_kind(existing_ep, ep_path)
+                        existing_ep = existing.get(coverage_path)
+                        kind = _effective_endpoint_kind(existing_ep, coverage_path)
                         ep["auto_hints"] = _endpoint_auto_hints(
-                            ep_path,
+                            coverage_path,
                             ep.get("observed_params") or [],
                             all_endpoints=all_seen_endpoints,
                         )
                         ep["weight"] = max(
-                            _coerce_weight(ep.get("weight", value_weight(ep_path)), value_weight(ep_path)),
-                            _semantic_weight_floor(ep_path, ep.get("observed_params") or []),
+                            _coerce_weight(ep.get("weight", value_weight(coverage_path)), value_weight(coverage_path)),
+                            _semantic_weight_floor(coverage_path, ep.get("observed_params") or []),
                         )
                         ep["endpoint_kind"] = kind
                         _apply_endpoint_applicability(ep, kind)
@@ -1592,30 +1606,30 @@ def rebuild_matrix(
                         }
                         break
                 else:
-                    existing_ep = existing.get(ep_path)
-                    kind = _effective_endpoint_kind(existing_ep, ep_path)
+                    existing_ep = existing.get(coverage_path)
+                    kind = _effective_endpoint_kind(existing_ep, coverage_path)
                     if isinstance(existing_ep, dict):
                         ep = dict(existing_ep)
                         ep["cells"] = dict(existing_ep.get("cells") or {})
                         ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(params))
                     else:
                         ep = {
-                            "endpoint": ep_path,
+                            "endpoint": coverage_path,
                             "observed_params": params,
                             "source_count": 0,
                             "observation_count": 0,
-                            "cells": _empty_cells(ep_path, endpoint_kind=kind),
+                            "cells": _empty_cells(coverage_path, endpoint_kind=kind),
                         }
                     auto_hints = _endpoint_auto_hints(
-                        ep_path,
+                        coverage_path,
                         ep.get("observed_params") or [],
                         all_endpoints=all_seen_endpoints,
                     )
-                    ep["endpoint"] = ep_path
+                    ep["endpoint"] = coverage_path
                     ep["weight"] = max(
-                        _coerce_weight(ep.get("weight", value_weight(ep_path)), value_weight(ep_path)),
-                        value_weight(ep_path),
-                        _semantic_weight_floor(ep_path, ep.get("observed_params") or []),
+                        _coerce_weight(ep.get("weight", value_weight(coverage_path)), value_weight(coverage_path)),
+                        value_weight(coverage_path),
+                        _semantic_weight_floor(coverage_path, ep.get("observed_params") or []),
                     )
                     ep["endpoint_kind"] = kind
                     ep["auto_hints"] = auto_hints

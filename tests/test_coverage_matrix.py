@@ -790,6 +790,26 @@ class TestRebuildMatrix:
         for vc in VULN_CLASSES:
             assert vc in wp_ep["cells"]
 
+    def test_findings_for_folded_route_mark_template_cell(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://x.com/api/v1/orders/123",
+            "https://x.com/api/v1/orders/456",
+        ])
+        findings_dir = tmp_path / "findings" / "x.com"
+        findings_dir.mkdir(parents=True)
+        (findings_dir / "findings.json").write_text(json.dumps([{
+            "id": "F-folded",
+            "endpoint": "/api/v1/orders/123",
+            "vuln_class": "IDOR",
+        }]), encoding="utf-8")
+
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        endpoints = {ep["endpoint"]: ep for ep in matrix["endpoints"]}
+
+        assert "/api/v1/orders/{id}" in endpoints
+        assert "/api/v1/orders/123" not in endpoints
+        assert endpoints["/api/v1/orders/{id}"]["cells"]["IDOR"]["status"] == "tested_finding"
+
     def test_rebuild_preserves_ai_kind_for_findings_only_endpoint(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [])
         findings_dir = tmp_path / "findings" / "x.com"
