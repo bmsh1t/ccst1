@@ -3894,7 +3894,15 @@ def build_checkpoint(
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     coverage_target = target_storage_key(resolved_target)
-    state = build_autopilot_state(str(repo), resolved_target, memory_dir=memory_dir)
+    queue_snapshot = load_action_queue(repo, resolved_target)
+    case_state = _case_state_summary(repo, resolved_target)
+    state = build_autopilot_state(
+        str(repo),
+        resolved_target,
+        memory_dir=memory_dir,
+        queue_snapshot=queue_snapshot,
+        case_state_summary=case_state,
+    )
     matrix = load_matrix_projection(coverage_target, repo_root=repo)
     coverage_rebuilt = False
     if matrix is None:
@@ -3912,6 +3920,11 @@ def build_checkpoint(
         memory_dir=memory_dir,
         surface_state=state.get("surface") if isinstance(state.get("surface"), dict) else None,
         coverage_state=(gaps, matrix),
+        validation_runner_candidates=(
+            state.get("validation_runner_candidates")
+            if isinstance(state.get("validation_runner_candidates"), list)
+            else None
+        ),
     )
     coverage_summary = _matrix_summary(matrix, gaps)
     evidence_summary = build_evidence_summary(
@@ -3920,7 +3933,6 @@ def build_checkpoint(
         focus_endpoints=_evidence_focus_endpoints(state, gaps),
         vuln_classes=_evidence_vuln_classes(gaps, context),
     )
-    case_state = _case_state_summary(repo, resolved_target)
     actor_gaps = _actor_gaps(evidence_summary)
     case_state_proposal = _case_state_proposal(case_state)
     case_state_seed = _case_state_seed_summary(repo, resolved_target) if not case_state_proposal else {}
@@ -3981,7 +3993,6 @@ def build_checkpoint(
         target=resolved_target,
         context=context,
     )
-    queue_snapshot = load_action_queue(repo, resolved_target)
     chain_review = _capability_chain_review_item(repo, resolved_target, queue_snapshot)
     if chain_review:
         next_action_queue.append(chain_review)

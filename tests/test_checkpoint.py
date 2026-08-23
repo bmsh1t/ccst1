@@ -1006,20 +1006,42 @@ def test_checkpoint_reuses_surface_state_for_context_pack(tmp_path, monkeypatch)
     _seed_recon(tmp_path, "target.com", ["https://api.target.com/users/1"])
     context_globals = checkpoint_module.build_context_pack.__globals__
     load_registry = context_globals["_load_capability_registry"]
+    load_runner_candidates = checkpoint_module.build_autopilot_state.__globals__[
+        "load_validation_runner_candidate_pool"
+    ]
     registry_loads = 0
+    candidate_loads = 0
 
     def fail_on_second_surface_load(*_args, **_kwargs):
         raise AssertionError("checkpoint rebuilt surface state for context pack")
+
+    def fail_on_candidate_reload(*_args, **_kwargs):
+        raise AssertionError("context pack reloaded validation runner candidates")
 
     def count_registry_loads(*args, **kwargs):
         nonlocal registry_loads
         registry_loads += 1
         return load_registry(*args, **kwargs)
 
+    def count_candidate_loads(*args, **kwargs):
+        nonlocal candidate_loads
+        candidate_loads += 1
+        return load_runner_candidates(*args, **kwargs)
+
     monkeypatch.setitem(
         context_globals,
         "_surface_state",
         fail_on_second_surface_load,
+    )
+    monkeypatch.setitem(
+        context_globals,
+        "load_validation_runner_candidate_pool",
+        fail_on_candidate_reload,
+    )
+    monkeypatch.setitem(
+        checkpoint_module.build_autopilot_state.__globals__,
+        "load_validation_runner_candidate_pool",
+        count_candidate_loads,
     )
     monkeypatch.setitem(context_globals, "_load_capability_registry", count_registry_loads)
 
@@ -1027,6 +1049,7 @@ def test_checkpoint_reuses_surface_state_for_context_pack(tmp_path, monkeypatch)
 
     assert checkpoint["evidence_reviewed"]["surface"] is True
     assert registry_loads == 1
+    assert candidate_loads == 1
 
 
 def test_checkpoint_reuses_action_queue_snapshot(tmp_path, monkeypatch):
@@ -1040,7 +1063,15 @@ def test_checkpoint_reuses_action_queue_snapshot(tmp_path, monkeypatch):
         queue_loads += 1
         return load_queue(*args, **kwargs)
 
+    def fail_on_state_queue_reload(*_args, **_kwargs):
+        raise AssertionError("autopilot state reloaded the checkpoint Queue snapshot")
+
     monkeypatch.setattr(checkpoint_module, "load_action_queue", count_queue_loads)
+    monkeypatch.setitem(
+        checkpoint_module.build_autopilot_state.__globals__,
+        "load_queue",
+        fail_on_state_queue_reload,
+    )
 
     checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
 
@@ -1068,10 +1099,67 @@ def test_checkpoint_reuses_case_state_owner_snapshot(tmp_path, monkeypatch):
 
     monkeypatch.setitem(case_state_globals, "load_case_state", count_state_loads)
 
-    summary = checkpoint_module._case_state_summary(tmp_path, "target.com")
+    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
 
     assert state_loads == 1
-    assert summary["object_samples"][0]["object_ref"] == "order_123"
+    assert checkpoint["case_state"]["objects"] == 1
+
+
+def test_checkpoint_owner_snapshots_preserve_state_projection(tmp_path):
+    target = "target.com"
+    _seed_recon(tmp_path, target, ["https://api.target.com/users/1"])
+    _seed_capability_parent(tmp_path, target=target)
+    add_object(
+        tmp_path,
+        target,
+        object_ref="order_123",
+        object_type="order",
+        object_id="123",
+        endpoint="https://api.target.com/orders/123",
+    )
+    checkpoint_module.build_autopilot_state(str(tmp_path), target)
+    baseline = checkpoint_module.build_autopilot_state(str(tmp_path), target)
+    reused = checkpoint_module.build_autopilot_state(
+        str(tmp_path),
+        target,
+        queue_snapshot=checkpoint_module.load_action_queue(tmp_path, target),
+        case_state_summary=checkpoint_module._case_state_summary(tmp_path, target),
+    )
+
+    for key in (
+        "next_action",
+        "action_queue_next",
+        "case_state",
+        "structured_findings",
+        "validation_runner_candidates",
+        "priority_frontier",
+        "surface",
+    ):
+        assert reused[key] == baseline[key], key
+
+
+def test_autopilot_state_rejects_cross_target_owner_snapshots(tmp_path):
+    add_object(
+        tmp_path,
+        "target.com",
+        object_ref="order_123",
+        object_type="order",
+        object_id="123",
+        endpoint="https://target.com/orders/123",
+    )
+
+    with pytest.raises(ValueError, match="action queue snapshot target"):
+        checkpoint_module.build_autopilot_state(
+            str(tmp_path),
+            "target.com",
+            queue_snapshot={"target": "other.test", "actions": []},
+        )
+    with pytest.raises(ValueError, match="case state snapshot target"):
+        checkpoint_module.build_autopilot_state(
+            str(tmp_path),
+            "target.com",
+            case_state_summary={"target": "other.test"},
+        )
 
 
 def test_checkpoint_reuses_fresh_coverage_matrix(tmp_path, monkeypatch):

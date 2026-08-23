@@ -810,12 +810,25 @@ def _load_js_intel_projection(repo_root: str, target: str) -> dict:
     return projection
 
 
-def _load_case_state_projection(repo_root: str, target: str) -> dict:
+def _load_case_state_projection(
+    repo_root: str,
+    target: str,
+    *,
+    case_state_summary: dict | None = None,
+) -> dict:
     """Load the bounded, secret-free Case State continuation."""
     path = case_state_path(repo_root, target)
     if not path.is_file():
         return {"status": "missing", "path": str(path)}
-    payload = build_case_state_summary(repo_root, target)
+    if isinstance(case_state_summary, dict):
+        snapshot_target = canonical_target_value(str(case_state_summary.get("target") or ""))
+        if snapshot_target != canonical_target_value(target):
+            raise ValueError("case state snapshot target does not match requested target")
+    payload = (
+        case_state_summary
+        if isinstance(case_state_summary, dict)
+        else build_case_state_summary(repo_root, target)
+    )
     top = payload.get("top_next_action") if isinstance(payload.get("top_next_action"), dict) else {}
     canonical_conflict_count = int(payload.get("canonical_conflict_count", 0) or 0)
     if canonical_conflict_count and str(top.get("next_action") or "none") == "none":
@@ -2167,9 +2180,20 @@ def _is_substantive_queue_action(item: dict) -> bool:
     return command.startswith(("python3 ", "/validate ", "curl "))
 
 
-def _load_substantive_action_queue_next(repo_root: str, target: str) -> dict:
+def _load_substantive_action_queue_next(
+    repo_root: str,
+    target: str,
+    *,
+    queue_snapshot: dict | None = None,
+) -> dict:
     """复用 action_queue 的公开 selector，不复制其排序与去重规则。"""
-    queue = load_queue(repo_root, target)
+    if isinstance(queue_snapshot, dict):
+        snapshot_target = canonical_target_value(str(queue_snapshot.get("target") or ""))
+        if snapshot_target != canonical_target_value(target):
+            raise ValueError("action queue snapshot target does not match requested target")
+        queue = dict(queue_snapshot)
+    else:
+        queue = load_queue(repo_root, target)
     queue["actions"] = [
         item
         for item in queue.get("actions", [])
@@ -2444,6 +2468,8 @@ def _load_autopilot_control_facts(
     resolved_memory_dir: str,
     *,
     fast_recon: bool,
+    queue_snapshot: dict | None = None,
+    case_state_summary: dict | None = None,
 ) -> dict:
     """一次性读取 next-action 所需控制事实。
 
@@ -2481,7 +2507,11 @@ def _load_autopilot_control_facts(
         if validation_runner_candidates
         else {}
     )
-    action_queue_next = _load_substantive_action_queue_next(repo_root, resolved_target)
+    action_queue_next = _load_substantive_action_queue_next(
+        repo_root,
+        resolved_target,
+        queue_snapshot=queue_snapshot,
+    )
     runtime_state = load_runtime_state(repo_root, resolved_target)
     recon_artifacts = (
         inspect_recon_artifacts_fast(repo_root, resolved_target)
@@ -2544,7 +2574,11 @@ def _load_autopilot_control_facts(
     json_inject = _load_json_inject_projection(repo_root, resolved_target)
     sql_matrix = _load_sql_matrix_projections(repo_root, resolved_target)
     js_intel = _load_js_intel_projection(repo_root, resolved_target)
-    case_state = _load_case_state_projection(repo_root, resolved_target)
+    case_state = _load_case_state_projection(
+        repo_root,
+        resolved_target,
+        case_state_summary=case_state_summary,
+    )
     return {
         "repo_root": repo_root,
         "resolved_target": resolved_target,
@@ -2820,6 +2854,9 @@ def build_autopilot_bootstrap_state(
     repo_root: str,
     target: str,
     memory_dir: str | None = None,
+    *,
+    queue_snapshot: dict | None = None,
+    case_state_summary: dict | None = None,
 ) -> dict:
     """构建 slash expansion 专用的严格只读、bounded state。"""
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
@@ -2833,6 +2870,8 @@ def build_autopilot_bootstrap_state(
         resolved_target,
         resolved_memory_dir,
         fast_recon=True,
+        queue_snapshot=queue_snapshot,
+        case_state_summary=case_state_summary,
     )
     observation_inventory = peek_inventory_summary(repo_root, resolved_target)
     projection = load_surface_projection(
@@ -2883,10 +2922,18 @@ def build_autopilot_state(
     memory_dir: str | None = None,
     *,
     bounded: bool = False,
+    queue_snapshot: dict | None = None,
+    case_state_summary: dict | None = None,
 ) -> dict:
     """Build an autopilot state; bounded mode never rebuilds the full surface."""
     if bounded:
-        return build_autopilot_bootstrap_state(repo_root, target, memory_dir=memory_dir)
+        return build_autopilot_bootstrap_state(
+            repo_root,
+            target,
+            memory_dir=memory_dir,
+            queue_snapshot=queue_snapshot,
+            case_state_summary=case_state_summary,
+        )
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
     resolved_target = canonical_target_value(target)
     if classify_target(resolved_target)["kind"] == "list":
@@ -2897,6 +2944,8 @@ def build_autopilot_state(
         resolved_target,
         resolved_memory_dir,
         fast_recon=False,
+        queue_snapshot=queue_snapshot,
+        case_state_summary=case_state_summary,
     )
     projection = load_surface_projection(
         repo_root,

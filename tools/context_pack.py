@@ -3433,6 +3433,7 @@ def build_context_pack(
     memory_dir: str | None = None,
     surface_state: dict | None = None,
     coverage_state: tuple[list[dict], dict] | None = None,
+    validation_runner_candidates: list[dict] | None = None,
 ) -> dict:
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
@@ -3441,7 +3442,11 @@ def build_context_pack(
     ranked = surface_state if surface_state is not None else _surface_state(repo, resolved_target, memory_dir)
     gaps, matrix = coverage_state or _safe_find_gaps(resolved_target, target_key, repo)
     findings = _load_findings(repo, target_key)
-    runner_candidates = load_validation_runner_candidate_pool(repo, resolved_target)
+    runner_candidates = (
+        validation_runner_candidates
+        if isinstance(validation_runner_candidates, list)
+        else load_validation_runner_candidate_pool(repo, resolved_target)
+    )
     local_intel = _load_local_intel(repo, target_key)
     tech_stack = _ranked_tech_stack(ranked)
     blob = _text_blob(focus, goal_memory, ranked, gaps, findings, local_intel)
