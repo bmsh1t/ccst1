@@ -9,7 +9,14 @@ import pytest
 
 import autopilot_state as autopilot_state_module
 import finding_index
-from action_queue import claim_next_action, ingest_checkpoint, load_queue, queue_fingerprint, resolve_action
+from action_queue import (
+    add_manual_action,
+    claim_next_action,
+    ingest_checkpoint,
+    load_queue,
+    queue_fingerprint,
+    resolve_action,
+)
 from tools import surface as surface_module
 from tools.surface_projection import build_surface_input_manifest, write_surface_projection
 from memory.hunt_journal import HuntJournal
@@ -342,6 +349,70 @@ def test_queue_resolution_rebuilds_state_from_durable_owner_facts(tmp_path):
     closure = load_closure_projection(str(tmp_path), after, max_lanes_reached=False)
     assert closure.get("round_progress", {}) == {}
     assert closure.get("checkpoint_health", {}).get("status") == "valid"
+
+
+def test_ai_action_outside_initial_frontier_uses_queue_owner_and_resumes(tmp_path):
+    target = "target.com"
+    ingest_checkpoint(
+        tmp_path,
+        target,
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "id": "AQ-INITIAL",
+                    "priority": 90,
+                    "type": "workflow-lead-review",
+                    "status": "ready",
+                    "action": "Review the initial owner-backed action.",
+                    "metadata": {"category": "asset-scope-review"},
+                }
+            ]
+        },
+    )
+    initial = build_autopilot_state(
+        str(tmp_path), target, memory_dir=str(tmp_path / "hunt-memory")
+    )
+    initial_frontier_ids = {
+        item["id"] for item in initial["priority_frontier"]
+    }
+
+    added = add_manual_action(
+        tmp_path,
+        target=target,
+        action_type="ai-created-frontier-extension",
+        evidence="AI identified a target-owned workflow dimension not projected initially.",
+        next_question="Can the newly selected workflow dimension be replayed safely?",
+        action="Replay the newly selected workflow dimension and record its disposition.",
+        priority=1,
+        source="ai",
+        source_id="frontier-extension",
+    )
+    new_action = next(
+        item
+        for item in added["queue"]["actions"]
+        if item["type"] == "ai-created-frontier-extension"
+    )
+    registered = build_autopilot_state(
+        str(tmp_path), target, memory_dir=str(tmp_path / "hunt-memory")
+    )
+
+    assert new_action["id"] not in initial_frontier_ids
+    assert new_action["id"] not in {
+        item["id"] for item in registered["priority_frontier"]
+    }
+    assert any(
+        item["id"] == new_action["id"]
+        for item in load_queue(tmp_path, target)["actions"]
+    )
+    claimed = claim_next_action(tmp_path, target, action_id=new_action["id"])
+    resumed = claim_next_action(tmp_path, target, action_id=new_action["id"])
+
+    assert claimed["claim_status"] == "claimed"
+    assert resumed["claim_status"] == "resumed"
+    saved = load_queue(tmp_path, target)
+    persisted = next(item for item in saved["actions"] if item["id"] == new_action["id"])
+    assert persisted["status"] == "running"
+    assert persisted["attempts"] == 1
 
 
 def test_pending_cidr_continuation_routes_back_to_recon():
