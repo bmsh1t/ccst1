@@ -128,6 +128,44 @@ def test_workflow_identity_family_is_recordable_without_expanding_legacy_matrix(
     )["actor_matrix"]["rows"] == []
 
 
+def test_explicit_empty_vuln_classes_disables_actor_matrix(tmp_path):
+    endpoint = "/api/accounts/42/export"
+
+    legacy = build_summary(tmp_path, target="target.com", focus_endpoints=[endpoint])
+    explicit_empty = build_summary(
+        tmp_path,
+        target="target.com",
+        focus_endpoints=[endpoint],
+        vuln_classes=[],
+    )
+
+    assert legacy["actor_matrix"]["vuln_classes"] == ["IDOR", "Authz"]
+    assert legacy["actor_matrix"]["rows"]
+    assert explicit_empty["actor_matrix"] == {
+        "endpoint_count": 1,
+        "vuln_classes": [],
+        "rows": [],
+        "gaps": [],
+        "gap_count": 0,
+        "covered_count": 0,
+    }
+    assert explicit_empty["record_commands"] == []
+
+
+def test_explicit_nonempty_vuln_classes_keeps_three_class_matrix_cap(tmp_path):
+    summary = build_summary(
+        tmp_path,
+        target="target.com",
+        focus_endpoints=["/api/accounts/42/export"],
+        vuln_classes=["IDOR", "Authz", "GraphQL", "CSRF"],
+    )
+
+    assert summary["actor_matrix"]["vuln_classes"] == ["IDOR", "Authz", "GraphQL", "CSRF"]
+    assert {row["vuln_class"] for row in summary["actor_matrix"]["rows"]} == {
+        "IDOR", "Authz", "GraphQL",
+    }
+
+
 def test_v2_incomplete_identity_is_recorded_but_not_closeable(tmp_path):
     entry = record_entry(
         tmp_path,

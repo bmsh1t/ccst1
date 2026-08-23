@@ -1010,7 +1010,15 @@ def test_context_pack_surfaces_actor_matrix_gaps(tmp_path):
         result="tested_clean",
     )
 
-    pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="api-idor",
+        coverage_state=([{
+            "endpoint": "/api/accounts/42/export",
+            "vuln_class": "IDOR",
+        }], {}),
+    )
     output = format_context_pack(pack)
 
     assert pack["source_summary"]["evidence_ledger_entries"] == 1
@@ -1021,14 +1029,21 @@ def test_context_pack_surfaces_actor_matrix_gaps(tmp_path):
     assert "Actor matrix gaps:" in output
 
 
-def test_information_disclosure_route_does_not_create_authz_ledger_lane():
-    classes = context_pack_module._ledger_vuln_classes(
-        ["knowledge/cards/information-disclosure-source-config.md"],
-        "public source map information disclosure",
+def test_context_pack_without_owner_backed_classes_keeps_context_but_no_actor_matrix(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://api.target.com/api/accounts/42?account_id=42"])
+
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="api-idor command injection payload family",
+        coverage_state=([], {}),
     )
 
-    assert "Path" in classes
-    assert "Authz" not in classes
+    assert "knowledge/cards/api-idor.md" in pack["knowledge_cards"]
+    assert pack["reference_hints"]
+    assert pack["actor_matrix_gaps"] == []
+    assert pack["source_summary"]["actor_matrix_gaps"] == 0
+    assert not any("Actor gap:" in item for item in pack["evidence_anchors"])
 
 
 def test_graphql_focus_routes_to_graphql_card(tmp_path):

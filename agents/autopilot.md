@@ -86,6 +86,10 @@ Use case state as working memory:
 - Linked blocked backlog -> follow `recover_hypothesis` with an empty replay command; record the recovery step before creating a fresh backlog and never replay the blocked runner implicitly.
 - Empty case state + object IDs in cached artifacts -> run `case_state_seed.py --target <target> --json` and review suggested commands.
 - New workflow/object/role signal -> extend case state with `add-actor`, `add-session`, `add-object`, `add-hypothesis`, or `add-backlog`.
+- Hypotheses are AI-owned and may use any family, primitive, or chain, including RCE and families
+  outside the canonical Coverage taxonomy. Case State/Queue `vuln_class` is a compatibility string;
+  only an owner-backed Matrix terminal state or validator-confirmed complete dimensions, provenance,
+  confidence, and evidence refs may close canonical Coverage. Unknown or incomplete candidates stay open.
 - Stronger fresh signal -> state the AI override reason and pursue it; do not force old backlog items.
 - Case state is not a scope gate, permission gate, bug-class selector, or IDOR-only workflow.
 

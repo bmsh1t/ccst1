@@ -118,6 +118,7 @@ def test_add_session_cli_redacts_auth_material_from_stdout(tmp_path, capsys):
     assert rc == 0
     assert secret not in output
     assert "<redacted>" in output
+    assert json.loads(output)["headers"] == {"Authorization": "<redacted>"}
     assert secret in target_case_state.load_case_state(tmp_path, TARGET)["sessions"]["sess_a"]["headers"]["Authorization"]
 
 
@@ -379,6 +380,66 @@ def test_add_hypothesis_and_backlog_then_next_outputs_ai_orchestration(tmp_path)
     assert "--complete-case-state" in next_item["command"]
     assert "Bearer owner-token" not in next_item["command"]
     assert "owner-token" not in next_item["redacted_command"]
+
+
+def test_hypothesis_metadata_cli_round_trip_and_bounded_projection(tmp_path, capsys):
+    target = "target.com"
+    metadata = {
+        "family": "RCE",
+        "primitive": "SSTI",
+        "boundary": "template input",
+        "impact": {"kind": "command execution"},
+        "chain": ["template", "shell"],
+        "chain_id": "chain-1",
+        "dimensions": {"input_field": "name", "sink": "renderer"},
+        "confidence": 0.82,
+        "provenance": ["evidence/target.com/browser/response.json"],
+        "evidence_refs": ["evidence/target.com/browser/response.json"],
+        "next_question": "does output reach the renderer?",
+        "stop_condition": "no template evaluation marker",
+    }
+    rc = target_case_state.main([
+        "add-hypothesis", "--repo-root", str(tmp_path), "--target", target,
+        "--vuln-class", "SSTI", "--next-action", "validate renderer",
+        "--metadata-json", json.dumps(metadata),
+    ])
+    output = capsys.readouterr().out
+
+    assert rc == 0
+    assert json.loads(output)["metadata"]["family"] == "RCE"
+    stored = target_case_state.load_case_state(tmp_path, target)
+    assert stored["hypotheses"][0]["metadata"]["primitive"] == "SSTI"
+    next_item = target_case_state.summary(tmp_path, target)["top_next_action"]
+    assert next_item["metadata"]["family"] == "RCE"
+    assert next_item["metadata"]["primitive"] == "SSTI"
+    assert next_item["metadata"]["impact"] == {"kind": "command execution"}
+
+
+def test_add_hypothesis_metadata_json_rejects_invalid_or_non_object(tmp_path, capsys):
+    for raw in ("{broken", "[]"):
+        rc = target_case_state.main([
+            "add-hypothesis", "--repo-root", str(tmp_path), "--target", "target.com",
+            "--vuln-class", "RCE", "--metadata-json", raw,
+        ])
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert captured.out == ""
+        assert "metadata-json" in captured.err
+
+    for key in (
+        "cookie", "accessToken", "authHeader", "clientSecret", "cookieValue",
+        "secretAccessKey", "secretKey", "sessionId", "tokenValue",
+    ):
+        rc = target_case_state.main([
+            "add-hypothesis", "--repo-root", str(tmp_path), "--target", "target.com",
+            "--vuln-class", "RCE", "--metadata-json", json.dumps({key: "SECRET_VALUE"}),
+        ])
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert captured.out == ""
+        assert f"sensitive field metadata.{key}" in captured.err
+        assert "SECRET_VALUE" not in captured.err
+    assert target_case_state.load_case_state(tmp_path, "target.com")["hypotheses"] == []
 
 
 def test_next_blocks_when_peer_session_missing(tmp_path):

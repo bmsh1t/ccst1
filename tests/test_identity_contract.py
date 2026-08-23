@@ -151,6 +151,31 @@ def test_ai_candidate_complete_high_confidence_builds_identity_but_candidate_is_
     assert "identity_v2" not in validated.candidate.to_dict()
 
 
+def test_complete_rce_candidate_projects_but_unknown_family_stays_open():
+    rce = validate_identity_candidate({
+        "family": "RCE",
+        "endpoint": "/render",
+        "dimensions": {"method": "POST", "input_field": "template", "sink": "renderer"},
+        "confidence": 0.95,
+        "provenance": ["evidence/render-response.json"],
+        "evidence_refs": ["evidence/render-response.json"],
+    })
+    unknown = validate_identity_candidate({
+        "family": "custom-sandbox-boundary",
+        "endpoint": "/render",
+        "dimensions": {},
+        "confidence": 0.95,
+        "provenance": ["evidence/render-response.json"],
+        "evidence_refs": ["evidence/render-response.json"],
+    })
+
+    assert rce.closeable is True
+    assert rce.identity is not None and rce.identity.family == "RCE"
+    assert unknown.closeable is False
+    assert unknown.identity is None
+    assert "family_policy" in unknown.candidate.missing_fields
+
+
 def test_candidate_conflicts_and_missing_provenance_fail_open():
     validated = validate_identity_candidate({
         "family": "IDOR",

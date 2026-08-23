@@ -1023,6 +1023,8 @@ def test_manual_action_cli_accepts_stop_condition_for_high_risk_lane(tmp_path):
 def test_manual_action_cli_writes_metadata_and_preserves_duplicate_queue_behavior(tmp_path):
     metadata = {
         "hypothesis_id": "H-42",
+        "family": "custom-template-chain",
+        "chain": ["template", "sandbox", "execution"],
         "tested_dimensions": ["sibling endpoint", "low-role actor"],
         "expected_learning": "A role difference should reveal object scoping.",
         "kill_condition": "Responses remain identical across both actors.",

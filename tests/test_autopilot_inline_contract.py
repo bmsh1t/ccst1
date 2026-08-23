@@ -290,6 +290,18 @@ def test_optional_autopilot_agent_is_not_the_slash_command_backend():
     assert "its caller owns the target boundary, state write-back, and result collection" in normalized
 
 
+def test_autopilot_keeps_free_hypotheses_separate_from_canonical_closure():
+    command = " ".join(_read("commands/autopilot.md").split())
+    agent = " ".join(_read("agents/autopilot.md").split())
+
+    for text in (command, agent):
+        assert "including RCE" in text
+        assert "families outside the canonical Coverage taxonomy" in text
+        assert "compatibility string" in text
+        assert "Matrix terminal state" in text
+        assert "Unknown or incomplete" in text or "unknown/incomplete" in text
+
+
 def test_operator_docs_separate_inline_autopilot_from_legacy_agent_sessions():
     claude = " ".join(_read("CLAUDE.md").split())
     readme = " ".join(_read("README.md").split())

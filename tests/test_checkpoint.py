@@ -58,7 +58,7 @@ from coverage_matrix import mark_cell
 from evidence_ledger import record_entry
 from identity_contract import build_closure_cell
 from runtime_state import runtime_phase_lock, update_runtime_state
-from target_case_state import add_actor, add_backlog, add_object, add_session
+from target_case_state import add_actor, add_backlog, add_hypothesis, add_object, add_session
 
 
 def _seed_recon(repo_root: Path, target: str, urls: list[str]) -> None:
@@ -2350,6 +2350,14 @@ def test_lead_proposals_keep_unknown_surface_type_fail_open():
     assert any("/api/Feedbacks" in item for item in proposals)
 
 
+def test_hypothesis_seed_is_only_a_fallback_without_owner_hypothesis():
+    state = {"has_recon": True, "surface": {"p1": [], "workflow_leads": []}}
+    context = {"hypothesis_seeds": ["try a card-derived route"]}
+
+    assert _lead_proposals(state, context) != []
+    assert _lead_proposals(state, context, case_state={"open_hypotheses": 1}) == []
+
+
 def test_checkpoint_v2_closure_compares_the_complete_identity():
     closed = build_closure_cell(
         "/api/search",
@@ -2705,6 +2713,59 @@ def test_checkpoint_surfaces_actor_matrix_gaps(tmp_path):
     assert "actor matrix gaps:" in output
     assert "Next action queue:" in output
     assert "Default candidate (compat pointer):" in output
+
+
+def test_checkpoint_does_not_default_actor_matrix_without_owner_family(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://target.com/about/company"])
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+
+    assert checkpoint["evidence_ledger"]["actor_matrix"] == {
+        "gap_count": 0,
+        "covered_count": 0,
+        "gaps": [],
+    }
+    assert not any(item["type"] == "actor-gap" for item in checkpoint["next_action_queue"])
+
+
+def test_checkpoint_actor_matrix_reads_only_active_queue_metadata_family():
+    assert checkpoint_module._evidence_vuln_classes(
+        [],
+        queue_snapshot={"actions": [
+            {"status": "queued", "metadata": {"vuln_class": "IDOR"}},
+            {"status": "tested", "metadata": {"vuln_class": "Authz"}},
+            {"status": "queued", "metadata": {"family": "custom-family"}},
+        ]},
+    ) == ["IDOR"]
+
+
+def test_checkpoint_projects_free_hypothesis_metadata_into_case_queue(tmp_path):
+    _seed_recon(tmp_path, "target.com", ["https://target.com/render"])
+    hypothesis = add_hypothesis(
+        tmp_path,
+        "target.com",
+        vuln_class="SSTI",
+        endpoint="/render",
+        why_now="template syntax changes the response",
+        next_action="validate the renderer boundary",
+        metadata={
+            "family": "RCE",
+            "primitive": "SSTI",
+            "chain": ["template", "sandbox", "execution"],
+            "evidence_refs": ["evidence/target.com/render-response.json"],
+        },
+    )
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com")
+    action = next(
+        item for item in checkpoint["next_action_queue"]
+        if item["type"] == "case-state-backlog-create"
+    )
+
+    assert action["metadata"]["hypothesis_id"] == hypothesis["id"]
+    assert action["metadata"]["family"] == "RCE"
+    assert action["metadata"]["primitive"] == "SSTI"
+    assert action["metadata"]["chain"] == ["template", "sandbox", "execution"]
 
 
 def test_checkpoint_surfaces_open_ledger_candidate_for_ai_validation(tmp_path):
@@ -4065,10 +4126,8 @@ def test_ranked_surface_redirect_parameter_uses_parameter_behavior_first():
     assert "owner/peer role replay" in ranked_text
 
     action = _build_next_action_queue([ranked_text], "target.com")[0]
-    skeleton = action["metadata"]["ledger_record_skeleton"]
-    assert "--vuln-class \"Authz\"" in skeleton
-    assert "--variant \"replay\"" in skeleton
-    assert "--actor \"anonymous\"" in skeleton
+    assert "Ledger skeleton:" not in ranked_text
+    assert "ledger_record_skeleton" not in action["metadata"]
 
 
 def test_ranked_surface_parent_prefix_uses_route_prefix_triage():
@@ -4102,10 +4161,8 @@ def test_ranked_surface_parent_prefix_uses_route_prefix_triage():
     assert "authz-role-replay" not in ranked_text
 
     action = _build_next_action_queue([ranked_text], "target.com")[0]
-    skeleton = action["metadata"]["ledger_record_skeleton"]
-    assert "--variant \"baseline\"" in skeleton
-    assert "--actor \"anonymous\"" in skeleton
-    assert "route prefix triage" in skeleton
+    assert "Ledger skeleton:" not in ranked_text
+    assert "ledger_record_skeleton" not in action["metadata"]
 
 
 def test_ranked_surface_parent_prefix_uses_matrix_child_paths_when_surface_window_truncated():
@@ -4227,11 +4284,8 @@ def test_ranked_surface_placeholder_object_uses_case_state_object():
     assert "authz-role-replay" not in ranked_text
 
     action = _build_next_action_queue([ranked_text], "target.com")[0]
-    skeleton = action["metadata"]["ledger_record_skeleton"]
-    assert "--endpoint \"/rest/basket/6\"" in skeleton
-    assert "--object-scope \"own_object\"" in skeleton
-    assert "--variant \"id_swap\"" in skeleton
-    assert "/rest/basket/NaN" not in skeleton
+    assert "Ledger skeleton:" not in ranked_text
+    assert "ledger_record_skeleton" not in action["metadata"]
 
 
 def test_ranked_surface_placeholder_object_skips_when_concrete_endpoint_covered():
@@ -4407,17 +4461,9 @@ def test_ranked_surface_defers_repeated_authz_baselines_when_case_state_missing(
         case_state={"actors": 0, "sessions": 0, "objects": 0},
     )
 
-    assert not any(item.startswith("Review surface candidate ") for item in proposals)
-    acquisition = next(item for item in proposals if item.startswith("Case-state acquisition lead:"))
-    assert "3 recent anonymous Authz baseline(s)" in acquisition
-    assert "testing more identical 401 baselines" in acquisition
-
-    action = _build_next_action_queue([acquisition], "target.com")[0]
-    assert action["type"] == "case-state-enrichment"
-    assert action["priority"] == 66
-    assert action["redline_required"] is False
-    assert action["metadata"]["clean_authz_baselines"] == 3
-    assert action["metadata"]["deferred_role_surfaces"] == 1
+    ranked = next(item for item in proposals if item.startswith("Review surface candidate "))
+    assert "Ledger skeleton:" not in ranked
+    assert not any(item.startswith("Case-state acquisition lead:") for item in proposals)
 
 
 def test_coverage_gap_boilerplate_does_not_force_redline_first():

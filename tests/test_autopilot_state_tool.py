@@ -1349,6 +1349,90 @@ def test_case_state_recovery_keeps_bounded_hypothesis_linkage(tmp_path):
     assert top["recovery_next_action"] == "capture the export route"
 
 
+def test_case_state_metadata_projection_is_bounded_and_secret_free(tmp_path):
+    target = "target.com"
+    case_path = tmp_path / "state" / target / "case_state.json"
+    case_path.parent.mkdir(parents=True)
+    case_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target": target,
+            "target_key": target,
+            "actors": {}, "sessions": {}, "objects": {},
+            "hypotheses": [{
+                "id": "hyp_001", "status": "open", "vuln_class": "SSTI",
+                "next_action": "validate template renderer",
+                "metadata": {
+                    "family": "RCE", "primitive": "SSTI",
+                    "impact": {
+                        "kind": "command execution",
+                        "headers": {"Cookie": "SECRET"},
+                        "accessToken": "SECRET_ACCESS_TOKEN",
+                        "authHeader": "SECRET_AUTH_HEADER",
+                        "clientSecret": "SECRET_CLIENT_SECRET",
+                        "cookieValue": "SECRET_COOKIE",
+                        "secretKey": "SECRET_KEY",
+                        "sessionId": "SECRET_SESSION",
+                        "tokenValue": "SECRET_TOKEN",
+                    },
+                    "chain": ["template", "shell"], "password": "SECRET_PASSWORD",
+                },
+            }],
+            "validation_backlog": [],
+        }),
+        encoding="utf-8",
+    )
+
+    state = build_autopilot_state(str(tmp_path), target, bounded=True)
+    metadata = state["case_state"]["top_next_action"]["metadata"]
+
+    assert metadata["family"] == "RCE"
+    assert metadata["primitive"] == "SSTI"
+    assert metadata["chain"] == ["template", "shell"]
+    assert "password" not in metadata
+    assert "headers" not in metadata["impact"]
+    assert "accessToken" not in metadata["impact"]
+    assert "authHeader" not in metadata["impact"]
+    assert "clientSecret" not in metadata["impact"]
+    assert "cookieValue" not in metadata["impact"]
+    assert "secretKey" not in metadata["impact"]
+    assert "sessionId" not in metadata["impact"]
+    assert "tokenValue" not in metadata["impact"]
+
+
+def test_case_state_projection_preserves_descriptive_token_dimension(tmp_path):
+    target = "target.com"
+    case_path = tmp_path / "state" / target / "case_state.json"
+    case_path.parent.mkdir(parents=True)
+    case_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target": target,
+            "target_key": target,
+            "actors": {}, "sessions": {}, "objects": {},
+            "hypotheses": [{
+                "id": "hyp_001", "status": "open", "vuln_class": "JWT",
+                "next_action": "compare token algorithm handling",
+                "metadata": {
+                    "family": "JWT",
+                    "dimensions": {
+                        "token_location": "Authorization header",
+                        "claim_algorithm": "alg",
+                        "cache_key": "Accept-Language",
+                    },
+                },
+            }],
+            "validation_backlog": [],
+        }),
+        encoding="utf-8",
+    )
+
+    state = build_autopilot_state(str(tmp_path), target, bounded=True)
+    dimensions = state["case_state"]["top_next_action"]["metadata"]["dimensions"]
+    assert dimensions["token_location"] == "Authorization header"
+    assert dimensions["cache_key"] == "Accept-Language"
+
+
 def test_malformed_case_state_returns_structured_state_error(tmp_path, monkeypatch, capsys):
     target = "target.com"
     case_path = tmp_path / "state" / target / "case_state.json"

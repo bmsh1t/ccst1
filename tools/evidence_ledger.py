@@ -56,6 +56,7 @@ RESULTS = (
     "blocked_redline",
     "not_applicable",
 )
+ACTOR_MATRIX_VULN_CLASSES = frozenset({"IDOR", "Authz", "GraphQL", "CSRF"})
 COVERING_RESULTS = {"signal", "candidate", "tested_clean", "tested_finding", "dead_end"}
 CLOSED_CELL_RESULTS = {"tested_clean", "tested_finding", "dead_end", "blocked_redline", "not_applicable"}
 
@@ -596,7 +597,7 @@ def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "G
     # actor matrix 只服务“角色/对象边界”类验证。像 Upload/SSRF/SQLi 即使落在
     # admin path 上，也不应自动生成 anonymous/owner/peer 这类 actor-gap，
     # 否则 checkpoint 会不断推送无意义待办。
-    if vc not in {"IDOR", "Authz", "GraphQL", "CSRF"}:
+    if vc not in ACTOR_MATRIX_VULN_CLASSES:
         return []
     if vc != "CSRF" and not _object_reference_endpoint(canonical_endpoint):
         return []
@@ -985,7 +986,9 @@ def build_summary(
     entries = list(diagnostics.get("entries") or [])
     path = ledger_path(repo_root, resolved_target)
     endpoints = _focus_endpoint_values(focus_endpoints, entries)
-    selected_vulns = vuln_classes or ["IDOR", "Authz"]
+    # ``None`` keeps the legacy caller default; an explicit empty list means
+    # no owner-backed actor-matrix classes for this projection.
+    selected_vulns = ["IDOR", "Authz"] if vuln_classes is None else list(vuln_classes)
     selected_vulns = _dedupe([normalize_ledger_vuln_class(vuln) for vuln in selected_vulns])
 
     actor_rows: list[dict] = []

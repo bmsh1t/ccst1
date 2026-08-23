@@ -15,6 +15,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shlex
 import sys
 import tempfile
@@ -73,6 +74,112 @@ RUNNER_CONTRACTS = {
     "marker-replay": ("endpoint", "expect_marker"),
     "idor-actor-pair": ("endpoint", "owner_actor", "peer_actor"),
 }
+
+HYPOTHESIS_METADATA_KEYS = (
+    "family", "primitive", "boundary", "impact", "chain", "chain_id",
+    "dimensions", "confidence", "provenance", "evidence_refs",
+    "next_question", "stop_condition",
+)
+_SENSITIVE_METADATA_PARTS = {
+    "access_key", "access_token", "api_key", "apikey", "auth", "authorization", "bearer",
+    "client_secret", "cookie", "credential", "credentials", "csrf_token", "header",
+    "header_value", "headers", "id_token", "jwt", "nonce", "otp", "password", "private",
+    "private_key", "private_marker", "refresh_token", "secret", "secret_key", "secret_value",
+    "session", "session_cookie", "session_id", "set_cookie", "token", "verification_code",
+}
+_SAFE_TOKEN_METADATA_KEYS = {
+    "token_algorithm", "token_audience", "token_binding", "token_claim", "token_issuer",
+    "token_location", "token_type",
+}
+
+
+def _sensitive_metadata_key(key: str) -> bool:
+    value = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key or ""))
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+    if normalized in _SENSITIVE_METADATA_PARTS:
+        return True
+    if normalized.startswith((
+        "authorization_", "bearer_", "cookie_", "credential_", "credentials_",
+        "password_", "secret_", "session_",
+    )):
+        return True
+    if normalized.startswith("token_") and normalized not in _SAFE_TOKEN_METADATA_KEYS:
+        return True
+    if normalized.endswith((
+        "_access_token", "_api_key", "_client_secret", "_cookie", "_credential",
+        "_credentials", "_header_value", "_id_token", "_password", "_private_key",
+        "_refresh_token", "_secret", "_secret_key", "_session_cookie", "_token",
+    )):
+        return True
+    parts = set(normalized.split("_"))
+    if normalized.endswith(("_header", "_headers")) and parts.intersection({
+        "auth", "authorization", "bearer", "cookie", "credential", "session", "token",
+    }):
+        return True
+    return normalized.endswith("_key") and bool(parts.intersection({
+        "access", "api", "client", "encryption", "private", "secret", "signing",
+    }))
+
+
+def _validate_hypothesis_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if metadata is None:
+        return {}
+    if not isinstance(metadata, dict):
+        raise ValueError("hypothesis metadata must be a JSON object")
+
+    def visit(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f"{path}.{key}"
+                if _sensitive_metadata_key(str(key)) and child not in (None, "", [], {}):
+                    raise ValueError(f"hypothesis metadata cannot contain sensitive field {child_path}")
+                visit(child, child_path)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}[{index}]")
+
+    visit(metadata, "metadata")
+    return metadata
+
+
+def _bounded_metadata_value(value: Any, *, key: str = "", depth: int = 0) -> Any:
+    if _sensitive_metadata_key(key) or depth > 3:
+        return None
+    if isinstance(value, dict):
+        result = {}
+        for raw_key, raw_value in list(value.items())[:32]:
+            child_key = str(raw_key)
+            if _sensitive_metadata_key(child_key):
+                continue
+            projected = _bounded_metadata_value(raw_value, key=child_key, depth=depth + 1)
+            if projected is not None:
+                result[child_key] = projected
+        return result
+    if isinstance(value, list):
+        return [
+            projected
+            for item in value[:16]
+            if (projected := _bounded_metadata_value(item, depth=depth + 1)) is not None
+        ]
+    if isinstance(value, str):
+        return value[:500]
+    if isinstance(value, (bool, int, float)) or value is None:
+        return value
+    return str(value)[:500]
+
+
+def project_hypothesis_metadata(metadata: Any) -> dict[str, Any]:
+    """Project the fixed, bounded, secret-free AI metadata subset."""
+    if not isinstance(metadata, dict):
+        return {}
+    projected = {}
+    for key in HYPOTHESIS_METADATA_KEYS:
+        if key not in metadata or _sensitive_metadata_key(key):
+            continue
+        value = _bounded_metadata_value(metadata[key], key=key)
+        if value is not None:
+            projected[key] = value
+    return projected
 
 
 def now_utc() -> str:
@@ -483,6 +590,7 @@ def add_hypothesis(
 ) -> dict[str, Any]:
     actors = actors or []
     vuln_class_value = _require_non_empty(vuln_class, "vuln_class")
+    metadata_value = _validate_hypothesis_metadata(metadata)
     def mutate(state):
         for actor in actors:
             if actor not in state["actors"]:
@@ -503,8 +611,8 @@ def add_hypothesis(
             "next_action": str(next_action or ""),
             "created_at": now_utc(),
         }
-        if metadata:
-            record["metadata"] = dict(metadata)
+        if metadata_value:
+            record["metadata"] = dict(metadata_value)
         state["hypotheses"].append(record)
         return record
     return _mutate_case_state(repo_root, target, mutate)
@@ -891,7 +999,7 @@ def next_action(
         ]
         if open_hypotheses:
             hyp = open_hypotheses[0]
-            return {
+            result = {
                 "next_action": "create_validation_backlog",
                 "hypothesis_id": hyp.get("id", ""),
                 "hypothesis": hyp.get("next_action") or hyp.get("why_now") or "open hypothesis needs validation backlog",
@@ -902,6 +1010,10 @@ def next_action(
                 "actors": hyp.get("actors", []),
                 "write_back": "add-backlog for this hypothesis after choosing the runner",
             }
+            metadata = project_hypothesis_metadata(hyp.get("metadata"))
+            if metadata:
+                result["metadata"] = metadata
+            return result
         return {
             "next_action": "none",
             "reason": "no active validation backlog or open hypothesis",
@@ -963,7 +1075,7 @@ def next_action(
         (str(extension).strip() for extension in extensions if str(extension).strip()),
         "capture the missing prerequisite before creating a fresh validation backlog",
     ) if recovering_hypothesis else ""
-    return {
+    result = {
         "next_action": (
             "recover_hypothesis"
             if recovering_hypothesis
@@ -1020,6 +1132,10 @@ def next_action(
             else f"complete-backlog {item.get('id')} with tested_finding/tested_clean/candidate"
         ),
     }
+    metadata = project_hypothesis_metadata(linked_hypothesis.get("metadata"))
+    if metadata:
+        result["metadata"] = metadata
+    return result
 
 
 def complete_backlog(
@@ -1162,10 +1278,10 @@ def summary(repo_root: str | Path, target: str) -> dict[str, Any]:
 def _print_json(payload: Any) -> None:
     def redact(value: Any, key: str = "") -> Any:
         normalized = key.lower().replace("-", "_")
-        if normalized in {"header_value", "cookie", "bearer", "api_key", "private_marker"}:
-            return "<redacted>" if value not in (None, "") else value
         if normalized == "headers" and isinstance(value, dict):
             return {str(name): "<redacted>" for name in value}
+        if _sensitive_metadata_key(normalized):
+            return "<redacted>" if value not in (None, "") else value
         if isinstance(value, dict):
             return {str(name): redact(item, str(name)) for name, item in value.items()}
         if isinstance(value, list):
@@ -1187,6 +1303,18 @@ def _print_summary(payload: dict[str, Any]) -> None:
         print(f"Top next action: {top.get('runner') or top.get('next_action')} {top.get('object_ref', '')} {top.get('owner_actor', '')} -> {top.get('peer_actor', '')}".strip())
         if top.get("redacted_command"):
             print(f"Replay draft: {top.get('redacted_command')}")
+
+
+def _parse_metadata_json(raw: str | None) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    try:
+        metadata = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--metadata-json must be valid JSON: {exc.msg}") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError("--metadata-json must be a JSON object")
+    return metadata
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1245,6 +1373,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--why-now", default="")
     p.add_argument("--next-action", default="")
     p.add_argument("--status", default="open")
+    p.add_argument("--metadata-json", default=None)
 
     p = sub.add_parser("add-backlog")
     common(p)
@@ -1338,6 +1467,7 @@ def _run_command(argv: list[str] | None = None) -> int:
             why_now=args.why_now,
             next_action=args.next_action,
             status=args.status,
+            metadata=_parse_metadata_json(args.metadata_json),
         ))
     elif args.cmd == "add-backlog":
         _print_json(add_backlog(

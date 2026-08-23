@@ -74,6 +74,11 @@ existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> RE
 Every invocation is state-first. Bootstrap `ctf_mode`, compact `state`, and advisory
 `capabilities` are the only initial inputs. Branch only after that state read;
 missing/stale/invalid is work, not no surface. State tools are not a pre-flight checklist.
+Hypothesis generation is AI-owned: derive any family, primitive, or chain, including RCE and families
+outside the canonical Coverage taxonomy, from evidence/unknowns/contradictions. `knowledge_cards` are
+context, never conclusions; Case State/Queue `vuln_class` is a compatibility string. Only an owner-backed
+Matrix terminal state or a complete evidence-backed identity candidate may close canonical Coverage;
+unknown/incomplete work stays open.
 For each iteration, keep the reasoning loop explicit:
 `inspect candidate/context -> AI choose and activate one hypothesis -> claim -> execute one
 bounded action -> read Runner observation -> AI resolve one continuation or kill -> refresh

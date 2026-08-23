@@ -23,7 +23,7 @@ try:
     from memory.target_profile import default_memory_dir
     from tools.closure_resolver import ClosureResolver
     from tools.coverage_matrix import high_value_gaps_from_matrix, load_matrix
-    from tools.evidence_ledger import build_summary as build_evidence_summary
+    from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary
     from tools.knowledge_registry import (
         load_card_metadata_by_file,
         load_card_paths,
@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from memory.target_profile import default_memory_dir
     from closure_resolver import ClosureResolver  # type: ignore
     from coverage_matrix import high_value_gaps_from_matrix, load_matrix  # type: ignore
-    from evidence_ledger import build_summary as build_evidence_summary  # type: ignore
+    from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary  # type: ignore
     from knowledge_registry import (  # type: ignore
         load_card_metadata_by_file,
         load_card_paths,
@@ -3128,70 +3128,15 @@ def _focus_endpoints_for_ledger(ranked: dict, gaps: list[dict], local_intel: dic
     return _dedupe(endpoints)[:8]
 
 
-def _ledger_vuln_classes(cards: list[str], blob: str) -> list[str]:
-    classes: list[str] = []
-    if CARD_PATHS["api-idor"] in cards or re.search(r"\b(idor|account_id|tenant_id|org_id|user_id|order_id)\b", blob, re.I):
-        classes.append("IDOR")
-    if CARD_PATHS["auth-access"] in cards or re.search(r"\b(authz|rbac|role|admin|permission)\b", blob, re.I):
-        classes.append("Authz")
-    if CARD_PATHS["auth-hidden-switches"] in cards or re.search(r"\b(login[-_ ]?bypass|account[-_ ]?takeover|ato|hidden[-_ ]?login|auth[-_ ]?selector|auth[-_ ]?switch)\b", blob, re.I):
-        classes.append("Authz")
-    if CARD_PATHS["auth-sso-token-edge-cases"] in cards or re.search(r"\b(jwt|jwe|jwks?|jku|kid|oauth|oidc|saml|sso|pkce|token[-_ ]?binding|account[-_ ]?linking)\b", blob, re.I):
-        classes.append("Authz")
-    if CARD_PATHS["auth-credential-recovery-flows"] in cards or re.search(r"\b(password[-_ ]?reset|forgot[-_ ]?password|account[-_ ]?recovery|username[-_ ]?enum(?:eration)?|credential[-_ ]?attack|brute[-_ ]?force|mfa|2fa|otp)\b", blob, re.I):
-        classes.append("Authz")
-    if CARD_PATHS["api-testing-workflow"] in cards or re.search(r"\b(api[-_ ]?testing|api[-_ ]?test|rest[-_ ]?api|soap[-_ ]?api|mobile[-_ ]?api)\b", blob, re.I):
-        classes.extend(["IDOR", "Authz", "SQLi"])
-    if CARD_PATHS["business-logic-state-machines"] in cards or re.search(r"\b(business[-_ ]?logic|logic[-_ ]?flaws?|state[-_ ]?machine|workflow[-_ ]?validation|client[-_ ]?side[-_ ]?controls|coupon|cart|checkout)\b", blob, re.I):
-        classes.extend(["Authz", "Race"])
-    if CARD_PATHS["missing-parameter-discovery"] in cards or re.search(r"\b(missing[-_ ]?param(?:eter)?|parameter[-_ ]?null|parameter is null|required[-_ ]?param(?:eter)?|schema[-_ ]?error|validator[-_ ]?error|binder[-_ ]?error|param[-_ ]?discovery)\b", blob, re.I):
-        classes.extend(["IDOR", "Authz"])
-    if CARD_PATHS["path-pattern-management-exposure"] in cards or re.search(r"\b(path[-_ ]?pattern|admin[-_ ]?panel|management[-_ ]?console|monitoring[-_ ]?console|metrics|health|config[-_ ]?(?:exposure|page|endpoint|dump|leak)|configuration|stats|log|trace|datasource|accesskey|secretkey|secret[-_ ]?leak)\b", blob, re.I):
-        classes.extend(["Authz", "Path"])
-    if CARD_PATHS["graphql"] in cards or re.search(r"\b(graphql|mutation|subscription)\b", blob, re.I):
-        classes.append("GraphQL")
-    if CARD_PATHS["sqli-hidden-surfaces"] in cards or re.search(r"\b(sqli|sql[-_ ]?injection|hidden[-_ ]?param)\b", blob, re.I):
-        classes.append("SQLi")
-    if CARD_PATHS.get("odata-query-boundaries") in cards:
-        classes.extend(["SQLi", "IDOR", "Authz"])
-    if CARD_PATHS.get("ldap-xpath-query-boundaries") in cards:
-        classes.extend(["SQLi", "Authz"])
-    if CARD_PATHS["nosql-query-injection"] in cards or re.search(r"\b(nosql|no[-_ ]?sql[-_ ]?injection|mongo(?:db)?|operator[-_ ]?injection)\b", blob, re.I):
-        classes.append("SQLi")
-    if CARD_PATHS["xxe-xml-parser"] in cards or re.search(r"\b(xxe|xml[-_ ]?parser|xinclude|external[-_ ]?entit(?:y|ies))\b", blob, re.I):
-        classes.append("XXE")
-    if CARD_PATHS["path-traversal-file-read"] in cards or re.search(r"\b(path[-_ ]?traversal|directory[-_ ]?traversal|lfi|file[-_ ]?read)\b", blob, re.I):
-        classes.append("Path")
-    if CARD_PATHS["ssrf-url-fetch"] in cards or CARD_PATHS["ssrf-internal-impact"] in cards or re.search(r"\b(ssrf|url[-_ ]?fetch|metadata)\b", blob, re.I):
-        classes.append("SSRF")
-    if CARD_PATHS["upload-parser"] in cards or CARD_PATHS["upload-to-execution"] in cards or re.search(r"\b(upload|file[-_ ]?parser|web[-_ ]?shell)\b", blob, re.I):
-        classes.append("Upload")
-    if CARD_PATHS["controlled-rce-impact"] in cards or re.search(r"\b(rce|command[-_ ]?injection|ssti|deserialization)\b", blob, re.I):
-        classes.append("RCE")
-    if CARD_PATHS["server-side-template-injection"] in cards:
-        classes.append("RCE")
-    if CARD_PATHS["insecure-deserialization"] in cards:
-        classes.append("RCE")
-    if CARD_PATHS["browser-client-boundaries"] in cards or re.search(r"\b(cors|csrf|xsrf|clickjacking|dom[-_ ]?xss|postmessage)\b", blob, re.I):
-        classes.extend(["XSS", "CSRF", "Authz"])
-    if CARD_PATHS["xss-client-injection"] in cards or re.search(r"\b(reflected[-_ ]?xss|stored[-_ ]?xss|client[-_ ]?xss|cross[-_ ]?site[-_ ]?scripting)\b|(?<!dom[-_])\bxss\b", blob, re.I):
-        classes.append("XSS")
-    if CARD_PATHS["proxy-cache-boundaries"] in cards or re.search(r"\b(host[-_ ]?header|request[-_ ]?smuggling|cache[-_ ]?(?:poisoning|deception))\b", blob, re.I):
-        classes.extend(["Authz", "Path"])
-    if CARD_PATHS["websocket-realtime-api"] in cards or re.search(r"\b(websocket|cswsh|subscription)\b", blob, re.I):
-        classes.append("Authz")
-    if CARD_PATHS["information-disclosure-source-config"] in cards or re.search(r"\b(information[-_ ]?disclosure|debug|source[-_ ]?map|backup|stack[-_ ]?trace)\b", blob, re.I):
-        # Public configuration/source exposure is an information/path lane.
-        # Do not manufacture an actor matrix row unless an independent authz
-        # signal matched above; the ledger has no InfoDisclosure family.
-        classes.append("Path")
-    if CARD_PATHS["web-llm-tool-chains"] in cards or re.search(r"\b(web[-_ ]?llm|prompt[-_ ]?injection|rag|tool[-_ ]?call)\b", blob, re.I):
-        classes.append("Authz")
-    if CARD_PATHS["node-prototype-pollution"] in cards or re.search(r"\b(prototype[-_ ]?pollution|proto[-_ ]?pollution|__proto__|constructor\.prototype|vm2?)\b", blob, re.I):
-        classes.append("RCE")
-    if re.search(r"\b(csrf|xsrf|same[-_ ]?site|origin|referer)\b", blob, re.I):
-        classes.append("CSRF")
-    return _dedupe(classes)[:3] or ["IDOR", "Authz"]
+def _owner_backed_vuln_classes(coverage_gaps: list[dict]) -> list[str]:
+    canonical_by_name = {item.casefold(): item for item in ACTOR_MATRIX_VULN_CLASSES}
+    return _dedupe([
+        canonical_by_name[value.casefold()]
+        for gap in coverage_gaps
+        if isinstance(gap, dict)
+        and (value := str(gap.get("vuln_class") or "").strip())
+        and value.casefold() in canonical_by_name
+    ])
 
 
 def _ledger_relative_path(summary: dict, repo_root: Path) -> str:
@@ -3490,7 +3435,7 @@ def build_context_pack(
         repo,
         target=resolved_target,
         focus_endpoints=_focus_endpoints_for_ledger(ranked, gaps, local_intel),
-        vuln_classes=_ledger_vuln_classes(cards, blob),
+        vuln_classes=_owner_backed_vuln_classes(gaps),
     )
     ledger_path = _ledger_relative_path(evidence_summary, repo)
 

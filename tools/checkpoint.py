@@ -52,7 +52,7 @@ try:
     from tools.context_pack import build_context_pack
     from tools.coverage_matrix import actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
-    from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
+    from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
     from tools.closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path
     from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
@@ -92,7 +92,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from context_pack import build_context_pack  # type: ignore
     from coverage_matrix import actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
-    from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
+    from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
     from closure_resolver import ClosureResolver, canonical_endpoint_identity, canonical_endpoint_path, extract_endpoint_path  # type: ignore
     from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
@@ -949,21 +949,38 @@ def _evidence_focus_endpoints(state: dict, coverage_gaps: list[dict]) -> list[st
     return _dedupe(endpoints)[:8]
 
 
-def _evidence_vuln_classes(coverage_gaps: list[dict], context_pack: dict) -> list[str]:
+def _evidence_vuln_classes(
+    coverage_gaps: list[dict],
+    case_state: dict | None = None,
+    queue_snapshot: dict | None = None,
+) -> list[str]:
+    """Collect only explicit canonical families from state owners."""
     classes: list[str] = []
     for gap in coverage_gaps[:8]:
         classes.append(str(gap.get("vuln_class") or ""))
-    for card in context_pack.get("knowledge_cards", []) or []:
-        card_text = str(card)
-        if "api-idor" in card_text:
-            classes.append("IDOR")
-        if "auth-access" in card_text:
-            classes.append("Authz")
-        if "graphql" in card_text:
-            classes.append("GraphQL")
-        if "insecure-deserialization" in card_text:
-            classes.append("Deserialization")
-    return _dedupe([item for item in classes if item])[:3] or ["IDOR", "Authz"]
+    top = (case_state or {}).get("top_next_action") if isinstance(case_state, dict) else {}
+    if isinstance(top, dict):
+        metadata = top.get("metadata") if isinstance(top.get("metadata"), dict) else {}
+        classes.extend([str(metadata.get("family") or ""), str(top.get("vuln_class") or "")])
+    actions = (queue_snapshot or {}).get("actions") if isinstance(queue_snapshot, dict) else []
+    for action in actions if isinstance(actions, list) else []:
+        if (
+            not isinstance(action, dict)
+            or str(action.get("status") or "queued") not in ACTION_QUEUE_ACTIVE_STATUSES
+        ):
+            continue
+        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+        classes.extend([
+            str(metadata.get("family") or ""),
+            str(metadata.get("vuln_class") or action.get("vuln_class") or ""),
+        ])
+
+    canonical_by_name = {item.casefold(): item for item in ACTOR_MATRIX_VULN_CLASSES}
+    return _dedupe([
+        canonical_by_name[item.strip().casefold()]
+        for item in classes
+        if item.strip().casefold() in canonical_by_name
+    ])
 
 
 def _actor_gaps(evidence_summary: dict) -> list[dict]:
@@ -1305,6 +1322,7 @@ def _lead_proposals(
     repo_root: Path | None = None,
     target: str = "",
     evidence_summary: dict | None = None,
+    case_state: dict | None = None,
 ) -> list[str]:
     proposals: list[str] = []
     surface = state.get("surface") or {}
@@ -1359,7 +1377,11 @@ def _lead_proposals(
                 )
             )
 
-    if not proposals and state.get("has_recon"):
+    if (
+        not proposals
+        and state.get("has_recon")
+        and not _case_state_count(case_state, "open_hypotheses")
+    ):
         for seed in (context_pack.get("hypothesis_seeds") or [])[:1]:
             proposals.append(
                 f"Evidence: Context-pack hypothesis seed. Why it matters: {seed} "
@@ -1529,7 +1551,7 @@ def _canonical_vuln_for_ledger(vuln_hint: str) -> str:
     try:
         return normalize_vuln_class(vuln_hint)
     except ValueError:
-        return "Authz"
+        return ""
 
 
 def _case_state_has_role_replay_context(case_state: dict | None) -> bool:
@@ -1703,6 +1725,8 @@ def _ranked_surface_context_prereq(state: dict, item: dict, case_state: dict | N
     entry = _ranked_surface_entry(state, url)
     vuln_hint = _ranked_surface_vuln_hint(entry, url)
     vuln_class = _canonical_vuln_for_ledger(vuln_hint)
+    if not vuln_class:
+        return False
     authz_gap = _path_only_authz_gap_for_url(url, vuln_hint)
     baseline_first = _is_path_only_authz_gap(authz_gap)
     return (
@@ -1907,6 +1931,8 @@ def _ranked_surface_ledger_skeleton(
     method = next((value for value in js_methods if value), "GET")
     vuln_hint = _ranked_surface_vuln_hint(entry, url)
     vuln_class = _canonical_vuln_for_ledger(vuln_hint)
+    if not vuln_class:
+        return ""
     authz_gap = _path_only_authz_gap_for_url(url, vuln_hint)
     baseline_first = _is_path_only_authz_gap(authz_gap)
     context_prereq = _ranked_surface_context_prereq(state, item, case_state)
@@ -3931,7 +3957,7 @@ def build_checkpoint(
         repo,
         target=resolved_target,
         focus_endpoints=_evidence_focus_endpoints(state, gaps),
-        vuln_classes=_evidence_vuln_classes(gaps, context),
+        vuln_classes=_evidence_vuln_classes(gaps, case_state, queue_snapshot),
     )
     actor_gaps = _actor_gaps(evidence_summary)
     case_state_proposal = _case_state_proposal(case_state)
@@ -3951,6 +3977,7 @@ def build_checkpoint(
         repo_root=repo,
         target=resolved_target,
         evidence_summary=evidence_summary,
+        case_state=case_state,
     )
     next_items = _next_proposals(
         state,
@@ -3968,6 +3995,16 @@ def build_checkpoint(
     elif case_state_seed_proposal:
         next_items = [case_state_seed_proposal, *next_items]
     next_action_queue = _build_next_action_queue(next_items, resolved_target, context.get("skill_route"))
+    case_top = _case_state_top_next(case_state)
+    case_metadata = case_top.get("metadata") if isinstance(case_top.get("metadata"), dict) else {}
+    if case_metadata:
+        for action in next_action_queue:
+            if str(action.get("type") or "").startswith("case-state-"):
+                metadata = action.setdefault("metadata", {})
+                if isinstance(metadata, dict):
+                    metadata.update(case_metadata)
+                    metadata.setdefault("hypothesis_id", str(case_top.get("hypothesis_id") or ""))
+                break
     json_inject_item = _json_inject_queue_item(state)
     if json_inject_item:
         next_action_queue.append(json_inject_item)

@@ -181,9 +181,9 @@ try:
 except ImportError:  # pragma: no cover - direct tools/ execution
     from scope_context import ScopeContext, ScopeContextError  # type: ignore
 try:
-    from tools.target_case_state import case_state_path, summary as build_case_state_summary
+    from tools.target_case_state import case_state_path, project_hypothesis_metadata, summary as build_case_state_summary
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from target_case_state import case_state_path, summary as build_case_state_summary  # type: ignore
+    from target_case_state import case_state_path, project_hypothesis_metadata, summary as build_case_state_summary  # type: ignore
 try:
     from tools.target_memory import load_goal_memory
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -846,6 +846,10 @@ def _load_case_state_projection(
         "downgrade_rule", "stop_condition", "chain_extensions_if_blocked", "recovery_next_action", "write_back",
         "param", "baseline_value", "variant_value", "expect_marker", "method",
     }
+    projected_top = {key: value for key, value in top.items() if key in allowed}
+    metadata = project_hypothesis_metadata(top.get("metadata"))
+    if metadata:
+        projected_top["metadata"] = metadata
     return {
         "status": "valid",
         "path": str(path),
@@ -859,7 +863,7 @@ def _load_case_state_projection(
                 "pending_validation_backlog",
             )
         },
-        "top_next_action": {key: value for key, value in top.items() if key in allowed},
+        "top_next_action": projected_top,
     }
 
 
