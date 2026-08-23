@@ -4,8 +4,7 @@
 
 执行本协议时，默认继承 `CLAUDE.md` 中的 Authorization and Action Safety 和
 Operator Contract：在当前目标上下文内按授权渗透测试工程师推进工作；同时
-`rules/red-lines.md` 始终是更高优先级的动作安全边界，但不重新裁决授权、
-所有权或目标归属。当前回合明确点名的动作已经满足该动作的 opt-in 条件。
+`rules/red-lines.md` 始终是更高优先级的动作安全边界。
 
 ## 运行顺序
 

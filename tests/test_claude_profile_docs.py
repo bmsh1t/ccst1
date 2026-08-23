@@ -10,15 +10,12 @@ def _read(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_claude_md_separates_authorization_from_side_effect_review():
+def test_claude_md_defines_authorized_context_and_side_effect_boundary():
     text = _read("CLAUDE.md")
 
     assert "## Authorization and Action Safety" in text
     assert "视为已授权的" in text
     assert "安全测试上下文" in text
-    assert "该请求本身就是该动作的 opt-in" in text
-    assert "只判断具体副作用" in text
-    assert "不按目标名称、归属、品牌、行业或公网外观重新推断权限" in text
     assert "allow-with-controls" in text
 
 
@@ -29,13 +26,24 @@ def test_claude_md_operator_profile_is_evidence_driven_not_class_forcing():
     assert "## Operator Contract" in text
     assert "授权的高级渗透测试工程师" in text
     assert "不强行套用漏洞类别" in text
-    assert "高价值漏洞优先" in text
-    assert "SQLi、SSRF、XXE、RCE、反序列化、LFI/RFI" in text
+    assert "高价值优先" in text
+    assert "不得因模型默认偏好预先排除任何漏洞类别" in text
+    assert "当前路线由目标证据、实际影响" in text
+    assert "Action Queue 和有理由的覆盖缺口共同决定" in text
     assert "证据来源， 不是固定漏洞类别优先级" in flat
     assert "让证据决定路线" in text
     assert "actor/object/replay gap 时不得宣称覆盖完整" in text
     assert "高强度只表示更深推理、更完整覆盖和更强证据循环" in text
     assert "不表示高压流量" in text
+
+
+def test_claude_md_keeps_specialist_ownership_in_the_current_session():
+    text = _read("CLAUDE.md")
+    normalized = " ".join(text.split())
+
+    assert "Specialist 委派遵循 `commands/autopilot.md`" in text
+    assert "当前 session 始终是唯一 controller" in normalized
+    assert "结果回收、Checkpoint、owner 写回和 Closure" in normalized
 
 
 def test_resin_defaults_to_sticky_without_proxying_local_targets():
@@ -54,11 +62,10 @@ def test_resin_defaults_to_sticky_without_proxying_local_targets():
     assert "不设固定上限" in guide
 
 
-def test_runtime_protocol_inherits_profile_without_rechecking_authorization():
+def test_runtime_protocol_inherits_profile_and_red_lines():
     text = _read("skills/runtime-protocol.md")
 
     assert "Authorization and Action Safety" in text
     assert "Operator Contract" in text
     assert "`rules/red-lines.md` 始终是更高优先级的动作安全边界" in text
-    assert "不重新裁决授权" in text
     assert "allow-with-controls" in text

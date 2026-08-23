@@ -106,7 +106,7 @@ def test_expert_hunter_startup_is_state_first_then_evidence_driven():
     combined = f"{command}\n{agent}"
 
     for marker in (
-        "active controller judges priority",
+        "current AI session judges priority",
         "Use `rules/hunting.md` value-first priorities",
         "Every invocation is state-first",
         "scanner quick",

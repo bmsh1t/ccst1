@@ -122,11 +122,9 @@ AI override is part of the operating model: skip a default lane, combine knowled
 
 Use the provided target set as the active execution target set. `ctf_mode: true` in `config.json` means full local/lab coverage. External program/scope text is optional context, not an execution gate.
 
-A current-turn request that names an action already supplies its opt-in. Do not
-ask for a separate authorization or ownership statement. `rules/red-lines.md`
-classifies concrete side effects. Separately stop for ambiguous target identity,
-unavailable credentials that
-cannot be derived through the controlled Credential Lane, report submission, a
+`rules/red-lines.md` classifies concrete side effects. Separately stop for
+ambiguous target identity, unavailable credentials that cannot be derived through
+the controlled Credential Lane, report submission, a
 new target not present in the current input/context, or irreversible/high-pressure
 effects that cannot be bounded or rolled back.
 

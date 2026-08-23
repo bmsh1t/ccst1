@@ -33,7 +33,7 @@ def test_hunting_rules_delegate_lifecycle_and_side_effect_owners():
     text = _read("rules/hunting.md")
 
     for owner in (
-        "`CLAUDE.md` owns authorization",
+        "`CLAUDE.md` owns target context",
         "`rules/red-lines.md` owns concrete side-effect decisions",
         "`rules/coverage-gate.md` owns lifecycle names",
         "`rules/tool-ai-boundary.md` owns the AI/tool split",

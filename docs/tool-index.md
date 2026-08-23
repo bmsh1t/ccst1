@@ -268,4 +268,3 @@ When deprecating a tool: keep the row but prefix label with `(deprecated)`.
 - `rules/hunting.md` — canonical hunt semantics + lane routing
 - `rules/tool-ai-boundary.md` — AI judges, tools preserve evidence
 - `commands/autopilot.md` — autonomous loop execution contract
-- `docs/PRODUCT.md` — product-level overview

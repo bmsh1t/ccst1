@@ -5,7 +5,7 @@ These are the canonical hunting semantics. Load this rule for `/hunt`,
 
 Owner boundaries:
 
-- `CLAUDE.md` owns authorization, action opt-in, CTF interpretation, and tool/MCP routing.
+- `CLAUDE.md` owns target context, CTF interpretation, and tool/MCP routing.
 - `rules/red-lines.md` owns concrete side-effect decisions.
 - `rules/coverage-gate.md` owns lifecycle names, coverage states, and completion claims.
 - `rules/tool-ai-boundary.md` owns the AI/tool split and scanner-output interpretation.
@@ -78,7 +78,7 @@ Keep observations, preferences, artifacts, state, and write-back isolated to it.
 Do not let another target's history select or suppress this target's lanes.
 
 Localhost, private IP, CIDR, list, and named targets remain valid inputs. Any
-authorization or CTF interpretation comes from `CLAUDE.md`, not this rule.
+CTF interpretation comes from `CLAUDE.md`, not this rule.
 
 ### Temporary preferences do not cross targets
 

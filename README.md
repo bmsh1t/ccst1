@@ -204,8 +204,8 @@ Claude CLI `/autopilot` runs inline in the current Claude session and does not
 implicitly create or resume `agent_session.json`. It is the sole controller for
 target state. It may use bounded, non-nesting specialists when independent
 evidence questions benefit from isolated context or useful parallelism; the
-active AI controller decides how many to use through the platform's delegation
-tool and retains owner write-back and closure decisions.
+current AI session decides how many to use through the platform's
+delegation tool and retains owner write-back and closure decisions.
 
 Explicit legacy local-agent runs started with `tools/hunt.py --agent` create a
 fresh session by default under

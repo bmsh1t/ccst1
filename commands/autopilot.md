@@ -43,9 +43,9 @@ request, bypass it for localhost/private targets, and never print the token or p
 Apply `rules/hunting.md` target-isolation/new-target defaults to the supplied
 target set. Bootstrap `ctf_mode` is authoritative lab context; external policy is
 advisory, and `/pickup` never replays another target's skips/scanner decisions.
-`/autopilot` runs inline in the current controller session, never creates/resumes
+`/autopilot` runs inline in the current AI session, never creates/resumes
 legacy `agent_session.json`, and remains the sole writer/closure controller.
-Specialists default to zero. The active AI controller may delegate distinct,
+Specialists default to zero. The current AI session may delegate distinct,
 bounded evidence questions through the platform's delegation tool (`Agent` in
 Claude Code or the native equivalent) when context reduction, useful parallelism,
 and `invocation_batch.max_lanes` justify it. Specialists may analyze selected lanes
@@ -123,7 +123,7 @@ never treat prose or a raw endpoint as evidence. If `state.root_claim_next` exis
 so `finding_index` creates the canonical candidate and queue action before using
 its ID. Refresh state after every owner write-back.
 ## Execution Invariants
-Expert Hunter Autopilot is AI-first: the active controller judges priority, impact, chain fit,
+Expert Hunter Autopilot is AI-first: the current AI session judges priority, impact, chain fit,
 promotion, reopen, and finish; deterministic owners preserve schema, evidence,
 replay, and durable state. Follow `skills/runtime-protocol.md`,
 `rules/tool-ai-boundary.md`, `rules/red-lines.md`, and

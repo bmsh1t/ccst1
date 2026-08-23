@@ -14,11 +14,11 @@ def test_slash_command_keeps_one_controller_and_ai_selected_bounded_specialists(
     text = _read("commands/autopilot.md")
     normalized = " ".join(text.split())
 
-    assert "runs inline in the current controller session" in normalized
+    assert "runs inline in the current AI session" in normalized
     assert "never creates/resumes legacy `agent_session.json`" in normalized
     assert "sole writer/closure controller" in normalized
     assert "Specialists default to zero" in normalized
-    assert "active AI controller may delegate distinct, bounded evidence questions" in normalized
+    assert "current AI session may delegate distinct, bounded evidence questions" in normalized
     assert "platform's delegation tool" in normalized
     assert "bounded context/request cost" in normalized
     assert "expected information gain" in normalized
@@ -94,7 +94,6 @@ def test_generic_asset_relationship_lane_is_bounded_public_and_scope_preserving(
 def test_inline_auth_and_seed_contract_uses_formal_arguments_only():
     command = _read("commands/autopilot.md")
     readme = _read("README.md")
-    product = _read("docs/PRODUCT.md")
 
     assert "[--auth-file PATH]" in command
     assert "arguments.seed_url" in command
@@ -103,7 +102,6 @@ def test_inline_auth_and_seed_contract_uses_formal_arguments_only():
     assert "cd -- <repo_root_shell> &&" in command
     assert "/autopilot target.com --normal --auth-file .private/auth.json" in readme
     assert "/autopilot target.com --normal, use" not in readme
-    assert "URL 目标保留 canonical host state" in product
 
 
 def test_bounded_deep_invocation_handoffs_instead_of_expanding_new_lanes():
@@ -295,36 +293,25 @@ def test_optional_autopilot_agent_is_not_the_slash_command_backend():
 def test_operator_docs_separate_inline_autopilot_from_legacy_agent_sessions():
     claude = " ".join(_read("CLAUDE.md").split())
     readme = " ".join(_read("README.md").split())
-    product = " ".join(_read("docs/PRODUCT.md").split())
 
     assert "current Claude session" in claude
     assert "current Claude session" in readme
-
-    assert "当前 Claude 会话" in product
     assert "Continue this target in the current Claude session" in readme
     assert "Explicit legacy local-agent runs" in readme
-    assert "默认的 `/autopilot target.com` 或 agent 运行会创建新的本地 session" not in product
-    assert "默认会创建新的本地 agent session" not in product
-    assert "默认创建新的本地 agent session" not in product
 
 
-def test_single_user_entry_docs_do_not_publish_stale_inventory_counts():
+def test_single_user_readme_does_not_publish_stale_inventory_counts():
     readme = _read("README.md")
-    product = _read("docs/PRODUCT.md")
 
     for stale in ("17 个命令", "提供 17 个", "9 个角色", "定义了 9 个", "提供 9 个安全"):
         assert stale not in readme
-        assert stale not in product
     for command in ("autopilot", "autopilot-round", "pickup"):
         assert (REPO_ROOT / "commands" / f"{command}.md").is_file()
-        assert f"`/{command}`" in product
     assert "## Optional Agent Compatibility Layer" in readme
-    assert "当前 Claude 会话" in product
-    assert "不作为默认自治后端" in product
 
 
 def test_legacy_agent_resume_entrypoints_remain_documented():
-    combined = "\n".join((_read("README.md"), _read("docs/PRODUCT.md")))
+    readme = _read("README.md")
 
-    assert "python3 tools/hunt.py --target target.com --agent --resume latest" in combined
-    assert "python3 tools/hunt.py --target target.com --agent --resume <session_id>" in combined
+    assert "python3 tools/hunt.py --target target.com --agent --resume latest" in readme
+    assert "python3 tools/hunt.py --target target.com --agent --resume <session_id>" in readme
