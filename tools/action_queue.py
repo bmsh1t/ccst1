@@ -1061,7 +1061,9 @@ def _sync_coverage_matrix_for_action(
             "reason": f"action status {normalized_status!r} does not close a coverage cell",
         }
     metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
-    endpoint = str(metadata.get("endpoint") or "").strip()
+    endpoint = str(
+        metadata.get("coverage_endpoint") or metadata.get("endpoint") or ""
+    ).strip()
     vuln_class = str(metadata.get("vuln_class") or "").strip()
     if not endpoint or not vuln_class:
         return {

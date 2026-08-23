@@ -235,6 +235,32 @@ def test_asset_scope_workflow_review_is_substantive_but_other_advisory_leads_are
     )
 
 
+def test_legacy_checkpoint_coverage_action_rechecks_current_relevance():
+    base = {
+        "status": "queued",
+        "type": "coverage-gap",
+        "evidence_type": "checkpoint-next-action",
+        "source": "checkpoint",
+        "attempts": 0,
+    }
+
+    assert not _is_substantive_queue_action({
+        **base,
+        "metadata": {
+            "endpoint": "/api/public/job-alerts/renew",
+            "vuln_class": "RCE",
+            "relevance_score": 15,
+        },
+    })
+    assert _is_substantive_queue_action({
+        **base,
+        "metadata": {
+            "endpoint": "/api/jobs/123/run",
+            "vuln_class": "RCE",
+        },
+    })
+
+
 def test_asset_scope_workflow_review_routes_autopilot_to_durable_queue(tmp_path):
     queue_dir = tmp_path / "state" / "target.com"
     queue_dir.mkdir(parents=True)
@@ -569,6 +595,7 @@ def test_closure_does_not_cross_close_distinct_vulnerability_lanes():
 def test_closure_blocks_case_state_canonical_conflict():
     closure = build_closure_projection(
         {
+            "target": "target.com",
             "next_action": "handoff",
             "case_state": {
                 "status": "valid",
@@ -580,6 +607,107 @@ def test_closure_blocks_case_state_canonical_conflict():
 
     assert closure["verdict"] == "handoff"
     assert closure["reasons"] == ["case_state_canonical_conflict"]
+    assert closure["actionable_frontier"][0]["owner"] == "case_state"
+    assert closure["actionable_frontier"][0]["id"] == "canonical-conflict"
+    assert closure["actionable_frontier"][0]["evidence_ref"].endswith(
+        "state/target.com/case_state.json"
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "item_id"),
+    [
+        ("pending_validation_backlog", "validation-backlog"),
+        ("open_hypotheses", "open-hypothesis"),
+    ],
+)
+def test_case_state_obligations_without_top_action_still_have_frontier(
+    field, item_id
+):
+    closure = build_closure_projection(
+        {
+            "target": "target.com",
+            "next_action": "handoff",
+            "case_state": {"status": "valid", field: 1},
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["actionable_frontier"][0]["owner"] == "case_state"
+    assert closure["actionable_frontier"][0]["id"] == item_id
+    assert all(
+        closure["actionable_frontier"][0][key]
+        for key in ("action", "evidence_ref", "expected_information_gain", "stop_condition")
+    )
+
+
+@pytest.mark.parametrize(
+    ("next_action", "owner"),
+    [("run_recon", "recon"), ("run_intel", "intel"), ("validate_finding", "finding")],
+)
+def test_pending_next_action_always_has_owner_backed_frontier(next_action, owner):
+    closure = build_closure_projection(
+        {"target": "target.com", "next_action": next_action},
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["next_action_pending"]
+    item = closure["actionable_frontier"][0]
+    assert item["owner"] == owner
+    assert all(
+        item[key]
+        for key in ("action", "evidence_ref", "expected_information_gain", "stop_condition")
+    )
+
+
+def test_ledger_health_handoff_always_has_owner_backed_frontier():
+    closure = build_closure_projection(
+        {
+            "target": "target.com",
+            "next_action": "handoff",
+            "_ledger_health": {"status": "partial"},
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["ledger_partial"]
+    assert closure["actionable_frontier"][0]["owner"] == "evidence-ledger"
+
+
+@pytest.mark.parametrize(
+    ("state", "owner"),
+    [
+        (
+            {"recon_artifacts": {"run_budget": {"partial": True}}},
+            "recon",
+        ),
+        (
+            {"case_state": {"status": "valid", "authz_coverage": {"status": "missing"}}},
+            "case_state",
+        ),
+        (
+            {"root_finding_claim_next": {"id": "claim-1", "source_file": "findings/target.com/claim.json"}},
+            "finding-claim",
+        ),
+        ({"recon_in_progress": True}, "runtime"),
+    ],
+)
+def test_authoritative_handoff_reasons_have_executable_frontier(state, owner):
+    closure = build_closure_projection(
+        {"target": "target.com", "next_action": "handoff", **state},
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    item = closure["actionable_frontier"][0]
+    assert item["owner"] == owner
+    assert all(
+        item[key]
+        for key in ("action", "evidence_ref", "expected_information_gain", "stop_condition")
+    )
 
 
 def test_closure_handoffs_only_for_partial_recon_budget():
@@ -878,6 +1006,12 @@ def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
     assert terminal["verdict"] == "handoff"
     assert terminal["reasons"] == ["round_closure_pending"]
     assert terminal["round_progress"]["latest_lane"]["decision"] == "tested clean"
+    for item in (started["actionable_frontier"], terminal["actionable_frontier"]):
+        assert item[0]["owner"] == "round-progress"
+        assert item[0]["evidence_ref"].endswith("checkpoint_latest.json")
+        assert item[0]["action"]
+        assert item[0]["expected_information_gain"]
+        assert item[0]["stop_condition"]
     assert closed["verdict"] == "finish"
     assert closed["can_claim_exhausted"] is True
 
@@ -913,6 +1047,7 @@ def test_closure_does_not_finish_an_active_round_before_first_lane_claim(tmp_pat
     assert closure["verdict"] == "handoff"
     assert closure["reasons"] == ["round_lane_unclaimed"]
     assert closure["next_action"] == "resume_round_lane"
+    assert closure["actionable_frontier"][0]["owner"] == "round-progress"
 
 
 @pytest.mark.parametrize(
@@ -967,7 +1102,57 @@ def test_closure_handoffs_legacy_completed_lane_with_invalid_evidence(
     assert closure["reasons"] == ["round_lane_evidence_invalid"]
     assert closure["next_action"] == "repair_round_lane_evidence"
     assert closure["round_progress"]["invalid_evidence_lanes"] == ["sqli:/api/search"]
+    assert closure["actionable_frontier"][0]["owner"] == "round-progress"
     assert witness.read_bytes() == previous
+
+
+def test_closure_rejects_legacy_coverage_lane_with_narrative_only_evidence(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    narrative_ref = f"evidence/{target}/coverage_disposition.md"
+    narrative_path = tmp_path / narrative_ref
+    narrative_path.write_text("TESTED/BLOCKED narrative only", encoding="utf-8")
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text(json.dumps({
+        "round_progress": {
+            "schema_version": 1,
+            "round_id": "round-legacy-coverage",
+            "status": "completed",
+            "max_lanes": 1,
+            "claimed_lanes": ["coverage:high-risk-lane-review"],
+            "lanes": [{
+                "schema_version": 1,
+                "id": "coverage:high-risk-lane-review",
+                "status": "completed",
+                "decision": "coverage disposition recorded",
+                "evidence_ref": narrative_ref,
+                "next_action": "final closure",
+                "started_at": "2026-08-01T00:00:00Z",
+                "updated_at": "2026-08-01T00:01:00Z",
+                "finished_at": "2026-08-01T00:01:00Z",
+            }],
+            "claimed_count": 1,
+            "remaining_lanes": 0,
+            "budget_reached": True,
+            "started_at": "2026-08-01T00:00:00Z",
+            "updated_at": "2026-08-01T00:01:00Z",
+            "completed_at": "2026-08-01T00:01:00Z",
+        },
+    }), encoding="utf-8")
+
+    closure = _load_closure_projection(
+        str(tmp_path),
+        {"target": target, "resolved_target": target, "next_action": "handoff"},
+        max_lanes_reached=False,
+        apply_round_guard=False,
+    )
+
+    assert closure["reasons"] == ["round_lane_evidence_invalid"]
+    assert closure["round_progress"]["invalid_evidence_lanes"] == [
+        "coverage:high-risk-lane-review"
+    ]
+    assert closure["actionable_frontier"][0]["owner"] == "round-progress"
 
 
 def test_round_projection_preserves_budget_after_lane_field_projection(tmp_path):
@@ -1519,6 +1704,27 @@ def test_round_guard_ignores_coverage_rebuild_timestamp(tmp_path):
     assert first["stagnation_fingerprint"] == second["stagnation_fingerprint"]
 
 
+def test_semantic_coverage_fingerprint_ignores_source_count_only_changes():
+    projection = {
+        "_coverage_projection": True,
+        "_coverage_gaps": [{
+            "endpoint": "/api/orders/{id}",
+            "vuln_class": "IDOR",
+            "relevance_score": 3,
+            "source_count": 1,
+        }],
+    }
+    changed = {
+        **projection,
+        "_coverage_gaps": [{**projection["_coverage_gaps"][0], "source_count": 99}],
+    }
+
+    assert (
+        autopilot_state_module._semantic_coverage_fingerprint(projection)
+        == autopilot_state_module._semantic_coverage_fingerprint(changed)
+    )
+
+
 def test_next_action_pending_round_guard_ignores_candidate_window_churn(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
@@ -1801,6 +2007,56 @@ def test_compact_projection_keeps_default_cells_as_pending_gaps():
     assert closure["reasons"] == ["coverage_high_value_gaps"]
 
 
+def test_zero_relevance_coverage_gap_is_advisory_not_closure_work():
+    projection = {
+        "summary": {"high_value_gaps_count": 1},
+        "endpoints": [{"endpoint": "/api/orders/1", "cells": {}}],
+        "_coverage_gaps": [{"endpoint": "/api/orders/1", "vuln_class": "RCE", "relevance_score": 0}],
+        "_coverage_projection": True,
+    }
+
+    closure = build_closure_projection({"next_action": "handoff"}, projection)
+
+    assert closure["verdict"] == "finish"
+    assert closure["reasons"] == []
+    assert projection["summary"]["high_value_gaps_count"] == 1
+
+
+def test_zero_relevance_gap_does_not_hide_surface_review_requirement():
+    projection = {
+        "summary": {"high_value_gaps_count": 1},
+        "endpoints": [{"endpoint": "/api/orders/1", "cells": {}}],
+        "_coverage_gaps": [{"endpoint": "/api/orders/1", "vuln_class": "RCE", "relevance_score": 0}],
+        "_coverage_projection": True,
+    }
+
+    completion = autopilot_state_module._surface_review_completion(
+        {"surface_review_candidates": [{"url": "https://target.com/api/orders/1"}]},
+        projection,
+        {"actions": []},
+    )
+
+    assert completion["unresolved"] == [{
+        "url": "https://target.com/api/orders/1",
+        "reason": "review_outcome_missing",
+    }]
+
+
+def test_actionable_coverage_gap_still_blocks_closure_and_frontier():
+    projection = {
+        "summary": {"high_value_gaps_count": 1},
+        "endpoints": [{"endpoint": "/api/orders/1", "cells": {}}],
+        "_coverage_gaps": [{"endpoint": "/api/orders/1", "vuln_class": "IDOR", "relevance_score": 3}],
+        "_coverage_projection": True,
+    }
+
+    closure = build_closure_projection({"target": "target.com", "next_action": "handoff"}, projection)
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["coverage_high_value_gaps"]
+    assert closure["actionable_frontier"][0]["owner"] == "coverage"
+
+
 def _surface_closure_state(target: str, *, next_action: str = "hunt_p1") -> dict:
     return {
         "target": target,
@@ -1906,7 +2162,51 @@ def test_surface_candidate_query_requires_exact_final_queue_identity(tmp_path):
     exact = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
 
     assert mismatch["verdict"] == "finish"
+    assert mismatch["surface_review"]["status"] == "unresolved"
+    assert mismatch["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
     assert exact["verdict"] == "finish"
+    assert exact["surface_review"] == {"status": "complete", "unresolved": []}
+
+
+def test_surface_candidate_uses_folded_coverage_but_requires_exact_queue_identity():
+    matrix = {
+        "endpoints": [{
+            "endpoint": "/api/orders/{id}",
+            "cells": {"IDOR": {"status": "tested_clean"}},
+        }],
+        "summary": {"high_value_gaps_count": 0},
+    }
+    state = {
+        "surface_review_candidates": [{
+            "url": "https://target.com/api/orders/123?view=detail",
+            "vuln_class": "IDOR",
+        }],
+    }
+    mismatch = autopilot_state_module._surface_review_completion(
+        state,
+        matrix,
+        {"actions": [{
+            "status": "tested",
+            "metadata": {
+                "endpoint": "/api/orders/123?view=summary",
+                "vuln_class": "IDOR",
+            },
+        }]},
+    )
+    exact = autopilot_state_module._surface_review_completion(
+        state,
+        matrix,
+        {"actions": [{
+            "status": "tested",
+            "metadata": {
+                "endpoint": "/api/orders/123?view=detail",
+                "vuln_class": "IDOR",
+            },
+        }]},
+    )
+
+    assert mismatch["unresolved"][0]["reason"] == "review_outcome_missing"
+    assert exact == {"status": "complete", "unresolved": []}
 
 
 def test_surface_candidate_reopens_after_new_ledger_candidate(tmp_path):
@@ -2520,6 +2820,11 @@ def test_closure_handoffs_for_high_value_or_invalid_observation_inventory():
 
     assert high_value["reasons"] == ["observation_high_value_pending"]
     assert invalid["reasons"] == ["observation_inventory_partial"]
+    for closure in (high_value, invalid):
+        assert closure["actionable_frontier"][0]["owner"] == "observation"
+        assert closure["actionable_frontier"][0]["evidence_ref"].endswith(
+            "observations-summary.json"
+        )
     assert reviewed["verdict"] == "finish"
 
 

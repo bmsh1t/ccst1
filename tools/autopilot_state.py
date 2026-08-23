@@ -40,11 +40,13 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
 try:
     from tools.checkpoint_witness import (
+        is_canonical_coverage_lane_evidence_ref,
         load_checkpoint_witness as _load_checkpoint_witness,
         validate_round_progress,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from checkpoint_witness import (  # type: ignore
+        is_canonical_coverage_lane_evidence_ref,
         load_checkpoint_witness as _load_checkpoint_witness,
         validate_round_progress,
     )
@@ -133,6 +135,9 @@ try:
     from tools.coverage_matrix import (
         STATUS_VALUES,
         VULN_CLASSES,
+        _route_template,
+        actionable_coverage_gaps,
+        class_relevance,
         high_value_gaps_from_matrix,
         load_matrix,
         load_matrix_projection,
@@ -145,6 +150,9 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from coverage_matrix import (  # type: ignore
         STATUS_VALUES,
         VULN_CLASSES,
+        _route_template,
+        actionable_coverage_gaps,
+        class_relevance,
         high_value_gaps_from_matrix,
         load_matrix,
         load_matrix_projection,
@@ -410,16 +418,21 @@ def _checkpoint_round_projection(
                 item[field] = value
         projected_lanes.append(item)
     unfinished = [item["id"] for item in projected_lanes if item["status"] == "started"]
-    invalid_evidence = [
-        item["id"]
-        for item in projected_lanes
-        if item["status"] == "completed"
-        and not _target_owned_nonempty_evidence_ref(
+    invalid_evidence = []
+    for item in projected_lanes:
+        if item["status"] != "completed":
+            continue
+        evidence_ref = _target_owned_nonempty_evidence_ref(
             repo_root,
             target,
             item.get("evidence_ref"),
         )
-    ]
+        if not evidence_ref or not is_canonical_coverage_lane_evidence_ref(
+            item["id"],
+            evidence_ref,
+            target,
+        ):
+            invalid_evidence.append(item["id"])
     return {
         "status": progress["status"],
         "round_id": str(progress.get("round_id") or ""),
@@ -2108,11 +2121,30 @@ def _is_substantive_queue_action(item: dict) -> bool:
     if status == "queued" and action_type in {
         "candidate-evidence-gap",
         "actor-gap",
-        "coverage-gap",
         "action-gated-review",
         "browser-enrichment",
     }:
         return True
+    if status == "queued" and action_type == "coverage-gap":
+        if str(item.get("source") or "") != "checkpoint" or evidence_type != "checkpoint-next-action":
+            return True
+        if int(item.get("attempts", 0) or 0) > 0:
+            return True
+        if any(metadata.get(key) for key in ("hypothesis_id", "evidence_ref", "last_outcome")):
+            return True
+        endpoint = str(metadata.get("coverage_endpoint") or metadata.get("endpoint") or "").strip()
+        vuln_class = str(metadata.get("vuln_class") or "").strip()
+        if not endpoint or not vuln_class:
+            return True
+        observed_params = metadata.get("observed_params")
+        params = observed_params if isinstance(observed_params, list) else []
+        relevance = class_relevance(endpoint, vuln_class, params)
+        if int(relevance.get("relevance_score", 0) or 0) > 0:
+            return True
+        # Legacy checkpoint actions may have lost parameter names. Preserve a
+        # parameter-backed action until the next checkpoint refresh can rewrite
+        # its structured metadata instead of retiring a real input surface.
+        return "parameter" in str(metadata.get("relevance_reason") or "").lower()
     if status == "queued" and action_type in {"surface-review", "ranked-surface"}:
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         return "validation_runner.py" in " ".join(
@@ -3122,7 +3154,8 @@ def _matrix_is_usable_for_closure(matrix: object) -> bool:
         if not isinstance(summary, dict) or not isinstance(gaps, list):
             return False
         try:
-            if int(summary.get("high_value_gaps_count", -1)) < 0:
+            gap_count = int(summary.get("high_value_gaps_count", -1))
+            if gap_count < 0 or (gap_count > 0 and not gaps):
                 return False
         except (TypeError, ValueError):
             return False
@@ -3146,13 +3179,12 @@ def _coverage_gaps(matrix: dict) -> list[dict]:
     return high_value_gaps_from_matrix(matrix)
 
 
+def _actionable_coverage_gaps(matrix: dict) -> list[dict]:
+    return actionable_coverage_gaps(_coverage_gaps(matrix))
+
+
 def _coverage_has_high_value_gaps(matrix: dict) -> bool:
-    if matrix.get("_coverage_projection"):
-        try:
-            return int((matrix.get("summary") or {}).get("high_value_gaps_count", 0)) > 0
-        except (TypeError, ValueError):
-            return True
-    return bool(high_value_gaps_from_matrix(matrix))
+    return bool(_actionable_coverage_gaps(matrix))
 
 
 def _authz_context_reason(case_state: dict, matrix: dict) -> str:
@@ -3236,7 +3268,7 @@ def _surface_review_completion(
     }
     high_gap_paths = {
         _normalise_endpoint_path(str(gap.get("endpoint") or ""))
-        for gap in _coverage_gaps(matrix)
+        for gap in _actionable_coverage_gaps(matrix)
         if isinstance(gap, dict)
     }
     final_specs = _final_queue_execution_specs(queue)
@@ -3248,11 +3280,16 @@ def _surface_review_completion(
         url = str(candidate.get("url") or "").strip()
         endpoint = _normalise_endpoint_path(url)
         endpoint_identity = canonical_endpoint_identity(url)
+        coverage_endpoint = (
+            endpoint
+            if endpoint in matrix_by_path
+            else _normalise_endpoint_path(_route_template(endpoint))
+        )
         if not endpoint or not endpoint_identity:
             unresolved.append({"url": url, "reason": "missing_endpoint"})
-        elif endpoint not in matrix_by_path:
+        elif coverage_endpoint not in matrix_by_path:
             unresolved.append({"url": url, "reason": "coverage_endpoint_missing"})
-        elif endpoint in high_gap_paths:
+        elif coverage_endpoint in high_gap_paths:
             unresolved.append({"url": url, "reason": "coverage_gap_pending"})
         else:
             candidate_class = str(candidate.get("vuln_class") or "").strip().lower()
@@ -3310,11 +3347,13 @@ def _observation_partial_reason(state: dict) -> str:
     if inventory_status and inventory_status != "valid":
         return "observation_inventory_partial"
     by_kind = inventory.get("by_kind") if isinstance(inventory.get("by_kind"), dict) else {}
-    if any(
-        int((by_kind.get(kind) or {}).get("present_untouched", 0) or 0) > 0
-        for kind in HIGH_VALUE_OBSERVATION_KINDS
-    ):
-        return "observation_high_value_pending"
+    for kind in HIGH_VALUE_OBSERVATION_KINDS:
+        try:
+            untouched = int((by_kind.get(kind) or {}).get("present_untouched", 0) or 0)
+        except (TypeError, ValueError):
+            untouched = 0
+        if untouched > 0:
+            return "observation_high_value_pending"
     return ""
 
 
@@ -3365,7 +3404,7 @@ def _build_actionable_frontier(
                 queue_next.get("evidence_ref")
                 or metadata.get("evidence_ref")
                 or queue_next.get("evidence")
-                or "action_queue"
+                or f"state/{target_storage_key(target)}/action_queue.json"
             ),
             expected_information_gain=str(
                 queue_next.get("next_question")
@@ -3394,7 +3433,7 @@ def _build_actionable_frontier(
             or finding.get("source_file")
             or (
                 f"findings/{target_storage_key(target)}/findings.json#{finding_id}"
-                if finding_id else "findings"
+                if finding_id else f"findings/{target_storage_key(target)}/findings.json"
             )
         )
         frontier.append(_frontier_item(
@@ -3436,22 +3475,78 @@ def _build_actionable_frontier(
             ),
             priority=95,
         ))
+    else:
+        case_obligation = ""
+        if int(case_state.get("canonical_conflict_count", 0) or 0) > 0:
+            case_obligation = "canonical-conflict"
+            case_action = "Reconcile the Case State canonical conflict before closure"
+            case_gain = "align Case State terminal records with the canonical finding owner"
+            case_stop = "record the reconciliation or a bounded blocker, then recompute Closure"
+        elif int(case_state.get("pending_validation_backlog", 0) or 0) > 0:
+            case_obligation = "validation-backlog"
+            case_action = "Resume the pending Case State validation backlog"
+            case_gain = "produce the next owner-backed validation result"
+            case_stop = "record the backlog result as tested, candidate, blocked, or dead-end"
+        elif int(case_state.get("open_hypotheses", 0) or 0) > 0:
+            case_obligation = "open-hypothesis"
+            case_action = "Resolve the next open Case State hypothesis"
+            case_gain = "turn the hypothesis into bounded actor, object, or replay evidence"
+            case_stop = "record a bounded hypothesis result or an explicit blocker"
+        if case_obligation:
+            frontier.append(_frontier_item(
+                owner="case_state",
+                item_id=case_obligation,
+                action=case_action,
+                evidence_ref=str(
+                    case_state.get("path")
+                    or f"state/{target_storage_key(target)}/case_state.json"
+                ),
+                expected_information_gain=case_gain,
+                stop_condition=case_stop,
+                priority=95,
+            ))
 
-    gaps = _coverage_gaps(matrix) if isinstance(matrix, dict) else []
+    observation_inventory = state.get("observation_inventory") if isinstance(state.get("observation_inventory"), dict) else {}
+    observation_reason = _observation_partial_reason(state)
+    if observation_reason:
+        target = str(state.get("resolved_target") or state.get("target") or "")
+        if observation_reason == "observation_high_value_pending":
+            action = "Review the bounded high-value Observation inventory sample"
+            expected_information_gain = "turn exposure/infra observations into a target-owned action or explicit disposition"
+            stop_condition = "touch, review, park, or enqueue each sampled observation; never infer tested-clean from omission"
+        else:
+            action = "Synchronize or repair the target-owned Observation inventory"
+            expected_information_gain = "restore a valid bound summary and expose the bounded untouched sample"
+            stop_condition = "publish a valid inventory summary or record the missing, stale, or invalid blocker"
+        frontier.append(_frontier_item(
+            owner="observation",
+            item_id=observation_reason,
+            action=action,
+            evidence_ref=str(
+                observation_inventory.get("summary_path")
+                or f"state/{target_storage_key(target)}/observations-summary.json"
+            ),
+            expected_information_gain=expected_information_gain,
+            stop_condition=stop_condition,
+            priority=72,
+        ))
+
+    gaps = _actionable_coverage_gaps(matrix) if isinstance(matrix, dict) else []
     if gaps:
         gap = gaps[0]
-        endpoint = str(gap.get("endpoint") or "")
+        coverage_endpoint = str(gap.get("endpoint") or "")
+        endpoint = str(gap.get("representative_endpoint") or coverage_endpoint)
         vuln_class = str(gap.get("vuln_class") or "")
         frontier.append(_frontier_item(
             owner="coverage",
-            item_id=f"{vuln_class}:{endpoint}",
+            item_id=f"{vuln_class}:{coverage_endpoint}",
             action=f"Review the high-value {vuln_class} coverage gap at {endpoint}",
             evidence_ref=str(
                 state.get("_coverage_evidence_ref")
                 or f"evidence/{target_storage_key(target)}/coverage_matrix.json"
             ),
             expected_information_gain=(
-                f"obtain a disposition for {vuln_class} on {endpoint}"
+                f"obtain a disposition for {vuln_class} on {coverage_endpoint}"
             ),
             stop_condition="record tested, blocked, dead-end, not_applicable, or candidate with evidence",
             priority=80,
@@ -3554,6 +3649,7 @@ _FRONTIER_LANES = {
     "validation-runner": "state-and-queue",
     "target-memory": "state-and-queue",
     "case_state": "workflow-timing-and-case-state",
+    "observation": "recon-and-surface",
     "coverage": "recon-and-surface",
     "surface": "recon-and-surface",
     "surface-context": "recon-and-surface",
@@ -4048,6 +4144,219 @@ def build_closure_projection(
         if verdict == "finish":
             verdict = "handoff"
 
+    if verdict == "handoff":
+        reason = str(reasons[0] if reasons else "")
+        target = str(state.get("resolved_target") or state.get("target") or "")
+        checkpoint_ref = f"state/{target_storage_key(target)}/checkpoint_latest.json"
+        if reason in {
+            "round_lane_evidence_invalid",
+            "round_lane_unfinished",
+            "round_closure_pending",
+            "round_lane_unclaimed",
+        }:
+            round_ids = [
+                *list(round_progress.get("invalid_evidence_lanes") or []),
+                *list(round_progress.get("unfinished_lanes") or []),
+            ]
+            label = ", ".join(str(item) for item in round_ids[:3]) or str(
+                (round_progress.get("latest_lane") or {}).get("id") or round_progress.get("round_id") or "active round"
+            )
+            actionable_frontier = [_frontier_item(
+                owner="round-progress",
+                item_id=label,
+                action={
+                    "round_lane_evidence_invalid": "Repair the invalid evidence for round lane {label}",
+                    "round_lane_unfinished": "Resume the unfinished round lane {label}",
+                    "round_closure_pending": "Complete the active round closure for {label}",
+                    "round_lane_unclaimed": "Claim the next owner-selected lane for {label}",
+                }[reason].format(label=label),
+                evidence_ref=checkpoint_ref,
+                expected_information_gain="reconcile round progress with the durable lane evidence and current owner state",
+                stop_condition="record a valid lane terminal state or a bounded blocker, then recompute Closure",
+                priority=85,
+            ), *actionable_frontier]
+        elif reason in {"checkpoint_stale", "checkpoint_invalid"}:
+            actionable_frontier = [_frontier_item(
+                owner="checkpoint",
+                item_id=reason,
+                action="Refresh or repair the target checkpoint witness before continuing",
+                evidence_ref=checkpoint_ref,
+                expected_information_gain="restore a trusted checkpoint binding for round and queue recovery",
+                stop_condition="publish a valid witness or record the checkpoint read/queue mismatch",
+                priority=85,
+            ), *actionable_frontier]
+
+    if verdict == "handoff" and not actionable_frontier:
+        target = str(state.get("resolved_target") or state.get("target") or "")
+        target_key = target_storage_key(target)
+        reason = str(reasons[0] if reasons else "")
+        item_id = action or reason
+        if reason in {"ledger_partial", "ledger_unreadable"}:
+            owner = "evidence-ledger"
+            evidence_ref = f"memory/evidence/{target_key}/ledger.jsonl"
+            action_text = "Repair or reconcile the target-owned Evidence Ledger before closure"
+            expected_gain = "restore the evidence owner needed to evaluate canonical closure cells"
+            stop_condition = "publish a readable ledger or record the bounded ledger blocker"
+        elif reason in {"checkpoint_stale", "checkpoint_invalid"}:
+            owner = "checkpoint"
+            evidence_ref = checkpoint_ref
+            action_text = "Refresh or repair the target checkpoint witness before continuing"
+            expected_gain = "restore a trusted checkpoint binding for round and queue recovery"
+            stop_condition = "publish a valid witness or record the checkpoint read/queue mismatch"
+        elif reason == "recon_budget_partial":
+            owner = "recon"
+            recon = state.get("recon_artifacts") if isinstance(state.get("recon_artifacts"), dict) else {}
+            evidence_ref = str(
+                recon.get("recon_dir")
+                or f"recon/{target_key}/recon_manifest.jsonl"
+            )
+            action_text = "Resume the bounded Recon budget from its existing target-owned artifacts"
+            expected_gain = "cover the remaining bounded Recon inputs without discarding prior pages"
+            stop_condition = "record the completed or blocked Recon budget outcome, then recompute Closure"
+        elif reason == "runtime_phase_active":
+            owner = "runtime"
+            phase = "scan" if state.get("scan_in_progress") else "recon"
+            evidence_ref = f"state/{target_key}/session.json"
+            action_text = f"Wait for the active {phase} phase to release its target runtime lock"
+            expected_gain = "obtain the owner-written phase completion state before selecting more work"
+            stop_condition = "refresh after the matching lock releases; never start a duplicate phase"
+        elif reason in {"authz_context_missing", "authz_context_incomplete", "case_state_work_pending"}:
+            owner = "case_state"
+            case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
+            evidence_ref = str(
+                case_state.get("path")
+                or f"state/{target_key}/case_state.json"
+            )
+            action_text = "Complete the Case State actor and session context required for coverage"
+            expected_gain = "obtain the missing owner-backed authorization context"
+            stop_condition = "record context ready, blocked, or not-applicable with evidence"
+        elif reason == "finding_work_pending":
+            root_claim = state.get("root_finding_claim_next") if isinstance(state.get("root_finding_claim_next"), dict) else {}
+            memory_candidate = state.get("memory_candidate_next") if isinstance(state.get("memory_candidate_next"), dict) else {}
+            if root_claim:
+                owner = "finding-claim"
+                item_id = str(root_claim.get("id") or root_claim.get("claim_id") or reason)
+                action_text = "Collect locatable evidence and reconcile the Finding claim through checkpoint"
+                evidence_ref = str(
+                    root_claim.get("source_file")
+                    or root_claim.get("claim_source_file")
+                    or f"findings/{target_key}/claim.json"
+                )
+                expected_gain = "determine whether the claim can enter the canonical Finding lifecycle"
+                stop_condition = "record a canonical candidate or reject the unsupported claim"
+            elif memory_candidate:
+                owner = "target-memory"
+                item_id = str(memory_candidate.get("id") or reason)
+                action_text = str(
+                    memory_candidate.get("action")
+                    or "Collect evidence for the legacy target-memory candidate"
+                )
+                evidence_ref = str(
+                    memory_candidate.get("evidence_ref")
+                    or f"memory/evidence/{target_key}/ledger.jsonl"
+                )
+                expected_gain = "determine whether the candidate has replayable evidence"
+                stop_condition = "reconcile through the canonical Finding owner or record evidence missing"
+            else:
+                owner = "finding"
+                item_id = reason
+                action_text = "Resolve the canonical Finding owner obligation"
+                evidence_ref = f"findings/{target_key}/findings.json"
+                expected_gain = "resolve the pending Finding lifecycle state"
+                stop_condition = "record validated, candidate, dead-end, or blocked owner state"
+        elif reason == "durable_work_pending":
+            owner = "action_queue"
+            evidence_ref = f"state/{target_key}/action_queue.json"
+            action_text = "Resume substantive work from the durable Action Queue"
+            expected_gain = "resolve the selected owner-backed Queue action"
+            stop_condition = "record a terminal Queue result or bounded blocker"
+        elif reason == "surface_work_pending":
+            owner = "surface"
+            projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
+            evidence_ref = str(projection.get("path") or "surface_projection")
+            action_text = "Review the currently bound target-owned Surface continuation"
+            expected_gain = "turn the retained Surface lead into a concrete owner action or disposition"
+            stop_condition = "record evidence-backed Queue/Ledger disposition or defer without tested-clean"
+        else:
+            owner = {
+                "run_recon": "recon",
+                "wait_recon": "recon",
+                "wait_scan": "recon",
+                "run_intel": "intel",
+                "collect_web_intel": "intel",
+                "test_advisory_applicability": "intel",
+                "review_intel_group": "intel",
+                "revalidate_finding_owner": "finding",
+                "collect_candidate_evidence": "finding",
+                "validate_finding": "finding",
+                "report_finding": "finding",
+                "complete_report_draft": "finding",
+                "resume_action_queue": "action_queue",
+                "resume_case_state": "case_state",
+                "prepare_surface_context": "surface-context",
+            }.get(action, "controller")
+            action_text = describe_next_step({**state, "next_action": action})
+            expected_gain = {
+                "recon": "restore or extend target-owned recon evidence",
+                "intel": "resolve the bounded software or advisory evidence gap",
+                "finding": "resolve the canonical Finding evidence gate",
+                "action_queue": "resolve the selected durable Queue action",
+                "case_state": "resolve the selected Case State obligation",
+                "surface-context": "produce the bounded Surface context needed for selection",
+            }.get(owner, "resolve the selected control-plane action")
+            stop_condition = "record the existing owner result or a bounded blocker, then recompute Closure"
+            if owner == "recon":
+                recon = state.get("recon_artifacts") if isinstance(state.get("recon_artifacts"), dict) else {}
+                evidence_ref = str(
+                    recon.get("recon_dir")
+                    or f"recon/{target_key}/recon_manifest.jsonl"
+                )
+            elif owner == "intel":
+                intel = state.get("intel_continuation") if isinstance(state.get("intel_continuation"), dict) else {}
+                evidence_ref = str(
+                    intel.get("intel_path")
+                    or intel.get("inventory_path")
+                    or f"findings/{target_key}/intel"
+                )
+            elif owner == "finding":
+                findings = state.get("structured_findings") if isinstance(state.get("structured_findings"), dict) else {}
+                finding = next(
+                    (item for item in findings.values() if isinstance(item, dict) and item),
+                    {},
+                )
+                evidence_ref = str(
+                    finding.get("evidence_ref")
+                    or finding.get("source_file")
+                    or f"findings/{target_key}/findings.json"
+                )
+            elif owner == "action_queue":
+                queue_next = state.get("action_queue_next") if isinstance(state.get("action_queue_next"), dict) else {}
+                evidence_ref = str(
+                    queue_next.get("evidence_ref")
+                    or queue_next.get("evidence")
+                    or f"state/{target_key}/action_queue.json"
+                )
+            elif owner == "case_state":
+                case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
+                evidence_ref = str(
+                    case_state.get("path")
+                    or f"state/{target_key}/case_state.json"
+                )
+            elif owner == "surface-context":
+                projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
+                evidence_ref = str(projection.get("path") or "surface_projection")
+            else:
+                evidence_ref = checkpoint_ref
+        actionable_frontier = [_frontier_item(
+            owner=owner,
+            item_id=item_id,
+            action=action_text,
+            evidence_ref=evidence_ref,
+            expected_information_gain=expected_gain,
+            stop_condition=stop_condition,
+            priority=85,
+        )]
+
     result = {
         "verdict": verdict,
         "can_claim_exhausted": verdict == "finish",
@@ -4379,13 +4688,12 @@ def _semantic_coverage_fingerprint(matrix: dict | None) -> str:
                 "endpoint",
                 "vuln_class",
                 "observed_params",
-                "source_count",
                 "relevance_score",
                 "identity_v2",
             )
             if key in gap
         }
-        for gap in _coverage_gaps(matrix)
+        for gap in _actionable_coverage_gaps(matrix)
         if isinstance(gap, dict)
     ]
     encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

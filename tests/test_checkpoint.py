@@ -52,6 +52,7 @@ from checkpoint import (
     record_round_lane_result,
     sync_checkpoint_action_queue,
 )
+from coverage_matrix import mark_cell
 from evidence_ledger import record_entry
 from identity_contract import build_closure_cell
 from runtime_state import runtime_phase_lock, update_runtime_state
@@ -523,6 +524,47 @@ def test_round_lane_result_requires_claim_and_completed_evidence(tmp_path):
             evidence_ref="none",
             next_action="none",
         )
+
+
+def test_completed_coverage_lane_requires_canonical_owner_evidence(tmp_path):
+    target = "target.com"
+    lane = "coverage:high-risk-lane-review"
+    narrative_ref = f"evidence/{target}/coverage_disposition.md"
+    begin_round(tmp_path, target, max_lanes=1)
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+    _write_round_evidence(tmp_path, narrative_ref, "TESTED/BLOCKED narrative only")
+
+    with pytest.raises(ValueError, match="canonical Coverage Matrix"):
+        record_round_lane_result(
+            tmp_path,
+            target,
+            lane=lane,
+            status="completed",
+            decision="coverage disposition recorded",
+            evidence_ref=narrative_ref,
+            next_action="final closure",
+        )
+
+    matrix_ref = f"evidence/{target}/coverage_matrix.json"
+    mark_cell(
+        target,
+        "/api/orders/123",
+        "IDOR",
+        "tested_clean",
+        reason="bounded two-actor replay",
+        repo_root=tmp_path,
+    )
+    recorded = record_round_lane_result(
+        tmp_path,
+        target,
+        lane=lane,
+        status="completed",
+        decision="canonical coverage updated",
+        evidence_ref=matrix_ref,
+        next_action="recompute closure",
+    )
+
+    assert recorded["lane"]["evidence_ref"] == matrix_ref
 
 
 @pytest.mark.parametrize("case", ["missing", "empty", "off_target", "outside_repo"])
@@ -2285,6 +2327,33 @@ def test_checkpoint_still_queues_semantically_relevant_coverage_gap():
     assert any("Cover high-value matrix gap" in item for item in proposals)
     coverage_action = next(item for item in queue if item["type"] == "coverage-gap")
     assert coverage_action["metadata"]["relevance_score"] == 3
+
+
+def test_checkpoint_keeps_folded_coverage_and_replay_identities_separate():
+    proposals = _next_proposals(
+        state={"has_recon": True, "recommended_targets": []},
+        coverage_gaps=[{
+            "endpoint": "/api/orders/{id}",
+            "representative_endpoint": "/api/orders/123",
+            "vuln_class": "IDOR",
+            "weight": 3.0,
+            "relevance_score": 3,
+            "relevance_reason": "object reference path/parameter",
+        }],
+        matrix={"endpoints": []},
+        target="target.com",
+        context_pack={},
+        evidence_summary={},
+    )
+
+    action = next(
+        item
+        for item in _build_next_action_queue(proposals, "target.com")
+        if item["type"] == "coverage-gap"
+    )
+
+    assert action["metadata"]["endpoint"] == "/api/orders/123"
+    assert action["metadata"]["coverage_endpoint"] == "/api/orders/{id}"
 
 
 def test_path_only_authz_coverage_gap_is_baseline_first():

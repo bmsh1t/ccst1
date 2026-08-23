@@ -81,15 +81,15 @@ from __future__ import annotations
 import argparse
 import bisect
 import hashlib
+import html
 import json
 import os
 import re
 import sys
 import tempfile
 from datetime import datetime, timezone
-from itertools import chain
 from pathlib import Path
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
@@ -104,7 +104,11 @@ try:
         extract_endpoint_path,
     )
     from tools.finding_index import load_finding_index, upsert_finding
-    from tools.recon_filters import has_malformed_path
+    from tools.recon_filters import (
+        has_html_unicode_encoding,
+        has_malformed_path,
+        has_url_encoding_error,
+    )
     from tools.surface_index import iter_surface_index, load_surface_index_status
     from tools.surface_weights import value_weight
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -117,7 +121,11 @@ except ImportError:  # pragma: no cover - top-level tools/ import
         extract_endpoint_path,
     )
     from finding_index import load_finding_index, upsert_finding  # type: ignore
-    from recon_filters import has_malformed_path  # type: ignore
+    from recon_filters import (  # type: ignore
+        has_html_unicode_encoding,
+        has_malformed_path,
+        has_url_encoding_error,
+    )
     from surface_index import iter_surface_index, load_surface_index_status  # type: ignore
     from surface_weights import value_weight  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
@@ -133,7 +141,7 @@ HIGH_RISK_LANE_TECHNIQUES = {
     "RCE": ("SSTI", "CommandInjection", "Deserialization"),
     "Path": ("LFI", "RFI"),
 }
-COVERAGE_BUILD_VERSION = 3
+COVERAGE_BUILD_VERSION = 4
 COVERAGE_PROJECTION_SCHEMA_VERSION = 2
 COVERAGE_PROJECTION_KIND = "coverage_matrix_projection"
 COVERAGE_PROJECTION_GAP_LIMIT = 1000
@@ -213,8 +221,9 @@ _RELEVANCE_RULES: tuple[tuple[str, int, re.Pattern, str], ...] = (
     ("SSRF", 5, re.compile(r"/(?:fetch|proxy|webhook|callback|oembed|import|integrations?)(?:/|$|\b)", re.I), "server-side fetch/webhook path"),
     ("Path", 8, re.compile(r"\b(file|filepath|file_path|filename|file_name|path|dir|directory|download|export|include|include_path|template|theme|locale|doc|document|attachment|archive)\b", re.I), "file/path selector"),
     ("Path", 6, re.compile(r"/(?:download|export|file|files|attachment|attachments|include|static|assets|preview)(?:/|$|\b)", re.I), "file download/read path"),
-    ("RCE", 9, re.compile(r"\b(cmd|command|exec|execute|shell|template|render|ssti|deserialize|deserialise|unserialize|pickle|yaml|workflow|job)\b", re.I), "code/template/deserialization execution candidate"),
-    ("RCE", 6, re.compile(r"/(?:render|template|preview|execute|exec|job|jobs|worker|debug)(?:/|$|\b)", re.I), "render/execution path"),
+    ("RCE", 9, re.compile(r"\b(cmd|command|exec|execute|shell|template|render|ssti|deserialize|deserialise|unserialize|pickle|yaml|workflow)\b", re.I), "code/template/deserialization execution candidate"),
+    ("RCE", 6, re.compile(r"/(?:render|template|preview|execute|exec|worker|debug)(?:/|$|\b)", re.I), "render/execution path"),
+    ("RCE", 6, re.compile(r"/(?:job|jobs)(?:/[^/?#]+)?/(?:run|process|dispatch|trigger)(?:/|$|\b)", re.I), "job execution path"),
     ("XXE", 8, re.compile(r"\b(xml|soap|wsdl|saml|xinclude|xxe|doctype|docx|xlsx|svg)\b", re.I), "XML/parser surface"),
     ("Upload", 8, re.compile(r"\b(upload|import|file|filename|attachment|avatar|media|document|csv|xlsx|zip|archive)\b", re.I), "upload/import file surface"),
     ("GraphQL", 9, re.compile(r"\b(graphql|gql|query|mutation|operationname|operation_name|variables)\b|/graphql(?:/|$|\b)", re.I), "GraphQL operation surface"),
@@ -231,7 +240,7 @@ _RELEVANCE_RULES: tuple[tuple[str, int, re.Pattern, str], ...] = (
 #   不是天然的查询入口，不应仅凭路径就被抬进高价值 SQLi 队列。
 # - `/search?q=`、`?filter=`、`?order=` 这类参数名仍是高信号，应保持高优先级。
 _SQLI_PATH_PATTERN = re.compile(
-    r"/(?:search|query|filter|filters|lookup|report|reports)(?:/|$|\b)",
+    r"/(?:search|query|filter|filters|lookup)(?:/|$|\b)",
     re.I,
 )
 _SQLI_PARAM_PATTERN = re.compile(
@@ -610,6 +619,47 @@ def _compute_summary(matrix: dict) -> dict:
 def _canonicalize_endpoint(url: str) -> str:
     """Project a raw URL to a canonical endpoint key (no query string)."""
     return extract_endpoint_path(url)
+
+
+_EMBEDDED_URL_IN_PATH_PATTERN = re.compile(r"https?://", re.IGNORECASE)
+_PATH_CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f]|\\[nrtfv]", re.IGNORECASE)
+_HTML_ENTITY_PATTERN = re.compile(
+    r"&(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]+);",
+    re.IGNORECASE,
+)
+
+
+def _raw_path_text(raw_url: str) -> str:
+    """Keep entity-like `#` text visible while excluding the query string."""
+    value = str(raw_url or "").strip()
+    value = re.sub(r"^[a-z][a-z0-9+.-]*://[^/]*", "", value, count=1, flags=re.I)
+    return value.split("?", 1)[0]
+
+
+def _is_malformed_coverage_path(raw_url: str, endpoint: str) -> bool:
+    """Keep crawler fragments out of coverage without changing raw recon."""
+    try:
+        parsed_path = urlsplit(str(raw_url or "").strip()).path
+    except ValueError:
+        return True
+    raw_path = _raw_path_text(raw_url) or parsed_path or str(endpoint or "")
+    decoded_paths = [raw_path]
+    for _ in range(3):
+        decoded = unquote(decoded_paths[-1])
+        if decoded == decoded_paths[-1]:
+            break
+        decoded_paths.append(decoded)
+    normalized_paths = [html.unescape(value) for value in decoded_paths]
+    return (
+        has_malformed_path(raw_path)
+        or any(
+            has_url_encoding_error(value) or has_html_unicode_encoding(value)
+            for value in (*decoded_paths, *normalized_paths)
+        )
+        or any(_HTML_ENTITY_PATTERN.search(value) for value in decoded_paths)
+        or any(_PATH_CONTROL_PATTERN.search(value) for value in normalized_paths)
+        or any(_EMBEDDED_URL_IN_PATH_PATTERN.search(value) for value in normalized_paths)
+    )
 
 
 def _route_template(endpoint: str) -> str:
@@ -1095,6 +1145,25 @@ def high_value_gaps_from_matrix(matrix: dict, min_weight: float = DEFAULT_MIN_WE
     return gaps
 
 
+def actionable_coverage_gaps(gaps: list[dict]) -> list[dict]:
+    """Keep raw coverage hints visible, but return only semantically matched gaps."""
+    actionable: list[dict] = []
+    for gap in gaps:
+        if not isinstance(gap, dict):
+            continue
+        if "relevance_score" not in gap:
+            actionable.append(gap)
+            continue
+        try:
+            relevance = int(gap.get("relevance_score", 0) or 0)
+        except (TypeError, ValueError):
+            actionable.append(gap)
+            continue
+        if relevance > 0:
+            actionable.append(gap)
+    return actionable
+
+
 def _iter_high_value_gaps(matrix: dict, min_weight: float = DEFAULT_MIN_WEIGHT):
     """Yield untested high-value cells without materializing the full result."""
     for ep in matrix.get("endpoints", []):
@@ -1115,11 +1184,15 @@ def _iter_high_value_gaps(matrix: dict, min_weight: float = DEFAULT_MIN_WEIGHT):
                 "endpoint": endpoint,
                 "vuln_class": vc,
                 "weight": weight,
-                # 只存参数名和来源计数，不存参数值。checkpoint 需要这些
+                # 只存参数名和来源/观察计数，不存参数值。checkpoint 需要这些
                 # 轻量信号来区分“真实可重放输入面”和“仅路径命中的语义 gap”。
                 "observed_params": list(observed_params),
                 "source_count": int(ep.get("source_count", 0) or 0),
+                "observation_count": int(ep.get("observation_count", 0) or 0),
             }
+            representative = str(ep.get("representative_endpoint") or "").strip()
+            if representative and representative != endpoint:
+                gap["representative_endpoint"] = representative
             if isinstance(cell.get("identity_v2"), dict):
                 gap["identity_v2"] = cell["identity_v2"]
             gap.update(class_relevance(endpoint, vc, observed_params))
@@ -1237,6 +1310,7 @@ def _ensure_endpoint(matrix: dict, endpoint: str, weight: float) -> dict:
         "auto_hints": auto_hints,
         "observed_params": [],
         "source_count": 0,
+        "observation_count": 0,
         "cells": _empty_cells(endpoint, endpoint_kind=kind),
     }
     matrix.setdefault("endpoints", []).append(new_ep)
@@ -1289,42 +1363,45 @@ def rebuild_matrix(
     # Collect URLs from recon
     target_key = _storage_key(target)
     urls_dir = repo / "recon" / target_key / "urls"
+    surface_status = load_surface_index_status(repo, target)
     urls: list[str] = []
     # Active is the canonical, filtered view. Older recon directories may only
     # have *_filtered.txt plus raw all.txt, so retain that read-only fallback.
     filtered_set: set[str] = set()
     filtered_path = urls_dir / "all_filtered.txt"
     active_path = urls_dir / "all.txt"
-    active_is_canonical = active_path.is_file() and (
-        (urls_dir / "raw").is_dir() or not filtered_path.is_file()
-    )
-    if active_is_canonical:
-        source_paths = (active_path,)
-    elif filtered_path.is_file():
-        source_paths = (filtered_path,)
+    if surface_status.get("status") != "valid":
+        active_is_canonical = active_path.is_file() and (
+            (urls_dir / "raw").is_dir() or not filtered_path.is_file()
+        )
+        if active_is_canonical:
+            source_paths = (active_path,)
+        elif filtered_path.is_file():
+            source_paths = (filtered_path,)
+        else:
+            source_paths = tuple(path for path in (filtered_path, active_path) if path.is_file())
+        for urls_path in source_paths:
+            if not urls_path.is_file():
+                continue
+            try:
+                current_urls = [
+                    line.strip()
+                    for line in urls_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                    if line.strip()
+                ]
+                if urls_path == filtered_path:
+                    filtered_set.update(current_urls)
+                urls.extend(current_urls)
+            except OSError:
+                continue
+    if surface_status.get("status") == "valid":
+        source_rows = (
+            (str(item.get("url") or ""), item.get("sources") or ("surface",))
+            for item in iter_surface_index(repo, target)
+            if item.get("target_owned") and str(item.get("url") or "")
+        )
     else:
-        source_paths = tuple(path for path in (filtered_path, active_path) if path.is_file())
-    for urls_path in source_paths:
-        if not urls_path.is_file():
-            continue
-        try:
-            current_urls = [
-                line.strip()
-                for line in urls_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-                if line.strip()
-            ]
-            if urls_path == filtered_path:
-                filtered_set.update(current_urls)
-            urls.extend(current_urls)
-        except OSError:
-            continue
-    urls = list(dict.fromkeys(urls))
-    surface_status = load_surface_index_status(repo, target)
-    surface_urls = (
-        str(item.get("url") or "")
-        for item in iter_surface_index(repo, target)
-        if item.get("target_owned") and str(item.get("url") or "")
-    ) if surface_status.get("status") == "valid" else ()
+        source_rows = ((raw, ("active",)) for raw in dict.fromkeys(urls))
 
     # Build endpoint set with weights and lightweight param-name signals.
     # The canonical matrix key remains path-only, but the sorting layer can
@@ -1332,12 +1409,12 @@ def rebuild_matrix(
     # endpoint and avoid always proposing IDOR first.
     js_path_artifacts = _load_js_path_artifact_urls(urls_dir)
     seen: dict[str, dict] = {}
-    route_template_counts: dict[str, int] = {}
-    raw_urls_seen: set[str] = set()
-    for raw in chain(urls, surface_urls):
-        if raw in raw_urls_seen:
-            continue
-        raw_urls_seen.add(raw)
+    for raw, raw_sources in source_rows:
+        sources = {
+            str(source).strip()
+            for source in raw_sources
+            if str(source).strip()
+        }
         if raw in js_path_artifacts:
             continue
         if (
@@ -1350,7 +1427,7 @@ def rebuild_matrix(
         if is_attack_probe(raw):
             raw = sanitize_attack_probe_url(raw)
         path = _canonicalize_endpoint(raw)
-        if not path or has_malformed_path(raw):
+        if not path or _is_malformed_coverage_path(raw, path):
             continue
         if _looks_like_minified_js_pseudo_endpoint(path):
             continue
@@ -1360,16 +1437,21 @@ def rebuild_matrix(
         meta = seen.setdefault(path, {
             "weight": 0.0,
             "params": set(),
-            "source_count": 0,
+            "sources": set(),
+            "observation_count": 0,
         })
         meta["weight"] = max(_coerce_weight(meta.get("weight", 0.0), 0.0), weight)
         meta["params"].update(params)
-        meta["source_count"] = int(meta.get("source_count", 0) or 0) + 1
-        template = _route_template(path)
+        meta["sources"].update(sources)
+        meta["observation_count"] = int(meta.get("observation_count", 0) or 0) + 1
+
+    route_template_counts: dict[str, int] = {}
+    for endpoint in seen:
+        template = _route_template(endpoint)
         route_template_counts[template] = route_template_counts.get(template, 0) + 1
 
-    # Only fold a route template when multiple raw observations prove the
-    # pattern is repeated. A lone `/orders/123` remains addressable for
+    # Only fold a route template when multiple distinct paths prove the pattern
+    # is repeated. Query variants of one `/orders/123` stay addressable for
     # backwards compatibility and precise operator review.
     compacted_seen: dict[str, dict] = {}
     for endpoint, meta in seen.items():
@@ -1381,10 +1463,21 @@ def rebuild_matrix(
             and not _has_persisted_coverage_state(existing.get(endpoint))
             else endpoint
         )
-        current = compacted_seen.setdefault(key, {"weight": 0.0, "params": set(), "source_count": 0})
+        current = compacted_seen.setdefault(key, {
+            "weight": 0.0,
+            "params": set(),
+            "sources": set(),
+            "observation_count": 0,
+        })
         current["weight"] = max(current["weight"], _coerce_weight(meta.get("weight", 0.0), 0.0))
         current["params"].update(meta.get("params") or [])
-        current["source_count"] += int(meta.get("source_count", 0) or 0)
+        current["sources"].update(meta.get("sources") or [])
+        current["observation_count"] += int(meta.get("observation_count", 0) or 0)
+        if key != endpoint:
+            representative = str(current.get("representative_endpoint") or "")
+            current["representative_endpoint"] = min(
+                value for value in (representative, endpoint) if value
+            )
     seen = compacted_seen
 
     # Apply a small semantic weight floor after all params for an endpoint
@@ -1402,7 +1495,7 @@ def rebuild_matrix(
         structural_noise_hints = STRUCTURAL_NOISE_HINTS - {"route_prefix_candidate"}
         if any(hint in auto_hints for hint in structural_noise_hints):
             weight = 0.0
-        elif "route_prefix_candidate" in auto_hints and int(meta.get("source_count", 0) or 0) == 0:
+        elif "route_prefix_candidate" in auto_hints and not meta.get("sources"):
             weight = 0.0
         if weight < min_weight_to_include:
             if not any(hint in auto_hints for hint in {"static_asset_shape", "public_metadata_path"}):
@@ -1410,9 +1503,13 @@ def rebuild_matrix(
         filtered_seen[endpoint] = {
             "weight": weight,
             "params": params,
-            "source_count": int(meta.get("source_count", 0) or 0),
+            "source_count": len(meta.get("sources") or []),
+            "observation_count": int(meta.get("observation_count", 0) or 0),
             "auto_hints": auto_hints,
         }
+        representative = str(meta.get("representative_endpoint") or "").strip()
+        if representative and representative != endpoint:
+            filtered_seen[endpoint]["representative_endpoint"] = representative
 
     # Merge: keep existing cells, add new endpoints with untested cells
     new_endpoints: list[dict] = []
@@ -1433,21 +1530,32 @@ def rebuild_matrix(
             ep["endpoint_kind"] = kind
             ep["auto_hints"] = auto_hints
             ep["observed_params"] = sorted(set(ep.get("observed_params") or []) | set(meta.get("params") or []))
-            ep["source_count"] = max(int(ep.get("source_count", 0) or 0), int(meta.get("source_count", 0) or 0))
+            ep["source_count"] = int(meta.get("source_count", 0) or 0)
+            ep["observation_count"] = int(meta.get("observation_count", 0) or 0)
+            representative = str(meta.get("representative_endpoint") or "").strip()
+            if representative and representative != endpoint:
+                ep["representative_endpoint"] = representative
+            else:
+                ep.pop("representative_endpoint", None)
             cells = ep.get("cells") or {}
             ep["cells"] = cells
             _apply_endpoint_applicability(ep, kind)
             new_endpoints.append(ep)
         else:
-            new_endpoints.append({
+            new_endpoint = {
                 "endpoint": endpoint,
                 "weight": weight,
                 "endpoint_kind": kind,
                 "auto_hints": auto_hints,
                 "observed_params": list(meta.get("params") or []),
                 "source_count": int(meta.get("source_count", 0) or 0),
+                "observation_count": int(meta.get("observation_count", 0) or 0),
                 "cells": _empty_cells(endpoint, endpoint_kind=kind, auto_hints=auto_hints),
-            })
+            }
+            representative = str(meta.get("representative_endpoint") or "").strip()
+            if representative and representative != endpoint:
+                new_endpoint["representative_endpoint"] = representative
+            new_endpoints.append(new_endpoint)
 
     # Apply findings: mark cells as tested_finding
     findings_path = repo / "findings" / target_key / "findings.json"
@@ -1495,6 +1603,7 @@ def rebuild_matrix(
                             "endpoint": ep_path,
                             "observed_params": params,
                             "source_count": 0,
+                            "observation_count": 0,
                             "cells": _empty_cells(ep_path, endpoint_kind=kind),
                         }
                     auto_hints = _endpoint_auto_hints(
@@ -1511,6 +1620,7 @@ def rebuild_matrix(
                     ep["endpoint_kind"] = kind
                     ep["auto_hints"] = auto_hints
                     ep["source_count"] = int(ep.get("source_count", 0) or 0)
+                    ep["observation_count"] = int(ep.get("observation_count", 0) or 0)
                     _apply_endpoint_applicability(ep, kind)
                     ep["cells"][vc] = {
                         "status": "tested_finding",
@@ -1612,6 +1722,7 @@ def _apply_scanner_pass(
                 "auto_hints": auto_hints,
                 "observed_params": [],
                 "source_count": 0,
+                "observation_count": 0,
                 "cells": _empty_cells(endpoint, endpoint_kind=kind, auto_hints=auto_hints),
             }
             endpoints.append(new_ep)
@@ -1733,6 +1844,7 @@ def needs_endpoint_triage(
             "weight": _coerce_weight(ep.get("weight", 1.0)),
             "observed_params": observed_params,
             "source_count": int(ep.get("source_count", 0) or 0),
+            "observation_count": int(ep.get("observation_count", 0) or 0),
             "status_counts": status_counts,
         })
 

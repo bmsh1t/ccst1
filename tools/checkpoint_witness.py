@@ -8,8 +8,10 @@ from pathlib import Path
 
 try:
     from tools.autopilot_args import MAX_LANES
+    from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
+    from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
 def _now_utc() -> str:
@@ -41,6 +43,23 @@ def new_round_lane(lane_id: str, *, started_at: str | None = None) -> dict:
         "next_action": "",
         "started_at": timestamp,
         "updated_at": timestamp,
+    }
+
+
+def is_canonical_coverage_lane_evidence_ref(
+    lane_id: str,
+    evidence_ref: str,
+    target: str,
+) -> bool:
+    """Require coverage completion to point at an existing canonical owner."""
+    if not str(lane_id or "").strip().lower().startswith("coverage:"):
+        return True
+    key = target_storage_key(canonical_target_value(target))
+    normalized = str(evidence_ref or "").strip().replace("\\", "/").lstrip("./")
+    return normalized in {
+        f"evidence/{key}/coverage_matrix.json",
+        f"state/{key}/action_queue.json",
+        f"memory/evidence/{key}/ledger.jsonl",
     }
 
 

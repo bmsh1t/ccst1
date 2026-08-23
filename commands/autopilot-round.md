@@ -90,6 +90,9 @@ cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> -
 ```
 
 Completed lanes require an existing, non-empty, target-owned evidence artifact.
+Completed `coverage:*` lanes must reference the canonical Coverage Matrix,
+Action Queue, or Evidence Ledger artifact after owner write-back; a narrative
+Markdown disposition is not completion evidence.
 Blocked lanes may use literal `none`. Never store raw responses, prompts,
 credentials, tokens, cookies, or authorization headers in a heartbeat. The
 heartbeat is recovery context, not a second action owner; persist unresolved

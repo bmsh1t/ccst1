@@ -29,6 +29,7 @@ if str(BASE_DIR) not in sys.path:
 try:
     from tools.autopilot_args import MAX_LANES
     from tools.checkpoint_witness import (
+        is_canonical_coverage_lane_evidence_ref,
         load_checkpoint_witness as _load_checkpoint_witness,
         new_round_lane as _round_lane,
         validate_round_progress as _round_progress,
@@ -48,7 +49,7 @@ try:
     )
     from tools.autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint
     from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
+    from tools.coverage_matrix import actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
@@ -68,6 +69,7 @@ try:
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
     from checkpoint_witness import (  # type: ignore
+        is_canonical_coverage_lane_evidence_ref,
         load_checkpoint_witness as _load_checkpoint_witness,
         new_round_lane as _round_lane,
         validate_round_progress as _round_progress,
@@ -87,7 +89,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint  # type: ignore
     from context_pack import build_context_pack  # type: ignore
-    from coverage_matrix import class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
+    from coverage_matrix import actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
@@ -213,16 +215,23 @@ def _invalid_completed_lane_evidence(
     target: str,
     lanes: list[dict],
 ) -> list[str]:
-    return [
-        str(lane.get("id") or "")
-        for lane in lanes
-        if lane.get("status") == "completed"
-        and not action_queue_target_owned_nonempty_evidence_ref(
+    invalid: list[str] = []
+    for lane in lanes:
+        if lane.get("status") != "completed":
+            continue
+        lane_id = str(lane.get("id") or "")
+        evidence_ref = action_queue_target_owned_nonempty_evidence_ref(
             repo_root,
             target,
             lane.get("evidence_ref"),
         )
-    ]
+        if not evidence_ref or not is_canonical_coverage_lane_evidence_ref(
+            lane_id,
+            evidence_ref,
+            target,
+        ):
+            invalid.append(lane_id)
+    return invalid
 
 
 def begin_round(repo_root: Path | str, target: str, *, max_lanes: int) -> dict:
@@ -353,6 +362,15 @@ def record_round_lane_result(
             if not terminal_evidence:
                 raise ValueError(
                     "completed round lane requires target-owned, non-empty evidence_ref"
+                )
+            if not is_canonical_coverage_lane_evidence_ref(
+                lane_id,
+                terminal_evidence,
+                target,
+            ):
+                raise ValueError(
+                    "completed coverage lane requires canonical Coverage Matrix, "
+                    "Action Queue, or Evidence Ledger evidence_ref"
                 )
         expected = {
             "status": terminal_status,
@@ -627,15 +645,7 @@ def _actionable_coverage_gaps(coverage_gaps: list[dict]) -> list[dict]:
     coverage statistics; only promote semantically relevant cells into the
     next-action loop.
     """
-    actionable: list[dict] = []
-    for gap in coverage_gaps:
-        try:
-            relevance = int(gap.get("relevance_score", 0) or 0)
-        except (TypeError, ValueError):
-            relevance = 0
-        if relevance > 0:
-            actionable.append(gap)
-    return actionable
+    return actionable_coverage_gaps(coverage_gaps)
 
 
 def _gap_observed_params(gap: dict) -> list[str]:
@@ -673,7 +683,9 @@ def _coverage_gap_validation_path(gap: dict) -> str:
     rubric that `/validate` uses so discovery and validation stay aligned.
     """
     vuln_class = str(gap.get("vuln_class") or "").strip()
-    endpoint = str(gap.get("endpoint") or "").strip()
+    endpoint = str(
+        gap.get("representative_endpoint") or gap.get("endpoint") or ""
+    ).strip()
     reason = str(gap.get("relevance_reason") or "").strip()
     if not vuln_class:
         return ""
@@ -2504,13 +2516,20 @@ def _next_proposals(
             )
         validation_path = _coverage_gap_validation_path(gap)
         validation_suffix = f" Validation path: {validation_path}" if validation_path else ""
+        coverage_endpoint = str(gap.get("endpoint") or "")
+        endpoint = str(gap.get("representative_endpoint") or coverage_endpoint)
+        coverage_suffix = (
+            f", coverage_endpoint={coverage_endpoint}"
+            if endpoint != coverage_endpoint else ""
+        )
         proposals.append(
             "Cover high-value matrix gap: {endpoint} x {vuln_class} "
-            "(weight={weight}{relevance}).{validation_suffix} If concrete side-effect risk appears, mark blocked "
+            "(weight={weight}{coverage_suffix}{relevance}).{validation_suffix} If concrete side-effect risk appears, mark blocked "
             "and use low-risk evidence instead.".format(
-                endpoint=gap.get("endpoint", ""),
+                endpoint=endpoint,
                 vuln_class=gap.get("vuln_class", ""),
                 weight=gap.get("weight", ""),
+                coverage_suffix=coverage_suffix,
                 relevance=relevance,
                 validation_suffix=validation_suffix,
             )
@@ -2854,6 +2873,7 @@ def _extract_action_metadata(text: str) -> dict:
     match = re.search(
         r"Cover high-value matrix gap:\s+(?P<endpoint>\S+)\s+x\s+"
         r"(?P<vuln>[A-Za-z0-9_-]+)\s+\(weight=(?P<weight>[^,\)]+)"
+        r"(?:,\s*coverage_endpoint=(?P<coverage_endpoint>[^,\)]+))?"
         r"(?:,\s*relevance=(?P<score>\d+)(?::\s*(?P<reason>[^\)]+))?)?\)",
         value,
     )
@@ -2865,6 +2885,8 @@ def _extract_action_metadata(text: str) -> dict:
         })
         if match.group("score"):
             metadata["relevance_score"] = int(match.group("score"))
+        if match.group("coverage_endpoint"):
+            metadata["coverage_endpoint"] = match.group("coverage_endpoint").strip()
         if match.group("reason"):
             metadata["relevance_reason"] = match.group("reason").strip()
         if validation_match:

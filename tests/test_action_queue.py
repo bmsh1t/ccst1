@@ -1345,6 +1345,48 @@ def test_resolve_coverage_gap_updates_coverage_matrix(tmp_path):
     assert "Low-risk replay" in cell["reason"]
 
 
+def test_resolve_folded_coverage_gap_updates_template_from_representative(tmp_path):
+    target = "target.com"
+    mark_cell(
+        target,
+        "/api/orders/{id}",
+        "IDOR",
+        "untested",
+        reason="seed folded route",
+        repo_root=tmp_path,
+    )
+    checkpoint = {
+        "next_action_queue": [{
+            "type": "coverage-gap",
+            "status": "ready",
+            "priority": 80,
+            "action": "Replay /api/orders/123 for the folded route.",
+            "command_hint": "focused replay",
+            "metadata": {
+                "endpoint": "/api/orders/123",
+                "coverage_endpoint": "/api/orders/{id}",
+                "vuln_class": "IDOR",
+            },
+        }],
+    }
+    ingest_checkpoint(tmp_path, target, checkpoint=checkpoint)
+    action = load_queue(tmp_path, target)["actions"][0]
+
+    resolved = resolve_action(
+        tmp_path,
+        target=target,
+        action_id=action["id"],
+        status="tested_clean",
+        result="Representative route replay showed no unauthorized object access.",
+    )
+
+    matrix = load_matrix(target, repo_root=tmp_path)
+    endpoints = {item["endpoint"]: item for item in matrix["endpoints"]}
+    assert resolved["coverage_update"]["endpoint"] == "/api/orders/{id}"
+    assert endpoints["/api/orders/{id}"]["cells"]["IDOR"]["status"] == "tested_clean"
+    assert "/api/orders/123" not in endpoints
+
+
 def test_resolve_coverage_gap_candidate_marks_tested_finding(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
     queue = load_queue(tmp_path, "target.com")

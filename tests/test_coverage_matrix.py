@@ -51,9 +51,15 @@ def test_readme_names_the_canonical_web2_closure_taxonomy():
 
 def test_weak_content_path_words_do_not_promote_high_value_server_side_classes():
     assert class_relevance("/news/process", "RCE", [])["relevance_score"] == 0
+    assert class_relevance("/careers/job-life", "RCE", [])["relevance_score"] == 0
+    assert class_relevance("/careers/job-details", "RCE", [])["relevance_score"] == 0
+    assert class_relevance("/reports/annual-report", "SQLi", [])["relevance_score"] == 0
     assert class_relevance("/news/feed", "SSRF", [])["relevance_score"] == 0
     assert class_relevance("/news/rss", "XXE", [])["relevance_score"] == 0
     assert class_relevance("/api/execute", "RCE", [])["relevance_score"] > 0
+    assert class_relevance("/api/jobs/process", "RCE", [])["relevance_score"] > 0
+    assert class_relevance("/api/jobs/123/run", "RCE", [])["relevance_score"] > 0
+    assert class_relevance("/api/job/{id}/dispatch", "RCE", [])["relevance_score"] > 0
     assert class_relevance("/api/import", "SSRF", ["url"])["relevance_score"] > 0
 
 
@@ -205,7 +211,42 @@ class TestRouteTemplate:
             "https://x.com/users/789",
         ])
         matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+        save_matrix("x.com", matrix, repo_root=tmp_path)
         assert [item["endpoint"] for item in matrix["endpoints"]] == ["/users/{id}"]
+        assert matrix["endpoints"][0]["representative_endpoint"] == "/users/123"
+        assert matrix["endpoints"][0]["source_count"] == 1
+        assert matrix["endpoints"][0]["observation_count"] == 3
+        gap = next(
+            item
+            for item in find_high_value_gaps("x.com", repo_root=tmp_path, min_weight=0)
+            if item["vuln_class"] == "IDOR"
+        )
+        assert gap["endpoint"] == "/users/{id}"
+        assert gap["representative_endpoint"] == "/users/123"
+
+    def test_source_count_tracks_provenance_not_duplicate_url_observations(self, tmp_path):
+        url = "https://x.com/api/users/123"
+        _seed_recon(tmp_path, "x.com", [url])
+        urls_dir = tmp_path / "recon" / "x.com" / "urls"
+        (urls_dir / "api_endpoints.txt").write_text(url + "\n", encoding="utf-8")
+        build_surface_index(tmp_path, "x.com")
+
+        endpoint = rebuild_matrix("x.com", repo_root=tmp_path)["endpoints"][0]
+
+        assert endpoint["source_count"] == 2
+        assert endpoint["observation_count"] == 1
+
+    def test_query_variants_do_not_trigger_route_template_folding(self, tmp_path):
+        _seed_recon(tmp_path, "x.com", [
+            "https://x.com/users/123?view=summary",
+            "https://x.com/users/123?view=detail",
+        ])
+
+        endpoint = rebuild_matrix("x.com", repo_root=tmp_path)["endpoints"][0]
+
+        assert endpoint["endpoint"] == "/users/123"
+        assert endpoint["source_count"] == 1
+        assert endpoint["observation_count"] == 2
 
     def test_rebuild_preserves_exact_rows_with_operator_state(self, tmp_path):
         _seed_recon(tmp_path, "x.com", ["https://x.com/users/123"])
@@ -964,6 +1005,28 @@ class TestFindGaps:
         assert "/dom/index.html.[10" not in endpoints
         assert "/dom/index.html" in endpoints
         assert malformed in (tmp_path / "recon" / "x.com" / "urls" / "all.txt").read_text()
+
+
+    def test_embedded_external_path_noise_is_excluded_without_dropping_query_urls(self, tmp_path):
+        malformed = [
+            "https://x.com/articles/http://external.example/report",
+            "https://x.com/articles/annual%0Areport",
+            "https://x.com/articles/annual%09report",
+            r"https://x.com/articles/annual%5Cnreport",
+            r"https://x.com/articles/%5Cu003Cdiv%5Cu003E",
+            r"https://x.com/articles/\u003cdiv\u003e",
+            "https://x.com/articles/http&#x3a;//external.example/report",
+            "https://x.com/articles/http&colon;//external.example/report",
+            "https://x.com/articles/http%25253a%25252f%25252fexternal.example/report",
+        ]
+        query_url = "https://x.com/api/fetch?url=http://127.0.0.1:80/"
+        _seed_recon(tmp_path, "x.com", [*malformed, query_url])
+
+        matrix = rebuild_matrix("x.com", repo_root=tmp_path)
+
+        endpoints = {item["endpoint"] for item in matrix["endpoints"]}
+        assert not any(endpoint.startswith("/articles/") for endpoint in endpoints)
+        assert "/api/fetch" in endpoints
 
     def test_bare_numeric_path_not_promoted_as_high_value_idor_gap(self, tmp_path):
         _seed_recon(tmp_path, "x.com", [
