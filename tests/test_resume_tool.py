@@ -4,6 +4,7 @@ import json
 
 import finding_index
 import resume as resume_tool
+import tools.checkpoint as checkpoint_tool
 from memory.hunt_journal import HuntJournal
 from memory.pattern_db import PatternDB
 from memory.schemas import make_journal_entry, make_pattern_entry
@@ -299,10 +300,76 @@ class TestResumeSummary:
         assert summary is not None
         assert summary["checkpoint"]["available"] is True
         assert summary["checkpoint"]["decision"] == "refresh-recon"
+        assert set(summary["checkpoint"]) >= {
+            "current_action",
+            "recent_evidence",
+            "blocker",
+            "next_action",
+        }
         assert "Checkpoint:" in output
         assert "Decision: refresh-recon" in output
+        assert "Current action:" in output
+        assert "Recent evidence:" in output
+        assert "Blocker:" in output
         assert "Target write-back proposals:" in output
         assert "[c] Run checkpoint write-back when ready" in output
+
+    def test_checkpoint_followup_projects_empty_running_and_wait_control_state(self, monkeypatch, tmp_path):
+        cases = [
+            ({"decision": "handoff", "next_action": "handoff"}, {}, [], ""),
+            (
+                {
+                    "decision": "continue",
+                    "next_action": "validation",
+                    "recommended_executable_action": {
+                        "id": "AQ-running",
+                        "type": "validation",
+                        "status": "running",
+                        "action": "Replay the current lane.",
+                        "evidence_ref": "evidence/target.com/running.json",
+                    },
+                },
+                {"id": "AQ-running", "status": "running"},
+                ["evidence/target.com/running.json"],
+                "",
+            ),
+            (
+                {
+                    "decision": "wait_recon",
+                    "next_action": "wait_recon",
+                    "recommended_executable_action": {
+                        "id": "runtime-wait",
+                        "type": "wait_recon",
+                        "status": "transient",
+                        "action": "Wait for the existing recon phase.",
+                        "evidence": "matching phase lock is active",
+                    },
+                },
+                {"id": "runtime-wait", "status": "transient"},
+                ["matching phase lock is active"],
+                "wait_recon: an existing long-running phase owns the target",
+            ),
+        ]
+
+        for payload, expected_action, expected_evidence, expected_blocker in cases:
+            checkpoint = {
+                "coverage": {"summary": {}},
+                "target_write_back": {},
+                "context_pack": {},
+                "evidence_ledger": {},
+                **payload,
+            }
+            monkeypatch.setattr(checkpoint_tool, "build_checkpoint", lambda *_args, **_kwargs: checkpoint)
+
+            projection = resume_tool.load_checkpoint_followup(tmp_path, "target.com")
+
+            assert {
+                key: projection["current_action"].get(key)
+                for key in expected_action
+            } == expected_action
+            assert projection["recent_evidence"] == expected_evidence
+            assert projection["blocker"] == expected_blocker
+            assert projection["next_action"] == payload["next_action"]
 
 
 class TestResumeFormatting:
@@ -427,6 +494,9 @@ class TestResumeFormatting:
                 "available": True,
                 "decision": "continue",
                 "next_action": "hunt_p1",
+                "current_action": {"type": "validation", "action": "Replay the evidence lane."},
+                "recent_evidence": ["evidence/target.com/summary.json"],
+                "blocker": "red-line evidence remains unchecked",
                 "selected_skill": "skills/web2-vuln-classes/SKILL.md",
                 "high_value_gaps_count": 3,
                 "lead_count": 1,
@@ -443,6 +513,9 @@ class TestResumeFormatting:
         assert "Checkpoint:" in output
         assert "Decision: continue" in output
         assert "Next action: hunt_p1" in output
+        assert "Current action: Replay the evidence lane." in output
+        assert "Recent evidence: evidence/target.com/summary.json" in output
+        assert "Blocker: red-line evidence remains unchecked" in output
         assert "Selected skill: skills/web2-vuln-classes/SKILL.md" in output
         assert "High-value gaps: 3" in output
         assert "Target write-back proposals: lead=1, next=2, dead-end=0" in output

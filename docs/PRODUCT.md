@@ -390,8 +390,8 @@ targets/<target>/sessions/<session_id>/
              ┌─────────────────┼─────────────────┐
              │                 │                 │
              ▼                 ▼                 ▼
-      Slash Commands      AI Agents          Skills 知识域
-        17 个命令          9 个角色             9 个技能
+      Slash Commands      可选 Agents        Skills 知识域
+       以目录为准          兼容/专项角色          以目录为准
              │                 │                 │
              └─────────────────┼─────────────────┘
                                ▼
@@ -560,7 +560,8 @@ Token / Meme coin 风险扫描：
 
 ### 1. Slash Commands
 
-`commands/` 目录提供 17 个 Claude Code slash 命令。
+`commands/` 目录是 Claude Code slash 命令的事实清单。下表只列单人本地
+工作流的主要入口，不维护容易过期的手工数量。
 
 | 命令 | 功能 |
 |---|---|
@@ -575,6 +576,7 @@ Token / Meme coin 风险扫描：
 | `/remember` | 将发现、端点、技术栈和成功模式写入记忆 |
 | `/pickup` | 续接历史目标 |
 | `/autopilot` | 运行自治测试循环 |
+| `/autopilot-round` | 为 `/loop` 执行一个确定性的有界 round |
 | `/intel` | 按组件/版本生成 OSV/GHSA/NVD advisory，并用 KEV/EPSS 和本地证据富化 |
 | `/source-hunt` | 扫描源码泄露和 CI/CD 风险 |
 | `/chain` | 辅助构造 A→B→C 漏洞链 |
@@ -582,9 +584,10 @@ Token / Meme coin 风险扫描：
 | `/token-scan` | Token / Meme coin 风险扫描 |
 | `/memory-gc` | 管理 hunt-memory JSONL 日志大小 |
 
-### 2. AI Agents
+### 2. 可选 Agent 兼容层
 
-`agents/` 目录定义了 9 个角色化 agent。
+`/autopilot` 的 controller 是当前 Claude 会话；`agents/` 目录只提供显式
+调用的专项/兼容角色，完整清单以目录为准，不作为默认自治后端。
 
 | Agent | 角色 |
 |---|---|
@@ -600,7 +603,7 @@ Token / Meme coin 风险扫描：
 
 ### 3. Skills 知识域
 
-`skills/` 目录提供 9 个安全测试知识域。
+`skills/` 目录提供安全测试知识域；完整清单以目录为准。
 
 | Skill | 说明 |
 |---|---|

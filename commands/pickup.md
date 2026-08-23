@@ -37,7 +37,8 @@ Continue a previous hunt on a target.
 - Untested surface summary
 - Pending validation/report suggestions
 - Runtime-stage / recon-cache context for the next command choice
-- Checkpoint decision, coverage gaps, and target-memory write-back proposals
+- Checkpoint current action, recent evidence, blocker, next action, coverage
+  gaps, and target-memory write-back proposals
 
 ## Artifacts Written
 
@@ -78,8 +79,9 @@ lane unless the current user turn explicitly excludes that lane.
 4. Shows structured finding follow-up from `findings/<target>/findings.json`
 5. Suggests the next validation or report command when a candidate is pending
 6. Suggests techniques based on tech stack + pattern DB
-7. Shows a checkpoint decision and target-memory write-back proposal while
-   recording only the bounded runtime-v2 witness
+7. Shows the current action, recent evidence, blocker, next action, and
+   target-memory write-back proposal while recording only the bounded
+   runtime-v2 witness
 8. Asks: continue hunting, checkpoint write-back, validate/report pending findings, or re-run recon?
 
 ## Usage
@@ -116,6 +118,9 @@ Structured Findings:
 Checkpoint:
   Decision: continue
   Next action: hunt_p1
+  Current action: Replay the evidence lane.
+  Recent evidence: evidence/target.com/validation/summary.json
+  Blocker: none
   Selected skill: skills/web2-vuln-classes/SKILL.md
   High-value gaps: 3
   Target write-back proposals: lead=1, next=2, dead-end=0

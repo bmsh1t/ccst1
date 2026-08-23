@@ -284,6 +284,21 @@ def test_operator_docs_separate_inline_autopilot_from_legacy_agent_sessions():
     assert "默认创建新的本地 agent session" not in product
 
 
+def test_single_user_entry_docs_do_not_publish_stale_inventory_counts():
+    readme = _read("README.md")
+    product = _read("docs/PRODUCT.md")
+
+    for stale in ("17 个命令", "提供 17 个", "9 个角色", "定义了 9 个", "提供 9 个安全"):
+        assert stale not in readme
+        assert stale not in product
+    for command in ("autopilot", "autopilot-round", "pickup"):
+        assert (REPO_ROOT / "commands" / f"{command}.md").is_file()
+        assert f"`/{command}`" in product
+    assert "## Optional Agent Compatibility Layer" in readme
+    assert "当前 Claude 会话" in product
+    assert "不作为默认自治后端" in product
+
+
 def test_legacy_agent_resume_entrypoints_remain_documented():
     combined = "\n".join((_read("README.md"), _read("docs/PRODUCT.md")))
 

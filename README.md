@@ -370,9 +370,11 @@ tools are skipped, not fatal.
 
 <br>
 
-## AI Agents
+## Optional Agent Compatibility Layer
 
-Specialized agents, each tuned for its role:
+`/autopilot` is controlled by the current Claude session. Files under
+`agents/` are explicit specialist/compatibility roles; the directory is the
+source of truth and these roles are not an implicit second controller.
 
 | Agent | What It Does | Model |
 |:---|:---|:---|

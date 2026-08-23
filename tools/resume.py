@@ -265,6 +265,58 @@ def load_checkpoint_followup(base_dir: str | Path, target: str, memory_dir: str 
     coverage = checkpoint.get("coverage") or {}
     coverage_summary = coverage.get("summary") or {}
     write_back = checkpoint.get("target_write_back") or {}
+    queue = checkpoint.get("next_action_queue") or []
+    current_action = checkpoint.get("recommended_executable_action")
+    if not isinstance(current_action, dict) or not current_action:
+        current_action = checkpoint.get("default_candidate")
+    if not isinstance(current_action, dict) or not current_action:
+        current_action = queue[0] if queue and isinstance(queue[0], dict) else {}
+
+    evidence = []
+    for value in (
+        current_action.get("evidence_ref"),
+        current_action.get("evidence"),
+        current_action.get("result"),
+    ):
+        text = str(value or "").strip()
+        if text and text not in evidence:
+            evidence.append(text[:300])
+    context = checkpoint.get("context_pack") or {}
+    for value in context.get("evidence_anchors") or []:
+        text = str(value or "").strip()
+        if text and text not in evidence:
+            evidence.append(text[:300])
+    ledger = checkpoint.get("evidence_ledger") or {}
+    for item in ledger.get("open_candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("evidence_ref") or item.get("artifact") or "").strip()
+        if text and text not in evidence:
+            evidence.append(text[:300])
+
+    decision = str(checkpoint.get("decision") or "").strip()
+    status = str(current_action.get("status") or "").strip()
+    redline_unchecked = ledger.get("redline_unchecked_count", 0)
+    if not isinstance(redline_unchecked, (int, float)):
+        redline_unchecked = 0
+    if decision in {"wait_recon", "wait_scan"}:
+        blocker = f"{decision}: an existing long-running phase owns the target"
+    elif status == "blocked":
+        blocker = str(current_action.get("result") or current_action.get("notes") or "blocked").strip()
+    elif redline_unchecked > 0:
+        blocker = "red-line evidence remains unchecked"
+    else:
+        blocker = ""
+
+    control = {
+        "current_action": {
+            key: current_action.get(key, "")
+            for key in ("id", "type", "status", "action", "command_hint", "evidence_ref")
+        } if current_action else {},
+        "recent_evidence": evidence[:6],
+        "blocker": blocker,
+        "next_action": str(checkpoint.get("next_action") or decision or "none"),
+    }
     return {
         "available": True,
         "decision": checkpoint.get("decision", ""),
@@ -277,6 +329,7 @@ def load_checkpoint_followup(base_dir: str | Path, target: str, memory_dir: str 
         "dead_end_count": len(write_back.get("dead_end") or []),
         "handoff": str(write_back.get("handoff") or ""),
         "commands": checkpoint.get("commands", [])[:3],
+        **control,
     }
 
 
@@ -412,6 +465,14 @@ def format_resume_output(summary: dict | None, target: str) -> str:
         if checkpoint.get("available"):
             lines.append(f"  Decision: {checkpoint.get('decision') or '-'}")
             lines.append(f"  Next action: {checkpoint.get('next_action') or '-'}")
+            current_action = checkpoint.get("current_action") or {}
+            lines.append(
+                "  Current action: "
+                + (str(current_action.get("action") or current_action.get("type") or "none"))
+            )
+            evidence = checkpoint.get("recent_evidence") or []
+            lines.append(f"  Recent evidence: {evidence[0] if evidence else 'none'}")
+            lines.append(f"  Blocker: {checkpoint.get('blocker') or 'none'}")
             selected_skill = str(checkpoint.get("selected_skill") or "").strip()
             if selected_skill:
                 lines.append(f"  Selected skill: {selected_skill}")
