@@ -3997,13 +3997,21 @@ def build_checkpoint(
         default_candidate = {}
         recommended_executable_action = _runtime_wait_candidate(runtime_wait_action, resolved_target)
     else:
-        default_candidate = _select_default_candidate(resolved_target, next_action_queue)
+        queue_next = (
+            state.get("action_queue_next")
+            if isinstance(state.get("action_queue_next"), dict)
+            else {}
+        )
+        default_candidate = (
+            queue_next
+            if str(queue_next.get("status") or "") == "running"
+            else _select_default_candidate(resolved_target, next_action_queue)
+        )
         effective_action = str(default_candidate.get("type") or runtime_wait_action)
         decision = _decision_for_action(effective_action if default_candidate else "handoff")
         # Backward compatibility: older command docs and tests still consume the
-        # historical field name. The new name makes the contract explicit: this is
-        # only the default pointer from the candidate set, not a replacement for
-        # Claude's final judgment.
+        # historical field name. This remains an advisory pointer; an already
+        # claimed Queue action stays visible instead of being re-ranked here.
         recommended_executable_action = default_candidate
     next_action_label = str(
         recommended_executable_action.get("type")

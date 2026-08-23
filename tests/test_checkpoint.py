@@ -13,7 +13,9 @@ import finding_index
 from action_queue import (
     _checkpoint_item_to_action,
     _dedupe_key,
+    add_manual_action,
     build_action,
+    claim_next_action,
     ingest_checkpoint,
     load_queue,
     resolve_action,
@@ -1759,6 +1761,46 @@ def test_default_candidate_keeps_report_above_advisory_surface_review():
 
     assert selected["type"] == "report"
     assert selected["metadata"]["finding_id"] == "F-REPORT"
+
+
+def test_checkpoint_default_preserves_explicitly_claimed_priority_override(tmp_path):
+    target = "target.com"
+    high = add_manual_action(
+        tmp_path,
+        target=target,
+        action_type="high-default",
+        evidence="High default candidate.",
+        next_question="Should the default candidate run first?",
+        action="Run the default candidate.",
+        priority=100,
+    )["queue"]["actions"][0]
+    added = add_manual_action(
+        tmp_path,
+        target=target,
+        action_type="ai-priority-override",
+        evidence="AI selected a lower mechanical priority for higher information gain.",
+        next_question="Does the AI-selected workflow expose the stronger signal?",
+        action="Run the AI-selected workflow first.",
+        priority=1,
+        source="ai",
+        source_id="priority-override",
+    )
+    selected = next(
+        item for item in added["queue"]["actions"]
+        if item["type"] == "ai-priority-override"
+    )
+
+    assert high["priority"] > selected["priority"]
+    claimed = claim_next_action(tmp_path, target, action_id=selected["id"])
+    state = checkpoint_module.build_autopilot_state(str(tmp_path), target)
+    checkpoint = build_checkpoint(tmp_path, target=target, refresh_coverage=False)
+    sync_checkpoint_action_queue(tmp_path, checkpoint)
+
+    assert claimed["status"] == "running"
+    assert state["action_queue_next"]["id"] == selected["id"]
+    assert checkpoint["default_candidate"]["id"] == selected["id"]
+    assert checkpoint["recommended_executable_action"]["id"] == selected["id"]
+    assert checkpoint["action_queue_sync"]["next"]["id"] == selected["id"]
 
 
 def test_checkpoint_replaces_replay_with_existing_candidate_evidence_gap(tmp_path):
