@@ -29,33 +29,35 @@ Obey bootstrap `action`. Only `continue` may proceed. For `ask_target`,
 cleanup, emit `STATUS: ERROR reason=<bounded-summary>`, and stop. Do not sync
 runtime automatically and do not perform a target action first.
 
-## Read-Only Terminal Precheck
+## Prepare And Read-Only Terminal Precheck
 
-Run one state-only precheck without `--max-lanes-reached`:
+Run the deterministic prepare operation once:
 
 ```bash
-cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
+cd -- <repo_root_shell> && python3 tools/autopilot_round.py prepare --target <target_shell> --max-lanes <invocation_batch.max_lanes> --json
 ```
 
-For STATUS selection, read only `closure.verdict`,
+The legacy state-only projection remains a compatibility adapter for callers
+that cannot use the coordinator; do not run it in addition to `prepare`:
+
+```bash
+# python3 tools/checkpoint.py --target <target_shell> --round-begin --max-lanes <invocation_batch.max_lanes> --json
+# python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
+```
+
+The coordinator runs the read-only terminal precheck before beginning or
+resuming the checkpoint-owned round. For STATUS selection, read only `closure.verdict`,
 `closure.can_claim_exhausted`, `closure.reasons`, `closure.next_action`, and
 `structured_findings.reported`. For terminal residual blind spots only, read
 the bounded browser/source/recon/observation/runtime/capability fields already
 returned by bootstrap/state; these advisory facts never select or override
 STATUS.
 
-`finish` or `blocked` is terminal: project STATUS, apply terminal cron cleanup,
+`status=terminal` with Closure `finish` or `blocked` is terminal: project STATUS, apply terminal cron cleanup,
 emit, and stop without any target action. Missing, damaged, inconsistent, or
 unknown closure is `STATUS: ERROR` after terminal cleanup.
-
-Start or resume the checkpoint-owned round budget:
-
-```bash
-cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --round-begin --max-lanes <invocation_batch.max_lanes> --json
-```
-
-Treat `round_progress` as authoritative. Resume any lane whose heartbeat is
-still `status=started` before selecting new work.
+For `status=started|resumed`, treat `round_progress` as authoritative. Resume
+any lane whose heartbeat is still `status=started` before selecting new work.
 
 ## One Canonical Round
 
@@ -105,20 +107,32 @@ next invocation.
 
 ## Final Closure And Status
 
-After the canonical checkpoint/write-back, rebuild and review coverage, record
-round closure, then request the owner verdict in this order:
+After the terminal lane heartbeats, run the deterministic settle operation. The
+coordinator performs the canonical checkpoint/write-back for this round:
 
 ```bash
-cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>
-cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell> --limit 50
-cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-closure --json
-cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
+cd -- <repo_root_shell> && python3 tools/autopilot_round.py settle --target <target_shell> --json
+```
+
+The legacy owner commands remain valid compatibility adapters. The coordinator
+executes their equivalent order; do not repeat them after `settle`:
+
+```bash
+# python3 tools/coverage_matrix.py rebuild --target <target_shell>
+# python3 tools/coverage_matrix.py find-gaps --target <target_shell> --limit 50
+# python3 tools/checkpoint.py --target <target_shell> --record-round-closure --json
+# python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
 ```
 
 The bounded `find-gaps --limit 50` output is an AI review window only. Its
 `total` and `truncated` fields are advisory display metadata; the complete
 matrix remains the closure owner input, and a truncated window never means
 coverage is complete.
+
+The coordinator refuses any `started` lane before writes, then orders Coverage
+refresh/checkpoint build, Action Queue sync, round closure, and final bounded
+Closure projection. Repeating settle after round completion is read-only and
+returns `status=already_settled`; it never replays target work.
 
 `round_progress.budget_reached` only ends target work for this invocation. The
 final verdict is recomputed from current Queue, Finding, Case State, coverage,

@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,15 +145,34 @@ def _checkpoint_witness_path(repo_root: Path | str, target: str) -> Path:
     return Path(repo_root) / "state" / target_storage_key(resolved) / "checkpoint_latest.json"
 
 
+_CHECKPOINT_LOCK_STATE = threading.local()
+
+
 @contextmanager
 def checkpoint_witness_lock(repo_root: Path | str, target: str):
     lock_path = _checkpoint_witness_path(repo_root, target).parent / "locks" / "checkpoint.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    locks = getattr(_CHECKPOINT_LOCK_STATE, "locks", None)
+    if locks is None or getattr(_CHECKPOINT_LOCK_STATE, "pid", None) != os.getpid():
+        locks = {}
+        _CHECKPOINT_LOCK_STATE.locks = locks
+        _CHECKPOINT_LOCK_STATE.pid = os.getpid()
+    key = str(lock_path.resolve())
+    existing = locks.get(key)
+    if existing is not None:
+        existing["depth"] += 1
         try:
             yield
         finally:
+            existing["depth"] -= 1
+        return
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        locks[key] = {"depth": 1}
+        try:
+            yield
+        finally:
+            locks.pop(key, None)
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 

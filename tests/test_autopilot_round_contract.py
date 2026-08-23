@@ -83,7 +83,7 @@ def test_round_reuses_the_bootstrap_and_canonical_controller_contract():
 
 def test_terminal_precheck_is_state_only_and_precedes_target_work():
     command = _read("commands/autopilot-round.md")
-    precheck = command.split("## Read-Only Terminal Precheck", 1)[1].split(
+    precheck = command.split("## Prepare And Read-Only Terminal Precheck", 1)[1].split(
         "## One Canonical Round", 1
     )[0]
     normalized_precheck = " ".join(precheck.split())
@@ -91,11 +91,16 @@ def test_terminal_precheck_is_state_only_and_precedes_target_work():
         "python3 tools/autopilot_state.py --target <target_shell> "
         "--bounded --closure --projection-only --json"
     )
+    prepare = (
+        "python3 tools/autopilot_round.py prepare --target <target_shell> "
+        "--max-lanes <invocation_batch.max_lanes> --json"
+    )
 
-    assert command.index("## Read-Only Terminal Precheck") < command.index(
+    assert command.index("## Prepare And Read-Only Terminal Precheck") < command.index(
         "## One Canonical Round"
     )
     assert closure in precheck
+    assert prepare in precheck
     assert f"{closure} --max-lanes-reached" not in precheck
     assert "`finish` or `blocked` is terminal" in normalized_precheck
     assert "apply terminal cron cleanup, emit, and stop" in normalized_precheck
@@ -110,8 +115,13 @@ def test_terminal_precheck_is_state_only_and_precedes_target_work():
 def test_round_end_orders_checkpoint_coverage_and_owner_closure():
     command = _read("commands/autopilot-round.md")
     normalized = " ".join(command.split())
-    checkpoint = command.index("After the canonical checkpoint/write-back")
-    rebuild = command.index("python3 tools/coverage_matrix.py rebuild", checkpoint)
+    checkpoint = command.index("canonical checkpoint/write-back")
+    settle = command.index(
+        "python3 tools/autopilot_round.py settle --target <target_shell> --json",
+        checkpoint,
+    )
+    compatibility = command.index("legacy owner commands", settle)
+    rebuild = command.index("python3 tools/coverage_matrix.py rebuild", compatibility)
     gaps = command.index("python3 tools/coverage_matrix.py find-gaps", rebuild)
     record = command.index("python3 tools/checkpoint.py --target <target_shell> --record-round-closure --json", gaps)
     closure = command.index(
@@ -119,7 +129,9 @@ def test_round_end_orders_checkpoint_coverage_and_owner_closure():
         record,
     )
 
-    assert checkpoint < rebuild < gaps < record < closure
+    assert checkpoint < settle < compatibility < rebuild < gaps < record < closure
+    assert "do not repeat them after `settle`" in normalized
+    assert "Coverage refresh/checkpoint build, Action Queue sync, round closure" in normalized
     assert "After every terminal lane heartbeat" in command
     assert "canonical `--loop-check --json` guard" in command
     assert "at most bootstrap `invocation_batch.max_lanes`" in normalized
@@ -139,6 +151,7 @@ def test_round_budget_is_checkpoint_owned_not_prompt_counted():
 
     assert "Explicit formal arguments set the budget when starting a new round" in normalized
     assert "resuming an active round keeps the checkpoint-owned `max_lanes`" in normalized
+    assert "autopilot_round.py prepare" in command
     assert "--round-begin --max-lanes <invocation_batch.max_lanes> --json" in command
     assert "--record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json" in command
     assert "--record-round-lane-result --lane <stable_lane_id> --lane-status <completed_or_blocked>" in command
