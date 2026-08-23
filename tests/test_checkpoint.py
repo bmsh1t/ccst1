@@ -1105,6 +1105,80 @@ def test_checkpoint_reuses_case_state_owner_snapshot(tmp_path, monkeypatch):
     assert checkpoint["case_state"]["objects"] == 1
 
 
+def test_checkpoint_owner_read_budget_is_bounded(tmp_path, monkeypatch):
+    target = "target.com"
+    _seed_recon(tmp_path, target, ["https://api.target.com/users/1"])
+    _seed_capability_parent(tmp_path, target=target)
+
+    counts = {
+        "queue": 0,
+        "case": 0,
+        "validation_candidates": 0,
+        "coverage_projection": 0,
+        "surface_fallback": 0,
+        "coverage_fallback": 0,
+    }
+
+    original_queue = checkpoint_module.load_action_queue
+
+    def count_queue(*args, **kwargs):
+        counts["queue"] += 1
+        return original_queue(*args, **kwargs)
+
+    monkeypatch.setattr(checkpoint_module, "load_action_queue", count_queue)
+
+    case_globals = checkpoint_module.build_case_state_summary.__globals__
+    original_case = case_globals["load_case_state"]
+
+    def count_case(*args, **kwargs):
+        counts["case"] += 1
+        return original_case(*args, **kwargs)
+
+    monkeypatch.setitem(case_globals, "load_case_state", count_case)
+
+    state_globals = checkpoint_module.build_autopilot_state.__globals__
+    original_candidates = state_globals["load_validation_runner_candidate_pool"]
+
+    def count_candidates(*args, **kwargs):
+        counts["validation_candidates"] += 1
+        return original_candidates(*args, **kwargs)
+
+    monkeypatch.setitem(state_globals, "load_validation_runner_candidate_pool", count_candidates)
+
+    original_matrix_projection = checkpoint_module.load_matrix_projection
+
+    def count_matrix_projection(*args, **kwargs):
+        counts["coverage_projection"] += 1
+        return original_matrix_projection(*args, **kwargs)
+
+    monkeypatch.setattr(checkpoint_module, "load_matrix_projection", count_matrix_projection)
+
+    context_globals = checkpoint_module.build_context_pack.__globals__
+
+    def fail_surface_fallback(*_args, **_kwargs):
+        counts["surface_fallback"] += 1
+        raise AssertionError("Context Pack reloaded Surface after State projection")
+
+    def fail_coverage_fallback(*_args, **_kwargs):
+        counts["coverage_fallback"] += 1
+        raise AssertionError("Context Pack reloaded Coverage after Checkpoint projection")
+
+    monkeypatch.setitem(context_globals, "_surface_state", fail_surface_fallback)
+    monkeypatch.setitem(context_globals, "_safe_find_gaps", fail_coverage_fallback)
+
+    checkpoint = build_checkpoint(tmp_path, target=target, refresh_coverage=False)
+
+    assert checkpoint["target"] == target
+    assert counts == {
+        "queue": 1,
+        "case": 1,
+        "validation_candidates": 1,
+        "coverage_projection": 1,
+        "surface_fallback": 0,
+        "coverage_fallback": 0,
+    }
+
+
 def test_checkpoint_owner_snapshots_preserve_state_projection(tmp_path):
     target = "target.com"
     _seed_recon(tmp_path, target, ["https://api.target.com/users/1"])
