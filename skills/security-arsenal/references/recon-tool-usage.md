@@ -1,6 +1,6 @@
 # Recon and Tool Usage Reference
 
-Load this file when the task needs concrete command shapes for recon, endpoint discovery, static audit, or ffuf. Keep execution bounded by the supplied target set, rate limits, red-lines, and current-turn opt-in for side effects. Save raw outputs when they become evidence.
+Load this file when the task needs concrete command shapes for recon, endpoint discovery, static audit, or ffuf. Keep execution bounded by the supplied target set, tool/request budgets, red-lines, and current-turn opt-in for side effects. Save raw outputs when they become evidence.
 
 ## Tool Roles
 
@@ -34,7 +34,7 @@ Stop condition: no live surfaces under the supplied target set, repeated 401/403
 
 ## FFUF Usage
 
-Rule: prefer `-ac` calibration, bounded wordlists, low rate, and raw request files for authenticated flows.
+Rule: prefer `-ac` calibration, bounded wordlists, explicit concurrency, and raw request files for authenticated flows.
 
 ```bash
 ffuf -w wordlist.txt -u https://target.example/FUZZ -ac
@@ -45,7 +45,7 @@ ffuf -w ~/wordlists/burp-parameter-names.txt -X POST -d "FUZZ=test" -u "https://
 ffuf -w subs.txt -u https://FUZZ.target.example -ac
 ```
 
-Useful filters: `-fc`, `-fs`, `-fw`, `-fr`, `-rate`, `-t`, `-e`, `-o`.
+Useful filters/options: `-fc`, `-fs`, `-fw`, `-fr`, `-t`, `-e`, `-o`.
 
 ## Semgrep Quick Audit
 

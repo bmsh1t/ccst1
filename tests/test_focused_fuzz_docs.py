@@ -42,6 +42,7 @@ def test_web2_recon_preserves_focused_ffuf_execution_capabilities():
     assert "/tmp/ffuf-dirs.json" not in text
     assert "~/wordlists/api-endpoints.txt" not in text
     assert "seq 1 10000" not in text
+    assert "-rate" not in text
 
 
 def test_web2_recon_uses_existing_isolated_artifact_and_memory_contracts():

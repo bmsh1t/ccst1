@@ -455,7 +455,7 @@ set -o pipefail
 if ffuf -u 'https://target.com/api/v2/FUZZ' \
   -w "$RUN_DIR/wordlist.txt" \
   -H 'Authorization: Bearer <token>' -b 'session=<cookie>' \
-  -mc all -ac -rate 20 -t 5 -timeout 10 \
+  -mc all -ac -t 5 -timeout 10 \
   -s -json 2> "$RUN_DIR/ffuf.log" \
   | gzip -c > "$RUN_DIR/dirs/ffuf_results.jsonl.gz"; then
   RUN_COUNTS=(--attempted 1 --succeeded 1)
@@ -478,7 +478,7 @@ mkdir -p "$RUN_DIR/dirs"
 set -o pipefail
 ffuf -request "$RUN_DIR/request.txt" -request-proto https \
   -w "$RUN_DIR/wordlist.txt" \
-  -mc all -ac -rate 10 -t 3 -timeout 10 \
+  -mc all -ac -t 3 -timeout 10 \
   -s -json 2> "$RUN_DIR/ffuf.log" \
   | gzip -c > "$RUN_DIR/dirs/ffuf_results.jsonl.gz"
 ```
@@ -488,15 +488,15 @@ artifact 契约：
 
 ```bash
 # path
-ffuf -u 'https://target.com/api/v2/FUZZ' -w "$RUN_DIR/wordlist.txt" -mc all -ac -rate 10 -t 3
+ffuf -u 'https://target.com/api/v2/FUZZ' -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
 # query
-ffuf -u 'https://target.com/api/v2/items?view=FUZZ' -w "$RUN_DIR/wordlist.txt" -mc all -ac -rate 10 -t 3
+ffuf -u 'https://target.com/api/v2/items?view=FUZZ' -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
 # body
 ffuf -u 'https://target.com/api/v2/items' -X POST -H 'Content-Type: application/json' \
-  -d '{"action":"FUZZ"}' -w "$RUN_DIR/wordlist.txt" -mc all -ac -rate 10 -t 3
+  -d '{"action":"FUZZ"}' -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
 # header
 ffuf -u 'https://target.com/api/v2/items' -H 'X-API-Version: FUZZ' \
-  -w "$RUN_DIR/wordlist.txt" -mc all -ac -rate 10 -t 3
+  -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
 ```
 
 保留 `-ac`；只有 control/baseline 支持时才增加如 `-fc 404`、`-fs <control-size>` 的显式
