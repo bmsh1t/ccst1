@@ -10,15 +10,23 @@ def _read(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_slash_command_runs_inline_with_one_controller_and_bounded_specialist():
+def test_slash_command_keeps_one_controller_and_ai_selected_bounded_specialists():
     text = _read("commands/autopilot.md")
     normalized = " ".join(text.split())
 
-    assert "runs inline in the current Claude session as the sole controller" in normalized
-    assert "does not create/resume legacy `agent_session.json`" in normalized
-    assert "specialists default to zero" in normalized
-    assert "At most one bounded specialist" in normalized
-    assert "The invoked specialist must not spawn nested agents, run full recon/scans, write final closure, or control finish" in normalized
+    assert "runs inline in the current controller session" in normalized
+    assert "never creates/resumes legacy `agent_session.json`" in normalized
+    assert "sole writer/closure controller" in normalized
+    assert "Specialists default to zero" in normalized
+    assert "active AI controller may delegate distinct, bounded evidence questions" in normalized
+    assert "platform's delegation tool" in normalized
+    assert "bounded context/request cost" in normalized
+    assert "expected information gain" in normalized
+    assert "stop when no independent question remains" in normalized
+    for forbidden in ("never nest", "run full recon/scans", "create lanes", "expand budgets", "write owner state", "decide closure/finish"):
+        assert forbidden in normalized
+    assert "controller collects results and writes back" in normalized
+    assert "one read-only second opinion per frontier projection" in normalized
     assert "--isolated" not in text
 
 
@@ -32,7 +40,7 @@ def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
     assert 'mcp__Playwright__*' in text
     assert 'mcp__chrome-devtools__*' in text
     assert 'mcp__fofamap__*' in text
-    assert "through Claude Code's `Agent` tool" in normalized
+    assert "`Agent` in Claude Code or the native equivalent" in normalized
     assert 'tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"' in text
     assert "git rev-parse --show-toplevel" in text
     assert "Authoritative bootstrap contract (do not reinterpret)" in normalized
@@ -105,8 +113,9 @@ def test_bounded_deep_invocation_handoffs_instead_of_expanding_new_lanes():
     assert "[--deep [--max-lanes N]]" in command
     assert "`--max-lanes` is valid only with `--deep`" in command
     assert "invocation_batch.bounded" in command
-    assert "browser/source discoveries become next-invocation work, not lane n+1" in " ".join(command.split()).lower()
     assert "after lane N do not execute a newly discovered queue item" in command
+    assert "Evidence import, owner write-back, cleanup, checkpoint, and closure are not new" in command
+    assert "Newly discovered work becomes next-invocation work" in command
     assert "Reaching `max_lanes` ends target work for this invocation" in command
     assert "the budget alone never requires another round" in command
     assert "checkpoint/sync durable queue" in agent
@@ -127,15 +136,16 @@ def test_browser_first_use_probe_retries_only_transient_session_failures():
     assert "checkpoint the blocker in the existing action queue" in command
     assert "pivot to js/source/api evidence" in command
     assert "next invocation, after repair, or on explicit operator retry" in command
-    assert "select one active backend for the invocation" in command
-    assert "never run both browser backends concurrently" in command
-    assert "never probe both" in command
+    assert "one active backend at a time" in command
+    assert "never probe both for availability" in command
+    assert "sequentially or concurrently" in command
+    assert "never run both concurrently" in command
     assert "reuse a matching" in command
     assert "close stale" in command
-    assert "do not close or switch an authenticated/stateful workflow mid-lane" in command
-    assert "switch only after its evidence and recoverable state are persisted" in command
-    assert "close the current native session first" in command
-    assert "close the native browser session before handoff or finish" in command
+    assert "or switch mid-workflow" in command
+    assert "switch only at a lane boundary after the current workflow is complete" in command
+    assert "close the current session first" in command
+    assert "persist/import browser artifacts and close its native session" in command
     assert "do not open a second session to replace an unclosed one" in command
 
 
@@ -182,20 +192,34 @@ def test_finish_contract_surfaces_high_value_memory_recommendations_without_auto
 
 
 def test_versioned_hypothesis_contract_keeps_runner_observation_fields_tool_owned():
-    command = " ".join(_read("commands/autopilot.md").split()).lower()
+    command = " ".join(
+        (_read("commands/autopilot.md") + _read("docs/autopilot-lanes.md")).split()
+    ).lower()
 
-    assert "for `depth_contract_version=1`, runner owns `last_outcome`, `tested_dimensions`, and `runner_operation_id`" in command
-    assert "ai claim/resolve metadata must not fabricate them" in command
-    assert "when resolving a legacy/versionless action" in command
+    assert "runner alone writes `last_outcome`, `tested_dimensions`" in command
+    assert "`runner_operation_id`" in command
+    assert "versioned ai metadata never fabricates runner fields" in command
+    assert "legacy/versionless" in command
 
 
 def test_versioned_claim_uses_the_stored_cap_without_guessing_retries():
-    command = " ".join(_read("commands/autopilot.md").split()).lower()
+    command = " ".join(
+        (_read("commands/autopilot.md") + _read("docs/autopilot-lanes.md")).split()
+    ).lower()
 
-    assert "read that stored cap from the selected action before claim" in command
-    assert "never include `max_hypothesis_actions_cap` in claim metadata" in command
-    assert "refresh and re-ingest the checkpoint action" in command
-    assert "instead of guessing fields or retrying the same contract" in command
+    assert "no greater than the stored `metadata.max_hypothesis_actions_cap`" in command
+    assert "never submit, repair, or increase it in claim metadata" in command
+    assert "missing cap requires checkpoint re-ingest" in command
+    assert "stop without guessing/retry" in command
+
+
+def test_controller_prompt_stays_within_utf8_budget():
+    command = _read("commands/autopilot.md")
+    lanes = _read("docs/autopilot-lanes.md")
+
+    assert len(command.encode("utf-8")) <= 20 * 1024
+    assert "docs/autopilot-lanes.md" in command
+    assert "## State And Queue" in lanes
 
 
 def test_durable_queue_work_is_claimed_before_replay():

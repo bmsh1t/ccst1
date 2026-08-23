@@ -16,15 +16,18 @@ Formal arguments: `<target> [--paranoid|--normal|--yolo] [--quick] [--deep [--ma
 ## Runtime Preflight
 Obey bootstrap `action` before any other step. `ask_target` asks for the exact target;
 `stop_invalid_arguments` reports `arguments.errors`; `stop_invalid_scope`/`stop_invalid_context` report bounded `error` and stop; `stop_state_error`/`stop_runtime_error` report bounded `error` and stop; `stop_runtime_drift` reports compact critical runtime paths/counts, points to `/sync-check`, requests explicit confirmation before any sync, and stops. Advisory runtime drift is reported but does not block. Never sync automatically. Only `continue` may act.
-For the final response, apply the `CLAUDE.md` user-facing language contract: explain internal state
-in the user's language, keep exact field names only in commands/JSON when execution needs them,
-and do not repeat opaque bootstrap state or knowledge-card filenames as prose.
+Apply the `CLAUDE.md` user-facing language contract in the final response; do not
+dump opaque bootstrap fields or knowledge-card filenames as prose.
 The bootstrap already ran arguments, read-only runtime compare, advisory capability profile, then compact target state. Arguments/runtime remain the only blocking gates. Treat
 `capabilities` as advisory: `session_managed` names are not availability claims; use MCP only when visible in this Claude session and use a listed fallback otherwise. Missing/degraded
 tools never block, trigger installation or request it, count as tested-clean, or hide material
 limits in the handoff. Use the matching `capabilities.lanes` record only to explain local readiness or choose a viable fallback; it never overrides the owner-selected Action Queue/state lane. Within one invocation, do not rerun the same failed source/tool; preserve
 cached/stale evidence as partial/blocked. `tools/external_arsenal.sh --versions` is diagnostics-only, never startup.
-For browser work, select one active backend for the invocation from evidence before the first MCP call: Chrome DevTools MCP for deep Network/Runtime/Console/performance, or Playwright MCP for interaction/auth/workflow capture. Keep the other backend available for a later invocation. Never probe both for availability, and never run both browser backends concurrently. Reuse a matching selected-backend session and close stale pages before opening a new context. Do not close or switch an authenticated/stateful workflow mid-lane; switch only after its evidence and recoverable state are persisted, and close the current native session first.
+Browser lanes use one active backend at a time and follow
+`docs/autopilot-lanes.md#browser-source-and-js` for selection, recovery, import,
+switching, and close. A persisted lane boundary may switch backends when unique
+evidence requires it; never probe both for availability, run both concurrently,
+or switch mid-workflow.
 Run project commands as `cd -- <repo_root_shell> && ...`. Use
 `arguments.target_shell`, expand `arguments.hunt_auth_flags` (or
 `--auth-file <arguments.auth_file_shell>`) only when present, and apply
@@ -37,33 +40,32 @@ follow `docs/resin-proxy.md` to export one stable sticky environment via `Creden
 When sticky access is blocked, use current evidence and the request budget to decide whether to reuse or switch
 available sticky account environments and how much to retry; impose no fixed count. Use rotate only on explicit
 request, bypass it for localhost/private targets, and never print the token or persist proxy setup.
-Treat the supplied target set as the active execution target set; `ctf_mode` is the
-authoritative lab target record. External policy is advisory audit/replay context;
-do not require public-program, written-permission, or ownership-confirmation.
-Target isolation follows a new target default: the built-in XSS lane skip is explicit,
-and `/pickup` does **not** replay previous target skips or scanner decisions.
-`/autopilot` runs inline in the current Claude session as the sole controller and does not create/resume legacy `agent_session.json`; specialists default to zero.
-At most one bounded specialist may be invoked through Claude Code's `Agent` tool for one evidence question. The invoked specialist must not spawn nested agents, run full recon/scans, write final closure, or control finish. After using one, this invocation cannot call a second specialist.
-If bounded state exposes `enrichment_hints` with `tool=recon-ranker`, that is an
-opt-in read-only second opinion for a large, multi-source Surface only. Invoke it
-once only when the specialist slot is unused; it never runs requests, writes state,
-or replaces Claude's Queue, lane, validation, or Closure decisions. If the hint is
-absent, continue with the current projection directly.
-Bootstrap emits one `state.lane_contract` pointer. Before executing a named lane, read only
-`state.lane_contract.ref` (or the matching section for a newly observed signal) from
-`docs/autopilot-lanes.md`; it is execution detail, not a second controller. Every lane still
-inherits this command's Scope/Auth, evidence, checkpoint, Action Queue, loop-guard, and finish
-contracts.
+Apply `rules/hunting.md` target-isolation/new-target defaults to the supplied
+target set. Bootstrap `ctf_mode` is authoritative lab context; external policy is
+advisory, and `/pickup` never replays another target's skips/scanner decisions.
+`/autopilot` runs inline in the current controller session, never creates/resumes
+legacy `agent_session.json`, and remains the sole writer/closure controller.
+Specialists default to zero. The active AI controller may delegate distinct,
+bounded evidence questions through the platform's delegation tool (`Agent` in
+Claude Code or the native equivalent) when context reduction, useful parallelism,
+and `invocation_batch.max_lanes` justify it. Specialists may analyze selected lanes
+but never nest, run full recon/scans, create lanes, expand budgets, write owner
+state, or decide closure/finish. The controller collects results and writes back.
+Each delegation needs a distinct question, bounded context/request cost, and
+expected information gain; stop when no independent question remains.
+Optional `recon-ranker` is one read-only second opinion per frontier projection;
+it never runs requests, writes state, or replaces controller decisions.
+Before a named lane, read only `state.lane_contract.ref` from
+`docs/autopilot-lanes.md`; before substantive Queue claim/resolve, also read its
+`State And Queue` section. These are execution details, not another controller.
 Before active hunting begins, load `rules/hunting.md` for its canonical hunting
 semantics. Fresh Recon is not active hunting: when `state.hard_gate.action=run_recon`
 (and when `state.next_action=run_recon` for older readers),
 execute the selected lane directly; refresh state after it completes. The
 default context pack intentionally does not load this rule.
-Tool discovery stays in `docs/tool-index.md`; concrete evidence may select
-`tools/dns_expand.py --reason`, `tools/deep_js_packer.py`,
-`tools/disclosure_search.py`, or `tools/sibling_generator.py` without loading
-their full documentation here; host count alone is not a trigger, JS volume
-alone is not a trigger, and partial/unavailable tool output remains open.
+Tool discovery stays in `docs/tool-index.md`; evidence may select its helpers
+without loading their full docs here. Host/JS volume alone is not a trigger, and
+partial/unavailable output remains open.
 ## State Consumption Loop
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
@@ -90,44 +92,23 @@ cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_she
 When the selected action is `run_recon`, immediately run the selected Recon command from
 the lane contract with `arguments.recon_flags`, then refresh bounded state. Do
 not perform another context or documentation pass before that action.
-For substantive candidates, claim the exact action with the evidence-backed activation contract
-before replay (surface review, runtime wait, recovery, and reporting remain versionless):
+For substantive candidates, apply the lane's evidence-backed activation contract
+and claim the exact action before replay:
 ```bash
 cd -- <repo_root_shell> && python3 tools/action_queue.py claim --target <target_shell> --id <id> --metadata-json '<activation-object>'
 ```
-The activation object records `depth_contract_version=1`, target-specific `hypothesis_id`, open
-`family`/`technique`, selected Skill/knowledge references, one `active_dimension`,
-`expected_learning`, `kill_condition`, `risk_tier`, and `max_hypothesis_actions` no greater than the
-queued item's `metadata.max_hypothesis_actions_cap`. Read that stored cap from the selected Action
-before claim. The stored cap is Queue-owned: never include `max_hypothesis_actions_cap` in claim
-metadata or try to repair/increase it during claim. If it is missing, refresh and re-ingest the
-checkpoint action; if it is invalid, stop and preserve it for Action Queue owner repair. If claim
-exits non-zero, inspect its stderr and the stored Action once, then stop that claim path instead of
-guessing fields or retrying the same contract. The
-Queue computes execution identity and rejects same endpoint/method/family/technique/
-actor/object/workflow/dimension work without new evidence or a recorded repeat reason. After the
-deterministic Runner writes `last_outcome`, `tested_dimensions`, replayable evidence refs,
-operation ID, and a bounded observation, it keeps the versioned action `running`. An explicit
-`observation_kind=baseline_only` records the safe baseline for the next AI decision but cannot
-support a kill.
-The AI then resolves it with exactly one evidence-backed continuation (`sibling`, `bypass`,
-`identity`, `object`, `parser`, `transport`, `workflow`, `chain`, `rotation`, or `blocked`) or a
-supported `kill_condition_met=true`; missing outcome write-back, tested dimensions, or the next
-decision leaves the action recoverable and blocks exhaustion. Materialize at most one continuation
-child while preserving the versioned hypothesis, activation, parent, and evidence lineage.
+The Queue owns activation caps, identity/dedup, Runner fields, continuation
+lineage, and credential rejection. On claim failure inspect stderr/stored state
+once; never guess or retry the contract. Runner observation leaves the action
+`running`; the controller resolves that action with one primary continuation or
+supported kill. Independent follow-ups require separately claimed actions within
+the batch budget. Missing outcome/decision remains recoverable and blocks closure.
 In deep mode, a concrete API/browser-XHR surface requires an evidence-linked
 depth pack: run the observed GET/query path and the observed POST JSON/form path
 when applicable. GET-only is not API completion; OPTIONS/HEAD remain passive
-checks, and default probing never adds PUT/PATCH/DELETE. After a negative result,
-record the selected sibling/variant/actor/workflow/chain dimension plus
-`hypothesis`, `tested_dimensions`, `expected_learning`, `kill_condition`, and `next_question` in the
-existing Action Queue metadata. For legacy/versionless manual actions only, use
-`tools/action_queue.py add --metadata-json '{"hypothesis_id":"H-1","tested_dimensions":["sibling"],"expected_learning":"...","kill_condition":"...","next_question":"..."}'`;
-the parser accepts only a JSON object and rejects credential-bearing fields before any queue write.
-For `depth_contract_version=1`, Runner owns `last_outcome`, `tested_dimensions`, and
-`runner_operation_id`; AI claim/resolve metadata must not fabricate them. This is the existing Action
-Queue, not a new state owner. A partial tool cursor or unused depth dimension
-is resumable work, not tested-clean.
+checks, and default probing never adds PUT/PATCH/DELETE. Negative results record
+the next evidence-linked dimension/question in the existing Queue. Partial cursors
+or unused dimensions are resumable work, not tested-clean.
 
 Deep lanes keep the normal per-invocation caps unless `--deep` is active. In deep
 mode, parameter discovery, JSON injection, and zero-day fuzzing may project a
@@ -136,37 +117,19 @@ high-value evidence; every projection has a hard maximum and records
 `partial_on_exhaustion=true`. A larger projection never bypasses Scope/Auth or
 the WAF plan cap, and exhaustion with an incomplete cursor remains resumable.
 
-Every checkpoint-generated substantive Action Queue item carries the selected
-`skill_route` and its `required_dimensions`; the queue validates that route
-before persistence. AI may override the selected Skill, but must record the
-replacement route and reason in the same metadata. Hand-written advisory queue
-items remain compatible when `route_required` is not set.
-
-When resolving a legacy/versionless action, preserve its structured metadata through
-`tools/action_queue.py resolve --metadata-json`; `last_outcome`, `tested_dimensions`,
-`next_question`, `expected_learning`, `kill_condition`, and `pivot_hints` keep their compatible
-merge behavior. A versioned AI resolve supplies only one continuation or supported kill plus optional
-bounded capability primitives; it consumes Runner-owned observation fields already on the action.
-The JSON must be an object and must not contain credentials or authorization headers.
-If Checkpoint projects `capability-chain-review`, treat it as advisory: do not execute the primitive
-directly. If one bounded chain is executable, add one normal versioned chain action with the persisted
-parent/hypothesis/evidence lineage before resolving the review; otherwise resolve it as blocked/dead-end.
-The review never changes existing running, validation, candidate, report, or Closure priority.
-
 Named action mechanics, replay commands, recon continuation, list selection, and owner
 write-back rules live in the selected lane section. Claim durable queue work before replay;
 never treat prose or a raw endpoint as evidence. If `state.root_claim_next` exists, run `/checkpoint`
 so `finding_index` creates the canonical candidate and queue action before using
 its ID. Refresh state after every owner write-back.
 ## Execution Invariants
-Expert Hunter Autopilot is AI-first: Claude judges priority, impact, chain fit,
+Expert Hunter Autopilot is AI-first: the active controller judges priority, impact, chain fit,
 promotion, reopen, and finish; deterministic owners preserve schema, evidence,
 replay, and durable state. Follow `skills/runtime-protocol.md`,
 `rules/tool-ai-boundary.md`, `rules/red-lines.md`, and
 `rules/hunting.md#broad-scanner-input-and-completion-contract`.
-Super-pentester priority is business impact > workflow evidence > crown-jewel
-hypothesis > scanner/coverage hints. Scanner quick is an advisory breadth sensor,
-and scanner-negative is not completion.
+Use `rules/hunting.md` value-first priorities. Scanner quick is an advisory breadth
+sensor, and scanner-negative is not completion.
 Business Model Read: after fresh Recon starts, write or refresh
 `evidence/<target>/business_model.md` from observed application purpose, actors,
 private objects, trust boundaries, sensitive workflows, and likely crown jewels.
@@ -176,9 +139,8 @@ replayable raw request/response or a locatable evidence ref. Canonical finding
 writes go through `finding_index` and `/validate`, never direct `findings.json`
 edits. Partial/blocked is unresolved, not tested-clean; placeholder reports are
 not report-ready.
-Four-layer memory is the external brain, not the steering wheel:
-`target memory / case state -> Skill -> 1-2 matching cards/references -> checks`.
-These are decision inputs, not first-contact controllers or closure evidence.
+Apply the four-layer routing in `skills/runtime-protocol.md`; memory/cards are
+decision inputs, never first-contact controllers or closure evidence.
 ## Transition And Finish Contract
 Apply `arguments.checkpoint_trigger`: paranoid after each substantive state
 change, normal after a coherent lane batch, yolo only on blocker/handoff/finish.
@@ -193,9 +155,12 @@ Obey `loop_guard.verdict`. On `rotate`, do not continue the reported `endpoint_f
 `--deep` is a value-first comprehensive depth flag, not a checklist or favorite bug
 class. With `invocation_batch.bounded`, execute at most `max_lanes` named
 substantive lanes; after lane N do not execute a newly discovered queue item.
-Checkpoint/sync the durable queue, state the handoff, and end. Browser/source
-discoveries become next-invocation work, not lane N+1.
-Finish on evidence state, not a tool checklist. `working_hypothesis` must be resolved, blocked, dead-end, Candidate, or Validated Finding. Check `oast_listen` when used; resolve or record high-value action-gated scanner leads and every matrix gap. If Playwright/Chrome MCP was used, persist/import the required artifacts and close the native browser session before handoff or finish; a failed/unavailable close is `partial`/`blocked`, never a reason to open another session.
+Evidence import, owner write-back, cleanup, checkpoint, and closure are not new
+lanes and must still complete. Newly discovered work becomes next-invocation work.
+Finish on evidence state, not a tool checklist. Resolve/block/dead-end/promote the
+`working_hypothesis`; drain used `oast_listen` and record high-value scanner leads
+and matrix gaps. Persist/import browser artifacts and close its native session;
+failed close is `partial`/`blocked` and forbids a replacement in this invocation.
 Immediately before any target-exhaustion claim, run the ordered coverage review and explicit read-only verdict below; an absent or empty matrix never proof of coverage. Consult available `evidence/<target>/intelligence.md`, browser, JS, source, and exposure evidence.
 ```bash
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <target_shell>

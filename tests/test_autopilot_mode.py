@@ -73,8 +73,9 @@ def test_deep_mode_requires_method_and_hypothesis_depth_packs():
     root = Path(__file__).resolve().parents[1]
     agent_text = (root / "agents" / "autopilot.md").read_text(encoding="utf-8")
     command_text = (root / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    lane_text = (root / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
 
-    for text in (agent_text, command_text):
+    for text in (agent_text, f"{command_text}\n{lane_text}"):
         assert "GET" in text and "POST" in text
         assert "PUT/PATCH/DELETE" in text
         assert "tested_dimensions" in text
@@ -1279,7 +1280,7 @@ def test_autopilot_command_md_bootstraps_state_first_then_branches():
     assert "`wait_recon` / `wait_scan`: wait or poll" in lanes
     assert "Runtime phase locks are the final duplicate-launch guard" in lanes
     assert "the only initial inputs" in normalized
-    assert "1-2 matching cards/references" in text
+    assert "skills/runtime-protocol.md" in text
 
 
 def test_autopilot_command_md_uses_checkpoint_tool_for_writeback():
@@ -1365,7 +1366,6 @@ def test_autopilot_command_routes_helpers_through_canonical_owners():
     assert "## Question -> Tool Reference" not in text
     assert "docs/autopilot-lanes.md" in text
     assert "docs/tool-index.md" in lanes
-    assert "at most one bounded specialist" in text.lower()
     for agent_name in ("recon-ranker", "js-reader", "validator", "chain-builder", "report-writer"):
         assert (Path(__file__).resolve().parents[1] / "agents" / f"{agent_name}.md").is_file()
 
@@ -1377,7 +1377,7 @@ def test_autopilot_command_md_has_post_hunt_unsafe_review_gate():
     md = Path(__file__).resolve().parent.parent / "commands" / "autopilot.md"
     text = md.read_text(encoding="utf-8")
 
-    assert "action-gated scanner leads" in text
+    assert "high-value scanner leads" in text
     assert "Partial/blocked is unresolved, not tested-clean" in " ".join(text.split())
     assert "rules/hunting.md" in text
 

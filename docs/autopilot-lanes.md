@@ -7,8 +7,9 @@ description: On-demand lane contracts for the inline Autopilot controller.
 `commands/autopilot.md` is the controller. Read only the section named by
 bootstrap `state.lane_contract.ref` (or the section matching a newly observed
 evidence signal) before executing that lane. Do not load this whole file into
-every invocation. Every lane remains subject to the controller's Scope/Auth,
-evidence, checkpoint, Action Queue, loop-guard, and finish contracts.
+every invocation. Also read `State And Queue` before any substantive Queue
+claim/resolve. Every lane remains subject to the controller's Scope/Auth, evidence,
+checkpoint, Action Queue, loop-guard, and finish contracts.
 
 Add a dedicated lane only when shared runners cannot express the required input,
 observation, or evidence semantics and the execution is stable, repeatable, and
@@ -17,6 +18,34 @@ actions. Ordinary Card changes do not require a new lane.
 
 ## State And Queue
 
+- Every substantive candidate is claimed before replay with
+  `python3 tools/action_queue.py claim --target <target_shell> --id <id> --metadata-json '<activation-object>'`.
+  Activation records `depth_contract_version=1`, target `hypothesis_id`, open
+  `family`/`technique`, selected Skill/knowledge refs, one `active_dimension`,
+  `expected_learning`, `kill_condition`, `risk_tier`, and `max_hypothesis_actions`
+  no greater than the stored `metadata.max_hypothesis_actions_cap`. The cap is
+  Queue-owned: never submit, repair, or increase it in claim metadata. Missing cap
+  requires checkpoint re-ingest; invalid cap remains for owner repair. On claim
+  failure inspect stderr and stored state once, then stop without guessing/retry.
+- Queue identity rejects duplicate endpoint/method/family/technique/actor/object/
+  workflow/dimension work without new evidence or a recorded repeat reason.
+  Runner alone writes `last_outcome`, `tested_dimensions`, replayable refs, and
+  `runner_operation_id`, keeping the action `running`; `baseline_only` cannot kill.
+- Resolve each action with one evidence-backed continuation (`sibling`, `bypass`,
+  `identity`, `object`, `parser`, `transport`, `workflow`, `chain`, `rotation`, or
+  `blocked`) or supported `kill_condition_met=true`. At most one child preserves
+  parent/hypothesis/evidence lineage; independent follow-ups are separate claimed
+  actions within the batch budget. Missing outcome/decision blocks closure.
+- Legacy/versionless `action_queue.py add/resolve --metadata-json` accepts only a
+  JSON object, preserves `next_question`, `expected_learning`, `kill_condition`,
+  `pivot_hints`, and other compatible structured fields, and rejects credentials
+  or authorization headers. Versioned AI metadata never fabricates Runner fields.
+- Checkpoint-generated substantive items carry validated `skill_route` and
+  `required_dimensions`; AI override records the replacement route/reason.
+  Hand-written advisory items remain compatible without `route_required`.
+- `capability-chain-review` is advisory. Materialize one normal versioned chain
+  action with persisted lineage when executable; otherwise resolve blocked/dead-end.
+  It never changes running, validation, candidate, report, or Closure priority.
 - `wait_recon` / `wait_scan`: wait or poll, then refresh state. Runtime phase locks are the final duplicate-launch guard.
 - `validate_finding`: call `/validate` only when state returns `validate_finding`. The non-TTY owner is `python3 tools/validate.py --target <target_shell> --finding-id <id> --decision-json <json_file_shell> --json`; the JSON file path is never inline.
 - `resume_action_queue`: run `python3 tools/action_queue.py claim --target <target_shell>`, perform the claimed or resumed durable replay, then run `python3 tools/action_queue.py resolve --target <target_shell> --id <id> --status <state> --evidence <why>` and refresh.
@@ -43,7 +72,7 @@ actions. Ordinary Card changes do not require a new lane.
 
 ## Browser Source And JS
 
-- Browser actions use only visible Playwright/Chrome MCP, with one active backend per invocation: choose Chrome DevTools MCP for deep Network/Runtime/Console/performance work, or Playwright MCP for page interaction, authentication, and workflow capture. Both remain configured capabilities; this is an invocation choice, not a permanent feature disable. Choose from evidence before making any MCP call; never probe both backends for availability because the probe may start both browsers. Never run `agent-browser` or `playwright-cli` through Bash. First use on the selected backend is a harmless page-list/session probe: reuse a matching same-target session, or close stale/unrelated pages before opening a new context. Retry once only for timeout, disconnect, or closed-context errors. Missing/configuration/permission/protocol errors do not retry.
+- Browser actions use only visible Playwright/Chrome MCP, with one active backend at a time: choose Chrome DevTools MCP for deep Network/Runtime/Console/performance work, or Playwright MCP for page interaction, authentication, and workflow capture. Choose from evidence before making any MCP call; never probe both for availability (sequentially or concurrently) because a probe may start both browsers, and never run both concurrently. Never run `agent-browser` or `playwright-cli` through Bash. First use is a harmless page-list/session probe: reuse a matching same-target session, or close stale/unrelated pages before opening a context. Retry once only for timeout, disconnect, or closed-context errors; missing/configuration/permission/protocol errors do not retry.
 - After a second failure, checkpoint the blocker in the existing Action Queue, pivot to JS/source/API evidence, and probe again only next invocation, after repair, or on explicit operator retry. On success import native artifacts via `tools/browser_mcp_import.py` (`--auth-required` for authenticated captures). Missing Network/state stays partial.
 - Reuse one visible browser/MCP session per invocation. Never close or switch while an authenticated or stateful workflow still depends on in-memory browser state. If unique evidence requires the other backend, switch only at a lane boundary after the current workflow is complete and its artifacts plus recoverable session references are persisted; otherwise defer that backend to the next invocation. Close the current session first, record the handoff, and open the replacement only after the close succeeds. After importing the required artifacts, call the session's native `browser_close`/equivalent before handoff, finish, or an intentional pivot; do not open a second session to replace an unclosed one. If close is unavailable or fails, record the browser session as `partial`/`blocked` and leave the next invocation to repair it.
 - Use `tools/source_intel.py`/`tools/js_reader.py`; `tools/deep_js_packer.py` requires concrete runtime/chunk/source-map evidence; JS volume alone is not a trigger. Partial/unavailable stays open.

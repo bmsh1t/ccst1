@@ -101,7 +101,12 @@ heartbeat is recovery context, not a second action owner; persist unresolved
 work through its existing owner or the Action Queue before round closure. A
 round with any `started` lane cannot close.
 
-After every terminal lane heartbeat, run the canonical `--loop-check --json` guard.
+After every terminal lane heartbeat, run the canonical read-only loop guard:
+
+```bash
+cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json
+```
+
 When the lane budget is consumed, checkpoint and leave new work for the
 next invocation.
 
@@ -113,21 +118,6 @@ coordinator performs the canonical checkpoint/write-back for this round:
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_round.py settle --target <target_shell> --json
 ```
-
-The legacy owner commands remain valid compatibility adapters. The coordinator
-executes their equivalent order; do not repeat them after `settle`:
-
-```bash
-# python3 tools/coverage_matrix.py rebuild --target <target_shell>
-# python3 tools/coverage_matrix.py find-gaps --target <target_shell> --limit 50
-# python3 tools/checkpoint.py --target <target_shell> --record-round-closure --json
-# python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
-```
-
-The bounded `find-gaps --limit 50` output is an AI review window only. Its
-`total` and `truncated` fields are advisory display metadata; the complete
-matrix remains the closure owner input, and a truncated window never means
-coverage is complete.
 
 The coordinator refuses any `started` lane before writes, then orders Coverage
 refresh/checkpoint build, Action Queue sync, round closure, and final bounded

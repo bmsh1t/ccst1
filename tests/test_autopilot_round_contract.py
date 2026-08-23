@@ -112,7 +112,7 @@ def test_terminal_precheck_is_state_only_and_precedes_target_work():
         assert active_path not in precheck
 
 
-def test_round_end_orders_checkpoint_coverage_and_owner_closure():
+def test_round_end_uses_explicit_loop_guard_and_owner_settle():
     command = _read("commands/autopilot-round.md")
     normalized = " ".join(command.split())
     checkpoint = command.index("canonical checkpoint/write-back")
@@ -120,29 +120,17 @@ def test_round_end_orders_checkpoint_coverage_and_owner_closure():
         "python3 tools/autopilot_round.py settle --target <target_shell> --json",
         checkpoint,
     )
-    compatibility = command.index("legacy owner commands", settle)
-    rebuild = command.index("python3 tools/coverage_matrix.py rebuild", compatibility)
-    gaps = command.index("python3 tools/coverage_matrix.py find-gaps", rebuild)
-    record = command.index("python3 tools/checkpoint.py --target <target_shell> --record-round-closure --json", gaps)
-    closure = command.index(
-        "python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json",
-        record,
+    loop_guard = (
+        "python3 tools/autopilot_state.py --target <target_shell> "
+        "--bounded --loop-check --projection-only --json"
     )
 
-    assert checkpoint < settle < compatibility < rebuild < gaps < record < closure
-    assert "do not repeat them after `settle`" in normalized
+    assert checkpoint < settle
+    assert loop_guard in command
     assert "Coverage refresh/checkpoint build, Action Queue sync, round closure" in normalized
     assert "After every terminal lane heartbeat" in command
-    assert "canonical `--loop-check --json` guard" in command
     assert "at most bootstrap `invocation_batch.max_lanes`" in normalized
     assert "budget exhaustion alone never selects `STATUS: CONTINUE`" in normalized
-
-
-def test_round_gap_review_uses_bounded_display_window_without_changing_closure_order():
-    command = _read("commands/autopilot-round.md")
-    assert "python3 tools/coverage_matrix.py find-gaps --target <target_shell> --limit 50" in command
-    assert "The bounded `find-gaps --limit 50` output is an AI review window only." in command
-    assert "a truncated window never means" in command
 
 
 def test_round_budget_is_checkpoint_owned_not_prompt_counted():

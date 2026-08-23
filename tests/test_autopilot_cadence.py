@@ -106,15 +106,15 @@ def test_expert_hunter_startup_is_state_first_then_evidence_driven():
     combined = f"{command}\n{agent}"
 
     for marker in (
-        "Super-pentester priority",
-        "business impact > workflow evidence > crown-jewel",
+        "active controller judges priority",
+        "Use `rules/hunting.md` value-first priorities",
         "Every invocation is state-first",
         "scanner quick",
         "breadth sensor",
         "advisory lead source",
         "scanner-negative is not completion",
         "Branch only after that state",
-        "Four-layer memory is the external brain, not the steering wheel",
+        "Apply the four-layer routing in `skills/runtime-protocol.md`",
         "BUSINESS/CROWN JEWELS",
         "MINIMAL PROOF",
         "-> CHAIN ->",
@@ -145,7 +145,7 @@ def test_deep_mode_points_to_coverage_tools_instead_of_embedded_lab_fixtures():
     assert "evidence/cadence-labs" not in command
 
 
-def test_compact_transition_contract_preserves_cadence_and_single_specialist_budget():
+def test_compact_transition_contract_preserves_cadence():
     command = _read(COMMAND)
     agent = _read(AGENT)
     combined = f"{command}\n{agent}"
@@ -161,5 +161,3 @@ def test_compact_transition_contract_preserves_cadence_and_single_specialist_bud
         "rotating form/session token",
     ):
         assert marker in combined
-
-    assert "After using one, this invocation cannot call a second specialist." in command
