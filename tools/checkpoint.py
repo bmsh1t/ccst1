@@ -39,6 +39,7 @@ try:
         ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES,
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
         _action_identities as action_queue_action_identities,
+        _candidate_dedupe_key as action_queue_candidate_dedupe_key,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
         _knowledge_signal_identity as action_queue_knowledge_signal_identity,
@@ -80,6 +81,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         ACTIVE_STATUSES as ACTION_QUEUE_ACTIVE_STATUSES,
         FINAL_STATUSES as ACTION_QUEUE_FINAL_STATUSES,
         _action_identities as action_queue_action_identities,
+        _candidate_dedupe_key as action_queue_candidate_dedupe_key,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
         _knowledge_signal_identity as action_queue_knowledge_signal_identity,
@@ -3620,6 +3622,9 @@ def _filter_final_action_queue_items(
         status = str(action.get("status") or "")
         if status not in ACTION_QUEUE_FINAL_STATUSES:
             return False
+        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+        if metadata.get("dedupe_retired") is True:
+            return False
         result = str(action.get("result") or "").strip()
         if status == "validated" and result.startswith("validation-runner-result="):
             return False
@@ -3664,14 +3669,23 @@ def _filter_final_action_queue_items(
         if signal_identity:
             final_signal_identities.add(signal_identity)
 
-    active_candidate_by_key = {
-        str(action.get("dedupe_key") or action_queue_dedupe_key(action)): from_existing_action(action)
-        for action in existing.get("actions", [])
-        if isinstance(action, dict)
-        and str(action.get("status") or "") == "candidate"
-        and str(action.get("type") or "") == "candidate-evidence-gap"
-        and not (action_identities(action) & final_identities)
-    }
+    active_candidate_by_key: dict[str, dict] = {}
+    active_candidate_key_by_identity: dict[str, str] = {}
+    for action in existing.get("actions", []):
+        if not isinstance(action, dict):
+            continue
+        if str(action.get("status") or "") != "candidate" or str(action.get("type") or "") != "candidate-evidence-gap":
+            continue
+        if action_identities(action) & final_identities:
+            continue
+        key = str(
+            action_queue_candidate_dedupe_key(action)
+            or action.get("dedupe_key")
+            or action_queue_dedupe_key(action)
+        )
+        active_candidate_by_key.setdefault(key, from_existing_action(action))
+        for identity in action_identities(action):
+            active_candidate_key_by_identity.setdefault(identity, key)
     if not final_keys and not final_signal_identities and not active_candidate_by_key:
         return items
 
@@ -3687,6 +3701,23 @@ def _filter_final_action_queue_items(
         signal_identity = action_queue_knowledge_signal_identity(queue_shape)
         if signal_identity and signal_identity in final_signal_identities:
             continue
+        candidate_key = ""
+        if str(queue_shape.get("type") or "") in {
+            "surface-review",
+            "ranked-surface",
+            "coverage-gap",
+            "evidence-convergence",
+        }:
+            candidate_key = next(
+                (
+                    active_candidate_key_by_identity[identity]
+                    for identity in action_identities(queue_shape)
+                    if identity in active_candidate_key_by_identity
+                ),
+                "",
+            )
+        if candidate_key:
+            key = candidate_key
         if key not in final_keys:
             if key in active_candidate_by_key:
                 if key not in emitted_candidate_keys:

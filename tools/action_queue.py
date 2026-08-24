@@ -765,6 +765,9 @@ def _locatable_evidence_ref(repo_root: Path | str, result: str) -> str:
 
 
 def _dedupe_key(action: dict) -> str:
+    candidate_key = _candidate_dedupe_key(action)
+    if candidate_key:
+        return candidate_key
     metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
     action_text = str(action.get("action", ""))
     evidence_text = str(action.get("evidence", ""))
@@ -833,6 +836,8 @@ def _action_identity_dimensions(metadata: dict) -> dict[str, str]:
 def _action_identities(action: dict) -> set[str]:
     """Stable identities used to suppress stale duplicate candidate actions."""
     metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    if metadata.get("dedupe_retired") is True:
+        return set()
     identities: set[str] = set()
     finding_id = str(metadata.get("finding_id") or "").strip().lower()
     if finding_id:
@@ -864,6 +869,70 @@ def _action_identities(action: dict) -> set[str]:
     return identities
 
 
+def _candidate_dedupe_key(action: dict) -> str:
+    """Use finding/endpoint identity instead of candidate prose."""
+    if str(action.get("type") or "") != "candidate-evidence-gap":
+        return ""
+    if str(action.get("status") or "queued") not in ACTIVE_STATUSES:
+        return ""
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    finding_id = str(metadata.get("finding_id") or "").strip().lower()
+    if finding_id:
+        return f"candidate-evidence-gap finding:{finding_id}"
+    identities = sorted(
+        identity
+        for identity in _action_identities(action)
+        if not identity.startswith("finding:")
+    )
+    return f"candidate-evidence-gap {identities[0]}" if identities else ""
+
+
+def _coalesce_candidate_duplicates(queue: dict) -> int:
+    """Retire historical active candidate duplicates without deleting evidence."""
+    owners: dict[str, dict] = {}
+    retired = 0
+
+    def rank(item: dict) -> tuple[int, str]:
+        status = str(item.get("status") or "queued")
+        return ({"running": 0, "candidate": 1, "queued": 2}.get(status, 3), str(item.get("id") or ""))
+
+    def retire(item: dict, owner: dict) -> None:
+        nonlocal retired
+        metadata = item.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            item["metadata"] = metadata
+        metadata["dedupe_retired"] = True
+        metadata["dedupe_kept_action_id"] = str(owner.get("id") or "")
+        item["status"] = "n/a"
+        item["dedupe_key"] = f"candidate-evidence-gap-retired-{item.get('id') or retired}"
+        item["result"] = (
+            "Retired duplicate candidate projection; kept action "
+            f"{owner.get('id') or '-'} as the active finding lane."
+        )
+        item["updated_at"] = now_utc()
+        retired += 1
+
+    for item in queue.get("actions", []):
+        if not isinstance(item, dict):
+            continue
+        key = _candidate_dedupe_key(item)
+        if not key:
+            continue
+        owner = owners.get(key)
+        if owner is None:
+            owners[key] = item
+            continue
+        if owner is item:
+            continue
+        if rank(item) < rank(owner):
+            retire(owner, item)
+            owners[key] = item
+        else:
+            retire(item, owner)
+    return retired
+
+
 def _knowledge_signal_identity(action: dict) -> str:
     """Return the stable identity used only by knowledge-signal reviews."""
     if str(action.get("type") or "") != "knowledge-signal-review":
@@ -885,6 +954,9 @@ def _is_runner_only_validated(action: dict) -> bool:
 
 
 def _is_final_action(action: dict) -> bool:
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    if metadata.get("dedupe_retired") is True:
+        return False
     status = str(action.get("status") or "")
     return status in FINAL_STATUSES and not _is_runner_only_validated(action)
 
@@ -1281,15 +1353,17 @@ def _checkpoint_item_to_action(target: str, item: dict) -> dict:
 
 
 def upsert_actions(queue: dict, actions: list[dict]) -> dict:
-    existing_by_key = {
-        str(item.get("dedupe_key") or _dedupe_key(item)): item
-        for item in queue.get("actions", [])
-        if isinstance(item, dict)
-    }
-    stats = {"added": 0, "updated": 0, "skipped_final": 0}
+    retired_duplicates = _coalesce_candidate_duplicates(queue)
+    existing_by_key: dict[str, dict] = {}
+    for item in queue.get("actions", []):
+        if not isinstance(item, dict):
+            continue
+        key = _candidate_dedupe_key(item) or str(item.get("dedupe_key") or _dedupe_key(item))
+        existing_by_key[key] = item
+    stats = {"added": 0, "updated": retired_duplicates, "skipped_final": 0}
 
     for action in actions:
-        key = str(action.get("dedupe_key") or _dedupe_key(action))
+        key = _candidate_dedupe_key(action) or str(action.get("dedupe_key") or _dedupe_key(action))
         if not key:
             continue
         existing = existing_by_key.get(key)
@@ -1343,9 +1417,14 @@ def upsert_actions(queue: dict, actions: list[dict]) -> dict:
                 metadata = existing.setdefault("metadata", {})
                 if isinstance(metadata, dict):
                     metadata.update({k: v for k, v in action["metadata"].items() if k not in metadata})
+            # Candidate projections may have matched by stable finding/endpoint
+            # identity even though their presentation-specific dedupe keys differ.
+            # Store the latest key so the next replay is key-idempotent too.
+            existing["dedupe_key"] = key
             if _semantic_action(existing) != before:
                 existing["updated_at"] = now_utc()
                 stats["updated"] += 1
+            existing_by_key[key] = existing
             continue
 
         action["id"] = _next_id(queue.setdefault("actions", []))
@@ -1556,7 +1635,7 @@ def ingest_checkpoint(repo_root: Path | str, target: str, *, checkpoint: dict | 
         runtime_wait_projection = current_runtime_wait in {"wait_recon", "wait_scan"} or str(
             checkpoint.get("decision") or checkpoint.get("next_action") or ""
         ) in {"wait_recon", "wait_scan"}
-        stats = {"added": 0, "updated": 0, "skipped_final": 0}
+        stats = {"added": 0, "updated": _coalesce_candidate_duplicates(queue), "skipped_final": 0}
         for action in actions:
             result = (
                 upsert_generated_action(queue, action)

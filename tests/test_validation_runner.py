@@ -13,6 +13,7 @@ import pytest
 import finding_index
 import target_case_state
 import validation_runner
+from action_queue import ingest_checkpoint, load_queue, save_queue
 from evidence_ledger import ledger_path
 from identity_contract import build_closure_cell
 from tools.auth_session import AuthSession
@@ -677,6 +678,106 @@ def test_authz_role_replay_candidate_reopens_previous_tested_queue_action(monkey
     assert queue["actions"][0]["metadata"]["runner"] == "authz_role_replay"
     assert "policy/role expectation" in " ".join(queue["actions"][0]["metadata"]["missing_evidence"])
     assert summary["sync"]["action_queue"]["candidate_followup"]["patched"] is True
+
+
+def test_candidate_followup_reingest_is_idempotent_across_runner_and_checkpoint(tmp_path):
+    target = "https://target.test"
+    url = "https://target.test/rest/admin/application-configuration"
+    original = {
+        "id": "A1",
+        "priority": 70,
+        "type": "surface-review",
+        "status": "ready",
+        "action": f"Review surface candidate {url}: validate exposure evidence.",
+        "command_hint": "capture baseline",
+        "source": "checkpoint",
+        "source_id": "A1",
+        "metadata": {
+            "url": url,
+            "endpoint": "/rest/admin/application-configuration",
+        },
+    }
+    ingest_checkpoint(tmp_path, target, checkpoint={"next_action_queue": [original]})
+    queue = load_queue(tmp_path, target)
+    queue["actions"][0]["status"] = "candidate"
+
+    summary = {
+        "finding_id": "exposure_f0731e9e75",
+        "url": url,
+        "summary_path": "evidence/target.test/summary.json",
+        "lane": "authz_public_exposure",
+        "evidence_rubric": {
+            "status": "candidate",
+            "missing_labels": ["policy/role expectation"],
+        },
+    }
+    patched = validation_runner._patch_candidate_queue_followup_in_queue(
+        queue,
+        action_id="AQ-0001",
+        summary=summary,
+    )
+    assert patched["patched"] is True
+    duplicate = {
+        **queue["actions"][0],
+        "id": "AQ-LEGACY-DUP",
+        "dedupe_key": "legacy-candidate-gap",
+        "metadata": dict(queue["actions"][0]["metadata"]),
+    }
+    queue["actions"].append(duplicate)
+    save_queue(tmp_path, target, queue)
+
+    candidate = validation_runner._candidate_queue_followup(summary)
+    candidate.update(
+        {
+            "id": "A9",
+            "priority": 70,
+            "status": "ready",
+            "source": "checkpoint",
+            "source_id": "A9",
+        }
+    )
+    validation = {
+        "id": "A10",
+        "priority": 100,
+        "type": "validation",
+        "status": "ready",
+        "action": f"Run /validate for finding {summary['finding_id']} on {url}.",
+        "command_hint": "/validate",
+        "source": "checkpoint",
+        "source_id": "A10",
+        "metadata": {"finding_id": summary["finding_id"]},
+    }
+
+    first = ingest_checkpoint(
+        tmp_path,
+        target,
+        checkpoint={"next_action_queue": [candidate, validation]},
+    )
+    second = ingest_checkpoint(
+        tmp_path,
+        target,
+        checkpoint={"next_action_queue": [candidate, validation]},
+    )
+    actions = load_queue(tmp_path, target)["actions"]
+    active_candidates = [
+        item
+        for item in actions
+        if item.get("type") == "candidate-evidence-gap"
+        and item.get("status") in {"queued", "candidate", "running"}
+    ]
+    active_validations = [
+        item
+        for item in actions
+        if item.get("type") == "validation"
+        and item.get("status") in {"queued", "candidate", "running"}
+    ]
+
+    assert first["stats"]["added"] == 1
+    assert second["stats"]["added"] == 0
+    assert len(active_candidates) == 1
+    assert active_candidates[0]["id"] == "AQ-0001"
+    assert [item for item in actions if item.get("id") == "AQ-LEGACY-DUP"][0]["status"] == "n/a"
+    assert len(active_validations) == 1
 
 
 def test_runner_queue_sync_prefers_exact_finding_id_over_legacy_url(tmp_path):

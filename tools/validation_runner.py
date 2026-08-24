@@ -37,6 +37,7 @@ try:
     from tools.auth_session import AuthSession, add_cli_args, session_from_args
     from tools.action_queue import (
         ACTIVE_STATUSES,
+        _dedupe_key,
         _resolve_action_in_queue,
         _target_owned_evidence_ref,
         _validate_observed_difference,
@@ -70,6 +71,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from auth_session import AuthSession, add_cli_args, session_from_args  # type: ignore
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES,
+        _dedupe_key,
         _resolve_action_in_queue,
         _target_owned_evidence_ref,
         _validate_observed_difference,
@@ -941,6 +943,7 @@ def _patch_candidate_queue_followup_in_queue(
         metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
         metadata.update(followup["metadata"])
         action["metadata"] = metadata
+        action["dedupe_key"] = _dedupe_key(action)
         patched = True
         break
     if not patched:
