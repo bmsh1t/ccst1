@@ -59,6 +59,23 @@ unknown closure is `STATUS: ERROR` after terminal cleanup.
 For `status=started|resumed`, treat `round_progress` as authoritative. Resume
 any lane whose heartbeat is still `status=started` before selecting new work.
 
+## Command Execution Contract
+
+Every `Bash` invocation receives one shell command string, never a JSON/object
+value. Run machine-readable commands independently and inspect the exit status
+before consuming output. A command declared `--json` is usable only when it
+returns zero, non-empty stdout containing exactly one JSON object; do not pipe a
+failed, empty, mixed-log, malformed, or non-object response into `jq`, Python, or
+the next owner. Record the bounded command error as `blocked`/`partial` (or emit
+`STATUS: ERROR` at the wrapper boundary) and preserve the lane for recovery.
+
+Unknown AI families such as `Infra` may remain in hypotheses, Case State, and
+Action Queue metadata. They are advisory until a canonical owner validates the
+family and writes complete evidence; an unknown or incomplete family cannot mark
+a canonical Coverage cell terminal or satisfy Closure. Only canonical owners may
+write Matrix terminal state or satisfy Closure; advisory families must not be
+silently renamed to another family.
+
 ## One Canonical Round
 
 read and obey `commands/autopilot.md` as the sole controller contract. Do not

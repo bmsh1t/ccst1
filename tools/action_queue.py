@@ -766,12 +766,17 @@ def _locatable_evidence_ref(repo_root: Path | str, result: str) -> str:
 
 def _dedupe_key(action: dict) -> str:
     metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    action_text = str(action.get("action", ""))
+    evidence_text = str(action.get("evidence", ""))
+    if str(action.get("type") or "") == "coverage-gap":
+        action_text = re.sub(r"\s+Family projection:.*$", "", action_text, flags=re.I)
+        evidence_text = re.sub(r"\s+Family projection:.*$", "", evidence_text, flags=re.I)
     parts = [
         action.get("type", ""),
         action.get("evidence_type", ""),
-        action.get("evidence", ""),
+        evidence_text,
         action.get("next_question", ""),
-        action.get("action", ""),
+        action_text,
         action.get("command_hint", ""),
         metadata.get("generation", ""),
         metadata.get("endpoint", ""),
@@ -784,6 +789,17 @@ def _dedupe_key(action: dict) -> str:
     ]
     raw = " ".join(_compact_text(part, limit=300).lower() for part in parts if part)
     return re.sub(r"[^a-z0-9:/?&._=-]+", " ", raw).strip()
+
+
+def _coverage_family_projection(action: dict) -> str:
+    if str(action.get("type") or "") != "coverage-gap":
+        return ""
+    match = re.search(
+        r"\s+Family projection:.*$",
+        str(action.get("action") or ""),
+        flags=re.I,
+    )
+    return match.group(0) if match else ""
 
 
 def _normalise_identity_endpoint(value: str) -> str:
@@ -845,6 +861,14 @@ def _action_identities(action: dict) -> set[str]:
         # new, dimensioned lanes supersede one another.
         identities.add(f"endpoint:{endpoint}")
     return identities
+
+
+def _knowledge_signal_identity(action: dict) -> str:
+    """Return the stable identity used only by knowledge-signal reviews."""
+    if str(action.get("type") or "") != "knowledge-signal-review":
+        return ""
+    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    return str(metadata.get("signal_identity") or "").strip()
 
 
 def _is_runner_only_validated(action: dict) -> bool:
@@ -1296,6 +1320,22 @@ def upsert_actions(queue: dict, actions: list[dict]) -> dict:
                 # checkpoint 是可重复生成的投影；当上游风险判定收窄时，允许清掉
                 # 旧队列里的误报 red-line 标记，避免“actor/role”类文案长期限制执行。
                 existing["redline_required"] = bool(action.get("redline_required"))
+                if (
+                    str(existing.get("status") or "") == "queued"
+                    and str(action.get("type") or "") == "coverage-gap"
+                    and _coverage_family_projection(existing) != _coverage_family_projection(action)
+                ):
+                    for field in ("action", "evidence", "next_question"):
+                        if field in action:
+                            existing[field] = action[field]
+                    existing_metadata = existing.setdefault("metadata", {})
+                    incoming_metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+                    if isinstance(existing_metadata, dict):
+                        for field in ("family_key", "family_projection", "family_size", "family_members"):
+                            if field in incoming_metadata:
+                                existing_metadata[field] = copy.deepcopy(incoming_metadata[field])
+                            else:
+                                existing_metadata.pop(field, None)
             else:
                 existing["redline_required"] = bool(existing.get("redline_required") or action.get("redline_required"))
             if isinstance(action.get("metadata"), dict):
@@ -1325,6 +1365,7 @@ def upsert_generated_action(queue: dict, action: dict) -> dict:
     source_id = str(action.get("source_id") or "")
     metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
     generation = str(metadata.get("generation") or "")
+    signal_identity = _knowledge_signal_identity(action)
     if not source or not source_id or not generation:
         return upsert_actions(queue, [action])
 
@@ -1341,10 +1382,11 @@ def upsert_generated_action(queue: dict, action: dict) -> dict:
             if isinstance(existing.get("metadata"), dict)
             else {}
         )
-        if (
-            _is_final_action(existing)
-            and str(existing_metadata.get("generation") or "") == generation
-        ):
+        same_generation = str(existing_metadata.get("generation") or "") == generation
+        same_signal = bool(signal_identity) and (
+            _knowledge_signal_identity(existing) == signal_identity
+        )
+        if _is_final_action(existing) and (same_generation or same_signal):
             return {"added": 0, "updated": 0, "skipped_final": 1}
 
     queued = next(

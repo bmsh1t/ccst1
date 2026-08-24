@@ -112,6 +112,19 @@ def test_terminal_precheck_is_state_only_and_precedes_target_work():
         assert active_path not in precheck
 
 
+def test_round_command_execution_and_advisory_family_contract_is_explicit():
+    command = " ".join(_read("commands/autopilot-round.md").split())
+
+    assert "Every `Bash` invocation receives one shell command string, never a JSON/object value" in command
+    assert "returns zero, non-empty stdout containing exactly one JSON object" in command
+    assert "do not pipe a failed, empty, mixed-log, malformed, or non-object response" in command
+    assert "Record the bounded command error as `blocked`/`partial`" in command
+    assert "Unknown AI families such as `Infra` may remain in hypotheses, Case State, and Action Queue metadata" in command
+    assert "cannot mark a canonical Coverage cell terminal or satisfy Closure" in command
+    assert "Only canonical owners may write Matrix terminal state or satisfy Closure" in command
+    assert "must not be silently renamed" in command
+
+
 def test_round_end_uses_explicit_loop_guard_and_owner_settle():
     command = _read("commands/autopilot-round.md")
     normalized = " ".join(command.split())

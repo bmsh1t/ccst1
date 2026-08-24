@@ -41,6 +41,7 @@ try:
         _action_identities as action_queue_action_identities,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
+        _knowledge_signal_identity as action_queue_knowledge_signal_identity,
         _target_owned_nonempty_evidence_ref as action_queue_target_owned_nonempty_evidence_ref,
         _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
         ingest_checkpoint as ingest_action_queue_checkpoint,
@@ -50,7 +51,7 @@ try:
     )
     from tools.autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint
     from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
+    from tools.coverage_matrix import _route_template, actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
@@ -81,6 +82,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         _action_identities as action_queue_action_identities,
         _checkpoint_item_to_action as action_queue_checkpoint_item_to_action,
         _dedupe_key as action_queue_dedupe_key,
+        _knowledge_signal_identity as action_queue_knowledge_signal_identity,
         _target_owned_nonempty_evidence_ref as action_queue_target_owned_nonempty_evidence_ref,
         _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
         ingest_checkpoint as ingest_action_queue_checkpoint,
@@ -90,7 +92,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     )
     from autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint  # type: ignore
     from context_pack import build_context_pack  # type: ignore
-    from coverage_matrix import actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
+    from coverage_matrix import _route_template, actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
@@ -2355,20 +2357,123 @@ def _is_parent_closure_gap(gap: dict, tested_endpoints: set[str]) -> bool:
     return any(_is_parent_endpoint(endpoint, tested) for tested in tested_endpoints)
 
 
+def _coverage_family_shape(endpoint: str) -> tuple[str, str]:
+    path = _normalise_endpoint_path(endpoint)
+    if not path:
+        return "", ""
+    parts = [part for part in path.strip("/").split("/") if part]
+    template_parts = [
+        part for part in _route_template(path).strip("/").split("/") if part
+    ]
+    shape_parts: list[str] = []
+    prefix_parts: list[str] = []
+    dynamic_seen = False
+    for index, part in enumerate(parts):
+        template_part = template_parts[index] if index < len(template_parts) else part
+        # Route discovery often emits tokens such as ``role-0`` that are
+        # dynamic in practice but not normalized by the canonical template.
+        segment_dynamic = template_part.startswith("{") or bool(
+            re.search(r"(?:^|[-_])\d+$", part)
+        )
+        if segment_dynamic:
+            shape_parts.append("{dynamic}")
+            dynamic_seen = True
+            continue
+        if dynamic_seen:
+            # Keep post-identifier resource names in the family key; two
+            # different child resources must not collapse into one sample.
+            shape_parts.append(part.casefold())
+        else:
+            shape_parts.append("{static}")
+            prefix_parts.append(part.casefold())
+
+    if dynamic_seen:
+        # A path with no stable prefix is too ambiguous for structural merging.
+        if not prefix_parts:
+            return "/".join(shape_parts), ""
+    else:
+        # For static endpoint leaves, preserve the existing resource-parent
+        # grouping (for example /api/orders/list and /api/orders/export).
+        prefix_parts = [part.casefold() for part in parts[:2]]
+    return "/".join(shape_parts), "/" + "/".join(prefix_parts)
+
+
+def _coverage_family_key(gap: dict, template_count: dict[str, int]) -> tuple:
+    endpoint = str(gap.get("endpoint") or "").strip()
+    vuln_class = str(gap.get("vuln_class") or "").strip().casefold()
+    reason = re.sub(r"\s+", " ", str(gap.get("relevance_reason") or "")).strip().casefold()
+    template = _route_template(endpoint)
+    if template_count.get(template, 0) > 1:
+        return ("route-template", vuln_class, reason, template)
+    shape, prefix = _coverage_family_shape(endpoint)
+    if not vuln_class or not reason or not shape or not prefix:
+        return ()
+    return ("structural", vuln_class, reason, shape, prefix)
+
+
+_STRUCTURAL_COVERAGE_FAMILY_MIN_MEMBERS = 3
+
+
 def _checkpoint_coverage_gaps(coverage_gaps: list[dict], matrix: dict, limit: int = 2) -> list[dict]:
     """Select coverage gaps for the immediate checkpoint queue.
 
     Coverage itself keeps all untested cells.  The execution queue is stricter:
     it skips parent-only Authz closure gaps that are already represented by a
-    validated child endpoint, preventing noisy loops while preserving other
-    high-signal gaps for Claude to reason over.
+    validated child endpoint, and emits one representative for an existing
+    route-template or high-volume structural family. This prevents noisy loops
+    while preserving other high-signal gaps for Claude to reason over. The
+    ``_projection_family`` field is advisory queue metadata; it never mutates a
+    sibling Matrix cell or changes exact Action Queue identity.
     """
     tested_endpoints = _tested_finding_endpoints(matrix)
-    selected: list[dict] = []
+    eligible: list[dict] = []
     for gap in _actionable_coverage_gaps(coverage_gaps):
         if _is_parent_closure_gap(gap, tested_endpoints):
             continue
-        selected.append(gap)
+        eligible.append(gap)
+
+    template_count: dict[str, int] = {}
+    for gap in eligible:
+        template = _route_template(str(gap.get("endpoint") or "").strip())
+        template_count[template] = template_count.get(template, 0) + 1
+
+    groups: dict[tuple, list[dict]] = {}
+    order: list[tuple] = []
+    for index, gap in enumerate(eligible):
+        family_key = _coverage_family_key(gap, template_count)
+        key = family_key or ("single", index)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(gap)
+
+    selected: list[dict] = []
+    for key in order:
+        members = groups[key]
+        if (
+            key[0] == "structural"
+            and len(members) < _STRUCTURAL_COVERAGE_FAMILY_MIN_MEMBERS
+        ):
+            for member in members:
+                selected.append(dict(member))
+                if len(selected) >= limit:
+                    return selected
+            continue
+        representative = dict(members[0])
+        if len(members) > 1 and key[0] in {"route-template", "structural"}:
+            endpoints = [
+                str(item.get("endpoint") or "").strip()
+                for item in members
+                if str(item.get("endpoint") or "").strip()
+            ]
+            representative["_projection_family"] = {
+                "key": ":".join(str(value) for value in key),
+                "kind": key[0],
+                "size": len(members),
+                "template": _route_template(endpoints[0]) if endpoints else "",
+                "members": endpoints[:5],
+            }
+        selected.append(representative)
         if len(selected) >= limit:
             break
     return selected
@@ -2568,16 +2673,34 @@ def _next_proposals(
             f", coverage_endpoint={coverage_endpoint}"
             if endpoint != coverage_endpoint else ""
         )
+        family = gap.get("_projection_family") if isinstance(gap.get("_projection_family"), dict) else {}
+        family_suffix = ""
+        if family:
+            family_members = ",".join(
+                str(value).strip()
+                for value in family.get("members") or []
+                if str(value).strip()
+            )
+            family_suffix = (
+                " Family projection: key={key}; kind={kind}; size={size}; "
+                "samples={members}.".format(
+                    key=family.get("key", "family"),
+                    kind=family.get("kind", "route-template"),
+                    size=family.get("size", 0),
+                    members=family_members or coverage_endpoint,
+                )
+            )
         proposals.append(
             "Cover high-value matrix gap: {endpoint} x {vuln_class} "
             "(weight={weight}{coverage_suffix}{relevance}).{validation_suffix} If concrete side-effect risk appears, mark blocked "
-            "and use low-risk evidence instead.".format(
+            "and use low-risk evidence instead.{family_suffix}".format(
                 endpoint=endpoint,
                 vuln_class=gap.get("vuln_class", ""),
                 weight=gap.get("weight", ""),
                 coverage_suffix=coverage_suffix,
                 relevance=relevance,
                 validation_suffix=validation_suffix,
+                family_suffix=family_suffix,
             )
         )
     for gap in _actionable_actor_gaps(evidence_summary, case_state)[:3]:
@@ -2911,7 +3034,9 @@ def _extract_action_metadata(text: str) -> dict:
         return metadata
 
     validation_match = re.search(
-        r"Validation path:\s+(?P<path>.*?)(?:\s+If red-line|\s+Stop condition:|$)",
+        r"Validation path:\s+(?P<path>.*?)(?:\s+If red-line|"
+        r"\s+If concrete side-effect|\s+Family projection:|"
+        r"\s+Stop condition:|$)",
         value,
         re.I,
     )
@@ -2937,6 +3062,23 @@ def _extract_action_metadata(text: str) -> dict:
             metadata["relevance_reason"] = match.group("reason").strip()
         if validation_match:
             metadata["validation_path"] = validation_match.group("path").strip()
+        family_match = re.search(
+            r"Family projection:\s+key=(?P<key>.*?);\s+kind=(?P<kind>[^;]+);"
+            r"\s+size=(?P<size>\d+);\s+samples=(?P<members>.*?)\.\s*$",
+            value,
+            re.I,
+        )
+        if family_match:
+            metadata.update({
+                "family_key": family_match.group("key").strip(),
+                "family_projection": family_match.group("kind").strip(),
+                "family_size": int(family_match.group("size")),
+                "family_members": [
+                    part.strip()
+                    for part in family_match.group("members").split(",")
+                    if part.strip()
+                ],
+            })
         return metadata
 
     match = re.search(
@@ -3365,6 +3507,32 @@ def _attach_activation_context(
     return actions
 
 
+_VOLATILE_KNOWLEDGE_ANCHOR_PREFIXES = (
+    "surface",
+    "workflow lead",
+    "coverage gap",
+    "coverage_",
+    "ledger",
+    "actor gap",
+)
+
+
+def _stable_knowledge_anchors(values: object) -> list[str]:
+    """Keep evidence-backed anchors while dropping rotating projections."""
+    if not isinstance(values, list):
+        return []
+    stable: set[str] = set()
+    for value in values:
+        anchor = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not anchor:
+            continue
+        lowered = anchor.casefold()
+        if lowered.startswith(_VOLATILE_KNOWLEDGE_ANCHOR_PREFIXES):
+            continue
+        stable.add(lowered[:500])
+    return sorted(stable)
+
+
 def _knowledge_signal_review_item(context: dict, actions: list[dict], target: str) -> dict:
     """Keep specific recalled cards visible when no surviving action carries them."""
     represented: set[str] = set()
@@ -3443,6 +3611,28 @@ def _knowledge_signal_review_item(context: dict, actions: list[dict], target: st
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+    signal_recalls = [
+        {
+            "file": item["file"],
+            "id": item["id"],
+            "status": item["status"],
+        }
+        for item in ordered
+    ]
+    signal_identity = hashlib.sha256(
+        json.dumps(
+            {
+                "target": canonical_target_value(target),
+                "recall": signal_recalls,
+                "evidence_anchors": _stable_knowledge_anchors(
+                    context.get("evidence_anchors")
+                ),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     visible = [
         "{id} [{status}: {reason}]".format(
             id=item["id"] or Path(item["file"]).stem,
@@ -3473,6 +3663,7 @@ def _knowledge_signal_review_item(context: dict, actions: list[dict], target: st
         "source_id": "unrepresented-signals",
         "metadata": {
             "generation": generation,
+            "signal_identity": signal_identity,
             "knowledge_refs": [item["file"] for item in ordered],
             "knowledge_card_recall": ordered,
         },
@@ -3642,12 +3833,16 @@ def _filter_final_action_queue_items(
         and is_final_for_checkpoint(action)
     }
     final_identities: set[str] = set()
+    final_signal_identities: set[str] = set()
     for action in existing.get("actions", []):
         if not isinstance(action, dict):
             continue
         if not is_final_for_checkpoint(action):
             continue
         final_identities.update(action_identities(action))
+        signal_identity = action_queue_knowledge_signal_identity(action)
+        if signal_identity:
+            final_signal_identities.add(signal_identity)
 
     active_candidate_by_key = {
         str(action.get("dedupe_key") or action_queue_dedupe_key(action)): from_existing_action(action)
@@ -3657,7 +3852,7 @@ def _filter_final_action_queue_items(
         and str(action.get("type") or "") == "candidate-evidence-gap"
         and not (action_identities(action) & final_identities)
     }
-    if not final_keys and not active_candidate_by_key:
+    if not final_keys and not final_signal_identities and not active_candidate_by_key:
         return items
 
     filtered: list[dict] = []
@@ -3668,6 +3863,9 @@ def _filter_final_action_queue_items(
             key = str(queue_shape.get("dedupe_key") or action_queue_dedupe_key(queue_shape))
         except Exception:  # pragma: no cover - keep item if matching fails
             filtered.append(item)
+            continue
+        signal_identity = action_queue_knowledge_signal_identity(queue_shape)
+        if signal_identity and signal_identity in final_signal_identities:
             continue
         if key not in final_keys:
             if key in active_candidate_by_key:

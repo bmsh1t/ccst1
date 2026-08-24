@@ -26,10 +26,12 @@ from checkpoint import (
     _bounded_next_proposals,
     _actor_gap_enrichment_proposal,
     _capability_chain_review_item,
+    _checkpoint_coverage_gaps,
     _coverage_gap_validation_path,
     _decision_for_action,
     _dead_end_proposals,
     _dedupe_artifact_category_items,
+    _extract_action_metadata,
     _filter_final_action_queue_items,
     _lead_proposals,
     _ledger_candidate_proposals,
@@ -3722,6 +3724,193 @@ def test_knowledge_signal_review_terminal_generation_suppression_and_reopen(tmp_
     reopened = _knowledge_signal_review_item(changed, [], "target.com")
     assert reopened["metadata"]["generation"] != first["metadata"]["generation"]
     assert _filter_final_action_queue_items(tmp_path, "target.com", [reopened]) == [reopened]
+
+
+def test_knowledge_signal_volatile_projection_changes_do_not_reopen(tmp_path):
+    context = {
+        "knowledge_card_recall": [{
+            "file": "knowledge/cards/api-testing-workflow.md",
+            "id": "api-testing-workflow",
+            "status": "selected",
+            "rank": 1,
+            "reason": "specific routing signal matched; selected within card budget",
+        }],
+        "evidence_anchors": [
+            "Surface review https://TARGET/job/a score_hint=2",
+            "Coverage gap: /job/a x Path weight=3.0",
+        ],
+        "hypothesis_seeds": ["compare the observed request shape"],
+    }
+    first = _knowledge_signal_review_item(context, [], "target.com")
+    ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [first]})
+    action = next(
+        item for item in load_queue(tmp_path, "target.com")["actions"]
+        if item["type"] == "knowledge-signal-review"
+    )
+    resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=action["id"],
+        status="dead-end",
+        result="The recalled signal was already dispositioned.",
+    )
+
+    changed = {
+        **context,
+        "knowledge_card_recall": [{
+            **context["knowledge_card_recall"][0],
+            "rank": 7,
+            "reason": "context evidence signal matched; deferred by card budget",
+        }],
+        "evidence_anchors": [
+            "Surface review https://TARGET/job/b score_hint=1",
+            "Coverage gap: /job/b x Path weight=3.0",
+        ],
+    }
+    reopened = _knowledge_signal_review_item(changed, [], "target.com")
+
+    assert reopened["metadata"]["signal_identity"] == first["metadata"]["signal_identity"]
+    assert reopened["metadata"]["generation"] != first["metadata"]["generation"]
+    assert _filter_final_action_queue_items(tmp_path, "target.com", [reopened]) == []
+    ingest_checkpoint(tmp_path, "target.com", checkpoint={"next_action_queue": [reopened]})
+    assert len(load_queue(tmp_path, "target.com")["actions"]) == 1
+
+
+def test_checkpoint_coverage_projection_bounds_large_family_without_closing_siblings():
+    family_gaps = [
+        {
+            "endpoint": f"/en/job/us/role-{index}/23251/{1000 + index}",
+            "vuln_class": "Path",
+            "weight": 3.5,
+            "relevance_score": 14,
+            "relevance_reason": "file/path selector; file download/read path",
+        }
+        for index in range(3)
+    ]
+    other = {
+        "endpoint": "/download/export-report",
+        "vuln_class": "Path",
+        "weight": 3.5,
+        "relevance_score": 12,
+        "relevance_reason": "file/path selector; file download/read path",
+    }
+    matrix = {
+        "endpoints": [
+            {
+                "endpoint": item["endpoint"],
+                "cells": {"Path": {"status": "untested"}},
+            }
+            for item in [*family_gaps, other]
+        ]
+    }
+
+    selected = _checkpoint_coverage_gaps([*family_gaps, other], matrix, limit=8)
+
+    assert len(selected) == 2
+    family_selected = [item for item in selected if "/en/job/" in item["endpoint"]]
+    assert len(family_selected) == 1
+    assert family_selected[0]["_projection_family"]["size"] == 3
+    assert any(item["endpoint"] == other["endpoint"] for item in selected)
+    assert all(
+        endpoint["cells"]["Path"]["status"] == "untested"
+        for endpoint in matrix["endpoints"]
+    )
+
+    proposal = (
+        "Cover high-value matrix gap: {endpoint} x Path (weight=3.5, relevance=14: "
+        "file/path selector; file download/read path). Family projection: "
+        "key=structural:path:file/path selector; kind=structural; size=3; "
+        "samples={members}."
+    ).format(
+        endpoint=family_selected[0]["endpoint"],
+        members=",".join(family_selected[0]["_projection_family"]["members"]),
+    )
+    metadata = _extract_action_metadata(proposal)
+    assert metadata["family_projection"] == "structural"
+    assert metadata["family_size"] == 3
+    assert len(metadata["family_members"]) == 3
+
+
+def test_checkpoint_does_not_merge_distinct_dynamic_resources():
+    gaps = [
+        {
+            "endpoint": f"/api/v1/{resource}/{index}",
+            "vuln_class": "Path",
+            "weight": 3.5,
+            "relevance_score": 14,
+            "relevance_reason": "file/path selector; file download/read path",
+        }
+        for resource, index in (("users", 101), ("orders", 202), ("admin", 303))
+    ]
+    matrix = {
+        "endpoints": [
+            {
+                "endpoint": item["endpoint"],
+                "cells": {"Path": {"status": "untested"}},
+            }
+            for item in gaps
+        ]
+    }
+
+    selected = _checkpoint_coverage_gaps(gaps, matrix, limit=8)
+
+    assert [item["endpoint"] for item in selected] == [item["endpoint"] for item in gaps]
+    assert all("_projection_family" not in item for item in selected)
+
+
+def test_checkpoint_family_metadata_preserves_delimiters_in_reason_and_paths():
+    proposal = (
+        "Cover high-value matrix gap: /api/orders/list.json x Path "
+        "(weight=3.5, relevance=14: file/path selector; file download/read path). "
+        "Validation path: Capture the exact request. If concrete side-effect risk "
+        "appears, mark blocked and use low-risk evidence instead. "
+        "Family projection: key=structural:path:file/path selector; file download/read "
+        "path:{static}/{static}/{static}:/api/orders; kind=structural; size=3; "
+        "samples=/api/orders/list.json,/api/orders/search.json,/api/orders/export.json."
+    )
+
+    action = _build_next_action_queue([proposal], "target.com")[0]
+
+    assert action["metadata"]["family_key"] == (
+        "structural:path:file/path selector; file download/read path:"
+        "{static}/{static}/{static}:/api/orders"
+    )
+    assert action["metadata"]["family_members"] == [
+        "/api/orders/list.json",
+        "/api/orders/search.json",
+        "/api/orders/export.json",
+    ]
+    assert action["metadata"]["validation_path"] == "Capture the exact request."
+
+
+def test_checkpoint_family_projection_refreshes_queued_action_without_duplicate(tmp_path):
+    def checkpoint_for(size):
+        members = ",".join(
+            f"/api/orders/{name}.json"
+            for name in ("list", "search", "export", "archive")[:size]
+        )
+        action = (
+            "Cover high-value matrix gap: /api/orders/list.json x Path "
+            "(weight=3.5, relevance=14: file/path selector). Validation path: "
+            "Capture the exact request. If concrete side-effect risk appears, "
+            "mark blocked and use low-risk evidence instead. Family projection: "
+            f"key=route-template:path:file/path selector:/api/orders/{{id}}; "
+            f"kind=route-template; size={size}; samples={members}."
+        )
+        return {"next_action_queue": _build_next_action_queue([action], "target.com")}
+
+    first = ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint_for(3))
+    second = ingest_checkpoint(tmp_path, "target.com", checkpoint=checkpoint_for(4))
+    queue = load_queue(tmp_path, "target.com")
+    coverage = next(item for item in queue["actions"] if item["type"] == "coverage-gap")
+
+    assert first["stats"]["added"] == 1
+    assert second["stats"]["added"] == 0
+    assert second["stats"]["updated"] == 1
+    assert len(queue["actions"]) == 1
+    assert coverage["metadata"]["family_size"] == 4
+    assert coverage["metadata"]["family_members"][-1] == "/api/orders/archive.json"
+    assert "size=4" in coverage["action"]
 
 
 @pytest.mark.parametrize("family_status", ["tested", "not_applicable"])
