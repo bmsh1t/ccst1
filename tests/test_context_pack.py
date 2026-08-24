@@ -6,14 +6,17 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 import context_pack as context_pack_module
 from autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint
+from checkpoint import build_checkpoint
 from context_pack import SKILL_CATALOG, SKILL_PATHS, build_context_pack, format_context_pack
 from evidence_ledger import record_entry
 from surface_projection import build_surface_input_manifest, write_surface_projection
 from tools import knowledge_candidates as candidates
 from tools.experience_schema import make_entry_id
+from tools.knowledge_registry import KnowledgeRegistryError
 from tools.target_paths import target_storage_key
 
 
@@ -317,6 +320,74 @@ def test_context_pack_exposes_registry_metadata_for_selected_cards(tmp_path):
     assert caps["knowledge/cards/api-idor.md"]["load"] == "signal-or-default"
     assert caps["knowledge/cards/api-idor.md"]["purpose"] == "validate"
     assert "Knowledge card capabilities:" in format_context_pack(pack)
+
+
+def test_target_registry_remap_reaches_context_pack_checkpoint_and_witness(tmp_path):
+    registry_source = Path(__file__).resolve().parents[1] / "knowledge" / "capabilities.yaml"
+    registry = yaml.safe_load(registry_source.read_text(encoding="utf-8"))
+    custom_card = "knowledge/cards/target-ssti.md"
+    original_card = "knowledge/cards/server-side-template-injection.md"
+    capability = next(
+        item
+        for item in registry["capabilities"]
+        if item.get("id") == "server-side-template-injection"
+    )
+    capability["file"] = custom_card
+    registry_path = tmp_path / "knowledge" / "capabilities.yaml"
+    registry_path.parent.mkdir(parents=True)
+    registry_path.write_text(
+        yaml.safe_dump(registry, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    card_path = tmp_path / custom_card
+    card_path.parent.mkdir(parents=True, exist_ok=True)
+    card_path.write_text("# Target SSTI card\n", encoding="utf-8")
+    _seed_target_memory(tmp_path, "target.com", {})
+    active_path = tmp_path / "memory" / "goals" / "active.json"
+    active = json.loads(active_path.read_text(encoding="utf-8"))
+    active["active_goal"] = "Validate one template rendering boundary"
+    active["current_hypothesis"] = "SSTI template injection render payload family"
+    active_path.write_text(json.dumps(active), encoding="utf-8")
+
+    pack = build_context_pack(
+        tmp_path,
+        target="target.com",
+        focus="ssti template injection render payload family",
+    )
+
+    assert custom_card in pack["knowledge_cards"]
+    assert original_card not in pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
+    assert custom_card in pack["must_read"]
+    assert any(
+        item["file"] == custom_card
+        and item["id"] == "server-side-template-injection"
+        for item in pack["knowledge_card_capabilities"]
+    )
+    assert any(item["file"] == custom_card for item in pack["knowledge_card_recall"])
+    assert any("SSTI 先做模板求值 primitive" in item for item in pack["hypothesis_seeds"])
+    assert any("SSTI 无结果时" in item for item in pack["alternative_angles"])
+    assert "skills/security-arsenal/references/payload-families.md" in _hint_paths(pack)
+
+    checkpoint = build_checkpoint(tmp_path, target="target.com", refresh_coverage=False)
+    witness = json.loads(
+        (tmp_path / "state" / "target.com" / "checkpoint_latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert custom_card in checkpoint["context_pack"]["knowledge_cards"]
+    assert original_card not in checkpoint["context_pack"]["knowledge_cards"]
+    assert witness["context_pack"]["knowledge_cards"] == checkpoint["context_pack"]["knowledge_cards"]
+    assert witness["context_pack"]["reference_hints"] == checkpoint["context_pack"]["reference_hints"]
+
+
+def test_context_pack_does_not_fallback_from_malformed_target_registry(tmp_path):
+    registry_path = tmp_path / "knowledge" / "capabilities.yaml"
+    registry_path.parent.mkdir(parents=True)
+    registry_path.write_text("capabilities: [", encoding="utf-8")
+
+    with pytest.raises(KnowledgeRegistryError, match="YAML 无效"):
+        build_context_pack(tmp_path, target="target.com", focus="api-idor")
 
 
 def test_context_pack_exposes_bounded_historical_patterns_as_advisory(tmp_path):

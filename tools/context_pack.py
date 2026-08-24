@@ -1890,7 +1890,9 @@ def _select_cards_and_deferred(
     repo_root: Path | str = BASE_DIR,
     *,
     registry: dict[str, dict[str, str]] | None = None,
+    card_paths: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str], list[dict[str, object]]]:
+    card_paths = CARD_PATHS if card_paths is None else card_paths
     focus_cards = _cards_from_focus(focus)
     tech_stack = _ranked_tech_stack(ranked)
     node_card_signal = _has_node_card_signal(focus, blob, tech_stack)
@@ -2234,16 +2236,16 @@ def _select_cards_and_deferred(
         else:
             cards = _dedupe((cards[:1] if cards else []) + ["coverage-prompts"])
         preserved_deferred = [name for name in before_fallback if name not in cards]
-    candidate_paths = [CARD_PATHS[name] for name in _dedupe(cards) if name in CARD_PATHS]
+    candidate_paths = [card_paths[name] for name in _dedupe(cards) if name in card_paths]
     selected, deferred = _budget_knowledge_cards(candidate_paths, repo_root, registry=registry)
     fallback_deferred = [
-        CARD_PATHS[name]
+        card_paths[name]
         for name in preserved_deferred
-        if name in CARD_PATHS and CARD_PATHS[name] not in selected + deferred
+        if name in card_paths and card_paths[name] not in selected + deferred
     ]
     deferred.extend(fallback_deferred)
     ranked_paths = _dedupe(
-        [CARD_PATHS[name] for name in ranked_names if name in CARD_PATHS]
+        [card_paths[name] for name in ranked_names if name in card_paths]
         + selected
         + deferred
     )
@@ -2288,8 +2290,19 @@ def _select_cards(
     goal_memory: dict,
     focus: str,
     repo_root: Path | str = BASE_DIR,
+    *,
+    card_paths: dict[str, str] | None = None,
 ) -> list[str]:
-    selected, _, _ = _select_cards_and_deferred(blob, skill, ranked, gaps, goal_memory, focus, repo_root)
+    selected, _, _ = _select_cards_and_deferred(
+        blob,
+        skill,
+        ranked,
+        gaps,
+        goal_memory,
+        focus,
+        repo_root,
+        card_paths=card_paths,
+    )
     return selected
 
 
@@ -2547,20 +2560,27 @@ def _local_intel_hypothesis_seeds(local_intel: dict) -> list[str]:
     return _dedupe(seeds)
 
 
-def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[str]:
+def _hypothesis_seeds(
+    cards: list[str],
+    blob: str,
+    local_intel: dict,
+    *,
+    card_paths: dict[str, str] | None = None,
+) -> list[str]:
+    card_paths = CARD_PATHS if card_paths is None else card_paths
     seeds: list[str] = []
     seeds.extend(_local_intel_hypothesis_seeds(local_intel))
-    if CARD_PATHS.get("odata-query-boundaries") in cards:
+    if card_paths.get("odata-query-boundaries") in cards:
         seeds.extend([
             "OData 先区分 entity、field/projection、predicate/order、navigation 和 batch inner-operation 边界；`$metadata`、operator 可用或 HTTP 200 只算 query signal。",
             "OData 最小验证保持自有对象和身份 baseline，每次只改变一个字段/relation/wrapper；只有受限字段、关联对象或 direct-vs-batch 策略产生稳定数据/状态差异才进入 Candidate。",
         ])
-    if CARD_PATHS.get("ldap-xpath-query-boundaries") in cards:
+    if card_paths.get("ldap-xpath-query-boundaries") in cards:
         seeds.extend([
             "LDAP/XPath 先确认输入位于 search filter、DN、bind username 还是 XPath context；使用合法/明确 false/语法错误 control，不能由单次 500 或 wildcard 结果直接判注入。",
             "区分 Active Directory 与普通 LDAP：AD `unicodePwd` 不可读取；Candidate 必须证明测试账号 session/身份改变或非预期目录对象/属性差异。",
         ])
-    if CARD_PATHS["api-idor"] in cards or re.search(r"\b(idor|tenant|org|accounts|user_id|account_id|order_id)\b", blob, re.I):
+    if card_paths.get("api-idor") in cards or re.search(r"\b(idor|tenant|org|accounts|user_id|account_id|order_id)\b", blob, re.I):
         seeds.extend([
             "对象/组织/租户 ID 是否只在前端约束，服务端是否重新绑定当前身份。",
             "export/download/report 类接口是否可通过 ID 或筛选条件读取其他主体数据。",
@@ -2575,7 +2595,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             )
         if NEXTJS_DATA_RE.search(blob):
             seeds.append("Next.js `/_next/data` / `__NEXT_DATA__` 必须比较 anonymous、owner、peer/cross-tenant 的对象与字段；JSON 200、build metadata 或当前 owner 数据不等于 IDOR。")
-    if CARD_PATHS["auth-access"] in cards:
+    if card_paths.get("auth-access") in cards:
         seeds.extend([
             "同一 endpoint 在匿名、普通用户、低权限成员、管理员之间是否只有 UI 差异而缺少服务端差异。",
             "访问控制要对比 method/path/header 维度：GET vs POST、X-HTTP-Method-Override、X-Original-URL/X-Rewrite-URL、Referer 和直接 API/raw replay；浏览器 fetch 不能设置受限头时不要据此停止。",
@@ -2584,7 +2604,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             seeds.append(
                 "OPA/Cedar 要逐跳对照 PDP 输入与 PEP 实际执行，检查 actor/action/object/tenant 缺失、gateway/backend/worker、policy/cache stale 和 canonicalization；Candidate 必须有具体未授权数据或状态影响。"
             )
-    if CARD_PATHS["auth-hidden-switches"] in cards:
+    if card_paths.get("auth-hidden-switches") in cards:
         seeds.extend([
             "登录接口是否存在 UI 未传但后端读取的隐藏认证参数、模式、来源、渠道、provider 或 feature flag，能切换认证分支。",
             "留意管理员预留特权参数或内部账号分支，例如 isAdmin/admin/source/provider/soap 这类目标相关 selector；它们是联想种子，不是固定字典。",
@@ -2592,89 +2612,89 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
         ])
         if LEGACY_AUTH_SURFACE_RE.search(blob):
             seeds.append("旧 REST/mobile/SOAP/XMLRPC/native auth 只在同一测试账号下比较 MFA、SSO、限速、session、role 策略；端点可达、200/401 或方法列表都不是绕过。")
-    if CARD_PATHS["auth-sso-token-edge-cases"] in cards:
+    if card_paths.get("auth-sso-token-edge-cases") in cards:
         seeds.extend([
             "JWT/OAuth/SAML/SSO 先保存合法流程 baseline，再做 decode、metadata、callback、state/nonce/PKCE、issuer/key source 和账号绑定的单变量差异；JWT key-source 探针要和 claim-only tamper 分离，分别验证 JWK/JKU/KID/alg confusion 是否改变服务端身份/权限。",
             "JWT 签名验证 baseline 要先做 claim-only tamper：只改 sub/role/org 等单个 claim，保留无效签名或 none/alg 差异，观察服务端身份/权限是否实际改变。",
             "token/SSO 候选必须证明服务端身份、角色、租户、session 或 account-linking 边界影响；公开 metadata、可 decode token 或报错差异只算 Lead。",
         ])
-    if CARD_PATHS["auth-credential-recovery-flows"] in cards:
+    if card_paths.get("auth-credential-recovery-flows") in cards:
         seeds.extend([
             "密码重置/账号恢复先建 token->账号->session 绑定模型；检查 hidden username、reset token、邮箱链接、Host/XFH、旧 token 复用和跨账号提交。",
             "用户名枚举、口令/OTP/remember-me 测试不是绝对禁用，但必须有目标依据、低频边界、锁定/限速观察和停止条件；训练资源可完整验证。",
         ])
         if RATE_LIMIT_REGIME_RE.search(blob):
             seeds.append("限速按 hard lockout、explicit throttle、CAPTCHA/step-up、shadow throttle 分类；只用测试账号的有界 known-good before/after control，没有 429 不能推出无限速。")
-    if CARD_PATHS["api-testing-workflow"] in cards:
+    if card_paths.get("api-testing-workflow") in cards:
         seeds.extend([
             "API testing 先把 docs/schema、JS/source、浏览器 XHR、mobile/旧版本和实际请求合并成 endpoint+method+auth matrix；不要只扫 `/api/` 路径。",
             "重点补 object/authz、隐藏/特权参数、mass assignment、content-type/parser、method override、HPP、版本差异和注入 sink；示例参数是候选形态，不是固定字典。",
             "API 参数污染/HPP 先比较 duplicate query/body、JSON 重复 key、分隔符/fragment 截断、后端 URL 构造、content-type parser 和 method override 差异；mass assignment 优先从 schema/JS/XHR 派生 role/isAdmin/plan/status/verified/approved 等高价值字段。",
         ])
-    if CARD_PATHS["business-logic-state-machines"] in cards:
+    if card_paths.get("business-logic-state-machines") in cards:
         seeds.extend([
             "业务逻辑先建状态机 baseline：谁能在什么前置状态下执行哪一步、服务端是否重新计算价格/权限/数量/流程顺序。",
             "重点看客户端可控价格/数量/折扣/角色/邮箱/流程步骤、异常输入、重复提交、双用途 endpoint 和跨步骤参数复用；训练/自有资源内验证，真实高影响状态默认先 dry-run。",
         ])
-    if CARD_PATHS.get("payment-callback-idempotency") in cards:
+    if card_paths.get("payment-callback-idempotency") in cards:
         seeds.extend([
             "支付 callback/webhook 先画 pending->paid/refunded 状态和事件归属，再比较签名覆盖、订单/金额/受益人绑定、幂等键、重试和乱序；200/success 不等于权益已改变。",
             "只在自有/训练订单上做单变量 callback、重试或 idempotency 对照并 read-back；没有 dry-run、回滚或副作用证据时保持 Lead/blocked。",
         ])
-    if CARD_PATHS.get("cicd-trust-boundaries") in cards:
+    if card_paths.get("cicd-trust-boundaries") in cards:
         seeds.extend([
             "CI/CD 按 untrusted input -> workflow context -> runner -> secret/OIDC -> artifact/deploy 画数据流；触发器、checkout ref、权限和环境保护必须逐跳有证据。",
             "配置/日志和 dummy marker 优先于执行未知 workflow；id-token、self-hosted runner 或未固定 action 只是信号，必须证明不可信输入到达高权限下游。",
             "Dependency confusion 只有 public registry 状态、目标构建实际依赖和 resolver public fallback 三项齐全时才是 Candidate；404 单独保持 Lead。",
             "可从 JS/lockfile/build log、Docker/GHCR image layer、SPDX/CycloneDX SBOM 交叉确认 package/version，但仍需独立证明 fallback。",
         ])
-    if CARD_PATHS.get("public-package-artifact-intelligence") in cards:
+    if card_paths.get("public-package-artifact-intelligence") in cards:
         seeds.extend([
             "公开包/镜像先用官方链接、publisher、仓库 metadata 或目标直接引用确认归属；同名包、相似组织名和第三方依赖只算弱信号。",
             "历史发布物只选首版、上一个 major、迁移边界和最新版等代表样本，记录来源、版本、发布时间与 digest/SHA-256；仅解压做静态审查，不安装、执行 lifecycle script 或运行镜像。",
             "公开包版本只形成 Candidate 线索；必须在真实目标直接观测到精确组件/版本后才交给 /intel，静态 secret 命中继续走现有 triage。",
         ])
-    if CARD_PATHS.get("js-runtime-signature-reconstruction") in cards:
+    if card_paths.get("js-runtime-signature-reconstruction") in cards:
         seeds.extend([
             "动态 JS 请求链先固定正常请求、request initiator、脚本 URL/hash 和运行时样本，再按 Observe -> Capture -> Rebuild -> Patch -> DeepDive 收敛；不要先模拟整个浏览器环境。",
             "本地重建每次只补一个已观测的环境缺口，并记录 first divergence 是否前移；稳定 sample I/O 只是下游签名、认证或业务差异验证的输入，不直接构成漏洞结论。",
         ])
-    if CARD_PATHS.get("custom-protocol-state-recovery") in cards:
+    if card_paths.get("custom-protocol-state-recovery") in cards:
         seeds.extend([
             "自定义协议先保存 capture provenance、hash、会话、方向和时序，区分 TCP segmentation/reassembly 与应用帧，再恢复 framing、message dictionary 和状态转换。",
             "只有多份同类/异类消息及 truncated/invalid controls 都能稳定解码，且 replay 动作无副作用时才做最小回放；gRPC/WebSocket 继续交给现有专卡。",
         ])
-    if CARD_PATHS.get("cloud-control-plane-pivots") in cards:
+    if card_paths.get("cloud-control-plane-pivots") in cards:
         seeds.extend([
             "云控制面按入口->身份->权限->单个资源动作->影响分层；metadata、OIDC、service account 或 policy 名称不能替代 caller、资源和动作证据。",
             "先做授权环境 caller identity/describe 或 dry-run；create/update/delete、secret read、跨租户和持久化动作默认 blocked。",
         ])
-    if CARD_PATHS.get("cloud-cognito-identity-pool") in cards:
+    if card_paths.get("cloud-cognito-identity-pool") in cards:
         seeds.extend([
             "Cognito Identity Pool 先区分公开 IdentityPoolId、GetId、临时 STS 凭证、caller role 和实际 IAM action；GetId 200 单独不是漏洞。",
             "只有匿名凭证、role identity、非预期资源权限和具体影响逐跳齐全时才进入 Candidate；凭证值不写入证据。",
         ])
-    if CARD_PATHS.get("grpc-api-boundaries") in cards:
+    if card_paths.get("grpc-api-boundaries") in cards:
         seeds.extend([
             "gRPC 同时记录 HTTP/2 headers/trailers 与 grpc-status：12 只确认 transport，16/7 是 authn/authz，3 是参数可达，0 仍需对象/数据/状态影响。",
             "比较 edge/backend metadata 与 gRPC-Web/gateway/transcoding 的身份、字段和对象授权差异；reflection 只算 schema enabler。",
         ])
-    if CARD_PATHS.get("k8s-control-plane-boundaries") in cards:
+    if card_paths.get("k8s-control-plane-boundaries") in cards:
         seeds.extend([
             "Kubernetes 先区分 API server、kubelet 10255/10250 和代理路径，再用 SelfSubjectRulesReview/AccessReview 确认具体 verb/resource/subresource。",
             "namespace/API 200 或 service-account token 出现不等于 cluster-admin；检查 audience/expiry，并逐跳验证 nodes/proxy 到 kubelet 的权限链。",
         ])
-    if CARD_PATHS.get("dns-email-trust-boundaries") in cards:
+    if card_paths.get("dns-email-trust-boundaries") in cards:
         seeds.extend([
             "DNS/email 先对照权威解析、CNAME/NS/MX、HTTP/TLS 和 SPF/DKIM/DMARC alignment；缺记录、p=none 或 provider 404 本身不是影响。",
             "邮件/身份验证只用自有测试域和账号做单变量 normalization、From/Reply-To、verified email 或 callback 对照，必须证明接管、投递、绑定或业务状态影响。",
         ])
-    if CARD_PATHS["missing-parameter-discovery"] in cards:
+    if card_paths.get("missing-parameter-discovery") in cards:
         seeds.extend([
             "`parameter is null` / `missing parameter` / schema 或 validator 错误只是入口信号；先从目标自身材料构造目标特定参数词表，再低频验证响应形态差异。",
             "隐藏参数命中后只做最小影响验证：状态码、长度、字段集合、空/非空结构和自有/测试对象差异；不批量枚举真实 PII、密码、地址或 token。",
         ])
-    if CARD_PATHS["path-pattern-management-exposure"] in cards:
+    if card_paths.get("path-pattern-management-exposure") in cards:
         seeds.extend([
             "发现类 fuzz 先从目标已有路径、文件名、API 前缀、参数名、子域、静态资源等命名规律生成有界词表，再验证兄弟 surface；不要直接扩大到无边界通用字典。",
             "管理/监控/日志/统计/配置/记录类 surface 优先做只读识别和结构化记录提取；疑似 access key/secret 只记录最小证据与验证计划，不接管云资源或读取真实数据。",
@@ -2683,57 +2703,57 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             seeds.append("已观察 API 路径只取同目标、最多 3 个非根祖先前缀，本轮最多 12 个候选并保留 seed_refs；API 文档优先，management 需要框架证据。")
         if ACTUATOR_MANAGEMENT_RE.search(blob):
             seeds.append("Actuator/Jolokia 路径 200 必须确认 actuator-shaped JSON、endpoint link、heapdump magic 或目标特定管理数据，并排除登录页、Whitelabel、SPA fallback 和统一错误页。")
-    if CARD_PATHS["graphql"] in cards:
+    if card_paths.get("graphql") in cards:
         seeds.extend([
             "GraphQL mutation / global ID / node 查询是否复用 REST 的对象权限缺口。",
         ])
-    if CARD_PATHS["sqli-hidden-surfaces"] in cards:
+    if card_paths.get("sqli-hidden-surfaces") in cards:
         seeds.extend([
             "SQLi 先保留显式查询语义输入 baseline：搜索、筛选、排序、分页、报表、导出和租户范围；再判 query context，字符串值位才用 `'`/`''`，数字用类型/布尔 control，标识符用合法 A/合法 B/无效名称，列表看容器与重复参数，二阶看 store/trigger。",
             "请求元数据 Header 先画 client -> edge/proxy -> application -> store/query，区分代理覆盖、规范化、直接查询和二阶输入；path 优先保持 route shape，并证明合法值、不存在值和扰动仍进入同一 handler。",
             "Sibling 参数按 B baseline -> B+A 原始参数束 -> A整束 `'` 值 vs A整束 `''` 值 -> 二分移除/逐字段隔离 -> query-context control；整束对照只负责发现隐藏分支，分别判断被接收、业务生效、影响查询和可注入，不能从参数生效直接升级 SQLi。",
         ])
-    if CARD_PATHS["nosql-query-injection"] in cards:
+    if card_paths.get("nosql-query-injection") in cards:
         seeds.extend([
             "NoSQL 先判断输入是否进入查询对象、过滤器、JSON parser 或表达式引擎；重点看登录、搜索、筛选、JSON body 和类型混淆。",
             "用合法 baseline 对比单变量 operator/type 差异，例如布尔绕过、数组/对象包裹、regex 形态和错误指纹；不批量枚举真实数据。",
         ])
-    if CARD_PATHS["xxe-xml-parser"] in cards:
+    if card_paths.get("xxe-xml-parser") in cards:
         seeds.extend([
             "XXE 先确认真实 XML 解析面：SOAP/XML API、SAML、SVG、Office 文档、RSS/Atom、导入/转换器和 content-type 兼容路径可能使用不同 parser；即使外层是 form/JSON 参数，也可能被后端组装进 XML 后触发 XInclude。",
             "验证顺序优先 harmless entity / OAST callback / XInclude 差异，再按证据判断 file-read 或 SSRF 影响；不默认批量读取敏感文件。",
             "错误响应本身不是 XXE 证据；只有业务字段或错误消息反射无害 entity、外部 entity 内容，或 OAST 记录到唯一 token 时，才把 parser 行为升级为影响线索。",
         ])
-    if CARD_PATHS["path-traversal-file-read"] in cards:
+    if card_paths.get("path-traversal-file-read") in cards:
         seeds.extend([
             "路径遍历先定位文件选择器：download/view/include/template/image/doc/export/theme/locale/archive 等参数、路径段、文件名和后端别名映射。",
             "用正常文件 baseline 对比 traversal 变体、编码/双编码、斜杠混用、后缀拼接和平台路径差异；命中后优先链到源码/配置/路由发现，不做批量 secret harvesting。",
         ])
-    if CARD_PATHS["ssrf-url-fetch"] in cards:
+    if card_paths.get("ssrf-url-fetch") in cards:
         seeds.extend([
             "URL fetch、webhook、import callback、stock checker、预览/导入等是否存在 server-side fetch；先用合法 allowlisted URL 建 baseline，再比较响应体、状态码、错误和来源差异。",
         ])
         if NEXTJS_IMAGE_RE.search(blob):
             seeds.append("Next.js `/_next/image` 返回 200 只说明 optimizer 响应；用唯一 OAST callback、可解释 upstream 内容差异或单个内部资源证据证明 server-side fetch，400 常是 remotePatterns 正常拒绝。")
-    if CARD_PATHS["ssrf-internal-impact"] in cards:
+    if card_paths.get("ssrf-internal-impact") in cards:
         seeds.extend([
             "SSRF 内部影响只在已证明 server-side fetch 后展开；优先单个明确内部目标的状态级证据，不做内网扫描。",
             "当 SSRF 受 allowlist/local-only 限制时，open redirect / redirect connector 属于 SSRF 链路而不是浏览器跳转结论：先证明本地允许 URL 会被服务端 fetch，再证明 30x 后由服务端访问单个内部目标。",
             "内部 admin/metadata/control-plane 只做最小路径和单账号/单对象影响证明；parser discrepancy、userinfo、fragment、编码和重定向差异是候选形态，不是固定字典。",
             "Blacklist/allowlist SSRF 过滤绕过按 blocked baseline -> loopback/别名 host -> 单/双编码 path -> 状态确认分步验证；3xx/404/400 差异要保存原始请求/响应，内部动作只在测试资源上做单目标最小证明。",
         ])
-    if CARD_PATHS["upload-parser"] in cards:
+    if card_paths.get("upload-parser") in cards:
         seeds.extend([
             "上传、导入、预览、转换是否形成解析器链路，优先验证元数据/预览差异而非破坏性 payload；SVG/Office/XML 类二阶解析要保存上传请求、处理响应和转换/read-back 结果。",
         ])
-    if CARD_PATHS["upload-to-execution"] in cards:
+    if card_paths.get("upload-to-execution") in cards:
         seeds.extend([
             "上传执行链先证明存储/访问/解析器路径和一次性无害执行差异；webshell 只作为明确授权后的深度证明，不是默认动作。",
             "上传执行验证要拆成存储路径 proof、访问/read-back proof、处理器/解释器 proof、执行身份 proof；filename 路径分隔符和编码 parent segment 只作为存储目录选择候选形态，需同时对原上传目录和目标目录做 read-back，并保存原始 upload 请求、上传响应、read-back 请求和响应。",
             "扩展名、multipart part Content-Type、magic bytes、polyglot、.htaccess/web.config 等只是候选形态，不是固定字典；每次只改一个维度并记录服务器信任声明 MIME、检查内容、静态下载、解析、预览还是执行。",
             "需要脚本执行时优先一次性短输出或 OAST token；持久 webshell、写业务目录、读真实数据和批量枚举必须 gated，并有清理路径和停止条件。",
         ])
-    if CARD_PATHS["insecure-deserialization"] in cards:
+    if card_paths.get("insecure-deserialization") in cards:
         seeds.extend([
             "Serialized session/remember-me/state blob 先保存合法 baseline，记录 cookie/header/field 名、HttpOnly/SameSite、编码层（base64/gzip/url-safe 等）、对象/类名/字段图，再做单字节 tamper 看完整性 gate。",
             "Unsigned serialized object 如果接受篡改，优先只在自有/测试账号上验证低影响 state 字段：role/admin/tenant/feature/price/quantity 等；跨账号 replay、旧 token 和用户绑定要单独对照。",
@@ -2746,7 +2766,7 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             seeds.append(
                 "Telerik DialogParameters/AsyncUpload 证据先保留一份目标归属的正常响应私有副本，再运行 tools/telerik_knownkey.py 以项目内 Badsecrets ASP.NET/Telerik 密钥集离线比对。命中只说明 ConfigurationHashKey 复用信号，必须另行证明受控影响，不能自动晋升 Candidate 或 Finding。"
             )
-    if CARD_PATHS["controlled-rce-impact"] in cards:
+    if card_paths.get("controlled-rce-impact") in cards:
         seeds.extend([
             "RCE/命令执行/SSTI/反序列化先证明 primitive，再证明执行身份和影响边界；默认不写文件、不持久化、不批量读取。",
             "RCE/模板执行的 500/超时本身不是成功证据；只有原始响应包含命令 stderr/返回码、或后续状态差异证明侧效应已经发生时，才可作为执行证据，并要配 baseline、replay 和清理说明。",
@@ -2757,14 +2777,14 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
                 "命令注入候选形态不是固定字典：分隔符、低影响身份/系统 probe（如当前用户、id、系统类型）只在明确 sink 上按一个变量一次使用，命中即停并回到证据链。",
                 "Blind 命令注入按短延迟 timing、output redirection、OAST 三类分型验证；timing 要设置低延迟上限和重复次数；output redirection 先从正常静态资源/上传/附件路径找 writable + readable read-back 位置；写文件/回连只在训练或明确授权环境 gated 执行，并记录 token、时间、来源和清理状态。",
             ])
-    if CARD_PATHS["server-side-template-injection"] in cards:
+    if card_paths.get("server-side-template-injection") in cards:
         seeds.extend([
             "SSTI 先做模板求值 primitive 和模板引擎指纹：算术/字符串/上下文变量/错误差异；命中后再转 controlled-rce-impact 做受控影响证明。",
             "SSTI 要先定位 render/trigger 位置：reflected 参数、stored 内容、邮件/通知/报表/PDF/预览/后台审核可能分离；记录输入步、触发步和渲染证据。",
             "模板 probe 是候选形态不是固定字典：按引擎分隔符、运算符、过滤器、错误类型和上下文变量做单变量 fingerprint；Tornado/Mako/Handlebars/Mustache/Nunjucks/Pug/EJS 等引擎名只有与 template/render/code-context/helper/sandbox 线索同现时才进入 SSTI，避免前端模板名或 Node 运行时名误路由。",
             "Code-context SSTI 先证明当前表达式/字符串/模板块可闭合：baseline -> 无害表达式 -> trigger render；设置点和触发点分离时保存原始设置请求、触发请求和响应；sandbox/user-supplied object 只证明对象边界，文件或命令执行进 controlled-rce gate。",
         ])
-    if CARD_PATHS["browser-client-boundaries"] in cards:
+    if card_paths.get("browser-client-boundaries") in cards:
         seeds.extend([
             "浏览器边界类先用真实浏览器 baseline：Origin/Referer/SameSite、frame policy、DOM source->sink、postMessage origin check 和实际凭据发送情况。",
             "CSRF/CORS/Clickjacking/DOM 候选必须证明状态改变、跨源读能力、可点击敏感动作或 source-to-sink；单独 header 缺失或反射只算 Lead。",
@@ -2790,13 +2810,13 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             seeds.append(
                 "DOM clobbering 先读脚本里的全局变量/配置名和 sanitizer/filter 逻辑，再验证 duplicate id/name -> HTMLCollection/property chain，并检查 payload 是否在 sink 或属性清洗之前生效。"
             )
-    if CARD_PATHS["xss-client-injection"] in cards:
+    if card_paths.get("xss-client-injection") in cards:
         seeds.extend([
             "XSS 先识别 reflected/stored/DOM 输入面和输出上下文：HTML text、attribute、JS string、URL、template、Markdown/富文本或 sanitizer 后输出。",
             "Candidate 必须有真实浏览器执行证据和最小可复现 payload；真实目标上不默认主动存储污染他人可见内容，训练/测试资源或明确授权除外。",
             "CSP 绕过先读完整 header；重点看 nonce/hash、script-src-elem、report-uri/base-uri/object-src 缺口、可反射 directive 和允许脚本源。",
         ])
-    if CARD_PATHS["proxy-cache-boundaries"] in cards:
+    if card_paths.get("proxy-cache-boundaries") in cards:
         seeds.extend([
             "Host/proxy/cache/smuggling 先分层建模：前端代理、后端应用、cache key、路由重写、连接复用和 backend connection pool；每次只改一个 header 或传输边界，request smuggling 要区分 CL.TE、TE.CL、TE.TE/TE obfuscation，并用新连接 GET/POST probe 验证 `GGET`/`GPOST` 或 differential 404 队列污染；H2.TE 要确认客户端真的发送了 `transfer-encoding` forbidden header，高级 H2 库可能静默过滤；H2.CL 要确认 `content-length: 0` 与 DATA mismatch 被保留，并用 SMUGGLED/404 或 host-controlled redirect 证明队列影响；H2 CRLF header injection 要区分 `\\r\\nTransfer-Encoding: chunked` 注入真实 header 和 `\\r\\n\\r\\nGET /x HTTP/1.1` 直接 request splitting，并用 404 sentinel 证明第二条请求进入后端队列；绕过 front-end controls 时检查内部 Host（如 localhost）、header conflict/body absorber 和原始字节长度；确认 desync 后继续评估 smuggled reflected XSS、请求捕获、cache/redirect 连接器或内部动作等 victim-facing 影响。",
             "Cache/Host 候选要证明未入 key 的输入影响可缓存响应或安全链接；按 cache-buster oracle -> no-header hit -> victim request shape hit -> victim path delivery 验证，注意 Vary/User-Agent/Accept/browser navigation 分桶。",
@@ -2807,37 +2827,44 @@ def _hypothesis_seeds(cards: list[str], blob: str, local_intel: dict) -> list[st
             "Web cache deception 要从自有账号私有页 baseline 开始，分别测试 path mapping、delimiter、origin/cache normalization 和 exact-match file rule；smuggling-to-WCD 还要检查 incomplete-header inner request 是否继承 victim Cookie、victim readiness/访问节奏和未预热 JS/CSS/image key，并把私有页错配到资源 cache key；投递 victim 前换唯一 URL，最后用 no-cookie/raw read 证明私有响应被共享缓存。",
             "WCD 如果泄露 CSRF token、API key 或账户页敏感字段，要评估能否链到最小影响动作；训练环境可用自动提交表单证明，真实目标保持非破坏性。",
         ])
-    if CARD_PATHS["websocket-realtime-api"] in cards:
+    if card_paths.get("websocket-realtime-api") in cards:
         seeds.extend([
             "WebSocket 先捕获握手、Origin、Cookie/token、消息 schema 和首批 server messages；再做 raw frame replay、CSWSH exfil、订阅越权、消息级权限和 handshake header mutation（如 X-Forwarded-For/Protocol）差异。",
         ])
-    if CARD_PATHS["information-disclosure-source-config"] in cards:
+    if card_paths.get("information-disclosure-source-config") in cards:
         seeds.extend([
             "信息泄露先区分公开信息、调试/错误/源码/配置/备份/source map；命中后提取最小必要证据并链到权限、token、路由或依赖风险。",
         ])
-    if CARD_PATHS["web-llm-tool-chains"] in cards:
+    if card_paths.get("web-llm-tool-chains") in cards:
         seeds.extend([
             "Web LLM 先枚举模型可见上下文、可调用工具、数据源和权限边界；prompt injection 需要证明越权读、工具调用或业务动作影响。",
             "Agent 覆盖按基础设施、感知、规划、记忆、行动、影响六阶段检查；阶段缺口只生成 evidence-driven next action，不能直接当成 finding。",
         ])
-    if CARD_PATHS["node-prototype-pollution"] in cards:
+    if card_paths.get("node-prototype-pollution") in cards:
         seeds.extend([
             "Node/prototype 方向先找 merge/path-set/query-parser source 和可观察 sink；live 验证只用唯一 inert marker，不先污染 role、权限或执行相关字段。",
             "有 prototype pollution primitive 不等于 RCE；先证明 marker -> sink 差异，命中模板/VM/执行 sink 后再转 controlled-rce-impact。",
         ])
-    if CARD_PATHS["race-conditions"] in cards:
+    if card_paths.get("race-conditions") in cards:
         seeds.extend([
             "并发风险先做低频状态模型和幂等性推理，不做高并发或真实资金/库存状态改变。",
             "Race 验证顺序是合法单次 baseline、单次 replay 幂等检查、状态窗口/锁粒度推理、协议能力探测（如 HTTP/2 multiplex 或 last-byte 同步）和最小同步触发；只有训练/自有可回滚资源才进入低请求数并发验证。",
         ])
-    if CARD_PATHS["coverage-prompts"] in cards:
+    if card_paths.get("coverage-prompts") in cards:
         seeds.append("把 surface review pool 映射到 authz、IDOR、SSRF、Upload、GraphQL、Race 等高价值 lane，找未测组合；分数只是提示，最终由 Claude 结合证据判断。")
-    if CARD_PATHS["dead-ends"] in cards:
+    if card_paths.get("dead-ends") in cards:
         seeds.append("复查 dead end 的停止条件：只有出现新证据时才重开旧方向。")
     return _dedupe(seeds)[:6]
 
 
-def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> list[str]:
+def _alternative_angles(
+    cards: list[str],
+    ranked: dict,
+    local_intel: dict,
+    *,
+    card_paths: dict[str, str] | None = None,
+) -> list[str]:
+    card_paths = CARD_PATHS if card_paths is None else card_paths
     angles = [
         "如果主路径证据不足，转到相邻高信号 review candidate，而不是扩大读取全量日志。",
         "对浏览器态 XHR/API、JS-reader、source-intel 的新证据保持开放，必要时改选 Skill。",
@@ -2855,63 +2882,63 @@ def _alternative_angles(cards: list[str], ranked: dict, local_intel: dict) -> li
     source_intel = local_intel.get("source_intel") or {}
     if js_intel.get("endpoints") and source_intel.get("hypotheses"):
         angles.append("把 JS-reader endpoint 与 source-intel route/hypothesis 交叉，优先验证两者重合的权限边界。")
-    if CARD_PATHS["api-idor"] in cards:
+    if card_paths.get("api-idor") in cards:
         angles.append("从 REST IDOR 横向扩展到导出、报表、批量查询、成员管理和 invite 流程。")
-    if CARD_PATHS["auth-hidden-switches"] in cards:
+    if card_paths.get("auth-hidden-switches") in cards:
         angles.append("登录绕过无信号时，回到 JS/source/browser 找 sibling 登录端点、旧入口、移动端入口和隐藏认证分支选择器。")
-    if CARD_PATHS.get("odata-query-boundaries") in cards:
+    if card_paths.get("odata-query-boundaries") in cards:
         angles.append("OData 无直接结果时，回到 `$metadata`/service document 识别目标 entity、field、navigation 和 batch，再用 owner/peer 单变量对照。")
-    if CARD_PATHS.get("ldap-xpath-query-boundaries") in cards:
+    if card_paths.get("ldap-xpath-query-boundaries") in cards:
         angles.append("LDAP/XPath 无稳定差异时，回到 source/error 确认 filter、DN 或 XPath context，并建立合法/false/语法错误 control。")
-    if CARD_PATHS["auth-sso-token-edge-cases"] in cards:
+    if card_paths.get("auth-sso-token-edge-cases") in cards:
         angles.append("SSO/token 无直接结果时，回到合法流程 baseline、issuer/JWKS metadata、callback 绑定、state/nonce/PKCE 和 account-linking 映射差异。")
-    if CARD_PATHS["auth-credential-recovery-flows"] in cards:
+    if card_paths.get("auth-credential-recovery-flows") in cards:
         angles.append("认证恢复无结果时，回到 reset/change-password/remember-me/MFA/lockout 的状态机，比较账号绑定、一次性 token、错误差异和限速边界。")
-    if CARD_PATHS["api-testing-workflow"] in cards:
+    if card_paths.get("api-testing-workflow") in cards:
         angles.append("API testing 无结果时，回到浏览器态 XHR、JS/source-derived routes、OpenAPI/schema、移动端/旧版本、content-type 和 method/version 差异。")
-    if CARD_PATHS["business-logic-state-machines"] in cards:
+    if card_paths.get("business-logic-state-machines") in cards:
         angles.append("业务逻辑无结果时，不换 payload spray；回到正常业务流程，重排步骤、修改客户端字段、构造边界值、复用旧 token/优惠/订单状态和双账号对照。")
-    if CARD_PATHS["missing-parameter-discovery"] in cards:
+    if card_paths.get("missing-parameter-discovery") in cards:
         angles.append("缺参/校验信号无结果时，回到 JS/source/schema/浏览器 XHR/历史请求/表单/GraphQL/sibling endpoint/路径分段，而不是扩大通用字典喷洒。")
-    if CARD_PATHS["path-pattern-management-exposure"] in cards:
+    if card_paths.get("path-pattern-management-exposure") in cards:
         angles.append("命名规律没有直接结果时，提取只读结构化记录、访问记录、统计接口、配置字段和 raw log 反哺二次 recon，并把 secret 候选降级为最小验证线索。")
-    if CARD_PATHS["graphql"] in cards:
+    if card_paths.get("graphql") in cards:
         angles.append("GraphQL 无结果时检查同业务的 REST sibling endpoint、global ID 解码和前端缓存。")
-    if CARD_PATHS["sqli-hidden-surfaces"] in cards:
+    if card_paths.get("sqli-hidden-surfaces") in cards:
         angles.append("常规参数无 SQLi 信号时，转向目标相关的非显式输入面：请求元数据、路径/路由变量、cookie/session、JS/source-derived sibling 参数或二阶链路。")
-    if CARD_PATHS["nosql-query-injection"] in cards:
+    if card_paths.get("nosql-query-injection") in cards:
         angles.append("NoSQL 无显式信号时，回到 JSON/form parser、登录/搜索/filter 参数、数组对象包裹和 schema/type 错误差异。")
-    if CARD_PATHS["xxe-xml-parser"] in cards:
+    if card_paths.get("xxe-xml-parser") in cards:
         angles.append("XXE 无直接回显时，换到同业务的 XML/SOAP/SAML/SVG/Office 导入 sibling parser，或用一次性 OAST 证明解析器外连。")
-    if CARD_PATHS["path-traversal-file-read"] in cards:
+    if card_paths.get("path-traversal-file-read") in cards:
         angles.append("路径遍历无结果时，检查路由规范化、静态文件别名、下载/预览 sibling、压缩包条目和 PHP/Java/Windows 特定读取语义。")
-    if CARD_PATHS["upload-parser"] in cards:
+    if card_paths.get("upload-parser") in cards:
         angles.append("上传链路无结果时转向 import URL、预览 worker、异步转换状态和权限绑定。")
-    if CARD_PATHS["upload-to-execution"] in cards:
+    if card_paths.get("upload-to-execution") in cards:
         angles.append("上传执行无结果时回到扩展/MIME/magic bytes、metadata、转换器、预览 worker 和可访问路径差异。")
-    if CARD_PATHS["ssrf-internal-impact"] in cards:
+    if card_paths.get("ssrf-internal-impact") in cards:
         angles.append("SSRF 内部影响无结果时回到 parser discrepancy、redirect、DNS/IP 编码和单个 health/status 级内部目标。")
-    if CARD_PATHS["controlled-rce-impact"] in cards:
+    if card_paths.get("controlled-rce-impact") in cards:
         angles.append("执行类 primitive 无结果时先换低风险 probe、OAST 或 source/sink 证据，不直接升级 shell 或文件写入。")
-    if CARD_PATHS["server-side-template-injection"] in cards:
+    if card_paths.get("server-side-template-injection") in cards:
         angles.append("SSTI 无结果时回到模板出现位置、邮件/预览/报表/错误页/富文本渲染链，区分客户端模板与服务端模板。")
-    if CARD_PATHS["insecure-deserialization"] in cards:
+    if card_paths.get("insecure-deserialization") in cards:
         angles.append("反序列化无结果时回到 cookie/state/import/export/queue/RPC 与框架指纹，先确认格式和完整性保护再考虑 gadget。")
-    if CARD_PATHS["browser-client-boundaries"] in cards:
+    if card_paths.get("browser-client-boundaries") in cards:
         angles.append("浏览器边界无结果时，用 Playwright 对比真实 Origin/Referer/SameSite、iframe 可加载性、DOM source-to-sink、navigation sink、cookie 写入和 postMessage origin 处理。")
-    if CARD_PATHS["xss-client-injection"] in cards:
+    if card_paths.get("xss-client-injection") in cards:
         angles.append("XSS 无结果时，切换输出上下文和渲染链：attribute、JS string、template、Markdown/富文本、DOM sink、存储后触发页和 CSP/sanitizer 差异。")
-    if CARD_PATHS["proxy-cache-boundaries"] in cards:
+    if card_paths.get("proxy-cache-boundaries") in cards:
         angles.append("代理/cache 无结果时，回到 Host/XFH/Forwarded、scheme/port、cache key、Vary、static extension 和 CL/TE 传输差异。")
-    if CARD_PATHS["websocket-realtime-api"] in cards:
+    if card_paths.get("websocket-realtime-api") in cards:
         angles.append("WebSocket 无结果时，回到握手 Origin、频道订阅、消息 schema、对象 ID、重连 token 和同功能 REST sibling。")
-    if CARD_PATHS["information-disclosure-source-config"] in cards:
+    if card_paths.get("information-disclosure-source-config") in cards:
         angles.append("信息泄露无结果时，转到 source map、错误页、备份命名、静态资源 manifest、robots/security.txt 和版本/组件线索。")
-    if CARD_PATHS["web-llm-tool-chains"] in cards:
+    if card_paths.get("web-llm-tool-chains") in cards:
         angles.append("Web LLM 无结果时，回到工具清单、RAG 引用、系统提示泄露、间接 prompt 注入载体和权限绑定。")
-    if CARD_PATHS["node-prototype-pollution"] in cards:
+    if card_paths.get("node-prototype-pollution") in cards:
         angles.append("Node/prototype 无信号时，回到 package/source/sink grep，确认 deep merge/path set 与 gadget 后再做 live marker。")
-    if CARD_PATHS["race-conditions"] in cards:
+    if card_paths.get("race-conditions") in cards:
         angles.append("Race 不直接加压；先寻找可回滚测试资源、幂等 key、状态机边界和重复提交证据。")
     if not ranked.get("available"):
         angles.append("如果 recon 缺失，先只补最小可用 surface，再回到漏洞类别验证。")
@@ -3207,9 +3234,17 @@ def _ledger_source_summary(summary: dict) -> dict:
     }
 
 
-def _reference_hints(cards: list[str], blob: str, focus: str, skill: str) -> list[dict]:
+def _reference_hints(
+    cards: list[str],
+    blob: str,
+    focus: str,
+    skill: str,
+    *,
+    card_paths: dict[str, str] | None = None,
+) -> list[dict]:
     """按当前证据给 `/autopilot` 提供按需 reference 提示，不默认加载大字典。"""
 
+    card_paths = CARD_PATHS if card_paths is None else card_paths
     evidence = f"{focus}\n{blob}"
     hints: list[dict] = []
 
@@ -3228,11 +3263,11 @@ def _reference_hints(cards: list[str], blob: str, focus: str, skill: str) -> lis
             re.I,
         )
         and (
-            CARD_PATHS["ssrf-url-fetch"] in cards
-            or CARD_PATHS["ssrf-internal-impact"] in cards
-            or CARD_PATHS["upload-parser"] in cards
-            or CARD_PATHS["upload-to-execution"] in cards
-            or CARD_PATHS["sqli-hidden-surfaces"] in cards
+            card_paths.get("ssrf-url-fetch") in cards
+            or card_paths.get("ssrf-internal-impact") in cards
+            or card_paths.get("upload-parser") in cards
+            or card_paths.get("upload-to-execution") in cards
+            or card_paths.get("sqli-hidden-surfaces") in cards
             or re.search(r"\b(open[-_ ]?redirect|sql(?:i|[-_ ]?injection)|ssrf|upload|file[-_ ]?upload)\b", evidence, re.I)
         )
     )
@@ -3243,9 +3278,9 @@ def _reference_hints(cards: list[str], blob: str, focus: str, skill: str) -> lis
         )
 
     payload_signal = bool(
-        CARD_PATHS["server-side-template-injection"] in cards
-        or CARD_PATHS["xxe-xml-parser"] in cards
-        or CARD_PATHS["proxy-cache-boundaries"] in cards
+        card_paths.get("server-side-template-injection") in cards
+        or card_paths.get("xxe-xml-parser") in cards
+        or card_paths.get("proxy-cache-boundaries") in cards
         or COMMAND_INJECTION_RE.search(evidence)
         or re.search(
             r"\b(ssti|template[-_ ]?injection|command[-_ ]?injection|cmdi|xxe|"
@@ -3269,8 +3304,8 @@ def _reference_hints(cards: list[str], blob: str, focus: str, skill: str) -> lis
             re.I,
         )
         and (
-            CARD_PATHS["xss-client-injection"] in cards
-            or CARD_PATHS["browser-client-boundaries"] in cards
+            card_paths.get("xss-client-injection") in cards
+            or card_paths.get("browser-client-boundaries") in cards
             or re.search(r"\b(dom|xss|javascript|typescript|python|php|ruby|rust|golang|go)\b", evidence, re.I)
         )
     )
@@ -3420,6 +3455,7 @@ def build_context_pack(
         if len(historical_patterns) == 3:
             break
     registry = _load_capability_registry(repo)
+    card_paths = {item["id"]: path for path, item in registry.items()}
     cards, deferred_cards, knowledge_card_recall = _select_cards_and_deferred(
         blob,
         skill,
@@ -3429,6 +3465,7 @@ def build_context_pack(
         focus,
         repo,
         registry=registry,
+        card_paths=card_paths,
     )
     checks = _required_checks(skill, blob)
     evidence_summary = build_evidence_summary(
@@ -3469,7 +3506,13 @@ def build_context_pack(
         "deferred_knowledge_cards": deferred_cards,
         "deferred_knowledge_card_capabilities": _card_capabilities(deferred_cards, repo, registry=registry),
         "knowledge_card_recall": knowledge_card_recall,
-        "reference_hints": _reference_hints(cards, blob, focus, skill),
+        "reference_hints": _reference_hints(
+            cards,
+            blob,
+            focus,
+            skill,
+            card_paths=card_paths,
+        ),
         "historical_patterns": historical_patterns,
         "reviewed_candidate_hints": reviewed_candidate_hints,
         "required_checks": checks,
@@ -3477,8 +3520,18 @@ def build_context_pack(
         + _runner_candidate_anchors(runner_candidates)
         + _ledger_anchors(evidence_summary),
         "validation_runner_candidates": runner_candidates,
-        "hypothesis_seeds": _hypothesis_seeds(cards, blob, local_intel),
-        "alternative_angles": _alternative_angles(cards, ranked, local_intel),
+        "hypothesis_seeds": _hypothesis_seeds(
+            cards,
+            blob,
+            local_intel,
+            card_paths=card_paths,
+        ),
+        "alternative_angles": _alternative_angles(
+            cards,
+            ranked,
+            local_intel,
+            card_paths=card_paths,
+        ),
         "unknowns": _unknowns(ranked, goal_memory, matrix, findings, local_intel)
         + _ledger_unknowns(evidence_summary),
         "contradictions": _contradictions(resolved_target, goal_memory, ranked, gaps, local_intel, evidence_summary),
