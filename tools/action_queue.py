@@ -769,8 +769,9 @@ def _dedupe_key(action: dict) -> str:
     action_text = str(action.get("action", ""))
     evidence_text = str(action.get("evidence", ""))
     if str(action.get("type") or "") == "coverage-gap":
-        action_text = re.sub(r"\s+Family projection:.*$", "", action_text, flags=re.I)
-        evidence_text = re.sub(r"\s+Family projection:.*$", "", evidence_text, flags=re.I)
+        projection_re = r"\s+(?:Queue projection only:|Family projection:).*$"
+        action_text = re.sub(projection_re, "", action_text, flags=re.I)
+        evidence_text = re.sub(projection_re, "", evidence_text, flags=re.I)
     parts = [
         action.get("type", ""),
         action.get("evidence_type", ""),

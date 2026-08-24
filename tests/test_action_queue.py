@@ -821,6 +821,44 @@ def test_ingest_checkpoint_retires_stale_checkpoint_queued_actions(tmp_path):
     assert "checkpoint refresh" in stale["result"].lower()
 
 
+def test_ingest_checkpoint_keeps_coverage_identity_across_projection_wording(tmp_path):
+    base = (
+        "Cover high-value matrix gap: /api/orders/list x Path "
+        "(weight=3.5, relevance=14: observed file selector)."
+    )
+    legacy = {
+        "next_action_queue": [{
+            "id": "LEGACY-COVERAGE",
+            "priority": 80,
+            "type": "coverage-gap",
+            "status": "ready",
+            "action": base + " Family projection: key=route; kind=route-template; size=2; samples=/api/orders/list,/api/orders/export.",
+            "command_hint": "focused replay",
+            "metadata": {"endpoint": "/api/orders/list", "vuln_class": "Path"},
+        }]
+    }
+    current = {
+        "next_action_queue": [{
+            "id": "CURRENT-COVERAGE",
+            "priority": 80,
+            "type": "coverage-gap",
+            "status": "ready",
+            "action": base + " Queue projection only: this representative is advisory. Family projection: key=route; kind=route-template; size=2; members=/api/orders/list,/api/orders/export.",
+            "command_hint": "focused replay",
+            "metadata": {"endpoint": "/api/orders/list", "vuln_class": "Path"},
+        }]
+    }
+
+    first = ingest_checkpoint(tmp_path, "target.com", checkpoint=legacy)
+    second = ingest_checkpoint(tmp_path, "target.com", checkpoint=current)
+
+    assert first["stats"]["added"] == 1
+    assert second["stats"]["added"] == 0
+    assert second["stats"]["updated"] == 1
+    assert second["stats"]["retired_stale"] == 0
+    assert len(load_queue(tmp_path, "target.com")["actions"]) == 1
+
+
 def test_ingest_checkpoint_preserves_running_versioned_hypothesis(tmp_path):
     ingest_checkpoint(
         tmp_path,

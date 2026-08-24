@@ -2412,6 +2412,7 @@ def _coverage_family_key(gap: dict, template_count: dict[str, int]) -> tuple:
 
 
 _STRUCTURAL_COVERAGE_FAMILY_MIN_MEMBERS = 3
+_COVERAGE_FAMILY_MEMBER_PREVIEW = 12
 
 
 def _checkpoint_coverage_gaps(coverage_gaps: list[dict], matrix: dict, limit: int = 2) -> list[dict]:
@@ -2471,7 +2472,9 @@ def _checkpoint_coverage_gaps(coverage_gaps: list[dict], matrix: dict, limit: in
                 "kind": key[0],
                 "size": len(members),
                 "template": _route_template(endpoints[0]) if endpoints else "",
-                "members": endpoints[:5],
+                # Keep queue context bounded; the family size tells AI whether
+                # this is only a preview, and raw Coverage remains expandable.
+                "members": endpoints[:_COVERAGE_FAMILY_MEMBER_PREVIEW],
             }
         selected.append(representative)
         if len(selected) >= limit:
@@ -2681,13 +2684,25 @@ def _next_proposals(
                 for value in family.get("members") or []
                 if str(value).strip()
             )
+            family_size = int(family.get("size", 0) or 0)
+            preview_truncated = family_size > len(family.get("members") or [])
+            expansion_suffix = (
+                " The preview is incomplete; query the raw Coverage gap window "
+                "before choosing another member."
+                if preview_truncated else ""
+            )
             family_suffix = (
-                " Family projection: key={key}; kind={kind}; size={size}; "
-                "samples={members}.".format(
+                " Queue projection only: this representative is advisory and does "
+                "not assert family equivalence. AI remains the judgment owner and "
+                "may choose or expand any listed member; sibling Matrix cells stay "
+                "unclosed until owner evidence.{expansion_suffix} Family projection: "
+                "key={key}; kind={kind}; size={size}; "
+                "members={members}.".format(
                     key=family.get("key", "family"),
                     kind=family.get("kind", "route-template"),
-                    size=family.get("size", 0),
+                    size=family_size,
                     members=family_members or coverage_endpoint,
+                    expansion_suffix=expansion_suffix,
                 )
             )
         proposals.append(
@@ -3035,7 +3050,8 @@ def _extract_action_metadata(text: str) -> dict:
 
     validation_match = re.search(
         r"Validation path:\s+(?P<path>.*?)(?:\s+If red-line|"
-        r"\s+If concrete side-effect|\s+Family projection:|"
+        r"\s+If concrete side-effect|\s+Queue projection only:|"
+        r"\s+Family projection:|"
         r"\s+Stop condition:|$)",
         value,
         re.I,
@@ -3064,7 +3080,7 @@ def _extract_action_metadata(text: str) -> dict:
             metadata["validation_path"] = validation_match.group("path").strip()
         family_match = re.search(
             r"Family projection:\s+key=(?P<key>.*?);\s+kind=(?P<kind>[^;]+);"
-            r"\s+size=(?P<size>\d+);\s+samples=(?P<members>.*?)\.\s*$",
+            r"\s+size=(?P<size>\d+);\s+(?:members|samples)=(?P<members>.*?)\.\s*$",
             value,
             re.I,
         )

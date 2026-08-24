@@ -123,6 +123,11 @@ def test_round_command_execution_and_advisory_family_contract_is_explicit():
     assert "cannot mark a canonical Coverage cell terminal or satisfy Closure" in command
     assert "Only canonical owners may write Matrix terminal state or satisfy Closure" in command
     assert "must not be silently renamed" in command
+    assert "Coverage-family representatives are queue projections only" in command
+    assert "do not assert family equivalence" in command
+    assert "AI remains the judgment owner and may choose or expand any member" in command
+    assert "must query the raw Coverage gap window" in command
+    assert "do not close sibling cells" in command
 
 
 def test_round_end_uses_explicit_loop_guard_and_owner_settle():

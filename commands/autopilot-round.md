@@ -76,6 +76,13 @@ a canonical Coverage cell terminal or satisfy Closure. Only canonical owners may
 write Matrix terminal state or satisfy Closure; advisory families must not be
 silently renamed to another family.
 
+Coverage-family representatives are queue projections only. They do not assert
+family equivalence or hide the raw Matrix endpoints. They do not close sibling
+cells. The AI remains the judgment owner and may choose or expand any member
+listed in the projection metadata, and must query the raw Coverage gap window
+when the member preview is incomplete; only explicit canonical-owner evidence
+can close that member's Matrix cell or satisfy Closure.
+
 ## One Canonical Round
 
 read and obey `commands/autopilot.md` as the sole controller contract. Do not

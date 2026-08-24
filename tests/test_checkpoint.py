@@ -3831,6 +3831,95 @@ def test_checkpoint_coverage_projection_bounds_large_family_without_closing_sibl
     assert len(metadata["family_members"]) == 3
 
 
+def test_checkpoint_family_projection_keeps_all_members_and_leaves_ai_override_visible():
+    family_gaps = [
+        {
+            "endpoint": f"/en/job/us/role-{index}/23251/{1000 + index}",
+            "vuln_class": "Path",
+            "weight": 3.5,
+            "relevance_score": 14,
+            "relevance_reason": "file/path selector; file download/read path",
+        }
+        for index in range(7)
+    ]
+    endpoints = [item["endpoint"] for item in family_gaps]
+    matrix = {
+        "endpoints": [
+            {"endpoint": endpoint, "cells": {"Path": {"status": "untested"}}}
+            for endpoint in endpoints
+        ]
+    }
+
+    selected = _checkpoint_coverage_gaps(family_gaps, matrix, limit=8)
+    projection = selected[0]["_projection_family"]
+
+    assert projection["size"] == len(endpoints)
+    assert projection["members"] == endpoints
+
+    proposals = _next_proposals(
+        state={"has_recon": True, "recommended_targets": []},
+        coverage_gaps=family_gaps,
+        matrix=matrix,
+        target="target.com",
+        context_pack={},
+        evidence_summary={},
+    )
+    proposal = next(item for item in proposals if item.startswith("Cover high-value matrix gap:"))
+    assert "Queue projection only" in proposal
+    assert "does not assert family equivalence" in proposal
+    assert "AI remains the judgment owner and may choose or expand any listed member" in proposal
+    assert "sibling Matrix cells stay unclosed" in proposal
+
+    action = next(
+        item
+        for item in _build_next_action_queue(proposals, "target.com")
+        if item["type"] == "coverage-gap"
+    )
+    assert action["metadata"]["family_size"] == len(endpoints)
+    assert action["metadata"]["family_members"] == endpoints
+    assert all(
+        endpoint["cells"]["Path"]["status"] == "untested"
+        for endpoint in matrix["endpoints"]
+    )
+
+
+def test_checkpoint_family_projection_bounds_preview_without_hiding_family_size():
+    gaps = [
+        {
+            "endpoint": f"/api/orders/role-{index}/23251/{1000 + index}",
+            "vuln_class": "Path",
+            "weight": 3.5,
+            "relevance_score": 14,
+            "relevance_reason": "file/path selector; file download/read path",
+        }
+        for index in range(20)
+    ]
+    matrix = {
+        "endpoints": [
+            {"endpoint": item["endpoint"], "cells": {"Path": {"status": "untested"}}}
+            for item in gaps
+        ]
+    }
+
+    selected = _checkpoint_coverage_gaps(gaps, matrix, limit=8)
+    projection = selected[0]["_projection_family"]
+
+    assert projection["size"] == 20
+    assert len(projection["members"]) == 12
+
+    proposals = _next_proposals(
+        state={"has_recon": True, "recommended_targets": []},
+        coverage_gaps=gaps,
+        matrix=matrix,
+        target="target.com",
+        context_pack={},
+        evidence_summary={},
+    )
+    proposal = next(item for item in proposals if item.startswith("Cover high-value matrix gap:"))
+    assert "preview is incomplete" in proposal
+    assert "raw Coverage gap window" in proposal
+
+
 def test_checkpoint_does_not_merge_distinct_dynamic_resources():
     gaps = [
         {
