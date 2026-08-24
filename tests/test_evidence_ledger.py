@@ -48,6 +48,21 @@ def test_record_entry_writes_normalized_ledger_row(tmp_path):
     assert rows[0]["replayed"] is True
 
 
+def test_record_entry_accepts_canonical_object_scope(tmp_path):
+    entry = record_entry(
+        tmp_path,
+        target="target.com",
+        endpoint="/rest/basket/7",
+        vuln_class="IDOR",
+        actor="peer",
+        object_scope="other_object_same_org",
+        variant="id_swap",
+        result="tested_finding",
+    )
+
+    assert entry["object_scope"] == "other_object_same_org"
+
+
 def test_parent_summary_aggregates_child_ledger_without_copying_events(tmp_path):
     record_entry(
         tmp_path,

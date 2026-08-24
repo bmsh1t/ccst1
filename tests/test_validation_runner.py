@@ -1578,7 +1578,39 @@ def test_request_diff_replays_post_json_with_sql_classifier(monkeypatch, tmp_pat
     assert summary["classifier"] == "sqli"
     assert summary["result"] == "tested_finding"
     assert summary["ledger_record"]["write_status"] in {"written", "deduplicated", "updated"}
+    assert validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)["ledger"]["status"] in {
+        "written",
+        "deduplicated",
+        "updated",
+    }
     assert all(run["method"] if "method" in run else True for run in summary["runs"])
+
+
+def test_request_diff_without_canonical_ledger_family_keeps_sync_skipped(monkeypatch, tmp_path):
+    def fake_request_once(**kwargs):
+        query = parse_qs(urlparse(kwargs["url"]).query).get("q", [""])[0]
+        count = 2 if query == "banana" else 1
+        return _fake_response(kwargs["url"], body=json.dumps({"data": list(range(count))}))
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    summary = validation_runner.run_request_diff(
+        repo_root=tmp_path,
+        target="https://target.test",
+        request_spec={
+            "baseline_request": {"method": "GET", "url": "https://target.test/search?q=apple"},
+            "variant_request": {"method": "GET", "url": "https://target.test/search?q=banana"},
+            "active_dimension": "query:q",
+            "classifier": "generic",
+        },
+        finding_id="GENERIC-REQUEST-DIFF",
+    )
+
+    sync = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+
+    assert summary["ledger_record"]["write_status"] == "skipped"
+    assert sync["status"] == "skipped"
+    assert sync["ledger"]["status"] == "skipped"
+    assert "error" not in sync["ledger"]
 
 
 def test_request_diff_marks_multipart_manual_required_without_request(monkeypatch, tmp_path):

@@ -1222,6 +1222,11 @@ def _sync_evidence_ledger(summary: dict[str, Any], *, repo_root: Path) -> dict[s
         return {"status": "skipped", "reason": "runner was invoked with --no-ledger"}
     if not isinstance(ledger, dict):
         raise ValueError("runner ledger record must be an object")
+    if ledger.get("write_status") == "skipped":
+        return {
+            "status": "skipped",
+            "reason": str(ledger.get("reason") or "runner skipped the Ledger write"),
+        }
     request = ledger.get("request") if isinstance(ledger.get("request"), dict) else {
         "target": ledger.get("target"),
         "endpoint": ledger.get("raw_endpoint") or ledger.get("endpoint"),
