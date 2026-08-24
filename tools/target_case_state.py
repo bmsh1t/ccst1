@@ -29,12 +29,14 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
+    from tools.action_queue import SENSITIVE_OBSERVATION_VALUE_RE
     from tools.auth_session import AuthSession
     from tools.closure_resolver import canonical_endpoint_identity
     from tools.finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from tools.private_artifacts import private_artifact_dir, write_private_json
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
+    from action_queue import SENSITIVE_OBSERVATION_VALUE_RE  # type: ignore
     from auth_session import AuthSession  # type: ignore
     from closure_resolver import canonical_endpoint_identity  # type: ignore
     from finding_index import load_finding_index, verify_finalized_finding_owner_provenance  # type: ignore
@@ -78,7 +80,7 @@ RUNNER_CONTRACTS = {
 HYPOTHESIS_METADATA_KEYS = (
     "family", "primitive", "boundary", "impact", "chain", "chain_id",
     "dimensions", "confidence", "provenance", "evidence_refs",
-    "next_question", "stop_condition",
+    "next_question", "stop_condition", "token_location",
 )
 _SENSITIVE_METADATA_PARTS = {
     "access_key", "access_token", "api_key", "apikey", "auth", "authorization", "bearer",
@@ -137,6 +139,10 @@ def _validate_hypothesis_metadata(metadata: dict[str, Any] | None) -> dict[str, 
         elif isinstance(value, list):
             for index, child in enumerate(value):
                 visit(child, f"{path}[{index}]")
+        elif isinstance(value, str) and SENSITIVE_OBSERVATION_VALUE_RE.search(value):
+            raise ValueError(
+                f"hypothesis metadata cannot contain credential-bearing value at {path}"
+            )
 
     visit(metadata, "metadata")
     return metadata
@@ -144,6 +150,8 @@ def _validate_hypothesis_metadata(metadata: dict[str, Any] | None) -> dict[str, 
 
 def _bounded_metadata_value(value: Any, *, key: str = "", depth: int = 0) -> Any:
     if _sensitive_metadata_key(key) or depth > 3:
+        return None
+    if isinstance(value, str) and SENSITIVE_OBSERVATION_VALUE_RE.search(value):
         return None
     if isinstance(value, dict):
         result = {}

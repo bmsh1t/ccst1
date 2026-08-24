@@ -397,6 +397,7 @@ def test_hypothesis_metadata_cli_round_trip_and_bounded_projection(tmp_path, cap
         "evidence_refs": ["evidence/target.com/browser/response.json"],
         "next_question": "does output reach the renderer?",
         "stop_condition": "no template evaluation marker",
+        "token_location": "Authorization header",
     }
     rc = target_case_state.main([
         "add-hypothesis", "--repo-root", str(tmp_path), "--target", target,
@@ -413,6 +414,7 @@ def test_hypothesis_metadata_cli_round_trip_and_bounded_projection(tmp_path, cap
     assert next_item["metadata"]["family"] == "RCE"
     assert next_item["metadata"]["primitive"] == "SSTI"
     assert next_item["metadata"]["impact"] == {"kind": "command execution"}
+    assert next_item["metadata"]["token_location"] == "Authorization header"
 
 
 def test_add_hypothesis_metadata_json_rejects_invalid_or_non_object(tmp_path, capsys):
@@ -440,6 +442,46 @@ def test_add_hypothesis_metadata_json_rejects_invalid_or_non_object(tmp_path, ca
         assert f"sensitive field metadata.{key}" in captured.err
         assert "SECRET_VALUE" not in captured.err
     assert target_case_state.load_case_state(tmp_path, "target.com")["hypotheses"] == []
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"provenance": "Authorization: Bearer SECRET_VALUE"},
+        {"next_question": {"prompt": "Cookie: sid=SECRET_VALUE"}},
+        {"impact": {"description": "api-key: SECRET_VALUE"}},
+        {"provenance": {"next-question": "Bearer SECRET_VALUE"}},
+        {"nextQuestion": "Bearer SECRET_VALUE"},
+        {"impact": {"api-key": "SECRET_VALUE"}},
+    ],
+    ids=["provenance", "next-question", "nested-impact", "kebab-nested", "camel", "kebab-key"],
+)
+def test_hypothesis_metadata_rejects_credential_values_before_case_state_mutation(
+    tmp_path, metadata,
+):
+    with pytest.raises(ValueError, match="(?:credential-bearing value|sensitive field)") as raised:
+        target_case_state.add_hypothesis(
+            tmp_path,
+            "target.com",
+            vuln_class="RCE",
+            metadata=metadata,
+        )
+
+    assert "SECRET_VALUE" not in str(raised.value)
+    assert not target_case_state.case_state_path(tmp_path, "target.com").exists()
+
+
+def test_hypothesis_metadata_projection_filters_legacy_credential_values_and_keeps_token_location():
+    metadata = {
+        "provenance": "Authorization: Bearer SECRET_VALUE",
+        "impact": {"description": "api-key: SECRET_VALUE"},
+        "token_location": "Authorization header",
+    }
+
+    projected = target_case_state.project_hypothesis_metadata(metadata)
+
+    assert "SECRET_VALUE" not in json.dumps(projected)
+    assert projected == {"impact": {}, "token_location": "Authorization header"}
 
 
 def test_next_blocks_when_peer_session_missing(tmp_path):

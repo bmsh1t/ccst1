@@ -27,6 +27,7 @@ from tools.autopilot_bootstrap import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FAKE_RESPONSE_TEXT = "runtime-probe-ok"
+TOOL_LOOP_RESULT = "TOOL_LOOP_OK"
 DYNAMIC_ARGUMENT_COMMAND = (
     '!`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json -- '
     '"$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`'
@@ -39,6 +40,8 @@ class _CaptureServer(ThreadingHTTPServer):
     def __init__(self, server_address, handler_class):
         super().__init__(server_address, handler_class)
         self.requests: queue.Queue[dict] = queue.Queue()
+        self.response_plan: list[str] = []
+        self.response_plan_lock = threading.Lock()
 
 
 class _AnthropicHandler(BaseHTTPRequestHandler):
@@ -55,50 +58,110 @@ class _AnthropicHandler(BaseHTTPRequestHandler):
         })
 
         model = payload.get("model") or "claude-runtime-probe"
-        events = (
-            (
-                "message_start",
-                {
-                    "type": "message_start",
-                    "message": {
-                        "id": "msg_runtime_probe",
-                        "type": "message",
-                        "role": "assistant",
-                        "model": model,
-                        "content": [],
-                        "stop_reason": None,
-                        "stop_sequence": None,
-                        "usage": {"input_tokens": 1, "output_tokens": 0},
+        with self.server.response_plan_lock:  # type: ignore[attr-defined]
+            response_mode = (
+                self.server.response_plan.pop(0)  # type: ignore[attr-defined]
+                if self.server.response_plan  # type: ignore[attr-defined]
+                else "text"
+            )
+        if response_mode == "tool_use":
+            events = (
+                (
+                    "message_start",
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": "msg_runtime_tool_use",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": model,
+                            "content": [],
+                            "stop_reason": None,
+                            "stop_sequence": None,
+                            "usage": {"input_tokens": 1, "output_tokens": 0},
+                        },
                     },
-                },
-            ),
-            (
-                "content_block_start",
-                {
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""},
-                },
-            ),
-            (
-                "content_block_delta",
-                {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": FAKE_RESPONSE_TEXT},
-                },
-            ),
-            ("content_block_stop", {"type": "content_block_stop", "index": 0}),
-            (
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                    "usage": {"output_tokens": 1},
-                },
-            ),
-            ("message_stop", {"type": "message_stop"}),
-        )
+                ),
+                (
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": "toolu_runtime_probe",
+                            "name": "Bash",
+                            "input": {},
+                        },
+                    },
+                ),
+                (
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": json.dumps({"command": f"printf {TOOL_LOOP_RESULT}"}),
+                        },
+                    },
+                ),
+                ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                (
+                    "message_delta",
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+                        "usage": {"output_tokens": 1},
+                    },
+                ),
+                ("message_stop", {"type": "message_stop"}),
+            )
+        else:
+            events = (
+                (
+                    "message_start",
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": "msg_runtime_probe",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": model,
+                            "content": [],
+                            "stop_reason": None,
+                            "stop_sequence": None,
+                            "usage": {"input_tokens": 1, "output_tokens": 0},
+                        },
+                    },
+                ),
+                (
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                ),
+                (
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": FAKE_RESPONSE_TEXT},
+                    },
+                ),
+                ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                (
+                    "message_delta",
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                        "usage": {"output_tokens": 1},
+                    },
+                ),
+                ("message_stop", {"type": "message_stop"}),
+            )
         response = "".join(
             f"event: {event_name}\ndata: {json.dumps(event)}\n\n"
             for event_name, event in events
@@ -173,12 +236,20 @@ def test_staged_runtime_installs_observations_command(staged_claude_runtime):
 
 @pytest.fixture
 def run_staged_claude(fake_anthropic_server, staged_claude_runtime):
-    def run(*prompt_args: str, cwd: Path = REPO_ROOT) -> dict:
+    def run(
+        *prompt_args: str,
+        cwd: Path = REPO_ROOT,
+        response_plan: list[str] | None = None,
+        expected_requests: int = 1,
+    ) -> dict | list[dict]:
         while True:
             try:
                 fake_anthropic_server.requests.get_nowait()
             except queue.Empty:
                 break
+
+        with fake_anthropic_server.response_plan_lock:
+            fake_anthropic_server.response_plan[:] = list(response_plan or ["text"])
 
         host, port = fake_anthropic_server.server_address
         env = os.environ.copy()
@@ -221,12 +292,20 @@ def run_staged_claude(fake_anthropic_server, staged_claude_runtime):
         )
         assert result.returncode == 0, result.stderr + result.stdout
         assert result.stdout.strip() == FAKE_RESPONSE_TEXT
+        captured = []
+        for _ in range(expected_requests):
+            try:
+                request = fake_anthropic_server.requests.get(timeout=2)
+            except queue.Empty:
+                pytest.fail("Claude CLI did not call the localhost fake endpoint")
+            assert request["path"].split("?", 1)[0].endswith("/v1/messages")
+            captured.append(request["payload"])
         try:
-            captured = fake_anthropic_server.requests.get(timeout=2)
+            extra = fake_anthropic_server.requests.get_nowait()
         except queue.Empty:
-            pytest.fail("Claude CLI did not call the localhost fake endpoint")
-        assert captured["path"].split("?", 1)[0].endswith("/v1/messages")
-        return captured["payload"]
+            extra = None
+        assert extra is None, "Claude CLI made more requests than the scripted response plan"
+        return captured[0] if expected_requests == 1 else captured
 
     return run
 
@@ -455,3 +534,54 @@ def test_real_claude_cli_discovers_installed_optional_autopilot_agent(
     assert "explicitly invoked optional Claude subagent" in combined
     assert "not the implicit backend of the `/autopilot` slash command" in combined
     assert "return only the staged-agent-probe result" in combined
+
+
+def test_real_claude_cli_executes_bash_tool_loop_across_independent_invocations(
+    run_staged_claude,
+):
+    invocations = [
+        run_staged_claude(
+            "/autopilot local-tool-loop-one",
+            response_plan=["tool_use", "text"],
+            expected_requests=2,
+        ),
+        run_staged_claude(
+            "/autopilot local-tool-loop-two",
+            response_plan=["tool_use", "text"],
+            expected_requests=2,
+        ),
+    ]
+
+    for requests in invocations:
+        first, second = requests
+        assistant_tool_use = next(
+            message
+            for message in second["messages"]
+            if message.get("role") == "assistant"
+            and any(
+                isinstance(item, dict) and item.get("type") == "tool_use"
+                for item in (message.get("content") or [])
+            )
+        )
+        tool_result = next(
+            item
+            for message in second["messages"]
+            if message.get("role") == "user"
+            for item in (message.get("content") or [])
+            if isinstance(item, dict) and item.get("type") == "tool_result"
+        )
+        tool_use = next(
+            item
+            for item in assistant_tool_use["content"]
+            if item.get("type") == "tool_use"
+        )
+        assert tool_use["id"] == "toolu_runtime_probe"
+        assert tool_use["name"] == "Bash"
+        assert tool_use["input"]["command"] == f"printf {TOOL_LOOP_RESULT}"
+        assert tool_result["tool_use_id"] == tool_use["id"]
+        assert TOOL_LOOP_RESULT in json.dumps(tool_result)
+        assert not any(
+            isinstance(item, dict) and item.get("type") == "tool_result"
+            for message in first["messages"]
+            for item in (message.get("content") or [])
+        )
