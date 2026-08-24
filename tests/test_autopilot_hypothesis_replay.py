@@ -234,15 +234,23 @@ def test_versioned_claim_reports_requested_cap_above_stored_cap_without_writing(
     assert load_queue(tmp_path, TARGET)["actions"][0]["status"] == "queued"
 
 
-@pytest.mark.parametrize("stored_route", [None, ALT_ROUTE], ids=["missing", "different"])
-def test_claimed_skill_route_override_requires_reason(tmp_path, stored_route):
+def test_claimed_first_skill_route_does_not_require_override_reason(tmp_path):
     baseline = f"evidence/{TARGET}/correlation/baseline.json"
     context = _activation_context(baseline)
-    if stored_route is None:
-        context.pop("skill_route")
-        context.pop("route_required")
-    else:
-        context["skill_route"] = stored_route
+    context.pop("skill_route")
+    context.pop("route_required")
+    action_id, _queue_path = _queued_depth_action(tmp_path, context=context)
+    activation = {**_activation(), "skill_route": ROUTE}
+
+    claimed = claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=activation)
+
+    assert claimed["metadata"]["skill_route"] == ROUTE
+    assert "skill_override_reason" not in claimed["metadata"]
+
+
+def test_claimed_skill_route_override_requires_reason(tmp_path):
+    baseline = f"evidence/{TARGET}/correlation/baseline.json"
+    context = {**_activation_context(baseline), "skill_route": ALT_ROUTE}
     action_id, queue_path = _queued_depth_action(tmp_path, context=context)
     activation = {**_activation(), "skill_route": ROUTE}
     before = queue_path.read_bytes()
@@ -254,6 +262,62 @@ def test_claimed_skill_route_override_requires_reason(tmp_path, stored_route):
     activation["skill_override_reason"] = "current target evidence supports the authorization route"
     claimed = claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=activation)
     assert claimed["metadata"]["skill_route"] == ROUTE
+
+
+@pytest.mark.parametrize("selection", ["missing", "empty"])
+def test_versioned_claim_accepts_optional_knowledge_refs(tmp_path, selection):
+    baseline = f"evidence/{TARGET}/correlation/baseline.json"
+    context = {**_activation_context(baseline), "knowledge_refs": []}
+    action_id, _queue_path = _queued_depth_action(tmp_path, context=context)
+    activation = _activation()
+    if selection == "missing":
+        activation.pop("selected_knowledge_refs")
+    else:
+        activation["selected_knowledge_refs"] = []
+
+    claimed = claim_next_action(
+        tmp_path,
+        TARGET,
+        action_id=action_id,
+        metadata=activation,
+    )
+
+    assert claimed["metadata"]["selected_knowledge_refs"] == []
+
+
+@pytest.mark.parametrize("selected_refs", [None, CARD, [""]])
+def test_versioned_claim_rejects_malformed_optional_knowledge_refs(
+    tmp_path,
+    selected_refs,
+):
+    action_id, queue_path = _queued_depth_action(tmp_path)
+    activation = {**_activation(), "selected_knowledge_refs": selected_refs}
+    before = queue_path.read_bytes()
+
+    with pytest.raises(ValueError, match="list of non-empty references"):
+        claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=activation)
+
+    assert queue_path.read_bytes() == before
+
+
+def test_versioned_claim_requires_reason_for_unrecommended_knowledge_refs(tmp_path):
+    action_id, queue_path = _queued_depth_action(tmp_path)
+    other_card = "knowledge/cards/auth-access.md"
+    activation = {**_activation(), "selected_knowledge_refs": [other_card, other_card]}
+    before = queue_path.read_bytes()
+
+    with pytest.raises(ValueError, match="knowledge_override_reason"):
+        claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=activation)
+
+    assert queue_path.read_bytes() == before
+    activation["knowledge_override_reason"] = "current evidence requires the auth boundary card"
+    claimed = claim_next_action(
+        tmp_path,
+        TARGET,
+        action_id=action_id,
+        metadata=activation,
+    )
+    assert claimed["metadata"]["selected_knowledge_refs"] == [other_card]
 
 
 def test_versioned_runner_requires_operation_id_without_writing(tmp_path):
@@ -380,6 +444,41 @@ def test_hidden_surface_requires_correlated_local_evidence_before_activation(tmp
     assert correlated[0]["activation_required"] is True
     assert len(correlated[0]["metadata"]["evidence_refs"]) == 2
     assert correlated[0]["metadata"]["method"] == "POST"
+
+
+def test_activation_context_does_not_require_recommended_route_or_cards(tmp_path):
+    browser = tmp_path / "recon" / TARGET / "browser" / "xhr.json"
+    source = tmp_path / "findings" / TARGET / "source_intel" / "routes.json"
+    _write_json(browser, {"url": ENDPOINT})
+    _write_json(source, {"method": "POST", "route": "/api/export"})
+    actions = [{
+        "type": "evidence-convergence",
+        "action": f"Cross-evidence high-value surface {ENDPOINT}: POST route",
+        "command_hint": "focused replay with browser/JS/source evidence",
+    }]
+
+    _attach_activation_context(
+        actions,
+        repo=tmp_path,
+        target=TARGET,
+        context={
+            "knowledge_cards": [],
+            "hypothesis_seeds": ["export route crosses an object boundary"],
+            "must_read": [
+                f"recon/{TARGET}/browser/xhr.json",
+                f"findings/{TARGET}/source_intel/routes.json",
+            ],
+        },
+    )
+
+    metadata = actions[0]["metadata"]
+    assert actions[0]["activation_required"] is True
+    assert metadata["knowledge_refs"] == []
+    assert metadata["max_hypothesis_actions_cap"] == 4
+    assert metadata["baseline_ref"] == f"recon/{TARGET}/browser/xhr.json"
+    assert "hypothesis_seed" not in metadata
+    assert "skill_route" not in metadata
+    assert "route_required" not in metadata
 
 
 def test_surface_review_remains_versionless_even_with_replay_draft(tmp_path):

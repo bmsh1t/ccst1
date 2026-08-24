@@ -279,6 +279,20 @@ def test_skill_catalog_covers_repository_and_derives_primary_routes():
     }
 
 
+def test_recommended_skill_and_cards_stay_advisory_and_outside_must_read(tmp_path):
+    pack = build_context_pack(tmp_path, target="target.com", focus="api-idor")
+    catalog_paths = {item["path"] for item in SKILL_CATALOG.values()}
+
+    assert "CLAUDE.md" not in pack["must_read"]
+    assert "SKILL.md" not in pack["must_read"]
+    assert "skills/runtime-protocol.md" in pack["must_read"]
+    assert pack["selected_skill"] in catalog_paths
+    assert pack["skill_route"]["skill_path"] == pack["selected_skill"]
+    assert set(pack["must_read"]).isdisjoint(catalog_paths)
+    assert len(pack["knowledge_cards"]) <= 2
+    assert set(pack["knowledge_cards"]).isdisjoint(pack["must_read"])
+
+
 def test_explicit_primary_skill_names_precede_generic_validation_words(tmp_path):
     for skill_id in SKILL_PATHS:
         pack = build_context_pack(
@@ -308,6 +322,7 @@ def test_api_idor_context_pack_selects_vuln_skill_and_cards(tmp_path):
     assert "auth" in pack["skill_route"]["required_dimensions"]
     assert "knowledge/cards/api-idor.md" in pack["knowledge_cards"]
     assert "knowledge/cards/auth-access.md" in pack["knowledge_cards"]
+    assert "Recommended skill: skills/web2-vuln-classes/SKILL.md" in output
     assert any("Surface review" in item for item in pack["evidence_anchors"])
     assert "AI override" in output
 
@@ -357,7 +372,7 @@ def test_target_registry_remap_reaches_context_pack_checkpoint_and_witness(tmp_p
 
     assert custom_card in pack["knowledge_cards"]
     assert original_card not in pack["knowledge_cards"] + pack["deferred_knowledge_cards"]
-    assert custom_card in pack["must_read"]
+    assert custom_card not in pack["must_read"]
     assert any(
         item["file"] == custom_card
         and item["id"] == "server-side-template-injection"

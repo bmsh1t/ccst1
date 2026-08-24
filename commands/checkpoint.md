@@ -47,6 +47,9 @@ python3 tools/target_case_state.py summary --target <target>
 - 可复制执行的 `tools/target_memory.py` 命令
 - `/retrospect <target>` 后续沉淀入口
 
+Context Pack 的 Skill/Card/seed/recall 建议会保留在 checkpoint 与 witness 中供诊断，
+但不会仅因未被现有动作表示而生成 durable Queue item，也不会自动成为已选择假设。
+
 ## 自动写入边界
 
 默认允许自动写入，仅限：
@@ -103,8 +106,8 @@ CHECKPOINT DECISION
 - Phase:
 - Decision:
 - Next action:
-- Selected skill:
-- Knowledge cards:
+- Recommended skill:
+- Recommended knowledge cards:
 - Coverage:
   - endpoints:
   - high-value gaps:

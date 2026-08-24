@@ -64,6 +64,12 @@ def test_install_script_copies_shared_skill_markdown_files(tmp_path):
     assert installed_protocol.read_text(encoding="utf-8") == expected
     assert "Installed shared skill file: runtime-protocol.md" in result.stdout
 
+    installed_bug_bounty = home / ".claude" / "skills" / "bug-bounty" / "SKILL.md"
+    modular_bug_bounty = REPO_ROOT / "skills" / "bug-bounty" / "SKILL.md"
+    legacy_root_skill = REPO_ROOT / "SKILL.md"
+    assert installed_bug_bounty.read_bytes() == modular_bug_bounty.read_bytes()
+    assert installed_bug_bounty.read_bytes() != legacy_root_skill.read_bytes()
+
 
 def test_install_script_recursively_copies_managed_skill_resources(tmp_path):
     home = tmp_path / "home"

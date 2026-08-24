@@ -267,43 +267,36 @@ add skips because of previous target context.
 
 ## How It Works
 
-Claude Code CLI uses a local, layered workflow:
+Claude Code CLI uses a local, layered workflow. The current Claude session keeps
+the final route decision; prompts and tools do not create another controller.
 
 | Layer | Responsibility |
 |:---|:---|
-| **Agent** | Executes bounded roles such as recon, ranking, validation, reporting, chaining, Web3, token review, and autopilot loops |
-| **Skill** | Supplies reusable methodology; broad skills coordinate, narrower skills own recon, vuln classes, validation, reporting, arsenal, Web3, and token tactics |
-| **Memory** | Persists target-level state, tested surfaces, findings, audit trails, and reusable patterns without forcing old agent sessions into new runs |
+| **`CLAUDE.md`** | Always-loaded project contract for authorization, AI/tool boundaries, state owners, and entry routing |
+| **Runtime protocol** | Shared Target -> Skill -> Knowledge -> Checks -> Write-back contract |
+| **Decision Skill** | `bb-methodology`, loaded for session start, target switch, stalled progress, or hypothesis rotation |
+| **Execution Skills** | Evidence-selected contracts for recon, vulnerability families, validation, reporting, credentials, mobile, CI/CD, Web3, and token work |
+| **Knowledge** | Bounded on-demand cards and references; never the current target-state owner |
+| **Tools and state** | Deterministic replay, diff, raw evidence, Coverage, Ledger, Queue, Checkpoint, and recovery |
+| **Optional Agents** | Bounded specialist execution that returns evidence to the current Claude session; never a second target-state controller |
+
+The root `SKILL.md` is a legacy direct-install compatibility entry. The supported
+installer copies `skills/*.md` and `skills/*/`; the root entry is not part of the
+default Context Pack or installed runtime.
 
 The default manual lane is the Core 4: **`/recon` -> `/hunt` -> `/validate` -> `/report`**. Power commands such as `/autopilot`, `/surface`, `/pickup`, `/intel`, `/source-hunt`, `/chain`, `/web3-audit`, `/token-scan`, and `/memory-gc` extend that lane when you need autonomy, source intelligence, chaining, Web3/token review, or memory maintenance.
 
 ```
-                         YOU
-                          |
-                    ┌─────▼─────┐
-                    │   Claude   │ ◄── Burp/Caido MCP (sees your traffic)
-                    │   Code     │ ◄── HackerOne MCP (program intel)
-                    └─────┬─────┘
-                          |
-          ┌───────────────┼───────────────┐
-          |               |               |
-    ┌─────▼─────┐  ┌──────▼──────┐  ┌────▼────┐
-    │   Recon    │  │    Hunt     │  │ Report  │
-    │   Agent    │  │   Engine    │  │ Writer  │
-    └─────┬─────┘  └──────┬──────┘  └────┬────┘
-          |               |               |
-    subfinder        target match     H1/Bugcrowd
-    httpx            vuln test        Intigriti
-    katana           validate         Immunefi
-    nuclei           chain A→B→C      CVSS 4.0
-          |               |               |
-    ┌─────▼───────────────▼───────────────▼─────┐
-    │              Hunt Memory                   │
-    │  journal · patterns · audit · rate limit   │
-    └───────────────────────────────────────────-─┘
+YOU -> Claude Code CLI main session
+    -> CLAUDE.md + runtime protocol
+    -> bounded Context Pack (target evidence + one Skill / 0-2 Card recommendations)
+    -> Claude explicitly selects and loads the applicable route
+    -> tool / MCP / optional specialist execution
+    -> raw evidence -> Ledger / Queue / Checkpoint / Coverage -> recovery
 ```
 
-Each stage feeds the next. Claude orchestrates everything, or you run any stage independently.
+Each stage feeds the existing owners. Claude chooses the route, or you run any
+stage independently.
 
 <br>
 

@@ -13,9 +13,9 @@ description: Web/API vulnerability-class routing guide for autonomous assessment
 > require explicit current-turn intent. Prefer source, JS, captured traffic,
 > GET/HEAD, role diff, dry-run reasoning, and low-volume controlled probes first.
 
-This Skill is the **default-loaded decision layer** for Web/API bug classes. Keep
-it small. Put payload bodies, bypass tables, grep lists, and tool syntax in the
-on-demand references below.
+This Skill is the decision layer after Claude selects a concrete Web/API bug-class
+lane. Keep it small. Put payload bodies, bypass tables, grep lists, and tool syntax
+in the on-demand references below.
 
 ## Runtime Contract
 

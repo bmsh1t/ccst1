@@ -440,6 +440,11 @@ def write_checkpoint_witness(
             "selected_skill": context.get("selected_skill", ""),
             "skill_route": context.get("skill_route", {}),
             "knowledge_cards": context.get("knowledge_cards", []),
+            "knowledge_card_recall": [
+                item
+                for item in (context.get("knowledge_card_recall") or [])[:8]
+                if isinstance(item, dict)
+            ],
             "reference_hints": context.get("reference_hints", []),
             "required_checks": context.get("required_checks", []),
         },
@@ -1379,18 +1384,6 @@ def _lead_proposals(
                 )
             )
 
-    if (
-        not proposals
-        and state.get("has_recon")
-        and not _case_state_count(case_state, "open_hypotheses")
-    ):
-        for seed in (context_pack.get("hypothesis_seeds") or [])[:1]:
-            proposals.append(
-                f"Evidence: Context-pack hypothesis seed. Why it matters: {seed} "
-                "Next action: collect the smallest surface artifact that can confirm "
-                "or reject this hypothesis. Stop condition: no matching endpoint, "
-                "role boundary, or workflow evidence appears."
-            )
     return _dedupe(proposals)[:3]
 
 
@@ -2581,14 +2574,12 @@ def _next_proposals(
     )
     covered_ledger_cells = _ledger_covered_cells(evidence_summary, matrix)
 
-    viewstate_seed = next(
-        (
-            str(seed) for seed in (context_pack.get("hypothesis_seeds") or [])
-            if "ViewState 表单先保存同页新鲜 GET 基线" in str(seed)
-        ),
-        "",
+    source_summary = (
+        context_pack.get("source_summary")
+        if isinstance(context_pack.get("source_summary"), dict)
+        else {}
     )
-    if viewstate_seed:
+    if source_summary.get("viewstate_signal") is True:
         proposals.append(
             "ViewState integrity review: browser evidence exposes __VIEWSTATE. "
             "Save one target-owned fresh same-page GET baseline with __VIEWSTATEGENERATOR/__EVENTVALIDATION; first run tools/aspnet_viewstate_knownkey.py offline, then replay only a format control and single-byte __VIEWSTATE tamper without submitting a business action. "
@@ -3226,7 +3217,7 @@ def _dedupe_artifact_category_items(items: list[dict]) -> list[dict]:
     return result
 
 
-def _build_next_action_queue(next_items: list[str], target: str = "", skill_route: dict | None = None) -> list[dict]:
+def _build_next_action_queue(next_items: list[str], target: str = "") -> list[dict]:
     queue: list[dict] = []
     for idx, item in enumerate(next_items, 1):
         action_type, priority, command_hint = _classify_next_action(item, target)
@@ -3246,27 +3237,9 @@ def _build_next_action_queue(next_items: list[str], target: str = "", skill_rout
         }
         if metadata:
             row["metadata"] = metadata
-        if isinstance(skill_route, dict) and skill_route:
-            row.setdefault("metadata", {})
-            row["metadata"].setdefault("skill_route", dict(skill_route))
-            row["metadata"]["route_required"] = True
         queue.append(row)
     queue.sort(key=lambda item: (-int(item["priority"]), str(item["id"])))
     return queue
-
-
-def _attach_skill_route(actions: list[dict], skill_route: dict | None) -> list[dict]:
-    if not isinstance(skill_route, dict) or not skill_route:
-        return actions
-    for action in actions:
-        if not isinstance(action, dict):
-            continue
-        metadata = action.setdefault("metadata", {})
-        if isinstance(metadata, dict):
-            metadata.setdefault("skill_route", dict(skill_route))
-            metadata["route_required"] = True
-    return actions
-
 
 _ACTIVATABLE_ACTION_TYPES = {
     "validation", "candidate-evidence-gap", "case-state-validation", "actor-gap",
@@ -3487,11 +3460,7 @@ def _attach_activation_context(
     target: str,
     context: dict,
 ) -> list[dict]:
-    route = context.get("skill_route") if isinstance(context.get("skill_route"), dict) else {}
     knowledge_refs = [str(value) for value in (context.get("knowledge_cards") or []) if str(value).strip()][:4]
-    seeds = [str(value).strip() for value in (context.get("hypothesis_seeds") or []) if str(value).strip()]
-    if not route or not knowledge_refs:
-        return actions
     for action in actions:
         if not isinstance(action, dict) or str(action.get("type") or "") not in _ACTIVATABLE_ACTION_TYPES:
             continue
@@ -3513,7 +3482,6 @@ def _attach_activation_context(
             "evidence_ref": refs[-1],
             "evidence_refs": refs,
             "baseline_ref": refs[0],
-            "hypothesis_seed": (seeds[0] if seeds else str(action.get("action") or ""))[:500],
             "max_hypothesis_actions_cap": 4,
             "endpoint": endpoint,
             "method": method,
@@ -3521,170 +3489,6 @@ def _attach_activation_context(
         })
         action["activation_required"] = True
     return actions
-
-
-_VOLATILE_KNOWLEDGE_ANCHOR_PREFIXES = (
-    "surface",
-    "workflow lead",
-    "coverage gap",
-    "coverage_",
-    "ledger",
-    "actor gap",
-)
-
-
-def _stable_knowledge_anchors(values: object) -> list[str]:
-    """Keep evidence-backed anchors while dropping rotating projections."""
-    if not isinstance(values, list):
-        return []
-    stable: set[str] = set()
-    for value in values:
-        anchor = re.sub(r"\s+", " ", str(value or "")).strip()
-        if not anchor:
-            continue
-        lowered = anchor.casefold()
-        if lowered.startswith(_VOLATILE_KNOWLEDGE_ANCHOR_PREFIXES):
-            continue
-        stable.add(lowered[:500])
-    return sorted(stable)
-
-
-def _knowledge_signal_review_item(context: dict, actions: list[dict], target: str) -> dict:
-    """Keep specific recalled cards visible when no surviving action carries them."""
-    represented: set[str] = set()
-    for action in actions:
-        metadata = (
-            action.get("metadata")
-            if isinstance(action, dict) and isinstance(action.get("metadata"), dict)
-            else {}
-        )
-        for key in ("knowledge_refs", "selected_knowledge_refs"):
-            values = metadata.get(key)
-            if not isinstance(values, list):
-                continue
-            represented.update(
-                str(value).strip()
-                for value in values
-                if str(value).strip()
-            )
-
-    recalls: list[dict] = []
-    for raw in context.get("knowledge_card_recall", []) or []:
-        if not isinstance(raw, dict):
-            continue
-        file = str(raw.get("file") or "").strip()
-        card_id = str(raw.get("id") or "").strip()
-        status = str(raw.get("status") or "").strip().lower()
-        reason = re.sub(r"\s+", " ", str(raw.get("reason") or "")).strip()
-        try:
-            rank = int(raw.get("rank", 0) or 0)
-        except (TypeError, ValueError):
-            rank = 0
-        if (
-            not file
-            or status not in {"selected", "deferred"}
-            or reason.split(";", 1)[0].strip().lower() == "coverage or routing fallback"
-            or represented.intersection({file, card_id})
-        ):
-            continue
-        recalls.append({
-            "file": file,
-            "id": card_id,
-            "status": status,
-            "rank": rank,
-            "reason": reason,
-        })
-
-    ordered: list[dict] = []
-    seen_files: set[str] = set()
-    for recall in sorted(recalls, key=lambda item: (item["rank"], item["file"], item["id"])):
-        if recall["file"] not in seen_files:
-            ordered.append(recall)
-            seen_files.add(recall["file"])
-    if not ordered:
-        return {}
-
-    anchors = [
-        re.sub(r"\s+", " ", str(value)).strip()[:500]
-        for value in (context.get("evidence_anchors") or [])
-        if str(value).strip()
-    ][:8]
-    seeds = [
-        re.sub(r"\s+", " ", str(value)).strip()[:500]
-        for value in (context.get("hypothesis_seeds") or [])
-        if str(value).strip()
-    ][:8]
-    generation = hashlib.sha256(
-        json.dumps(
-            {
-                "target": canonical_target_value(target),
-                "recall": ordered,
-                "evidence_anchors": anchors,
-                "hypothesis_seeds": seeds,
-            },
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    signal_recalls = [
-        {
-            "file": item["file"],
-            "id": item["id"],
-            "status": item["status"],
-        }
-        for item in ordered
-    ]
-    signal_identity = hashlib.sha256(
-        json.dumps(
-            {
-                "target": canonical_target_value(target),
-                "recall": signal_recalls,
-                "evidence_anchors": _stable_knowledge_anchors(
-                    context.get("evidence_anchors")
-                ),
-            },
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    visible = [
-        "{id} [{status}: {reason}]".format(
-            id=item["id"] or Path(item["file"]).stem,
-            status=item["status"],
-            reason=item["reason"].split(";", 1)[0][:120],
-        )
-        for item in ordered[:4]
-    ]
-    remaining = len(ordered) - len(visible)
-    summary = ", ".join(visible) + (f"; {remaining} more in metadata" if remaining else "")
-    return {
-        "id": f"KNOWLEDGE-SIGNAL-{generation[:12]}",
-        "priority": 91,
-        "type": "knowledge-signal-review",
-        "status": "ready",
-        "action": (
-            f"Review unrepresented knowledge signals: {summary}. "
-            "Choose at most one evidence-backed hypothesis, or record why the "
-            "signals are deferred or not applicable."
-        ),
-        "command_hint": "review recall reasons and current evidence anchors before adding one bounded queue action",
-        "redline_required": False,
-        "stop_condition": (
-            "materialize at most one evidence-backed action or record "
-            "deferred/not-applicable with evidence"
-        ),
-        "source": "knowledge-recall",
-        "source_id": "unrepresented-signals",
-        "metadata": {
-            "generation": generation,
-            "signal_identity": signal_identity,
-            "knowledge_refs": [item["file"] for item in ordered],
-            "knowledge_card_recall": ordered,
-        },
-    }
-
 
 def _json_inject_queue_item(state: dict) -> dict:
     projection = state.get("json_inject") or {}
@@ -4208,7 +4012,7 @@ def build_checkpoint(
         next_items = [case_state_proposal, *next_items]
     elif case_state_seed_proposal:
         next_items = [case_state_seed_proposal, *next_items]
-    next_action_queue = _build_next_action_queue(next_items, resolved_target, context.get("skill_route"))
+    next_action_queue = _build_next_action_queue(next_items, resolved_target)
     case_top = _case_state_top_next(case_state)
     case_metadata = case_top.get("metadata") if isinstance(case_top.get("metadata"), dict) else {}
     if case_metadata:
@@ -4237,7 +4041,6 @@ def build_checkpoint(
     )
     if sibling_item:
         next_action_queue.append(sibling_item)
-    _attach_skill_route(next_action_queue, context.get("skill_route"))
     _attach_activation_context(
         next_action_queue,
         repo=repo,
@@ -4254,18 +4057,6 @@ def build_checkpoint(
         next_action_queue,
         queue_snapshot,
     )
-    knowledge_signal_item = _knowledge_signal_review_item(
-        context,
-        next_action_queue,
-        resolved_target,
-    )
-    if knowledge_signal_item:
-        next_action_queue.extend(_filter_final_action_queue_items(
-            repo,
-            resolved_target,
-            [knowledge_signal_item],
-            queue_snapshot,
-        ))
     dead_ends = _dead_end_proposals(state, gaps)
     runtime_wait_action = str(state.get("next_action") or "")
     if runtime_wait_action in {"wait_recon", "wait_scan"}:
@@ -4319,6 +4110,11 @@ def build_checkpoint(
             "selected_skill": context.get("selected_skill", ""),
             "skill_route": context.get("skill_route", {}),
             "knowledge_cards": context.get("knowledge_cards", []),
+            "knowledge_card_recall": [
+                item
+                for item in (context.get("knowledge_card_recall") or [])[:8]
+                if isinstance(item, dict)
+            ],
             "evidence_anchors": context.get("evidence_anchors", []),
             "hypothesis_seeds": context.get("hypothesis_seeds", []),
             "reference_hints": context.get("reference_hints", []),
@@ -4534,8 +4330,8 @@ def format_checkpoint(checkpoint: dict) -> str:
         f"- Phase: {checkpoint.get('phase', '')}",
         f"- Decision: {checkpoint.get('decision', '')}",
         f"- Next action: {checkpoint.get('next_action', '')}",
-        f"- Selected skill: {context.get('selected_skill', '')}",
-        "- Knowledge cards:",
+        f"- Recommended skill: {context.get('selected_skill', '')}",
+        "- Recommended knowledge cards:",
         *_fmt_list([str(item) for item in context.get("knowledge_cards", [])]),
         "- Knowledge effect: {suggestion} -> {action} -> {result}".format(
             suggestion=knowledge_trace.get("suggestion", "pending"),

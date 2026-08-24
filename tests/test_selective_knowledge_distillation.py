@@ -45,7 +45,7 @@ def test_sqli_hidden_surface_card_stays_bounded_and_preserves_core_branches(tmp_
     )
 
     assert pack["knowledge_cards"][0] == "knowledge/cards/sqli-hidden-surfaces.md"
-    assert pack["knowledge_cards"][0] in pack["must_read"]
+    assert pack["knowledge_cards"][0] not in pack["must_read"]
     assert len(pack["knowledge_cards"]) <= 2
     assert any(
         item["id"] == "sqli-hidden-surfaces"

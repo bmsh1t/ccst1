@@ -57,8 +57,10 @@ python3 tools/context_pack.py --target <target>
 7. 推荐一个主 Skill，再推荐 1-2 张知识卡。
 8. 输出证据锚点、假设种子、Actor Matrix 缺口、相邻角度、矛盾点和写回建议。
 
-如果工具输出的 `AI override` 认为另一个 Skill / 知识卡更匹配当前证据，Claude
-可以改选，但必须说明原因并保留红线与覆盖检查。
+`selected_skill`、`skill_route` 和 `knowledge_cards` 是兼容推荐字段，不表示已经加载或
+选择。Claude 根据当前证据显式选择适用 Skill / 知识卡，并保留红线与覆盖检查。
+`hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall` 也只是建议/诊断，
+不会由 Checkpoint 自动变成 Queue 动作或已选择假设。
 
 ## 输出格式
 
@@ -68,10 +70,10 @@ CONTEXT PACK
 - Phase:
 - Active goal:
 - Current hypothesis:
-- Selected skill:
-- Why this skill:
+- Recommended skill:
+- Why this recommendation:
 - Must read:
-- Knowledge cards:
+- Recommended knowledge cards:
 - Required checks:
 - Evidence anchors:
 - Hypothesis seeds:
@@ -98,14 +100,13 @@ CONTEXT PACK
 - Phase: hunt
 - Active goal: Find high-value API authorization issues
 - Current hypothesis: org_id may be user-controlled
-- Selected skill: skills/web2-vuln-classes/SKILL.md
-- Why this skill: 已有可测试的 Web/API surface 或漏洞类别信号。
+- Recommended skill: skills/web2-vuln-classes/SKILL.md
+- Why this recommendation: 已有可测试的 Web/API surface 或漏洞类别信号。
 - Must read:
   - memory/goals/active.json
   - memory/goals/targets/example.com.json
   - skills/runtime-protocol.md
-  - skills/web2-vuln-classes/SKILL.md
-- Knowledge cards:
+- Recommended knowledge cards:
   - knowledge/cards/api-idor.md
   - knowledge/cards/auth-access.md
 - Required checks:
@@ -138,10 +139,10 @@ CONTEXT PACK
   - raw browser capture requests/console/storage unless validating one exact replay path
 - Write-back:
   - python3 tools/target_memory.py lead "Evidence: ... Why it matters: ... Next action: ... Stop condition: ..." --target example.com
-- AI override: Claude may choose another skill, knowledge card, or path if the evidence supports it...
+- AI override: Skill/Card fields are advisory; Claude explicitly selects the route at Action Queue claim...
 ```
 
-`knowledge/index.md` remains an on-demand catalog when the selected Card or
+`knowledge/index.md` remains an on-demand catalog when the recommended Card or
 recall reason is insufficient; it is not part of the default `Must read` set.
 
 ## Skill / Focus 路由
@@ -163,15 +164,16 @@ recall reason is insufficient; it is not part of the default `Must read` set.
 
 ## 纪律
 
-- 一轮任务只选一个主 Skill。
-- 一次最多选 1-2 张知识卡。
+- Context Pack 一轮只推荐一个主 Skill，Claude 选择后再读取。
+- Context Pack 一次最多推荐 1-2 张知识卡，Claude 只读取当前证据需要的卡。
 - 可能改变、破坏或污染真实状态的动作必须加入 `rules/red-lines.md`。
 - 结束前必须加入 `rules/coverage-gate.md`。
 - 上下文包不是结论；它只是执行前的加载计划。
-- 每次 substantive lane 以 context pack 的 `skill_route` 为执行边界；
-  `required_dimensions` 必须写入对应 Action Queue metadata。AI 可以改选路线，
-  但要把替代 `skill_id`、原因和测试维度写回，不能无记录地绕过路由。
+- seed/recall 不是动作；Claude 选择假设后才通过现有 owner 创建或激活正常 Queue action。
+- 每次 substantive lane 在 Action Queue claim 时由 Claude 显式选择 `skill_route`；
+  `required_dimensions` 必须写入对应 metadata。首次选择不是 override；替换 action
+  owner 已有 route 时必须记录 `skill_override_reason`。
 - browser 证据默认只读 `recon/<target>/browser/` 的 XHR/API/params/form/page-JS 小索引；
   不默认加载 `evidence/<target>/browser/...` 的原始 requests/console/storage。
 - Actor Matrix 缺口不是结论；它只是提醒哪些角色/对象/replay 还没有结构化记录。
-- 工具推荐不是强制路线，也不是固定工具清单；Claude 可以改选 Skill、知识卡或执行路径，但必须说明原因并写回 route metadata。
+- 工具推荐不是强制路线，也不是固定工具清单；Claude 必须说明选择原因并把实际 route 写回 Action Queue metadata。

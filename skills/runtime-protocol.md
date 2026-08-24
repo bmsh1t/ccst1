@@ -1,16 +1,45 @@
 # Skills 四层运行协议
 
-本协议定义核心 Skills 如何接入目标层、知识库层和检查层。
+本协议定义共享的 Target -> Skill -> Knowledge -> Checks -> Write-back 路由，不负责
+替 Claude Code CLI 主会话选择具体测试类别。
 
 执行本协议时，默认继承 `CLAUDE.md` 中的 Authorization and Action Safety 和
 Operator Contract：在当前目标上下文内按授权渗透测试工程师推进工作；同时
 `rules/red-lines.md` 始终是更高优先级的动作安全边界。
 
+## Claude Code CLI 职责边界
+
+| 层 | 唯一职责 | 加载边界 |
+|---|---|---|
+| `CLAUDE.md` | 授权、AI/工具边界、状态 owner、入口路由 | 仓库启动时由 Claude Code CLI 常驻加载 |
+| 本协议 | Target -> Skill -> Knowledge -> Checks -> Write-back | Context Pack 共享必读契约 |
+| `bb-methodology` | 假设选择、轮换、停止和交接 | 会话开始、换目标、停滞或需要选路时按需加载 |
+| 专项 Skill | 特定输入、观察、安全和写回步骤 | Context Pack 推荐，Claude 按当前证据选择后读取 |
+| 知识卡/参考资料 | 模式、技巧、证据门和停止条件 | 默认推荐 0-2 张，Claude 按信号读取 |
+| Rules / checks | 红线、Coverage、Validation 和 Reporting gate | 按当前动作与阶段读取 |
+| Tools / state owners | replay、diff、raw evidence、生命周期和恢复 | 确定性执行或写回时调用 |
+
+根 `SKILL.md` 是旧单文件直装兼容入口，不由正式 `install.sh` 安装，也不进入 Context
+Pack。Claude Code CLI 当前主会话保留最终路线判断权；本协议、推荐 Skill/Card 和工具输出
+都不能建立第二个 controller 或 target-state owner。
+
+Context Pack 的 `selected_skill`、`skill_route` 和 `knowledge_cards` 是兼容推荐字段，不是
+已选择的执行状态，也不进入默认 `must_read` 或自动写入 Queue。Claude 在 substantive
+action claim 时显式选择 Skill route；首次选择不是 override，只有替换 action owner 已有
+route 时才需要 `skill_override_reason`。
+
+`hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall` 同样只供 Claude 判断与
+诊断。Context Pack 保留三者，Checkpoint 保留 seed/recall 投影，但不会仅凭建议生成 Queue
+动作或把首个 seed 记成已选择假设。
+
+Action Queue claim 的 `selected_knowledge_refs` 可以省略或为空；只有实际使用知识卡时才记录。
+非空引用必须来自 action 的 `knowledge_refs`，改选其它引用时记录 `knowledge_override_reason`。
+
 ## 运行顺序
 
 ```text
 1. 目标层：确认当前目标和上下文
-2. Skills 层：当前 Skill 作为流程指挥者，选择执行路径
+2. Skills 层：Claude 主会话选择一个 Skill 作为当前执行契约
 3. 知识库层：Skill 按需读取知识卡，用于回忆、联想和思路变形
 4. 检查层：红线过滤和覆盖基线审计
 5. 执行与写回：低风险验证、记录线索、沉淀经验
@@ -44,7 +73,8 @@ python3 tools/target_memory.py show
 
 ## 2. Skills 层：选择执行路径
 
-Skills 层是四层体系的流程指挥者。当前 Skill 根据目标、阶段和证据决定下一步：
+Claude Code CLI 主会话根据目标、阶段和证据选择当前 Skill；Skill 提供该路径的决策或
+执行契约：
 
 - `bug-bounty`：端到端协调、跨 Skill 路由、链式思考
 - `bb-methodology`：会话路线、阶段判断、迷路时重新定向
@@ -52,7 +82,9 @@ Skills 层是四层体系的流程指挥者。当前 Skill 根据目标、阶段
 - `web2-vuln-classes`：具体漏洞类别验证思路
 - `triage-validation`：Candidate 到 Validated Finding 的验证 gate
 
-Skill 负责指定流程、选择工具、调用检查层和写回结果。Skill 不应把知识库当成默认全量上下文，也不应让知识卡反过来接管执行顺序；只在需要扩展、变形或补充思路时读取知识库。
+Claude 主会话用 Skill 约束当前流程、工具、检查层和写回结果，并保留接受、替换或组合
+建议的最终判断权。Skill 不应把知识库当成默认全量上下文，也不应让知识卡反过来接管
+执行顺序；只在需要扩展、变形或补充思路时读取知识库。
 
 ## 2.1 三模式决策：Discovery / Exploitation / Validation modes
 
@@ -76,9 +108,10 @@ actively generate new evidence。
 Next question / Stop condition / Red-line status`。复核结果继续写入现有 Evidence 或
 Action Queue，不新增 transition 字段或第二套状态机。
 
-AI override 是能力上限保护：当前 Skill 可以跳过默认路线、组合多张知识卡、
+AI selection / override 是能力上限保护：当前 Skill 可以跳过推荐路线、组合多张知识卡、
 创建新的 action 类型，或把 Discovery / Exploitation / Validation 顺序局部
-重排；但必须说明原因、red-line status、下一步验证动作和停止条件。Skill route
+重排；选择必须说明 decision reason、red-line status、下一步验证动作和停止条件；只有
+替换 action owner 已有 route 才需要 override reason。Skill route
 及其 required dimensions 是 substantive Action Queue 的最小执行证据；工具、知识卡
 和 checklist 仍是可替换的决策输入，不是固定工具清单。
 

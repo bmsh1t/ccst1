@@ -475,7 +475,7 @@ def format_resume_output(summary: dict | None, target: str) -> str:
             lines.append(f"  Blocker: {checkpoint.get('blocker') or 'none'}")
             selected_skill = str(checkpoint.get("selected_skill") or "").strip()
             if selected_skill:
-                lines.append(f"  Selected skill: {selected_skill}")
+                lines.append(f"  Recommended skill: {selected_skill}")
             lines.append(f"  High-value gaps: {checkpoint.get('high_value_gaps_count', 0)}")
             lines.append(
                 "  Target write-back proposals: "

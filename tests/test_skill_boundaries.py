@@ -183,6 +183,25 @@ def test_runtime_protocol_keeps_compact_mode_transition_review():
         assert marker in runtime
 
 
+def test_claude_cli_runtime_responsibility_and_loading_boundaries_are_explicit():
+    claude = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
+    loading = (REPO_ROOT / "rules" / "context-loading.md").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    runtime_text = " ".join(runtime.split())
+    loading_text = " ".join(loading.split())
+
+    assert "### Responsibility and Loading Boundary" in claude
+    assert "Claude Code CLI 当前主会话" in claude
+    assert "## Claude Code CLI 职责边界" in runtime
+    assert "不负责 替 Claude Code CLI 主会话选择具体测试类别" in runtime_text
+    assert "根 `SKILL.md` 是旧单文件直装兼容入口" in runtime
+    assert "## 当前默认加载边界" in loading
+    assert "推荐的 primary Skill 和最多两张知识卡不在 `must_read`" in loading_text
+    assert "The root `SKILL.md` is a legacy direct-install compatibility entry" in readme
+    assert "Optional Agents" in readme
+
+
 def test_hidden_sqli_surfaces_are_part_of_skill_flow():
     runtime = (REPO_ROOT / "skills" / "runtime-protocol.md").read_text(encoding="utf-8")
     web2 = (REPO_ROOT / "skills" / "web2-vuln-classes" / "SKILL.md").read_text(encoding="utf-8")

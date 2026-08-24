@@ -26,10 +26,12 @@ def test_context_pack_command_uses_tool_not_manual_prompt_only():
     assert "不执行测试、不扫描目标、不写目标记忆" in text
 
 
-def test_context_pack_keeps_ai_override_boundary():
+def test_context_pack_keeps_advisory_selection_boundary():
     text = _read("commands/context-pack.md")
 
     assert "AI override" in text
-    assert "Claude 可以改选" in text
-    assert "必须说明原因" in text
+    assert "兼容推荐字段" in text
+    assert "Claude 根据当前证据显式选择" in text
+    assert "首次选择不是 override" in text
+    assert "必须说明选择原因" in text
     assert "工具推荐不是强制路线" in text

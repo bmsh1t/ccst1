@@ -3480,9 +3480,8 @@ def build_context_pack(
         goal_memory["active_path"],
         goal_memory["target_path"],
         "skills/runtime-protocol.md",
-        SKILL_PATHS[skill],
         ledger_path,
-    ] + cards + (["tools/aspnet_viewstate_knownkey.py"] if viewstate_signal else []) + (["tools/telerik_knownkey.py"] if telerik_dialog_signal else []) + _local_intel_paths(local_intel) + [
+    ] + (["tools/aspnet_viewstate_knownkey.py"] if viewstate_signal else []) + (["tools/telerik_knownkey.py"] if telerik_dialog_signal else []) + _local_intel_paths(local_intel) + [
         str(item.get("summary_path") or "")
         for item in runner_candidates[:6]
         if item.get("summary_path")
@@ -3546,10 +3545,10 @@ def build_context_pack(
         ],
         "write_back": _write_back_commands(resolved_target) + (evidence_summary.get("record_commands") or [])[:3],
         "ai_override": (
-            "Claude may choose another skill, knowledge card, or path if the evidence supports it; "
-            "state the reason, keep red-lines/coverage checks loaded, write the selected skill and "
-            "tested dimensions into the Action Queue, and write the decision back to target memory "
-            "or /retrospect."
+            "Skill and knowledge-card fields are advisory. Claude must explicitly choose and load "
+            "the applicable route at Action Queue claim, keep red-lines/coverage checks loaded, "
+            "and write the selected skill and tested dimensions into the Action Queue. "
+            "skill_override_reason is required only when replacing an action-owned route."
         ),
         "source_summary": {
             "surface_available": bool(ranked.get("available")),
@@ -3590,12 +3589,12 @@ def format_context_pack(pack: dict) -> str:
         f"- Active goal: {pack.get('active_goal') or '-'}",
         f"- Current hypothesis: {pack.get('current_hypothesis') or '-'}",
         f"- Tech stack: {', '.join(pack.get('tech_stack') or []) or '-'}",
-        f"- Selected skill: {pack['selected_skill']}",
-        f"- Why this skill: {pack['why_this_skill']}",
-        f"- Required test dimensions: {', '.join((pack.get('skill_route') or {}).get('required_dimensions', []))}",
+        f"- Recommended skill: {pack['selected_skill']}",
+        f"- Why this recommendation: {pack['why_this_skill']}",
+        f"- Recommended test dimensions: {', '.join((pack.get('skill_route') or {}).get('required_dimensions', []))}",
         "- Must read:",
         *_format_list(pack["must_read"]),
-        "- Knowledge cards:",
+        "- Recommended knowledge cards:",
         *_format_list(pack["knowledge_cards"]),
         "- Knowledge card capabilities:",
         *_format_list([

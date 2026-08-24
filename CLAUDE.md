@@ -49,6 +49,19 @@ Target state / Evidence -> Coverage Matrix -> Skill / Context Router
 - Action Queue、Evidence Ledger 和 Checkpoint 负责动作生命周期、证据闭环和完成判断；
   不在提示词中建立第二套状态机。
 
+### Responsibility and Loading Boundary
+
+- `CLAUDE.md` 是本仓库由 Claude Code CLI 项目机制常驻加载的平台契约，只负责授权、
+  AI/工具边界、状态 owner 和最小入口路由，不承载专项测试方法。
+- `skills/runtime-protocol.md` 是 Context Pack 的共享路由与写回契约；它连接 Target、Skill、
+  Knowledge、Checks 和 owner write-back，但不替 Claude 选择当前测试路线。
+- `skills/bb-methodology/SKILL.md` 是按需决策 Skill，只在会话开始、切换目标、进展停滞或
+  需要选择/轮换假设时加载；专项 Skill 和知识卡继续按当前证据加载。
+- 根 `SKILL.md` 是旧单文件直装兼容入口。正式 `install.sh` 安装 `skills/*.md` 和
+  `skills/*/`，Context Pack 也不读取根入口；不得把根文件行数计算成当前默认上下文。
+- Claude Code CLI 当前主会话保留路线、取舍和证据组合的最终判断权；Skill、Card 和工具
+  提供契约或候选，Coverage/Ledger/Queue/Checkpoint 继续拥有确定性状态。
+
 ## Intent Routing in Claude CLI
 
 用户不必输入 slash command。对自然语言目标，按等价意图读取对应 `commands/*.md`
@@ -84,8 +97,8 @@ hand-maintained list here.
 ## Context and Evidence Discipline
 
 - 除非命令已有 authoritative bootstrap，复杂目标任务先读取目标记忆并运行 `/context-pack`。
-- 一轮只选择一个主 Skill，默认加载 1-2 张与当前证据直接相关的知识卡；不要全量读取
-  Skills、知识库、历史会话或大体积扫描日志。
+- 一轮只选择一个主 Skill，并按当前证据读取 0-2 张知识卡；不要全量读取 Skills、
+  知识库、历史会话或大体积扫描日志。
 - 外部研究按需使用 Grok Search 或 Smartsearch；先选一个，结果不足或冲突时再使用另一个。
 - 先复用 target history、cached recon、structured findings、browser/JS/source 索引和
   `/surface` 输出，再决定是否需要新的宽扫。

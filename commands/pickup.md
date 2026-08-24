@@ -121,7 +121,7 @@ Checkpoint:
   Current action: Replay the evidence lane.
   Recent evidence: evidence/target.com/validation/summary.json
   Blocker: none
-  Selected skill: skills/web2-vuln-classes/SKILL.md
+  Recommended skill: skills/web2-vuln-classes/SKILL.md
   High-value gaps: 3
   Target write-back proposals: lead=1, next=2, dead-end=0
   Suggested command:

@@ -516,6 +516,6 @@ class TestResumeFormatting:
         assert "Current action: Replay the evidence lane." in output
         assert "Recent evidence: evidence/target.com/summary.json" in output
         assert "Blocker: red-line evidence remains unchecked" in output
-        assert "Selected skill: skills/web2-vuln-classes/SKILL.md" in output
+        assert "Recommended skill: skills/web2-vuln-classes/SKILL.md" in output
         assert "High-value gaps: 3" in output
         assert "Target write-back proposals: lead=1, next=2, dead-end=0" in output

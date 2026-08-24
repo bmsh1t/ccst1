@@ -333,20 +333,20 @@ def _prepare_claim_metadata(
     if merged["active_dimension"] not in required_dimensions and not merged.get("decision_reason"):
         raise ValueError("Action Queue active_dimension must come from the selected Skill route")
     original_route = existing.get("skill_route") if isinstance(existing.get("skill_route"), dict) else {}
-    if route != original_route and not _compact_text(merged.get("skill_override_reason"), 500):
+    if original_route and route != original_route and not _compact_text(merged.get("skill_override_reason"), 500):
         raise ValueError("Action Queue Skill override requires skill_override_reason")
 
     available_refs = {
         str(value).strip() for value in existing.get("knowledge_refs", []) if str(value).strip()
     }
-    selected_refs = merged.get("selected_knowledge_refs")
-    if not isinstance(selected_refs, list) or not selected_refs or any(not str(value).strip() for value in selected_refs):
-        raise ValueError("Action Queue depth contract requires selected_knowledge_refs")
+    selected_refs = merged.get("selected_knowledge_refs", [])
+    if not isinstance(selected_refs, list) or any(not str(value).strip() for value in selected_refs):
+        raise ValueError("Action Queue selected_knowledge_refs must be a list of non-empty references")
     selected_refs = list(dict.fromkeys(str(value).strip() for value in selected_refs))
     knowledge_override_reason = _compact_text(merged.get("knowledge_override_reason"), 500)
-    if not available_refs and not knowledge_override_reason:
+    if selected_refs and not available_refs and not knowledge_override_reason:
         raise ValueError("Action Queue depth contract requires activation knowledge_refs")
-    if available_refs and not set(selected_refs).issubset(available_refs) and not knowledge_override_reason:
+    if selected_refs and available_refs and not set(selected_refs).issubset(available_refs) and not knowledge_override_reason:
         raise ValueError("Action Queue knowledge override requires knowledge_override_reason")
     merged["selected_knowledge_refs"] = selected_refs
 

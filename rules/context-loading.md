@@ -21,6 +21,21 @@ rules/coverage-gate.md
 
 如果 `memory/goals/active.json` 不存在，先根据用户当前目标建立或询问目标上下文。
 
+## 当前默认加载边界
+
+- Claude Code CLI 从仓库根启动时自动加载项目级 `CLAUDE.md`；Context Pack 不再把它
+  重复列入 `must_read`。
+- 当前 Context Pack 的 `must_read` 只包含目标状态、`skills/runtime-protocol.md`、当前
+  证据/Ledger 和证据明确需要的工具引用；推荐的 primary Skill 和最多两张知识卡不在
+  `must_read`，由 Claude 根据当前证据显式选择后按需读取。
+- `skills/bb-methodology/SKILL.md` 不是额外常驻核心；只在会话开始、换目标、停滞或需要
+  选择/轮换假设时成为当前按需 Skill。
+- 根 `SKILL.md` 是旧单文件直装兼容资产，不由正式 `install.sh` 安装，也不进入 Context
+  Pack。正式安装面是 `skills/*.md` 和 `skills/*/`。
+- `selected_skill`、`skill_route` 和 `knowledge_cards` 保留为兼容推荐字段，不表示 Claude
+  已选择路线，也不直接生成 Queue route。首次 claim 显式选择 Skill；只有替换 action
+  owner 已有 route 时才需要 `skill_override_reason`。
+
 ## 按需读取
 
 根据当前任务只选择必要文件：
@@ -54,7 +69,10 @@ rules/coverage-gate.md
 一次只加载 1-2 张知识卡。只有当当前证据继续扩展时，才加载更多。
 
 `knowledge/index.md` 是按需目录，不是每轮全文必读项；先使用
-`knowledge_card_recall`、选中 Card 和 `reference_hints`，只有召回无法解释当前证据时才读取目录。
+`knowledge_card_recall`、推荐 Card 和 `reference_hints`，只有召回无法解释当前证据时才读取目录。
+
+这些召回和 seed 不自动生成 Action Queue 工作；Claude 先结合目标证据选择假设，再通过现有
+owner 创建或激活正常动作。
 
 知识卡必须服务于当前 Skill，不能反过来让知识库主导任务。
 
@@ -94,9 +112,9 @@ rules/coverage-gate.md
 CONTEXT PACK
 - Target:
 - Phase:
-- Selected skill:
+- Recommended skill:
 - Must read:
-- Knowledge cards:
+- Recommended knowledge cards:
 - Required checks:
 - Optional:
 - Do not load:
