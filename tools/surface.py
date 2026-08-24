@@ -191,6 +191,58 @@ def _load_resolved_unsafe_skipped(repo_root: Path, storage_key: str) -> set[str]
     return {str(key) for key in resolved if str(key).strip()}
 
 
+def _load_scanner_manual_review(findings_dir: Path, target: str) -> dict:
+    """Load the scanner's complete target-owned manual-review index."""
+    storage_key = target_storage_key(target)
+    summary_path = findings_dir / "summary.json"
+    display_summary = f"findings/{storage_key}/summary.json"
+    payload = _read_json_object(summary_path)
+    if not payload:
+        return {"summary_path": display_summary, "items": []}
+
+    summary_target = str(payload.get("target") or "").strip()
+    try:
+        if summary_target and canonical_target_value(summary_target) != canonical_target_value(target):
+            return {"summary_path": display_summary, "items": []}
+    except ValueError:
+        return {"summary_path": display_summary, "items": []}
+
+    raw_items = payload.get("manual_review")
+    if not isinstance(raw_items, list):
+        return {"summary_path": display_summary, "items": []}
+
+    findings_root = findings_dir.resolve()
+    seen: set[str] = set()
+    items: list[dict] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        raw_path = str(item.get("path") or "").strip()
+        if not raw_path or Path(raw_path).is_absolute():
+            continue
+        try:
+            path = (findings_root / raw_path).resolve()
+            relative_path = path.relative_to(findings_root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if relative_path in seen or not path.is_file():
+            continue
+        try:
+            lines = _read_lines(path)
+        except (OSError, UnicodeError):
+            continue
+        if not lines:
+            continue
+        seen.add(relative_path)
+        items.append({
+            "path": f"findings/{storage_key}/{relative_path}",
+            "relative_path": relative_path,
+            "count": len(lines),
+            "preview": [surface_safe_preview(line) for line in lines[:3]],
+        })
+    return {"summary_path": display_summary, "items": items}
+
+
 def _count_recon_artifact(recon_artifacts: dict, key: str) -> int:
     """Safely read one integer count from runtime_state recon metadata."""
     counts = recon_artifacts.get("counts") or {}
@@ -1702,6 +1754,7 @@ def load_surface_context(
     ffuf_summary = ReconAdapter(recon_dir).get_ffuf_summary()
     js_intel = load_js_intel_hypotheses(findings_dir)
     source_intel = load_source_intel_hypotheses(findings_dir)
+    scanner_manual_review = _load_scanner_manual_review(findings_dir, target)
     manual_review_leads = _build_manual_review_lead_hints(findings_dir, storage_key)
     observation_inventory = _sync_observation_inventory(repo_root, target)
 
@@ -1771,6 +1824,7 @@ def load_surface_context(
         "ffuf_summary": ffuf_summary,
         "js_intel": js_intel,
         "source_intel": source_intel,
+        "scanner_manual_review": scanner_manual_review,
         "manual_review_leads": manual_review_leads,
         "observation_inventory": observation_inventory,
         "target_goal_memory": target_goal_memory,
@@ -2881,6 +2935,11 @@ def rank_surface(context: dict) -> dict:
         "target_memory": target_memory_summary,
         "scanner": {
             "finding_count": len(context.get("scanner_findings", [])),
+            "manual_review": list((context.get("scanner_manual_review") or {}).get("items") or []),
+            "manual_review_total": len((context.get("scanner_manual_review") or {}).get("items") or []),
+            "manual_review_summary_path": str(
+                (context.get("scanner_manual_review") or {}).get("summary_path") or ""
+            ),
         },
         "intel": {
             **(context.get("intel") or {}),
@@ -3236,6 +3295,29 @@ def format_surface_output(ranked: dict, target: str) -> str:
                 break
     else:
         lines.append("- No structured scanner candidates yet.")
+    scanner_manual_review = ranked.get("scanner", {}).get("manual_review") or []
+    if scanner_manual_review:
+        manual_total = int(
+            ranked.get("scanner", {}).get("manual_review_total", len(scanner_manual_review))
+            or len(scanner_manual_review)
+        )
+        lines.append(
+            f"- Manual-review artifacts: {manual_total} (neutral evidence index; no route implied)"
+        )
+        summary_path = str(
+            ranked.get("scanner", {}).get("manual_review_summary_path") or ""
+        ).strip()
+        if summary_path:
+            lines.append(f"- Canonical summary: {summary_path}")
+        for item in scanner_manual_review[:8]:
+            lines.append(
+                f"- Review artifact: {item.get('path', '-')} "
+                f"({int(item.get('count', 0) or 0)} non-empty line(s))"
+            )
+            for preview in (item.get("preview") or [])[:3]:
+                lines.append(f"  - {preview}")
+        if manual_total > 8:
+            lines.append(f"- Manual-review preview overflow: {manual_total - 8}")
 
     lines.extend(["", "Intel Signals:"])
     intel_meta = ranked.get("intel", {})

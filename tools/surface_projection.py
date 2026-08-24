@@ -344,6 +344,28 @@ def _bounded_surface(ranked: dict) -> dict:
         "stats",
     )
     surface = {key: ranked[key] for key in allowed if key in ranked}
+    scanner = ranked.get("scanner") if isinstance(ranked.get("scanner"), dict) else {}
+    manual_review = scanner.get("manual_review") if isinstance(scanner.get("manual_review"), list) else []
+    bounded_manual_review = []
+    for item in manual_review[:8]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            count = max(0, int(item.get("count", 0) or 0))
+        except (TypeError, ValueError):
+            count = 0
+        bounded_manual_review.append({
+            "path": str(item.get("path") or "")[:512],
+            "relative_path": str(item.get("relative_path") or "")[:512],
+            "count": count,
+            "preview": [str(line)[:240] for line in (item.get("preview") or [])[:3]],
+        })
+    surface["scanner"] = {
+        **scanner,
+        "manual_review": bounded_manual_review,
+        "manual_review_total": len(manual_review),
+        "manual_review_summary_path": str(scanner.get("manual_review_summary_path") or "")[:512],
+    }
     surface["p1"] = list(ranked.get("p1") or [])[:8]
     surface["p2"] = list(ranked.get("p2") or [])[:8]
     surface["review_pool"] = list(ranked.get("review_pool") or [])[:16]

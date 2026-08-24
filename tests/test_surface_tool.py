@@ -10,6 +10,7 @@ from runtime_state import update_runtime_state
 from surface import (
     _candidate_reason,
     _is_websocket_endpoint,
+    build_surface_review,
     format_surface_output,
     load_surface_context,
     rank_surface,
@@ -17,6 +18,7 @@ from surface import (
 )
 from tools.coverage_matrix import save_matrix
 from tools.recon_adapter import ReconAdapter
+from tools.surface_projection import load_surface_projection
 
 
 class TestSurfaceContext:
@@ -850,6 +852,95 @@ class TestSurfaceRanking:
         assert "public-metadata" in categories
         assert "findings/target.com/manual_review/open_200_api.txt" in output
         assert "findings/target.com/manual_review/standard_public_metadata.txt" in output
+
+    def test_scanner_summary_indexes_all_target_owned_manual_review_artifacts(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        findings_dir = repo_root / "findings" / "target.com"
+        manual_dir = findings_dir / "manual_review"
+        outside_dir = repo_root / "findings" / "other" / "manual_review"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        manual_dir.mkdir(parents=True)
+        outside_dir.mkdir(parents=True)
+
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [IIS] [1000]\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/health\n",
+            encoding="utf-8",
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+        (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+
+        valid_paths = []
+        for index in range(10):
+            name = "iis_shortnames.txt" if index == 0 else f"SAMPLE-{index}.txt"
+            relative_path = f"manual_review/{name}"
+            (manual_dir / name).write_text(
+                f"review line {index}\nsecond line {index}\n",
+                encoding="utf-8",
+            )
+            valid_paths.append({"path": relative_path, "count": 999})
+
+        (manual_dir / "empty.txt").write_text("\n", encoding="utf-8")
+        (outside_dir / "outside.txt").write_text("outside\n", encoding="utf-8")
+        absolute_outside = repo_root / "outside.txt"
+        absolute_outside.write_text("outside\n", encoding="utf-8")
+        (findings_dir / "summary.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target": "target.com",
+                "manual_review": valid_paths + [
+                    valid_paths[0],
+                    {"path": "manual_review/empty.txt", "count": 1},
+                    {"path": "manual_review/missing.txt", "count": 1},
+                    {"path": "../other/manual_review/outside.txt", "count": 1},
+                    {"path": str(absolute_outside), "count": 1},
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        ranked = build_surface_review(
+            repo_root,
+            "target.com",
+            memory_dir=repo_root / "hunt-memory",
+        )
+        output = format_surface_output(ranked, "target.com")
+        projected = load_surface_projection(
+            repo_root,
+            "target.com",
+            memory_dir=repo_root / "hunt-memory",
+        )["surface"]
+
+        assert ranked["scanner"]["manual_review_total"] == 10
+        assert len(ranked["scanner"]["manual_review"]) == 10
+        assert ranked["scanner"]["manual_review"][0] == {
+            "path": "findings/target.com/manual_review/iis_shortnames.txt",
+            "relative_path": "manual_review/iis_shortnames.txt",
+            "count": 2,
+            "preview": ["review line 0", "second line 0"],
+        }
+        assert projected["scanner"]["manual_review_total"] == 10
+        assert projected["scanner"]["manual_review_summary_path"] == (
+            "findings/target.com/summary.json"
+        )
+        assert len(projected["scanner"]["manual_review"]) == 8
+        assert "Manual-review artifacts: 10 (neutral evidence index; no route implied)" in output
+        assert "findings/target.com/manual_review/iis_shortnames.txt" in output
+        assert "Manual-review preview overflow: 2" in output
+        workflow_leads = [
+            json.loads(item) if isinstance(item, str) else item
+            for item in ranked["workflow_leads"]
+        ]
+        assert not any(
+            item.get("artifact") == "findings/target.com/manual_review/iis_shortnames.txt"
+            for item in workflow_leads
+        )
 
     def test_reranks_structured_scanner_findings_into_p1(self, tmp_path):
         repo_root = tmp_path
