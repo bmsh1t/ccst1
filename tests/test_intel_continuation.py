@@ -936,9 +936,12 @@ def test_expired_web_query_reopens_intel_merge(tmp_path):
     assert "Web Intel TTL/status changed" in state["reason"]
 
 
-def test_continuation_only_preempts_generic_actions():
+def test_continuation_preempts_handoff_but_preserves_surface_priority():
     continuation = {"action": "run_intel"}
-    assert apply_intel_continuation("hunt_p1", continuation) == "run_intel"
+    assert apply_intel_continuation("hunt_p1", continuation) == "hunt_p1"
+    assert apply_intel_continuation("hunt_p2", continuation) == "hunt_p2"
+    assert apply_intel_continuation("continue_last_focus", continuation) == "run_intel"
+    assert apply_intel_continuation("resume_untested", continuation) == "run_intel"
     assert apply_intel_continuation("handoff", continuation) == "run_intel"
     assert apply_intel_continuation("validate_finding", continuation) == "validate_finding"
     assert apply_intel_continuation("prepare_surface_context", continuation) == "prepare_surface_context"

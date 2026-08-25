@@ -41,7 +41,7 @@ def test_finalizer_publishes_index_projection_and_warm_bootstrap(tmp_path):
     )
     assert state["surface_projection"]["status"] == "valid"
     assert state["primary_next_action"] == "hunt_p1"
-    assert state["next_action"] == "run_intel"
+    assert state["next_action"] == "hunt_p1"
 
 
 def test_full_state_reuses_exact_projection_without_ranking_again(tmp_path, monkeypatch):
@@ -61,7 +61,7 @@ def test_full_state_reuses_exact_projection_without_ranking_again(tmp_path, monk
     )
     assert state["surface_projection"]["status"] == "valid"
     assert state["primary_next_action"] == "hunt_p1"
-    assert state["next_action"] == "run_intel"
+    assert state["next_action"] == "hunt_p1"
 
 
 def test_finalizer_cli_reports_missing_recon_without_creating_success(tmp_path, capsys):

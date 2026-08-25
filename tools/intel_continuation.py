@@ -51,11 +51,9 @@ _IDENTIFIER_RE = re.compile(
     r"\b(?:CVE-\d{4}-\d{4,}|GHSA-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})\b",
     re.IGNORECASE,
 )
-GENERIC_ACTIONS = {
+INTEL_PREEMPTIBLE_ACTIONS = {
     "continue_last_focus",
     "resume_untested",
-    "hunt_p1",
-    "hunt_p2",
     "handoff",
 }
 GROUP_DISPOSITION_KEY = "__intel_groups__"
@@ -696,8 +694,8 @@ def inspect_intel_continuation(
 
 
 def apply_intel_continuation(primary_action: str, continuation: dict) -> str:
-    """只抢占普通探索/handoff；finding、queue、recon 和 surface gate 仍优先。"""
+    """只抢占恢复/handoff；finding、queue、recon 和 Surface 优先级仍优先。"""
     action = str(continuation.get("action") or "complete")
-    if primary_action in GENERIC_ACTIONS and action != "complete":
+    if primary_action in INTEL_PREEMPTIBLE_ACTIONS and action != "complete":
         return action
     return primary_action

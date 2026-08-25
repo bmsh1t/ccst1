@@ -306,7 +306,7 @@ def _validate(
         if (
             warm.get("projection_status") != "valid"
             or warm.get("primary_next_action") != "hunt_p1"
-            or warm.get("next_action") != "run_intel"
+            or warm.get("next_action") != "hunt_p1"
         ):
             failures.append("warm bootstrap did not consume exact projection")
         if warm.get("seconds", 999) > max_bootstrap_seconds:

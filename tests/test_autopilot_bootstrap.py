@@ -1101,7 +1101,7 @@ def test_exact_empty_projection_completes_fresh_recon_surface_handoff(tmp_path):
     assert state["next_action"] == "handoff"
 
 
-def test_compact_state_routes_persisted_software_inventory_to_intel(tmp_path):
+def test_compact_state_keeps_intel_advisory_without_preempting_surface(tmp_path):
     _write_fast_recon(tmp_path)
     load_or_build_inventory(tmp_path, "target.com")
     ranked = {
@@ -1127,10 +1127,10 @@ def test_compact_state_routes_persisted_software_inventory_to_intel(tmp_path):
     )
 
     assert state["primary_next_action"] == "hunt_p1"
-    assert state["next_action"] == "run_intel"
+    assert state["next_action"] == "hunt_p1"
     assert state["selection_mode"] == "ai_priority"
     assert {item["owner"] for item in state["priority_frontier"]} >= {"intel", "surface"}
-    assert state["next_tool_hint"] == "run_intel"
+    assert state["next_tool_hint"] == ""
     assert "Intel v2 has not processed" in state["intel_continuation"]["reason"]
 
 
