@@ -332,7 +332,175 @@ def test_recon_engine_supports_auth_session_env():
     assert "-follow-host-redirects" in text
     assert "-follow-redirects" not in text
     assert "-dr -fs rdn -do" in text
-    assert 'ffuf -u "${FFUF_BASE_URL}/FUZZ"' in text
+    assert 'ffuf -u "${base_url}/FUZZ"' in text
+
+
+def test_recon_engine_deduplicates_www_alias_before_ffuf(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    function = "filter_ffuf_targets() {" + text.split(
+        "filter_ffuf_targets() {", 1
+    )[1].split("\nurl_origin() {", 1)[0]
+    targets = tmp_path / "ffuf_targets.txt"
+    aliases = tmp_path / "aliases.tsv"
+    targets.write_text(
+        "https://www.target.test\nhttps://target.test\nhttps://link.target.test\nhttps://target.test\n",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -euo pipefail\n"
+            + function
+            + f'\nfilter_ffuf_targets "{targets}" "{aliases}" target.test\n',
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert targets.read_text(encoding="utf-8").splitlines() == [
+        "https://target.test",
+        "https://link.target.test",
+    ]
+    assert aliases.read_text(encoding="utf-8").splitlines() == [
+        "https://target.test\thttps://www.target.test",
+        "https://target.test\thttps://target.test",
+        "https://link.target.test\thttps://link.target.test",
+    ]
+
+
+def test_recon_engine_publishes_atomic_ffuf_phase_state(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    function = "write_ffuf_phase_state() {" + text.split(
+        "write_ffuf_phase_state() {", 1
+    )[1].split("\nffuf_run_target() {", 1)[0]
+    state = tmp_path / "ffuf_phase_state.json"
+    args = [
+        str(state),
+        "partial",
+        "recon/target/dirs/ffuf_results.jsonl.gz",
+        "recon/target/dirs/ffuf_summary.json",
+        "deadline",
+        "2",
+        "1",
+        "1",
+        "1",
+        "1",
+        "4",
+        "0",
+        "4",
+        "0",
+        '{"200": 4}',
+        "200:status=200/count=4",
+        "ok",
+        "failed",
+        "3",
+        "2",
+        "10",
+        "false",
+        "2",
+        "background worker state",
+    ]
+    completed = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + function + "\nwrite_ffuf_phase_state \"$@\"", "bash", *args],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(state.read_text(encoding="utf-8"))
+    assert payload["status"] == "partial"
+    assert payload["attempted"] == 2
+    assert payload["status_counts"] == {"200": 4}
+    assert payload["host_concurrency"] == 2
+    assert payload["summary_ok"] is False
+
+
+def test_recon_engine_worker_keeps_control_then_main_per_target(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    function = "ffuf_run_target() {" + text.split(
+        "ffuf_run_target() {", 1
+    )[1].split("\nrun_ffuf_phase() {", 1)[0]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ffuf = fake_bin / "ffuf"
+    fake_ffuf.write_text(
+        "#!/bin/sh\n"
+        "url= wordlist=\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  case \"$1\" in -u) url=\"$2\"; shift 2;; -w) wordlist=\"$2\"; shift 2;; *) shift;; esac\n"
+        "done\n"
+        "kind=main\n"
+        "case \"$wordlist\" in *control_words*) kind=control;; esac\n"
+        "printf 'start %s %s\\n' \"$kind\" \"$url\" >> \"$TRACE\"\n"
+        "if [ \"$kind\" = control ]; then\n"
+        "  mkdir \"$BARRIER/control-$$\"\n"
+        "  while [ \"$(find \"$BARRIER\" -maxdepth 1 -type d -name 'control-*' | wc -l)\" -lt 2 ]; do sleep 0.01; done\n"
+        "else\n"
+        "  sleep 0.02\n"
+        "fi\n"
+        "printf 'end %s %s\\n' \"$kind\" \"$url\" >> \"$TRACE\"\n"
+        "printf '{\"status\":200,\"length\":1}\\n'\n",
+        encoding="utf-8",
+    )
+    fake_ffuf.chmod(0o755)
+    fake_python = fake_bin / "python3"
+    fake_python.write_text(
+        "#!/bin/sh\ncase \"$*\" in *--ffuf-control-size*) printf '0\\n';; esac\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+    trace = tmp_path / "trace.log"
+    barrier = tmp_path / "barrier"
+    barrier.mkdir()
+    work = tmp_path / "workers"
+    (work / "one").mkdir(parents=True)
+    (work / "two").mkdir(parents=True)
+    wordlist = tmp_path / "common.txt"
+    wordlist.write_text("index\n", encoding="utf-8")
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -euo pipefail\n"
+            + function
+            + "\n"
+            "run_with_timeout() { shift; \"$@\"; }\n"
+            "dir_fuzz_remaining_seconds() { printf '30\\n'; }\n"
+            "bb_auth_args_for_url() { BB_URL_AUTH_ARGS=(); }\n"
+            "BB_URL_AUTH_ARGS=()\n"
+            "ffuf_run_target https://one.test \"$WORK/one\" \"$WORDLIST\" 5 & p1=$!\n"
+            "ffuf_run_target https://two.test \"$WORK/two\" \"$WORDLIST\" 5 & p2=$!\n"
+            "wait \"$p1\"\nwait \"$p2\"\n",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "BASE_DIR": str(tmp_path),
+            "RECON_DIR": str(tmp_path),
+            "TRACE": str(trace),
+            "BARRIER": str(barrier),
+            "WORK": str(work),
+            "WORDLIST": str(wordlist),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    events = trace.read_text(encoding="utf-8").splitlines()
+    assert sum(line.startswith("start control") for line in events) == 2
+    assert sum(line.startswith("start main") for line in events) == 2
+    for worker in (work / "one", work / "two"):
+        assert worker.joinpath("summary.tsv").read_text(encoding="utf-8").split("\t")[1] == "ok"
+    for host in ("https://one.test/FUZZ", "https://two.test/FUZZ"):
+        control_end = events.index(f"end control {host}")
+        main_start = events.index(f"start main {host}")
+        assert control_end < main_start
 
 
 def test_recon_engine_supports_assetfinder_and_puredns():
@@ -479,40 +647,50 @@ def test_recon_engine_filters_spa_fallback_directory_fuzz_noise():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
 
-    assert 'FFUF_CONTROL_WORDLIST_TMP="$(mktemp' in text
+    assert 'control_words="$worker_dir/control_words.txt"' in text
     assert "__bbhunt_missing_%s_%s" in text
-    assert '-w "$FFUF_CONTROL_WORDLIST_TMP"' in text
+    assert '-w "$control_words"' in text
     assert "-mc all" in text
     assert "--ffuf-control-size" in text
     assert "curl -sS -L" not in text
-    assert 'SPA_FALLBACK_LOG="$RECON_DIR/dirs/spa_fallback.txt"' in text
-    assert 'FFUF_FILTER_ARGS=(-fs "$SPA_FALLBACK_SIZE")' in text
+    assert '"$RECON_DIR/dirs/spa_fallback.txt"' in text
+    assert 'filter_args=(-fs "$spa_fallback_size")' in text
     assert "-ac \\" in text
     assert "-sf \\" not in text
-    assert '"${FFUF_FILTER_ARGS[@]}" \\' in text
-    assert "two FFUF controls returned 200" in text
-    assert 'if [ "$SPA_FALLBACK_SIZE" -gt 0 ]; then' in text
+    assert '"${filter_args[@]}" \\' in text
+    assert "random-miss controls" in text
+    assert 'if [ "$spa_fallback_size" -gt 0 ]; then' in text
 
 
 def test_recon_engine_streams_one_compressed_ffuf_artifact_without_coverage_merge():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
 
-    assert 'FFUF_RESULT_ARTIFACT="$RECON_DIR/dirs/ffuf_results.jsonl.gz"' in text
-    assert 'run_with_timeout "$FFUF_MAIN_TIMEOUT" ffuf -u "${FFUF_BASE_URL}/FUZZ"' in text
-    assert 'FFUF_HOST_RUN_TMP="$(mktemp' in text
-    assert 'gzip -c "$FFUF_HOST_RUN_TMP" >> "$FFUF_RESULT_TMP"' in text
-    assert 'FFUF_INTERRUPTED=1' in text
+    assert 'result_artifact="$RECON_DIR/dirs/ffuf_results.jsonl.gz"' in text
+    assert 'run_with_timeout "$remaining" ffuf -u "${base_url}/FUZZ"' in text
+    assert 'main_run="$worker_dir/main.jsonl"' in text
+    assert 'gzip -c "$worker_dir/main.jsonl" >> "$result_tmp"' in text
+    assert 'interrupted=1' in text
     assert '--summarize-ffuf' in text
-    assert '--controls "$FFUF_CONTROL_TMP"' in text
+    assert '--controls "$control_tmp"' in text
     assert '--control-failed "$FFUF_CONTROL_FAILED"' in text
     assert 'FFUF_OBSERVATIONS' in text
-    assert 'FFUF_SUMMARY_OK="true"' in text
+    assert 'summary_ok="true"' in text
     assert 'tools/recon_target_selector.py' in text
     assert '--select' in text
     assert '--record-results' in text
     assert 'FFUF_TARGET_STATE="$RECON_DIR/dirs/ffuf_target_state.json"' in text
     assert 'done < "$FFUF_TARGETS_FILE"' in text
+    assert 'FFUF_HOST_CONCURRENCY="${BBHUNT_FFUF_HOST_CONCURRENCY:-4}"' in text
+    assert 'filter_ffuf_targets "$FFUF_TARGETS_FILE" "$FFUF_TARGET_ALIAS_MAP" "$TARGET"' in text
+    assert 'run_ffuf_phase &' in text
+    assert 'wait_for_ffuf_phase' in text
+    assert text.index('filter_ffuf_targets "$FFUF_TARGETS_FILE"') < text.index('ffuf_run_target "$base_url"')
+    assert text.index('run_ffuf_phase &') < text.index('log_info "Phase 6.5: Config File Exposure Check"')
+    assert text.rindex('wait_for_ffuf_phase') > text.index('log_info "Phase 6.5: Config File Exposure Check"')
+    assert 'worker_pids+=("$!")' in text
+    assert 'target_summary="$worker_dir/summary.tsv"' in text
+    assert 'FFUF_PHASE_STATE="$RECON_DIR/dirs/ffuf_phase_state.json"' in text
     assert 'target_selection' in text
     assert '-o "$RECON_DIR/dirs/ffuf_' not in text
     ffuf_block = text[text.index('log_info "Phase 6: Directory Fuzzing"'):text.index('log_info "Phase 6.5: Config File Exposure Check"')]

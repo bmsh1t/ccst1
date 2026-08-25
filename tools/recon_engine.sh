@@ -229,6 +229,67 @@ print(urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")
 PY
 }
 
+filter_ffuf_targets() {
+    local targets_file="$1"
+    local alias_map="$2"
+    local target="$3"
+    python3 - "$targets_file" "$alias_map" "$target" <<'PY'
+import os
+import sys
+import tempfile
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+targets_path = Path(sys.argv[1])
+alias_path = Path(sys.argv[2])
+target = sys.argv[3].strip()
+target_host = urlsplit(target if "://" in target else f"//{target}").hostname or ""
+target_host = target_host.lower()
+seen = set()
+seen_originals = set()
+targets = []
+aliases = []
+
+for raw in targets_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    value = raw.strip()
+    if not value:
+        continue
+    if value in seen_originals:
+        continue
+    seen_originals.add(value)
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        continue
+    host = (parsed.hostname or "").lower()
+    canonical_host = target_host if host == f"www.{target_host}" else host
+    try:
+        port = parsed.port
+    except ValueError:
+        continue
+    if (parsed.scheme.lower() == "http" and port == 80) or (parsed.scheme.lower() == "https" and port == 443):
+        port = None
+    netloc = canonical_host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    canonical = urlunsplit((parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", ""))
+    key = (parsed.scheme.lower(), canonical_host, port, parsed.path.rstrip("/"))
+    if key not in seen:
+        seen.add(key)
+        targets.append(canonical)
+    aliases.append((canonical, value))
+
+def atomic_write(path: Path, content: str) -> None:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        handle.write(content)
+    os.replace(temporary, path)
+
+atomic_write(targets_path, ("\n".join(targets) + "\n") if targets else "")
+alias_lines = [f"{canonical}\t{original}" for canonical, original in aliases]
+atomic_write(alias_path, ("\n".join(alias_lines) + "\n") if alias_lines else "")
+PY
+}
+
 url_origin() {
     python3 - "$1" <<'PY'
 import sys
@@ -306,7 +367,12 @@ publish_raw_url_staging_on_exit() {
 }
 
 dir_fuzz_remaining_seconds() {
-    local remaining=$((FFUF_PHASE_DEADLINE_SECONDS - SECONDS))
+    local remaining
+    if [ -n "${FFUF_PHASE_DEADLINE_EPOCH:-}" ]; then
+        remaining=$((FFUF_PHASE_DEADLINE_EPOCH - $(date +%s)))
+    else
+        remaining=$((FFUF_PHASE_DEADLINE_SECONDS - SECONDS))
+    fi
     if [ "$remaining" -gt 0 ]; then
         printf '%s\n' "$remaining"
     else
@@ -573,7 +639,20 @@ post_compress_raw_recon_urls() {
         "if disk remains tight, review large recon logs before deleting any recon intelligence"
 }
 
+FFUF_PID=""
+
+stop_ffuf_phase() {
+    local pid="${FFUF_PID:-}"
+    [ -n "$pid" ] || return 0
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    fi
+    FFUF_PID=""
+}
+
 cleanup_auth_tmpfiles() {
+    stop_ffuf_phase
     [ -n "${WAFW00F_HEADERS_FILE:-}" ] && [ -f "$WAFW00F_HEADERS_FILE" ] && rm -f "$WAFW00F_HEADERS_FILE"
     [ -n "${HTTPX_RUN_TMP:-}" ] && [ -f "$HTTPX_RUN_TMP" ] && rm -f "$HTTPX_RUN_TMP"
     [ -n "${FFUF_RESULT_TMP:-}" ] && [ -f "$FFUF_RESULT_TMP" ] && rm -f "$FFUF_RESULT_TMP"
@@ -3037,7 +3116,6 @@ log_info "Phase 6: Directory Fuzzing"
 
 WORDLIST_DIR="$BASE_DIR/wordlists"
 LEGACY_WORDLIST_DIR="$BASE_DIR/tools/wordlists"
-WORDLIST=""
 FFUF_ATTEMPTED=0
 FFUF_SUCCEEDED=0
 FFUF_FAILED=0
@@ -3057,6 +3135,7 @@ FFUF_TARGET_RESULTS_TMP=""
 FFUF_TARGET_PLAN="$RECON_DIR/dirs/ffuf_target_plan.json"
 FFUF_TARGETS_FILE="$RECON_DIR/dirs/ffuf_targets.txt"
 FFUF_TARGET_STATE="$RECON_DIR/dirs/ffuf_target_state.json"
+FFUF_TARGET_ALIAS_MAP=""
 FFUF_TARGET_PENDING=0
 FFUF_TARGET_SELECTION_STATUS="not-run"
 FFUF_TARGET_RECORD_STATUS="not-run"
@@ -3065,48 +3144,280 @@ FFUF_PHASE_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/"
 FFUF_SUMMARY_ARTIFACT="-"
 FFUF_SKIP_REASON=""
 FFUF_SUMMARY_OK="false"
-DIR_FUZZ_STATUS="skipped"
+DIR_FUZZ_STATUS="pending"
 FFUF_LOG="$RECON_DIR/logs/ffuf.log"
 FFUF_EFFECTIVE_BUDGET_SECONDS="$DIR_FUZZ_HARD_BUDGET_SECONDS"
 FFUF_PHASE_DEADLINE_SECONDS=$((SECONDS + FFUF_EFFECTIVE_BUDGET_SECONDS))
+FFUF_PHASE_DEADLINE_EPOCH=$(( $(date +%s) + FFUF_EFFECTIVE_BUDGET_SECONDS ))
+FFUF_PHASE_STATE="$RECON_DIR/dirs/ffuf_phase_state.json"
+FFUF_HOST_CONCURRENCY="${BBHUNT_FFUF_HOST_CONCURRENCY:-4}"
+require_positive_integer BBHUNT_FFUF_HOST_CONCURRENCY "$FFUF_HOST_CONCURRENCY"
 : > "$FFUF_LOG"
 
-if ! command -v ffuf >/dev/null 2>&1; then
-    FFUF_SKIP_REASON="ffuf not installed"
-elif [ -z "$(timeout_bin)" ]; then
-    FFUF_SKIP_REASON="timeout utility unavailable"
-elif [ ! -s "$RECON_DIR/live/urls.txt" ]; then
-    FFUF_SKIP_REASON="no live URLs"
-else
-    if [ -f "$WORDLIST_DIR/common.txt" ]; then
-        WORDLIST="$WORDLIST_DIR/common.txt"
-    elif [ -f "$LEGACY_WORDLIST_DIR/common.txt" ]; then
-        WORDLIST="$LEGACY_WORDLIST_DIR/common.txt"
-    elif [ -f "$WORDLIST_DIR/raft-medium-dirs.txt" ]; then
-        WORDLIST="$WORDLIST_DIR/raft-medium-dirs.txt"
-    elif [ -f "$LEGACY_WORDLIST_DIR/raft-medium-dirs.txt" ]; then
-        WORDLIST="$LEGACY_WORDLIST_DIR/raft-medium-dirs.txt"
-    elif [ -f /usr/share/wordlists/dirb/common.txt ]; then
-        WORDLIST="/usr/share/wordlists/dirb/common.txt"
-    else
-        FFUF_SKIP_REASON="no wordlist"
-    fi
-fi
+write_ffuf_phase_state() {
+    local path="$1"
+    shift
+    python3 - "$path" "$@" <<'PY'
+import json
+import os
+import sys
 
-if [ -n "$WORDLIST" ]; then
-    if python3 "$BASE_DIR/tools/recon_target_selector.py" \
-        --select \
-        --target "$TARGET" \
-        --httpx "$RECON_DIR/live/httpx_full.txt" \
-        --urls "$RECON_DIR/live/urls.txt" \
-        --state "$FFUF_TARGET_STATE" \
-        --plan "$FFUF_TARGET_PLAN" \
-        --targets "$FFUF_TARGETS_FILE" \
-        --wordlist "$WORDLIST" \
-        --limit "$([ "$QUICK_MODE" = "--quick" ] && echo 2 || echo 5)" \
-        >> "$FFUF_LOG" 2>&1; then
-        FFUF_TARGET_SELECTION_STATUS="ok"
-        if FFUF_TARGET_PENDING="$(python3 - "$FFUF_TARGET_PLAN" <<'PY'
+(
+    path,
+    status,
+    artifact,
+    summary_artifact,
+    skip_reason,
+    attempted,
+    succeeded,
+    failed,
+    control_failed,
+    interrupted,
+    observations,
+    parse_errors,
+    sample_count,
+    overflow,
+    status_counts,
+    heavy_signatures,
+    target_selection,
+    target_record,
+    pending,
+    host_concurrency,
+    target_threads,
+    summary_ok,
+    worker_count,
+    note,
+) = sys.argv[1:]
+try:
+    status_counts_value = json.loads(status_counts or "{}")
+except json.JSONDecodeError:
+    status_counts_value = {}
+payload = {
+    "schema_version": 1,
+    "status": status,
+    "artifact": artifact,
+    "summary_artifact": summary_artifact,
+    "skip_reason": skip_reason,
+    "attempted": int(attempted or 0),
+    "succeeded": int(succeeded or 0),
+    "failed": int(failed or 0),
+    "control_failed": int(control_failed or 0),
+    "interrupted": int(interrupted or 0),
+    "observations": int(observations or 0),
+    "parse_errors": int(parse_errors or 0),
+    "sample_count": int(sample_count or 0),
+    "overflow": int(overflow or 0),
+    "status_counts": status_counts_value,
+    "heavy_signatures": heavy_signatures,
+    "target_selection": target_selection,
+    "target_record": target_record,
+    "pending": int(pending or 0),
+    "host_concurrency": int(host_concurrency or 0),
+    "target_threads": int(target_threads or 0),
+    "summary_ok": summary_ok == "true",
+    "worker_count": int(worker_count or 0),
+    "note": note,
+}
+temporary = f"{path}.tmp.{os.getpid()}"
+with open(temporary, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+    handle.write("\n")
+os.replace(temporary, path)
+PY
+}
+
+ffuf_run_target() {
+    local base_url="$1"
+    local worker_dir="$2"
+    local wordlist="$3"
+    local target_threads="$4"
+    local worker_log="$worker_dir/worker.log"
+    local control_words="$worker_dir/control_words.txt"
+    local control_run="$worker_dir/control.jsonl"
+    local main_run="$worker_dir/main.jsonl"
+    local target_summary="$worker_dir/summary.tsv"
+    local spa_fallback="$worker_dir/spa_fallback.tsv"
+    local control_ok=1
+    local main_ok=0
+    local control_failed=0
+    local interrupted=0
+    local control_exit=0
+    local main_exit=0
+    local spa_fallback_size=0
+    local remaining
+    local filter_args=()
+
+    : > "$worker_log"
+    : > "$control_run"
+    : > "$main_run"
+    : > "$spa_fallback"
+    printf '%s\n' "$base_url" > "$worker_dir/url.txt"
+    printf 'Fuzzing: %s\n' "$base_url" >> "$worker_log"
+    bb_auth_args_for_url "$base_url"
+
+    printf '__bbhunt_missing_%s_%s\n__bbhunt_missing_%s_%s\n' \
+        "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" > "$control_words"
+    remaining="$(dir_fuzz_remaining_seconds)"
+    if [ "$remaining" -le 0 ]; then
+        printf '%s\n' "FFUF deadline reached before control request" >> "$worker_log"
+        printf '%s\tfailed\t1\t0\t1\t1\t1\n' "$base_url" > "$target_summary"
+        return 0
+    fi
+    if run_with_timeout "$remaining" ffuf -u "${base_url}/FUZZ" \
+        -w "$control_words" \
+        -mc all \
+        -s -json \
+        -t 1 \
+        -timeout 10 \
+        "${BB_URL_AUTH_ARGS[@]}" \
+        > "$control_run" 2>> "$worker_log"; then
+        if ! spa_fallback_size="$(python3 "$BASE_DIR/tools/recon_adapter.py" \
+            --recon-dir "$RECON_DIR" \
+            --ffuf-control-size \
+            --controls "$control_run" 2>> "$worker_log")"; then
+            spa_fallback_size=0
+            control_failed=1
+            control_ok=0
+        fi
+        if ! [[ "$spa_fallback_size" =~ ^[0-9]+$ ]]; then
+            spa_fallback_size=0
+            control_failed=1
+            control_ok=0
+        fi
+        if [ "$spa_fallback_size" -gt 0 ]; then
+            filter_args=(-fs "$spa_fallback_size")
+            printf '%s\t%s\n' "$base_url" "$spa_fallback_size" > "$spa_fallback"
+        fi
+    else
+        control_exit=$?
+        control_failed=1
+        control_ok=0
+        if [ "$control_exit" -eq 124 ] || [ "$control_exit" -eq 130 ]; then
+            interrupted=1
+        fi
+        printf 'random-miss controls failed (exit=%s)\n' "$control_exit" >> "$worker_log"
+    fi
+    rm -f "$control_words"
+
+    remaining="$(dir_fuzz_remaining_seconds)"
+    if [ "$remaining" -le 0 ]; then
+        interrupted=1
+        printf '%s\n' "FFUF deadline reached before main request" >> "$worker_log"
+    else
+        if run_with_timeout "$remaining" ffuf -u "${base_url}/FUZZ" \
+            -w "$wordlist" \
+            -mc 200,301,302,403,405 \
+            -ac \
+            "${filter_args[@]}" \
+            -t "$target_threads" \
+            -timeout 10 \
+            "${BB_URL_AUTH_ARGS[@]}" \
+            -s -json > "$main_run" 2>> "$worker_log"; then
+            main_ok=1
+        else
+            main_exit=$?
+            if [ "$main_exit" -eq 124 ] || [ "$main_exit" -eq 130 ]; then
+                interrupted=1
+            fi
+            printf 'main FFUF failed (exit=%s)\n' "$main_exit" >> "$worker_log"
+        fi
+    fi
+
+    if [ "$main_ok" -eq 1 ] && [ "$control_ok" -eq 1 ]; then
+        printf '%s\tok\t1\t1\t0\t%s\t%s\n' "$base_url" "$control_failed" "$interrupted" > "$target_summary"
+    elif [ "$main_ok" -eq 1 ]; then
+        printf '%s\tpartial\t1\t1\t0\t%s\t%s\n' "$base_url" "$control_failed" "$interrupted" > "$target_summary"
+    else
+        printf '%s\tfailed\t1\t0\t1\t%s\t%s\n' "$base_url" "$control_failed" "$interrupted" > "$target_summary"
+    fi
+}
+
+cleanup_ffuf_background() {
+    local worker_pid temporary
+    for worker_pid in "${worker_pids[@]:-}"; do
+        kill "$worker_pid" 2>/dev/null || true
+    done
+    if [ -n "${work_dir:-}" ] && [ -d "$work_dir" ]; then
+        rm -rf -- "$work_dir"
+    fi
+    for temporary in "${result_tmp:-}" "${control_tmp:-}" "${target_results_tmp:-}" "${FFUF_TARGET_ALIAS_MAP:-}"; do
+        [ -n "$temporary" ] && rm -f -- "$temporary"
+    done
+}
+
+run_ffuf_phase() {
+    local wordlist=""
+    local skip_reason=""
+    local target_selection="not-run"
+    local target_record="not-run"
+    local target_pending=0
+    local max_fuzz
+    local worker_limit
+    local target_threads
+    local worker_count=0
+    local worker_failures=0
+    local work_dir=""
+    local result_tmp=""
+    local control_tmp=""
+    local target_results_tmp=""
+    local result_artifact="recon/${RECON_TARGET_KEY}/dirs/"
+    local summary_artifact="-"
+    local summary_ok="false"
+    local phase_status="skipped"
+    local -a worker_pids=()
+    local base_url url worker_dir worker_pid worker_summary worker_status worker_attempted
+    local worker_succeeded worker_failed worker_control_failed worker_interrupted
+    local summary_values
+    trap 'cleanup_ffuf_background; exit 143' TERM INT
+    trap 'cleanup_ffuf_background' EXIT
+
+    FFUF_ATTEMPTED=0
+    FFUF_SUCCEEDED=0
+    FFUF_FAILED=0
+    FFUF_CONTROL_FAILED=0
+    FFUF_INTERRUPTED=0
+    FFUF_OBSERVATIONS=0
+    FFUF_PARSE_ERRORS=0
+    FFUF_SAMPLE_COUNT=0
+    FFUF_OVERFLOW=0
+    FFUF_STATUS_COUNTS="{}"
+    FFUF_HEAVY_SIGNATURES="-"
+
+    if ! command -v ffuf >/dev/null 2>&1; then
+        skip_reason="ffuf not installed"
+    elif [ -z "$(timeout_bin)" ]; then
+        skip_reason="timeout utility unavailable"
+    elif [ ! -s "$RECON_DIR/live/urls.txt" ]; then
+        skip_reason="no live URLs"
+    elif [ -f "$WORDLIST_DIR/common.txt" ]; then
+        wordlist="$WORDLIST_DIR/common.txt"
+    elif [ -f "$LEGACY_WORDLIST_DIR/common.txt" ]; then
+        wordlist="$LEGACY_WORDLIST_DIR/common.txt"
+    elif [ -f "$WORDLIST_DIR/raft-medium-dirs.txt" ]; then
+        wordlist="$WORDLIST_DIR/raft-medium-dirs.txt"
+    elif [ -f "$LEGACY_WORDLIST_DIR/raft-medium-dirs.txt" ]; then
+        wordlist="$LEGACY_WORDLIST_DIR/raft-medium-dirs.txt"
+    elif [ -f /usr/share/wordlists/dirb/common.txt ]; then
+        wordlist="/usr/share/wordlists/dirb/common.txt"
+    else
+        skip_reason="no wordlist"
+    fi
+
+    if [ -n "$wordlist" ]; then
+        max_fuzz=$([ "$QUICK_MODE" = "--quick" ] && echo 2 || echo 5)
+        if python3 "$BASE_DIR/tools/recon_target_selector.py" \
+            --select \
+            --target "$TARGET" \
+            --httpx "$RECON_DIR/live/httpx_full.txt" \
+            --urls "$RECON_DIR/live/urls.txt" \
+            --state "$FFUF_TARGET_STATE" \
+            --plan "$FFUF_TARGET_PLAN" \
+            --targets "$FFUF_TARGETS_FILE" \
+            --wordlist "$wordlist" \
+            --limit "$max_fuzz" \
+            >> "$FFUF_LOG" 2>&1; then
+            target_selection="ok"
+            if target_pending="$(python3 - "$FFUF_TARGET_PLAN" <<'PY'
 import json
 import sys
 
@@ -3117,226 +3428,165 @@ PY
 )"; then
             :
         else
-            FFUF_TARGET_PENDING=0
-            FFUF_TARGET_SELECTION_STATUS="partial"
-            log_warn "FFUF target plan was written but its pending count could not be read"
+            target_selection="partial"
+            printf '%s\n' "target plan pending count could not be read" >> "$FFUF_LOG"
         fi
         if [ ! -s "$FFUF_TARGETS_FILE" ]; then
             if grep -q '"exhausted": true' "$FFUF_TARGET_PLAN" 2>/dev/null; then
-                FFUF_SKIP_REASON="directory target rotation exhausted"
+                skip_reason="directory target rotation exhausted"
             else
-                FFUF_SKIP_REASON="no scope-owned live URL"
+                skip_reason="no scope-owned live URL"
             fi
-            WORDLIST=""
+            wordlist=""
+        elif FFUF_TARGET_ALIAS_MAP="$(mktemp "$RECON_DIR/dirs/.ffuf-target-aliases.XXXXXX")" && \
+             filter_ffuf_targets "$FFUF_TARGETS_FILE" "$FFUF_TARGET_ALIAS_MAP" "$TARGET"; then
+            printf 'filtered FFUF targets before execution: %s\n' "$(wc -l < "$FFUF_TARGETS_FILE" | tr -d ' ')" >> "$FFUF_LOG"
+        else
+            skip_reason="FFUF target de-duplication failed"
+            rm -f "$FFUF_TARGET_ALIAS_MAP"
+            FFUF_TARGET_ALIAS_MAP=""
+            wordlist=""
         fi
     else
-        FFUF_TARGET_SELECTION_STATUS="failed"
-        FFUF_SKIP_REASON="directory target selection failed"
-        WORDLIST=""
-        log_warn "Directory target selection failed; raw live inventory preserved and FFUF skipped"
+        target_selection="failed"
+        skip_reason="directory target selection failed"
+        printf '%s\n' "Directory target selection failed; raw live inventory preserved" >> "$FFUF_LOG"
     fi
 fi
 
-if [ -n "$WORDLIST" ]; then
-    MAX_FUZZ=$([ "$QUICK_MODE" = "--quick" ] && echo 2 || echo 5)
-    SPA_FALLBACK_LOG="$RECON_DIR/dirs/spa_fallback.txt"
-    : > "$SPA_FALLBACK_LOG"
-    FFUF_TARGET_RESULTS_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf_target_results.XXXXXX")"
-    FFUF_CONTROL_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf_controls.XXXXXX")"
-    FFUF_RESULT_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf_results.XXXXXX")"
-
-    if command -v gzip >/dev/null 2>&1 && gzip -c /dev/null > "$FFUF_RESULT_TMP" 2>> "$FFUF_LOG"; then
-        FFUF_RESULT_ARTIFACT="$RECON_DIR/dirs/ffuf_results.jsonl.gz"
-        FFUF_USE_GZIP="true"
-    else
-        : > "$FFUF_RESULT_TMP"
-        FFUF_RESULT_ARTIFACT="$RECON_DIR/dirs/ffuf_results.jsonl"
-        FFUF_USE_GZIP="false"
-    fi
-
-    while IFS= read -r url && [ "$FFUF_ATTEMPTED" -lt "$MAX_FUZZ" ]; do
-        [ -n "$url" ] || continue
-        FFUF_REMAINING_SECONDS="$(dir_fuzz_remaining_seconds)"
-        if [ "$FFUF_REMAINING_SECONDS" -le 0 ]; then
-            FFUF_INTERRUPTED=1
-            break
-        fi
-        if ! FFUF_BASE_URL="$(url_append_base "$url")"; then
-            log_warn "Skipping invalid FFUF base URL: $url"
-            continue
-        fi
-        FFUF_HOST_CONTROL_OK=1
-        FFUF_HOST_MAIN_OK=0
-        bb_auth_args_for_url "$FFUF_BASE_URL"
-        FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))
-        FFUF_FILTER_ARGS=()
-        FFUF_CONTROL_WORDLIST_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf-control-words.XXXXXX")"
-        FFUF_CONTROL_RUN_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf-control-run.XXXXXX")"
-        printf '__bbhunt_missing_%s_%s\n__bbhunt_missing_%s_%s\n' \
-            "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" > "$FFUF_CONTROL_WORDLIST_TMP"
-
-        FFUF_CONTROL_TIMEOUT="$(dir_fuzz_remaining_seconds)"
-        if [ "$FFUF_CONTROL_TIMEOUT" -le 0 ]; then
-            FFUF_INTERRUPTED=1
-            printf '%s\tfailed\n' "$FFUF_BASE_URL" >> "$FFUF_TARGET_RESULTS_TMP"
-            rm -f "$FFUF_CONTROL_WORDLIST_TMP" "$FFUF_CONTROL_RUN_TMP"
-            FFUF_CONTROL_WORDLIST_TMP=""
-            FFUF_CONTROL_RUN_TMP=""
-            break
-        fi
-        if run_with_timeout "$FFUF_CONTROL_TIMEOUT" ffuf -u "${FFUF_BASE_URL}/FUZZ" \
-            -w "$FFUF_CONTROL_WORDLIST_TMP" \
-            -mc all \
-            -s -json \
-            -t 1 \
-            -timeout 10 \
-            "${BB_URL_AUTH_ARGS[@]}" \
-            > "$FFUF_CONTROL_RUN_TMP" 2>> "$FFUF_LOG"; then
-            cat "$FFUF_CONTROL_RUN_TMP" >> "$FFUF_CONTROL_TMP"
-            if ! SPA_FALLBACK_SIZE="$(python3 "$BASE_DIR/tools/recon_adapter.py" \
-                --recon-dir "$RECON_DIR" \
-                --ffuf-control-size \
-                --controls "$FFUF_CONTROL_RUN_TMP" 2>> "$FFUF_LOG")"; then
-                SPA_FALLBACK_SIZE=0
-                FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + 1))
-                FFUF_HOST_CONTROL_OK=0
-            fi
-            if ! [[ "$SPA_FALLBACK_SIZE" =~ ^[0-9]+$ ]]; then
-                SPA_FALLBACK_SIZE=0
-                FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + 1))
-                FFUF_HOST_CONTROL_OK=0
-            fi
-            if [ "$SPA_FALLBACK_SIZE" -gt 0 ]; then
-                FFUF_FILTER_ARGS=(-fs "$SPA_FALLBACK_SIZE")
-                printf '%s\t%s\n' "$FFUF_BASE_URL" "$SPA_FALLBACK_SIZE" >> "$SPA_FALLBACK_LOG"
-                log_warn "SPA fallback observed for $FFUF_BASE_URL (two FFUF controls returned 200 size=$SPA_FALLBACK_SIZE); filtering that size"
-            fi
+if [ -n "$wordlist" ]; then
+        worker_limit="$FFUF_HOST_CONCURRENCY"
+        [ "$worker_limit" -gt "$max_fuzz" ] && worker_limit="$max_fuzz"
+        target_threads=$((THREADS / worker_limit))
+        [ "$target_threads" -lt 1 ] && target_threads=1
+        work_dir="$(mktemp -d "$RECON_DIR/dirs/.ffuf-workers.XXXXXX")"
+        result_tmp="$(mktemp "$RECON_DIR/dirs/.ffuf-results.XXXXXX")"
+        control_tmp="$(mktemp "$RECON_DIR/dirs/.ffuf-controls.XXXXXX")"
+        target_results_tmp="$(mktemp "$RECON_DIR/dirs/.ffuf-target-results.XXXXXX")"
+        if command -v gzip >/dev/null 2>&1 && gzip -c /dev/null > "$result_tmp" 2>> "$FFUF_LOG"; then
+            FFUF_USE_GZIP="true"
+            result_artifact="$RECON_DIR/dirs/ffuf_results.jsonl.gz"
         else
-            FFUF_CONTROL_EXIT=$?
-            if [ -s "$FFUF_CONTROL_RUN_TMP" ]; then
-                cat "$FFUF_CONTROL_RUN_TMP" >> "$FFUF_CONTROL_TMP"
-            fi
-            FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + 1))
-            FFUF_HOST_CONTROL_OK=0
-            if [ "$FFUF_CONTROL_EXIT" -eq 124 ] || [ "$FFUF_CONTROL_EXIT" -eq 130 ]; then
-                FFUF_INTERRUPTED=1
-            fi
-            log_warn "FFUF random-miss controls failed for $url; continuing without a fallback size filter"
+            FFUF_USE_GZIP="false"
+            : > "$result_tmp"
+            result_artifact="$RECON_DIR/dirs/ffuf_results.jsonl"
         fi
-        rm -f "$FFUF_CONTROL_WORDLIST_TMP" "$FFUF_CONTROL_RUN_TMP"
-        FFUF_CONTROL_WORDLIST_TMP=""
-        FFUF_CONTROL_RUN_TMP=""
+        mkdir -p "$RECON_DIR/dirs"
+        : > "$RECON_DIR/dirs/spa_fallback.txt"
 
-        log_step "Fuzzing: $FFUF_BASE_URL"
-        FFUF_MAIN_TIMEOUT="$(dir_fuzz_remaining_seconds)"
-        if [ "$FFUF_MAIN_TIMEOUT" -le 0 ]; then
-            FFUF_INTERRUPTED=1
-            printf '%s\tfailed\n' "$FFUF_BASE_URL" >> "$FFUF_TARGET_RESULTS_TMP"
-            break
-        fi
-        if [ "$FFUF_USE_GZIP" = "true" ]; then
-            FFUF_HOST_RUN_TMP="$(mktemp "$RECON_DIR/dirs/.ffuf-host-run.XXXXXX")"
-            FFUF_HOST_EXIT=0
-            if run_with_timeout "$FFUF_MAIN_TIMEOUT" ffuf -u "${FFUF_BASE_URL}/FUZZ" \
-                -w "$WORDLIST" \
-                -mc 200,301,302,403,405 \
-                -ac \
-                "${FFUF_FILTER_ARGS[@]}" \
-                -t "$THREADS" \
-                -timeout 10 \
-                "${BB_URL_AUTH_ARGS[@]}" \
-                -s -json > "$FFUF_HOST_RUN_TMP" 2>> "$FFUF_LOG"; then
+        while IFS= read -r url && [ "$worker_count" -lt "$max_fuzz" ]; do
+            [ -n "$url" ] || continue
+            if ! base_url="$(url_append_base "$url")"; then
+                printf '%s\n' "Skipping invalid FFUF base URL: $url" >> "$FFUF_LOG"
+                continue
+            fi
+            worker_count=$((worker_count + 1))
+            worker_dir="$work_dir/target-$(printf '%04d' "$worker_count")"
+            mkdir -p "$worker_dir"
+            (
+                set +e
+                ffuf_run_target "$base_url" "$worker_dir" "$wordlist" "$target_threads"
+            ) &
+            worker_pids+=("$!")
+            while [ "${#worker_pids[@]}" -ge "$worker_limit" ]; do
+                worker_pid="${worker_pids[0]}"
+                if wait "$worker_pid"; then
+                    :
+                else
+                    worker_failures=$((worker_failures + 1))
+                fi
+                worker_pids=("${worker_pids[@]:1}")
+            done
+        done < "$FFUF_TARGETS_FILE"
+        for worker_pid in "${worker_pids[@]}"; do
+            if wait "$worker_pid"; then
                 :
             else
-                FFUF_HOST_EXIT=$?
+                worker_failures=$((worker_failures + 1))
             fi
-            if gzip -c "$FFUF_HOST_RUN_TMP" >> "$FFUF_RESULT_TMP"; then
-                if [ "$FFUF_HOST_EXIT" -eq 0 ]; then
-                    FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + 1))
-                    FFUF_HOST_MAIN_OK=1
+        done
+
+        for worker_dir in "$work_dir"/target-*; do
+            [ -d "$worker_dir" ] || continue
+            [ -s "$worker_dir/worker.log" ] && cat "$worker_dir/worker.log" >> "$FFUF_LOG"
+            [ -s "$worker_dir/control.jsonl" ] && cat "$worker_dir/control.jsonl" >> "$control_tmp"
+            if [ -s "$worker_dir/main.jsonl" ]; then
+                if [ "$FFUF_USE_GZIP" = "true" ]; then
+                    gzip -c "$worker_dir/main.jsonl" >> "$result_tmp" || worker_failures=$((worker_failures + 1))
                 else
-                    FFUF_FAILED=$((FFUF_FAILED + 1))
-                    if [ "$FFUF_HOST_EXIT" -eq 124 ] || [ "$FFUF_HOST_EXIT" -eq 130 ]; then
-                        FFUF_INTERRUPTED=1
-                        log_warn "FFUF interrupted for $url; any valid partial JSONL remains in the evidence artifact"
-                    else
-                        log_warn "FFUF failed for $url; any valid partial JSONL remains in the evidence artifact"
-                    fi
-                fi
-            else
-                FFUF_FAILED=$((FFUF_FAILED + 1))
-                log_warn "Could not append FFUF evidence for $url"
-            fi
-            rm -f "$FFUF_HOST_RUN_TMP"
-            FFUF_HOST_RUN_TMP=""
-        else
-            if run_with_timeout "$FFUF_MAIN_TIMEOUT" ffuf -u "${FFUF_BASE_URL}/FUZZ" \
-                -w "$WORDLIST" \
-                -mc 200,301,302,403,405 \
-                -ac \
-                "${FFUF_FILTER_ARGS[@]}" \
-                -t "$THREADS" \
-                -timeout 10 \
-                "${BB_URL_AUTH_ARGS[@]}" \
-                -s -json >> "$FFUF_RESULT_TMP" 2>> "$FFUF_LOG"; then
-                FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + 1))
-                FFUF_HOST_MAIN_OK=1
-            else
-                FFUF_MAIN_EXIT=$?
-                FFUF_FAILED=$((FFUF_FAILED + 1))
-                if [ "$FFUF_MAIN_EXIT" -eq 124 ] || [ "$FFUF_MAIN_EXIT" -eq 130 ]; then
-                    FFUF_INTERRUPTED=1
-                    log_warn "FFUF interrupted for $url; any valid partial JSONL remains in the evidence artifact"
-                else
-                    log_warn "FFUF failed for $url; any valid partial JSONL remains in the evidence artifact"
+                    cat "$worker_dir/main.jsonl" >> "$result_tmp" || worker_failures=$((worker_failures + 1))
                 fi
             fi
-        fi
-        if [ "$FFUF_HOST_MAIN_OK" -eq 1 ] && [ "$FFUF_HOST_CONTROL_OK" -eq 1 ]; then
-            printf '%s\tok\n' "$FFUF_BASE_URL" >> "$FFUF_TARGET_RESULTS_TMP"
-        elif [ "$FFUF_HOST_MAIN_OK" -eq 1 ]; then
-            printf '%s\tpartial\n' "$FFUF_BASE_URL" >> "$FFUF_TARGET_RESULTS_TMP"
-        else
-            printf '%s\tfailed\n' "$FFUF_BASE_URL" >> "$FFUF_TARGET_RESULTS_TMP"
-        fi
-    done < "$FFUF_TARGETS_FILE"
+            [ -s "$worker_dir/spa_fallback.tsv" ] && cat "$worker_dir/spa_fallback.tsv" >> "$RECON_DIR/dirs/spa_fallback.txt"
+            worker_summary="$worker_dir/summary.tsv"
+            if [ -s "$worker_summary" ]; then
+                IFS=$'\t' read -r base_url worker_status worker_attempted worker_succeeded worker_failed worker_control_failed worker_interrupted < "$worker_summary"
+                printf '%s\t%s\n' "$base_url" "$worker_status" >> "$target_results_tmp"
+                if [ -s "$FFUF_TARGET_ALIAS_MAP" ]; then
+                    while IFS=$'\t' read -r alias_base alias_original; do
+                        [ "$alias_base" = "$base_url" ] || continue
+                        [ "$alias_original" = "$base_url" ] && continue
+                        printf '%s\t%s\n' "$alias_original" "$worker_status" >> "$target_results_tmp"
+                    done < "$FFUF_TARGET_ALIAS_MAP"
+                fi
+                FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + worker_attempted))
+                FFUF_SUCCEEDED=$((FFUF_SUCCEEDED + worker_succeeded))
+                FFUF_FAILED=$((FFUF_FAILED + worker_failed))
+                FFUF_CONTROL_FAILED=$((FFUF_CONTROL_FAILED + worker_control_failed))
+                FFUF_INTERRUPTED=$((FFUF_INTERRUPTED + worker_interrupted))
+            else
+                base_url="$(cat "$worker_dir/url.txt" 2>/dev/null || true)"
+                [ -n "$base_url" ] || continue
+                printf '%s\tfailed\n' "$base_url" >> "$target_results_tmp"
+                if [ -s "$FFUF_TARGET_ALIAS_MAP" ]; then
+                    while IFS=$'\t' read -r alias_base alias_original; do
+                        [ "$alias_base" = "$base_url" ] || continue
+                        [ "$alias_original" = "$base_url" ] && continue
+                        printf '%s\tfailed\n' "$alias_original" >> "$target_results_tmp"
+                    done < "$FFUF_TARGET_ALIAS_MAP"
+                fi
+                FFUF_ATTEMPTED=$((FFUF_ATTEMPTED + 1))
+                FFUF_FAILED=$((FFUF_FAILED + 1))
+                worker_failures=$((worker_failures + 1))
+            fi
+        done
+        rm -rf "$work_dir"
 
-    if [ -s "$FFUF_TARGET_RESULTS_TMP" ]; then
-        if python3 "$BASE_DIR/tools/recon_target_selector.py" \
-            --record-results \
-            --target "$TARGET" \
-            --state "$FFUF_TARGET_STATE" \
-            --results "$FFUF_TARGET_RESULTS_TMP" \
-            >> "$FFUF_LOG" 2>&1; then
-            FFUF_TARGET_RECORD_STATUS="ok"
-        else
-            FFUF_TARGET_RECORD_STATUS="failed"
-            log_warn "FFUF target rotation state update failed; completed coverage was not advanced"
+        if [ -s "$target_results_tmp" ]; then
+            if python3 "$BASE_DIR/tools/recon_target_selector.py" \
+                --record-results \
+                --target "$TARGET" \
+                --state "$FFUF_TARGET_STATE" \
+                --results "$target_results_tmp" \
+                >> "$FFUF_LOG" 2>&1; then
+                target_record="ok"
+            else
+                target_record="failed"
+                printf '%s\n' "FFUF target rotation state update failed; completed coverage was not advanced" >> "$FFUF_LOG"
+            fi
         fi
-    fi
 
-    if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
-        mv -f "$FFUF_RESULT_TMP" "$FFUF_RESULT_ARTIFACT"
-        FFUF_RESULT_TMP=""
-        if [ "$FFUF_USE_GZIP" = "true" ]; then
-            rm -f "$RECON_DIR/dirs/ffuf_results.jsonl"
-        else
-            rm -f "$RECON_DIR/dirs/ffuf_results.jsonl.gz"
-        fi
-        FFUF_PHASE_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/$(basename "$FFUF_RESULT_ARTIFACT")"
-
-        if python3 "$BASE_DIR/tools/recon_adapter.py" \
-            --recon-dir "$RECON_DIR" \
-            --summarize-ffuf \
-            --controls "$FFUF_CONTROL_TMP" \
-            --attempted "$FFUF_ATTEMPTED" \
-            --succeeded "$FFUF_SUCCEEDED" \
-            --failed "$FFUF_FAILED" \
-            --control-failed "$FFUF_CONTROL_FAILED" \
-            >> "$FFUF_LOG" 2>&1; then
-            FFUF_SUMMARY_OK="true"
-            FFUF_SUMMARY_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/ffuf_summary.json"
-            if FFUF_SUMMARY_VALUES="$(python3 - "$RECON_DIR/dirs/ffuf_summary.json" <<'PY'
+        if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
+            mv -f "$result_tmp" "$result_artifact"
+            result_tmp=""
+            if [ "$FFUF_USE_GZIP" = "true" ]; then
+                rm -f "$RECON_DIR/dirs/ffuf_results.jsonl"
+            else
+                rm -f "$RECON_DIR/dirs/ffuf_results.jsonl.gz"
+            fi
+            FFUF_PHASE_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/$(basename "$result_artifact")"
+            if python3 "$BASE_DIR/tools/recon_adapter.py" \
+                --recon-dir "$RECON_DIR" \
+                --summarize-ffuf \
+                --controls "$control_tmp" \
+                --attempted "$FFUF_ATTEMPTED" \
+                --succeeded "$FFUF_SUCCEEDED" \
+                --failed "$FFUF_FAILED" \
+                --control-failed "$FFUF_CONTROL_FAILED" \
+                >> "$FFUF_LOG" 2>&1; then
+                summary_ok="true"
+                summary_artifact="recon/${RECON_TARGET_KEY}/dirs/ffuf_summary.json"
+                if summary_values="$(python3 - "$RECON_DIR/dirs/ffuf_summary.json" <<'PY'
 import json
 import sys
 
@@ -3357,66 +3607,159 @@ print(
 )
 PY
 )"; then
-                IFS=$'\t' read -r FFUF_OBSERVATIONS FFUF_PARSE_ERRORS FFUF_SAMPLE_COUNT FFUF_OVERFLOW FFUF_STATUS_COUNTS FFUF_HEAVY_SIGNATURES <<< "$FFUF_SUMMARY_VALUES"
+                    IFS=$'\t' read -r FFUF_OBSERVATIONS FFUF_PARSE_ERRORS FFUF_SAMPLE_COUNT FFUF_OVERFLOW FFUF_STATUS_COUNTS FFUF_HEAVY_SIGNATURES <<< "$summary_values"
+                else
+                    summary_ok="false"
+                    printf '%s\n' "FFUF summary was written but its compact counters could not be read" >> "$FFUF_LOG"
+                fi
             else
-                FFUF_SUMMARY_OK="false"
-                log_warn "FFUF summary was written but its compact counters could not be read"
+                printf '%s\n' "ReconAdapter failed to summarize FFUF evidence; full result artifact was preserved" >> "$FFUF_LOG"
             fi
         else
-            log_warn "ReconAdapter failed to summarize FFUF evidence; full result artifact was preserved"
+            skip_reason="no usable base URLs"
+            rm -f "$result_tmp"
+            result_tmp=""
         fi
-    else
-        FFUF_SKIP_REASON="no usable base URLs"
-        rm -f "$FFUF_RESULT_TMP"
-        FFUF_RESULT_TMP=""
+        rm -f "$control_tmp" "$target_results_tmp" "$FFUF_TARGET_ALIAS_MAP"
+        FFUF_TARGET_ALIAS_MAP=""
+        control_tmp=""
+        target_results_tmp=""
+        if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
+            phase_status="ok"
+            if [ "$FFUF_FAILED" -gt 0 ] || [ "$FFUF_CONTROL_FAILED" -gt 0 ] || \
+               [ "$FFUF_INTERRUPTED" -gt 0 ] || [ "$FFUF_PARSE_ERRORS" -gt 0 ] || \
+               [ "$summary_ok" != "true" ] || [ "$target_record" != "ok" ] || [ "$worker_failures" -gt 0 ]; then
+                phase_status="partial"
+            fi
+        fi
     fi
 
-    rm -f "$FFUF_CONTROL_TMP"
-    FFUF_CONTROL_TMP=""
-fi
+    if [ "$FFUF_ATTEMPTED" -eq 0 ] && [ -z "$skip_reason" ]; then
+        skip_reason="no usable base URLs"
+    fi
+    if ! write_ffuf_phase_state \
+        "$FFUF_PHASE_STATE" \
+        "$phase_status" \
+        "${FFUF_PHASE_ARTIFACT:-$result_artifact}" \
+        "$summary_artifact" \
+        "$skip_reason" \
+        "$FFUF_ATTEMPTED" "$FFUF_SUCCEEDED" "$FFUF_FAILED" "$FFUF_CONTROL_FAILED" \
+        "$FFUF_INTERRUPTED" "$FFUF_OBSERVATIONS" "$FFUF_PARSE_ERRORS" "$FFUF_SAMPLE_COUNT" \
+        "$FFUF_OVERFLOW" "$FFUF_STATUS_COUNTS" "$FFUF_HEAVY_SIGNATURES" \
+        "$target_selection" "$target_record" "$target_pending" \
+        "${worker_limit:-0}" "${target_threads:-0}" "$summary_ok" "$worker_count" \
+        "background host workers; per-target control then main; aggregate thread budget is bounded"; then
+        printf '%s\n' "Could not publish FFUF phase state" >> "$FFUF_LOG"
+        return 1
+    fi
+}
 
-if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
-    DIR_FUZZ_STATUS="ok"
-    if [ "$FFUF_FAILED" -gt 0 ] || [ "$FFUF_CONTROL_FAILED" -gt 0 ] || \
-       [ "$FFUF_PARSE_ERRORS" -gt 0 ] || [ "$FFUF_SUMMARY_OK" != "true" ] || \
-       [ "$FFUF_TARGET_RECORD_STATUS" != "ok" ] || [ "$FFUF_INTERRUPTED" -gt 0 ]; then
+wait_for_ffuf_phase() {
+    local wait_status=0
+    local state_values
+    if [ -n "${FFUF_PID:-}" ]; then
+        if wait "$FFUF_PID"; then
+            :
+        else
+            wait_status=$?
+            log_warn "Background FFUF phase exited with status $wait_status"
+        fi
+        FFUF_PID=""
+    fi
+    if [ ! -s "$FFUF_PHASE_STATE" ]; then
         DIR_FUZZ_STATUS="partial"
-    fi
-    log_done "Directory fuzzing complete: attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED observations=$FFUF_OBSERVATIONS"
-else
-    log_warn "Directory fuzzing skipped: ${FFUF_SKIP_REASON:-no runnable inputs}"
-fi
+        FFUF_SKIP_REASON="background FFUF phase exited before publishing state"
+        FFUF_PHASE_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/"
+        FFUF_SUMMARY_ARTIFACT="-"
+        RECON_PHASE_PARTIAL=1
+    elif ! state_values="$(python3 - "$FFUF_PHASE_STATE" <<'PY'
+import json
+import sys
 
-FFUF_PHASE_NOTE="bounded host sampling with rotation; budget=${FFUF_EFFECTIVE_BUDGET_SECONDS}s (hard=${DIR_FUZZ_HARD_BUDGET_SECONDS}s); attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED interrupted=$FFUF_INTERRUPTED parse_errors=$FFUF_PARSE_ERRORS target_selection=$FFUF_TARGET_SELECTION_STATUS target_record=$FFUF_TARGET_RECORD_STATUS pending=$FFUF_TARGET_PENDING; not complete directory coverage"
-[ -n "$FFUF_SKIP_REASON" ] && FFUF_PHASE_NOTE="$FFUF_PHASE_NOTE; skipped_reason=$FFUF_SKIP_REASON"
-record_recon_phase \
-    dir_fuzz \
-    "$DIR_FUZZ_STATUS" \
-    "$FFUF_PHASE_ARTIFACT" \
-    "$FFUF_OBSERVATIONS" \
-    "$FFUF_PHASE_NOTE"
-emit_claude_hint \
-    phase                dir_fuzz \
-    status               "$DIR_FUZZ_STATUS" \
-    hosts_attempted      "$FFUF_ATTEMPTED" \
-    hosts_succeeded      "$FFUF_SUCCEEDED" \
-    hosts_failed         "$FFUF_FAILED" \
-   interrupted           "$FFUF_INTERRUPTED" \
-   hard_budget_seconds   "$DIR_FUZZ_HARD_BUDGET_SECONDS" \
-    effective_budget_seconds "$FFUF_EFFECTIVE_BUDGET_SECONDS" \
-   target_selection     "$FFUF_TARGET_SELECTION_STATUS" \
-    target_record        "$FFUF_TARGET_RECORD_STATUS" \
-    pending_targets      "$FFUF_TARGET_PENDING" \
-    observations         "$FFUF_OBSERVATIONS" \
-    status_counts        "$FFUF_STATUS_COUNTS" \
-    heavy_signatures     "$FFUF_HEAVY_SIGNATURES" \
-    review_sample_count  "$FFUF_SAMPLE_COUNT" \
-    review_overflow      "$FFUF_OVERFLOW" \
-    artifact             "$FFUF_PHASE_ARTIFACT" \
-    targets_plan         "recon/${RECON_TARGET_KEY}/dirs/ffuf_target_plan.json" \
-    targets_state        "recon/${RECON_TARGET_KEY}/dirs/ffuf_target_state.json" \
-    summary              "$FFUF_SUMMARY_ARTIFACT" \
-    interpretation       "AI review required; control matches are evidence hints, not exclusions"
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+fields = (
+    "status", "artifact", "summary_artifact", "skip_reason", "attempted", "succeeded",
+    "failed", "control_failed", "interrupted", "observations", "parse_errors", "sample_count",
+    "overflow", "status_counts", "heavy_signatures", "target_selection", "target_record",
+    "pending", "host_concurrency", "target_threads", "summary_ok", "worker_count",
+)
+missing = [field for field in fields if field not in payload]
+if missing:
+    raise ValueError(f"missing FFUF phase state fields: {', '.join(missing)}")
+values = []
+for field in fields:
+    value = payload.get(field, "{}" if field == "status_counts" else "-")
+    if field == "status_counts":
+        value = json.dumps(value or {}, separators=(",", ":"))
+    elif field == "summary_ok":
+        value = "true" if value else "false"
+    value = str(value).replace("\t", " ").replace("\n", " ")
+    values.append(value)
+print("\t".join(values))
+PY
+)"; then
+        IFS=$'\t' read -r DIR_FUZZ_STATUS FFUF_PHASE_ARTIFACT FFUF_SUMMARY_ARTIFACT FFUF_SKIP_REASON \
+            FFUF_ATTEMPTED FFUF_SUCCEEDED FFUF_FAILED FFUF_CONTROL_FAILED FFUF_INTERRUPTED \
+            FFUF_OBSERVATIONS FFUF_PARSE_ERRORS FFUF_SAMPLE_COUNT FFUF_OVERFLOW FFUF_STATUS_COUNTS \
+            FFUF_HEAVY_SIGNATURES FFUF_TARGET_SELECTION_STATUS FFUF_TARGET_RECORD_STATUS FFUF_TARGET_PENDING \
+            FFUF_EFFECTIVE_HOST_CONCURRENCY FFUF_TARGET_THREADS FFUF_SUMMARY_OK FFUF_WORKER_COUNT <<< "$state_values"
+        if [ "$wait_status" -ne 0 ] && [ "$DIR_FUZZ_STATUS" = "ok" ]; then
+            DIR_FUZZ_STATUS="partial"
+            RECON_PHASE_PARTIAL=1
+        fi
+        case "$DIR_FUZZ_STATUS" in
+            partial|failed|incomplete) RECON_PHASE_PARTIAL=1 ;;
+        esac
+    else
+        DIR_FUZZ_STATUS="partial"
+        FFUF_SKIP_REASON="FFUF phase state could not be parsed"
+        RECON_PHASE_PARTIAL=1
+    fi
+
+    if [ "$FFUF_ATTEMPTED" -gt 0 ]; then
+        log_done "Directory fuzzing complete: attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED observations=$FFUF_OBSERVATIONS (background workers=$FFUF_WORKER_COUNT)"
+    else
+        log_warn "Directory fuzzing skipped: ${FFUF_SKIP_REASON:-no runnable inputs}"
+    fi
+    FFUF_PHASE_NOTE="bounded host sampling with rotation; background=true; host_concurrency=${FFUF_EFFECTIVE_HOST_CONCURRENCY:-0}; target_threads=${FFUF_TARGET_THREADS:-0}; budget=${FFUF_EFFECTIVE_BUDGET_SECONDS}s (hard=${DIR_FUZZ_HARD_BUDGET_SECONDS}s); attempted=$FFUF_ATTEMPTED succeeded=$FFUF_SUCCEEDED failed=$FFUF_FAILED control_failed=$FFUF_CONTROL_FAILED interrupted=$FFUF_INTERRUPTED parse_errors=$FFUF_PARSE_ERRORS target_selection=$FFUF_TARGET_SELECTION_STATUS target_record=$FFUF_TARGET_RECORD_STATUS pending=$FFUF_TARGET_PENDING; not complete directory coverage"
+    [ -n "$FFUF_SKIP_REASON" ] && FFUF_PHASE_NOTE="$FFUF_PHASE_NOTE; skipped_reason=$FFUF_SKIP_REASON"
+    record_recon_phase \
+        dir_fuzz \
+        "$DIR_FUZZ_STATUS" \
+        "$FFUF_PHASE_ARTIFACT" \
+        "$FFUF_OBSERVATIONS" \
+        "$FFUF_PHASE_NOTE"
+    emit_claude_hint \
+        phase                dir_fuzz \
+        status               "$DIR_FUZZ_STATUS" \
+        hosts_attempted      "$FFUF_ATTEMPTED" \
+        hosts_succeeded      "$FFUF_SUCCEEDED" \
+        hosts_failed         "$FFUF_FAILED" \
+        interrupted          "$FFUF_INTERRUPTED" \
+        hard_budget_seconds  "$DIR_FUZZ_HARD_BUDGET_SECONDS" \
+        effective_budget_seconds "$FFUF_EFFECTIVE_BUDGET_SECONDS" \
+        host_concurrency     "${FFUF_EFFECTIVE_HOST_CONCURRENCY:-0}" \
+        target_threads       "${FFUF_TARGET_THREADS:-0}" \
+        background           "true" \
+        target_selection     "$FFUF_TARGET_SELECTION_STATUS" \
+        target_record        "$FFUF_TARGET_RECORD_STATUS" \
+        pending_targets      "$FFUF_TARGET_PENDING" \
+        observations         "$FFUF_OBSERVATIONS" \
+        status_counts        "$FFUF_STATUS_COUNTS" \
+        heavy_signatures     "$FFUF_HEAVY_SIGNATURES" \
+        review_sample_count  "$FFUF_SAMPLE_COUNT" \
+        review_overflow      "$FFUF_OVERFLOW" \
+        artifact             "$FFUF_PHASE_ARTIFACT" \
+        targets_plan         "recon/${RECON_TARGET_KEY}/dirs/ffuf_target_plan.json" \
+        targets_state        "recon/${RECON_TARGET_KEY}/dirs/ffuf_target_state.json" \
+        summary              "$FFUF_SUMMARY_ARTIFACT" \
+        interpretation       "AI review required; control matches are evidence hints, not exclusions"
+}
+
+run_ffuf_phase &
+FFUF_PID=$!
+log_step "Directory fuzzing scheduled in background (pid=$FFUF_PID, host_concurrency=$FFUF_HOST_CONCURRENCY); continuing with later recon phases"
 
 # ============================================================
 # Phase 6.5: Config File Exposure Check
@@ -4088,6 +4431,10 @@ emit_claude_hint \
 emit_claude_hint_actions \
     "review findings/cicd/<org>/scan_results.txt for pull_request_target / unsafe-context risks" \
     "if no GitHub orgs were auto-detected, leave CI/CD as no cached signal rather than tested clean"
+
+# FFUF is independent of the later evidence-only lanes; collect its durable
+# state now so Surface never observes a half-published directory artifact.
+wait_for_ffuf_phase
 
 # ============================================================
 # Routing candidates: existing evidence only, no new requests
