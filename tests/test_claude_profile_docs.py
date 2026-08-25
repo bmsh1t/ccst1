@@ -17,7 +17,7 @@ def test_claude_md_defines_authorized_context_and_side_effect_boundary():
     assert "视为已授权的" in text
     assert "安全测试上下文" in text
     assert "allow-with-controls" in text
-    assert "不要确认目标性质、公开/私有、归属或授权" in text
+    assert "不要以目标性质、公开/私有、归属或授权确认作为常规探索的额外门槛" in text
 
 
 def test_claude_md_operator_profile_is_evidence_driven_not_class_forcing():
