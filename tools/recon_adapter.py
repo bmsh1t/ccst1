@@ -2,16 +2,16 @@
 Recon output adapter — normalizes recon data across formats.
 
 Reads the nested directory format produced by recon_engine.sh and provides
-a unified API for agent.py, brain.py, and recon-ranker to consume recon data.
+a unified API for surface and recon-ranker consumers.
 
 Handles fallback paths (e.g. httpx_full.txt at root vs live/httpx_full.txt)
-and can normalize a recon directory by creating missing stub files that
-brain.py expects (priority/, api_specs/, urls/graphql.txt, etc.).
+and can normalize a recon directory by creating missing derived files used by
+older artifact layouts (priority/, api_specs/, urls/graphql.txt, etc.).
 
 Usage:
     adapter = ReconAdapter(Path("recon/target.com"))
     subs = adapter.get_subdomains()
-    adapter.normalize()  # create missing stubs for brain.py
+    adapter.normalize()  # create missing derived artifact stubs
 """
 
 import argparse
@@ -629,10 +629,10 @@ class ReconAdapter:
     # ── Normalize ─────────────────────────────────────────────────────────
 
     def normalize(self) -> None:
-        """Ensure all files expected by brain.py exist.
+        """Ensure expected derived artifact files exist.
 
-        Creates missing directories and stub files so that brain.py's strict
-        path lookups don't fail. Existing files are never overwritten.
+        Creates missing directories and stub files for older artifact layouts.
+        Existing files are never overwritten.
         """
         if not self._dir.is_dir():
             return

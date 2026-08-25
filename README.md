@@ -195,9 +195,8 @@ the same slash-command line.
 | See where the last run stopped for this target | `/pickup target.com` |
 | Continue this target in the current Claude session using persisted target state | `/hunt target.com` or `/autopilot target.com --normal` |
 
-Claude CLI `/autopilot` runs inline in the current Claude session and does not
-create a separate local-agent session file. It is the sole controller for
-target state. It may use bounded, non-nesting specialists when independent
+Claude CLI `/autopilot` runs inline in the current Claude session and is the
+sole controller for target state. It may use bounded, non-nesting specialists when independent
 evidence questions benefit from isolated context or useful parallelism; the
 current AI session decides how many to use through the platform's
 delegation tool and retains owner write-back and closure decisions.

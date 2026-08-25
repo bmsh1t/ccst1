@@ -13,11 +13,10 @@ Continue a previous hunt on a target.
 - You want to see where a target left off before continuing
 - You want target-level memory, structured findings, runtime state, and untested
   surface in one place
-- You want a safe resume that does not silently inherit an old agent trace
+- You want a safe resume from target-owned state
 
 ## Do Not Use When
 
-- You want exact continuation of a previous local agent session trace
 - You are starting a completely new target with no history
 - You only need current surface evidence review; `/surface` is better for that
 

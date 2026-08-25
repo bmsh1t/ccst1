@@ -16,7 +16,7 @@ surface when a target needs deeper browser runtime inspection, such as:
 - postMessage / origin / frame boundary observations
 
 This is an optional external Claude MCP capability. It does **not**
-automatically integrate with `/recon`, `/surface`, `/autopilot`, or `agent.py`.
+automatically integrate with `/recon`, `/surface`, or `/autopilot`.
 Use it when Chrome DevTools or Playwright MCP shows
 that runtime JS behavior is the next useful evidence source.
 

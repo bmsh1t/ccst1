@@ -206,7 +206,7 @@ if prompt_yes_no "Set up JSHook MCP now? (y/N): "; then
     echo "Replace /absolute/path/to/jshook-mcp/dist/server.js with your local JSHook MCP entrypoint."
     echo ""
     echo "This is an optional external Claude MCP capability only."
-    echo "It does not automatically integrate with /recon, /surface, /autopilot, or agent.py."
+    echo "It does not automatically integrate with /recon, /surface, or /autopilot."
     echo ""
 fi
 

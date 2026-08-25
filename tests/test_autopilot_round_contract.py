@@ -216,7 +216,7 @@ def test_readme_documents_native_loop_cancellation_and_disk_resume():
     assert "One loop owns one target" in readme
     assert "deletes its exact matching recurring job" in readme
     assert "If a turn is interrupted, the next round resumes from disk" in readme
-    assert "does not resume legacy `agent.py --agent` working memory" in readme
+    assert "does not resume the prior conversational turn" in readme
     assert "evidence-bounded, not proof that every payload" in readme
 
 

@@ -191,7 +191,7 @@ class TestReconAdapterGraphQL:
 
 
 class TestReconAdapterFallbacks:
-    """Fallback paths for agent.py compatibility."""
+    """Fallback paths for older recon artifact layouts."""
 
     def test_live_hosts_fallback_to_root_httpx(self, recon_dir):
         """If live/httpx_full.txt missing but httpx_full.txt at root, use that."""
@@ -229,7 +229,7 @@ class TestReconAdapterFallbacks:
 
 
 class TestReconAdapterNormalize:
-    """normalize() ensures all expected files exist for brain.py."""
+    """normalize() ensures derived artifact files exist."""
 
     def test_normalize_creates_priority_dir(self, populated_recon):
         adapter = ReconAdapter(populated_recon)
