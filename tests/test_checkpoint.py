@@ -2232,7 +2232,7 @@ def test_checkpoint_queues_unsafe_skipped_review_from_manual_review_artifact(tmp
         for item in checkpoint["target_write_back"]["next"]
     )
     review_action = next(item for item in checkpoint["next_action_queue"] if item["type"] == "action-gated-review")
-    assert review_action["redline_required"] is True
+    assert review_action["redline_required"] is False
     assert review_action["metadata"]["unsafe_skipped_id"]
     assert review_action["metadata"]["artifact"] == "findings/target.com/manual_review/unsafe_skipped.txt"
 

@@ -3231,7 +3231,9 @@ def _build_next_action_queue(next_items: list[str], target: str = "") -> list[di
             "status": "ready",
             "action": item,
             "command_hint": command_hint,
-            "redline_required": action_type == "action-gated-review",
+            # Checkpoint projects an explicit flag; it does not infer a
+            # red-line requirement from an action type or its wording.
+            "redline_required": False,
             "stop_condition": (
                 "record tested, blocked, dead-end, candidate, or validated finding "
                 "before moving to the next queued action"
