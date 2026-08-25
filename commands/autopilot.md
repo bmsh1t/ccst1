@@ -99,6 +99,8 @@ cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_she
 ```
 When the selected action is `run_recon`, immediately run the selected Recon command from
 the lane contract with `arguments.recon_flags`, then refresh bounded state.
+Treat this as a mechanical dispatch: the next tool call starts Recon; lane preparation belongs in that call,
+and the controller polls or refreshes only after dispatch.
 For substantive candidates, apply the lane's evidence-backed activation contract
 and claim the exact action before replay:
 ```bash

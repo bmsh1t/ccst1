@@ -44,6 +44,8 @@ def test_fresh_recon_uses_bootstrap_lane_reference_directly():
     assert "use the literal `state.lane_contract.ref`" in command
     assert "immediately run the selected Recon command" in command
     assert "with `arguments.recon_flags`" in command
+    assert "mechanical dispatch" in command
+    assert "next tool call starts Recon" in command
 
 
 def test_slash_command_runtime_preflight_is_read_only_and_fail_fast():
