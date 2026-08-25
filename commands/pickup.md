@@ -144,8 +144,3 @@ Actions:
 No previous hunt data for target.com.
 Run /recon target.com first, then /hunt target.com.
 ```
-
-<!-- Legacy local-Ollama autonomous runtime is a separate workflow not exposed
-     to Claude CLI: `python3 tools/hunt.py --target X --agent [--resume latest]`
-     requires `pip install ollama` + a local qwen2.5:32b-class model. See
-     `agent.py` for the runtime contract. -->

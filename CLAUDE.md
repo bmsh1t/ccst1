@@ -79,9 +79,8 @@ Target state / Evidence -> Coverage Matrix -> Skill / Context Router
 - Governance/maintenance：`/check-coverage`、`/checkpoint`、`/retrospect`、
   `/sync-check`、`/memory-gc`。
 
-Legacy CVE/report entrypoints remain available as compatibility paths; `/intel`
-and `/report` are primary. Command discovery comes from `commands/`, not a
-hand-maintained list here.
+`/intel` and `/report` are the component-intelligence and reporting owners.
+Command discovery comes from `commands/`, not a hand-maintained list here.
 
 ## Tool and MCP Routing
 
@@ -107,7 +106,7 @@ hand-maintained list here.
   具体验证再按引用展开单条证据，不把完整 corpus 复制进上下文。
 - Validation gate 只用于 Candidate；有具体下一证据动作的 Lead/Signal 保持开放。
 - Temporary skips are per-current-target and per-current-invocation only；不得从旧目标、
-  `/pickup`、README 示例或未恢复的 legacy trace 继承。
+  `/pickup`、README 示例或旧会话继承。
 - 结束或交接前说明 covered、blocked、unknown、active leads 和 next actions；存在
   actor/object/replay gap 时不得宣称覆盖完整。
 

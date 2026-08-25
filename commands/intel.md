@@ -4,8 +4,8 @@ description: On-demand component intelligence for a target — version applicabi
 
 # /intel
 
-Fetch actionable component intelligence for a target. This is the primary intel workflow;
-legacy CVE-hunt entrypoints are compatibility paths only. Every result is an
+Fetch actionable component intelligence for a target. This is the primary intel workflow.
+Every result is an
 advisory/hypothesis input, not a validated finding.
 
 ## Run This (the only required step)

@@ -379,10 +379,5 @@ def test_cadence_from_namespace(namespace, expected):
     assert autopilot_args.cadence_from_namespace(namespace) == expected
 
 
-def test_direct_cli_compatibility_wrappers_delegate_to_shared_helper(monkeypatch):
-    namespace = Namespace()
-    monkeypatch.setattr(hunt, "cadence_from_namespace", lambda value: "hunt-shared")
-    monkeypatch.setattr(agent, "cadence_from_namespace", lambda value: "agent-shared")
-
-    assert hunt.resolve_autopilot_mode(namespace) == "hunt-shared"
-    assert agent._resolve_cli_autopilot_mode(namespace) == "agent-shared"
+def test_hunt_cli_has_no_legacy_agent_cadence_wrapper():
+    assert not hasattr(hunt, "resolve_autopilot_mode")

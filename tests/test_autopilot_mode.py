@@ -902,45 +902,12 @@ def test_run_agent_hunt_session_summary_uses_remembered_profile_findings(monkeyp
     assert "Findings: 1." in entries[0]["notes"]
 
 
-def test_hunt_main_passes_autopilot_mode_to_agent(monkeypatch, tmp_path):
-    captured = {}
+@pytest.mark.parametrize("removed_flag", ["--agent", "--cve-hunt"])
+def test_hunt_main_rejects_removed_legacy_routes(monkeypatch, removed_flag):
+    monkeypatch.setattr(sys, "argv", ["hunt.py", "--target", "example.com", removed_flag])
 
-    def fake_run_agent_hunt(*args, **kwargs):
-        captured["autopilot_mode"] = kwargs["autopilot_mode"]
-        captured["quick"] = kwargs["quick"]
-        captured["resume_session_id"] = kwargs["resume_session_id"]
-        captured["ctf_mode"] = kwargs["ctf_mode"]
-        captured["deep_mode"] = kwargs["deep_mode"]
-        return {
-            "domain": "example.com",
-            "success": True,
-            "steps": 0,
-            "findings": 0,
-            "reports": 0,
-            "autopilot_mode": kwargs["autopilot_mode"],
-            "ctf_mode": kwargs["ctf_mode"],
-            "deep_mode": kwargs["deep_mode"],
-        }
-
-    common = tmp_path / "common.txt"
-    common.write_text("admin\n", encoding="utf-8")
-
-    monkeypatch.setattr(hunt, "load_config", lambda: {"ctf_mode": True})
-    monkeypatch.setattr(hunt, "is_ctf_mode", lambda config=None: True)
-    monkeypatch.setattr(hunt, "check_tools", lambda: ([], []))
-    monkeypatch.setattr(hunt, "setup_wordlists", lambda: None)
-    monkeypatch.setattr(hunt, "print_dashboard", lambda result: None)
-    monkeypatch.setattr(hunt, "WORDLIST_DIR", str(tmp_path))
-    monkeypatch.setattr(agent, "run_agent_hunt", fake_run_agent_hunt)
-    monkeypatch.setattr(sys, "argv", ["hunt.py", "--target", "example.com", "--agent", "--yolo", "--deep"])
-
-    hunt.main()
-
-    assert captured["autopilot_mode"] == "yolo"
-    assert captured["quick"] is False
-    assert captured["resume_session_id"] is None
-    assert captured["ctf_mode"] is True
-    assert captured["deep_mode"] is True
+    with pytest.raises(SystemExit, match="2"):
+        hunt.main()
 
 
 def test_hunt_missing_tool_hint_uses_shell_safe_root_install_script(
@@ -958,119 +925,6 @@ def test_hunt_missing_tool_hint_uses_shell_safe_root_install_script(
 
     expected = f"Run: bash {shlex.quote(str(repo_root / 'install_tools.sh'))}"
     assert expected in capsys.readouterr().out
-
-
-def test_hunt_main_passes_quick_mode_to_agent(monkeypatch, tmp_path):
-    captured = {}
-
-    def fake_run_agent_hunt(*args, **kwargs):
-        captured["quick"] = kwargs["quick"]
-        return {
-            "domain": "example.com",
-            "success": True,
-            "steps": 0,
-            "findings": 0,
-            "reports": 0,
-            "quick_mode": kwargs["quick"],
-        }
-
-    common = tmp_path / "common.txt"
-    common.write_text("admin\n", encoding="utf-8")
-
-    monkeypatch.setattr(hunt, "check_tools", lambda: ([], []))
-    monkeypatch.setattr(hunt, "setup_wordlists", lambda: None)
-    monkeypatch.setattr(hunt, "print_dashboard", lambda result: None)
-    monkeypatch.setattr(hunt, "WORDLIST_DIR", str(tmp_path))
-    monkeypatch.setattr(agent, "run_agent_hunt", fake_run_agent_hunt)
-    monkeypatch.setattr(sys, "argv", ["hunt.py", "--target", "example.com", "--agent", "--quick"])
-
-    hunt.main()
-
-    assert captured["quick"] is True
-
-
-@pytest.mark.parametrize(
-    ("argv", "expected_mode", "expected_quick", "expected_deep"),
-    [
-        (["hunt.py", "--target", "example.com", "--agent"], "paranoid", False, False),
-        (["hunt.py", "--target", "example.com", "--agent", "--normal"], "normal", False, False),
-        (["hunt.py", "--target", "example.com", "--agent", "--yolo"], "yolo", False, False),
-        (["hunt.py", "--target", "example.com", "--agent", "--quick", "--normal"], "normal", True, False),
-        (["hunt.py", "--target", "example.com", "--agent", "--deep", "--normal"], "normal", False, True),
-    ],
-)
-def test_hunt_main_passes_mode_matrix_to_agent(
-    monkeypatch,
-    tmp_path,
-    argv,
-    expected_mode,
-    expected_quick,
-    expected_deep,
-):
-    captured = {}
-
-    def fake_run_agent_hunt(*args, **kwargs):
-        captured["autopilot_mode"] = kwargs["autopilot_mode"]
-        captured["quick"] = kwargs["quick"]
-        captured["deep_mode"] = kwargs["deep_mode"]
-        return {
-            "domain": "example.com",
-            "success": True,
-            "steps": 0,
-            "findings": 0,
-            "reports": 0,
-            "autopilot_mode": kwargs["autopilot_mode"],
-            "quick_mode": kwargs["quick"],
-            "deep_mode": kwargs["deep_mode"],
-        }
-
-    common = tmp_path / "common.txt"
-    common.write_text("admin\n", encoding="utf-8")
-
-    monkeypatch.setattr(hunt, "check_tools", lambda: ([], []))
-    monkeypatch.setattr(hunt, "setup_wordlists", lambda: None)
-    monkeypatch.setattr(hunt, "print_dashboard", lambda result: None)
-    monkeypatch.setattr(hunt, "WORDLIST_DIR", str(tmp_path))
-    monkeypatch.setattr(agent, "run_agent_hunt", fake_run_agent_hunt)
-    monkeypatch.setattr(sys, "argv", argv)
-
-    hunt.main()
-
-    assert captured["autopilot_mode"] == expected_mode
-    assert captured["quick"] is expected_quick
-    assert captured["deep_mode"] is expected_deep
-
-
-def test_hunt_main_passes_resume_session_to_agent(monkeypatch, tmp_path):
-    captured = {}
-
-    def fake_run_agent_hunt(*args, **kwargs):
-        captured["resume_session_id"] = kwargs["resume_session_id"]
-        return {
-            "domain": "example.com",
-            "success": True,
-            "steps": 0,
-            "findings": 0,
-            "reports": 0,
-        }
-
-    common = tmp_path / "common.txt"
-    common.write_text("admin\n", encoding="utf-8")
-
-    monkeypatch.setattr(hunt, "check_tools", lambda: ([], []))
-    monkeypatch.setattr(hunt, "setup_wordlists", lambda: None)
-    monkeypatch.setattr(hunt, "print_dashboard", lambda result: None)
-    monkeypatch.setattr(hunt, "WORDLIST_DIR", str(tmp_path))
-    monkeypatch.setattr(agent, "run_agent_hunt", fake_run_agent_hunt)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["hunt.py", "--target", "example.com", "--agent", "--resume", "latest"],
-    )
-
-    hunt.main()
-
-    assert captured["resume_session_id"] == "latest"
 
 
 def test_agent_main_passes_quick_and_mode_to_run_agent_hunt(monkeypatch):

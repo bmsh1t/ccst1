@@ -41,7 +41,7 @@ def test_dispatch_generate_reports_summarizes_output(monkeypatch, tmp_path):
     assert "Reports: 001-test.md" in output
 
 
-def test_dispatch_generate_reports_bridge_backed_hunt_still_summarizes_report_count(
+def test_dispatch_generate_reports_canonical_hunt_still_summarizes_report_count(
     monkeypatch,
     tmp_path,
 ):
@@ -56,23 +56,24 @@ def test_dispatch_generate_reports_bridge_backed_hunt_still_summarizes_report_co
     hunt = agent._h()
     seen = {}
 
-    def fake_generate_legacy_reports(target_findings_dir, *, base_dir, timeout=600):
-        seen["findings_dir"] = target_findings_dir
-        seen["base_dir"] = base_dir
+    def fake_run_argv(argv, *, cwd=None, timeout=600, env=None):
+        seen["argv"] = argv
+        seen["cwd"] = cwd
         seen["timeout"] = timeout
+        seen["env"] = env
         return True, "generated"
 
     monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
     monkeypatch.setattr(hunt, "REPORTS_DIR", str(tmp_path / "reports"))
-    monkeypatch.setattr(hunt._module, "generate_legacy_reports", fake_generate_legacy_reports)
+    monkeypatch.setattr(hunt._module, "run_argv", fake_run_argv)
 
     output = dispatcher.dispatch("generate_reports", {})
 
-    assert seen == {
-        "findings_dir": str(findings_dir),
-        "base_dir": hunt.BASE_DIR,
-        "timeout": 600,
-    }
+    assert seen["argv"][-1] == str(findings_dir)
+    assert seen["argv"][1].endswith("tools/report_generator.py")
+    assert seen["cwd"] == hunt.BASE_DIR
+    assert seen["timeout"] == 600
+    assert seen["env"] is None
     assert "generate_reports: 1 report(s) generated" in output
     assert "Reports: 001-bridge.md" in output
 

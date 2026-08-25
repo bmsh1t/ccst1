@@ -50,8 +50,8 @@ Bootstrap `ctf_mode` is authoritative lab context; external policy is advisory, 
 CTF/lab mode treats the supplied target set plus repo config as the authoritative lab target record;
 public-program, written-permission, or ownership-confirmation text is not an extra gate.
 DNS expansion remains an advisory audit/replay lane; host count alone is not a trigger, and it requires target-specific evidence plus `--reason`.
-`/autopilot` runs inline in the current AI session, never creates/resumes
-legacy `agent_session.json`, and remains the sole writer/closure controller.
+`/autopilot` runs inline in the current AI session and remains the sole
+writer/closure controller.
 Specialists default to zero. The current AI session may delegate distinct,
 bounded evidence questions through the platform's delegation tool (`Agent` in
 Claude Code or the native equivalent) when context reduction, useful parallelism,

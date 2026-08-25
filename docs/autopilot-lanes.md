@@ -93,7 +93,7 @@ controller alone claims lanes, writes owner state, and decides closure.
 ## Software And Intel
 
 - Known software: concrete version -> `tools/intel_engine.py`; select a reachable advisory before targeted probe and refresh state. WordPress/WPScan: `knowledge/cards/wordpress-surface-intelligence.md`. Exchange/OWA/EWS/Autodiscover evidence -> `python3 tools/eburst_lane.py --target <target_shell>` for the bounded interface check; use `/spray` for reviewed credentials.
-- If a concrete component/version appears, query advisory sources, map affected/fixed ranges, and record `applicability`, source failure/staleness, and route reachability separately. Do not pair default Intel with `tools/cve_hunter.py`; use `/scan-cves`, `tools/cve_scan.sh`, or that compatibility entry only after AI selects a reachable advisory.
+- If a concrete component/version appears, query advisory sources, map affected/fixed ranges, and record `applicability`, source failure/staleness, and route reachability separately. Do not pair default Intel with a broad CVE sweep; use `/scan-cves` or `tools/cve_scan.sh` only after AI selects a reachable advisory.
 - `review_intel_group` is an AI review handoff, not a new scanner lane. Use the bounded
   read-only query (`python3 tools/intel_artifact.py query --target <target_shell> --component <component> [--version <version>] --cursor <cursor>`)
   to page omitted advisory facts. Then add or resolve one existing `intel-advisory`

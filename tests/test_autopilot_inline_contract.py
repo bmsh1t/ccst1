@@ -15,7 +15,6 @@ def test_slash_command_keeps_one_controller_and_ai_selected_bounded_specialists(
     normalized = " ".join(text.split())
 
     assert "runs inline in the current AI session" in normalized
-    assert "never creates/resumes legacy `agent_session.json`" in normalized
     assert "sole writer/closure controller" in normalized
     assert "Specialists default to zero" in normalized
     assert "current AI session may delegate distinct, bounded evidence questions" in normalized
@@ -327,7 +326,8 @@ def test_operator_docs_separate_inline_autopilot_from_legacy_agent_sessions():
     assert "current Claude session" in claude
     assert "current Claude session" in readme
     assert "Continue this target in the current Claude session" in readme
-    assert "Explicit legacy local-agent runs" in readme
+    assert "tools/hunt.py --target target.com --agent" not in readme
+    assert "agent_session.json" not in readme
 
 
 def test_single_user_readme_does_not_publish_stale_inventory_counts():
@@ -340,8 +340,8 @@ def test_single_user_readme_does_not_publish_stale_inventory_counts():
     assert "## Optional Agent Compatibility Layer" in readme
 
 
-def test_legacy_agent_resume_entrypoints_remain_documented():
+def test_legacy_agent_resume_entrypoints_are_not_documented():
     readme = _read("README.md")
 
-    assert "python3 tools/hunt.py --target target.com --agent --resume latest" in readme
-    assert "python3 tools/hunt.py --target target.com --agent --resume <session_id>" in readme
+    assert "python3 tools/hunt.py --target target.com --agent" not in readme
+    assert "--resume latest" not in readme

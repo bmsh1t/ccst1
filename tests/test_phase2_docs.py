@@ -13,37 +13,27 @@ def _read(*relative_paths: str) -> str:
     return "\n".join((REPO_ROOT / path).read_text(encoding="utf-8") for path in relative_paths)
 
 
-@pytest.mark.parametrize(
-    ("relative_path", "expected"),
-    [
-        ("README.md", "legacy cve/report entrypoints remain available as compatibility paths"),
-        ("CLAUDE.md", "legacy cve/report entrypoints remain available as compatibility paths"),
-        ("commands/hunt.md", "legacy cve/report entrypoints remain available as compatibility paths"),
-    ],
-)
-def test_primary_workflow_docs_reference_intel_report_and_compatibility_path(
-    relative_path: str,
-    expected: str,
-):
+@pytest.mark.parametrize("relative_path", ["README.md", "CLAUDE.md", "commands/hunt.md"])
+def test_primary_workflow_docs_reference_intel_and_report_owners(relative_path: str):
     content = _read(relative_path).lower()
 
     assert "/intel" in content
     assert "/report" in content
-    assert expected in content
+    assert "legacy cve/report entrypoints" not in content
 
 
-def test_intel_doc_marks_legacy_cve_entrypoints_as_compatibility_paths_only():
+def test_intel_doc_is_the_primary_component_intelligence_owner():
     content = _read("commands/intel.md").lower()
 
     assert "primary intel workflow" in content
-    assert "compatibility paths only" in content
+    assert "legacy cve-hunt" not in content
 
 
-def test_report_doc_marks_legacy_report_entrypoints_as_compatibility_paths_only():
+def test_report_doc_is_the_primary_reporting_owner():
     content = _read("commands/report.md").lower()
 
     assert "primary reporting workflow" in content
-    assert "compatibility paths only" in content
+    assert "legacy report-generation entrypoints" not in content
     assert "seven_question_gate_passed: true" in content
     assert "four_validation_gates_passed: true" in content
     assert "all_gates_passed: true" in content
@@ -162,13 +152,11 @@ def test_auth_reference_docs_and_private_dir_ignore_exist():
     assert "copy this to .private/<target>.json" in auth_example
 
 
-def test_resume_docs_explain_storage_key_for_cidr_and_host_list_targets():
+def test_resume_docs_do_not_expose_removed_local_agent_sessions():
     content = _read("README.md", "commands/autopilot.md").lower()
 
-    assert "targets/<storage-key>/sessions/<session_id>/" in content
-    assert "cidr targets replace `/` with `_`" in content
-    assert "host-list" in content
-    assert "list filename stem plus a canonical-path digest" in content
+    assert "agent_session" not in content
+    assert "--agent" not in content
 
 
 def test_tracked_claude_hook_contract_is_complete():

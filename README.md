@@ -110,8 +110,6 @@ claude                          # Start Claude Code from this repo root
 /sync-check                     # Check repo/runtime drift after pulls or weird CLI behavior
 ```
 
-> Legacy CVE/report entrypoints remain available as compatibility paths, but prefer `/intel` and `/report` as the primary workflows.
-
 > **AI-first hunt loop:** load target context, rank surface, enrich app-like targets with Chrome DevTools MCP / Playwright MCP artifacts / browser XHR / source_intel / js-reader, attack exact business workflows, preserve leads/signals, then validate only report-ready candidates.
 
 **Step 3 — Go Autonomous**
@@ -146,8 +144,8 @@ runs at most the requested substantive lanes, and returns a stable status:
 `EXHAUSTED` is evidence-bounded, not proof that every payload, identity, timing,
 business state, or exploit path has been exhausted. DONE and EXHAUSTED include
 bounded residual blind spots already visible in target state. If a turn is
-interrupted, the next round resumes from disk; it does not resume legacy
-`agent.py --agent` working memory. Cancel the current loop before scheduling the
+interrupted, the next round resumes from disk; it does not resume the prior
+conversational turn. Cancel the current loop before scheduling the
 same target at a different cadence.
 
 **Authenticated / stateful targets**
@@ -169,7 +167,6 @@ cat > .private/auth.json <<'EOF'
 EOF
 
 python3 tools/hunt.py --target target.com --auth-file .private/auth.json
-python3 tools/hunt.py --target target.com --agent --quick --auth-file .private/auth.json
 ```
 
 Environment-variable mode also works:
@@ -177,7 +174,6 @@ Environment-variable mode also works:
 ```bash
 export BBHUNT_COOKIE='session=REDACTED'
 export BBHUNT_BEARER='REDACTED'
-python3 tools/hunt.py --target target.com --agent --auth-from-env
 ```
 
 Inside Claude Code, say the auth source explicitly in the turn, for example:
@@ -198,35 +194,20 @@ the same slash-command line.
 |---|---|
 | See where the last run stopped for this target | `/pickup target.com` |
 | Continue this target in the current Claude session using persisted target state | `/hunt target.com` or `/autopilot target.com --normal` |
-| Resume the exact previous agent working memory / trace | `python3 tools/hunt.py --target target.com --agent --resume latest` |
 
 Claude CLI `/autopilot` runs inline in the current Claude session and does not
-implicitly create or resume `agent_session.json`. It is the sole controller for
+create a separate local-agent session file. It is the sole controller for
 target state. It may use bounded, non-nesting specialists when independent
 evidence questions benefit from isolated context or useful parallelism; the
 current AI session decides how many to use through the platform's
 delegation tool and retains owner write-back and closure decisions.
-
-Explicit legacy local-agent runs started with `tools/hunt.py --agent` create a
-fresh session by default under
-`targets/<storage-key>/sessions/<session_id>/`. For domains and single IPs the
-storage key matches the target; CIDR targets replace `/` with `_`, and host-list
-targets use the list filename stem plus a canonical-path digest. `/pickup` only reads target-level
-history and structured findings. It does not automatically reuse an old
-`agent_session.json`. Use these commands only when you explicitly want to
-continue the previous agent's local state:
-
-```bash
-python3 tools/hunt.py --target target.com --agent --resume latest
-python3 tools/hunt.py --target target.com --agent --resume <session_id>
-```
 
 Fresh target hygiene: scanner module skip settings remain per-run; use
 `--scanner-full` for the scanner's full set of supported lanes. Temporary
 instructions such as “skip/ignore this module”, focus lanes, or excluded bug
 classes apply only to the current target and the current Claude Code turn where
 they were explicitly stated. They are not persisted through `/pickup`, README
-examples, old agent traces, or a newly opened Claude Code CLI. Do not
+examples, prior sessions, or a newly opened Claude Code CLI. Do not
 add skips because of previous target context.
 
 <br>
@@ -236,7 +217,6 @@ add skips because of previous target context.
 > python3 tools/hunt.py --target target.com
 > python3 tools/hunt.py --target target.com --scan-only --scanner-full
 > python3 tools/hunt.py --target target.com --auth-file .private/auth.json
-> python3 tools/hunt.py --target target.com --agent --auth-file .private/auth.json --quick
 > # Optional, per-invocation exclusion only when explicitly requested now:
 > python3 tools/hunt.py --target target.com --scan-only --scanner-skip module1,module2
 > ./tools/recon_engine.sh target.com

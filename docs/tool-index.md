@@ -15,7 +15,7 @@
 | `tools/recon_adapter.py` | Reading recon output programmatically | Unified reader for `recon/<target>/`; streams and pages compact FFUF evidence without loading full artifacts |
 | `tools/recon_candidates.py` | Cached routing evidence | Builds bounded candidates and a derived Scope summary; never expands Scope |
 | `tools/cloud_recon.sh` | Target brand likely owns buckets | S3/Azure/GCP discovery + CloudFlare origin reveal |
-| `tools/cve_hunter.py` | Explicit compatibility CVE-template probe | Rebuild Intel v2, then run the legacy Nuclei CVE pass; do not pair with default `/intel` |
+| `tools/cve_hunter.py` | Explicit CVE-template probe | Focused CVE template pass for `/scan-cves`; use only after a reachable component/advisory is selected |
 | `tools/cve_scan.sh` | Pre-engagement nuclei sweep | Fast nuclei pass scoped to known CVE templates |
 | `tools/intel_engine.py` | Versioned component/service review | `/intel` owner — OSV/GHSA/NVD, KEV/EPSS, local signals, atomic `intel.json` |
 | `tools/intel_artifact.py` | AI selects an omitted advisory group or filter | Read-only, bounded, cursor-paged query over the complete `intel.json`; never writes findings or Queue |
@@ -164,7 +164,6 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/report_generator.py` | Drafting submission report | `/report` backend — H1/BC/Intigriti/Immunefi templates |
 | `tools/request_guard.py` | Logging request telemetry | Advisory audit/replay record + breaker telemetry |
 | `tools/memory_gc.py` | Hunt-memory JSONL too big | Inspect/rotate audit/journal/pattern JSONL files |
-| `tools/legacy_bridge.py` | Internal compatibility | Bridges legacy top-level imports |
 | `tools/runtime_config.py` | Reading repo-local config | Loader for `config.json` (incl. ctf_mode resolution) |
 | `tools/runtime_doctor.py` | Checking repo↔runtime drift | `/sync-check` backend — compare commands/agents/skills |
 | `tools/runtime_exec.py` | Subprocess execution | Shared shell-command runner with timeout/quoting |
@@ -222,7 +221,7 @@ hard-code historical campaign targets. Use the current chain instead:
 | Concrete webpack/chunk/source-map signal | `deep_js_packer.py`, then `js_reader.py` |
 | JS bundles cached without recovery evidence | `js_reader.py` (then `js-reader` agent) |
 | Recon done, want broad active | `vuln_scanner.sh` |
-| Tech stack or identified network service needs CVE applicability | `/intel` → `intel_engine.py`; `cve_hunter.py` is compatibility-only |
+| Tech stack or identified network service needs CVE applicability | `/intel` → `intel_engine.py`; use `/scan-cves` for a selected reachable advisory |
 | Dashboard / SPA target | Chrome DevTools/Playwright MCP → `browser_mcp_import.py` → `browser_surface.py` |
 | Switching back to old target | `resume.py` |
 | Want to remember a pattern | `remember.py` |

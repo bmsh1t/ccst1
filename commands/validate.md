@@ -322,7 +322,3 @@ If no chain → do not report it. If chain confirmed → report the proven chain
 **DO_NOT_REPORT:** "Q[N] fails because [reason]. Do not report this candidate. Move on or demote only with a concrete next evidence action."
 
 **DOWNGRADE:** "Q6 only shows technical possibility. Downgrade from High to Medium. Requires showing actual data exfil in PoC."
-
-<!-- Adversarial self-review (`--self-review` on `agent.py`, B12c) is a
-     local-Ollama runtime extension; see `agent.py` + `tools/self_review.py`
-     + `tools/red_team_worker.py` for the runtime contract. -->

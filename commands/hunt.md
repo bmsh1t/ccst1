@@ -6,9 +6,6 @@ description: Start active hunting on a target using cached recon, AI-first surfa
 
 Active vulnerability hunting through Claude CLI. Run the production scanner when broad coverage is useful; otherwise use the surface review pack as evidence for Claude to choose exact probes.
 
-Legacy CVE/report entrypoints remain available as compatibility paths, but the
-primary workflows are `/intel` and `/report`.
-
 ## Run This (the only required step)
 
 Replace `target.com` with the supplied target.

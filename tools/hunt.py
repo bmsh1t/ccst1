@@ -7,14 +7,11 @@ Usage:
     python3 hunt.py                         # Full pipeline: select targets + hunt
     python3 hunt.py --target <target>       # Hunt a specific domain/IP/CIDR or primary-domain batch
     python3 hunt.py --quick --target <target>  # Quick scan mode
-    python3 hunt.py --target <target> --agent  # Autonomous agent mode
-    python3 hunt.py --target <target> --agent --deep  # Deep legacy local-agent mode
     python3 hunt.py --recon-only --target <target>  # Only run recon
     python3 hunt.py --scan-only --target <target>   # Only run vuln scanner (requires prior recon)
     python3 hunt.py --scan-only --target <target> --scanner-full --scanner-skip module1,module2
     python3 hunt.py --status                # Show current progress
     python3 hunt.py --setup-wordlists       # Download common wordlists
-    python3 hunt.py --cve-hunt --target <target>   # Run CVE hunter
     python3 hunt.py --zero-day --target <target>   # Run zero-day fuzzer
 """
 
@@ -56,7 +53,6 @@ from memory.hunt_journal import HuntJournal
 from memory.schemas import make_journal_entry
 from memory.target_profile import default_memory_dir, load_target_profile, make_target_profile, save_target_profile
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
-from tools.autopilot_args import cadence_from_namespace
 from tools.credential_store import CredentialStore
 from tools.eburst_lane import resolve_eburst
 from tools.public_exposure_signals import classify_public_response
@@ -97,11 +93,6 @@ def _phase_execution_lock(repo_root: str, target: str, phase: str):
             yield
         finally:
             _RUNTIME_PHASE_LOCK_FDS = previous_lock_fds
-
-
-def resolve_autopilot_mode(args) -> str:
-    """Resolve CLI checkpoint mode with paranoid as the safe default."""
-    return cadence_from_namespace(args)
 
 
 def load_config():
@@ -2420,8 +2411,6 @@ Examples:
   python3 hunt.py                            Full pipeline (select + hunt)
   python3 hunt.py --target example.com       Hunt specific domain/IP/CIDR target
   python3 hunt.py --quick --target 1.2.3.4   Quick scan for a specific target
-  python3 hunt.py --target 10.0.0.0/24 --agent   Autonomous agent mode, fresh session
-  python3 hunt.py --target example.com --agent --resume latest
   python3 hunt.py --status                   Show progress
   python3 hunt.py --setup-wordlists          Download wordlists
         """
@@ -2443,45 +2432,22 @@ Examples:
     parser.add_argument("--report-only", action="store_true", help="Only generate reports")
     parser.add_argument("--status", action="store_true", help="Show pipeline status")
     parser.add_argument("--setup-wordlists", action="store_true", help="Download wordlists")
-    parser.add_argument("--cve-hunt", action="store_true", help="Run CVE hunter")
     parser.add_argument("--zero-day", action="store_true", help="Run zero-day fuzzer")
     parser.add_argument("--select-targets", action="store_true", help="Only run target selection")
     parser.add_argument("--top", type=int, default=10, help="Number of targets to select")
-    parser.add_argument("--agent", action="store_true", help="Run autonomous agent mode for a target")
-    parser.add_argument(
-        "--resume",
-        type=str,
-        help="Resume agent session ID; use 'latest' to continue the most recent session",
-    )
-    parser.add_argument(
-        "--cookie",
-        type=str,
-        default="",
-        help="Session cookie for auth-aware requests and agent POST discovery",
-    )
-    parser.add_argument("--scope-lock", action="store_true", help="Keep agent recon on the exact target only")
-    parser.add_argument("--max-urls", type=int, default=100, help="Max URLs for agent recon (default 100)")
-    parser.add_argument("--max-steps", type=int, default=20, help="Max autonomous agent steps (default 20)")
-    parser.add_argument("--time", type=float, default=2.0, help="Agent time budget in hours (default 2)")
     parser.add_argument(
         "--deep",
         action="store_true",
         help=(
-            "Deep high-impact mode for the legacy --agent runtime; classic "
-            "recon runs also execute the full deep-JS path while scanner "
-            "behavior remains unchanged"
+            "Run the full deep-JS recon path while scanner behavior remains "
+            "unchanged"
         ),
     )
     add_cli_args(parser, include_cookie=False)
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument("--paranoid", action="store_true", help="Frequent checkpoints (default)")
-    mode_group.add_argument("--normal", action="store_true", help="Batch related findings before checkpointing")
-    mode_group.add_argument("--yolo", action="store_true", help="Keep moving with minimal checkpoints")
     args = parser.parse_args()
     global _AUTH_SESSION
     _AUTH_SESSION = session_from_args(args).bind_target(args.target or "")
     _AUTH_SESSION.export_to_env(os.environ)
-    autopilot_mode = resolve_autopilot_mode(args)
     config = load_config()
     ctf_mode = is_ctf_mode(config)
 
@@ -2494,10 +2460,6 @@ Examples:
     if not _AUTH_SESSION.is_empty():
         log("info", _AUTH_SESSION.describe())
 
-    if args.agent:
-        log("info", f"Autopilot checkpoint mode: {autopilot_mode}")
-        if args.deep:
-            log("info", "Autopilot deep mode: enabled")
     if ctf_mode:
         log("warn", "CTF mode enabled — external program checks stay advisory for this workspace.")
 
@@ -2535,37 +2497,6 @@ Examples:
                         generate_reports(d)
         return
 
-    if args.agent:
-        if not args.target:
-            log("err", "--agent requires --target")
-            sys.exit(1)
-        log_authorization_posture(args.target)
-
-        if not os.path.exists(os.path.join(WORDLIST_DIR, "common.txt")):
-            setup_wordlists()
-
-        from agent import run_agent_hunt
-
-        try:
-            result = run_agent_hunt(
-                args.target,
-                scope_lock=args.scope_lock,
-                max_urls=args.max_urls,
-                quick=args.quick,
-                max_steps=args.max_steps,
-                time_budget_hours=args.time,
-                cookies=args.cookie,
-                resume_session_id=args.resume,
-                autopilot_mode=autopilot_mode,
-                ctf_mode=ctf_mode,
-                deep_mode=bool(args.deep),
-            )
-        except RuntimeError as exc:
-            log("err", str(exc))
-            sys.exit(1)
-        print_dashboard([result])
-        return
-
     # Hunt specific target
     if args.target:
         log("info", f"Hunting target: {args.target}")
@@ -2581,7 +2512,6 @@ Examples:
                 deep=args.deep,
                 recon_only=args.recon_only,
                 scan_only=args.scan_only,
-                cve_hunt=args.cve_hunt,
                 zero_day=args.zero_day,
                 scanner_full=args.scanner_full,
                 scanner_skip=args.scanner_skip,

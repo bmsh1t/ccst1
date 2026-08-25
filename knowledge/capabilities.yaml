@@ -715,7 +715,6 @@ capabilities:
     routes:
       - tools/surface.py
       - tools/checkpoint.py
-      - agent.py
   - id: standard-public-metadata-secondary-sweep
     kind: workflow
     layer: reference

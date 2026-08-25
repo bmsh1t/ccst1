@@ -6,7 +6,7 @@ description: Draft a validated bounty submission, local write-up, or formal pene
 
 Generate an editable, submission-ready report draft from validated evidence.
 
-This is the preferred primary reporting workflow; legacy report-generation entrypoints are compatibility paths only.
+This is the primary reporting workflow.
 The generator rejects statusless structured rows and raw legacy scanner files by
 default. `--allow-legacy-drafts` is an explicit compatibility path; those drafts
 do not update canonical finding or action-queue lifecycle state.
