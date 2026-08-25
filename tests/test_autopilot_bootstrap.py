@@ -402,6 +402,7 @@ def test_bootstrap_projects_bounded_deep_invocation_batch(monkeypatch, tmp_path)
     )
 
     assert payload["action"] == "continue"
+    assert payload["arguments"]["deep"] is True
     assert payload["arguments"]["max_lanes"] == 3
     assert payload["invocation_batch"] == {
         "bounded": True,

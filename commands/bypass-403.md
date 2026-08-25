@@ -23,8 +23,9 @@ with a 60-second wall-clock timeout (`BYP4XX_TIMEOUT`); its output is unparsed
 and therefore remains `needs_review`/`partial`. Supplying `--max-requests` forces
 the counted built-in matrix. The `--plan` path accepts schema-versioned JSON generated
 from target evidence; it validates target scope, AuthSession, request budget,
-headers, and methods before sending anything. PUT/PATCH/TRACE remain manual-review
-by default and require `ALLOW_UNSAFE_HTTP_TESTS=1`.
+headers, and methods before sending anything. Method names remain advisory; only
+probes explicitly marked `state_changing`, `destructive`, or
+`action_requires_opt_in` require `ALLOW_UNSAFE_HTTP_TESTS=1`.
 
 Fallback mode has a 64-request invocation budget by default; use
 `--max-requests N` to narrow or raise it up to 512. A budget stop is written as

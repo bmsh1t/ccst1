@@ -82,7 +82,7 @@ identity, and cloud signals without re-enumerating everything.
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/vuln_scanner.sh` | Recon done, want broad active coverage | Multi-lane scanner; unsafe methods become manual-review unless `ALLOW_UNSAFE_HTTP_TESTS=1` |
+| `tools/vuln_scanner.sh` | Recon done, want broad active coverage | Multi-lane scanner; HTTP methods are advisory, while explicitly state-changing actions require `ALLOW_UNSAFE_HTTP_TESTS=1` |
 | `tools/json_inject_probe.py` | Reviewed same-target POST/JSON shape exists | AuthSession, bounded matrix, atomic summary, resumable cursor, WAF plan 4/8 or fallback 2 |
 | `tools/sql_parameter_probe.py` | Reviewed query URL or POST form file | Shared matrix, scoped findings, resumable cursor, and plan/static WAF bounds |
 | `tools/waf_pass_plan.py` | New SQLi/XSS WAF block plus target evidence | Validates AI plan refs, defaults to 4 variants, caps at 8, and keeps adapter scope/auth/budget/fallback |

@@ -110,13 +110,28 @@ def test_bypass_action_with_target_summary_is_substantive() -> None:
     ) is True
 
 
-def test_plan_marks_unsafe_methods_without_executing_them() -> None:
+def test_plan_marks_method_advisories_without_treating_them_as_state_changes() -> None:
     normalized = validate_plan(
         _plan(_probe("trace", method="TRACE")),
         target="example.test",
     )
     assert normalized[0]["unsafe"] is True
+    assert normalized[0]["state_changing"] is False
     assert normalized[0]["method"] == "TRACE"
+
+
+def test_plan_method_is_advisory_unless_state_change_is_explicit() -> None:
+    normalized = validate_plan(
+        _plan(
+            _probe("delete", method="DELETE"),
+            _probe("write", method="PUT", state_changing=True),
+        ),
+        target="example.test",
+    )
+    assert normalized[0]["unsafe"] is True
+    assert normalized[0]["state_changing"] is False
+    assert normalized[1]["unsafe"] is True
+    assert normalized[1]["state_changing"] is True
 
 
 def test_auth_file_is_bound_to_the_execution_target(tmp_path) -> None:

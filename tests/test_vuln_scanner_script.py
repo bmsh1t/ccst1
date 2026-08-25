@@ -191,10 +191,11 @@ def test_vuln_scanner_gates_unsafe_methods_and_upload_action_by_default():
     assert "manual_review/unsafe_skipped.txt" in text
     assert "post_action_requires_opt_in" not in text
     assert ': > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"' in text
-    assert 'scanner_probe_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes"' in text
+    assert 'scanner_probe_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes" "1"' in text
     assert 'scanner_probe_guard "POST" "$upload_url" "upload canary probe" "1"' in text
-    assert 'scanner_probe_guard "POST" "$BASE" "MFA rate-limit probe"' in text
-    assert 'scanner_probe_guard "POST" "$ACS_URL" "SAML signature-stripping probe"' in text
+    assert 'scanner_probe_guard "POST" "$BASE" "MFA rate-limit probe" "1"' in text
+    assert 'scanner_probe_guard "POST" "$BASE" "MFA response-manipulation canary" "1"' in text
+    assert 'scanner_probe_guard "POST" "$ACS_URL" "SAML signature-stripping probe" "1"' in text
 
 
 def test_upload_canary_requires_explicit_opt_in_without_losing_approved_path(tmp_path):

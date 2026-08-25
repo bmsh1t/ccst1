@@ -25,7 +25,9 @@ class SkillEvalTask:
     forbidden_cards: tuple[str, ...]
     seed_groups: tuple[tuple[str, ...], ...]
     expected_skill: str = "web2-vuln-classes"
-    expected_checks: tuple[str, ...] = ("rules/red-lines.md", "rules/coverage-gate.md")
+    # Action safety is the Claude CLI platform contract (CLAUDE.md); Context
+    # Pack should not repeat it as a per-task load requirement.
+    expected_checks: tuple[str, ...] = ("rules/coverage-gate.md",)
 
 
 EVAL_TASKS = [

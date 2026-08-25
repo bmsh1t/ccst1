@@ -33,6 +33,7 @@ from checkpoint import (
     _dedupe_artifact_category_items,
     _extract_action_metadata,
     _filter_final_action_queue_items,
+    _json_inject_queue_item,
     _lead_proposals,
     _ledger_candidate_proposals,
     _ledger_covered_cells,
@@ -4075,6 +4076,63 @@ def test_sql_matrix_candidates_become_generation_aware_durable_actions(tmp_path)
 
     sync_checkpoint_action_queue(tmp_path, {"target": "target.com", "next_action_queue": items})
     assert len(load_queue(tmp_path, "target.com")["actions"]) == 1
+
+
+def test_json_inject_queue_item_replays_target_owned_source_without_placeholder():
+    item = _json_inject_queue_item(
+        {
+            "target": "target.com",
+            "json_inject": {
+                "status": "partial",
+                "input_fingerprint": "a" * 64,
+                "source_paths": ["recon/target.com/urls/json_endpoints.txt"],
+            },
+        }
+    )
+
+    assert item["command_hint"] == (
+        'python3 -m tools.json_inject_probe --target "target.com" '
+        '--endpoints-file "recon/target.com/urls/json_endpoints.txt"'
+    )
+    assert "FILE" not in item["command_hint"]
+    assert item["metadata"]["source_paths"] == [
+        "recon/target.com/urls/json_endpoints.txt"
+    ]
+
+
+def test_json_inject_queue_item_preserves_typed_source_flags():
+    item = _json_inject_queue_item(
+        {
+            "target": "target.com",
+            "json_inject": {
+                "status": "partial",
+                "input_fingerprint": "a" * 64,
+                "source_paths": ["findings/target.com/js_intel/hypotheses.json"],
+                "source_refs": [
+                    {"kind": "js-intel", "path": "findings/target.com/js_intel/hypotheses.json"},
+                ],
+            },
+        }
+    )
+
+    assert item["command_hint"] == (
+        'python3 -m tools.json_inject_probe --target "target.com" '
+        '--js-intel "findings/target.com/js_intel/hypotheses.json"'
+    )
+
+
+def test_json_inject_queue_item_uses_default_seed_recovery_without_source_placeholder():
+    item = _json_inject_queue_item(
+        {
+            "target": "target.com",
+            "json_inject": {"status": "invalid_input", "input_fingerprint": "b" * 64},
+        }
+    )
+
+    assert item["command_hint"] == (
+        'python3 -m tools.json_inject_probe --target "target.com"'
+    )
+    assert "FILE" not in item["command_hint"]
 
 
 def test_candidate_finding_creates_one_scoped_sibling_action(tmp_path):

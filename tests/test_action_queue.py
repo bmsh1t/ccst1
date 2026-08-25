@@ -1616,6 +1616,44 @@ def test_resolve_validated_and_reported_require_locatable_evidence(tmp_path):
     assert reported["status"] == "reported"
 
 
+def test_resolve_tested_requires_locatable_evidence(tmp_path):
+    ingest_checkpoint(
+        tmp_path,
+        "target.com",
+        checkpoint={
+            "next_action_queue": [
+                {
+                    "type": "workflow-sequence",
+                    "status": "ready",
+                    "action": "Replay the recorded workflow.",
+                }
+            ]
+        },
+    )
+    action = claim_next_action(tmp_path, "target.com")
+
+    with pytest.raises(ValueError, match="locatable evidence"):
+        resolve_action(
+            tmp_path,
+            target="target.com",
+            action_id=action["id"],
+            status="tested",
+            result="No material difference was observed.",
+        )
+
+    summary = tmp_path / "evidence" / "target.com" / "validation" / "summary.json"
+    summary.parent.mkdir(parents=True)
+    summary.write_text("{}\n", encoding="utf-8")
+    resolved = resolve_action(
+        tmp_path,
+        target="target.com",
+        action_id=action["id"],
+        status="tested",
+        result=f"summary={summary.relative_to(tmp_path)}",
+    )
+    assert resolved["status"] == "tested"
+
+
 def test_resolve_cli_accepts_evidence_alias(tmp_path):
     ingest_checkpoint(tmp_path, "target.com", checkpoint=_checkpoint())
     next_action = select_next_action(load_queue(tmp_path, "target.com"))

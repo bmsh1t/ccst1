@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.action_queue import add_manual_action, resolve_action
+    from tools.action_queue import add_manual_action, claim_next_action, resolve_action
     from tools.auth_session import add_cli_args, session_from_args, AuthSession
     from tools.browser_surface import public_url_shape
     from tools.json_inject_probe import _write_json_atomic
@@ -24,7 +24,7 @@ try:
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
     from tools.validation_runner import request_once
 except ImportError:  # pragma: no cover
-    from action_queue import add_manual_action, resolve_action  # type: ignore
+    from action_queue import add_manual_action, claim_next_action, resolve_action  # type: ignore
     from auth_session import add_cli_args, session_from_args, AuthSession  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
     from json_inject_probe import _write_json_atomic  # type: ignore
@@ -260,6 +260,8 @@ def _queue_sequence_action(
     summary_path: str,
     run_id: str,
     status: str,
+    *,
+    resolve: bool = False,
 ) -> dict[str, Any]:
     source_id = hashlib.sha256(f"{evidence_ref}:{run_id}".encode("utf-8")).hexdigest()[:20]
     try:
@@ -281,6 +283,7 @@ def _queue_sequence_action(
             stop_condition="record tested_clean, candidate, or blocked before closing the sequence",
         )
         queue = result.get("queue") if isinstance(result, dict) else {}
+        stats = result.get("stats") if isinstance(result, dict) else {}
         action = next(
             (item for item in (queue.get("actions") or [])
              if isinstance(item, dict) and str(item.get("source_id") or "") == source_id),
@@ -288,15 +291,24 @@ def _queue_sequence_action(
         )
         action_id = str(action.get("id") or "")
         current_status = str(action.get("status") or "queued")
+        if int((stats or {}).get("skipped_final", 0) or 0) > 0:
+            return {
+                "status": "already_final",
+                "action_id": action_id,
+                "action_status": current_status,
+            }
         final_status = {"tested_clean": "tested", "candidate_pending": "candidate"}.get(status)
-        if action_id and final_status and current_status not in {"tested", "candidate", "dead-end", "blocked", "validated", "reported", "n/a"}:
+        if action_id and current_status == "queued":
+            claimed = claim_next_action(repo_root, target=target, action_id=action_id)
+            current_status = str(claimed.get("status") or "running")
+        if resolve and action_id and final_status and current_status not in {"tested", "candidate", "dead-end", "blocked", "validated", "reported", "n/a"}:
             resolved = resolve_action(
                 repo_root,
                 target=target,
                 action_id=action_id,
                 status=final_status,
-                result=f"workflow-sequence-result={status}",
-                notes=f"summary={summary_path}",
+                result=summary_path,
+                notes=f"workflow sequence status={status}; summary={summary_path}",
             )
             current_status = str(resolved.get("status") or final_status)
         return {"status": "ok", "action_id": action_id, "action_status": current_status}
@@ -378,6 +390,46 @@ def run_sequence(
             run_id,
             summary["status"],
         )
+        if summary["queue"].get("status") == "already_final":
+            try:
+                existing = json.loads(summary_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                summary["errors"].append("terminal queue action has no readable summary")
+            else:
+                if isinstance(existing, dict):
+                    existing["queue"] = summary["queue"]
+                    return existing
+                summary["errors"].append("terminal queue action summary is not an object")
+        _write_json_atomic(summary_path, summary)
+        return summary
+
+    # Claim the generated action before any replay so an interrupted run is
+    # recoverable as running work instead of an untracked network operation.
+    summary["queue"] = _queue_sequence_action(
+        repo_root,
+        resolved_target,
+        _rel(evidence, repo_root),
+        _rel(summary_path, repo_root),
+        run_id,
+        summary["status"],
+    )
+    if summary["queue"].get("status") == "error":
+        summary["errors"].append({"queue": summary["queue"].get("error", "queue claim failed")})
+        _write_json_atomic(summary_path, summary)
+        return summary
+    if summary["queue"].get("status") == "already_final":
+        try:
+            existing = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            summary["status"] = "partial"
+            summary["errors"].append("terminal queue action has no readable summary")
+            _write_json_atomic(summary_path, summary)
+            return summary
+        if isinstance(existing, dict):
+            existing["queue"] = summary["queue"]
+            return existing
+        summary["status"] = "partial"
+        summary["errors"].append("terminal queue action summary is not an object")
         _write_json_atomic(summary_path, summary)
         return summary
 
@@ -410,36 +462,46 @@ def run_sequence(
 
     baseline_results = execute("baseline", baseline_steps)
     variant_results = execute("variant", variant_steps) if not summary["errors"] else []
-    write_private_json(private_dir / "sequence.json", raw)
-    base_by_id = {item["id"]: item["response"] for item in baseline_results}
-    variant_by_id = {item["id"]: item["response"] for item in variant_results}
-    for step_id in [item["id"] for item in baseline_steps if item["id"] in variant_by_id]:
-        if step_id not in base_by_id:
-            continue
-        baseline = base_by_id[step_id]
-        variant = variant_by_id[step_id]
-        summary["diffs"].append({
-            "step": step_id,
-            "changed": _material_diff(baseline, variant),
-            "baseline": _summary_snapshot(baseline),
-            "variant": _summary_snapshot(variant),
-        })
-    summary["evidence_artifact"] = _rel(private_dir / "sequence.json", repo_root)
+    try:
+        write_private_json(private_dir / "sequence.json", raw)
+        base_by_id = {item["id"]: item["response"] for item in baseline_results}
+        variant_by_id = {item["id"]: item["response"] for item in variant_results}
+        for step_id in [item["id"] for item in baseline_steps if item["id"] in variant_by_id]:
+            if step_id not in base_by_id:
+                continue
+            baseline = base_by_id[step_id]
+            variant = variant_by_id[step_id]
+            summary["diffs"].append({
+                "step": step_id,
+                "changed": _material_diff(baseline, variant),
+                "baseline": _summary_snapshot(baseline),
+                "variant": _summary_snapshot(variant),
+            })
+        summary["evidence_artifact"] = _rel(private_dir / "sequence.json", repo_root)
+    except Exception as exc:
+        summary["errors"].append({"artifact": type(exc).__name__, "reason": str(exc)[:240]})
     if summary["errors"] or summary["request_count"] >= max_requests:
         summary["status"] = "partial"
     elif any(item.get("changed") for item in summary["diffs"]):
         summary["status"] = "candidate_pending"
     else:
         summary["status"] = "tested_clean"
-    summary["queue"] = _queue_sequence_action(
-        repo_root,
-        resolved_target,
-        _rel(evidence, repo_root),
-        _rel(summary_path, repo_root),
-        run_id,
-        summary["status"],
-    )
+    # Persist evidence before resolving a terminal action.  Queue validation
+    # checks that `result` points at an existing summary file.
+    _write_json_atomic(summary_path, summary)
+    if summary["status"] in {"tested_clean", "candidate_pending"}:
+        summary["queue"] = _queue_sequence_action(
+            repo_root,
+            resolved_target,
+            _rel(evidence, repo_root),
+            _rel(summary_path, repo_root),
+            run_id,
+            summary["status"],
+            resolve=True,
+        )
     if summary["queue"].get("status") == "error" and summary["status"] == "tested_clean":
+        summary["status"] = "partial"
+    if summary["queue"].get("status") == "error" and summary["status"] == "candidate_pending":
         summary["status"] = "partial"
     _write_json_atomic(summary_path, summary)
     return summary

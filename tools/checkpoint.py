@@ -3494,7 +3494,7 @@ def _attach_activation_context(
         action["activation_required"] = True
     return actions
 
-def _json_inject_queue_item(state: dict) -> dict:
+def _json_inject_queue_item(state: dict, target: str = "") -> dict:
     projection = state.get("json_inject") or {}
     status = str(projection.get("status") or "")
     generation = str(projection.get("input_fingerprint") or "")
@@ -3506,8 +3506,35 @@ def _json_inject_queue_item(state: dict) -> dict:
         "invalid_input": "Review the rejected JSON endpoint input and supply an in-scope POST endpoint.",
     }[status]
     plan_ref = str(projection.get("waf_plan_ref") or "").strip()
-    command_hint = "python3 -m tools.json_inject_probe --target TARGET --endpoints-file FILE"
-    if plan_ref:
+    resolved_target = str(target or state.get("resolved_target") or state.get("target") or "").strip()
+    raw_source_paths = projection.get("source_paths")
+    source_paths = [
+        str(path).strip()
+        for path in (raw_source_paths if isinstance(raw_source_paths, list) else [])
+        if str(path).strip()
+    ][:3]
+    raw_source_refs = projection.get("source_refs")
+    source_refs = [
+        ref for ref in (raw_source_refs if isinstance(raw_source_refs, list) else [])
+        if isinstance(ref, dict) and str(ref.get("path") or "").strip()
+    ][:3]
+    command_hint = (
+        "python3 -m tools.json_inject_probe --target "
+        f"{_quote(resolved_target)}"
+    )
+    emitted_sources = False
+    emitted_waf_plan = False
+    for ref in source_refs:
+        kind = str(ref.get("kind") or "").strip().lower()
+        path = str(ref.get("path") or "").strip()
+        flag = {"endpoints": "--endpoints-file", "js-intel": "--js-intel", "waf-plan": "--waf-plan"}.get(kind)
+        if flag and path:
+            command_hint += f" {flag} {_quote(path)}"
+            emitted_sources = True
+            emitted_waf_plan = emitted_waf_plan or kind == "waf-plan"
+    if source_paths and not emitted_sources:
+        command_hint += f" --endpoints-file {_quote(source_paths[0])}"
+    if plan_ref and not emitted_waf_plan:
         command_hint += f" --waf-plan {_quote(plan_ref)}"
     return {
         "id": "JSON-INJECT",
@@ -3524,6 +3551,8 @@ def _json_inject_queue_item(state: dict) -> dict:
             "generation": generation,
             "summary_path": str(projection.get("path") or ""),
             "summary_status": status,
+            "source_paths": source_paths,
+            "source_refs": source_refs,
             "waf_plan_ref": plan_ref,
             "waf_plan_sha256": str(projection.get("waf_plan_sha256") or ""),
             "waf_ai_variants_executed": int(projection.get("waf_ai_variants_executed", 0) or 0),
@@ -4056,7 +4085,7 @@ def build_checkpoint(
                     metadata.update(case_metadata)
                     metadata.setdefault("hypothesis_id", str(case_top.get("hypothesis_id") or ""))
                 break
-    json_inject_item = _json_inject_queue_item(state)
+    json_inject_item = _json_inject_queue_item(state, resolved_target)
     if json_inject_item:
         next_action_queue.append(json_inject_item)
     next_action_queue.extend(_sql_matrix_queue_items(state, resolved_target))

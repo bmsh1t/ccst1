@@ -68,11 +68,13 @@ def test_sequence_transition_identity_is_distinct_and_idempotent(monkeypatch, tm
         {"id": "login", "url": "https://target.test/api/login", "method": "POST", "body": "x=1", "state_effect": "read_only"},
         {"id": "profile", "url": "https://target.test/api/profile", "method": "GET", "state_effect": "read_only"},
     ])
-    monkeypatch.setattr(
-        sequence,
-        "request_once",
-        lambda **kwargs: _response(kwargs["url"], '{"ok":true}'),
-    )
+    calls = []
+
+    def fake_request_once(**kwargs):
+        calls.append(kwargs["url"])
+        return _response(kwargs["url"], '{"ok":true}')
+
+    monkeypatch.setattr(sequence, "request_once", fake_request_once)
 
     def run(perturb, step_index):
         return sequence.run_sequence(
@@ -89,11 +91,13 @@ def test_sequence_transition_identity_is_distinct_and_idempotent(monkeypatch, tm
     different_step = run("remove", -1)
     replay = run("remove", 1)
     transitions = [first, different_perturb, different_step]
+    request_count_before_replay = len(calls)
 
     assert len({item["summary_path"] for item in transitions}) == 3
     assert len({item["evidence_artifact"] for item in transitions}) == 3
     assert replay["summary_path"] == different_step["summary_path"]
     assert replay["evidence_artifact"] == different_step["evidence_artifact"]
+    assert len(calls) == request_count_before_replay
     assert all((tmp_path / item["summary_path"]).is_file() for item in transitions)
     assert all((tmp_path / item["evidence_artifact"]).is_file() for item in transitions)
     queue = load_queue(tmp_path, "target.test")
@@ -238,6 +242,47 @@ def test_sequence_does_not_add_a_state_effect_gate(monkeypatch, tmp_path):
     summary = sequence.run_sequence(repo_root=tmp_path, target="target.test", evidence_ref=str(evidence))
     assert summary["status"] == "tested_clean"
     assert summary["request_count"] == 3
+
+
+def test_sequence_claims_before_first_request_and_resolves_after_summary(monkeypatch, tmp_path):
+    evidence = _write_steps(tmp_path, [
+        {"id": "one", "url": "https://target.test/api/one", "method": "POST", "body": "x=1"},
+        {"id": "two", "url": "https://target.test/api/two", "method": "GET"},
+    ])
+    observed = {}
+
+    def fake_request_once(**kwargs):
+        observed.setdefault("request_status", load_queue(tmp_path, "target.test")["actions"][0]["status"])
+        return _response(kwargs["url"], '{"ok":true}')
+
+    real_resolve = sequence.resolve_action
+
+    def checked_resolve(*args, **kwargs):
+        summary_path = tmp_path / kwargs["result"]
+        observed["summary_exists"] = summary_path.is_file()
+        observed["summary_status"] = json.loads(summary_path.read_text())["status"]
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(sequence, "request_once", fake_request_once)
+    monkeypatch.setattr(sequence, "resolve_action", checked_resolve)
+    summary = sequence.run_sequence(repo_root=tmp_path, target="target.test", evidence_ref=str(evidence))
+
+    assert summary["status"] == "tested_clean"
+    assert observed == {"request_status": "running", "summary_exists": True, "summary_status": "tested_clean"}
+
+
+def test_sequence_request_error_leaves_claim_running(monkeypatch, tmp_path):
+    evidence = _write_steps(tmp_path, [
+        {"id": "one", "url": "https://target.test/api/one", "method": "POST", "body": "x=1"},
+        {"id": "two", "url": "https://target.test/api/two", "method": "GET"},
+    ])
+    monkeypatch.setattr(sequence, "request_once", lambda **_: (_ for _ in ()).throw(RuntimeError("fixture failure")))
+
+    summary = sequence.run_sequence(repo_root=tmp_path, target="target.test", evidence_ref=str(evidence))
+
+    assert summary["status"] == "partial"
+    action = load_queue(tmp_path, "target.test")["actions"][0]
+    assert action["status"] == "running"
 
 
 def test_sequence_rejects_relative_step_url(tmp_path):

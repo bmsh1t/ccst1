@@ -1598,6 +1598,10 @@ def test_cli_projection_only_keeps_full_json_mode_available(monkeypatch, capsys)
 
 def test_json_summary_projection_and_partial_closure(tmp_path):
     target = "target.com"
+    source = tmp_path / "recon" / target / "urls" / "json_endpoints.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("https://target.com/api/login\n", encoding="utf-8")
+    source_digest = hashlib.sha256(source.read_bytes()).hexdigest()
     path = tmp_path / "findings" / target / "poc" / "json_inject" / "summary.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({
@@ -1606,6 +1610,7 @@ def test_json_summary_projection_and_partial_closure(tmp_path):
         "target": target,
         "status": "partial",
         "input_fingerprint": "a" * 64,
+        "source_bindings": [{"kind": "endpoints", "path": str(source), "sha256": source_digest}],
         "waf_plan_ref": "findings/target.com/poc/waf-plan.json",
         "waf_plan_sha256": "b" * 64,
         "waf_plan_variant_count": 1,
@@ -1622,6 +1627,8 @@ def test_json_summary_projection_and_partial_closure(tmp_path):
     )
 
     assert projection["status"] == "partial"
+    assert projection["source_paths"] == [str(source)]
+    assert projection["source_refs"] == [{"kind": "endpoints", "path": str(source)}]
     assert projection["waf_plan_variant_count"] == 1
     assert projection["waf_ai_variants_executed"] == 1
     assert closure["reasons"] == ["json_evidence_partial"]

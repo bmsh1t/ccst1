@@ -47,6 +47,9 @@ request, bypass it for localhost/private targets, and never print the token or p
 Apply `rules/hunting.md` target-isolation/new-target defaults to the supplied target set.
 Bootstrap `ctf_mode` is authoritative lab context; external policy is advisory, and
 `/pickup` never replays another target's skips/scanner decisions.
+CTF/lab mode treats the supplied target set plus repo config as the authoritative lab target record;
+public-program, written-permission, or ownership-confirmation text is not an extra gate.
+DNS expansion remains an advisory audit/replay lane; host count alone is not a trigger, and it requires target-specific evidence plus `--reason`.
 `/autopilot` runs inline in the current AI session, never creates/resumes
 legacy `agent_session.json`, and remains the sole writer/closure controller.
 Specialists default to zero. The current AI session may delegate distinct,
@@ -57,8 +60,18 @@ but never nest, run full recon/scans, create lanes, expand budgets, write owner
 state, or decide closure/finish. The controller collects results and writes back.
 Each delegation needs a distinct question, bounded context/request cost, and
 expected information gain; stop when no independent question remains.
+Delegated prompts must mechanically carry the bootstrap values
+`arguments.deep` and the complete `invocation_batch` (`bounded`, `max_lanes`,
+`handoff`); never reparse or infer them from prose. When `arguments.deep=true`,
+label the handoff `DEEP HUNT MODE` and apply this command's value-first
+comprehensive-depth semantics to the assigned lane without increasing
+`invocation_batch.max_lanes`. When `arguments.deep=false`, do not upgrade the
+specialist to deep mode. Specialists return their effective mode and batch
+boundary with results;
+the controller remains the only owner of lane claims and write-back.
 Optional `recon-ranker` is one read-only second opinion per frontier projection;
 it never runs requests, writes state, or replaces controller decisions.
+The second opinion is read only and never becomes a lane owner.
 Before a named lane, use the literal `state.lane_contract.ref` from `docs/autopilot-lanes.md`. Before substantive
 Queue claim/resolve, also read its `State And Queue` section. These are execution details, not another controller.
 Before active hunting begins, load `rules/hunting.md` for its canonical hunting
@@ -69,6 +82,8 @@ default context pack intentionally does not load this rule.
 Tool discovery stays in `docs/tool-index.md`; evidence may select its helpers
 without loading their full docs here. Host/JS volume alone is not a trigger, and
 partial/unavailable output remains open.
+Concrete JS bundle gaps may select `tools/deep_js_packer.py`; target-specific naming
+evidence may select `tools/dns_expand.py`. Neither helper is a baseline lane.
 ## State Consumption Loop
 ```text
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT

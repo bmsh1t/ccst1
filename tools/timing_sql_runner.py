@@ -16,16 +16,18 @@ from typing import Any
 
 try:
     from tools import sql_parameter_probe as core
-    from tools.action_queue import add_manual_action, resolve_action
+    from tools.action_queue import add_manual_action, claim_next_action, resolve_action
     from tools.auth_session import add_cli_args, session_from_args, AuthSession
     from tools.json_inject_probe import _write_json_atomic
+    from tools.json_inject_probe import _waf_observation
     from tools.private_artifacts import private_artifact_dir, write_private_json
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover
     import sql_parameter_probe as core  # type: ignore
-    from action_queue import add_manual_action, resolve_action  # type: ignore
+    from action_queue import add_manual_action, claim_next_action, resolve_action  # type: ignore
     from auth_session import add_cli_args, session_from_args, AuthSession  # type: ignore
     from json_inject_probe import _write_json_atomic  # type: ignore
+    from json_inject_probe import _waf_observation  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
 
@@ -69,6 +71,11 @@ def _mad(values: list[float], center: float) -> float:
     return _median([abs(value - center) for value in values])
 
 
+def _public_body_shape(body: str) -> str:
+    pairs = urllib.parse.parse_qsl(str(body or ""), keep_blank_values=True)
+    return urllib.parse.urlencode([(name, "") for name, _ in pairs], doseq=True)
+
+
 def _queue_action(
     repo_root: Path,
     target: str,
@@ -77,27 +84,40 @@ def _queue_action(
     param: str,
     generation: str,
     status: str,
+    *,
+    method: str = "GET",
+    body: str = "",
+    resolve: bool = False,
 ) -> dict[str, Any]:
-    source_id = hashlib.sha256(f"{url}|{param}".encode("utf-8")).hexdigest()[:20]
+    source_id = hashlib.sha256(
+        f"{url}|{param}|{method}|{generation}".encode("utf-8")
+    ).hexdigest()[:20]
+    safe_url = core.public_url_shape(url)
     try:
+        safe_body = _public_body_shape(body)
+        recovery_hint = (
+            "python3 tools/timing_sql_runner.py --target "
+            f"{shlex.quote(target)} --url {shlex.quote(safe_url)}"
+            f" --param {shlex.quote(param)} --variant-value PAYLOAD --baseline-value BASELINE"
+        )
+        if str(method).upper() == "POST":
+            recovery_hint += f" --method POST --body {shlex.quote(safe_body)}"
         result = add_manual_action(
             repo_root,
             target=target,
             action_type="sql-timing-validation",
             evidence=f"Timing SQL evidence: {summary_path}",
             next_question="Is the interleaved timing trend stable after excluding WAF, 429, and transport noise?",
-            action=f"Review bounded timing SQL evidence for {url} parameter {param}: {summary_path}",
+            action=f"Review bounded timing SQL evidence for {safe_url} parameter {param}: {summary_path}",
             priority=90,
-            command_hint=(
-                "python3 tools/timing_sql_runner.py --target "
-                f"{shlex.quote(target)} --url {shlex.quote(url)} --param {shlex.quote(param)}"
-            ),
+            command_hint=recovery_hint,
             source="sql-timing",
             source_id=source_id,
             generation=generation,
             stop_condition="record stable candidate, complete_no_hit, blocked, or transport-limited partial result",
         )
         queue = result.get("queue") if isinstance(result, dict) else {}
+        stats = result.get("stats") if isinstance(result, dict) else {}
         action = next(
             (item for item in (queue.get("actions") or [])
              if isinstance(item, dict) and str(item.get("source_id") or "") == source_id),
@@ -105,15 +125,24 @@ def _queue_action(
         )
         action_id = str(action.get("id") or "")
         current = str(action.get("status") or "queued")
+        if int((stats or {}).get("skipped_final", 0) or 0) > 0:
+            return {
+                "status": "already_final",
+                "action_id": action_id,
+                "action_status": current,
+            }
         final = {"complete_no_hit": "tested", "candidate_pending": "candidate", "manual_required": "blocked"}.get(status)
-        if action_id and final and current not in {"tested", "candidate", "dead-end", "blocked", "validated", "reported", "n/a"}:
+        if action_id and current == "queued":
+            claimed = claim_next_action(repo_root, target=target, action_id=action_id)
+            current = str(claimed.get("status") or "running")
+        if resolve and action_id and final and current not in {"tested", "candidate", "dead-end", "blocked", "validated", "reported", "n/a"}:
             current = str(resolve_action(
                 repo_root,
                 target=target,
                 action_id=action_id,
                 status=final,
-                result=f"timing-sql-result={status}",
-                notes=f"summary={summary_path}",
+                result=summary_path,
+                notes=f"timing SQL status={status}; summary={summary_path}",
             ).get("status") or final)
         return {"status": "ok", "action_id": action_id, "action_status": current}
     except (OSError, KeyError, ValueError) as exc:
@@ -187,32 +216,65 @@ def run_timing_sql(
         "errors": [],
     }
     active_session = (session or AuthSession()).bind_target(target)
+    # Claim before requests so an interrupted run leaves a recoverable action.
+    summary["queue"] = _queue_action(
+        repo_root, target, _rel(summary_path, repo_root), url, param, generation, summary["status"],
+        method=method, body=body,
+    )
+    if summary["queue"].get("status") == "error":
+        summary["errors"].append({"queue": summary["queue"].get("error", "queue claim failed")})
+        _write_json_atomic(summary_path, summary)
+        return summary
+    if summary["queue"].get("status") == "already_final":
+        try:
+            existing = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            summary["status"] = "partial"
+            summary["errors"].append("terminal queue action has no readable summary")
+            _write_json_atomic(summary_path, summary)
+            return summary
+        if isinstance(existing, dict):
+            existing["queue"] = summary["queue"]
+            return existing
+        summary["status"] = "partial"
+        summary["errors"].append("terminal queue action summary is not an object")
+        _write_json_atomic(summary_path, summary)
+        return summary
     while len(summary["samples"]) < repeat and summary["request_count"] + 2 <= max_requests:
         iteration = len(summary["samples"]) + 1
         sample: dict[str, Any] = {"iteration": iteration}
-        base = core._http_request(
-            baseline_url,
-            method=method,
-            body=baseline_body,
-            content_type=content_type,
-            timeout=timeout,
-            target=target,
-            session=active_session,
-        )
-        variant = core._http_request(
-            probe_url,
-            method=method,
-            body=probe_body,
-            content_type=content_type,
-            timeout=timeout,
-            target=target,
-            session=active_session,
-        )
-        summary["request_count"] += 2
+        try:
+            base = core._http_request(
+                baseline_url,
+                method=method,
+                body=baseline_body,
+                content_type=content_type,
+                timeout=timeout,
+                target=target,
+                session=active_session,
+            )
+            summary["request_count"] += 1
+            variant = core._http_request(
+                probe_url,
+                method=method,
+                body=probe_body,
+                content_type=content_type,
+                timeout=timeout,
+                target=target,
+                session=active_session,
+            )
+            summary["request_count"] += 1
+        except Exception as exc:
+            summary["errors"].append({"iteration": iteration, "type": type(exc).__name__, "reason": str(exc)[:240]})
+            break
         for response in (base, variant):
             if response.get("error") or int(response.get("status") or 0) <= 0:
                 summary["transport_error_count"] += 1
-        waf = core.core._waf_observation(base, variant)
+        try:
+            waf = _waf_observation(base, variant)
+        except Exception as exc:
+            summary["errors"].append({"iteration": iteration, "type": type(exc).__name__, "reason": str(exc)[:240]})
+            break
         baseline_status = int(base.get("status") or 0)
         variant_status = int(variant.get("status") or 0)
         baseline_rate_limited = baseline_status == 429
@@ -236,11 +298,18 @@ def run_timing_sql(
         summary["samples"].append(sample)
         if sample["rate_limited"] or sample["waf_blocked"]:
             summary["errors"].append("waf_or_rate_limit")
-    baseline_times = [float(item["baseline_ms"]) for item in summary["samples"] if item["baseline_status"] > 0]
-    variant_times = [float(item["variant_ms"]) for item in summary["samples"] if item["variant_status"] > 0]
+    valid_samples = [
+        item for item in summary["samples"]
+        if item["baseline_status"] > 0
+        and item["variant_status"] > 0
+        and not item.get("rate_limited")
+        and not item.get("waf_blocked")
+    ]
+    baseline_times = [float(item["baseline_ms"]) for item in valid_samples]
+    variant_times = [float(item["variant_ms"]) for item in valid_samples]
     baseline_median = _median(baseline_times)
     variant_median = _median(variant_times)
-    deltas = [float(item["variant_ms"]) - float(item["baseline_ms"]) for item in summary["samples"]]
+    deltas = [float(item["variant_ms"]) - float(item["baseline_ms"]) for item in valid_samples]
     stable_hits = sum(delta >= min_delta_ms for delta in deltas)
     stable = bool(
         len(deltas) >= 3
@@ -256,8 +325,11 @@ def run_timing_sql(
         "stable_hits": stable_hits,
         "sample_count": len(deltas),
     }
-    write_private_json(private_dir / "samples.json", summary["samples"])
-    summary["evidence_artifact"] = _rel(private_dir / "samples.json", repo_root)
+    try:
+        write_private_json(private_dir / "samples.json", summary["samples"])
+        summary["evidence_artifact"] = _rel(private_dir / "samples.json", repo_root)
+    except Exception as exc:
+        summary["errors"].append({"artifact": type(exc).__name__, "reason": str(exc)[:240]})
     if summary["errors"] or summary["transport_error_count"]:
         summary["status"] = "partial"
     elif stable:
@@ -266,8 +338,16 @@ def run_timing_sql(
         summary["status"] = "partial"
     else:
         summary["status"] = "complete_no_hit"
-    summary["queue"] = _queue_action(repo_root, target, _rel(summary_path, repo_root), url, param, generation, summary["status"])
-    if summary["queue"].get("status") == "error" and summary["status"] == "complete_no_hit":
+    # Queue terminal evidence must exist before resolve_action is called.
+    _write_json_atomic(summary_path, summary)
+    if summary["status"] in {"complete_no_hit", "candidate_pending", "manual_required"}:
+        summary["queue"] = _queue_action(
+            repo_root, target, _rel(summary_path, repo_root), url, param, generation, summary["status"],
+            method=method, body=body, resolve=True
+        )
+    if summary["queue"].get("status") == "error" and summary["status"] in {"complete_no_hit", "candidate_pending"}:
+        summary["status"] = "partial"
+    if summary["queue"].get("status") == "error" and summary["status"] == "manual_required":
         summary["status"] = "partial"
     _write_json_atomic(summary_path, summary)
     return summary

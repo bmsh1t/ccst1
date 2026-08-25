@@ -65,6 +65,12 @@ class TestSafeMethodPolicyCheck:
         result = policy.check("PUT", "https://target.com/api/data")
         assert result["url"] == "https://target.com/api/data"
 
+    @pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE", "TRACE"])
+    def test_check_never_blocks_on_method_alone(self, method):
+        result = SafeMethodPolicy().check(method, "https://target.com/api")
+        assert result["decision"] == "allow"
+        assert result["advisory"] is True
+
 
 class TestSafeMethodPolicyCustom:
     """Custom safe method sets."""

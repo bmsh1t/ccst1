@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tools import timing_sql_runner as timing
+from tools.action_queue import load_queue
 import pytest
 
 
@@ -119,3 +120,87 @@ def test_timing_rejects_off_target_before_request(monkeypatch, tmp_path):
             param="q",
             variant_value="SLEEP(5)",
         )
+
+
+def test_timing_request_error_keeps_action_non_terminal(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        timing.core,
+        "_http_request",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("fixture failure")),
+    )
+    summary = timing.run_timing_sql(
+        repo_root=tmp_path,
+        target="target.test",
+        url="https://target.test/search?q=1",
+        param="q",
+        variant_value="SLEEP(5)",
+        repeat=3,
+        max_requests=8,
+    )
+
+    assert summary["status"] == "partial"
+    assert summary["queue"]["action_status"] == "running"
+
+
+def test_timing_recovery_hint_redacts_values(monkeypatch, tmp_path):
+    monkeypatch.setattr(timing.core, "_http_request", lambda url, **_: _resp(0.05))
+    summary = timing.run_timing_sql(
+        repo_root=tmp_path,
+        target="target.test",
+        url="https://target.test/search?q=SECRET",
+        param="q",
+        variant_value="SECRET_PAYLOAD",
+        baseline_value="SECRET",
+        repeat=3,
+        max_requests=6,
+    )
+
+    assert summary["status"] == "complete_no_hit"
+    action = load_queue(tmp_path, "target.test")["actions"][0]
+    assert "SECRET" not in action["command_hint"]
+    assert "SECRET" not in action["action"]
+    assert "PAYLOAD" in action["command_hint"]
+
+
+def test_timing_generation_identity_and_terminal_replay(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_request(url, **_kwargs):
+        calls.append(url)
+        return _resp(0.05)
+
+    monkeypatch.setattr(timing.core, "_http_request", fake_request)
+    first = timing.run_timing_sql(
+        repo_root=tmp_path,
+        target="target.test",
+        url="https://target.test/search?q=1",
+        param="q",
+        variant_value="SLEEP(5)",
+        repeat=3,
+        max_requests=6,
+    )
+    first_call_count = len(calls)
+    replay = timing.run_timing_sql(
+        repo_root=tmp_path,
+        target="target.test",
+        url="https://target.test/search?q=1",
+        param="q",
+        variant_value="SLEEP(5)",
+        repeat=3,
+        max_requests=6,
+    )
+    second = timing.run_timing_sql(
+        repo_root=tmp_path,
+        target="target.test",
+        url="https://target.test/search?q=1",
+        param="q",
+        variant_value="SLEEP(6)",
+        repeat=3,
+        max_requests=6,
+    )
+
+    assert first["status"] == replay["status"] == "complete_no_hit"
+    assert len(calls) == first_call_count + 6
+    actions = [item for item in load_queue(tmp_path, "target.test")["actions"] if item["source"] == "sql-timing"]
+    assert len(actions) == 2
+    assert len({item["source_id"] for item in actions}) == 2

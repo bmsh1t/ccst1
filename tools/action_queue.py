@@ -1875,12 +1875,6 @@ def _resolve_action_in_queue(
                 "Action Queue resolve cannot supply Runner-owned observation fields: "
                 + ", ".join(sorted(runner_fields))
             )
-        if normalized in TERMINAL_EVIDENCE_STATUSES:
-            evidence_ref = _locatable_evidence_ref(repo_root, result)
-            if not evidence_ref:
-                raise ValueError(
-                    f"action status {normalized!r} requires a locatable evidence reference in result"
-                )
         merged_metadata = _merge_action_metadata(item.get("metadata"), metadata)
         if (
             merged_metadata.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
@@ -1897,6 +1891,29 @@ def _resolve_action_in_queue(
             metadata,
             merged_metadata,
         )
+        # A claimed/running action represents real execution; closing it as
+        # tested must point at target-owned evidence. Versioned runners already
+        # store that evidence in last_outcome, so a free-form resolve note can
+        # close the action after the continuation/kill contract is checked.
+        requires_tested_evidence = (
+            normalized == "tested"
+            and previous == "running"
+            and str(item.get("source") or "") != "manual"
+        )
+        if normalized in TERMINAL_EVIDENCE_STATUSES or requires_tested_evidence:
+            evidence_ref = _locatable_evidence_ref(repo_root, result)
+            if not evidence_ref and requires_tested_evidence:
+                outcome = merged_metadata.get("last_outcome")
+                if isinstance(outcome, dict):
+                    evidence_ref = _target_owned_evidence_ref(
+                        repo_root,
+                        target,
+                        outcome.get("evidence_ref") or outcome.get("summary_ref"),
+                    )
+            if not evidence_ref:
+                raise ValueError(
+                    f"action status {normalized!r} requires a locatable evidence reference in result"
+                )
         item["status"] = normalized
         item["updated_at"] = now_utc()
         item["result"] = _compact_text(result or item.get("result", ""), 1000)

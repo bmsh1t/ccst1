@@ -909,7 +909,7 @@ def probe_endpoint(
 # Output writer
 
 
-def _source_binding(path_value: str) -> dict:
+def _source_binding(path_value: str, kind: str = "") -> dict:
     if not path_value:
         return {}
     path = Path(path_value).expanduser().resolve()
@@ -919,11 +919,14 @@ def _source_binding(path_value: str) -> dict:
         display = str(path.relative_to(BASE_DIR))
     except ValueError:
         display = str(path)
-    return {
+    binding = {
         "path": display,
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "size": path.stat().st_size,
     }
+    if kind:
+        binding["kind"] = kind
+    return binding
 
 
 def _input_fingerprint(endpoints: list[dict], source_bindings: list[dict]) -> str:
@@ -1193,9 +1196,9 @@ def main() -> int:
     source_bindings = [
         binding
         for binding in (
-            _source_binding(args.endpoints_file),
-            _source_binding(args.js_intel),
-            _source_binding(args.waf_plan),
+            _source_binding(args.endpoints_file, "endpoints"),
+            _source_binding(args.js_intel, "js-intel"),
+            _source_binding(args.waf_plan, "waf-plan"),
         )
         if binding
     ]

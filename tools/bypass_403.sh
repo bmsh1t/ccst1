@@ -199,7 +199,7 @@ if [ -n "$PLAN_FILE" ]; then
 fi
 
 if [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" != "1" ]; then
-  log "side-effect-capable method probes disabled for the broad scanner; set ALLOW_UNSAFE_HTTP_TESTS=1 to include PUT/PATCH/TRACE"
+  log "external byp4xx execution remains disabled without ALLOW_UNSAFE_HTTP_TESTS=1; built-in method probes use verb-only advisory classification"
 fi
 
 if [ -z "$PLAN_FILE" ]; then
@@ -643,9 +643,9 @@ _run_plan() {
     python3 "$_ANALYZER" --calibrate "$origin" --output "$baseline_json" --quiet 2>/dev/null || true
   fi
 
-  while IFS=$'\t' read -r id_b64 kind_b64 method_b64 url_b64 headers_b64 markers_b64 reason_b64 expected_b64 stop_b64 unsafe_b64; do
+  while IFS=$'\t' read -r id_b64 kind_b64 method_b64 url_b64 headers_b64 markers_b64 reason_b64 expected_b64 stop_b64 state_changing_b64 unsafe_b64; do
     [ -n "$id_b64" ] || continue
-    local probe_id kind method probe_url headers_json markers_json reason expected stop unsafe
+    local probe_id kind method probe_url headers_json markers_json reason expected stop state_changing unsafe
     probe_id=$(_b64_decode "$id_b64")
     kind=$(_b64_decode "$kind_b64")
     method=$(_b64_decode "$method_b64")
@@ -655,12 +655,18 @@ _run_plan() {
     reason=$(_b64_decode "$reason_b64")
     expected=$(_b64_decode "$expected_b64")
     stop=$(_b64_decode "$stop_b64")
+    # Accept pre-state-changing normalized lines emitted by older planners.
+    if [ -z "$unsafe_b64" ] && [ -n "$state_changing_b64" ]; then
+      unsafe_b64="$state_changing_b64"
+      state_changing_b64=""
+    fi
+    state_changing=$(_b64_decode "$state_changing_b64")
     unsafe=$(_b64_decode "$unsafe_b64")
-    if [ "$unsafe" = "True" ] && [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" != "1" ]; then
-      printf '%s|%s|%s|unsafe-disabled|0|{"verdict":"manual_review","reason":"unsafe method requires ALLOW_UNSAFE_HTTP_TESTS=1"}\n' \
+    if [ "$state_changing" = "True" ] && [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" != "1" ]; then
+      printf '%s|%s|%s|unsafe-disabled|0|{"verdict":"manual_review","reason":"state-changing action requires ALLOW_UNSAFE_HTTP_TESTS=1"}\n' \
         "$probe_id" "$probe_url" "$method" >> "$OUT_DIR/bypass_manual_review.txt"
       _append_plan_result "$probe_id" "$kind" "needs_review" "$probe_url" "$method" 0 0 \
-        "unsafe method requires manual review" "$expected" "$stop" ""
+        "state-changing action requires manual review" "$expected" "$stop" ""
       continue
     fi
 
@@ -778,14 +784,6 @@ _probe_one() {
     method=$(echo "$combo" | cut -d'|' -f1)
     url=$(echo "$combo" | cut -d'|' -f2)
     hdr=$(echo "$combo" | cut -d'|' -f3)
-    case "$method" in
-      PUT|PATCH|TRACE)
-        if [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" != "1" ]; then
-          printf '%s|%s|%s|unsafe-disabled|0|{"verdict":"manual_review","reason":"side-effect-capable scanner method requires ALLOW_UNSAFE_HTTP_TESTS=1"}\n' "$method" "$url" "$hdr" >> "$OUT_DIR/bypass_manual_review.txt"
-          continue
-        fi
-        ;;
-    esac
     local _tmpbody _tmphdr
     _tmpbody=$(mktemp)
     _tmphdr=$(mktemp)
@@ -1078,7 +1076,7 @@ log "Output written to: $OUT_DIR"
 [ -f "$OUT_DIR/bypass_uncertain.txt" ] && log "bypass_uncertain.txt: $(wc -l < "$OUT_DIR/bypass_uncertain.txt") needs review (200 body may still be block page)"
 [ -f "$OUT_DIR/bypass_blocked.txt" ]  && log "Confirmed blocked: $(wc -l < "$OUT_DIR/bypass_blocked.txt") probe(s) → $OUT_DIR/bypass_blocked.txt"
 [ -f "$OUT_DIR/bypass_partial.txt" ] && log "Partial: $(wc -l < "$OUT_DIR/bypass_partial.txt") probe(s) → $OUT_DIR/bypass_partial.txt"
-[ -f "$OUT_DIR/bypass_manual_review.txt" ] && log "Manual review: $(wc -l < "$OUT_DIR/bypass_manual_review.txt") unsafe probe(s) skipped → $OUT_DIR/bypass_manual_review.txt"
+[ -f "$OUT_DIR/bypass_manual_review.txt" ] && log "Manual review: $(wc -l < "$OUT_DIR/bypass_manual_review.txt") state-changing probe(s) skipped → $OUT_DIR/bypass_manual_review.txt"
 [ -f "$OUT_DIR/waf_fingerprint.txt" ] && log "waf_fingerprint.txt:  $(cat "$OUT_DIR/waf_fingerprint.txt")"
 [ -f "$PLAN_SUMMARY_FILE" ] && log "summary.json:         $PLAN_SUMMARY_FILE"
 exit 0

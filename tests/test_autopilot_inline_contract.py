@@ -30,6 +30,24 @@ def test_slash_command_keeps_one_controller_and_ai_selected_bounded_specialists(
     assert "--isolated" not in text
 
 
+def test_deep_mode_propagates_to_supported_inline_specialists_without_budget_expansion():
+    command = " ".join(_read("commands/autopilot.md").split())
+    lanes = " ".join(_read("docs/autopilot-lanes.md").split())
+
+    for text in (command, lanes):
+        assert "arguments.deep" in text
+        assert "invocation_batch" in text
+        assert "DEEP HUNT MODE" in text
+        assert "value-first comprehensive-depth" in text
+        assert "max_lanes" in text
+        assert "reparse" in text
+
+    assert "When `arguments.deep=true`" in command
+    assert "without increasing `invocation_batch.max_lanes`" in command
+    assert "When `arguments.deep=false`, do not upgrade the specialist to deep" in command
+    assert "the inline controller alone claims lanes" in lanes
+
+
 def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
     text = _read("commands/autopilot.md")
     normalized = " ".join(text.split())

@@ -527,6 +527,10 @@ def _load_json_inject_projection(repo_root: str, target: str) -> dict:
         )
     ):
         status = "partial"
+    valid_source_paths: list[str] = []
+    valid_source_refs: list[dict[str, str]] = []
+    repo = Path(repo_root).resolve()
+    target_key = target_storage_key(target)
     for binding in payload.get("source_bindings") or []:
         if not isinstance(binding, dict):
             status = "partial"
@@ -535,13 +539,27 @@ def _load_json_inject_projection(repo_root: str, target: str) -> dict:
         source = Path(str(binding.get("path") or ""))
         source = source if source.is_absolute() else Path(repo_root) / source
         try:
+            relative = source.resolve().relative_to(repo)
             current = hashlib.sha256(source.read_bytes()).hexdigest()
-        except OSError:
+        except (OSError, ValueError):
             current = ""
-        if current != str(binding.get("sha256") or ""):
+            relative = None
+        if (
+            current != str(binding.get("sha256") or "")
+            or relative is None
+            or target_key not in relative.parts
+        ):
             status = "partial"
             projection["reason"] = "stale_source_binding"
             break
+        binding_path = str(binding.get("path") or "")[:300]
+        valid_source_paths.append(binding_path)
+        kind = str(binding.get("kind") or "").strip().lower()
+        if kind in {"endpoints", "js-intel", "waf-plan"}:
+            valid_source_refs.append({"kind": kind, "path": binding_path})
+    source_bindings = payload.get("source_bindings")
+    if not isinstance(source_bindings, list):
+        source_bindings = []
     projection.update({
         "status": status,
         "schema_version": int(payload.get("schema_version", 0) or 0),
@@ -560,6 +578,8 @@ def _load_json_inject_projection(repo_root: str, target: str) -> dict:
         "waf_plan_variant_count": _bounded_count(payload.get("waf_plan_variant_count")),
         "waf_ai_variants_executed": _bounded_count(payload.get("waf_ai_variants_executed")),
         "transport_error_count": int(payload.get("transport_error_count", 0) or 0),
+        "source_paths": valid_source_paths[:3],
+        "source_refs": valid_source_refs[:3],
         "skipped": {
             key: int((payload.get("skipped") or {}).get(key, 0) or 0)
             for key in ("out_of_scope", "unsupported_method", "invalid_url", "out_of_scope_redirect")

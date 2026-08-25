@@ -33,8 +33,10 @@ MAX_MARKERS = 8
 MAX_TEXT = 600
 MAX_ROUNDS = 2
 ALLOWED_KINDS = {"path", "header", "encoding", "method", "sibling", "custom"}
-ALLOWED_METHODS = {"GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "TRACE"}
-UNSAFE_METHODS = {"PUT", "PATCH", "TRACE"}
+# Keep the input contract finite, but do not treat a verb as proof of mutation.
+ALLOWED_METHODS = {"GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE", "TRACE"}
+# Advisory hints retained for compatibility; execution gates use explicit flags.
+UNSAFE_METHODS = {"PUT", "PATCH", "DELETE", "TRACE"}
 AUTH_HEADER_NAMES = {"authorization", "cookie", "proxy-authorization", "set-cookie"}
 HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
 
@@ -105,6 +107,14 @@ def _markers(value: Any) -> list[str]:
             raise ValueError("protected markers must contain at least 3 characters")
         result.append(marker)
     return result
+
+
+def _explicit_action_flag(item: dict[str, Any], mutation: dict[str, Any], field: str) -> bool:
+    """Read an explicit side-effect declaration; method names remain advisory."""
+    value = item.get(field, mutation.get(field, False))
+    if not isinstance(value, bool):
+        raise ValueError(f"probes[].{field} must be a boolean")
+    return value
 
 
 def validate_plan(
@@ -186,6 +196,11 @@ def validate_plan(
             raise ValueError(f"probes[{index}].mutation.method is unsupported")
         headers = _headers(mutation.get("headers"))
         markers = _markers(item.get("protected_markers", plan_markers))
+        action_flags = [
+            _explicit_action_flag(item, mutation, field)
+            for field in ("state_changing", "destructive", "action_requires_opt_in")
+        ]
+        state_changing = any(action_flags)
         if auth_file and not session.allows_url(probe_url):
             raise ValueError(f"probes[{index}] auth session is outside its target scope")
         normalized.append(
@@ -199,6 +214,7 @@ def validate_plan(
                 "reason": _text(item.get("reason"), f"probes[{index}].reason"),
                 "expected_signal": _text(item.get("expected_signal"), f"probes[{index}].expected_signal"),
                 "stop_condition": _text(item.get("stop_condition"), f"probes[{index}].stop_condition"),
+                "state_changing": state_changing,
                 "unsafe": method in UNSAFE_METHODS,
             }
         )
@@ -277,6 +293,7 @@ def _shell_lines(probes: list[dict[str, Any]]) -> str:
         "reason",
         "expected_signal",
         "stop_condition",
+        "state_changing",
         "unsafe",
     )
     lines = []

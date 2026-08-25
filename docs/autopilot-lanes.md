@@ -16,12 +16,25 @@ observation, or evidence semantics and the execution is stable, repeatable, and
 reusable across targets. Keep one-off target cases as bounded AI-selected evidence
 actions. Ordinary Card changes do not require a new lane.
 
+## Inline Specialist Propagation
+
+The supported Claude inline delegation path receives mode and budget from the
+same bootstrap object as the controller. Every specialist handoff includes the
+literal values `arguments.deep` and `invocation_batch.bounded`,
+`invocation_batch.max_lanes`, and `invocation_batch.handoff`; specialists do not
+reparse slash-command text or infer a mode from the objective. For
+`arguments.deep=true`, include the label `DEEP HUNT MODE` and apply the
+value-first comprehensive-depth contract to the assigned lane while preserving
+the controller's `max_lanes` boundary. For `arguments.deep=false`, keep normal
+depth. A specialist reports its effective mode and batch boundary; the inline
+controller alone claims lanes, writes owner state, and decides closure.
+
 ## State And Queue
 
 - Every substantive candidate is claimed before replay with
   `python3 tools/action_queue.py claim --target <target_shell> --id <id> --metadata-json '<activation-object>'`.
   Activation records `depth_contract_version=1`, target `hypothesis_id`, open
-  `family`/`technique`, selected Skill/knowledge refs, one `active_dimension`,
+  `family`/`technique`, selected Skill and optional `selected_knowledge_refs`, one `active_dimension`,
   `expected_learning`, `kill_condition`, `risk_tier`, and `max_hypothesis_actions`
   no greater than the stored `metadata.max_hypothesis_actions_cap`. The cap is
   Queue-owned: never submit, repair, or increase it in claim metadata. Missing cap
