@@ -67,6 +67,20 @@ def test_autopilot_docs_keep_target_driven_flow_and_document_ctf_override():
     assert "ctf_mode" in combined
 
 
+def test_claude_autopilot_does_not_create_a_target_nature_preflight():
+    repo_root = Path(__file__).resolve().parents[1]
+    autopilot = (repo_root / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    recon = (repo_root / "commands" / "recon.md").read_text(encoding="utf-8")
+    agent = (repo_root / "agents" / "autopilot.md").read_text(encoding="utf-8")
+
+    assert "Run the embedded bootstrap before reading lane contracts, Resin configuration" in autopilot
+    assert "do not ask whether" in autopilot
+    assert "Before the first network lane for a public target" not in autopilot
+    assert "Start directly with **Run This**" in recon
+    assert "## Authorization Posture" not in recon
+    assert "Do not create a separate target-nature" in agent
+
+
 def test_validate_docs_keep_exact_7_question_gate_language():
     repo_root = Path(__file__).resolve().parents[1]
     text = (repo_root / "commands" / "validate.md").read_text(encoding="utf-8").lower()

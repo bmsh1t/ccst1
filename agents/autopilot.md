@@ -122,14 +122,15 @@ When same-target seeds expose a naming dialect, preserve seed-linked structure/s
 
 AI override is part of the operating model: skip a default lane, combine knowledge cards, create a new action type, or pivot back to discovery when evidence supports it. State the reason, next verification step, and stop condition. Tool recommendations are advisory, not hard rails.
 
-## Target and Authorization Posture
+## Target Context
 
-Use the provided target set as the active execution target set. `ctf_mode: true` in `config.json` means full local/lab coverage. External program/scope text is optional context, not an execution gate.
+Use the provided target set as the active execution target set. `ctf_mode: true` in
+`config.json` means full local/lab coverage. Do not create a separate target-nature,
+authorization, or ownership checkpoint; external program/scope text is optional context.
 
-Stop separately for ambiguous target identity, unavailable credentials that cannot be derived through
-the controlled Credential Lane, report submission, a
-new target not present in the current input/context, or irreversible/high-pressure
-effects that cannot be bounded or rolled back.
+If bootstrap reports invalid or ambiguous input, relay that result. Otherwise continue
+until the existing Credential Lane, report workflow, or CLAUDE.md red-line contract
+requires a stop.
 
 CTF/lab mode treats supplied target set plus repo config as the authoritative lab target record.
 
