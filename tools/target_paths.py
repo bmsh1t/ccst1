@@ -255,12 +255,18 @@ def target_storage_key(target: str) -> str:
     return re.sub(r"[^A-Za-z0-9._:-]+", "_", normalized_target).strip("._-") or "unknown-target"
 
 
-def migrate_legacy_list_storage(repo_root: str | Path, target: str) -> dict:
+def migrate_legacy_list_storage(
+    repo_root: str | Path,
+    target: str,
+    *,
+    apply: bool = True,
+) -> dict:
     """Move an owned stem-only batch state/recon tree to the digest key.
 
     A stem-only directory is ambiguous by definition. Migration therefore
     requires the old runtime session to name the same canonical list path;
     otherwise the old data remains untouched for explicit operator review.
+    ``apply=False`` performs the same owner check without moving directories.
     """
     target_info = classify_target(target)
     if target_info["kind"] != "list":
@@ -290,6 +296,26 @@ def migrate_legacy_list_storage(repo_root: str | Path, target: str) -> dict:
             "old_key": old_key,
             "new_key": new_key,
             "migrated": [],
+        }
+
+    if not apply:
+        pending = [
+            str(repo / root_name / new_key)
+            for root_name in ("state", "recon")
+            if (repo / root_name / old_key).exists()
+            and not (repo / root_name / new_key).exists()
+        ]
+        return {
+            "status": "would_migrate" if pending else "nothing_to_migrate",
+            "old_key": old_key,
+            "new_key": new_key,
+            "migrated": pending,
+            "skipped": [
+                str(repo / root_name / old_key)
+                for root_name in ("state", "recon")
+                if (repo / root_name / old_key).exists()
+                and (repo / root_name / new_key).exists()
+            ],
         }
 
     migrated = []
