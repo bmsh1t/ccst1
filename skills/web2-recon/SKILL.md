@@ -7,22 +7,16 @@ description: Web2 recon pipeline — subdomain enumeration (subfinder, optional 
 
 Full asset discovery from nothing to a prioritized URL list ready for hunting.
 
-## 四层记忆接入
+## Runtime Handoff
 
-本 Skill 负责资产和攻击面发现。执行时遵守 `skills/runtime-protocol.md`：
+本 Skill 只负责资产与攻击面发现；共享路由、安全边界和覆盖验收沿用
+`skills/runtime-protocol.md`、`CLAUDE.md` 与现有 Rules。输出回到
+`surface -> lead -> next action`，需要补漏时再按证据读取匹配知识卡：
 
-1. 先读取目标层，确认当前 target、mode、phase 和已有 next actions。
-2. Recon 结果用于形成 surface、lead 和 next action，不直接宣称漏洞成立。
-3. 需要补漏时读取 `knowledge/index.md` 和相关知识卡：
-   - API / 身份边界：`knowledge/cards/api-idor.md`, `knowledge/cards/auth-access.md`
-   - 缺参信号 / 隐藏参数发现：`knowledge/cards/missing-parameter-discovery.md`
-   - 目录命名规律 / 管理面暴露：`knowledge/cards/path-pattern-management-exposure.md`
-   - URL fetch / webhook / import：`knowledge/cards/ssrf-url-fetch.md`
-   - GraphQL / subscription：`knowledge/cards/graphql.md`
-   - 上传 / 导入 / 转换：`knowledge/cards/upload-parser.md`
-   - 覆盖缺口：`knowledge/cards/coverage-prompts.md`
-4. 扩展扫描、并发、目录爆破、批量请求前，必须按 `rules/red-lines.md` 控制频率和范围。
-5. 结束前按 `rules/coverage-gate.md` 输出已覆盖 surface、未覆盖 surface、阻塞项和下一步。
+- API / 身份边界：`knowledge/cards/api-idor.md`, `knowledge/cards/auth-access.md`
+- 缺参与命名规律：`knowledge/cards/missing-parameter-discovery.md`, `knowledge/cards/path-pattern-management-exposure.md`
+- URL fetch / GraphQL / 上传：`knowledge/cards/ssrf-url-fetch.md`, `knowledge/cards/graphql.md`, `knowledge/cards/upload-parser.md`
+- 覆盖缺口：`knowledge/cards/coverage-prompts.md`
 
 ## COMMAND RELATIONSHIP
 
