@@ -178,24 +178,21 @@ def test_vuln_scanner_marks_auth_flows_for_manual_review():
     assert "relaystate" in text
 
 
-def test_vuln_scanner_gates_unsafe_methods_and_upload_action_by_default():
+def test_vuln_scanner_gates_only_explicit_state_changes():
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     text = script.read_text(encoding="utf-8")
 
     assert "scanner_probe_guard()" in text
-    assert "SafeMethodPolicy" in text
-    assert "action_requires_opt_in" in text
+    assert "state_changing" in text
     assert "ALLOW_UNSAFE_HTTP_TESTS" in text
-    assert "require_approval" in text
     assert "Skipping $label" in text
     assert "manual_review/unsafe_skipped.txt" in text
-    assert "post_action_requires_opt_in" not in text
     assert ': > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"' in text
-    assert 'scanner_probe_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes" "1"' in text
-    assert 'scanner_probe_guard "POST" "$upload_url" "upload canary probe" "1"' in text
-    assert 'scanner_probe_guard "POST" "$BASE" "MFA rate-limit probe" "1"' in text
-    assert 'scanner_probe_guard "POST" "$BASE" "MFA response-manipulation canary" "1"' in text
-    assert 'scanner_probe_guard "POST" "$ACS_URL" "SAML signature-stripping probe" "1"' in text
+    assert 'scanner_probe_guard "upload canary probe" "1" "$upload_url" "POST"' in text
+    assert 'scanner_probe_guard "PUT" "$FIRST_LIVE_URL"' not in text
+    assert 'scanner_probe_guard "MFA rate-limit probe"' not in text
+    assert 'scanner_probe_guard "MFA response-manipulation canary"' not in text
+    assert 'scanner_probe_guard "SAML signature-stripping probe"' not in text
 
 
 def test_upload_canary_requires_explicit_opt_in_without_losing_approved_path(tmp_path):
@@ -218,6 +215,61 @@ def test_upload_canary_requires_explicit_opt_in_without_losing_approved_path(tmp
     assert "status=cleanup_unverified" in cleanup
     assert "kind=executed" in cleanup
     assert "reason=no verified remote delete contract" in cleanup
+
+
+def test_method_tampering_probe_is_not_gated_by_http_verb(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    run_dir = tmp_path / "method"
+    recon_dir = run_dir / "recon" / "method.test"
+    findings_dir = run_dir / "findings"
+    shim_dir = run_dir / "bin"
+    curl_log = run_dir / "curl.log"
+    (recon_dir / "live").mkdir(parents=True)
+    shim_dir.mkdir(parents=True)
+    (recon_dir / "live" / "urls.txt").write_text("https://method.test/profile\n", encoding="utf-8")
+    curl_shim = shim_dir / "curl"
+    curl_shim.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$CURL_LOG\"\n"
+        "printf '405'\n",
+        encoding="utf-8",
+    )
+    curl_shim.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "CURL_LOG": str(curl_log),
+            "FINDINGS_OUT_DIR": str(findings_dir),
+            "PATH": f"{shim_dir}:/usr/bin:/bin",
+            "BBHUNT_RUNTIME_PHASE_LOCKED": "scan",
+            "BBHUNT_RUNTIME_LOCK_TARGET": "method.test",
+        }
+    )
+    env.pop("ALLOW_UNSAFE_HTTP_TESTS", None)
+    result = subprocess.run(
+        [
+            "bash",
+            str(script),
+            str(recon_dir),
+            "--quick",
+            "--skip",
+            _skip_modules_except("auth_bypass"),
+        ],
+        cwd=script.resolve().parent.parent,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    calls = curl_log.read_text(encoding="utf-8")
+    assert "-X PUT" in calls
+    assert "-X DELETE" in calls
+    assert "-X PATCH" in calls
+    assert not (findings_dir / "manual_review" / "unsafe_skipped.txt").exists()
 
 
 def test_vuln_scanner_supports_auth_session_env():

@@ -55,7 +55,7 @@ Evidence gate: capture 302 Location and final browser destination. For OAuth, pr
 
 ## File Upload Bypass Shapes
 
-Use after an upload parser, storage path, converter, or execution/read-back boundary is identified. Do not execute uploaded content on real infrastructure unless the current turn authorizes that state-changing test.
+Use after an upload parser, storage path, converter, or execution/read-back boundary is identified.
 
 | Shape | Example | Signal |
 |---|---|---|

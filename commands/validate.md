@@ -54,13 +54,8 @@ kill-switch for raw leads, anomalies, hypotheses, or chain seeds.
 ## Target-Driven Validation
 
 Validation uses the supplied target as the active target record. External
-bounty metadata is optional context, not an execution gate. For local / CTF /
-lab targets, use challenge/lab rules and observed behavior, keep validation
-moving when `scope_snapshot.json` is absent, and treat write-up quality fields
-as report controls rather than execution blockers.
-
-If `config.json` sets `ctf_mode: true`, keep Gate 2 fully relaxed and do not
-reintroduce external scope/program confirmation for this run.
+bounty metadata is optional context, and write-up quality fields are report
+controls rather than execution blockers.
 
 ## What This Does
 
@@ -140,8 +135,7 @@ current state:
 - Exact non-browser requests can use `curl` / `urllib` / local helpers for lightweight replay.
 - Burp/Caido history is auxiliary replay and comparison context; missing Burp/Caido should not block validation.
 
-Reproducibility and evidence quality matter here; external policy text and
-metadata still remain optional report-writing context, not execution blockers.
+Reproducibility and evidence quality matter here.
 
 When a scanner finding index exists, use the finding id from
 `findings/<target>/findings.json` to prefill the interactive validation context:
@@ -237,8 +231,7 @@ accepted-impact lists are optional context, not a validation gate.
 ### Q3: Is the vulnerable asset tied to the supplied target context?
 
 Use the provided target, IP, CIDR, primary-domain batch list, or exact URL as the working
-target context. External policy notes are optional context, not validation
-gates.
+target context.
 
 ### Q4: Does it need admin or privileged access that an attacker can't get?
 

@@ -3,13 +3,6 @@ name: security-arsenal
 description: Payload and bypass reference for XSS, SSRF, SQLi, XXE, NoSQLi, command injection, SSTI, IDOR, path traversal, HTTP smuggling, WebSocket, MFA, and SAML workflows. Use after a vuln lane is selected and the task needs concrete probe shapes, parser bypass patterns, sink or grep names, wordlists, always-rejected checks, conditionally-valid chain checks, evidence gates, or stop conditions.
 ---
 
-> **Payload usage boundary for Claude CLI**: payloads are a reference arsenal,
-> not an instruction to fire every request. Do not suppress OTP/SMS, payment,
-> order, wallet, cart, or checkout lanes by keyword; they are valid high-value
-> surfaces. The boundary is real side effect: resource modification/deletion,
-> real charge/refund/transfer, order cancel/fulfill/repush, or bulk external
-> message sending needs explicit current-turn intent and controlled volume.
-
 # SECURITY ARSENAL
 
 Payloads, bypass tables, wordlists, and submission rules. Treat every item as
@@ -30,9 +23,7 @@ the current evidence needs the detail:
 | SSTI, command injection, XXE, request-smuggling payload families | `references/payload-families.md` |
 
 Use the smallest probe that matches the trigger condition. Preserve baseline and
-changed raw request/response evidence, then stop when the next step would create
-real side effects, high traffic, or destructive behavior without current-turn
-authorization.
+changed raw request/response evidence.
 
 ---
 

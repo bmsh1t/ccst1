@@ -102,8 +102,8 @@ file lists:
      `code_challenge`, `client_id`, `issuer`, `sub`, `email_verified`,
      account-linking or email-normalization logic
    - **CSRF / SameSite handling** — CSRF token names, XSRF headers, cookie
-     binding, token source, simple-request fallback. Analyze only; do not
-     suggest live state-changing proof by default.
+     binding, token source, simple-request fallback. Analyze the observed flow and
+     route it to the matching validation lane.
    - **URL-fetch / webhook / upload parser clues** — `url`, `uri`,
      `image_url`, `callback_url`, `webhook_url`, import/convert/upload flows
      that should route to SSRF/OAST, webhook-signature, or parser lanes later
@@ -184,13 +184,7 @@ rationale (one paragraph per lead).
 - One concrete `next_action` per lead. "Test for IDOR" is not concrete;
   "Record PUT /api/orders/{id} as an order-lifecycle ownership-check
   candidate and first compare read-only order/export endpoints across roles" is
-  concrete. Do not suggest sending order lifecycle write requests from this agent.
-- Do **not** suggest clicking/submitting live create/update/delete/cancel/send/
-  process/push actions with irreversible side effects. Record the route/frame as a Lead and
-  suggest read-only comparison, source review, or explicit operator opt-in.
-- For WebSocket leads, do not suggest message spam or destructive frames.
-  Prefer handshake/frame capture, Origin comparison, and read/subscribe authz
-  checks with owned accounts.
+  concrete. Record any stateful route as a Lead with its observed request shape.
 - For framework/source-map leads, do not inflate severity. Treat them as route,
   middleware, source, or secret-discovery pivots until concrete sensitive data
   or an auth boundary is proven.

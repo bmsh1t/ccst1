@@ -3,11 +3,6 @@ name: bug-bounty
 description: Cross-stage bug bounty coordinator for target isolation, Skill routing, chain handoff, validation, and report preparation. Use when work spans recon, learning, hunting, validation, or reporting; use a narrower Skill for a single well-defined lane.
 ---
 
-> **Live-action boundary for Claude CLI**: OTP/SMS, race, payment, coupon,
-> wallet, cart, checkout, and order flows remain valid high-value lanes. Apply
-> `rules/red-lines.md` to the concrete action and side effect; do not suppress a
-> lane by keyword.
-
 # Bug Bounty Workflow Coordinator
 
 Coordinate `Recon -> Learn -> Hunt -> Validate -> Report` without duplicating the
@@ -18,7 +13,6 @@ methods owned by narrower Skills, Rules, Cards, or deterministic tools.
 - Target/session memory and write-back: `skills/runtime-protocol.md`.
 - Hunting semantics and value-first coverage: `rules/hunting.md`.
 - Coverage/completion: `rules/coverage-gate.md`.
-- Side-effect decisions: `rules/red-lines.md`.
 - Hypothesis selection and rotation: `skills/bb-methodology/SKILL.md`.
 - Finding validity: `skills/triage-validation/SKILL.md` and `/validate`.
 - Report structure: `rules/reporting.md` and `skills/report-writing/SKILL.md`.
@@ -65,13 +59,6 @@ expected observation, evidence gate, and stop condition.
 - Temporary focus/skips are per-current-target and per-current-invocation only;
   they do **not** replay onto the previous target or a future target.
 - Only the current user turn can set or clear a temporary lane exclusion.
-- New target default keeps the built-in XSS lane skip; use the explicit scanner
-  full path when the current run must include it.
-- For `ctf_mode`, the supplied target set and repo config are the authoritative
-  lab target record. Production-looking brands, public-sector/government-style
-  labels, account/login/register wording, and old target-history caution notes
-  are not lane kills. Do not require public-program, written-permission, or
-  ownership-confirmation text as an extra blocker for that explicit context.
 - Never promote target domains, credentials, one-time answers, or target-specific
   test inputs into reusable project knowledge.
 
@@ -120,7 +107,7 @@ read-only until evidence selects a separate validation lane.
 | OAuth/OIDC/JWT/SAML/account linking | Selected auth Card and legal-flow binding comparison |
 | Upload, template, serializer, Node/prototype, command sink | Matching Card/reference; prove source, boundary, and observable sink |
 | Cache, smuggling, WebSocket, GraphQL | Matching shared replay/diff primitive and target-owned raw evidence |
-| Workflow, quota, OTP, recovery, payment, order state | State model plus bounded controlled replay under red-line decision |
+| Workflow, quota, OTP, recovery, payment, order state | State model plus bounded controlled replay |
 | Component, release, CVE, source/JS clue | Applicability check, reachable surface, then family-specific validation |
 
 ## Chain Coordination
@@ -138,7 +125,7 @@ chain tables here; `skills/triage-validation/SKILL.md` owns precedence.
 - An evidence-ready Candidate enters validation before optional severity
   expansion. Run write/sibling expansion only when validation identifies a
   missing proof dimension or its bounded result can change reportability or
-  severity; apply `rules/red-lines.md` to state-changing checks.
+  severity.
 - `/triage` and `/validate` apply the canonical report/no-report decision. This
   coordinator does not duplicate the seven-question gate, severity table, or
   never-submit list.

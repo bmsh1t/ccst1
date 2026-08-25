@@ -1,12 +1,5 @@
 # Methodology Cheatsheet
 
-> **Default execution boundary**: this cheatsheet contains aggressive quick
-> checks for experienced operators. In Claude CLI default flows, do not block
-> OTP/SMS, payment, order, wallet, cart, or checkout lanes by category. Treat
-> only real side effects — persistent mutation, real money movement,
-> irreversible lifecycle changes, or bulk external sends — as requiring explicit
-> current-turn intent. Preserve the idea; control the effect.
-
 Distilled from `KathanP19/HowToHunt`, `HolyBugx/HolyTips`,
 `daffainfo/AllAboutBugBounty`, and `KingOfBugbounty/KingOfBugBountyTips`. The
 upstream repos go deeper — see `REFERENCES.md` for links. Use this as a lookup
@@ -65,7 +58,7 @@ table during the hunt.
 5. Pre-account-takeover: register the victim's email at the IDP before they do.
 
 ### Race conditions
-1. Payment/coupon/wallet surfaces are valid business-logic lanes; avoid only real money movement or irreversible state changes unless explicitly opted in.
+1. Payment/coupon/wallet surfaces are valid business-logic lanes.
 2. Non-payment quota: send the same invite/usage request 50× in parallel — does quota go negative?
 3. Account creation: same username 50× in parallel — duplicates?
 4. Use `ffuf -p` or a goroutine-based fuzzer; avoid `&` background loops in bash for true parallelism.

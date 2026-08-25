@@ -45,12 +45,11 @@ Success signal: `findings/<target>/summary.json`, `findings/<target>/findings.js
 2. ROUTE     Select the main Skill using skills/runtime-protocol.md
 3. REVIEW    Build an evidence-backed surface view; Claude chooses the highest-value workflow: account, admin, API, export, upload, webhook, GraphQL, invite, report/download
 4. KNOWLEDGE Load only 1-2 relevant cards from knowledge/index.md when a lane needs deeper thinking
-5. CHECK     Apply rules/red-lines.md before high-volume traffic, destructive changes to real data, active stored XSS payloads, or race-style load; HTTP method alone is not the boundary
-6. ATTACK    Reduce one hypothesis to exact requests: auth, role, object, method, version, body diff
-7. CHAIN     Check siblings, roles, versions, and side effects when a signal appears
-8. RECORD    Preserve leads/signals/candidates with exact next evidence actions in target memory
-9. COVERAGE  Apply rules/coverage-gate.md before finishing or rotating
-10. VALIDATE Use `/validate` only when a Candidate is ready for report-quality proof
+5. ATTACK    Reduce one hypothesis to exact requests: auth, role, object, method, version, body diff
+6. CHAIN     Check siblings, roles, versions, and side effects when a signal appears
+7. RECORD    Preserve leads/signals/candidates with exact next evidence actions in target memory
+8. COVERAGE  Apply rules/coverage-gate.md before finishing or rotating
+9. VALIDATE Use `/validate` only when a Candidate is ready for report-quality proof
 ```
 
 Do not become a passive scanner wrapper. Start with the most concrete evidence available.
@@ -144,20 +143,6 @@ ALLOW_UNSAFE_HTTP_TESTS=1 python3 tools/hunt.py --target target.com --scan-only 
 - XSS is not an active vuln-scanner lane; recon/validation provide its evidence.
 - `--scanner-full` expands supported scanner lanes but does not enable a Nuclei XSS scan.
 - `--scanner-skip` is per invocation only; do not inherit it across targets or sessions.
-- HTTP method names do not independently skip scanner probes; PUT/PATCH/DELETE
-  remain advisory metadata. Explicitly state-changing actions (including upload,
-  MFA/OTP, and SAML `POST` validation) still require `ALLOW_UNSAFE_HTTP_TESTS=1`.
-
-## Guardrails For Live Actions
-
-- Reports are never auto-submitted.
-- HTTP method alone is not a red line. Treat method as a side-effect hint and
-  decide from the concrete operation, object, data scope, cleanup path, and
-  observed request shape.
-- Payment, billing, refund, credit, wallet, coupon, cart, checkout, and fund-transfer surfaces are valid high-value lanes; avoid only real money movement or irreversible lifecycle changes unless explicitly intended.
-- Order/fulfillment/delivery/shipment/booking lifecycle write actions are Leads only; do not click, replay, race, or call them from this command.
-- Stored XSS and live HTML/script injection are opt-in per current user turn; do not submit payloads by default.
-- Request guard, rate limits, and cooldowns are advisory telemetry for pacing and replay, not a reason to stop thinking.
 
 ## When To Stop Or Rotate
 
@@ -165,7 +150,6 @@ Rotate when:
 
 - three focused variants return identical status/body shape;
 - no auth, object, role, parser, or sink evidence remains;
-- the next step would be a state-changing action without explicit operator intent;
 - the current first-review surface is exhausted and `/surface` only shows follow-up hints.
 
 Then run:

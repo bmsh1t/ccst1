@@ -778,7 +778,7 @@ class TestSurfaceRanking:
         assert workflow_leads[0]["category"] == "action-gated"
         assert "[high] action-gated: Side-effect-capable scanner probes were skipped" in output
         assert "findings/target.com/manual_review/unsafe_skipped.txt" in output
-        assert "ALLOW_UNSAFE_HTTP_TESTS=1" in output
+        assert "upload canary" in output
 
     def test_resolved_unsafe_skipped_artifact_is_hidden_from_workflow_leads(self, tmp_path):
         repo_root = tmp_path

@@ -66,7 +66,7 @@ full-Recon Agent as the bounded specialist inside `/autopilot`.
 - After recon, hand off to `/surface`; use `recon-ranker` only as an explicit,
   read-only second opinion for a large cached surface
 
-## Local / Lab / Supplied Target Sets
+## Target Sets
 
 Treat the supplied target, IP, CIDR, or primary-domain batch list as the
 active execution target set for this run. For a readable list file, treat each
@@ -76,8 +76,7 @@ files, parameters, and exposure candidates under that supplied target set stay
 associated with the run. Run the normal recon pipeline directly: Chaos API,
  subfinder, assetfinder, puredns, httpx, katana, gau, waymore, bounded
  directory/parameter fuzzing, JS/config exposure discovery, API leak detection, lightweight identity/cloud
- intel, and scanner preparation where available. Treat external program pages,
- policy text, and ownership notes as optional context only.
+ intel, and scanner preparation where available.
 
 ## Instructions
 

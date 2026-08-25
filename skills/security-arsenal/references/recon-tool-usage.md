@@ -1,6 +1,6 @@
 # Recon and Tool Usage Reference
 
-Load this file when the task needs concrete command shapes for recon, endpoint discovery, static audit, or ffuf. Keep execution bounded by the supplied target set, tool/request budgets, red-lines, and current-turn opt-in for side effects. Save raw outputs when they become evidence.
+Load this file when the task needs concrete command shapes for recon, endpoint discovery, static audit, or ffuf. Keep execution bounded by the supplied target set and tool/request budgets. Save raw outputs when they become evidence.
 
 ## Tool Roles
 

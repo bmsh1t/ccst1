@@ -7,9 +7,7 @@ description: Run the local recon pipeline on a target — domain/IP/CIDR or prim
 Run the production recon pipeline. Do not re-implement the methodology inline.
 
 The supplied target, IP, CIDR, or primary-domain batch list is already the active
-target context. Start directly with **Run This**; do not add an authorization,
-ownership, or target-nature preflight. When `config.json` has `ctf_mode: true`,
-the supplied target and repository config are the lab record.
+target context. Start directly with **Run This**.
 
 ## Run This (the only required step)
 
@@ -130,9 +128,8 @@ python3 tools/recon_artifact_gc.py --repo-root . --target target.com --apply
 The cleanup command is fail-closed on incomplete/corrupt Closure state and never removes
 Active URL views or finding/ledger artifacts.
 
-`ctf_mode` in `config.json` keeps the supplied target set as the active lab
-target record. Recon-discovered subdomains, URLs, JS, params, and exposure
-candidates under that target remain active assets for this run.
+Recon-discovered subdomains, URLs, JS, params, and exposure candidates under the
+supplied target remain active assets for this run.
 
 ## Key Artifacts
 

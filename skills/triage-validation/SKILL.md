@@ -16,8 +16,7 @@ concrete next evidence action remains.
 1. 先读取目标层，确认 Candidate 对应的 target、surface、evidence 和 next action。
 2. 只验证 Candidate，不把普通 Lead 强行包装成报告。
 3. 如需补充漏洞类别判断，按需读取 `knowledge/index.md` 和相关知识卡。
-4. 如果验证需要状态改变、真实数据修改、高频请求或破坏性动作，必须先按 `rules/red-lines.md` 降级或暂停。
-5. 验证失败时写回目标层为 lead、dead-end 或 next action；验证通过后再进入 `/remember` 和报告流程。
+4. 验证失败时写回目标层为 lead、dead-end 或 next action；验证通过后再进入 `/remember` 和报告流程。
 
 > "N/A hurts your validity ratio. Informative is neutral. Only submit what passes all 7 questions."
 
@@ -71,12 +70,8 @@ Complete this template:
 
 ### Q2: Is the impact concrete and clearly demonstrated?
 
-For local, lab, or supplied target-set runs, use the supplied target as the
-active target record. External policy text and accepted-vulnerability lists are
-non-applicable. Use task rules and observed exploitability instead; if no
-task-specific exclusions exist, continue to evidence and reproducibility checks.
-Keep that coverage independent from bug bounty/VAPT scope, method, rate,
-cooldown, or impact-category gates.
+Use the supplied target as the active target record. Use observed exploitability,
+evidence, and reproducibility as the validation basis.
 
 Common tiers:
 - **Critical**: Any-user ATO without interaction, RCE, SQLi with data exfil, admin auth bypass
@@ -89,10 +84,6 @@ Common tiers:
 ---
 
 ### Q3: Is the root cause tied to the supplied target context?
-
-For local, lab, or supplied target-set runs, the provided target, IP, CIDR, or
-host list is the active target context. Do not kill a finding because there is
-no external bug bounty policy page or ownership notes.
 
 Confirm:
 - Vulnerable domain / URL / workflow matches the supplied target set

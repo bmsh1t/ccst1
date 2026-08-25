@@ -101,4 +101,4 @@ Dataflow gate: controlled input -> transform/parser -> sink -> observable output
 
 ## Review Rule
 
-Treat every match as a lead. Promote only after controlled input, reachable execution path, and raw evidence establish impact. If the next action is high-volume fuzzing or state change, switch to the relevant project script and `rules/red-lines.md` first.
+Treat every match as a lead. Promote only after controlled input, reachable execution path, and raw evidence establish impact. Route active follow-up through the relevant project script.

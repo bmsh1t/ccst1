@@ -23,10 +23,6 @@ The bootstrap already ran arguments, read-only runtime compare, advisory capabil
 tools never block, trigger installation or request it, count as tested-clean, or hide material
 limits in the handoff. Use the matching `capabilities.lanes` record only to explain local readiness or choose a viable fallback; it never overrides the owner-selected Action Queue/state lane. Within one invocation, do not rerun the same failed source/tool; preserve
 cached/stale evidence as partial/blocked. `tools/external_arsenal.sh --versions` is diagnostics-only, never startup.
-Before choosing a lane, surface bootstrap `ctf_mode` explicitly as `CTF/lab mode: enabled` or
-`CTF/lab mode: disabled`; this is a status confirmation, not a second execution gate. When
-enabled, the supplied target plus repository config are the lab record: do not ask whether
-the target is public, authorized, owned, or what its nature is.
 Browser lanes use one active backend at a time and follow
 `docs/autopilot-lanes.md#browser-source-and-js` for selection, recovery, import,
 switching, and close. A persisted lane boundary may switch backends when unique
@@ -45,10 +41,7 @@ When sticky access is blocked, use current evidence and the request budget to de
 available sticky account environments and how much to retry; impose no fixed count. Use rotate only on explicit
 request, bypass it for localhost/private targets, and never print the token or persist proxy setup.
 Apply `rules/hunting.md` target-isolation/new-target defaults to the supplied target set.
-Bootstrap `ctf_mode` is authoritative lab context; external policy is advisory, and
-`/pickup` never replays another target's skips/scanner decisions.
-CTF/lab mode treats the supplied target set plus repo config as the authoritative lab target record;
-public-program, written-permission, or ownership-confirmation text is not an extra gate.
+`/pickup` never replays another target's skips or scanner decisions.
 DNS expansion remains an advisory audit/replay lane; host count alone is not a trigger, and it requires target-specific evidence plus `--reason`.
 `/autopilot` runs inline in the current AI session and remains the sole
 writer/closure controller.
@@ -89,8 +82,8 @@ evidence may select `tools/dns_expand.py`. Neither helper is a baseline lane.
 fresh: TARGET -> RECON -> BUSINESS/CROWN JEWELS -> SURFACE/CONTEXT -> BROWSER/SOURCE/JS TRUTH -> SCANNER QUICK -> WORKFLOW -> HYPOTHESIS -> MINIMAL PROOF -> CHAIN -> VALIDATE -> RECORD/CHECKPOINT
 existing: LOAD -> REVIEW EVIDENCE -> ENRICH -> HUNT -> VALIDATE CANDIDATES -> REPORT/CHECKPOINT
 ```
-Every invocation is state-first. Bootstrap `ctf_mode`, compact `state`, and advisory
-`capabilities` are the only initial inputs. Branch only after that state read;
+Every invocation is state-first. Bootstrap `state` and advisory `capabilities` are
+the only initial inputs. Branch only after that state read;
 missing/stale/invalid is work, not no surface. State tools are not a pre-flight checklist.
 Hypothesis generation is AI-owned: derive any family, primitive, or chain, including RCE and families
 outside the canonical Coverage taxonomy, from evidence/unknowns/contradictions. `knowledge_cards` are

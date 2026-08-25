@@ -6,8 +6,7 @@ description: Hunt leaked credentials in a filesystem path, git history, JS bundl
 
 Find leaked API keys, tokens, and credentials. Treat hits as evidence leads until provider/ownership/usability are minimally proven.
 
-Secret exposure is not automatically a high-value finding and is not a red line.
-Treat it as a vulnerability signal: value depends on whether the key is valid,
+Treat secret exposure as a vulnerability signal: value depends on whether the key is valid,
 target-owned, scoped to useful permissions, and tied to concrete security
 impact.
 

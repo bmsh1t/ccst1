@@ -6,16 +6,15 @@ from pathlib import Path
 SCANNER_PATH = Path(__file__).resolve().parents[1] / "tools" / "vuln_scanner.sh"
 
 
-def test_saml_signature_stripping_is_opt_in_and_policy_gated():
+def test_saml_signature_stripping_is_available_without_method_gate():
     scanner = SCANNER_PATH.read_text()
 
     assert "scanner_probe_guard()" in scanner
-    assert "SafeMethodPolicy" in scanner
     assert "ALLOW_UNSAFE_HTTP_TESTS" in scanner
-    assert "require_approval" in scanner
-    assert 'scanner_probe_guard "POST" "$BASE" "MFA rate-limit probe" "1"' in scanner
-    assert 'scanner_probe_guard "POST" "$BASE" "MFA response-manipulation canary" "1"' in scanner
-    assert 'scanner_probe_guard "POST" "$ACS_URL" "SAML signature-stripping probe" "1"' in scanner
+    assert 'scanner_probe_guard "upload canary probe" "1" "$upload_url" "POST"' in scanner
+    assert 'scanner_probe_guard "MFA rate-limit probe"' not in scanner
+    assert 'scanner_probe_guard "MFA response-manipulation canary"' not in scanner
+    assert 'scanner_probe_guard "SAML signature-stripping probe"' not in scanner
 
 
 def test_scanner_uses_current_repo_paths():

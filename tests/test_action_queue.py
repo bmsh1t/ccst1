@@ -1487,7 +1487,7 @@ def test_resolve_unsafe_skipped_review_persists_resolution(tmp_path):
                 "priority": 88,
                 "type": "action-gated-review",
                 "status": "ready",
-                "action": "Review action-gated scanner lane abcdef1234567890: 1 unresolved skipped probe line(s). Artifact=findings/target.com/manual_review/unsafe_skipped.txt. Decide tested, blocked, dead-end, n/a, or candidate; only rerun with ALLOW_UNSAFE_HTTP_TESTS=1 after explicit operator opt-in.",
+                "action": "Review action-gated scanner lane abcdef1234567890: 1 unresolved skipped probe line(s). Artifact=findings/target.com/manual_review/unsafe_skipped.txt. Decide tested, blocked, dead-end, n/a, or candidate; record the selected outcome before continuing.",
                 "command_hint": "review legacy unsafe_skipped.txt; resolve queue with tested/blocked/dead-end/n/a/candidate",
                 "redline_required": True,
                 "metadata": {

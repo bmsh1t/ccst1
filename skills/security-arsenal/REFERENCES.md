@@ -34,7 +34,7 @@ assets below instead of raw external notes or local absolute paths.
 | `knowledge/cards/render-pipeline-ssrf.md` | PDF/image/HTML/render/export pipeline SSRF and file-read pivots |
 | `knowledge/cards/upload-parser.md` | Upload/import/archive/parser differentials and processing chains |
 | `knowledge/cards/upload-to-execution.md` | Upload-to-execution as controlled impact proof |
-| `knowledge/cards/controlled-rce-impact.md` | RCE/command/SSTI/deser impact proof, red-line and cleanup model |
+| `knowledge/cards/controlled-rce-impact.md` | RCE/command/SSTI/deser impact proof and cleanup model |
 | `knowledge/cards/node-prototype-pollution.md` | Node/prototype source → property → gadget → sink chains |
 | `knowledge/cards/web-llm-tool-chains.md` | Web LLM/RAG/agent tool-use boundary testing |
 

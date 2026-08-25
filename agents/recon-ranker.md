@@ -85,7 +85,6 @@ owns any write-back.
 1. 目标记忆：active goal、hypothesis、active leads、next actions、dead ends、latest handoff。
 2. Skill routing：从 `skills/runtime-protocol.md` 判断下一步更像 recon、Web2 vuln class、browser/source/JS enrichment，还是 validation。
 3. 知识库：只加载当前证据匹配的 1-2 张知识卡，用来扩展测试角度。
-4. 检查：`rules/red-lines.md` 过滤掉 DDoS、高压流量、破坏性行为、修改/删除/破坏目标数据的测试。
 
 优先运行 `python3 tools/surface.py --target <target>` 获取合并证据包；需要强制重建派生索引/
 投影时使用 `--refresh`。脚本会对完整 exact、target-owned URL 流逐条评分，再只输出有界

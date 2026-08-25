@@ -132,12 +132,8 @@ boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -
   不因技术栈名称加载整套框架 Skill。
 - OData 与 LDAP/XPath 只有出现协议、operator、错误或 source 证据时才加载专项 reference 卡；
   metadata、HTTP 200、格式识别或 parser error 单独只能是 Signal。
-- 不照搬 CTF 的 flag 路径、admin-bot 前提、DoS/ReDoS、持久 shell、批量读取、
-  破坏性 payload 或宽泛 payload spray。
 - 每个链式假设必须写成 `Evidence / Primitive / Connector / Impact hypothesis /
   Next action / Stop condition`。
-- 如果链式方向涉及写入、执行、真实业务状态或持久化，遵循继承的动作安全契约做
-  降级或暂停判断。
 
 ## 2.3 层级归属标准
 
@@ -280,4 +276,3 @@ SKILL RESULT
 - 不得默认全量读取知识库。
 - 不得用“没有发现问题”替代覆盖摘要。
 - 不得把 Lead 包装成 Candidate。
-- 不得执行 DDoS、高压流量或破坏性状态改变。

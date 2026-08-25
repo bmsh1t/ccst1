@@ -25,7 +25,6 @@ Use `/scope` when you want to:
 - In a JSON manifest, `in_scope` entries add active assets and `out_of_scope` entries always win.
 - Discovered but unlisted third-party assets remain lossless `external-chain-context` or `scope-review`;
   they are not silently promoted to active requests.
-- External policy pages and metadata are optional context only.
 - `scope_snapshot.json` is documentation, not a gate.
 
 ## Usage

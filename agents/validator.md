@@ -39,8 +39,7 @@ notes."
 - Recent validation context and disclosed-report context as advisory inputs
 - Target memory from `memory/goals/targets/<target>.json` when available,
   especially dead ends, prior handoffs, and the current hypothesis
-- `rules/red-lines.md` and `rules/coverage-gate.md` when validation would
-  require additional traffic or state-changing proof
+- `rules/coverage-gate.md` when validation needs additional evidence
 
 ## Outputs
 
@@ -86,9 +85,8 @@ missing evidence action instead of pretending it is report-ready.
 
 1. 先读取目标记忆，确认当前 candidate 没有重复已杀死的 dead end。
 2. 读取最相关的知识卡，只用于校准验证证据要求，例如 IDOR 需要双账号对象差异、SSRF 不能只有 DNS-only。
-3. 应用红线：不要为了验证而执行 DDoS、高压流量、破坏性动作、修改/删除/破坏目标数据、真实支付/取消/发货等不可逆动作。
-4. 如果缺失证明但补证会越过红线，输出 CHAIN REQUIRED 或 DOWNGRADE，并把安全替代证明写成 next action。
-5. 结束时明确建议 `/target dead-end ...` 或 `/target next ...` 的写回内容，避免后续 Claude CLI 重复踩同一条路。
+3. 如果缺失证明，输出 CHAIN REQUIRED 或 DOWNGRADE，并把缺失证明写成 next action。
+4. 结束时明确建议 `/target dead-end ...` 或 `/target next ...` 的写回内容，避免后续 Claude CLI 重复踩同一条路。
 
 ## Your Decision Framework
 

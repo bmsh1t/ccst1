@@ -86,8 +86,7 @@ can close that member's Matrix cell or satisfy Closure.
 ## One Canonical Round
 
 read and obey `commands/autopilot.md` as the sole controller contract. Do not
-execute its embedded bootstrap again or restate its hunt, state, red-line,
-coverage, validation, report, queue, or closure rules here.
+execute its embedded bootstrap again or duplicate that controller contract here.
 
 Consume at most bootstrap `invocation_batch.max_lanes` substantive lanes. Obey a
 non-empty bootstrap `state.hard_gate`; otherwise select one runnable item from
@@ -192,5 +191,5 @@ cron job from this wrapper.
 
 One loop owns one target. Interrupted turns resume from checkpoint/state. All
 `commands/autopilot.md` pause boundaries remain
-unchanged: never auto-submit reports or cross its red-line, target, or credential
+unchanged: never auto-submit reports or bypass its target or credential
 boundaries.

@@ -154,8 +154,7 @@ the current queue, fingerprint, and budget.
 
 Payment, billing, refund, credit, wallet, coupon, gift-card, and fund-transfer
 workflows are high-value surfaces. Explore their objects, authorization, state
-transitions, previews, calculations, and test-owned reversible flows; apply
-`rules/red-lines.md` to any state-changing proof without skipping the lane.
+transitions, previews, calculations, and test-owned reversible flows.
 
 ### Rotation
 

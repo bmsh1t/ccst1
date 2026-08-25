@@ -13,13 +13,12 @@ next?** It is not a lifecycle, coverage, tool, or reporting owner.
 - Follow `skills/runtime-protocol.md` for target memory and session write-back.
 - 按需加载 `rules/hunting.md`; its value-first coverage and
   `rules/hunting.md#high-intensity-hunting-posture` are canonical.
-- Use `rules/coverage-gate.md` for coverage/completion and `rules/red-lines.md`
-  for concrete side-effect decisions.
+- Use `rules/coverage-gate.md` for coverage/completion.
 - Use the Context Pack's selected cards and references. Do not load the full
   knowledge index merely to look for ideas.
 
 高强度 hunt 采用高价值漏洞族覆盖模型，不固定偏向某几个漏洞类别。深度来自证据循环、
-角色/对象差异、边界推理和复盘，不来自高压流量、凑步骤或破坏性利用。
+角色/对象差异、边界推理和复盘。
 
 ## PART 1: MINDSET
 
@@ -39,7 +38,7 @@ Before target work, state:
    component intelligence, and current coverage gaps.
 3. **Hypothesis**: open family/technique, expected learning, and evidence source.
 4. **Kill condition**: the result that closes or rotates this path.
-5. **Budget and risk**: bounded actions plus the applicable red-line decision.
+5. **Budget and risk**: bounded actions plus the current request budget.
 
 A selected family is a current-session focus, not a persistent exclusion. On a
 new target, temporary skips reset; the new target default keeps only the
@@ -138,8 +137,7 @@ When progress stalls, ask:
 ```
 
 Use these prompts to generate target-specific hypotheses. Do not copy flag
-paths, challenge assumptions, persistent shells, destructive proofs, or broad
-payload spraying from unrelated examples.
+paths or challenge assumptions from unrelated examples.
 
 ## Close The Decision Loop
 

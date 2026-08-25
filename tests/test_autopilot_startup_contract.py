@@ -87,7 +87,7 @@ def test_slash_command_preserves_parent_scope_for_multi_asset_handoff():
 def test_optional_agent_uses_the_same_state_first_contract():
     text = " ".join(_read("agents/autopilot.md").split())
 
-    assert "run `python3 tools/autopilot_state.py --target <target> --bounded` exactly once before choosing fresh, existing, or batch behavior" in text
+    assert "Run `python3 tools/autopilot_state.py --target <target> --bounded` exactly once before choosing fresh, existing, or batch behavior" in text
     assert "Never scan or actively hunt the batch index" in text
     assert "Runtime phase locks are the final duplicate-launch guard" in text
 

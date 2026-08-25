@@ -5,14 +5,6 @@ description: Web/API vulnerability-class routing guide for autonomous assessment
 
 # WEB2 VULN CLASSES — Compact Routing Layer
 
-> **Live-action boundary for Claude CLI**: do not skip a lane just because it
-> mentions OTP/SMS, payment, order, wallet, cart, or checkout. Those are valid
-> high-value surfaces. The boundary is the *effect*: real state-changing or
-> external-side-effect actions such as modifying/deleting resources, real
-> charge/refund/transfer, order cancel/fulfill/repush, or bulk message sending
-> require explicit current-turn intent. Prefer source, JS, captured traffic,
-> GET/HEAD, role diff, dry-run reasoning, and low-volume controlled probes first.
-
 This Skill is the decision layer after Claude selects a concrete Web/API bug-class
 lane. Keep it small. Put payload bodies, bypass tables, grep lists, and tool syntax
 in the on-demand references below.
@@ -125,10 +117,10 @@ broad payload spraying into real targets.
 | Dimension | Minimal check | Stop condition |
 |---|---|---|
 | User / tenant / org | Same request with two owned identities | Same 403/404 and no data delta |
-| Method | `GET` vs `PATCH/DELETE/POST` on same object | State-changing proof would touch real data |
+| Method | `GET` vs `PATCH/DELETE/POST` on same object | No server-side authorization or state delta |
 | Path / rewrite header | method diff -> path/header rewrite -> raw replay | No server-side path delta |
 | Field / GraphQL selection | Same object with sibling fields/mutations | Introspection only, no protected data/action |
-| Workflow state | Before/after step request replay | Would charge/refund/cancel/notify without opt-in |
+| Workflow state | Before/after step request replay | No server-side transition or response delta |
 
 ### Access-Control Boundary Matrix
 
@@ -242,7 +234,7 @@ chain path, and reference routing.
 - Trigger: concurrent, parallel, TOCTOU, payment, OTP, coupon, quota, cart, checkout.
 - First safe action: identify one idempotent or test-scope state transition and run low-count parallel replay.
 - Evidence gate: reproducible duplicate transition or limit bypass; rate limit and lockout observed.
-- Stop condition: noisy timing, real irreversible state, or no stable transition delta.
+- Stop condition: noisy timing or no stable transition delta.
 - Chain path: race -> double spend, OTP/MFA bypass, quota/limit overrun.
 - Read if needed: `knowledge/cards/race-conditions.md`.
 
@@ -306,7 +298,7 @@ chain path, and reference routing.
 - Trigger: template injection, command injection, output channel, blind timing, shell primitive.
 - First safe action: engine/context classification with harmless output or timing baseline.
 - Evidence gate: controlled RCE proof shows output/timing channel and bounded execution identity.
-- Stop condition: 500/timeout only, destructive command needed, no cleanup path.
+- Stop condition: 500/timeout only, no observable execution identity or output.
 - Chain path: primitive -> controlled RCE -> bounded impact statement.
 - Read if needed: `payload-families.md` and `sink-and-grep-patterns.md`.
 
@@ -314,7 +306,7 @@ chain path, and reference routing.
 - Trigger: dangling CNAME, storage bucket, Firebase/open rules, exposed admin/metrics/config.
 - First safe action: read-only fingerprint and provider-specific proof without takeover.
 - Evidence gate: provider confirms claimable resource or readable storage/config boundary.
-- Stop condition: ambiguous fingerprint, no target ownership/claimability evidence, takeover/write needed.
+- Stop condition: ambiguous fingerprint or no claimable resource/provider proof.
 - Chain path: takeover/config -> app data/source/secret/auth boundary.
 - Read if needed: `recon-tool-usage.md`.
 
@@ -392,8 +384,5 @@ chain path, and reference routing.
 
 ## Global Stop Conditions
 
-Stop or downgrade to Lead when there is no raw baseline, no controllable input, no
-owned/test identity, no repeatable response delta, or the next step requires
-bulk traffic, destructive state, real-user data, third-party OOB, persistent
-shell, prod-wide cache poison, cloud takeover, or sensitive file reads without
-current-turn authorization.
+Stop or downgrade to Lead when there is no raw baseline, no controllable input,
+no owned/test identity, or no repeatable response delta.

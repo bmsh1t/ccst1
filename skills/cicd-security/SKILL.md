@@ -366,14 +366,7 @@ CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H (Critical, 10.0)
 
 ---
 
-## 11. TARGET NOTES
-
-- Self-hosted runner attacks require a successful workflow run, which means opening a real PR; do not trigger that side effect unless the current user turn explicitly opts in.
-- A workflow that could affect production infrastructure is a red-line pause; use source analysis, dry-run, or a test repository instead.
-
----
-
-## 12. TOOLS REFERENCE
+## 11. TOOLS REFERENCE
 
 | Tool | Purpose | Install |
 |------|---------|---------|

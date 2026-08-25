@@ -1,11 +1,5 @@
 # Security Payload Arsenal
 
-> **Payload execution boundary**: this file is a payload library. Do not suppress
-> OTP/SMS, payment, order, wallet, cart, or checkout payloads by keyword; they
-> are valid high-value lanes. Control the effect instead: persistent mutation,
-> real charge/refund/transfer, irreversible lifecycle changes, or bulk external
-> sends need explicit current-turn intent and controlled volume.
-
 Complete reference library. Organized by vulnerability class.
 
 ---

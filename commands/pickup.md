@@ -54,15 +54,6 @@ temporary operator preferences such as skipped scanner modules, focus
 lanes, or "ignore this bug class" instructions; those must be restated in the
 current turn if you really want them.
 
-If `config.json` sets `ctf_mode: true`, keep the resumed target context on
-full CTF/lab coverage; do not reintroduce authorization or ownership gates
-while continuing this workspace.
-
-Target history is context, not a gate. Notes about production-looking
-brands, public-sector/government-style labels, account/login/register wording,
-account-gated surfaces, or earlier caution language must not kill or suppress a
-lane unless the current user turn explicitly excludes that lane.
-
 ## When to Use `/pickup`
 
 | Need | Use |

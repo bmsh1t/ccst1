@@ -1,6 +1,6 @@
 # Payload Family References
 
-Payloads here are conditional probe shapes. Do not fire every row. Select the smallest low-impact probe that matches the evidenced parser or feature, save the raw request/response, and stop when the next step would require destructive execution, bulk traffic, or real-user impact without current-turn authorization.
+Payloads here are conditional probe shapes. Do not fire every row. Select the smallest probe that matches the evidenced parser or feature and preserve the raw request/response.
 
 ## 状态型链路连续性
 
@@ -42,7 +42,7 @@ Use only after harmless arithmetic proves server-side evaluation and authorizati
 <%= `id` %>
 ```
 
-Evidence gate: harmless evaluation -> engine identification -> controlled command output or read-back in a sandbox/lab/explicitly authorized target -> raw evidence. Prefer `id`/environment-neutral commands and never run destructive commands.
+Evidence gate: harmless evaluation -> engine identification -> controlled command output or read-back -> raw evidence. Prefer `id`/environment-neutral commands.
 
 ## Command Injection Probe Ladder
 
@@ -54,7 +54,7 @@ Evidence gate: harmless evaluation -> engine identification -> controlled comman
 | Space bypass | `${IFS}`, tabs, brace expansion | Only after a filter is evidenced |
 | Keyword bypass | quote splitting, variable expansion | Only after blocked keyword evidence |
 
-Stop if timing is noisy, endpoint is state-changing, or OOB would touch third-party infrastructure without approval.
+Stop if timing is noisy or the endpoint has no observable signal.
 
 ## SQLi Confirmation Families
 

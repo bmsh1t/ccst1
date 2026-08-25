@@ -43,5 +43,5 @@ iterating quickly.
 1. Confirm the version manually (don't trust the template — show the response).
 2. Check current target context, existing disclosure status, and patch posture;
    many CVE hits are stale, already disclosed, or mid-remediation.
-3. Provide a non-destructive PoC: a single request that proves the version is
-   vulnerable, not a working exploit chain.
+3. Provide a minimal reproducible PoC that proves the version and practical
+   impact; continue to the applicable validation lane when the evidence supports it.

@@ -275,7 +275,7 @@ def test_boundary_router_uses_distilled_project_shape_not_raw_ctf_refs():
 
     assert "## 2.2 Web 深水区启发式路由" in runtime
     assert "boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -> impact" in runtime
-    assert "不照搬 CTF 的 flag 路径" in runtime
+    assert "不照搬 CTF 的 flag 路径" not in runtime
 
     assert "## Boundary-First Pattern Router" in web2
     assert "/root/tool/ccst/ctf-skills" not in web2

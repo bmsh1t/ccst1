@@ -65,7 +65,8 @@ def test_bb_methodology_references_high_intensity_hunting_posture():
     text = _read("skills/bb-methodology/SKILL.md")
 
     assert "rules/hunting.md#high-intensity-hunting-posture" in text
-    assert "不来自高压流量、凑步骤或破坏性利用" in text
+    assert "角色/对象差异、边界推理和复盘" in text
+    assert "不来自高压流量、凑步骤或破坏性利用" not in text
     assert "高价值漏洞族覆盖模型" in text
     assert "不固定偏向某几个漏洞类别" in text
 
