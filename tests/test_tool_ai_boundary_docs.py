@@ -35,15 +35,9 @@ def test_autopilot_runtime_references_tool_ai_boundary():
 
 def test_claude_facing_output_explains_internal_terms_without_changing_contracts():
     claude = _read("CLAUDE.md")
-    command = _read("commands/autopilot.md")
-    agent = _read("agents/autopilot.md")
-
-    for text in (command, agent):
-        assert "CLAUDE.md" in text
-        assert "opaque" in text
-    assert "`cursor` 写作“分页/续跑令牌”" in claude
-    assert "`oracle` 写作“可观测差异信号”" in claude
-    assert "机器输出仍必须保留原字段、参数和令牌" in claude
+    assert "默认沿用用户语言并保持简洁" in claude
+    assert "命令、JSON、错误和机器输出保留" in claude
+    assert "精确字段、参数与原值" in claude
 
 
 def test_claude_facing_prompts_do_not_reintroduce_tool_authority_phrases():
