@@ -1,15 +1,4 @@
-"""tests/test_json_inject_dispatcher.py — PR-1 wiring contract tests.
-
-Verifies the AI-callable surgical POST-JSON injection probe is fully wired
-into agent.py's ToolDispatcher:
-
-  1. Tool name appears in TOOLS / TOOL_NAMES
-  2. _OPTIONAL_TOOL_FUNCS maps tool_name → hunt.py function name
-  3. _FINISH_FLOOR_PROGRESS_TOOLS includes it (counts as a substantive hunt step)
-  4. Dispatcher branch invokes hunt.run_json_inject_probe with correct kwargs
-  5. Tool spec JSON-schema is well-formed (LLM can introspect)
-  6. The wrapper in tools/hunt.py auto-discovers default inputs
-"""
+"""Behavioral tests for the bounded JSON injection probe and its wrapper."""
 
 from __future__ import annotations
 
@@ -20,17 +9,6 @@ import urllib.request
 from pathlib import Path
 
 import pytest
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
-
-import agent  # noqa: E402
-
-
-def _build_dispatcher(tmp_path):
-    memory = agent.HuntMemory(str(tmp_path / "agent_session.json"))
-    return agent.ToolDispatcher("target.com", memory)
-
 
 def test_json_probe_shares_one_request_budget_across_endpoints(monkeypatch):
     from tools import json_inject_probe as probe
@@ -221,159 +199,7 @@ def test_json_resume_does_not_inflate_replayed_hit_count(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------
-#  Hook 1 — TOOL_NAMES / TOOLS spec presence
-# ---------------------------------------------------------------------
-
-class TestToolRegistration:
-    def test_tool_name_present_in_TOOL_NAMES(self):
-        assert "run_json_inject_probe" in agent.TOOL_NAMES
-
-    def test_tool_spec_present_in_TOOLS(self):
-        names = {t["function"]["name"] for t in agent.TOOLS}
-        assert "run_json_inject_probe" in names
-
-    def test_tool_spec_is_well_formed(self):
-        spec = next(
-            t for t in agent.TOOLS
-            if t["function"]["name"] == "run_json_inject_probe"
-        )
-        assert spec["type"] == "function"
-        fn = spec["function"]
-        assert "description" in fn
-        assert "parameters" in fn
-        params = fn["parameters"]
-        assert params["type"] == "object"
-        props = params["properties"]
-        # All 4 documented args present and typed
-        for arg in ("endpoints_file", "js_intel", "max_requests", "add_default_seeds", "waf_plan"):
-            assert arg in props, f"missing arg {arg}"
-        assert props["max_requests"]["type"] == "integer"
-        assert props["add_default_seeds"]["type"] == "boolean"
-        assert props["endpoints_file"]["type"] == "string"
-        assert props["waf_plan"]["type"] == "string"
-        # No required args (auto-discovery covers them)
-        assert params["required"] == []
-
-    def test_description_mentions_post_json_and_payload_classes(self):
-        spec = next(
-            t for t in agent.TOOLS
-            if t["function"]["name"] == "run_json_inject_probe"
-        )
-        desc = spec["function"]["description"].lower()
-        # Must hint to LLM what it does and when to use it
-        assert "post" in desc and "json" in desc
-        assert "sqli" in desc
-        assert "ssti" in desc or "cmd" in desc  # at least one other class
-        assert "waf" in desc and "maximum eight" in desc and "capped at two" in desc
-
-
-# ---------------------------------------------------------------------
-#  Hook 2 — _OPTIONAL_TOOL_FUNCS mapping
-# ---------------------------------------------------------------------
-
-class TestOptionalToolMapping:
-    def test_mapping_exists(self):
-        # Find HuntModule-like wrapper class
-        h = agent._h()
-        assert "run_json_inject_probe" in h._OPTIONAL_TOOL_FUNCS
-        assert h._OPTIONAL_TOOL_FUNCS["run_json_inject_probe"] == "run_json_inject_probe"
-
-    def test_hunt_module_exposes_function(self):
-        h = agent._h()
-        assert hasattr(h._module, "run_json_inject_probe")
-        assert callable(h._module.run_json_inject_probe)
-
-    def test_supported_tool_names_includes_probe(self):
-        h = agent._h()
-        assert "run_json_inject_probe" in h.supported_tool_names()
-
-
-# ---------------------------------------------------------------------
-#  Hook 3 — _FINISH_FLOOR_PROGRESS_TOOLS membership
-# ---------------------------------------------------------------------
-
-class TestFinishFloorMembership:
-    def test_probe_counts_as_progress(self):
-        # finish gate needs ≥2 substantive hunt steps; the probe should qualify
-        assert "run_json_inject_probe" in agent._FINISH_FLOOR_PROGRESS_TOOLS
-
-    def test_finish_floor_count_helper_picks_up_probe(self):
-        count = agent._finish_floor_progress_count(
-            ["run_recon", "run_json_inject_probe"]
-        )
-        assert count == 2
-
-
-# ---------------------------------------------------------------------
-#  Hook 4 — Dispatcher branch invokes the wrapper
-# ---------------------------------------------------------------------
-
-class TestDispatcherBranch:
-    def test_dispatch_invokes_wrapper_with_defaults(self, monkeypatch, tmp_path):
-        captured = {}
-        def fake_probe(domain, **kwargs):
-            captured["domain"] = domain
-            captured.update(kwargs)
-            return True
-
-        hunt = agent._h()
-        monkeypatch.setattr(hunt, "run_json_inject_probe", fake_probe)
-
-        dispatcher = _build_dispatcher(tmp_path)
-        obs = dispatcher.dispatch("run_json_inject_probe", {})
-
-        assert captured["domain"] == "target.com"
-        # default values from spec
-        assert captured["endpoints_file"] == ""
-        assert captured["js_intel"] == ""
-        assert captured["max_requests"] == 60
-        assert captured["add_default_seeds"] is True
-        assert captured["waf_plan"] == ""
-        # observation summary contains the json_inject label
-        assert "json_inject" in obs
-
-    def test_dispatch_forwards_custom_args(self, monkeypatch, tmp_path):
-        captured = {}
-        def fake_probe(domain, **kwargs):
-            captured.update(kwargs)
-            return True
-
-        hunt = agent._h()
-        monkeypatch.setattr(hunt, "run_json_inject_probe", fake_probe)
-
-        dispatcher = _build_dispatcher(tmp_path)
-        dispatcher.dispatch("run_json_inject_probe", {
-            "endpoints_file": "/tmp/eps.txt",
-            "js_intel": "/tmp/hyp.json",
-            "max_requests": 25,
-            "add_default_seeds": False,
-        })
-
-        assert captured["endpoints_file"] == "/tmp/eps.txt"
-        assert captured["js_intel"] == "/tmp/hyp.json"
-        assert captured["max_requests"] == 25
-        assert captured["add_default_seeds"] is False
-
-        captured.clear()
-        dispatcher.dispatch("run_json_inject_probe", {"waf_plan": "/tmp/plan.json"})
-        assert captured["waf_plan"] == "/tmp/plan.json"
-
-    def test_dispatch_coerces_max_requests_to_int(self, monkeypatch, tmp_path):
-        captured = {}
-        def fake_probe(domain, **kwargs):
-            captured.update(kwargs)
-            return True
-
-        hunt = agent._h()
-        monkeypatch.setattr(hunt, "run_json_inject_probe", fake_probe)
-
-        dispatcher = _build_dispatcher(tmp_path)
-        dispatcher.dispatch("run_json_inject_probe", {"max_requests": "42"})
-        assert captured["max_requests"] == 42
-
-
-# ---------------------------------------------------------------------
-#  Hook 5 — Wrapper auto-discovery of default inputs
+#  Wrapper auto-discovery of default inputs
 # ---------------------------------------------------------------------
 
 class TestWrapperAutoDiscovery:
@@ -585,25 +411,6 @@ class TestProbeSelfContained:
 
         assert captured["headers"]["Authorization"] == "Bearer secret"
         assert "secret" not in json.dumps(result)
-
-    def test_structured_summary_is_returned_to_agent(self, monkeypatch, tmp_path):
-        hunt = agent._h()
-        findings_dir = tmp_path / "findings"
-        monkeypatch.setattr(hunt, "FINDINGS_DIR", str(findings_dir))
-        summary_dir = findings_dir / "target.com" / "poc" / "json_inject"
-        summary_dir.mkdir(parents=True)
-        (summary_dir / "summary.json").write_text(
-            '{"hit_count": 2, "waf_observation_count": 3, '
-            '"waf_observations": [{"outcome": "waf_blocked"}, '
-            '{"outcome": "application_response"}, {"outcome": "waf_blocked"}]}',
-            encoding="utf-8",
-        )
-
-        summary = _build_dispatcher(tmp_path)._summarize_findings("target.com", "json_inject", True)
-
-        assert "hits=2 waf_observations=3" in summary
-        assert "application_response:1" in summary
-        assert "waf_blocked:2" in summary
 
     def test_payload_library_has_all_11_classes(self):
         from tools.json_inject_probe import PAYLOADS

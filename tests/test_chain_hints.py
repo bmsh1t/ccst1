@@ -2,14 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-import pytest
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
-
 from tools.chain_hints import derive_chain_hint  # noqa: E402
 
 
@@ -202,70 +194,3 @@ class TestRobustness:
              "tool": "graphql_introspection_check"}
         out = derive_chain_hint(f)
         assert "[CHAIN HINT" in out
-
-
-# ---------------------------------------------------------------------
-#  HuntMemory integration
-# ---------------------------------------------------------------------
-
-class TestHuntMemoryIntegration:
-    def test_add_finding_appends_hint_to_working_memory(self, tmp_path):
-        from agent import HuntMemory
-        m = HuntMemory(str(tmp_path / "sess.json"))
-        m.working_memory = "existing notes"
-        m.add_finding("scanner", "high", "GET IDOR on /api/users/1 confirmed")
-        assert "existing notes" in m.working_memory
-        assert "[CHAIN HINT" in m.working_memory
-        assert "PUT/PATCH/DELETE" in m.working_memory
-
-    def test_info_severity_still_appends_when_pattern_matches(self, tmp_path):
-        """Severity gate was removed — info-level IDOR/SSRF/etc. still
-        produce chain hints because the regex patterns themselves
-        discriminate noise. High-leverage chains often start at info-level
-        signals (S3 listable, GraphQL introspection, JWT alg=none)."""
-        from agent import HuntMemory
-        m = HuntMemory(str(tmp_path / "sess.json"))
-        m.working_memory = "existing notes"
-        m.add_finding("scanner", "info", "GET IDOR on /api/users/1")
-        assert "existing notes" in m.working_memory
-        assert "[CHAIN HINT" in m.working_memory
-        assert "PUT/PATCH/DELETE" in m.working_memory
-
-    def test_info_finding_with_no_pattern_match_is_a_no_op(self, tmp_path):
-        """An info-level finding that matches NO chain rule leaves
-        working_memory untouched. Regex specificity, not severity,
-        is what discriminates noise."""
-        from agent import HuntMemory
-        m = HuntMemory(str(tmp_path / "sess.json"))
-        m.working_memory = "existing notes"
-        m.add_finding("scanner", "info", "interesting tech stack: Django")
-        assert m.working_memory == "existing notes"
-
-    def test_hint_never_breaks_add_finding(self, tmp_path, monkeypatch):
-        """Even if chain_hints raises, add_finding still records the finding."""
-        from agent import HuntMemory
-        import tools.chain_hints as ch
-        monkeypatch.setattr(ch, "derive_chain_hint",
-                            lambda f: (_ for _ in ()).throw(RuntimeError("boom")))
-        m = HuntMemory(str(tmp_path / "sess.json"))
-        m.add_finding("scanner", "high", "Stored XSS in bio")
-        assert len(m.findings_log) == 1
-
-    def test_working_memory_capped_at_8k(self, tmp_path):
-        from agent import HuntMemory
-        m = HuntMemory(str(tmp_path / "sess.json"))
-        m.working_memory = "X" * 9000
-        m.add_finding("scanner", "high", "Stored XSS in bio")
-        assert len(m.working_memory) <= 8000
-        # Hint preserved at the tail
-        assert "[CHAIN HINT" in m.working_memory[-1000:]
-
-    def test_hint_persists_across_save_load(self, tmp_path):
-        from agent import HuntMemory
-        sess = tmp_path / "sess.json"
-        m1 = HuntMemory(str(sess))
-        m1.add_finding("scanner", "high", "SSRF DNS callback fired")
-        m1.save()
-        m2 = HuntMemory(str(sess))
-        assert "[CHAIN HINT" in m2.working_memory
-        assert "169.254.169.254" in m2.working_memory

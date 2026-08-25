@@ -1,15 +1,11 @@
-"""Legacy local-agent B12d acceptance tests."""
+"""Behavioral tests for validation pattern calibration and recall."""
 
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
 
 from tools import pattern_calibration as pc      # noqa: E402
 from memory.pattern_db import PatternDB           # noqa: E402
@@ -196,34 +192,6 @@ class TestCalibratedMatch:
 
 
 # ---------------------------------------------------------------------
-#  R6: CLI flag
-# ---------------------------------------------------------------------
-
-class TestCliFlag:
-    def test_agent_py_has_calibrate_patterns_flag(self):
-        text = (REPO_ROOT / "agent.py").read_text(encoding="utf-8")
-        assert "--calibrate-patterns" in text
-
-
-# ---------------------------------------------------------------------
-#  R7: Dispatcher tool exposure
-# ---------------------------------------------------------------------
-
-class TestDispatcherToolExposure:
-    def test_pattern_calibration_summary_in_dispatcher_only_set(self):
-        import agent
-        assert "pattern_calibration_summary" in agent._DISPATCHER_ONLY_TOOLS
-
-    def test_pattern_calibration_summary_in_tool_specs(self):
-        import agent
-        tool_names = {
-            spec["function"]["name"] for spec in agent._ALL_TOOL_SPECS
-            if isinstance(spec, dict) and spec.get("type") == "function"
-        }
-        assert "pattern_calibration_summary" in tool_names
-
-
-# ---------------------------------------------------------------------
 #  Rotation (C4)
 # ---------------------------------------------------------------------
 
@@ -282,58 +250,3 @@ class TestCliMain:
         assert rc == 0
         out = capsys.readouterr().out
         assert "bad" in out
-
-
-# ---------------------------------------------------------------------
-#  Documentation hooks
-# ---------------------------------------------------------------------
-
-class TestDocsMention:
-    def test_legacy_flag_reference_mentions_calibrate_patterns(self):
-        md = (REPO_ROOT / "docs" / "v4.5-mode-flags.md").read_text(encoding="utf-8")
-        # Per B12d AC bullet
-        assert "calibrate" in md.lower() or "--calibrate-patterns" in md
-
-
-# ---------------------------------------------------------------------
-#  Dispatcher method
-# ---------------------------------------------------------------------
-
-class TestDispatcherMethod:
-    def test_pattern_calibration_summary_renders_json_text(self, tmp_path, monkeypatch):
-        import agent
-        # Point default calibration path at a tmp file
-        cal = tmp_path / "cal.jsonl"
-        pc.record_outcome(pattern_id="p1", outcome="helped", path=cal)
-        monkeypatch.setattr(
-            pc, "default_calibration_path", lambda repo_root=None: cal,
-        )
-        dispatcher = agent.ToolDispatcher.__new__(agent.ToolDispatcher)
-        out = dispatcher._pattern_calibration_summary(format="json")
-        data = json.loads(out)
-        assert any(r["pattern_id"] == "p1" for r in data["rows"])
-        assert data["exclusion_rule"].startswith("samples>=5")
-
-    def test_pattern_calibration_summary_text_format(self, tmp_path, monkeypatch):
-        import agent
-        cal = tmp_path / "cal.jsonl"
-        pc.record_outcome(pattern_id="p1", outcome="helped", path=cal)
-        monkeypatch.setattr(
-            pc, "default_calibration_path", lambda repo_root=None: cal,
-        )
-        dispatcher = agent.ToolDispatcher.__new__(agent.ToolDispatcher)
-        out = dispatcher._pattern_calibration_summary(format="text")
-        assert "p1" in out
-        # Header row
-        assert "pattern_id" in out
-
-    def test_pattern_calibration_summary_handles_no_data(self, tmp_path, monkeypatch):
-        import agent
-        cal = tmp_path / "cal.jsonl"
-        monkeypatch.setattr(
-            pc, "default_calibration_path", lambda repo_root=None: cal,
-        )
-        dispatcher = agent.ToolDispatcher.__new__(agent.ToolDispatcher)
-        out = dispatcher._pattern_calibration_summary(format="text")
-        # No file, no data → graceful
-        assert "no data" in out.lower() or out.strip() != ""

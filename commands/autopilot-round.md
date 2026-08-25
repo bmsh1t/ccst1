@@ -190,7 +190,7 @@ ToolSearch once. No exact match means direct invocation or prior cleanup. A tool
 error emits `STATUS: ERROR reason=loop-cancel-failed`. Never create or modify a
 cron job from this wrapper.
 
-One loop owns one target. Interrupted turns resume from checkpoint/state, not a
-legacy agent session. All `commands/autopilot.md` pause boundaries remain
+One loop owns one target. Interrupted turns resume from checkpoint/state. All
+`commands/autopilot.md` pause boundaries remain
 unchanged: never auto-submit reports or cross its red-line, target, or credential
 boundaries.

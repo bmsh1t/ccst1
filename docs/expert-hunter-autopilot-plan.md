@@ -2,9 +2,9 @@
 
 > Current runtime entry: Claude CLI inline `/autopilot`, with
 > `commands/autopilot.md` and `docs/autopilot-lanes.md` as the executable
-> contracts. The old local-agent runtime remains outside the Claude CLI path
-> and is not routed by `tools/hunt.py`. The phases below record design decisions and
-> validation history; they are not a pending implementation checklist.
+> contracts. The phases below record design decisions and validation history;
+> they are not a pending implementation checklist. The retired local-agent
+> controller is not part of the supported runtime.
 
 ## 1. 一句话目标
 

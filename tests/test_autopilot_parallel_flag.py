@@ -78,11 +78,3 @@ def test_default_max_parallel_is_three():
 def test_yolo_max_parallel_is_eight():
     """B6 R7 invariant: yolo allows up to 8."""
     assert YOLO_MAX_PARALLEL == 8
-
-
-def test_agent_py_imports_parallel_module():
-    """sanity: agent.py CLI section references --parallel; module is reachable."""
-    text = (REPO_ROOT / "agent.py").read_text(encoding="utf-8")
-    assert "--parallel" in text
-    assert "--max-parallel" in text
-    assert "--worker-timeout-secs" in text

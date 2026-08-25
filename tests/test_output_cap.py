@@ -3,13 +3,7 @@
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
-
 import pytest
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
 
 from tools import output_cap as oc  # noqa: E402
 
@@ -179,41 +173,3 @@ class TestCapWithLog:
         parsed = json.loads(path.read_text().strip())
         assert parsed["tool"] == "read_recon_summary"
         assert parsed["original_bytes"] == 100_000
-
-
-# ---------------------------------------------------------------------
-#  R3 — Dispatcher integration
-# ---------------------------------------------------------------------
-
-class TestDispatcherIntegration:
-    def test_dispatcher_caps_read_recon_summary(self, monkeypatch, tmp_path):
-        """Verify the cap is APPLIED in ToolDispatcher.dispatch() for read_*."""
-        from agent import HuntMemory, ToolDispatcher
-        memory = HuntMemory(session_file=str(tmp_path / "sess.json"))
-        d = ToolDispatcher("x.com", memory)
-
-        # Stub _read_recon_files to return a 200KB string
-        monkeypatch.setattr(d, "_read_recon_files", lambda dom: "y" * 200_000)
-        # Stub _classify_obs to a no-op so nothing barfs on the huge string
-        monkeypatch.setattr(d, "_classify_obs", lambda n, o: None)
-        # Stub save so we don't touch disk
-        monkeypatch.setattr(memory, "save", lambda: None)
-
-        out = d.dispatch("read_recon_summary", {})
-        # Output is now capped + trailing dispatcher footer
-        head = out.split("\n\n[", 1)[0]
-        assert "TRUNCATED" in head
-        # Compact: well under 200KB
-        assert len(out.encode("utf-8")) < 100_000
-
-    def test_dispatcher_does_not_cap_other_tools(self, monkeypatch, tmp_path):
-        """Non-listed tools should pass through unchanged."""
-        from agent import HuntMemory, ToolDispatcher
-        memory = HuntMemory(session_file=str(tmp_path / "sess.json"))
-        d = ToolDispatcher("x.com", memory)
-
-        # update_working_memory returns directly without the cap layer
-        out = d.dispatch("update_working_memory", {"notes": "x" * 100_000})
-        # Plain non-truncated success message
-        assert "Working memory updated" in out
-        assert "TRUNCATED" not in out

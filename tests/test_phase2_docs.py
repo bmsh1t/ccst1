@@ -194,7 +194,7 @@ def test_claude_code_prompt_files_are_utf8_and_not_corrupted():
 
 def test_execution_flow_files_are_utf8_and_not_corrupted():
     """Execution-flow files may contain Chinese under current project rules."""
-    flow_files = [REPO_ROOT / "README.md", REPO_ROOT / "agent.py", REPO_ROOT / "install.sh"]
+    flow_files = [REPO_ROOT / "README.md", REPO_ROOT / "install.sh"]
     for flow_dir in ("tools", "scripts", "hooks", "mcp", ".claude"):
         root = REPO_ROOT / flow_dir
         if root.exists():

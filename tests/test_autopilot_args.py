@@ -6,7 +6,6 @@ import json
 import shlex
 from argparse import Namespace
 
-import agent
 import hunt
 import pytest
 

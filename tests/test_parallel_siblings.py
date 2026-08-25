@@ -367,14 +367,6 @@ class TestModeCoercion:
         assert pw.coerce_max_parallel(None, "normal") == 3
 
 
-def test_cli_flags_present_in_agent_argparse():
-    """B6 R7 — agent.py must accept --parallel / --max-parallel / --worker-timeout-secs."""
-    text = (REPO_ROOT / "agent.py").read_text(encoding="utf-8")
-    assert '"--parallel"' in text, "agent.py missing --parallel flag"
-    assert '"--max-parallel"' in text, "agent.py missing --max-parallel flag"
-    assert '"--worker-timeout-secs"' in text, "agent.py missing --worker-timeout-secs flag"
-
-
 # ---------------------------------------------------------------------
 #  R9: Audit-log additive shape
 # ---------------------------------------------------------------------
@@ -468,7 +460,7 @@ class TestBackwardsCompatibility:
     def test_default_argparse_namespace_has_parallel_off(self):
         """Without explicit --parallel, behavior is unchanged."""
         import argparse
-        # Build a minimal parser mirroring agent.py's relevant flags.
+        # Build a minimal parser mirroring the supported parallel flags.
         parser = argparse.ArgumentParser()
         parser.add_argument("--parallel", action="store_true")
         parser.add_argument("--max-parallel", type=int, default=3)

@@ -1,26 +1,18 @@
-"""Legacy local-agent B12c acceptance tests.
+"""Behavioral tests for self-review verdict parsing and worker evidence.
 
 Covers:
   R1   red_team worker spawn (via B6 primitive, mocked subprocess)
   R2   review output schema (VERDICT line + free-text rationale)
   R3   parent decision branching across 3 verdicts
-  R4   --self-review CLI flag wired into the legacy agent.py entrypoint
   R5   audit-log payload carries verdict + worker_id + parent_session
 """
 
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
-
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
-
 from tools import self_review as sr           # noqa: E402
-from tools import parallel_workers as pw      # noqa: E402
 from tools import red_team_worker             # noqa: E402
 
 
@@ -234,23 +226,6 @@ class TestSpawnEndToEnd:
 
 
 # ---------------------------------------------------------------------
-#  R4: --self-review CLI flag
-# ---------------------------------------------------------------------
-
-class TestCliFlag:
-    def test_self_review_flag_in_agent_py(self):
-        text = (REPO_ROOT / "agent.py").read_text(encoding="utf-8")
-        assert "--self-review" in text
-
-    def test_self_review_default_off(self):
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--self-review", action="store_true")
-        ns = parser.parse_args([])
-        assert ns.self_review is False
-
-
-# ---------------------------------------------------------------------
 #  R3 false-positive pattern recording
 # ---------------------------------------------------------------------
 
@@ -265,23 +240,6 @@ class TestDisqualifierRecording:
         # The hunt_journal may impose schema constraints — if so, out is None.
         # In that case the file should still exist (no crash).
         assert journal_path.exists() or out is not None
-
-
-# ---------------------------------------------------------------------
-#  Docs: --self-review mentioned in commands/validate.md and the legacy flag reference
-# ---------------------------------------------------------------------
-
-class TestDocsMention:
-    def test_validate_md_mentions_self_review(self):
-        path = REPO_ROOT / "commands" / "validate.md"
-        if not path.exists():
-            pytest.skip("commands/validate.md does not exist yet in this repo")
-        text = path.read_text(encoding="utf-8")
-        assert "--self-review" in text or "self-review" in text.lower()
-
-    def test_legacy_flag_reference_mentions_self_review(self):
-        text = (REPO_ROOT / "docs" / "v4.5-mode-flags.md").read_text(encoding="utf-8")
-        assert "--self-review" in text or "self-review" in text.lower()
 
 
 # ---------------------------------------------------------------------

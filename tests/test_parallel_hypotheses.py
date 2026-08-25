@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import json
 import signal
-import sys
 from pathlib import Path
 
 import pytest
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
 
 from tools import hypothesis_fleet as hf       # noqa: E402
 from tools import parallel_workers as pw       # noqa: E402
@@ -282,33 +278,6 @@ class TestRunFanoutEndToEnd:
         wave_prefixes = [w.split("-")[1] for w in spawn_calls]
         # Wave count = max waves seen, 3 here
         assert max(int(p[1:]) for p in wave_prefixes) == 3
-
-
-# ---------------------------------------------------------------------
-#  CLI flag
-# ---------------------------------------------------------------------
-
-class TestCliFlag:
-    def test_parallel_hypotheses_flag_in_agent_py(self):
-        text = (REPO_ROOT / "agent.py").read_text(encoding="utf-8")
-        assert "--parallel-hypotheses" in text
-
-    def test_default_off(self):
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--parallel-hypotheses", action="store_true")
-        ns = parser.parse_args([])
-        assert ns.parallel_hypotheses is False
-
-
-# ---------------------------------------------------------------------
-#  Docs
-# ---------------------------------------------------------------------
-
-class TestDocsMention:
-    def test_legacy_flag_reference_mentions_parallel_hypotheses(self):
-        text = (REPO_ROOT / "docs" / "v4.5-mode-flags.md").read_text(encoding="utf-8")
-        assert "--parallel-hypotheses" in text
 
 
 # ---------------------------------------------------------------------

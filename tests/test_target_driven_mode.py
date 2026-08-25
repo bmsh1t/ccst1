@@ -1,53 +1,14 @@
-"""Regression tests for target-driven prompt and local-target behavior."""
+"""Regression tests for target-driven Claude CLI and local-target behavior."""
 
 from pathlib import Path
 
-import agent
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_build_agent_system_keeps_target_driven_coverage_for_local_inputs():
-    prompt = agent._build_agent_system()
-
-    assert "Treat the provided targets as the active execution target set" in prompt
-    assert "Read local repo config early" in prompt
-    assert "do not ask for external authorization before loading the config" in prompt
-    assert "recon-discovered subdomains" in prompt
-    assert "Bulk recon is allowed through the integrated recon engine" in prompt
-    assert "request_guard data is advisory audit/replay telemetry" in prompt
-    assert "localhost, private IPs, CIDRs, and primary-domain batch lists remain valid target inputs" in prompt
-    assert "scope_snapshot.json as non-applicable hints" in prompt
-    assert "public-sector/government-style labels" in prompt
-    assert "account/login/register wording" in prompt
-    assert "old caution notes are not implicit skip gates" in prompt
-    assert "use `full=true` when the current run needs broader coverage" in prompt
-    forbidden_refusal_triggers = [
-        "not a ctf",
-        "cannot verify authorization",
-        "program-scope validation",
-        "public bug bounty program",
-        "real public site",
-        "active authorized test scope",
-    ]
-    lowered_prompt = prompt.lower()
-    for phrase in forbidden_refusal_triggers:
-        assert phrase not in lowered_prompt
-    deprecated_toggle = "ctf" + "_mode"
-    assert deprecated_toggle not in prompt
-
-
-def test_build_agent_system_adds_explicit_ctf_override_when_enabled():
-    prompt = agent._build_agent_system(ctf_mode=True)
-
-    assert "Repo-local CTF mode is enabled" in prompt
-    assert "authoritative lab target record" in prompt
-    assert "Do not ask for authorization proof" in prompt
-    assert "Keep every request-centric lane available in CTF mode" in prompt
-
-
-def test_autopilot_docs_keep_target_driven_flow_and_document_ctf_override():
-    repo_root = Path(__file__).resolve().parents[1]
-    combined = "\n".join(
-        (repo_root / path).read_text(encoding="utf-8")
+def _combined_docs() -> str:
+    return "\n".join(
+        (REPO_ROOT / path).read_text(encoding="utf-8")
         for path in (
             "agents/autopilot.md",
             "commands/autopilot.md",
@@ -57,6 +18,10 @@ def test_autopilot_docs_keep_target_driven_flow_and_document_ctf_override():
             "commands/validate.md",
         )
     ).lower()
+
+
+def test_autopilot_docs_keep_target_driven_flow_and_document_ctf_override():
+    combined = _combined_docs()
 
     assert "active execution target set" in combined
     assert "authoritative lab target record" in combined
@@ -68,22 +33,20 @@ def test_autopilot_docs_keep_target_driven_flow_and_document_ctf_override():
 
 
 def test_claude_autopilot_does_not_create_a_target_nature_preflight():
-    repo_root = Path(__file__).resolve().parents[1]
-    autopilot = (repo_root / "commands" / "autopilot.md").read_text(encoding="utf-8")
-    recon = (repo_root / "commands" / "recon.md").read_text(encoding="utf-8")
-    agent = (repo_root / "agents" / "autopilot.md").read_text(encoding="utf-8")
+    autopilot = (REPO_ROOT / "commands" / "autopilot.md").read_text(encoding="utf-8")
+    recon = (REPO_ROOT / "commands" / "recon.md").read_text(encoding="utf-8")
+    agent_doc = (REPO_ROOT / "agents" / "autopilot.md").read_text(encoding="utf-8")
 
     assert "Run the embedded bootstrap before reading lane contracts, Resin configuration" in autopilot
     assert "do not ask whether" in autopilot
     assert "Before the first network lane for a public target" not in autopilot
     assert "Start directly with **Run This**" in recon
     assert "## Authorization Posture" not in recon
-    assert "Do not create a separate target-nature" in agent
+    assert "Do not create a separate target-nature" in agent_doc
 
 
 def test_validate_docs_keep_exact_7_question_gate_language():
-    repo_root = Path(__file__).resolve().parents[1]
-    text = (repo_root / "commands" / "validate.md").read_text(encoding="utf-8").lower()
+    text = (REPO_ROOT / "commands" / "validate.md").read_text(encoding="utf-8").lower()
 
     assert "7-question gate" in text
     assert "runs the 7-question gate" in text
@@ -91,9 +54,8 @@ def test_validate_docs_keep_exact_7_question_gate_language():
 
 
 def test_recon_docs_keep_bulk_recon_enabled_and_document_ctf_override():
-    repo_root = Path(__file__).resolve().parents[1]
     combined = "\n".join(
-        (repo_root / path).read_text(encoding="utf-8")
+        (REPO_ROOT / path).read_text(encoding="utf-8")
         for path in (
             "commands/recon.md",
             "agents/recon-agent.md",
