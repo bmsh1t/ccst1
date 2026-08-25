@@ -16,7 +16,6 @@ if BASE_DIR not in sys.path:
 
 try:
     # Support `import tools.resume`.
-    from .legacy_bridge import open_hunt_journal
     from .repo_source_artifacts import load_repo_source_summary
     from .runtime_state import inspect_recon_artifacts, load_runtime_state
     from .structured_findings import (
@@ -25,13 +24,13 @@ try:
     )
 except ImportError:
     # Keep legacy top-level `import resume` working.
-    from legacy_bridge import open_hunt_journal
     from repo_source_artifacts import load_repo_source_summary
     from runtime_state import inspect_recon_artifacts, load_runtime_state
     from structured_findings import (
         format_structured_findings_lines,
         summarize_structured_findings,
     )
+from memory.hunt_journal import HuntJournal
 from memory.pattern_db import PatternDB
 from memory.target_profile import default_memory_dir, load_target_profile
 try:
@@ -174,7 +173,7 @@ def load_resume_summary(memory_dir: str | Path, target: str) -> dict | None:
         return None
 
     profile_target = str(profile.get("target") or canonical_target or requested_target)
-    journal = open_hunt_journal(memory_dir)
+    journal = HuntJournal(memory_dir / "journal.jsonl")
     entries = journal.query(target=profile_target)
     confirmed_entries = [entry for entry in entries if entry.get("result") == "confirmed"]
     confirmed_payout = round(sum(float(entry.get("payout", 0) or 0) for entry in confirmed_entries), 2)

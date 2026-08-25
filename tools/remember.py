@@ -19,12 +19,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-try:
-    # Support `import tools.remember`.
-    from .legacy_bridge import open_hunt_journal
-except ImportError:
-    # Keep legacy top-level `import remember` working.
-    from legacy_bridge import open_hunt_journal
+from memory.hunt_journal import HuntJournal
 from memory.pattern_db import PatternDB
 from memory.schemas import make_journal_entry, make_pattern_entry
 from memory.target_profile import default_memory_dir, load_target_profile, make_target_profile, save_target_profile
@@ -207,7 +202,7 @@ def remember_finding(
     tags = tags or []
     requested_tech_stack = dedupe_keep_order([t.lower() for t in (tech_stack or [])])
 
-    journal = open_hunt_journal(memory_dir)
+    journal = HuntJournal(memory_dir / "journal.jsonl")
     pattern_db = PatternDB(memory_dir / "patterns.jsonl")
     profile = load_or_create_target_profile(memory_dir, canonical_target)
     profile["target"] = canonical_target

@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 
 import pytest
 from pathlib import Path
@@ -525,15 +527,21 @@ def test_generate_reports_uses_cidr_storage_dirs(monkeypatch, tmp_path):
 
     captured = {}
 
-    def fake_generate_legacy_reports(findings_dir, *, base_dir, timeout=600):
-        captured["findings_dir"] = findings_dir
-        captured["base_dir"] = base_dir
+    def fake_run_argv(argv, *, cwd=None, timeout=600, env=None):
+        captured["argv"] = argv
+        captured["cwd"] = cwd
         captured["timeout"] = timeout
+        captured["env"] = env
         return True, "generated"
 
-    monkeypatch.setattr(hunt, "generate_legacy_reports", fake_generate_legacy_reports)
+    monkeypatch.setattr(hunt, "run_argv", fake_run_argv)
 
     assert hunt.generate_reports("1.2.3.0/24") == 1
-    assert captured["findings_dir"] == str(stored_findings_dir)
-    assert captured["base_dir"] == hunt.BASE_DIR
+    assert captured["argv"] == [
+        sys.executable,
+        os.path.join(hunt.BASE_DIR, "tools", "report_generator.py"),
+        str(stored_findings_dir),
+    ]
+    assert captured["cwd"] == hunt.BASE_DIR
     assert captured["timeout"] == 600
+    assert captured["env"] is None

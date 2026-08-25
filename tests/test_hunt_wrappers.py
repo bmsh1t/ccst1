@@ -663,57 +663,35 @@ def test_run_source_intel_wrapper_writes_and_reads_summary(monkeypatch, tmp_path
     assert "/api/orders/:id/approve" in summary
 
 
-def test_run_cve_hunt_uses_legacy_bridge(monkeypatch, tmp_path):
+def test_run_cve_hunt_uses_direct_argv(monkeypatch, tmp_path):
     domain = "example.com"
     monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
     (tmp_path / "recon" / domain).mkdir(parents=True, exist_ok=True)
 
     called = {}
 
-    def fake_run_legacy_cve_hunt(target, *, base_dir, recon_dir=None, timeout=600):
-        called.update(
-            {
-                "target": target,
-                "base_dir": base_dir,
-                "recon_dir": recon_dir,
-                "timeout": timeout,
-            }
-        )
+    def fake_run_argv(argv, *, cwd=None, timeout=600, env=None):
+        called.update({"argv": argv, "cwd": cwd, "timeout": timeout, "env": env})
         return True, "ok"
 
-    monkeypatch.setattr(hunt, "run_legacy_cve_hunt", fake_run_legacy_cve_hunt)
-
-    class FakeProc:
-        returncode = 0
-
-        def wait(self, timeout=None):
-            return 0
-
-    monkeypatch.setattr(hunt.subprocess, "Popen", lambda *args, **kwargs: FakeProc())
+    monkeypatch.setattr(hunt, "run_argv", fake_run_argv)
 
     assert hunt.run_cve_hunt(domain) is True
     assert called == {
-        "target": domain,
-        "base_dir": hunt.BASE_DIR,
-        "recon_dir": hunt._resolve_recon_dir(domain),
+        "argv": [
+            sys.executable,
+            os.path.join(hunt.BASE_DIR, "tools", "cve_hunter.py"),
+            domain,
+            "--recon-dir",
+            hunt._resolve_recon_dir(domain),
+        ],
+        "cwd": hunt.BASE_DIR,
         "timeout": 600,
+        "env": None,
     }
 
 
-def test_run_cve_hunt_compatibility_hint(monkeypatch, tmp_path, capsys):
-    domain = "example.com"
-    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
-    (tmp_path / "recon" / domain).mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(hunt, "run_legacy_cve_hunt", lambda *args, **kwargs: (True, "ok"))
-
-    assert hunt.run_cve_hunt(domain) is True
-
-    output = capsys.readouterr().out.lower()
-    assert "legacy compatibility path" in output
-    assert "/intel" in output
-
-
-def test_generate_reports_uses_legacy_bridge(monkeypatch, tmp_path):
+def test_generate_reports_uses_direct_argv(monkeypatch, tmp_path):
     domain = "example.com"
     monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
     monkeypatch.setattr(hunt, "REPORTS_DIR", str(tmp_path / "reports"))
@@ -725,46 +703,26 @@ def test_generate_reports_uses_legacy_bridge(monkeypatch, tmp_path):
 
     called = {}
 
-    def fake_generate_legacy_reports(target_findings_dir, *, base_dir, timeout=600):
-        called.update(
-            {
-                "findings_dir": target_findings_dir,
-                "base_dir": base_dir,
-                "timeout": timeout,
-            }
-        )
+    def fake_run_argv(argv, *, cwd=None, timeout=600, env=None):
+        called.update({"argv": argv, "cwd": cwd, "timeout": timeout, "env": env})
         return True, "generated"
 
-    monkeypatch.setattr(hunt, "generate_legacy_reports", fake_generate_legacy_reports)
+    monkeypatch.setattr(hunt, "run_argv", fake_run_argv)
 
     assert hunt.generate_reports(domain) == 1
     assert called == {
-        "findings_dir": str(findings_dir),
-        "base_dir": hunt.BASE_DIR,
+        "argv": [
+            sys.executable,
+            os.path.join(hunt.BASE_DIR, "tools", "report_generator.py"),
+            str(findings_dir),
+        ],
+        "cwd": hunt.BASE_DIR,
         "timeout": 600,
+        "env": None,
     }
 
 
-def test_generate_reports_compatibility_hint(monkeypatch, tmp_path, capsys):
-    domain = "example.com"
-    monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
-    monkeypatch.setattr(hunt, "REPORTS_DIR", str(tmp_path / "reports"))
-
-    findings_dir = Path(hunt._resolve_findings_dir(domain))
-    report_dir = Path(hunt._resolve_reports_dir(domain, create=True))
-    findings_dir.mkdir(parents=True, exist_ok=True)
-    (report_dir / "compat.md").write_text("ok", encoding="utf-8")
-
-    monkeypatch.setattr(hunt, "generate_legacy_reports", lambda *args, **kwargs: (True, "generated"))
-
-    assert hunt.generate_reports(domain) == 1
-
-    output = capsys.readouterr().out.lower()
-    assert "legacy compatibility path" in output
-    assert "/report" in output
-
-
-def test_generate_reports_prefers_current_generation_count_from_legacy_output(monkeypatch, tmp_path):
+def test_generate_reports_prefers_current_generation_count_from_generator_output(monkeypatch, tmp_path):
     domain = "example.com"
     monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
     monkeypatch.setattr(hunt, "REPORTS_DIR", str(tmp_path / "reports"))
@@ -776,7 +734,7 @@ def test_generate_reports_prefers_current_generation_count_from_legacy_output(mo
 
     monkeypatch.setattr(
         hunt,
-        "generate_legacy_reports",
+        "run_argv",
         lambda *args, **kwargs: (True, "=============================================\n[+] Generated 0 reports"),
     )
 

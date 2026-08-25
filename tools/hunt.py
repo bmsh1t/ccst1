@@ -34,6 +34,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener, urlopen
@@ -51,9 +52,9 @@ if BASE_DIR not in sys.path:
 if TOOLS_DIR not in sys.path:
     sys.path.insert(0, TOOLS_DIR)
 
+from memory.hunt_journal import HuntJournal
 from memory.schemas import make_journal_entry
 from memory.target_profile import default_memory_dir, load_target_profile, make_target_profile, save_target_profile
-from legacy_bridge import generate_legacy_reports, open_hunt_journal, run_legacy_cve_hunt
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
 from tools.autopilot_args import cadence_from_namespace
 from tools.credential_store import CredentialStore
@@ -187,14 +188,6 @@ class _ScopedAuthRedirectHandler(HTTPRedirectHandler):
                 if name.lower() in sensitive:
                     del mapping[name]
         return redirected
-
-
-def _log_legacy_path_hint(kind: str, preferred_command: str) -> None:
-    """Emit a low-noise hint when an entrypoint is legacy-only."""
-    log(
-        "info",
-        f"{kind} is using a legacy compatibility path; prefer {preferred_command} for the primary workflow.",
-    )
 
 
 def run_cmd(cmd, cwd=None, timeout=600, env=None):
@@ -591,7 +584,7 @@ def _log_guard_advisory(
     _SEEN_GUARD_BLOCKS.add(signature)
 
     try:
-        journal = open_hunt_journal(HUNT_MEMORY_DIR)
+        journal = HuntJournal(Path(HUNT_MEMORY_DIR) / "journal.jsonl")
         entry = make_journal_entry(
             target=normalized_target,
             action="recon" if is_recon else "hunt",
@@ -1004,7 +997,7 @@ def _auto_log_session_summary(
             cve_hunt=cve_hunt,
             zero_day=zero_day,
         )
-        journal = open_hunt_journal(HUNT_MEMORY_DIR)
+        journal = HuntJournal(Path(HUNT_MEMORY_DIR) / "journal.jsonl")
         journal.log_session_summary(
             target=domain,
             action=action,
@@ -1922,8 +1915,12 @@ def generate_reports(domain):
         return 0
 
     log("info", f"Generating reports for {domain}...")
-    _log_legacy_path_hint("Report generation", "/report")
-    success, output = generate_legacy_reports(findings_dir, base_dir=BASE_DIR)
+    script = os.path.join(BASE_DIR, "tools", "report_generator.py")
+    success, output = run_argv(
+        [sys.executable, script, findings_dir],
+        cwd=BASE_DIR,
+        timeout=600,
+    )
     print(output)
 
     generated_count = _extract_generated_report_count(output)
@@ -2031,12 +2028,13 @@ def print_dashboard(results):
 def run_cve_hunt(domain):
     """Run CVE hunter on a target."""
     log("info", f"Running CVE hunter on {domain}...")
-    _log_legacy_path_hint("CVE hunt", "/intel")
     recon_dir = _resolve_recon_dir(domain)
-    success, _ = run_legacy_cve_hunt(
-        domain,
-        base_dir=BASE_DIR,
-        recon_dir=recon_dir if os.path.isdir(recon_dir) else None,
+    cmd = [sys.executable, os.path.join(BASE_DIR, "tools", "cve_hunter.py"), domain]
+    if os.path.isdir(recon_dir):
+        cmd.extend(["--recon-dir", recon_dir])
+    success, _ = run_argv(
+        cmd,
+        cwd=BASE_DIR,
         timeout=600,
     )
     return success
