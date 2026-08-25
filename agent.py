@@ -246,15 +246,8 @@ def _h():
 
 
 def _open_hunt_journal(memory_dir: str | Path):
-    """Resolve the legacy bridge journal opener without depending on _h() mocks."""
-    try:
-        from legacy_bridge import open_hunt_journal
-    except ModuleNotFoundError:
-        tools_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
-        if tools_dir not in sys.path:
-            sys.path.insert(0, tools_dir)
-        from legacy_bridge import open_hunt_journal
-    return open_hunt_journal(memory_dir)
+    """Open the canonical target journal without a compatibility bridge."""
+    return HuntJournal(Path(memory_dir) / "journal.jsonl")
 
 def _normalize_autopilot_mode(mode: str | None) -> str:
     """Normalize autopilot checkpoint mode with a safe default."""
