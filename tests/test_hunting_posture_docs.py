@@ -77,8 +77,7 @@ def test_runtime_protocol_preserves_discovery_driven_exploration():
     assert "Evidence-driven depth does not mean evidence-only testing" in text
     assert "Discovery-driven discovery" in text
     assert "actively generate new evidence" in text
-    assert "AI override" in text
-    assert "red-line status" in text
+    assert "AI selection / override" in text
 
 
 def test_autopilot_docs_keep_discovery_as_first_class_mode():
@@ -89,7 +88,7 @@ def test_autopilot_docs_keep_discovery_as_first_class_mode():
     assert "Discovery / Exploitation / Validation modes" in command
     assert "evidence-driven depth does not" in command_lower
     assert "actively generate new evidence" in command_lower
-    assert "AI override" in command
+    assert "AI selection / override" in command
     assert "skills/runtime-protocol.md" in command
     for marker in (
         "Evidence-driven depth does not mean evidence-only testing",

@@ -58,7 +58,7 @@ python3 tools/context_pack.py --target <target>
 8. 输出证据锚点、假设种子、Actor Matrix 缺口、相邻角度、矛盾点和写回建议。
 
 `selected_skill`、`skill_route` 和 `knowledge_cards` 是兼容推荐字段，不表示已经加载或
-选择。Claude 根据当前证据显式选择适用 Skill / 知识卡，并保留红线与覆盖检查。
+选择。Claude 根据当前证据显式选择适用 Skill / 知识卡，并保留覆盖检查。
 `hypothesis_seeds`、`alternative_angles` 和 `knowledge_card_recall` 也只是建议/诊断，
 不会由 Checkpoint 自动变成 Queue 动作或已选择假设。
 
@@ -110,7 +110,6 @@ CONTEXT PACK
   - knowledge/cards/api-idor.md
   - knowledge/cards/auth-access.md
 - Required checks:
-  - rules/red-lines.md
   - rules/coverage-gate.md
 - Evidence anchors:
   - Surface review https://api.example.com/api/org/123/users score_hint=...
@@ -121,7 +120,7 @@ CONTEXT PACK
   - Coverage gap: /api/org/123/users x IDOR weight=...
 - Hypothesis seeds:
   - 对象/组织/租户 ID 是否只在前端约束，服务端是否重新绑定当前身份。
-  - 浏览器观察到的 XHR/API 优先按原始 method / 参数形态做登录态、角色、租户差异对比；HTTP method 本身不是红线，真实破坏性副作用才需要降级到只读或可回滚验证。
+  - 浏览器观察到的 XHR/API 优先按原始请求/参数形态做登录态、角色、租户差异对比。
   - export/download/report 类接口是否可通过 ID 或筛选条件读取其他主体数据。
 - Alternative angles:
   - 用 Playwright/浏览器复用登录态重放关键页面，只看 Network/Console 差异和只读响应变化。
@@ -159,14 +158,14 @@ recall reason is insufficient; it is not part of the default `Must read` set.
 | `graphql` | `skills/web2-vuln-classes/SKILL.md` | `graphql` |
 | `sqli` / `hidden-param` | `skills/web2-vuln-classes/SKILL.md` | `sqli-hidden-surfaces` |
 | `upload` | `skills/web2-vuln-classes/SKILL.md` | `upload-parser` |
-| `race` | `skills/web2-vuln-classes/SKILL.md` | `race-conditions`，并在 Required checks 保留 `rules/red-lines.md` |
+| `race` | `skills/web2-vuln-classes/SKILL.md` | `race-conditions` |
 | candidate / validation | `skills/triage-validation/SKILL.md` | 相关漏洞卡 + `dead-ends` |
 
 ## 纪律
 
 - Context Pack 一轮只推荐一个主 Skill，Claude 选择后再读取。
 - Context Pack 一次最多推荐 1-2 张知识卡，Claude 只读取当前证据需要的卡。
-- 可能改变、破坏或污染真实状态的动作必须加入 `rules/red-lines.md`。
+- Context Pack 不生成动作安全门禁。
 - 结束前必须加入 `rules/coverage-gate.md`。
 - 上下文包不是结论；它只是执行前的加载计划。
 - seed/recall 不是动作；Claude 选择假设后才通过现有 owner 创建或激活正常 Queue action。

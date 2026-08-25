@@ -12,14 +12,15 @@ def _read(relative_path: str) -> str:
 
 def test_evidence_ledger_command_documents_summary_and_record():
     text = _read("commands/evidence-ledger.md")
+    flat = " ".join(text.split())
 
     assert "python3 tools/evidence_ledger.py summary --target <target>" in text
     assert "python3 tools/evidence_ledger.py record" in text
     assert "memory/evidence/<target>/ledger.jsonl" in text
     assert "Actor Matrix" in text
-    assert "rules/red-lines.md" in text
-    assert "OTP/MFA、\nSAML 等也只按具体动作效果判断" in text
-    assert "实际会改写状态的 `PUT`、`PATCH`、`DELETE`" in text
+    assert "blocked_redline" in text
+    assert "只记录调用方明确提供的事实、结果和证据" in text
+    assert "OTP/MFA、SAML" not in flat
     assert "测试组织授权" not in text
 
 

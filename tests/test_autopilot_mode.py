@@ -69,15 +69,15 @@ def test_build_agent_system_includes_mode_guidance():
     assert "advisory telemetry" in paranoid_prompt.lower()
 
 
-def test_deep_mode_requires_method_and_hypothesis_depth_packs():
+def test_deep_mode_requires_observed_request_and_hypothesis_depth_packs():
     root = Path(__file__).resolve().parents[1]
     agent_text = (root / "agents" / "autopilot.md").read_text(encoding="utf-8")
     command_text = (root / "commands" / "autopilot.md").read_text(encoding="utf-8")
     lane_text = (root / "docs" / "autopilot-lanes.md").read_text(encoding="utf-8")
 
     for text in (agent_text, f"{command_text}\n{lane_text}"):
-        assert "GET" in text and "POST" in text
-        assert "PUT/PATCH/DELETE" in text
+        assert "target-observed request shapes" in text
+        assert "PUT/PATCH/DELETE" not in text
         assert "tested_dimensions" in text
         assert "kill_condition" in text
         assert "next_question" in text

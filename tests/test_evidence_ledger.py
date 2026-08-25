@@ -548,7 +548,7 @@ def test_state_changing_record_without_redline_check_is_flagged(tmp_path, method
     assert entry["redline_decision"] == "blocked"
     assert summary["redline_unchecked_count"] == 1
     assert "redline_check_missing_for_state_changing_test" in summary["recent_entries"][0]["warnings"]
-    assert any(row["redline_required"] for row in summary["actor_matrix"]["gaps"])
+    assert all("redline_required" not in row for row in summary["actor_matrix"]["gaps"])
 
 
 def test_state_changing_patch_with_redline_remains_covering(tmp_path):
@@ -698,7 +698,7 @@ def test_post_record_is_not_state_changing_by_method_alone(tmp_path):
     assert entry["state_changing"] is False
     assert entry["warnings"] == []
     assert summary["redline_unchecked_count"] == 0
-    assert not any(row["redline_required"] for row in summary["actor_matrix"]["gaps"])
+    assert all("redline_required" not in row for row in summary["actor_matrix"]["gaps"])
 
 
 def test_summary_closed_cells_include_older_non_recent_entries(tmp_path):

@@ -9,6 +9,7 @@ from __future__ import annotations
 import pathlib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+CLAUDE = REPO_ROOT / "CLAUDE.md"
 COMMAND = REPO_ROOT / "commands" / "autopilot.md"
 AGENT = REPO_ROOT / "agents" / "autopilot.md"
 LANES = REPO_ROOT / "docs" / "autopilot-lanes.md"
@@ -34,7 +35,7 @@ def test_autopilot_routes_lane_detail_on_demand():
 def test_autopilot_references_canonical_runtime_layers():
     command = _read(COMMAND)
     agent = _read(AGENT)
-    combined = "\n".join((command, agent, _read(LANES), _read(RUNTIME)))
+    combined = "\n".join((_read(CLAUDE), command, agent, _read(LANES), _read(RUNTIME)))
 
     for marker in (
         "tools/context_pack.py",

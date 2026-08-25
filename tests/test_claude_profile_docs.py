@@ -65,7 +65,5 @@ def test_resin_defaults_to_sticky_without_proxying_local_targets():
 def test_runtime_protocol_inherits_profile_and_red_lines():
     text = _read("skills/runtime-protocol.md")
 
-    assert "Authorization and Action Safety" in text
-    assert "Operator Contract" in text
-    assert "`rules/red-lines.md` 始终是更高优先级的动作安全边界" in text
-    assert "allow-with-controls" in text
+    assert "本协议只定义共享路由" in text
+    assert "不重复加载或改写平台常驻契约" in text

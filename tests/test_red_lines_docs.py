@@ -28,10 +28,10 @@ def test_red_lines_judge_outcomes_not_request_forms():
 
     assert "动作按结果判断，不按形式判断" in text
     assert "表单、SOAP、`POST`、生产环境或普通状态写入本身不是红线" in text
-    assert "`PUT`、`PATCH`、`DELETE` 仍禁止自动执行" in text
+    assert "`PUT`、`PATCH`、`DELETE` 也不是仅凭方法名阻断" in text
     assert "只有能合理预见会造成下列" in flat
     assert "实际破坏时才阻断" in flat
-    assert "不确定时先执行一次最小影响请求确认" in text
+    assert "副作用不明时记录证据不足" in text
     assert "DDoS、高压流量、资源耗尽或服务中断" in text
     assert "不可控地修改、删除或污染真实数据、账号、权限、配置或业务状态" in text
     assert "写入影响真实用户的内容" in text
@@ -59,20 +59,16 @@ def test_autopilot_and_runtime_keep_red_lines_minimal():
     lanes = _read("docs/autopilot-lanes.md")
     agent = _read("agents/autopilot.md")
 
-    assert "窄红线" in runtime
-    assert "唯一规则源" in runtime
-    assert "检查层不复制红线类别、决策表或领域执行卫生" in runtime
-    assert "HTTP method、表单、SOAP、上传或普通状态写入本身不构成" in runtime
-    assert "自动流程仍不直接执行 `PUT`、`PATCH`、`DELETE`" in runtime
-    assert "Credential、stored XSS" in runtime
+    assert "本协议只定义共享路由" in runtime
+    assert "不重复加载或改写平台常驻契约" in runtime
+    assert "不复制动作安全规则或增加第二套门禁" in runtime
+    assert "HTTP method" not in runtime
     assert "secret 外传" not in runtime
 
     command_flat = " ".join(f"{command}\n{lanes}".split())
     agent_flat = " ".join(agent.split())
 
-    assert "Apply `rules/red-lines.md` to the concrete action" in command_flat
-    assert "`rules/red-lines.md` classifies concrete side effects" in agent_flat
-    assert "Deep mode follows `rules/red-lines.md` for action boundaries" in agent_flat
+    assert "Apply `rules/red-lines.md` to the concrete action" not in command_flat
     assert "dry-run/preview/validate-only/inert" not in agent
     assert "not mandatory last lanes" in command_flat
     assert "Other high-value lanes are blocked" not in command

@@ -52,10 +52,7 @@ python3 tools/evidence_ledger.py record \
   --evidence-ref recon/target.com/browser/xhr_endpoints.txt:1
 ```
 
-会改写真实数据、配置或业务状态的动作必须先过红线检查。HTTP method 本身不是红线：
-POST 常用于只读查询、搜索、GraphQL query 和浏览器观察到的 API replay；OTP/MFA、
-SAML 等也只按具体动作效果判断。自动流程对实际会改写状态的 `PUT`、`PATCH`、`DELETE`
-保留 action gate，记录其验证结果前必须已有 `rules/red-lines.md` 决策。
+Evidence Ledger 只记录调用方明确提供的事实、结果和证据，不根据请求形态补充决策。
 
 ```bash
 python3 tools/evidence_ledger.py record \

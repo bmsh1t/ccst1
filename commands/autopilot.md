@@ -23,6 +23,8 @@ The bootstrap already ran arguments, read-only runtime compare, advisory capabil
 tools never block, trigger installation or request it, count as tested-clean, or hide material
 limits in the handoff. Use the matching `capabilities.lanes` record only to explain local readiness or choose a viable fallback; it never overrides the owner-selected Action Queue/state lane. Within one invocation, do not rerun the same failed source/tool; preserve
 cached/stale evidence as partial/blocked. `tools/external_arsenal.sh --versions` is diagnostics-only, never startup.
+Before choosing a lane, surface bootstrap `ctf_mode` explicitly as `CTF/lab mode: enabled` or
+`CTF/lab mode: disabled`; this is a status confirmation, not a second execution gate.
 Browser lanes use one active backend at a time and follow
 `docs/autopilot-lanes.md#browser-source-and-js` for selection, recovery, import,
 switching, and close. A persisted lane boundary may switch backends when unique
@@ -109,10 +111,9 @@ once; never guess or retry the contract. Runner observation leaves the action
 supported kill. Independent follow-ups require separately claimed actions within
 the batch budget. Missing outcome/decision remains recoverable and blocks closure.
 In deep mode, a concrete API/browser-XHR surface requires an evidence-linked
-depth pack: run the observed GET/query path and the observed POST JSON/form path
-when applicable. GET-only is not API completion; OPTIONS/HEAD remain passive
-checks, and default probing never adds PUT/PATCH/DELETE. Negative results record
-the next evidence-linked dimension/question in the existing Queue. Partial cursors
+depth pack built from target-observed request shapes. A single passive observation
+is not API completion. Negative results record the next evidence-linked
+dimension/question in the existing Queue. Partial cursors
 or unused dimensions are resumable work, not tested-clean.
 
 Deep lanes keep the normal per-invocation caps unless `--deep` is active. In deep
@@ -131,7 +132,7 @@ its ID. Refresh state after every owner write-back.
 Expert Hunter Autopilot is AI-first: the current AI session judges priority, impact, chain fit,
 promotion, reopen, and finish; deterministic owners preserve schema, evidence,
 replay, and durable state. Follow `skills/runtime-protocol.md`,
-`rules/tool-ai-boundary.md`, `rules/red-lines.md`, and
+`rules/tool-ai-boundary.md`, and
 `rules/hunting.md#broad-scanner-input-and-completion-contract`.
 Use `rules/hunting.md` value-first priorities. Scanner quick is an advisory breadth
 sensor, and scanner-negative is not completion.

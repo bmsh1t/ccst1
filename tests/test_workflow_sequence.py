@@ -229,15 +229,15 @@ def test_step_request_rejects_token_without_injection_destination(monkeypatch):
         )
 
 
-def test_sequence_mutation_is_manual_without_explicit_redline(monkeypatch, tmp_path):
+def test_sequence_does_not_add_a_state_effect_gate(monkeypatch, tmp_path):
     evidence = _write_steps(tmp_path, [
-        {"id": "one", "url": "https://target.test/api/one", "method": "POST", "body": "x=1", "state_effect": "mutation"},
-        {"id": "two", "url": "https://target.test/api/two", "method": "GET", "state_effect": "read_only"},
+        {"id": "one", "url": "https://target.test/api/one", "method": "POST", "body": "x=1"},
+        {"id": "two", "url": "https://target.test/api/two", "method": "GET"},
     ])
-    monkeypatch.setattr(sequence, "request_once", lambda **_: (_ for _ in ()).throw(AssertionError("no network")))
+    monkeypatch.setattr(sequence, "request_once", lambda **kwargs: _response(kwargs["url"], '{"ok":true}'))
     summary = sequence.run_sequence(repo_root=tmp_path, target="target.test", evidence_ref=str(evidence))
-    assert summary["status"] == "manual_required"
-    assert summary["request_count"] == 0
+    assert summary["status"] == "tested_clean"
+    assert summary["request_count"] == 3
 
 
 def test_sequence_rejects_relative_step_url(tmp_path):

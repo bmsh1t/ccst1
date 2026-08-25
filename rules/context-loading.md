@@ -15,7 +15,6 @@
 CLAUDE.md
 memory/goals/active.json
 skills/runtime-protocol.md
-rules/red-lines.md
 rules/coverage-gate.md
 ```
 
@@ -25,6 +24,7 @@ rules/coverage-gate.md
 
 - Claude Code CLI 从仓库根启动时自动加载项目级 `CLAUDE.md`；Context Pack 不再把它
   重复列入 `must_read`。
+- Context Pack、Queue 和 runner 不重复把平台安全契约变成第二个 `must_read` 或执行门禁。
 - 当前 Context Pack 的 `must_read` 只包含目标状态、`skills/runtime-protocol.md`、当前
   证据/Ledger 和证据明确需要的工具引用；推荐的 primary Skill 和最多两张知识卡不在
   `must_read`，由 Claude 根据当前证据显式选择后按需读取。
@@ -136,4 +136,4 @@ CONTEXT PACK
 经验/技巧/bypass 进知识库，判断进 `evidence_rubric.py`，路由进 `context_pack.py`，
 下一步进 `checkpoint.py`，重复执行动作进 `tools/`，结果进 Evidence Ledger。
 
-其余输入也遵守同一边界：不要把扫描日志当作上下文包主体，或在没有目标层上下文时直接开始复杂任务；不要用上下文包绕过红线和覆盖基线。
+其余输入也遵守同一边界：不要把扫描日志当作上下文包主体，或在没有目标层上下文时直接开始复杂任务；不要用上下文包替代覆盖基线。

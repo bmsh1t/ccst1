@@ -411,6 +411,7 @@ def test_bootstrap_projects_bounded_deep_invocation_batch(monkeypatch, tmp_path)
 
 
 def test_runtime_drift_stops_before_target_state(monkeypatch, tmp_path):
+    (tmp_path / "config.json").write_text('{"ctf_mode": true}\n', encoding="utf-8")
     monkeypatch.setattr(
         autopilot_bootstrap,
         "compare_runtime",
@@ -466,6 +467,7 @@ def test_runtime_drift_stops_before_target_state(monkeypatch, tmp_path):
     )
 
     assert payload["action"] == "stop_runtime_drift"
+    assert payload["ctf_mode"] is True
     assert payload["runtime"] == {
         "checked": True,
         "clean": False,

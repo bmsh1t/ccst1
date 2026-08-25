@@ -3,9 +3,7 @@
 本协议定义共享的 Target -> Skill -> Knowledge -> Checks -> Write-back 路由，不负责
 替 Claude Code CLI 主会话选择具体测试类别。
 
-执行本协议时，默认继承 `CLAUDE.md` 中的 Authorization and Action Safety 和
-Operator Contract：在当前目标上下文内按授权渗透测试工程师推进工作；同时
-`rules/red-lines.md` 始终是更高优先级的动作安全边界。
+本协议只定义共享路由，不重复加载或改写平台常驻契约。
 
 ## Claude Code CLI 职责边界
 
@@ -16,7 +14,7 @@ Operator Contract：在当前目标上下文内按授权渗透测试工程师推
 | `bb-methodology` | 假设选择、轮换、停止和交接 | 会话开始、换目标、停滞或需要选路时按需加载 |
 | 专项 Skill | 特定输入、观察、安全和写回步骤 | Context Pack 推荐，Claude 按当前证据选择后读取 |
 | 知识卡/参考资料 | 模式、技巧、证据门和停止条件 | 默认推荐 0-2 张，Claude 按信号读取 |
-| Rules / checks | 红线、Coverage、Validation 和 Reporting gate | 按当前动作与阶段读取 |
+| Rules / checks | Coverage、Validation 和 Reporting gate | 按当前动作与阶段读取 |
 | Tools / state owners | replay、diff、raw evidence、生命周期和恢复 | 确定性执行或写回时调用 |
 
 根 `SKILL.md` 是旧单文件直装兼容入口，不由正式 `install.sh` 安装，也不进入 Context
@@ -41,7 +39,7 @@ Action Queue claim 的 `selected_knowledge_refs` 可以省略或为空；只有�
 1. 目标层：确认当前目标和上下文
 2. Skills 层：Claude 主会话选择一个 Skill 作为当前执行契约
 3. 知识库层：Skill 按需读取知识卡，用于回忆、联想和思路变形
-4. 检查层：红线过滤和覆盖基线审计
+4. 检查层：覆盖基线审计
 5. 执行与写回：低风险验证、记录线索、沉淀经验
 ```
 
@@ -102,15 +100,15 @@ actively generate new evidence。
   信号时，围绕该证据做最小安全深入，例如 replay、role/object diff、sibling
   expansion、parser/bypass、CVE applicability、OAST 低风险证明或链式验证。
 - **Validation mode**：只有 Candidate 质量足够时进入验证。使用最低影响证据
-  证明实际安全影响，并在红线允许范围内完成 `/validate` 或报告前 gate。
+  证明实际安全影响，并完成 `/validate` 或报告前 gate。
 
 每次在三种模式之间切换，先做一次 compact transition review：`Evidence state /
-Next question / Stop condition / Red-line status`。复核结果继续写入现有 Evidence 或
+Next question / Stop condition`。复核结果继续写入现有 Evidence 或
 Action Queue，不新增 transition 字段或第二套状态机。
 
 AI selection / override 是能力上限保护：当前 Skill 可以跳过推荐路线、组合多张知识卡、
 创建新的 action 类型，或把 Discovery / Exploitation / Validation 顺序局部
-重排；选择必须说明 decision reason、red-line status、下一步验证动作和停止条件；只有
+重排；选择必须说明 decision reason、下一步验证动作和停止条件；只有
 替换 action owner 已有 route 才需要 override reason。Skill route
 及其 required dimensions 是 substantive Action Queue 的最小执行证据；工具、知识卡
 和 checklist 仍是可替换的决策输入，不是固定工具清单。
@@ -138,8 +136,8 @@ boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -
   破坏性 payload 或宽泛 payload spray。
 - 每个链式假设必须写成 `Evidence / Primitive / Connector / Impact hypothesis /
   Next action / Stop condition`。
-- 如果链式方向涉及写入、执行、真实业务状态或持久化，先回到 `rules/red-lines.md`
-  做降级或暂停判断。
+- 如果链式方向涉及写入、执行、真实业务状态或持久化，遵循继承的动作安全契约做
+  降级或暂停判断。
 
 ## 2.3 层级归属标准
 
@@ -152,7 +150,7 @@ boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -
 | 提供技巧、payload、bypass、案例、经验、发散思路、补充 checklist | 知识库 | 写成知识卡、payload pack 或 playbook，作为当前 Skill 的候选输入。 |
 | 内容很大、场景很深、包含长案例或矩阵 | `deep_refs` | 默认不加载，只在证据命中具体卡片或 router 时按需读取。 |
 | 能稳定自动执行、可重复、适合结构化排队 | Tools / action queue | 做成工具、脚本或 `tools/action_queue.py` action 类型，不让 Skill 手写重复步骤。 |
-| 会影响安全边界、红线、覆盖门槛、报告 gate | Rules / checks | 写入 `rules/` 或对应检查命令；不要埋在知识卡里。 |
+| 会影响覆盖门槛、验证或报告 gate | Rules / checks | 写入 `rules/` 或对应检查命令；不要埋在知识卡里。 |
 
 决策补充：
 
@@ -165,7 +163,7 @@ boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -
 
 ## 3. 知识库层：按需发散
 
-知识库层是 Skills 的回忆和联想层。它不负责指挥流程，不保存当前目标状态，也不定义红线；它只提供可复用的模式、反例、发散问题和最小验证思路，让当前 Skill 在不丢失主线的前提下扩展攻击面。
+知识库层是 Skills 的回忆和联想层。它不负责指挥流程，也不保存当前目标状态；它只提供可复用的模式、反例、发散问题和最小验证思路，让当前 Skill 在不丢失主线的前提下扩展攻击面。
 
 需要发散时，先读取：
 
@@ -208,19 +206,10 @@ Evidence -> Hypothesis -> Next action -> Stop condition
 
 其中 `Next action` 只是给当前 Skill 的候选动作，是否执行、何时执行、用什么工具执行，仍由 Skill 和检查层共同决定。
 
-## 4. 检查层：窄红线，再验收
+## 4. 检查层：覆盖与验收
 
-执行前按唯一规则源检查具体副作用：
-
-```text
-rules/red-lines.md
-```
-
-检查层不复制红线类别、决策表或领域执行卫生。Skill 只负责识别具体的破坏性结果，
-随后使用 `allow`、`allow-with-controls`、`downgrade` 或 `pause` 记录
-`rules/red-lines.md` 的决策。HTTP method、表单、SOAP、上传或普通状态写入本身不构成
-门禁；但自动流程仍不直接执行 `PUT`、`PATCH`、`DELETE`，这些动作必须先过 checkpoint。
-Credential、stored XSS 等具体边界仍由该文件及其领域 owner 负责。
+动作安全继承平台常驻契约；本层只负责覆盖、验证和报告状态，
+不复制动作安全规则或增加第二套门禁。
 
 结束前检查覆盖基线：
 
@@ -276,7 +265,6 @@ SKILL RESULT
 - Evidence:
 - Hypotheses:
 - Actions taken:
-- Red-line check:
 - Coverage update:
 - Leads / Signals:
 - Candidates:
@@ -290,7 +278,6 @@ SKILL RESULT
 
 - 不得跳过目标层直接进入大范围测试。
 - 不得默认全量读取知识库。
-- 不得用覆盖基线绕过红线。
 - 不得用“没有发现问题”替代覆盖摘要。
 - 不得把 Lead 包装成 Candidate。
 - 不得执行 DDoS、高压流量或破坏性状态改变。

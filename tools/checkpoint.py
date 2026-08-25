@@ -2039,8 +2039,10 @@ def _ranked_surface_ledger_skeleton(
     ]
     if entry.get("browser_observed"):
         parts.append("--browser-observed")
-    if method not in {"GET", "HEAD", "OPTIONS", "POST"}:
-        parts.extend(["--state-changing", "--redline-checked"])
+    if entry.get("state_changing") is True:
+        parts.append("--state-changing")
+    if entry.get("redline_checked") is True:
+        parts.append("--redline-checked")
     if evidence_ref:
         parts.extend(["--evidence-ref", _quote(evidence_ref)])
     parts.extend(["--notes", _quote(notes)])
@@ -2712,10 +2714,9 @@ def _next_proposals(
             )
         )
     for gap in _actionable_actor_gaps(evidence_summary, case_state)[:3]:
-        redline = " Run red-line check first." if gap.get("redline_required") else ""
         proposals.append(
             "Cover actor matrix gap: {endpoint} x {vuln} with {actor}/{scope}/{variant} "
-            "expected={expected} status={status}.{redline} Record result with: {cmd}".format(
+            "expected={expected} status={status}. Record result with: {cmd}".format(
                 endpoint=gap.get("endpoint", ""),
                 vuln=gap.get("vuln_class", ""),
                 actor=gap.get("actor", ""),
@@ -2723,7 +2724,6 @@ def _next_proposals(
                 variant=gap.get("variant", ""),
                 expected=gap.get("expected", ""),
                 status=gap.get("status", ""),
-                redline=redline,
                 cmd=evidence_record_command(target, gap),
             )
         )

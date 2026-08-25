@@ -668,6 +668,10 @@ def build_autopilot_bootstrap(
     if arguments["action"] != "continue":
         return payload
 
+    # Surface the repo-local lab flag before any later stop gate.  A runtime
+    # drift must not make an enabled CTF workspace look like ordinary mode.
+    payload["ctf_mode"] = is_ctf_mode_enabled(resolved_repo)
+
     continuation = None
     try:
         if arguments.get("context_file"):
@@ -742,7 +746,6 @@ def build_autopilot_bootstrap(
         # 能力快照只能影响推荐路径，任何探测异常都不能阻断 target state。
         payload["capabilities"] = unknown_capability_profile("profile-error")
 
-    payload["ctf_mode"] = is_ctf_mode_enabled(resolved_repo)
     try:
         state = build_autopilot_bootstrap_state(
             str(resolved_repo),

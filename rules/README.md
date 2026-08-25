@@ -5,10 +5,10 @@ the source of truth; commands and Skills only route to them.
 
 ## Default Read
 
-Load these for every complex task or context pack:
+Claude Code already loads the action-safety rule through `CLAUDE.md`. The
+context pack adds only route-specific checks:
 
 - `rules/context-loading.md` — minimal context assembly.
-- `rules/red-lines.md` — action side-effect decisions.
 - `rules/coverage-gate.md` — coverage states and completion claims.
 
 `rules/context-loading.md` is loaded by the entrypoint as the assembly contract;
@@ -36,7 +36,7 @@ contract, but must not redefine it.
 | Rule | Owner |
 |---|---|
 | `context-loading.md` | `tools/context_pack.py` |
-| `red-lines.md` | `tools/evidence_ledger.py` |
+| `red-lines.md` | `CLAUDE.md` loads it; `rules/red-lines.md` owns the semantics |
 | `coverage-gate.md` | `tools/coverage_matrix.py` |
 | `hunting.md` | `rules/hunting.md` |
 | `playbook-router.md` | `tools/context_pack.py` |

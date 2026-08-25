@@ -131,9 +131,8 @@ python3 tools/workflow_sequence.py \
   --evidence-ref evidence/<target>/browser/<capture>/requests.json
 ```
 
-Mutation or unknown steps return `manual_required` until the current turn supplies
-the explicit red-line flag; a response difference remains a candidate until AI
-reviews impact and replayability.
+The workflow runner records raw traffic, budgets, and response differences; a
+response difference remains a candidate until AI reviews impact and replayability.
 
 A step-level `token` declares exactly one source: `regex` (body capture group),
 `response_header`, `cookie` (`Set-Cookie` name), or a bounded dotted `json_path`.

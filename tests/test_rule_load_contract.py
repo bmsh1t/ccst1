@@ -17,7 +17,6 @@ def test_default_context_pack_keeps_hunting_rule_on_demand():
     checks = context_pack._required_checks("skills/web2-recon/SKILL.md", "recon")
 
     assert checks == [
-        "rules/red-lines.md",
         "rules/coverage-gate.md",
     ]
     assert "rules/hunting.md" not in checks

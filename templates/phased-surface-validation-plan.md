@@ -6,7 +6,7 @@
 
 - 这是计划模板，不是自动执行器。
 - 所有目标、端点、actor、凭据、payload 都必须来自当前目标的 `surface`、`checkpoint`、`coverage_matrix`、`action_queue` 或人工确认。
-- 副作用判断统一遵循 `rules/red-lines.md`；模板不因漏洞类别、攻击方向或 payload 名称自动跳过覆盖。`PUT/PATCH/DELETE` 和实际文件上传先进入 checkpoint，其他动作只按具体副作用判断。
+- 动作安全由当前会话的常驻契约决定；模板不因漏洞类别、攻击方向或 payload 名称自动跳过覆盖，也不新增第二套动作门禁。
 - 每个阶段结束后先回写证据和队列状态，再进入下一阶段。
 
 ## 输入
@@ -63,8 +63,8 @@ continue | checkpoint | blocked | needs-operator-approval
 
 ```text
 - 只读、inert marker、一次性 OAST 和最小 primitive proof：按当前证据继续验证
-- 需要状态改变或可清理测试资源：按 `rules/red-lines.md` 选择 `allow-with-controls` 或进入下一阶段
-- 具体破坏、持久化、高压或不可逆动作：先做红线决策；被延后或阻断时记录 `unsafe-skipped-review` 或 checkpoint
+- 需要状态改变或可清理测试资源：按当前动作安全契约选择 `allow-with-controls` 或进入下一阶段
+- 具体破坏、持久化、高压或不可逆动作：先做动作安全决策；被延后或阻断时记录 `unsafe-skipped-review` 或 checkpoint
 ```
 
 证据回写：
@@ -83,7 +83,7 @@ continue | checkpoint | blocked | needs-operator-approval
 - 阶段 1 已产生明确 next_question
 - actor / endpoint family / vuln_class 已明确
 - action_queue 中有对应 queued item
-- action_queue item 有 source artifact、预算和停止条件；有副作用时按 `rules/red-lines.md` 决策
+- action_queue item 有 source artifact、预算和停止条件；有副作用时按当前动作安全契约决策
 ```
 
 适合动作：
@@ -116,25 +116,25 @@ tested | dead-end | blocked | candidate | validated | n/a
 进入条件：
 
 ```text
-- `rules/red-lines.md` 已完成具体副作用判断
+- 当前动作安全契约已完成具体副作用判断
 - 明确停止条件
 - 明确回滚/影响控制策略
-- 需要门控时在 action_queue 中标记 `redline_required`
+- 需要门控时在 action_queue 中记录动作安全决定
 ```
 
 需要门控的动作示例：
 
 ```text
-- PUT/PATCH/DELETE 或实际文件上传
+- 需要明确副作用判断或人工复核的动作
 - 持久化写入、删除或真实业务状态改变
 - 高压流量、资源耗尽或不可逆动作
-- 其他经红线判断确认存在真实副作用的动作
+- 其他经动作安全判断确认存在真实副作用的动作
 ```
 
 默认行为：
 
 ```text
-按 `rules/red-lines.md` 的 `allow`、`allow-with-controls`、`downgrade` 或 `pause` 执行并回写证据。
+按动作安全决定的 `allow`、`allow-with-controls`、`downgrade` 或 `pause` 执行并回写证据。
 ```
 
 ## 阶段结束检查

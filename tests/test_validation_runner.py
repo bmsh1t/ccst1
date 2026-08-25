@@ -2590,7 +2590,7 @@ def test_state_changing_without_redline_fails_before_request(monkeypatch, tmp_pa
 
 
 @pytest.mark.parametrize("state_changing", [None, False])
-def test_patch_requires_redline_even_without_state_changing_flag(
+def test_patch_without_explicit_state_fact_is_not_redline_blocked(
     monkeypatch, tmp_path, state_changing
 ):
     called = False
@@ -2601,16 +2601,18 @@ def test_patch_requires_redline_even_without_state_changing_flag(
         return _fake_response(kwargs["url"], body="MARKER")
 
     monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
-    with pytest.raises(ValueError, match="requires --redline-checked"):
-        validation_runner.run_marker_replay(
-            repo_root=tmp_path,
-            target="target.test",
-            url="https://target.test/submit",
-            expect_marker="MARKER",
-            method="PATCH",
-            state_changing=state_changing,
-        )
-    assert called is False
+    summary = validation_runner.run_marker_replay(
+        repo_root=tmp_path,
+        target="target.test",
+        url="https://target.test/submit",
+        expect_marker="MARKER",
+        method="PATCH",
+        state_changing=state_changing,
+        no_ledger=True,
+    )
+    assert called is True
+    assert summary["state_changing"] is state_changing
+    assert summary["redline_checked"] is False
 
 
 def test_post_defaults_to_unknown_state_and_private_unique_runs(monkeypatch, tmp_path):

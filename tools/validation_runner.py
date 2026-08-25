@@ -104,7 +104,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 
 SCHEMA_VERSION = 1
-SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "POST"}
 MAX_RESPONSE_BYTES = 1024 * 1024
 SQLI_PROBE_RE = re.compile(
     r"('|--|/\*|\*/|;|\)\)|\b(?:or|and|union|select|where|from|sleep|benchmark|"
@@ -1454,13 +1453,12 @@ def request_once(
 def _validate_request_facts(
     state_changing: bool | None,
     redline_checked: bool,
-    method: str,
 ) -> bool | None:
-    method_unsafe = str(method or "GET").upper() not in SAFE_METHODS
-    effective = True if method_unsafe else state_changing
-    if effective is True and not redline_checked:
+    # The red-line rule is about the concrete effect.  The HTTP verb is only
+    # recorded evidence and must not create a second gate in the runner.
+    if state_changing is True and not redline_checked:
         raise ValueError("state-changing validation requires --redline-checked before any request")
-    return effective
+    return state_changing
 
 
 def _write_raw_http(
@@ -2013,7 +2011,7 @@ def run_authz_public_exposure(
     identity_v2: dict[str, Any] | None = None,
     session: AuthSession | None = None,
 ) -> dict[str, Any]:
-    state_changing = _validate_request_facts(state_changing, redline_checked, method)
+    state_changing = _validate_request_facts(state_changing, redline_checked)
     finding_id = finding_id or _default_finding_id("authz-public-exposure", url)
     bundle = _bundle_dir(repo_root, target, finding_id)
     private_bundle = _private_bundle_dir(repo_root, target, bundle)
@@ -2385,7 +2383,7 @@ def run_authz_role_replay(
     anonymous sensitive exposure promotes directly to ``tested_finding``.
     """
     method_u = method.upper()
-    state_changing = _validate_request_facts(state_changing, redline_checked, method_u)
+    state_changing = _validate_request_facts(state_changing, redline_checked)
     owner_headers = dict(owner_headers or {})
     peer_headers = dict(peer_headers or {})
     peer_body = owner_body if peer_body is None else peer_body
@@ -2826,8 +2824,8 @@ def run_request_diff(
 
     baseline = spec["baseline_request"]
     variant = spec["variant_request"]
-    effective_state = _validate_request_facts(state_changing, redline_checked, baseline["method"])
-    _validate_request_facts(state_changing, redline_checked, variant["method"])
+    effective_state = _validate_request_facts(state_changing, redline_checked)
+    _validate_request_facts(state_changing, redline_checked)
     if not url_belongs_to_target(baseline["url"], target) or not url_belongs_to_target(variant["url"], target):
         raise ValueError("request pair contains an off-target URL")
     finding_id = finding_id or _default_finding_id(lane, baseline["url"])
@@ -3144,7 +3142,7 @@ def run_marker_replay(
     marker = str(expect_marker or "")
     if not marker:
         raise ValueError("expect_marker is required")
-    state_changing = _validate_request_facts(state_changing, redline_checked, method)
+    state_changing = _validate_request_facts(state_changing, redline_checked)
     finding_id = finding_id or _default_finding_id("marker-replay", url)
     bundle = _bundle_dir(repo_root, target, finding_id)
     private_bundle = _private_bundle_dir(repo_root, target, bundle)
@@ -3308,7 +3306,7 @@ def run_idor_actor_pair(
     peer_headers = dict(peer_headers or {})
     peer_url = peer_url or url
     peer_body = owner_body if peer_body is None else peer_body
-    state_changing = _validate_request_facts(state_changing, redline_checked, method_u)
+    state_changing = _validate_request_facts(state_changing, redline_checked)
     if not _actor_context_differs(
         url=url,
         peer_url=peer_url,

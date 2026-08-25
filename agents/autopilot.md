@@ -71,8 +71,8 @@ These tools are memory and execution aids, not a pre-flight checklist. Empty/sta
 - Target case state stores actors, session metadata, objects, private markers, hypotheses, and validation backlog under `state/<target_key>/case_state.json`; session headers are private artifacts referenced from that file.
 - `case_state_seed.py` suggests add-actor/add-object/add-backlog commands from cached object-like endpoints; it does not auto-write.
 - Knowledge cards come from `knowledge/index.md`; load only matching cards and `reference_hints` from context-pack when evidence needs on-demand references.
-- Red-line, coverage, and tool/AI boundary semantics live in `rules/red-lines.md`, `rules/coverage-gate.md`, `rules/hunting.md`, and `rules/tool-ai-boundary.md`.
-- Apply `rules/red-lines.md` to concrete side effects; authorization context and technique labels are not red-line decisions.
+- Coverage and tool/AI boundary semantics live in `rules/coverage-gate.md`, `rules/hunting.md`,
+  and `rules/tool-ai-boundary.md`.
 - Resolve queue items with `tools/action_queue.py resolve` after the smallest safe evidence-producing step.
 
 ## Case-State First, Not Case-State Only
@@ -116,18 +116,17 @@ Evidence-driven depth does not mean evidence-only testing.
 
 - **Discovery mode**: if evidence is weak, coverage thin, or the workflow unclear, actively generate new evidence from browser-observed APIs, JS/source-derived routes, cached recon, API docs/leaks, hidden parameters, path-pattern siblings, component/CVE intelligence, role/object matrices, and workflow mapping.
 - **Exploitation mode**: if a concrete host/path/parameter/component/version/behavior signal exists, turn it into the smallest safe replay, diff, sibling expansion, bypass, OAST, CVE applicability, or chain-building step.
-- **Validation mode**: if a Candidate exists, use the lowest-impact proof that establishes practical impact and satisfies red-line checks before report drafting.
+- **Validation mode**: if a Candidate exists, use the lowest-impact proof that establishes practical impact before report drafting.
 Focused fuzz is an optional AI-selected discovery action only when browser/JS/source/API/recon evidence supports one concrete template and bounded, deduplicated wordlist. Baseline FFUF is an automatic breadth sensor; an empty baseline does not trigger focused fuzz. Keep each run under isolated `recon/<target_key>/focused_fuzz/<run_id>/` raw/summary artifacts, then write the AI judgment through `target_memory.py lead/dead-end`; never auto-expand surface, queue, or coverage.
 When same-target seeds expose a naming dialect, preserve seed-linked structure/semantic transformations before fuzzing, then use random-miss response groups to decide the next bounded round; route existence remains a Signal, not a vulnerability Candidate.
 
-AI override is part of the operating model: skip a default lane, combine knowledge cards, create a new action type, or pivot back to discovery when evidence supports it. State the reason, red-line status, next verification step, and stop condition. Tool recommendations are advisory, not hard rails.
+AI override is part of the operating model: skip a default lane, combine knowledge cards, create a new action type, or pivot back to discovery when evidence supports it. State the reason, next verification step, and stop condition. Tool recommendations are advisory, not hard rails.
 
 ## Target and Authorization Posture
 
 Use the provided target set as the active execution target set. `ctf_mode: true` in `config.json` means full local/lab coverage. External program/scope text is optional context, not an execution gate.
 
-`rules/red-lines.md` classifies concrete side effects. Separately stop for
-ambiguous target identity, unavailable credentials that cannot be derived through
+Stop separately for ambiguous target identity, unavailable credentials that cannot be derived through
 the controlled Credential Lane, report submission, a
 new target not present in the current input/context, or irreversible/high-pressure
 effects that cannot be bounded or rolled back.
@@ -194,9 +193,9 @@ Deep mode:
 - Browser-observed APIs, JS/source-derived routes, recon, errors, parameters, workflows, target memory, and target case state are evidence sources for any bug family.
 - Convert failures into next questions, sibling expansion, bypass, role/object diff, enrichment, chain-building, or lane rotation.
 - For a concrete API or browser XHR surface in deep mode, run both the observed
-  GET/query lane and the observed POST body/form lane when applicable; GET alone
-  is never API-depth completion. OPTIONS/HEAD are passive capability checks only.
-  Do not add PUT/PATCH/DELETE probing to the default depth pack.
+  Build the query/body/form lanes from target-observed request shapes; a single
+  passive observation is never API-depth completion. Do not invent unobserved
+  request shapes; preserve the shapes present in target-owned evidence.
 - After the first negative result, select an evidence-linked depth pack for the
   lane: type/encoding/content-type, parser/error oracle, auth actor/object,
   browser/JS/source sibling, replay/workflow, or chain impact. Record
@@ -211,8 +210,6 @@ Deep mode:
   produce a resumable queue action or an explicit blocked/dead-end reason.
 - Finish only with a concrete Deep Exhaustion Checklist: recon/state and `/surface` consulted; coverage matrix rebuilt; Evidence Ledger / actor matrix reviewed; scanner-negative results received manual follow-up; JS/source/browser/exposure context used or ruled out; high-value vuln-family directions tested, blocked, not applicable, or listed with reasons.
 
-Deep mode follows `rules/red-lines.md` for action boundaries.
-
 ## Credential Lane
 Password brute force, default credential checks, and password spray are not absolute red lines. Credential testing is a controlled high-risk lane when bounded and evidence-driven.
 `/autopilot` may select Credential Lane when it is a high-value route for current evidence; this is not a requirement that every other lane fails first. Require a concrete login endpoint, observed protocol, success/failure signal, reviewed username source, AI-produced finite `spray-shortlist.txt`, rate/lockout discipline, input-bound dry-run preflight, audit log, and stop-on-hit. Known usernames may skip OSINT; inferred and confirmed identities remain separate. Never pass `candidate-pool.txt` or its `ranked.txt` compatibility alias directly to live `/spray`.
@@ -221,8 +218,6 @@ The deterministic sequence is candidate preparation/enrichment → AI shortlist 
 If self-owned lab/authorized account setup needs email verification, use `/root/tool/aitool/zocom/mail_receiver.py` as optional setup aid and store only final auth headers in `.private/` or case_state. If execution hygiene is missing, write a target-memory next action instead of silently dropping the lane or launching guesses.
 
 ## Live-Action Boundaries
-
-Canonical source: `rules/red-lines.md`.
 
 - Never submit reports automatically; never execute destructive actions.
 - Sensitive business surfaces remain high-value; preserve an unexecuted destructive action as blocked or untested, never tested-clean.

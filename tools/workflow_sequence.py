@@ -36,7 +36,6 @@ except ImportError:  # pragma: no cover
 BASE_DIR = Path(__file__).resolve().parents[1]
 MAX_STEPS = 8
 DEFAULT_REQUEST_CAP = 16
-SAFE_EFFECTS = {"read_only", "preview"}
 TOKEN_SOURCES = ("regex", "response_header", "cookie", "json_path")
 MAX_TOKEN_LENGTH = 8192
 
@@ -99,18 +98,12 @@ def _extract_steps(payload: dict[str, Any], *, target: str, max_steps: int) -> l
             raise ValueError(f"workflow step {index + 1} has unsupported method {method}")
         post_data = request.get("postData") if isinstance(request.get("postData"), dict) else {}
         body = str(raw.get("body") if "body" in raw else post_data.get("text") or "")
-        effect = str(raw.get("state_effect") or raw.get("side_effect") or "").strip().lower()
-        if not effect:
-            effect = "read_only" if method in {"GET", "HEAD", "OPTIONS"} else "unknown"
-        if effect not in SAFE_EFFECTS | {"mutation", "unknown"}:
-            raise ValueError(f"workflow step {index + 1} has invalid state_effect")
         steps.append({
             "id": str(raw.get("id") or f"step-{index + 1}"),
             "url": url,
             "method": method,
             "headers": _header_map(raw.get("headers") if "headers" in raw else request.get("headers")),
             "body": body,
-            "state_effect": effect,
             "token": raw.get("token") if isinstance(raw.get("token"), dict) else {},
         })
     if len(steps) < 2:
@@ -285,7 +278,7 @@ def _queue_sequence_action(
             source="workflow-sequence",
             source_id=source_id,
             generation=run_id,
-            stop_condition="record tested_clean, candidate, blocked, or manual_required before closing the sequence",
+            stop_condition="record tested_clean, candidate, or blocked before closing the sequence",
         )
         queue = result.get("queue") if isinstance(result, dict) else {}
         action = next(
@@ -295,7 +288,7 @@ def _queue_sequence_action(
         )
         action_id = str(action.get("id") or "")
         current_status = str(action.get("status") or "queued")
-        final_status = {"tested_clean": "tested", "candidate_pending": "candidate", "manual_required": "blocked"}.get(status)
+        final_status = {"tested_clean": "tested", "candidate_pending": "candidate"}.get(status)
         if action_id and final_status and current_status not in {"tested", "candidate", "dead-end", "blocked", "validated", "reported", "n/a"}:
             resolved = resolve_action(
                 repo_root,
@@ -322,8 +315,10 @@ def run_sequence(
     max_steps: int = MAX_STEPS,
     max_requests: int = DEFAULT_REQUEST_CAP,
     timeout: int = 15,
-    allow_mutation: bool = False,
+    allow_mutation: bool | None = None,
 ) -> dict[str, Any]:
+    # Compatibility-only flag; request safety is not inferred or gated here.
+    del allow_mutation
     if max_steps < 2 or max_steps > MAX_STEPS:
         raise ValueError(f"max_steps must be between 2 and {MAX_STEPS}")
     if max_requests < 2:
@@ -336,7 +331,6 @@ def run_sequence(
         raise ValueError("workflow evidence must be a JSON object")
     resolved_target = canonical_target_value(target)
     steps = _extract_steps(payload, target=resolved_target, max_steps=max_steps)
-    unsafe = [step["id"] for step in steps if step["state_effect"] not in SAFE_EFFECTS]
     if step_index < 0:
         step_index = len(steps) - 1
     if step_index >= len(steps):
@@ -362,11 +356,6 @@ def run_sequence(
         "errors": [],
         "diffs": [],
     }
-    if unsafe and not allow_mutation:
-        summary.update({"status": "manual_required", "reason": "state-changing or unknown step requires explicit red-line confirmation", "blocked_steps": unsafe})
-        summary["queue"] = _queue_sequence_action(repo_root, resolved_target, _rel(evidence, repo_root), _rel(summary_path, repo_root), run_id, summary["status"])
-        _write_json_atomic(summary_path, summary)
-        return summary
     active_session = (session or AuthSession()).bind_target(resolved_target)
     baseline_steps = list(steps)
     variant_steps = list(steps)
@@ -466,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-steps", type=int, default=MAX_STEPS)
     parser.add_argument("--max-requests", type=int, default=DEFAULT_REQUEST_CAP)
     parser.add_argument("--timeout", type=int, default=15)
-    parser.add_argument("--allow-mutation", action="store_true")
+    parser.add_argument("--allow-mutation", action="store_true", help=argparse.SUPPRESS)
     add_cli_args(parser)
     args = parser.parse_args(argv)
     try:

@@ -45,7 +45,6 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 
 SCHEMA_VERSION = 1
-SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "POST"}
 RESULTS = (
     "lead",
     "signal",
@@ -481,7 +480,8 @@ def record_entry(
                 missing_fields=identity_result.missing_fields,
                 conflicts=conflicts,
             )
-    requires_redline = method_u in {"PUT", "PATCH", "DELETE"} and bool(entry["state_changing"])
+    # Red-line ownership follows the recorded effect, not the request verb.
+    requires_redline = entry["state_changing"] is True
     if requires_redline and not entry["redline_checked"] and normalized_result in COVERING_RESULTS:
         entry["requested_result"] = normalized_result
         entry["result"] = "blocked_redline"
@@ -589,13 +589,15 @@ def _object_reference_endpoint(endpoint: str) -> bool:
     return False
 
 
-def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "GET") -> list[dict]:
+def actor_requirements(
+    endpoint: str,
+    vuln_class: str = "IDOR",
+    method: str = "GET",
+) -> list[dict]:
     """返回高级 authz/IDOR 测试应覆盖的角色/对象差异项。"""
     canonical_endpoint = _canonicalize_endpoint(endpoint)
     vc = normalize_ledger_vuln_class(vuln_class)
     method_u = str(method or "GET").strip().upper()
-    state_changing = method_u not in SAFE_METHODS
-
     # actor matrix 只服务“角色/对象边界”类验证。像 Upload/SSRF/SQLi 即使落在
     # admin path 上，也不应自动生成 anonymous/owner/peer 这类 actor-gap，
     # 否则 checkpoint 会不断推送无意义待办。
@@ -614,7 +616,6 @@ def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "G
             "object_scope": "none",
             "variant": "unauth_denied",
             "expected": "deny",
-            "redline_required": False,
         },
         {
             "id": "owner-baseline",
@@ -625,7 +626,6 @@ def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "G
             "object_scope": "own_object",
             "variant": "baseline",
             "expected": "allow",
-            "redline_required": state_changing,
         },
     ]
 
@@ -640,7 +640,6 @@ def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "G
                 "object_scope": "other_object_same_org",
                 "variant": "id_swap",
                 "expected": "deny_or_no_data",
-                "redline_required": state_changing,
             },
             {
                 "id": "low-role-diff",
@@ -651,7 +650,6 @@ def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "G
                 "object_scope": "own_object",
                 "variant": "role_diff",
                 "expected": "deny_or_limited",
-                "redline_required": state_changing,
             },
             {
                 "id": "cross-tenant-diff",
@@ -662,7 +660,6 @@ def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "G
                 "object_scope": "cross_tenant_object",
                 "variant": "tenant_diff",
                 "expected": "deny_or_no_data",
-                "redline_required": state_changing,
             },
         ])
 
@@ -677,7 +674,6 @@ def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "G
                 "object_scope": "own_object",
                 "variant": "token_missing",
                 "expected": "deny",
-                "redline_required": True,
             },
             {
                 "id": "csrf-origin-diff",
@@ -688,7 +684,6 @@ def actor_requirements(endpoint: str, vuln_class: str = "IDOR", method: str = "G
                 "object_scope": "own_object",
                 "variant": "origin_diff",
                 "expected": "deny",
-                "redline_required": True,
             },
         ])
     return requirements
@@ -1161,8 +1156,6 @@ def record_command(target: str, row: dict) -> str:
         "--notes",
         "observed expected authz/object-boundary behavior",
     ]
-    if row.get("redline_required"):
-        parts.append("--redline-checked")
     return " ".join(_quote(part) for part in parts)
 
 
@@ -1208,9 +1201,8 @@ def format_summary(summary: dict) -> str:
     gaps = matrix.get("gaps") or []
     if gaps:
         for row in gaps[:8]:
-            redline = " redline-required" if row.get("redline_required") else ""
             lines.append(
-                "  - {endpoint} x {vuln}: {actor}/{scope}/{variant} expected={expected} status={status}{redline}".format(
+                "  - {endpoint} x {vuln}: {actor}/{scope}/{variant} expected={expected} status={status}".format(
                     endpoint=row.get("endpoint", ""),
                     vuln=row.get("vuln_class", ""),
                     actor=row.get("actor", ""),
@@ -1218,7 +1210,6 @@ def format_summary(summary: dict) -> str:
                     variant=row.get("variant", ""),
                     expected=row.get("expected", ""),
                     status=row.get("status", ""),
-                    redline=redline,
                 )
             )
     else:

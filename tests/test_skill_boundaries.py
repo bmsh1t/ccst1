@@ -177,10 +177,10 @@ def test_runtime_protocol_keeps_compact_mode_transition_review():
         "Evidence state",
         "Next question",
         "Stop condition",
-        "Red-line status",
         "不新增 transition 字段或第二套状态机",
     ):
         assert marker in runtime
+    assert "Red-line status" not in runtime
 
 
 def test_claude_cli_runtime_responsibility_and_loading_boundaries_are_explicit():

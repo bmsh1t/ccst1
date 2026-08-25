@@ -1518,7 +1518,7 @@ def test_internal_admin_without_fetch_context_does_not_load_ssrf_internal(tmp_pa
     assert pack["knowledge_cards"][0] == "knowledge/cards/auth-access.md"
 
 
-def test_race_payment_focus_keeps_red_lines_loaded(tmp_path):
+def test_race_payment_focus_inherits_red_lines_from_claude(tmp_path):
     _seed_recon(tmp_path, "target.com", [
         "https://api.target.com/api/checkout/payment",
     ])
@@ -1526,7 +1526,7 @@ def test_race_payment_focus_keeps_red_lines_loaded(tmp_path):
     pack = build_context_pack(tmp_path, target="target.com", focus="race payment otp")
 
     assert "knowledge/cards/race-conditions.md" in pack["knowledge_cards"]
-    assert "rules/red-lines.md" in pack["required_checks"]
+    assert "rules/red-lines.md" not in pack["required_checks"]
     assert any("高并发" in seed or "真实资金" in seed for seed in pack["hypothesis_seeds"])
     assert any(
         "合法单次 baseline" in seed
@@ -2114,13 +2114,8 @@ def test_browser_observed_context_becomes_actionable_pack_evidence(tmp_path):
     assert pack["source_summary"]["browser_params"] == 1
     assert any("Browser XHR/API" in item and "order_id=42" in item for item in pack["evidence_anchors"])
     assert any("Browser param" in item and "order_id" in item for item in pack["evidence_anchors"])
-    assert any("登录态" in item and "红线" in item for item in pack["hypothesis_seeds"])
-    assert any(
-        "表单、SOAP 或 POST 本身不构成阻断" in item
-        and "PUT/PATCH/DELETE" in item
-        and "checkpoint" in item
-        for item in pack["hypothesis_seeds"]
-    )
+    assert any("登录态" in item and "原始请求/参数形态" in item for item in pack["hypothesis_seeds"])
+    assert any("表单和协议请求" in item and "原始请求/响应" in item for item in pack["hypothesis_seeds"])
     assert any("Playwright" in item for item in pack["alternative_angles"])
     assert "No browser-observed XHR/API context loaded." not in pack["unknowns"]
 

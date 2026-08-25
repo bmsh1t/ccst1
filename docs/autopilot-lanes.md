@@ -68,7 +68,7 @@ actions. Ordinary Card changes do not require a new lane.
 - `prepare_surface_context`: run one explicit `python3 tools/surface.py --target <target_shell> --refresh`, verify its bounded projection, load context, then refresh state.
 - `collect_candidate_evidence`: consume `state.structured_next.rubric.next_actions`, or a reviewed `state.memory_candidate_next` locatable `evidence_ref`; preserve `missing_labels` and refresh. Prose or `raw_endpoint` alone is not evidence.
 - Observation top-K and `remaining` are attention windows, not closure; use `/observations` for evidence-driven long-tail review.
-- Before unusual helpers, scan `docs/tool-index.md` once. Canonical contracts are `skills/runtime-protocol.md`, `rules/red-lines.md`, `rules/coverage-gate.md`, `rules/hunting.md`, `rules/tool-ai-boundary.md`, `rules/web-intel.md`, `knowledge/index.md`, `tools/checkpoint.py`, `tools/action_queue.py`, `tools/coverage_matrix.py`, `tools/evidence_ledger.py`, and `docs/evidence-runners.md`.
+- Before unusual helpers, scan `docs/tool-index.md` once. Canonical contracts are `skills/runtime-protocol.md`, `rules/coverage-gate.md`, `rules/hunting.md`, `rules/tool-ai-boundary.md`, `rules/web-intel.md`, `knowledge/index.md`, `tools/checkpoint.py`, `tools/action_queue.py`, `tools/coverage_matrix.py`, `tools/evidence_ledger.py`, and `docs/evidence-runners.md`.
 
 ## Browser Source And JS
 
@@ -102,7 +102,7 @@ actions. Ordinary Card changes do not require a new lane.
 
 ## Workflow Timing And Case State
 
-- When imported HAR/browser Network evidence contains at least two ordered same-target business requests, run `python3 tools/workflow_sequence.py --target <target_shell> --evidence-ref <repo-evidence-json>`. It performs one bounded remove/repeat perturbation, refreshes declared per-step tokens, writes raw traffic privately, and leaves the result in Action Queue. Mutation/unknown steps remain `manual_required` unless the current turn supplies the red-line flag.
+- When imported HAR/browser Network evidence contains at least two ordered same-target business requests, run `python3 tools/workflow_sequence.py --target <target_shell> --evidence-ref <repo-evidence-json>`. It performs one bounded remove/repeat perturbation, refreshes declared per-step tokens, writes raw traffic privately, and leaves the result in Action Queue. The runner records observed requests and response differences; the AI reviews the resulting evidence.
 - When a time-shaped candidate or explicit SQL timing evidence remains after result-diff, run `python3 tools/timing_sql_runner.py --target <target_shell> --url <target-url> --param <name> --variant-value <controlled-delay>` with an explicit request cap. It interleaves baseline/variant samples and requires a stable median/MAD trend; one slow response, `429`, WAF block, or transport error stays partial.
 - Case-State First, Not Case-State Only: case-state-validation and case-state-enrichment are high-value continuity, not a scope gate or bug-class selector. Stale/missing cannot block fresh evidence/AI override; use `tools/target_case_state.py`, `tools/case_state_seed.py`, and runners.
 
@@ -117,4 +117,4 @@ actions. Ordinary Card changes do not require a new lane.
 ## Wire And Live-Action Boundaries
 
 - Byte-exact HTTP/cache/desync uses `tools/sender_semantics.py --require` and `tools/smuggling_executor.py --variant`; read `disposition=manual_required` as a capability handoff, not a verified smuggling result. Browser evidence cannot prove wire absence.
-- Apply `rules/red-lines.md` to the concrete action. Preserve unavailable credentials, off-set targets, report submission, and other execution blockers as blocked or untested, never tested-clean.
+- Preserve unavailable credentials, off-target requests, report submission, and other execution blockers as blocked or untested, never tested-clean.

@@ -2307,10 +2307,8 @@ def _select_cards(
 
 
 def _required_checks(skill: str, blob: str) -> list[str]:
-    checks = [
-        "rules/red-lines.md",
-        "rules/coverage-gate.md",
-    ]
+    # Platform startup owns action safety; Context Pack only emits route checks.
+    checks = ["rules/coverage-gate.md"]
     if skill == "triage-validation":
         checks.append("rules/reporting.md")
     # Router guidance is useful for parser/proxy/encoding and other boundary
@@ -2506,7 +2504,7 @@ def _local_intel_hypothesis_seeds(local_intel: dict) -> list[str]:
     )
     if _has_browser_intel(local_intel):
         seeds.append(
-            "浏览器观察到的 XHR/API 优先按原始 method / 参数形态做登录态、角色、租户差异对比；HTTP method 本身不是红线，真实破坏性副作用才需要降级到只读或可回滚验证。"
+            "浏览器观察到的 XHR/API 优先按原始请求/参数形态做登录态、角色、租户差异对比。"
         )
     if re.search(r"\b(user|account|tenant|org|order|invoice|object|profile|workspace)[_-]?id\b|[?&]id=", browser_blob, re.I):
         seeds.append(
@@ -2518,7 +2516,7 @@ def _local_intel_hypothesis_seeds(local_intel: dict) -> list[str]:
         )
     if browser.get("forms"):
         seeds.append(
-            "表单、SOAP 或 POST 本身不构成阻断；按实际副作用判断，只读、预览、校验以及测试自有且可回滚的动作可验证，PUT/PATCH/DELETE 先通过 checkpoint 的 red-line 门禁。"
+            "表单和协议请求优先保留原始请求/响应，按当前证据选择对比维度。"
         )
     viewstate_forms = [
         form for form in (browser.get("forms") or [])
@@ -3546,8 +3544,8 @@ def build_context_pack(
         "write_back": _write_back_commands(resolved_target) + (evidence_summary.get("record_commands") or [])[:3],
         "ai_override": (
             "Skill and knowledge-card fields are advisory. Claude must explicitly choose and load "
-            "the applicable route at Action Queue claim, keep red-lines/coverage checks loaded, "
-            "and write the selected skill and tested dimensions into the Action Queue. "
+            "the applicable route at Action Queue claim, keep the coverage check loaded, and "
+            "write the selected skill and tested dimensions into the Action Queue. "
             "skill_override_reason is required only when replacing an action-owned route."
         ),
         "source_summary": {
