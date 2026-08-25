@@ -38,6 +38,17 @@ def test_fresh_recon_uses_its_selected_lane_without_extra_docs():
     assert "Append `arguments.recon_flags` exactly" in recon_lane
 
 
+def test_fresh_recon_fast_path_avoids_redundant_argument_and_document_passes():
+    command = " ".join(_read("commands/autopilot.md").split())
+
+    assert "inline the one stable sticky export" in command
+    assert "in the same shell command as the lane" in command
+    assert "A bounded Resin health probe is allowed when needed" in command
+    assert "re-run `hunt.py --help`" in command
+    assert "do not guess or search for a different heading" in command
+    assert "Do not perform another context, argument, or documentation pass" in command
+
+
 def test_slash_command_runtime_preflight_is_read_only_and_fail_fast():
     text = _read("commands/autopilot.md")
     preflight = text.split("## Runtime Preflight", 1)[1].split("## State Consumption Loop", 1)[0]

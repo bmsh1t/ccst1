@@ -40,7 +40,9 @@ Run project commands as `cd -- <repo_root_shell> && ...`. Use
 never skips browser/source/validation or implies completion. `arguments.seed_url` is an
 exact first-contact browser/source/workflow seed for the canonical target.
 After bootstrap, before the first network lane, inspect `config.json.resin`; when enabled,
-follow `docs/resin-proxy.md` to export one stable sticky environment via `CredentialStore`.
+inline the one stable sticky export from `docs/resin-proxy.md` in the same shell command as the lane.
+A bounded Resin health probe is allowed when needed; it is transport diagnostics, not an authorization or red-line
+gate. Do not re-run `hunt.py --help`, re-parse the arguments, or perform another bootstrap/state/document pass.
 When sticky access is blocked, use current evidence and the request budget to decide whether to reuse or switch
 available sticky account environments and how much to retry; impose no fixed count. Use rotate only on explicit
 request, bypass it for localhost/private targets, and never print the token or persist proxy setup.
@@ -59,9 +61,9 @@ Each delegation needs a distinct question, bounded context/request cost, and
 expected information gain; stop when no independent question remains.
 Optional `recon-ranker` is one read-only second opinion per frontier projection;
 it never runs requests, writes state, or replaces controller decisions.
-Before a named lane, read only `state.lane_contract.ref` from
-`docs/autopilot-lanes.md`; before substantive Queue claim/resolve, also read its
-`State And Queue` section. These are execution details, not another controller.
+Before a named lane, read only the literal `state.lane_contract.ref` from
+`docs/autopilot-lanes.md`; do not guess or search for a different heading. Before substantive Queue
+claim/resolve, also read its `State And Queue` section. These are execution details, not another controller.
 Before active hunting begins, load `rules/hunting.md` for its canonical hunting
 semantics. Fresh Recon is not active hunting: when `state.hard_gate.action=run_recon`
 (and when `state.next_action=run_recon` for older readers),
@@ -99,8 +101,8 @@ compatibility projections and owner contracts. With one frontier item, execute i
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
 ```
 When the selected action is `run_recon`, immediately run the selected Recon command from
-the lane contract with `arguments.recon_flags`, then refresh bounded state. Do
-not perform another context or documentation pass before that action.
+the lane contract with `arguments.recon_flags`, including any inline Resin export, then refresh bounded state.
+Do not perform another context, argument, or documentation pass before that action.
 For substantive candidates, apply the lane's evidence-backed activation contract
 and claim the exact action before replay:
 ```bash
