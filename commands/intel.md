@@ -66,6 +66,11 @@ workflow rather than the component advisory artifact.
   cache/stale state, and an error summary. A single source failure preserves other
   results. If every advisory source is unavailable or fails, `intel.json` is still
   published with the source states and the CLI exits non-zero.
+- When a provider is network-unavailable, an expired local cache gets one short
+  bounded refresh attempt, then is reused during the retry cooldown and the
+  source records `network_unavailable=true`; no cache is reported as
+  `unavailable`, not as a clean result. Response-shape and other
+  provider-contract failures remain `error`.
 - `--json` writes only valid JSON to stdout; progress and diagnostics use stderr.
 - `affected`, `likely`, `unknown`, and `not_affected` are applicability states,
   not finding lifecycle states. A Web claim must match the observed component

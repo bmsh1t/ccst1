@@ -804,8 +804,33 @@ def _load_js_intel_projection(repo_root: str, target: str) -> dict:
         except (OSError, json.JSONDecodeError):
             projection.update({"status": "partial", "reason": "malformed_hypotheses", "hypotheses_path": str(hypotheses)})
             return projection
-        values = payload.get("hypotheses") if isinstance(payload, dict) else None
-        if not isinstance(values, list) or not values:
+        # The Claude js-reader contract is a structured report, not a generic
+        # ``hypotheses`` list.  Treat its lead/endpoints fields as analysis
+        # evidence so a valid report with no promoted lead is not misclassified
+        # as an empty or malformed artifact.
+        values = None
+        analysis_format = "hypotheses"
+        for field in ("hypotheses", "attack_surface_leads", "ranked_leads"):
+            candidate = payload.get(field) if isinstance(payload, dict) else None
+            if not isinstance(candidate, list):
+                continue
+            if values is None or not values:
+                values = candidate
+                analysis_format = field
+            if candidate:
+                break
+        report_keys = {
+            "endpoints",
+            "auth_model",
+            "sinks",
+            "graphql_operations",
+            "attack_surface_leads",
+            "noise_observed",
+        }
+        canonical_report = isinstance(payload, dict) and bool(report_keys.intersection(payload))
+        if values is None and canonical_report:
+            values = []
+        if not isinstance(values, list) or (not values and not canonical_report):
             projection.update({"status": "partial", "reason": "hypotheses_empty", "hypotheses_path": str(hypotheses)})
             return projection
         bindings = payload.get("source_bindings") if isinstance(payload, dict) else None
@@ -826,7 +851,12 @@ def _load_js_intel_projection(repo_root: str, target: str) -> dict:
                 if current != str(binding.get("sha256") or ""):
                     projection.update({"status": "partial", "reason": "stale_source_binding", "hypotheses_path": str(hypotheses)})
                     return projection
-        projection.update({"status": "analyzed", "hypotheses_path": str(hypotheses), "hypothesis_count": min(len(values), 100)})
+        projection.update({
+            "status": "analyzed",
+            "hypotheses_path": str(hypotheses),
+            "hypothesis_count": min(len(values), 100),
+            "analysis_format": analysis_format,
+        })
     return projection
 
 

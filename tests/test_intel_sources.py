@@ -374,6 +374,135 @@ def test_stale_cache_is_used_explicitly_when_refresh_fails(tmp_path):
     assert "CVE-2026-0004" in result["items"]
 
 
+def test_network_failure_without_cache_is_explicitly_unavailable(tmp_path):
+    result = intel_sources.fetch_osv_for_components(
+        [_component()],
+        tmp_path,
+        fetcher=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            intel_sources.IntelSourceNetworkError("offline")
+        ),
+        now=NOW,
+    )
+
+    assert result["status"] == "unavailable"
+    assert result["network_unavailable"] is True
+    assert result["items"] == []
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "network failure",
+        "network error",
+        "DNS resolution failed",
+        "network is unreachable",
+        "no route to host",
+        "HTTP 502 for provider",
+    ],
+)
+def test_network_error_messages_are_explicitly_unavailable(tmp_path, message):
+    result = intel_sources.fetch_osv_for_components(
+        [_component()],
+        tmp_path,
+        fetcher=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            intel_sources.IntelSourceError(message)
+        ),
+        now=NOW,
+    )
+
+    assert result["status"] == "unavailable"
+    assert result["network_unavailable"] is True
+    assert message in result["error"]
+
+
+def test_mixed_network_and_contract_errors_keep_error_diagnostic(tmp_path):
+    components = [_component(), _component(name="django", version="5.1.2")]
+
+    def fetcher(_url, **kwargs):
+        package = (kwargs.get("body") or {}).get("package", {}).get("name")
+        if package == "next":
+            raise intel_sources.IntelSourceNetworkError("offline")
+        return []
+
+    result = intel_sources.fetch_osv_for_components(
+        components,
+        tmp_path,
+        fetcher=fetcher,
+        now=NOW,
+    )
+
+    assert result["status"] == "error"
+    assert result["network_unavailable"] is True
+    assert "offline" in result["error"]
+    assert "JSON object" in result["error"]
+
+
+def test_expired_cache_refresh_uses_bounded_timeout(tmp_path):
+    query = {"catalog": "cisa-kev"}
+    path = intel_sources._cache_path(tmp_path, "kev", query)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "source": "kev",
+        "query": query,
+        "fetched_at": "2026-07-18T00:00:00Z",
+        "expires_at": "2026-07-18T06:00:00Z",
+        "data": {"vulnerabilities": [{"cveID": "CVE-2026-0006"}]},
+    }), encoding="utf-8")
+    timeouts = []
+
+    def offline(_url, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        raise intel_sources.IntelSourceNetworkError("timed out")
+
+    result = intel_sources.fetch_kev(
+        tmp_path,
+        fetcher=offline,
+        ttl_seconds=60,
+        now=NOW,
+    )
+
+    assert timeouts == [intel_sources.DEFAULT_STALE_REFRESH_TIMEOUT_SECONDS]
+    assert result["status"] == "partial"
+    assert result["stale"] is True
+    assert result["network_unavailable"] is True
+    assert "CVE-2026-0006" in result["items"]
+
+
+def test_stale_cache_reuses_after_network_failure_cooldown(tmp_path):
+    query = {"catalog": "cisa-kev"}
+    path = intel_sources._cache_path(tmp_path, "kev", query)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "source": "kev",
+        "query": query,
+        "fetched_at": "2026-07-18T00:00:00Z",
+        "expires_at": "2026-07-18T06:00:00Z",
+        "data": {"vulnerabilities": [{"cveID": "CVE-2026-0005"}]},
+    }), encoding="utf-8")
+    calls = []
+
+    def offline(*_args, **_kwargs):
+        calls.append(1)
+        raise intel_sources.IntelSourceNetworkError("offline")
+
+    first = intel_sources.fetch_kev(tmp_path, fetcher=offline, ttl_seconds=60, now=NOW)
+    second = intel_sources.fetch_kev(
+        tmp_path,
+        fetcher=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cooldown should reuse stale cache")
+        ),
+        ttl_seconds=60,
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert calls == [1]
+    assert first["status"] == second["status"] == "partial"
+    assert first["network_unavailable"] is second["network_unavailable"] is True
+    assert "CVE-2026-0005" in second["items"]
+
+
 def test_epss_batches_and_normalizes_scores(tmp_path, monkeypatch):
     monkeypatch.setattr(intel_sources, "EPSS_BATCH_SIZE", 2)
     urls = []

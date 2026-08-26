@@ -114,6 +114,7 @@ identity, and cloud signals without re-enumerating everything.
 |---|---|---|
 | `tools/browser_evidence.py` | MCP browser evidence already imported | Compact linkage and last-capture lookup only; it does not launch a browser |
 | `tools/browser_mcp_import.py` | Chrome DevTools/Playwright MCP artifacts ready | Normalize MCP network/snapshot/console/screenshot evidence into browser surface |
+| `tools/browser_playwright_fallback.py` | Neither visible browser MCP backend is usable | Capture one target-owned page with installed Python Playwright, then reuse the MCP importer; never installs browsers |
 | `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL surface from browser evidence |
 | `tools/hai_browser_recon.js` | Need browser-side recon snippet | Playwright recon helper script (JS) |
 | `tools/deep_js_packer.py` | Concrete webpack/chunk/source-map signal | Evidence-gated Packer bundle/page recovery into existing JS artifacts |

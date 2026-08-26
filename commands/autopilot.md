@@ -24,9 +24,10 @@ tools never block, trigger installation or request it, count as tested-clean, or
 limits in the handoff. Use the matching `capabilities.lanes` record only to explain local readiness or choose a viable fallback; it never overrides the owner-selected Action Queue/state lane. Within one invocation, do not rerun the same failed source/tool; preserve
 cached/stale evidence as partial/blocked. `tools/external_arsenal.sh --versions` is diagnostics-only, never startup.
 Browser/source lanes use the selected contract in
-`docs/autopilot-lanes.md#browser-source-and-js`; keep one active backend and
-follow its recovery, import, switching, and close rules; never probe both for
-availability or switch mid-workflow.
+`docs/autopilot-lanes.md#browser-source-and-js`; prefer one visible MCP backend
+and use `python3 tools/browser_playwright_fallback.py` for one target-owned page
+when neither MCP backend is usable. Follow the contract's recovery, import,
+switching, and close rules; never probe both for availability or switch mid-workflow.
 Run project commands as `cd -- <repo_root_shell> && ...`. Use
 `arguments.target_shell`, expand `arguments.hunt_auth_flags` (or
 `--auth-file <arguments.auth_file_shell>`) only when present, and apply
@@ -183,7 +184,9 @@ cd -- <repo_root_shell> && python3 tools/coverage_matrix.py rebuild --target <ta
 cd -- <repo_root_shell> && python3 tools/coverage_matrix.py find-gaps --target <target_shell> --limit 50
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
 ```
-The bounded `find-gaps --limit 50` output is an AI review window only. Its
+The bounded `find-gaps --limit 50` output is an AI review window of semantic
+gaps by default (`relevance_score > 0`). Use `--all` when raw endpoint x class
+coverage is needed; this changes only the view, not matrix state. Its
 `total` and `truncated` fields are advisory display metadata; the complete
 matrix remains the closure owner input, and a truncated window never means
 coverage is complete.

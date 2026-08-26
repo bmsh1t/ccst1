@@ -3194,6 +3194,26 @@ def test_js_materials_require_analysis_or_terminal_disposition(tmp_path):
     assert _load_js_intel_projection(str(tmp_path), target)["status"] == "blocked"
 
 
+def test_js_reader_attack_surface_leads_are_analyzed(tmp_path):
+    target = "target.com"
+    js_dir = tmp_path / "findings" / target / "js_intel"
+    js_dir.mkdir(parents=True)
+    (js_dir / "hypotheses.json").write_text(
+        json.dumps({
+            "hypotheses": [],
+            "endpoints": [{"path": "/api/orders"}],
+            "attack_surface_leads": [{"title": "order authorization"}],
+        }),
+        encoding="utf-8",
+    )
+
+    projection = _load_js_intel_projection(str(tmp_path), target)
+
+    assert projection["status"] == "analyzed"
+    assert projection["analysis_format"] == "attack_surface_leads"
+    assert projection["hypothesis_count"] == 1
+
+
 class TestAutopilotState:
     def test_bounded_recon_counts_render_unknown_without_crashing(self, tmp_path):
         recon_dir = tmp_path / "recon" / "target.com"

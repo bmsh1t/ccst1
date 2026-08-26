@@ -15,6 +15,8 @@
 ### Anonymous exposure
 
 用于匿名访问 admin/config/account/API 暴露的最小证明。只有 body-backed 敏感/配置/密钥形态才应升级。
+该 lane 的 `tested_clean` 只表示没有观察到公开暴露证据，不代表受保护资源的匿名
+Authz 已验证；匿名请求写入 Ledger 时使用 `baseline`，不使用 `unauth_denied`。
 
 ```bash
 python3 tools/validation_runner.py authz-public-exposure \

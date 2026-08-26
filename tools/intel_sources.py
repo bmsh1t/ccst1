@@ -40,6 +40,8 @@ DEFAULT_NVD_REQUEST_MAX_SECONDS = 25.0
 DEFAULT_NVD_RESULTS_PER_PAGE = 200
 DEFAULT_NVD_QUERY_PAGE_LIMIT = 8
 MAX_NVD_QUERY_PAGE_LIMIT = 32
+DEFAULT_NETWORK_RETRY_COOLDOWN_SECONDS = 5 * 60
+DEFAULT_STALE_REFRESH_TIMEOUT_SECONDS = 3.0
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 GITHUB_ADVISORY_URL = "https://api.github.com/advisories"
@@ -50,6 +52,44 @@ EPSS_URL = "https://api.first.org/data/v1/epss"
 
 class IntelSourceError(RuntimeError):
     """远端来源或缓存读取失败。"""
+
+
+class IntelSourceNetworkError(IntelSourceError):
+    """网络不可用；与响应契约错误区分，便于缓存和 continuation。"""
+
+
+_NETWORK_FAILURE_RE = re.compile(
+    r"(?:"
+    r"\boffline\b|"
+    r"\bnetwork(?:\s+is)?\s+(?:unavailable|error|failure)\b|"
+    r"\b(?:dns|getaddrinfo)\b|"
+    r"\b(?:name or service not known|temporary failure in name resolution|"
+    r"could not resolve|resolution failed|network is unreachable|"
+    r"no route to host)\b|"
+    r"\bhttp\s+(?:408|425|500|502|503|504)\b|"
+    r"\b(?:connection|connect|socket)\b[^\n]{0,32}\b"
+    r"(?:reset|refused|timeout|timed out|failed|failure|closed|aborted)\b|"
+    r"\brequest failed\b|"
+    r"\b(?:timed out|timeout)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_network_failure(value: object) -> bool:
+    if isinstance(value, IntelSourceNetworkError):
+        return True
+    return bool(_NETWORK_FAILURE_RE.search(str(value or "").strip()))
+
+
+def _cache_network_cooldown_active(cached: dict, current: datetime) -> bool:
+    if not bool(cached.get("network_unavailable")):
+        return False
+    failed_at = _parse_utc(str(cached.get("last_error_at") or ""))
+    return bool(
+        failed_at is not None
+        and (current - failed_at).total_seconds() < DEFAULT_NETWORK_RETRY_COOLDOWN_SECONDS
+    )
 
 
 JsonFetcher = Callable[..., object]
@@ -221,9 +261,14 @@ def fetch_json(
         detail = f"HTTP {exc.code}"
         if retry_after:
             detail += f" retry-after={retry_after}"
-        raise IntelSourceError(f"{detail} for {url}") from exc
+        error_type = (
+            IntelSourceNetworkError
+            if exc.code in {408, 425, 500, 502, 503, 504}
+            else IntelSourceError
+        )
+        raise error_type(f"{detail} for {url}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise IntelSourceError(f"request failed for {url}: {exc}") from exc
+        raise IntelSourceNetworkError(f"request failed for {url}: {exc}") from exc
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -284,11 +329,14 @@ def cached_json_request(
     source: str,
     query: object,
     ttl_seconds: int,
-    request: Callable[[], object],
+    request: Callable[[float | None], object],
     validate: Callable[[object], object] | None = None,
     now: datetime | None = None,
+    stale_refresh_timeout_seconds: float = DEFAULT_STALE_REFRESH_TIMEOUT_SECONDS,
 ) -> dict:
-    """返回缓存/远端结果；远端失败时允许显式使用 stale cache。"""
+    """返回缓存/远端结果；过期缓存刷新使用有界超时并保留 stale 证据。"""
+    if stale_refresh_timeout_seconds <= 0:
+        raise ValueError("stale_refresh_timeout_seconds must be positive")
     current = (now or _now_utc()).astimezone(timezone.utc)
     path = _cache_path(repo_root, source, query)
     cached = _read_cache(path, source=source, query=query)
@@ -304,25 +352,62 @@ def cached_json_request(
                 "data": cached["data"],
                 "cached": True,
                 "stale": False,
+                "network_unavailable": False,
                 "fetched_at": cached["fetched_at"],
                 "error": "",
                 "cache_path": str(path),
             }
 
+    # A recent network outage is durable across CLI invocations. Reuse the
+    # stale value immediately during the short cooldown instead of paying the
+    # provider timeout again on every Autopilot refresh.
+    if cached and _cache_network_cooldown_active(cached, current):
+        return {
+            "data": cached["data"],
+            "cached": True,
+            "stale": True,
+            "network_unavailable": True,
+            "fetched_at": cached["fetched_at"],
+            "error": str(cached.get("last_error") or "network unavailable"),
+            "cache_path": str(path),
+        }
+
     try:
-        data = request()
+        data = request(
+            stale_refresh_timeout_seconds
+            if cached is not None
+            else None
+        )
         if validate is not None:
             data = validate(data)
     except Exception as exc:
         if cached:
+            network_unavailable = _is_network_failure(exc)
+            if network_unavailable:
+                cached.update(
+                    {
+                        "last_error": str(exc),
+                        "last_error_at": _iso_utc(current),
+                        "network_unavailable": True,
+                    }
+                )
+                try:
+                    _write_json_atomic(path, cached)
+                except OSError:
+                    pass
             return {
                 "data": cached["data"],
                 "cached": True,
                 "stale": True,
+                "network_unavailable": network_unavailable,
                 "fetched_at": cached["fetched_at"],
                 "error": str(exc),
                 "cache_path": str(path),
             }
+        if isinstance(exc, IntelSourceError):
+            raise
+        if _is_network_failure(exc):
+            raise IntelSourceNetworkError(str(exc)) from exc
         raise IntelSourceError(str(exc)) from exc
 
     fetched_at = _iso_utc(current)
@@ -338,6 +423,7 @@ def cached_json_request(
         "data": data,
         "cached": False,
         "stale": False,
+        "network_unavailable": False,
         "fetched_at": fetched_at,
         "error": "",
         "cache_path": str(path),
@@ -575,6 +661,7 @@ def fetch_osv_for_components(
     errors: list[str] = []
     cached_count = 0
     stale_count = 0
+    network_unavailable = False
     fetched_at_values: list[str] = []
 
     def fetch_component(component: dict) -> tuple[dict, dict | None, str]:
@@ -585,17 +672,22 @@ def fetch_osv_for_components(
             },
             "version": component["version"],
         }
+
+        def request(timeout_seconds: float | None = None) -> object:
+            timeout = timeout_seconds or 20
+            return _require_object_collection(
+                fetcher(OSV_QUERY_URL, method="POST", body=request_body, timeout=timeout),
+                source="osv",
+                field="vulns",
+            )
+
         try:
             result = cached_json_request(
                 repo_root,
                 source="osv",
                 query=request_body,
                 ttl_seconds=ttl_seconds,
-                request=lambda body=request_body: _require_object_collection(
-                    fetcher(OSV_QUERY_URL, method="POST", body=body, timeout=20),
-                    source="osv",
-                    field="vulns",
-                ),
+                request=request,
                 validate=lambda payload: _require_object_collection(
                     payload,
                     source="osv",
@@ -614,9 +706,11 @@ def fetch_osv_for_components(
     ):
         if error or result is None:
             errors.append(error)
+            network_unavailable |= _is_network_failure(error)
             continue
         cached_count += int(result["cached"])
         stale_count += int(result["stale"])
+        network_unavailable |= bool(result.get("network_unavailable"))
         fetched_at_values.append(str(result["fetched_at"]))
         if result["error"]:
             errors.append(f"{component['name']}@{component['version']}: {result['error']}")
@@ -633,6 +727,7 @@ def fetch_osv_for_components(
         errors=errors,
         cached_count=cached_count,
         stale_count=stale_count,
+        network_unavailable=network_unavailable,
         fetched_at_values=fetched_at_values,
         now=now,
     )
@@ -721,6 +816,7 @@ def fetch_github_advisories_for_components(
     errors: list[str] = []
     cached_count = 0
     stale_count = 0
+    network_unavailable = False
     fetched_at_values: list[str] = []
     coverage_gaps: list[dict] = []
 
@@ -737,20 +833,25 @@ def fetch_github_advisories_for_components(
                 "page": page,
             }
             url = f"{GITHUB_ADVISORY_URL}?{urllib.parse.urlencode(query)}"
+
+            def request(timeout_seconds: float | None = None) -> object:
+                timeout = timeout_seconds or 20
+                return _require_array_response(
+                    fetcher(
+                        url,
+                        headers={"X-GitHub-Api-Version": "2022-11-28"},
+                        timeout=timeout,
+                    ),
+                    source="github_advisory",
+                )
+
             try:
                 result = cached_json_request(
                     repo_root,
                     source="github-advisory",
                     query=query,
                     ttl_seconds=ttl_seconds,
-                    request=lambda request_url=url: _require_array_response(
-                        fetcher(
-                            request_url,
-                            headers={"X-GitHub-Api-Version": "2022-11-28"},
-                            timeout=20,
-                        ),
-                        source="github_advisory",
-                    ),
+                    request=request,
                     validate=lambda payload: _require_array_response(
                         payload,
                         source="github_advisory",
@@ -794,9 +895,11 @@ def fetch_github_advisories_for_components(
     ):
         if error:
             errors.append(error)
+            network_unavailable |= _is_network_failure(error)
         for result in results:
             cached_count += int(result["cached"])
             stale_count += int(result["stale"])
+            network_unavailable |= bool(result.get("network_unavailable"))
             fetched_at_values.append(str(result["fetched_at"]))
             if result["error"]:
                 errors.append(f"{component['name']}@{component.get('version') or '?'}: {result['error']}")
@@ -815,6 +918,7 @@ def fetch_github_advisories_for_components(
         errors=errors,
         cached_count=cached_count,
         stale_count=stale_count,
+        network_unavailable=network_unavailable,
         fetched_at_values=fetched_at_values,
         coverage_gaps=coverage_gaps,
         partial_reasons=[gap["reason"] for gap in coverage_gaps],
@@ -1037,23 +1141,30 @@ def _fetch_nvd_page(
     }
     url = f"{NVD_CVE_URL}?{urllib.parse.urlencode(query)}"
     api_key = os.environ.get("NVD_API_KEY", "").strip()
+
+    def request(timeout_seconds: float | None = None) -> object:
+        effective_timeout = request_timeout
+        if timeout_seconds is not None:
+            effective_timeout = min(effective_timeout, timeout_seconds)
+        return _require_object_collection(
+            _call_with_wall_timeout(
+                lambda: fetcher(
+                    url,
+                    timeout=effective_timeout,
+                    headers={"apiKey": api_key} if api_key else None,
+                ),
+                effective_timeout,
+            ),
+            source="nvd",
+            field="vulnerabilities",
+        )
+
     result = cached_json_request(
         repo_root,
         source="nvd",
         query=query,
         ttl_seconds=ttl_seconds,
-        request=lambda: _require_object_collection(
-            _call_with_wall_timeout(
-                lambda: fetcher(
-                    url,
-                    timeout=request_timeout,
-                    headers={"apiKey": api_key} if api_key else None,
-                ),
-                request_timeout,
-            ),
-            source="nvd",
-            field="vulnerabilities",
-        ),
+        request=request,
         validate=lambda payload: _require_object_collection(
             payload,
             source="nvd",
@@ -1262,6 +1373,7 @@ def query_nvd_page(
         "has_more": next_cursor is not None,
         "cached": bool(result["cached"]),
         "stale": bool(result["stale"]),
+        "network_unavailable": bool(result.get("network_unavailable")),
         "error": str(result["error"] or ""),
     }
 
@@ -1297,6 +1409,7 @@ def fetch_nvd_for_components(
     errors: list[str] = []
     cached_count = 0
     stale_count = 0
+    network_unavailable = False
     fetched_at_values: list[str] = []
     coverage_gaps: list[dict] = []
     attempted_queries = 0
@@ -1352,6 +1465,7 @@ def fetch_nvd_for_components(
             )
         except IntelSourceError as exc:
             detail = f"{component['name']}@{component.get('version') or '?'}: {exc}"
+            network_unavailable |= _is_network_failure(exc)
             if re.search(r"\bHTTP (?:403|429)\b", str(exc)):
                 partial_reasons.append(f"NVD rate limit stopped remaining queries: {detail}")
                 stop_nvd = True
@@ -1362,6 +1476,7 @@ def fetch_nvd_for_components(
             continue
         cached_count += int(result["cached"])
         stale_count += int(result["stale"])
+        network_unavailable |= bool(result.get("network_unavailable"))
         fetched_at_values.append(str(result["fetched_at"]))
         if result["error"]:
             detail = (
@@ -1444,6 +1559,7 @@ def fetch_nvd_for_components(
         partial_reasons=partial_reasons,
         cached_count=cached_count,
         stale_count=stale_count,
+        network_unavailable=network_unavailable,
         fetched_at_values=fetched_at_values,
         coverage_gaps=coverage_gaps,
         items_fresh=bool(items and coverage_gaps and not errors and not stale_count),
@@ -1463,18 +1579,31 @@ def _source_envelope(
     cached_count: int,
     stale_count: int,
     fetched_at_values: list[str],
+    network_unavailable: bool = False,
     coverage_gaps: list[dict] | None = None,
     items_fresh: bool = False,
     now: datetime | None,
 ) -> dict:
     attempted = eligible if attempted is None else attempted
     partial_reasons = partial_reasons or []
+    network_unavailable = bool(
+        network_unavailable
+        or any(_is_network_failure(error) for error in errors)
+        or any(_is_network_failure(reason) for reason in partial_reasons)
+    )
+    failure_reasons = [*errors, *partial_reasons]
+    all_failures_network = bool(failure_reasons) and all(
+        _is_network_failure(reason) for reason in failure_reasons
+    )
     if eligible == 0:
         status = "unavailable"
         error = "no eligible component/package query"
     elif errors and not fetched_at_values:
-        status = "error"
+        status = "unavailable" if all_failures_network else "error"
         error = "; ".join(errors[:5])
+    elif all_failures_network and not fetched_at_values and not items:
+        status = "unavailable"
+        error = "; ".join(partial_reasons[:3]) or "network unavailable"
     elif errors or stale_count or partial_reasons:
         status = "partial"
         error = "; ".join([*errors[:5], *partial_reasons[:3]])
@@ -1487,6 +1616,7 @@ def _source_envelope(
         "fetched_at": min((value for value in fetched_at_values if value), default=_iso_utc(now)),
         "cached": bool(cached_count),
         "stale": bool(stale_count),
+        "network_unavailable": network_unavailable,
         "error": error,
         "items": items,
         "stats": {
@@ -1529,17 +1659,21 @@ def fetch_kev(
     now: datetime | None = None,
 ) -> dict:
     query = {"catalog": "cisa-kev"}
+
+    def request(timeout_seconds: float | None = None) -> object:
+        return _require_object_collection(
+            fetcher(KEV_URL, timeout=timeout_seconds or 30),
+            source="kev",
+            field="vulnerabilities",
+        )
+
     try:
         result = cached_json_request(
             repo_root,
             source="kev",
             query=query,
             ttl_seconds=ttl_seconds,
-            request=lambda: _require_object_collection(
-                fetcher(KEV_URL, timeout=30),
-                source="kev",
-                field="vulnerabilities",
-            ),
+            request=request,
             validate=lambda payload: _require_object_collection(
                 payload,
                 source="kev",
@@ -1550,10 +1684,11 @@ def fetch_kev(
     except IntelSourceError as exc:
         return {
             "source": "kev",
-            "status": "error",
+            "status": "unavailable" if _is_network_failure(exc) else "error",
             "fetched_at": _iso_utc(now),
             "cached": False,
             "stale": False,
+            "network_unavailable": _is_network_failure(exc),
             "error": str(exc),
             "items": {},
             "stats": {"item_count": 0},
@@ -1572,6 +1707,7 @@ def fetch_kev(
         "fetched_at": result["fetched_at"],
         "cached": result["cached"],
         "stale": result["stale"],
+        "network_unavailable": bool(result.get("network_unavailable")),
         "error": result["error"],
         "items": index,
         "stats": {"item_count": len(index), "catalog_version": payload.get("catalogVersion", "")},
@@ -1594,6 +1730,7 @@ def fetch_epss(
             "fetched_at": _iso_utc(now),
             "cached": False,
             "stale": False,
+            "network_unavailable": False,
             "error": "no CVE identifiers to enrich",
             "items": {},
             "stats": {"item_count": 0, "batch_count": 0},
@@ -1603,23 +1740,28 @@ def fetch_epss(
     errors: list[str] = []
     cached_count = 0
     stale_count = 0
+    network_unavailable = False
     fetched_at_values: list[str] = []
     batches = [normalized[index:index + EPSS_BATCH_SIZE] for index in range(0, len(normalized), EPSS_BATCH_SIZE)]
     for batch in batches:
         query = {"cve": batch}
         params = urllib.parse.urlencode({"cve": ",".join(batch)})
         url = f"{EPSS_URL}?{params}"
+
+        def request(timeout_seconds: float | None = None) -> object:
+            return _require_object_collection(
+                fetcher(url, timeout=timeout_seconds or 20),
+                source="epss",
+                field="data",
+            )
+
         try:
             result = cached_json_request(
                 repo_root,
                 source="epss",
                 query=query,
                 ttl_seconds=ttl_seconds,
-                request=lambda request_url=url: _require_object_collection(
-                    fetcher(request_url, timeout=20),
-                    source="epss",
-                    field="data",
-                ),
+                request=request,
                 validate=lambda payload: _require_object_collection(
                     payload,
                     source="epss",
@@ -1629,9 +1771,11 @@ def fetch_epss(
             )
         except IntelSourceError as exc:
             errors.append(str(exc))
+            network_unavailable |= _is_network_failure(exc)
             continue
         cached_count += int(result["cached"])
         stale_count += int(result["stale"])
+        network_unavailable |= bool(result.get("network_unavailable"))
         fetched_at_values.append(str(result["fetched_at"]))
         if result["error"]:
             errors.append(result["error"])
@@ -1657,7 +1801,7 @@ def fetch_epss(
             }
 
     if errors and not fetched_at_values:
-        status = "error"
+        status = "unavailable" if network_unavailable else "error"
     elif errors or stale_count:
         status = "partial"
     else:
@@ -1668,6 +1812,7 @@ def fetch_epss(
         "fetched_at": min((value for value in fetched_at_values if value), default=_iso_utc(now)),
         "cached": bool(cached_count),
         "stale": bool(stale_count),
+        "network_unavailable": network_unavailable,
         "error": "; ".join(errors[:5]),
         "items": scores,
         "stats": {"item_count": len(scores), "batch_count": len(batches)},

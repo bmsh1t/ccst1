@@ -49,6 +49,9 @@ python3 tools/coverage_matrix.py rebuild --target <target>
 python3 tools/coverage_matrix.py find-gaps --target <target>
 ```
 
+复盘中的 `find-gaps` 默认是语义 gap 视图；需要核对完整 endpoint x vuln_class
+窗口时使用 `python3 tools/coverage_matrix.py find-gaps --target <target> --all`。
+
 `checkpoint.py` 是目标层写回建议的主来源。复盘时优先使用它输出的
 `target_write_back`、`coverage`、`decision` 和 `retrospect` 字段，再判断哪些
 经验需要晋升到知识库、Skills 或 Rules。

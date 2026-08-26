@@ -144,6 +144,8 @@ def test_browser_first_use_probe_retries_only_transient_session_failures():
     ).lower()
 
     assert "browser actions use only visible playwright/chrome mcp" in command
+    assert "browser_playwright_fallback.py" in command
+    assert "when neither mcp backend is usable" in command
     assert "never run `agent-browser` or `playwright-cli` through bash" in command
     assert "first use" in command
     assert "harmless page-list/session probe" in command

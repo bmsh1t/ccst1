@@ -109,6 +109,9 @@ python3 tools/coverage_matrix.py rebuild --target <target>
 python3 tools/coverage_matrix.py find-gaps --target <target>
 ```
 
+`find-gaps` 默认是有语义证据的 AI-actionable 视图；需要核对完整 raw endpoint x
+vuln_class 矩阵时使用同一命令追加 `--all`。两者都只读，Closure 仍以完整矩阵为准。
+
 矩阵不是唯一真相，而是防偷懒的 evidence hint ledger：
 
 - 未解释的 AI-actionable `find-gaps` 非空：只能 checkpoint 或继续，不能声称全面完成。

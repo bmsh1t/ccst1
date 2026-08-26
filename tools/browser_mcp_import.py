@@ -536,6 +536,7 @@ def import_mcp_browser_evidence(
     source: str = "mcp",
     auth_required: bool = False,
     auth_state: str = "",
+    capture_error: str = "",
 ) -> dict[str, Any]:
     """Create an evidence capture from MCP-exported browser artifacts."""
     target_key = target_storage_key(target)
@@ -634,10 +635,13 @@ def import_mcp_browser_evidence(
         if requested_auth_state in {"", "present"}
         else requested_auth_state
     )
+    safe_capture_error = " ".join(str(capture_error or "").split())[:400]
     capture_success = has_any_artifact and not source_failed
     capture_status = (
         "error"
         if source_failed
+        else "partial"
+        if safe_capture_error and has_any_artifact
         else "ok"
         if has_core_network and (not auth_required or auth_state_value == "present")
         else "partial"
@@ -658,6 +662,7 @@ def import_mcp_browser_evidence(
         "pointer_path": str(pointer_path),
         "success": capture_success,
         "status": capture_status,
+        "error": safe_capture_error,
         "network_fingerprint": network_fingerprint,
         "auth_required": bool(auth_required),
         "auth_state": auth_state_value,

@@ -1055,9 +1055,16 @@ class TestIntelV2Pipeline:
             include_identity=False,
         )
 
-        assert payload["coverage_status"] == "error"
+        assert payload["coverage_status"] == "unavailable"
         assert payload["advisories"] == []
-        assert {source["status"] for source in payload["sources"][:3]} == {"error"}
+        advisory_sources = [
+            source
+            for source in payload["sources"][:3]
+            if source["source"] in {"osv", "github_advisory", "nvd"}
+        ]
+        assert {source["status"] for source in advisory_sources} == {"unavailable"}
+        assert all(source["network_unavailable"] is True for source in advisory_sources)
+        assert all("offline" in source["error"] for source in advisory_sources)
         assert (tmp_path / "recon" / "target.com" / "intel.json").is_file()
 
     def test_web_intel_fills_official_zero_result_without_creating_finding(self, tmp_path):

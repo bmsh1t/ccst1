@@ -60,7 +60,33 @@ skills 层：知道怎么做。
 - skill 更像方法论和工作流，不写成僵硬死规则。
 - 至少经过 3 次不同任务验证后，系统表现确实变好：重复更少、恢复更快、覆盖更完整。
 
-## 4. v1.0 前硬门槛
+## 4. 后续开发迭代归属
+
+每次优化先按问题归属到唯一 owner，再做最小修改：
+
+| 问题 | 修改 owner |
+|---|---|
+| AI 判断、路线选择、召回不足 | 对应 Skill 或知识卡 |
+| 工具执行、证据解析、并发、去重、恢复 | 对应 `tools/` 或 Runner |
+| Queue、Ledger、Checkpoint、Coverage 生命周期 | 对应状态 owner |
+| 动作安全边界或实际副作用判定 | `rules/red-lines.md` |
+| Claude CLI 加载、路由或命令行为 | `CLAUDE.md`、Context Pack 或 `commands/` |
+
+标准闭环：
+
+```text
+发现问题 -> 定位 owner -> 最小修改 -> focused regression
+         -> 按影响范围运行 audit/A-B/staging -> 审阅 diff -> 手工同步 runtime
+```
+
+- 不为单个目标案例新增 Skill、知识卡、Controller、Registry 或状态机；只有稳定、可复用且
+  跨目标的能力才进入 Skill/知识库。
+- runtime 同步保持手工；涉及安装面的改动使用临时 `HOME` 验证，不能自动覆盖用户 runtime。
+- 只有同时证明“无调用者、无旧数据、无独有能力、迁移回归通过”时，才删除兼容入口或旧格式分支。
+- 仅改文档或单一 owner 时运行针对性检查；跨 owner 契约才扩大到集成/staging；Skill/知识库
+  改动额外运行相应 A/B、治理检查或 `knowledge_audit`。
+
+## 5. v1.0 前硬门槛
 
 打 `v1.0.0` 前必须满足以下条件：
 

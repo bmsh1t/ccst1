@@ -24,6 +24,8 @@ try:
         sync_checkpoint_action_queue,
     )
     from tools.finding_index import list_root_finding_claims, reconcile_root_finding_claims
+    from tools.surface import build_surface_review
+    from tools.surface_index import SurfaceIndexError
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
@@ -37,6 +39,8 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         sync_checkpoint_action_queue,
     )
     from finding_index import list_root_finding_claims, reconcile_root_finding_claims  # type: ignore
+    from surface import build_surface_review  # type: ignore
+    from surface_index import SurfaceIndexError  # type: ignore
     from target_paths import canonical_target_value, target_storage_key  # type: ignore
 
 
@@ -54,6 +58,30 @@ def _closure_snapshot(repo_root: Path | str, target: str) -> tuple[dict, dict]:
 def _round_progress(closure: dict) -> dict:
     progress = closure.get("round_progress")
     return dict(progress) if isinstance(progress, dict) else {}
+
+
+def _refresh_surface_if_pending(
+    repo_root: Path,
+    target: str,
+    state: dict,
+    closure: dict,
+) -> tuple[dict, dict]:
+    """Refresh the Surface owner before closure when lane artifacts changed it.
+
+    Lane work can publish JS/Intel evidence after the previous Surface build.
+    Rebuilding here keeps the required checkpoint -> coverage -> closure order
+    without making every lane remember a second refresh command.  A malformed
+    or unavailable Surface remains an explicit handoff rather than preventing
+    the rest of the round from being persisted.
+    """
+    reasons = closure.get("reasons") if isinstance(closure, dict) else []
+    if "surface_projection_pending" not in (reasons or []):
+        return state, closure
+    try:
+        build_surface_review(repo_root, target, refresh=True)
+    except (OSError, ValueError, SurfaceIndexError):
+        return state, closure
+    return _closure_snapshot(repo_root, target)
 
 
 def _result(
@@ -152,6 +180,13 @@ def settle_round(
         unfinished = list(progress.get("unfinished_lanes") or [])
         if unfinished:
             raise ValueError("cannot settle round with unfinished lanes: " + ", ".join(map(str, unfinished)))
+        state, closure = _refresh_surface_if_pending(
+            repo,
+            resolved_target,
+            state,
+            closure,
+        )
+        progress = _round_progress(closure)
         if progress.get("status") == "completed":
             return _result(
                 "settle",

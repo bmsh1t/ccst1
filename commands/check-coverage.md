@@ -36,6 +36,9 @@ python3 tools/evidence_ledger.py summary --target <target>
 python3 tools/surface.py --target <target>
 ```
 
+`find-gaps` 默认返回有语义证据的 high-value gap，减少通用 endpoint x class
+噪音；需要审阅完整矩阵时追加 `--all`。两种模式都只读，不会改变 Coverage 状态。
+
 解释方式：
 
 - `find-gaps` 非空：不能说“全面完成”，必须列出高价值 gap 和下一步。

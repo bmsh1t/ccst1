@@ -85,6 +85,9 @@ low_role / own_object / role_diff
 cross_tenant / cross_tenant_object / tenant_diff
 ```
 
+`unauth_denied` 仅表示受保护资源拒绝匿名访问；公开登录页或 IdP hosted
+入口应记录为公开面 baseline，不能据此声称 Authz 已测试通过。
+
 CSRF 还会关注：
 
 ```text

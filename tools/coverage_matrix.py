@@ -25,8 +25,10 @@ Design notes:
       annotations (n_a reasons, etc.) unless --force-clean is set.
     - All cell values are typed enums INTERNALLY (4 statuses) but
       the cell shape is data, NOT a Claude-facing options[] menu.
-      Claude reads `find-gaps` output which is just (endpoint,
-      vuln_class) tuples — no "pick one of these statuses" prompt.
+      Claude reads the semantic `find-gaps` window by default; `--all` keeps
+      the complete endpoint × vuln class view available when raw coverage
+      inspection is needed. Neither output is a "pick one of these statuses"
+      prompt.
 
 VULN_CLASSES taxonomy (15 entries, ordering is stable — append-only
 on extension; positional consumers may rely on the prefix):
@@ -609,10 +611,16 @@ def _compute_summary(matrix: dict) -> dict:
                 counts[status] += 1
             if status == "untested" and weight >= DEFAULT_MIN_WEIGHT:
                 high_gaps += 1
+    actionable_gaps = sum(
+        1
+        for gap in _iter_high_value_gaps(matrix)
+        if actionable_coverage_gaps([gap])
+    )
     return {
         "total_cells": total,
         **counts,
         "high_value_gaps_count": high_gaps,
+        "actionable_high_value_gaps_count": actionable_gaps,
     }
 
 
@@ -1204,13 +1212,16 @@ def high_value_gap_window_from_matrix(
     *,
     min_weight: float = DEFAULT_MIN_WEIGHT,
     limit: int,
+    actionable_only: bool = False,
 ) -> tuple[list[dict], int]:
-    """Return the first ranked gap window and the exact full result count."""
+    """Return a ranked gap window and exact count for the selected view."""
     if limit < 0:
         raise ValueError("limit must be >= 0")
     total = 0
     selected: list[tuple[tuple, int, dict]] = []
     for index, gap in enumerate(_iter_high_value_gaps(matrix, min_weight=min_weight)):
+        if actionable_only and not actionable_coverage_gaps([gap]):
+            continue
         total += 1
         if limit:
             key = _gap_sort_key(gap)
@@ -1821,10 +1832,13 @@ def find_high_value_gaps(
     target: str,
     repo_root: Path | str | None = None,
     min_weight: float = DEFAULT_MIN_WEIGHT,
+    *,
+    actionable_only: bool = False,
 ) -> list[dict]:
-    """Return (endpoint, vuln_class) cells with status=untested AND weight >= min_weight."""
+    """Return untested high-value cells, optionally limited to semantic matches."""
     matrix = load_matrix(target, repo_root)
-    return high_value_gaps_from_matrix(matrix, min_weight=min_weight)
+    gaps = high_value_gaps_from_matrix(matrix, min_weight=min_weight)
+    return actionable_coverage_gaps(gaps) if actionable_only else gaps
 
 
 def needs_endpoint_triage(
@@ -2000,6 +2014,13 @@ def _run_command(argv: list[str] | None = None) -> int:
         default=None,
         help="presentation limit; output includes total/truncated metadata",
     )
+    p_gaps.add_argument(
+        "--all",
+        dest="actionable_only",
+        action="store_false",
+        help="include generic endpoint x class cells without semantic evidence",
+    )
+    p_gaps.set_defaults(actionable_only=True)
 
     p_needs_triage = sub.add_parser(
         "needs-triage",
@@ -2064,13 +2085,20 @@ def _run_command(argv: list[str] | None = None) -> int:
         print(f"coverage_matrix {'reused' if reused else 'written'}: {out}")
         print(
             f"  endpoints={len(matrix['endpoints'])}  cells={summary['total_cells']}  "
-            f"untested={summary['untested']}  high_value_gaps={summary['high_value_gaps_count']}"
+            f"untested={summary['untested']}  "
+            f"high_value_gaps={summary['high_value_gaps_count']}  "
+            f"actionable_high_value_gaps={summary.get('actionable_high_value_gaps_count', 0)}"
         )
         return 0
 
     if args.cmd == "find-gaps":
         if args.limit is None:
-            payload = find_high_value_gaps(args.target, args.repo_root, args.min_weight)
+            payload = find_high_value_gaps(
+                args.target,
+                args.repo_root,
+                args.min_weight,
+                actionable_only=args.actionable_only,
+            )
         else:
             if args.limit < 0:
                 raise ValueError("--limit must be >= 0")
@@ -2079,6 +2107,7 @@ def _run_command(argv: list[str] | None = None) -> int:
                 matrix,
                 min_weight=args.min_weight,
                 limit=args.limit,
+                actionable_only=args.actionable_only,
             )
             payload = {
                 "target": args.target,
@@ -2087,6 +2116,7 @@ def _run_command(argv: list[str] | None = None) -> int:
                 "returned": len(items),
                 "truncated": len(items) < total,
                 "limit": args.limit,
+                "scope": "actionable" if args.actionable_only else "all",
             }
         print(json.dumps(payload, indent=2))
         return 0

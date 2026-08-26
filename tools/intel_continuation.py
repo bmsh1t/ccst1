@@ -528,6 +528,27 @@ def inspect_intel_continuation(
         ) > 0
         for item in advisory_sources
     ):
+        eligible_sources = [
+            item
+            for item in advisory_sources
+            if int(
+                item.get("eligible_queries")
+                or (item.get("stats") or {}).get("eligible_queries", 0)
+                or 0
+            ) > 0
+        ]
+        if eligible_sources and all(
+            bool(item.get("network_unavailable")) for item in eligible_sources
+        ):
+            return {
+                **base,
+                "action": "handoff",
+                "reason": (
+                    "Intel advisory sources are network-unavailable; reuse preserved cache "
+                    "and continue other evidence lanes"
+                ),
+                "network_unavailable": True,
+            }
         return {
             **base,
             "action": "run_intel",

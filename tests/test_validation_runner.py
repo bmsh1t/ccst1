@@ -137,7 +137,33 @@ def test_authz_public_exposure_without_sensitive_marker_is_clean(monkeypatch, tm
     assert summary["result"] == "tested_clean"
     assert summary["markers"] == []
     assert summary["candidate_ready"] is False
+    assert summary["assessment_scope"] == "anonymous_public_exposure_only"
     assert summary["observation_kind"] == "baseline_only"
+
+
+def test_authz_public_exposure_baseline_does_not_claim_anonymous_denial(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(
+            kwargs["url"],
+            body='<html><title>Cargill Sign In</title><div id="okta-sign-in"></div><script>client_id=CLIENT_ID</script></html>',
+        ),
+    )
+
+    summary = validation_runner.run_authz_public_exposure(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/login",
+        finding_id="AUTHZ-LOGIN-BASELINE",
+    )
+
+    entry = summary["ledger_record"]
+    assert summary["result"] == "tested_clean"
+    assert summary["assessment_scope"] == "anonymous_public_exposure_only"
+    assert summary["ai_next"]["next_action"].startswith("Treat tested_clean as clean for public-exposure evidence only")
+    assert entry["variant"] == "baseline"
+    assert "does not establish protected-resource Authz denial" in entry["notes"]
 
 
 def test_authz_public_exposure_challenge_catalog_keywords_do_not_promote(monkeypatch, tmp_path):

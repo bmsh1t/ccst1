@@ -2036,9 +2036,9 @@ def run_authz_public_exposure(
         "url": public_url_shape(url),
         "summary": (
             f"{response['status']} {len(response['body'])} {public_url_shape(url)} "
-            f"markers={','.join(markers)} unauthenticated public exposure {impact_text}".strip()
+            f"markers={','.join(markers)} anonymous public exposure observation {impact_text}".strip()
         ),
-        "raw": f"anonymous replay returned {response['status']} with markers {markers}; {impact_text}".strip(),
+        "raw": f"anonymous baseline returned {response['status']} with markers {markers}; {impact_text}".strip(),
         "confidence": "high" if candidate_ready else "medium",
     }
     rubric = compact_evidence_rubric(evaluate_candidate_evidence(finding))
@@ -2061,8 +2061,9 @@ def run_authz_public_exposure(
         })
     evidence_ref = raw_artifacts["response"]
     notes = (
-        f"Validation runner authz-public-exposure: anonymous {method.upper()} returned "
-        f"{response['status']} with markers={markers or []}."
+        f"Validation runner authz-public-exposure: anonymous {method.upper()} baseline returned "
+        f"{response['status']} with markers={markers or []}; this lane checks public exposure only "
+        "and does not establish protected-resource Authz denial."
     )
     ledger = _record_ledger_if_needed(
         repo_root=repo_root,
@@ -2073,7 +2074,7 @@ def run_authz_public_exposure(
         vuln_class="Authz",
         actor="anonymous",
         object_scope="none",
-        variant="unauth_denied",
+        variant="baseline",
         result=result,
         source="validation-runner:authz-public-exposure",
         evidence_ref=evidence_ref,
@@ -2094,6 +2095,7 @@ def run_authz_public_exposure(
         "generated_at": now_utc(),
         "result": result,
         "candidate_ready": candidate_ready,
+        "assessment_scope": "anonymous_public_exposure_only",
         "observation_kind": "baseline_only",
         "markers": markers,
         "marker_sources": marker_sources,
@@ -2108,8 +2110,8 @@ def run_authz_public_exposure(
         "evidence_rubric": rubric,
         "ledger_record": ledger,
         "ai_next": {
-            "hypothesis": "anonymous user can read admin/config-like data",
-            "next_action": "If business impact is meaningful, run /validate using this evidence bundle; otherwise downgrade to informational/dead-end.",
+            "hypothesis": "anonymous response may expose body-backed sensitive/admin/config data",
+            "next_action": "Treat tested_clean as clean for public-exposure evidence only; protected-resource Authz remains untested. If markers are meaningful, run /validate using this evidence bundle; otherwise downgrade to informational/dead-end.",
             "stop_condition": "No 200 response or no body-backed sensitive/admin/config marker.",
         },
     }

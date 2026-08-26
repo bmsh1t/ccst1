@@ -288,6 +288,20 @@ class TestComputeSummary:
         # untested cell on weight>=3.0 endpoint -> high_value_gap
         assert s["high_value_gaps_count"] == 1
 
+        semantic = _compute_summary({
+            "endpoints": [{
+                "endpoint": "/api/import",
+                "weight": 5.0,
+                "observed_params": ["url"],
+                "cells": {
+                    "SSRF": {"status": "untested"},
+                    "IDOR": {"status": "untested"},
+                },
+            }],
+        })
+        assert semantic["high_value_gaps_count"] == 2
+        assert semantic["actionable_high_value_gaps_count"] == 1
+
 
 class TestSaveLoadRoundTrip:
     def test_save_then_load(self, tmp_path):
@@ -918,6 +932,28 @@ class TestFindGaps:
         assert limited["total"] == len(full)
         assert limited["returned"] == 1
         assert limited["truncated"] is True
+
+    def test_cli_defaults_to_semantic_gaps_but_all_keeps_raw_matrix(self, tmp_path, capsys):
+        _seed_recon(tmp_path, "x.com", [
+            "https://x.com/plain/path",
+            "https://x.com/api/import?url=http://127.0.0.1/",
+        ])
+        save_matrix("x.com", rebuild_matrix("x.com", repo_root=tmp_path), repo_root=tmp_path)
+
+        assert coverage_matrix_module.main([
+            "find-gaps", "--target", "x.com", "--repo-root", str(tmp_path),
+        ]) == 0
+        semantic = json.loads(capsys.readouterr().out)
+
+        assert coverage_matrix_module.main([
+            "find-gaps", "--target", "x.com", "--repo-root", str(tmp_path), "--all",
+        ]) == 0
+        complete = json.loads(capsys.readouterr().out)
+
+        assert semantic
+        assert all(item["relevance_score"] > 0 for item in semantic)
+        assert len(complete) > len(semantic)
+        assert any(item["relevance_score"] == 0 for item in complete)
 
 
     def test_semantic_ranking_prioritizes_authz_over_generic_idor(self, tmp_path):

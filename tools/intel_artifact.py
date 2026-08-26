@@ -644,6 +644,7 @@ def build_intel_review_projection(
             {
                 "source": str(source.get("source") or "")[:40],
                 "status": str(source.get("status") or "")[:40],
+                "network_unavailable": bool(source.get("network_unavailable")),
                 "eligible_queries": int((source.get("stats") or {}).get("eligible_queries", 0) or 0),
                 "error_count": int((source.get("stats") or {}).get("error_count", 0) or 0),
             }

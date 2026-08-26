@@ -89,6 +89,43 @@ def test_settle_round_closes_terminal_lane_and_replays_idempotently(tmp_path):
     assert witness.read_bytes() == after
 
 
+def test_pending_surface_refreshes_before_settle(monkeypatch, tmp_path):
+    calls = []
+    refreshed = ({"surface_projection": {"status": "valid"}}, {"reasons": []})
+
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "build_surface_review",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(autopilot_round_module, "_closure_snapshot", lambda *args: refreshed)
+
+    state, closure = autopilot_round_module._refresh_surface_if_pending(
+        tmp_path,
+        "target.com",
+        {"surface_projection": {"status": "stale"}},
+        {"reasons": ["surface_projection_pending"]},
+    )
+
+    assert calls == [((tmp_path, "target.com"), {"refresh": True})]
+    assert (state, closure) == refreshed
+
+
+def test_pending_surface_refresh_failure_preserves_handoff(monkeypatch, tmp_path):
+    original = ({"surface_projection": {"status": "stale"}}, {"reasons": ["surface_projection_pending"]})
+
+    def fail_refresh(*_args, **_kwargs):
+        raise OSError("surface unavailable")
+
+    monkeypatch.setattr(autopilot_round_module, "build_surface_review", fail_refresh)
+
+    assert autopilot_round_module._refresh_surface_if_pending(
+        tmp_path,
+        "target.com",
+        *original,
+    ) == original
+
+
 def test_settle_round_blocks_concurrent_lane_claim_until_round_is_closed(monkeypatch, tmp_path):
     target = "target.com"
     begin_round(tmp_path, target, max_lanes=1)
