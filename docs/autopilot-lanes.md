@@ -55,8 +55,9 @@ controller alone claims lanes, writes owner state, and decides closure.
   JSON object, preserves `next_question`, `expected_learning`, `kill_condition`,
   `pivot_hints`, and other compatible structured fields, and rejects credentials
   or authorization headers. Versioned AI metadata never fabricates Runner fields.
-- Checkpoint-generated substantive items carry validated `skill_route` and
-  `required_dimensions`; AI override records the replacement route/reason.
+- An action may carry a validated owner-provided `skill_route` and
+  `required_dimensions`; otherwise Claude selects them explicitly at claim time.
+  Replacing an existing owner route records the replacement route/reason.
   Hand-written advisory items remain compatible without `route_required`.
 - `capability-chain-review` is advisory. Materialize one normal versioned chain
   action with persisted lineage when executable; otherwise resolve blocked/dead-end.
