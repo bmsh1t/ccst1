@@ -2840,8 +2840,19 @@ def _build_domain_autopilot_state(
     }
     state["hard_gate"] = _hard_gate_projection(state)
     state["fallback_action"] = next_action
+    actionable_frontier = (
+        []
+        if state["hard_gate"]
+        else _build_actionable_frontier(state, None, limit=None)
+    )
     state["priority_frontier"] = (
-        [] if state["hard_gate"] else _build_priority_frontier(state, ranked_for_action)
+        []
+        if state["hard_gate"]
+        else _build_priority_frontier(
+            state,
+            ranked_for_action,
+            actionable_frontier=actionable_frontier,
+        )
     )
     state["selection_mode"] = (
         "hard_gate"
@@ -3733,6 +3744,7 @@ _FRONTIER_LANES = {
     "js-intel": "browser-source-and-js",
     "json-inject": "sql-json-and-waf",
     "sql-matrix": "sql-json-and-waf",
+    "enrichment": "recon-and-surface",
 }
 
 
@@ -3751,7 +3763,12 @@ def _execution_frontier_item(item: dict, *, impact_hint: str = "") -> dict:
     return projected
 
 
-def _build_priority_frontier(state: dict, ranked: dict | None = None) -> list[dict]:
+def _build_priority_frontier(
+    state: dict,
+    ranked: dict | None = None,
+    *,
+    actionable_frontier: list[dict] | None = None,
+) -> list[dict]:
     """Expose bounded owner heads for cross-owner AI selection without new state."""
     target = str(state.get("resolved_target") or state.get("target") or "")
     queue_next = (
@@ -3771,7 +3788,9 @@ def _build_priority_frontier(state: dict, ranked: dict | None = None) -> list[di
     )
 
     other_items: list[dict] = []
-    for item in _build_actionable_frontier(state, None, limit=None):
+    if actionable_frontier is None:
+        actionable_frontier = _build_actionable_frontier(state, None, limit=None)
+    for item in actionable_frontier:
         owner = str(item.get("owner") or "")
         impact_hint = ""
         if owner == "action_queue":

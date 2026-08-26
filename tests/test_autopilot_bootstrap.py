@@ -6,6 +6,7 @@ import json
 import shlex
 
 from tools import autopilot_bootstrap
+from tools.action_queue import activation_contract_projection
 from tools import autopilot_state as autopilot_state_module
 from tools.runtime_state import update_runtime_state
 from tools.surface_projection import build_surface_input_manifest, write_surface_projection
@@ -28,6 +29,18 @@ def test_compact_state_keeps_bounded_case_state_continuation():
 
     assert compact["case_state"]["pending_validation_backlog"] == 1
     assert compact["case_state"]["top_next_action"]["backlog_id"] == "val_001"
+
+
+def test_bootstrap_exposes_the_action_queue_activation_contract():
+    payload = autopilot_bootstrap.build_autopilot_bootstrap(["TARGET"])
+
+    assert payload["activation_contract"] == activation_contract_projection()
+    assert payload["activation_contract"]["version"] == 1
+    assert "decision_reason" in payload["activation_contract"]["required_fields"]
+    assert payload["activation_contract"]["target_owned_fields"] == [
+        "evidence_ref",
+        "baseline_ref",
+    ]
 
 
 def test_compact_state_exposes_surface_cursor_only_when_available():

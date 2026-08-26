@@ -1312,6 +1312,26 @@ def test_action_queue_accepts_skill_route_with_required_dimensions(tmp_path):
     assert action["metadata"]["skill_route"]["skill_id"] == "web2-vuln-classes"
 
 
+def test_action_queue_reports_the_exact_missing_skill_path():
+    with pytest.raises(
+        ValueError,
+        match=r"skill_path=skills/web2-vuln-classes/SKILL\.md",
+    ):
+        build_action(
+            target="api.target.com",
+            action_type="hypothesis",
+            evidence="Observed an API object path.",
+            next_question="Can a peer actor read it?",
+            action="Replay the object path with a peer actor.",
+            metadata={
+                "skill_route": {
+                    "skill_id": "web2-vuln-classes",
+                    "required_dimensions": ["auth", "object"],
+                },
+            },
+        )
+
+
 @pytest.mark.parametrize("metadata_json", ["not-json", "[]", "null", '"text"'])
 def test_manual_action_cli_rejects_non_object_metadata_json(tmp_path, capsys, metadata_json):
     code = main([

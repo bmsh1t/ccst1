@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from tools.action_queue import activation_contract_projection
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -222,7 +224,7 @@ def test_versioned_claim_uses_the_stored_cap_without_guessing_retries():
         (_read("commands/autopilot.md") + _read("docs/autopilot-lanes.md")).split()
     ).lower()
 
-    assert "no greater than the stored `metadata.max_hypothesis_actions_cap`" in command
+    assert "`max_hypothesis_actions` limit" in command
     assert "never submit, repair, or increase it in claim metadata" in command
     assert "missing cap requires checkpoint re-ingest" in command
     assert "stop without guessing/retry" in command
@@ -232,8 +234,10 @@ def test_activation_contract_lists_required_fields_and_js_agent_route_boundary()
     lanes = " ".join(_read("docs/autopilot-lanes.md").split())
     js_command = " ".join(_read("commands/js-read.md").split())
 
+    contract = activation_contract_projection()
+    assert "activation_contract.required_fields" in lanes
+    assert "depth_contract_version" in contract["required_fields"]
     for field in (
-        "depth_contract_version=1",
         "decision_reason",
         "input_boundary",
         "endpoint",
@@ -243,7 +247,7 @@ def test_activation_contract_lists_required_fields_and_js_agent_route_boundary()
         "risk_tier",
         "max_hypothesis_actions",
     ):
-        assert field in lanes
+        assert field in contract["required_fields"]
     assert "`js-reader` is an Agent handoff" in lanes
     assert "not a Queue Skill" in js_command
     assert "skills/web2-recon/SKILL.md" in js_command

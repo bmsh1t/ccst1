@@ -7,18 +7,12 @@
 目标层 -> Skills 层 -> 知识库层 -> 检查层 -> 写回位置
 ```
 
-## 默认必读
+## 常驻与默认入口
 
-每轮复杂任务默认只需要这些入口：
-
-```text
-CLAUDE.md
-memory/goals/active.json
-skills/runtime-protocol.md
-rules/coverage-gate.md
-```
-
-如果 `memory/goals/active.json` 不存在，先根据用户当前目标建立或询问目标上下文。
+`CLAUDE.md` 由 Claude Code CLI 常驻加载，不计入 Context Pack 的 `must_read`。
+Context Pack 的默认入口是当前目标状态（如存在 `memory/goals/active.json`）和
+`skills/runtime-protocol.md`；证据、Ledger、工具引用及 `rules/coverage-gate.md`
+只在当前阶段需要时加入。不存在目标状态时，先根据用户当前目标建立或询问目标上下文。
 
 ## 当前默认加载边界
 

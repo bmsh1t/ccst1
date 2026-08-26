@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 try:
+    from tools.action_queue import activation_contract_projection
     from tools.autopilot_args import parse_autopilot_args
     from tools.autopilot_continuation import load_continuation
     from tools.autopilot_state import build_autopilot_bootstrap_state, describe_next_step
@@ -21,6 +22,7 @@ try:
     from tools.runtime_doctor import KIND_ORDER, compare_runtime
     from tools.scope_context import ScopeContext, ScopeContextError
 except ModuleNotFoundError:  # 兼容 `python3 tools/autopilot_bootstrap.py` 直接执行
+    from action_queue import activation_contract_projection  # type: ignore
     from autopilot_args import parse_autopilot_args
     from autopilot_continuation import load_continuation
     from autopilot_state import build_autopilot_bootstrap_state, describe_next_step
@@ -662,6 +664,9 @@ def build_autopilot_bootstrap(
         },
         "capabilities": unknown_capability_profile(),
         "ctf_mode": False,
+        # The Queue remains the contract owner; expose its bounded projection
+        # so the inline controller does not reconstruct claim fields from prose.
+        "activation_contract": activation_contract_projection(),
     }
 
     # 参数 gate 必须在 runtime/state 读取前结束，避免 invalid slash 触发目标工作流。

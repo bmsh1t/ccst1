@@ -113,6 +113,30 @@ STRUCTURED_METADATA_LIST_FIELDS = {"tested_dimensions", "pivot_hints"}
 RUNNER_OBSERVATION_FIELDS = {"last_outcome", "tested_dimensions", "runner_operation_id"}
 DEPTH_CONTRACT_VERSION = 1
 RISK_TIERS = {"low", "medium", "high", "critical"}
+ACTIVATION_REQUIRED_FIELDS = (
+    "hypothesis_id",
+    "family",
+    "technique",
+    "active_dimension",
+    "expected_learning",
+    "kill_condition",
+    "decision_reason",
+    "input_boundary",
+)
+ACTIVATION_ROUTE_FIELDS = ("skill_id", "skill_path", "required_dimensions")
+ACTIVATION_REQUIRED_CLAIM_FIELDS = (
+    "depth_contract_version",
+    *ACTIVATION_REQUIRED_FIELDS,
+    "endpoint",
+    "method",
+    "skill_route",
+    "evidence_ref",
+    "baseline_ref",
+    "risk_tier",
+    "max_hypothesis_actions",
+)
+ACTIVATION_OPTIONAL_FIELDS = ("selected_knowledge_refs",)
+ACTIVATION_QUEUE_OWNED_FIELDS = ("activation_required", "max_hypothesis_actions_cap")
 CONTINUATION_KINDS = {
     "sibling", "bypass", "identity", "object", "parser", "transport",
     "workflow", "chain", "rotation", "blocked",
@@ -125,6 +149,31 @@ SENSITIVE_OBSERVATION_VALUE_RE = re.compile(
     r"\s*[\"']?\s*[:=]\s*[\"']?\s*\S+",
     re.I,
 )
+
+
+def activation_contract_projection() -> dict[str, Any]:
+    """Return the bounded machine contract used by versioned Queue claims."""
+    return {
+        "version": DEPTH_CONTRACT_VERSION,
+        "required_fields": list(ACTIVATION_REQUIRED_CLAIM_FIELDS),
+        "skill_route": {
+            "required_fields": list(ACTIVATION_ROUTE_FIELDS),
+            "skill_path_template": "skills/{skill_id}/SKILL.md",
+        },
+        "target_owned_fields": ["evidence_ref", "baseline_ref"],
+        "optional_fields": list(ACTIVATION_OPTIONAL_FIELDS),
+        "conditional_fields": {
+            "skill_override_reason": "skill_route_changes",
+            "knowledge_override_reason": "selected_knowledge_refs_outside_available",
+            "repeat_reason": "execution_identity_repeats_with_new_evidence",
+        },
+        "risk_tiers": sorted(RISK_TIERS),
+        "queue_owned_fields": list(ACTIVATION_QUEUE_OWNED_FIELDS),
+        "runner_owned_fields": sorted(RUNNER_OBSERVATION_FIELDS),
+        "limits": {
+            "max_hypothesis_actions": "positive_integer <= max_hypothesis_actions_cap",
+        },
+    }
 
 
 def now_utc() -> str:
@@ -160,8 +209,19 @@ def _validate_action_metadata(metadata: dict | None) -> dict:
         skill_id = str(route.get("skill_id") or "").strip()
         skill_path = str(route.get("skill_path") or "").strip()
         dimensions = route.get("required_dimensions")
-        if not skill_id or skill_path != f"skills/{skill_id}/SKILL.md":
-            raise ValueError("Action Queue metadata skill_route has an invalid skill path")
+        if not skill_id:
+            raise ValueError("Action Queue metadata skill_route requires skill_id")
+        expected_path = f"skills/{skill_id}/SKILL.md"
+        if not skill_path:
+            raise ValueError(
+                "Action Queue metadata skill_route requires "
+                f"skill_path={expected_path}"
+            )
+        if skill_path != expected_path:
+            raise ValueError(
+                "Action Queue metadata skill_route skill_path must be "
+                f"{expected_path}"
+            )
         if not isinstance(dimensions, list) or not dimensions or any(not str(item).strip() for item in dimensions):
             raise ValueError("Action Queue metadata skill_route requires test dimensions")
     return metadata
@@ -314,12 +374,8 @@ def _prepare_claim_metadata(
 
     if merged.get("depth_contract_version") != DEPTH_CONTRACT_VERSION:
         raise ValueError("Action Queue claim requires depth_contract_version=1 activation metadata")
-    required_activation_fields = (
-        "hypothesis_id", "family", "technique", "active_dimension",
-        "expected_learning", "kill_condition", "decision_reason", "input_boundary",
-    )
     missing_activation_fields = [
-        field for field in required_activation_fields
+        field for field in ACTIVATION_REQUIRED_FIELDS
         if not _compact_text(merged.get(field))
     ]
     if missing_activation_fields:
@@ -327,7 +383,7 @@ def _prepare_claim_metadata(
             "Action Queue depth contract requires activation fields: "
             + ", ".join(missing_activation_fields)
         )
-    for field in required_activation_fields:
+    for field in ACTIVATION_REQUIRED_FIELDS:
         merged[field] = _bounded_metadata_text(merged.get(field), field)
     merged["endpoint"] = _bounded_metadata_text(
         merged.get("endpoint") or merged.get("url"), "endpoint"
