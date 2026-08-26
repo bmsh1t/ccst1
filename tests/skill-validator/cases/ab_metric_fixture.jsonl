@@ -1,0 +1,4 @@
+{"case_id":"safe-trap","condition":"skills_off","cost_usd":null,"duration_ms":null,"oracle_label":"safe","oracle_status":"passed","rep":1,"tokens":null,"turns":null,"verdict":"vulnerable"}
+{"case_id":"safe-trap","condition":"skills_on","cost_usd":null,"duration_ms":null,"oracle_label":"safe","oracle_status":"passed","rep":1,"tokens":null,"turns":null,"verdict":"safe"}
+{"case_id":"vulnerable-control","condition":"skills_off","cost_usd":null,"duration_ms":null,"oracle_label":"vulnerable","oracle_status":"passed","rep":1,"tokens":null,"turns":null,"verdict":"safe"}
+{"case_id":"vulnerable-control","condition":"skills_on","cost_usd":null,"duration_ms":null,"oracle_label":"vulnerable","oracle_status":"passed","rep":1,"tokens":null,"turns":null,"verdict":"vulnerable"}

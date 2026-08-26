@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -1816,6 +1815,114 @@ def test_marker_replay_without_marker_is_clean(monkeypatch, tmp_path):
     assert summary["result"] == "tested_clean"
     assert summary["candidate_ready"] is False
     assert summary["runs"][0]["marker_found"] is False
+
+
+def test_marker_replay_control_proves_baseline_absence(monkeypatch, tmp_path):
+    marker = "CCST_UNIQUE_MARKER_42"
+
+    def fake_request_once(**kwargs):
+        return _fake_response(
+            kwargs["url"],
+            body="ordinary output" if "neutral" in kwargs["url"] else f"rendered {marker}",
+        )
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    summary = validation_runner.run_marker_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url=f"https://target.test/render?q={marker}",
+        baseline_url="https://target.test/render?q=neutral",
+        expect_marker=marker,
+        finding_id="MARKER-ORACLE-PASS",
+        vuln_class="SSTI",
+        no_ledger=True,
+    )
+
+    assert summary["result"] == "tested_finding"
+    assert summary["marker_oracle"]["status"] == "passed"
+    assert summary["marker_oracle"]["baseline_absent"] is True
+    assert summary["runs"][0]["baseline_marker_found"] is False
+
+
+def test_marker_replay_valid_control_without_marker_is_clean(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body="ordinary output"),
+    )
+
+    summary = validation_runner.run_marker_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/render?q=neutral",
+        baseline_url="https://target.test/render?q=control",
+        expect_marker="CCST_UNIQUE_MARKER_42",
+        finding_id="MARKER-ORACLE-CLEAN",
+        no_ledger=True,
+    )
+
+    assert summary["result"] == "tested_clean"
+    assert summary["marker_oracle"]["status"] == "rejected"
+    assert summary["marker_oracle"]["baseline_valid"] is True
+
+
+def test_marker_replay_control_rejects_natural_marker_and_weak_token(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body="already contains MARKER"),
+    )
+
+    summary = validation_runner.run_marker_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url="https://target.test/render?q=MARKER",
+        baseline_url="https://target.test/render?q=neutral",
+        expect_marker="MARKER",
+        finding_id="MARKER-ORACLE-REJECT",
+        no_ledger=True,
+    )
+
+    assert summary["result"] == "candidate"
+    assert summary["candidate_ready"] is False
+    assert summary["marker_oracle"]["status"] == "rejected"
+    assert summary["marker_oracle"]["baseline_absent"] is False
+    assert summary["marker_oracle"]["marker_quality"]["sufficient"] is False
+
+
+@pytest.mark.parametrize("invalid_kind", ["status", "truncated"])
+def test_marker_replay_invalid_control_never_returns_tested_terminal(
+    monkeypatch, tmp_path, invalid_kind
+):
+    marker = "CCST_UNIQUE_MARKER_42"
+
+    def fake_request_once(**kwargs):
+        if "neutral" in kwargs["url"]:
+            response = _fake_response(
+                kwargs["url"],
+                status=500 if invalid_kind == "status" else 200,
+                body="ordinary output",
+            )
+            if invalid_kind == "truncated":
+                response["body_truncated"] = True
+            return response
+        return _fake_response(kwargs["url"], body=f"rendered {marker}")
+
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    summary = validation_runner.run_marker_replay(
+        repo_root=tmp_path,
+        target="https://target.test",
+        url=f"https://target.test/render?q={marker}",
+        baseline_url="https://target.test/render?q=neutral",
+        expect_marker=marker,
+        finding_id=f"MARKER-INVALID-{invalid_kind}",
+        no_ledger=True,
+    )
+
+    assert summary["result"] == "candidate"
+    assert summary["candidate_ready"] is False
+    assert summary["marker_oracle"]["status"] == "invalid_control"
+    assert summary["marker_oracle"]["baseline_valid"] is False
 
 
 def test_xss_marker_reflection_stays_open_signal_until_browser_context(monkeypatch, tmp_path):

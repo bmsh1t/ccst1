@@ -39,6 +39,7 @@ FFUF_HEAVY_CAPACITY = 16
 FFUF_HEAVY_OUTPUT_LIMIT = 8
 FFUF_ERROR_PREVIEW_LIMIT = 20
 FFUF_PAGE_LIMIT_MAX = 1000
+FFUF_BODY_DIGEST_MAX_BYTES = 1024 * 1024
 
 
 class ReconAdapter:
@@ -176,6 +177,23 @@ class ReconAdapter:
         return " ".join(str(value).strip().splitlines())
 
     @classmethod
+    def _ffuf_body_digest(cls, value: object) -> tuple[str, bool]:
+        if value is None:
+            return "", True
+        if isinstance(value, bytes):
+            raw = value
+        elif isinstance(value, str):
+            raw = value.encode("utf-8", errors="replace")
+        else:
+            raw = json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        complete = len(raw) <= FFUF_BODY_DIGEST_MAX_BYTES
+        return hashlib.sha256(raw[:FFUF_BODY_DIGEST_MAX_BYTES]).hexdigest(), complete
+
+    @staticmethod
+    def _ffuf_path_depth(url: str) -> int:
+        return sum(bool(part) for part in urlsplit(url).path.split("/"))
+
+    @classmethod
     def _project_ffuf_result(cls, record: object) -> dict | None:
         """把 FFUF result 投影为不含 config/header/cookie 的稳定事实字段。"""
         if not isinstance(record, dict):
@@ -197,6 +215,7 @@ class ReconAdapter:
             input_value = cls._safe_text(raw_input.get("FUZZ"))
 
         host = cls._safe_text(record.get("host")) or parsed.netloc
+        body_sha256, body_digest_complete = cls._ffuf_body_digest(record.get("body"))
         return {
             "url": url,
             "status": cls._safe_int(record.get("status")),
@@ -211,6 +230,8 @@ class ReconAdapter:
             ),
             "input": input_value,
             "host": host,
+            "body_sha256": body_sha256,
+            "body_digest_complete": body_digest_complete,
         }
 
     @staticmethod
@@ -227,6 +248,20 @@ class ReconAdapter:
     def _ffuf_signature_id(signature: tuple[int, int, int, int, str]) -> str:
         encoded = json.dumps(signature, ensure_ascii=False, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:12]
+
+    @classmethod
+    def _ffuf_control_matches(cls, observation: dict, control: dict) -> bool:
+        if cls._ffuf_signature(observation) != cls._ffuf_signature(control):
+            return False
+        if str(observation.get("host", "")).lower() != str(control.get("host", "")).lower():
+            return False
+        if cls._ffuf_path_depth(str(observation.get("url", ""))) != cls._ffuf_path_depth(str(control.get("url", ""))):
+            return False
+        observation_digest = str(observation.get("body_sha256") or "")
+        control_digest = str(control.get("body_sha256") or "")
+        if not observation.get("body_digest_complete", True) or not control.get("body_digest_complete", True):
+            return False
+        return not observation_digest or not control_digest or observation_digest == control_digest
 
     def _canonical_ffuf_path(self) -> Path | None:
         for relative_path in FFUF_CANONICAL_PATHS:
@@ -413,8 +448,17 @@ class ReconAdapter:
         if (
             first.get("status") == 200
             and second.get("status") == 200
+            and str(first.get("host", "")).lower() == str(second.get("host", "")).lower()
+            and self._ffuf_path_depth(str(first.get("url", ""))) == self._ffuf_path_depth(str(second.get("url", "")))
             and first_length > 0
             and int(second.get("length", 0) or 0) == first_length
+            and first.get("body_digest_complete", True)
+            and second.get("body_digest_complete", True)
+            and (
+                not first.get("body_sha256")
+                or not second.get("body_sha256")
+                or first.get("body_sha256") == second.get("body_sha256")
+            )
         ):
             return first_length
         return 0
@@ -472,7 +516,7 @@ class ReconAdapter:
 
         error_state: dict = {"count": 0, "preview": []}
         controls = self._read_ffuf_controls(controls_path, error_state)
-        control_signatures = {self._ffuf_signature(item) for item in controls}
+        control_match_counts: Counter[tuple[int, int, int, int, str]] = Counter()
         status_counts: Counter[str] = Counter()
         heavy_candidates: dict[tuple[int, int, int, int, str], int] = {}
         sample = []
@@ -483,6 +527,8 @@ class ReconAdapter:
             observations += 1
             status_counts[str(observation["status"])] += 1
             signature = self._ffuf_signature(observation)
+            if any(self._ffuf_control_matches(observation, control) for control in controls):
+                control_match_counts[signature] += 1
             self._misra_gries_update(heavy_candidates, signature)
             if signature not in sample_signatures and len(sample) < FFUF_SAMPLE_LIMIT:
                 sample_signatures.add(signature)
@@ -509,7 +555,9 @@ class ReconAdapter:
                 "content_type": content_type,
                 "count": count,
                 "ratio": round(count / observations, 6) if observations else 0.0,
-                "matches_random_miss_control": signature in control_signatures,
+                "control_match_count": control_match_counts.get(signature, 0),
+                "control_match_ratio": round(control_match_counts.get(signature, 0) / count, 6) if count else 0.0,
+                "matches_random_miss_control": bool(control_match_counts.get(signature, 0)),
             })
 
         artifacts = self._relative_artifact_metadata(paths)

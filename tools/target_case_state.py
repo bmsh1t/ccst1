@@ -642,6 +642,7 @@ def add_backlog(
     param: str = "",
     baseline_value: str = "",
     variant_value: str = "",
+    baseline_url: str = "",
     expect_marker: str = "",
     request_spec_ref: str = "",
     active_dimension: str = "",
@@ -685,6 +686,7 @@ def add_backlog(
             "param": str(param or ""),
             "baseline_value": str(baseline_value or ""),
             "variant_value": str(variant_value or ""),
+            "baseline_url": str(baseline_url or ""),
             "expect_marker": str(expect_marker or ""),
             "request_spec_ref": str(request_spec_ref or ""),
             "active_dimension": str(active_dimension or ""),
@@ -849,6 +851,8 @@ def _build_generic_command(target: str, item: dict[str, Any], details: dict[str,
     elif runner == "request-diff":
         parts.extend(["--request-spec", item.get("request_spec_ref") or ""])
     elif runner == "marker-replay":
+        if str(item.get("baseline_url") or ""):
+            parts.extend(["--baseline-url", item.get("baseline_url")])
         parts.extend(["--expect-marker", item.get("expect_marker") or ""])
     return " ".join(_quote(part) for part in parts if part != "")
 
@@ -1120,6 +1124,7 @@ def next_action(
         "param": item.get("param") or "",
         "baseline_value": item.get("baseline_value") or "",
         "variant_value": item.get("variant_value") or "",
+        "baseline_url": item.get("baseline_url") or "",
         "expect_marker": item.get("expect_marker") or "",
         "method": item.get("method") or "GET",
         "missing_evidence": missing,
@@ -1398,6 +1403,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--param", default="")
     p.add_argument("--baseline-value", default="")
     p.add_argument("--variant-value", default="")
+    p.add_argument("--baseline-url", default="")
     p.add_argument("--expect-marker", default="")
     p.add_argument("--request-spec-ref", default="")
     p.add_argument("--active-dimension", default="")
@@ -1494,6 +1500,7 @@ def _run_command(argv: list[str] | None = None) -> int:
             param=args.param,
             baseline_value=args.baseline_value,
             variant_value=args.variant_value,
+            baseline_url=args.baseline_url,
             expect_marker=args.expect_marker,
             request_spec_ref=args.request_spec_ref,
             active_dimension=args.active_dimension,

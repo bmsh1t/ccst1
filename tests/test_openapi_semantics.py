@@ -61,6 +61,19 @@ def test_openapi3_run_writes_semantics_and_merges_endpoints_idempotently(tmp_pat
         "info": {"title": "Accounts"},
         "servers": [{"url": "https://external.example/{version}", "variables": {"version": {"default": "v1"}}}],
         "security": [{"bearerAuth": []}],
+        "components": {
+            "requestBodies": {
+                "UserRequest": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/User"},
+                        },
+                    },
+                },
+            },
+            "schemas": {"User": {"type": "object"}},
+        },
         "paths": {
             "/users/{id}": {
                 "parameters": [
@@ -69,6 +82,7 @@ def test_openapi3_run_writes_semantics_and_merges_endpoints_idempotently(tmp_pat
                 ],
                 "get": {
                     "operationId": "getUser",
+                    "requestBody": {"$ref": "#/components/requestBodies/UserRequest"},
                     "parameters": [
                         {"name": "include", "in": "query", "schema": {"type": "string"}},
                     ],
@@ -115,6 +129,17 @@ def test_openapi3_run_writes_semantics_and_merges_endpoints_idempotently(tmp_pat
     assert by_path["/users/{id}"]["url"] == "https://external.example/v1/users/{id}?include=FUZZ"
     assert by_path["/users/{id}"]["security_status"] == "declared_required"
     assert by_path["/users/{id}"]["security_schemes"] == ["bearerAuth"]
+    assert by_path["/users/{id}"]["request_body"] == {
+        "content": {
+            "application/json": {
+                "schema": {"ref": "#/components/schemas/User", "type": "object"},
+            },
+        },
+        "content_types": ["application/json"],
+        "kind": "request_body",
+        "ref": "#/components/requestBodies/UserRequest",
+        "required": True,
+    }
     assert [(item["in"], item["name"]) for item in by_path["/users/{id}"]["parameters"]] == [
         ("header", "tenant"),
         ("path", "id"),
@@ -154,6 +179,7 @@ paths:
     )
     assert yaml_operations[0]["url"] == "https://target.test/api/v2/status"
     assert yaml_operations[0]["security_status"] == "unspecified"
+    assert yaml_operations[0]["request_body"] == {}
 
     swagger = openapi_semantics.parse_document(json.dumps({
         "swagger": "2.0",
@@ -178,6 +204,192 @@ paths:
     ]
     assert all(item["security_status"] == "explicit_public" for item in operations)
     assert operations[0]["parameters"][0]["type"] == "integer"
+
+
+def test_swagger2_body_and_form_data_facts_use_local_refs():
+    swagger = openapi_semantics.parse_document(json.dumps({
+        "swagger": "2.0",
+        "info": {"title": "Body API"},
+        "host": "target.test",
+        "basePath": "/v1",
+        "schemes": ["https"],
+        "consumes": ["application/json", "application/x-www-form-urlencoded"],
+        "parameters": {
+            "Body": {
+                "name": "payload",
+                "in": "body",
+                "required": True,
+                "schema": {"$ref": "#/definitions/Payload"},
+            },
+            "Email": {"name": "email", "in": "formData", "type": "string", "required": True},
+            "Avatar": {"name": "avatar", "in": "formData", "type": "file"},
+        },
+        "definitions": {"Payload": {"type": "object"}},
+        "paths": {
+            "/items": {"post": {"parameters": [{"$ref": "#/parameters/Body"}]}},
+            "/upload": {
+                "post": {
+                    "consumes": ["multipart/form-data"],
+                    "parameters": [
+                        {"$ref": "#/parameters/Email"},
+                        {"$ref": "#/parameters/Avatar"},
+                    ],
+                },
+            },
+        },
+    }).encode())
+
+    operations = {item["path"]: item for item in openapi_semantics.extract_operations(
+        swagger,
+        "https://docs.target.test/swagger.json",
+    )}
+
+    assert operations["/items"]["request_body"] == {
+        "content_types": ["application/json", "application/x-www-form-urlencoded"],
+        "kind": "body_parameter",
+        "parameter_name": "payload",
+        "ref": "#/parameters/Body",
+        "required": True,
+        "schema": {"ref": "#/definitions/Payload", "type": "object"},
+    }
+    assert operations["/upload"]["request_body"] == {
+        "content_types": ["multipart/form-data"],
+        "kind": "form_data",
+        "parameters": [
+            {
+                "in": "formData",
+                "name": "avatar",
+                "ref": "#/parameters/Avatar",
+                "required": False,
+                "type": "file",
+            },
+            {
+                "in": "formData",
+                "name": "email",
+                "ref": "#/parameters/Email",
+                "required": True,
+                "type": "string",
+            },
+        ],
+    }
+
+
+def test_swagger2_operation_body_overrides_path_body_and_form_duplicates():
+    swagger = openapi_semantics.parse_document(json.dumps({
+        "swagger": "2.0",
+        "info": {"title": "Override API"},
+        "host": "target.test",
+        "schemes": ["https"],
+        "parameters": {
+            "PathBody": {
+                "name": "pathPayload",
+                "in": "body",
+                "schema": {"type": "object"},
+            },
+            "OperationBody": {
+                "name": "operationPayload",
+                "in": "body",
+                "required": True,
+                "schema": {"type": "string"},
+            },
+            "PathForm": {"name": "email", "in": "formData", "type": "string"},
+            "OperationForm": {"name": "email", "in": "formData", "type": "file"},
+        },
+        "paths": {
+            "/items": {
+                "parameters": [
+                    {"$ref": "#/parameters/PathBody"},
+                    {"$ref": "#/parameters/PathForm"},
+                ],
+                "post": {
+                    "parameters": [
+                        {"$ref": "#/parameters/OperationBody"},
+                        {"$ref": "#/parameters/OperationForm"},
+                    ],
+                },
+            },
+            "/upload": {
+                "parameters": [{"$ref": "#/parameters/PathForm"}],
+                "post": {
+                    "parameters": [{"$ref": "#/parameters/OperationForm"}],
+                },
+            },
+        },
+    }).encode())
+
+    operations = {
+        item["path"]: item
+        for item in openapi_semantics.extract_operations(
+            swagger,
+            "https://docs.target.test/swagger.json",
+        )
+    }
+
+    assert operations["/items"]["request_body"] == {
+        "content_types": [],
+        "kind": "body_parameter",
+        "parameter_name": "operationPayload",
+        "ref": "#/parameters/OperationBody",
+        "required": True,
+        "schema": {"type": "string"},
+    }
+    assert operations["/upload"]["request_body"] == {
+        "content_types": [],
+        "kind": "form_data",
+        "parameters": [{
+            "in": "formData",
+            "name": "email",
+            "required": False,
+            "type": "file",
+            "ref": "#/parameters/OperationForm",
+        }],
+    }
+
+
+def test_request_body_merge_flattens_and_bounds_conflicts():
+    def operation(body):
+        return {
+            "method": "POST",
+            "url": "https://api.target.test/items",
+            "parameters": [],
+            "request_body": body,
+            "sources": [body["source"]],
+            "spec_versions": ["3.0.0"],
+            "operation_ids": [],
+            "security_declarations": [],
+            "security_status": "unspecified",
+            "security_schemes": [],
+        }
+
+    bodies = [
+        {"kind": "request_body", "content_types": [f"application/x-{index}"], "source": str(index)}
+        for index in range(openapi_semantics.MAX_BODY_VARIANTS + 4)
+    ]
+    merged = openapi_semantics.merge_operations([operation(body) for body in bodies])[0]
+
+    assert merged["request_body"]["kind"] == "mixed"
+    assert len(merged["request_body"]["variants"]) == openapi_semantics.MAX_BODY_VARIANTS
+    assert merged["request_body"]["truncated"] is True
+    assert all(item.get("kind") != "mixed" for item in merged["request_body"]["variants"])
+
+
+def test_swagger2_form_data_is_bounded_during_collection():
+    swagger = openapi_semantics.parse_document(json.dumps({
+        "swagger": "2.0",
+        "info": {"title": "Form API"},
+        "host": "target.test",
+        "paths": {"/upload": {"post": {"parameters": [
+            {"name": f"field{index}", "in": "formData", "type": "string"}
+            for index in range(openapi_semantics.MAX_BODY_PARAMETERS + 20)
+        ]}}},
+    }).encode())
+
+    operation = openapi_semantics.extract_operations(
+        swagger,
+        "https://docs.target.test/swagger.json",
+    )[0]
+
+    assert len(operation["request_body"]["parameters"]) == openapi_semantics.MAX_BODY_PARAMETERS
 
 
 def test_duplicate_operations_merge_sources_and_preserve_security_conflict():

@@ -3119,6 +3119,8 @@ def run_marker_replay(
     target: str,
     url: str,
     expect_marker: str,
+    baseline_url: str = "",
+    baseline_body: str | None = None,
     method: str = "GET",
     headers: dict[str, str] | None = None,
     body: str = "",
@@ -3136,12 +3138,22 @@ def run_marker_replay(
     """Replay an exact request and require an inert marker in every response.
 
     This lane deliberately does not generate payloads. Claude/operator chooses
-    the hypothesis and exact safe marker request; the runner only handles stable
-    replay, evidence artifacts, rubric, and ledger output.
+    the hypothesis and exact safe marker request; an optional neutral baseline
+    proves the marker is not naturally present. The runner handles stable replay,
+    evidence artifacts, rubric, and ledger output.
     """
     marker = str(expect_marker or "")
     if not marker:
         raise ValueError("expect_marker is required")
+    baseline_url = str(baseline_url or "").strip()
+    if baseline_url and not url_belongs_to_target(baseline_url, target):
+        raise ValueError("marker baseline URL is off-target")
+    marker_bytes = marker.encode("utf-8", errors="replace")
+    marker_quality = {
+        "byte_length": len(marker_bytes),
+        "distinct_characters": len(set(marker)),
+        "sufficient": len(marker_bytes) >= 8 and len(set(marker)) >= 4,
+    }
     state_changing = _validate_request_facts(state_changing, redline_checked)
     finding_id = finding_id or _default_finding_id("marker-replay", url)
     bundle = _bundle_dir(repo_root, target, finding_id)
@@ -3152,6 +3164,25 @@ def run_marker_replay(
     runs: list[dict[str, Any]] = []
 
     for idx in range(1, repeat + 1):
+        baseline_response = None
+        baseline_artifacts = None
+        if baseline_url:
+            baseline_response = request_once(
+                target=target,
+                url=baseline_url,
+                method=method_u,
+                headers=headers,
+                body=body if baseline_body is None else baseline_body,
+                timeout=timeout,
+                session=session,
+            )
+            prefix = "" if repeat == 1 else f"{idx}."
+            baseline_artifacts = _write_raw_http(
+                private_bundle,
+                f"{prefix}baseline.",
+                baseline_response,
+                repo_root,
+            )
         response = request_once(
             target=target,
             url=url,
@@ -3162,24 +3193,76 @@ def run_marker_replay(
             session=session,
         )
         prefix = "" if repeat == 1 else f"{idx}."
-        raw_artifacts = _write_raw_http(private_bundle, prefix, response, repo_root)
+        raw_artifacts = _write_raw_http(
+            private_bundle,
+            f"{prefix}variant." if baseline_url else prefix,
+            response,
+            repo_root,
+        )
         marker_found = marker in response["body"]
-        runs.append({
+        run = {
             "iteration": idx,
             "url": public_url_shape(url),
             "method": method_u,
             "status": response["status"],
             "marker_found": marker_found,
+            "marker_occurrences": response["body"].count(marker),
             "artifacts": {
                 "request": raw_artifacts["request"],
                 "response": raw_artifacts["response"],
                 "identity": raw_artifacts["identity"],
             },
             "snapshot": _response_snapshot(response),
-        })
+        }
+        if baseline_response is not None and baseline_artifacts is not None:
+            run["baseline_marker_found"] = marker in baseline_response["body"]
+            run["baseline_marker_occurrences"] = baseline_response["body"].count(marker)
+            run["baseline_status"] = baseline_response["status"]
+            run["baseline_body_truncated"] = bool(baseline_response.get("body_truncated"))
+            run["baseline_artifacts"] = {
+                "request": baseline_artifacts["request"],
+                "response": baseline_artifacts["response"],
+                "identity": baseline_artifacts["identity"],
+            }
+            run["baseline_snapshot"] = _response_snapshot(baseline_response)
+        runs.append(run)
 
-    candidate_ready = all(bool(run["marker_found"]) for run in runs)
-    result = "tested_finding" if candidate_ready else "tested_clean"
+    marker_present = all(bool(run["marker_found"]) for run in runs)
+    baseline_valid = (
+        all(
+            200 <= int(run.get("baseline_status", 0) or 0) < 400
+            and not bool(run.get("baseline_body_truncated"))
+            for run in runs
+        )
+        if baseline_url
+        else None
+    )
+    baseline_absent = (
+        all(not bool(run.get("baseline_marker_found")) for run in runs)
+        if baseline_url and baseline_valid
+        else None
+    )
+    marker_oracle_passed = bool(
+        baseline_url
+        and baseline_valid
+        and baseline_absent
+        and marker_quality["sufficient"]
+        and marker_present
+    ) if baseline_url else None
+    oracle_status = (
+        "passed" if marker_oracle_passed
+        else "not_requested" if not baseline_url
+        else "invalid_control" if not baseline_valid
+        else "rejected"
+    )
+    candidate_ready = marker_present if not baseline_url else marker_oracle_passed
+    result = (
+        "tested_finding"
+        if candidate_ready
+        else "candidate"
+        if baseline_url and (baseline_valid is False or marker_present)
+        else "tested_clean"
+    )
     finding = {
         "type": vuln_class,
         "url": public_url_shape(url),
@@ -3190,6 +3273,10 @@ def run_marker_replay(
         "raw": (
             "rce-poc controlled marker exact request safe proof repeated"
             if candidate_ready
+        else "baseline control was invalid"
+            if baseline_url and baseline_valid is False
+        else "marker observed but baseline/marker oracle was not proven"
+            if baseline_url and marker_present
             else "exact marker replay did not show expected inert marker"
         ),
         "confidence": "high" if candidate_ready else "medium",
@@ -3199,14 +3286,15 @@ def run_marker_replay(
         "tested_finding"
         if candidate_ready and rubric.get("ready") is True
         else "signal"
-        if candidate_ready
+        if candidate_ready or (baseline_url and (baseline_valid is False or marker_present))
         else "tested_clean"
     )
     summary_path = bundle / "summary.json"
     evidence_ref = _rel(summary_path, repo_root)
     notes = (
         f"Validation runner marker-replay for {vuln_class}: "
-        f"marker_present={candidate_ready}, repeat={repeat}, method={method_u}."
+        f"marker_present={marker_present}, oracle={oracle_status}, "
+        f"repeat={repeat}, method={method_u}."
     )
     ledger = _record_ledger_if_needed(
         repo_root=repo_root,
@@ -3253,6 +3341,13 @@ def run_marker_replay(
         "generated_at": now_utc(),
         "result": result,
         "candidate_ready": candidate_ready,
+        "marker_oracle": {
+            "status": oracle_status,
+            "baseline_url": public_url_shape(baseline_url) if baseline_url else "",
+            "baseline_valid": baseline_valid,
+            "baseline_absent": baseline_absent,
+            "marker_quality": marker_quality,
+        },
         "expect_marker_length": len(marker.encode("utf-8", errors="replace")),
         "expect_marker_sha256": hashlib.sha256(marker.encode("utf-8", errors="replace")).hexdigest(),
         "state_changing": state_changing,
@@ -3582,10 +3677,20 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(marker)
     add_cli_args(marker)
     marker.add_argument("--url", required=True)
+    marker.add_argument(
+        "--baseline-url",
+        default="",
+        help="Optional target-owned control request used to prove baseline marker absence",
+    )
     marker.add_argument("--expect-marker", required=True)
     marker.add_argument("--method", default="GET")
     marker.add_argument("--header", action="append", default=[])
     marker.add_argument("--body", default="")
+    marker.add_argument(
+        "--baseline-body",
+        default=None,
+        help="Optional body for the marker-absent control request",
+    )
     marker.add_argument("--timeout", type=int, default=10)
     marker.add_argument("--repeat", type=int, default=1)
     marker.add_argument("--vuln-class", default="RCE")
@@ -3738,6 +3843,8 @@ def main(argv: list[str] | None = None) -> int:
             target=args.target,
             url=args.url,
             expect_marker=args.expect_marker,
+            baseline_url=args.baseline_url,
+            baseline_body=args.baseline_body,
             method=args.method,
             headers=parse_headers(args.header),
             body=args.body,

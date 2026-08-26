@@ -1,11 +1,12 @@
 """Tests for ReconAdapter — normalizes recon output across formats."""
 
 import gzip
+import hashlib
 import json
 import os
 import pytest
 
-from tools.recon_adapter import ReconAdapter, main as recon_adapter_main
+from tools.recon_adapter import FFUF_BODY_DIGEST_MAX_BYTES, ReconAdapter, main as recon_adapter_main
 
 
 def _ffuf_result(
@@ -17,8 +18,9 @@ def _ffuf_result(
     lines=2,
     content_type="text/html",
     fuzz="admin",
+    body=None,
 ):
-    return {
+    result = {
         "url": url,
         "status": status,
         "length": length,
@@ -29,6 +31,9 @@ def _ffuf_result(
         "input": {"FUZZ": fuzz},
         "host": url.split("/", 3)[2],
     }
+    if body is not None:
+        result["body"] = body
+    return result
 
 
 def _write_ffuf_jsonl(path, records, *, append=False):
@@ -419,6 +424,47 @@ class TestReconAdapterFfuf:
             ],
         )
         assert adapter.get_ffuf_control_filter_size(controls) == 0
+
+    def test_control_matching_binds_host_depth_and_body_digest(self, recon_dir, tmp_path):
+        artifact = recon_dir / "dirs" / "ffuf_results.jsonl"
+        _write_ffuf_jsonl(
+            artifact,
+            [_ffuf_result("https://target.com/a", length=321, body="real body")],
+        )
+        controls = tmp_path / "controls.jsonl"
+        _write_ffuf_jsonl(
+            controls,
+            [_ffuf_result("https://target.com/missing", length=321, body="control body")],
+        )
+
+        summary = ReconAdapter(recon_dir).summarize_ffuf_results(controls_path=controls)
+        heavy = summary["heavy_signatures"][0]
+
+        assert heavy["matches_random_miss_control"] is False
+        assert heavy["control_match_count"] == 0
+        assert heavy["control_match_ratio"] == 0.0
+
+    def test_projected_ffuf_body_is_digest_only(self):
+        observation = ReconAdapter._project_ffuf_result(
+            _ffuf_result("https://target.com/a", body="SECRET_BODY")
+        )
+
+        assert observation["body_sha256"] == hashlib.sha256(b"SECRET_BODY").hexdigest()
+        assert observation["body_digest_complete"] is True
+        assert "SECRET_BODY" not in json.dumps(observation)
+
+
+    def test_oversized_ffuf_body_digest_is_not_used_for_control_matching(self):
+        body = "A" * (FFUF_BODY_DIGEST_MAX_BYTES + 1)
+        observation = ReconAdapter._project_ffuf_result(
+            _ffuf_result("https://target.com/a", body=body)
+        )
+        control = ReconAdapter._project_ffuf_result(
+            _ffuf_result("https://target.com/missing", body=body)
+        )
+
+        assert observation["body_digest_complete"] is False
+        assert ReconAdapter._ffuf_control_matches(observation, control) is False
 
     def test_malformed_json_is_partial_evidence_not_total_failure(self, recon_dir):
         artifact = recon_dir / "dirs" / "ffuf_results.jsonl"

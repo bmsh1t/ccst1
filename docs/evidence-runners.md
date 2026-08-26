@@ -118,6 +118,23 @@ python3 tools/validation_runner.py marker-replay \
   --browser-observed
 ```
 
+For a stronger marker claim, add a target-owned neutral control. The runner
+records baseline absence and rejects weak or naturally present markers without
+turning the observation into `tested_clean`:
+
+```bash
+python3 tools/validation_runner.py marker-replay \
+  --target <target> \
+  --baseline-url '<neutral-control-url>' \
+  --url '<marker-request-url>' \
+  --expect-marker '<unique-inert-marker>' \
+  --vuln-class RCE
+```
+
+The neutral control must finish with a successful, non-truncated response. An
+error or truncated control keeps the replay as a `candidate` signal so it
+cannot become either `tested_finding` or `tested_clean`.
+
 ### Workflow sequence
 
 Use only an imported HAR/browser Network artifact with at least two ordered,

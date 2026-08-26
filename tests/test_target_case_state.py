@@ -552,6 +552,7 @@ def test_marker_runner_builds_complete_command_when_contract_is_satisfied(tmp_pa
         TARGET,
         runner="marker-replay",
         endpoint=f"{TARGET}/api/ready",
+        baseline_url=f"{TARGET}/api/neutral",
         expect_marker="MARKER",
         method="POST",
         priority="high",
@@ -562,6 +563,8 @@ def test_marker_runner_builds_complete_command_when_contract_is_satisfied(tmp_pa
     assert next_item["backlog_id"] == ready["id"]
     assert next_item["ready"] is True
     assert "--expect-marker MARKER" in next_item["command"]
+    assert f"--baseline-url {TARGET}/api/neutral" in next_item["command"]
+    assert next_item["baseline_url"] == f"{TARGET}/api/neutral"
     assert "--method POST" in next_item["command"]
 
 

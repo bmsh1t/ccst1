@@ -33,6 +33,10 @@ PLATFORM_PATHS = {
 }
 DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_PLATFORM_HOSTS = 20
+MAX_BODY_CONTENT_TYPES = 16
+MAX_BODY_PARAMETERS = 32
+MAX_BODY_VARIANTS = 16
+MAX_BODY_TEXT = 256
 URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.I)
 
 SPEC_CANDIDATE_GROUPS = (
@@ -226,6 +230,132 @@ def _normalize_parameter(spec: dict, raw: object) -> dict | None:
     return output
 
 
+def _bounded_text(value: object, *, limit: int = MAX_BODY_TEXT) -> str:
+    text = str(value or "").strip()
+    return text[:limit]
+
+
+def _schema_fact(spec: dict, raw: object) -> dict:
+    """Keep only small, reusable schema facts; never persist the full schema."""
+    resolved = _resolve_local_ref(spec, raw)
+    output: dict[str, str] = {}
+    if isinstance(raw, dict) and isinstance(raw.get("$ref"), str):
+        ref = _bounded_text(raw["$ref"])
+        if ref:
+            output["ref"] = ref
+    if not isinstance(resolved, dict):
+        return output
+    for key in ("type", "format"):
+        value = _bounded_text(resolved.get(key))
+        if value:
+            output[key] = value
+    return output
+
+
+def _media_types(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return sorted({
+        normalized
+        for item in value
+        if (normalized := _bounded_text(item, limit=128).lower())
+    })[:MAX_BODY_CONTENT_TYPES]
+
+
+def _request_body(spec: dict, path_item: dict, operation: dict) -> dict:
+    if spec["_ccst_spec_kind"] == "openapi3":
+        if "requestBody" not in operation:
+            return {}
+        raw_body = operation.get("requestBody")
+        body = _resolve_local_ref(spec, raw_body)
+        if not isinstance(body, dict):
+            return {"kind": "request_body", "required": "unknown", "content_types": []}
+        output: dict = {
+            "kind": "request_body",
+            "required": body.get("required") if isinstance(body.get("required"), bool) else (
+                "unknown" if "required" in body else False
+            ),
+            "content_types": [],
+            "content": {},
+        }
+        if isinstance(raw_body, dict) and isinstance(raw_body.get("$ref"), str):
+            output["ref"] = _bounded_text(raw_body["$ref"])
+        content = body.get("content")
+        if isinstance(content, dict):
+            for raw_type, media in sorted(content.items(), key=lambda item: str(item[0]).lower()):
+                content_type = _bounded_text(raw_type, limit=128).lower()
+                if not content_type or content_type in output["content"]:
+                    continue
+                output["content_types"].append(content_type)
+                schema = _schema_fact(spec, media.get("schema")) if isinstance(media, dict) else {}
+                output["content"][content_type] = {"schema": schema} if schema else {}
+                if len(output["content_types"]) == MAX_BODY_CONTENT_TYPES:
+                    break
+        return output
+
+    body_parameter: dict | None = None
+    body_ref = ""
+    form_parameters: dict[tuple[str, str], dict] = {}
+    for raw in list(path_item.get("parameters") or []) + list(operation.get("parameters") or []):
+        resolved = _resolve_local_ref(spec, raw)
+        if not isinstance(resolved, dict):
+            continue
+        location = str(resolved.get("in") or "").lower()
+        if location == "body":
+            # Swagger 2 operation parameters override path-level parameters.
+            body_parameter = resolved
+            body_ref = _bounded_text(raw.get("$ref")) if isinstance(raw, dict) else ""
+        elif location == "formdata":
+            name = _bounded_text(resolved.get("name"))
+            if not name:
+                continue
+            item = {
+                "name": name,
+                "in": "formData",
+                "required": resolved.get("required") if isinstance(resolved.get("required"), bool) else (
+                    "unknown" if "required" in resolved else False
+                ),
+            }
+            for key in ("type", "format", "collectionFormat"):
+                value = _bounded_text(resolved.get(key))
+                if value:
+                    item[key] = value
+            if isinstance(raw, dict) and isinstance(raw.get("$ref"), str):
+                item["ref"] = _bounded_text(raw["$ref"])
+            key = ("formData", name)
+            if key not in form_parameters and len(form_parameters) >= MAX_BODY_PARAMETERS:
+                continue
+            # Keep the latter declaration, matching _merge_parameters().
+            form_parameters[key] = item
+
+    consumes = _media_types(operation.get("consumes") if "consumes" in operation else spec.get("consumes"))
+    if body_parameter is not None:
+        output = {
+            "kind": "body_parameter",
+            "required": body_parameter.get("required") if isinstance(body_parameter.get("required"), bool) else (
+                "unknown" if "required" in body_parameter else False
+            ),
+            "content_types": consumes,
+        }
+        if (name := _bounded_text(body_parameter.get("name"))):
+            output["parameter_name"] = name
+        if (schema := _schema_fact(spec, body_parameter.get("schema"))):
+            output["schema"] = schema
+        if body_ref:
+            output["ref"] = body_ref
+        return output
+    if not form_parameters:
+        return {}
+    return {
+        "kind": "form_data",
+        "content_types": consumes,
+        "parameters": sorted(
+            form_parameters.values(),
+            key=lambda item: (item["name"], item.get("ref", "")),
+        )[:MAX_BODY_PARAMETERS],
+    }
+
+
 def _merge_parameters(spec: dict, path_item: dict, operation: dict) -> list[dict]:
     merged: dict[tuple[str, str], dict] = {}
     for raw in list(path_item.get("parameters") or []) + list(operation.get("parameters") or []):
@@ -338,6 +468,7 @@ def extract_operations(spec: dict, source_url: str) -> list[dict]:
             if normalized_method not in HTTP_METHODS or not isinstance(operation, dict):
                 continue
             parameters = _merge_parameters(spec, path_item, operation)
+            request_body = _request_body(spec, path_item, operation)
             security = _security_declaration(spec, operation)
             for server in _operation_servers(spec, path_item, operation, source_url):
                 url = _join_operation_url(server, str(operation_path), parameters)
@@ -352,12 +483,43 @@ def extract_operations(spec: dict, source_url: str) -> list[dict]:
                     "summary": str(operation.get("summary") or ""),
                     "api_title": title,
                     "parameters": parameters,
+                    "request_body": request_body,
                     "security_status": security["status"],
                     "security_schemes": security["schemes"],
                     "security_declarations": [{"source": source_url, **security}],
                     "sources": [source_url],
                     "spec_versions": [spec["_ccst_spec_version"]],
                 })
+    return output
+
+
+def _merge_request_bodies(left: object, right: object) -> dict:
+    if not isinstance(left, dict) or not left:
+        return right if isinstance(right, dict) else {}
+    if not isinstance(right, dict) or not right:
+        return left
+    candidates = []
+    prior_truncated = False
+    for value in (left, right):
+        if value.get("kind") == "mixed" and isinstance(value.get("variants"), list):
+            candidates.extend(value["variants"])
+            prior_truncated = prior_truncated or bool(value.get("truncated"))
+        else:
+            candidates.append(value)
+    unique = {
+        json.dumps(value, ensure_ascii=False, sort_keys=True): value
+        for value in candidates
+        if isinstance(value, dict) and value
+    }
+    variants = [unique[key] for key in sorted(unique)[:MAX_BODY_VARIANTS]]
+    if len(variants) == 1:
+        return variants[0]
+    output = {
+        "kind": "mixed",
+        "variants": variants,
+    }
+    if prior_truncated or len(unique) > MAX_BODY_VARIANTS:
+        output["truncated"] = True
     return output
 
 
@@ -379,6 +541,11 @@ def merge_operations(operations: list[dict]) -> list[dict]:
             for item in current["parameters"] + operation["parameters"]
         }
         current["parameters"] = sorted(parameters.values(), key=lambda item: (item["in"], item["name"]))
+        if "request_body" in current or "request_body" in operation:
+            current["request_body"] = _merge_request_bodies(
+                current.get("request_body", {}),
+                operation.get("request_body", {}),
+            )
         declarations = current["security_declarations"] + operation["security_declarations"]
         unique_declarations = {
             json.dumps(item, ensure_ascii=False, sort_keys=True): item
