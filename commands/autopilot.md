@@ -23,11 +23,10 @@ The bootstrap already ran arguments, read-only runtime compare, advisory capabil
 tools never block, trigger installation or request it, count as tested-clean, or hide material
 limits in the handoff. Use the matching `capabilities.lanes` record only to explain local readiness or choose a viable fallback; it never overrides the owner-selected Action Queue/state lane. Within one invocation, do not rerun the same failed source/tool; preserve
 cached/stale evidence as partial/blocked. `tools/external_arsenal.sh --versions` is diagnostics-only, never startup.
-Browser lanes use one active backend at a time and follow
-`docs/autopilot-lanes.md#browser-source-and-js` for selection, recovery, import,
-switching, and close. A persisted lane boundary may switch backends when unique
-evidence requires it; never probe both for availability, run both concurrently,
-or switch mid-workflow.
+Browser/source lanes use the selected contract in
+`docs/autopilot-lanes.md#browser-source-and-js`; keep one active backend and
+follow its recovery, import, switching, and close rules; never probe both for
+availability or switch mid-workflow.
 Run project commands as `cd -- <repo_root_shell> && ...`. Use
 `arguments.target_shell`, expand `arguments.hunt_auth_flags` (or
 `--auth-file <arguments.auth_file_shell>`) only when present, and apply
@@ -139,24 +138,23 @@ never treat prose or a raw endpoint as evidence. If `state.root_claim_next` exis
 so `finding_index` creates the canonical candidate and queue action before using
 its ID. Refresh state after every owner write-back.
 ## Execution Invariants
-Expert Hunter Autopilot is AI-first: the current AI session judges priority, impact, chain fit,
-promotion, reopen, and finish; deterministic owners preserve schema, evidence,
-replay, and durable state. Follow `skills/runtime-protocol.md`,
+Expert Hunter Autopilot is AI-first: the current AI session judges priority, impact,
+chain fit, promotion, reopen, and finish; deterministic owners preserve schema,
+evidence, replay, and durable state. Follow `skills/runtime-protocol.md`,
 `rules/tool-ai-boundary.md`, and
 `rules/hunting.md#broad-scanner-input-and-completion-contract`.
-Use `rules/hunting.md` value-first priorities. Scanner quick is an advisory breadth
+Use `rules/hunting.md` value-first priorities; scanner quick is an advisory breadth
 sensor, and scanner-negative is not completion.
 Business Model Read: after fresh Recon starts, write or refresh
 `evidence/<target>/business_model.md` from observed application purpose, actors,
-private objects, trust boundaries, sensitive workflows, and likely crown jewels.
-A fresh file may be reused for 30 days.
+private objects, trust boundaries, sensitive workflows, and likely crown jewels;
+a fresh file may be reused for 30 days.
 Promote Lead -> Signal -> Candidate -> Validated Finding only with practical,
 replayable raw request/response or a locatable evidence ref. Canonical finding
-writes go through `finding_index` and `/validate`, never direct `findings.json`
-edits. Partial/blocked is unresolved, not tested-clean; placeholder reports are
-not report-ready.
-Apply the four-layer routing in `skills/runtime-protocol.md`; memory/cards are
-decision inputs, never first-contact controllers or closure evidence.
+writes go through `finding_index` and `/validate`; partial/blocked is unresolved,
+not tested-clean, and placeholder reports are not report-ready.
+Apply the four-layer routing in `skills/runtime-protocol.md`; memory/cards are decision
+inputs, never first-contact controllers or closure evidence.
 ## Transition And Finish Contract
 Apply `arguments.checkpoint_trigger`: paranoid after each substantive state
 change, normal after a coherent lane batch, yolo only on blocker/handoff/finish.

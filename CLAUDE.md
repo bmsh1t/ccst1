@@ -33,8 +33,7 @@ production-looking brands、public-sector/government-style labels、account/logi
 
 ## User-facing language
 
-默认沿用用户语言并保持简洁；自然语言中解释内部字段，不复制完整 bootstrap JSON、令牌、内部路径
-或知识卡文件名，除非用户要求诊断/开发细节。命令、JSON、错误和机器输出保留精确字段、参数与原值。
+默认沿用用户语言并保持简洁；命令、JSON、错误和机器输出保留精确字段、参数与原值。
 
 ## Runtime Architecture
 
@@ -69,46 +68,27 @@ Target state / Evidence -> Coverage Matrix -> Skill / Context Router
 和 Skill 并遵守其契约；不要虚构用户未提供的命令参数。具体参数、工具权限和执行顺序
 以命令文件及其 parser/bootstrap 为准，本文件不复制完整命令清单。
 
-- Target/context：`/target`、`/scope`、`/context-pack`、`/kb`。
-- Discovery/intelligence：`/recon`、`/surface`、`/intel`、`/source-hunt`。
-- Active testing/resume：`/hunt`、`/pickup`；Claude Code 保留的 `/resume` 不用于目标续接。
-- Autonomous loop：`/autopilot`；需要一轮有界执行时使用 `/autopilot-round`。
-- Candidate lifecycle：`/triage`、`/validate`、`/chain`、`/report`、`/remember`。
-- Specialized workflows：按证据选择 Web3、token、credential、browser/JS、CI/CD 或移动端 Skill；
-  不因目录中存在某个专项就默认执行。
-- Governance/maintenance：`/check-coverage`、`/checkpoint`、`/retrospect`、
-  `/sync-check`、`/memory-gc`。
+- Context/discovery：`/target`、`/scope`、`/context-pack`、`/kb`、`/recon`、`/surface`、`/intel`。
+- Hunting/loop：`/hunt`、`/pickup`、`/autopilot`、`/autopilot-round`；`/resume` 不用于目标续接。
+- Lifecycle：`/triage`、`/validate`、`/chain`、`/report`、`/remember`；专项 Skill 只按证据选择。
+- Maintenance：`/check-coverage`、`/checkpoint`、`/retrospect`、`/sync-check`、`/memory-gc`。
 
 `/intel` and `/report` are the component-intelligence and reporting owners.
 Command discovery comes from `commands/`, not a hand-maintained list here.
 
 ## Tool and MCP Routing
 
-工具能力以当前 Claude session 实际暴露的工具面为准；缺失或不可用的 MCP 不得伪造为已执行，
-应使用项目脚本、源码/JS 或原生 HTTP 作为有界 fallback，也不得把工具缺失记为 tested-clean。
-
-- Chrome DevTools MCP：深度 DevTools、Network、Console、DOM 和 runtime 观察。
-- Playwright MCP：页面交互、认证 session、表单、截图和多角色流程；成功捕获通过
-  `tools/browser_mcp_import.py` 写回可定位的浏览器证据。
-- Burp/Caido MCP：已连接时用于代理历史、请求重放和差异对比，是辅助证据来源。
-- FofaMap MCP：仅在具体资产覆盖缺口时按证据调用；返回的第三方资产先保留为 chain context。
-- JSHook MCP：仅在已有运行时 JavaScript 证据时按需调用。
+工具能力以当前 Claude session 实际暴露的工具面为准；缺失的 MCP 使用
+`docs/tool-index.md` 中的项目脚本、源码/JS 或原生 HTTP fallback，不伪造已执行或 tested-clean。
 
 ## Context and Evidence Discipline
 
-- 除非命令已有 authoritative bootstrap，复杂目标任务先读取目标记忆并运行 `/context-pack`。
-- 一轮只选择一个主 Skill，并按当前证据读取 0-2 张知识卡；不要全量读取 Skills、
-  知识库、历史会话或大体积扫描日志。
-- 外部研究按需使用 Grok Search 或 Smartsearch；先选一个，结果不足或冲突时再使用另一个。
-- 先复用 target history、cached recon、structured findings、browser/JS/source 索引和
-  `/surface` 输出，再决定是否需要新的宽扫。
-- 原始 `all.txt`、JSONL、HTML 和完整响应保留在本地；默认只读摘要、分页或固定范围，
-  具体验证再按引用展开单条证据，不把完整 corpus 复制进上下文。
-- Validation gate 只用于 Candidate；有具体下一证据动作的 Lead/Signal 保持开放。
-- Temporary skips are per-current-target and per-current-invocation only；不得从旧目标、
-  `/pickup`、README 示例或旧会话继承。
-- 结束或交接前说明 covered、blocked、unknown、active leads 和 next actions；存在
-  actor/object/replay gap 时不得宣称覆盖完整。
+- 无 authoritative bootstrap 时，复杂任务先读取目标记忆并运行 `/context-pack`；一轮只选一个主 Skill，
+  按证据读取 0-2 张知识卡，不全量读取 Skills、知识库、历史或大日志。
+- 先复用摘要、索引和缓存证据；原始响应只按引用展开，Validation gate 只用于 Candidate。
+- 外部研究按需选择 Grok 或 Smartsearch；结果不足或冲突时再使用另一个。
+- Temporary skips are per-current-target and per-current-invocation only；交接说明 covered、blocked、unknown、
+  active leads、next actions，存在 actor/object/replay gap 时不得宣称覆盖完整。
 
 ## Runtime Boundaries
 
@@ -125,15 +105,10 @@ LOAD -> REVIEW EVIDENCE -> ENRICH -> TEST -> CHAIN -> RECORD
 
 ## Egress Proxy (Resin)
 
-Resin 是可选出口。非密钥连接信息位于 `config.json` 的 `resin`，但不要把
-rotate/sticky mode 写入配置；`RESIN_PROXY_TOKEN` 只存放在 gitignored `.env`。
-不得读取、打印或复制原始 `.env` 值到 prompt、日志、报告或文档；Runtime 工具
-只能访问 `CredentialStore` 明确允许的字段。
-
-- 启用 Resin 时，公网 recon/scanner/login/session/multi-step 默认使用每个 target/job
-  稳定的 **sticky** Account。
-- 只有用户明确要求轮换出口时使用 **rotate**。
-- localhost、RFC1918 和其他私网目标始终 **bypass** Resin。
+Resin 配置与密钥规则见 `docs/resin-proxy.md`；token 只存于 gitignored `.env`，不得打印或持久化。
+启用时公网 recon/scanner/login/session/multi-step
+默认使用每个 target/job 稳定的 **sticky** Account，只有用户明确要求轮换出口时使用 **rotate**，
+localhost、RFC1918 和其他私网目标始终 **bypass** Resin。
 
 `hunt.py` 不自动接线代理；按 `docs/resin-proxy.md` 设置环境变量或工具代理参数。
 
