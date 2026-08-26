@@ -86,7 +86,7 @@ Command discovery comes from `commands/`, not a hand-maintained list here.
 - 无 authoritative bootstrap 时，复杂任务先读取目标记忆并运行 `/context-pack`；一轮只选一个主 Skill，
   按证据读取 0-2 张知识卡，不全量读取 Skills、知识库、历史或大日志。
 - 先复用摘要、索引和缓存证据；原始响应只按引用展开，Validation gate 只用于 Candidate。
-- 外部研究按需选择 Grok 或 Smartsearch；结果不足或冲突时再使用另一个。
+- 外部研究按需选择 Grok Search 或 Smartsearch；结果不足或冲突时再使用另一个。
 - Temporary skips are per-current-target and per-current-invocation only；交接说明 covered、blocked、unknown、
   active leads、next actions，存在 actor/object/replay gap 时不得宣称覆盖完整。
 

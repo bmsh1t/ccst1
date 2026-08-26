@@ -33,13 +33,18 @@ controller alone claims lanes, writes owner state, and decides closure.
 
 - Every substantive candidate is claimed before replay with
   `python3 tools/action_queue.py claim --target <target_shell> --id <id> --metadata-json '<activation-object>'`.
-  Activation records `depth_contract_version=1`, target `hypothesis_id`, open
-  `family`/`technique`, selected Skill and optional `selected_knowledge_refs`, one `active_dimension`,
-  `expected_learning`, `kill_condition`, `risk_tier`, and `max_hypothesis_actions`
+  The activation object is exact, not a prose hint. Required fields are
+  `depth_contract_version=1`, `hypothesis_id`, `family`, `technique`, `active_dimension`,
+  `expected_learning`, `kill_condition`, `decision_reason`, `input_boundary`, `endpoint`,
+  `method`, a `skill_route` object, target-owned `evidence_ref` and `baseline_ref`,
+  `risk_tier`, and `max_hypothesis_actions`. `skill_route` requires a real
+  `skills/{skill_id}/SKILL.md` path and non-empty `required_dimensions`.
+  `selected_knowledge_refs` is optional and may be empty. `max_hypothesis_actions` is
   no greater than the stored `metadata.max_hypothesis_actions_cap`. The cap is
   Queue-owned: never submit, repair, or increase it in claim metadata. Missing cap
   requires checkpoint re-ingest; invalid cap remains for owner repair. On claim
-  failure inspect stderr and stored state once, then stop without guessing/retry.
+  failure inspect the single diagnostic and stored state once, then stop without
+  guessing/retry; do not retry an incomplete object.
 - Queue identity rejects duplicate endpoint/method/family/technique/actor/object/
   workflow/dimension work without new evidence or a recorded repeat reason.
   Runner alone writes `last_outcome`, `tested_dimensions`, replayable refs, and
@@ -88,7 +93,12 @@ controller alone claims lanes, writes owner state, and decides closure.
 - Browser actions use only visible Playwright/Chrome MCP, with one active backend at a time: choose Chrome DevTools MCP for deep Network/Runtime/Console/performance work, or Playwright MCP for page interaction, authentication, and workflow capture. Choose from evidence before making any MCP call; never probe both for availability (sequentially or concurrently) because a probe may start both browsers, and never run both concurrently. Never run `agent-browser` or `playwright-cli` through Bash. First use is a harmless page-list/session probe: reuse a matching same-target session, or close stale/unrelated pages before opening a context. Retry once only for timeout, disconnect, or closed-context errors; missing/configuration/permission/protocol errors do not retry.
 - After a second failure, checkpoint the blocker in the existing Action Queue, pivot to JS/source/API evidence, and probe again only next invocation, after repair, or on explicit operator retry. On success import native artifacts via `tools/browser_mcp_import.py` (`--auth-required` for authenticated captures). Missing Network/state stays partial.
 - Reuse one visible browser/MCP session per invocation. Never close or switch while an authenticated or stateful workflow still depends on in-memory browser state. If unique evidence requires the other backend, switch only at a lane boundary after the current workflow is complete and its artifacts plus recoverable session references are persisted; otherwise defer that backend to the next invocation. Close the current session first, record the handoff, and open the replacement only after the close succeeds. After importing the required artifacts, call the session's native `browser_close`/equivalent before handoff, finish, or an intentional pivot; do not open a second session to replace an unclosed one. If close is unavailable or fails, record the browser session as `partial`/`blocked` and leave the next invocation to repair it.
-- Use `tools/source_intel.py`/`tools/js_reader.py`; `tools/deep_js_packer.py` requires concrete runtime/chunk/source-map evidence; JS volume alone is not a trigger. Partial/unavailable stays open.
+- Use `tools/source_intel.py`/`tools/js_reader.py`; `js-reader` is an Agent handoff,
+  not a Queue Skill. Never use `agents/js-reader.md` or `commands/js-read.md` as
+  `skill_route`; a JS-derived Queue action normally uses the real
+  `skills/web2-recon/SKILL.md` route with explicitly selected dimensions.
+  `tools/deep_js_packer.py` requires concrete runtime/chunk/source-map evidence;
+  JS volume alone is not a trigger. Partial/unavailable stays open.
 
 ## Software And Intel
 

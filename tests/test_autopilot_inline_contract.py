@@ -228,6 +228,27 @@ def test_versioned_claim_uses_the_stored_cap_without_guessing_retries():
     assert "stop without guessing/retry" in command
 
 
+def test_activation_contract_lists_required_fields_and_js_agent_route_boundary():
+    lanes = " ".join(_read("docs/autopilot-lanes.md").split())
+    js_command = " ".join(_read("commands/js-read.md").split())
+
+    for field in (
+        "depth_contract_version=1",
+        "decision_reason",
+        "input_boundary",
+        "endpoint",
+        "method",
+        "evidence_ref",
+        "baseline_ref",
+        "risk_tier",
+        "max_hypothesis_actions",
+    ):
+        assert field in lanes
+    assert "`js-reader` is an Agent handoff" in lanes
+    assert "not a Queue Skill" in js_command
+    assert "skills/web2-recon/SKILL.md" in js_command
+
+
 def test_controller_prompt_stays_within_utf8_budget():
     command = _read("commands/autopilot.md")
     lanes = _read("docs/autopilot-lanes.md")

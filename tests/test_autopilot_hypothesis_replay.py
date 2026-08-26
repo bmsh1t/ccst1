@@ -175,6 +175,22 @@ def test_versioned_claim_reports_missing_stored_cap_without_writing(tmp_path):
     assert load_queue(tmp_path, TARGET)["actions"][0]["status"] == "queued"
 
 
+def test_versioned_claim_reports_all_missing_activation_fields_without_writing(tmp_path):
+    baseline = f"evidence/{TARGET}/correlation/baseline.json"
+    context = _activation_context(baseline)
+    context.pop("input_boundary")
+    action_id, queue_path = _queued_depth_action(tmp_path, context=context)
+    before = queue_path.read_bytes()
+    activation = _activation()
+    activation.pop("decision_reason")
+
+    with pytest.raises(ValueError, match="decision_reason, input_boundary"):
+        claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=activation)
+
+    assert queue_path.read_bytes() == before
+    assert load_queue(tmp_path, TARGET)["actions"][0]["status"] == "queued"
+
+
 def test_versioned_claim_cannot_override_queue_owned_cap(tmp_path):
     action_id, queue_path = _queued_depth_action(tmp_path)
     before = queue_path.read_bytes()

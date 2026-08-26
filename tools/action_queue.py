@@ -314,10 +314,20 @@ def _prepare_claim_metadata(
 
     if merged.get("depth_contract_version") != DEPTH_CONTRACT_VERSION:
         raise ValueError("Action Queue claim requires depth_contract_version=1 activation metadata")
-    for field in (
+    required_activation_fields = (
         "hypothesis_id", "family", "technique", "active_dimension",
         "expected_learning", "kill_condition", "decision_reason", "input_boundary",
-    ):
+    )
+    missing_activation_fields = [
+        field for field in required_activation_fields
+        if not _compact_text(merged.get(field))
+    ]
+    if missing_activation_fields:
+        raise ValueError(
+            "Action Queue depth contract requires activation fields: "
+            + ", ".join(missing_activation_fields)
+        )
+    for field in required_activation_fields:
         merged[field] = _bounded_metadata_text(merged.get(field), field)
     merged["endpoint"] = _bounded_metadata_text(
         merged.get("endpoint") or merged.get("url"), "endpoint"

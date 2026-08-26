@@ -47,6 +47,10 @@ Then use the `js-reader` agent on:
 findings/target.com/js_intel/materials.json
 ```
 
+`js-reader` is an Agent, not a Queue Skill. Do not place `agents/js-reader.md` or
+`commands/js-read.md` in `skill_route`; when JS evidence creates a substantive
+Queue action, select a real Skill path, normally `skills/web2-recon/SKILL.md`.
+
 The preparation step is local-only and does not call an LLM. The agent reads the prepared materials and selected cached JS files.
 
 ## What This Produces
