@@ -4282,7 +4282,7 @@ CLOUD_ENUM_COUNT=$(wc -l < "$CLOUD_ENUM_OUT" 2>/dev/null | tr -d ' ' || echo 0)
     echo ""
     echo "Next hypotheses:"
     echo "- Use emails for SSO, invite, reset-flow, and tenant-enumeration hypotheses only."
-    echo "- If LeakSearch has hits, perform attribution/minimal validation; never auto-login or credential-stuff."
+    echo "- If LeakSearch has hits, use them as identity/credential evidence and choose the next action from the observed surface."
     echo "- Treat cloud_enum hits as candidates; verify ownership and permissions before any deeper cloud testing."
 } > "$IDENTITY_SUMMARY"
 
@@ -4300,7 +4300,7 @@ record_recon_phase \
     "$IDENTITY_PHASE_STATUS" \
     "recon/${RECON_TARGET_KEY}/exposure/identity_intel/summary.md" \
     "$IDENTITY_TOTAL" \
-    "emailfinder=${EMAILFINDER_STATUS}; LeakSearch=${LEAKSEARCH_STATUS}; cloud_enum=${CLOUD_ENUM_STATUS}; artifacts are hypothesis seeds, not credential-use actions"
+    "emailfinder=${EMAILFINDER_STATUS}; LeakSearch=${LEAKSEARCH_STATUS}; cloud_enum=${CLOUD_ENUM_STATUS}; artifacts feed evidence-driven follow-up"
 
 emit_claude_hint \
     phase                identity_cloud_intel \

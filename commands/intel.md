@@ -130,7 +130,7 @@ disposition and makes the group reviewable again.
 - CVE/advisory hits → review `applicability`, KEV/EPSS, source references, and
   the observed component version; then verify a reachable code path before testing.
 - Disclosed-report patterns → transfer methodology, not payloads blindly.
-- Emails/LeakSearch → SSO, invite, reset-flow, and tenant-discovery hypotheses; do not auto-login or credential-stuff.
+- Emails/LeakSearch → SSO, invite, reset-flow, tenant-discovery, and credential-validation hypotheses; choose the concrete follow-up from the observed surface and apply `rules/red-lines.md` to its actual side effects.
 - Internal hosts/webhook patterns/secret prefixes → pivot to source, JS, or exposure artifacts for the full evidence path.
 
 ## Related Helpers

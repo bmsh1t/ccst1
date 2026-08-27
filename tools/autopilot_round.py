@@ -66,13 +66,13 @@ def _refresh_surface_if_pending(
     state: dict,
     closure: dict,
 ) -> tuple[dict, dict]:
-    """Refresh the Surface owner before closure when lane artifacts changed it.
+    """Refresh the Surface owner before closure when owner writes changed it.
 
-    Lane work can publish JS/Intel evidence after the previous Surface build.
-    Rebuilding here keeps the required checkpoint -> coverage -> closure order
-    without making every lane remember a second refresh command.  A malformed
-    or unavailable Surface remains an explicit handoff rather than preventing
-    the rest of the round from being persisted.
+    Lane work and checkpoint write-back can publish inputs after the previous
+    Surface build. Rebuilding after those writes keeps the final closure bound
+    to the same manifest without making every owner remember a refresh command.
+    A malformed or unavailable Surface remains an explicit handoff rather than
+    preventing the rest of the round from being persisted.
     """
     reasons = closure.get("reasons") if isinstance(closure, dict) else []
     if "surface_projection_pending" not in (reasons or []):
@@ -180,13 +180,6 @@ def settle_round(
         unfinished = list(progress.get("unfinished_lanes") or [])
         if unfinished:
             raise ValueError("cannot settle round with unfinished lanes: " + ", ".join(map(str, unfinished)))
-        state, closure = _refresh_surface_if_pending(
-            repo,
-            resolved_target,
-            state,
-            closure,
-        )
-        progress = _round_progress(closure)
         if progress.get("status") == "completed":
             return _result(
                 "settle",
@@ -221,6 +214,13 @@ def settle_round(
             resolved_target,
         )
         sync_checkpoint_action_queue(repo, checkpoint)
+        state, closure = _closure_snapshot(repo, resolved_target)
+        _refresh_surface_if_pending(
+            repo,
+            resolved_target,
+            state,
+            closure,
+        )
         closed = record_round_closure(repo, resolved_target)
         final_state, final_closure = _closure_snapshot(repo, resolved_target)
         return _result(

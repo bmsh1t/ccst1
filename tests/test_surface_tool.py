@@ -129,6 +129,41 @@ class TestSurfaceContext:
         assert context["recon_artifacts"]["ready"] is True
         assert context["recon_artifacts"]["counts"]["hosts"] == 1
 
+    def test_surface_uses_calibration_from_selected_memory_dir(self, tmp_path):
+        recon_dir = tmp_path / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir()
+        (recon_dir / "js").mkdir()
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [GraphQL] [100]\n",
+            encoding="utf-8",
+        )
+
+        memory_dir = tmp_path / "hunt-memory"
+        (memory_dir / "targets").mkdir(parents=True)
+        save_target_profile(memory_dir, make_target_profile("target.com", tech_stack=["graphql"]))
+        PatternDB(memory_dir / "patterns.jsonl").save(make_pattern_entry(
+            target="alpha.com",
+            vuln_class="IDOR",
+            technique="numeric_id_swap",
+            tech_stack=["graphql"],
+        ))
+        calibration = memory_dir / "pattern_calibration.jsonl"
+        calibration.write_text(
+            "\n".join(
+                json.dumps({
+                    "pattern_id": "alpha.com|IDOR|numeric_id_swap",
+                    "outcome": "false_positive",
+                })
+                for _ in range(5)
+            ) + "\n",
+            encoding="utf-8",
+        )
+
+        context = load_surface_context(tmp_path, "target.com", memory_dir=memory_dir)
+
+        assert context["pattern_matches"] == []
+
 
 def test_surface_marks_exact_target_owned_new_observations_without_score_bonus(tmp_path):
     recon_dir = tmp_path / "recon" / "target.com"

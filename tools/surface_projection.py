@@ -137,6 +137,24 @@ def _semantic_evidence_ledger(repo_root: Path, target: str) -> dict:
     }
 
 
+def _semantic_pattern_calibration(path: Path) -> dict:
+    """Project only the calibration decisions that can change Surface ranking."""
+    try:
+        try:
+            from tools.pattern_calibration import excluded_pattern_ids
+        except ImportError:  # pragma: no cover - direct tools/ execution
+            from pattern_calibration import excluded_pattern_ids  # type: ignore
+        excluded = sorted(str(pattern_id) for pattern_id in excluded_pattern_ids(path))
+    except Exception:
+        # PatternDB.match(calibrated=True) treats an unreadable optional
+        # calibration file as no exclusions; keep the manifest equivalent.
+        excluded = []
+    return {
+        "kind": "pattern_calibration_effective_projection",
+        "excluded_pattern_ids": excluded,
+    }
+
+
 def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -198,7 +216,7 @@ def _manifest_roots(
         (repo_root / "state" / storage_key / "observations-summary.json", frozenset()),
     ]
     if memory_dir:
-        memory_root = Path(memory_dir)
+        memory_root = Path(memory_dir).resolve()
         roots.extend(
             [
                 (memory_root / "targets" / f"{storage_key}.json", frozenset()),
@@ -223,6 +241,11 @@ def build_surface_input_manifest(
         f"state/{storage_key}/action_queue.json": _semantic_action_queue,
         f"memory/evidence/{storage_key}/ledger.jsonl": _semantic_evidence_ledger,
     }
+    if memory_dir and Path(memory_dir).resolve().exists():
+        calibration_path = Path(memory_dir).resolve() / "pattern_calibration.jsonl"
+        semantic_paths[_path_label(repo, calibration_path)] = (
+            lambda _repo, _target, path=calibration_path: _semantic_pattern_calibration(path)
+        )
     items: list[dict] = []
     seen: set[str] = set()
     for root, skip_parts in _manifest_roots(repo, resolved, memory_dir=memory_dir):

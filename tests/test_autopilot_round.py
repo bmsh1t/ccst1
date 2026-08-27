@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing
 import time
+from contextlib import nullcontext
 
 import pytest
 
@@ -124,6 +125,57 @@ def test_pending_surface_refresh_failure_preserves_handoff(monkeypatch, tmp_path
         "target.com",
         *original,
     ) == original
+
+
+def test_settle_refreshes_surface_after_checkpoint_queue_writeback(monkeypatch, tmp_path):
+    events = []
+    target = "target.com"
+    state = {"resolved_target": target}
+    closure = {
+        "reasons": ["surface_projection_pending"],
+        "round_progress": {"status": "active", "unfinished_lanes": []},
+    }
+
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "checkpoint_witness_lock",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(autopilot_round_module, "_closure_snapshot", lambda *_args: (state, closure))
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "reconcile_root_finding_claims",
+        lambda *_args, **_kwargs: events.append("reconcile") or {},
+    )
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "build_checkpoint",
+        lambda *_args, **kwargs: events.append("checkpoint") or {
+            "target": kwargs["target"],
+            "next_action_queue": [],
+        },
+    )
+    monkeypatch.setattr(autopilot_round_module, "list_root_finding_claims", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "sync_checkpoint_action_queue",
+        lambda *_args, **_kwargs: events.append("sync"),
+    )
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "_refresh_surface_if_pending",
+        lambda *_args, **_kwargs: events.append("refresh") or (state, closure),
+    )
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "record_round_closure",
+        lambda *_args, **_kwargs: events.append("close") or {"round_progress": {"status": "completed"}},
+    )
+
+    result = settle_round(tmp_path, target, refresh_coverage=False)
+
+    assert result["status"] == "settled"
+    assert events == ["reconcile", "checkpoint", "sync", "refresh", "close"]
 
 
 def test_settle_round_blocks_concurrent_lane_claim_until_round_is_closed(monkeypatch, tmp_path):

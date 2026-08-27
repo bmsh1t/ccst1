@@ -1766,7 +1766,11 @@ def load_surface_context(
             # patterns by passing calibrated=True; PatternDB.match() consults
             # hunt-memory/pattern_calibration.jsonl and excludes patterns
             # with samples>=5 AND precision<0.2.
-            for pattern in pattern_db.match(tech_stack=tech_stack, calibrated=True):
+            for pattern in pattern_db.match(
+                tech_stack=tech_stack,
+                calibrated=True,
+                calibration_path=Path(memory_dir) / "pattern_calibration.jsonl",
+            ):
                 if pattern.get("target") == target:
                     continue
                 pattern_matches.append({

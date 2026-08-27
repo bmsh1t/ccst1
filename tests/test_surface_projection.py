@@ -205,6 +205,51 @@ def test_first_non_closing_ledger_append_keeps_projection_valid(tmp_path):
     assert load_surface_projection(tmp_path, "target.com")["status"] == "valid"
 
 
+def test_calibration_manifest_tracks_effective_exclusions_only(tmp_path):
+    _write_surface_inputs(tmp_path)
+    memory_dir = tmp_path / "hunt-memory"
+    memory_dir.mkdir()
+    manifest = build_surface_input_manifest(
+        tmp_path,
+        "target.com",
+        memory_dir=memory_dir,
+    )
+    write_surface_projection(
+        tmp_path,
+        "target.com",
+        _ranked(),
+        manifest=manifest,
+        memory_dir=memory_dir,
+    )
+
+    calibration = memory_dir / "pattern_calibration.jsonl"
+    calibration.write_text("", encoding="utf-8")
+    assert load_surface_projection(
+        tmp_path,
+        "target.com",
+        memory_dir=memory_dir,
+    )["status"] == "valid"
+
+    calibration.write_text(
+        json.dumps({"pattern_id": "p1", "outcome": "no_signal"}) + "\n",
+        encoding="utf-8",
+    )
+    assert load_surface_projection(
+        tmp_path,
+        "target.com",
+        memory_dir=memory_dir,
+    )["status"] == "valid"
+
+    with calibration.open("a", encoding="utf-8") as handle:
+        for _ in range(5):
+            handle.write(json.dumps({"pattern_id": "p1", "outcome": "false_positive"}) + "\n")
+    assert load_surface_projection(
+        tmp_path,
+        "target.com",
+        memory_dir=memory_dir,
+    )["status"] == "stale"
+
+
 def test_projection_ignores_recon_finalize_manifest(tmp_path):
     recon_dir = _write_surface_inputs(tmp_path)
     manifest = build_surface_input_manifest(tmp_path, "target.com")

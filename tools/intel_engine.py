@@ -261,7 +261,7 @@ def _resolve_leaksearch() -> list[str] | None:
 def run_identity_intel(target: str, timeout: int = 180, *, repo_root: str | Path | None = None) -> dict:
     """运行轻量身份/凭据情报采集。
 
-    这不是 finding，也不会尝试登录或撞库；结果仅作为 /intel 假设燃料。
+    这不是 finding；结果作为 /intel 的身份与凭据假设输入，后续动作由调用方按实际副作用决定。
     """
     resolved_target = canonical_target_value(target)
     target_key = target_storage_key(resolved_target)
@@ -309,7 +309,7 @@ def run_identity_intel(target: str, timeout: int = 180, *, repo_root: str | Path
         "",
         "Next hypotheses:",
         "- 检查登录/SSO/找回密码是否存在账号枚举或租户枚举。",
-        "- 若 LeakSearch 有命中，只做最小化验证和归属确认，不做自动登录/撞库。",
+        "- 若 LeakSearch 有命中，将其作为身份/凭据证据，按观察到的登录面选择后续验证。",
         "- 将邮箱模式与邀请流、OAuth/SAML、support/admin 面结合验证。",
         "",
     ]

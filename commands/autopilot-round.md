@@ -144,8 +144,9 @@ cd -- <repo_root_shell> && python3 tools/autopilot_round.py settle --target <tar
 
 The coordinator refuses any `started` lane before writes, then orders Coverage
 refresh/checkpoint build, Action Queue sync, round closure, and final bounded
-Closure projection. Repeating settle after round completion is read-only and
-returns `status=already_settled`; it never replays target work.
+Closure projection; the Surface owner refreshes after any resulting input
+changes and before round closure. Repeating settle after round completion is
+read-only and returns `status=already_settled`; it never replays target work.
 
 `round_progress.budget_reached` only ends target work for this invocation. The
 final verdict is recomputed from current Queue, Finding, Case State, coverage,

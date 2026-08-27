@@ -47,9 +47,9 @@ manual review lane.
 | `porch-pirate` Postman search | `recon/<target>/exposure/api_leaks/postman_leaks.txt` | Look for workspace/collection URLs, environment names, tokens, and non-production API hosts |
 | `postleaksNg` | `recon/<target>/exposure/api_leaks/postleaks_urls.txt`, `postleaksNg.log`, `postleaksNg/` | Extract collection/spec URLs; feed interesting files into `/secrets-hunt --filesystem recon/<target>/exposure/api_leaks/` when non-empty |
 | Osmedeus `SwaggerSpy` | `recon/<target>/exposure/api_leaks/swagger_leaks.txt` | Treat as API-spec discovery candidates; validate liveness and auth boundary before broad fuzzing |
-| Verified secret pass | `recon/<target>/exposure/api_leak_trufflehog_verified.jsonl` | Minimal attribution/usability check; do not auto-login or credential-stuff |
+| Verified secret pass | `recon/<target>/exposure/api_leak_trufflehog_verified.jsonl` | Evidence for attribution/usability and follow-up validation; choose the concrete action from the observed surface and apply `rules/red-lines.md` |
 | `emailfinder` | `recon/<target>/exposure/identity_intel/emails.txt` | Seed tenant, reset-flow, invite, SSO, and username-format hypotheses |
-| `LeakSearch` | `recon/<target>/exposure/identity_intel/leaksearch.txt`, `summary.md` | Attribute hits to the target; use as identity/intel leads, not automatic login attempts |
+| `LeakSearch` | `recon/<target>/exposure/identity_intel/leaksearch.txt`, `summary.md` | Attribute hits to the target and derive identity/credential hypotheses for the next evidence-backed action |
 | `cloud_enum` | `recon/<target>/exposure/cloud/cloud_enum.txt`, `cloud_enum.log` | Treat as candidate cloud ownership evidence; pivot to `/cloud-recon` or minimal ownership checks |
 | Generic asset relations | `recon/<target>/exposure/asset_relation_*` | Queue `scope-review`; keep external relations non-executable |
 | Batch ranking | `recon/<list-stem>/surface_ranking.txt`, `ai_handoff.md`, `high_value_targets.json` | Pick completed domains with concrete signals; never hunt `recon/<list-stem>/` as a target |
