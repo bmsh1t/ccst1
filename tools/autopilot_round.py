@@ -60,6 +60,19 @@ def _round_progress(closure: dict) -> dict:
     return dict(progress) if isinstance(progress, dict) else {}
 
 
+def _surface_projection_pending(state: dict, closure: dict) -> bool:
+    reasons = closure.get("reasons") if isinstance(closure, dict) else []
+    if "surface_projection_pending" in (reasons or []):
+        return True
+    projection = state.get("surface_projection") if isinstance(state, dict) else {}
+    return (
+        isinstance(projection, dict)
+        and bool(projection)
+        and bool(state.get("has_recon") or state.get("surface_context_required"))
+        and str(projection.get("status") or "").strip().lower() != "valid"
+    )
+
+
 def _refresh_surface_if_pending(
     repo_root: Path,
     target: str,
@@ -71,11 +84,11 @@ def _refresh_surface_if_pending(
     Lane work and checkpoint write-back can publish inputs after the previous
     Surface build. Rebuilding after those writes keeps the final closure bound
     to the same manifest without making every owner remember a refresh command.
-    A malformed or unavailable Surface remains an explicit handoff rather than
-    preventing the rest of the round from being persisted.
+    A malformed or unavailable Surface remains an explicit handoff; checkpoint
+    write-back may persist, but the round itself stays open until the projection
+    is valid again.
     """
-    reasons = closure.get("reasons") if isinstance(closure, dict) else []
-    if "surface_projection_pending" not in (reasons or []):
+    if not _surface_projection_pending(state, closure):
         return state, closure
     try:
         build_surface_review(repo_root, target, refresh=True)
@@ -215,12 +228,22 @@ def settle_round(
         )
         sync_checkpoint_action_queue(repo, checkpoint)
         state, closure = _closure_snapshot(repo, resolved_target)
-        _refresh_surface_if_pending(
+        state, closure = _refresh_surface_if_pending(
             repo,
             resolved_target,
             state,
             closure,
         )
+        if _surface_projection_pending(state, closure):
+            return _result(
+                "settle",
+                resolved_target,
+                status="handoff",
+                state=state,
+                closure=closure,
+                round_progress=progress,
+                checkpoint=checkpoint,
+            )
         closed = record_round_closure(repo, resolved_target)
         final_state, final_closure = _closure_snapshot(repo, resolved_target)
         return _result(
