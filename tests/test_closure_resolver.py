@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from closure_resolver import (
+    CANONICAL_VULN_CLASSES,
+    CLOSURE_FAMILIES,
     ClosureResolver,
     canonical_endpoint_identity,
     canonical_endpoint_path,
@@ -11,6 +15,8 @@ from closure_resolver import (
     extract_endpoint_path,
     from_summary,
 )
+from coverage_matrix import normalize_vuln_class
+from identity_contract import build_closure_cell
 
 
 def test_endpoint_normalization_strips_query_fragment_and_trailing_slash():
@@ -42,6 +48,32 @@ def test_vuln_normalization_unknown_and_generic_fail_open():
     assert canonical_vuln_class("generic") == ""
     assert canonical_vuln_class("totally-unknown") == ""
     assert canonical_vuln_class("") == ""
+
+
+def test_workflow_is_closeable_without_expanding_coverage_taxonomy():
+    assert "Workflow" in CLOSURE_FAMILIES
+    assert "Workflow" not in CANONICAL_VULN_CLASSES
+    assert canonical_vuln_class("workflow") == "Workflow"
+
+    cell = build_closure_cell(
+        "/checkout",
+        "workflow",
+        {"workflow": "checkout", "transition": "pay", "actor": "owner"},
+    )
+    assert cell.complete and cell.key is not None
+    resolver = ClosureResolver({
+        "closed_cells_v2": [{
+            "identity_v2": cell.key.to_dict(),
+            "result": "tested_clean",
+        }],
+    })
+    assert resolver.is_closure_closed(cell.key)
+    assert resolver.closed_result(
+        "/checkout", "Workflow", identity_v2=cell.key
+    ) == "tested_clean"
+
+    with pytest.raises(ValueError, match="unknown vuln_class"):
+        normalize_vuln_class("Workflow")
 
 
 def test_closed_cell_from_ledger_closed_cells():

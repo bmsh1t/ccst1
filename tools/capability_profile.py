@@ -99,9 +99,10 @@ def _lane_record(
     degraded: tuple[str, ...] = (),
     classification: str = "executable",
     runtime_status: str | None = None,
+    ready_override: bool | None = None,
 ) -> dict:
     encoded = json.dumps(inputs, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    ready = all(inputs.values())
+    ready = all(inputs.values()) if ready_override is None else ready_override
     return {
         "id": lane_id,
         "checked": True,
@@ -327,6 +328,9 @@ def build_capability_profile(
             "intel",
             {"commands/intel.md+tools/intel_engine.py+intel_artifact.py": intel_ready},
             evidence_required=("component-version-or-advisory-signal",),
+            classification="evidence_gated",
+            runtime_status="unchecked" if intel_ready else "unavailable",
+            ready_override=False,
         ),
         _lane_record(
             "credential",
@@ -334,6 +338,9 @@ def build_capability_profile(
                 "commands/spray.md+credential-attack": credential_ready,
             },
             evidence_required=("reviewed-identity-and-request-spec",),
+            classification="evidence_gated",
+            runtime_status="unchecked" if credential_ready else "unavailable",
+            ready_override=False,
         ),
     ]
 

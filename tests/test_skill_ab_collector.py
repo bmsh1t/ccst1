@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -34,6 +35,37 @@ else:
         'total_cost_usd': 0.5,
         'duration_ms': 12,
     }))
+""",
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | 0o111)
+    return path
+
+
+def _fake_failure_claude(path: Path) -> Path:
+    path.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+
+if '--version' in sys.argv:
+    print('claude-test')
+else:
+    mode = os.environ.get('FAKE_MODE')
+    if mode == 'empty':
+        pass
+    elif mode == 'mixed':
+        print('progress: starting')
+        print(json.dumps({'structured_output': {'verdict': 'safe'}}))
+    elif mode == 'nonzero':
+        print(json.dumps({'structured_output': {'verdict': 'safe'}}))
+        raise SystemExit(7)
+    elif mode == 'timeout':
+        time.sleep(0.2)
+    else:
+        print(json.dumps({'structured_output': {'verdict': 'safe'}}))
 """,
         encoding="utf-8",
     )
@@ -195,6 +227,47 @@ def test_collector_returns_error_when_native_result_has_no_structured_verdict(tm
     result = summarize_rows(load_jsonl(output))
     assert result["valid_row_count"] == 0
     assert result["invalid_row_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_error", "timeout"),
+    [("empty", "invalid_json", 1.0), ("mixed", "invalid_json", 1.0),
+     ("nonzero", "nonzero_exit", 1.0), ("timeout", "timeout", 0.02)],
+)
+def test_run_case_keeps_failure_reason_in_a_complete_result_row(
+    tmp_path, mode, expected_error, timeout
+):
+    fake = _fake_failure_claude(tmp_path / "claude")
+    row = ab_collect._run_case(
+        fake,
+        {
+            "case_id": "CASE",
+            "prompt": "Return the safe fixture verdict.",
+            "oracle_label": "safe",
+            "oracle_status": "passed",
+        },
+        condition="skills_on",
+        rep=1,
+        verdicts=["vulnerable", "safe"],
+        model=None,
+        tools="",
+        setting_sources="user",
+        permission_mode="auto",
+        max_turns=1,
+        max_budget_usd=None,
+        cwd=REPO_ROOT,
+        env={**os.environ, "FAKE_MODE": mode},
+        timeout=timeout,
+    )
+
+    assert row["case_id"] == "CASE"
+    assert row["condition"] == "skills_on"
+    assert row["rep"] == 1
+    assert row["oracle_label"] == "safe"
+    assert row["oracle_status"] == "passed"
+    assert row["verdict"] == "unknown"
+    assert row["agent_error"] == expected_error
+    assert row["duration_ms"] >= 0
 
 
 def test_dry_run_does_not_write_output_or_manifest(tmp_path, capsys):

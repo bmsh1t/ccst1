@@ -26,9 +26,13 @@ CANONICAL_VULN_CLASSES = (
     "GraphQL", "OAuth", "Upload", "Webhook", "JWT",
     "SQLi", "XXE", "RCE", "Path", "CSRF",
 )
+# Coverage Matrix deliberately owns only the 15 Web2 classes above.  Workflow
+# is a closeable evidence family, but remains outside that matrix taxonomy.
+CLOSURE_ONLY_FAMILIES = ("Workflow",)
+CLOSURE_FAMILIES = CANONICAL_VULN_CLASSES + CLOSURE_ONLY_FAMILIES
 
 VULN_CLASS_ALIASES = {
-    **{vuln_class.lower(): vuln_class for vuln_class in CANONICAL_VULN_CLASSES},
+    **{vuln_class.lower(): vuln_class for vuln_class in CLOSURE_FAMILIES},
     "auth": "Authz",
     "access": "Authz",
     "access-control": "Authz",
@@ -86,7 +90,6 @@ VULN_CLASS_ALIASES = {
     "xml-injection": "XXE",
     "xmlinjection": "XXE",
     "xinclude": "XXE",
-    "workflow": "Workflow",
 }
 
 
