@@ -83,7 +83,6 @@ def test_claude_code_target_isolation_docs_prevent_inherited_scanner_skips():
 def test_ctf_prompt_docs_do_not_turn_target_history_into_lane_kills():
     content = _read(
         "CLAUDE.md",
-        "SKILL.md",
         "commands/hunt.md",
         "commands/autopilot.md",
         "commands/pickup.md",
@@ -179,7 +178,7 @@ def test_claude_code_prompt_files_are_utf8_and_not_corrupted():
     files remain UTF-8 readable and do not contain replacement-character
     corruption from bad merges or encoding mistakes.
     """
-    prompt_files = [REPO_ROOT / "CLAUDE.md", REPO_ROOT / "SKILL.md"]
+    prompt_files = [REPO_ROOT / "CLAUDE.md"]
     for prompt_dir in ("commands", "agents", "skills", "rules"):
         prompt_files.extend((REPO_ROOT / prompt_dir).rglob("*.md"))
 

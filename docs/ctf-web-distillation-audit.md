@@ -96,7 +96,7 @@ ctf-web 原文 -> 现代 AI 可能漏掉的可迁移 delta -> knowledge/cards / 
 
 | 文件 | 价值 | 建议动作 | 吸收目标 |
 |---|---:|---|---|
-| `SKILL.md` | 中 | 保留 optional；只吸收 boundary-first 决策形状 | `skills/web2-vuln-classes/SKILL.md` 已基本覆盖 |
+| `SKILL.md` | 中 | 已移除根入口；保留的判断形状已进入模块化 Skill | `skills/web2-vuln-classes/SKILL.md` 已基本覆盖 |
 | `sql-injection.md` | 高 | 优先蒸馏 | `sqli-hidden-surfaces.md`, `sqli-low-risk-probes.md` |
 | `auth-jwt.md` | 高 | 优先蒸馏 | `auth-sso-token-edge-cases.md` |
 | `auth-infra.md` | 高 | 优先蒸馏 | `auth-sso-token-edge-cases.md`, `auth-credential-recovery-flows.md`, `browser-client-boundaries.md` |

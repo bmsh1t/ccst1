@@ -56,8 +56,6 @@ Target state / Evidence -> Coverage Matrix -> Skill / Context Router
   Knowledge、Checks 和 owner write-back，但不替 Claude 选择当前测试路线。
 - `skills/bb-methodology/SKILL.md` 是按需决策 Skill，只在会话开始、切换目标、进展停滞或
   需要选择/轮换假设时加载；专项 Skill 和知识卡继续按当前证据加载。
-- 根 `SKILL.md` 是旧单文件直装兼容入口。正式 `install.sh` 安装 `skills/*.md` 和
-  `skills/*/`，Context Pack 也不读取根入口；不得把根文件行数计算成当前默认上下文。
 - Claude Code CLI 当前主会话保留路线、取舍和证据组合的最终判断权；Skill、Card 和工具
   提供契约或候选，Coverage/Ledger/Queue/Checkpoint 继续拥有确定性状态。
 

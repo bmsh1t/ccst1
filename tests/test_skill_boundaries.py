@@ -195,10 +195,8 @@ def test_claude_cli_runtime_responsibility_and_loading_boundaries_are_explicit()
     assert "Claude Code CLI 当前主会话" in claude
     assert "## Claude Code CLI 职责边界" in runtime
     assert "不负责 替 Claude Code CLI 主会话选择具体测试类别" in runtime_text
-    assert "根 `SKILL.md` 是旧单文件直装兼容入口" in runtime
     assert "## 当前默认加载边界" in loading
     assert "推荐的 primary Skill 和最多两张知识卡不在 `must_read`" in loading_text
-    assert "The root `SKILL.md` is a legacy direct-install compatibility entry" in readme
     assert "Optional Agents" in readme
 
 

@@ -259,10 +259,6 @@ the final route decision; prompts and tools do not create another controller.
 | **Tools and state** | Deterministic replay, diff, raw evidence, Coverage, Ledger, Queue, Checkpoint, and recovery |
 | **Optional Agents** | Bounded specialist execution that returns evidence to the current Claude session; never a second target-state controller |
 
-The root `SKILL.md` is a legacy direct-install compatibility entry. The supported
-installer copies `skills/*.md` and `skills/*/`; the root entry is not part of the
-default Context Pack or installed runtime.
-
 The default manual lane is the Core 4: **`/recon` -> `/hunt` -> `/validate` -> `/report`**. Power commands such as `/autopilot`, `/surface`, `/pickup`, `/intel`, `/source-hunt`, `/chain`, `/web3-audit`, `/token-scan`, and `/memory-gc` extend that lane when you need autonomy, source intelligence, chaining, Web3/token review, or memory maintenance.
 
 ```

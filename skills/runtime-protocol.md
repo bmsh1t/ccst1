@@ -17,9 +17,8 @@
 | Rules / checks | Coverage、Validation 和 Reporting gate | 按当前动作与阶段读取 |
 | Tools / state owners | replay、diff、raw evidence、生命周期和恢复 | 确定性执行或写回时调用 |
 
-根 `SKILL.md` 是旧单文件直装兼容入口，不由正式 `install.sh` 安装，也不进入 Context
-Pack。Claude Code CLI 当前主会话保留最终路线判断权；本协议、推荐 Skill/Card 和工具输出
-都不能建立第二个 controller 或 target-state owner。
+Claude Code CLI 当前主会话保留最终路线判断权；本协议、推荐 Skill/Card 和工具输出都不能
+建立第二个 controller 或 target-state owner。
 
 Context Pack 的 `selected_skill`、`skill_route` 和 `knowledge_cards` 是兼容推荐字段，不是
 已选择的执行状态，也不进入默认 `must_read` 或自动写入 Queue。Claude 在 substantive

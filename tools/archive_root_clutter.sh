@@ -51,7 +51,7 @@ warn() { printf '[!] %s\n' "$*" >&2; }
 
 is_core_file() {
   case "$1" in
-    AGENTS.md|CLAUDE.md|README.md|CHANGELOG.md|FAQ.md|TERMS.md|LICENSE|SKILL.md|hunting-plan.md) return 0 ;;
+    AGENTS.md|CLAUDE.md|README.md|CHANGELOG.md|FAQ.md|TERMS.md|LICENSE|hunting-plan.md) return 0 ;;
     install.sh|install_tools.sh|requirements.txt|requirements-dev.txt|pytest.ini|config.json|config.example.json|logo.png) return 0 ;;
     .gitignore) return 0 ;;
   esac

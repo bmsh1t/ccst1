@@ -24,8 +24,7 @@ Context Pack 的默认入口是当前目标状态（如存在 `memory/goals/acti
   `must_read`，由 Claude 根据当前证据显式选择后按需读取。
 - `skills/bb-methodology/SKILL.md` 不是额外常驻核心；只在会话开始、换目标、停滞或需要
   选择/轮换假设时成为当前按需 Skill。
-- 根 `SKILL.md` 是旧单文件直装兼容资产，不由正式 `install.sh` 安装，也不进入 Context
-  Pack。正式安装面是 `skills/*.md` 和 `skills/*/`。
+- 正式安装面是 `skills/*.md` 和 `skills/*/`；根目录不再提供单文件 Skill 入口。
 - `selected_skill`、`skill_route` 和 `knowledge_cards` 保留为兼容推荐字段，不表示 Claude
   已选择路线，也不直接生成 Queue route。首次 claim 显式选择 Skill；只有替换 action
   owner 已有 route 时才需要 `skill_override_reason`。
