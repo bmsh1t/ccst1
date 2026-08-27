@@ -2190,6 +2190,7 @@ def _is_substantive_queue_action(item: dict) -> bool:
         "actor-gap",
         "action-gated-review",
         "browser-enrichment",
+        "case-state-enrichment",
     }:
         return True
     if status == "queued" and action_type == "coverage-gap":

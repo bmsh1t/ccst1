@@ -4065,6 +4065,7 @@ class TestAutopilotState:
             "coverage-gap",
             "action-gated-review",
             "browser-enrichment",
+            "case-state-enrichment",
         ), 1):
             target = f"case{index}.target"
             queue_dir = tmp_path / "state" / target
