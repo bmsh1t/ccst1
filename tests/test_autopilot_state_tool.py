@@ -2530,6 +2530,64 @@ def test_stale_surface_projection_blocks_full_state_and_closure(tmp_path):
     assert closure["reasons"] == ["surface_projection_pending"]
 
 
+def test_surface_round_guard_resets_after_surface_input_changes(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir()
+    (recon_dir / "js").mkdir()
+    (recon_dir / "live" / "httpx_full.txt").write_text(
+        "https://target.com [200] [API] [Express] [100]\n", encoding="utf-8"
+    )
+    source = recon_dir / "urls" / "with_params.txt"
+    source.write_text("https://target.com/api/orders?id=1\n", encoding="utf-8")
+    (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+    _publish_surface_projection(tmp_path, "target.com")
+
+    source.write_text("https://target.com/api/orders?id=2\n", encoding="utf-8")
+    _write_closure_owners(tmp_path, "target.com", status="tested_clean", final_review=False)
+    first_state = build_autopilot_state(str(tmp_path), "target.com")
+    first_state["next_action"] = "handoff"
+    first = _load_closure_projection(
+        str(tmp_path), first_state, max_lanes_reached=False, apply_round_guard=False
+    )
+    witness = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text(
+        json.dumps({
+            "round_guard": {
+                "fingerprint": first["stagnation_fingerprint"],
+                "consecutive": 3,
+                "threshold": 3,
+            }
+        }),
+        encoding="utf-8",
+    )
+    blocked = _load_closure_projection(
+        str(tmp_path), first_state, max_lanes_reached=False
+    )
+    assert blocked["verdict"] == "blocked"
+    assert blocked["reasons"] == ["stagnant_prerequisite"]
+
+    source.write_text(
+        "https://target.com/api/orders?id=2\n"
+        "https://target.com/api/orders?id=3\n",
+        encoding="utf-8",
+    )
+    changed_state = build_autopilot_state(str(tmp_path), "target.com")
+    changed_state["next_action"] = "handoff"
+    changed = _load_closure_projection(
+        str(tmp_path), changed_state, max_lanes_reached=False
+    )
+
+    assert changed_state["surface_projection"]["input_fingerprint"]
+    assert (
+        changed_state["surface_projection"]["input_fingerprint"]
+        != first_state["surface_projection"]["input_fingerprint"]
+    )
+    assert changed["verdict"] == "handoff"
+    assert changed["reasons"] == ["surface_projection_pending"]
+
+
 def test_missing_surface_projection_without_recon_does_not_mask_closure_reason():
     closure = build_closure_projection(
         {

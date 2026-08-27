@@ -63,6 +63,9 @@ def test_projection_exact_manifest_hit_and_source_change_stale(tmp_path):
     assert stale["status"] == "stale"
     assert stale["surface"] == {}
     assert stale["reason"] == "input-manifest-mismatch"
+    assert stale["input_fingerprint"] == build_surface_input_manifest(
+        tmp_path, "target.com"
+    )["fingerprint"]
 
 
 def test_empty_checkpoint_sync_keeps_valid_projection(tmp_path):

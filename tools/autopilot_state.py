@@ -2972,6 +2972,7 @@ def build_autopilot_bootstrap_state(
             "status": str(projection.get("status") or "invalid"),
             "reason": str(projection.get("reason") or ""),
             "path": str(projection.get("path") or ""),
+            "input_fingerprint": str(projection.get("input_fingerprint") or ""),
             "refresh_command": f"python3 tools/surface.py --target {resolved_target} --refresh",
         }, ranked),
         surface_context_required=(
@@ -3053,6 +3054,7 @@ def build_autopilot_state(
             "status": str(projection.get("status") or "computed"),
             "reason": str(projection.get("reason") or ""),
             "path": str(projection.get("path") or ""),
+            "input_fingerprint": str(projection.get("input_fingerprint") or ""),
         }, ranked),
         surface_context_required=(
             bool(facts.get("has_recon")) and projection.get("status") != "valid"
@@ -4718,7 +4720,7 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
     elif reason == "surface_projection_pending":
         payload["surface_projection"] = {
             key: (state.get("surface_projection") or {}).get(key)
-            for key in ("status", "reason")
+            for key in ("status", "reason", "input_fingerprint")
         }
     elif reason == "json_evidence_partial":
         payload["json"] = {
@@ -5611,7 +5613,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
         ("browser_evidence", ("present", "ready")),
         ("repo_source_summary", ("status",)),
         ("observation_inventory", ("status", "reason", "untouched", "stale", "by_kind")),
-        ("surface_projection", ("status", "reason", "refresh_command", "continuation")),
+        ("surface_projection", ("status", "reason", "input_fingerprint", "refresh_command", "continuation")),
         ("case_state", ("status", "actors", "sessions", "authz_coverage", "objects", "canonical_conflict_count", "canonical_conflicts", "open_hypotheses", "pending_validation_backlog", "top_next_action")),
     ):
         value = state.get(field) if isinstance(state.get(field), dict) else {}

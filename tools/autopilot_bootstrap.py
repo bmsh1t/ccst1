@@ -397,7 +397,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     intel_continuation = _compact_intel_continuation(state.get("intel_continuation"))
     compact_surface_projection = {
         key: surface_projection[key]
-        for key in ("status", "reason", "path", "refresh_command")
+        for key in ("status", "reason", "path", "input_fingerprint", "refresh_command")
         if surface_projection.get(key) not in (None, "")
     }
     raw_surface_continuation = surface_projection.get("continuation")

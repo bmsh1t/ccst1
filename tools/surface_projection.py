@@ -445,13 +445,22 @@ def write_surface_projection(
     return path
 
 
-def _projection_result(path: Path, status: str, reason: str = "", surface: dict | None = None) -> dict:
-    return {
+def _projection_result(
+    path: Path,
+    status: str,
+    reason: str = "",
+    surface: dict | None = None,
+    input_fingerprint: str = "",
+) -> dict:
+    result = {
         "status": status,
         "reason": reason,
         "path": str(path),
         "surface": surface or {},
     }
+    if input_fingerprint:
+        result["input_fingerprint"] = input_fingerprint
+    return result
 
 
 def load_surface_projection(
@@ -481,6 +490,17 @@ def load_surface_projection(
         current = build_surface_input_manifest(repo_root, resolved, memory_dir=memory_dir)
     except (OSError, ValueError) as exc:
         return _projection_result(path, "invalid", f"manifest-error: {exc}")
-    if str(payload.get("input_fingerprint") or "") != current["fingerprint"]:
-        return _projection_result(path, "stale", "input-manifest-mismatch")
-    return _projection_result(path, "valid", surface=payload["surface"])
+    current_fingerprint = str(current.get("fingerprint") or "")
+    if str(payload.get("input_fingerprint") or "") != current_fingerprint:
+        return _projection_result(
+            path,
+            "stale",
+            "input-manifest-mismatch",
+            input_fingerprint=current_fingerprint,
+        )
+    return _projection_result(
+        path,
+        "valid",
+        surface=payload["surface"],
+        input_fingerprint=current_fingerprint,
+    )
