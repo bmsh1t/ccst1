@@ -11,6 +11,19 @@ def test_cf_solver_check_cookie_without_saved_cookie_is_local_only(tmp_path, mon
     assert cf_solver.check_cookie("https://example.test/") is None
 
 
+def test_cf_solver_reads_its_section_through_shared_runtime_loader(tmp_path, monkeypatch):
+    (tmp_path / "config.json").write_text(
+        '{"cf_solver": {"headful": true, "balance_check": false}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cf_solver, "BASE_DIR", tmp_path)
+
+    config = cf_solver.load_config()
+
+    assert config["headful"] is True
+    assert config["balance_check"] is False
+
+
 def test_cf_solver_export_env_pairs_cookie_with_user_agent(capsys, monkeypatch, tmp_path):
     monkeypatch.setattr(cf_solver, "BASE_DIR", tmp_path)
     headers = cf_solver.write_output(

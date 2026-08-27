@@ -26,6 +26,14 @@ for TPR/FPR. Failed, unknown, unavailable, and invalid oracle rows remain in
 the invalid report and are excluded from metrics. `rep` pairs only the same
 case and repetition across arms.
 
+Rows may also carry directly observed behavior fields: `hypothesis_selected`,
+`action_selected`, `tool_choice_valid`, `evidence_complete`,
+`duplicate_action`, `invalid_route`, `recovery_success`,
+`unsupported_claim` (booleans), and `coverage_progress` (non-negative number).
+Missing behavior fields stay unobserved. The summary reports per-arm means and
+paired on-minus-off deltas under `behavior` and `paired_behavior`; it never
+infers a behavior metric from a verdict.
+
 The scorer is intentionally binary: verdicts must map to the existing safe /
 vulnerable aliases. Existing triage or other multi-class evaluators remain
 separate and are not silently coerced into TPR/FPR.

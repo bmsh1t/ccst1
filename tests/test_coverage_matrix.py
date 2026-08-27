@@ -261,6 +261,34 @@ class TestRouteTemplate:
         assert endpoints["/users/123"]["cells"]["IDOR"]["status"] == "tested_clean"
         assert "/users/{id}" in endpoints
 
+    def test_rebuild_retains_historical_endpoint_when_recon_no_longer_reports_it(self, tmp_path):
+        target = "x.com"
+        historical_endpoint = "/api/v1/admin/legacy"
+        current_endpoint = "/api/v1/admin/current"
+        _seed_recon(tmp_path, target, [historical_endpoint])
+        matrix = rebuild_matrix(target, repo_root=tmp_path)
+        historical = matrix["endpoints"][0]
+        historical["cells"]["Authz"] = {
+            "status": "tested_clean",
+            "reason": "operator reviewed historical route",
+            "evidence_ref": "evidence/x.com/legacy.json",
+        }
+        save_matrix(target, matrix, repo_root=tmp_path)
+
+        (tmp_path / "recon" / target / "urls" / "all.txt").write_text(
+            current_endpoint + "\n", encoding="utf-8"
+        )
+        rebuilt = rebuild_matrix(target, repo_root=tmp_path)
+        by_endpoint = {item["endpoint"]: item for item in rebuilt["endpoints"]}
+
+        assert historical_endpoint in by_endpoint
+        assert by_endpoint[historical_endpoint]["cells"]["Authz"] == {
+            "status": "tested_clean",
+            "reason": "operator reviewed historical route",
+            "evidence_ref": "evidence/x.com/legacy.json",
+        }
+        assert current_endpoint in by_endpoint
+
 
 class TestComputeSummary:
     def test_empty_matrix_zero_totals(self):

@@ -30,7 +30,6 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import shlex
@@ -38,12 +37,13 @@ import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-CONFIG_PATH = BASE_DIR / "config.json"
 
 try:
     from tools.private_artifacts import private_artifact_dir, write_private_text
+    from tools.runtime_config import load_config_section
 except ImportError:  # pragma: no cover - direct tools/ execution
     from private_artifacts import private_artifact_dir, write_private_text  # type: ignore
+    from runtime_config import load_config_section  # type: ignore
 
 # cf_clearance is UA-bound — the exact UA used to solve MUST be sent with every
 # subsequent request carrying that cookie, or CF re-challenges. Pin it as a
@@ -86,13 +86,7 @@ const i = setInterval(() => {
 
 
 def load_config() -> dict:
-    cfg = {}
-    if CONFIG_PATH.exists():
-        try:
-            cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            print(f"[!] config.json parse error: {exc}", file=sys.stderr)
-    section = cfg.get("cf_solver", {}) or {}
+    section = load_config_section(BASE_DIR, "cf_solver")
     api_key = os.environ.get("TWOCAPTCHA_API_KEY") or section.get("api_key", "")
     return {
         "service": section.get("service", "2captcha"),

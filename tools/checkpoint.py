@@ -497,13 +497,20 @@ def record_round_closure(repo_root: Path | str, target: str) -> dict:
     """Record one completed round only when closure is the same explicit prerequisite blocker."""
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
-    state = build_autopilot_state(str(repo), resolved_target, bounded=True)
+    queue_snapshot = load_action_queue(repo, resolved_target)
+    state = build_autopilot_state(
+        str(repo),
+        resolved_target,
+        bounded=True,
+        queue_snapshot=queue_snapshot,
+    )
     closure = load_closure_projection(
         str(repo),
         state,
         max_lanes_reached=False,
         apply_round_guard=False,
         include_round_projection=False,
+        queue_snapshot=queue_snapshot,
     )
     fingerprint = stagnation_fingerprint(state, closure)
     path = _checkpoint_witness_path(repo, resolved_target)
@@ -1303,6 +1310,8 @@ ACTION_DECISIONS = {
     "review_validation_candidate": "continue",
     "resume_action_queue": "continue",
     "resume_case_state": "continue",
+    "refresh_checkpoint": "checkpoint",
+    "repair_evidence_ledger": "checkpoint",
     "continue_last_focus": "continue",
     "resume_untested": "continue",
     "case-state-validation": "continue",

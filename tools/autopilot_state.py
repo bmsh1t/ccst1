@@ -26,6 +26,7 @@ try:
         FINAL_STATUSES,
         _target_owned_nonempty_evidence_ref,
         load_queue,
+        queue_path,
         queue_fingerprint,
         select_next_action,
     )
@@ -35,6 +36,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         FINAL_STATUSES,
         _target_owned_nonempty_evidence_ref,
         load_queue,
+        queue_path,
         queue_fingerprint,
         select_next_action,
     )
@@ -1375,6 +1377,24 @@ def _describe_next_step(state: dict) -> str:
             f"resume Case State action {item.get('next_action', 'enrich_case_state')}: "
             f"{item.get('hypothesis') or item.get('write_back') or 'refresh the validation backlog'}."
         )
+    if action == "refresh_checkpoint":
+        return "refresh the target checkpoint witness, then recompute the bounded Closure snapshot."
+    if action == "repair_evidence_ledger":
+        return "repair or reconcile the target Evidence Ledger, then recompute the bounded Closure snapshot."
+    if action == "coverage-gap":
+        return "review the selected high-value Coverage gap and record its owner-backed disposition."
+    if action == "surface-review":
+        return "review the selected Surface continuation and record its owner-backed disposition."
+    if action == "browser-enrichment":
+        return "complete the browser evidence import and refresh the bounded Surface context."
+    if action == "source-enrichment":
+        return "complete or disposition the repository-source evidence review."
+    if action == "js-enrichment":
+        return "read and disposition the prepared JavaScript evidence."
+    if action == "json-inject-review":
+        return "resume the bounded JSON input evidence lane and record its owner result."
+    if action == "sql-matrix-review":
+        return "resume the bounded SQL evidence lane and record its owner result."
     if action == "recon_no_live_hosts":
         return (
             "recon completed with no live hosts; review cached infra/exposure/offline evidence "
@@ -2235,6 +2255,45 @@ def _is_substantive_queue_action(item: dict) -> bool:
     return command.startswith(("python3 ", "/validate ", "curl "))
 
 
+def _queue_snapshot_for_target(
+    repo_root: str,
+    target: str,
+    queue_snapshot: dict | None = None,
+) -> dict:
+    """Return one validated Queue view for the current target."""
+    if not isinstance(queue_snapshot, dict):
+        return load_queue(repo_root, target)
+    snapshot_target = canonical_target_value(str(queue_snapshot.get("target") or ""))
+    if snapshot_target != canonical_target_value(target):
+        raise ValueError("action queue snapshot target does not match requested target")
+    return queue_snapshot
+
+
+def _owner_source_markers(repo_root: str | Path, target: str) -> dict[str, tuple[object, ...]]:
+    """Capture owner file metadata without reading another state projection."""
+    resolved = canonical_target_value(target)
+    key = target_storage_key(resolved)
+    paths = {
+        "action_queue": queue_path(repo_root, resolved),
+        "coverage": Path(repo_root) / "evidence" / key / "coverage_matrix.json",
+        "ledger": Path(repo_root) / "memory" / "evidence" / key / "ledger.jsonl",
+        "surface": Path(repo_root) / "state" / key / "surface-projection.json",
+        "checkpoint": Path(repo_root) / "state" / key / "checkpoint_latest.json",
+        "target_memory": Path(repo_root) / "memory" / "goals" / "targets" / f"{key}.json",
+    }
+    markers: dict[str, tuple[object, ...]] = {}
+    for name, path in paths.items():
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            markers[name] = (False,)
+        except OSError as exc:
+            markers[name] = ("error", type(exc).__name__, str(exc)[:160])
+        else:
+            markers[name] = (True, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    return markers
+
+
 def _load_substantive_action_queue_next(
     repo_root: str,
     target: str,
@@ -2242,13 +2301,7 @@ def _load_substantive_action_queue_next(
     queue_snapshot: dict | None = None,
 ) -> dict:
     """复用 action_queue 的公开 selector，不复制其排序与去重规则。"""
-    if isinstance(queue_snapshot, dict):
-        snapshot_target = canonical_target_value(str(queue_snapshot.get("target") or ""))
-        if snapshot_target != canonical_target_value(target):
-            raise ValueError("action queue snapshot target does not match requested target")
-        queue = dict(queue_snapshot)
-    else:
-        queue = load_queue(repo_root, target)
+    queue = dict(_queue_snapshot_for_target(repo_root, target, queue_snapshot))
     queue["actions"] = [
         item
         for item in queue.get("actions", [])
@@ -2562,10 +2615,11 @@ def _load_autopilot_control_facts(
         if validation_runner_candidates
         else {}
     )
+    queue = _queue_snapshot_for_target(repo_root, resolved_target, queue_snapshot)
     action_queue_next = _load_substantive_action_queue_next(
         repo_root,
         resolved_target,
-        queue_snapshot=queue_snapshot,
+        queue_snapshot=queue,
     )
     runtime_state = load_runtime_state(repo_root, resolved_target)
     recon_artifacts = (
@@ -2650,6 +2704,7 @@ def _load_autopilot_control_facts(
         "validation_runner_candidates": validation_runner_candidates,
         "validation_runner_next": validation_runner_next,
         "action_queue_next": action_queue_next,
+        "action_queue_fingerprint": queue_fingerprint(queue),
         "runtime_state": runtime_state,
         "runtime_derived": runtime_derived,
         "recon_artifacts": recon_artifacts,
@@ -2844,6 +2899,7 @@ def _build_domain_autopilot_state(
         "validation_runner_candidates": facts.get("validation_runner_candidates") or [],
         "validation_runner_next": facts.get("validation_runner_next") or {},
         "action_queue_next": facts.get("action_queue_next") or {},
+        "action_queue_fingerprint": str(facts.get("action_queue_fingerprint") or ""),
         "action_queue": {"next": facts.get("action_queue_next") or {}},
         "runtime_derived": facts.get("runtime_derived") or {},
         "target_goal_memory": facts.get("target_goal_memory") or {},
@@ -3796,6 +3852,388 @@ def _execution_frontier_item(item: dict, *, impact_hint: str = "") -> dict:
     return projected
 
 
+# Closure reason order is deliberately explicit.  Terminal/active control
+# state wins first, then durable owner work, then derived review signals.
+_CLOSURE_REASON_PRIORITY = {
+    "invalid_batch_target": 0,
+    "batch_failed": 0,
+    "recon_no_live_hosts": 0,
+    "round_lane_evidence_invalid": 5,
+    "round_lane_unfinished": 5,
+    "round_closure_pending": 5,
+    "round_lane_unclaimed": 5,
+    "runtime_phase_active": 10,
+    "checkpoint_invalid": 15,
+    "checkpoint_stale": 15,
+    "ledger_unreadable": 16,
+    "ledger_partial": 16,
+    "durable_work_pending": 20,
+    "finding_work_pending": 25,
+    "case_state_canonical_conflict": 30,
+    "case_state_work_pending": 31,
+    "authz_context_missing": 32,
+    "authz_context_incomplete": 32,
+    "surface_projection_pending": 35,
+    "surface_work_pending": 36,
+    "recon_budget_partial": 40,
+    "next_action_pending": 50,
+    "coverage_missing": 60,
+    "coverage_empty": 60,
+    "coverage_invalid": 60,
+    "coverage_high_value_gaps": 61,
+    "observation_inventory_partial": 70,
+    "observation_high_value_pending": 70,
+    "browser_evidence_partial": 71,
+    "browser_evidence_required": 71,
+    "source_evidence_partial": 72,
+    "js_evidence_partial": 73,
+    "json_evidence_partial": 74,
+    "json_candidate_pending": 74,
+    "sql_evidence_partial": 75,
+    "sql_candidate_pending": 75,
+    "intel_evidence_blocked": 76,
+    "identity_v2_follow_up_pending": 77,
+    "identity_v2_candidate_pending": 77,
+    "identity_v2_incomplete": 77,
+}
+
+_CLOSURE_REASON_OWNERS = {
+    "durable_work_pending": {"action_queue"},
+    "finding_work_pending": {"finding", "finding-claim", "target-memory"},
+    "case_state_canonical_conflict": {"case_state"},
+    "case_state_work_pending": {"case_state"},
+    "authz_context_missing": {"case_state"},
+    "authz_context_incomplete": {"case_state"},
+    "surface_projection_pending": {"surface", "surface-context"},
+    "surface_work_pending": {"surface"},
+    "coverage_missing": {"coverage"},
+    "coverage_empty": {"coverage"},
+    "coverage_invalid": {"coverage"},
+    "coverage_high_value_gaps": {"coverage"},
+    "observation_inventory_partial": {"observation"},
+    "observation_high_value_pending": {"observation"},
+    "browser_evidence_partial": {"browser"},
+    "browser_evidence_required": {"browser"},
+    "source_evidence_partial": {"source-intel"},
+    "js_evidence_partial": {"js-intel"},
+    "json_evidence_partial": {"json-inject"},
+    "json_candidate_pending": {"json-inject"},
+    "sql_evidence_partial": {"sql-matrix"},
+    "sql_candidate_pending": {"sql-matrix"},
+    "intel_evidence_blocked": {"intel"},
+    "identity_v2_follow_up_pending": {"evidence-ledger"},
+    "identity_v2_candidate_pending": {"evidence-ledger"},
+    "identity_v2_incomplete": {"evidence-ledger"},
+}
+
+
+def _closure_primary_reason(reasons: list[str]) -> str:
+    """Select one stable reason without losing the diagnostic list."""
+    if not reasons:
+        return ""
+    return min(
+        enumerate(reasons),
+        key=lambda pair: (_CLOSURE_REASON_PRIORITY.get(pair[1], 90), pair[0]),
+    )[1]
+
+
+def _closure_frontier_matches(reason: str, item: dict) -> bool:
+    owners = _CLOSURE_REASON_OWNERS.get(reason)
+    if owners:
+        return str(item.get("owner") or "") in owners
+    return False
+
+
+def _closure_reason_frontier(
+    reason: str,
+    state: dict,
+    matrix: dict | None,
+    current_action: str = "",
+) -> dict | None:
+    """Create a bounded fallback item when an owner has no projected head."""
+    target = str(state.get("resolved_target") or state.get("target") or "")
+    target_key = target_storage_key(target)
+    if reason == "surface_projection_pending":
+        projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
+        return _frontier_item(
+            owner="surface",
+            action="Refresh the target-owned Surface projection",
+            evidence_ref=str(projection.get("path") or "surface_projection"),
+            expected_information_gain="restore the bounded Surface index used for review",
+            stop_condition="publish a valid projection or record the source blocker",
+            priority=60,
+        )
+    if reason in {"durable_work_pending"}:
+        return _frontier_item(
+            owner="action_queue",
+            item_id=str((state.get("action_queue_next") or {}).get("id") or reason),
+            action="Resume substantive work from the durable Action Queue",
+            evidence_ref=f"state/{target_key}/action_queue.json",
+            expected_information_gain="resolve the selected owner-backed Queue action",
+            stop_condition="record a terminal Queue result or bounded blocker",
+            priority=85,
+        )
+    if reason in {"case_state_work_pending", "case_state_canonical_conflict", "authz_context_missing", "authz_context_incomplete"}:
+        case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
+        return _frontier_item(
+            owner="case_state",
+            item_id="canonical-conflict" if reason == "case_state_canonical_conflict" else reason,
+            action="Complete the Case State actor and session context required for coverage",
+            evidence_ref=str(case_state.get("path") or f"state/{target_key}/case_state.json"),
+            expected_information_gain="obtain the missing owner-backed authorization context",
+            stop_condition="record context ready, blocked, or not-applicable with evidence",
+            priority=85,
+        )
+    if reason in {"checkpoint_stale", "checkpoint_invalid"}:
+        return _frontier_item(
+            owner="checkpoint",
+            item_id=reason,
+            action="Refresh or repair the target checkpoint witness before continuing",
+            evidence_ref=f"state/{target_key}/checkpoint_latest.json",
+            expected_information_gain="restore a trusted checkpoint binding for round and queue recovery",
+            stop_condition="publish a valid witness or record the checkpoint read/queue mismatch",
+            priority=85,
+        )
+    if reason in {"runtime_phase_active", "recon_budget_partial"}:
+        owner = "runtime" if reason == "runtime_phase_active" else "recon"
+        action = "wait_scan" if state.get("scan_in_progress") else "wait_recon"
+        if reason == "recon_budget_partial":
+            action = "run_recon"
+        return _frontier_item(
+            owner=owner,
+            item_id=action,
+            action=describe_next_step({**state, "next_action": action}),
+            evidence_ref=f"state/{target_key}/session.json" if owner == "runtime" else f"recon/{target_key}/recon_manifest.jsonl",
+            expected_information_gain="obtain the owner-written phase result before selecting more work",
+            stop_condition="refresh after the matching phase completes or record its bounded blocker",
+            priority=85,
+        )
+    if reason == "finding_work_pending":
+        return _frontier_item(
+            owner="finding",
+            item_id="finding-work",
+            action="Resolve the canonical Finding owner obligation",
+            evidence_ref=f"findings/{target_key}/findings.json",
+            expected_information_gain="resolve the pending Finding lifecycle state",
+            stop_condition="record validated, candidate, dead-end, or blocked owner state",
+            priority=85,
+        )
+    if reason in {"surface_work_pending"}:
+        projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
+        return _frontier_item(
+            owner="surface",
+            item_id=reason,
+            action="Review the currently bound target-owned Surface continuation",
+            evidence_ref=str(projection.get("path") or "surface_projection"),
+            expected_information_gain="turn the retained Surface lead into a concrete owner action or disposition",
+            stop_condition="record evidence-backed Queue/Ledger disposition or defer without tested-clean",
+            priority=80,
+        )
+    evidence_specs = {
+        "observation_inventory_partial": (
+            "observation", "Synchronize or repair the target-owned Observation inventory",
+            f"state/{target_key}/observations-summary.json",
+        ),
+        "observation_high_value_pending": (
+            "observation", "Review the bounded high-value Observation inventory sample",
+            f"state/{target_key}/observations-summary.json",
+        ),
+        "browser_evidence_partial": (
+            "browser", "Repair or complete the existing browser evidence import",
+            "findings/browser/mcp-readiness.json",
+        ),
+        "browser_evidence_required": (
+            "browser", "Complete the browser evidence required for this surface",
+            "findings/browser/mcp-readiness.json",
+        ),
+        "source_evidence_partial": (
+            "source-intel", "Complete or disposition the repository-source evidence review",
+            f"findings/{target_key}/exposure/repo_source_meta.json",
+        ),
+        "js_evidence_partial": (
+            "js-intel", "Read and disposition the prepared JavaScript evidence",
+            f"findings/{target_key}/js_intel/materials.json",
+        ),
+        "json_evidence_partial": (
+            "json-inject", "Resume the bounded JSON input evidence lane",
+            "findings/json_inject/summary.json",
+        ),
+        "json_candidate_pending": (
+            "json-inject", "Resolve the pending JSON input candidate",
+            "findings/json_inject/summary.json",
+        ),
+        "sql_evidence_partial": (
+            "sql-matrix", "Resume the bounded SQL evidence lane",
+            "findings/sql_matrix/summary.json",
+        ),
+        "sql_candidate_pending": (
+            "sql-matrix", "Resolve the pending SQL response candidate",
+            "findings/sql_matrix/summary.json",
+        ),
+        "intel_evidence_blocked": (
+            "intel", "Resolve the bounded software intelligence evidence gap",
+            f"findings/{target_key}/intel",
+        ),
+        "ledger_partial": (
+            "evidence-ledger", "Repair or reconcile the target-owned Evidence Ledger before closure",
+            f"memory/evidence/{target_key}/ledger.jsonl",
+        ),
+        "ledger_unreadable": (
+            "evidence-ledger", "Repair or reconcile the target-owned Evidence Ledger before closure",
+            f"memory/evidence/{target_key}/ledger.jsonl",
+        ),
+        "identity_v2_follow_up_pending": (
+            "evidence-ledger", "Resolve the pending identity evidence follow-up",
+            f"memory/evidence/{target_key}/ledger.jsonl",
+        ),
+        "identity_v2_candidate_pending": (
+            "evidence-ledger", "Resolve the pending identity evidence candidate",
+            f"memory/evidence/{target_key}/ledger.jsonl",
+        ),
+        "identity_v2_incomplete": (
+            "evidence-ledger", "Complete the identity evidence required for closure",
+            f"memory/evidence/{target_key}/ledger.jsonl",
+        ),
+    }
+    if reason in evidence_specs:
+        owner, action_text, evidence_ref = evidence_specs[reason]
+        return _frontier_item(
+            owner=owner,
+            item_id=reason,
+            action=action_text,
+            evidence_ref=evidence_ref,
+            expected_information_gain="restore the owner evidence needed for deterministic Closure",
+            stop_condition="record a complete owner result or bounded blocker, then recompute Closure",
+            priority=80,
+        )
+    if reason == "next_action_pending" and current_action not in {"", "handoff"}:
+        owner = {
+            "run_recon": "recon",
+            "wait_recon": "runtime",
+            "wait_scan": "runtime",
+            "run_intel": "intel",
+            "collect_web_intel": "intel",
+            "test_advisory_applicability": "intel",
+            "review_intel_group": "intel",
+            "validate_finding": "finding",
+            "collect_candidate_evidence": "finding",
+            "review_validation_candidate": "validation-runner",
+            "revalidate_finding_owner": "finding",
+            "report_finding": "finding",
+            "complete_report_draft": "finding",
+            "resume_action_queue": "action_queue",
+            "resume_case_state": "case_state",
+            "prepare_surface_context": "surface-context",
+            "hunt_p1": "surface",
+            "hunt_p2": "surface",
+        }.get(current_action)
+        if owner:
+            return _frontier_item(
+                owner=owner,
+                item_id=current_action,
+                action=describe_next_step({**state, "next_action": current_action}),
+                evidence_ref=f"state/{target_key}/session.json",
+                expected_information_gain="resolve the selected owner action",
+                stop_condition="record the owner result or a bounded blocker, then recompute Closure",
+                priority=85,
+            )
+    if reason in {"coverage_missing", "coverage_empty", "coverage_invalid", "coverage_high_value_gaps"}:
+        return _frontier_item(
+            owner="coverage",
+            item_id=reason,
+            action="Rebuild the coverage matrix and record the resulting gap disposition",
+            evidence_ref=str(
+                state.get("_coverage_evidence_ref")
+                or f"evidence/{target_key}/coverage_matrix.json"
+            ),
+            expected_information_gain="restore a valid bounded coverage projection",
+            stop_condition="record the rebuild as complete or blocked with its reason",
+            priority=80,
+        )
+    return None
+
+
+def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
+    """Map the selected owner continuation to an existing CLI action."""
+    exact = {
+        "surface_projection_pending": "prepare_surface_context",
+        "durable_work_pending": "resume_action_queue",
+        "case_state_work_pending": "resume_case_state",
+        "case_state_canonical_conflict": "resume_case_state",
+        "authz_context_missing": "resume_case_state",
+        "authz_context_incomplete": "resume_case_state",
+        "checkpoint_stale": "refresh_checkpoint",
+        "checkpoint_invalid": "refresh_checkpoint",
+        "ledger_partial": "repair_evidence_ledger",
+        "ledger_unreadable": "repair_evidence_ledger",
+        "surface_work_pending": "surface-review",
+        "coverage_missing": "coverage-gap",
+        "coverage_empty": "coverage-gap",
+        "coverage_invalid": "coverage-gap",
+        "coverage_high_value_gaps": "coverage-gap",
+        "observation_inventory_partial": "surface-review",
+        "observation_high_value_pending": "surface-review",
+        "browser_evidence_partial": "browser-enrichment",
+        "browser_evidence_required": "browser-enrichment",
+        "source_evidence_partial": "source-enrichment",
+        "js_evidence_partial": "js-enrichment",
+        "json_evidence_partial": "json-inject-review",
+        "json_candidate_pending": "json-inject-review",
+        "sql_evidence_partial": "sql-matrix-review",
+        "sql_candidate_pending": "sql-matrix-review",
+        "intel_evidence_blocked": "run_intel",
+        "identity_v2_follow_up_pending": "repair_evidence_ledger",
+        "identity_v2_candidate_pending": "repair_evidence_ledger",
+        "identity_v2_incomplete": "repair_evidence_ledger",
+        "recon_budget_partial": "run_recon",
+        "runtime_phase_active": "wait_scan" if state.get("scan_in_progress") else "wait_recon",
+    }
+    if reason in exact:
+        return exact[reason]
+    if reason == "finding_work_pending":
+        findings = state.get("structured_findings") if isinstance(state.get("structured_findings"), dict) else {}
+        if findings.get("next_owner_revalidation"):
+            return "revalidate_finding_owner"
+        if findings.get("next_validation"):
+            return "validate_finding"
+        return "collect_candidate_evidence"
+    if reason in {"round_lane_evidence_invalid", "round_lane_unfinished", "round_closure_pending", "round_lane_unclaimed"}:
+        return current
+    if reason in _TERMINAL_CLOSURE_ACTIONS:
+        return current
+    if reason == "next_action_pending" and current != "handoff":
+        return current
+    return current if current != "handoff" else "handoff"
+
+
+def _finalize_closure_continuation(
+    reasons: list[str],
+    frontier: list[dict],
+    state: dict,
+    matrix: dict | None,
+    current_action: str,
+) -> tuple[list[str], list[dict], str]:
+    """Bind primary reason, first frontier item, and next action together."""
+    primary = _closure_primary_reason(reasons)
+    matching_exists = any(_closure_frontier_matches(primary, item) for item in frontier)
+    fallback = _closure_reason_frontier(primary, state, matrix, current_action) if primary else None
+    force_fallback = primary in {"surface_projection_pending", "checkpoint_stale", "checkpoint_invalid"}
+    if fallback and (force_fallback or not matching_exists):
+        frontier = [fallback, *frontier]
+    if primary:
+        matching = next(
+            (item for item in frontier if _closure_frontier_matches(primary, item)),
+            None,
+        )
+        if matching is not None:
+            frontier = [matching, *[item for item in frontier if item is not matching]]
+    action = _closure_action_for_reason(primary, state, current_action)
+    ordered_reasons = ([primary] if primary else []) + [
+        reason for reason in reasons if reason != primary
+    ]
+    return ordered_reasons[:3], frontier, action
+
+
 def _build_priority_frontier(
     state: dict,
     ranked: dict | None = None,
@@ -4229,6 +4667,22 @@ def build_closure_projection(
         else:
             verdict = "finish"
 
+    # Keep owner blockers that were masked by an earlier branch as secondary
+    # diagnostics.  Primary selection below applies the stable precedence.
+    for extra_reason in (
+        _explicit_partial_reason(state),
+        (
+            "case_state_canonical_conflict"
+            if case_state_pending and int(case_state.get("canonical_conflict_count", 0) or 0) > 0
+            else "case_state_work_pending"
+            if case_state_pending
+            else ""
+        ),
+        "surface_projection_pending" if surface_projection_pending else "",
+    ):
+        if extra_reason and extra_reason not in reasons:
+            reasons.append(extra_reason)
+
     if verdict == "handoff" and not actionable_frontier:
         reason = str(reasons[0] if reasons else "")
         if reason in {"coverage_missing", "coverage_empty", "coverage_invalid"}:
@@ -4481,6 +4935,14 @@ def build_closure_projection(
             stop_condition=stop_condition,
             priority=85,
         )]
+
+    reasons, actionable_frontier, action = _finalize_closure_continuation(
+        reasons,
+        actionable_frontier,
+        state,
+        matrix,
+        action,
+    )
 
     result = {
         "verdict": verdict,
@@ -4825,6 +5287,115 @@ def _semantic_coverage_fingerprint(matrix: dict | None) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+_SNAPSHOT_VOLATILE_KEYS = frozenset({
+    "at",
+    "created_at",
+    "updated_at",
+    "generated_at",
+    "recorded_at",
+    "started_at",
+    "finished_at",
+    "completed_at",
+    "mtime_ns",
+    "ctime_ns",
+})
+
+
+def _snapshot_normalize(value: object) -> object:
+    """Remove owner timestamps before hashing a read-only snapshot."""
+    if isinstance(value, dict):
+        return {
+            str(key): _snapshot_normalize(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if str(key) not in _SNAPSHOT_VOLATILE_KEYS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_snapshot_normalize(item) for item in value]
+    if isinstance(value, set):
+        normalized = [_snapshot_normalize(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, ensure_ascii=True, sort_keys=True),
+        )
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
+def _closure_snapshot_components(
+    target: str,
+    state: dict,
+    queue: dict,
+    matrix: dict | None,
+    ledger_projection: dict,
+    ledger_health: dict,
+    checkpoint_health: dict,
+    witness: dict,
+) -> dict:
+    """Expose small, non-secret generation hints alongside the digest."""
+    surface_projection = state.get("surface_projection")
+    surface_projection = surface_projection if isinstance(surface_projection, dict) else {}
+    checkpoint_queue = witness.get("action_queue") if isinstance(witness, dict) else {}
+    checkpoint_queue = checkpoint_queue if isinstance(checkpoint_queue, dict) else {}
+    return {
+        "target": canonical_target_value(target),
+        "queue_fingerprint": queue_fingerprint(queue),
+        "coverage_fingerprint": str((matrix or {}).get("source_fingerprint") or "")
+        or _semantic_coverage_fingerprint(matrix),
+        "surface_input_fingerprint": str(surface_projection.get("input_fingerprint") or ""),
+        "checkpoint_queue_fingerprint": str(checkpoint_queue.get("fingerprint") or ""),
+        "ledger_status": str(ledger_health.get("status") or "missing"),
+    }
+
+
+def _closure_snapshot_digest(
+    target: str,
+    state: dict,
+    queue: dict,
+    matrix: dict | None,
+    ledger_projection: dict,
+    ledger_health: dict,
+    checkpoint_health: dict,
+    witness: dict,
+) -> tuple[str, dict]:
+    """Bind Closure to normalized Queue and owner projections."""
+    components = _closure_snapshot_components(
+        target,
+        state,
+        queue,
+        matrix,
+        ledger_projection,
+        ledger_health,
+        checkpoint_health,
+        witness,
+    )
+    material = {
+        "components": components,
+        "queue": queue,
+        "ledger": {
+            "health": ledger_health,
+            "projection": ledger_projection,
+        },
+        "coverage": matrix,
+        "surface": state.get("surface_projection") or {},
+        "checkpoint": {
+            "health": checkpoint_health,
+            "witness": witness,
+        },
+        "target_memory": {
+            "goal": state.get("target_goal_memory") or {},
+            "resume": state.get("resume_summary") or {},
+        },
+    }
+    encoded = json.dumps(
+        _snapshot_normalize(material),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), components
+
+
 def load_closure_projection(
     repo_root: str,
     state: dict,
@@ -4832,14 +5403,18 @@ def load_closure_projection(
     max_lanes_reached: bool,
     apply_round_guard: bool = True,
     include_round_projection: bool = True,
+    queue_snapshot: dict | None = None,
 ) -> dict:
     """Read existing closure inputs only for an explicit CLI request."""
     target = str(state.get("resolved_target") or state.get("target") or "")
+    source_markers_before = _owner_source_markers(repo_root, target)
     matrix_path = Path(repo_root) / "evidence" / target_storage_key(target) / "coverage_matrix.json"
     matrix = load_matrix_projection(target, repo_root)
     if matrix is None and matrix_path.is_file():
         matrix = load_matrix(target, repo_root)
-    queue = load_queue(repo_root, target)
+    queue = _queue_snapshot_for_target(repo_root, target, queue_snapshot)
+    queue_generation = queue_fingerprint(queue)
+    state_queue_generation = str(state.get("action_queue_fingerprint") or "").strip()
     _, artifact_hints = _build_enrichment_hints(
         repo_root=repo_root,
         resolved_target=target,
@@ -4900,11 +5475,15 @@ def load_closure_projection(
         "_ledger_projection": ledger_projection,
         "enrichment_hints": enrichment_hints,
         "_coverage_evidence_ref": f"evidence/{target_storage_key(target)}/coverage_matrix.json",
-        "action_queue_next": (
-            state.get("action_queue_next")
-            if isinstance(state.get("action_queue_next"), dict) and state.get("action_queue_next")
-            else _load_substantive_action_queue_next(repo_root, target)
+        # Closure must never use a preloaded next-action pointer: it may have
+        # been produced before the durable Queue changed. Both this pointer
+        # and the active count below come from the same Queue snapshot.
+        "action_queue_next": _load_substantive_action_queue_next(
+            repo_root,
+            target,
+            queue_snapshot=queue,
         ),
+        "action_queue_fingerprint": queue_generation,
         "active_action_queue_count": sum(
             isinstance(item, dict)
             and str(item.get("status") or "queued").strip().lower() in ACTIVE_STATUSES
@@ -4928,8 +5507,38 @@ def load_closure_projection(
     fingerprint = stagnation_fingerprint(closure_state, closure)
     if fingerprint:
         closure["stagnation_fingerprint"] = fingerprint
+    snapshot_digest, snapshot_components = _closure_snapshot_digest(
+        target,
+        closure_state,
+        queue,
+        matrix,
+        ledger_projection,
+        ledger_health,
+        checkpoint_health,
+        witness,
+    )
+    closure["snapshot_digest"] = snapshot_digest
+    closure["snapshot_components"] = snapshot_components
+    source_markers_after = _owner_source_markers(repo_root, target)
+    stale_sources = [
+        name
+        for name, marker in source_markers_before.items()
+        if marker != source_markers_after.get(name)
+    ]
+    if state_queue_generation and state_queue_generation != queue_generation:
+        stale_sources.append("action_queue")
+    if stale_sources:
+        closure.update({
+            "verdict": "handoff",
+            "can_claim_exhausted": False,
+            "reasons": ["state_snapshot_stale"],
+            "next_action": "refresh_state",
+            "snapshot_stale": True,
+            "snapshot_stale_sources": list(dict.fromkeys(stale_sources)),
+        })
     if (
         apply_round_guard
+        and not closure.get("snapshot_stale")
         and fingerprint
         and fingerprint == str(guard.get("fingerprint") or "")
         and int(guard.get("consecutive", 0) or 0) >= 3
@@ -5591,6 +6200,10 @@ def build_decision_projection(state: dict, kind: str) -> dict:
             "recon_budget_partial",
             "authz_coverage",
             "stagnation_fingerprint",
+            "snapshot_digest",
+            "snapshot_components",
+            "snapshot_stale",
+            "snapshot_stale_sources",
             "error",
             "round_progress",
             "coverage_policy_skips",
@@ -5677,17 +6290,24 @@ def main() -> int:
         parser.error("--projection-only requires --json and exactly one of --closure or --loop-check")
 
     try:
+        queue_snapshot = load_queue(BASE_DIR, args.target) if args.closure else None
+        state_kwargs = {
+            "memory_dir": args.memory_dir or None,
+            "bounded": args.bounded,
+        }
+        if queue_snapshot is not None:
+            state_kwargs["queue_snapshot"] = queue_snapshot
         state = build_autopilot_state(
             BASE_DIR,
             args.target,
-            memory_dir=args.memory_dir or None,
-            bounded=args.bounded,
+            **state_kwargs,
         )
         if args.closure:
             state["closure"] = load_closure_projection(
                 BASE_DIR,
                 state,
                 max_lanes_reached=args.max_lanes_reached,
+                queue_snapshot=queue_snapshot,
             )
         if args.loop_check:
             state["loop_guard"] = _load_loop_guard_projection(BASE_DIR, state)

@@ -25,6 +25,17 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parents[2]
 CONDITIONS = ("skills_off", "skills_on")
 DEFAULT_VERDICTS = ("vulnerable", "safe")
+BEHAVIOR_BOOL_FIELDS = (
+    "hypothesis_selected",
+    "action_selected",
+    "tool_choice_valid",
+    "evidence_complete",
+    "duplicate_action",
+    "invalid_route",
+    "recovery_success",
+    "unsupported_claim",
+)
+BEHAVIOR_NUMERIC_FIELDS = ("coverage_progress",)
 
 if str(Path(__file__).parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).parent))
@@ -79,7 +90,11 @@ def _verdict_schema(verdicts: list[str]) -> dict[str, Any]:
         raise ValueError("verdicts must contain exactly two distinct labels")
     return {
         "type": "object",
-        "properties": {"verdict": {"type": "string", "enum": verdicts}},
+        "properties": {
+            "verdict": {"type": "string", "enum": verdicts},
+            **{field: {"type": "boolean"} for field in BEHAVIOR_BOOL_FIELDS},
+            "coverage_progress": {"type": "number", "minimum": 0},
+        },
         "required": ["verdict"],
         "additionalProperties": False,
     }
@@ -90,7 +105,9 @@ def _prompt(case_prompt: str, verdicts: list[str]) -> str:
     return (
         f"{case_prompt}\n\n"
         "Return your final binary decision in the structured output field "
-        f"`verdict`, using exactly one of: {labels}."
+        f"`verdict`, using exactly one of: {labels}. "
+        "Fill optional behavior fields only when the task directly provides "
+        "the observation; omit fields that are not observable."
     )
 
 
@@ -189,6 +206,13 @@ def parse_result(stdout: str, *, duration_ms: float) -> dict[str, Any]:
         result["agent_error"] = "agent_error"
     elif error:
         result["agent_error"] = error
+    for field in BEHAVIOR_BOOL_FIELDS:
+        value = structured.get(field) if isinstance(structured, Mapping) else None
+        if isinstance(value, bool):
+            result[field] = value
+    value = structured.get("coverage_progress") if isinstance(structured, Mapping) else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        result["coverage_progress"] = value
     return result
 
 
@@ -263,6 +287,9 @@ def _run_case(
         "cost_usd": parsed.get("cost_usd"),
         "duration_ms": parsed.get("duration_ms", duration_ms),
     }
+    for field in (*BEHAVIOR_BOOL_FIELDS, *BEHAVIOR_NUMERIC_FIELDS):
+        if field in parsed:
+            row[field] = parsed[field]
     if error:
         row["agent_error"] = error
     return row

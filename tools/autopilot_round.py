@@ -14,7 +14,12 @@ from pathlib import Path
 
 try:
     from tools.autopilot_args import MAX_LANES
-    from tools.autopilot_state import build_autopilot_state, load_closure_projection
+    from tools.action_queue import load_queue
+    from tools.autopilot_state import (
+        _owner_source_markers,
+        build_autopilot_state,
+        load_closure_projection,
+    )
     from tools.checkpoint import (
         _append_root_claim_queue_items,
         begin_round,
@@ -29,7 +34,12 @@ try:
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
-    from autopilot_state import build_autopilot_state, load_closure_projection  # type: ignore
+    from action_queue import load_queue  # type: ignore
+    from autopilot_state import (  # type: ignore
+        _owner_source_markers,
+        build_autopilot_state,
+        load_closure_projection,
+    )
     from checkpoint import (  # type: ignore
         _append_root_claim_queue_items,
         begin_round,
@@ -46,12 +56,33 @@ except ImportError:  # pragma: no cover - direct tools/ execution
 
 def _closure_snapshot(repo_root: Path | str, target: str) -> tuple[dict, dict]:
     """Read the bounded owner projections used by both coordinator stages."""
-    state = build_autopilot_state(str(repo_root), target, bounded=True)
-    closure = load_closure_projection(
-        str(repo_root),
-        state,
-        max_lanes_reached=False,
-    )
+    for attempt in range(2):
+        source_markers_before = _owner_source_markers(repo_root, target)
+        queue_snapshot = load_queue(repo_root, target)
+        state = build_autopilot_state(
+            str(repo_root),
+            target,
+            bounded=True,
+            queue_snapshot=queue_snapshot,
+        )
+        closure = load_closure_projection(
+            str(repo_root),
+            state,
+            max_lanes_reached=False,
+            queue_snapshot=queue_snapshot,
+        )
+        if source_markers_before != _owner_source_markers(repo_root, target):
+            closure = {
+                **closure,
+                "verdict": "handoff",
+                "can_claim_exhausted": False,
+                "reasons": ["state_snapshot_stale"],
+                "next_action": "refresh_state",
+                "snapshot_stale": True,
+                "snapshot_stale_sources": ["owner_state"],
+            }
+        if not closure.get("snapshot_stale") or attempt:
+            return state, closure
     return state, closure
 
 

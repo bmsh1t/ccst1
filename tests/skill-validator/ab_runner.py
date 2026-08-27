@@ -37,6 +37,18 @@ REQUIRED_FIELDS = (
     "duration_ms",
 )
 METRIC_FIELDS = ("turns", "tokens", "cost_usd", "duration_ms")
+BEHAVIOR_BOOL_FIELDS = (
+    "hypothesis_selected",
+    "action_selected",
+    "tool_choice_valid",
+    "evidence_complete",
+    "duplicate_action",
+    "invalid_route",
+    "recovery_success",
+    "unsupported_claim",
+)
+BEHAVIOR_NUMERIC_FIELDS = ("coverage_progress",)
+BEHAVIOR_FIELDS = BEHAVIOR_BOOL_FIELDS + BEHAVIOR_NUMERIC_FIELDS
 
 _METRIC_ALIASES = {
     "turns": ("turn",),
@@ -118,6 +130,8 @@ def _canonical_input(row: Mapping[str, Any]) -> dict[str, Any]:
         "cost_usd": _first(raw, "cost_usd", "cost"),
         "duration_ms": _first(raw, "duration_ms", "duration"),
     }
+    for field in BEHAVIOR_FIELDS:
+        canonical[field] = raw.get(field)
 
     oracle = _first(raw, "oracle_status", "oracle")
     if isinstance(oracle, Mapping):
@@ -192,6 +206,18 @@ def validate_row(row: Mapping[str, Any] | Any) -> list[str]:
             errors.append(f"{field} must be a non-negative number or null")
         elif field in {"turns", "tokens"} and int(item) != item:
             errors.append(f"{field} must be an integer or null")
+    for field in BEHAVIOR_BOOL_FIELDS:
+        item = value[field]
+        if item is not None and not isinstance(item, bool):
+            errors.append(f"{field} must be a boolean or null")
+    for field in BEHAVIOR_NUMERIC_FIELDS:
+        item = value[field]
+        if item is None:
+            continue
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            errors.append(f"{field} must be a non-negative number or null")
+        elif not math.isfinite(float(item)) or item < 0:
+            errors.append(f"{field} must be a non-negative number or null")
     return errors
 
 
@@ -203,6 +229,9 @@ def normalize_row(row: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("; ".join(errors))
     value = _canonical_input(row)
     normalized = {field: value[field] for field in REQUIRED_FIELDS}
+    normalized.update(
+        {field: value[field] for field in BEHAVIOR_FIELDS if value[field] is not None}
+    )
     if value["oracle_label"] is not None:
         normalized["oracle_label"] = value["oracle_label"].strip()
     return normalized
@@ -224,6 +253,7 @@ def offline_row(
     tokens: int | None = None,
     cost_usd: float | None = None,
     duration_ms: float | None = None,
+    behavior: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a row for deterministic fixtures without inventing live metrics."""
 
@@ -240,6 +270,8 @@ def offline_row(
     }
     if oracle_label is not None:
         row["oracle_label"] = oracle_label
+    if behavior:
+        row.update({field: behavior[field] for field in BEHAVIOR_FIELDS if field in behavior})
     return normalize_row(row)
 
 
@@ -305,6 +337,23 @@ def _metric_stats(
     return output
 
 
+def _behavior_stats(
+    rows: list[tuple[dict[str, Any], bool, bool]],
+) -> dict[str, dict[str, Any]]:
+    output: dict[str, dict[str, Any]] = {}
+    for field in BEHAVIOR_FIELDS:
+        values = [
+            float(row[field])
+            for row, _, _ in rows
+            if row.get(field) is not None
+        ]
+        output[field] = {
+            "observed": len(values),
+            "mean": sum(values) / len(values) if values else None,
+        }
+    return output
+
+
 def _paired_metric_stats(paired: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     output: dict[str, dict[str, Any]] = {}
     for field in METRIC_FIELDS:
@@ -312,6 +361,21 @@ def _paired_metric_stats(paired: list[dict[str, Any]]) -> dict[str, dict[str, An
             float(item["metric_delta"][field])
             for item in paired
             if item["metric_delta"][field] is not None
+        ]
+        output[field] = {
+            "observed": len(values),
+            "mean_delta": sum(values) / len(values) if values else None,
+        }
+    return output
+
+
+def _paired_behavior_stats(paired: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    output: dict[str, dict[str, Any]] = {}
+    for field in BEHAVIOR_FIELDS:
+        values = [
+            float(item["behavior_delta"][field])
+            for item in paired
+            if item["behavior_delta"].get(field) is not None
         ]
         output[field] = {
             "observed": len(values),
@@ -450,6 +514,14 @@ def summarize_rows(
                     )
                     for field in METRIC_FIELDS
                 },
+                "behavior_delta": {
+                    field: (
+                        float(on_row[field]) - float(off_row[field])
+                        if on_row.get(field) is not None and off_row.get(field) is not None
+                        else None
+                    )
+                    for field in BEHAVIOR_FIELDS
+                },
             }
         )
 
@@ -485,6 +557,9 @@ def summarize_rows(
         "invalid_rows": invalid,
         "conditions": condition_stats,
         "metrics": metric_stats,
+        "behavior": {
+            condition: _behavior_stats(items) for condition, items in by_condition.items()
+        },
         "tpr": {
             condition: stats["tpr"] for condition, stats in condition_stats.items()
         },
@@ -494,6 +569,7 @@ def summarize_rows(
         "unpaired_pair_count": len(unpaired),
         "unpaired_pairs": unpaired,
         "paired_metrics": _paired_metric_stats(paired),
+        "paired_behavior": _paired_behavior_stats(paired),
         "paired_delta": paired_delta,
     }
 

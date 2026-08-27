@@ -39,6 +39,79 @@ def _claim_lane_after_signal(repo_root, target, start, attempting, output):
         output.put(("error", str(exc)))
 
 
+def test_closure_snapshot_reuses_one_queue_read(monkeypatch, tmp_path):
+    queue = {"target": "target.com", "actions": []}
+    queue_reads = []
+    state_snapshots = []
+    closure_snapshots = []
+
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "load_queue",
+        lambda *_args, **_kwargs: queue_reads.append(queue) or queue,
+    )
+
+    def fake_state(*_args, **kwargs):
+        state_snapshots.append(kwargs["queue_snapshot"])
+        return {
+            "target": "target.com",
+            "resolved_target": "target.com",
+            "action_queue_fingerprint": "queue-generation",
+        }
+
+    def fake_closure(*_args, **kwargs):
+        closure_snapshots.append(kwargs["queue_snapshot"])
+        return {}
+
+    monkeypatch.setattr(autopilot_round_module, "build_autopilot_state", fake_state)
+    monkeypatch.setattr(autopilot_round_module, "load_closure_projection", fake_closure)
+
+    autopilot_round_module._closure_snapshot(tmp_path, "target.com")
+
+    assert len(queue_reads) == 1
+    assert state_snapshots == [queue]
+    assert closure_snapshots == [queue]
+    assert state_snapshots[0] is closure_snapshots[0]
+
+
+def test_closure_snapshot_retries_one_stale_owner_read(monkeypatch, tmp_path):
+    queues = [
+        {"target": "target.com", "actions": [{"id": "AQ-1"}]},
+        {"target": "target.com", "actions": [{"id": "AQ-2"}]},
+    ]
+    closures = [
+        {"snapshot_stale": True, "reasons": ["state_snapshot_stale"]},
+        {"snapshot_digest": "stable"},
+    ]
+    reads = []
+
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "load_queue",
+        lambda *_args, **_kwargs: reads.append(queues.pop(0)) or reads[-1],
+    )
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "build_autopilot_state",
+        lambda *_args, **kwargs: {
+            "target": "target.com",
+            "resolved_target": "target.com",
+            "action_queue_fingerprint": "generation",
+            "queue_snapshot": kwargs["queue_snapshot"],
+        },
+    )
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "load_closure_projection",
+        lambda *_args, **_kwargs: closures.pop(0),
+    )
+
+    _state, closure = autopilot_round_module._closure_snapshot(tmp_path, "target.com")
+
+    assert len(reads) == 2
+    assert closure == {"snapshot_digest": "stable"}
+
+
 def test_prepare_round_is_idempotent_and_preserves_checkpoint_budget(tmp_path):
     first = prepare_round(tmp_path, "target.com", 2)
     second = prepare_round(tmp_path, "target.com", 8)

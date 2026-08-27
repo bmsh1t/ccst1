@@ -135,6 +135,58 @@ def test_paired_resource_metrics_include_on_minus_off_delta():
     assert metric_delta["duration_ms"] == pytest.approx(400)
 
 
+def test_behavior_metrics_cover_evidence_routing_and_recovery_without_filling_gaps():
+    rows = [
+        offline_row(
+            "CASE",
+            "skills_off",
+            "safe",
+            oracle_label="safe",
+            behavior={
+                "hypothesis_selected": False,
+                "action_selected": True,
+                "tool_choice_valid": False,
+                "evidence_complete": False,
+                "duplicate_action": True,
+                "invalid_route": True,
+                "recovery_success": False,
+                "coverage_progress": 1,
+                "unsupported_claim": True,
+            },
+        ),
+        offline_row(
+            "CASE",
+            "skills_on",
+            "safe",
+            oracle_label="safe",
+            behavior={
+                "hypothesis_selected": True,
+                "action_selected": True,
+                "tool_choice_valid": True,
+                "evidence_complete": True,
+                "duplicate_action": False,
+                "invalid_route": False,
+                "recovery_success": True,
+                "coverage_progress": 3,
+                "unsupported_claim": False,
+            },
+        ),
+    ]
+
+    result = summarize_rows(rows)
+
+    assert result["behavior"]["skills_on"]["evidence_complete"] == {
+        "observed": 1,
+        "mean": 1.0,
+    }
+    assert result["behavior"]["skills_off"]["duplicate_action"]["mean"] == 1.0
+    assert result["paired_behavior"]["coverage_progress"] == {
+        "observed": 1,
+        "mean_delta": 2.0,
+    }
+    assert result["paired_delta"]["cases"][0]["behavior_delta"]["invalid_route"] == -1.0
+
+
 def test_mismatched_pair_oracle_is_invalid_and_excluded_from_both_arms():
     rows = [
         offline_row("CASE", "skills_off", "safe", oracle_label="safe"),

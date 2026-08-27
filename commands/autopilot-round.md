@@ -15,166 +15,109 @@ allowed-tools:
 Authoritative round bootstrap (do not reinterpret): !`python3 "$(git rev-parse --show-toplevel)/tools/autopilot_bootstrap.py" --json --round-defaults -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"`
 Native fixed-loop prompt identity (do not reinterpret): `/autopilot-round $ARGUMENTS`
 
-Arguments are identical to `/autopilot`. Round defaults are
-`--normal --deep --max-lanes 8`. Explicit formal arguments set the budget when
-starting a new round; resuming an active round keeps the checkpoint-owned
-`max_lanes`. The bootstrap parser is the only argument owner.
+Arguments match `/autopilot`. Defaults are `--normal --deep --max-lanes 8`;
+an active round keeps its checkpoint-owned `max_lanes`. The bootstrap parser is
+the only argument owner.
 
 ## Bootstrap Gate
 
 Obey bootstrap `action`. Only `continue` may proceed. For `ask_target`,
 `stop_invalid_arguments`, `stop_invalid_scope`, `stop_invalid_context`,
-`stop_runtime_drift`, `stop_runtime_error`, or
-`stop_state_error`, preserve the bounded reason, apply the terminal cron
-cleanup, emit `STATUS: ERROR reason=<bounded-summary>`, and stop. Do not sync
-runtime automatically and do not perform a target action first.
+`stop_runtime_drift`, `stop_runtime_error`, or `stop_state_error`, perform
+terminal cron cleanup, emit `STATUS: ERROR reason=<bounded-summary>`, and stop.
+Do not sync runtime or perform a target action first.
 
-## Prepare And Read-Only Terminal Precheck
+## Prepare And Terminal Precheck
 
-Run the deterministic prepare operation once:
+Run prepare once:
 
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_round.py prepare --target <target_shell> --max-lanes <invocation_batch.max_lanes> --json
 ```
 
-The legacy state-only projection remains a compatibility adapter for callers
-that cannot use the coordinator; do not run it in addition to `prepare`:
+The coordinator performs the read-only terminal precheck before starting or
+resuming the checkpoint-owned round. For STATUS, consume only
+`closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`,
+`closure.next_action`, and `structured_findings.reported`. Residual blind-spot
+labels may use the bounded advisory fields already returned by bootstrap/state.
+These fields never override STATUS.
 
-```bash
-# python3 tools/checkpoint.py --target <target_shell> --round-begin --max-lanes <invocation_batch.max_lanes> --json
-# python3 tools/autopilot_state.py --target <target_shell> --bounded --closure --projection-only --json
-```
+`status=terminal` with Closure `finish` or `blocked` is terminal: clean up the
+exact loop, emit STATUS, and stop without target work. Missing, damaged,
+inconsistent, or unknown Closure is `STATUS: ERROR` after cleanup. For
+`status=started|resumed`, recover any lane whose heartbeat remains `started`.
 
-The coordinator runs the read-only terminal precheck before beginning or
-resuming the checkpoint-owned round. For STATUS selection, read only `closure.verdict`,
-`closure.can_claim_exhausted`, `closure.reasons`, `closure.next_action`, and
-`structured_findings.reported`. For terminal residual blind spots only, read
-the bounded browser/source/recon/observation/runtime/capability fields already
-returned by bootstrap/state; these advisory facts never select or override
-STATUS.
+The legacy state-only projection is a compatibility adapter for callers that
+cannot use the coordinator; do not run it in addition to `prepare`.
 
-`status=terminal` with Closure `finish` or `blocked` is terminal: project STATUS, apply terminal cron cleanup,
-emit, and stop without any target action. Missing, damaged, inconsistent, or
-unknown closure is `STATUS: ERROR` after terminal cleanup.
-For `status=started|resumed`, treat `round_progress` as authoritative. Resume
-any lane whose heartbeat is still `status=started` before selecting new work.
+## Round Mechanics
 
-## Command Execution Contract
+Read and obey `commands/autopilot.md` as the sole controller contract. This
+wrapper only carries the bounded round mechanics and does not repeat its route,
+evidence, red-line, or completion rules. Consume at most
+`invocation_batch.max_lanes` substantive lanes and use the controller-selected
+owner/action. If no lane is executable, preserve the existing handoff and move
+to closure.
 
-Every `Bash` invocation receives one shell command string, never a JSON/object
-value. Run machine-readable commands independently and inspect the exit status
-before consuming output. A command declared `--json` is usable only when it
-returns zero, non-empty stdout containing exactly one JSON object; do not pipe a
-failed, empty, mixed-log, malformed, or non-object response into `jq`, Python, or
-the next owner. Record the bounded command error as `blocked`/`partial` (or emit
-`STATUS: ERROR` at the wrapper boundary) and preserve the lane for recovery.
-
-Unknown AI families such as `Infra` may remain in hypotheses, Case State, and
-Action Queue metadata. They are advisory until a canonical owner validates the
-family and writes complete evidence; an unknown or incomplete family cannot mark
-a canonical Coverage cell terminal or satisfy Closure. Only canonical owners may
-write Matrix terminal state or satisfy Closure; advisory families must not be
-silently renamed to another family.
-
-Coverage-family representatives are queue projections only. They do not assert
-family equivalence or hide the raw Matrix endpoints. They do not close sibling
-cells. The AI remains the judgment owner and may choose or expand any member
-listed in the projection metadata, and must query the raw Coverage gap window
-when the member preview is incomplete; only explicit canonical-owner evidence
-can close that member's Matrix cell or satisfy Closure.
-
-## One Canonical Round
-
-read and obey `commands/autopilot.md` as the sole controller contract. Do not
-execute its embedded bootstrap again or duplicate that controller contract here.
-
-Consume at most bootstrap `invocation_batch.max_lanes` substantive lanes. Obey a
-non-empty bootstrap `state.hard_gate`; otherwise select one runnable item from
-`state.priority_frontier` using the canonical controller's value judgment. The
-frontier only changes cross-owner execution order; execute through the selected
-item's canonical owner and evidence contract. If no frontier item is executable,
-use `state.fallback_action` or persist the existing blocker/handoff instead of
-asking the operator to choose a direction. Never replace selected work with
-passive `idle`, `no-change`, or monitoring lanes. Derive `<stable_lane_id>` from
-the owner ID or stable `<lane-kind>:<endpoint-or-artifact>` identity, then claim
-the heartbeat:
+Claim the selected stable lane:
 
 ```bash
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane --lane <stable_lane_id> --max-lanes <invocation_batch.max_lanes> --json
 ```
 
-Execute only when `allowed=true`. `already_claimed` resumes interrupted work;
-`already_completed` or `already_blocked` must not replay target work.
-`budget_exhausted` or `passive_lane_rejected` proceeds to final closure without
-target work.
+Proceed only when `allowed=true`. `already_claimed` resumes interrupted work;
+`already_completed`, `already_blocked`, `budget_exhausted`, and
+`passive_lane_rejected` do not replay target work.
 
-After target work, record one terminal heartbeat:
+After the owner action, record one terminal heartbeat:
 
 ```bash
 cd -- <repo_root_shell> && python3 tools/checkpoint.py --target <target_shell> --record-round-lane-result --lane <stable_lane_id> --lane-status <completed_or_blocked> --decision <decision_shell> --evidence-ref <evidence_ref_shell> --next-action <next_action_shell> --json
 ```
 
-Completed lanes require an existing, non-empty, target-owned evidence artifact.
-Completed `coverage:*` lanes must reference the canonical Coverage Matrix,
-Action Queue, or Evidence Ledger artifact after owner write-back; a narrative
-Markdown disposition is not completion evidence.
-Blocked lanes may use literal `none`. Never store raw responses, prompts,
-credentials, tokens, cookies, or authorization headers in a heartbeat. The
-heartbeat is recovery context, not a second action owner; persist unresolved
-work through its existing owner or the Action Queue before round closure. A
-round with any `started` lane cannot close.
+Completed lanes require a non-empty target-owned evidence artifact; blocked
+lanes may use `none`. Heartbeats contain no raw responses, prompts, credentials,
+tokens, cookies, or authorization headers. A round with any `started` lane
+cannot close.
 
-After every terminal lane heartbeat, run the canonical read-only loop guard:
+After every terminal heartbeat, run the read-only loop guard:
 
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json
 ```
 
-When the lane budget is consumed, checkpoint and leave new work for the
-next invocation.
+When the lane budget is consumed, checkpoint and leave new work for the next
+invocation.
 
-## Final Closure And Status
+## Settle And Status
 
-After the terminal lane heartbeats, run the deterministic settle operation. The
-coordinator performs the canonical checkpoint/write-back for this round:
+After terminal heartbeats, run the deterministic settle operation:
 
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_round.py settle --target <target_shell> --json
 ```
 
-The coordinator refuses any `started` lane before writes, then orders Coverage
-refresh/checkpoint build, Action Queue sync, round closure, and final bounded
-Closure projection; the Surface owner refreshes after any resulting input
-changes and before round closure. If the projection remains stale or cannot be
-refreshed, settle returns a handoff and leaves the round active; it does not
-record a stagnation guard or discard existing evidence. Repeating settle after
-round completion is read-only and returns `status=already_settled`; it never
-replays target work.
+Settle refuses `started` lanes, performs owner write-back and final Closure, and
+leaves the round active when Surface is stale or unavailable. Repeating settle
+after completion is read-only (`status=already_settled`) and never replays target
+work. Budget exhaustion ends target work for this invocation; it does not itself
+select `STATUS: CONTINUE`.
 
-`round_progress.budget_reached` only ends target work for this invocation. The
-final verdict is recomputed from current Queue, Finding, Case State, coverage,
-and evidence owners; budget exhaustion alone never selects `STATUS: CONTINUE`.
-After a successful bootstrap, closure owner fields alone select STATUS; model
-prose, scores, scanner output, gaps, and run-contract checks never override them.
+Project STATUS from the final owner fields:
 
-## Status Projection
-
-- `finish` + `can_claim_exhausted=true` +
-  `structured_findings.reported > 0`: `STATUS: DONE residual_blind_spots=<bounded-labels|none-recorded>`
-- `finish` + `can_claim_exhausted=true` +
-  `structured_findings.reported == 0`: `STATUS: EXHAUSTED reason=evidence-bounded`, then
+- `finish` + `can_claim_exhausted=true` + `structured_findings.reported > 0`:
+  `STATUS: DONE residual_blind_spots=<bounded-labels|none-recorded>`
+- `finish` + `can_claim_exhausted=true` + `structured_findings.reported == 0`:
+  `STATUS: EXHAUSTED reason=evidence-bounded`, then
   `RESIDUAL_BLIND_SPOTS: <bounded-labels|none-recorded>`
 - `handoff`: `STATUS: CONTINUE next_action=<bounded-summary>`
 - `blocked`: `STATUS: BLOCKED reason=<bounded-summary>`
 - Any other shape: `STATUS: ERROR reason=<bounded-summary>`
 
-For DONE/EXHAUSTED, emit at most five labels already evidenced by bootstrap/state.
-Do not create a new blind-spot store or speculate beyond state. `none-recorded`
-means no current-state gap was recorded, not universal absence.
-
-`EXHAUSTED` is evidence-bounded and does not prove that every payload, identity,
-timing, business state, or vulnerability has been exhausted. `DONE` adds a
-canonical generated report but keeps the same closure limits.
+For DONE/EXHAUSTED, emit at most five labels already evidenced by
+bootstrap/state. Do not create a blind-spot store or speculate beyond state.
+`EXHAUSTED` is evidence-bounded, not proof that every payload, identity,
+timing, business state, or vulnerability has been exhausted.
 
 ## Native Loop Ownership
 
@@ -185,15 +128,9 @@ Recommended scheduler entry:
 ```
 
 Native `/loop` owns the fixed-interval cron job. For `STATUS: CONTINUE`, do not
-call CronList or CronDelete. Before emitting DONE, EXHAUSTED, BLOCKED, or ERROR,
-call CronList once and delete jobs whose `prompt` exactly equals the expanded
-Native fixed-loop prompt identity. Never delete by target substring, cadence
-alone, or job position. If deferred, load exactly CronList and CronDelete through
-ToolSearch once. No exact match means direct invocation or prior cleanup. A tool
-error emits `STATUS: ERROR reason=loop-cancel-failed`. Never create or modify a
-cron job from this wrapper.
-
-One loop owns one target. Interrupted turns resume from checkpoint/state. All
-`commands/autopilot.md` pause boundaries remain
-unchanged: never auto-submit reports or bypass its target or credential
-boundaries.
+call CronList or CronDelete. Before DONE, EXHAUSTED, BLOCKED, or ERROR, call
+CronList once and delete only jobs whose `prompt` exactly equals the expanded
+fixed-loop prompt identity. Never delete by target substring, cadence, or job
+position. If cleanup fails, emit `STATUS: ERROR reason=loop-cancel-failed`.
+Never create or modify a cron job from this wrapper. One loop owns one target;
+interrupted turns resume from checkpoint/state.

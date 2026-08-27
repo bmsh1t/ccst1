@@ -14,6 +14,7 @@ from action_queue import (
     claim_next_action,
     ingest_checkpoint,
     load_queue,
+    queue_path,
     queue_fingerprint,
     resolve_action,
 )
@@ -733,6 +734,80 @@ def test_pending_next_action_always_has_owner_backed_frontier(next_action, owner
     )
 
 
+@pytest.mark.parametrize(
+    ("state", "reason", "owner", "next_action"),
+    [
+        (
+            {
+                "target": "target.com",
+                "next_action": "handoff",
+                "has_recon": True,
+                "surface_projection": {"status": "stale"},
+            },
+            "surface_projection_pending",
+            "surface",
+            "prepare_surface_context",
+        ),
+        (
+            {
+                "target": "target.com",
+                "next_action": "handoff",
+                "action_queue_next": {"id": "AQ-1", "action": "resume queued work"},
+            },
+            "durable_work_pending",
+            "action_queue",
+            "resume_action_queue",
+        ),
+        (
+            {
+                "target": "target.com",
+                "next_action": "handoff",
+                "case_state": {"status": "valid", "pending_validation_backlog": 1},
+            },
+            "case_state_work_pending",
+            "case_state",
+            "resume_case_state",
+        ),
+        (
+            {
+                "target": "target.com",
+                "next_action": "handoff",
+                "_checkpoint_health": {"status": "stale"},
+            },
+            "checkpoint_stale",
+            "checkpoint",
+            "refresh_checkpoint",
+        ),
+    ],
+)
+def test_closure_binds_primary_reason_frontier_and_action(
+    state, reason, owner, next_action
+):
+    closure = build_closure_projection(state, _closure_matrix())
+
+    assert closure["reasons"][0] == reason
+    assert closure["actionable_frontier"][0]["owner"] == owner
+    assert closure["next_action"] == next_action
+
+
+def test_closure_prefers_durable_owner_over_stale_surface_projection():
+    closure = build_closure_projection(
+        {
+            "target": "target.com",
+            "next_action": "handoff",
+            "has_recon": True,
+            "surface_projection": {"status": "stale"},
+            "action_queue_next": {"id": "AQ-1", "action": "resume queued work"},
+        },
+        _closure_matrix(),
+    )
+
+    assert "surface_projection_pending" in closure["reasons"]
+    assert closure["reasons"][0] == "durable_work_pending"
+    assert closure["actionable_frontier"][0]["owner"] == "action_queue"
+    assert closure["next_action"] == "resume_action_queue"
+
+
 def test_ledger_health_handoff_always_has_owner_backed_frontier():
     closure = build_closure_projection(
         {
@@ -892,6 +967,115 @@ def test_stale_checkpoint_queue_fingerprint_forces_refresh_handoff(tmp_path):
     assert "checkpoint_stale" in closure["reasons"]
     assert closure["verdict"] == "handoff"
     assert current != "stale-queue-generation"
+
+
+def test_closure_uses_current_queue_next_instead_of_preloaded_pointer(tmp_path):
+    target = "target.com"
+    path = queue_path(tmp_path, target)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "target": target,
+        "actions": [{
+            "id": "AQ-CURRENT",
+            "status": "queued",
+            "type": "coverage-gap",
+            "source": "operator",
+            "action": "review the current queue item",
+            "priority": 80,
+        }],
+    }), encoding="utf-8")
+
+    closure = load_closure_projection(
+        str(tmp_path),
+        {
+            "target": target,
+            "resolved_target": target,
+            "next_action": "handoff",
+            "action_queue_next": {"id": "AQ-STALE", "action": "old pointer"},
+        },
+        max_lanes_reached=False,
+    )
+
+    queue = load_queue(tmp_path, target)
+    assert closure["snapshot_components"]["queue_fingerprint"] == queue_fingerprint(queue)
+    assert closure["snapshot_digest"]
+    assert closure["actionable_frontier"][0]["id"] == "AQ-CURRENT"
+    assert all(item["id"] != "AQ-STALE" for item in closure["actionable_frontier"])
+
+
+def test_closure_marks_state_snapshot_stale_when_queue_generation_changes(tmp_path):
+    target = "target.com"
+    path = queue_path(tmp_path, target)
+    path.parent.mkdir(parents=True)
+    initial = {
+        "schema_version": 1,
+        "target": target,
+        "actions": [{
+            "id": "AQ-OLD",
+            "status": "queued",
+            "type": "coverage-gap",
+            "source": "operator",
+            "action": "old queue item",
+        }],
+    }
+    path.write_text(json.dumps(initial), encoding="utf-8")
+    old_generation = queue_fingerprint(load_queue(tmp_path, target))
+    path.write_text(json.dumps({
+        **initial,
+        "actions": [{
+            **initial["actions"][0],
+            "id": "AQ-NEW",
+            "action": "new queue item",
+        }],
+    }), encoding="utf-8")
+
+    closure = load_closure_projection(
+        str(tmp_path),
+        {
+            "target": target,
+            "resolved_target": target,
+            "next_action": "handoff",
+            "action_queue_fingerprint": old_generation,
+        },
+        max_lanes_reached=False,
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["state_snapshot_stale"]
+    assert closure["next_action"] == "refresh_state"
+    assert closure["snapshot_stale"] is True
+    assert closure["snapshot_stale_sources"] == ["action_queue"]
+
+
+def test_closure_marks_owner_snapshot_stale_when_source_changes_during_read(tmp_path, monkeypatch):
+    target = "target.com"
+    names = (
+        "action_queue",
+        "coverage",
+        "ledger",
+        "surface",
+        "checkpoint",
+        "target_memory",
+    )
+    stable = {name: (False,) for name in names}
+    changed = {**stable, "ledger": (True, 1, 2, 3, 4)}
+    markers = iter((stable, changed))
+    monkeypatch.setattr(
+        autopilot_state_module,
+        "_owner_source_markers",
+        lambda *_args, **_kwargs: next(markers),
+    )
+
+    closure = load_closure_projection(
+        str(tmp_path),
+        {"target": target, "resolved_target": target, "next_action": "handoff"},
+        max_lanes_reached=False,
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["state_snapshot_stale"]
+    assert closure["snapshot_stale_sources"] == ["ledger"]
 
 
 def test_checkpoint_cursor_missing_from_queue_is_stale_not_advanced(tmp_path):
@@ -1756,7 +1940,7 @@ def test_matching_third_round_guard_does_not_revive_advisory_surface(tmp_path):
     assert "rotation_target" not in closure
 
 
-def test_matching_third_round_guard_preserves_authoritative_next_action(tmp_path):
+def test_matching_third_round_guard_ignores_stale_state_queue_pointer(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     stagnant_state = {
@@ -1779,9 +1963,9 @@ def test_matching_third_round_guard_preserves_authoritative_next_action(tmp_path
         "action_queue_next": {"id": "AQ-1", "next_action": "validate_finding"},
     }, max_lanes_reached=False)
 
-    assert closure["verdict"] == "handoff"
-    assert closure["reasons"] == ["durable_work_pending"]
-    assert closure["next_action"] == "handoff"
+    assert closure["verdict"] == "blocked"
+    assert closure["reasons"] == ["stagnant_prerequisite"]
+    assert closure["next_action"] == "json-inject-review"
     assert "rotation_target" not in closure
 
 

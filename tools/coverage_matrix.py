@@ -1358,9 +1358,11 @@ def rebuild_matrix(
     Operators using `mark_cell` for ad-hoc cells should ALSO append a
     matching entry to findings.json so the cell survives a rebuild.
 
-    Operator annotations (n_a reasons) are preserved unless
-    force_clean=True. Recon URLs below min_weight_to_include are
-    skipped to avoid bloat (Risk R-E).
+    Operator annotations (n_a reasons) and historical endpoint rows are
+    preserved unless force_clean=True. A historical row that is absent from
+    the current Recon input remains visible as retained coverage state; it is
+    not treated as current Recon evidence. Recon URLs below
+    min_weight_to_include are skipped to avoid bloat (Risk R-E).
     """
     repo = Path(repo_root) if repo_root else BASE_DIR
     matrix = _empty_matrix(target) if force_clean else load_matrix(target, repo)
@@ -1567,6 +1569,34 @@ def rebuild_matrix(
             if representative and representative != endpoint:
                 new_endpoint["representative_endpoint"] = representative
             new_endpoints.append(new_endpoint)
+
+    # Preserve endpoint rows that are no longer present in the current Recon
+    # input. Coverage is a durable view of prior review, not a snapshot that
+    # silently forgets an endpoint when a later Recon run is narrower. Keep the
+    # persisted cells/reasons/evidence intact and only backfill schema defaults
+    # for newly added vulnerability classes. `force_clean=True` starts with an
+    # empty matrix, so it remains the explicit opt-in escape hatch.
+    current_endpoints = {str(item.get("endpoint") or "") for item in new_endpoints}
+    for endpoint, historical_ep in existing.items():
+        endpoint = str(endpoint or "")
+        if not endpoint or endpoint in current_endpoints:
+            continue
+        if not isinstance(historical_ep, dict):
+            continue
+        kind = _effective_endpoint_kind(historical_ep, endpoint)
+        historical_ep["endpoint"] = endpoint
+        historical_ep.setdefault("endpoint_kind", kind)
+        historical_ep.setdefault("auto_hints", _endpoint_auto_hints(
+            endpoint,
+            historical_ep.get("observed_params") or [],
+            all_endpoints=current_endpoints,
+        ))
+        historical_ep.setdefault("observed_params", [])
+        historical_ep.setdefault("source_count", 0)
+        historical_ep.setdefault("observation_count", 0)
+        historical_ep.setdefault("cells", {})
+        _apply_endpoint_applicability(historical_ep, kind)
+        new_endpoints.append(historical_ep)
 
     # Apply findings: mark cells as tested_finding
     findings_path = repo / "findings" / target_key / "findings.json"

@@ -36,6 +36,15 @@ HELPERS = (
     "tools/oast_listen.py",
     "commands/web3-audit.md",
     "skills/web3-audit/SKILL.md",
+    "commands/intel.md",
+    "tools/intel_engine.py",
+    "tools/intel_artifact.py",
+    "commands/spray.md",
+    "skills/credential-attack/SKILL.md",
+    "tools/auth_session.py",
+    "tools/credential_store.py",
+    "tools/spray_contract.py",
+    "tools/spray_orchestrator.sh",
 )
 
 
@@ -96,11 +105,13 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
     assert lanes["browser"]["classification"] == "artifact_bridge"
     assert lanes["browser"]["runtime_status"] == "unchecked"
     assert lanes["browser"]["bridge_ready"] is True
-    assert lanes["browser"]["profile_version"] == 2
+    assert lanes["browser"]["profile_version"] == 3
     assert lanes["browser"]["missing"] == ["session-browser-mcp"]
     assert lanes["browser"]["degraded"] == ["session-browser-mcp-unchecked"]
     assert lanes["oast"]["degraded"] == ["manual-oast-provider"]
     assert lanes["web3"]["degraded"] == ["static-review-only"]
+    assert lanes["intel"]["ready"] is True
+    assert lanes["credential"]["ready"] is True
     assert all(lane["input_fingerprint"].startswith("sha256:") for lane in lanes.values())
     encoded = json.dumps(profile, sort_keys=True)
     assert str(tmp_path) not in encoded
@@ -160,6 +171,8 @@ def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback
     assert lanes["recon"]["missing"] == ["httpx-or-curl"]
     assert lanes["cloud"]["missing"] == ["cloud-provider-tool"]
     assert lanes["surface"]["ready"] is True
+    assert lanes["intel"]["ready"] is True
+    assert lanes["credential"]["ready"] is True
 
 
 def test_browser_cli_presence_does_not_change_mcp_only_profile(tmp_path):

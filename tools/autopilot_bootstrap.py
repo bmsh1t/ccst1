@@ -506,6 +506,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             if isinstance(queue_next, dict)
             else {}
         ),
+        "action_queue_fingerprint": str(state.get("action_queue_fingerprint") or ""),
         "memory_candidate_next": (
             _compact_candidate(memory_candidate_next)
             if isinstance(memory_candidate_next, dict)

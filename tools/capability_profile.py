@@ -29,7 +29,7 @@ TOOL_REGISTRY: dict[str, tuple[str, ...]] = {
 }
 SESSION_MANAGED = ("chrome-devtools-mcp", "playwright-mcp")
 CORE_EXTERNAL_TOOLS = ("curl", "httpx")
-LANE_PROFILE_VERSION = 2
+LANE_PROFILE_VERSION = 3
 LANE_IDS = (
     "recon",
     "surface",
@@ -43,6 +43,8 @@ LANE_IDS = (
     "cloud",
     "oast",
     "web3",
+    "intel",
+    "credential",
 )
 
 Which = Callable[[str], str | None]
@@ -171,6 +173,21 @@ def build_capability_profile(
         resolved_repo,
         "commands/web3-audit.md",
         "skills/web3-audit/SKILL.md",
+    )
+    intel_ready = _helpers_exist(
+        resolved_repo,
+        "commands/intel.md",
+        "tools/intel_engine.py",
+        "tools/intel_artifact.py",
+    )
+    credential_ready = _helpers_exist(
+        resolved_repo,
+        "commands/spray.md",
+        "skills/credential-attack/SKILL.md",
+        "tools/auth_session.py",
+        "tools/credential_store.py",
+        "tools/spray_contract.py",
+        "tools/spray_orchestrator.sh",
     )
     interactsh_available = bool(resolver("interactsh-client"))
     forge_available = bool(resolver("forge"))
@@ -305,6 +322,18 @@ def build_capability_profile(
             {"commands/web3-audit.md+skills/web3-audit/SKILL.md": web3_ready},
             evidence_required=("contract-source",),
             degraded=("static-review-only",) if not forge_available else (),
+        ),
+        _lane_record(
+            "intel",
+            {"commands/intel.md+tools/intel_engine.py+intel_artifact.py": intel_ready},
+            evidence_required=("component-version-or-advisory-signal",),
+        ),
+        _lane_record(
+            "credential",
+            {
+                "commands/spray.md+credential-attack": credential_ready,
+            },
+            evidence_required=("reviewed-identity-and-request-spec",),
         ),
     ]
 

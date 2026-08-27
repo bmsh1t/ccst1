@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 import pytest
 
@@ -379,8 +378,13 @@ def test_runtime_config_is_fail_open_and_explicit_override_wins(tmp_path):
     assert runtime_config.is_ctf_mode_enabled(tmp_path) is False
     assert runtime_config.is_ctf_mode_enabled(tmp_path, explicit=True) is True
 
-    (tmp_path / "config.json").write_text('{"ctf_mode": true, "other": 1}\n', encoding="utf-8")
+    (tmp_path / "config.json").write_text(
+        '{"ctf_mode": true, "cf_solver": {"headful": true}, "other": 1}\n',
+        encoding="utf-8",
+    )
     assert runtime_config.load_runtime_config(tmp_path)["ctf_mode"] is True
+    assert runtime_config.load_config_section(tmp_path, "cf_solver") == {"headful": True}
+    assert runtime_config.load_config_section(tmp_path, "missing") == {}
     assert runtime_config.is_ctf_mode_enabled(tmp_path) is True
     assert runtime_config.is_ctf_mode_enabled(tmp_path, explicit=False) is False
 

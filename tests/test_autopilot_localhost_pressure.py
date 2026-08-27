@@ -222,11 +222,13 @@ def test_localhost_sequential_fresh_resume_batch_queue_runner_and_checkpoint(
             "checkpoint_health",
             "recon_budget_partial",
             "round_budget_reached",
-            "surface_review",
-            "actionable_frontier",
-            "stagnation_fingerprint",
-        )
-    }
+                "surface_review",
+                "actionable_frontier",
+                "stagnation_fingerprint",
+                "snapshot_digest",
+                "snapshot_components",
+            )
+        }
     assert closure_payload["closure"]["round_budget_reached"] is True
     assert "max_lanes_reached" not in closure_payload["closure"]["reasons"]
     assert "surface" not in loop_payload

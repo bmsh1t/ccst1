@@ -21,6 +21,12 @@ def load_runtime_config(repo_root: str | Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def load_config_section(repo_root: str | Path, name: str) -> dict:
+    """Return one object-valued config section through the shared loader."""
+    value = load_runtime_config(repo_root).get(name)
+    return value if isinstance(value, dict) else {}
+
+
 def is_ctf_mode_enabled(repo_root: str | Path, explicit: bool | None = None) -> bool:
     """Resolve repo-local CTF mode, allowing an explicit override."""
     if explicit is not None:

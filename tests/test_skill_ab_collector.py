@@ -98,6 +98,28 @@ def test_parse_native_json_result_extracts_metrics():
     }
 
 
+def test_parse_native_json_result_keeps_observable_behavior_metrics():
+    result = ab_collect.parse_result(
+        json.dumps(
+            {
+                "structured_output": {
+                    "verdict": "safe",
+                    "hypothesis_selected": True,
+                    "evidence_complete": False,
+                    "invalid_route": False,
+                    "coverage_progress": 2,
+                }
+            }
+        ),
+        duration_ms=10,
+    )
+
+    assert result["hypothesis_selected"] is True
+    assert result["evidence_complete"] is False
+    assert result["invalid_route"] is False
+    assert result["coverage_progress"] == 2
+
+
 def test_collector_writes_rows_and_manifest_without_network(tmp_path):
     fake = _fake_claude(tmp_path / "claude")
     cases = _cases(tmp_path / "cases.jsonl")
