@@ -20,6 +20,8 @@ from typing import Any
 try:
     from tools.action_queue import (
         ACTIVE_STATUSES,
+        ACTIVATION_REQUIRED_FIELDS,
+        DEPTH_CONTRACT_VERSION,
         _ensure_active_action_ids,
         load_queue,
         queue_mutation_lock,
@@ -51,6 +53,8 @@ try:
 except ImportError:  # pragma: no cover - direct tools/ execution
     from action_queue import (  # type: ignore
         ACTIVE_STATUSES,
+        ACTIVATION_REQUIRED_FIELDS,
+        DEPTH_CONTRACT_VERSION,
         _ensure_active_action_ids,
         load_queue,
         queue_mutation_lock,
@@ -176,6 +180,54 @@ def _queue_migration(repo: Path, target: str, report: dict[str, Any], apply: boo
         if not str(item.get("id") or "").strip()
         and str(item.get("status") or "queued") in ACTIVE_STATUSES
     )
+    for index, item in enumerate(actions):
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        if str(item.get("status") or "queued") not in ACTIVE_STATUSES:
+            continue
+        if not (
+            metadata.get("activation_required") is True
+            or metadata.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
+        ):
+            continue
+        missing_activation = [
+            "depth_contract_version"
+            if metadata.get("depth_contract_version") != DEPTH_CONTRACT_VERSION
+            else "",
+            *[
+                field
+                for field in ACTIVATION_REQUIRED_FIELDS
+                if not str(metadata.get(field) or "").strip()
+            ],
+        ]
+        route = metadata.get("skill_route")
+        if not isinstance(route, dict) or not all(
+            str(route.get(field) or "").strip()
+            for field in ("skill_id", "skill_path")
+        ) or not isinstance(route.get("required_dimensions") if isinstance(route, dict) else None, list) or not (
+            route.get("required_dimensions") if isinstance(route, dict) else []
+        ):
+            missing_activation.append("skill_route")
+        for field in ("endpoint", "method", "evidence_ref", "baseline_ref", "risk_tier"):
+            if not str(metadata.get(field) or "").strip():
+                missing_activation.append(field)
+        cap = metadata.get("max_hypothesis_actions")
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+            missing_activation.append("max_hypothesis_actions")
+        missing_activation = [field for field in missing_activation if field]
+        if missing_activation:
+            report["needs_review"].append(
+                _entry(
+                    "action_queue",
+                    f"{_relative_path(repo, path)}:actions[{index}]",
+                    "active action requires AI activation metadata; migrator will not invent decision fields",
+                    action_id=str(item.get("id") or ""),
+                    missing_fields=missing_activation,
+                    repair_action=(
+                        "refresh checkpoint and re-ingest the action, then claim it with "
+                        "complete depth_contract_version=1 activation metadata"
+                    ),
+                )
+            )
     changes: list[str] = []
     if version != 1:
         changes.append("schema_version=1")

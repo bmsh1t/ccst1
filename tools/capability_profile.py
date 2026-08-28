@@ -192,7 +192,12 @@ def build_capability_profile(
     )
     interactsh_available = bool(resolver("interactsh-client"))
     forge_available = bool(resolver("forge"))
-    cloud_provider_available = any(bool(resolver(tool)) for tool in ("cloud_enum", "s3scanner", "curl"))
+    # curl is a transport primitive, not proof that a cloud enumeration
+    # provider is installed.  Keep the provider requirement explicit so the
+    # profile cannot advertise keyword enumeration on a curl-only host.
+    cloud_provider_available = any(
+        bool(resolver(tool)) for tool in ("cloud_enum", "s3scanner")
+    )
 
     missing_core: list[str] = []
     if not curl_available:
@@ -311,18 +316,54 @@ def build_capability_profile(
             },
             evidence_required=("reviewed-brand-or-host", "provider-ownership-review"),
             degraded=("manual-provider-review",) if not cloud_provider_available else (),
+            classification="evidence_gated",
+            runtime_status=(
+                "ready"
+                if cloud_ready and cloud_provider_available
+                else "degraded"
+                if cloud_ready
+                else "unavailable"
+            ),
+            ready_override=cloud_ready and cloud_provider_available,
         ),
         _lane_record(
             "oast",
-            {"tools/oast_listen.py": oast_ready},
+            {
+                "tools/oast_listen.py": oast_ready,
+                "interactsh-client": interactsh_available,
+            },
             evidence_required=("callback-capable-sink", "callback-correlation"),
             degraded=("manual-oast-provider",) if not interactsh_available else (),
+            classification="evidence_gated",
+            runtime_status=(
+                "ready"
+                if oast_ready and interactsh_available
+                else "degraded"
+                if oast_ready
+                else "unavailable"
+            ),
+            ready_override=oast_ready and interactsh_available,
         ),
         _lane_record(
             "web3",
-            {"commands/web3-audit.md+skills/web3-audit/SKILL.md": web3_ready},
+            {
+                "commands/web3-audit.md+skills/web3-audit/SKILL.md": web3_ready,
+                "foundry-forge": forge_available,
+            },
             evidence_required=("contract-source",),
             degraded=("static-review-only",) if not forge_available else (),
+            classification="static_review",
+            runtime_status=(
+                "ready"
+                if web3_ready and forge_available
+                else "degraded"
+                if web3_ready
+                else "unavailable"
+            ),
+            # Static contract review is a real capability even without a
+            # local Foundry toolchain; expose the missing execution backend
+            # without hiding that bounded review path.
+            ready_override=web3_ready,
         ),
         _lane_record(
             "intel",

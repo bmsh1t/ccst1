@@ -190,6 +190,52 @@ def test_collector_writes_rows_and_manifest_without_network(tmp_path):
     assert manifest["model"] == "MODEL"
     assert manifest["claude_version"] == "claude-test"
     assert manifest["conditions"] == ["skills_off", "skills_on"]
+    assert manifest["provenance"]["staged_home"] == str(home)
+    assert manifest["provenance"]["runtime_root"] == str(home / ".claude")
+    assert manifest["provenance"]["install_script"]["sha256"].startswith("sha256:")
+    assert "runtime_doctor" in manifest["provenance"]
+
+
+def test_existing_keys_ignore_retryable_rows(tmp_path):
+    output = tmp_path / "rows.jsonl"
+    output.write_text(
+        "\n".join(
+            [
+                json.dumps({"case_id": "DONE", "condition": "skills_on", "rep": 1, "verdict": "safe"}),
+                json.dumps({"case_id": "UNKNOWN", "condition": "skills_on", "rep": 1, "verdict": "unknown"}),
+                json.dumps({"case_id": "ERROR", "condition": "skills_on", "rep": 1, "verdict": "safe", "agent_error": "timeout"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert ab_collect._existing_keys(output) == {("DONE", "skills_on", 1)}
+
+
+def test_append_resume_replaces_retryable_row_without_duplicate_pair(tmp_path):
+    output = tmp_path / "rows.jsonl"
+    old = {
+        "case_id": "CASE",
+        "condition": "skills_on",
+        "rep": 1,
+        "verdict": "unknown",
+        "agent_error": "timeout",
+    }
+    output.write_text(json.dumps(old) + "\n", encoding="utf-8")
+
+    ab_collect._replace_row(
+        output,
+        {
+            "case_id": "CASE",
+            "condition": "skills_on",
+            "rep": 1,
+            "verdict": "safe",
+        },
+    )
+
+    rows = load_jsonl(output)
+    assert rows == [{"case_id": "CASE", "condition": "skills_on", "rep": 1, "verdict": "safe"}]
 
 
 def test_collector_returns_error_when_native_result_has_no_structured_verdict(tmp_path):

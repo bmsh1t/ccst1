@@ -1803,6 +1803,8 @@ def test_checkpoint_keeps_report_queued_without_outranking_high_value_hunt(tmp_p
         ("ranked-surface", "hunt"),
         ("source-enrichment", "enrich"),
         ("action-gated-review", "checkpoint"),
+        ("high-risk-lane-review", "validate"),
+        ("viewstate-integrity-review", "validate"),
         ("report", "report"),
         ("recon_no_live_hosts", "handoff"),
         ("unknown-action", "handoff"),

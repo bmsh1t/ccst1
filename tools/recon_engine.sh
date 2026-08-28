@@ -1671,11 +1671,9 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/js/potential_secrets.txt"
 : > "$RECON_DIR/js/linkfinder_endpoints.txt"
 : > "$RECON_DIR/js/request_targets.txt"
-: > "$RECON_DIR/exposure/host_pivot_candidates.jsonl"
-: > "$RECON_DIR/exposure/ai_asset_candidates.jsonl"
-: > "$RECON_DIR/exposure/host_ranking.jsonl"
-: > "$RECON_DIR/exposure/asset_relation_candidates.jsonl"
-rm -f "$RECON_DIR/exposure/asset_relation_summary.json"
+# Routing candidates are rebuildable projections. recon_candidates.py publishes
+# each file atomically, so retain the last usable generation until a complete
+# rebuild succeeds; a failed rebuild is reported by the phase as partial.
 
 ensure_explicit_port_seed_live() {
     if [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ] && [ -n "$TARGET_HTTP_SEED" ] \
@@ -3425,6 +3423,7 @@ cleanup_ffuf_background() {
     for temporary in "${result_tmp:-}" "${control_tmp:-}" "${target_results_tmp:-}" "${FFUF_TARGET_ALIAS_MAP:-}"; do
         [ -n "$temporary" ] && rm -f -- "$temporary"
     done
+    return 0
 }
 
 run_ffuf_phase() {
@@ -3754,7 +3753,7 @@ wait_for_ffuf_phase() {
         FFUF_PHASE_ARTIFACT="recon/${RECON_TARGET_KEY}/dirs/"
         FFUF_SUMMARY_ARTIFACT="-"
         RECON_PHASE_PARTIAL=1
-    elif ! state_values="$(python3 - "$FFUF_PHASE_STATE" <<'PY'
+    elif state_values="$(python3 - "$FFUF_PHASE_STATE" <<'PY'
 import json
 import sys
 

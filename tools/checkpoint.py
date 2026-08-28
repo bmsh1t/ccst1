@@ -47,6 +47,7 @@ try:
         _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
         ingest_checkpoint as ingest_action_queue_checkpoint,
         load_queue as load_action_queue,
+        queue_mutation_lock,
         queue_fingerprint as action_queue_fingerprint,
         select_next_action as action_queue_select_next_action,
     )
@@ -89,6 +90,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         _target_owned_evidence_ref as action_queue_target_owned_evidence_ref,
         ingest_checkpoint as ingest_action_queue_checkpoint,
         load_queue as load_action_queue,
+        queue_mutation_lock,
         queue_fingerprint as action_queue_fingerprint,
         select_next_action as action_queue_select_next_action,
     )
@@ -497,74 +499,77 @@ def record_round_closure(repo_root: Path | str, target: str) -> dict:
     """Record one completed round only when closure is the same explicit prerequisite blocker."""
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
-    queue_snapshot = load_action_queue(repo, resolved_target)
-    state = build_autopilot_state(
-        str(repo),
-        resolved_target,
-        bounded=True,
-        queue_snapshot=queue_snapshot,
-    )
-    closure = load_closure_projection(
-        str(repo),
-        state,
-        max_lanes_reached=False,
-        apply_round_guard=False,
-        include_round_projection=False,
-        queue_snapshot=queue_snapshot,
-    )
-    fingerprint = stagnation_fingerprint(state, closure)
     path = _checkpoint_witness_path(repo, resolved_target)
     with checkpoint_witness_lock(repo, resolved_target):
-        payload = _load_checkpoint_witness(path)
-        if not payload:
-            raise ValueError(f"checkpoint witness missing or invalid: {path}")
-        previous = payload.get("round_guard") if isinstance(payload.get("round_guard"), dict) else {}
-        if fingerprint:
-            consecutive = (
-                min(int(previous.get("consecutive", 0) or 0) + 1, 3)
-                if fingerprint == str(previous.get("fingerprint") or "")
-                else 1
+        # Lock order is checkpoint -> queue, matching round settle. This binds
+        # the guard fingerprint to the queue snapshot used by Closure.
+        with queue_mutation_lock(repo, resolved_target):
+            queue_snapshot = load_action_queue(repo, resolved_target)
+            state = build_autopilot_state(
+                str(repo),
+                resolved_target,
+                bounded=True,
+                queue_snapshot=queue_snapshot,
             )
-            payload["round_guard"] = {
-                "schema_version": 1,
-                "fingerprint": fingerprint,
-                "reason": str((closure.get("reasons") or [""])[0]),
-                "consecutive": consecutive,
-                "threshold": 3,
-                "recorded_at": now_utc(),
+            closure = load_closure_projection(
+                str(repo),
+                state,
+                max_lanes_reached=False,
+                apply_round_guard=False,
+                include_round_projection=False,
+                queue_snapshot=queue_snapshot,
+            )
+            fingerprint = stagnation_fingerprint(state, closure)
+            payload = _load_checkpoint_witness(path)
+            if not payload:
+                raise ValueError(f"checkpoint witness missing or invalid: {path}")
+            previous = payload.get("round_guard") if isinstance(payload.get("round_guard"), dict) else {}
+            if fingerprint:
+                consecutive = (
+                    min(int(previous.get("consecutive", 0) or 0) + 1, 3)
+                    if fingerprint == str(previous.get("fingerprint") or "")
+                    else 1
+                )
+                payload["round_guard"] = {
+                    "schema_version": 1,
+                    "fingerprint": fingerprint,
+                    "reason": str((closure.get("reasons") or [""])[0]),
+                    "consecutive": consecutive,
+                    "threshold": 3,
+                    "recorded_at": now_utc(),
+                }
+            else:
+                payload.pop("round_guard", None)
+            progress = _round_progress(payload)
+            invalid_evidence = _invalid_completed_lane_evidence(
+                repo,
+                resolved_target,
+                progress.get("lanes") or [],
+            )
+            if invalid_evidence:
+                raise ValueError(
+                    "cannot close round with invalid completed lane evidence: "
+                    + ", ".join(invalid_evidence)
+                )
+            unfinished = [
+                str(item.get("id") or "")
+                for item in (progress.get("lanes") or [])
+                if item.get("status") == "started"
+            ]
+            if progress.get("status") == "active" and unfinished:
+                raise ValueError(
+                    "cannot close round with unfinished lanes: " + ", ".join(unfinished)
+                )
+            if progress.get("status") == "active":
+                progress["status"] = "completed"
+                progress["completed_at"] = now_utc()
+                progress["updated_at"] = now_utc()
+            _write_json_atomic(path, payload)
+            return {
+                "path": str(path),
+                "round_guard": payload.get("round_guard") or {},
+                "round_progress": dict(progress),
             }
-        else:
-            payload.pop("round_guard", None)
-        progress = _round_progress(payload)
-        invalid_evidence = _invalid_completed_lane_evidence(
-            repo,
-            resolved_target,
-            progress.get("lanes") or [],
-        )
-        if invalid_evidence:
-            raise ValueError(
-                "cannot close round with invalid completed lane evidence: "
-                + ", ".join(invalid_evidence)
-            )
-        unfinished = [
-            str(item.get("id") or "")
-            for item in (progress.get("lanes") or [])
-            if item.get("status") == "started"
-        ]
-        if progress.get("status") == "active" and unfinished:
-            raise ValueError(
-                "cannot close round with unfinished lanes: " + ", ".join(unfinished)
-            )
-        if progress.get("status") == "active":
-            progress["status"] = "completed"
-            progress["completed_at"] = now_utc()
-            progress["updated_at"] = now_utc()
-        _write_json_atomic(path, payload)
-        return {
-            "path": str(path),
-            "round_guard": payload.get("round_guard") or {},
-            "round_progress": dict(progress),
-        }
 
 
 def sync_checkpoint_action_queue(
@@ -1303,6 +1308,8 @@ ACTION_DECISIONS = {
     "review_intel_group": "enrich",
     "context-review": "checkpoint",
     "action-gated-review": "checkpoint",
+    "high-risk-lane-review": "validate",
+    "viewstate-integrity-review": "validate",
     "handoff": "handoff",
     "recon_no_live_hosts": "handoff",
     "revalidate_finding_owner": "continue",

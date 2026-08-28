@@ -64,3 +64,25 @@ def test_legacy_phase_record_gets_a_read_time_gate(tmp_path):
     assert gate["status"] == "complete"
     assert gate["evidence_refs"] == ["recon/target.com/urls/all.txt"]
 
+
+def test_persisted_gate_is_revalidated_against_current_record(tmp_path):
+    artifact = tmp_path / "recon" / "target.com" / "urls" / "all.txt"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("https://target.com/\n", encoding="utf-8")
+
+    gate = gate_from_record(
+        tmp_path,
+        {
+            "record_type": "recon_phase",
+            "phase": "url_collection",
+            "status": "failed",
+            "artifact": "recon/target.com/urls/all.txt",
+            "gate": {
+                "status": "complete",
+                "evidence_refs": ["recon/target.com/urls/all.txt"],
+            },
+        },
+    )
+
+    assert gate["status"] == "partial"
+    assert "phase_status:failed" in gate["coverage_gaps"]

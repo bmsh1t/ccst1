@@ -13,7 +13,7 @@
 | `tools/recon_engine.sh` | New target / stale recon / primary-domain batch | Expanded pipeline: batch→subdomain→probe→ports→urls→js→fuzz→config→API-leak→identity/cloud→params→cicd |
 | `tools/cf_solver.py` ⚠️ manual-only | Operator-approved Cloudflare challenge clearance | Optional 2Captcha+Playwright helper; writes cf_clearance headers for recon reuse |
 | `tools/recon_adapter.py` | Reading recon output programmatically | Unified reader for `recon/<target>/`; streams and pages compact FFUF evidence without loading full artifacts |
-| `tools/recon_candidates.py` | Cached routing evidence | Builds bounded candidates, an all-host soft ranking, and a derived Scope summary; never expands Scope |
+| `tools/recon_candidates.py` | Cached routing evidence | Builds bounded candidates and host ranking; `--asset-cursor` resumes relation pages; never expands Scope |
 | `tools/recon_host_verify.py` | Host pivot candidates were derived | One bounded read-only Host/SNI/default-vhost response comparison; appends observations without changing Scope or Queue |
 | `tools/cloud_recon.sh` | Target brand likely owns buckets | S3/Azure/GCP discovery + CloudFlare origin reveal |
 | `tools/cve_hunter.py` | Explicit CVE-template probe | Focused CVE template pass for `/scan-cves`; use only after a reachable component/advisory is selected |
@@ -154,7 +154,7 @@ identity, and cloud signals without re-enumerating everything.
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/hunt.py` | Master hunt entrypoint (CLI) | Orchestrator — wraps recon/scan/agent/report flows |
+| `tools/hunt.py` | Master hunt entrypoint (CLI) | Orchestrator — wraps recon, scan, zero-day, and report flows |
 | `tools/autopilot_state.py` | Reading current autopilot state | Shared control facts plus compact read-only bootstrap/full diagnostic state; compact mode never ranks large surface bodies |
 | `tools/observation_inventory.py` | Large/resumed recon corpus | Persist neutral untouched/stale observations; stat-bound summary and revision cursor; never routes a Skill |
 | `tools/action_queue.py` | Actionable evidence exists or checkpoint has next actions | Persistent action queue: ingest, choose next, resolve, summarize |

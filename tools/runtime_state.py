@@ -583,9 +583,14 @@ def _asset_relation_state(recon_dir: Path, target: str) -> dict:
     base = {
         "available": False,
         "path": str(relative),
+        "candidate_count": 0,
+        "unique_count": 0,
         "scope_review_pending": 0,
         "status_counts": {},
         "partial": False,
+        "truncated": False,
+        "cursor": "",
+        "next_cursor": "",
     }
     if not path.is_file():
         return base
@@ -612,10 +617,14 @@ def _asset_relation_state(recon_dir: Path, target: str) -> dict:
         return {
             **base,
             "available": True,
+            "candidate_count": max(0, int(payload.get("candidate_count", 0) or 0)),
+            "unique_count": max(0, int(payload.get("unique_count", 0) or 0)),
             "scope_review_pending": scope_review_pending,
             "status_counts": status_counts,
             "partial": bool(payload.get("partial")),
             "truncated": bool(payload.get("truncated")),
+            "cursor": str(payload.get("cursor") or "")[:512],
+            "next_cursor": str(payload.get("next_cursor") or "")[:512],
             "invalid_count": max(0, int(payload.get("invalid_count", 0) or 0)),
             "max_depth": payload.get("max_depth"),
         }
@@ -1013,9 +1022,14 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
             "asset_relations": {
                 "available": False,
                 "path": "exposure/asset_relation_summary.json",
+                "candidate_count": 0,
+                "unique_count": 0,
                 "scope_review_pending": 0,
                 "status_counts": {},
                 "partial": False,
+                "truncated": False,
+                "cursor": "",
+                "next_cursor": "",
             },
             "missing": ["recon directory"],
             "warnings": [],

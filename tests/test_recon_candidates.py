@@ -483,6 +483,70 @@ def test_asset_relation_candidates_are_bounded_and_prioritized(tmp_path):
         "high-single.example",
     ]
     assert rows[0]["sources"] == ["ct", "pdns"]
+    assert result["asset_relation_next_cursor"]
+
+    resumed = build_recon_candidates(
+        tmp_path,
+        "target.com",
+        asset_limit=2,
+        asset_cursor=result["asset_relation_next_cursor"],
+    )
+    resumed_rows = [
+        json.loads(line)
+        for line in (recon / "exposure" / "asset_relation_candidates.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert resumed["asset_relation_cursor"] == result["asset_relation_next_cursor"]
+    assert resumed["asset_relation_next_cursor"] == ""
+    assert [row["value"] for row in resumed_rows] == ["low.example"]
+
+
+def test_asset_relation_cursor_rejects_source_changes(tmp_path):
+    recon = _empty_recon(tmp_path, "target.com")
+    source = recon / "exposure" / "asset_relation_observations.jsonl"
+    source.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "asset-relation-observation",
+                    "asset_type": "domain",
+                    "value": value,
+                    "relation": "shared-owner",
+                    "source": "registry",
+                }
+            )
+            for value in ("one.example", "two.example")
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    first = build_recon_candidates(tmp_path, "target.com", asset_limit=1)
+    source.write_text(
+        source.read_text(encoding="utf-8")
+        + json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "asset-relation-observation",
+                "asset_type": "domain",
+                "value": "three.example",
+                "relation": "shared-owner",
+                "source": "registry",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="source changed"):
+        build_recon_candidates(
+            tmp_path,
+            "target.com",
+            asset_limit=1,
+            asset_cursor=first["asset_relation_next_cursor"],
+        )
 
 
 @pytest.mark.parametrize(

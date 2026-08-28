@@ -56,9 +56,13 @@ controller alone claims lanes, writes owner state, and decides closure.
   `pivot_hints`, and other compatible structured fields, and rejects credentials
   or authorization headers. Versioned AI metadata never fabricates Runner fields.
 - An action may carry a validated owner-provided `skill_route` and
-  `required_dimensions`; otherwise Claude selects them explicitly at claim time.
-  Replacing an existing owner route records the replacement route/reason.
-  Hand-written advisory items remain compatible without `route_required`.
+  `required_dimensions`; the Queue accepts only a real `primary` entry from the
+  shared `SKILL_CATALOG` and its exact repository Skill path. Otherwise Claude
+  selects the route explicitly at claim time. Required dimensions are non-empty
+  route context selected by the AI; an `active_dimension` outside that list must
+  carry `dimension_override_reason`. Replacing an existing owner route records
+  the replacement route/reason. Hand-written advisory items remain compatible
+  without `route_required`.
 - `capability-chain-review` is advisory. Materialize one normal versioned chain
   action with persisted lineage when executable; otherwise resolve blocked/dead-end.
   It never changes running, validation, candidate, report, or Closure priority.
@@ -72,6 +76,11 @@ controller alone claims lanes, writes owner state, and decides closure.
 - `request-diff` is the shared request-pair primitive. AI supplies the exact
   baseline/variant and `active_dimension`; SQLi/NoSQLi/etc. are classifiers, not
   separate fixed-input lanes. Unsupported wire formats remain `manual_required`.
+- Explicitly state-changing Scanner probes, including upload canaries and HTTP
+  method tampering, require `ALLOW_UNSAFE_HTTP_TESTS=1`. Without that opt-in the
+  request is skipped and recorded in `manual_review/unsafe_skipped.txt`; the
+  resulting review item is not a clean result. HTTP method names alone do not
+  classify every probe as state-changing.
 - For a readable text list or schema-v1 JSON Scope manifest, run batch recon only for `run_batch_recon`; never scan the list/manifest file itself. Stop on `invalid_batch_target` or `batch_failed`. For one completed `in_scope` asset, run `python3 tools/autopilot_continuation.py create --parent-target <scope_ref> --selected-target <domain> [--auth-file <auth_file_shell>]`, then invoke `/autopilot <domain> --context-file=<returned-path>`; bootstrap validates the parent `scope_ref/scope_hash` before target I/O. Unlisted discovery remains context/review, and `out_of_scope` always wins.
 
 ## Recon And Surface

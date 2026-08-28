@@ -98,7 +98,8 @@ def _run_upload_gate_fixture(tmp_path: Path, *, approved: bool):
         check=False,
         timeout=30,
     )
-    return result, findings_dir, curl_log.read_text(encoding="utf-8")
+    calls = curl_log.read_text(encoding="utf-8") if curl_log.exists() else ""
+    return result, findings_dir, calls
 
 
 def test_vuln_scanner_bash_syntax_is_valid():
@@ -189,7 +190,7 @@ def test_vuln_scanner_gates_only_explicit_state_changes():
     assert "manual_review/unsafe_skipped.txt" in text
     assert ': > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"' in text
     assert 'scanner_probe_guard "upload canary probe" "1" "$upload_url" "POST"' in text
-    assert 'scanner_probe_guard "PUT" "$FIRST_LIVE_URL"' not in text
+    assert 'scanner_probe_guard "HTTP method tampering" "1" "$url" "$METHOD"' in text
     assert 'scanner_probe_guard "MFA rate-limit probe"' not in text
     assert 'scanner_probe_guard "MFA response-manipulation canary"' not in text
     assert 'scanner_probe_guard "SAML signature-stripping probe"' not in text
@@ -217,9 +218,9 @@ def test_upload_canary_requires_explicit_opt_in_without_losing_approved_path(tmp
     assert "reason=no verified remote delete contract" in cleanup
 
 
-def test_method_tampering_probe_is_not_gated_by_http_verb(tmp_path):
+def _run_method_tampering_gate_fixture(tmp_path: Path, *, approved: bool):
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
-    run_dir = tmp_path / "method"
+    run_dir = tmp_path / ("method-approved" if approved else "method-default")
     recon_dir = run_dir / "recon" / "method.test"
     findings_dir = run_dir / "findings"
     shim_dir = run_dir / "bin"
@@ -246,7 +247,10 @@ def test_method_tampering_probe_is_not_gated_by_http_verb(tmp_path):
             "BBHUNT_RUNTIME_LOCK_TARGET": "method.test",
         }
     )
-    env.pop("ALLOW_UNSAFE_HTTP_TESTS", None)
+    if approved:
+        env["ALLOW_UNSAFE_HTTP_TESTS"] = "1"
+    else:
+        env.pop("ALLOW_UNSAFE_HTTP_TESTS", None)
     result = subprocess.run(
         [
             "bash",
@@ -264,12 +268,36 @@ def test_method_tampering_probe_is_not_gated_by_http_verb(tmp_path):
         timeout=30,
     )
 
-    assert result.returncode == 0, result.stderr + result.stdout
-    calls = curl_log.read_text(encoding="utf-8")
-    assert "-X PUT" in calls
-    assert "-X DELETE" in calls
-    assert "-X PATCH" in calls
-    assert not (findings_dir / "manual_review" / "unsafe_skipped.txt").exists()
+    calls = curl_log.read_text(encoding="utf-8") if curl_log.exists() else ""
+    return result, findings_dir, calls
+
+
+def test_method_tampering_requires_explicit_opt_in(tmp_path):
+    default, default_findings, default_calls = _run_method_tampering_gate_fixture(
+        tmp_path, approved=False
+    )
+
+    assert default.returncode == 0, default.stderr + default.stdout
+    assert "-X PUT" not in default_calls
+    assert "-X DELETE" not in default_calls
+    assert "-X PATCH" not in default_calls
+    skipped = (default_findings / "manual_review" / "unsafe_skipped.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "label=HTTP method tampering" in skipped
+    assert "method=PUT" in skipped
+    assert "method=DELETE" in skipped
+    assert "method=PATCH" in skipped
+
+    approved, approved_findings, approved_calls = _run_method_tampering_gate_fixture(
+        tmp_path, approved=True
+    )
+
+    assert approved.returncode == 0, approved.stderr + approved.stdout
+    assert "-X PUT" in approved_calls
+    assert "-X DELETE" in approved_calls
+    assert "-X PATCH" in approved_calls
+    assert not (approved_findings / "manual_review" / "unsafe_skipped.txt").exists()
 
 
 def test_vuln_scanner_supports_auth_session_env():

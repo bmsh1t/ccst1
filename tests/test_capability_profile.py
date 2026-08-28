@@ -103,7 +103,7 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
     assert all(
         lane["ready"]
         for lane_id, lane in lanes.items()
-        if lane_id not in {"browser", "intel", "credential"}
+        if lane_id not in {"browser", "cloud", "oast", "intel", "credential"}
     )
     assert lanes["browser"]["ready"] is False
     assert lanes["browser"]["classification"] == "artifact_bridge"
@@ -113,7 +113,16 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
     assert lanes["browser"]["missing"] == ["session-browser-mcp"]
     assert lanes["browser"]["degraded"] == ["session-browser-mcp-unchecked"]
     assert lanes["oast"]["degraded"] == ["manual-oast-provider"]
+    assert lanes["oast"]["ready"] is False
+    assert lanes["oast"]["runtime_status"] == "degraded"
+    assert lanes["oast"]["missing"] == ["interactsh-client"]
+    assert lanes["cloud"]["ready"] is False
+    assert lanes["cloud"]["runtime_status"] == "degraded"
+    assert lanes["cloud"]["missing"] == ["cloud-provider-tool"]
     assert lanes["web3"]["degraded"] == ["static-review-only"]
+    assert lanes["web3"]["ready"] is True
+    assert lanes["web3"]["runtime_status"] == "degraded"
+    assert lanes["web3"]["missing"] == ["foundry-forge"]
     for lane_id in ("intel", "credential"):
         assert lanes[lane_id]["ready"] is False
         assert lanes[lane_id]["classification"] == "evidence_gated"
@@ -273,9 +282,28 @@ def test_missing_sql_helper_only_degrades_sql_lane(tmp_path):
     assert all(
         lane["ready"]
         for lane_id, lane in lanes.items()
-        if lane_id not in {"browser", "sql", "intel", "credential"}
+        if lane_id not in {"browser", "cloud", "oast", "sql", "intel", "credential"}
     )
     assert lanes["browser"]["classification"] == "artifact_bridge"
+
+
+def test_optional_backend_state_is_not_inferred_from_transport_or_docs(tmp_path):
+    repo = _repo_with_helpers(tmp_path)
+    profile = build_capability_profile(
+        repo,
+        which=_which_with("curl", "httpx"),
+    )
+    lanes = {lane["id"]: lane for lane in profile["lanes"]}
+
+    assert lanes["cloud"]["ready"] is False
+    assert lanes["cloud"]["missing"] == ["cloud-provider-tool"]
+    assert lanes["cloud"]["runtime_status"] == "degraded"
+    assert lanes["oast"]["ready"] is False
+    assert lanes["oast"]["missing"] == ["interactsh-client"]
+    assert lanes["oast"]["runtime_status"] == "degraded"
+    assert lanes["web3"]["ready"] is True
+    assert lanes["web3"]["missing"] == ["foundry-forge"]
+    assert lanes["web3"]["runtime_status"] == "degraded"
 
 
 def test_unknown_profile_is_distinct_from_checked_but_degraded():

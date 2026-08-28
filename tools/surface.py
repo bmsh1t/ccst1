@@ -317,6 +317,13 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
         )
     except (TypeError, ValueError):
         asset_scope_reviews = 0
+    asset_next_cursor = str(asset_relation_state.get("next_cursor") or "").strip()[:512]
+    asset_continuation = (
+        " Continue the bounded candidate page with `python3 tools/recon_candidates.py "
+        f"--target {target} --asset-cursor {asset_next_cursor}`."
+        if asset_next_cursor
+        else ""
+    )
     emails = _count_recon_artifact(recon_artifacts, "identity_emails")
     leaksearch = _count_recon_artifact(recon_artifacts, "leaksearch_hits")
     cloud_enum = _count_recon_artifact(recon_artifacts, "cloud_enum_hits")
@@ -507,7 +514,8 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "next_action": (
                 f"review recon/{storage_key}/exposure/asset_relation_candidates.jsonl and classify "
                 "each scope-review row as explicitly in scope, external context, or excluded; do not "
-                "issue active requests until the explicit target set proves Scope"
+                "issue active requests until the explicit target set proves Scope."
+                f"{asset_continuation}"
             ),
             "rationale": (
                 f"{asset_scope_reviews} high-confidence target-linked candidate(s) have ownership or "
@@ -526,7 +534,8 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
             "next_action": (
                 f"review recon/{storage_key}/exposure/asset_relation_candidates.jsonl; prioritize "
                 "multi-source or high-confidence relationships, then promote only target-owned or "
-                "explicitly supplied assets into active Recon/Surface work"
+                "explicitly supplied assets into active Recon/Surface work."
+                f"{asset_continuation}"
             ),
             "rationale": (
                 f"{asset_relations - asset_scope_reviews} contextual relationship candidate(s) were derived from external "

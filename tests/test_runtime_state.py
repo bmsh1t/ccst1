@@ -947,7 +947,8 @@ def test_recon_phase_gates_are_projected_from_latest_manifest_rows(tmp_path):
         "recon/target.com/urls/all.txt"
     ]
     assert gates["latest"]["js_analysis"]["coverage_gaps"] == [
-        "phase_status:partial"
+        "missing_artifact:recon/target.com/js/endpoints.txt",
+        "phase_status:partial",
     ]
 
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import heapq
 import json
@@ -40,6 +41,7 @@ ASSET_RELATION_WARNING_LIMIT = 10
 MAX_ASSET_RELATION_LINE_BYTES = 1_000_000
 MAX_ASSET_RELATION_LIST_ITEMS = 256
 DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT = 5000
+ASSET_RELATION_CURSOR_VERSION = 1
 CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
 HOST_LIKE_ASSET_TYPES = {"domain", "hostname", "url", "ip", "cidr"}
 STRONG_RELATION_TOKENS = (
@@ -445,16 +447,67 @@ def _asset_relation_candidates(
     source: Path,
     *,
     limit: int = DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT,
+    cursor: str = "",
     target: str = "",
     allowed: ScopeChecker | None = None,
     excluded: ScopeChecker | None = None,
 ) -> tuple[list[dict], dict]:
-    """流式合并 observation；完整原始输入保留，候选只发布固定上限。"""
+    """流式合并 observation and expose a stable cursor for bounded pages."""
     if limit < 1:
         raise ValueError("asset relation candidate limit must be positive")
-    stats = {"input_count": 0, "invalid_count": 0, "warnings": [], "unique_count": 0}
+    stats = {
+        "input_count": 0,
+        "invalid_count": 0,
+        "warnings": [],
+        "unique_count": 0,
+        "cursor": str(cursor or ""),
+        "next_cursor": "",
+    }
     if not source.is_file():
         return [], stats
+
+    source_stat = source.stat()
+    source_binding = {
+        "size": source_stat.st_size,
+        "mtime_ns": source_stat.st_mtime_ns,
+        "ctime_ns": source_stat.st_ctime_ns,
+        "st_dev": source_stat.st_dev,
+        "st_ino": source_stat.st_ino,
+    }
+
+    def _decode_cursor(value: str) -> tuple[int, str] | None:
+        if not value:
+            return None
+        try:
+            encoded = value.encode("ascii")
+            encoded += b"=" * (-len(encoded) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(encoded).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError, base64.binascii.Error) as exc:
+            raise ValueError("invalid asset relation cursor") from exc
+        if not isinstance(payload, dict) or payload.get("v") != ASSET_RELATION_CURSOR_VERSION:
+            raise ValueError("invalid asset relation cursor")
+        if payload.get("binding") != source_binding:
+            raise ValueError("asset relation cursor source changed")
+        try:
+            score = int(payload["score"])
+            key = str(payload["key"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid asset relation cursor") from exc
+        if not key:
+            raise ValueError("invalid asset relation cursor")
+        return score, key
+
+    def _encode_cursor(score: int, key: str) -> str:
+        payload = {
+            "v": ASSET_RELATION_CURSOR_VERSION,
+            "binding": source_binding,
+            "score": int(score),
+            "key": key,
+        }
+        raw = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+    decoded_cursor = _decode_cursor(str(cursor or ""))
 
     def _candidate_key(observation: dict) -> str:
         return "\x1f".join(
@@ -575,14 +628,23 @@ def _asset_relation_candidates(
             stats["unique_count"] = int(
                 connection.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
             )
-            rows = [
-                json.loads(payload)
-                for (payload,) in connection.execute(
-                    "SELECT payload FROM candidates ORDER BY score DESC, key ASC LIMIT ?",
-                    (limit,),
-                )
-            ]
-    stats["truncated"] = stats["unique_count"] > len(rows)
+            query = "SELECT key, payload, score FROM candidates"
+            params: list[object] = []
+            if decoded_cursor is not None:
+                score, key = decoded_cursor
+                query += " WHERE score < ? OR (score = ? AND key > ?)"
+                params.extend((score, score, key))
+            query += " ORDER BY score DESC, key ASC LIMIT ?"
+            params.append(limit + 1)
+            page_rows = list(connection.execute(query, params))
+            has_more = len(page_rows) > limit
+            page_rows = page_rows[:limit]
+            rows = [json.loads(payload) for _key, payload, _score in page_rows]
+            if has_more and page_rows:
+                last_key, _last_payload, last_score = page_rows[-1]
+                stats["next_cursor"] = _encode_cursor(last_score, last_key)
+    stats["source_binding"] = source_binding
+    stats["truncated"] = bool(stats["next_cursor"])
     return rows, stats
 
 
@@ -722,6 +784,9 @@ def _asset_relation_summary(target: str, rows: list[dict], stats: dict) -> dict:
         "invalid_count": stats["invalid_count"],
         "unique_count": stats["unique_count"],
         "truncated": bool(stats.get("truncated")),
+        "cursor": str(stats.get("cursor") or ""),
+        "next_cursor": str(stats.get("next_cursor") or ""),
+        "source_binding": dict(stats.get("source_binding") or {}),
         "partial": bool(stats["invalid_count"] or stats.get("truncated")),
         "warnings": stats["warnings"],
         "status_counts": dict(sorted(counts.items())),
@@ -1289,6 +1354,7 @@ def build_recon_candidates(
     *,
     asset_input: str | Path | None = None,
     asset_limit: int = DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT,
+    asset_cursor: str = "",
 ) -> dict:
     resolved = canonical_target_value(target)
     recon_dir = Path(repo_root) / "recon" / target_storage_key(resolved)
@@ -1303,6 +1369,7 @@ def build_recon_candidates(
     asset_rows, asset_stats = _asset_relation_candidates(
         asset_input_path,
         limit=asset_limit,
+        cursor=asset_cursor,
         target=resolved,
         allowed=allowed_scope,
         excluded=excluded_scope,
@@ -1342,6 +1409,8 @@ def build_recon_candidates(
         "asset_relation_invalid": asset_stats["invalid_count"],
         "asset_relation_unique": asset_stats["unique_count"],
         "asset_relation_truncated": asset_stats.get("truncated", False),
+        "asset_relation_cursor": str(asset_stats.get("cursor") or ""),
+        "asset_relation_next_cursor": str(asset_stats.get("next_cursor") or ""),
         "asset_relation_warnings": asset_stats["warnings"],
         "host_path": str(host_path),
         "ai_path": str(ai_path),
@@ -1373,6 +1442,11 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_ASSET_RELATION_CANDIDATE_LIMIT,
         help="Maximum derived asset-relation candidates to publish",
     )
+    parser.add_argument(
+        "--asset-cursor",
+        default="",
+        help="Resume a bounded asset-relation candidate page from its source-bound cursor",
+    )
     parser.add_argument("--js-output")
     parser.add_argument("--js-limit", type=int, default=DEFAULT_JS_CANDIDATE_LIMIT)
     args = parser.parse_args(argv)
@@ -1393,6 +1467,7 @@ def main(argv: list[str] | None = None) -> int:
                 str(args.target),
                 asset_input=args.asset_input,
                 asset_limit=args.asset_limit,
+                asset_cursor=args.asset_cursor,
             )
     except (OSError, ValueError, sqlite3.Error) as exc:
         print(f"recon_candidates: {exc}", file=sys.stderr)

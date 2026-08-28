@@ -419,6 +419,76 @@ def test_recon_engine_publishes_atomic_ffuf_phase_state(tmp_path):
     assert payload["summary_ok"] is False
 
 
+def test_recon_engine_consumes_valid_ffuf_phase_state(tmp_path):
+    """A valid background state must not enter the parse-error branch."""
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    function = "wait_for_ffuf_phase() {" + text.split(
+        "wait_for_ffuf_phase() {", 1
+    )[1].split("\nrun_ffuf_phase &", 1)[0]
+    state = tmp_path / "ffuf_phase_state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "status": "skipped",
+                "artifact": "recon/target/dirs/",
+                "summary_artifact": "-",
+                "skip_reason": "directory target rotation exhausted",
+                "attempted": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "control_failed": 0,
+                "interrupted": 0,
+                "observations": 0,
+                "parse_errors": 0,
+                "sample_count": 0,
+                "overflow": 0,
+                "status_counts": {},
+                "heavy_signatures": "-",
+                "target_selection": "ok",
+                "target_record": "not-run",
+                "pending": 0,
+                "host_concurrency": 0,
+                "target_threads": 0,
+                "summary_ok": False,
+                "worker_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    shell = "\n".join(
+        [
+            "set -euo pipefail",
+            function,
+            "log_warn() { :; }",
+            "log_done() { :; }",
+            "record_recon_phase() { :; }",
+            "emit_claude_hint() { :; }",
+            "emit_claude_hint_actions() { :; }",
+            f"FFUF_PHASE_STATE={state!s}",
+            "RECON_TARGET_KEY=target",
+            "FFUF_PID=''",
+            "RECON_PHASE_PARTIAL=0",
+            "DIR_FUZZ_STATUS=pending",
+            "DIR_FUZZ_HARD_BUDGET_SECONDS=900",
+            "FFUF_EFFECTIVE_BUDGET_SECONDS=30",
+            "FFUF_EFFECTIVE_HOST_CONCURRENCY=0",
+            "FFUF_TARGET_THREADS=0",
+            "FFUF_ATTEMPTED=0",
+            "wait_for_ffuf_phase",
+            "printf '%s|%s|%s|%s' \"$DIR_FUZZ_STATUS\" \"$FFUF_SKIP_REASON\" \"$RECON_PHASE_PARTIAL\" \"$FFUF_TARGET_SELECTION_STATUS\"",
+        ]
+    )
+    completed = subprocess.run(
+        ["bash", "-c", shell],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "skipped|directory target rotation exhausted|0|ok"
+
+
 def test_recon_engine_worker_keeps_control_then_main_per_target(tmp_path):
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
@@ -881,7 +951,7 @@ def test_recon_engine_syncs_shared_observation_index_after_source_groups():
     assert 'active_probing             "host_collision_only"' in text
 
 
-def test_recon_engine_clears_routing_projections_before_rebuild():
+def test_recon_engine_keeps_routing_projections_until_atomic_rebuild():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
 
@@ -891,8 +961,14 @@ def test_recon_engine_clears_routing_projections_before_rebuild():
         "host_ranking.jsonl",
         "asset_relation_candidates.jsonl",
     ):
-        assert f': > "$RECON_DIR/exposure/{artifact}"' in text
-    assert 'rm -f "$RECON_DIR/exposure/asset_relation_summary.json"' in text
+        assert f': > "$RECON_DIR/exposure/{artifact}"' not in text
+    assert 'rm -f "$RECON_DIR/exposure/asset_relation_summary.json"' not in text
+    assert "retain the last usable generation" in text
+    candidates = (Path(__file__).resolve().parent.parent / "tools" / "recon_candidates.py").read_text(
+        encoding="utf-8"
+    )
+    assert "_write_jsonl_atomic" in candidates
+    assert "_write_json_atomic" in candidates
 
 
 def test_recon_engine_preserves_root_scope_and_partial_handoff_contract():

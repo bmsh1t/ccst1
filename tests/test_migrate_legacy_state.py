@@ -48,6 +48,68 @@ def test_queue_migration_is_dry_run_then_idempotent(tmp_path: Path) -> None:
     assert not any(item["owner"] == "action_queue" for item in again["migratable"])
 
 
+def test_active_activation_gap_is_reported_without_inventing_ai_fields(tmp_path: Path) -> None:
+    target = "activation.example"
+    path = tmp_path / "state" / target / "action_queue.json"
+    _write_json(
+        path,
+        {
+            "schema_version": 1,
+            "target": target,
+            "actions": [
+                {
+                    "id": "AQ-legacy-depth",
+                    "status": "queued",
+                    "type": "validation",
+                    "metadata": {"activation_required": True},
+                }
+            ],
+        },
+    )
+
+    report = migrate_legacy_state(tmp_path, target, apply=True)
+
+    item = next(
+        item
+        for item in report["needs_review"]
+        if item["owner"] == "action_queue" and "actions[0]" in item["path"]
+    )
+    assert "depth_contract_version" in item["missing_fields"]
+    assert "decision_reason" in item["missing_fields"]
+    assert "skill_route" in item["missing_fields"]
+    assert "max_hypothesis_actions" in item["missing_fields"]
+    assert "refresh checkpoint" in item["repair_action"]
+    migrated = json.loads(path.read_text(encoding="utf-8"))
+    assert migrated["actions"][0]["metadata"] == {"activation_required": True}
+
+
+def test_versioned_active_row_without_activation_marker_is_reviewed(tmp_path: Path) -> None:
+    target = "versioned.example"
+    path = tmp_path / "state" / target / "action_queue.json"
+    _write_json(
+        path,
+        {
+            "schema_version": 1,
+            "target": target,
+            "actions": [
+                {
+                    "id": "AQ-versioned-depth",
+                    "status": "running",
+                    "type": "validation",
+                    "metadata": {"depth_contract_version": 1},
+                }
+            ],
+        },
+    )
+
+    report = migrate_legacy_state(tmp_path, target)
+
+    item = next(item for item in report["needs_review"] if item["owner"] == "action_queue")
+    assert "activation_required" not in item["missing_fields"]
+    assert "skill_route" in item["missing_fields"]
+    assert report["changed_paths"] == []
+
+
 def test_findings_list_uses_existing_owner_migration(tmp_path: Path) -> None:
     target = "example.com"
     path = tmp_path / "findings" / target / "findings.json"

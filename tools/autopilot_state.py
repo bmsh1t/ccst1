@@ -3866,6 +3866,7 @@ def _execution_frontier_item(item: dict, *, impact_hint: str = "") -> dict:
 # Closure reason order is deliberately explicit.  Terminal/active control
 # state wins first, then durable owner work, then derived review signals.
 _CLOSURE_REASON_PRIORITY = {
+    "state_snapshot_stale": -1,
     "invalid_batch_target": 0,
     "batch_failed": 0,
     "recon_no_live_hosts": 0,
@@ -3887,6 +3888,7 @@ _CLOSURE_REASON_PRIORITY = {
     "surface_projection_pending": 35,
     "surface_work_pending": 36,
     "recon_budget_partial": 40,
+    "cidr_continuation_invalid": 40,
     "next_action_pending": 50,
     "coverage_missing": 60,
     "coverage_empty": 60,
@@ -3909,6 +3911,7 @@ _CLOSURE_REASON_PRIORITY = {
 }
 
 _CLOSURE_REASON_OWNERS = {
+    "state_snapshot_stale": {"controller"},
     "durable_work_pending": {"action_queue"},
     "finding_work_pending": {"finding", "finding-claim", "target-memory"},
     "case_state_canonical_conflict": {"case_state"},
@@ -3935,6 +3938,7 @@ _CLOSURE_REASON_OWNERS = {
     "identity_v2_follow_up_pending": {"evidence-ledger"},
     "identity_v2_candidate_pending": {"evidence-ledger"},
     "identity_v2_incomplete": {"evidence-ledger"},
+    "cidr_continuation_invalid": {"recon"},
 }
 
 
@@ -3964,6 +3968,19 @@ def _closure_reason_frontier(
     """Create a bounded fallback item when an owner has no projected head."""
     target = str(state.get("resolved_target") or state.get("target") or "")
     target_key = target_storage_key(target)
+    if reason == "state_snapshot_stale":
+        return _frontier_item(
+            owner="controller",
+            item_id="state_snapshot_stale",
+            action="Refresh the owner state snapshot before continuing",
+            evidence_ref=f"state/{target_key}/session.json",
+            expected_information_gain=(
+                "re-read Queue, Ledger, Coverage, Surface, Checkpoint, and Target Memory "
+                "from one stable snapshot"
+            ),
+            stop_condition="recompute Closure with a stable snapshot or record the owner blocker",
+            priority=100,
+        )
     if reason == "surface_projection_pending":
         projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
         return _frontier_item(
@@ -4005,18 +4022,39 @@ def _closure_reason_frontier(
             stop_condition="publish a valid witness or record the checkpoint read/queue mismatch",
             priority=85,
         )
-    if reason in {"runtime_phase_active", "recon_budget_partial"}:
+    if reason in {"runtime_phase_active", "recon_budget_partial", "cidr_continuation_invalid"}:
         owner = "runtime" if reason == "runtime_phase_active" else "recon"
         action = "wait_scan" if state.get("scan_in_progress") else "wait_recon"
-        if reason == "recon_budget_partial":
+        if reason in {"recon_budget_partial", "cidr_continuation_invalid"}:
             action = "run_recon"
+        continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
+        if reason == "cidr_continuation_invalid":
+            action = "run_recon"
+            expected_information_gain = "repair the invalid CIDR cursor and resume target-owned Recon coverage"
+            stop_condition = "publish a valid cursor or record the bounded Recon blocker"
+        else:
+            expected_information_gain = "obtain the owner-written phase result before selecting more work"
+            stop_condition = "refresh after the matching phase completes or record its bounded blocker"
         return _frontier_item(
             owner=owner,
             item_id=action,
-            action=describe_next_step({**state, "next_action": action}),
-            evidence_ref=f"state/{target_key}/session.json" if owner == "runtime" else f"recon/{target_key}/recon_manifest.jsonl",
-            expected_information_gain="obtain the owner-written phase result before selecting more work",
-            stop_condition="refresh after the matching phase completes or record its bounded blocker",
+            action=(
+                "Repair the invalid CIDR continuation before resuming Recon"
+                if reason == "cidr_continuation_invalid"
+                else describe_next_step({**state, "next_action": action})
+            ),
+            evidence_ref=(
+                str(
+                    continuation.get("path")
+                    or f"recon/{target_key}/live/cidr_continuation.json"
+                )
+                if reason == "cidr_continuation_invalid"
+                else f"recon/{target_key}/recon_manifest.jsonl"
+                if owner == "recon"
+                else f"state/{target_key}/session.json"
+            ),
+            expected_information_gain=expected_information_gain,
+            stop_condition=stop_condition,
             priority=85,
         )
     if reason == "finding_work_pending":
@@ -4167,6 +4205,7 @@ def _closure_reason_frontier(
 def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
     """Map the selected owner continuation to an existing CLI action."""
     exact = {
+        "state_snapshot_stale": "refresh_state",
         "surface_projection_pending": "prepare_surface_context",
         "durable_work_pending": "resume_action_queue",
         "case_state_work_pending": "resume_case_state",
@@ -4197,6 +4236,7 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "identity_v2_candidate_pending": "repair_evidence_ledger",
         "identity_v2_incomplete": "repair_evidence_ledger",
         "recon_budget_partial": "run_recon",
+        "cidr_continuation_invalid": "run_recon",
         "runtime_phase_active": "wait_scan" if state.get("scan_in_progress") else "wait_recon",
     }
     if reason in exact:
@@ -4228,7 +4268,13 @@ def _finalize_closure_continuation(
     primary = _closure_primary_reason(reasons)
     matching_exists = any(_closure_frontier_matches(primary, item) for item in frontier)
     fallback = _closure_reason_frontier(primary, state, matrix, current_action) if primary else None
-    force_fallback = primary in {"surface_projection_pending", "checkpoint_stale", "checkpoint_invalid"}
+    force_fallback = primary in {
+        "state_snapshot_stale",
+        "surface_projection_pending",
+        "checkpoint_stale",
+        "checkpoint_invalid",
+        "cidr_continuation_invalid",
+    }
     if fallback and (force_fallback or not matching_exists):
         frontier = [fallback, *frontier]
     if primary:
@@ -4385,14 +4431,28 @@ def _build_priority_frontier(
         if isinstance((state.get("recon_artifacts") or {}).get("cidr_continuation"), dict)
         else {}
     )
-    if continuation.get("status") == "pending":
+    if continuation.get("status") in {"pending", "invalid"}:
+        continuation_status = str(continuation.get("status") or "pending")
+        continuation_action = (
+            "Repair the invalid CIDR continuation before resuming Recon"
+            if continuation_status == "invalid"
+            else f"continue bounded CIDR recon from offset {continuation.get('next_offset', 0)}"
+        )
         other_items.append(_execution_frontier_item(_frontier_item(
             owner="recon",
-            item_id=f"cidr:{continuation.get('next_offset', '')}",
-            action=f"continue bounded CIDR recon from offset {continuation.get('next_offset', 0)}",
+            item_id=f"cidr:{continuation.get('next_offset', continuation_status)}",
+            action=continuation_action,
             evidence_ref=str(continuation.get("path") or f"recon/{target_storage_key(target)}/live/cidr_continuation.json"),
-            expected_information_gain=f"cover the remaining {continuation.get('remaining_hosts', 'unknown')} CIDR hosts",
-            stop_condition="advance or complete the durable cursor, or record its explicit blocker",
+            expected_information_gain=(
+                "repair the invalid CIDR cursor and resume target-owned Recon coverage"
+                if continuation_status == "invalid"
+                else f"cover the remaining {continuation.get('remaining_hosts', 'unknown')} CIDR hosts"
+            ),
+            stop_condition=(
+                "publish a valid cursor or record the bounded Recon blocker"
+                if continuation_status == "invalid"
+                else "advance or complete the durable cursor, or record its explicit blocker"
+            ),
         ), impact_hint="remaining target-owned CIDR coverage"))
 
     intel = (
@@ -5333,6 +5393,50 @@ def _snapshot_normalize(value: object) -> object:
     return str(value)
 
 
+_CLOSURE_STATE_KEYS = (
+    "next_action",
+    "has_recon",
+    "surface_context_required",
+    "recon_in_progress",
+    "scan_in_progress",
+    "recon_completed_no_live_hosts",
+    "recon_artifacts",
+    "case_state",
+    "structured_findings",
+    "root_finding_claim_next",
+    "validation_runner_next",
+    "action_queue_next",
+    "target_goal_memory",
+    "memory_candidate_next",
+    "resume_targets",
+    "surface_review_candidates",
+    "recommended_targets",
+    "surface_projection",
+    "observation_inventory",
+    "browser_evidence",
+    "browser_required",
+    "repo_source_available",
+    "repo_source_artifacts",
+    "repo_source_summary",
+    "json_inject",
+    "sql_matrix",
+    "js_intel",
+    "intel_continuation",
+    "enrichment_hints",
+    "surface_review_completion",
+    "round_progress",
+)
+
+
+def _closure_state_snapshot(state: dict) -> dict:
+    """Keep every state projection that can affect the Closure decision."""
+    return {
+        key: state.get(key)
+        for key in _CLOSURE_STATE_KEYS
+        if key in state
+    }
+
+
 def _closure_snapshot_components(
     target: str,
     state: dict,
@@ -5348,6 +5452,13 @@ def _closure_snapshot_components(
     surface_projection = surface_projection if isinstance(surface_projection, dict) else {}
     checkpoint_queue = witness.get("action_queue") if isinstance(witness, dict) else {}
     checkpoint_queue = checkpoint_queue if isinstance(checkpoint_queue, dict) else {}
+    closure_state = _closure_state_snapshot(state)
+    state_encoded = json.dumps(
+        _snapshot_normalize(closure_state),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return {
         "target": canonical_target_value(target),
         "queue_fingerprint": queue_fingerprint(queue),
@@ -5356,6 +5467,7 @@ def _closure_snapshot_components(
         "surface_input_fingerprint": str(surface_projection.get("input_fingerprint") or ""),
         "checkpoint_queue_fingerprint": str(checkpoint_queue.get("fingerprint") or ""),
         "ledger_status": str(ledger_health.get("status") or "missing"),
+        "closure_state_fingerprint": hashlib.sha256(state_encoded.encode("utf-8")).hexdigest(),
     }
 
 
@@ -5393,6 +5505,7 @@ def _closure_snapshot_digest(
             "health": checkpoint_health,
             "witness": witness,
         },
+        "closure_state": _closure_state_snapshot(state),
         "target_memory": {
             "goal": state.get("target_goal_memory") or {},
             "resume": state.get("resume_summary") or {},
@@ -5546,6 +5659,18 @@ def load_closure_projection(
             "next_action": "refresh_state",
             "snapshot_stale": True,
             "snapshot_stale_sources": list(dict.fromkeys(stale_sources)),
+        })
+        reasons, actionable_frontier, action = _finalize_closure_continuation(
+            ["state_snapshot_stale"],
+            closure.get("actionable_frontier") or [],
+            closure_state,
+            matrix,
+            "refresh_state",
+        )
+        closure.update({
+            "reasons": reasons,
+            "actionable_frontier": actionable_frontier,
+            "next_action": action,
         })
     if (
         apply_round_guard

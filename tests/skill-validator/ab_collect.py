@@ -10,11 +10,13 @@ loads its Skills.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -302,16 +304,72 @@ def _append_row(path: Path, row: Mapping[str, Any]) -> None:
         handle.flush()
 
 
+def _row_key(row: Mapping[str, Any]) -> tuple[str, str, int] | None:
+    if not {"case_id", "condition", "rep"} <= row.keys():
+        return None
+    try:
+        return (str(row["case_id"]), str(row["condition"]), int(row["rep"]))
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_is_retryable(row: Mapping[str, Any]) -> bool:
+    return bool(row.get("agent_error")) or str(row.get("verdict") or "").strip().lower() == "unknown"
+
+
+def _replace_row(path: Path, row: Mapping[str, Any]) -> None:
+    """Replace one retryable attempt so strict A/B pairing sees one row per key."""
+    key = _row_key(row)
+    if key is None or not path.exists():
+        _append_row(path, row)
+        return
+    kept: list[str] = []
+    replaced = False
+    for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+        try:
+            existing = json.loads(line)
+        except json.JSONDecodeError:
+            kept.append(line)
+            continue
+        if isinstance(existing, Mapping) and _row_key(existing) == key and _row_is_retryable(existing):
+            if not replaced:
+                kept.append(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
+                replaced = True
+            continue
+        kept.append(line)
+    if not replaced:
+        kept.append(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write("".join(kept))
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    except Exception:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
+
+
 def _existing_keys(path: Path) -> set[tuple[str, str, int]]:
     if not path.exists():
         return set()
     keys: set[tuple[str, str, int]] = set()
     for row in load_jsonl(path):
-        if {"case_id", "condition", "rep"} <= row.keys():
-            try:
-                keys.add((str(row["case_id"]), str(row["condition"]), int(row["rep"])))
-            except (TypeError, ValueError):
-                continue
+        if not isinstance(row, Mapping) or _row_is_retryable(row):
+            continue
+        key = _row_key(row)
+        if key is not None:
+            keys.add(key)
     return keys
 
 
@@ -351,6 +409,44 @@ def _write_manifest(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(
         json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+
+
+def _sha256_file(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return f"sha256:{digest.hexdigest()}"
+    except OSError:
+        return None
+
+
+def _runtime_provenance(cwd: Path, home: Path, config_dir: Path) -> dict[str, Any]:
+    runtime_root = home / ".claude"
+    try:
+        from tools.runtime_doctor import compare_runtime
+
+        doctor = compare_runtime(cwd, runtime_root)
+        doctor_projection = {
+            "clean": bool(doctor.get("clean")),
+            "critical_clean": bool(doctor.get("critical_clean")),
+            "drift_count": int(doctor.get("drift_count", 0) or 0),
+            "critical_drift_count": int(doctor.get("critical_drift_count", 0) or 0),
+        }
+    except (OSError, TypeError, ValueError, ImportError) as exc:
+        doctor_projection = {"status": "unknown", "error": str(exc)[:160]}
+    install_script = cwd / "install.sh"
+    return {
+        "staged_home": str(home),
+        "xdg_config_home": str(config_dir),
+        "runtime_root": str(runtime_root),
+        "install_script": {
+            "path": str(install_script),
+            "sha256": _sha256_file(install_script),
+        },
+        "runtime_doctor": doctor_projection,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -443,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
                     "repetitions": args.repetitions,
                     "verdicts": verdicts,
                     "git_revision": _git_revision(cwd),
+                    "provenance": _runtime_provenance(cwd, home, config_dir),
                 },
             )
         except OSError as exc:
@@ -500,7 +597,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 agent_errors += int("agent_error" in row)
                 try:
-                    _append_row(args.output, row)
+                    if args.append:
+                        _replace_row(args.output, row)
+                    else:
+                        _append_row(args.output, row)
                 except OSError as exc:
                     print(f"row write failed: {args.output}: {exc}", file=sys.stderr)
                     return 2

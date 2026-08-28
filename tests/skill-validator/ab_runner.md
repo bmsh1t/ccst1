@@ -83,3 +83,11 @@ invoking Claude or writing output.
 The collector is for binary capability/FP-control cases. It is not a replacement
 for the existing deterministic Web2 evaluator or the recorded triage
 multi-class A/B reports.
+
+When resuming with `ab_collect.py --append`, completed non-retryable rows are
+skipped by `(case_id, condition, rep)`. Rows with `agent_error` or an `unknown`
+verdict are retryable; a successful retry atomically replaces that row so strict
+pairing never counts the same attempt twice. Malformed non-JSONL lines are kept
+for diagnosis. The manifest records the staged HOME/XDG paths, install-script
+hash, and bounded `runtime_doctor` result so a run can be reproduced without
+using the real user runtime.

@@ -1471,6 +1471,9 @@ if ! skip_has auth_bypass && [ -s "$LIVE_URLS" ]; then
         log_step "Testing HTTP method tampering on sample endpoints..."
         while IFS= read -r url; do
             for METHOD in PUT DELETE PATCH; do
+                if ! scanner_probe_guard "HTTP method tampering" "1" "$url" "$METHOD"; then
+                    continue
+                fi
                 STATUS=$(curl -s "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" -X "$METHOD" --max-time 5 "$url" 2>/dev/null || echo "000")
                 if [ "$STATUS" = "200" ] || [ "$STATUS" = "201" ] || [ "$STATUS" = "204" ]; then
                     echo "$METHOD $STATUS $url" >> "$FINDINGS_DIR/auth_bypass/method_tampering.txt"

@@ -72,14 +72,15 @@ def build_phase_gate(
 
 
 def gate_from_record(repo_root: str | Path, record: dict) -> dict:
-    """Use a persisted gate, or derive one for an older phase record."""
-    gate = record.get("gate")
-    if isinstance(gate, dict) and isinstance(gate.get("status"), str):
-        return gate
+    """Rebuild the gate from current status and artifact ownership.
+
+    Persisted gates are historical hints only: artifacts can disappear or be
+    replaced after a manifest row was written, so trusting the embedded value
+    could turn an incomplete phase into a false completion.
+    """
     return build_phase_gate(
         repo_root,
         phase=str(record.get("phase") or "unknown"),
         status=str(record.get("status") or "unknown"),
         artifact=str(record.get("artifact") or ""),
     )
-

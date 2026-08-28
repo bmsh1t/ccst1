@@ -261,6 +261,30 @@ def test_claimed_first_skill_route_does_not_require_override_reason(tmp_path):
     claimed = claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=activation)
 
     assert claimed["metadata"]["skill_route"] == ROUTE
+
+
+def test_active_dimension_outside_route_requires_explicit_override_reason(tmp_path):
+    action_id, _queue_path = _queued_depth_action(tmp_path)
+
+    with pytest.raises(ValueError, match="dimension_override_reason"):
+        claim_next_action(
+            tmp_path,
+            TARGET,
+            action_id=action_id,
+            metadata={**_activation(), "active_dimension": "parser"},
+        )
+
+    claimed = claim_next_action(
+        tmp_path,
+        TARGET,
+        action_id=action_id,
+        metadata={
+            **_activation(),
+            "active_dimension": "parser",
+            "dimension_override_reason": "the response parser is the evidence-linked boundary",
+        },
+    )
+    assert claimed["metadata"]["active_dimension"] == "parser"
     assert "skill_override_reason" not in claimed["metadata"]
 
 

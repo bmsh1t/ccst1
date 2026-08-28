@@ -16,6 +16,7 @@ try:
     from tools.autopilot_args import MAX_LANES
     from tools.action_queue import load_queue
     from tools.autopilot_state import (
+        _finalize_closure_continuation,
         _owner_source_markers,
         build_autopilot_state,
         load_closure_projection,
@@ -36,6 +37,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from autopilot_args import MAX_LANES  # type: ignore
     from action_queue import load_queue  # type: ignore
     from autopilot_state import (  # type: ignore
+        _finalize_closure_continuation,
         _owner_source_markers,
         build_autopilot_state,
         load_closure_projection,
@@ -81,6 +83,18 @@ def _closure_snapshot(repo_root: Path | str, target: str) -> tuple[dict, dict]:
                 "snapshot_stale": True,
                 "snapshot_stale_sources": ["owner_state"],
             }
+            reasons, frontier, next_action = _finalize_closure_continuation(
+                ["state_snapshot_stale"],
+                closure.get("actionable_frontier") or [],
+                state,
+                None,
+                "refresh_state",
+            )
+            closure.update({
+                "reasons": reasons,
+                "actionable_frontier": frontier,
+                "next_action": next_action,
+            })
         if not closure.get("snapshot_stale") or attempt:
             return state, closure
     return state, closure

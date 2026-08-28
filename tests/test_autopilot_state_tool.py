@@ -1076,6 +1076,63 @@ def test_closure_marks_owner_snapshot_stale_when_source_changes_during_read(tmp_
     assert closure["verdict"] == "handoff"
     assert closure["reasons"] == ["state_snapshot_stale"]
     assert closure["snapshot_stale_sources"] == ["ledger"]
+    assert closure["next_action"] == "refresh_state"
+    assert closure["actionable_frontier"][0]["owner"] == "controller"
+    assert closure["actionable_frontier"][0]["id"] == "state_snapshot_stale"
+
+
+def test_closure_digest_changes_when_decision_state_changes(tmp_path):
+    target = "target.com"
+    base = {
+        "target": target,
+        "resolved_target": target,
+        "next_action": "handoff",
+        "case_state": {"status": "valid", "open_hypotheses": 0},
+        "recon_artifacts": {"run_budget": {"partial": False}},
+        "structured_findings": {},
+    }
+
+    original = load_closure_projection(str(tmp_path), base, max_lanes_reached=False)
+    changed = load_closure_projection(
+        str(tmp_path),
+        {
+            **base,
+            "case_state": {"status": "valid", "open_hypotheses": 1},
+        },
+        max_lanes_reached=False,
+    )
+
+    assert original["snapshot_digest"] != changed["snapshot_digest"]
+    assert (
+        original["snapshot_components"]["closure_state_fingerprint"]
+        != changed["snapshot_components"]["closure_state_fingerprint"]
+    )
+
+
+def test_invalid_cidr_continuation_has_recon_frontier(tmp_path):
+    target = "target.com"
+    closure = build_closure_projection(
+        {
+            "target": target,
+            "resolved_target": target,
+            "next_action": "handoff",
+            "recon_artifacts": {
+                "cidr_continuation": {
+                    "status": "invalid",
+                    "path": "recon/target.com/live/cidr_continuation.json",
+                }
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"][0] == "cidr_continuation_invalid"
+    assert closure["next_action"] == "run_recon"
+    assert closure["actionable_frontier"][0]["owner"] == "recon"
+    assert closure["actionable_frontier"][0]["evidence_ref"].endswith(
+        "cidr_continuation.json"
+    )
 
 
 def test_checkpoint_cursor_missing_from_queue_is_stale_not_advanced(tmp_path):

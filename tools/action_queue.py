@@ -164,6 +164,7 @@ def activation_contract_projection() -> dict[str, Any]:
         "optional_fields": list(ACTIVATION_OPTIONAL_FIELDS),
         "conditional_fields": {
             "skill_override_reason": "skill_route_changes",
+            "dimension_override_reason": "active_dimension_outside_skill_route",
             "knowledge_override_reason": "selected_knowledge_refs_outside_available",
             "repeat_reason": "execution_identity_repeats_with_new_evidence",
         },
@@ -211,7 +212,21 @@ def _validate_action_metadata(metadata: dict | None) -> dict:
         dimensions = route.get("required_dimensions")
         if not skill_id:
             raise ValueError("Action Queue metadata skill_route requires skill_id")
-        expected_path = f"skills/{skill_id}/SKILL.md"
+        try:
+            from tools.context_pack import SKILL_CATALOG
+        except ImportError:  # pragma: no cover - direct tools/ execution
+            from context_pack import SKILL_CATALOG  # type: ignore
+        catalog_entry = SKILL_CATALOG.get(skill_id)
+        if not isinstance(catalog_entry, dict) or catalog_entry.get("route_mode") != "primary":
+            raise ValueError(
+                "Action Queue metadata skill_route skill_id must reference a canonical primary Skill"
+            )
+        expected_path = str(catalog_entry.get("path") or "")
+        if not expected_path or not (BASE_DIR / expected_path).is_file():
+            raise ValueError(
+                "Action Queue metadata skill_route references a missing canonical Skill: "
+                f"{expected_path or skill_id}"
+            )
         if not skill_path:
             raise ValueError(
                 "Action Queue metadata skill_route requires "
@@ -396,8 +411,13 @@ def _prepare_claim_metadata(
     required_dimensions = [
         str(value).strip() for value in route.get("required_dimensions", []) if str(value).strip()
     ]
-    if merged["active_dimension"] not in required_dimensions and not merged.get("decision_reason"):
-        raise ValueError("Action Queue active_dimension must come from the selected Skill route")
+    if merged["active_dimension"] not in required_dimensions and not _compact_text(
+        merged.get("dimension_override_reason"), 500
+    ):
+        raise ValueError(
+            "Action Queue active_dimension outside the selected Skill route requires "
+            "dimension_override_reason"
+        )
     original_route = existing.get("skill_route") if isinstance(existing.get("skill_route"), dict) else {}
     if original_route and route != original_route and not _compact_text(merged.get("skill_override_reason"), 500):
         raise ValueError("Action Queue Skill override requires skill_override_reason")
@@ -579,6 +599,14 @@ def _versioned_continuation_action(item: dict, metadata: dict, continuation: dic
         "next_question": question,
         "hypothesis_status": "open",
     })
+    route = child_metadata.get("skill_route") if isinstance(child_metadata.get("skill_route"), dict) else {}
+    route_dimensions = {
+        str(value).strip()
+        for value in (route.get("required_dimensions") or [])
+        if str(value).strip()
+    }
+    if dimension not in route_dimensions:
+        child_metadata["dimension_override_reason"] = reason
     last_outcome = metadata.get("last_outcome") if isinstance(metadata.get("last_outcome"), dict) else {}
     child_metadata["baseline_ref"] = str(last_outcome.get("summary_ref") or metadata.get("baseline_ref") or "")
     child_metadata["evidence_ref"] = str(last_outcome.get("evidence_ref") or last_outcome.get("summary_ref") or "")
