@@ -748,6 +748,13 @@ def test_inspect_recon_artifacts_counts_exposure_signals(tmp_path):
     assert payload["counts"]["identity_emails"] == 2
     assert payload["counts"]["leaksearch_hits"] == 1
     assert payload["counts"]["cloud_enum_hits"] == 1
+    (recon_dir / "exposure" / "host_ranking.jsonl").write_text(
+        '{"kind":"host-ranking-candidate","host":"api.target.com"}\n',
+        encoding="utf-8",
+    )
+    payload = inspect_recon_artifacts(tmp_path, "target.com")
+    assert payload["counts"]["host_ranking"] == 1
+    assert payload["exposure_paths"]["host_ranking"] == "exposure/host_ranking.jsonl"
     assert payload["exposure_paths"]["api_doc_candidates"] == "exposure/api_doc_candidates.txt"
     assert payload["exposure_paths"]["verified_secrets"] == "exposure/api_leak_trufflehog_verified.jsonl"
     assert payload["exposure_paths"]["openapi_operations"] == "api_specs/operations.jsonl"

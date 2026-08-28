@@ -169,6 +169,7 @@ recon/<target>/
     ├── external_service_hosts.txt
     ├── host_pivot_candidates.jsonl
     ├── ai_asset_candidates.jsonl
+    ├── host_ranking.jsonl              # all-host soft priority view; raw inputs remain authoritative
     ├── asset_relation_observations.jsonl  # optional normalized input
     ├── asset_relation_candidates.jsonl    # derived projection
     ├── asset_relation_summary.json        # Scope/partial projection

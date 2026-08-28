@@ -19,9 +19,9 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from memory.pattern_db import PatternDB
-from memory.target_profile import default_memory_dir, load_target_profile
-from tools.target_memory import load_goal_memory
+from memory.pattern_db import PatternDB  # noqa: E402
+from memory.target_profile import default_memory_dir, load_target_profile  # noqa: E402
+from tools.target_memory import load_goal_memory  # noqa: E402
 try:
     from tools.closure_resolver import ClosureResolver, canonical_endpoint_path
     from tools.coverage_matrix import load_matrix
@@ -3143,6 +3143,12 @@ def format_surface_output(ranked: dict, target: str) -> str:
         )
     if runtime_workflow or recon_artifacts.get("available"):
         lines.append("")
+    host_ranking_count = _count_recon_artifact(recon_artifacts, "host_ranking")
+    if host_ranking_count:
+        lines.append(
+            f"- Host ranking: {host_ranking_count} all-host soft priority rows "
+            "(advisory; raw recon remains authoritative)"
+        )
     observation_inventory = ranked.get("observation_inventory") or {}
     inventory_error = str(observation_inventory.get("error") or "").strip()
     if inventory_error:

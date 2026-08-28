@@ -1569,6 +1569,7 @@ touch "$RECON_DIR/subdomains/all.txt" \
       "$RECON_DIR/exposure/external_service_hosts.txt" \
       "$RECON_DIR/exposure/host_pivot_candidates.jsonl" \
       "$RECON_DIR/exposure/ai_asset_candidates.jsonl" \
+      "$RECON_DIR/exposure/host_ranking.jsonl" \
       "$RECON_DIR/exposure/asset_relation_candidates.jsonl"
 
 # Clear regenerated summary files so reruns cannot inherit stale counters.
@@ -1596,6 +1597,11 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/js/potential_secrets.txt"
 : > "$RECON_DIR/js/linkfinder_endpoints.txt"
 : > "$RECON_DIR/js/request_targets.txt"
+: > "$RECON_DIR/exposure/host_pivot_candidates.jsonl"
+: > "$RECON_DIR/exposure/ai_asset_candidates.jsonl"
+: > "$RECON_DIR/exposure/host_ranking.jsonl"
+: > "$RECON_DIR/exposure/asset_relation_candidates.jsonl"
+rm -f "$RECON_DIR/exposure/asset_relation_summary.json"
 
 ensure_explicit_port_seed_live() {
     if [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ] && [ -n "$TARGET_HTTP_SEED" ] \
@@ -4449,6 +4455,7 @@ if ! python3 "$BASE_DIR/tools/recon_candidates.py" \
 fi
 HOST_PIVOT_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/host_pivot_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
 AI_ASSET_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/ai_asset_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
+HOST_RANKING_HOSTS=$(wc -l < "$RECON_DIR/exposure/host_ranking.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
 ASSET_RELATION_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/asset_relation_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
 record_recon_phase \
     routing_candidates \
@@ -4460,6 +4467,7 @@ emit_claude_hint \
     phase                      routing_candidates \
     host_pivot_candidates      "$HOST_PIVOT_CANDIDATES" \
     ai_asset_candidates        "$AI_ASSET_CANDIDATES" \
+    host_ranking_hosts          "$HOST_RANKING_HOSTS" \
     asset_relation_candidates  "$ASSET_RELATION_CANDIDATES" \
     active_probing             "false"
 emit_claude_hint_actions \

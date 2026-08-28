@@ -1702,6 +1702,10 @@ def _exposure_review_paths(target: str, recon_artifacts: dict) -> list[str]:
         "exposure/host_pivot_candidates.jsonl",
     )
     add_if(
+        _count_value(counts, "host_ranking") > 0,
+        "exposure/host_ranking.jsonl",
+    )
+    add_if(
         _count_value(counts, "ai_asset_candidates") > 0,
         "exposure/ai_asset_candidates.jsonl",
     )
@@ -1774,7 +1778,8 @@ def _format_exposure_signal_lines(target: str, recon_artifacts: dict) -> list[st
     lines.append(
         "- Routing candidates: "
         f"host_pivot={_count_value(counts, 'host_pivot_candidates')}, "
-        f"ai_asset={_count_value(counts, 'ai_asset_candidates')}"
+        f"ai_asset={_count_value(counts, 'ai_asset_candidates')}, "
+        f"host_ranking={_count_value(counts, 'host_ranking')}"
     )
 
     review_paths = _exposure_review_paths(target, recon_artifacts)

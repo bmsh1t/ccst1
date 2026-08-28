@@ -858,6 +858,20 @@ def test_recon_engine_records_phase_manifest_without_value_judgment():
     assert "raw URL staging is retained until Active publication" in text
 
 
+def test_recon_engine_clears_routing_projections_before_rebuild():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    for artifact in (
+        "host_pivot_candidates.jsonl",
+        "ai_asset_candidates.jsonl",
+        "host_ranking.jsonl",
+        "asset_relation_candidates.jsonl",
+    ):
+        assert f': > "$RECON_DIR/exposure/{artifact}"' in text
+    assert 'rm -f "$RECON_DIR/exposure/asset_relation_summary.json"' in text
+
+
 def test_recon_engine_preserves_root_scope_and_partial_handoff_contract():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")

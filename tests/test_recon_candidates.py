@@ -11,6 +11,7 @@ from tools.recon_candidates import (
 from tools.runtime_state import inspect_recon_artifacts, inspect_recon_artifacts_fast
 from tools.surface import _build_exposure_lead_hints
 from tools.target_paths import target_storage_key
+from tools.technology_inventory import build_inventory_from_source, inventory_fingerprint
 
 
 def _empty_recon(tmp_path, target):
@@ -75,6 +76,257 @@ def test_build_recon_candidates_uses_existing_evidence_only(tmp_path):
     assert artifacts["counts"]["host_pivot_candidates"] == len(host_rows)
     assert artifacts["counts"]["ai_asset_candidates"] == len(ai_rows)
     assert {"host-pivot", "ai-asset"}.issubset(categories)
+
+    ranking_rows = [
+        json.loads(line)
+        for line in (recon / "exposure" / "host_ranking.jsonl").read_text().splitlines()
+    ]
+    assert result["host_ranking_hosts"] == len(ranking_rows)
+    assert {row["host"] for row in ranking_rows} >= {"chat.target.com", "api.target.com"}
+
+
+def test_host_ranking_is_deterministic_and_retains_long_tail(tmp_path):
+    recon = _empty_recon(tmp_path, "target.com")
+    inputs = {
+        "live/httpx_full.txt": [
+            "https://api.target.com [200] [nginx] [ip=192.0.2.10] [cname=edge.target.com]",
+            "https://tail.target.com [200] [static]",
+            "https://docs.target.com [200] [static]",
+            "https://admin.target.com [200] [cloudflare] [ip=192.0.2.10]",
+        ],
+        "ports/open_host_ports.txt": [
+            "api.target.com:443",
+            "admin.target.com:8443",
+            "port-only.target.com:8080",
+        ],
+        "ports/open_host_ports_nmap.txt": ["admin.target.com:8443"],
+        "urls/api_endpoints.txt": [
+            "https://api.target.com/v1/users",
+            "https://api.target.com/v1/orders",
+        ],
+        "urls/with_params.txt": [
+            "https://api.target.com/v1/users?id=1",
+            "https://admin.target.com/export?format=json",
+        ],
+        "urls/js_files.txt": [
+            "https://admin.target.com/assets/app.js",
+            "https://tail.target.com/assets/tail.js",
+        ],
+    }
+    raw_paths = []
+    for relative, lines in inputs.items():
+        path = recon / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        raw_paths.append(path)
+    before = {path: path.read_bytes() for path in raw_paths}
+
+    result = build_recon_candidates(tmp_path, "target.com")
+    ranking_path = recon / "exposure" / "host_ranking.jsonl"
+    first_bytes = ranking_path.read_bytes()
+    rows = [json.loads(line) for line in ranking_path.read_text(encoding="utf-8").splitlines()]
+    by_host = {row["host"]: row for row in rows}
+
+    assert result["host_ranking_hosts"] == len(rows)
+    assert result["host_ranking_path"] == str(ranking_path)
+    assert {
+        "api.target.com",
+        "admin.target.com",
+        "docs.target.com",
+        "edge.target.com",
+        "port-only.target.com",
+        "tail.target.com",
+    }.issubset(by_host)
+    assert rows == sorted(rows, key=lambda row: (-row["score"], row["host"]))
+    assert by_host["api.target.com"]["score"] > by_host["tail.target.com"]["score"]
+    assert by_host["api.target.com"]["details"]["api_endpoints"] == 2
+    assert by_host["api.target.com"]["details"]["with_params"] == 1
+    assert by_host["api.target.com"]["details"]["technology_signals"] == ["nginx"]
+    assert by_host["api.target.com"]["source_counts"]["urls/api_endpoints.txt"] == 2
+    assert "shared-ip" in by_host["admin.target.com"]["signals"]
+    assert "js-file" in by_host["tail.target.com"]["signals"]
+    assert result["host_ranking_source_counts"]["ports/open_host_ports.txt"] == 3
+    assert result["host_ranking_source_counts"]["ports/open_host_ports_nmap.txt"] == 1
+    assert all(row["details"]["technology_signals"] == sorted(row["details"]["technology_signals"]) for row in rows)
+    assert {path: path.read_bytes() for path in raw_paths} == before
+
+    for path, lines in inputs.items():
+        (recon / path).write_text("\n".join(reversed(lines)) + "\n", encoding="utf-8")
+    build_recon_candidates(tmp_path, "target.com")
+
+    assert ranking_path.read_bytes() == first_bytes
+    assert {path: path.read_bytes() for path in raw_paths} == {
+        path: ("\n".join(reversed(inputs[str(path.relative_to(recon))])) + "\n").encode()
+        for path in raw_paths
+    }
+
+
+def test_host_ranking_keeps_raw_relation_hosts_without_promoting_entities(tmp_path):
+    recon = _empty_recon(tmp_path, "target.com")
+    input_path = recon / "exposure" / "asset_relation_observations.jsonl"
+    input_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {
+                    "schema_version": 1,
+                    "kind": "asset-relation-observation",
+                    "asset_type": "organization",
+                    "value": "Holding Company",
+                    "relation": "majority-owned",
+                    "related": ["target.com"],
+                    "source": "registry",
+                    "confidence": "high",
+                },
+                {
+                    "schema_version": 1,
+                    "kind": "asset-relation-observation",
+                    "asset_type": "domain",
+                    "value": "tail.example.com",
+                    "relation": "shared-owner",
+                    "source": "registry",
+                    "confidence": "low",
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = build_recon_candidates(tmp_path, "target.com", asset_limit=1)
+    rows = {
+        json.loads(line)["host"]
+        for line in (recon / "exposure" / "host_ranking.jsonl").read_text().splitlines()
+    }
+
+    assert {"target.com", "tail.example.com"}.issubset(rows)
+    assert "holding" not in rows
+    assert result["host_ranking_source_counts"]["exposure/asset_relation_observations.jsonl"] >= 2
+
+
+def test_host_ranking_keeps_raw_relation_tail_beyond_candidate_list_cap(tmp_path):
+    recon = _empty_recon(tmp_path, "target.com")
+    related = [f"tail-{index:03d}.target.com" for index in range(300)]
+    input_path = recon / "exposure" / "asset_relation_observations.jsonl"
+    input_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "asset-relation-observation",
+                "asset_type": "organization",
+                "value": "Holding Company",
+                "relation": "majority-owned",
+                "related": related,
+                "source": "registry",
+                "confidence": "high",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = build_recon_candidates(tmp_path, "target.com")
+    rows = {
+        json.loads(line)["host"]
+        for line in (recon / "exposure" / "host_ranking.jsonl").read_text().splitlines()
+    }
+
+    assert {related[0], related[-1]}.issubset(rows)
+    assert "holding" not in rows
+    assert result["asset_relation_invalid"] == 1
+    assert result["host_ranking_source_counts"]["exposure/asset_relation_observations.jsonl"] == 300
+
+
+def test_host_ranking_covers_canonical_observation_artifacts(tmp_path):
+    recon = _empty_recon(tmp_path, "target.com")
+    inputs = {
+        "subdomains/subfinder.txt": "enum.target.com\n",
+        "subdomains/resolved.txt": "resolved.target.com\n",
+        "urls/all.txt": "https://all.target.com/legacy\n",
+        "urls/graphql.txt": "https://graphql.target.com/query\n",
+    }
+    for relative, content in inputs.items():
+        path = recon / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    build_recon_candidates(tmp_path, "target.com")
+    ranking_rows = [
+        json.loads(line)
+        for line in (recon / "exposure" / "host_ranking.jsonl").read_text().splitlines()
+    ]
+    by_host = {row["host"]: row for row in ranking_rows}
+
+    assert {"enum.target.com", "resolved.target.com", "all.target.com", "graphql.target.com"}.issubset(by_host)
+    assert by_host["enum.target.com"]["source_counts"]["subdomains/subfinder.txt"] == 1
+    assert by_host["resolved.target.com"]["source_counts"]["subdomains/resolved.txt"] == 1
+    assert by_host["all.target.com"]["source_counts"]["urls/all.txt"] == 1
+    assert by_host["graphql.target.com"]["source_counts"]["urls/graphql.txt"] == 1
+
+
+def test_host_ranking_reads_only_current_technology_inventory(tmp_path):
+    recon = _empty_recon(tmp_path, "target.com")
+    (recon / "live" / "httpx_full.txt").write_text(
+        "https://api.target.com [200] [nginx]\n", encoding="utf-8"
+    )
+    (recon / "live" / "technology_inventory.json").write_text(
+        json.dumps([{"host": "foreign.example", "components": ["nginx"]}]),
+        encoding="utf-8",
+    )
+
+    build_recon_candidates(tmp_path, "target.com")
+    hosts = {
+        json.loads(line)["host"]
+        for line in (recon / "exposure" / "host_ranking.jsonl").read_text().splitlines()
+    }
+
+    assert "api.target.com" in hosts
+    assert "foreign.example" not in hosts
+
+
+def test_host_ranking_requires_fresh_technology_inventory_source_binding(tmp_path):
+    recon = _empty_recon(tmp_path, "target.com")
+    httpx_path = recon / "live" / "httpx_full.txt"
+    httpx_path.write_text("https://api.target.com [200] [nginx]\n", encoding="utf-8")
+    inventory = build_inventory_from_source(httpx_path, "text", target="target.com")
+    inventory["hosts"] = [{"host": "inventory.target.com", "components": [{"name": "nginx"}]}]
+    inventory["components"] = [{"name": "nginx"}]
+    inventory["fingerprint"] = inventory_fingerprint(inventory)
+    (recon / "live" / "technology_inventory.json").write_text(
+        json.dumps(inventory),
+        encoding="utf-8",
+    )
+
+    build_recon_candidates(tmp_path, "target.com")
+    hosts = {
+        json.loads(line)["host"]
+        for line in (recon / "exposure" / "host_ranking.jsonl").read_text().splitlines()
+    }
+    assert "inventory.target.com" in hosts
+
+    httpx_path.write_text("https://new.target.com [200] [nginx]\n", encoding="utf-8")
+    build_recon_candidates(tmp_path, "target.com")
+    hosts = {
+        json.loads(line)["host"]
+        for line in (recon / "exposure" / "host_ranking.jsonl").read_text().splitlines()
+    }
+    assert "new.target.com" in hosts
+    assert "inventory.target.com" not in hosts
+
+
+def test_host_ranking_uses_legacy_port_fallback_when_primary_is_missing(tmp_path):
+    recon = _empty_recon(tmp_path, "target.com")
+    ports = recon / "ports"
+    ports.mkdir()
+    (ports / "open_ports_all.txt").write_text("legacy.target.com:8443\n", encoding="utf-8")
+
+    build_recon_candidates(tmp_path, "target.com")
+    hosts = {
+        json.loads(line)["host"]
+        for line in (recon / "exposure" / "host_ranking.jsonl").read_text().splitlines()
+    }
+
+    assert "legacy.target.com" in hosts
 
 
 def test_asset_relation_observations_merge_provenance_into_one_soft_lead(tmp_path):
@@ -148,6 +400,13 @@ def test_asset_relation_observations_merge_provenance_into_one_soft_lead(tmp_pat
             "scope_reason": "high-confidence target-linked certificate-san relationship",
         }
     ]
+    host_ranking = [
+        json.loads(line)
+        for line in (recon / "exposure" / "host_ranking.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    relation_row = next(item for item in host_ranking if item["host"] == "edge.target.net")
+    assert relation_row["details"]["asset_relation_candidates"] == 1
+    assert "asset-relation" in relation_row["signals"]
     summary = json.loads(
         (recon / "exposure" / "asset_relation_summary.json").read_text(encoding="utf-8")
     )

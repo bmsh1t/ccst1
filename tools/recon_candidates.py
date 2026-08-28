@@ -23,10 +23,11 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from memory.target_profile import default_memory_dir, load_target_profile
-from tools.scope_checker import ScopeChecker
-from tools.scope_context import ScopeContext, ScopeContextError
-from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+from memory.target_profile import default_memory_dir, load_target_profile  # noqa: E402
+from tools.scope_checker import ScopeChecker  # noqa: E402
+from tools.scope_context import ScopeContext, ScopeContextError  # noqa: E402
+from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # noqa: E402
+from tools.technology_inventory import inventory_source_binding_matches  # noqa: E402
 
 
 SCHEMA_VERSION = 1
@@ -34,6 +35,7 @@ DEFAULT_JS_CANDIDATE_LIMIT = 800
 ASSET_RELATION_INPUT_PATH = Path("exposure/asset_relation_observations.jsonl")
 ASSET_RELATION_OUTPUT_PATH = Path("exposure/asset_relation_candidates.jsonl")
 ASSET_RELATION_SUMMARY_PATH = Path("exposure/asset_relation_summary.json")
+HOST_RANKING_OUTPUT_PATH = Path("exposure/host_ranking.jsonl")
 ASSET_RELATION_WARNING_LIMIT = 10
 MAX_ASSET_RELATION_LINE_BYTES = 1_000_000
 MAX_ASSET_RELATION_LIST_ITEMS = 256
@@ -69,6 +71,84 @@ AI_SOURCES = (
     Path("browser/xhr_endpoints.txt"),
     Path("browser/api_endpoints.txt"),
 )
+
+HOST_RANKING_FIXED_SOURCES = (
+    ("live_httpx", Path("live/httpx_full.txt"), "live/httpx_full.txt", "live"),
+    ("api_endpoints", Path("urls/api_endpoints.txt"), "urls/api_endpoints.txt", "api-endpoint"),
+    ("with_params", Path("urls/with_params.txt"), "urls/with_params.txt", "parameterized-url"),
+    ("js_files", Path("urls/js_files.txt"), "urls/js_files.txt", "js-file"),
+)
+# These artifacts are host-bearing inputs too, but are kept separate from the
+# weighted lanes above so their provenance remains visible without changing the
+# existing score calibration.
+HOST_RANKING_ADDITIONAL_SOURCES = (
+    (Path("subdomains/subfinder.txt"), "subdomain"),
+    (Path("subdomains/resolved.txt"), "resolved-subdomain"),
+    (Path("subdomains/all.txt"), "subdomain"),
+    (Path("urls/all.txt"), "url"),
+    (Path("urls/graphql.txt"), "graphql"),
+    (Path("live/urls.txt"), "live-url"),
+    (Path("js/endpoints.txt"), "endpoint"),
+    (Path("browser/xhr_endpoints.txt"), "browser-xhr"),
+    (Path("browser/api_endpoints.txt"), "browser-api"),
+)
+HOST_RANKING_ADDITIONAL_SOURCE_NAMES = frozenset(
+    relative.as_posix() for relative, _signal in HOST_RANKING_ADDITIONAL_SOURCES
+)
+HOST_RANKING_CANDIDATE_SOURCES = (
+    ("host_pivot_candidates", Path("exposure/host_pivot_candidates.jsonl"), "host-pivot"),
+    ("ai_asset_candidates", Path("exposure/ai_asset_candidates.jsonl"), "ai-asset"),
+    ("asset_relation_candidates", Path("exposure/asset_relation_candidates.jsonl"), "asset-relation"),
+)
+HOST_RANKING_TECHNOLOGY_PATH = Path("live/technology_inventory.json")
+HOST_RANKING_WEIGHTS = {
+    "live_httpx": 3,
+    "discovery_artifacts": 1,
+    "open_host_ports": 2,
+    "api_endpoints": 5,
+    "with_params": 4,
+    "js_files": 2,
+    "host_pivot_candidates": 5,
+    "ai_asset_candidates": 5,
+    "asset_relation_candidates": 3,
+    "asset_relation_observations": 1,
+    "technology_signals": 2,
+}
+HOST_RANKING_SIGNAL_ORDER = (
+    ("live_httpx", "live"),
+    ("discovery_artifacts", "discovery"),
+    ("open_host_ports", "open-port"),
+    ("api_endpoints", "api-endpoint"),
+    ("with_params", "parameterized-url"),
+    ("js_files", "js-file"),
+    ("host_pivot_candidates", "host-pivot"),
+    ("ai_asset_candidates", "ai-asset"),
+    ("asset_relation_candidates", "asset-relation"),
+    ("asset_relation_observations", "asset-relation-observation"),
+    ("technology_signals", "technology"),
+)
+TECHNOLOGY_HINTS = {
+    "apache",
+    "asp.net",
+    "caddy",
+    "cloudflare",
+    "django",
+    "express",
+    "flask",
+    "graphql",
+    "iis",
+    "laravel",
+    "nginx",
+    "node.js",
+    "php",
+    "react",
+    "ruby",
+    "spring",
+    "tomcat",
+    "varnish",
+    "vue",
+    "wordpress",
+}
 
 JS_CATEGORY_PATTERNS = (
     (
@@ -650,6 +730,469 @@ def _asset_relation_summary(target: str, rows: list[dict], stats: dict) -> dict:
     }
 
 
+def _normalized_host(value: object, *, allow_bare: bool = False) -> str:
+    """Return a canonical host from a URL or an explicitly host-like value."""
+    if not isinstance(value, str):
+        return ""
+    token = value.strip().split()[0] if value.strip() else ""
+    if not token:
+        return ""
+    if token.endswith("/open"):
+        token = token[:-5]
+    if token.startswith("/") and not token.startswith("//"):
+        return ""
+    has_scheme = "://" in token
+    if not has_scheme and not token.startswith("//") and not allow_bare:
+        return ""
+    if allow_bare and not has_scheme and not token.startswith("//"):
+        # urlsplit treats an unbracketed IPv6 literal as a malformed netloc.
+        # Handle the host-only form before parsing host:port artifacts.
+        try:
+            return str(ip_address(token.strip("[]")))
+        except ValueError:
+            pass
+    try:
+        parsed = urlsplit(token if has_scheme or token.startswith("//") else f"//{token}")
+        host = (parsed.hostname or "").strip(".").lower()
+        # A bare path such as ``assets/app.js`` must not become host ``assets``.
+        if allow_bare and not has_scheme and not token.startswith("//") and any(
+            marker in token for marker in ("/", "?", "#")
+        ):
+            return ""
+        parsed.port
+    except ValueError:
+        return ""
+    if not host:
+        return ""
+    try:
+        return str(ip_address(host))
+    except ValueError:
+        try:
+            ascii_host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return ""
+        labels = ascii_host.split(".")
+        if not all(
+            label
+            and len(label) <= 63
+            and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label)
+            for label in labels
+        ):
+            return ""
+        return ascii_host.lower()
+
+
+def _jsonl_objects(path: Path):
+    """Yield object rows from a derived JSONL input; malformed rows are ignored."""
+    for line in _iter_lines(path):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            yield payload
+
+
+def _technology_labels(value: object) -> list[str]:
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        return []
+    labels = []
+    for item in values:
+        if isinstance(item, dict):
+            item = item.get("name") or item.get("display_name") or item.get("raw_label")
+        if not isinstance(item, str):
+            continue
+        label = " ".join(item.strip().split()).lower()
+        if label:
+            labels.append(label)
+    return sorted(set(labels))
+
+
+def _known_technology_labels(value: object) -> list[str]:
+    return [
+        label
+        for label in _technology_labels(value)
+        if label in TECHNOLOGY_HINTS
+        or any(
+            re.search(rf"(?<![a-z0-9]){re.escape(hint)}(?![a-z0-9])", label)
+            for hint in TECHNOLOGY_HINTS
+        )
+    ]
+
+
+def _httpx_technology_signals(line: str) -> list[str]:
+    signals = []
+    for group in re.findall(r"\[([^\]]+)\]", line):
+        normalized = " ".join(group.strip().split()).lower()
+        if normalized in TECHNOLOGY_HINTS:
+            signals.append(normalized)
+            continue
+        for hint in TECHNOLOGY_HINTS:
+            if re.search(rf"(?<![a-z0-9]){re.escape(hint)}(?![a-z0-9])", normalized):
+                signals.append(hint)
+    return sorted(set(signals))
+
+
+def _iter_asset_relation_observations(source: Path):
+    """Yield valid raw relation observations without applying candidate limits."""
+    if not source.is_file():
+        return
+    try:
+        with source.open("rb") as handle:
+            while True:
+                raw = handle.readline(MAX_ASSET_RELATION_LINE_BYTES + 1)
+                if not raw:
+                    break
+                oversized = len(raw) > MAX_ASSET_RELATION_LINE_BYTES
+                if oversized and not raw.endswith(b"\n"):
+                    while True:
+                        chunk = handle.readline(MAX_ASSET_RELATION_LINE_BYTES + 1)
+                        if not chunk or chunk.endswith(b"\n"):
+                            break
+                    continue
+                if oversized:
+                    continue
+                text = raw.decode("utf-8", errors="replace").strip()
+                if not text:
+                    continue
+                try:
+                    yield _normalize_asset_relation_observation(json.loads(text))
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    except OSError:
+        return
+
+
+def _iter_asset_relation_ranking_observations(source: Path):
+    """Read network values from raw relation rows without candidate list caps."""
+    if not source.is_file():
+        return
+    try:
+        with source.open("rb") as handle:
+            while True:
+                raw = handle.readline(MAX_ASSET_RELATION_LINE_BYTES + 1)
+                if not raw:
+                    break
+                oversized = len(raw) > MAX_ASSET_RELATION_LINE_BYTES
+                if oversized and not raw.endswith(b"\n"):
+                    while True:
+                        chunk = handle.readline(MAX_ASSET_RELATION_LINE_BYTES + 1)
+                        if not chunk or chunk.endswith(b"\n"):
+                            break
+                    continue
+                if oversized:
+                    continue
+                try:
+                    payload = json.loads(raw.decode("utf-8", errors="replace"))
+                except (UnicodeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("schema_version") != SCHEMA_VERSION or payload.get("kind") != "asset-relation-observation":
+                    continue
+                yield payload
+    except OSError:
+        return
+
+
+def _asset_relation_network_values(observation: dict):
+    """Return only network assets from a relation row for host ranking."""
+    asset_type = str(observation.get("asset_type") or "").lower()
+    value = observation.get("value")
+    if isinstance(value, str) and _parseable_network_asset(asset_type, value):
+        yield value
+    for related in observation.get("related") or []:
+        if not isinstance(related, str):
+            continue
+        if "://" in related:
+            related_type = "url"
+        else:
+            try:
+                ip_address(related.strip("[]"))
+                related_type = "ip"
+            except ValueError:
+                related_type = "domain"
+        if _parseable_network_asset(related_type, related):
+            yield related
+
+
+def _load_host_ranking_inventory(recon_dir: Path, target: str) -> dict:
+    """Read an existing technology projection without creating a new artifact."""
+    path = recon_dir / HOST_RANKING_TECHNOLOGY_PATH
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict) or payload.get("status") != "ready":
+        return {}
+    try:
+        if target and canonical_target_value(str(payload.get("target") or "")) != canonical_target_value(target):
+            return {}
+    except ValueError:
+        return {}
+    bindings = payload.get("sources")
+    if not isinstance(bindings, list):
+        binding = payload.get("source")
+        bindings = [binding] if isinstance(binding, dict) else []
+    def _fresh_binding(binding: object) -> bool:
+        if not isinstance(binding, dict) or not isinstance(binding.get("path"), str):
+            return False
+        try:
+            return inventory_source_binding_matches(binding, binding["path"])
+        except (OSError, TypeError, ValueError):
+            return False
+
+    if not bindings or any(not _fresh_binding(binding) for binding in bindings):
+        return {}
+    return payload
+
+
+def _host_ranking(
+    recon_dir: Path,
+    *,
+    target: str = "",
+    candidate_rows: dict[str, list[dict]] | None = None,
+    asset_relation_input: Path | None = None,
+) -> tuple[list[dict], dict]:
+    """Build an all-host soft ranking from cached recon evidence only.
+
+    The output is a rebuildable attention hint. Every host observed in the
+    supported artifacts is retained; only deterministic ordering changes.
+    """
+    observations: dict[str, dict] = {}
+
+    def add(
+        host: str,
+        source: str,
+        evidence_key: str,
+        signal: str,
+        *,
+        technology: list[str] | None = None,
+    ) -> None:
+        if not host:
+            return
+        bucket = observations.setdefault(
+            host,
+            {
+                "evidence": defaultdict(set),
+                "signals": set(),
+                "technology": set(),
+            },
+        )
+        bucket["evidence"][source].add(evidence_key)
+        if signal:
+            bucket["signals"].add(signal)
+        if technology:
+            bucket["technology"].update(technology)
+
+    for source_key, relative, source_name, signal in HOST_RANKING_FIXED_SOURCES:
+        path = recon_dir / relative
+        for line in _iter_lines(path):
+            host = _normalized_host(line, allow_bare=source_key == "live_httpx")
+            if not host:
+                continue
+            technology = _httpx_technology_signals(line) if source_key == "live_httpx" else []
+            add(host, source_name, line, signal, technology=technology)
+            if technology:
+                add(host, "live/httpx_full.txt", line, "technology", technology=technology)
+
+    for relative, signal in HOST_RANKING_ADDITIONAL_SOURCES:
+        for line in _iter_lines(recon_dir / relative):
+            host = _normalized_host(line, allow_bare=True)
+            if host:
+                add(host, relative.as_posix(), line, signal)
+
+    ports_dir = recon_dir / "ports"
+    if ports_dir.is_dir():
+        port_paths = sorted(
+            (path for path in ports_dir.glob("open_host_ports*.txt") if path.is_file()),
+            key=lambda path: path.name,
+        )
+        if not port_paths:
+            port_paths = [
+                path
+                for name in ("open_ports_all.txt", "open_ports.txt", "open_ports_naabu.txt")
+                if (path := ports_dir / name).is_file()
+            ]
+    else:
+        port_paths = []
+    for path in port_paths:
+        source_name = f"ports/{path.name}"
+        for line in _iter_lines(path):
+            host = _normalized_host(line, allow_bare=True)
+            if host:
+                add(host, source_name, line, "open-port")
+
+    for source_key, path, signal in HOST_RANKING_CANDIDATE_SOURCES:
+        source_name = path.as_posix()
+        payloads = (
+            candidate_rows.get(source_key, [])
+            if candidate_rows is not None and source_key in candidate_rows
+            else _jsonl_objects(recon_dir / path)
+        )
+        for payload in payloads:
+            evidence_key = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            raw_signals = payload.get("signals")
+            row_signals = _technology_labels(raw_signals)
+            row_signals.append(signal)
+            values = [payload.get("value")]
+            related = payload.get("related")
+            if isinstance(related, list):
+                values.extend(related)
+            if source_key == "asset_relation_candidates":
+                asset_type = str(payload.get("asset_type") or "").lower()
+                values = [
+                    value
+                    for value in values
+                    if isinstance(value, str)
+                    and _parseable_network_asset(
+                        asset_type if value == payload.get("value") else (
+                            "url" if "://" in value else "domain"
+                        ),
+                        value,
+                    )
+                ]
+            for value in values:
+                host = _normalized_host(value, allow_bare=True)
+                if not host:
+                    continue
+                for row_signal in row_signals:
+                    add(host, source_name, evidence_key, row_signal)
+
+    technology_payload = _load_host_ranking_inventory(recon_dir, target)
+    for row_index, item in enumerate(technology_payload.get("hosts") or []):
+        if not isinstance(item, dict):
+            continue
+        host = _normalized_host(item.get("host") or item.get("url"), allow_bare=True)
+        if not host:
+            continue
+        labels = _known_technology_labels(item.get("components"))
+        add(
+            host,
+            HOST_RANKING_TECHNOLOGY_PATH.as_posix(),
+            f"{row_index}:{json.dumps(item, ensure_ascii=False, sort_keys=True)}",
+            "technology",
+            technology=labels,
+        )
+
+    raw_asset_input = asset_relation_input or recon_dir / ASSET_RELATION_INPUT_PATH
+    raw_asset_source = ASSET_RELATION_INPUT_PATH.as_posix()
+    for observation in _iter_asset_relation_ranking_observations(raw_asset_input):
+        evidence_key = json.dumps(observation, ensure_ascii=False, sort_keys=True)
+        for value in _asset_relation_network_values(observation):
+            host = _normalized_host(value, allow_bare=True)
+            if host:
+                add(host, raw_asset_source, evidence_key, "asset-relation-observation")
+
+    fixed_source_names = [
+        source_name
+        for _key, _path, source_name, _signal in HOST_RANKING_FIXED_SOURCES
+    ]
+    rows: list[dict] = []
+    for host in sorted(observations):
+        bucket = observations[host]
+        source_counts = {
+            source_name: len(bucket["evidence"].get(source_name, set()))
+            for source_name in fixed_source_names
+        }
+        source_counts.update(
+            {
+                source_name: len(bucket["evidence"].get(source_name, set()))
+                for source_name in sorted(bucket["evidence"])
+                if source_name not in source_counts
+            }
+        )
+        details = {
+            "live_httpx": source_counts.get("live/httpx_full.txt", 0),
+            "discovery_artifacts": sum(
+                source_counts.get(source_name, 0)
+                for source_name in HOST_RANKING_ADDITIONAL_SOURCE_NAMES
+            ),
+            "open_host_ports": sum(
+                count for source_name, count in source_counts.items() if source_name.startswith("ports/")
+            ),
+            "api_endpoints": source_counts.get("urls/api_endpoints.txt", 0),
+            "with_params": source_counts.get("urls/with_params.txt", 0),
+            "js_files": source_counts.get("urls/js_files.txt", 0),
+            "host_pivot_candidates": source_counts.get(
+                "exposure/host_pivot_candidates.jsonl", 0
+            ),
+            "ai_asset_candidates": source_counts.get("exposure/ai_asset_candidates.jsonl", 0),
+            "asset_relation_candidates": source_counts.get(
+                "exposure/asset_relation_candidates.jsonl", 0
+            ),
+            "asset_relation_observations": source_counts.get(
+                ASSET_RELATION_INPUT_PATH.as_posix(), 0
+            ),
+            "technology_signals": sorted(bucket["technology"]),
+        }
+        score_details = []
+        score = 0
+        for source_key, signal in HOST_RANKING_SIGNAL_ORDER:
+            count = (
+                len(details["technology_signals"])
+                if source_key == "technology_signals"
+                else details[source_key]
+            )
+            points = min(count, 8) * HOST_RANKING_WEIGHTS[source_key]
+            if not points:
+                continue
+            score += points
+            score_details.append(
+                {
+                    "source": source_key,
+                    "count": count,
+                    "points": points,
+                    "reason": f"{count} {signal} observation(s)",
+                }
+            )
+        signals = [
+            signal
+            for source_key, signal in HOST_RANKING_SIGNAL_ORDER
+            if (
+                len(details["technology_signals"])
+                if source_key == "technology_signals"
+                else details[source_key]
+            )
+        ]
+        for signal in sorted(bucket["signals"]):
+            if signal not in signals:
+                signals.append(signal)
+        signals.extend(
+            f"technology:{label}"
+            for label in details["technology_signals"]
+            if f"technology:{label}" not in signals
+        )
+        rows.append(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "kind": "host-ranking-candidate",
+                "host": host,
+                "value": host,
+                "score": score,
+                "details": details,
+                "source_counts": source_counts,
+                "signals": signals,
+                "score_details": score_details,
+            }
+        )
+    rows.sort(key=lambda row: (-row["score"], row["host"]))
+    aggregate_source_counts = {source_name: 0 for source_name in fixed_source_names}
+    for row in rows:
+        for source_name in row["source_counts"]:
+            aggregate_source_counts[source_name] = aggregate_source_counts.get(source_name, 0) + row[
+                "source_counts"
+            ][source_name]
+    return rows, {
+        "host_count": len(rows),
+        "source_counts": dict(sorted(aggregate_source_counts.items())),
+    }
+
+
 def _host_candidates(recon_dir: Path) -> list[dict]:
     rows: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -768,12 +1311,24 @@ def build_recon_candidates(
         _classify_asset_relation_scope(row, resolved, allowed_scope, excluded_scope)
         row.pop("_target_related", None)
     asset_summary = _asset_relation_summary(resolved, asset_rows, asset_stats)
+    host_ranking_rows, host_ranking_summary = _host_ranking(
+        recon_dir,
+        target=resolved,
+        candidate_rows={
+            "host_pivot_candidates": host_rows,
+            "ai_asset_candidates": ai_rows,
+            "asset_relation_candidates": asset_rows,
+        },
+        asset_relation_input=asset_input_path,
+    )
     host_path = exposure_dir / "host_pivot_candidates.jsonl"
     ai_path = exposure_dir / "ai_asset_candidates.jsonl"
+    host_ranking_path = recon_dir / HOST_RANKING_OUTPUT_PATH
     asset_path = recon_dir / ASSET_RELATION_OUTPUT_PATH
     asset_summary_path = recon_dir / ASSET_RELATION_SUMMARY_PATH
     _write_jsonl_atomic(host_path, host_rows)
     _write_jsonl_atomic(ai_path, ai_rows)
+    _write_jsonl_atomic(host_ranking_path, host_ranking_rows)
     _write_jsonl_atomic(asset_path, asset_rows)
     asset_summary["candidate_bytes"] = asset_path.stat().st_size
     _write_json_atomic(asset_summary_path, asset_summary)
@@ -781,6 +1336,7 @@ def build_recon_candidates(
         "target": resolved,
         "host_pivot_candidates": len(host_rows),
         "ai_asset_candidates": len(ai_rows),
+        "host_ranking_hosts": host_ranking_summary["host_count"],
         "asset_relation_candidates": len(asset_rows),
         "asset_relation_observations": asset_stats["input_count"],
         "asset_relation_invalid": asset_stats["invalid_count"],
@@ -789,6 +1345,8 @@ def build_recon_candidates(
         "asset_relation_warnings": asset_stats["warnings"],
         "host_path": str(host_path),
         "ai_path": str(ai_path),
+        "host_ranking_path": str(host_ranking_path),
+        "host_ranking_source_counts": host_ranking_summary["source_counts"],
         "asset_input_path": str(asset_input_path),
         "asset_path": str(asset_path),
         "asset_summary_path": str(asset_summary_path),
