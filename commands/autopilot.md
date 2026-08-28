@@ -125,8 +125,9 @@ and claim the exact action before replay:
 cd -- <repo_root_shell> && python3 tools/action_queue.py claim --target <target_shell> --id <id> --metadata-json '<activation-object>'
 ```
 The Queue owns activation caps, identity/dedup, Runner fields, continuation
-lineage, and credential rejection. On claim failure inspect stderr/stored state
-once; never guess or retry the contract. Runner observation leaves the action
+lineage, and prevents sensitive values from entering state or logs. On claim
+failure inspect stderr/stored state once; never guess or retry the contract.
+Runner observation leaves the action
 `running`; the controller resolves that action with one primary continuation or
 supported kill. Independent follow-ups require separately claimed actions within
 the batch budget. Missing outcome/decision remains recoverable and blocks closure.
