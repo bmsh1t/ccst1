@@ -107,6 +107,14 @@ compatibility projections and owner contracts. With one frontier item, execute i
 ```bash
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded
 ```
+
+Before selecting another substantive lane, run a compact phase gate in the same AI turn:
+what exact target-owned evidence did this lane add, which high-value surface remains unknown
+or was ruled out, and why the next action has better information gain than rotate or stop.
+Put the answers in the existing `decision`/`next_action` heartbeat; do not create another
+state, queue, or checklist owner. If the gate has no evidence-backed answer, resolve the lane
+as a bounded dead-end/blocker or handoff instead of silently widening work.
+
 When the selected action is `run_recon`, immediately run the selected Recon command from
 the lane contract with `arguments.recon_flags`, then refresh bounded state.
 Treat this as a mechanical dispatch: the next tool call starts Recon; lane preparation belongs in that call,

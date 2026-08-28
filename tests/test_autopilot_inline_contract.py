@@ -302,6 +302,18 @@ def test_ai_priority_frontier_competes_across_owners_without_changing_evidence_r
     assert "use `state.fallback_action`" in command
 
 
+def test_phase_gate_keeps_long_runs_evidence_driven_without_new_state_owner():
+    command = " ".join(_read("commands/autopilot.md").split()).lower()
+
+    assert "before selecting another substantive lane" in command
+    assert "what exact target-owned evidence did this lane add" in command
+    assert "which high-value surface remains unknown" in command
+    assert "why the next action has better information gain" in command
+    assert "existing `decision`/`next_action` heartbeat" in command
+    assert "do not create another state, queue, or checklist owner" in command
+    assert "bounded dead-end/blocker or handoff" in command
+
+
 def test_failed_sources_and_tools_are_suppressed_within_one_invocation():
     command = " ".join(_read("commands/autopilot.md").split()).lower()
 
