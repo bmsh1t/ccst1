@@ -15,6 +15,7 @@ agents/js-reader.md in the main Claude Code conversation with the Read tool.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -154,6 +155,30 @@ def _read_recon_extracted(target: str, repo_root: Path) -> dict[str, list[str]]:
     return out
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _previous_js_hashes(path: Path) -> dict[str, str]:
+    """Read the previous material inventory; malformed cache is ignored."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    selected = payload.get("selected_js_files") if isinstance(payload, dict) else None
+    if not isinstance(selected, list):
+        return {}
+    return {
+        str(item.get("path")): str(item.get("sha256"))
+        for item in selected
+        if isinstance(item, dict) and item.get("path") and item.get("sha256")
+    }
+
+
 def prepare_materials(
     target: str,
     *,
@@ -166,10 +191,13 @@ def prepare_materials(
     safe_target = _safe_target(target)
     output_dir = repo_root / "findings" / safe_target / "js_intel"
     output_dir.mkdir(parents=True, exist_ok=True)
+    materials_path = output_dir / "materials.json"
+    previous_hashes = _previous_js_hashes(materials_path)
 
     cached_js = _list_cached_js_paths(safe_target, repo_root)
     selected: list[dict] = []
     skipped: list[dict] = []
+    hash_states = {"new": 0, "unchanged": 0, "changed": 0}
 
     for p in cached_js:
         try:
@@ -183,7 +211,18 @@ def prepare_materials(
         if size > max_file_bytes:
             skipped.append({"path": rel_path, "size": size, "reason": f"oversize_{size}"})
             continue
-        selected.append({"path": rel_path, "size": size})
+        digest = _sha256(p)
+        previous = previous_hashes.get(rel_path)
+        content_status = (
+            "new" if previous is None else "unchanged" if previous == digest else "changed"
+        )
+        hash_states[content_status] += 1
+        selected.append({
+            "path": rel_path,
+            "size": size,
+            "sha256": digest,
+            "content_status": content_status,
+        })
         if len(selected) >= max_files:
             break
 
@@ -200,12 +239,12 @@ def prepare_materials(
         },
         "selected_js_files": selected,
         "skipped_js_files": skipped,
+        "hash_states": hash_states,
         "recon_extracted": recon_extracted,
         "source_intel_present": source_intel is not None,
         "source_intel": source_intel,
     }
 
-    materials_path = output_dir / "materials.json"
     materials_path.write_text(
         json.dumps(materials, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -219,6 +258,8 @@ def prepare_materials(
         "materials": materials,
         "selected_count": len(selected),
         "skipped_count": len(skipped),
+        "unchanged_count": hash_states["unchanged"],
+        "changed_count": hash_states["changed"],
         "recon_artifacts_present": any(v for v in recon_extracted.values()),
         "source_intel_present": source_intel is not None,
         "artifacts": {
@@ -238,6 +279,9 @@ def _format_materials_summary(materials: dict) -> str:
         f"- max_files: {materials['cap']['max_files']}",
         f"- max_file_bytes: {materials['cap']['max_file_bytes']}",
         f"- skip_vendor: {materials['cap']['skip_vendor']}",
+        f"- content hashes: new={materials['hash_states']['new']}, "
+        f"unchanged={materials['hash_states']['unchanged']}, "
+        f"changed={materials['hash_states']['changed']}",
         "",
         "## Selected JS files",
         f"({len(materials['selected_js_files'])} files)",

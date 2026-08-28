@@ -73,7 +73,9 @@ testable next step.
 You receive a path to `findings/<target>/js_intel/materials.json`. That
 file lists:
 
-- `selected_js_files`: paths to JS files (already size-filtered, vendor-filtered) — read these with the Read tool
+- `selected_js_files`: paths to JS files (already size-filtered, vendor-filtered) with `sha256` and
+  `content_status` (`new`, `changed`, or `unchanged`) — prioritize new/changed files and
+  compare unchanged files with existing hypotheses before rereading them
 - `skipped_js_files`: paths skipped (vendor / oversize) — for transparency only, do not read
 - `recon_extracted`: pre-grep results from LinkFinder / SecretFinder (endpoints, raw hits, potential secrets, js_urls)
 - `source_intel`: hypotheses from a prior source intelligence run (may be `null`)

@@ -127,6 +127,25 @@ def test_max_files_cap_is_respected(repo_root: Path) -> None:
     assert result["selected_count"] == 5
 
 
+def test_materials_marks_unchanged_and_changed_bundle_hashes(repo_root: Path) -> None:
+    target = "hashes.app"
+    base = repo_root / "recon" / target / "js_dump"
+    _write(base / "auth.js", "function login(){}\n")
+    _write(base / "orders.js", "fetch('/orders')\n")
+
+    first = prepare_materials(target, repo_root=repo_root)
+    assert first["materials"]["hash_states"] == {"new": 2, "unchanged": 0, "changed": 0}
+
+    _write(base / "orders.js", "fetch('/orders-v2')\n")
+    second = prepare_materials(target, repo_root=repo_root)
+
+    assert second["materials"]["hash_states"] == {"new": 0, "unchanged": 1, "changed": 1}
+    by_path = {item["path"]: item for item in second["materials"]["selected_js_files"]}
+    assert by_path[f"recon/{target}/js_dump/auth.js"]["content_status"] == "unchanged"
+    assert by_path[f"recon/{target}/js_dump/orders.js"]["content_status"] == "changed"
+    assert all(len(item["sha256"]) == 64 for item in by_path.values())
+
+
 def test_recovered_packer_source_precedes_old_cache_at_file_cap(
     repo_root: Path,
 ) -> None:
@@ -199,6 +218,7 @@ def test_summary_markdown_mentions_caps_and_counts(repo_root: Path) -> None:
 
     summary = Path(result["artifacts"]["summary"]).read_text(encoding="utf-8")
     assert f"max_files: {DEFAULT_MAX_FILES}" in summary
+    assert "content hashes: new=1, unchanged=0, changed=0" in summary
     assert "Selected JS files" in summary
     assert "Hand `materials.json` to the `js-reader` agent" in summary
 
