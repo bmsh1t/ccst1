@@ -357,13 +357,33 @@ recon_record_budget_on_exit() {
     RECON_BUDGET_RECORD_WRITTEN=1
 }
 
-publish_raw_url_staging_on_exit() {
+publish_raw_url_archive() {
     local staging="${RAW_URLS_STAGING:-}"
     local archive="${RAW_URLS_ARCHIVE:-}"
+    local merged
     [ -n "$staging" ] && [ -s "$staging" ] || return 0
     [ -n "$archive" ] || return 0
-    mkdir -p "$(dirname "$archive")" 2>/dev/null || return 0
-    mv -f "$staging" "$archive" 2>/dev/null || true
+    mkdir -p "$(dirname "$archive")" 2>/dev/null || return 1
+    merged="$(mktemp "${archive}.XXXXXX")" || return 1
+    # Raw URL evidence is append-only across runs. Keep current staging
+    # separate from Active views so historical URLs remain queryable without
+    # widening the default scanner input.
+    if ! { append_artifact "$archive"; cat "$staging"; } \
+        | awk 'NF && !seen[$0]++' > "$merged"; then
+        rm -f "$merged"
+        return 1
+    fi
+    if ! mv -f "$merged" "$archive"; then
+        rm -f "$merged"
+        return 1
+    fi
+    # The merged plain file is authoritative for older readers.
+    rm -f "${archive}.gz" 2>/dev/null || true
+    rm -f "$staging" 2>/dev/null || true
+}
+
+publish_raw_url_staging_on_exit() {
+    publish_raw_url_archive || true
 }
 
 dir_fuzz_remaining_seconds() {
@@ -444,6 +464,27 @@ append_artifact() {
     fi
 }
 
+archive_collector_artifact() {
+    local artifact="$1"
+    local relative archive_root archive_path archive_stamp archived=0
+    [ -f "$artifact" ] || [ -f "${artifact}.gz" ] || return 0
+    relative="${artifact#"${RECON_DIR}/"}"
+    archive_stamp="${RECON_RUN_TIMESTAMP:-${TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}}-${BASHPID:-$$}"
+    archive_root="$RECON_DIR/history/collectors/$archive_stamp"
+    archive_path="$archive_root/$relative"
+    if [ -f "$artifact" ]; then
+        mkdir -p "$(dirname "$archive_path")" || return 1
+        cp -p "$artifact" "$archive_path"
+        archived=1
+    fi
+    if [ -f "${artifact}.gz" ]; then
+        mkdir -p "$(dirname "${archive_path}.gz")" || return 1
+        cp -p "${artifact}.gz" "${archive_path}.gz"
+        archived=1
+    fi
+    [ "$archived" -eq 1 ]
+}
+
 run_collector_task() {
     local artifact="$1"
     local meta_file="$2"
@@ -460,6 +501,13 @@ run_collector_task() {
 
     case "$rc" in
         0)
+            if ! archive_collector_artifact "$artifact"; then
+                rm -f "$temp_artifact"
+                status="error"
+                note="could not archive prior artifact; current result not published"
+                printf '%s\t%s\t%s\n' "$status" "$duration" "$note" > "$meta_file"
+                return 0
+            fi
             mv -f "$temp_artifact" "$artifact"
             rm -f "${artifact}.gz"
             status="ok"
@@ -4478,9 +4526,18 @@ emit_claude_hint_actions \
 # ============================================================
 # Optional post-run storage guard
 # ============================================================
-if [ -f "$RAW_URLS_STAGING" ]; then
-    mv -f "$RAW_URLS_STAGING" "$RAW_URLS_ARCHIVE"
+RAW_ARCHIVE_STATUS="ok"
+if ! publish_raw_url_archive; then
+    RAW_ARCHIVE_STATUS="partial"
+    RECON_PHASE_PARTIAL=1
+    log_warn "Could not merge raw URL archive; current staging remains available for recovery"
 fi
+record_recon_phase \
+    raw_archive \
+    "$RAW_ARCHIVE_STATUS" \
+    "recon/${RECON_TARGET_KEY}/urls/raw/all.txt" \
+    "$(artifact_line_count "$RAW_URLS_ARCHIVE")" \
+    "append-only deduplicated raw URL archive; Active views remain run-scoped"
 post_compress_raw_recon_urls "$RECON_DIR"
 
 # Surface index/projection 是可重建派生视图。收尾失败不能抹掉已完成的

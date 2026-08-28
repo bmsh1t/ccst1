@@ -1195,6 +1195,47 @@ run_collector_task "$RECON_DIR/urls/katana.txt" "$RECON_DIR/logs/katana.status" 
     assert (recon_dir / "logs" / "waymore.status").read_text().startswith("error\t")
     assert katana.read_text(encoding="utf-8") == "fresh\n"
     assert (recon_dir / "logs" / "katana.status").read_text().startswith("ok\t")
+    archived = list((recon_dir / "history" / "collectors").rglob("katana.txt"))
+    assert len(archived) == 1
+    assert archived[0].read_text(encoding="utf-8") == "replace\n"
+
+
+def test_recon_engine_merges_raw_archive_without_losing_previous_urls(tmp_path):
+    script = Path(__file__).resolve().parents[1] / "tools" / "recon_engine.sh"
+    prefix = script.read_text(encoding="utf-8").split('TARGET="${1:?', 1)[0]
+    harness = tmp_path / "raw-archive-functions.sh"
+    harness.write_text(prefix, encoding="utf-8")
+    raw_dir = tmp_path / "urls" / "raw"
+    raw_dir.mkdir(parents=True)
+    archive = raw_dir / "all.txt"
+    with gzip.open(str(archive) + ".gz", "wt", encoding="utf-8") as handle:
+        handle.write("https://target.test/old\nhttps://target.test/shared\n")
+    staging = raw_dir / ".all.current.txt"
+    staging.write_text(
+        "https://target.test/shared\nhttps://target.test/new\n", encoding="utf-8"
+    )
+
+    subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; RAW_URLS_STAGING="$2"; RAW_URLS_ARCHIVE="$3"; '
+            "publish_raw_url_archive",
+            "bash",
+            str(harness),
+            str(staging),
+            str(archive),
+        ],
+        check=True,
+    )
+
+    assert archive.read_text(encoding="utf-8").splitlines() == [
+        "https://target.test/old",
+        "https://target.test/shared",
+        "https://target.test/new",
+    ]
+    assert not staging.exists()
+    assert not Path(str(archive) + ".gz").exists()
 
 
 def test_recon_engine_defaults_to_post_run_raw_url_compression():

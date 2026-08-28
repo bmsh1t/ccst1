@@ -49,10 +49,12 @@ python3 tools/surface.py --target <target>
 
 ### 3. Active 与 raw 生命周期
 **改进**: 原始 URL 先进入 `urls/raw/` staging，过滤成功后原子发布到 Active `urls/all.txt`；
-`all_filtered.txt` 仅作为兼容投影。
+归档发布会跨重跑追加并 exact 去重，`all_filtered.txt` 仅作为兼容投影。
 **影响**: Coverage、scanner 默认只消费 Active；Surface exact index 同时索引
 Active 与 `urls/raw/all.txt[.gz]`，把 raw-only URL 作为可重建的低优先级证据，必要时按
 shape/source 重新激活。Closure 前仍可直接查询 raw，Closure 后可用引用感知 GC 清理未引用归档。
+每次成功替换 collector 原始文件前，旧字节会归档到
+`recon/<target>/history/collectors/<run_timestamp>/`，归档只供历史追溯，不进入默认扫描。
 
 ### 4. 过滤日志
 **改进**: 记录所有被过滤的 URL 到 log 文件
