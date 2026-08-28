@@ -53,6 +53,11 @@ Queue action, select a real Skill path, normally `skills/web2-recon/SKILL.md`.
 
 The preparation step is local-only and does not call an LLM. The agent reads the prepared materials and selected cached JS files.
 
+On a resumed run, the agent reuses hypotheses whose source file is marked
+`unchanged` and reads only new/changed files or unresolved evidence. Existing
+hypotheses are merged into the new report; unchanged bundles are not re-read
+just because they remain in the inventory.
+
 ## What This Produces
 
 ```text

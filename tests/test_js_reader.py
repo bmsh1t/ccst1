@@ -223,6 +223,15 @@ def test_summary_markdown_mentions_caps_and_counts(repo_root: Path) -> None:
     assert "Hand `materials.json` to the `js-reader` agent" in summary
 
 
+def test_js_reader_contract_reuses_unchanged_hypotheses() -> None:
+    contract = (Path(__file__).resolve().parents[1] / "agents" / "js-reader.md").read_text(
+        encoding="utf-8"
+    )
+    assert "carry forward its" in contract
+    assert "do **not** reread" in contract
+    assert "merge changes" in contract
+
+
 def test_vendor_pattern_matcher() -> None:
     assert _looks_like_vendor(Path("react.production.min.js")) is True
     assert _looks_like_vendor(Path("vendors~main-abc.js")) is True

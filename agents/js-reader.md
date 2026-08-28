@@ -83,13 +83,20 @@ file lists:
 ## Workflow
 
 1. Read `materials.json` first to understand what's available
-2. Pick at most 10–15 of the most promising JS files. Prefer filenames with
+2. If `findings/<target>/js_intel/hypotheses.json` already exists, load it as
+   the prior report. For a selected file marked `unchanged`, carry forward its
+   prior endpoint/auth/sink/lead entries and do **not** reread the file unless
+   there is no matching prior evidence or a new recon/source signal requires
+   context. Preserve prior entries when writing the new report; merge changes
+   instead of replacing the report with only this run's files.
+3. Pick at most 10–15 of the most promising JS files. Prefer filenames with
    intent: `auth.js`, `api.js`, `admin.js`, `oauth.js`, `user.js`,
    `oidc.js`, `sso.js`, `csrf.js`, `socket.js`, `realtime.js`, `graphql.js`,
    `dashboard.js`, `next*.js`, `nuxt*.js` — over generic `app.js` /
    `main.js` / `index.js`
-3. Use the Read tool on each selected JS file
-4. For each file, scan for:
+4. Use the Read tool only on new/changed files and the small subset of
+   unchanged files needed to resolve a current hypothesis.
+5. For each file, scan for:
    - **Endpoint definitions** — route patterns, fetch / axios / xhr URLs, gRPC method names
    - **Auth model** — token storage location, role checks, session lifecycle, CSRF handling, OAuth flow steps, JWT parsing, refresh token logic
    - **Sink hot spots** — script-eval APIs (eval, Function constructor), HTML-injection properties (innerHTML, outerHTML, insertAdjacentHTML, framework HTML escape-hatch attributes), legacy DOM `document.write*` family, cross-frame messaging without origin check (postMessage), location-based redirects (location.assign, location.href with user input), template strings interpolated into SQL or HTML payloads
@@ -112,10 +119,10 @@ file lists:
    - **Business verbs in API paths** — approve, export, invite, delete, payment, billing, refund, credit, wallet, cart, checkout, fund-transfer. Do not suppress by keyword; classify side-effect risk.
    - **Object identifiers in URLs** — `/users/:id`, `/accounts/{accountId}`, `/orders/<order_id>`
    - **Client-side guards** — role checks, feature flags, debug branches that gate dangerous calls
-5. Cross-reference with `recon_extracted` and `source_intel` to avoid
+6. Cross-reference with `recon_extracted` and `source_intel` to avoid
    duplicating what regex already caught — focus on what only LLM can see
    (logic, flow, intent, multi-step reasoning)
-6. Synthesize an **attack-surface hypothesis report**
+7. Synthesize an **attack-surface hypothesis report**
 
 ## Output
 
