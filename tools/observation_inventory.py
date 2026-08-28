@@ -72,6 +72,7 @@ ARTIFACT_SPECS = (
     ("exposure", Path("exposure/cloud_storage_candidates.txt")),
     ("exposure", Path("exposure/s3_bucket_candidates.txt")),
     ("exposure", Path("exposure/host_pivot_candidates.jsonl")),
+    ("exposure", Path("exposure/host_collision_observations.jsonl")),
     ("exposure", Path("exposure/ai_asset_candidates.jsonl")),
     ("exposure", Path("exposure/asset_relation_candidates.jsonl")),
     ("infra", Path("live/wafw00f_hits.txt")),

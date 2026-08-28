@@ -300,6 +300,9 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
     s3 = _count_recon_artifact(recon_artifacts, "s3_bucket_candidates")
     external_hosts = _count_recon_artifact(recon_artifacts, "external_service_hosts")
     host_pivots = _count_recon_artifact(recon_artifacts, "host_pivot_candidates")
+    host_collision_observations = _count_recon_artifact(
+        recon_artifacts, "host_collision_observations"
+    )
     ai_assets = _count_recon_artifact(recon_artifacts, "ai_asset_candidates")
     asset_relations = _count_recon_artifact(recon_artifacts, "asset_relation_candidates")
     asset_relation_state = (
@@ -454,6 +457,26 @@ def _build_exposure_lead_hints(recon_artifacts: dict, target: str) -> list[dict]
                 "CNAME, or certificate facts; no active pivot has been validated yet."
             ),
             "evidence": f"{host_pivots} candidate row(s)",
+        })
+
+    if host_collision_observations > 0:
+        leads.append({
+            "source": "recon_routing_observation",
+            "title": "Host collision response observations are available",
+            "category": "host-collision-observation",
+            "priority": "high",
+            "artifact": f"recon/{storage_key}/exposure/host_collision_observations.jsonl",
+            "next_action": (
+                f"review recon/{storage_key}/exposure/host_collision_observations.jsonl; "
+                "replay only target-owned host/SNI/default-vhost controls and keep response "
+                "differences as candidates until independently validated"
+            ),
+            "rationale": (
+                f"{host_collision_observations} bounded read-only response observation(s) were "
+                "recorded from existing Host pivot candidates; no observation is a finding or "
+                "scope expansion."
+            ),
+            "evidence": f"{host_collision_observations} observation row(s)",
         })
 
     if ai_assets > 0:

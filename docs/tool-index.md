@@ -14,6 +14,7 @@
 | `tools/cf_solver.py` ⚠️ manual-only | Operator-approved Cloudflare challenge clearance | Optional 2Captcha+Playwright helper; writes cf_clearance headers for recon reuse |
 | `tools/recon_adapter.py` | Reading recon output programmatically | Unified reader for `recon/<target>/`; streams and pages compact FFUF evidence without loading full artifacts |
 | `tools/recon_candidates.py` | Cached routing evidence | Builds bounded candidates, an all-host soft ranking, and a derived Scope summary; never expands Scope |
+| `tools/recon_host_verify.py` | Host pivot candidates were derived | One bounded read-only Host/SNI/default-vhost response comparison; appends observations without changing Scope or Queue |
 | `tools/cloud_recon.sh` | Target brand likely owns buckets | S3/Azure/GCP discovery + CloudFlare origin reveal |
 | `tools/cve_hunter.py` | Explicit CVE-template probe | Focused CVE template pass for `/scan-cves`; use only after a reachable component/advisory is selected |
 | `tools/cve_scan.sh` | Pre-engagement nuclei sweep | Fast nuclei pass scoped to known CVE templates |
@@ -52,6 +53,7 @@ manual review lane.
 | `LeakSearch` | `recon/<target>/exposure/identity_intel/leaksearch.txt`, `summary.md` | Attribute hits to the target and derive identity/credential hypotheses for the next evidence-backed action |
 | `cloud_enum` | `recon/<target>/exposure/cloud/cloud_enum.txt`, `cloud_enum.log` | Treat as candidate cloud ownership evidence; pivot to `/cloud-recon` or minimal ownership checks |
 | Generic asset relations | `recon/<target>/exposure/asset_relation_*` | Queue `scope-review`; keep external relations non-executable |
+| Host pivot response comparison | `recon/<target>/exposure/host_collision_observations.jsonl`, `host_collision_summary.json` | Compare only target-owned controls; a difference remains a candidate and requires independent validation |
 | Batch ranking | `recon/<list-stem>/surface_ranking.txt`, `ai_handoff.md`, `high_value_targets.json` | Pick completed domains with concrete signals; never hunt `recon/<list-stem>/` as a target |
 
 OpenAPI metadata probing defaults to 20 live origins. Set

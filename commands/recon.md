@@ -111,12 +111,18 @@ The integrated `tools/recon_engine.sh` path may run, when available:
 - JS/API extraction: quick/normal 保留完整 JS inventory 并生成多类别有界 `js/deep_candidates.txt`，但不主动请求 bundle；full/deep 仅从 `js/request_targets.txt` 使用有界、限速、scope-filtered 的 xnLinkFinder，失败、不兼容 scope 或认证上下文回退逐 URL LinkFinder；所有 profile 都保留 raw backstop
 - bounded directory/parameter fuzzing and config discovery with timeout guards
 - exposure candidates: API docs, config files, cloud storage, S3 buckets, third-party hosted assets
-- routing candidates: 从已有 origin/shared-IP/CNAME/certificate（若 artifact 已包含）、path/schema 事实及可选通用资产关系 observation 生成 Host/SNI、AI/LLM 与外部资产关系中性候选，不在 Recon 中主动验证
+- routing candidates: 从已有 origin/shared-IP/CNAME/certificate（若 artifact 已包含）、path/schema 事实及可选通用资产关系 observation 生成 Host/SNI、AI/LLM 与外部资产关系中性候选；候选生成后仅对高置信且当前 Scope 内的 Host pivot 做一次有界只读响应差异观察，AI 资产仍由后续专项路线验证
 - API leak detection: `porch-pirate`, `postleaksNg`, Osmedeus `SwaggerSpy`, plus bounded `trufflehog` verified-secret pass
 - identity/cloud intel: `emailfinder`, `LeakSearch`, `cloud_enum`
 - CI/CD hints when repo/workflow artifacts are available
 
 These are recon signals, not vulnerability conclusions. They feed `/surface`, `/hunt`, `/intel`, and `/autopilot`.
+
+The built-in Host pivot check is deliberately narrow and read-only. It runs once
+per candidate identity, records compact status/header/body-hash observations in
+`exposure/host_collision_observations.jsonl`, and skips candidates already
+observed on a resumed run. A response difference is still a candidate; it does
+not change Scope, create a Queue action, or close Coverage.
 
 After the target's Closure is complete, inspect raw-archive cleanup before applying it:
 
@@ -168,6 +174,8 @@ recon/<target>/
     ├── s3_bucket_candidates.txt
     ├── external_service_hosts.txt
     ├── host_pivot_candidates.jsonl
+    ├── host_collision_observations.jsonl
+    ├── host_collision_summary.json
     ├── ai_asset_candidates.jsonl
     ├── host_ranking.jsonl              # all-host soft priority view; raw inputs remain authoritative
     ├── asset_relation_observations.jsonl  # optional normalized input

@@ -1635,6 +1635,7 @@ EXPOSURE_SUMMARY_KEYS = (
     "s3_bucket_candidates",
     "external_service_hosts",
     "host_pivot_candidates",
+    "host_collision_observations",
     "ai_asset_candidates",
     "identity_emails",
     "leaksearch_hits",
@@ -1700,6 +1701,10 @@ def _exposure_review_paths(target: str, recon_artifacts: dict) -> list[str]:
     add_if(
         _count_value(counts, "host_pivot_candidates") > 0,
         "exposure/host_pivot_candidates.jsonl",
+    )
+    add_if(
+        _count_value(counts, "host_collision_observations") > 0,
+        "exposure/host_collision_observations.jsonl",
     )
     add_if(
         _count_value(counts, "host_ranking") > 0,
@@ -1778,6 +1783,7 @@ def _format_exposure_signal_lines(target: str, recon_artifacts: dict) -> list[st
     lines.append(
         "- Routing candidates: "
         f"host_pivot={_count_value(counts, 'host_pivot_candidates')}, "
+        f"host_collision={_count_value(counts, 'host_collision_observations')}, "
         f"ai_asset={_count_value(counts, 'ai_asset_candidates')}, "
         f"host_ranking={_count_value(counts, 'host_ranking')}"
     )

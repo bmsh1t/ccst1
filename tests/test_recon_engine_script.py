@@ -876,6 +876,9 @@ def test_recon_engine_syncs_shared_observation_index_after_source_groups():
     assert 'observation_inventory.py" \\' in text
     for stage in ("subdomain_enum", "url_denoising", "routing_candidates"):
         assert f"sync_observation_inventory {stage}" in text
+    assert 'recon_host_verify.py' in text
+    assert 'host_collision_verify' in text
+    assert 'active_probing             "host_collision_only"' in text
 
 
 def test_recon_engine_clears_routing_projections_before_rebuild():

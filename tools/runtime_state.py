@@ -541,6 +541,7 @@ EXPOSURE_COUNT_PATHS = {
     "s3_bucket_candidates": Path("exposure/s3_bucket_candidates.txt"),
     "external_service_hosts": Path("exposure/external_service_hosts.txt"),
     "host_pivot_candidates": Path("exposure/host_pivot_candidates.jsonl"),
+    "host_collision_observations": Path("exposure/host_collision_observations.jsonl"),
     "ai_asset_candidates": Path("exposure/ai_asset_candidates.jsonl"),
     "host_ranking": Path("exposure/host_ranking.jsonl"),
     "asset_relation_candidates": Path("exposure/asset_relation_candidates.jsonl"),

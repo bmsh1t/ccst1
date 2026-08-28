@@ -4519,7 +4519,8 @@ emit_claude_hint_actions \
 wait_for_ffuf_phase
 
 # ============================================================
-# Routing candidates: existing evidence only, no new requests
+# Routing candidates: derive from existing evidence, then run one bounded
+# read-only Host pivot observation pass
 # ============================================================
 ROUTING_CANDIDATE_STATUS="ok"
 if ! python3 "$BASE_DIR/tools/recon_candidates.py" \
@@ -4529,6 +4530,36 @@ if ! python3 "$BASE_DIR/tools/recon_candidates.py" \
     ROUTING_CANDIDATE_STATUS="partial"
     log_warn "Host/AI/asset-relation candidate generation failed; raw recon remains available"
 fi
+# Verify only the highest-confidence, target-owned Host pivot candidates.  The
+# helper performs a bounded read-only GET and appends compact observations; it
+# never expands scope or turns a response difference into a finding.
+HOST_VERIFY_STATUS="ok"
+if ! python3 "$BASE_DIR/tools/recon_host_verify.py" \
+    --repo-root "$BASE_DIR" \
+    --target "$TARGET" \
+    > "$RECON_DIR/logs/host_collision_verify.json" 2>&1; then
+    HOST_VERIFY_STATUS="partial"
+    RECON_PHASE_PARTIAL=1
+    log_warn "Host collision verification failed; candidate and raw recon artifacts remain available"
+fi
+HOST_VERIFY_COUNT=$(python3 - "$RECON_DIR/exposure/host_collision_summary.json" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, ValueError):
+    payload = {}
+print(int(payload.get("observation_count", 0) or 0))
+PY
+)
+record_recon_phase \
+    host_collision_verify \
+    "$HOST_VERIFY_STATUS" \
+    "recon/${RECON_TARGET_KEY}/exposure/host_collision_summary.json" \
+    "$HOST_VERIFY_COUNT" \
+    "bounded read-only Host/SNI/default-vhost evidence; response differences remain candidates and do not expand Scope"
 HOST_PIVOT_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/host_pivot_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
 AI_ASSET_CANDIDATES=$(wc -l < "$RECON_DIR/exposure/ai_asset_candidates.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
 HOST_RANKING_HOSTS=$(wc -l < "$RECON_DIR/exposure/host_ranking.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
@@ -4538,7 +4569,7 @@ record_recon_phase \
     "$ROUTING_CANDIDATE_STATUS" \
     "recon/${RECON_TARGET_KEY}/exposure/" \
     "$((HOST_PIVOT_CANDIDATES + AI_ASSET_CANDIDATES + ASSET_RELATION_CANDIDATES))" \
-    "builds evidence-backed candidates only; Host/SNI, AI behavior, and external asset relationships remain Autopilot review lanes"
+    "builds evidence-backed candidates; bounded Host/SNI/default-vhost verification is advisory and remains outside Finding/Scope"
 sync_observation_inventory routing_candidates
 emit_claude_hint \
     phase                      routing_candidates \
@@ -4546,9 +4577,9 @@ emit_claude_hint \
     ai_asset_candidates        "$AI_ASSET_CANDIDATES" \
     host_ranking_hosts          "$HOST_RANKING_HOSTS" \
     asset_relation_candidates  "$ASSET_RELATION_CANDIDATES" \
-    active_probing             "false"
+    active_probing             "host_collision_only"
 emit_claude_hint_actions \
-    "review Host pivot candidates only with default-vhost/CDN/error-page controls" \
+    "review Host pivot observations with default-vhost/CDN/error-page controls; differences remain candidates" \
     "route AI candidates through web-llm-tool-chains before behavioral validation" \
     "review external asset relationships as provenance-backed context; do not treat association as target scope"
 
