@@ -86,13 +86,16 @@ record_recon_phase() {
 
     # Manifest 是阶段账本，不做价值判断；用于让 Claude 区分“无结果”和“未运行/跳过”。
     [ -n "${RECON_MANIFEST:-}" ] || return 0
-    python3 - "$RECON_MANIFEST" "$TARGET" "${RECON_TARGET_KEY:-}" "$RECON_PROFILE" \
+    python3 - "$BASE_DIR" "$RECON_MANIFEST" "$TARGET" "${RECON_TARGET_KEY:-}" "$RECON_PROFILE" \
         "$phase" "$status" "$artifact" "$count" "$note" <<'PY' || true
 import json
 import sys
 from datetime import datetime, timezone
 
-manifest, target, target_key, profile, phase, status, artifact, count, note = sys.argv[1:]
+base_dir, manifest, target, target_key, profile, phase, status, artifact, count, note = sys.argv[1:]
+sys.path.insert(0, base_dir)
+from tools.recon_gate import build_phase_gate
+
 try:
     count_value = int(str(count).strip() or "0")
 except ValueError:
@@ -108,6 +111,7 @@ record = {
     "artifact": artifact,
     "count": count_value,
     "note": note,
+    "gate": build_phase_gate(base_dir, phase=phase, status=status, artifact=artifact),
     "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
 }
 with open(manifest, "a", encoding="utf-8") as handle:
@@ -211,6 +215,28 @@ if source.is_file():
             values.append(candidate)
 Path(output_raw).write_text(("\n".join(values) + "\n") if values else "", encoding="utf-8")
 PY
+}
+
+sync_observation_inventory() {
+    local source_stage="${1:-unknown}"
+    local log_path="$RECON_DIR/logs/observation_inventory_${source_stage}.json"
+    local status="ok"
+
+    if python3 "$BASE_DIR/tools/observation_inventory.py" \
+        --repo-root "$BASE_DIR" sync --target "$TARGET" \
+        > "$log_path" 2>&1; then
+        log_done "Observation index synced after ${source_stage}"
+    else
+        status="partial"
+        RECON_PHASE_PARTIAL=1
+        log_warn "Observation index sync failed after ${source_stage}; raw artifacts remain available"
+    fi
+    record_recon_phase \
+        observation_index \
+        "$status" \
+        "state/${RECON_TARGET_KEY}/observations-summary.json" \
+        0 \
+        "incremental canonical observation index after ${source_stage}; raw source artifacts remain authoritative"
 }
 
 js_profile_defers_active_analysis() {
@@ -2003,6 +2029,7 @@ emit_claude_hint_actions \
     "bash tools/takeover_scanner.sh recon/${RECON_TARGET_KEY}/subdomains/all.txt   # dangling CNAME quick wins" \
     "bash tools/cloud_recon.sh --keyword \"${TARGET%%.*}\"   # auto-derive bucket keyword from target" \
     "python3 tools/surface.py --target ${TARGET}   # rank P1 before deeper recon"
+sync_observation_inventory subdomain_enum
 
 # ============================================================
 # Phase 2: HTTP Probing
@@ -2913,6 +2940,7 @@ record_recon_phase \
     "recon/${RECON_TARGET_KEY}/urls/all.txt" \
     "$URLS_FILTERED" \
     "Active filtered URL view; raw URL staging/archive remains available for Closure and targeted review"
+sync_observation_inventory url_denoising
 
 emit_claude_hint \
     phase                url_collection \
@@ -4511,6 +4539,7 @@ record_recon_phase \
     "recon/${RECON_TARGET_KEY}/exposure/" \
     "$((HOST_PIVOT_CANDIDATES + AI_ASSET_CANDIDATES + ASSET_RELATION_CANDIDATES))" \
     "builds evidence-backed candidates only; Host/SNI, AI behavior, and external asset relationships remain Autopilot review lanes"
+sync_observation_inventory routing_candidates
 emit_claude_hint \
     phase                      routing_candidates \
     host_pivot_candidates      "$HOST_PIVOT_CANDIDATES" \

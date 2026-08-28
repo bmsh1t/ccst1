@@ -387,6 +387,23 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
     root_claim_next = state.get("root_finding_claim_next") or {}
     recon_artifacts = state.get("recon_artifacts") or {}
     cidr_continuation = recon_artifacts.get("cidr_continuation") or {}
+    phase_gates = recon_artifacts.get("phase_gates") or {}
+    compact_phase_gates = {
+        "available": bool(phase_gates.get("available")),
+        "incomplete": [str(item) for item in (phase_gates.get("incomplete") or [])[:12]],
+        "blocked": [str(item) for item in (phase_gates.get("blocked") or [])[:12]],
+        "complete_count": int(phase_gates.get("complete_count", 0) or 0),
+        "incomplete_count": int(phase_gates.get("incomplete_count", 0) or 0),
+        "latest": {},
+    }
+    for phase, gate in list((phase_gates.get("latest") or {}).items())[:12]:
+        if not isinstance(gate, dict):
+            continue
+        compact_phase_gates["latest"][str(phase)] = {
+            key: gate[key]
+            for key in ("status", "evidence_refs", "coverage_gaps", "next_focus")
+            if key in gate
+        }
     surface_projection = state.get("surface_projection") or {}
     observation_inventory = state.get("observation_inventory") or {}
     json_inject = state.get("json_inject") or {}
@@ -484,6 +501,7 @@ def compact_autopilot_state(state: dict[str, Any]) -> dict[str, Any]:
             "host_inventory_ready": bool(recon_artifacts.get("host_inventory_ready")),
             "fresh_recon_ready": bool(state.get("fresh_recon_ready")),
             "blocker": str(state.get("recon_blocker") or ""),
+            "phase_gates": compact_phase_gates,
             "cidr_continuation": {
                 key: cidr_continuation.get(key)
                 for key in ("status", "next_offset", "remaining_hosts", "reason")

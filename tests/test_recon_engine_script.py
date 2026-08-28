@@ -858,6 +858,26 @@ def test_recon_engine_records_phase_manifest_without_value_judgment():
     assert "raw URL staging is retained until Active publication" in text
 
 
+def test_recon_engine_records_evidence_gate_with_each_phase():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'from tools.recon_gate import build_phase_gate' in text
+    assert '"gate": build_phase_gate' in text
+    gate_text = (Path(__file__).resolve().parent.parent / "tools" / "recon_gate.py").read_text(encoding="utf-8")
+    assert '"status": gate_status' in gate_text
+
+
+def test_recon_engine_syncs_shared_observation_index_after_source_groups():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'sync_observation_inventory()' in text
+    assert 'observation_inventory.py" \\' in text
+    for stage in ("subdomain_enum", "url_denoising", "routing_candidates"):
+        assert f"sync_observation_inventory {stage}" in text
+
+
 def test_recon_engine_clears_routing_projections_before_rebuild():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")

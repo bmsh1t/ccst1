@@ -891,6 +891,66 @@ def test_recon_budget_projection_uses_latest_record_and_preserves_advisory_statu
     assert interrupted["stopped_phase"] == "url_collection"
 
 
+def test_recon_phase_gates_are_projected_from_latest_manifest_rows(tmp_path):
+    recon_dir = tmp_path / "recon" / "target.com"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir(parents=True)
+    (recon_dir / "live" / "httpx_full.txt").write_text(
+        "https://target.com [200]\n", encoding="utf-8"
+    )
+    (recon_dir / "urls" / "all.txt").write_text(
+        "https://target.com/\n", encoding="utf-8"
+    )
+    manifest = recon_dir / "recon_manifest.jsonl"
+    manifest.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {
+                    "record_type": "recon_phase",
+                    "phase": "url_collection",
+                    "status": "ok",
+                    "artifact": "recon/target.com/urls/all.txt",
+                    "gate": {
+                        "status": "complete",
+                        "evidence_refs": ["recon/target.com/urls/all.txt"],
+                        "coverage_gaps": [],
+                        "next_focus": "choose next evidence",
+                    },
+                },
+                {
+                    "record_type": "recon_phase",
+                    "phase": "js_analysis",
+                    "status": "partial",
+                    "artifact": "recon/target.com/js/endpoints.txt",
+                    "gate": {
+                        "status": "partial",
+                        "evidence_refs": [],
+                        "coverage_gaps": ["phase_status:partial"],
+                        "next_focus": "resume JS",
+                    },
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    full = inspect_recon_artifacts(tmp_path, "target.com")
+    fast = inspect_recon_artifacts_fast(tmp_path, "target.com")
+
+    assert full["phase_gates"] == fast["phase_gates"]
+    gates = full["phase_gates"]
+    assert gates["complete_count"] == 1
+    assert gates["incomplete"] == ["js_analysis"]
+    assert gates["latest"]["url_collection"]["evidence_refs"] == [
+        "recon/target.com/urls/all.txt"
+    ]
+    assert gates["latest"]["js_analysis"]["coverage_gaps"] == [
+        "phase_status:partial"
+    ]
+
+
 def test_inspect_recon_artifacts_reports_legacy_ffuf_without_parsing_it(tmp_path):
     recon_dir = tmp_path / "recon" / "target.com"
     (recon_dir / "live").mkdir(parents=True)

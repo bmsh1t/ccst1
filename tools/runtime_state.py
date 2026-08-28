@@ -46,11 +46,13 @@ try:
         inspect_mcp_browser_readiness,
     )
     from tools.recon_adapter import ReconAdapter
+    from tools.recon_gate import gate_from_record
     from tools.target_paths import canonical_target_value, target_storage_key
 except ImportError:  # pragma: no cover - direct tools/ execution
     from browser_mcp_import import BROWSER_FRESHNESS_SECONDS, inspect_mcp_browser_readiness
     from finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from recon_adapter import ReconAdapter
+    from recon_gate import gate_from_record  # type: ignore
     from target_paths import canonical_target_value, target_storage_key
 
 SCHEMA_VERSION = 2
@@ -684,6 +686,14 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
             "host_inventory_ready": False,
             "surface_inputs_ready": False,
             "recon_dir": str(recon_dir),
+            "phase_gates": {
+                "available": False,
+                "latest": {},
+                "incomplete": [],
+                "blocked": [],
+                "complete_count": 0,
+                "incomplete_count": 0,
+            },
             "run_budget": _run_budget_state(recon_dir),
             "counts": {},
             "missing": ["recon directory"],
@@ -746,6 +756,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     )
 
     http_probe = _http_probe_state(recon_dir)
+    phase_gates = _phase_gate_state(recon_dir)
     run_budget = _run_budget_state(recon_dir)
     cidr_continuation = _cidr_continuation_state(recon_dir, target)
     ready = host_inventory_ready or surface_inputs_ready
@@ -779,6 +790,7 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
         "host_inventory_ready": host_inventory_ready,
         "surface_inputs_ready": surface_inputs_ready,
         "http_probe": http_probe,
+        "phase_gates": phase_gates,
         "run_budget": run_budget,
         "cidr_continuation": cidr_continuation,
         "recon_dir": str(recon_dir),
@@ -822,6 +834,52 @@ def _latest_recon_phase_record(recon_dir: Path, phase: str) -> dict:
     except OSError:
         pass
     return latest
+
+
+def _phase_gate_state(recon_dir: Path) -> dict:
+    """Project the latest evidence gate for each recorded Recon phase."""
+    manifest = recon_dir / "recon_manifest.jsonl"
+    latest: dict[str, dict] = {}
+    repo_root = recon_dir.parent.parent
+    try:
+        with manifest.open(encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                try:
+                    item = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(item, dict) or item.get("record_type") != "recon_phase":
+                    continue
+                phase = str(item.get("phase") or "").strip()
+                if not phase:
+                    continue
+                gate = gate_from_record(repo_root, item)
+                latest[phase] = {
+                    "status": str(gate.get("status") or "partial"),
+                    "evidence_refs": [str(ref) for ref in (gate.get("evidence_refs") or [])[:3]],
+                    "coverage_gaps": [str(gap) for gap in (gate.get("coverage_gaps") or [])[:3]],
+                    "next_focus": " ".join(str(gate.get("next_focus") or "").split())[:240],
+                    "execution_status": str(item.get("status") or "unknown"),
+                    "artifact": str(item.get("artifact") or ""),
+                    "recorded_at": str(item.get("recorded_at") or ""),
+                }
+    except OSError:
+        pass
+
+    incomplete = sorted(
+        phase for phase, gate in latest.items() if gate.get("status") != "complete"
+    )
+    blocked = sorted(
+        phase for phase, gate in latest.items() if gate.get("status") == "blocked"
+    )
+    return {
+        "available": bool(latest),
+        "latest": latest,
+        "incomplete": incomplete,
+        "blocked": blocked,
+        "complete_count": sum(gate.get("status") == "complete" for gate in latest.values()),
+        "incomplete_count": len(incomplete),
+    }
 
 
 def _run_budget_state(recon_dir: Path) -> dict:
@@ -940,6 +998,14 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
             "host_inventory_ready": False,
             "surface_inputs_ready": False,
             "recon_dir": str(recon_dir),
+            "phase_gates": {
+                "available": False,
+                "latest": {},
+                "incomplete": [],
+                "blocked": [],
+                "complete_count": 0,
+                "incomplete_count": 0,
+            },
             "run_budget": _run_budget_state(recon_dir),
             "counts": {},
             "counts_exact": False,
@@ -1015,6 +1081,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         )
     ) or ffuf_ready or findings_ready or source_intel_ready
     http_probe = _http_probe_state(recon_dir)
+    phase_gates = _phase_gate_state(recon_dir)
     run_budget = _run_budget_state(recon_dir)
     cidr_continuation = _cidr_continuation_state(recon_dir, target)
     asset_relations = _asset_relation_state(recon_dir, target)
@@ -1048,6 +1115,7 @@ def inspect_recon_artifacts_fast(repo_root: str | Path, target: str) -> dict:
         "host_inventory_ready": host_inventory_ready,
         "surface_inputs_ready": surface_inputs_ready,
         "http_probe": http_probe,
+        "phase_gates": phase_gates,
         "run_budget": run_budget,
         "cidr_continuation": cidr_continuation,
         "recon_dir": str(recon_dir),

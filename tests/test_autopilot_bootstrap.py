@@ -62,6 +62,46 @@ def test_compact_state_exposes_surface_cursor_only_when_available():
     }
 
 
+def test_compact_state_exposes_bounded_recon_phase_gates():
+    compact = autopilot_bootstrap.compact_autopilot_state({
+        "recon_artifacts": {
+            "phase_gates": {
+                "available": True,
+                "complete_count": 1,
+                "incomplete_count": 1,
+                "incomplete": ["js_analysis"],
+                "blocked": [],
+                "latest": {
+                    "js_analysis": {
+                        "status": "partial",
+                        "evidence_refs": ["recon/target.com/js/endpoints.txt"],
+                        "coverage_gaps": ["phase_status:partial"],
+                        "next_focus": "resume JS",
+                        "execution_status": "partial",
+                        "artifact": "recon/target.com/js/endpoints.txt",
+                    },
+                },
+            },
+        },
+    })
+
+    assert compact["recon"]["phase_gates"] == {
+        "available": True,
+        "incomplete": ["js_analysis"],
+        "blocked": [],
+        "complete_count": 1,
+        "incomplete_count": 1,
+        "latest": {
+            "js_analysis": {
+                "status": "partial",
+                "evidence_refs": ["recon/target.com/js/endpoints.txt"],
+                "coverage_gaps": ["phase_status:partial"],
+                "next_focus": "resume JS",
+            },
+        },
+    }
+
+
 def test_compact_state_exposes_only_read_only_ranker_advisory():
     compact = autopilot_bootstrap.compact_autopilot_state({
         "next_action": "handoff",

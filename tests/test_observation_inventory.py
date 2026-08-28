@@ -92,6 +92,24 @@ def test_sync_merges_subdomain_collector_provenance(tmp_path):
     ]
 
 
+def test_sync_indexes_host_and_ai_candidate_artifacts_with_provenance(tmp_path):
+    recon_dir, _urls = _write_recon(tmp_path, count=1)
+    exposure = recon_dir / "exposure"
+    exposure.mkdir()
+    host_candidate = json.dumps({"host": "admin.target.com", "signals": ["shared-ip"]})
+    ai_candidate = json.dumps({"value": "https://ai.target.com", "signals": ["rag"]})
+    (exposure / "host_pivot_candidates.jsonl").write_text(host_candidate + "\n", encoding="utf-8")
+    (exposure / "ai_asset_candidates.jsonl").write_text(ai_candidate + "\n", encoding="utf-8")
+
+    payload = sync_inventory(tmp_path, "target.com")
+
+    indexed = {item["value"]: item for item in payload["observations"]}
+    assert host_candidate in indexed
+    assert ai_candidate in indexed
+    assert indexed[host_candidate]["sources"] == ["exposure/host_pivot_candidates.jsonl"]
+    assert indexed[ai_candidate]["sources"] == ["exposure/ai_asset_candidates.jsonl"]
+
+
 def test_sync_inventory_prefers_host_aware_port_evidence(tmp_path):
     recon_dir, _urls = _write_recon(tmp_path, count=1)
     (recon_dir / "ports").mkdir()
