@@ -633,7 +633,7 @@ def test_closure_keeps_authorization_context_gap_explicit():
     )
 
     assert closure["verdict"] == "handoff"
-    assert closure["reasons"] == ["authz_context_missing"]
+    assert closure["reasons"] == ["actor_context_missing"]
     assert closure["authz_coverage"]["status"] == "missing"
 
 

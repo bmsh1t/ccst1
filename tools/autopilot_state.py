@@ -3372,7 +3372,7 @@ def _coverage_has_high_value_gaps(matrix: dict) -> bool:
 
 
 def _authz_context_reason(case_state: dict, matrix: dict) -> str:
-    """Keep anonymous-only authorization review from claiming exhaustion."""
+    """Keep anonymous-only access-control review from claiming exhaustion."""
     if str(case_state.get("status") or "") != "valid":
         return ""
     coverage = case_state.get("authz_coverage")
@@ -3399,9 +3399,9 @@ def _authz_context_reason(case_state: dict, matrix: dict) -> str:
     if not relevant:
         return ""
     return (
-        "authz_context_missing"
+        "actor_context_missing"
         if str(coverage.get("status") or "") == "missing"
-        else "authz_context_incomplete"
+        else "actor_context_incomplete"
     )
 
 
@@ -3883,8 +3883,8 @@ _CLOSURE_REASON_PRIORITY = {
     "finding_work_pending": 25,
     "case_state_canonical_conflict": 30,
     "case_state_work_pending": 31,
-    "authz_context_missing": 32,
-    "authz_context_incomplete": 32,
+    "actor_context_missing": 32,
+    "actor_context_incomplete": 32,
     "surface_projection_pending": 35,
     "surface_work_pending": 36,
     "recon_budget_partial": 40,
@@ -3916,8 +3916,8 @@ _CLOSURE_REASON_OWNERS = {
     "finding_work_pending": {"finding", "finding-claim", "target-memory"},
     "case_state_canonical_conflict": {"case_state"},
     "case_state_work_pending": {"case_state"},
-    "authz_context_missing": {"case_state"},
-    "authz_context_incomplete": {"case_state"},
+    "actor_context_missing": {"case_state"},
+    "actor_context_incomplete": {"case_state"},
     "surface_projection_pending": {"surface", "surface-context"},
     "surface_work_pending": {"surface"},
     "coverage_missing": {"coverage"},
@@ -4001,14 +4001,14 @@ def _closure_reason_frontier(
             stop_condition="record a terminal Queue result or bounded blocker",
             priority=85,
         )
-    if reason in {"case_state_work_pending", "case_state_canonical_conflict", "authz_context_missing", "authz_context_incomplete"}:
+    if reason in {"case_state_work_pending", "case_state_canonical_conflict", "actor_context_missing", "actor_context_incomplete"}:
         case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
         return _frontier_item(
             owner="case_state",
             item_id="canonical-conflict" if reason == "case_state_canonical_conflict" else reason,
             action="Complete the Case State actor and session context required for coverage",
             evidence_ref=str(case_state.get("path") or f"state/{target_key}/case_state.json"),
-            expected_information_gain="obtain the missing owner-backed authorization context",
+            expected_information_gain="obtain the missing owner/peer actor and session context",
             stop_condition="record context ready, blocked, or not-applicable with evidence",
             priority=85,
         )
@@ -4210,8 +4210,8 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "durable_work_pending": "resume_action_queue",
         "case_state_work_pending": "resume_case_state",
         "case_state_canonical_conflict": "resume_case_state",
-        "authz_context_missing": "resume_case_state",
-        "authz_context_incomplete": "resume_case_state",
+        "actor_context_missing": "resume_case_state",
+        "actor_context_incomplete": "resume_case_state",
         "checkpoint_stale": "refresh_checkpoint",
         "checkpoint_invalid": "refresh_checkpoint",
         "ledger_partial": "repair_evidence_ledger",
@@ -4870,7 +4870,7 @@ def build_closure_projection(
             action_text = f"Wait for the active {phase} phase to release its target runtime lock"
             expected_gain = "obtain the owner-written phase completion state before selecting more work"
             stop_condition = "refresh after the matching lock releases; never start a duplicate phase"
-        elif reason in {"authz_context_missing", "authz_context_incomplete", "case_state_work_pending"}:
+        elif reason in {"actor_context_missing", "actor_context_incomplete", "case_state_work_pending"}:
             owner = "case_state"
             case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
             evidence_ref = str(
@@ -4878,7 +4878,7 @@ def build_closure_projection(
                 or f"state/{target_key}/case_state.json"
             )
             action_text = "Complete the Case State actor and session context required for coverage"
-            expected_gain = "obtain the missing owner-backed authorization context"
+            expected_gain = "obtain the missing owner/peer actor and session context"
             stop_condition = "record context ready, blocked, or not-applicable with evidence"
         elif reason == "finding_work_pending":
             root_claim = state.get("root_finding_claim_next") if isinstance(state.get("root_finding_claim_next"), dict) else {}
@@ -5060,8 +5060,8 @@ _STAGNANT_REASONS = {
     "intel_evidence_blocked",
     "json_evidence_partial",
     "sql_evidence_partial",
-    "authz_context_missing",
-    "authz_context_incomplete",
+    "actor_context_missing",
+    "actor_context_incomplete",
     "next_action_pending",
     "surface_work_pending",
     "coverage_high_value_gaps",
@@ -5285,7 +5285,7 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
                 for kind in HIGH_VALUE_OBSERVATION_KINDS
             },
         }
-    elif reason.startswith("authz_context_"):
+    elif reason.startswith("actor_context_"):
         payload["authz_coverage"] = (state.get("case_state") or {}).get("authz_coverage") or {}
     elif reason == "coverage_high_value_gaps":
         payload["coverage"] = str(state.get("_stagnation_coverage") or "")
