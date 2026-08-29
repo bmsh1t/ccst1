@@ -143,6 +143,7 @@ try:
         high_value_gaps_from_matrix,
         load_matrix,
         load_matrix_projection,
+        matrix_is_fresh,
     )
     from tools.evidence_ledger import (
         build_current_cell_projection,
@@ -158,6 +159,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         high_value_gaps_from_matrix,
         load_matrix,
         load_matrix_projection,
+        matrix_is_fresh,
     )
     from evidence_ledger import (  # type: ignore
         build_current_cell_projection,
@@ -970,6 +972,7 @@ def _build_recommended_targets(
             "remaining_seconds": float(status.get("remaining_seconds", 0.0) or 0.0),
             "matches_resume_target": _matches_resume_target(item.get("url", ""), preferred),
             "new_observation": bool(item.get("new_observation")),
+            "closure_blocking": bool(item.get("closure_blocking")),
         })
 
     recommended.sort(
@@ -2308,6 +2311,13 @@ def _owner_source_markers(repo_root: str | Path, target: str) -> dict[str, tuple
         "surface": Path(repo_root) / "state" / key / "surface-projection.json",
         "checkpoint": Path(repo_root) / "state" / key / "checkpoint_latest.json",
         "target_memory": Path(repo_root) / "memory" / "goals" / "targets" / f"{key}.json",
+        "findings": Path(repo_root) / "findings" / key / "findings.json",
+        "case_state": Path(repo_root) / "state" / key / "case_state.json",
+        "runtime": Path(repo_root) / "state" / key / "session.json",
+        "recon": Path(repo_root) / "recon" / key / "recon_manifest.jsonl",
+        "browser": Path(repo_root) / "findings" / key / "browser" / "mcp-readiness.json",
+        "js_intel": Path(repo_root) / "findings" / key / "js_intel" / "materials.json",
+        "intel": Path(repo_root) / "recon" / key / "intel.json",
     }
     markers: dict[str, tuple[object, ...]] = {}
     for name, path in paths.items():
@@ -3465,6 +3475,7 @@ def _surface_review_completion(
     candidates = state.get("surface_review_candidates") or state.get("recommended_targets") or []
     if not candidates:
         return {"status": "none", "unresolved": []}
+    blocking_unresolved = False
     if not _matrix_is_usable_for_closure(matrix):
         return {"status": "unresolved", "unresolved": [{"reason": "coverage_unavailable"}]}
 
@@ -3481,6 +3492,7 @@ def _surface_review_completion(
     final_specs = _final_queue_execution_specs(queue)
     unresolved = []
     for candidate in candidates:
+        candidate_blocking = isinstance(candidate, dict) and bool(candidate.get("closure_blocking"))
         if not isinstance(candidate, dict):
             unresolved.append({"reason": "invalid_candidate"})
             continue
@@ -3494,10 +3506,13 @@ def _surface_review_completion(
         )
         if not endpoint or not endpoint_identity:
             unresolved.append({"url": url, "reason": "missing_endpoint"})
+            blocking_unresolved |= candidate_blocking
         elif coverage_endpoint not in matrix_by_path:
             unresolved.append({"url": url, "reason": "coverage_endpoint_missing"})
+            blocking_unresolved |= candidate_blocking
         elif coverage_endpoint in high_gap_paths:
             unresolved.append({"url": url, "reason": "coverage_gap_pending"})
+            blocking_unresolved |= candidate_blocking
         else:
             candidate_class = str(candidate.get("vuln_class") or "").strip().lower()
             candidate_shape = str(candidate.get("semantic_shape_id") or "").strip().lower()
@@ -3511,7 +3526,17 @@ def _surface_review_completion(
             )
             if not matched:
                 unresolved.append({"url": url, "reason": "review_outcome_missing"})
-    return {"status": "complete" if not unresolved else "unresolved", "unresolved": unresolved[:5]}
+                blocking_unresolved |= candidate_blocking
+    result = {
+        "status": "complete" if not unresolved else "unresolved",
+        "unresolved": unresolved[:5],
+    }
+    # Ranked Surface candidates are advisory by default.  Only an explicitly
+    # owner-backed candidate may block Closure; keep the distinction in the
+    # projection so an unresolved advisory is never mistaken for a blocker.
+    if blocking_unresolved:
+        result["closure_blocking"] = True
+    return result
 
 
 def _explicit_partial_reason(state: dict) -> str:
@@ -3521,6 +3546,15 @@ def _explicit_partial_reason(state: dict) -> str:
     run_budget = (state.get("recon_artifacts") or {}).get("run_budget") or {}
     if run_budget.get("partial"):
         return "recon_budget_partial"
+    phase_gates = (state.get("recon_artifacts") or {}).get("phase_gates") or {}
+    for phase, gate in (phase_gates.get("latest") or {}).items():
+        bounded = gate.get("bounded") if isinstance(gate, dict) else {}
+        if (
+            isinstance(bounded, dict)
+            and bounded.get("closure_blocking")
+            and int(bounded.get("remaining", 0) or 0) > 0
+        ):
+            return "recon_phase_partial"
     continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
     if continuation.get("status") == "pending":
         return "cidr_continuation_pending"
@@ -3911,11 +3945,13 @@ _CLOSURE_REASON_PRIORITY = {
     "surface_projection_pending": 35,
     "surface_work_pending": 36,
     "recon_budget_partial": 40,
+    "recon_phase_partial": 40,
     "cidr_continuation_invalid": 40,
     "next_action_pending": 50,
     "coverage_missing": 60,
     "coverage_empty": 60,
     "coverage_invalid": 60,
+    "coverage_stale": 60,
     "coverage_high_value_gaps": 61,
     "cidr_continuation_pending": 40,
     "observation_inventory_partial": 70,
@@ -3942,9 +3978,11 @@ _CLOSURE_REASON_OWNERS = {
     "case_state_work_pending": {"case_state"},
     "surface_projection_pending": {"surface", "surface-context"},
     "surface_work_pending": {"surface"},
+    "recon_phase_partial": {"recon"},
     "coverage_missing": {"coverage"},
     "coverage_empty": {"coverage"},
     "coverage_invalid": {"coverage"},
+    "coverage_stale": {"coverage"},
     "coverage_high_value_gaps": {"coverage"},
     "observation_inventory_partial": {"observation"},
     "observation_high_value_pending": {"observation"},
@@ -4682,6 +4720,17 @@ def build_closure_projection(
     elif surface_projection_pending:
         verdict = "handoff"
         reasons.append("surface_projection_pending")
+    elif state.get("_coverage_stale"):
+        verdict = "handoff"
+        action = "refresh_coverage"
+        reasons.append("coverage_stale")
+    elif (
+        str(surface_review.get("status") or "") == "unresolved"
+        and bool(surface_review.get("closure_blocking"))
+    ):
+        verdict = "handoff"
+        action = "review_surface_candidate"
+        reasons.append("surface_work_pending")
     elif action != "handoff":
         verdict = "handoff"
         reasons.append("next_action_pending")
@@ -5056,6 +5105,7 @@ def build_closure_projection(
         "round_budget_reached": bool(
             max_lanes_reached or round_progress.get("budget_reached")
         ),
+        "coverage_stale": bool(state.get("_coverage_stale")),
         "recon_budget_partial": recon_budget_partial,
         "reasons": reasons[:3],
         "next_action": action,
@@ -5457,6 +5507,7 @@ _CLOSURE_STATE_KEYS = (
     "intel_continuation",
     "enrichment_hints",
     "surface_review_completion",
+    "_coverage_stale",
     "round_progress",
 )
 
@@ -5567,8 +5618,21 @@ def load_closure_projection(
     source_markers_before = _owner_source_markers(repo_root, target)
     matrix_path = Path(repo_root) / "evidence" / target_storage_key(target) / "coverage_matrix.json"
     matrix = load_matrix_projection(target, repo_root)
+    coverage_stale = False
     if matrix is None and matrix_path.is_file():
         matrix = load_matrix(target, repo_root)
+    # Older fixture-only matrices predate source fingerprints and have no
+    # Recon inputs to compare against.  Keep those read-only projections
+    # compatible; any target with a Recon directory must prove freshness.
+    matrix_has_legacy_context = not (
+        Path(repo_root) / "recon" / target_storage_key(target)
+    ).exists()
+    if matrix is not None and not (
+        matrix_is_fresh(target, matrix, repo_root)
+        or (not matrix.get("source_fingerprint") and matrix_has_legacy_context)
+    ):
+        coverage_stale = True
+        matrix = None
     queue = _queue_snapshot_for_target(repo_root, target, queue_snapshot)
     queue_generation = queue_fingerprint(queue)
     state_queue_generation = str(state.get("action_queue_fingerprint") or "").strip()
@@ -5632,6 +5696,7 @@ def load_closure_projection(
         "_ledger_projection": ledger_projection,
         "enrichment_hints": enrichment_hints,
         "_coverage_evidence_ref": f"evidence/{target_storage_key(target)}/coverage_matrix.json",
+        "_coverage_stale": coverage_stale,
         # Closure must never use a preloaded next-action pointer: it may have
         # been produced before the durable Queue changed. Both this pointer
         # and the active count below come from the same Queue snapshot.
@@ -6378,10 +6443,12 @@ def build_decision_projection(state: dict, kind: str) -> dict:
             "round_progress",
             "coverage_policy_skips",
             "round_budget_reached",
+            "coverage_stale",
             "surface_review",
             "actionable_frontier",
         )
         if key in closure
+        and not (key == "coverage_stale" and not closure[key])
     }
     structured = (
         state.get("structured_findings")
@@ -6460,25 +6527,46 @@ def main() -> int:
         parser.error("--projection-only requires --json and exactly one of --closure or --loop-check")
 
     try:
-        queue_snapshot = load_queue(BASE_DIR, args.target) if args.closure else None
-        state_kwargs = {
-            "memory_dir": args.memory_dir or None,
-            "bounded": args.bounded,
-        }
-        if queue_snapshot is not None:
-            state_kwargs["queue_snapshot"] = queue_snapshot
-        state = build_autopilot_state(
-            BASE_DIR,
-            args.target,
-            **state_kwargs,
-        )
-        if args.closure:
-            state["closure"] = load_closure_projection(
-                BASE_DIR,
-                state,
-                max_lanes_reached=args.max_lanes_reached,
-                queue_snapshot=queue_snapshot,
+        state = {}
+        queue_snapshot = None
+        for attempt in range(2 if args.closure else 1):
+            source_markers_before = (
+                _owner_source_markers(BASE_DIR, args.target) if args.closure else {}
             )
+            queue_snapshot = load_queue(BASE_DIR, args.target) if args.closure else None
+            state_kwargs = {
+                "memory_dir": args.memory_dir or None,
+                "bounded": args.bounded,
+            }
+            if queue_snapshot is not None:
+                state_kwargs["queue_snapshot"] = queue_snapshot
+            state = build_autopilot_state(BASE_DIR, args.target, **state_kwargs)
+            if args.closure:
+                state["closure"] = load_closure_projection(
+                    BASE_DIR,
+                    state,
+                    max_lanes_reached=args.max_lanes_reached,
+                    queue_snapshot=queue_snapshot,
+                )
+                source_markers_after = _owner_source_markers(BASE_DIR, args.target)
+                if source_markers_before != source_markers_after:
+                    if attempt == 0:
+                        continue
+                    closure = state["closure"]
+                    stale_sources = [
+                        name
+                        for name, marker in source_markers_before.items()
+                        if marker != source_markers_after.get(name)
+                    ] or ["owner_state"]
+                    closure.update({
+                        "verdict": "handoff",
+                        "can_claim_exhausted": False,
+                        "reasons": ["state_snapshot_stale"],
+                        "next_action": "refresh_state",
+                        "snapshot_stale": True,
+                        "snapshot_stale_sources": list(dict.fromkeys(stale_sources)),
+                    })
+            break
         if args.loop_check:
             state["loop_guard"] = _load_loop_guard_projection(BASE_DIR, state)
     except (OSError, ValueError) as exc:

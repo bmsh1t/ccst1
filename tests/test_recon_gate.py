@@ -86,3 +86,55 @@ def test_persisted_gate_is_revalidated_against_current_record(tmp_path):
 
     assert gate["status"] == "partial"
     assert "phase_status:failed" in gate["coverage_gaps"]
+
+
+def test_bounded_phase_exposes_remaining_input_without_hiding_raw_artifact(tmp_path):
+    artifact = tmp_path / "recon" / "target.com" / "js" / "endpoints.txt"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("/api/orders\n", encoding="utf-8")
+
+    gate = gate_from_record(
+        tmp_path,
+        {
+            "phase": "js_analysis",
+            "status": "ok",
+            "artifact": "recon/target.com/js/endpoints.txt",
+            "note": "input_total=50; selected=10; remaining=40; continuation=deep JS queue; closure_blocking=false",
+        },
+    )
+
+    assert gate["status"] == "complete"
+    assert gate["bounded"] == {
+        "input_total": 50,
+        "selected": 10,
+        "remaining": 40,
+        "continuation": "deep JS queue",
+        "closure_blocking": False,
+    }
+    assert "remaining_input:40" in gate["coverage_gaps"]
+
+
+def test_manifest_gate_downgrades_when_artifact_generation_changes(tmp_path):
+    artifact = tmp_path / "recon" / "target.com" / "urls" / "all.txt"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("/one\n", encoding="utf-8")
+    first = build_phase_gate(
+        tmp_path,
+        phase="url_collection",
+        status="ok",
+        artifact="recon/target.com/urls/all.txt",
+    )
+    artifact.write_text("/one\n/two\n", encoding="utf-8")
+
+    current = gate_from_record(
+        tmp_path,
+        {
+            "phase": "url_collection",
+            "status": "ok",
+            "artifact": "recon/target.com/urls/all.txt",
+            "gate": first,
+        },
+    )
+
+    assert current["status"] == "partial"
+    assert "artifact_changed_since_record" in current["coverage_gaps"]

@@ -889,6 +889,10 @@ def _phase_gate_state(recon_dir: Path) -> dict:
                     "artifact": str(item.get("artifact") or ""),
                     "recorded_at": str(item.get("recorded_at") or ""),
                 }
+                if isinstance(gate.get("artifact_binding"), dict):
+                    latest[phase]["artifact_binding"] = dict(gate["artifact_binding"])
+                if isinstance(gate.get("bounded"), dict):
+                    latest[phase]["bounded"] = dict(gate["bounded"])
     except OSError:
         pass
 

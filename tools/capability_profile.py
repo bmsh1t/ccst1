@@ -175,7 +175,7 @@ def build_capability_profile(
         "commands/web3-audit.md",
         "skills/web3-audit/SKILL.md",
     )
-    intel_ready = _helpers_exist(
+    intel_core_ready = _helpers_exist(
         resolved_repo,
         "commands/intel.md",
         "tools/intel_engine.py",
@@ -186,6 +186,9 @@ def build_capability_profile(
         "tools/technology_inventory.py",
     )
     web_intel_ready = _helpers_exist(resolved_repo, "tools/web_intel_artifact.py")
+    # intel_engine imports the web-intel recorder on every execution path;
+    # do not advertise a ready lane when that runtime dependency is absent.
+    intel_ready = intel_core_ready and web_intel_ready
     credential_ready = _helpers_exist(
         resolved_repo,
         "commands/spray.md",
@@ -376,12 +379,12 @@ def build_capability_profile(
         _lane_record(
             "intel",
             {
-                "commands/intel.md+tools/intel_engine.py+intel_artifact.py": intel_ready,
+                "commands/intel.md+tools/intel_engine.py+intel_artifact.py": intel_core_ready,
                 "tools/web_intel_artifact.py": web_intel_ready,
             },
             evidence_required=("component-version-or-advisory-signal",),
             classification="evidence_gated",
-            degraded=("web-intel-recorder-unavailable",) if intel_ready and not web_intel_ready else (),
+            degraded=("web-intel-recorder-unavailable",) if intel_core_ready and not web_intel_ready else (),
             runtime_status="ready" if intel_ready else "unavailable",
             ready_override=intel_ready,
         ),

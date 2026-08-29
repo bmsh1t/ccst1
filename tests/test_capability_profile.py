@@ -324,8 +324,8 @@ def test_intel_and_credential_lanes_require_real_local_entrypoints(tmp_path):
     profile = build_capability_profile(repo, which=_which_with("curl", "httpx"))
     lanes = {lane["id"]: lane for lane in profile["lanes"]}
 
-    assert lanes["intel"]["ready"] is True
-    assert lanes["intel"]["runtime_status"] == "ready"
+    assert lanes["intel"]["ready"] is False
+    assert lanes["intel"]["runtime_status"] == "unavailable"
     assert lanes["intel"]["missing"] == ["tools/web_intel_artifact.py"]
     assert lanes["intel"]["degraded"] == ["web-intel-recorder-unavailable"]
     assert lanes["credential"]["ready"] is False

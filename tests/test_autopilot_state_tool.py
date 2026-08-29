@@ -1235,6 +1235,45 @@ def test_closure_marks_owner_snapshot_stale_when_source_changes_during_read(tmp_
     assert closure["actionable_frontier"][0]["id"] == "state_snapshot_stale"
 
 
+def test_closure_rejects_stale_coverage_matrix(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    recon_dir = tmp_path / "recon" / target
+    (recon_dir / "urls").mkdir(parents=True)
+    (recon_dir / "urls" / "all.txt").write_text(
+        "https://target.com/orders\n", encoding="utf-8"
+    )
+    matrix_path = tmp_path / "evidence" / target / "coverage_matrix.json"
+    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+    matrix["source_fingerprint"] = "sha256:old-generation"
+    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+
+    closure = load_closure_projection(
+        str(tmp_path),
+        {"target": target, "resolved_target": target, "next_action": "handoff"},
+        max_lanes_reached=False,
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["coverage_stale"]
+    assert closure["coverage_stale"] is True
+
+
+def test_closure_blocking_surface_candidate_requires_owner_outcome(tmp_path):
+    target = "target.com"
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
+    state = _surface_closure_state(target, next_action="handoff")
+    state["surface_review_candidates"][0]["closure_blocking"] = True
+
+    closure = load_closure_projection(
+        str(tmp_path), state, max_lanes_reached=False
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["surface_work_pending"]
+    assert closure["surface_review"]["closure_blocking"] is True
+
+
 def test_closure_digest_changes_when_decision_state_changes(tmp_path):
     target = "target.com"
     base = {
@@ -3595,14 +3634,16 @@ def test_explicit_closure_checks_pending_source_and_js_artifacts(tmp_path):
     js_dir.mkdir(parents=True)
     (js_dir / "js_files.txt").write_text("https://target.com/app.js\n", encoding="utf-8")
     closure = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
-    assert closure["reasons"] == ["js_evidence_partial"]
+    # A legacy matrix without a source fingerprint cannot be reused once new
+    # Recon inputs exist; refresh Coverage before evaluating JS follow-up.
+    assert closure["reasons"] == ["coverage_stale"]
 
     js_intel = tmp_path / "findings" / storage_key / "js_intel"
     js_intel.mkdir()
     (js_intel / "materials.json").write_text("{}\n", encoding="utf-8")
     prepared = _load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
     assert prepared["verdict"] == "handoff"
-    assert prepared["reasons"] == ["js_evidence_partial"]
+    assert prepared["reasons"] == ["coverage_stale"]
 
 
 def test_sql_matrix_projection_validates_lane_and_source_freshness(tmp_path):

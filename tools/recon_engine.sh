@@ -1883,6 +1883,8 @@ collect_katana_urls() {
     local output="$1"
     command -v katana >/dev/null 2>&1 || return 3
     [ -s "$RECON_DIR/live/urls.txt" ] || return 4
+    KATANA_INPUT_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
+    KATANA_SELECTED=$((KATANA_INPUT_TOTAL > 50 ? 50 : KATANA_INPUT_TOTAL))
     head -50 "$RECON_DIR/live/urls.txt" > "$RECON_DIR/urls/katana_targets.txt"
     local perf_args=()
     [ -n "${KATANA_CONCURRENCY:-}" ] && perf_args+=(-c "$KATANA_CONCURRENCY")
@@ -1896,6 +1898,9 @@ collect_katana_urls() {
         -o "$output" \
         2> "$RECON_DIR/logs/katana.log"
 }
+
+KATANA_INPUT_TOTAL=0
+KATANA_SELECTED=0
 
 echo "============================================="
 echo "  Recon Engine — $TARGET"
@@ -2290,6 +2295,11 @@ log_info "Phase 2.5: WAF Fingerprinting"
 
 WAFW00F_STATUS="skipped"
 WAFW00F_NOTE="no live targets"
+WAFW00F_INPUT_TOTAL=0
+WAFW00F_SELECTED=0
+if [ -s "$RECON_DIR/live/urls.txt" ]; then
+    WAFW00F_INPUT_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
+fi
 if command -v wafw00f &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     WAFW00F_MAX_TARGETS=$([ "$QUICK_MODE" = "--quick" ] && echo 3 || echo 10)
     WAFW00F_HTTP_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 8 || echo 10)
@@ -2303,6 +2313,7 @@ if command -v wafw00f &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     WAFW00F_CURRENT_PUBLISHED="false"
 
     head -"$WAFW00F_MAX_TARGETS" "$RECON_DIR/live/urls.txt" > "$WAFW00F_TARGETS_FILE"
+    WAFW00F_SELECTED=$(wc -l < "$WAFW00F_TARGETS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
     if prepare_wafw00f_headers_file; then
         WAFW00F_HEADER_ARGS=(-H "$WAFW00F_HEADERS_FILE")
         WAFW00F_REDIRECT_ARGS=(-r)
@@ -2480,7 +2491,7 @@ record_recon_phase \
     "$WAFW00F_STATUS" \
     "recon/${RECON_TARGET_KEY}/live/wafw00f_hits.txt" \
     "$WAF_HITS" \
-    "$WAFW00F_NOTE; sampled WAF fingerprinting; no hit does not prove no edge control"
+    "$WAFW00F_NOTE; sampled WAF fingerprinting; no hit does not prove no edge control; input_total=$WAFW00F_INPUT_TOTAL; selected=$WAFW00F_SELECTED; remaining=$((WAFW00F_INPUT_TOTAL - WAFW00F_SELECTED)); continuation=next WAF sample; closure_blocking=false"
 emit_claude_hint \
     phase                waf_fp \
     waf_results_lines    "$WAF_HITS" \
@@ -2640,6 +2651,8 @@ log_info "Phase 3: Port Scanning"
 
 NAABU_STATUS="skipped"
 NAABU_NOTE="not run"
+NAABU_INPUT_TOTAL=0
+NAABU_SELECTED=0
 NMAP_STATUS="skipped"
 NMAP_NOTE="not run"
 if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
@@ -2702,6 +2715,14 @@ PY
     fi
 
     if [ -s "$NAABU_TARGETS_FILE" ]; then
+        if [ -s "$RECON_DIR/live/urls.txt" ]; then
+            NAABU_INPUT_TOTAL=$(awk '{print $1}' "$RECON_DIR/live/urls.txt" | sed -E 's#^[^:]+://([^/:]+).*#\1#' | sort -u | wc -l | tr -d ' ' || echo 0)
+        elif [ -s "$DISCOVERY_HOSTS_FILE" ]; then
+            NAABU_INPUT_TOTAL=$(wc -l < "$DISCOVERY_HOSTS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+        else
+            NAABU_INPUT_TOTAL=$(wc -l < "$NAABU_TARGETS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+        fi
+        NAABU_SELECTED=$(wc -l < "$NAABU_TARGETS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
         log_step "Running naabu (top $NAABU_MAX_TARGETS targets, top $NAABU_TOP_PORTS ports)..."
         NAABU_CURRENT_FILE="$(mktemp "$RECON_DIR/ports/.naabu.XXXXXX")"
         NAABU_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 120 || echo 300)
@@ -2877,7 +2898,7 @@ record_recon_phase \
     "$PORT_PHASE_STATUS" \
     "recon/${RECON_TARGET_KEY}/ports/open_host_ports.txt" \
     "$PORTS_OPEN" \
-    "naabu=${NAABU_STATUS} (${NAABU_NOTE}); nmap=${NMAP_STATUS} (${NMAP_NOTE}); host-aware canonical evidence with open_ports_all.txt compatibility projection"
+    "naabu=${NAABU_STATUS} (${NAABU_NOTE}); nmap=${NMAP_STATUS} (${NMAP_NOTE}); host-aware canonical evidence with open_ports_all.txt compatibility projection; input_total=$NAABU_INPUT_TOTAL; selected=$NAABU_SELECTED; remaining=$((NAABU_INPUT_TOTAL - NAABU_SELECTED)); continuation=next port sample; closure_blocking=false"
 emit_claude_hint \
     phase                port_scan \
     open_ports_total     "$PORTS_OPEN" \
@@ -2902,6 +2923,8 @@ start_collector waymore "$RECON_DIR/urls/waymore.txt" \
 wait_collector_group
 
 # katana 依赖 live hosts，因此只能在被动 URL collector 之后运行。
+KATANA_INPUT_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
+KATANA_SELECTED=$((KATANA_INPUT_TOTAL > 50 ? 50 : KATANA_INPUT_TOTAL))
 start_collector katana "$RECON_DIR/urls/katana.txt" \
     "recon/${RECON_TARGET_KEY}/urls/katana.txt" collect_katana_urls
 wait_collector_group
@@ -2931,7 +2954,7 @@ record_recon_phase \
     "$URL_COLLECTION_STATUS" \
     "recon/${RECON_TARGET_KEY}/urls/raw/all.txt" \
     "$RAW_URLS_TOTAL" \
-    "raw URL staging is retained until Active publication; Active all.txt is published after filtering"
+    "raw URL staging is retained until Active publication; Active all.txt is published after filtering; input_total=$KATANA_INPUT_TOTAL; selected=$KATANA_SELECTED; remaining=$((KATANA_INPUT_TOTAL - KATANA_SELECTED)); continuation=next Katana target sample; closure_blocking=false"
 
 # ============================================================
 # Phase 4.5: URL Denoising (non-destructive)
@@ -3234,12 +3257,18 @@ JS_SECRETS=$(wc -l < "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null | tr -d '
 JS_LINKFINDER=$(wc -l < "$RECON_DIR/js/linkfinder_endpoints.txt" 2>/dev/null | tr -d ' ' || echo 0)
 JS_MANIFEST_COUNT="$JS_ENDPOINTS"
 js_profile_defers_active_analysis && JS_MANIFEST_COUNT="$JS_DEEP_CANDIDATES"
+JS_INPUT_TOTAL=$(wc -l < "$JS_REQUEST_TARGETS" 2>/dev/null | tr -d ' ' || echo 0)
+JS_SELECTED="$JS_MANIFEST_COUNT"
+if ! js_profile_defers_active_analysis; then
+    JS_SELECTED=$(head -50 "$JS_REQUEST_TARGETS" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+fi
+JS_REMAINING=$((JS_INPUT_TOTAL > JS_SELECTED ? JS_INPUT_TOTAL - JS_SELECTED : 0))
 record_recon_phase \
     js_analysis \
     "$JS_ANALYSIS_STATUS" \
     "recon/${RECON_TARGET_KEY}/js/$(js_profile_defers_active_analysis && echo deep_candidates.txt || echo endpoints.txt)" \
     "$JS_MANIFEST_COUNT" \
-    "all JS URLs remain in urls/js_files.txt; active request inputs are target-owned in js/request_targets.txt; candidate_view=${JS_CANDIDATE_BUILD_STATUS}; link_analyzer=${JS_LINK_ANALYZER}; limit=${JS_CANDIDATE_LIMIT}; quick/normal defer active analysis without closing coverage"
+    "all JS URLs remain in urls/js_files.txt; active request inputs are target-owned in js/request_targets.txt; candidate_view=${JS_CANDIDATE_BUILD_STATUS}; link_analyzer=${JS_LINK_ANALYZER}; limit=${JS_CANDIDATE_LIMIT}; quick/normal defer active analysis without closing coverage; input_total=$JS_INPUT_TOTAL; selected=$JS_SELECTED; remaining=$JS_REMAINING; continuation=deep JS queue; closure_blocking=false"
 emit_claude_hint \
     phase                  js_analysis \
     profile                "$RECON_PROFILE" \
@@ -3964,12 +3993,14 @@ fi
 CONFIG_EXPOSED=$(wc -l < "$RECON_DIR/exposure/config_files.txt" 2>/dev/null | tr -d ' ' || echo 0)
 CONFIG_PHASE_STATUS="skipped"
 [ -s "$RECON_DIR/live/urls.txt" ] && CONFIG_PHASE_STATUS="ok"
+CONFIG_INPUT_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
+CONFIG_SELECTED=$((CONFIG_INPUT_TOTAL > 30 ? 30 : CONFIG_INPUT_TOTAL))
 record_recon_phase \
     config_exposure \
     "$CONFIG_PHASE_STATUS" \
     "recon/${RECON_TARGET_KEY}/exposure/config_files.txt" \
     "$CONFIG_EXPOSED" \
-    "fixed low-impact config path probes; evidence candidates require AI review"
+    "fixed low-impact config path probes; evidence candidates require AI review; input_total=$CONFIG_INPUT_TOTAL; selected=$CONFIG_SELECTED; remaining=$((CONFIG_INPUT_TOTAL - CONFIG_SELECTED)); continuation=next config sample; closure_blocking=false"
 emit_claude_hint \
     phase                config_exposure \
     exposed_count        "$CONFIG_EXPOSED" \
@@ -4067,6 +4098,7 @@ API_DOC_COUNT=$(wc -l < "$API_DOC_CANDIDATES" 2>/dev/null | tr -d ' ' || echo 0)
 CLOUD_CANDIDATE_COUNT=$(wc -l < "$CLOUD_STORAGE_CANDIDATES" 2>/dev/null | tr -d ' ' || echo 0)
 S3_BUCKET_COUNT=$(wc -l < "$S3_BUCKET_CANDIDATES" 2>/dev/null | tr -d ' ' || echo 0)
 EXTERNAL_SERVICE_COUNT=$(wc -l < "$EXTERNAL_SERVICE_HOSTS" 2>/dev/null | tr -d ' ' || echo 0)
+S3_INPUT_TOTAL=$(wc -l < "$CLOUD_STORAGE_CANDIDATES" 2>/dev/null | tr -d ' ' || echo 0)
 
 log_done "API doc candidates: $API_DOC_COUNT"
 log_done "Cloud storage candidates: $CLOUD_CANDIDATE_COUNT"
@@ -4079,7 +4111,7 @@ record_recon_phase \
     ok \
     "recon/${RECON_TARGET_KEY}/exposure/" \
     "$EXPOSURE_TOTAL" \
-    "correlation over already collected recon artifacts; no extra OSINT scan"
+    "correlation over already collected recon artifacts; no extra OSINT scan; input_total=$S3_INPUT_TOTAL; selected=$S3_BUCKET_COUNT; remaining=$((S3_INPUT_TOTAL > S3_BUCKET_COUNT ? S3_INPUT_TOTAL - S3_BUCKET_COUNT : 0)); continuation=review remaining cloud candidates; closure_blocking=false"
 
 emit_claude_hint \
     phase                exposure_candidates \
@@ -4525,6 +4557,7 @@ recon_budget_checkpoint cicd
 log_info "Phase 8: CI/CD Workflow Scan"
 
 GITHUB_ORGS=""
+GITHUB_ORGS_INPUT_TOTAL=0
 CICD_SCANNER="$(dirname "$0")/cicd_scanner.sh"
 CICD_SUCCEEDED=0
 CICD_FAILED=0
@@ -4538,7 +4571,9 @@ done
 
 # Deduplicate and limit to 5. Append `|| true` so an empty pipeline under
 # `set -euo pipefail` (grep -v returning 1 on empty input) does not kill recon.
-GITHUB_ORGS=$(echo "$GITHUB_ORGS" | tr ' ' '\n' | grep -v '^$' | sort -u | head -5 || true)
+GITHUB_ORGS=$(echo "$GITHUB_ORGS" | tr ' ' '\n' | grep -v '^$' | sort -u || true)
+GITHUB_ORGS_INPUT_TOTAL=$(printf '%s\n' "$GITHUB_ORGS" | grep -cE '^[a-zA-Z0-9_-]+' 2>/dev/null || true)
+GITHUB_ORGS=$(printf '%s\n' "$GITHUB_ORGS" | head -5 || true)
 
 if [ -n "$GITHUB_ORGS" ] && [ -x "$CICD_SCANNER" ] && command -v sisakulint &>/dev/null; then
     for ORG in $GITHUB_ORGS; do
@@ -4571,7 +4606,7 @@ record_recon_phase \
     "$CICD_PHASE_STATUS" \
     "recon/${RECON_TARGET_KEY}/cicd/" \
     "$CICD_ORGS_FOUND" \
-    "orgs_detected=${CICD_ORGS_FOUND}; succeeded=${CICD_SUCCEEDED}; failed=${CICD_FAILED}; missing scanner/tool is unavailable, not tested clean"
+    "orgs_detected=${CICD_ORGS_FOUND}; succeeded=${CICD_SUCCEEDED}; failed=${CICD_FAILED}; missing scanner/tool is unavailable, not tested clean; input_total=$GITHUB_ORGS_INPUT_TOTAL; selected=$CICD_ORGS_FOUND; remaining=$((GITHUB_ORGS_INPUT_TOTAL > CICD_ORGS_FOUND ? GITHUB_ORGS_INPUT_TOTAL - CICD_ORGS_FOUND : 0)); continuation=next GitHub org sample; closure_blocking=false"
 emit_claude_hint \
     phase                cicd \
     orgs_scanned         "$CICD_ORGS_FOUND" \
