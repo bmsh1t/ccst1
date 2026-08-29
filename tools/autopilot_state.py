@@ -2216,12 +2216,24 @@ def _is_substantive_queue_action(item: dict) -> bool:
         and str(metadata.get("category") or "") == "asset-scope-review"
     ):
         return True
+    if status == "queued" and action_type == "case-state-enrichment":
+        missing = metadata.get("missing_evidence")
+        missing_text = " ".join(
+            str(value).strip().casefold()
+            for value in (missing if isinstance(missing, list) else [missing])
+            if str(value).strip()
+        )
+        # A checkpoint lead that only asks for an actor/session/object cannot
+        # produce evidence in an anonymous run. Keep it recoverable, but do
+        # not let it turn a lane-local prerequisite into global Queue work.
+        if any(marker in missing_text for marker in ("actor", "session", "business object")):
+            return False
+        return True
     if status == "queued" and action_type in {
         "candidate-evidence-gap",
         "actor-gap",
         "action-gated-review",
         "browser-enrichment",
-        "case-state-enrichment",
     }:
         return True
     if status == "queued" and action_type == "coverage-gap":
@@ -3371,38 +3383,44 @@ def _coverage_has_high_value_gaps(matrix: dict) -> bool:
     return bool(_actionable_coverage_gaps(matrix))
 
 
-def _authz_context_reason(case_state: dict, matrix: dict) -> str:
-    """Keep anonymous-only access-control review from claiming exhaustion."""
+def _actor_context_gap(case_state: dict, matrix: dict | None) -> dict:
+    """Project actor/session coverage without blocking unrelated lanes."""
     if str(case_state.get("status") or "") != "valid":
-        return ""
+        return {}
     coverage = case_state.get("authz_coverage")
     if not isinstance(coverage, dict) or str(coverage.get("status") or "") == "ready":
-        return ""
+        return {}
     lanes = matrix.get("high_risk_lanes") if isinstance(matrix, dict) else None
     if not isinstance(lanes, dict):
         lanes = {}
-    relevant = any(
-        str((lanes.get(vuln_class) or {}).get("disposition") or "")
-        not in {"", "not_observed", "not_applicable"}
+    relevant_lanes = [
+        vuln_class
         for vuln_class in ("IDOR", "Authz", "GraphQL")
-    )
+        if str((lanes.get(vuln_class) or {}).get("disposition") or "")
+        not in {"", "not_observed", "not_applicable"}
+    ]
     if not lanes:
-        relevant = any(
-            isinstance(endpoint, dict)
-            and any(
-                isinstance((endpoint.get("cells") or {}).get(vuln_class), dict)
-                and (endpoint["cells"][vuln_class].get("status") not in {None, "n_a"})
-                for vuln_class in ("IDOR", "Authz", "GraphQL")
-            )
-            for endpoint in matrix.get("endpoints") or []
-        )
-    if not relevant:
-        return ""
-    return (
-        "actor_context_missing"
-        if str(coverage.get("status") or "") == "missing"
-        else "actor_context_incomplete"
-    )
+        relevant_lanes = []
+        for endpoint in (matrix or {}).get("endpoints") or []:
+            if not isinstance(endpoint, dict):
+                continue
+            cells = endpoint.get("cells") if isinstance(endpoint.get("cells"), dict) else {}
+            for vuln_class in ("IDOR", "Authz", "GraphQL"):
+                cell = cells.get(vuln_class)
+                if isinstance(cell, dict) and cell.get("status") not in {None, "n_a"}:
+                    if vuln_class not in relevant_lanes:
+                        relevant_lanes.append(vuln_class)
+    if not relevant_lanes:
+        return {}
+    status = str(coverage.get("status") or "").strip().lower()
+    reason = "actor_context_missing" if status == "missing" else "actor_context_incomplete"
+    return {
+        "status": status if status in {"missing", "partial"} else "incomplete",
+        "reason": reason,
+        "lanes": relevant_lanes,
+        "blocking": False,
+        "required_context": "owner/peer actor and session context",
+    }
 
 
 def _final_queue_execution_specs(queue: dict) -> list[dict[str, str]]:
@@ -3883,8 +3901,6 @@ _CLOSURE_REASON_PRIORITY = {
     "finding_work_pending": 25,
     "case_state_canonical_conflict": 30,
     "case_state_work_pending": 31,
-    "actor_context_missing": 32,
-    "actor_context_incomplete": 32,
     "surface_projection_pending": 35,
     "surface_work_pending": 36,
     "recon_budget_partial": 40,
@@ -3916,8 +3932,6 @@ _CLOSURE_REASON_OWNERS = {
     "finding_work_pending": {"finding", "finding-claim", "target-memory"},
     "case_state_canonical_conflict": {"case_state"},
     "case_state_work_pending": {"case_state"},
-    "actor_context_missing": {"case_state"},
-    "actor_context_incomplete": {"case_state"},
     "surface_projection_pending": {"surface", "surface-context"},
     "surface_work_pending": {"surface"},
     "coverage_missing": {"coverage"},
@@ -4001,7 +4015,7 @@ def _closure_reason_frontier(
             stop_condition="record a terminal Queue result or bounded blocker",
             priority=85,
         )
-    if reason in {"case_state_work_pending", "case_state_canonical_conflict", "actor_context_missing", "actor_context_incomplete"}:
+    if reason in {"case_state_work_pending", "case_state_canonical_conflict"}:
         case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
         return _frontier_item(
             owner="case_state",
@@ -4210,8 +4224,6 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "durable_work_pending": "resume_action_queue",
         "case_state_work_pending": "resume_case_state",
         "case_state_canonical_conflict": "resume_case_state",
-        "actor_context_missing": "resume_case_state",
-        "actor_context_incomplete": "resume_case_state",
         "checkpoint_stale": "refresh_checkpoint",
         "checkpoint_invalid": "refresh_checkpoint",
         "ledger_partial": "repair_evidence_ledger",
@@ -4593,6 +4605,7 @@ def build_closure_projection(
         and str(surface_projection.get("status") or "").strip().lower() != "valid"
     )
     case_state = state.get("case_state") or {}
+    actor_context_gap = _actor_context_gap(case_state, matrix)
     case_state_pending = (
         str(case_state.get("status") or "missing") == "valid"
         and (
@@ -4723,9 +4736,6 @@ def build_closure_projection(
         elif observation_reason:
             verdict = "handoff"
             reasons.append(observation_reason)
-        elif (authz_reason := _authz_context_reason(case_state, matrix)):
-            verdict = "handoff"
-            reasons.append(authz_reason)
         elif ledger_projection.get("identity_v2_follow_up_actions"):
             verdict = "handoff"
             reasons.append("identity_v2_follow_up_pending")
@@ -4870,7 +4880,7 @@ def build_closure_projection(
             action_text = f"Wait for the active {phase} phase to release its target runtime lock"
             expected_gain = "obtain the owner-written phase completion state before selecting more work"
             stop_condition = "refresh after the matching lock releases; never start a duplicate phase"
-        elif reason in {"actor_context_missing", "actor_context_incomplete", "case_state_work_pending"}:
+        elif reason in {"case_state_work_pending"}:
             owner = "case_state"
             case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
             evidence_ref = str(
@@ -5040,6 +5050,8 @@ def build_closure_projection(
         result["coverage_policy_skips"] = coverage_policy_skips
     if isinstance(case_state.get("authz_coverage"), dict):
         result["authz_coverage"] = case_state["authz_coverage"]
+    if actor_context_gap:
+        result["actor_context_gap"] = actor_context_gap
     if round_progress:
         result["round_progress"] = round_progress
     if ledger_health:
@@ -5060,8 +5072,6 @@ _STAGNANT_REASONS = {
     "intel_evidence_blocked",
     "json_evidence_partial",
     "sql_evidence_partial",
-    "actor_context_missing",
-    "actor_context_incomplete",
     "next_action_pending",
     "surface_work_pending",
     "coverage_high_value_gaps",
@@ -5285,8 +5295,6 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
                 for kind in HIGH_VALUE_OBSERVATION_KINDS
             },
         }
-    elif reason.startswith("actor_context_"):
-        payload["authz_coverage"] = (state.get("case_state") or {}).get("authz_coverage") or {}
     elif reason == "coverage_high_value_gaps":
         payload["coverage"] = str(state.get("_stagnation_coverage") or "")
     elif reason == "case_state_canonical_conflict":
@@ -6335,6 +6343,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
             "checkpoint_health",
             "recon_budget_partial",
             "authz_coverage",
+            "actor_context_gap",
             "stagnation_fingerprint",
             "snapshot_digest",
             "snapshot_components",

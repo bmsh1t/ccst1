@@ -229,6 +229,89 @@ def test_deep_js_review_queue_item_is_substantive():
     assert not _is_substantive_queue_action({**action, "evidence_type": "generic"})
 
 
+def test_actor_context_enrichment_lead_is_advisory_until_context_exists():
+    action = {
+        "status": "queued",
+        "type": "case-state-enrichment",
+        "source": "checkpoint",
+        "evidence_type": "checkpoint-next-action",
+        "command_hint": "register actor/session/object with tools/target_case_state.py",
+        "metadata": {
+            "missing_evidence": [
+                "second actor",
+                "peer/second session",
+                "business object",
+            ],
+        },
+    }
+
+    assert not _is_substantive_queue_action(action)
+    assert _is_substantive_queue_action({**action, "status": "running"})
+    assert _is_substantive_queue_action({
+        **action,
+        "metadata": {"missing_evidence": ["object endpoint"]},
+    })
+
+
+def test_persisted_actor_context_enrichment_does_not_block_closure(tmp_path):
+    target = "target.test"
+    matrix_path = tmp_path / "evidence" / target / "coverage_matrix.json"
+    matrix_path.parent.mkdir(parents=True)
+    matrix_path.write_text(json.dumps(_closure_matrix()), encoding="utf-8")
+    ingest_checkpoint(
+        tmp_path,
+        target,
+        checkpoint={
+            "target": target,
+            "next_action_queue": [{
+                "id": "A1",
+                "priority": 54,
+                "type": "case-state-enrichment",
+                "status": "ready",
+                "action": (
+                    "Case-state enrichment lead: actor matrix has a role gap. "
+                    "Missing evidence: second actor, peer/second session, business object."
+                ),
+                "command_hint": "register actor/session/object with tools/target_case_state.py",
+                "metadata": {
+                    "endpoint": "/api/orders/1",
+                    "vuln_class": "IDOR",
+                    "missing_evidence": [
+                        "second actor",
+                        "peer/second session",
+                        "business object",
+                    ],
+                },
+            }],
+        },
+    )
+
+    closure = load_closure_projection(
+        str(tmp_path),
+        {
+            "target": target,
+            "resolved_target": target,
+            "has_recon": True,
+            "next_action": "handoff",
+            "surface_projection": {"status": "valid"},
+            "case_state": {
+                "status": "valid",
+                "authz_coverage": {
+                    "status": "missing",
+                    "authenticated_actor_count": 0,
+                    "authenticated_session_count": 0,
+                },
+            },
+        },
+        max_lanes_reached=False,
+    )
+
+    assert closure["verdict"] == "finish"
+    assert closure["reasons"] == []
+    assert closure["actor_context_gap"]["blocking"] is False
+    assert "durable_work_pending" not in closure["reasons"]
+
+
 def test_asset_scope_workflow_review_is_substantive_but_other_advisory_leads_are_not():
     action = {
         "status": "ready",
@@ -608,7 +691,7 @@ def test_closure_finishes_only_for_gap_free_handoff_state():
     assert closure["reasons"] == []
 
 
-def test_closure_keeps_authorization_context_gap_explicit():
+def test_closure_keeps_actor_context_gap_advisory():
     matrix = {
         **_closure_matrix(),
         "high_risk_lanes": {
@@ -632,9 +715,84 @@ def test_closure_keeps_authorization_context_gap_explicit():
         matrix,
     )
 
-    assert closure["verdict"] == "handoff"
-    assert closure["reasons"] == ["actor_context_missing"]
+    assert closure["verdict"] == "finish"
+    assert closure["can_claim_exhausted"] is True
+    assert closure["reasons"] == []
     assert closure["authz_coverage"]["status"] == "missing"
+    assert closure["actor_context_gap"] == {
+        "status": "missing",
+        "reason": "actor_context_missing",
+        "lanes": ["IDOR", "Authz"],
+        "blocking": False,
+        "required_context": "owner/peer actor and session context",
+    }
+    assert not stagnation_fingerprint(
+        {
+            "target": "target.test",
+            "case_state": {
+                "status": "valid",
+                "authz_coverage": {"status": "missing"},
+            },
+        },
+        closure,
+    )
+
+
+def test_partial_actor_context_remains_non_blocking():
+    matrix = {
+        **_closure_matrix(),
+        "high_risk_lanes": {
+            "IDOR": {"disposition": "tested"},
+            "Authz": {"disposition": "tested"},
+        },
+    }
+    closure = build_closure_projection(
+        {
+            "next_action": "handoff",
+            "case_state": {
+                "status": "valid",
+                "authz_coverage": {
+                    "status": "partial",
+                    "authenticated_actor_count": 1,
+                    "authenticated_session_count": 1,
+                },
+            },
+        },
+        matrix,
+    )
+
+    assert closure["verdict"] == "finish"
+    assert closure["reasons"] == []
+    assert closure["actor_context_gap"]["status"] == "partial"
+    assert closure["actor_context_gap"]["reason"] == "actor_context_incomplete"
+    assert closure["actor_context_gap"]["blocking"] is False
+
+
+def test_ready_actor_context_has_no_deferred_gap():
+    matrix = {
+        **_closure_matrix(),
+        "high_risk_lanes": {
+            "IDOR": {"disposition": "tested"},
+            "Authz": {"disposition": "tested"},
+        },
+    }
+    closure = build_closure_projection(
+        {
+            "next_action": "handoff",
+            "case_state": {
+                "status": "valid",
+                "authz_coverage": {
+                    "status": "ready",
+                    "authenticated_actor_count": 2,
+                    "authenticated_session_count": 2,
+                },
+            },
+        },
+        matrix,
+    )
+
+    assert closure["verdict"] == "finish"
+    assert "actor_context_gap" not in closure
 
 
 def test_closure_does_not_cross_close_distinct_vulnerability_lanes():
@@ -829,10 +987,6 @@ def test_ledger_health_handoff_always_has_owner_backed_frontier():
         (
             {"recon_artifacts": {"run_budget": {"partial": True}}},
             "recon",
-        ),
-        (
-            {"case_state": {"status": "valid", "authz_coverage": {"status": "missing"}}},
-            "case_state",
         ),
         (
             {"root_finding_claim_next": {"id": "claim-1", "source_file": "findings/target.com/claim.json"}},

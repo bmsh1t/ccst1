@@ -207,6 +207,7 @@ matrix remains the closure owner input, and a truncated window never means
 coverage is complete.
 Read `closure.verdict`, `closure.can_claim_exhausted`, `closure.reasons`, and advisory `closure.rotation_hint`. Only `verdict=finish` with `can_claim_exhausted=true` permits a `finish/complete/exhausted` claim; `handoff` preserves durable work and `blocked` records the terminal prerequisite blocker.
 Reaching `max_lanes` ends target work for this invocation, then Closure recomputes from current owners; the budget alone never requires another round. A pending report is a closure asset, not a stop signal. Active substantive Queue work, pending validation/report, partial browser/source/intel, or untouched high-value work means `handoff/partial`, never `finish/complete/exhausted`.
+Missing owner/peer actor or session context is reported in `closure.actor_context_gap` as a non-blocking, lane-local coverage gap. It does not mean that the test lacks external permission, does not stop anonymous or unrelated lanes, and does not permit the affected access-control cells to be marked `tested_clean`.
 Checkpoint unresolved work in the existing Action Queue instead of passive TODOs.
 Passing `check_autopilot_run.py` proves state-chain integrity, not target exhaustion.
 In the final handoff/finish response, use the classification criteria (not the
