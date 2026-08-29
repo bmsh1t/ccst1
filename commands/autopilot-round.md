@@ -118,9 +118,6 @@ For DONE/EXHAUSTED, emit at most five labels already evidenced by
 bootstrap/state. Do not create a blind-spot store or speculate beyond state.
 `EXHAUSTED` is evidence-bounded, not proof that every payload, identity,
 timing, business state, or vulnerability has been exhausted.
-An `closure.actor_context_gap` is a lane-local residual for owner/peer
-comparison. It is non-blocking and must not be rendered as a missing external
-test authorization; anonymous and other independent lanes may still finish.
 
 ## Native Loop Ownership
 
