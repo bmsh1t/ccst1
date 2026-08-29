@@ -71,6 +71,42 @@ def test_bb_methodology_references_high_intensity_hunting_posture():
     assert "不固定偏向某几个漏洞类别" in text
 
 
+def test_bb_methodology_keeps_developer_view_recall_soft_and_target_specific():
+    text = _read("skills/bb-methodology/SKILL.md")
+
+    assert "### Developer-View Pre-Hunt Recall" in text
+    for marker in (
+        "mental model",
+        "crown jewel",
+        "developer empathy",
+        "trust boundaries",
+        "Feature over endpoint",
+        "Authorization inconsistency",
+        "Think second-order",
+        "Compare clients and diffs",
+        "Keep the checklist soft",
+        "What is the business model",
+        "What stack, authentication model",
+        "What changed recently",
+        "Which two actor",
+        "What is today's highest-information question",
+        "goal`, `known_facts`, `hypothesis`",
+        "fixed vulnerability list",
+    ):
+        assert marker in text
+    assert "not a mandatory" in text
+
+
+def test_autopilot_references_developer_view_recall_without_new_owner():
+    text = _read("commands/autopilot.md")
+
+    assert "Developer-View Pre-Hunt Recall" in text
+    assert "skills/bb-methodology/SKILL.md" in text
+    assert "soft reasoning prompt" in text
+    assert "second gate" in text
+    assert "Queue action list" in text
+
+
 def test_runtime_protocol_preserves_discovery_driven_exploration():
     text = _read("skills/runtime-protocol.md")
 

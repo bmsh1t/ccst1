@@ -115,6 +115,12 @@ Put the answers in the existing `decision`/`next_action` heartbeat; do not creat
 state, queue, or checklist owner. If the gate has no evidence-backed answer, resolve the lane
 as a bounded dead-end/blocker or handoff instead of silently widening work.
 
+When starting a target, entering a high-value feature, or rotating after a
+stalled lane, recall `Developer-View Pre-Hunt Recall` in
+`skills/bb-methodology/SKILL.md`. Keep it as a soft reasoning prompt: record
+target-specific answers in existing state fields and do not turn it into a
+second gate, fixed vulnerability order, or Queue action list.
+
 When the selected action is `run_recon`, immediately run the selected Recon command from
 the lane contract with `arguments.recon_flags`, then refresh bounded state.
 Treat this as a mechanical dispatch: the next tool call starts Recon; lane preparation belongs in that call,
