@@ -40,6 +40,7 @@ CURSOR_SCHEMA_VERSION = 1
 
 ACTIVE_URL_ARTIFACT_SPECS = (
     ("active", Path("urls/all.txt")),
+    ("port_candidate", Path("urls/port_candidates.txt")),
     ("js_inventory", Path("urls/js_files.txt")),
     ("api", Path("urls/api_endpoints.txt")),
     ("param", Path("urls/with_params.txt")),
@@ -50,6 +51,7 @@ RAW_URL_ARTIFACT_SPECS = (
     ("raw", Path("urls/raw/all.txt")),
 )
 LEGACY_URL_ARTIFACT_SPECS = (
+    ("port_candidate", Path("urls/port_candidates.txt")),
     ("gau", Path("urls/gau.txt")),
     ("wayback", Path("urls/wayback.txt")),
     ("waymore", Path("urls/waymore.txt")),
@@ -62,6 +64,7 @@ LEGACY_URL_ARTIFACT_SPECS = (
 )
 LEGACY_FILTERED_URL_ARTIFACT_SPECS = (
     ("active", Path("urls/all_filtered.txt")),
+    ("port_candidate", Path("urls/port_candidates.txt")),
     ("js_inventory", Path("urls/js_files_filtered.txt")),
     ("api", Path("urls/api_endpoints_filtered.txt")),
     ("param", Path("urls/with_params_filtered.txt")),

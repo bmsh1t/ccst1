@@ -666,6 +666,22 @@ def _cidr_continuation_state(recon_dir: Path, target: str) -> dict:
         return {**base, "status": "invalid", "reason": "target-mismatch"}
     status = str(payload.get("status") or "").strip().lower()
     if status == "ok":
+        try:
+            remaining_hosts = int(payload.get("remaining_hosts", 0) or 0)
+        except (TypeError, ValueError):
+            return {**base, "status": "invalid", "reason": "invalid-remaining-hosts"}
+        if remaining_hosts < 0:
+            return {**base, "status": "invalid", "reason": "invalid-remaining-hosts"}
+        next_offset_raw = payload.get("next_offset")
+        if next_offset_raw not in (None, ""):
+            try:
+                next_offset = int(next_offset_raw)
+            except (TypeError, ValueError):
+                return {**base, "status": "invalid", "reason": "invalid-offset"}
+            if next_offset < 0:
+                return {**base, "status": "invalid", "reason": "invalid-offset"}
+        if remaining_hosts > 0:
+            return {**base, "status": "invalid", "reason": "complete-with-remaining-hosts"}
         return {**base, "status": "complete"}
     try:
         next_offset = int(payload.get("next_offset"))

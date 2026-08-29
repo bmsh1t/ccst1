@@ -10,6 +10,7 @@ from tools.action_queue import (
     ingest_checkpoint,
     load_queue,
     resolve_action,
+    save_queue,
 )
 from tools.autopilot_state import load_closure_projection
 from tools.checkpoint import _attach_activation_context, _capability_chain_review_item
@@ -248,6 +249,43 @@ def test_versioned_claim_reports_requested_cap_above_stored_cap_without_writing(
 
     assert queue_path.read_bytes() == before
     assert load_queue(tmp_path, TARGET)["actions"][0]["status"] == "queued"
+
+
+def test_versioned_candidate_is_reclaimed_for_runner_replay(tmp_path):
+    action_id, _queue_path = _queued_depth_action(tmp_path)
+    claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=_activation())
+    queue = load_queue(tmp_path, TARGET)
+    queue["actions"][0]["status"] = "candidate"
+    save_queue(tmp_path, TARGET, queue)
+
+    reclaimed = claim_next_action(tmp_path, TARGET, action_id=action_id, metadata=_activation())
+
+    assert reclaimed["previous_status"] == "candidate"
+    assert reclaimed["claim_status"] == "reclaimed"
+    assert reclaimed["status"] == "running"
+    assert load_queue(tmp_path, TARGET)["actions"][0]["attempts"] == 2
+
+
+def test_special_candidate_is_not_promoted_to_runner(tmp_path):
+    added = add_manual_action(
+        tmp_path,
+        target=TARGET,
+        action_type="oast-callback",
+        evidence="callback candidate",
+        next_question="Can the callback be correlated?",
+        action="Poll the callback artifact.",
+        source="oast_listen",
+    )
+    action_id = added["queue"]["actions"][0]["id"]
+    queue = load_queue(tmp_path, TARGET)
+    queue["actions"][0]["status"] = "candidate"
+    save_queue(tmp_path, TARGET, queue)
+
+    selected = claim_next_action(tmp_path, TARGET, action_id=action_id)
+
+    assert selected["previous_status"] == "candidate"
+    assert selected["claim_status"] == "selected"
+    assert selected["status"] == "candidate"
 
 
 def test_claimed_first_skill_route_does_not_require_override_reason(tmp_path):

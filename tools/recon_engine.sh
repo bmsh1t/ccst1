@@ -490,6 +490,45 @@ append_artifact() {
     fi
 }
 
+build_port_url_candidates() {
+    local input="$1"
+    local output="$2"
+    python3 - "$input" "$output" <<'PY'
+import os
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+source, destination = map(Path, sys.argv[1:])
+tls_ports = {443, 4443, 5443, 6443, 7443, 8443, 9443, 10443, 12443}
+rows = set()
+if source.is_file():
+    for raw in source.read_text(encoding="utf-8", errors="replace").splitlines():
+        value = raw.strip().split()[0] if raw.strip() else ""
+        if not value:
+            continue
+        # Unbracketed IPv6 cannot be distinguished from the port separator.
+        if value.count(":") > 1 and not value.startswith("["):
+            continue
+        try:
+            parsed = urlsplit(f"//{value}")
+            host = (parsed.hostname or "").strip().lower().rstrip(".")
+            port = parsed.port
+        except ValueError:
+            continue
+        if not host or port is None or not 1 <= port <= 65535:
+            continue
+        netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        schemes = ("https",) if port in tls_ports else ("http", "https")
+        rows.update(f"{scheme}://{netloc}/" for scheme in schemes)
+
+destination.parent.mkdir(parents=True, exist_ok=True)
+temporary = destination.with_name(f".{destination.name}.tmp.{os.getpid()}")
+temporary.write_text(("\n".join(sorted(rows)) + "\n") if rows else "", encoding="utf-8")
+os.replace(temporary, destination)
+PY
+}
+
 archive_collector_artifact() {
     local artifact="$1"
     local relative archive_root archive_path archive_stamp archived=0
@@ -1590,6 +1629,20 @@ if [ -z "$HTTPX_BIN" ]; then
 fi
 
 mkdir -p "$RECON_DIR"/{subdomains,live,ports,urls,js,dirs,params,exposure,logs} "$RAW_URL_DIR"
+PORT_HISTORY_FILE="$RECON_DIR/ports/history/open_host_ports.txt"
+ORIGIN_HISTORY_FILE="$RECON_DIR/live/history/origin_candidates.txt"
+mkdir -p "$(dirname "$PORT_HISTORY_FILE")" "$(dirname "$ORIGIN_HISTORY_FILE")"
+if [ -s "$RECON_DIR/ports/open_host_ports.txt" ]; then
+    { append_artifact "$PORT_HISTORY_FILE"; append_artifact "$RECON_DIR/ports/open_host_ports.txt"; } \
+        | awk 'NF && !seen[$0]++' > "${PORT_HISTORY_FILE}.tmp" \
+        && mv -f "${PORT_HISTORY_FILE}.tmp" "$PORT_HISTORY_FILE"
+fi
+if [ -s "$RECON_DIR/live/origin_candidates.txt" ]; then
+    { append_artifact "$ORIGIN_HISTORY_FILE"; append_artifact "$RECON_DIR/live/origin_candidates.txt"; } \
+        | awk 'NF && !seen[$0]++' > "${ORIGIN_HISTORY_FILE}.tmp" \
+        && mv -f "${ORIGIN_HISTORY_FILE}.tmp" "$ORIGIN_HISTORY_FILE"
+fi
+touch "$RECON_DIR/urls/port_candidates.txt"
 RECON_MANIFEST="$RECON_DIR/recon_manifest.jsonl"
 CIDR_OFFSET=0
 if [ "$TARGET_KIND" = "cidr" ]; then
@@ -1652,7 +1705,6 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/live/wafw00f_hits.txt"
 : > "$RECON_DIR/live/waf_context.json"
 : > "$RECON_DIR/live/unwaf_bypass_ips.txt"
-: > "$RECON_DIR/live/origin_candidates.txt"
 : > "$RECON_DIR/live/status_200.txt"
 : > "$RECON_DIR/live/status_3xx.txt"
 : > "$RECON_DIR/live/status_401.txt"
@@ -1660,10 +1712,10 @@ touch "$RECON_DIR/subdomains/all.txt" \
 : > "$RECON_DIR/ports/open_ports.txt"
 : > "$RECON_DIR/ports/open_ports_naabu.txt"
 : > "$RECON_DIR/ports/open_ports_all.txt"
-: > "$RECON_DIR/ports/open_host_ports.txt"
 : > "$RECON_DIR/ports/open_host_ports_naabu.txt"
 : > "$RECON_DIR/ports/open_host_ports_nmap.txt"
 : > "$RECON_DIR/ports/open_host_ports_explicit.txt"
+: > "$RECON_DIR/urls/port_candidates.txt"
 : > "$RECON_DIR/urls/katana_targets.txt"
 : > "$RECON_DIR/urls/js_files_analysis.txt"
 : > "$RECON_DIR/js/endpoints.txt"
@@ -2552,8 +2604,12 @@ else
     log_warn "unwaf not installed — skipping origin discovery"
 fi
 
+if [ -s "$ORIGIN_HISTORY_FILE" ]; then
+    { append_artifact "$ORIGIN_HISTORY_FILE"; append_artifact "$RECON_DIR/live/origin_candidates.txt"; } \
+        | awk 'NF && !seen[$0]++' > "${RECON_DIR}/live/.origin_candidates.merge.tmp" \
+        && mv -f "${RECON_DIR}/live/.origin_candidates.merge.tmp" "$RECON_DIR/live/origin_candidates.txt"
+fi
 ORIGIN_CANDS_FILE="$RECON_DIR/live/origin_candidates.txt"
-[ -s "$RECON_DIR/live/unwaf_bypass_ips.txt" ] && ORIGIN_CANDS_FILE="$RECON_DIR/live/unwaf_bypass_ips.txt"
 ORIGIN_CANDS=$(wc -l < "$ORIGIN_CANDS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
 ORIGIN_PHASE_STATUS="skipped"
 if [ "$UNWAF_ENABLE" -eq 1 ]; then
@@ -2789,9 +2845,19 @@ fi
 
 cat "$RECON_DIR/ports/open_ports.txt" "$RECON_DIR/ports/open_ports_naabu.txt" "$RECON_DIR/ports/open_ports_explicit.txt" 2>/dev/null \
     | awk 'NF' | sort -u > "$RECON_DIR/ports/open_ports_all.txt" || true
-cat "$RECON_DIR/ports/open_host_ports_nmap.txt" "$RECON_DIR/ports/open_host_ports_naabu.txt" "$RECON_DIR/ports/open_host_ports_explicit.txt" 2>/dev/null \
+cat "$PORT_HISTORY_FILE" "$RECON_DIR/ports/open_host_ports_nmap.txt" "$RECON_DIR/ports/open_host_ports_naabu.txt" "$RECON_DIR/ports/open_host_ports_explicit.txt" 2>/dev/null \
     | awk 'NF' | sort -u > "$RECON_DIR/ports/open_host_ports.txt" || true
 PORTS_OPEN=$(wc -l < "$RECON_DIR/ports/open_host_ports.txt" 2>/dev/null | tr -d ' ' || echo 0)
+sed -nE 's|.*:([0-9]+)$|\1/open|p' "$RECON_DIR/ports/open_host_ports.txt" \
+    | cat - "$RECON_DIR/ports/open_ports.txt" "$RECON_DIR/ports/open_ports_naabu.txt" "$RECON_DIR/ports/open_ports_explicit.txt" \
+    | awk 'NF' | sort -u > "$RECON_DIR/ports/open_ports_all.txt" || true
+if ! build_port_url_candidates \
+    "$RECON_DIR/ports/open_host_ports.txt" \
+    "$RECON_DIR/urls/port_candidates.txt"; then
+    log_warn "Could not build port-derived URL candidates"
+    : > "$RECON_DIR/urls/port_candidates.txt"
+fi
+PORT_URL_CANDIDATES=$(wc -l < "$RECON_DIR/urls/port_candidates.txt" 2>/dev/null | tr -d ' ' || echo 0)
 PORT_PHASE_STATUS="skipped"
 if [ "$TARGET_KIND" = "url" ] || [ "$TARGET_HAS_EXPLICIT_PORT" = "true" ]; then
     PORT_PHASE_STATUS="seeded"
@@ -2814,10 +2880,11 @@ record_recon_phase \
     "naabu=${NAABU_STATUS} (${NAABU_NOTE}); nmap=${NMAP_STATUS} (${NMAP_NOTE}); host-aware canonical evidence with open_ports_all.txt compatibility projection"
 emit_claude_hint \
     phase                port_scan \
-    open_ports_total     "$PORTS_OPEN"
+    open_ports_total     "$PORTS_OPEN" \
+    port_url_candidates  "$PORT_URL_CANDIDATES"
 emit_claude_hint_actions \
     "review non-standard ports (8080/3000/9200/etc) for less-reviewed surface" \
-    "treat port results as sampled infra context when the host list is large"
+    "review recon/${RECON_TARGET_KEY}/urls/port_candidates.txt as a target-owned URL candidate view; keep off-target rows as external context"
 
 # ============================================================
 # Phase 4: URL Collection

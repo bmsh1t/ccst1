@@ -180,7 +180,12 @@ def build_capability_profile(
         "commands/intel.md",
         "tools/intel_engine.py",
         "tools/intel_artifact.py",
+        "tools/intel_sources.py",
+        "tools/intel_continuation.py",
+        "tools/intelligence_extractor.py",
+        "tools/technology_inventory.py",
     )
+    web_intel_ready = _helpers_exist(resolved_repo, "tools/web_intel_artifact.py")
     credential_ready = _helpers_exist(
         resolved_repo,
         "commands/spray.md",
@@ -189,6 +194,9 @@ def build_capability_profile(
         "tools/credential_store.py",
         "tools/spray_contract.py",
         "tools/spray_orchestrator.sh",
+        "tools/_spray_http_form.py",
+        "tools/_spray_oauth.py",
+        "tools/_spray_trevor.py",
     )
     interactsh_available = bool(resolver("interactsh-client"))
     forge_available = bool(resolver("forge"))
@@ -367,11 +375,15 @@ def build_capability_profile(
         ),
         _lane_record(
             "intel",
-            {"commands/intel.md+tools/intel_engine.py+intel_artifact.py": intel_ready},
+            {
+                "commands/intel.md+tools/intel_engine.py+intel_artifact.py": intel_ready,
+                "tools/web_intel_artifact.py": web_intel_ready,
+            },
             evidence_required=("component-version-or-advisory-signal",),
             classification="evidence_gated",
-            runtime_status="unchecked" if intel_ready else "unavailable",
-            ready_override=False,
+            degraded=("web-intel-recorder-unavailable",) if intel_ready and not web_intel_ready else (),
+            runtime_status="ready" if intel_ready else "unavailable",
+            ready_override=intel_ready,
         ),
         _lane_record(
             "credential",
@@ -380,8 +392,8 @@ def build_capability_profile(
             },
             evidence_required=("reviewed-identity-and-request-spec",),
             classification="evidence_gated",
-            runtime_status="unchecked" if credential_ready else "unavailable",
-            ready_override=False,
+            runtime_status="ready" if credential_ready else "unavailable",
+            ready_override=credential_ready,
         ),
     ]
 

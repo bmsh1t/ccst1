@@ -142,6 +142,44 @@ def test_network_unavailable_advisory_coverage_handoffs_without_retry(tmp_path):
     assert "reuse preserved cache" in state["reason"]
 
 
+@pytest.mark.parametrize("coverage_status", ["partial", "unavailable", "error"])
+def test_degraded_advisory_coverage_without_eligible_queries_cannot_complete(
+    tmp_path, coverage_status
+):
+    _prepare_inventory(tmp_path)
+    payload = _intel()
+    payload["coverage_status"] = coverage_status
+    payload["sources"] = [{
+        "source": "nvd",
+        "status": coverage_status,
+        "stats": {"eligible_queries": 0, "error_count": 1},
+    }]
+    _write_intel(tmp_path, payload)
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "handoff"
+    assert state["blocked"]
+    assert coverage_status in state["reason"]
+
+
+def test_partial_advisory_coverage_with_eligible_queries_requests_refresh(tmp_path):
+    _prepare_inventory(tmp_path)
+    payload = _intel()
+    payload["coverage_status"] = "partial"
+    payload["sources"] = [{
+        "source": "nvd",
+        "status": "partial",
+        "stats": {"eligible_queries": 1, "error_count": 1},
+    }]
+    _write_intel(tmp_path, payload)
+
+    state = inspect_intel_continuation(tmp_path, "target.test", now=NOW)
+
+    assert state["action"] == "run_intel"
+    assert state["blocked"][0]["source"] == "nvd"
+
+
 def test_intel_review_sidecar_is_bounded_and_stable(tmp_path, monkeypatch):
     _prepare_inventory(tmp_path)
     advisories = []

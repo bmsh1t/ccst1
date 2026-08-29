@@ -2110,16 +2110,17 @@ def _memory_evidence_ref(text: str) -> str:
     return match.group(1).strip().strip("'\"").rstrip(".,;:)]}")
 
 
-def _memory_evidence_available(repo_root: str | Path | None, evidence_ref: str) -> bool:
-    """Return whether a legacy memory artifact pointer resolves on disk."""
-    if not repo_root or not evidence_ref:
+def _memory_evidence_available(
+    repo_root: str | Path | None,
+    target: str,
+    evidence_ref: str,
+) -> bool:
+    """Return whether a legacy memory pointer is target-owned and non-empty."""
+    if not repo_root or not target or not evidence_ref:
         return False
-    path = Path(evidence_ref)
-    if not path.is_absolute():
-        path = Path(repo_root) / path
     try:
-        return path.exists()
-    except OSError:
+        return bool(_target_owned_nonempty_evidence_ref(repo_root, target, evidence_ref))
+    except (OSError, ValueError):
         return False
 
 
@@ -2162,7 +2163,11 @@ def _build_memory_action_queue(
             )
         if evidence_ref:
             entry["evidence_ref"] = evidence_ref
-            entry["evidence_available"] = _memory_evidence_available(repo_root, evidence_ref)
+            entry["evidence_available"] = _memory_evidence_available(
+                repo_root,
+                str(target_memory.get("target") or ""),
+                evidence_ref,
+            )
         else:
             entry["evidence_available"] = False
         queue.append(entry)
@@ -3517,6 +3522,8 @@ def _explicit_partial_reason(state: dict) -> str:
     if run_budget.get("partial"):
         return "recon_budget_partial"
     continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
+    if continuation.get("status") == "pending":
+        return "cidr_continuation_pending"
     if continuation.get("status") == "invalid":
         return "cidr_continuation_invalid"
     if state.get("active_action_queue_count"):
@@ -3910,6 +3917,7 @@ _CLOSURE_REASON_PRIORITY = {
     "coverage_empty": 60,
     "coverage_invalid": 60,
     "coverage_high_value_gaps": 61,
+    "cidr_continuation_pending": 40,
     "observation_inventory_partial": 70,
     "observation_high_value_pending": 70,
     "browser_evidence_partial": 71,
@@ -3952,6 +3960,7 @@ _CLOSURE_REASON_OWNERS = {
     "identity_v2_follow_up_pending": {"evidence-ledger"},
     "identity_v2_candidate_pending": {"evidence-ledger"},
     "identity_v2_incomplete": {"evidence-ledger"},
+    "cidr_continuation_pending": {"recon"},
     "cidr_continuation_invalid": {"recon"},
 }
 
@@ -4036,16 +4045,30 @@ def _closure_reason_frontier(
             stop_condition="publish a valid witness or record the checkpoint read/queue mismatch",
             priority=85,
         )
-    if reason in {"runtime_phase_active", "recon_budget_partial", "cidr_continuation_invalid"}:
+    if reason in {
+        "runtime_phase_active",
+        "recon_budget_partial",
+        "cidr_continuation_pending",
+        "cidr_continuation_invalid",
+    }:
         owner = "runtime" if reason == "runtime_phase_active" else "recon"
         action = "wait_scan" if state.get("scan_in_progress") else "wait_recon"
-        if reason in {"recon_budget_partial", "cidr_continuation_invalid"}:
+        if reason in {
+            "recon_budget_partial",
+            "cidr_continuation_pending",
+            "cidr_continuation_invalid",
+        }:
             action = "run_recon"
         continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
         if reason == "cidr_continuation_invalid":
             action = "run_recon"
             expected_information_gain = "repair the invalid CIDR cursor and resume target-owned Recon coverage"
             stop_condition = "publish a valid cursor or record the bounded Recon blocker"
+        elif reason == "cidr_continuation_pending":
+            expected_information_gain = (
+                f"cover the remaining {continuation.get('remaining_hosts', 'unknown')} CIDR hosts"
+            )
+            stop_condition = "advance or complete the durable cursor, or record its explicit blocker"
         else:
             expected_information_gain = "obtain the owner-written phase result before selecting more work"
             stop_condition = "refresh after the matching phase completes or record its bounded blocker"
@@ -4062,7 +4085,7 @@ def _closure_reason_frontier(
                     continuation.get("path")
                     or f"recon/{target_key}/live/cidr_continuation.json"
                 )
-                if reason == "cidr_continuation_invalid"
+                if reason in {"cidr_continuation_pending", "cidr_continuation_invalid"}
                 else f"recon/{target_key}/recon_manifest.jsonl"
                 if owner == "recon"
                 else f"state/{target_key}/session.json"
@@ -4248,6 +4271,7 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "identity_v2_candidate_pending": "repair_evidence_ledger",
         "identity_v2_incomplete": "repair_evidence_ledger",
         "recon_budget_partial": "run_recon",
+        "cidr_continuation_pending": "run_recon",
         "cidr_continuation_invalid": "run_recon",
         "runtime_phase_active": "wait_scan" if state.get("scan_in_progress") else "wait_recon",
     }
@@ -4285,6 +4309,7 @@ def _finalize_closure_continuation(
         "surface_projection_pending",
         "checkpoint_stale",
         "checkpoint_invalid",
+        "cidr_continuation_pending",
         "cidr_continuation_invalid",
     }
     if fallback and (force_fallback or not matching_exists):

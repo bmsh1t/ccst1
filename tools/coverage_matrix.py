@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import fcntl
 import hashlib
 import html
 import json
@@ -89,6 +90,7 @@ import os
 import re
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
@@ -337,6 +339,20 @@ def _projection_path(repo_root: Path, target: str) -> Path:
     return repo_root / "evidence" / _storage_key(target) / "coverage_matrix-summary.json"
 
 
+@contextmanager
+def coverage_matrix_mutation_lock(repo_root: Path | str, target: str):
+    """Serialize one target's complete coverage read-modify-write transaction."""
+    path = _matrix_path(Path(repo_root), target)
+    lock_path = path.parent / "locks" / "coverage_matrix.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _empty_matrix(target: str) -> dict:
     return {
         "target": target,
@@ -578,7 +594,7 @@ def load_matrix_projection(
     }
 
 
-def save_matrix(target: str, matrix: dict, repo_root: Path | str | None = None) -> Path:
+def _save_matrix_unlocked(target: str, matrix: dict, repo_root: Path | str | None = None) -> Path:
     """Persist matrix; recompute summary at save time.
 
     Mutates the input dict in place so the caller sees the freshly
@@ -596,6 +612,13 @@ def save_matrix(target: str, matrix: dict, repo_root: Path | str | None = None) 
     _write_json_atomic(path, matrix)
     save_matrix_projection(target, matrix, repo)
     return path
+
+
+def save_matrix(target: str, matrix: dict, repo_root: Path | str | None = None) -> Path:
+    """Persist a matrix under the target-local mutation lock."""
+    repo = Path(repo_root) if repo_root else BASE_DIR
+    with coverage_matrix_mutation_lock(repo, target):
+        return _save_matrix_unlocked(target, matrix, repo)
 
 
 def _compute_summary(matrix: dict) -> dict:
@@ -1335,6 +1358,31 @@ def rebuild_matrix(
     force_clean: bool = False,
     min_weight_to_include: float = 1.0,
 ) -> dict:
+    """Rebuild and publish Coverage atomically for one target.
+
+    The returned dict remains available to callers that need the in-memory
+    projection, while the target-local lock also covers the persisted write so
+    a concurrent mark cannot be overwritten by a stale rebuild snapshot.
+    """
+    repo = Path(repo_root) if repo_root else BASE_DIR
+    with coverage_matrix_mutation_lock(repo, target):
+        matrix = _rebuild_matrix_unlocked(
+            target,
+            repo_root=repo,
+            force_clean=force_clean,
+            min_weight_to_include=min_weight_to_include,
+        )
+        _save_matrix_unlocked(target, matrix, repo)
+        return matrix
+
+
+def _rebuild_matrix_unlocked(
+    target: str,
+    repo_root: Path | str | None = None,
+    *,
+    force_clean: bool = False,
+    min_weight_to_include: float = 1.0,
+) -> dict:
     """Populate the matrix from cached recon URLs + findings.
 
     Two endpoint sources are scanned:
@@ -1936,18 +1984,20 @@ def mark_endpoint_kind(
             f"unknown endpoint kind source: {source!r}. "
             f"Valid sources: {', '.join(sorted(FINAL_ENDPOINT_KIND_SOURCES))}"
         )
-    matrix = load_matrix(target, repo_root)
-    endpoint = _canonicalize_endpoint(endpoint)
-    ep = _ensure_endpoint(matrix, endpoint, value_weight(endpoint))
-    observed_params = list(ep.get("observed_params") or [])
-    ep["endpoint_kind"] = kind
-    ep["kind_source"] = source
-    ep["kind_reason"] = reason
-    ep["kind_triaged_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    ep["auto_hints"] = list(ep.get("auto_hints") or _endpoint_auto_hints(endpoint, observed_params))
-    _apply_endpoint_applicability(ep, kind)
-    save_matrix(target, matrix, repo_root)
-    return ep
+    repo = Path(repo_root) if repo_root else BASE_DIR
+    with coverage_matrix_mutation_lock(repo, target):
+        matrix = load_matrix(target, repo)
+        endpoint = _canonicalize_endpoint(endpoint)
+        ep = _ensure_endpoint(matrix, endpoint, value_weight(endpoint))
+        observed_params = list(ep.get("observed_params") or [])
+        ep["endpoint_kind"] = kind
+        ep["kind_source"] = source
+        ep["kind_reason"] = reason
+        ep["kind_triaged_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        ep["auto_hints"] = list(ep.get("auto_hints") or _endpoint_auto_hints(endpoint, observed_params))
+        _apply_endpoint_applicability(ep, kind)
+        _save_matrix_unlocked(target, matrix, repo)
+        return ep
 
 
 def mark_cell(
@@ -1977,20 +2027,22 @@ def mark_cell(
     vuln_class = normalize_vuln_class(vuln_class)
     if status not in STATUS_VALUES:
         raise ValueError(f"unknown status: {status}")
-    matrix = load_matrix(target, repo_root)
-    endpoint = _canonicalize_endpoint(endpoint)
-    weight = value_weight(endpoint)
-    ep = _ensure_endpoint(matrix, endpoint, weight)
-    cell = {"status": status}
-    if reason:
-        cell["reason"] = reason
-    ep["cells"][vuln_class] = cell
-    save_matrix(target, matrix, repo_root)
+    repo = Path(repo_root) if repo_root else BASE_DIR
+    with coverage_matrix_mutation_lock(repo, target):
+        matrix = load_matrix(target, repo)
+        endpoint = _canonicalize_endpoint(endpoint)
+        weight = value_weight(endpoint)
+        ep = _ensure_endpoint(matrix, endpoint, weight)
+        cell = {"status": status}
+        if reason:
+            cell["reason"] = reason
+        ep["cells"][vuln_class] = cell
+        _save_matrix_unlocked(target, matrix, repo)
 
-    if write_finding and status == "tested_finding":
-        _append_finding(target, endpoint, vuln_class, reason, repo_root)
+        if write_finding and status == "tested_finding":
+            _append_finding(target, endpoint, vuln_class, reason, repo)
 
-    return cell
+        return cell
 
 
 def _append_finding(

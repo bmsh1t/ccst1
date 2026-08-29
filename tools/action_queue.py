@@ -1892,13 +1892,22 @@ def claim_next_action(
         )
         if prepared_metadata:
             selected["metadata"] = prepared_metadata
-        if previous == "queued":
+        existing_metadata = selected.get("metadata") if isinstance(selected.get("metadata"), dict) else {}
+        # A versioned runner may leave a candidate after an observation that
+        # needs another bounded replay.  Special candidate actions (Spray,
+        # OAST, and other evidence-only projections) are not Runner claims and
+        # must remain candidate until their own owner resolves them.
+        candidate_requires_runner_claim = (
+            previous == "candidate"
+            and existing_metadata.get("depth_contract_version") == DEPTH_CONTRACT_VERSION
+        )
+        if previous == "queued" or candidate_requires_runner_claim:
             selected["status"] = "running"
             selected["attempts"] = int(selected.get("attempts", 0) or 0) + 1
             selected["updated_at"] = now_utc()
             queue["actions"].sort(key=_action_sort_key)
             save_queue(repo_root, target, queue)
-            claim_status = "claimed"
+            claim_status = "claimed" if previous == "queued" else "reclaimed"
         elif metadata_changed:
             selected["updated_at"] = now_utc()
             save_queue(repo_root, target, queue)

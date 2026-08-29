@@ -121,6 +121,21 @@ def test_collector_sources_and_gzip_merge_exact_url_provenance(tmp_path):
     assert rows["https://api.target.com/static/app.js"]["sources"] == ["js_inventory"]
 
 
+def test_port_candidates_enter_surface_with_scope_classification(tmp_path):
+    recon, _base, _variants = _write_inputs(tmp_path)
+    (recon / "urls" / "port_candidates.txt").write_text(
+        "http://api.target.com:8080/\nhttps://192.0.2.10:8443/\n",
+        encoding="utf-8",
+    )
+
+    build_surface_index(tmp_path, "target.com")
+    rows = {item["url"]: item for item in iter_surface_index(tmp_path, "target.com")}
+
+    assert rows["http://api.target.com:8080/"]["sources"] == ["port_candidate"]
+    assert rows["http://api.target.com:8080/"]["target_owned"] is True
+    assert rows["https://192.0.2.10:8443/"]["target_owned"] is False
+
+
 def test_active_inventory_excludes_collector_raw_sources(tmp_path):
     recon, _base, _variants = _write_inputs(tmp_path)
     (recon / "urls" / "raw").mkdir()
@@ -420,7 +435,8 @@ def test_surface_projection_exposes_resumable_raw_page_cursor(tmp_path):
 
     assert continuation["available"] is True
     assert continuation["next_cursor"]
-    assert "--cursor" not in continuation["command"]
+    assert "--cursor" in continuation["command"]
+    assert continuation["next_cursor"] in continuation["command"]
 
 
 def test_probe_sanitization_does_not_duplicate_existing_exact_surface(tmp_path):

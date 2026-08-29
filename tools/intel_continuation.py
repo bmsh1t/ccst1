@@ -697,6 +697,47 @@ def inspect_intel_continuation(
                 "owner_binding": owner_binding if isinstance(owner_binding, dict) else {},
             },
         }
+    if coverage_status in {"partial", "unavailable", "error"}:
+        blocked_sources = []
+        eligible_total = 0
+        for source in advisory_sources:
+            stats = source.get("stats") if isinstance(source.get("stats"), dict) else {}
+            eligible_queries = int(
+                source.get("eligible_queries")
+                or stats.get("eligible_queries", 0)
+                or 0
+            )
+            eligible_total += max(0, eligible_queries)
+            error_count = int(
+                source.get("error_count")
+                or stats.get("error_count", 0)
+                or 0
+            )
+            status = str(source.get("status") or "unknown").strip().lower()
+            blocked_sources.append({
+                "source": str(source.get("source") or "")[:40],
+                "status": status,
+                "eligible_queries": max(0, eligible_queries),
+                "error_count": max(0, error_count),
+                "network_unavailable": bool(source.get("network_unavailable")),
+            })
+        if not blocked_sources:
+            blocked_sources = [{
+                "source": "advisory-sources",
+                "status": coverage_status,
+                "eligible_queries": 0,
+                "error_count": 0,
+                "network_unavailable": False,
+            }]
+        return {
+            **base,
+            "action": "run_intel" if eligible_total > 0 else "handoff",
+            "reason": (
+                f"Intel advisory coverage is {coverage_status}; "
+                "preserve the degraded-source handoff before claiming completion"
+            ),
+            "blocked": blocked_sources[:8],
+        }
     # Web Intel 只补充官方源没有覆盖的内容，不能抢占已有高危/受影响 advisory。
     if gaps.get("web_search_recommended") and recommended:
         return {

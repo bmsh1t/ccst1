@@ -556,6 +556,25 @@ def test_recon_inspection_projects_pending_cidr_continuation(tmp_path):
     assert inspect_recon_artifacts(tmp_path, "10.0.0.0/19")["cidr_continuation"]["status"] == "invalid"
 
 
+def test_recon_inspection_rejects_inconsistent_complete_cidr_continuation(tmp_path):
+    live_dir = tmp_path / "recon" / "10.0.0.0_19" / "live"
+    live_dir.mkdir(parents=True)
+    (live_dir / "cidr_continuation.json").write_text(
+        json.dumps({
+            "target": "10.0.0.0/19",
+            "status": "ok",
+            "next_offset": 4096,
+            "remaining_hosts": 1,
+        }),
+        encoding="utf-8",
+    )
+
+    state = inspect_recon_artifacts(tmp_path, "10.0.0.0/19")
+
+    assert state["cidr_continuation"]["status"] == "invalid"
+    assert state["cidr_continuation"]["reason"] == "complete-with-remaining-hosts"
+
+
 @pytest.mark.parametrize("content", [b"{broken", b"\xff"])
 def test_recon_inspection_warns_on_invalid_cidr_continuation(tmp_path, content):
     live_dir = tmp_path / "recon" / "10.0.0.0_19" / "live"

@@ -8,6 +8,7 @@ cell counts, or specific vuln-class ordering.
 from __future__ import annotations
 
 import json
+import multiprocessing
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,18 @@ from surface_index import build_surface_index
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _coverage_mark_worker(repo_root: str, target: str, vuln_class: str, ready, start) -> None:
+    ready.set()
+    start.wait(10)
+    mark_cell(
+        target,
+        "/api/admin/users",
+        vuln_class,
+        "tested_clean",
+        repo_root=repo_root,
+    )
 
 
 def test_readme_names_the_canonical_web2_closure_taxonomy():
@@ -181,6 +194,32 @@ class TestEmptyMatrix:
 
         with pytest.raises(ValueError, match=message):
             load_matrix("x.com", repo_root=tmp_path)
+
+
+def test_concurrent_coverage_marks_preserve_disjoint_cells(tmp_path):
+    context = multiprocessing.get_context("fork")
+    start = context.Event()
+    ready = [context.Event() for _ in ("IDOR", "SSRF", "XSS")]
+    processes = [
+        context.Process(
+            target=_coverage_mark_worker,
+            args=(str(tmp_path), "x.com", vuln_class, ready[index], start),
+        )
+        for index, vuln_class in enumerate(("IDOR", "SSRF", "XSS"))
+    ]
+    for process in processes:
+        process.start()
+    assert all(event.wait(10) for event in ready)
+    start.set()
+    for process in processes:
+        process.join(10)
+        assert process.exitcode == 0
+
+    matrix = load_matrix("x.com", repo_root=tmp_path)
+    endpoint = next(item for item in matrix["endpoints"] if item["endpoint"] == "/api/admin/users")
+    assert {name for name, cell in endpoint["cells"].items() if cell["status"] == "tested_clean"} >= {
+        "IDOR", "SSRF", "XSS",
+    }
 
 
 class TestCanonicalizeEndpoint:

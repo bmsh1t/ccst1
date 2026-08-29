@@ -39,12 +39,20 @@ HELPERS = (
     "commands/intel.md",
     "tools/intel_engine.py",
     "tools/intel_artifact.py",
+    "tools/intel_sources.py",
+    "tools/intel_continuation.py",
+    "tools/intelligence_extractor.py",
+    "tools/technology_inventory.py",
+    "tools/web_intel_artifact.py",
     "commands/spray.md",
     "skills/credential-attack/SKILL.md",
     "tools/auth_session.py",
     "tools/credential_store.py",
     "tools/spray_contract.py",
     "tools/spray_orchestrator.sh",
+    "tools/_spray_http_form.py",
+    "tools/_spray_oauth.py",
+    "tools/_spray_trevor.py",
 )
 
 
@@ -103,7 +111,7 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
     assert all(
         lane["ready"]
         for lane_id, lane in lanes.items()
-        if lane_id not in {"browser", "cloud", "oast", "intel", "credential"}
+        if lane_id not in {"browser", "cloud", "oast"}
     )
     assert lanes["browser"]["ready"] is False
     assert lanes["browser"]["classification"] == "artifact_bridge"
@@ -123,11 +131,12 @@ def test_full_profile_is_ordered_bounded_and_path_free(tmp_path):
     assert lanes["web3"]["ready"] is True
     assert lanes["web3"]["runtime_status"] == "degraded"
     assert lanes["web3"]["missing"] == ["foundry-forge"]
-    for lane_id in ("intel", "credential"):
-        assert lanes[lane_id]["ready"] is False
-        assert lanes[lane_id]["classification"] == "evidence_gated"
-        assert lanes[lane_id]["runtime_status"] == "unchecked"
-        assert lanes[lane_id]["missing"] == []
+    assert lanes["intel"]["ready"] is True
+    assert lanes["intel"]["runtime_status"] == "ready"
+    assert lanes["intel"]["missing"] == []
+    assert lanes["credential"]["ready"] is True
+    assert lanes["credential"]["runtime_status"] == "ready"
+    assert lanes["credential"]["missing"] == []
     assert all(lane["input_fingerprint"].startswith("sha256:") for lane in lanes.values())
     encoded = json.dumps(profile, sort_keys=True)
     assert str(tmp_path) not in encoded
@@ -187,10 +196,10 @@ def test_empty_path_keeps_session_capabilities_advisory_and_uses_source_fallback
     assert lanes["recon"]["missing"] == ["httpx-or-curl"]
     assert lanes["cloud"]["missing"] == ["cloud-provider-tool"]
     assert lanes["surface"]["ready"] is True
-    for lane_id in ("intel", "credential"):
-        assert lanes[lane_id]["ready"] is False
-        assert lanes[lane_id]["classification"] == "evidence_gated"
-        assert lanes[lane_id]["runtime_status"] == "unchecked"
+    assert lanes["intel"]["ready"] is True
+    assert lanes["intel"]["runtime_status"] == "ready"
+    assert lanes["credential"]["ready"] is True
+    assert lanes["credential"]["runtime_status"] == "ready"
 
 
 def test_browser_cli_presence_does_not_change_mcp_only_profile(tmp_path):
@@ -241,7 +250,8 @@ def test_fallbacks_require_their_local_helpers(tmp_path):
     assert profile["lanes"][-2]["ready"] is False
     assert profile["lanes"][-2]["runtime_status"] == "unavailable"
     assert profile["lanes"][-2]["missing"] == [
-        "commands/intel.md+tools/intel_engine.py+intel_artifact.py"
+        "commands/intel.md+tools/intel_engine.py+intel_artifact.py",
+        "tools/web_intel_artifact.py",
     ]
     assert profile["lanes"][-1]["id"] == "credential"
     assert profile["lanes"][-1]["ready"] is False
@@ -282,7 +292,7 @@ def test_missing_sql_helper_only_degrades_sql_lane(tmp_path):
     assert all(
         lane["ready"]
         for lane_id, lane in lanes.items()
-        if lane_id not in {"browser", "cloud", "oast", "sql", "intel", "credential"}
+        if lane_id not in {"browser", "cloud", "oast", "sql"}
     )
     assert lanes["browser"]["classification"] == "artifact_bridge"
 
@@ -304,6 +314,25 @@ def test_optional_backend_state_is_not_inferred_from_transport_or_docs(tmp_path)
     assert lanes["web3"]["ready"] is True
     assert lanes["web3"]["missing"] == ["foundry-forge"]
     assert lanes["web3"]["runtime_status"] == "degraded"
+
+
+def test_intel_and_credential_lanes_require_real_local_entrypoints(tmp_path):
+    repo = _repo_with_helpers(tmp_path)
+    (repo / "tools" / "web_intel_artifact.py").unlink()
+    (repo / "tools" / "_spray_oauth.py").unlink()
+
+    profile = build_capability_profile(repo, which=_which_with("curl", "httpx"))
+    lanes = {lane["id"]: lane for lane in profile["lanes"]}
+
+    assert lanes["intel"]["ready"] is True
+    assert lanes["intel"]["runtime_status"] == "ready"
+    assert lanes["intel"]["missing"] == ["tools/web_intel_artifact.py"]
+    assert lanes["intel"]["degraded"] == ["web-intel-recorder-unavailable"]
+    assert lanes["credential"]["ready"] is False
+    assert lanes["credential"]["runtime_status"] == "unavailable"
+    assert lanes["credential"]["missing"] == [
+        "commands/spray.md+credential-attack"
+    ]
 
 
 def test_unknown_profile_is_distinct_from_checked_but_degraded():

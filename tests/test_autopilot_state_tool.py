@@ -1289,6 +1289,33 @@ def test_invalid_cidr_continuation_has_recon_frontier(tmp_path):
     )
 
 
+def test_pending_cidr_continuation_has_recon_frontier_and_cannot_finish():
+    closure = build_closure_projection(
+        {
+            "target": "10.0.0.0/19",
+            "resolved_target": "10.0.0.0/19",
+            "next_action": "handoff",
+            "recon_artifacts": {
+                "cidr_continuation": {
+                    "status": "pending",
+                    "next_offset": 4096,
+                    "remaining_hosts": 4094,
+                    "path": "recon/10.0.0.0_19/live/cidr_continuation.json",
+                }
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"][0] == "cidr_continuation_pending"
+    assert closure["next_action"] == "run_recon"
+    assert closure["actionable_frontier"][0]["owner"] == "recon"
+    assert closure["actionable_frontier"][0]["evidence_ref"].endswith(
+        "cidr_continuation.json"
+    )
+
+
 def test_checkpoint_cursor_missing_from_queue_is_stale_not_advanced(tmp_path):
     target = "target.com"
     ingest_checkpoint(
@@ -4110,6 +4137,34 @@ class TestAutopilotState:
         assert state_with_artifact["memory_candidate_next"]["evidence_ref"].endswith("raw-pair.json")
         assert state_with_artifact["memory_candidate_next"]["evidence_available"] is True
         assert state_with_artifact["next_action"] == "validate_finding"
+
+    def test_target_memory_evidence_requires_target_owned_nonempty_regular_file(self, tmp_path):
+        repo_root = tmp_path
+        memory_path = repo_root / "memory" / "goals" / "targets" / "target.com.json"
+        memory_path.parent.mkdir(parents=True)
+        memory_path.write_text(
+            json.dumps(
+                {
+                    "target": "target.com",
+                    "next_actions": [
+                        {"text": "Run /validate Evidence=evidence/target.com/empty.json"},
+                        {"text": "Run /validate Evidence=evidence/other.test/raw.json"},
+                        {"text": "Run /validate Evidence=evidence/target.com"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        target_root = repo_root / "evidence" / "target.com"
+        target_root.mkdir(parents=True)
+        (target_root / "empty.json").write_text("", encoding="utf-8")
+        (repo_root / "evidence" / "other.test").mkdir(parents=True)
+        (repo_root / "evidence" / "other.test" / "raw.json").write_text("{}", encoding="utf-8")
+
+        state = build_autopilot_state(str(repo_root), "target.com")
+
+        assert len(state["memory_action_queue"]) == 3
+        assert all(item["evidence_available"] is False for item in state["memory_action_queue"])
 
     def test_legacy_memory_narrative_cannot_preempt_report_closure(self, tmp_path):
         target_memory_path = tmp_path / "memory" / "goals" / "targets" / "target.com.json"

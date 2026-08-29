@@ -659,6 +659,41 @@ def test_recon_engine_writes_explicit_port_probe_url(tmp_path):
     assert discovery.read_text(encoding="utf-8") == "http://127.0.0.1:3001\n"
 
 
+def test_recon_engine_builds_url_candidates_from_verified_host_ports(tmp_path):
+    script = Path(__file__).resolve().parents[1] / "tools" / "recon_engine.sh"
+    prefix = script.read_text(encoding="utf-8").split('TARGET="${1:?', 1)[0]
+    harness = tmp_path / "port-functions.sh"
+    harness.write_text(prefix, encoding="utf-8")
+    ports = tmp_path / "open_host_ports.txt"
+    output = tmp_path / "urls" / "port_candidates.txt"
+    ports.write_text(
+        "target.test:8080\n[2001:db8::1]:8443\ninvalid\n2001:db8::2:9000\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; build_port_url_candidates "$2" "$3"',
+            "bash",
+            str(harness),
+            str(ports),
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        "http://target.test:8080/",
+        "https://[2001:db8::1]:8443/",
+        "https://target.test:8080/",
+    ]
+
+
 def test_recon_engine_projects_only_http_urls_and_seeds_explicit_port(tmp_path):
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
@@ -1438,6 +1473,19 @@ def test_recon_engine_supports_naabu_and_xnlinkfinder_fallback():
     assert 'python3 "$linkfinder_bin" -i "$tmp_js" -o cli' in text
     assert '"$linkfinder_bin" -i "$tmp_js" -o cli' in text
     assert 'link_analyzer          "$JS_LINK_ANALYZER"' in text
+
+
+def test_recon_engine_preserves_port_and_origin_derivatives_across_reruns():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+
+    assert 'PORT_HISTORY_FILE="$RECON_DIR/ports/history/open_host_ports.txt"' in text
+    assert 'ORIGIN_HISTORY_FILE="$RECON_DIR/live/history/origin_candidates.txt"' in text
+    assert 'append_artifact "$RECON_DIR/ports/open_host_ports.txt"' in text
+    assert 'append_artifact "$RECON_DIR/live/origin_candidates.txt"' in text
+    assert 'cat "$PORT_HISTORY_FILE" "$RECON_DIR/ports/open_host_ports_nmap.txt"' in text
+    assert ': > "$RECON_DIR/ports/open_host_ports.txt"' not in text
+    assert ': > "$RECON_DIR/live/origin_candidates.txt"' not in text
 
 
 @pytest.mark.parametrize("fake_exit", [0, 7])

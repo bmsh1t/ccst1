@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -2925,7 +2926,8 @@ def rank_surface(context: dict) -> dict:
                 "next_cursor": next_cursor,
                 "command": (
                     "python3 tools/surface_index.py page "
-                    f"--target {context['target']} --limit 50 --target-owned"
+                    f"--target {shlex.quote(context['target'])} --limit 50 "
+                    f"--target-owned --cursor {shlex.quote(next_cursor)}"
                 ),
             }
         except (OSError, SurfaceIndexError, ValueError):
