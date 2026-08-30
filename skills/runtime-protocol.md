@@ -77,6 +77,7 @@ Claude Code CLI 主会话根据目标、阶段和证据选择当前 Skill；Skil
 - `bb-methodology`：会话路线、阶段判断、迷路时重新定向
 - `web2-recon`：资产和攻击面发现
 - `web2-vuln-classes`：具体漏洞类别验证思路
+- `credential-attack`：具备身份来源、preflight、审计和停止条件时的受控凭据验证路径
 - `triage-validation`：Candidate 到 Validated Finding 的验证 gate
 
 Claude 主会话用 Skill 约束当前流程、工具、检查层和写回结果，并保留接受、替换或组合

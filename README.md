@@ -19,7 +19,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8+-3776AB.svg?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-1979_passing-brightgreen.svg?style=flat-square)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-passing-brightgreen.svg?style=flat-square)](tests/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Plugin-D97706.svg?style=flat-square&logo=anthropic&logoColor=white)](https://claude.ai/claude-code)
 
 <br>

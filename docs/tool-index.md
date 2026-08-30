@@ -190,7 +190,7 @@ identity, and cloud signals without re-enumerating everything.
 | 401/403 on interesting endpoint | `bypass_403.sh` |
 | Multiple session files in `.private/` | `role_diff.py` |
 | Two account creds + numeric IDs | `role_diff.py`, then `h1_idor_scanner.py` |
-| GraphQL endpoint discovered | `graphql_audit.sh` for target-owned discovery, then `validation_runner.py protocol-replay` for an exact operation; `h1_mutation_idor.py` remains explicit opt-in |
+| GraphQL endpoint discovered | `graphql_audit.sh` for target-owned discovery, then `validation_runner.py request-diff` with the observed baseline/variant HTTP request spec; `h1_mutation_idor.py` remains explicit opt-in |
 | OAuth `/authorize` `/callback` discovered | manual OAuth/OIDC flow review; `h1_oauth_tester.py` only for HackerOne/H1-compatible flows |
 | Payment / coupon / wallet / cart / checkout endpoint | high-value business-logic lane |
 | Quota / OTP / payment / cart race signal | manual review; `h1_race.py` only for controlled race probes |

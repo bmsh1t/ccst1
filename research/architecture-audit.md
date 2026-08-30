@@ -1,6 +1,6 @@
 # 当前项目架构审核报告
 
-审核日期：2026-07-13
+审核日期：2026-08-30（基于 2026-07-13 初始审核更新）
 范围：以 Claude CLI `/autopilot` 为核心，关注功能、能力、架构、流程、2–8GB 个人机器
 顺序使用和失败恢复；不把项目自身安全加固作为本轮主线。
 
@@ -8,7 +8,8 @@
 
 仓库实现已经达到**个人顺序使用下的首个实战稳定架构**：参数、runtime preflight、目标
 身份、recon/surface/context、action/evidence/finding/report/checkpoint 已形成可测试闭环；此前
-四个 P1 状态正确性问题和 runtime orphan marker 恢复问题均已修复，没有未解决 P0/P1。
+四个 P1 状态正确性问题、runtime orphan marker 恢复问题，以及本轮确认的 taxonomy 第二
+事实源和 report 跨 owner 重放问题均已修复，没有未解决 P0/P1。
 
 稳定成立的边界是：
 
@@ -18,24 +19,19 @@
 - scanner quick 只是 breadth sensor，AI 仍负责证据价值、下一步和停止判断；
 - 2–8GB 机器不同时运行多套 browser、scanner 和 agent runtime。
 
-**当前真实 Claude runtime 不是 clean 状态**：`runtime_doctor.py --fail-on-drift` 检出 2 项
-command diff（`distill.md`、`kb.md`）。仓库 preflight 会正确返回
-`stop_runtime_drift`，因此仓库代码稳定不等于此刻已安装 runtime 可直接使用最新契约。
-这两项来自尚未同步的当前仓库命令改动，不是架构数据丢失；本审核只记录，不自动修改
-`~/.claude`。
+2026-07-13 的本机快照曾由 `runtime_doctor.py --fail-on-drift` 检出 `distill.md`、`kb.md`
+两项 command diff。2026-08-30 更新不读取或修改真实 `~/.claude`，因此不把该历史快照
+继续陈述为当前 runtime 事实；实际使用前仍由 repository preflight 给出权威 drift 结果。
 
 ## 规模与入口
 
-当前仓库约有 39 个 slash commands、11 个 agents、12 个顶层 Skills、145 个 `tools/`
-文件和 150 个顶层 pytest 文件。主要入口分为两套：
+当前架构只有一套 controller 入口：
 
 1. **Claude inline runtime**：`commands/autopilot.md` ->
    `tools/autopilot_bootstrap.py` -> 当前 Claude 会话控制循环。
-2. **legacy local-agent runtime**：`agent.py`、`brain.py`、
-   `tools/hunt.py --agent`，拥有独立 `agent_session.json`/trace 语义。
 
-两套入口共享部分 deterministic tools 和目标 artifact，但不能共享 controller/session 假设。
-`commands/autopilot.md` 已明确 inline 入口不创建或恢复 legacy `agent_session.json`。
+原本独立的本地 agent controller 已由 `f3a1045` 退役；deterministic tools 仍由 inline
+controller 复用，不再维护第二套 controller/session 语义。
 
 ## 分层架构
 
@@ -206,7 +202,7 @@ batch key 已统一，但 recon Shell 仍生产大量 Python 消费的文件。�
   每个 coherent lane checkpoint 后释放重型进程。
 - 4GB：默认 `--normal`，browser + 一个 scanner 顺序运行；source/JS 分析按需加载。
 - 8GB：可以使用 `--deep` 和一个 bounded specialist，但仍不应同时启动多域扫描、多个浏览器
-  和 legacy local-agent fleet。
+  和多套额外 agent 进程。
 
 `--normal` 控制 checkpoint cadence，不是能力开关；不传 cadence 时按解析器默认策略运行。
 `--deep` 增加 evidence-first 深度，不放宽 red lines；`--quick` 降低 recon 成本，不跳过
