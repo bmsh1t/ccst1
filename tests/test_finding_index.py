@@ -1266,7 +1266,7 @@ def test_report_generator_uses_canonical_report_dir_for_url_target(monkeypatch, 
     assert not (tmp_path / "reports" / "http:" / "127.0.0.1:3002").exists()
 
 
-def test_report_generator_syncs_report_action_queue(monkeypatch, tmp_path):
+def _report_queue_fixture(monkeypatch, tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)
     (findings_dir / "findings.json").write_text(
@@ -1321,14 +1321,89 @@ def test_report_generator_syncs_report_action_queue(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(report_generator, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    return findings_dir, queue_dir
+
+
+def test_report_generator_syncs_report_action_queue(monkeypatch, tmp_path):
+    findings_dir, queue_dir = _report_queue_fixture(monkeypatch, tmp_path)
 
     total, index = report_generator.process_findings_dir(str(findings_dir))
     queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
+    finding = finding_index.find_finding(findings_dir, "sqli_report_sync")
 
     assert total == 1
     assert index[0]["queue_sync"]["status"] == "updated"
+    assert finding is not None
+    assert finding["queue_sync"] == index[0]["queue_sync"]
     assert queue["actions"][0]["status"] == "reported"
     assert "report_file=" in queue["actions"][0]["result"]
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    ["report_file", "finding", "queue_witness", "index"],
+)
+def test_report_generator_retry_reconciles_interrupted_cross_owner_flow(
+    monkeypatch,
+    tmp_path,
+    failure_point,
+):
+    findings_dir, queue_dir = _report_queue_fixture(monkeypatch, tmp_path)
+    failed = False
+    original_update = report_generator.update_finding_status
+    original_sync = report_generator.sync_report_action_queue
+    original_write_index = report_generator.write_report_index
+
+    def fail_update_once(*args, **updates):
+        nonlocal failed
+        should_fail = (
+            failure_point == "report_file" and updates.get("report_status") == "generated"
+        ) or (
+            failure_point == "queue_witness" and "queue_sync" in updates
+        )
+        if should_fail and not failed:
+            failed = True
+            raise OSError(f"interrupted after {failure_point}")
+        return original_update(*args, **updates)
+
+    def fail_sync_once(*args, **kwargs):
+        nonlocal failed
+        if failure_point == "finding" and not failed:
+            failed = True
+            raise OSError(f"interrupted after {failure_point}")
+        return original_sync(*args, **kwargs)
+
+    def fail_index_once(*args, **kwargs):
+        nonlocal failed
+        if failure_point == "index" and not failed:
+            failed = True
+            raise OSError(f"interrupted after {failure_point}")
+        return original_write_index(*args, **kwargs)
+
+    monkeypatch.setattr(report_generator, "update_finding_status", fail_update_once)
+    monkeypatch.setattr(report_generator, "sync_report_action_queue", fail_sync_once)
+    monkeypatch.setattr(report_generator, "write_report_index", fail_index_once)
+
+    with pytest.raises(OSError, match=f"interrupted after {failure_point}"):
+        report_generator.process_findings_dir(str(findings_dir))
+
+    total, index = report_generator.process_findings_dir(str(findings_dir))
+    finding = finding_index.find_finding(findings_dir, "sqli_report_sync")
+    queue = json.loads((queue_dir / "action_queue.json").read_text(encoding="utf-8"))
+    report_dir = tmp_path / "reports" / "example.com"
+
+    assert failed is True
+    assert total == 1
+    assert len(index) == 1
+    assert finding is not None
+    assert finding["report_status"] == "generated"
+    assert finding["report_id"] == "sqli_001"
+    assert finding["queue_sync"]["status"] in {"updated", "unchanged"}
+    assert index[0]["queue_sync"] == finding["queue_sync"]
+    assert queue["actions"][0]["status"] == "reported"
+    assert len(queue["actions"]) == 1
+    assert [path.name for path in report_dir.glob("sqli_*.md")] == ["sqli_001.md"]
+    assert (report_dir / "INDEX.json").is_file()
 
 
 def test_report_generator_uses_validation_summary_for_auth_bypass_narrative(monkeypatch, tmp_path):

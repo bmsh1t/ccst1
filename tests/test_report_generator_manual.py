@@ -117,6 +117,33 @@ def test_report_queue_sync_refuses_ambiguous_exact_identity(monkeypatch):
     assert result["ids"] == ["action-1", "action-2"]
 
 
+def test_report_queue_sync_does_not_reuse_reported_endpoint_for_another_finding(monkeypatch):
+    monkeypatch.setattr(
+        report_generator,
+        "load_queue",
+        lambda *_args: {
+            "actions": [
+                {
+                    "id": "action-old",
+                    "status": "reported",
+                    "type": "report",
+                    "metadata": {"url": "https://example.test/api"},
+                    "notes": "finding_id=F-old",
+                    "result": "report_file=reports/F-old.md",
+                }
+            ]
+        },
+    )
+
+    result = report_generator.sync_report_action_queue(
+        "example.test",
+        {"id": "F-new", "url": "https://example.test/api"},
+        "reports/F-new.md",
+    )
+
+    assert result == {"status": "skipped", "reason": "no matching report action"}
+
+
 def test_report_includes_validation_gate_status(tmp_path):
     summary_path = tmp_path / "validation-summary.json"
     summary_path.write_text(

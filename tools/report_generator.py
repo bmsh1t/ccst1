@@ -118,6 +118,8 @@ def _report_action_match_kind(action, finding, report_file):
             action.get("next_question"),
             action.get("action"),
             action.get("command_hint"),
+            action.get("result"),
+            action.get("notes"),
             metadata.get("finding_id"),
             metadata.get("url"),
             metadata.get("endpoint"),
@@ -143,13 +145,16 @@ def sync_report_action_queue(target_name, finding, report_file):
         for action in queue.get("actions", []):
             if not isinstance(action, dict):
                 continue
-            if str(action.get("status") or "queued") not in ACTIVE_STATUSES:
+            action_status = str(action.get("status") or "queued")
+            if action_status not in ACTIVE_STATUSES and action_status != "reported":
                 continue
             kind = _report_action_match_kind(action, finding, report_file)
+            if action_status == "reported" and kind in {"exact_endpoint", "legacy_endpoint"}:
+                continue
             if kind:
                 matches.append((kind, action))
         if not matches:
-            return {"status": "skipped", "reason": "no matching active report action"}
+            return {"status": "skipped", "reason": "no matching report action"}
         rank = {
             "exact_finding": 0,
             "exact_report_file": 1,
@@ -167,6 +172,13 @@ def sync_report_action_queue(target_name, finding, report_file):
                 "ids": [str(action.get("id") or "") for _kind, action in best],
             }
         match_kind, matched = best[0]
+        if str(matched.get("status") or "") == "reported":
+            return {
+                "status": "unchanged",
+                "id": str(matched.get("id") or ""),
+                "action_status": "reported",
+                "match_kind": match_kind,
+            }
         resolved = resolve_action(
             repo_root,
             target=str(target_name or ""),
@@ -183,6 +195,29 @@ def sync_report_action_queue(target_name, finding, report_file):
         }
     except Exception as exc:  # pragma: no cover - queue sync must not block reports
         return {"status": "error", "error": str(exc)}
+
+
+def _reconcile_report_action(findings_dir, target_name, finding, report_file):
+    """Persist the Queue reconciliation witness through the Finding owner."""
+    current = finding.get("queue_sync") if isinstance(finding.get("queue_sync"), dict) else {}
+    if current.get("status") in {"updated", "unchanged"}:
+        return finding, current
+
+    queue_sync = sync_report_action_queue(target_name, finding, report_file)
+    if queue_sync == current:
+        return finding, current
+    updated = update_finding_status(
+        findings_dir,
+        finding.get("id", ""),
+        queue_sync=queue_sync,
+    )
+    if updated is None:
+        raise ValueError(
+            "canonical finding disappeared before report queue reconciliation: "
+            f"{findings_dir}/{finding.get('id', '')}"
+        )
+    return updated, queue_sync
+
 
 # Severity mappings
 SEVERITY_MAP = {
@@ -1231,11 +1266,16 @@ def process_findings_dir(findings_dir, *, allow_legacy_drafts=False):
                         "canonical finding disappeared before report status update: "
                         f"{findings_dir}/{finding.get('id', '')}"
                     )
-            queue_sync = (
-                {"status": "skipped", "reason": "legacy compatibility draft"}
-                if legacy_draft
-                else sync_report_action_queue(target_name, finding, report_file)
-            )
+                finding = updated
+            if legacy_draft:
+                queue_sync = {"status": "skipped", "reason": "legacy compatibility draft"}
+            else:
+                finding, queue_sync = _reconcile_report_action(
+                    findings_dir,
+                    target_name,
+                    finding,
+                    report_file,
+                )
 
             total_reports += 1
             report_index.append({
@@ -1352,6 +1392,12 @@ def _existing_structured_report_entries(
         report_file = str(finding.get("report_file") or "").strip()
         if not report_file:
             continue
+        finding, queue_sync = _reconcile_report_action(
+            findings_dir,
+            target_storage_key(target or Path(findings_dir).name),
+            finding,
+            report_file,
+        )
         report_id = str(finding.get("report_id") or "").strip() or Path(report_file).stem
         key = str(finding.get("id") or "") or report_file
         if key in seen:
@@ -1367,7 +1413,7 @@ def _existing_structured_report_entries(
             "type": finding.get("type") or finding.get("category") or "misconfig",
             "source_file": finding.get("source_file", ""),
             "confidence": finding.get("confidence", ""),
-            "queue_sync": finding.get("queue_sync", {}),
+            "queue_sync": queue_sync,
         })
     return entries
 
