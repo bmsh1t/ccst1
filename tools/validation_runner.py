@@ -67,6 +67,7 @@ try:
     from tools.response_diff import diff_responses, snapshot_response
     from tools.request_diff import RequestPairError, request_pair_digest, validate_request_pair
     from tools.browser_surface import public_url_shape
+    from tools.closure_resolver import CLOSURE_FAMILIES, canonical_vuln_class
     from tools.private_artifacts import private_artifact_dir, write_private_json, write_private_text
     from tools.target_case_state import complete_backlog, load_case_state
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -101,6 +102,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
     from response_diff import diff_responses, snapshot_response  # type: ignore
     from request_diff import RequestPairError, request_pair_digest, validate_request_pair  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
+    from closure_resolver import CLOSURE_FAMILIES, canonical_vuln_class  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json, write_private_text  # type: ignore
     from target_case_state import complete_backlog, load_case_state  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
@@ -2749,26 +2751,7 @@ def _merge_request_headers(request: dict[str, Any], extra: dict[str, str] | None
 
 
 def _classifier_vuln_class(classifier: str, explicit: str = "") -> str:
-    aliases = {"nosqli": "SQLi", "ssti": "RCE", "command-injection": "RCE", "lfi": "Path"}
-    if explicit:
-        return aliases.get(str(explicit).strip().lower(), explicit)
-    return {
-        "sqli": "SQLi",
-        "nosqli": "SQLi",
-        "idor": "IDOR",
-        "authz": "Authz",
-        "ssrf": "SSRF",
-        "xxe": "XXE",
-        "xss": "XSS",
-        "ssti": "SSTI",
-        "rce": "RCE",
-    }.get(str(classifier or "").lower(), "")
-
-
-LEDGER_VULN_CLASSES = {
-    "IDOR", "SSRF", "XSS", "Race", "Authz", "GraphQL", "OAuth", "Upload",
-    "Webhook", "JWT", "SQLi", "XXE", "RCE", "Path", "CSRF", "Workflow",
-}
+    return canonical_vuln_class(explicit or classifier)
 
 
 def _request_pair_materiality(run: dict[str, Any]) -> bool:
@@ -2969,7 +2952,7 @@ def run_request_diff(
             "missing": ["stable_material_diff"],
             "missing_labels": ["stable material response diff"],
         })
-    if vuln_class in LEDGER_VULN_CLASSES:
+    if vuln_class in CLOSURE_FAMILIES:
         ledger = _record_ledger_if_needed(
             repo_root=repo_root,
             no_ledger=no_ledger,

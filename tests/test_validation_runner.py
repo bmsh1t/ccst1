@@ -24,6 +24,25 @@ def _target_key(target: str) -> str:
     return validation_runner.target_storage_key(validation_runner.canonical_target_value(target))
 
 
+@pytest.mark.parametrize(
+    ("classifier", "explicit", "expected"),
+    [
+        ("nosqli", "", "NoSQLi"),
+        ("generic", "prototype-pollution", "PrototypePollution"),
+        ("generic", "open-redirect", "OpenRedirect"),
+        ("generic", "business-logic", "BusinessLogic"),
+        ("ssti", "", "RCE"),
+        ("generic", "command-injection", "RCE"),
+        ("generic", "lfi", "Path"),
+        ("unknown", "", ""),
+    ],
+)
+def test_request_diff_uses_canonical_vuln_taxonomy(classifier, explicit, expected):
+    actual = validation_runner._classifier_vuln_class(classifier, explicit)
+    assert actual == expected
+    assert not actual or actual in validation_runner.CLOSURE_FAMILIES
+
+
 def _fake_response(url: str, *, status: int = 200, body: str = "{}") -> dict:
     return {
         "url": url,
