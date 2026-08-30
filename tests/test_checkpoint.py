@@ -2544,10 +2544,11 @@ def test_checkpoint_does_not_queue_zero_relevance_coverage_gap():
 def test_high_risk_review_groups_techniques_without_truncating_canonical_families():
     lane_order = (
         "SQLi", "SSRF", "XXE", "RCE", "Path", "Upload", "IDOR", "Authz",
-        "GraphQL", "OAuth", "JWT", "CSRF", "Race", "Webhook", "XSS",
+        "GraphQL", "OAuth", "JWT", "CSRF", "Race", "Webhook", "XSS", "NoSQLi",
+        "PrototypePollution", "OpenRedirect", "BusinessLogic",
     )
     lanes = {name: {"disposition": "unassessed"} for name in lane_order}
-    lanes["SQLi"]["techniques"] = ["NoSQLi"]
+    lanes["SQLi"]["techniques"] = ["BooleanBlind"]
     lanes["RCE"]["techniques"] = ["SSTI", "CommandInjection", "Deserialization"]
     lanes["Path"]["techniques"] = ["LFI", "RFI"]
 
@@ -2561,14 +2562,14 @@ def test_high_risk_review_groups_techniques_without_truncating_canonical_familie
     )
 
     review = next(item for item in proposals if item.startswith("High-risk lane review:"))
-    assert "SQLi[NoSQLi]=unassessed" in review
+    assert "SQLi[BooleanBlind]=unassessed" in review
     assert "RCE[SSTI,CommandInjection,Deserialization]=unassessed" in review
     assert "Path[LFI,RFI]=unassessed" in review
     assert all(
         f"{name}=" in review
         for name in ("Authz", "GraphQL", "OAuth", "JWT", "CSRF", "Race", "Webhook", "XSS")
     )
-    assert "NoSQLi=unassessed" not in review
+    assert "NoSQLi=unassessed" in review
 
 
 def test_checkpoint_still_queues_semantically_relevant_coverage_gap():

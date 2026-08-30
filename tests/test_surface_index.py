@@ -73,7 +73,10 @@ def test_js_relative_endpoints_join_against_origin_not_httpx_path(tmp_path):
         "https://app.target.com/base/path [200]\n", encoding="utf-8"
     )
     endpoints = recon / "js" / "endpoints.txt"
-    endpoints.write_text("/api/users\napi/orders\n", encoding="utf-8")
+    endpoints.write_text(
+        "/api/users\napi/orders\n//cdn.external.test/assets/app.js\n",
+        encoding="utf-8",
+    )
 
     origin = surface_index_module._default_host(recon)
 
@@ -81,6 +84,7 @@ def test_js_relative_endpoints_join_against_origin_not_httpx_path(tmp_path):
     assert list(surface_index_module._iter_js_urls(endpoints, origin)) == [
         "https://app.target.com/api/users",
         "https://app.target.com/api/orders",
+        "https://cdn.external.test/assets/app.js",
     ]
 
 

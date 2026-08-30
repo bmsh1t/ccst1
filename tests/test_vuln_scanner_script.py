@@ -447,11 +447,16 @@ def test_vuln_scanner_writes_structured_summary_json(tmp_path):
     assert summary["ordered_scan_count"] == 1
     assert summary["skipped_checks"] == ["all"]
     assert summary["nuclei_cve"] == {
-        "enabled": False,
+        "enabled": True,
         "status": "skipped",
         "input": "origin-bounded",
         "candidate_count": 1,
     }
+    assert summary["lane_coverage"]["xss_reflection"]["status"] == "skipped"
+    assert summary["lane_coverage"]["cve"]["remaining"] == 1
+    assert summary["lane_coverage"]["idor_candidates"]["execution_kind"] == (
+        "candidate_only"
+    )
     assert summary["totals"]["findings"] == 0
     assert summary["totals"]["high_value"]["verified_sqli_pocs"] == 0
     assert "mfa" in summary["categories"]
@@ -774,7 +779,7 @@ def test_vuln_scanner_requires_finding_index_before_completion(tmp_path):
     assert not (findings_dir / "summary.json").exists()
 
 
-def test_vuln_scanner_delegates_xss_by_default(tmp_path):
+def test_vuln_scanner_runs_bounded_xss_by_default(tmp_path):
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     recon_dir = tmp_path / "recon" / "example.com"
     live_dir = recon_dir / "live"
@@ -802,13 +807,15 @@ def test_vuln_scanner_delegates_xss_by_default(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "Default skip: xss (XSS is handled by recon/validation)" in result.stdout
-    assert "Skipping XSS scanner lane (handled by recon/validation)" in result.stdout
+    assert "Default skip: xss" not in result.stdout
+    assert "Check 1: Reflected XSS marker sampling" in result.stdout
+    assert "Reflected XSS marker: no parameterized URLs" in result.stdout
 
     summary = json.loads((findings_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["mode"] == "standard"
-    assert summary["skipped_checks"][0] == "xss"
+    assert "xss" not in summary["skipped_checks"]
     assert "ssti" in summary["skipped_checks"]
+    assert summary["lane_coverage"]["xss_reflection"]["status"] == "sampled"
 
 
 def test_vuln_scanner_full_mode_includes_xss_by_default(tmp_path):
@@ -842,7 +849,7 @@ def test_vuln_scanner_full_mode_includes_xss_by_default(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Default skip: xss" not in result.stdout
     assert "Skipping XSS checks" not in result.stdout
-    assert "XSS checks are delegated" in result.stdout
+    assert "Check 1: Reflected XSS marker sampling" in result.stdout
 
     summary = json.loads((findings_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["mode"] == "full"

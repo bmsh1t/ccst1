@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -107,6 +109,11 @@ def test_authz_public_exposure_creates_bundle_and_ledger(monkeypatch, tmp_path):
     assert "oauth" in summary["markers"]
     assert (tmp_path / summary["artifacts"]["baseline_request"]).is_file()
     assert (tmp_path / summary["artifacts"]["baseline_response"]).is_file()
+    bindings = {item["kind"]: item for item in summary["artifact_bindings"]}
+    assert {"baseline_request", "baseline_response"} <= bindings.keys()
+    for binding in bindings.values():
+        artifact = tmp_path / binding["ref"]
+        assert binding["sha256"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
     identity = json.loads((tmp_path / summary["artifacts"]["baseline_identity"]).read_text(encoding="utf-8"))
     assert identity["requested_url"].endswith("/rest/admin/application-configuration")
     assert identity["final_url"] == identity["requested_url"]
@@ -1841,6 +1848,139 @@ def test_marker_replay_without_marker_is_clean(monkeypatch, tmp_path):
     assert summary["result"] == "tested_clean"
     assert summary["candidate_ready"] is False
     assert summary["runs"][0]["marker_found"] is False
+
+
+def test_websocket_protocol_replay_binds_frames_and_resumes_operation(tmp_path):
+    calls = []
+
+    def execute(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{"private":"FRAME_MARKER"}\n', stderr="")
+
+    spec = {
+        "schema_version": 1,
+        "protocol": "websocket",
+        "endpoint": "wss://target.test/socket",
+        "frames": ['{"op":"subscribe","channel":"SAMPLE"}'],
+        "expect": {"marker": "FRAME_MARKER", "finding_grade": True},
+        "vuln_class": "Authz",
+        "actor": "peer",
+        "object_scope": "other_object_same_org",
+    }
+    first = validation_runner.run_protocol_replay(
+        repo_root=tmp_path,
+        target="target.test",
+        spec=spec,
+        finding_id="WS-FRAME-1",
+        state_changing=False,
+        headers={"Origin": "https://target.test"},
+        execute=execute,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    second = validation_runner.run_protocol_replay(
+        repo_root=tmp_path,
+        target="target.test",
+        spec=spec,
+        finding_id="WS-FRAME-1",
+        state_changing=False,
+        headers={"Origin": "https://target.test"},
+        execute=execute,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert first["result"] == "tested_finding"
+    assert first["operation_id"] == second["operation_id"]
+    assert calls[0][0] == [
+        "/usr/bin/websocat", "-n1", "-t", "-H",
+        "Origin: https://target.test", "wss://target.test/socket",
+    ]
+    assert calls[0][1]["input"].endswith("\n")
+    assert "shell" not in calls[0][1]
+    assert (tmp_path / first["artifacts"]["protocol_request"]).is_file()
+    assert (tmp_path / first["artifacts"]["response"]).is_file()
+
+
+def test_grpc_protocol_replay_keeps_request_off_argv_and_saves_trailers(tmp_path):
+    observed = {}
+
+    def execute(argv, **kwargs):
+        observed.update({"argv": argv, **kwargs})
+        return SimpleNamespace(
+            returncode=0,
+            stdout='{"record":"SERIAL"}\n{"done":true}\n',
+            stderr="Response trailers received:\ngrpc-status: 0\n",
+        )
+
+    summary = validation_runner.run_protocol_replay(
+        repo_root=tmp_path,
+        target="target.test:50051",
+        spec={
+            "schema_version": 1,
+            "protocol": "grpc",
+            "endpoint": "target.test:50051",
+            "method": "sample.Inventory/List",
+            "request": {"cursor": "OFFSET"},
+            "plaintext": True,
+            "expect": {"marker": "SERIAL", "finding_grade": True},
+            "vuln_class": "Authz",
+        },
+        finding_id="GRPC-STREAM-1",
+        state_changing=False,
+        headers={"x-tenant": "SAMPLE"},
+        execute=execute,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+
+    assert summary["result"] == "tested_finding"
+    assert observed["argv"][-2:] == ["target.test:50051", "sample.Inventory/List"]
+    assert observed["argv"][-4:-2] == ["-H", "x-tenant: SAMPLE"]
+    assert "OFFSET" not in " ".join(observed["argv"])
+    assert json.loads(observed["input"])["cursor"] == "OFFSET"
+    assert "grpc-status: 0" in (tmp_path / summary["artifacts"]["trailers"]).read_text()
+
+
+def test_llm_tool_call_protocol_replay_parses_exact_tool_and_arguments(monkeypatch, tmp_path):
+    body = json.dumps({
+        "choices": [{
+            "message": {
+                "tool_calls": [{
+                    "type": "function",
+                    "function": {"name": "lookup_record", "arguments": '{"id":"SERIAL"}'},
+                }],
+            },
+        }],
+    })
+    monkeypatch.setattr(
+        validation_runner,
+        "request_once",
+        lambda **kwargs: _fake_response(kwargs["url"], body=body),
+    )
+
+    summary = validation_runner.run_protocol_replay(
+        repo_root=tmp_path,
+        target="target.test",
+        spec={
+            "schema_version": 1,
+            "protocol": "llm_tool_call",
+            "endpoint": "https://target.test/v1/chat",
+            "body": {"prompt": "SAMPLE"},
+            "expect": {
+                "tool_name": "lookup_record",
+                "argument_marker": "SERIAL",
+                "finding_grade": True,
+            },
+            "vuln_class": "BusinessLogic",
+        },
+        finding_id="LLM-TOOL-1",
+        state_changing=False,
+    )
+
+    assert summary["result"] == "tested_finding"
+    assert summary["observation"]["tool_calls"] == [
+        {"name": "lookup_record", "arguments": '{"id":"SERIAL"}'},
+    ]
+    assert (tmp_path / summary["artifacts"]["request"]).is_file()
+    assert (tmp_path / summary["artifacts"]["response"]).is_file()
 
 
 def test_marker_replay_control_proves_baseline_absence(monkeypatch, tmp_path):

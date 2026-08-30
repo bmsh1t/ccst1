@@ -30,7 +30,7 @@ Design notes:
       inspection is needed. Neither output is a "pick one of these statuses"
       prompt.
 
-VULN_CLASSES taxonomy (15 entries, ordering is stable — append-only
+VULN_CLASSES taxonomy (ordering is stable and append-only
 on extension; positional consumers may rely on the prefix):
 
     NOTE: the three groups below are CONCEPTUAL organisation for human
@@ -48,8 +48,7 @@ on extension; positional consumers may rely on the prefix):
                  chained (CSRF -> state-change -> account compromise)
 
     Group 2 — Input injection family (5):
-      XSS      — reflected/stored/DOM; includes prototype-pollution
-                 -> XSS chains where impact is JS execution
+      XSS      — reflected/stored/DOM execution contexts
       SQLi     — error-based / boolean-blind / time-based / OOB;
                  covers all DBMS variants
       XXE      — classic + blind/OOB; both general & parameter entities
@@ -70,12 +69,9 @@ on extension; positional consumers may rely on the prefix):
                  chains to RCE via webshell
       Webhook  — incoming webhook abuse (HMAC bypass, replay, spoof)
 
-    Intentionally NOT in this enum (out of scope for this PR; obvious
-    next candidates if the matrix grows): SSTI as its own class
-    (currently subsumed under RCE), NoSQLi, OpenRedirect, Prototype
-    Pollution as a primary class (currently rolled into XSS when the
-    impact path is JS exec), Deserialisation (under RCE), CRLF
-    injection, HTTP smuggling.
+    Appended semantic classes retain independent cells for NoSQLi,
+    PrototypePollution, OpenRedirect, and BusinessLogic. They must not be
+    closed by a related SQLi, XSS, or Authz result.
 """
 
 from __future__ import annotations
@@ -141,7 +137,6 @@ VULN_CLASS_ALIASES = {
     if canonical in VULN_CLASSES
 }
 HIGH_RISK_LANE_TECHNIQUES = {
-    "SQLi": ("NoSQLi",),
     "RCE": ("SSTI", "CommandInjection", "Deserialization"),
     "Path": ("LFI", "RFI"),
 }
@@ -209,6 +204,10 @@ CLASS_IMPACT_PRIORITY = {
     "Race": 52,
     "XSS": 45,
     "CSRF": 40,
+    "NoSQLi": 80,
+    "PrototypePollution": 50,
+    "OpenRedirect": 42,
+    "BusinessLogic": 74,
 }
 
 
@@ -237,6 +236,9 @@ _RELEVANCE_RULES: tuple[tuple[str, int, re.Pattern, str], ...] = (
     ("XSS", 8, re.compile(r"/(?:[a-z0-9_-]*dom|reflected)(?:/|$|\b)", re.I), "reflection/DOM execution path"),
     ("XSS", 5, re.compile(r"\b(html|content|message|comment|title|name|callback|redirect|return|next|search|q)\b", re.I), "reflection/DOM input surface"),
     ("CSRF", 5, re.compile(r"\b(csrf|xsrf|state|token|update|change|invite|delete|remove|submit)\b", re.I), "session state-change surface"),
+    ("NoSQLi", 8, re.compile(r"\b(filter|where|selector|query|operator|mongodb|mongo|document)\b", re.I), "document-query input surface"),
+    ("PrototypePollution", 9, re.compile(r"\b(__proto__|prototype|constructor)\b", re.I), "prototype mutation input"),
+    ("OpenRedirect", 8, re.compile(r"\b(redirect|return|return_to|next|continue|dest|destination|callback)\b", re.I), "redirect destination input"),
 )
 
 # SQLi 需要把“路径段语义”和“参数名语义”分开：
@@ -261,6 +263,10 @@ _RACE_ACTION_PATH_PATTERN = re.compile(
 )
 _RACE_STATE_PARAM_PATTERN = re.compile(
     r"\b(coupon|coupon_code|promo|promo_code|voucher|quantity|qty|amount|credits|credit|points|reward|rewards|balance|wallet|seat|seats|quota|limit|otp|totp|token|idempotency|idempotency_key)\b",
+    re.I,
+)
+_BUSINESS_LOGIC_PARAM_PATTERN = re.compile(
+    r"\b(amount|price|quantity|coupon|balance|state|status|transition|step)\b",
     re.I,
 )
 
@@ -1071,6 +1077,25 @@ def _race_relevance(endpoint: str, params: list[str]) -> dict:
     }
 
 
+def _business_logic_relevance(endpoint: str, params: list[str]) -> dict:
+    """Prioritize explicit transitions or invariant-bearing inputs, not resource names."""
+    score = 0
+    reasons: list[str] = []
+    params_blob = _normalise_signal(" ".join(params))
+
+    if _RACE_ACTION_PATH_PATTERN.search(str(endpoint or "")):
+        score += 7
+        reasons.append("workflow state-transition path")
+    if _BUSINESS_LOGIC_PARAM_PATTERN.search(params_blob):
+        score += 7
+        reasons.append("workflow/business invariant parameter")
+
+    return {
+        "relevance_score": min(score, 20),
+        "relevance_reason": "; ".join(reasons[:3]),
+    }
+
+
 def class_relevance(endpoint: str, vuln_class: str, observed_params: object | None = None) -> dict:
     """Score how naturally a vuln class fits an endpoint.
 
@@ -1088,6 +1113,8 @@ def class_relevance(endpoint: str, vuln_class: str, observed_params: object | No
         return _sqli_relevance(endpoint, params)
     if vuln_class == "Race":
         return _race_relevance(endpoint, params)
+    if vuln_class == "BusinessLogic":
+        return _business_logic_relevance(endpoint, params)
 
     if vuln_class == "SSRF" and re.search(
         r"/(?:url)?dom(?:/|$)|/location/(?:hash|search)(?:/|$)|/window/(?:name|open)(?:/|$)",

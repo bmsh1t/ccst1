@@ -210,7 +210,8 @@ class TestCoverageMatrixScannerPass:
 
         assert set(lanes) == set(VULN_CLASSES)
         assert lanes["RCE"]["disposition"] == "candidate"
-        assert lanes["SQLi"]["techniques"] == ["NoSQLi"]
+        assert "techniques" not in lanes["SQLi"]
+        assert lanes["NoSQLi"]["disposition"] == "unassessed"
         assert lanes["RCE"]["techniques"] == ["SSTI", "CommandInjection", "Deserialization"]
         assert lanes["Path"]["techniques"] == ["LFI", "RFI"]
         assert "Deserialization" not in lanes

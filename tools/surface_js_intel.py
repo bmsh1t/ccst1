@@ -6,6 +6,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+try:
+    from tools.target_paths import resolve_target_url
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_paths import resolve_target_url  # type: ignore
+
 
 EMPTY_JS_INTEL = {
     "available": False,
@@ -50,12 +55,7 @@ def load_js_intel_hypotheses(findings_dir: Path) -> dict:
 
 
 def _endpoint_to_url(endpoint_path: str, default_host: str) -> str:
-    if endpoint_path.startswith(("http://", "https://", "ws://", "wss://")):
-        return endpoint_path
-    prefix = "" if endpoint_path.startswith("/") else "/"
-    if default_host:
-        return default_host.rstrip("/") + prefix + endpoint_path
-    return prefix + endpoint_path
+    return resolve_target_url(endpoint_path, default_host)
 
 
 def build_js_intel_urls(js_intel: dict, default_host: str) -> dict[str, list[dict]]:

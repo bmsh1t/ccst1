@@ -81,10 +81,14 @@ the same case-state owner.
 | SSTI probes | curl | **Yes** |
 | CMS detection | curl | **Yes** |
 | **MFA workflow-skip test** | curl | **No, intentionally** |
-| **SAML signature-stripping** | curl | **No, intentionally** |
+| **SAML signature-stripping** | curl | **Anonymous POST + isolated Cookie read-back** |
 
-The MFA-skip and SAML-stripping tests deliberately stay anonymous — that's the
-attack they're checking for. Everything else is gated on the same session.
+The MFA-skip test stays anonymous. SAML stripping also starts anonymously, but a
+finding additionally requires `BBHUNT_SAML_PROTECTED_URL` to name a same-target
+protected resource, an anonymous denied/redirect baseline, a newly issued Cookie,
+and an authenticated read-back difference. The temporary Cookie jar is removed;
+status-only results remain manual-review candidates. Everything else is gated on
+the shared session.
 
 ## CLI flags
 

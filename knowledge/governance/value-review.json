@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-18T17:23:04Z",
+  "generated_at": "2026-08-30T17:09:45Z",
   "reviewer": "Codex",
   "model_profile": "claude-cli/static-review/2026-07-13",
   "dispositions": [
@@ -633,7 +633,7 @@
       "card_path": "knowledge/cards/grpc-api-boundaries.md",
       "layer": "reference",
       "load": "signal-only",
-      "maturity": "draft",
+      "maturity": "tested",
       "trigger_tags": [
         "grpc",
         "grpc-web",
@@ -1558,7 +1558,7 @@
       "card_path": "knowledge/cards/web-llm-tool-chains.md",
       "layer": "reference",
       "load": "signal-only",
-      "maturity": "draft",
+      "maturity": "tested",
       "trigger_tags": [
         "web-llm",
         "prompt-injection",
@@ -1595,7 +1595,7 @@
       "card_path": "knowledge/cards/websocket-realtime-api.md",
       "layer": "reference",
       "load": "signal-only",
-      "maturity": "draft",
+      "maturity": "tested",
       "trigger_tags": [
         "websocket",
         "cswsh",

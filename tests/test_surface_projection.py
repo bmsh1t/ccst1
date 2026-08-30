@@ -68,6 +68,21 @@ def test_projection_exact_manifest_hit_and_source_change_stale(tmp_path):
     )["fingerprint"]
 
 
+def test_legacy_projection_schema_is_not_consumed(tmp_path):
+    _write_surface_inputs(tmp_path)
+    manifest = build_surface_input_manifest(tmp_path, "target.com")
+    write_surface_projection(tmp_path, "target.com", _ranked(), manifest=manifest)
+
+    path = surface_projection_path(tmp_path, "target.com")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 1
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_surface_projection(tmp_path, "target.com")
+    assert loaded["status"] == "invalid"
+    assert loaded["reason"] == "schema-mismatch"
+
+
 def test_empty_checkpoint_sync_keeps_valid_projection(tmp_path):
     _write_surface_inputs(tmp_path)
     queue_path = save_queue(

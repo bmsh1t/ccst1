@@ -26,9 +26,11 @@ MIN_CANDIDATE_CONFIDENCE = 0.75
 # from display text or a universal identity key.
 FAMILY_POLICIES: dict[str, tuple[str, ...]] = {
     "SQLi": ("method", "parameter"),
+    "NoSQLi": ("method", "parameter"),
     "IDOR": ("path_template", "method", "actor_relation", "object_scope"),
     "GraphQL": ("operation", "field", "argument"),
     "XSS": ("source", "sink"),
+    "PrototypePollution": ("source", "sink"),
     "Authz": ("method", "actor_role", "object_scope"),
     "OAuth": ("flow", "transition", "actor", "redirect_target"),
     "JWT": ("method", "token_location", "claim_algorithm"),
@@ -41,6 +43,8 @@ FAMILY_POLICIES: dict[str, tuple[str, ...]] = {
     "RCE": ("method", "input_field", "sink"),
     "Path": ("method", "input_field", "path_template"),
     "Workflow": ("workflow", "transition", "actor"),
+    "OpenRedirect": ("method", "parameter", "redirect_target"),
+    "BusinessLogic": ("workflow", "transition", "actor"),
 }
 
 # A small, deterministic alias table for candidate field names.  Values remain
@@ -54,9 +58,17 @@ _FIELD_ALIASES: dict[str, dict[str, str]] = {
         "parameter_name": "parameter",
         "body_parameter": "parameter",
     },
+    "NoSQLi": {
+        "http_method": "method",
+        "body_field": "parameter",
+        "input_field": "parameter",
+        "parameter_name": "parameter",
+        "body_parameter": "parameter",
+    },
     "IDOR": {"route_template": "path_template", "actor": "actor_relation", "object": "object_scope"},
     "GraphQL": {"op": "operation", "arg": "argument"},
     "XSS": {"source_parameter": "source", "parameter": "source", "output_sink": "sink"},
+    "PrototypePollution": {"source_parameter": "source", "parameter": "source", "output_sink": "sink"},
     "Authz": {"http_method": "method", "role": "actor_role", "actor": "actor_role", "object": "object_scope"},
     "OAuth": {"redirect_uri": "redirect_target", "role": "actor"},
     "JWT": {"http_method": "method", "token": "token_location", "claim": "claim_algorithm", "algorithm": "claim_algorithm"},
@@ -69,7 +81,15 @@ _FIELD_ALIASES: dict[str, dict[str, str]] = {
     "RCE": {"http_method": "method", "parameter": "input_field", "body_field": "input_field", "output_sink": "sink"},
     "Path": {"http_method": "method", "parameter": "input_field", "body_field": "input_field", "route_template": "path_template"},
     "Workflow": {"flow": "workflow", "step": "transition", "role": "actor"},
+    "OpenRedirect": {"http_method": "method", "input_field": "parameter", "redirect_uri": "redirect_target"},
+    "BusinessLogic": {"flow": "workflow", "step": "transition", "role": "actor"},
 }
+
+
+def _canonical_technique(value: Any, family: str) -> str:
+    """Return the stable technique token carried by a closure identity."""
+    text = str(value or family or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return "_".join(part for part in text.split("_") if part)
 
 
 def family_dimensions(family: str) -> tuple[str, ...]:
@@ -171,6 +191,7 @@ class ClosureCellKey:
     endpoint_key: EndpointKey
     family: str
     dimensions: Mapping[str, str]
+    technique: str = ""
     schema_version: int = IDENTITY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -185,7 +206,11 @@ class ClosureCellKey:
             raise ValueError(f"incomplete closure identity: {', '.join(missing)}")
         if set(self.dimensions) != set(required):
             raise ValueError("closure identity contains unexpected dimensions")
+        technique = _canonical_technique(self.technique, self.family)
+        if not technique:
+            raise ValueError("closure identity technique is required")
         object.__setattr__(self, "dimensions", MappingProxyType(dict(sorted(normalized.items()))))
+        object.__setattr__(self, "technique", technique)
 
     @property
     def endpoint(self) -> str:
@@ -220,6 +245,7 @@ class ClosureCellKey:
             "kind": "closure_cell",
             "endpoint": self.endpoint_key.to_dict(),
             "family": self.family,
+            "technique": self.technique,
             "dimensions": dict(self.dimensions),
         }
 
@@ -240,6 +266,7 @@ class ClosureCellKey:
             EndpointKey.from_dict(endpoint),
             str(payload.get("family") or ""),
             payload.get("dimensions") if isinstance(payload.get("dimensions"), Mapping) else {},
+            str(payload.get("technique") or payload.get("family") or ""),
         )
 
 
@@ -281,6 +308,8 @@ def build_closure_cell(
     endpoint: str | EndpointKey,
     family: str,
     dimensions: Mapping[str, Any] | None = None,
+    *,
+    technique: str = "",
 ) -> IdentityBuildResult:
     """Normalize one planned test cell; incomplete cells are fail-open."""
     canonical_family = canonical_vuln_class(family) or ("Workflow" if str(family or "").strip().lower() == "workflow" else "")
@@ -297,7 +326,12 @@ def build_closure_cell(
         missing = tuple((*missing, "endpoint"))
     if missing or conflicts:
         return IdentityBuildResult(canonical_family, None, tuple(sorted(set(missing))), tuple(sorted(set(conflicts))))
-    return IdentityBuildResult(canonical_family, ClosureCellKey(endpoint_key, canonical_family, values), (), ())
+    return IdentityBuildResult(
+        canonical_family,
+        ClosureCellKey(endpoint_key, canonical_family, values, technique),
+        (),
+        (),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +342,7 @@ class IdentityCandidate:
     endpoint: str
     dimensions: Mapping[str, str]
     confidence: float
+    technique: str = ""
     provenance: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
     aliases: Mapping[str, str] = MappingProxyType({})
@@ -316,6 +351,9 @@ class IdentityCandidate:
     follow_up_tests: tuple[Any, ...] = ()
     schema_version: int = IDENTITY_SCHEMA_VERSION
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "technique", _canonical_technique(self.technique, self.family))
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
@@ -323,6 +361,7 @@ class IdentityCandidate:
             "family": self.family,
             "endpoint": self.endpoint,
             "dimensions": dict(self.dimensions),
+            "technique": self.technique,
             "confidence": self.confidence,
             "provenance": list(self.provenance),
             "evidence_refs": list(self.evidence_refs),
@@ -397,7 +436,7 @@ def normalize_identity_candidate(candidate: Mapping[str, Any]) -> IdentityCandid
     if not isinstance(raw_dimensions, Mapping):
         raw_dimensions = {
             key: value for key, value in candidate.items()
-            if key not in {"family", "vuln_class", "endpoint", "route", "confidence", "provenance", "evidence_refs", "aliases", "missing_fields", "conflicts", "follow_up_tests", "follow_up"}
+            if key not in {"family", "vuln_class", "endpoint", "route", "technique", "confidence", "provenance", "evidence_refs", "aliases", "missing_fields", "conflicts", "follow_up_tests", "follow_up"}
         }
     canonical_family = canonical_vuln_class(family) or ("Workflow" if str(family or "").strip().lower() == "workflow" else "")
     values, issues = _canonical_dimensions(canonical_family, raw_dimensions) if canonical_family else ({}, ("family_policy",))
@@ -434,6 +473,7 @@ def normalize_identity_candidate(candidate: Mapping[str, Any]) -> IdentityCandid
         endpoint=endpoint,
         dimensions=MappingProxyType(dict(sorted(values.items()))),
         confidence=confidence,
+        technique=_canonical_technique(candidate.get("technique"), canonical_family),
         provenance=_as_strings(candidate.get("provenance")),
         evidence_refs=_as_strings(candidate.get("evidence_refs")),
         aliases=MappingProxyType(dict(sorted(aliases.items()))),
@@ -446,14 +486,20 @@ def normalize_identity_candidate(candidate: Mapping[str, Any]) -> IdentityCandid
 def validate_identity_candidate(candidate: Mapping[str, Any] | IdentityCandidate) -> CandidateValidation:
     """Apply deterministic completeness/confidence/conflict gates to a proposal."""
     normalized = candidate if isinstance(candidate, IdentityCandidate) else normalize_identity_candidate(candidate)
-    result = build_closure_cell(normalized.endpoint, normalized.family, normalized.dimensions)
+    result = build_closure_cell(
+        normalized.endpoint,
+        normalized.family,
+        normalized.dimensions,
+        technique=normalized.technique,
+    )
     missing = tuple(sorted(set((*normalized.missing_fields, *result.missing_fields))))
     conflicts = tuple(sorted(set((*normalized.conflicts, *result.conflicts))))
     if missing or conflicts:
         if missing != normalized.missing_fields or conflicts != normalized.conflicts:
             normalized = IdentityCandidate(
                 family=normalized.family, endpoint=normalized.endpoint, dimensions=normalized.dimensions,
-                confidence=normalized.confidence, provenance=normalized.provenance, evidence_refs=normalized.evidence_refs,
+                confidence=normalized.confidence, technique=normalized.technique,
+                provenance=normalized.provenance, evidence_refs=normalized.evidence_refs,
                 aliases=normalized.aliases, missing_fields=missing, conflicts=conflicts,
                 follow_up_tests=normalized.follow_up_tests,
             )

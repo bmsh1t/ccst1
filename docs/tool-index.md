@@ -91,6 +91,8 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/workflow_sequence.py` | HAR/browser flow has 2+ same-target requests | Bounded replay/perturb/diff with token refresh, private evidence and Action Queue |
 | `tools/timing_sql_runner.py` | Time-shaped SQL candidate remains | Interleaved timing evidence with robust stats, caps, WAF/429 semantics and queue |
 | `tools/validation_runner.py` (`request-diff`) | Exact AI baseline/variant pair | Shared replay/diff across query, form, JSON, text, header/cookie, and path inputs |
+| `tools/validation_runner.py` (`protocol-replay`) | Exact WS/gRPC/LLM request shape observed | Canonical frames/trailers/tool-call replay with Ledger/Finding/Queue write-back |
+| `tools/graphql_audit.sh` | GraphQL endpoint needs bounded discovery | Target-owned audit summary and candidate Finding; never auto-validates signals |
 | `tools/bypass_403.sh` | 403/401 on interesting endpoint | byp4xx + 20 built-in header/method/encoding bypass tricks |
 | `tools/sibling_generator.py` | Candidate route has an ID-bearing sibling shape | Writes a bounded sibling-endpoint probe queue for evidence-fit replay |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
@@ -188,7 +190,7 @@ identity, and cloud signals without re-enumerating everything.
 | 401/403 on interesting endpoint | `bypass_403.sh` |
 | Multiple session files in `.private/` | `role_diff.py` |
 | Two account creds + numeric IDs | `role_diff.py`, then `h1_idor_scanner.py` |
-| GraphQL endpoint discovered | manual introspection / role diff; `h1_mutation_idor.py` only with explicit operator opt-in |
+| GraphQL endpoint discovered | `graphql_audit.sh` for target-owned discovery, then `validation_runner.py protocol-replay` for an exact operation; `h1_mutation_idor.py` remains explicit opt-in |
 | OAuth `/authorize` `/callback` discovered | manual OAuth/OIDC flow review; `h1_oauth_tester.py` only for HackerOne/H1-compatible flows |
 | Payment / coupon / wallet / cart / checkout endpoint | high-value business-logic lane |
 | Quota / OTP / payment / cart race signal | manual review; `h1_race.py` only for controlled race probes |

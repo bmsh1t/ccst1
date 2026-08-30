@@ -19,7 +19,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -141,6 +144,9 @@ LANE_TO_VULN_CLASS = {
     "sqli_result_diff": "SQLi",
     "marker_replay": "RCE",
     "idor_actor_pair": "IDOR",
+    "websocket_replay": "Authz",
+    "grpc_replay": "Authz",
+    "llm_tool_call_replay": "BusinessLogic",
 }
 
 
@@ -262,6 +268,32 @@ def _file_sha256(repo_root: Path, ref: str) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _artifact_bindings(summary: dict[str, Any], repo_root: Path) -> list[dict[str, str]]:
+    """Bind every existing runner artifact path to its current content."""
+    bindings: dict[tuple[str, str], dict[str, str]] = {}
+
+    def visit(value: Any, *, artifact_map: bool = False) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                nested_map = artifact_map or key == "artifacts" or key.endswith("_artifacts")
+                if nested_map and isinstance(item, str):
+                    ref = item.strip()
+                    if ref:
+                        bindings[(key, ref)] = {
+                            "kind": key,
+                            "ref": ref,
+                            "sha256": _file_sha256(repo_root, ref),
+                        }
+                else:
+                    visit(item, artifact_map=nested_map)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, artifact_map=artifact_map)
+
+    visit(summary)
+    return [bindings[key] for key in sorted(bindings)]
+
+
 def _runner_operation_id(material: dict[str, Any]) -> str:
     encoded = json.dumps(material, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return f"runner:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:24]}"
@@ -269,11 +301,19 @@ def _runner_operation_id(material: dict[str, Any]) -> str:
 
 def _stable_operation_material(value: Any) -> Any:
     if isinstance(value, dict):
-        return {
-            key: _stable_operation_material(item)
-            for key, item in value.items()
-            if key not in {"artifacts", "generated_at", "operation_id", "summary_path", "sync"}
-        }
+        material = {}
+        for key, item in value.items():
+            if key in {"artifacts", "generated_at", "operation_id", "summary_path", "sync"}:
+                continue
+            if key == "artifact_bindings" and isinstance(item, list):
+                material[key] = [
+                    {"kind": binding.get("kind"), "sha256": binding.get("sha256")}
+                    for binding in item
+                    if isinstance(binding, dict)
+                ]
+            else:
+                material[key] = _stable_operation_material(item)
+        return material
     if isinstance(value, list):
         return [_stable_operation_material(item) for item in value]
     return value
@@ -281,6 +321,7 @@ def _stable_operation_material(value: Any) -> Any:
 
 def _finalize_runner_summary(summary: dict[str, Any], path: Path, repo_root: Path) -> dict[str, Any]:
     summary["summary_path"] = _rel(path, repo_root)
+    summary["artifact_bindings"] = _artifact_bindings(summary, repo_root)
     ledger = summary.get("ledger_record") if isinstance(summary.get("ledger_record"), dict) else {}
     operation_id = str(ledger.get("operation_id") or "")
     if not operation_id:
@@ -3593,6 +3634,301 @@ def run_idor_actor_pair(
     return _finalize_runner_summary(summary, summary_path, repo_root)
 
 
+def _protocol_public_url(protocol: str, endpoint: str, method: str = "") -> str:
+    if protocol == "websocket":
+        return re.sub(r"^ws", "http", endpoint, count=1)
+    if protocol == "grpc":
+        suffix = "/" + method.lstrip("/") if method else ""
+        return f"http://{endpoint}{suffix}"
+    return endpoint
+
+
+def _bounded_protocol_text(value: Any, *, field: str, limit: int = 65536) -> str:
+    text = str(value or "")
+    if not text:
+        raise ValueError(f"protocol spec {field} is required")
+    if len(text.encode("utf-8", errors="replace")) > limit:
+        raise ValueError(f"protocol spec {field} exceeds {limit} bytes")
+    return text
+
+
+def _external_protocol_run(
+    argv: list[str],
+    *,
+    stdin: str,
+    timeout: int,
+    execute: Any,
+) -> dict[str, Any]:
+    child_env = {
+        key: value
+        for key, value in os.environ.items()
+        if not any(token in key.upper() for token in ("TOKEN", "SECRET", "PASSWORD", "COOKIE", "AUTH"))
+    }
+    try:
+        completed = execute(
+            argv,
+            input=stdin,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+            env=child_env,
+        )
+        return {
+            "status": "ok" if completed.returncode == 0 else "failed",
+            "returncode": int(completed.returncode),
+            "stdout": str(completed.stdout or "")[:MAX_RESPONSE_BYTES],
+            "stderr": str(completed.stderr or "")[:MAX_RESPONSE_BYTES],
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "status": "timeout",
+            "returncode": None,
+            "stdout": str(exc.stdout or "")[:MAX_RESPONSE_BYTES],
+            "stderr": str(exc.stderr or "")[:MAX_RESPONSE_BYTES],
+        }
+
+
+def _tool_calls(value: Any) -> list[dict[str, str]]:
+    calls: list[dict[str, str]] = []
+    if isinstance(value, dict):
+        nested_function = isinstance(value.get("function"), dict)
+        function = value["function"] if nested_function else value
+        name = str(function.get("name") or "").strip()
+        arguments = function.get("arguments")
+        if name and arguments is not None:
+            calls.append({
+                "name": name,
+                "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, sort_keys=True),
+            })
+        for key, item in value.items():
+            if nested_function and key == "function":
+                continue
+            calls.extend(_tool_calls(item))
+    elif isinstance(value, list):
+        for item in value:
+            calls.extend(_tool_calls(item))
+    return calls
+
+
+def run_protocol_replay(
+    *,
+    repo_root: Path,
+    target: str,
+    spec: dict[str, Any],
+    finding_id: str = "",
+    timeout: int = 15,
+    no_ledger: bool = False,
+    browser_observed: bool = False,
+    state_changing: bool | None = None,
+    redline_checked: bool = False,
+    identity_v2: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    session: AuthSession | None = None,
+    execute: Any = subprocess.run,
+    which: Any = shutil.which,
+) -> dict[str, Any]:
+    """Execute one exact WS, gRPC, or LLM tool-call replay through runner owners."""
+    if not isinstance(spec, dict) or spec.get("schema_version") != 1:
+        raise ValueError("protocol spec must be a schema_version=1 object")
+    protocol = str(spec.get("protocol") or "").strip().lower().replace("-", "_")
+    if protocol not in {"websocket", "grpc", "llm_tool_call"}:
+        raise ValueError("protocol must be websocket, grpc, or llm_tool_call")
+    timeout = int(timeout or 15)
+    if timeout < 1 or timeout > 60:
+        raise ValueError("protocol timeout must be between 1 and 60 seconds")
+    state_changing = _validate_request_facts(state_changing, redline_checked)
+
+    endpoint = _bounded_protocol_text(spec.get("endpoint"), field="endpoint", limit=2048)
+    grpc_method = str(spec.get("method") or "").strip() if protocol == "grpc" else ""
+    public_url = _protocol_public_url(protocol, endpoint, grpc_method)
+    if not url_belongs_to_target(public_url, target):
+        raise ValueError("protocol endpoint is outside target scope")
+    finding_id = finding_id or _default_finding_id(f"{protocol}-replay", public_url)
+    bundle = _bundle_dir(repo_root, target, finding_id)
+    private_bundle = _private_bundle_dir(repo_root, target, bundle)
+    effective_headers = _request_headers(session, public_url, headers)
+    header_args = [
+        value
+        for name, header_value in effective_headers.items()
+        for value in ("-H", f"{name}: {header_value}")
+    ]
+    header_overlay_digest = hashlib.sha256(
+        json.dumps(effective_headers, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest() if effective_headers else ""
+    auth_session_id = session.session_id() if session is not None else ""
+    input_path = private_bundle / "protocol-input.json"
+    write_private_json(input_path, {"spec": spec, "headers": effective_headers})
+    artifacts: dict[str, str] = {"protocol_request": _rel(input_path, repo_root)}
+    execution: dict[str, Any]
+    observation_text = ""
+    observed_calls: list[dict[str, str]] = []
+    lane = f"{protocol}_replay"
+
+    if protocol == "websocket":
+        parsed = urllib.parse.urlparse(endpoint)
+        if parsed.scheme not in {"ws", "wss"} or not parsed.netloc:
+            raise ValueError("websocket endpoint must use ws:// or wss://")
+        raw_frames = spec.get("frames")
+        if not isinstance(raw_frames, list) or not 1 <= len(raw_frames) <= 16:
+            raise ValueError("websocket spec requires 1..16 frames")
+        frames = [_bounded_protocol_text(item, field="frame") for item in raw_frames]
+        tool = which("websocat")
+        execution = (
+            _external_protocol_run(
+                [tool, "-n1", "-t", *header_args, endpoint],
+                stdin="\n".join(frames) + "\n",
+                timeout=timeout,
+                execute=execute,
+            )
+            if tool
+            else {"status": "unavailable", "returncode": None, "stdout": "", "stderr": "websocat unavailable"}
+        )
+    elif protocol == "grpc":
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+(?::\d{1,5})?", endpoint):
+            raise ValueError("grpc endpoint must be a target-owned host[:port]")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*/[A-Za-z_][A-Za-z0-9_]*", grpc_method):
+            raise ValueError("grpc method must be package.Service/Method")
+        request = spec.get("request", {})
+        if not isinstance(request, dict):
+            raise ValueError("grpc request must be a JSON object")
+        request_text = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
+        argv = ["-v", "-format", "json", "-d", "@"]
+        if bool(spec.get("plaintext")):
+            argv.append("-plaintext")
+        tool = which("grpcurl")
+        execution = (
+            _external_protocol_run(
+                [tool, *argv, *header_args, endpoint, grpc_method],
+                stdin=request_text,
+                timeout=timeout,
+                execute=execute,
+            )
+            if tool
+            else {"status": "unavailable", "returncode": None, "stdout": "", "stderr": "grpcurl unavailable"}
+        )
+    else:
+        method = str(spec.get("http_method") or "POST").strip().upper()
+        body = spec.get("body", {})
+        if not isinstance(body, (dict, list, str)):
+            raise ValueError("llm_tool_call body must be JSON or text")
+        response = request_once(
+            target=target,
+            url=endpoint,
+            method=method,
+            headers=headers,
+            body=_request_body_text(body, headers or {}),
+            timeout=timeout,
+            session=session,
+        )
+        raw = _write_raw_http(private_bundle, "tool-call.", response, repo_root)
+        artifacts.update({"request": raw["request"], "response": raw["response"], "identity": raw["identity"]})
+        execution = {
+            "status": "ok" if 200 <= int(response.get("status", 0) or 0) < 400 else "failed",
+            "returncode": None,
+            "stdout": str(response.get("body") or ""),
+            "stderr": "",
+            "http_status": int(response.get("status", 0) or 0),
+        }
+        try:
+            observed_calls = _tool_calls(json.loads(execution["stdout"]))
+        except json.JSONDecodeError:
+            observed_calls = []
+
+    if protocol in {"websocket", "grpc"}:
+        stdout_path = private_bundle / "protocol.stdout.txt"
+        stderr_path = private_bundle / "protocol.stderr.txt"
+        write_private_text(stdout_path, execution["stdout"])
+        write_private_text(stderr_path, execution["stderr"])
+        artifacts.update({"response": _rel(stdout_path, repo_root), "trailers": _rel(stderr_path, repo_root)})
+    observation_text = f"{execution.get('stdout', '')}\n{execution.get('stderr', '')}"
+
+    expect = spec.get("expect") if isinstance(spec.get("expect"), dict) else {}
+    marker = str(expect.get("marker") or "")
+    tool_name = str(expect.get("tool_name") or "")
+    argument_marker = str(expect.get("argument_marker") or "")
+    if protocol == "llm_tool_call":
+        observed = any(
+            (not tool_name or call["name"] == tool_name)
+            and (not argument_marker or argument_marker in call["arguments"])
+            for call in observed_calls
+        ) and bool(tool_name or argument_marker)
+    else:
+        observed = bool(marker and marker in observation_text)
+    finding_grade = bool(expect.get("finding_grade"))
+    completed = execution.get("status") == "ok"
+    candidate_ready = bool(completed and observed and finding_grade)
+    result = "tested_finding" if candidate_ready else "candidate" if observed or not completed else "tested_clean"
+    vuln_class = str(spec.get("vuln_class") or ("BusinessLogic" if protocol == "llm_tool_call" else "Authz"))
+    rubric = {
+        "status": "candidate-ready" if candidate_ready else "signal" if result == "candidate" else "tested-clean",
+        "ready": candidate_ready,
+        "score": 100 if candidate_ready else 0,
+        "missing": [] if candidate_ready else ["protocol_impact_confirmation"] if observed else ["expected_protocol_observation"],
+        "missing_labels": [] if candidate_ready else ["protocol-level impact confirmation"] if observed else ["expected protocol observation"],
+        "next_actions": ["Review the saved frames/trailers/tool-call arguments and record the exact authorization or business impact."],
+        "summary": f"{protocol}:{result} execution={execution.get('status')} observed={observed}",
+    }
+    operation_material = {
+        "target": canonical_target_value(target),
+        "protocol": protocol,
+        "spec_sha256": hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest(),
+        "header_overlay_sha256": header_overlay_digest,
+        "auth_session_id": auth_session_id,
+        "result": result,
+        "observation_sha256": hashlib.sha256(observation_text.encode()).hexdigest(),
+    }
+    ledger = _record_ledger_if_needed(
+        repo_root=repo_root,
+        no_ledger=no_ledger,
+        target=target,
+        endpoint=public_url,
+        method="WS" if protocol == "websocket" else "GRPC" if protocol == "grpc" else str(spec.get("http_method") or "POST"),
+        vuln_class=vuln_class,
+        actor=str(spec.get("actor") or "unknown"),
+        object_scope=str(spec.get("object_scope") or "unknown"),
+        variant=protocol,
+        result="tested_finding" if candidate_ready else "signal" if result == "candidate" else "tested_clean",
+        source=f"validation-runner:{lane.replace('_', '-')}",
+        evidence_ref=artifacts["response"],
+        notes=f"Protocol replay {protocol}: execution={execution.get('status')} observed={observed}.",
+        browser_observed=browser_observed,
+        redline_checked=redline_checked,
+        state_changing=state_changing,
+        identity_v2=identity_v2,
+        operation_material=operation_material,
+    )
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "lane": lane,
+        "protocol": protocol,
+        "target": canonical_target_value(target),
+        "finding_id": finding_id,
+        "url": public_url,
+        "endpoint": endpoint,
+        "method": "WS" if protocol == "websocket" else "GRPC" if protocol == "grpc" else str(spec.get("http_method") or "POST").upper(),
+        "vuln_class": vuln_class,
+        "generated_at": now_utc(),
+        "result": result,
+        "candidate_ready": candidate_ready,
+        "execution": {key: value for key, value in execution.items() if key not in {"stdout", "stderr"}},
+        "observation": {"matched": observed, "tool_calls": observed_calls[:16]},
+        "state_changing": state_changing,
+        "redline_checked": redline_checked,
+        "header_overlay_sha256": header_overlay_digest,
+        "auth_session_id": auth_session_id,
+        "artifacts": artifacts,
+        "evidence_rubric": rubric,
+        "ledger_record": ledger,
+        "ai_next": {
+            "hypothesis": f"the exact {protocol} exchange may cross an authorization, stream, or tool boundary",
+            "next_action": "Use /validate only when the saved protocol transcript proves the target-specific impact; otherwise keep it as a signal.",
+            "stop_condition": "The expected frame, trailer, stream item, or tool call is absent or lacks impact.",
+        },
+    }
+    return _finalize_runner_summary(summary, bundle / "summary.json", repo_root)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run deterministic validation evidence lanes")
     sub = parser.add_subparsers(dest="lane", required=True)
@@ -3700,6 +4036,19 @@ def build_parser() -> argparse.ArgumentParser:
     add_request_facts(marker)
     marker.add_argument("--no-ledger", action="store_true")
 
+    protocol = sub.add_parser(
+        "protocol-replay",
+        help="Replay an exact WebSocket, gRPC, or LLM tool-call protocol spec",
+    )
+    add_common(protocol)
+    add_cli_args(protocol)
+    protocol.add_argument("--protocol-spec", required=True, help="schema-v1 protocol replay JSON")
+    protocol.add_argument("--header", action="append", default=[])
+    protocol.add_argument("--timeout", type=int, default=15)
+    protocol.add_argument("--browser-observed", action="store_true")
+    add_request_facts(protocol)
+    protocol.add_argument("--no-ledger", action="store_true")
+
     idor_pair = sub.add_parser("idor-actor-pair", help="Replay owner vs peer actor pair and diff responses")
     add_common(idor_pair)
     add_cli_args(idor_pair)
@@ -3743,7 +4092,28 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--identity-v2-json must contain a valid ClosureCellKey v2: {exc}")
     repo_root = Path(args.repo_root)
     auth_session = session_from_args(args).bind_target(args.target)
-    if args.lane == "request-diff":
+    if args.lane == "protocol-replay":
+        try:
+            protocol_spec = json.loads(Path(args.protocol_spec).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"--protocol-spec must point to a JSON object: {exc}")
+        if not isinstance(protocol_spec, dict):
+            parser.error("--protocol-spec must contain a JSON object")
+        summary = run_protocol_replay(
+            repo_root=repo_root,
+            target=args.target,
+            spec=protocol_spec,
+            finding_id=args.finding_id,
+            timeout=args.timeout,
+            no_ledger=args.no_ledger,
+            browser_observed=args.browser_observed,
+            state_changing=args.state_changing,
+            redline_checked=args.redline_checked,
+            identity_v2=identity_v2,
+            headers=parse_headers(args.header),
+            session=auth_session,
+        )
+    elif args.lane == "request-diff":
         try:
             request_spec = json.loads(Path(args.request_spec).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -3935,6 +4305,10 @@ def main(argv: list[str] | None = None) -> int:
         summary_path = _summary_path(summary, repo_root)
         if summary_path is not None:
             _write_json(summary_path, summary)
+            # The first Finding sync digests the pre-sync summary. Reconcile once
+            # more after the final summary write so owner provenance binds the
+            # exact persisted witness consumed by non-interactive validation.
+            _sync_finding_status(summary, repo_root=repo_root)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 

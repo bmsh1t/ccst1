@@ -9,7 +9,7 @@ trigger_tags:
   - cswsh
   - realtime
 risk: medium
-maturity: draft
+maturity: tested
 load_priority: medium
 deep_refs: []
 ---
@@ -66,6 +66,9 @@ deep_refs: []
 
 - 用浏览器捕获合法连接和消息 baseline。
 - 单变量改 Origin、对象 ID、channel 或 action，比较响应消息和状态。
+- 将确切 endpoint、1..16 个文本 frame 和预期 marker 写入 schema-v1 spec，使用
+  `python3 tools/validation_runner.py protocol-replay --target TARGET --protocol-spec SAMPLE.json`
+  保存 frame 输入、输出、operation ID，并写回既有 Ledger/Finding/Queue。
 - 如果 UI 编码或过滤器拦截，重放 raw frame 和新握手 header，对比错误消息、断连、ban 和服务端回显。
 - CSWSH 链按 `cross-site page -> handshake with cookie -> READY/subscribe -> sensitive server message -> exfil log` 验证。
 - Candidate 前需要可 replay 消息、角色/对象对照和影响说明。

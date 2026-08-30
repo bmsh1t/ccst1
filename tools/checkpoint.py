@@ -58,7 +58,7 @@ try:
         validate_global_review,
     )
     from tools.context_pack import build_context_pack
-    from tools.coverage_matrix import _route_template, actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
+    from tools.coverage_matrix import VULN_CLASSES, _route_template, actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
     from tools.evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command
     from tools.case_state_seed import build_case_state_seed
@@ -106,7 +106,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         validate_global_review,
     )
     from context_pack import build_context_pack  # type: ignore
-    from coverage_matrix import _route_template, actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
+    from coverage_matrix import VULN_CLASSES, _route_template, actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
     from evidence_ledger import ACTOR_MATRIX_VULN_CLASSES, build_summary as build_evidence_summary, record_command as evidence_record_command  # type: ignore
     from case_state_seed import build_case_state_seed  # type: ignore
@@ -2717,10 +2717,7 @@ def _next_proposals(
     lane_summary = matrix.get("high_risk_lanes")
     if not isinstance(lane_summary, dict):
         lane_summary = high_risk_lane_summary(matrix)
-    lane_order = (
-        "SQLi", "SSRF", "XXE", "RCE", "Path", "Upload", "IDOR", "Authz",
-        "GraphQL", "OAuth", "JWT", "CSRF", "Race", "Webhook", "XSS",
-    )
+    lane_order = VULN_CLASSES
     lane_review = []
     for name in lane_order:
         lane = lane_summary.get(name)

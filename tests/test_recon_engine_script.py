@@ -967,10 +967,60 @@ def test_recon_engine_records_evidence_gate_with_each_phase():
     script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
     text = script.read_text(encoding="utf-8")
 
-    assert 'from tools.recon_gate import build_phase_gate' in text
-    assert '"gate": build_phase_gate' in text
+    assert 'from tools.recon_gate import gate_from_record' in text
+    assert 'record["gate"] = gate_from_record(base_dir, record)' in text
     gate_text = (Path(__file__).resolve().parent.parent / "tools" / "recon_gate.py").read_text(encoding="utf-8")
     assert '"status": gate_status' in gate_text
+
+
+def test_recon_engine_persists_bounded_phase_gate_metadata(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    text = (repo_root / "tools" / "recon_engine.sh").read_text(encoding="utf-8")
+    function = "record_recon_phase() {" + text.split(
+        "record_recon_phase() {", 1
+    )[1].split("\nrecord_recon_collector() {", 1)[0]
+    artifact_ref = "recon/target.com/urls/raw/all.txt"
+    artifact = tmp_path / artifact_ref
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("https://target.com/\n", encoding="utf-8")
+    manifest = tmp_path / "recon" / "target.com" / "recon_manifest.jsonl"
+    shell = "\n".join(
+        [
+            "set -euo pipefail",
+            function,
+            f"BASE_DIR={tmp_path!s}",
+            f"RECON_MANIFEST={manifest!s}",
+            "TARGET=target.com",
+            "RECON_TARGET_KEY=target.com",
+            "RECON_PROFILE=normal",
+            "RECON_PHASE_PARTIAL=0",
+            (
+                "record_recon_phase url_collection ok "
+                f"{artifact_ref} 1 'input_total=50; selected=10; remaining=40; "
+                "continuation=next Katana sample; closure_blocking=false'"
+            ),
+        ]
+    )
+
+    completed = subprocess.run(
+        ["bash", "-c", shell],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    record = json.loads(manifest.read_text(encoding="utf-8"))
+    assert record["gate"]["status"] == "complete"
+    assert record["gate"]["bounded"] == {
+        "input_total": 50,
+        "selected": 10,
+        "remaining": 40,
+        "continuation": "next Katana sample",
+        "closure_blocking": False,
+    }
+    assert record["gate"]["artifact_binding"]["size"] == artifact.stat().st_size
 
 
 def test_recon_engine_syncs_shared_observation_index_after_source_groups():
@@ -1405,12 +1455,246 @@ def test_recon_engine_supports_wafw00f_fingerprinting():
 
     assert 'log_info "Phase 2.5: WAF Fingerprinting"' in text
     assert 'WAFW00F_MAX_TARGETS=$([ "$QUICK_MODE" = "--quick" ] && echo 3 || echo 10)' in text
-    assert 'head -"$WAFW00F_MAX_TARGETS" "$RECON_DIR/live/urls.txt" > "$WAFW00F_TARGETS_FILE"' in text
+    assert "prepare_wafw00f_batch()" in text
+    assert "validate_wafw00f_json()" in text
+    assert '"$WAFW00F_CONTEXT_FILE" \\' in text
     assert 'wafw00f \\' in text
     assert 'run_with_timeout "$WAFW00F_RUN_TIMEOUT" wafw00f \\' in text
     assert '-o "$WAFW00F_CURRENT_JSON" \\' in text
-    assert 'python3 - "$WAFW00F_PARSE_FILE" "$WAFW00F_HITS_FILE" "$WAFW00F_CONTEXT_FILE"' in text
+    assert '"$WAFW00F_PARSE_FILE" \\' in text
+    assert '"next_offset": completed' in text
     assert '"kind": "waf_context"' in text
+
+
+def test_recon_engine_requires_complete_wafw00f_json(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    function = "validate_wafw00f_json() {" + text.split(
+        "validate_wafw00f_json() {", 1
+    )[1].split("\nprepare_wafw00f_headers_file() {", 1)[0]
+    result = tmp_path / "wafw00f.json"
+    targets = tmp_path / "wafw00f_targets.txt"
+    targets.write_text(
+        "https://a.target.test\nhttps://b.target.test\n", encoding="utf-8"
+    )
+
+    def valid(payload) -> bool:
+        if isinstance(payload, str):
+            result.write_text(payload, encoding="utf-8")
+        else:
+            result.write_text(json.dumps(payload), encoding="utf-8")
+        completed = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "set -euo pipefail\n"
+                + function
+                + '\nvalidate_wafw00f_json "$1" "$2"\n',
+                "bash",
+                str(result),
+                str(targets),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return completed.returncode == 0
+
+    assert valid(
+        [{"url": "https://a.target.test"}, {"url": "https://b.target.test"}]
+    )
+    assert valid(
+        [{"url": "https://b.target.test"}, {"url": "https://a.target.test"}]
+    )
+    assert not valid([])
+    assert not valid([{"url": "https://a.target.test"}])
+    assert not valid(
+        [{"url": "https://a.target.test"}, {"url": "https://a.target.test"}]
+    )
+    assert not valid(
+        [{"url": "https://a.target.test"}, {"url": "https://c.target.test"}]
+    )
+    assert not valid([{"url": "https://a.target.test"}, {"detected": False}])
+    assert not valid([{"url": "https://a.target.test"}, {"url": 2}])
+    assert not valid({"url": "https://a.target.test"})
+    assert not valid("not-json")
+
+
+def test_recon_engine_filters_partial_waf_hits_to_selected_batch(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    start = text.index('    python3 - \\\n        "$WAFW00F_PARSE_FILE"')
+    body_start = text.index("<<'PY'\n", start) + len("<<'PY'\n")
+    body = text[body_start : text.index("\nPY\n", body_start)]
+    raw = tmp_path / "wafw00f.json"
+    hits = tmp_path / "wafw00f_hits.txt"
+    context = tmp_path / "waf_context.json"
+    targets = tmp_path / "wafw00f_targets.txt"
+    targets.write_text(
+        "https://a.target.test\nhttps://b.target.test\n", encoding="utf-8"
+    )
+    raw.write_text(
+        json.dumps(
+            [
+                {
+                    "url": "https://a.target.test",
+                    "detected": True,
+                    "firewall": "Cloudflare",
+                    "manufacturer": "Cloudflare Inc.",
+                },
+                {
+                    "url": "https://foreign.test",
+                    "detected": True,
+                    "firewall": "Foreign WAF",
+                    "manufacturer": "Foreign Vendor",
+                },
+                {"url": "https://b.target.test", "detected": False},
+                {"detected": True, "firewall": "Missing URL"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "python3",
+            "-",
+            str(raw),
+            str(hits),
+            str(context),
+            "target.test",
+            "partial",
+            "partial output",
+            "true",
+            "a" * 64,
+            "2",
+            "2",
+            "0",
+            "2",
+            str(targets),
+        ],
+        input=body,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert hits.read_text(encoding="utf-8").splitlines() == [
+        "https://a.target.test\tCloudflare\tCloudflare Inc.\t"
+    ]
+    summary = json.loads(context.read_text(encoding="utf-8"))
+    assert summary["vendors"] == ["Cloudflare", "Cloudflare Inc."]
+    assert [item["url"] for item in summary["observations"]] == [
+        "https://a.target.test"
+    ]
+    assert summary["malformed_result_count"] == 2
+
+
+def test_recon_engine_resumes_wafw00f_batch_for_same_input(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    function = "prepare_wafw00f_batch() {" + text.split(
+        "prepare_wafw00f_batch() {", 1
+    )[1].split("\nprepare_wafw00f_headers_file() {", 1)[0]
+    inputs = tmp_path / "urls.txt"
+    context = tmp_path / "waf_context.json"
+    batch = tmp_path / "wafw00f_targets.txt"
+    inputs.write_text(
+        "https://a.target.test\nhttps://b.target.test\n"
+        "https://c.target.test\nhttps://d.target.test\n",
+        encoding="utf-8",
+    )
+
+    def select() -> list[str]:
+        completed = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "set -euo pipefail\n"
+                + function
+                + '\nprepare_wafw00f_batch "$1" "$2" "$3" 2 target.test\n',
+                "bash",
+                str(inputs),
+                str(context),
+                str(batch),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        return completed.stdout.strip().split("\t")
+
+    first = select()
+    assert first[0:1] + first[2:] == ["4", "0", "2"]
+    assert batch.read_text(encoding="utf-8").splitlines() == [
+        "https://a.target.test",
+        "https://b.target.test",
+    ]
+
+    context.write_text(
+        json.dumps(
+            {
+                "target": "target.test",
+                "input_sha256": first[1],
+                "next_offset": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    second = select()
+    assert second[0:1] + second[2:] == ["4", "2", "2"]
+    assert batch.read_text(encoding="utf-8").splitlines() == [
+        "https://c.target.test",
+        "https://d.target.test",
+    ]
+
+    inputs.write_text(
+        inputs.read_text(encoding="utf-8") + "https://e.target.test\n",
+        encoding="utf-8",
+    )
+    changed = select()
+    assert changed[0:1] + changed[2:] == ["5", "0", "2"]
+    assert changed[1] != first[1]
+    assert batch.read_text(encoding="utf-8").splitlines() == [
+        "https://a.target.test",
+        "https://b.target.test",
+    ]
+
+
+def test_recon_engine_blocks_only_resumable_successful_waf_residual():
+    script = Path(__file__).resolve().parent.parent / "tools" / "recon_engine.sh"
+    text = script.read_text(encoding="utf-8")
+    decision = 'WAFW00F_CLOSURE_BLOCKING="false"' + text.split(
+        'WAFW00F_CLOSURE_BLOCKING="false"', 1
+    )[1].split("\nWAF_HITS=", 1)[0]
+
+    def evaluate(status: str, remaining: int, input_sha256: str = "a" * 64) -> str:
+        completed = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "set -euo pipefail\n"
+                f"WAFW00F_STATUS={status}\n"
+                f"WAFW00F_REMAINING={remaining}\n"
+                f"WAFW00F_INPUT_SHA256={input_sha256}\n"
+                + decision
+                + '\nprintf "%s\\n" "$WAFW00F_CLOSURE_BLOCKING"\n',
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        return completed.stdout.strip()
+
+    assert evaluate("ok", 2) == "true"
+    assert evaluate("ok", 0) == "false"
+    assert evaluate("partial", 2) == "false"
+    assert evaluate("error", 2) == "false"
+    assert evaluate("unavailable", 2) == "false"
+    assert evaluate("ok", 2, "") == "false"
 
 
 def test_recon_engine_supports_unwaf_origin_discovery():

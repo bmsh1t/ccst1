@@ -94,7 +94,7 @@ from datetime import datetime, timezone
 
 base_dir, manifest, target, target_key, profile, phase, status, artifact, count, note = sys.argv[1:]
 sys.path.insert(0, base_dir)
-from tools.recon_gate import build_phase_gate
+from tools.recon_gate import gate_from_record
 
 try:
     count_value = int(str(count).strip() or "0")
@@ -111,9 +111,9 @@ record = {
     "artifact": artifact,
     "count": count_value,
     "note": note,
-    "gate": build_phase_gate(base_dir, phase=phase, status=status, artifact=artifact),
     "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
 }
+record["gate"] = gate_from_record(base_dir, record)
 with open(manifest, "a", encoding="utf-8") as handle:
     handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 PY
@@ -774,6 +774,87 @@ cleanup_auth_tmpfiles() {
     [ -n "${FFUF_CONTROL_RUN_TMP:-}" ] && [ -f "$FFUF_CONTROL_RUN_TMP" ] && rm -f "$FFUF_CONTROL_RUN_TMP"
     [ -n "${FFUF_CONTROL_WORDLIST_TMP:-}" ] && [ -f "$FFUF_CONTROL_WORDLIST_TMP" ] && rm -f "$FFUF_CONTROL_WORDLIST_TMP"
     return 0  # Always succeed: EXIT trap propagates its return code to the script
+}
+
+prepare_wafw00f_batch() {
+    local input_file="$1"
+    local context_file="$2"
+    local output_file="$3"
+    local max_targets="$4"
+    local target="$5"
+
+    python3 - "$input_file" "$context_file" "$output_file" "$max_targets" "$target" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+input_path = Path(sys.argv[1])
+context_path = Path(sys.argv[2])
+output_path = Path(sys.argv[3])
+max_targets = max(1, int(sys.argv[4]))
+target = sys.argv[5]
+
+urls = list(dict.fromkeys(
+    line.strip()
+    for line in input_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if line.strip()
+))
+canonical = (("\n".join(urls) + "\n") if urls else "").encode("utf-8")
+input_sha256 = hashlib.sha256(canonical).hexdigest()
+offset = 0
+try:
+    previous = json.loads(context_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    previous = {}
+if not isinstance(previous, dict):
+    previous = {}
+if previous.get("target") == target and previous.get("input_sha256") == input_sha256:
+    try:
+        candidate = int(previous.get("next_offset", 0))
+    except (TypeError, ValueError):
+        candidate = 0
+    if 0 <= candidate <= len(urls):
+        offset = candidate
+
+batch = urls[offset:offset + max_targets]
+tmp = output_path.with_name(f".{output_path.name}.tmp")
+tmp.write_text(("\n".join(batch) + "\n") if batch else "", encoding="utf-8")
+tmp.replace(output_path)
+print(f"{len(urls)}\t{input_sha256}\t{offset}\t{len(batch)}")
+PY
+}
+
+validate_wafw00f_json() {
+    local json_file="$1"
+    local targets_file="$2"
+
+    python3 - "$json_file" "$targets_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    expected = [
+        line.strip()
+        for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+if (
+    not isinstance(payload, list)
+    or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("url"), str)
+        or not item["url"].strip()
+        for item in payload
+    )
+    or sorted(item["url"].strip() for item in payload) != sorted(expected)
+):
+    raise SystemExit(1)
+PY
 }
 
 prepare_wafw00f_headers_file() {
@@ -1702,8 +1783,8 @@ touch "$RECON_DIR/subdomains/all.txt" \
 # Clear regenerated summary files so reruns cannot inherit stale counters.
 : > "$RECON_DIR/live/urls.txt"
 : > "$RECON_DIR/live/seed_urls.txt"
-: > "$RECON_DIR/live/wafw00f_hits.txt"
-: > "$RECON_DIR/live/waf_context.json"
+# WAF summaries are replaced by their fingerprint-bound publisher after it reads
+# the prior cursor and detections. Other regenerated views remain clear-first.
 : > "$RECON_DIR/live/unwaf_bypass_ips.txt"
 : > "$RECON_DIR/live/status_200.txt"
 : > "$RECON_DIR/live/status_3xx.txt"
@@ -2296,30 +2377,44 @@ log_info "Phase 2.5: WAF Fingerprinting"
 WAFW00F_STATUS="skipped"
 WAFW00F_NOTE="no live targets"
 WAFW00F_INPUT_TOTAL=0
-WAFW00F_SELECTED=0
-if [ -s "$RECON_DIR/live/urls.txt" ]; then
-    WAFW00F_INPUT_TOTAL=$(wc -l < "$RECON_DIR/live/urls.txt" 2>/dev/null | tr -d ' ' || echo 0)
-fi
-if command -v wafw00f &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
-    WAFW00F_MAX_TARGETS=$([ "$QUICK_MODE" = "--quick" ] && echo 3 || echo 10)
-    WAFW00F_HTTP_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 8 || echo 10)
-    WAFW00F_TARGETS_FILE="$RECON_DIR/live/wafw00f_targets.txt"
-    WAFW00F_JSON_FILE="$RECON_DIR/live/wafw00f.json"
-    WAFW00F_CURRENT_JSON="$(mktemp "$RECON_DIR/live/.wafw00f.XXXXXX")"
-    WAFW00F_HITS_FILE="$RECON_DIR/live/wafw00f_hits.txt"
-    WAFW00F_CONTEXT_FILE="$RECON_DIR/live/waf_context.json"
-    WAFW00F_HEADER_ARGS=()
-    WAFW00F_REDIRECT_ARGS=()
-    WAFW00F_CURRENT_PUBLISHED="false"
+WAFW00F_INPUT_SHA256=""
+WAFW00F_OFFSET=0
+WAFW00F_BATCH_SELECTED=0
+WAFW00F_COMPLETED=0
+WAFW00F_REMAINING=0
+WAFW00F_CONTEXT_WRITTEN="false"
+WAFW00F_CURRENT_PUBLISHED="false"
+WAFW00F_MAX_TARGETS=$([ "$QUICK_MODE" = "--quick" ] && echo 3 || echo 10)
+WAFW00F_HTTP_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 8 || echo 10)
+WAFW00F_TARGETS_FILE="$RECON_DIR/live/wafw00f_targets.txt"
+WAFW00F_JSON_FILE="$RECON_DIR/live/wafw00f.json"
+WAFW00F_HITS_FILE="$RECON_DIR/live/wafw00f_hits.txt"
+WAFW00F_CONTEXT_FILE="$RECON_DIR/live/waf_context.json"
+WAFW00F_HEADER_ARGS=()
+WAFW00F_REDIRECT_ARGS=()
 
-    head -"$WAFW00F_MAX_TARGETS" "$RECON_DIR/live/urls.txt" > "$WAFW00F_TARGETS_FILE"
-    WAFW00F_SELECTED=$(wc -l < "$WAFW00F_TARGETS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+if [ -s "$RECON_DIR/live/urls.txt" ]; then
+    IFS=$'\t' read -r \
+        WAFW00F_INPUT_TOTAL \
+        WAFW00F_INPUT_SHA256 \
+        WAFW00F_OFFSET \
+        WAFW00F_BATCH_SELECTED \
+        < <(prepare_wafw00f_batch \
+            "$RECON_DIR/live/urls.txt" \
+            "$WAFW00F_CONTEXT_FILE" \
+            "$WAFW00F_TARGETS_FILE" \
+            "$WAFW00F_MAX_TARGETS" \
+            "$TARGET")
+fi
+
+if command -v wafw00f &>/dev/null && [ "$WAFW00F_BATCH_SELECTED" -gt 0 ]; then
+    WAFW00F_CURRENT_JSON="$(mktemp "$RECON_DIR/live/.wafw00f.XXXXXX")"
     if prepare_wafw00f_headers_file; then
         WAFW00F_HEADER_ARGS=(-H "$WAFW00F_HEADERS_FILE")
         WAFW00F_REDIRECT_ARGS=(-r)
     fi
 
-    log_step "Running wafw00f (top $WAFW00F_MAX_TARGETS live hosts)..."
+    log_step "Running wafw00f on $WAFW00F_BATCH_SELECTED host(s) from offset $WAFW00F_OFFSET..."
     WAFW00F_RUN_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 90 || echo 180)
     set +e
     run_with_timeout "$WAFW00F_RUN_TIMEOUT" wafw00f \
@@ -2333,7 +2428,12 @@ if command -v wafw00f &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
         >/dev/null 2>&1
     WAFW00F_EXIT_CODE=$?
     set -e
-    if [ "$WAFW00F_EXIT_CODE" -eq 0 ]; then
+    WAFW00F_OUTPUT_COMPLETE="false"
+    if [ "$WAFW00F_EXIT_CODE" -eq 0 ] \
+        && validate_wafw00f_json "$WAFW00F_CURRENT_JSON" "$WAFW00F_TARGETS_FILE"; then
+        WAFW00F_OUTPUT_COMPLETE="true"
+    fi
+    if [ "$WAFW00F_OUTPUT_COMPLETE" = "true" ]; then
         mv -f "$WAFW00F_CURRENT_JSON" "$WAFW00F_JSON_FILE"
         WAFW00F_CURRENT_PUBLISHED="true"
         WAFW00F_STATUS="ok"
@@ -2342,16 +2442,42 @@ if command -v wafw00f &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
         mv -f "$WAFW00F_CURRENT_JSON" "$WAFW00F_JSON_FILE"
         WAFW00F_CURRENT_PUBLISHED="true"
         WAFW00F_STATUS="partial"
-        WAFW00F_NOTE="current run exited $WAFW00F_EXIT_CODE; current partial JSON published"
+        if [ "$WAFW00F_EXIT_CODE" -eq 0 ]; then
+            WAFW00F_NOTE="current run exited 0 but JSON did not cover the selected Host batch; partial JSON published"
+        else
+            WAFW00F_NOTE="current run exited $WAFW00F_EXIT_CODE; current partial JSON published"
+        fi
     else
         rm -f "$WAFW00F_CURRENT_JSON"
-        WAFW00F_STATUS=$([ "$WAFW00F_EXIT_CODE" -eq 124 ] && echo partial || echo error)
-        WAFW00F_NOTE="current run exited $WAFW00F_EXIT_CODE without JSON; prior JSON preserved but not counted"
+        if [ "$WAFW00F_EXIT_CODE" -eq 0 ] || [ "$WAFW00F_EXIT_CODE" -eq 124 ]; then
+            WAFW00F_STATUS="partial"
+        else
+            WAFW00F_STATUS="error"
+        fi
+        WAFW00F_NOTE="current run exited $WAFW00F_EXIT_CODE without complete JSON; prior JSON preserved but not counted"
     fi
 
+    WAFW00F_COMPLETED="$WAFW00F_OFFSET"
+    if [ "$WAFW00F_STATUS" = "ok" ] && [ "$WAFW00F_CURRENT_PUBLISHED" = "true" ]; then
+        WAFW00F_COMPLETED=$((WAFW00F_OFFSET + WAFW00F_BATCH_SELECTED))
+    fi
+    WAFW00F_REMAINING=$((WAFW00F_INPUT_TOTAL - WAFW00F_COMPLETED))
     WAFW00F_PARSE_FILE="$WAFW00F_CURRENT_JSON"
     [ "$WAFW00F_CURRENT_PUBLISHED" != "true" ] || WAFW00F_PARSE_FILE="$WAFW00F_JSON_FILE"
-    python3 - "$WAFW00F_PARSE_FILE" "$WAFW00F_HITS_FILE" "$WAFW00F_CONTEXT_FILE" "$TARGET" "$WAFW00F_STATUS" "$WAFW00F_NOTE" "$WAFW00F_CURRENT_PUBLISHED" <<'PY'
+    python3 - \
+        "$WAFW00F_PARSE_FILE" \
+        "$WAFW00F_HITS_FILE" \
+        "$WAFW00F_CONTEXT_FILE" \
+        "$TARGET" \
+        "$WAFW00F_STATUS" \
+        "$WAFW00F_NOTE" \
+        "$WAFW00F_CURRENT_PUBLISHED" \
+        "$WAFW00F_INPUT_SHA256" \
+        "$WAFW00F_INPUT_TOTAL" \
+        "$WAFW00F_BATCH_SELECTED" \
+        "$WAFW00F_COMPLETED" \
+        "$WAFW00F_REMAINING" \
+        "$WAFW00F_TARGETS_FILE" <<'PY'
 import json
 import hashlib
 import sys
@@ -2364,6 +2490,19 @@ target = sys.argv[4]
 run_status = sys.argv[5]
 run_note = sys.argv[6]
 published = sys.argv[7] == "true"
+input_sha256 = sys.argv[8]
+input_total = max(0, int(sys.argv[9]))
+batch_selected = max(0, int(sys.argv[10]))
+completed = max(0, min(input_total, int(sys.argv[11])))
+remaining = max(0, int(sys.argv[12]))
+try:
+    selected_urls = {
+        line.strip()
+        for line in Path(sys.argv[13]).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+except (OSError, UnicodeDecodeError):
+    selected_urls = set()
 rows = []
 observations = []
 vendors = set()
@@ -2371,6 +2510,27 @@ scanned = 0
 malformed = 0
 parse_error = ""
 source_sha256 = ""
+try:
+    previous = json.loads(context_dst.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    previous = {}
+if not isinstance(previous, dict):
+    previous = {}
+same_snapshot = (
+    previous.get("target") == target
+    and previous.get("input_sha256") == input_sha256
+)
+previous_rows = []
+previous_observations = []
+if same_snapshot:
+    try:
+        previous_rows = [line for line in dst.read_text(encoding="utf-8").splitlines() if line]
+    except OSError:
+        previous_rows = []
+    previous_observations = [
+        item for item in previous.get("observations", []) if isinstance(item, dict)
+    ]
+    vendors.update(str(item) for item in previous.get("vendors", []) if str(item))
 
 if src.exists() and src.stat().st_size:
     scanned = 0
@@ -2389,6 +2549,10 @@ if src.exists() and src.stat().st_size:
             malformed += 1
             continue
         scanned += 1
+        item_url = item.get("url")
+        if not isinstance(item_url, str) or item_url.strip() not in selected_urls:
+            malformed += 1
+            continue
         if not item.get("detected"):
             continue
         firewall = str(item.get("firewall", ""))
@@ -2398,13 +2562,23 @@ if src.exists() and src.stat().st_size:
         if manufacturer:
             vendors.add(manufacturer)
         observation = {
-            "url": str(item.get("url", "")),
+            "url": item_url.strip(),
             "firewall": firewall,
             "manufacturer": manufacturer,
             "trigger_url": str(item.get("trigger_url", "")),
         }
         observations.append(observation)
         rows.append("\t".join(observation.values()))
+
+rows = list(dict.fromkeys([*previous_rows, *rows]))
+deduplicated_observations = []
+seen_observations = set()
+for observation in [*previous_observations, *observations]:
+    key = tuple(str(observation.get(name, "")) for name in ("url", "firewall", "manufacturer", "trigger_url"))
+    if key in seen_observations:
+        continue
+    seen_observations.add(key)
+    deduplicated_observations.append(observation)
 
 dst.write_text(("\n".join(rows) + "\n") if rows else "", encoding="utf-8")
 context = {
@@ -2415,13 +2589,19 @@ context = {
     "published": published,
     "note": run_note,
     "detector": "wafw00f",
-    "scanned_count": scanned,
-    "detected_count": len(observations),
-    "unmatched_count": max(0, scanned - len(observations)),
+    "input_sha256": input_sha256,
+    "input_total": input_total,
+    "batch_selected_count": batch_selected,
+    "next_offset": completed,
+    "remaining_count": remaining,
+    "scanned_count": completed,
+    "detected_count": len(rows),
+    "unmatched_count": max(0, completed - len(rows)),
+    "current_scanned_count": scanned,
     "malformed_result_count": malformed,
     "parse_error": parse_error,
     "vendors": sorted(vendors),
-    "observations": observations[:32],
+    "observations": deduplicated_observations[:32],
     "source_sha256": source_sha256,
     "artifacts": {
         "raw": str(Path("live/wafw00f.json")),
@@ -2432,6 +2612,7 @@ tmp = context_dst.with_name(f".{context_dst.name}.tmp")
 tmp.write_text(json.dumps(context, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
 tmp.replace(context_dst)
 PY
+    WAFW00F_CONTEXT_WRITTEN="true"
 
     WAFW00F_COUNT=$(wc -l < "$WAFW00F_HITS_FILE" 2>/dev/null || echo 0)
     log_done "wafw00f scanned: $(wc -l < "$WAFW00F_TARGETS_FILE" 2>/dev/null || echo 0) hosts"
@@ -2441,6 +2622,10 @@ PY
         log_done "No WAF detected on sampled hosts"
     fi
     [ "$WAFW00F_STATUS" = "partial" ] && log_warn "wafw00f timed out or returned non-zero — partial output may still be useful"
+elif command -v wafw00f &>/dev/null && [ "$WAFW00F_INPUT_TOTAL" -gt 0 ]; then
+    WAFW00F_STATUS="ok"
+    WAFW00F_NOTE="input snapshot already sampled"
+    log_done "WAF input snapshot already sampled"
 else
     if ! command -v wafw00f >/dev/null 2>&1; then
         WAFW00F_STATUS="unavailable"
@@ -2451,29 +2636,65 @@ fi
 
 # Keep a structured, explicit unavailable/skipped state so later AI rounds do
 # not confuse an empty hit file with a completed negative fingerprint.
-if [ ! -s "$RECON_DIR/live/waf_context.json" ]; then
-    python3 - "$RECON_DIR/live/waf_context.json" "$TARGET" "$WAFW00F_STATUS" "$WAFW00F_NOTE" <<'PY'
+if [ "$WAFW00F_CONTEXT_WRITTEN" != "true" ]; then
+    WAFW00F_COMPLETED="$WAFW00F_OFFSET"
+    WAFW00F_REMAINING=$((WAFW00F_INPUT_TOTAL - WAFW00F_COMPLETED))
+    python3 - \
+        "$WAFW00F_CONTEXT_FILE" \
+        "$WAFW00F_HITS_FILE" \
+        "$TARGET" \
+        "$WAFW00F_STATUS" \
+        "$WAFW00F_NOTE" \
+        "$WAFW00F_INPUT_SHA256" \
+        "$WAFW00F_INPUT_TOTAL" \
+        "$WAFW00F_COMPLETED" \
+        "$WAFW00F_REMAINING" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+hits_path = Path(sys.argv[2])
+target = sys.argv[3]
+input_sha256 = sys.argv[6]
+input_total = max(0, int(sys.argv[7]))
+completed = max(0, min(input_total, int(sys.argv[8])))
+remaining = max(0, int(sys.argv[9]))
+try:
+    previous = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    previous = {}
+if not isinstance(previous, dict):
+    previous = {}
+same_snapshot = (
+    previous.get("target") == target
+    and previous.get("input_sha256") == input_sha256
+)
+if not same_snapshot:
+    previous = {}
+    hits_path.write_text("", encoding="utf-8")
 payload = {
     "schema_version": 1,
     "kind": "waf_context",
-    "target": sys.argv[2],
-    "status": sys.argv[3],
+    "target": target,
+    "status": sys.argv[4],
     "published": False,
-    "note": sys.argv[4],
+    "note": sys.argv[5],
     "detector": "wafw00f",
-    "scanned_count": 0,
-    "detected_count": 0,
-    "unmatched_count": 0,
-    "malformed_result_count": 0,
+    "input_sha256": input_sha256,
+    "input_total": input_total,
+    "batch_selected_count": 0,
+    "next_offset": completed,
+    "remaining_count": remaining,
+    "scanned_count": completed,
+    "detected_count": int(previous.get("detected_count", 0) or 0),
+    "unmatched_count": max(0, completed - int(previous.get("detected_count", 0) or 0)),
+    "current_scanned_count": 0,
+    "malformed_result_count": int(previous.get("malformed_result_count", 0) or 0),
     "parse_error": "",
-    "vendors": [],
-    "observations": [],
-    "source_sha256": "",
+    "vendors": previous.get("vendors", []),
+    "observations": previous.get("observations", []),
+    "source_sha256": str(previous.get("source_sha256") or ""),
     "artifacts": {
         "raw": "live/wafw00f.json",
         "hits": "live/wafw00f_hits.txt",
@@ -2483,6 +2704,12 @@ tmp = path.with_name(f".{path.name}.tmp")
 tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
 tmp.replace(path)
 PY
+    WAFW00F_CONTEXT_WRITTEN="true"
+fi
+
+WAFW00F_CLOSURE_BLOCKING="false"
+if [ "$WAFW00F_STATUS" = "ok" ] && [ "$WAFW00F_REMAINING" -gt 0 ] && [ -n "$WAFW00F_INPUT_SHA256" ]; then
+    WAFW00F_CLOSURE_BLOCKING="true"
 fi
 
 WAF_HITS=$(wc -l < "$RECON_DIR/live/wafw00f_hits.txt" 2>/dev/null | tr -d ' ' || echo 0)
@@ -2491,7 +2718,7 @@ record_recon_phase \
     "$WAFW00F_STATUS" \
     "recon/${RECON_TARGET_KEY}/live/wafw00f_hits.txt" \
     "$WAF_HITS" \
-    "$WAFW00F_NOTE; sampled WAF fingerprinting; no hit does not prove no edge control; input_total=$WAFW00F_INPUT_TOTAL; selected=$WAFW00F_SELECTED; remaining=$((WAFW00F_INPUT_TOTAL - WAFW00F_SELECTED)); continuation=next WAF sample; closure_blocking=false"
+    "$WAFW00F_NOTE; sampled WAF fingerprinting; no hit does not prove no edge control; input_total=$WAFW00F_INPUT_TOTAL; selected=$WAFW00F_COMPLETED; remaining=$WAFW00F_REMAINING; continuation=resume WAF sample at offset $WAFW00F_COMPLETED; closure_blocking=$WAFW00F_CLOSURE_BLOCKING"
 emit_claude_hint \
     phase                waf_fp \
     waf_results_lines    "$WAF_HITS" \

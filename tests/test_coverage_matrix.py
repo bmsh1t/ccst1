@@ -56,8 +56,9 @@ def _coverage_mark_worker(repo_root: str, target: str, vuln_class: str, ready, s
 
 def test_readme_names_the_canonical_web2_closure_taxonomy():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    assert "15 Canonical Web2 Closure Classes" in text
-    section = text.split("15 Canonical Web2 Closure Classes", 1)[1].split("</details>", 1)[0]
+    heading = f"{len(VULN_CLASSES)} Canonical Web2 Closure Classes"
+    assert heading in text
+    section = text.split(heading, 1)[1].split("</details>", 1)[0]
     assert all(f"**{vuln_class}**" in section for vuln_class in VULN_CLASSES)
     assert "20 Web2 Bug Classes" not in text
 
@@ -1191,7 +1192,9 @@ class TestFindGaps:
         assert class_relevance("/rest/order-history", "Race", [])["relevance_score"] == 0
         assert class_relevance("/rest/track-order", "Race", [])["relevance_score"] == 0
         assert class_relevance("/rest/wallet/balance", "Race", [])["relevance_score"] == 0
+        assert class_relevance("/rest/wallet/balance", "BusinessLogic", [])["relevance_score"] == 0
         assert class_relevance("/api/cart/checkout", "Race", [])["relevance_score"] > 0
+        assert class_relevance("/api/cart/checkout", "BusinessLogic", [])["relevance_score"] > 0
         assert class_relevance("/api/orders", "Race", ["coupon"])["relevance_score"] > 0
 
 
@@ -1408,6 +1411,7 @@ class TestExtendedVulnClasses:
     """
 
     NEW_CLASSES = ("SQLi", "XXE", "RCE", "Path", "CSRF")
+    SEMANTIC_CLASSES = ("NoSQLi", "PrototypePollution", "OpenRedirect", "BusinessLogic")
 
     def test_new_classes_in_enum(self):
         """C1: enum contains the 5 new classes; original 10 retain
@@ -1421,7 +1425,8 @@ class TestExtendedVulnClasses:
             "GraphQL", "OAuth", "Upload", "Webhook", "JWT",
         )
         # The 5 new classes are present after the original 10
-        assert set(VULN_CLASSES[10:]) == set(self.NEW_CLASSES)
+        assert set(VULN_CLASSES[10:15]) == set(self.NEW_CLASSES)
+        assert tuple(VULN_CLASSES[15:]) == self.SEMANTIC_CLASSES
 
     def test_new_classes_create_cells_on_rebuild(self, tmp_path):
         """C3: a fresh rebuild produces an `untested` cell for each of
@@ -1589,16 +1594,22 @@ class TestVulnClassNormalization:
             assert normalize_vuln_class(alias) == "RCE", alias
 
     def test_xss_aliases(self):
-        for alias in ("xss-dom", "dom-xss", "domxss",
-                      "prototype-pollution", "prototypepollution", "pp"):
+        for alias in ("xss-dom", "dom-xss", "domxss"):
             assert normalize_vuln_class(alias) == "XSS", alias
+
+    def test_prototype_pollution_aliases(self):
+        for alias in ("prototype-pollution", "prototypepollution", "pp"):
+            assert normalize_vuln_class(alias) == "PrototypePollution", alias
 
     def test_sqli_aliases(self):
         for alias in ("sql-injection", "sqlinjection", "sqlblind",
-                      "sqli-blind", "sqli-time", "blindsqli", "nosqli",
-                      "nosql-injection",
+                      "sqli-blind", "sqli-time", "blindsqli",
                       "SQL-INJECTION", "Sqli"):
             assert normalize_vuln_class(alias) == "SQLi", alias
+
+    def test_nosqli_aliases(self):
+        for alias in ("nosqli", "nosql-injection", "nosqlinjection"):
+            assert normalize_vuln_class(alias) == "NoSQLi", alias
 
     def test_xxe_aliases(self):
         for alias in ("xxe-blind", "xml-injection", "xinclude",
@@ -1611,7 +1622,11 @@ class TestVulnClassNormalization:
 
     def test_open_redirect_aliases(self):
         for alias in ("openredirect", "open-redirect", "redirect"):
-            assert normalize_vuln_class(alias) == "Authz", alias
+            assert normalize_vuln_class(alias) == "OpenRedirect", alias
+
+    def test_business_logic_aliases(self):
+        for alias in ("business-logic", "businesslogic"):
+            assert normalize_vuln_class(alias) == "BusinessLogic", alias
 
     def test_unknown_raises_with_helpful_message(self):
         with pytest.raises(ValueError) as excinfo:

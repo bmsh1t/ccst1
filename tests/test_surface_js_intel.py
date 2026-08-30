@@ -41,6 +41,7 @@ def test_build_js_intel_urls_and_counts_normalize_relative_paths():
         "endpoints": [
             {"path": "/api/admin/export?order_id=42", "method": "POST"},
             {"path": "graphql", "method": "POST"},
+            {"path": "//cdn.external.test/assets/app.js", "method": "GET"},
             {"path": "wss://api.target.com/ws?tenantId=acme", "method": "WS"},
             {"path": "https://cdn.target.com/api/public", "method": "GET"},
         ],
@@ -57,6 +58,9 @@ def test_build_js_intel_urls_and_counts_normalize_relative_paths():
         "https://app.target.com/graphql": [
             {"path": "graphql", "method": "POST"}
         ],
+        "https://cdn.external.test/assets/app.js": [
+            {"path": "//cdn.external.test/assets/app.js", "method": "GET"}
+        ],
         "wss://api.target.com/ws?tenantId=acme": [
             {"path": "wss://api.target.com/ws?tenantId=acme", "method": "WS"}
         ],
@@ -65,7 +69,7 @@ def test_build_js_intel_urls_and_counts_normalize_relative_paths():
         ],
     }
     assert surface_js_intel.js_intel_counts(js_intel) == {
-        "endpoint_count": 4,
+        "endpoint_count": 5,
         "lead_count": 2,
         "graphql_count": 1,
     }

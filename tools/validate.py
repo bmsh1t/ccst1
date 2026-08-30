@@ -29,14 +29,24 @@ from typing import Any, Sequence
 from urllib.parse import urlparse
 
 try:
-    from finding_index import load_finding_index, update_finding_status, upsert_finding
+    from finding_index import (
+        load_finding_index,
+        update_finding_status,
+        upsert_finding,
+        verify_finding_owner_provenance,
+    )
 except ImportError:  # pragma: no cover - package import path
-    from tools.finding_index import load_finding_index, update_finding_status, upsert_finding
+    from tools.finding_index import (
+        load_finding_index,
+        update_finding_status,
+        upsert_finding,
+        verify_finding_owner_provenance,
+    )
 
 try:
-    from target_paths import canonical_target_value, target_storage_key
+    from target_paths import canonical_target_value, resolve_target_url, target_storage_key
 except ImportError:  # pragma: no cover - package import path
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, resolve_target_url, target_storage_key
 
 try:
     from graphql_utils import escape_graphql_string
@@ -113,7 +123,8 @@ SEVEN_QUESTION_DEFINITIONS = (
 )
 SEVEN_QUESTION_KEYS = tuple(key for key, _ in SEVEN_QUESTION_DEFINITIONS)
 SEVEN_QUESTION_STATUSES = {"pass", "fail", "partial", "chain_required", "unknown"}
-MACHINE_DECISION_SCHEMA_VERSION = 1
+MACHINE_DECISION_SCHEMA_VERSION = 2
+RUNNER_SUMMARY_SCHEMA_VERSION = 1
 MACHINE_DECISION_GATE_KEYS = ("gate1", "gate2", "gate3", "gate4")
 CVSS_PARAMETER_KEYS = ("AV", "AC", "AT", "PR", "UI", "VC", "VI", "VA", "SC", "SI", "SA")
 
@@ -1446,6 +1457,7 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
                 for item in (machine_decision.get("evidence_refs") or [])
                 if str(item).strip()
             ],
+            "runner_summary": str(machine_decision.get("runner_summary") or ""),
         }
 
     return summary
@@ -1625,15 +1637,11 @@ def _validation_method_from_summary(summary: dict, repo: Path) -> str:
 
 def _finding_url_from_summary(summary: dict) -> str:
     endpoint = str(summary.get("endpoint") or "").strip()
-    if endpoint.startswith(("http://", "https://")):
-        return endpoint
     target = str(summary.get("target") or summary.get("program") or "").strip()
     if not target:
         return endpoint
     base = target if target.startswith(("http://", "https://")) else f"http://{target}"
-    if endpoint and not endpoint.startswith("/"):
-        endpoint = "/" + endpoint
-    return base.rstrip("/") + (endpoint or "/")
+    return resolve_target_url(endpoint, base) or f"{base.rstrip('/')}/"
 
 
 def _finding_id_from_summary(summary: dict) -> str:
@@ -2034,6 +2042,7 @@ def load_finding_prefill(
     finding_id: str,
     *,
     migrate_legacy: bool = True,
+    include_canonical: bool = False,
 ) -> dict:
     """Load defaults from findings.json, optionally without legacy write-back."""
     payload = load_finding_index(findings_dir, migrate_legacy=migrate_legacy)
@@ -2064,7 +2073,7 @@ def load_finding_prefill(
     if not rubric:
         rubric = evaluate_candidate_evidence(finding)
 
-    return {
+    prefill = {
         "target": payload.get("target") or Path(findings_dir).name,
         "vuln_type": (finding.get("type") or "").upper(),
         "endpoint": finding.get("url") or "",
@@ -2076,6 +2085,9 @@ def load_finding_prefill(
         "report_draft_path": finding.get("report_draft_path") or "",
         "report_file": finding.get("report_file") or "",
     }
+    if include_canonical:
+        prefill["_canonical_finding"] = finding
+    return prefill
 
 
 def resolve_browser_evidence_for_validate(
@@ -2187,6 +2199,120 @@ def _resolve_machine_evidence_refs(values: Any, *, repo_root: Path) -> list[str]
             raise ValueError(f"decision evidence ref is not a readable file: {raw}")
         resolved.append(str(path))
     return resolved
+
+
+def _resolve_machine_repo_file(value: Any, field: str, *, repo_root: Path) -> Path:
+    raw = _required_text(value, field)
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = repo_root / path
+    path = path.resolve()
+    try:
+        path.relative_to(repo_root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"decision.{field} must stay under the repository root") from exc
+    if not path.is_file():
+        raise ValueError(f"decision.{field} is not a readable file: {raw}")
+    return path
+
+
+def _validate_machine_runner_witness(
+    evidence: dict[str, Any],
+    *,
+    evidence_refs: list[str],
+    decision_target: str,
+    finding_id: str,
+    decision_endpoint: str,
+    decision_method: str,
+    findings_dir: Path,
+    prefill: dict[str, Any],
+    repo_root: Path,
+) -> Path:
+    """Require one owner-bound runner witness before machine validation writes."""
+    summary_path = _resolve_machine_repo_file(
+        evidence.get("runner_summary"),
+        "evidence.runner_summary",
+        repo_root=repo_root,
+    )
+    if summary_path not in {Path(ref).resolve() for ref in evidence_refs}:
+        raise ValueError("decision.evidence.refs must include decision.evidence.runner_summary")
+    try:
+        runner = json.loads(summary_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"decision.evidence.runner_summary is invalid JSON: {exc.msg}") from exc
+    if not isinstance(runner, dict):
+        raise ValueError("decision.evidence.runner_summary must contain one object")
+    if runner.get("schema_version") != RUNNER_SUMMARY_SCHEMA_VERSION:
+        raise ValueError(
+            "decision.evidence.runner_summary schema_version must be "
+            f"{RUNNER_SUMMARY_SCHEMA_VERSION}"
+        )
+
+    recorded_summary = _resolve_machine_repo_file(
+        runner.get("summary_path"),
+        "evidence.runner_summary.summary_path",
+        repo_root=repo_root,
+    )
+    if recorded_summary != summary_path:
+        raise ValueError("runner summary_path does not point to the supplied runner summary")
+    if canonical_target_value(str(runner.get("target") or "")) != decision_target:
+        raise ValueError("runner target does not match decision.target")
+    if str(runner.get("finding_id") or "").strip() != finding_id:
+        raise ValueError("runner finding_id does not match decision.finding_id")
+    runner_endpoints = [runner.get(key) for key in ("url", "endpoint", "raw_endpoint")]
+    if not any(_machine_endpoints_match(decision_endpoint, str(value or "")) for value in runner_endpoints):
+        raise ValueError("runner endpoint does not match decision.endpoint")
+    runner_method = normalize_http_method(runner.get("method") or "GET")
+    if runner_method != decision_method:
+        raise ValueError("runner method does not match decision.method")
+    if runner.get("result") != "tested_finding" or runner.get("candidate_ready") is not True:
+        raise ValueError("runner summary must be a candidate-ready tested_finding")
+    operation_id = _required_text(runner.get("operation_id"), "evidence.runner_summary.operation_id")
+
+    bindings = runner.get("artifact_bindings")
+    if not isinstance(bindings, list) or not bindings:
+        raise ValueError("runner summary artifact_bindings must be a non-empty list")
+    kinds: set[str] = set()
+    for index, binding in enumerate(bindings):
+        if not isinstance(binding, dict):
+            raise ValueError(f"runner artifact_bindings[{index}] must be an object")
+        kind = _required_text(binding.get("kind"), f"evidence.runner_summary.artifact_bindings[{index}].kind")
+        artifact = _resolve_machine_repo_file(
+            binding.get("ref"),
+            f"evidence.runner_summary.artifact_bindings[{index}].ref",
+            repo_root=repo_root,
+        )
+        expected = _required_text(
+            binding.get("sha256"),
+            f"evidence.runner_summary.artifact_bindings[{index}].sha256",
+        ).lower()
+        actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected) or actual != expected:
+            raise ValueError(f"runner artifact digest mismatch: {binding.get('ref')}")
+        kinds.add(kind)
+    if not any(kind == "request" or kind.endswith("_request") for kind in kinds):
+        raise ValueError("runner summary must bind at least one request artifact")
+    if not any(kind == "response" or kind.endswith("_response") for kind in kinds):
+        raise ValueError("runner summary must bind at least one response artifact")
+
+    canonical = prefill.get("_canonical_finding")
+    if not isinstance(canonical, dict):
+        raise ValueError("canonical finding is unavailable for runner owner binding")
+    canonical_summary = _resolved_repo_path(canonical.get("validation_summary"), repo_root=repo_root)
+    if canonical_summary != summary_path:
+        raise ValueError("canonical finding validation_summary does not match runner summary")
+    if str(canonical.get("runner_operation_id") or "").strip() != operation_id:
+        raise ValueError("canonical finding runner_operation_id does not match runner summary")
+    canonical_method = str(canonical.get("method") or "").strip()
+    if canonical_method and normalize_http_method(canonical_method) != decision_method:
+        raise ValueError("canonical finding method does not match decision.method")
+    provenance = verify_finding_owner_provenance(findings_dir, canonical, target=decision_target)
+    if provenance.get("valid") is not True:
+        raise ValueError(
+            "canonical finding owner provenance is invalid: "
+            f"{provenance.get('reason') or 'unknown'}"
+        )
+    return summary_path
 
 
 def _parse_machine_gates(raw: Any) -> tuple[dict[str, bool], dict[str, dict[str, Any]]]:
@@ -2356,6 +2482,7 @@ def _build_machine_validation_input(
         str(findings_dir),
         finding_id,
         migrate_legacy=False,
+        include_canonical=True,
     )
     if not prefill:
         raise ValueError(f"finding id not found in findings.json: {finding_id}")
@@ -2375,11 +2502,23 @@ def _build_machine_validation_input(
     seven_questions = _parse_machine_seven_questions(decision.get("seven_question_gate"))
     cvss_score, cvss_vector, cvss_params = _parse_machine_cvss(decision.get("cvss"))
     impact = _required_text(decision.get("impact"), "impact")
+    decision_method = normalize_http_method(decision.get("method") or "GET")
     evidence = decision.get("evidence")
     if not isinstance(evidence, dict):
         raise ValueError("decision.evidence must be an object")
     evidence_summary = _required_text(evidence.get("summary"), "evidence.summary")
     evidence_refs = _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=BASE_DIR)
+    runner_summary_path = _validate_machine_runner_witness(
+        evidence,
+        evidence_refs=evidence_refs,
+        decision_target=decision_target,
+        finding_id=finding_id,
+        decision_endpoint=decision_endpoint,
+        decision_method=decision_method,
+        findings_dir=findings_dir,
+        prefill=prefill,
+        repo_root=BASE_DIR,
+    )
     report_path, report_content = _resolve_machine_report(
         decision.get("report"),
         findings_dir=findings_dir,
@@ -2397,7 +2536,7 @@ def _build_machine_validation_input(
         "target": decision_target,
         "vuln_type": str(prefill.get("vuln_type") or decision_vuln_class),
         "endpoint": decision_endpoint,
-        "method": normalize_http_method(decision.get("method") or "GET"),
+        "method": decision_method,
         "impact": impact,
         "cvss_score": cvss_score,
         "cvss_vector": cvss_vector,
@@ -2412,6 +2551,7 @@ def _build_machine_validation_input(
             "source": str(decision_path),
             "evidence_summary": evidence_summary,
             "evidence_refs": evidence_refs,
+            "runner_summary": str(runner_summary_path),
         },
     }
     for key in MACHINE_DECISION_GATE_KEYS:
@@ -2451,6 +2591,7 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
                 str(findings_dir),
                 finding_id,
                 migrate_legacy=False,
+                include_canonical=True,
             )
         )
         if prefill == {}:
@@ -2481,13 +2622,38 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
     capture(lambda: _parse_machine_seven_questions(decision.get("seven_question_gate")))
     capture(lambda: _parse_machine_cvss(decision.get("cvss")))
     capture(lambda: _required_text(decision.get("impact"), "impact"))
+    decision_method = capture(lambda: normalize_http_method(decision.get("method") or "GET"))
 
     evidence = decision.get("evidence")
     if not isinstance(evidence, dict):
         errors.append("decision.evidence must be an object")
     else:
         capture(lambda: _required_text(evidence.get("summary"), "evidence.summary"))
-        capture(lambda: _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=BASE_DIR))
+        evidence_refs = capture(
+            lambda: _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=BASE_DIR)
+        )
+        if (
+            evidence_refs is not None
+            and decision_target is not None
+            and finding_id
+            and decision_endpoint is not None
+            and decision_method is not None
+            and findings_dir is not None
+            and prefill
+        ):
+            capture(
+                lambda: _validate_machine_runner_witness(
+                    evidence,
+                    evidence_refs=evidence_refs,
+                    decision_target=decision_target,
+                    finding_id=finding_id,
+                    decision_endpoint=decision_endpoint,
+                    decision_method=decision_method,
+                    findings_dir=findings_dir,
+                    prefill=prefill,
+                    repo_root=BASE_DIR,
+                )
+            )
 
     report_result = capture(
         lambda: _resolve_machine_report(

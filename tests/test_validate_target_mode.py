@@ -1,12 +1,26 @@
 """Regression tests for validate.py target-driven advisory behavior."""
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+import finding_index
 import validate
+import validation_runner
 from runtime_state import load_runtime_state
+
+
+def test_finding_url_from_summary_preserves_protocol_relative_external_endpoint():
+    assert validate._finding_url_from_summary({
+        "target": "target.com",
+        "endpoint": "//api.external.test/orders/123",
+    }) == "http://api.external.test/orders/123"
+    assert validate._finding_url_from_summary({
+        "target": "target.com",
+        "endpoint": "/orders/123",
+    }) == "http://target.com/orders/123"
 
 
 def test_validate_prompt_helpers_fail_closed_on_eof(monkeypatch):
@@ -23,7 +37,88 @@ def test_validate_prompt_helpers_fail_closed_on_eof(monkeypatch):
         validate.ask_choice("Attack Vector", [("N", "Network"), ("A", "Adjacent")])
 
 
-def _machine_decision(*, target: str, finding_id: str, endpoint: str, report_path: str, evidence_ref: str) -> dict:
+def _bind_runner_witness(
+    *,
+    target: str,
+    finding_id: str,
+    endpoint: str,
+    evidence_ref: str,
+    method: str = "GET",
+) -> str:
+    source = Path(evidence_ref).resolve()
+    evidence_root = next(parent for parent in source.parents if parent.name == "evidence")
+    repo_root = evidence_root.parent
+    bundle_root = evidence_root / target / "validation" / finding_id
+    run_number = len(list(bundle_root.glob("fixture-*"))) + 1
+    bundle = bundle_root / f"fixture-{run_number}"
+    private_bundle = repo_root / ".private" / "validation" / target / finding_id / f"fixture-{run_number}"
+    bundle.mkdir(parents=True)
+    private_bundle.mkdir(parents=True)
+    request_path = private_bundle / "baseline.request.txt"
+    response_path = private_bundle / "baseline.response.txt"
+    request_path.write_text(f"{method} {endpoint} HTTP/1.1\nHost: {target}\n\n", encoding="utf-8")
+    response_path.write_text("HTTP/1.1 200 OK\nContent-Type: application/json\n\n{\"rows\":[1,2]}\n", encoding="utf-8")
+    summary_path = bundle / "summary.json"
+    finding = finding_index.find_finding(
+        repo_root / "findings" / target,
+        finding_id,
+        migrate_legacy=False,
+    ) or {}
+    vuln_class = str(finding.get("vuln_class") or finding.get("type") or "SQLi")
+    runner_url = f"https://{target}{endpoint}" if endpoint.startswith("/") else endpoint
+    operation_id = "runner:" + hashlib.sha256(
+        f"{target}|{finding_id}|{endpoint}|{method}|{run_number}".encode("utf-8")
+    ).hexdigest()[:24]
+    summary = {
+        "schema_version": validation_runner.SCHEMA_VERSION,
+        "lane": "sqli_result_diff",
+        "target": target,
+        "finding_id": finding_id,
+        "url": runner_url,
+        "method": method,
+        "vuln_class": vuln_class,
+        "result": "tested_finding",
+        "candidate_ready": True,
+        "operation_id": operation_id,
+        "summary_path": str(summary_path.relative_to(repo_root)),
+        "artifact_bindings": [
+            {
+                "kind": "baseline_request",
+                "ref": str(request_path.relative_to(repo_root)),
+                "sha256": hashlib.sha256(request_path.read_bytes()).hexdigest(),
+            },
+            {
+                "kind": "baseline_response",
+                "ref": str(response_path.relative_to(repo_root)),
+                "sha256": hashlib.sha256(response_path.read_bytes()).hexdigest(),
+            },
+        ],
+    }
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    sync = validation_runner._sync_finding_status(summary, repo_root=repo_root)
+    assert sync["status"] in {"updated", "created"}
+    return str(summary_path)
+
+
+def _machine_decision(
+    *,
+    target: str,
+    finding_id: str,
+    endpoint: str,
+    report_path: str,
+    evidence_ref: str,
+    bind_runner: bool = True,
+) -> dict:
+    runner_summary = (
+        _bind_runner_witness(
+            target=target,
+            finding_id=finding_id,
+            endpoint=endpoint,
+            evidence_ref=evidence_ref,
+        )
+        if bind_runner
+        else evidence_ref
+    )
     questions = {
         key: {"status": "pass", "basis": f"Replay evidence supports {key}."}
         for key, _ in validate.SEVEN_QUESTION_DEFINITIONS
@@ -48,7 +143,8 @@ def _machine_decision(*, target: str, finding_id: str, endpoint: str, report_pat
         },
         "evidence": {
             "summary": "Baseline and controlled variant response pair are stored at the linked artifact.",
-            "refs": [evidence_ref],
+            "refs": [runner_summary],
+            "runner_summary": runner_summary,
         },
         "report": {
             "path": report_path,
@@ -177,6 +273,89 @@ def test_machine_decision_preflight_aggregates_errors_without_writes(tmp_path, m
     assert not (findings_dir / "validated").exists()
 
 
+def test_machine_preflight_rejects_ordinary_file_as_runner_witness(tmp_path, monkeypatch, capsys):
+    target, finding_id, _, decision_path = _seed_machine_preflight(tmp_path)
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    ordinary = tmp_path / "evidence" / target / "ordinary.txt"
+    ordinary.write_text("not a runner summary\n", encoding="utf-8")
+    decision["evidence"]["refs"] = [str(ordinary)]
+    decision["evidence"]["runner_summary"] = str(ordinary)
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    before = _file_snapshot(tmp_path)
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+
+    assert validate.main([
+        "--target", target,
+        "--finding-id", finding_id,
+        "--decision-json", str(decision_path),
+        "--preflight", "--json",
+    ]) == 2
+    output = json.loads(capsys.readouterr().out)
+
+    assert any("runner_summary is invalid JSON" in error for error in output["errors"])
+    assert _file_snapshot(tmp_path) == before
+
+
+def test_machine_preflight_rejects_runner_artifact_digest_drift(tmp_path, monkeypatch, capsys):
+    target, finding_id, _, decision_path = _seed_machine_preflight(tmp_path)
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    runner = json.loads(Path(decision["evidence"]["runner_summary"]).read_text(encoding="utf-8"))
+    artifact = tmp_path / runner["artifact_bindings"][0]["ref"]
+    artifact.write_text("tampered\n", encoding="utf-8")
+    before = _file_snapshot(tmp_path)
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+
+    assert validate.main([
+        "--target", target,
+        "--finding-id", finding_id,
+        "--decision-json", str(decision_path),
+        "--preflight", "--json",
+    ]) == 2
+    output = json.loads(capsys.readouterr().out)
+
+    assert any("runner artifact digest mismatch" in error for error in output["errors"])
+    assert _file_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("target", "other.test", "runner target does not match"),
+        ("finding_id", "other-finding", "runner finding_id does not match"),
+        ("url", "https://target.com/other", "runner endpoint does not match"),
+        ("method", "POST", "runner method does not match"),
+        ("operation_id", "runner:ffffffffffffffffffffffff", "runner_operation_id does not match"),
+    ],
+)
+def test_machine_preflight_rejects_runner_identity_drift(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    field,
+    value,
+    expected,
+):
+    target, finding_id, _, decision_path = _seed_machine_preflight(tmp_path)
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    runner_path = Path(decision["evidence"]["runner_summary"])
+    runner = json.loads(runner_path.read_text(encoding="utf-8"))
+    runner[field] = value
+    runner_path.write_text(json.dumps(runner), encoding="utf-8")
+    before = _file_snapshot(tmp_path)
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+
+    assert validate.main([
+        "--target", target,
+        "--finding-id", finding_id,
+        "--decision-json", str(decision_path),
+        "--preflight", "--json",
+    ]) == 2
+    output = json.loads(capsys.readouterr().out)
+
+    assert any(expected in error for error in output["errors"])
+    assert _file_snapshot(tmp_path) == before
+
+
 def test_non_tty_machine_decision_binds_canonical_finding_and_uses_owner(tmp_path, monkeypatch, capsys):
     from finding_index import find_finding, upsert_finding, verify_finding_owner_provenance
 
@@ -234,8 +413,9 @@ def test_non_tty_machine_decision_binds_canonical_finding_and_uses_owner(tmp_pat
     assert persisted["validation_status"] == "validated"
     assert verify_finding_owner_provenance(findings_dir, persisted, target=target)["valid"] is True
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert summary["machine_decision"]["schema_version"] == 1
-    assert summary["machine_decision"]["evidence_refs"] == [str(evidence_ref)]
+    assert summary["machine_decision"]["schema_version"] == 2
+    assert summary["machine_decision"]["evidence_refs"] == [decision["evidence"]["runner_summary"]]
+    assert summary["machine_decision"]["runner_summary"] == decision["evidence"]["runner_summary"]
 
 
 def test_machine_validation_preserves_root_claim_class_in_ledger_and_reconcile(tmp_path, monkeypatch, capsys):
@@ -323,12 +503,19 @@ def test_machine_decision_binding_error_has_no_new_validation_write(tmp_path, mo
         },
         target=target,
     )
+    runner_summary = _bind_runner_witness(
+        target=target,
+        finding_id="sqli_machine",
+        endpoint="/rest/products/search?q=test",
+        evidence_ref=str(evidence_ref),
+    )
     decision = _machine_decision(
         target=target,
         finding_id="sqli_machine",
         endpoint="/wrong-path",
         report_path="findings/target.com/validated/should-not-exist.md",
-        evidence_ref=str(evidence_ref),
+        evidence_ref=runner_summary,
+        bind_runner=False,
     )
     decision_path = tmp_path / "bad-machine-decision.json"
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
@@ -382,6 +569,7 @@ def test_machine_decision_binding_error_does_not_migrate_legacy_finding_list(
         endpoint="/wrong-path",
         report_path="findings/target.com/validated/should-not-exist.md",
         evidence_ref=str(evidence_ref),
+        bind_runner=False,
     )
     decision_path = tmp_path / "bad-legacy-decision.json"
     decision_path.write_text(json.dumps(decision), encoding="utf-8")
@@ -698,7 +886,7 @@ def test_machine_validation_rejects_report_path_owned_by_another_finding(
     )["finding_id"] == "sqli-one"
 
 
-def test_machine_validation_allows_same_finding_report_rerun(
+def test_machine_validation_rejects_rerun_without_runner_owner_handoff(
     tmp_path,
     monkeypatch,
     capsys,
@@ -725,34 +913,42 @@ def test_machine_validation_allows_same_finding_report_rerun(
     monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
     report_rel = f"findings/{target}/validated/rerun.md"
 
-    outputs = []
-    for run_number in (1, 2):
-        decision = _machine_decision(
-            target=target,
-            finding_id=finding_id,
-            endpoint="/item?id=1",
-            report_path=report_rel,
-            evidence_ref=str(evidence_ref),
-        )
-        decision["report"]["content"] = f"# Finding rerun {run_number}\n"
-        decision_path = tmp_path / f"decision-{run_number}.json"
-        decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    first = _machine_decision(
+        target=target,
+        finding_id=finding_id,
+        endpoint="/item?id=1",
+        report_path=report_rel,
+        evidence_ref=str(evidence_ref),
+    )
+    first["report"]["content"] = "# Finding rerun 1\n"
+    first_path = tmp_path / "decision-1.json"
+    first_path.write_text(json.dumps(first), encoding="utf-8")
+    assert validate.main([
+        "--target", target,
+        "--finding-id", finding_id,
+        "--decision-json", str(first_path),
+        "--json",
+    ]) == 0
+    capsys.readouterr()
 
-        assert validate.main(
-            [
-                "--target",
-                target,
-                "--finding-id",
-                finding_id,
-                "--decision-json",
-                str(decision_path),
-                "--json",
-            ]
-        ) == 0
-        outputs.append(json.loads(capsys.readouterr().out))
+    second = _machine_decision(
+        target=target,
+        finding_id=finding_id,
+        endpoint="/item?id=1",
+        report_path=report_rel,
+        evidence_ref=str(evidence_ref),
+    )
+    second["report"]["content"] = "# Finding rerun 2\n"
+    second_path = tmp_path / "decision-2.json"
+    second_path.write_text(json.dumps(second), encoding="utf-8")
 
-    assert outputs[0]["summary_path"] == outputs[1]["summary_path"]
-    assert (tmp_path / report_rel).read_text(encoding="utf-8") == "# Finding rerun 2\n"
+    assert validate.main([
+        "--target", target,
+        "--finding-id", finding_id,
+        "--decision-json", str(second_path),
+    ]) == 2
+    assert "canonical finding validation_summary does not match runner summary" in capsys.readouterr().err
+    assert (tmp_path / report_rel).read_text(encoding="utf-8") == "# Finding rerun 1\n"
     finding = find_finding(findings_dir, finding_id)
     assert finding is not None
     assert finding["validation_status"] == "validated"

@@ -36,12 +36,49 @@ def test_closure_encoding_is_deterministic_and_round_trips():
     assert key.dimension_map == {"method": "POST", "parameter": "q"}
     assert build_closure_cell(
         "/api/users", "nosqli", {"method": "POST", "parameter": "q"}
-    ).family == "SQLi"
+    ).family == "NoSQLi"
     assert build_closure_cell(
         "/api/users",
         "deserialization",
         {"method": "POST", "input_field": "blob", "sink": "pickle"},
     ).family == "RCE"
+
+
+def test_technique_is_part_of_identity_and_legacy_v2_defaults_to_family():
+    time_based = build_closure_cell(
+        "/api/search",
+        "SQLi",
+        {"method": "GET", "parameter": "q"},
+        technique="time-based",
+    ).key
+    boolean = build_closure_cell(
+        "/api/search",
+        "SQLi",
+        {"method": "GET", "parameter": "q"},
+        technique="boolean blind",
+    ).key
+    assert time_based != boolean
+    assert time_based.to_dict()["technique"] == "time_based"
+
+    legacy = time_based.to_dict()
+    legacy.pop("technique")
+    restored = ClosureCellKey.from_dict(legacy)
+    assert restored.technique == "sqli"
+    assert restored.to_dict()["technique"] == "sqli"
+
+
+def test_semantic_families_do_not_cross_close_same_parameter():
+    sqli = build_closure_cell(
+        "/api/search", "SQLi", {"method": "GET", "parameter": "q"}
+    ).key
+    nosqli = build_closure_cell(
+        "/api/search", "NoSQLi", {"method": "GET", "parameter": "q"}
+    ).key
+    resolver = ClosureResolver({
+        "closed_cells_v2": [{"identity_v2": sqli.to_dict(), "result": "tested_clean"}],
+    })
+    assert resolver.is_closure_closed(sqli)
+    assert not resolver.is_closure_closed(nosqli)
 
 
 def test_persisted_identity_requires_v2_kinds_and_versions():

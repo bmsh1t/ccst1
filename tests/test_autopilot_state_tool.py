@@ -437,7 +437,7 @@ def test_actor_context_enrichment_lead_is_advisory_until_context_exists():
     })
 
 
-def test_persisted_actor_context_enrichment_does_not_block_closure(tmp_path):
+def test_persisted_actor_context_enrichment_blocks_only_affected_role_lane(tmp_path):
     target = "target.test"
     matrix_path = tmp_path / "evidence" / target / "coverage_matrix.json"
     matrix_path.parent.mkdir(parents=True)
@@ -490,9 +490,10 @@ def test_persisted_actor_context_enrichment_does_not_block_closure(tmp_path):
         max_lanes_reached=False,
     )
 
-    assert closure["verdict"] == "finish"
-    assert closure["reasons"] == []
-    assert closure["actor_context_gap"]["blocking"] is False
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["actor_context_required"]
+    assert closure["next_action"] == "resume_case_state"
+    assert closure["actor_context_gap"]["blocking"] is True
     assert "durable_work_pending" not in closure["reasons"]
 
 
@@ -875,7 +876,7 @@ def test_closure_finishes_only_for_gap_free_handoff_state():
     assert closure["reasons"] == []
 
 
-def test_closure_keeps_actor_context_gap_advisory():
+def test_closure_blocks_role_lanes_until_actor_context_is_imported():
     matrix = {
         **_closure_matrix(),
         "high_risk_lanes": {
@@ -899,18 +900,31 @@ def test_closure_keeps_actor_context_gap_advisory():
         matrix,
     )
 
-    assert closure["verdict"] == "finish"
-    assert closure["can_claim_exhausted"] is True
-    assert closure["reasons"] == []
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"] == ["actor_context_required"]
+    assert closure["next_action"] == "resume_case_state"
     assert closure["authz_coverage"]["status"] == "missing"
     assert closure["actor_context_gap"] == {
         "status": "missing",
         "reason": "actor_context_missing",
         "lanes": ["IDOR", "Authz"],
-        "blocking": False,
+        "blocking": True,
         "required_context": "owner/peer actor and session context",
+        "acquisition_action": (
+            "Import two distinct actor sessions through Case State, then rerun the "
+            "IDOR/Authz/GraphQL lane; do not synthesize credentials."
+        ),
+        "command_hints": [
+            "python3 tools/target_case_state.py add-actor --target TARGET --actor owner --role ROLE",
+            "python3 tools/target_case_state.py add-session --target TARGET --session owner-session --actor owner --auth-file AUTH_FILE",
+            "python3 tools/target_case_state.py add-actor --target TARGET --actor peer --role ROLE",
+            "python3 tools/target_case_state.py add-session --target TARGET --session peer-session --actor peer --auth-file AUTH_FILE",
+        ],
     }
-    assert not stagnation_fingerprint(
+    assert closure["actionable_frontier"][0]["owner"] == "case_state"
+    assert "never synthesize credentials" in closure["actionable_frontier"][0]["stop_condition"]
+    assert stagnation_fingerprint(
         {
             "target": "target.test",
             "case_state": {
@@ -922,7 +936,7 @@ def test_closure_keeps_actor_context_gap_advisory():
     )
 
 
-def test_partial_actor_context_remains_non_blocking():
+def test_partial_actor_context_remains_blocking_for_role_lanes():
     matrix = {
         **_closure_matrix(),
         "high_risk_lanes": {
@@ -945,11 +959,11 @@ def test_partial_actor_context_remains_non_blocking():
         matrix,
     )
 
-    assert closure["verdict"] == "finish"
-    assert closure["reasons"] == []
+    assert closure["verdict"] == "handoff"
+    assert closure["reasons"] == ["actor_context_required"]
     assert closure["actor_context_gap"]["status"] == "partial"
     assert closure["actor_context_gap"]["reason"] == "actor_context_incomplete"
-    assert closure["actor_context_gap"]["blocking"] is False
+    assert closure["actor_context_gap"]["blocking"] is True
 
 
 def test_ready_actor_context_has_no_deferred_gap():
@@ -1192,6 +1206,201 @@ def test_authoritative_handoff_reasons_have_executable_frontier(state, owner):
         item[key]
         for key in ("action", "evidence_ref", "expected_information_gain", "stop_condition")
     )
+
+
+def test_blocking_recon_residual_binds_exact_phase_continuation():
+    closure = build_closure_projection(
+        {
+            "target": "target.com",
+            "next_action": "handoff",
+            "recon_artifacts": {
+                "phase_gates": {
+                    "latest": {
+                        "url_collection": {
+                            "artifact": "recon/target.com/urls/raw/all.txt",
+                            "evidence_refs": ["recon/target.com/urls/raw/all.txt"],
+                            "bounded": {
+                                "remaining": 17,
+                                "continuation": "continue Katana at OFFSET",
+                                "closure_blocking": True,
+                            },
+                        }
+                    }
+                },
+                "cidr_continuation": {
+                    "status": "pending",
+                    "next_offset": 4096,
+                    "remaining_hosts": 32,
+                },
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"][0] == "recon_phase_partial"
+    assert closure["next_action"] == "run_recon"
+    item = closure["actionable_frontier"][0]
+    assert item["owner"] == "recon"
+    assert item["id"] == "url_collection"
+    assert item["evidence_ref"] == "recon/target.com/urls/raw/all.txt"
+    assert "continue Katana at OFFSET" in item["action"]
+    assert "remaining 17 inputs" in item["expected_information_gain"]
+
+
+def test_advisory_recon_residual_requires_review_and_never_claims_exhausted():
+    closure = build_closure_projection(
+        {
+            "target": "target.com",
+            "next_action": "handoff",
+            "recon_artifacts": {
+                "phase_gates": {
+                    "latest": {
+                        "port_scan": {
+                            "evidence_refs": [
+                                "recon/target.com/ports/open_host_ports.txt"
+                            ],
+                            "bounded": {
+                                "remaining": 9,
+                                "continuation": "review the next port sample",
+                                "closure_blocking": False,
+                            },
+                        }
+                    }
+                }
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"][0] == "recon_phase_review_required"
+    assert closure["next_action"] == "global-review"
+    assert closure["recon_residuals"] == [
+        {
+            "phase": "port_scan",
+            "remaining": 9,
+            "continuation": "review the next port sample",
+            "closure_blocking": False,
+            "evidence_ref": "recon/target.com/ports/open_host_ports.txt",
+            "review_token": "recon:port_scan:remaining=9",
+        }
+    ]
+    assert closure["actionable_frontier"][0]["owner"] == "checkpoint"
+
+
+def test_scanner_lane_residual_requires_review_and_preserves_depth():
+    closure = build_closure_projection(
+        {
+            "target": "target.com",
+            "next_action": "handoff",
+            "scanner_summary": {
+                "status": "valid",
+                "path": "findings/target.com/summary.json",
+                "lanes": {
+                    "idor_candidates": {
+                        "lane": "idor_candidates",
+                        "execution_kind": "candidate_only",
+                        "status": "candidate_only",
+                        "remaining": 12,
+                        "continuation": "validate with owner/peer replay",
+                        "closure_blocking": False,
+                    }
+                },
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"][0] == "scanner_lane_review_required"
+    assert closure["next_action"] == "global-review"
+    assert closure["scanner_residuals"][0]["execution_kind"] == "candidate_only"
+    assert closure["scanner_residuals"][0]["review_token"] == (
+        "scanner:idor_candidates:remaining=12"
+    )
+
+
+def test_residual_global_review_requires_every_token_and_never_restores_exhausted(tmp_path):
+    target = "target.com"
+    witness_path = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness_path.parent.mkdir(parents=True)
+    witness = {
+        "schema_version": 1,
+        "kind": "autopilot_checkpoint_witness",
+        "target": target,
+    }
+    witness_path.write_text(json.dumps(witness), encoding="utf-8")
+    evidence_ref = f"findings/{target}/review/residual-review.txt"
+    evidence_path = tmp_path / evidence_ref
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text("reviewed bounded residuals\n", encoding="utf-8")
+    state = {
+        "target": target,
+        "resolved_target": target,
+        "next_action": "handoff",
+        "recon_artifacts": {
+            "phase_gates": {
+                "latest": {
+                    "port_scan": {
+                        "evidence_refs": ["recon/target.com/ports/open_host_ports.txt"],
+                        "bounded": {
+                            "remaining": 9,
+                            "continuation": "review the next port sample",
+                            "closure_blocking": False,
+                        },
+                    }
+                }
+            }
+        },
+        "scanner_summary": {
+            "status": "valid",
+            "path": "findings/target.com/summary.json",
+            "lanes": {
+                "idor_candidates": {
+                    "lane": "idor_candidates",
+                    "execution_kind": "candidate_only",
+                    "status": "candidate_only",
+                    "remaining": 12,
+                    "continuation": "validate with owner/peer replay",
+                    "closure_blocking": False,
+                }
+            },
+        },
+    }
+
+    missing = load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    assert missing["verdict"] == "handoff"
+    assert missing["reasons"] == ["global_review_required"]
+    assert missing["can_claim_exhausted"] is False
+
+    witness["global_review"] = {
+        "status": "complete",
+        "snapshot_digest": missing["snapshot_digest"],
+        "evidence_refs": [evidence_ref],
+        "cross_source_links": [],
+        "residual_unknowns": ["recon:port_scan:remaining=9"],
+        "decision": "defer the bounded residuals",
+        "next_action": "",
+    }
+    witness_path.write_text(json.dumps(witness), encoding="utf-8")
+    incomplete = load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    assert incomplete["verdict"] == "handoff"
+    assert incomplete["reasons"] == ["global_review_invalid"]
+    assert incomplete["can_claim_exhausted"] is False
+
+    witness["global_review"]["residual_unknowns"].append(
+        "scanner:idor_candidates:remaining=12"
+    )
+    witness_path.write_text(json.dumps(witness), encoding="utf-8")
+    complete = load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    assert complete["verdict"] == "blocked"
+    assert complete["reasons"] == ["bounded_recon_residual_deferred"]
+    assert complete["next_action"] == "stop_bounded"
+    assert complete["can_claim_exhausted"] is False
 
 
 def test_closure_handoffs_only_for_partial_recon_budget():
@@ -1955,7 +2164,7 @@ def test_case_state_work_routes_bootstrap_and_blocks_exhausted_closure(tmp_path)
     assert state["next_action"] == "resume_case_state"
     assert state["case_state"]["top_next_action"]["next_action"] == "create_validation_backlog"
     assert closure["verdict"] == "handoff"
-    assert closure["reasons"] == ["case_state_work_pending"]
+    assert closure["reasons"] == ["case_state_work_pending", "actor_context_required"]
 
 
 def test_case_state_recovery_keeps_bounded_hypothesis_linkage(tmp_path):

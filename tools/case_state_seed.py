@@ -24,10 +24,10 @@ if str(BASE_DIR) not in sys.path:
 
 try:
     from tools.target_case_state import load_case_state
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, resolve_target_url, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from target_case_state import load_case_state  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key  # type: ignore
+    from target_paths import canonical_target_value, resolve_target_url, target_storage_key, url_belongs_to_target  # type: ignore
 
 
 OBJECT_TOKEN_MAP = {
@@ -215,11 +215,7 @@ def _endpoint_to_url(endpoint: str, target: str) -> str:
     value = str(endpoint or "").strip()
     if not value:
         return ""
-    if value.startswith(("http://", "https://", "ws://", "wss://")):
-        return value
-    if not value.startswith("/"):
-        value = "/" + value
-    return _default_host(target) + value
+    return resolve_target_url(value, _default_host(target))
 
 
 def _artifact_url_from_line(line: str) -> str:
@@ -685,12 +681,20 @@ def build_case_state_seed(repo_root: str | Path, target: str, *, limit: int = 8)
     state = load_case_state(repo, resolved)
     endpoints = collect_artifact_endpoints(repo, resolved)
 
+    # Keep external observations counted, but never seed target-owned object
+    # validation from an off-target endpoint.
+    target_endpoints = [
+        item
+        for item in endpoints
+        if url_belongs_to_target(str(item.get("endpoint") or ""), resolved)
+    ]
+
     object_candidates: list[dict[str, Any]] = []
-    for item in endpoints:
+    for item in target_endpoints:
         object_candidates.extend(
             object_candidates_from_endpoint(item["endpoint"], source=item.get("source", ""))
         )
-    object_candidates.extend(collect_json_object_candidates(repo, resolved, endpoints))
+    object_candidates.extend(collect_json_object_candidates(repo, resolved, target_endpoints))
     object_candidates = _dedupe_objects(object_candidates)
 
     existing_objects = _existing_object_refs(state)

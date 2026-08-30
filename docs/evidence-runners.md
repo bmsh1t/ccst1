@@ -137,6 +137,36 @@ The neutral control must finish with a successful, non-truncated response. An
 error or truncated control keeps the replay as a `candidate` signal so it
 cannot become either `tested_finding` or `tested_clean`.
 
+### WebSocket / gRPC / LLM tool-call replay
+
+Use one schema-v1 spec after the exact protocol input is known:
+
+```json
+{
+  "schema_version": 1,
+  "protocol": "websocket",
+  "endpoint": "wss://TARGET/socket",
+  "frames": ["{\"op\":\"subscribe\",\"channel\":\"SAMPLE\"}"],
+  "expect": {"marker": "SERIAL", "finding_grade": false},
+  "vuln_class": "Authz"
+}
+```
+
+For gRPC, replace `frames` with `method`, JSON `request`, and optional
+`plaintext`; the request is sent through stdin and trailers are retained. For
+LLM HTTP endpoints, use `protocol=llm_tool_call`, `body`, and
+`expect.tool_name` / `expect.argument_marker` so the runner verifies a real
+function call rather than model prose.
+
+```bash
+python3 tools/validation_runner.py protocol-replay \
+  --target TARGET --protocol-spec SAMPLE.json
+```
+
+The runner reuses Scope, red-line, private raw artifacts, stable operation ID,
+artifact bindings, Evidence Ledger, Finding Index, and Action Queue owners.
+Tool absence, transport failure, and a weak observation remain candidates.
+
 ### Workflow sequence
 
 Use only an imported HAR/browser Network artifact with at least two ordered,

@@ -3,8 +3,8 @@
 # Vulnerability Scanner
 # Automated vulnerability checks against recon results
 # Usage: ./vuln_scanner.sh <recon_dir> [--quick] [--full] [--skip module1,module2]
-# The scanner keeps the legacy XSS skip/config surface. XSS evidence is supplied
-# by other recon and validation tools.
+# Reflected XSS uses a bounded inert marker. Stored/executable validation remains
+# owned by browser/validation runners.
 #
 # Coverage matrix feedback:
 #   On completion this script writes findings/<target>/scanner_pass.json,
@@ -253,10 +253,6 @@ else
     SCAN_MODE="standard"
 fi
 
-if [ "$FULL_MODE" != "--full" ]; then
-    DEFAULT_SKIP_CHECKS="xss"
-fi
-
 SKIP_CHECKS="$DEFAULT_SKIP_CHECKS"
 if [ -n "$USER_SKIP_CHECKS" ]; then
     SKIP_CHECKS="${SKIP_CHECKS:-}${SKIP_CHECKS:+,}$USER_SKIP_CHECKS"
@@ -296,6 +292,8 @@ UPLOAD_CLEANUP_FILE="$FINDINGS_DIR/manual_review/upload_cleanup.txt"
 : > "$FINDINGS_DIR/mfa/findings.txt"
 MFA_REVIEW_FILE="$FINDINGS_DIR/manual_review/mfa_review.txt"
 : > "$MFA_REVIEW_FILE"
+SAML_REVIEW_FILE="$FINDINGS_DIR/manual_review/saml_signature_review.txt"
+: > "$SAML_REVIEW_FILE"
 NUCLEI_FAILURE_MARKER="$FINDINGS_DIR/.tmp/nuclei_failed"
 SCANNER_PARTIAL_MARKER="$FINDINGS_DIR/.tmp/scanner_partial"
 
@@ -392,7 +390,9 @@ write_summary_json() {
     python3 - "$TARGET" "$SESSION_ID" "$SCAN_MODE" "$RECON_DIR" "$FINDINGS_DIR" \
         "$SKIP_CHECKS" "$LIVE_COUNT" "$ORDERED_SCAN" "$NUCLEI_TARGETS_ALL" \
         "$NUCLEI_TARGETS" "$NUCLEI_TARGET_LIMIT" \
-        "$NUCLEI_CVE_ENABLED" "$NUCLEI_CVE_STATUS" "$output_path" <<'PY'
+        "$NUCLEI_CVE_ENABLED" "$NUCLEI_CVE_STATUS" "$PARAM_URLS" \
+        "$API_ENDPOINTS_FILTERED" "$RECON_DIR/params/interesting_params.txt" \
+        "$output_path" <<'PY'
 import json
 import gzip
 import sys
@@ -402,13 +402,17 @@ from pathlib import Path
 (
     target, session_id, scan_mode, recon_dir, findings_dir, skip_checks,
     live_count, ordered_scan, nuclei_targets_all, nuclei_targets,
-    nuclei_target_limit, nuclei_cve_enabled, nuclei_cve_status, output_path,
+    nuclei_target_limit, nuclei_cve_enabled, nuclei_cve_status, param_urls,
+    api_endpoints, interesting_params, output_path,
 ) = sys.argv[1:]
 findings_root = Path(findings_dir)
 recon_root = Path(recon_dir)
 ordered_scan_path = Path(ordered_scan)
 nuclei_targets_all_path = Path(nuclei_targets_all)
 nuclei_targets_path = Path(nuclei_targets)
+param_urls_path = Path(param_urls)
+api_endpoints_path = Path(api_endpoints)
+interesting_params_path = Path(interesting_params)
 
 categories = [
     "upload",
@@ -505,6 +509,120 @@ for path in list(findings_root.glob("*/manual*.txt")) + list((findings_root / "m
     })
 
 manual_review_items = sum(item["count"] for item in manual_review_files)
+skip_set = {item.strip() for item in skip_checks.split(",") if item.strip()}
+skip_all = "all" in skip_set
+mode_index = {"quick": 0, "standard": 1, "full": 2}.get(scan_mode, 1)
+
+
+def lane(
+    name: str,
+    *,
+    input_total: int,
+    limits: tuple[int, int, int] | None,
+    execution_kind: str,
+    skipped: bool = False,
+    status: str = "sampled",
+    selected_override: int | None = None,
+    continuation: str,
+) -> dict:
+    if skipped:
+        selected = 0
+        status = "skipped"
+    elif selected_override is not None:
+        selected = max(0, min(input_total, selected_override))
+    elif execution_kind == "candidate_only":
+        selected = 0
+        status = "candidate_only"
+    else:
+        selected = min(input_total, limits[mode_index] if limits else input_total)
+    remaining = max(0, input_total - selected)
+    return {
+        "lane": name,
+        "execution_kind": execution_kind,
+        "status": status,
+        "input_total": input_total,
+        "selected": selected,
+        "remaining": remaining,
+        "continuation": continuation,
+        "closure_blocking": False,
+    }
+
+
+parameter_total = count_lines(param_urls_path)
+api_total = count_lines(api_endpoints_path)
+interesting_total = count_lines(interesting_params_path)
+nuclei_total = count_lines(nuclei_targets_all_path)
+nuclei_selected = count_lines(nuclei_targets_path)
+cve_completed = nuclei_selected if nuclei_cve_status == "complete" else 0
+lane_coverage = {
+    "xss_reflection": lane(
+        "xss_reflection",
+        input_total=parameter_total,
+        limits=(5, 10, 20),
+        execution_kind="active_marker",
+        skipped=skip_all or "xss" in skip_set,
+        continuation="run the next bounded reflected-XSS marker sample",
+    ),
+    "sqli": lane(
+        "sqli",
+        input_total=parameter_total,
+        limits=(5, 10, 20),
+        execution_kind="active_probe",
+        skipped=skip_all or "sqli" in skip_set,
+        continuation="run the next bounded SQLi sample",
+    ),
+    "ssti": lane(
+        "ssti",
+        input_total=parameter_total,
+        limits=(20, 50, 100),
+        execution_kind="active_probe",
+        skipped=skip_all or "ssti" in skip_set,
+        continuation="run the next bounded SSTI sample",
+    ),
+    "nuclei_default": lane(
+        "nuclei_default",
+        input_total=nuclei_total,
+        limits=None,
+        execution_kind="active_scanner",
+        skipped=skip_all,
+        selected_override=nuclei_selected,
+        continuation="run the next bounded Nuclei origin sample",
+    ),
+    "cve": lane(
+        "cve",
+        input_total=nuclei_total,
+        limits=None,
+        execution_kind="active_scanner",
+        skipped=skip_all or "cves" in skip_set,
+        status=nuclei_cve_status,
+        selected_override=cve_completed,
+        continuation="run or resume the bounded CVE origin lane",
+    ),
+    "ssrf_candidates": lane(
+        "ssrf_candidates",
+        input_total=interesting_total,
+        limits=None,
+        execution_kind="candidate_only",
+        skipped=skip_all or "ssrf" in skip_set,
+        continuation="validate the SSRF candidates through a canonical runner",
+    ),
+    "open_redirect_candidates": lane(
+        "open_redirect_candidates",
+        input_total=interesting_total,
+        limits=None,
+        execution_kind="candidate_only",
+        skipped=skip_all or "redirects" in skip_set,
+        continuation="validate redirect candidates with baseline and destination evidence",
+    ),
+    "idor_candidates": lane(
+        "idor_candidates",
+        input_total=parameter_total + api_total,
+        limits=None,
+        execution_kind="candidate_only",
+        skipped=skip_all or "idor" in skip_set,
+        continuation="validate IDOR candidates with owner/peer actor replay",
+    ),
+}
 
 summary = {
     "schema_version": 1,
@@ -531,6 +649,7 @@ summary = {
         "input": "origin-bounded",
         "candidate_count": count_lines(nuclei_targets_path),
     },
+    "lane_coverage": lane_coverage,
     "skipped_checks": [],
     "categories": category_summary,
     "totals": {
@@ -994,9 +1113,9 @@ case "$NUCLEI_TARGET_LIMIT" in
 esac
 NUCLEI_TARGETS_ALL="$FINDINGS_DIR/.tmp/nuclei_targets_all.txt"
 NUCLEI_TARGETS="$FINDINGS_DIR/.tmp/nuclei_targets.txt"
-NUCLEI_CVE_ENABLED=0
-case "${BBHUNT_ENABLE_NUCLEI_CVES:-0}" in
-    1|true|TRUE|yes|YES|on|ON) NUCLEI_CVE_ENABLED=1 ;;
+NUCLEI_CVE_ENABLED=1
+case "${BBHUNT_DISABLE_NUCLEI_CVES:-0}" in
+    1|true|TRUE|yes|YES|on|ON) NUCLEI_CVE_ENABLED=0 ;;
 esac
 NUCLEI_CVE_STATUS="disabled"
 python3 - "$ORDERED_SCAN" "$NUCLEI_TARGETS_ALL" "$NUCLEI_TARGETS" "$NUCLEI_TARGET_LIMIT" <<'PY'
@@ -1187,15 +1306,30 @@ fi
 # ============================================================
 echo ""
 if skip_has xss; then
-    if has_skip "$USER_SKIP_CHECKS" all || has_skip "$USER_SKIP_CHECKS" xss; then
-        log_warn "Skipping XSS checks (--skip)"
-    elif has_skip "$DEFAULT_SKIP_CHECKS" xss; then
-        log_warn "Skipping XSS scanner lane (handled by recon/validation)"
-    else
-        log_warn "Skipping XSS checks (--skip)"
-    fi
+    log_warn "Skipping XSS checks (--skip)"
 else
-    log_info "XSS checks are delegated to recon and validation tools"
+    log_info "Check 1: Reflected XSS marker sampling"
+    XSS_OUT="$FINDINGS_DIR/xss/reflected_marker_candidates.txt"
+    : > "$XSS_OUT"
+    if [ -s "$PARAM_URLS" ]; then
+        XSS_LIMIT=$(scan_limit 5 10 20)
+        XSS_MARKER="bbxss_${SESSION_ID:-scan}_marker"
+        while IFS= read -r url; do
+            [ -n "$url" ] || continue
+            XSS_URL=$(replace_all_param_values "$url" "$XSS_MARKER")
+            XSS_BODY=$(curl -sk "${BB_AUTH_ARGS[@]}" --max-time 10 "$XSS_URL" 2>/dev/null || true)
+            if printf '%s' "$XSS_BODY" | grep -Fq "$XSS_MARKER"; then
+                printf '[XSS-REFLECTION-SIGNAL] marker=%s url=%s\n' \
+                    "$XSS_MARKER" "$XSS_URL" >> "$XSS_OUT"
+            fi
+        done < <(head -"$XSS_LIMIT" "$PARAM_URLS")
+        XSS_COUNT=$(count_findings "$XSS_OUT")
+        [ "$XSS_COUNT" -gt 0 ] \
+            && log_warn "Reflected XSS marker signals: $XSS_COUNT (browser validation required)" \
+            || log_done "Reflected XSS marker: no sampled reflection"
+    else
+        log_done "Reflected XSS marker: no parameterized URLs"
+    fi
 fi
 
 # ============================================================
@@ -1660,6 +1794,10 @@ echo ""
 if ! skip_has saml; then
     log_info "Check 11: SAML / SSO Attack Surface"
     SAML_HOST_LIMIT=$(scan_limit 10 20 50)
+    rm -f \
+        "$FINDINGS_DIR/saml/findings.txt" \
+        "$FINDINGS_DIR/saml/endpoints.txt" \
+        "$FINDINGS_DIR/saml/certs.txt"
 
     while IFS= read -r host; do
         [ -z "$host" ] && continue
@@ -1700,15 +1838,52 @@ if ! skip_has saml; then
     ACS_URL=$(grep -E "saml/acs|saml/login" "$FINDINGS_DIR/saml/endpoints.txt" 2>/dev/null | head -1 | awk '{print $2}' || true)
     if [ -n "$ACS_URL" ]; then
         STRIPPED_SAML=$(printf '%s' '<?xml version="1.0"?><samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"><saml:Assertion><saml:Subject><saml:NameID>admin@target.com</saml:NameID></saml:Subject></saml:Assertion></samlp:Response>' | base64 | tr -d '\n')
-        SAML_POST_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 8 \
-            "${BB_AUTH_ARGS[@]}" \
+        SAML_COOKIE_JAR="$FINDINGS_DIR/.tmp/saml_signature.cookies"
+        SAML_POST_BODY="$FINDINGS_DIR/.tmp/saml_signature_post.body"
+        rm -f "$SAML_COOKIE_JAR" "$SAML_POST_BODY"
+        SAML_POST_CODE=$(curl -sk -o "$SAML_POST_BODY" -c "$SAML_COOKIE_JAR" -w "%{http_code}" --max-time 8 \
             -X POST "$ACS_URL" \
             -d "SAMLResponse=${STRIPPED_SAML}" 2>/dev/null || echo "000")
 
         if [ "$SAML_POST_CODE" = "200" ] || [ "$SAML_POST_CODE" = "302" ]; then
-            log_vuln "[SAML] Signature stripping accepted (HTTP $SAML_POST_CODE): $ACS_URL"
-            echo "[SAML-SIG-STRIP] $ACS_URL | HTTP $SAML_POST_CODE | stripped assertion accepted" >> "$FINDINGS_DIR/saml/findings.txt"
+            SAML_PROTECTED_URL="${BBHUNT_SAML_PROTECTED_URL:-}"
+            if [ -z "$SAML_PROTECTED_URL" ]; then
+                log_warn "[SAML] ACS accepted the probe, but no protected read-back URL was configured"
+                echo "[SAML-SIG-STRIP-CANDIDATE] $ACS_URL | post=$SAML_POST_CODE | reason=BBHUNT_SAML_PROTECTED_URL required" >> "$SAML_REVIEW_FILE"
+            elif ! PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$SAML_PROTECTED_URL" "$SCANNER_AUTH_TARGET" <<'PY'
+import sys
+from tools.target_paths import url_belongs_to_target
+
+raise SystemExit(0 if url_belongs_to_target(sys.argv[1], sys.argv[2]) else 1)
+PY
+            then
+                log_warn "[SAML] Protected read-back URL is outside the current target"
+                echo "[SAML-SIG-STRIP-CANDIDATE] $ACS_URL | post=$SAML_POST_CODE | reason=protected URL outside target" >> "$SAML_REVIEW_FILE"
+            else
+                SAML_ANON_BODY="$FINDINGS_DIR/.tmp/saml_signature_anon.body"
+                SAML_READBACK_BODY="$FINDINGS_DIR/.tmp/saml_signature_readback.body"
+                SAML_ANON_CODE=$(curl -sk -o "$SAML_ANON_BODY" -w "%{http_code}" --max-time 8 \
+                    "${BB_ANON_AUTH_ARGS[@]}" "$SAML_PROTECTED_URL" 2>/dev/null || echo "000")
+                SAML_READBACK_CODE=$(curl -sk -o "$SAML_READBACK_BODY" -b "$SAML_COOKIE_JAR" -w "%{http_code}" --max-time 8 \
+                    "$SAML_PROTECTED_URL" 2>/dev/null || echo "000")
+                SAML_COOKIE_ISSUED=0
+                grep -qE '^[^#[:space:]]' "$SAML_COOKIE_JAR" 2>/dev/null && SAML_COOKIE_ISSUED=1
+
+                if [[ "$SAML_ANON_CODE" =~ ^(301|302|303|307|308|401|403)$ ]] \
+                    && [ "$SAML_READBACK_CODE" = "200" ] \
+                    && [ "$SAML_COOKIE_ISSUED" -eq 1 ] \
+                    && [ -s "$SAML_READBACK_BODY" ] \
+                    && ! cmp -s "$SAML_ANON_BODY" "$SAML_READBACK_BODY"; then
+                    log_vuln "[SAML] Signature stripping produced an authenticated protected-resource read-back: $ACS_URL"
+                    echo "[SAML-SIG-STRIP] $ACS_URL | protected=$SAML_PROTECTED_URL | anon=$SAML_ANON_CODE | post=$SAML_POST_CODE | readback=$SAML_READBACK_CODE | cookie=issued" >> "$FINDINGS_DIR/saml/findings.txt"
+                else
+                    log_warn "[SAML] ACS status was not enough to prove an authenticated session: $ACS_URL"
+                    echo "[SAML-SIG-STRIP-CANDIDATE] $ACS_URL | protected=$SAML_PROTECTED_URL | anon=$SAML_ANON_CODE | post=$SAML_POST_CODE | readback=$SAML_READBACK_CODE | cookie=$SAML_COOKIE_ISSUED | reason=protected read-back not proven" >> "$SAML_REVIEW_FILE"
+                fi
+                rm -f "$SAML_ANON_BODY" "$SAML_READBACK_BODY"
+            fi
         fi
+        rm -f "$SAML_COOKIE_JAR" "$SAML_POST_BODY"
     fi
 
     # Suppress SPA-fallback false positives in sig-stripping / metadata findings
@@ -1723,6 +1898,10 @@ if ! skip_has saml; then
     [ "$SAML_FINDINGS" -gt 0 ] && log_ok "[SAML] $SAML_FINDINGS finding(s) — review $FINDINGS_DIR/saml/"
 else
     log_warn "Skipping SAML checks (--skip)"
+fi
+
+if [ ! -s "$SAML_REVIEW_FILE" ]; then
+    rm -f "$SAML_REVIEW_FILE"
 fi
 
 # ============================================================

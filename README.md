@@ -526,7 +526,7 @@ and the `disclosed-researcher` workflow instead of being mixed into the Intel ar
 ## Vulnerability Coverage
 
 <details>
-<summary><b>15 Canonical Web2 Closure Classes</b> — click to expand</summary>
+<summary><b>19 Canonical Web2 Closure Classes</b> — click to expand</summary>
 <br>
 
 | Class | Key Techniques | Typical Payout |
@@ -546,6 +546,10 @@ and the `disclosed-researcher` workflow instead of being mixed into the Intel ar
 | **RCE** | Command injection, deserialization, SSTI and upload-to-execution | $2K - $30K |
 | **Path** | Path traversal, LFI/RFI, archive and canonicalization boundaries | $500 - $10K |
 | **CSRF** | Session-riding state changes and account-impact chains | $500 - $5K |
+| **NoSQLi** | Operator injection, type confusion, document-query bypass | $1K - $15K |
+| **PrototypePollution** | Source-to-sink prototype mutation and impact chains | $500 - $10K |
+| **OpenRedirect** | Destination control, parser mismatch, token/header leak chains | $100 - $5K |
+| **BusinessLogic** | Workflow transitions, invariant breaks, price and quota abuse | $500 - $20K |
 
 Discovery and knowledge routing additionally cover workflow/business logic,
 LLM/AI, account takeover, subdomain takeover, cloud/infra, HTTP smuggling,

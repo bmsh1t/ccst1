@@ -6,6 +6,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+try:
+    from tools.target_paths import resolve_target_url, url_belongs_to_target
+except ImportError:  # pragma: no cover - direct tools/ execution
+    from target_paths import resolve_target_url, url_belongs_to_target  # type: ignore
+
 
 EMPTY_SOURCE_INTEL = {
     "available": False,
@@ -78,12 +83,7 @@ def load_source_intel_hypotheses(findings_dir: Path) -> dict:
 
 
 def _endpoint_to_url(endpoint_path: str, default_host: str) -> str:
-    if endpoint_path.startswith(("http://", "https://", "ws://", "wss://")):
-        return endpoint_path
-    prefix = "" if endpoint_path.startswith("/") else "/"
-    if default_host:
-        return default_host.rstrip("/") + prefix + endpoint_path
-    return prefix + endpoint_path
+    return resolve_target_url(endpoint_path, default_host)
 
 
 def build_source_intel_urls(source_intel: dict, default_host: str, known_urls: list[str] | None = None) -> dict[str, list[dict]]:
@@ -136,7 +136,12 @@ def source_intel_counts(source_intel: dict) -> dict:
     }
 
 
-def build_source_lead_hints(source_intel: dict) -> list[dict]:
+def build_source_lead_hints(
+    source_intel: dict,
+    *,
+    target: str = "",
+    default_host: str = "",
+) -> list[dict]:
     """Return compact actionable source-intel leads for surface/autopilot views."""
     leads = []
     for item in source_intel.get("hypotheses", []):
@@ -144,6 +149,8 @@ def build_source_lead_hints(source_intel: dict) -> list[dict]:
         vuln_type = str(item.get("type", "") or "other").strip().lower()
         reason = str(item.get("reason", "") or "").strip()
         if not candidate:
+            continue
+        if target and not url_belongs_to_target(resolve_target_url(candidate, default_host), target):
             continue
         next_action = reason or f"verify {candidate} with a focused {vuln_type} test"
         leads.append({

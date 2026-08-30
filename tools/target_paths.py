@@ -8,7 +8,7 @@ import json
 import os
 import re
 from pathlib import Path
-from urllib.parse import urlparse, urlsplit
+from urllib.parse import urljoin, urlparse, urlsplit
 
 
 _HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
@@ -56,6 +56,22 @@ def compact_url(value: str, *, limit: int = URL_DISPLAY_LIMIT) -> str:
     if len(preview) > available:
         preview = preview[: available - 3] + "..."
     return f"{preview} {marker}"
+
+
+def resolve_target_url(value: str, base_url: str = "") -> str:
+    """Resolve a discovered URL or path against an origin without mangling it."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        if urlsplit(raw).scheme:
+            return raw
+    except (TypeError, ValueError, UnicodeError):
+        return raw
+    base = str(base_url or "").strip()
+    if base:
+        return urljoin(base.rstrip("/") + "/", raw)
+    return raw if raw.startswith(("/", "//")) else "/" + raw
 
 
 def _parse_port(value: str) -> int:

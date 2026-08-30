@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import resource
+import subprocess
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +22,8 @@ from tools.autopilot_state import (
     build_loop_guard_projection,
 )
 from tools.checkpoint import build_checkpoint
+from tools.finding_index import load_finding_index
+from tools import report_generator, validate, validation_runner
 from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock, update_runtime_state
 from tools.target_paths import target_storage_key
 
@@ -28,7 +33,14 @@ class _LabHandler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler API
-        body = b'{"service":"autopilot-local-lab"}'
+        if self.path.startswith("/api/admin/config"):
+            body = json.dumps({
+                "oauth_client_secret": "TOKEN_" + "a" * 64,
+                "recovery_seed": "WORDLIST " * 64,
+                "environment": "SAMPLE",
+            }).encode()
+        else:
+            body = b'{"service":"autopilot-local-lab"}'
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
@@ -98,6 +110,56 @@ def _write_runner_candidate(repo_root, target: str, base_url: str) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _write_vulnerable_recon_fixture(repo_root, target: str, base_url: str) -> None:
+    recon_dir = repo_root / "recon" / target_storage_key(target)
+    for name in ("live", "urls", "params"):
+        (recon_dir / name).mkdir(parents=True, exist_ok=True)
+    endpoint = f"{base_url}/api/admin/config"
+    (recon_dir / "live" / "urls.txt").write_text(f"{base_url}\n", encoding="utf-8")
+    (recon_dir / "urls" / "api_endpoints.txt").write_text(f"{endpoint}\n", encoding="utf-8")
+    (recon_dir / "urls" / "all.txt").write_text(f"{endpoint}\n", encoding="utf-8")
+    (recon_dir / "urls" / "with_params.txt").write_text("", encoding="utf-8")
+
+
+def _machine_decision(target: str, finding: dict, summary: dict) -> dict:
+    summary_path = str(summary["summary_path"])
+    questions = {
+        key: {"status": "pass", "basis": f"Canonical replay supports {key}."}
+        for key, _ in validate.SEVEN_QUESTION_DEFINITIONS
+    }
+    return {
+        "schema_version": validate.MACHINE_DECISION_SCHEMA_VERSION,
+        "target": target,
+        "finding_id": finding["id"],
+        "endpoint": finding["url"],
+        "vuln_class": "auth_bypass",
+        "method": "GET",
+        "impact": "Anonymous users can read a target-owned configuration response containing secret material.",
+        "gates": {
+            key: {"passed": True, "notes": {"source": "canonical-runner"}}
+            for key in validate.MACHINE_DECISION_GATE_KEYS
+        },
+        "seven_question_gate": {"questions": questions},
+        "cvss": {
+            "score": 8.2,
+            "vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N",
+            "params": {"AV": "N", "AC": "L", "PR": "N", "VC": "H"},
+        },
+        "evidence": {
+            "summary": "The canonical anonymous replay stored the exact request and secret-bearing response.",
+            "refs": [summary_path],
+            "runner_summary": summary_path,
+        },
+        "report": {
+            "path": f"findings/{target_storage_key(target)}/validated/{finding['id']}.md",
+            "content": (
+                "# Anonymous configuration exposure\n\n"
+                "A repeated anonymous GET returned the stored secret-bearing configuration response.\n"
+            ),
+        },
+    }
 
 
 def _write_queue_candidate(repo_root, target: str) -> None:
@@ -254,3 +316,66 @@ def test_localhost_sequential_fresh_resume_batch_queue_runner_and_checkpoint(
         with pytest.raises(RuntimePhaseBusy):
             with runtime_phase_lock(tmp_path, target, "recon"):
                 pass
+
+
+def test_localhost_autopilot_discovers_replays_and_reports_real_fixture(
+    tmp_path,
+    local_lab_server,
+    monkeypatch,
+):
+    host, port = local_lab_server.server_address
+    target = f"{host}:{port}"
+    base_url = f"http://{target}"
+    target_key = target_storage_key(target)
+    findings_dir = tmp_path / "findings" / target_key
+    _write_vulnerable_recon_fixture(tmp_path, target, base_url)
+
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    skip = ",".join((
+        "upload", "sqli", "xss", "ssti", "takeover", "exposure", "ssrf",
+        "cves", "redirects", "idor", "auth_flow", "cms", "mfa", "saml",
+    ))
+    env = os.environ.copy()
+    env.update({"FINDINGS_OUT_DIR": str(findings_dir), "PATH": "/usr/bin:/bin"})
+    scan = subprocess.run(
+        ["bash", str(script), str(tmp_path / "recon" / target_key), "--quick", "--skip", skip],
+        cwd=script.parent.parent,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert scan.returncode == 0, scan.stderr + scan.stdout
+
+    index = load_finding_index(findings_dir)
+    finding = next(item for item in index["findings"] if item["type"] == "auth_bypass")
+    state = build_autopilot_state(str(tmp_path), target, memory_dir=str(tmp_path / "hunt-memory"))
+    assert state["structured_findings"]["next_validation"]["id"] == finding["id"]
+
+    summary = validation_runner.run_authz_public_exposure(
+        repo_root=tmp_path,
+        target=target,
+        url=finding["url"],
+        finding_id=finding["id"],
+    )
+    assert summary["result"] == "tested_finding"
+    assert summary["candidate_ready"] is True
+    sync = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
+    assert sync["finding"]["status"] in {"updated", "deduplicated"}
+
+    decision = _machine_decision(target, finding, summary)
+    decision_path = tmp_path / "machine-decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path)
+    assert validate.main([
+        "--target", target,
+        "--finding-id", finding["id"],
+        "--decision-json", str(decision_path),
+        "--json",
+    ]) == 0
+
+    monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
+    total, reports = report_generator.process_findings_dir(str(findings_dir))
+    assert total == 1
+    assert reports[0]["finding_id"] == finding["id"]
+    assert Path(reports[0]["file"]).is_file()

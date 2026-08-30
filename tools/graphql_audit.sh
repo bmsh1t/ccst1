@@ -17,6 +17,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BASE_DIR="${BBHUNT_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 . "$SCRIPT_DIR/external_arsenal.sh"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'
@@ -70,8 +71,40 @@ case "$BATCH_SIZE$ALIAS_COUNT$DEPTH" in
 esac
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-HOST=$(echo "$URL" | awk -F/ '{print $3}' | tr -d '[:space:]')
-OUT_DIR="${OUT_DIR:-$(pwd)/findings/graphql/${HOST}/${TIMESTAMP}}"
+if ! TARGET_INFO=$(python3 - "$URL" "$SCRIPT_DIR/.." <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[2]).resolve()))
+from tools.target_paths import canonical_target_value, target_storage_key
+
+target = canonical_target_value(sys.argv[1])
+print(target, target_storage_key(target), sep="\t")
+PY
+); then
+  err "Unable to derive the canonical target identity"
+  exit 2
+fi
+IFS=$'\t' read -r TARGET TARGET_KEY <<< "$TARGET_INFO"
+[ -n "$TARGET" ] && [ -n "$TARGET_KEY" ] || { err "Invalid target identity"; exit 2; }
+
+FINDINGS_DIR="$BASE_DIR/findings/$TARGET_KEY"
+GRAPHQL_DIR="$FINDINGS_DIR/graphql"
+OUT_DIR="${OUT_DIR:-$GRAPHQL_DIR/$TIMESTAMP}"
+if ! python3 - "$OUT_DIR" "$GRAPHQL_DIR" <<'PY'
+import sys
+from pathlib import Path
+
+output = Path(sys.argv[1]).expanduser().resolve()
+root = Path(sys.argv[2]).expanduser().resolve()
+try:
+    output.relative_to(root)
+except ValueError:
+    raise SystemExit(f"output directory must stay under the target GraphQL root: {root}")
+PY
+then
+  exit 2
+fi
 mkdir -p "$OUT_DIR"
 
 SUMMARY="$OUT_DIR/summary.txt"
@@ -88,6 +121,14 @@ CURL_ARGS=(-s --max-time "${GQL_CURL_TIMEOUT:-30}")
 for hdr in "${EXTRA_HEADERS[@]}"; do
   [ -n "$hdr" ] && CURL_ARGS+=(-H "$hdr")
 done
+
+INTROSPECTION_ENABLED=0
+GET_BYPASS=0
+FIELD_SUGGESTIONS=0
+SQLI_SIGNAL=0
+ARRAY_BATCHING=0
+ALIAS_ACCEPTED=0
+DEPTH_LIMIT_SIGNAL=0
 
 _summary() {
   printf '%s\n' "$1" >> "$SUMMARY"
@@ -146,6 +187,7 @@ INTROSPECT_OUT="$OUT_DIR/introspection.json"
 _gql_post "$INTROSPECT_QUERY" > "$INTROSPECT_RAW" 2>/dev/null || true
 
 if grep -q '"__schema"' "$INTROSPECT_RAW" 2>/dev/null; then
+  INTROSPECTION_ENABLED=1
   hit "Introspection ENABLED -- schema dumped to introspection.json"
   _pretty_json "$INTROSPECT_RAW" "$INTROSPECT_OUT"
   _summary "introspection: ENABLED"
@@ -188,6 +230,7 @@ else
   curl "${CURL_ARGS[@]}" -X GET \
     "$URL?query=%7B__schema%7BqueryType%7Bname%7D%7D%7D" > "$GET_RESP" 2>/dev/null || true
   if grep -q '"__schema"' "$GET_RESP" 2>/dev/null; then
+    GET_BYPASS=1
     hit "Introspection reachable via GET -- possible method/WAF bypass"
     _summary "introspection_get_bypass: YES"
   else
@@ -199,6 +242,7 @@ log "Checking field suggestions..."
 SUGGEST_OUT="$OUT_DIR/field_suggestions.raw.json"
 _gql_post '{"query":"{ usr { id } }"}' > "$SUGGEST_OUT" 2>/dev/null || true
 if grep -qi "did you mean\|suggestions" "$SUGGEST_OUT" 2>/dev/null; then
+  FIELD_SUGGESTIONS=1
   hit "Field suggestions ENABLED -- schema may be leakable via typo-based enumeration"
   _summary "field_suggestions: ENABLED"
 else
@@ -261,6 +305,7 @@ if [ "$ACTIVE" -eq 1 ]; then
     SQLI_RESP="$OUT_DIR/sqli_quick_probe.raw.json"
     _gql_post '{"query":"{ users(search: \"1'\''--\") { id } }"}' > "$SQLI_RESP" 2>/dev/null || true
     if grep -qi "syntax\|mysql\|pgsql\|sqlite\|ORA-\|error in your SQL" "$SQLI_RESP" 2>/dev/null; then
+      SQLI_SIGNAL=1
       hit "SQL error in response -- possible SQLi in GraphQL argument"
       _summary "sqli_quick_probe: POSSIBLE HIT"
     else
@@ -315,6 +360,7 @@ if [ "$DOS_TESTS" -eq 1 ]; then
   } | tee "$DOS_OUT"
 
   if grep -q '^\[' "$OUT_DIR/batching.raw" 2>/dev/null; then
+    ARRAY_BATCHING=1
     hit "Array batching ACCEPTED -- potential brute-force/rate-limit amplifier"
     _summary "array_batching: ENABLED (${BATCH_SIZE})"
   else
@@ -333,6 +379,7 @@ print(json.dumps({'query': '{ ' + aliases + ' }'}))
     -o "$ALIAS_OUT" -w "alias-${ALIAS_COUNT} query: HTTP %{http_code} time: %{time_total}s\n" 2>/dev/null \
     | tee -a "$DOS_OUT"
   if grep -q 'q0' "$ALIAS_OUT" 2>/dev/null; then
+    ALIAS_ACCEPTED=1
     hit "Alias query accepted -- check rate-limit / resolver cost controls"
     _summary "alias_query: accepted (${ALIAS_COUNT})"
   else
@@ -353,6 +400,7 @@ print(json.dumps({'query': '{ viewer { ' + inner + ' } }'}))
     -o "$DEPTH_OUT" -w '%{http_code}' 2>/dev/null || echo "000")
   echo "depth-${DEPTH} query: HTTP $DEPTH_HTTP" | tee -a "$DOS_OUT"
   if [ "$DEPTH_HTTP" = "200" ] && ! grep -qi "max.*depth\|query.*depth\|complexity" "$DEPTH_OUT" 2>/dev/null; then
+    DEPTH_LIMIT_SIGNAL=1
     hit "Deep query accepted -- no obvious depth/complexity limit signal"
     _summary "depth_limit: none detected at depth ${DEPTH}"
   else
@@ -362,6 +410,149 @@ else
   skip "DoS/complexity probes skipped -- rerun with --dos-tests"
   _summary "dos_complexity_phases: skipped"
 fi
+
+RUN_SUMMARY="$OUT_DIR/run-summary.json"
+_summary "canonical_run_summary: $RUN_SUMMARY"
+if ! PUBLISH_RESULT=$(python3 - \
+  "$BASE_DIR" "$SCRIPT_DIR/.." "$FINDINGS_DIR" "$OUT_DIR" "$RUN_SUMMARY" \
+  "$TARGET" "$TARGET_KEY" "$URL" "$ACTIVE" "$DOS_TESTS" \
+  "$INTROSPECTION_ENABLED" "$GET_BYPASS" "$FIELD_SUGGESTIONS" \
+  "$SQLI_SIGNAL" "$ARRAY_BATCHING" "$ALIAS_ACCEPTED" "$DEPTH_LIMIT_SIGNAL" <<'PY'
+import hashlib
+import json
+import os
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+repo_root = Path(sys.argv[1]).resolve()
+source_root = Path(sys.argv[2]).resolve()
+findings_dir = Path(sys.argv[3]).resolve()
+out_dir = Path(sys.argv[4]).resolve()
+summary_path = Path(sys.argv[5]).resolve()
+target, target_key, endpoint = sys.argv[6:9]
+active, dos_tests = (value == "1" for value in sys.argv[9:11])
+signal_names = (
+    "introspection_enabled",
+    "introspection_get_bypass",
+    "field_suggestions",
+    "sqli_error_signal",
+    "array_batching",
+    "alias_query_accepted",
+    "depth_limit_signal",
+)
+signals = [name for name, value in zip(signal_names, sys.argv[11:18]) if value == "1"]
+
+sys.path.insert(0, str(source_root))
+from tools.finding_index import upsert_finding
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+artifacts = []
+for path in sorted(out_dir.iterdir(), key=lambda item: item.name)[:24]:
+    if not path.is_file() or path == summary_path or path.stat().st_size <= 0:
+        continue
+    artifacts.append({
+        "ref": str(path.relative_to(repo_root)),
+        "sha256": sha256_file(path),
+        "size_bytes": path.stat().st_size,
+    })
+
+run_id = out_dir.name
+operation_seed = "|".join((target, endpoint, run_id, *signals))
+operation_id = "graphql_" + hashlib.sha256(operation_seed.encode()).hexdigest()[:20]
+finding_id = "graphql_" + hashlib.sha1(f"{target}|{endpoint}|audit-signal".encode()).hexdigest()[:12]
+generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+payload = {
+    "schema_version": 1,
+    "kind": "graphql_audit_run",
+    "generated_at": generated_at,
+    "operation_id": operation_id,
+    "run_id": run_id,
+    "target": target,
+    "target_key": target_key,
+    "endpoint": endpoint,
+    "mode": {"active": active, "dos_tests": dos_tests},
+    "status": "completed",
+    "signals": signals,
+    "artifact_count": len(artifacts),
+    "artifacts": artifacts,
+    "candidate_finding_id": finding_id if signals else "",
+}
+summary_path.parent.mkdir(parents=True, exist_ok=True)
+with tempfile.NamedTemporaryFile(
+    "w", encoding="utf-8", dir=summary_path.parent,
+    prefix=f".{summary_path.name}.", suffix=".tmp", delete=False,
+) as handle:
+    temp_path = Path(handle.name)
+    json.dump(payload, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+temp_path.replace(summary_path)
+
+if signals:
+    relative_summary = str(summary_path.relative_to(repo_root))
+    upsert_finding(
+        findings_dir,
+        {
+            "id": finding_id,
+            "type": "graphql",
+            "category": "graphql",
+            "vuln_class": "GraphQL",
+            "title": f"GraphQL audit signal on {endpoint}",
+            "summary": "GraphQL audit signals require protocol replay: " + ", ".join(signals),
+            "url": endpoint,
+            "severity": "low",
+            "confidence": "needs_review",
+            "source_file": relative_summary,
+            "raw": f"graphql_audit:{operation_id}",
+            "validation_status": "candidate",
+            "report_status": "not_generated",
+            "rubric": {
+                "rubric_id": "graphql",
+                "status": "needs-evidence",
+                "ready": False,
+                "score": 0,
+                "satisfied_count": 0,
+                "total": 3,
+                "missing": [
+                    {"id": "exact_replay", "label": "exact GraphQL request/response replay"},
+                    {"id": "actor_diff", "label": "actor or role boundary comparison"},
+                    {"id": "impact", "label": "target-owned business impact"},
+                ],
+                "missing_labels": [
+                    "exact GraphQL request/response replay",
+                    "actor or role boundary comparison",
+                    "target-owned business impact",
+                ],
+                "next_actions": [
+                    "Replay one exact GraphQL operation through validation_runner.py protocol-replay."
+                ],
+                "summary": "graphql:needs-evidence satisfied=0/3",
+            },
+        },
+        target=target,
+    )
+
+print(json.dumps({
+    "summary": str(summary_path.relative_to(repo_root)),
+    "candidate_finding_id": finding_id if signals else "",
+}, sort_keys=True))
+PY
+); then
+  err "Failed to publish the canonical GraphQL run summary"
+  exit 1
+fi
+_summary "canonical_publish: $PUBLISH_RESULT"
 
 echo ""
 echo -e "${BOLD}====== AUDIT SUMMARY ======${NC}"

@@ -19,7 +19,7 @@ trigger_tags:
   - cross-session-memory
   - multi-agent-impersonation
 risk: medium
-maturity: draft
+maturity: tested
 load_priority: medium
 deep_refs: []
 source_refs:
@@ -95,6 +95,9 @@ rug pull 或 OpenAPI schema 变化误路由到本卡。
 
 - 建立正常问答或工具调用 baseline；如果模型不可达，保存 raw stream/error 即停止，不把不可达本身当 prompt-injection。
 - 单变量加入直接/间接 prompt，比较引用、工具调用、输出和权限差异。
+- 将确切 HTTP endpoint/body 与预期 `tool_name`/`argument_marker` 写入
+  `llm_tool_call` schema-v1 spec，再用 `validation_runner.py protocol-replay`
+  解析真实 function name/arguments，并保留 raw request/response 与 owner 写回。
 - Backend error 只算 lead：需要证明内部地址、provider、tool schema 或参数能进一步造成敏感数据访问、内部服务利用、权限绕过或业务动作，才升 candidate。
 - Candidate 前需要真实数据/工具边界证据，而不是单纯“模型听话”。
 

@@ -15,6 +15,21 @@ import pytest
 from tools import action_queue, high_value_signals, noise_filter, parallel_workers, runtime_config, target_memory, target_paths, target_selector
 
 
+def test_resolve_target_url_preserves_protocol_relative_authority():
+    assert target_paths.resolve_target_url(
+        "//api.external.test/v1",
+        "https://app.target.test",
+    ) == "https://api.external.test/v1"
+    assert target_paths.resolve_target_url(
+        "//api.target.test/v1",
+        "https://app.target.test",
+    ) == "https://api.target.test/v1"
+    assert target_paths.resolve_target_url(
+        "/api/users",
+        "https://app.target.test",
+    ) == "https://app.target.test/api/users"
+
+
 def test_target_paths_canonicalizes_host_port_cidr_and_lists(tmp_path):
     scope = tmp_path / "scope.txt"
     scope.write_text("api.example.test\nshop.example.test\n", encoding="utf-8")

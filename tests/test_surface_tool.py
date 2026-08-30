@@ -431,6 +431,21 @@ class TestSurfaceRanking:
             encoding="utf-8",
         )
         (recon_dir / "js" / "endpoints.txt").write_text("", encoding="utf-8")
+        source_intel_dir = repo_root / "findings" / "target.com" / "source_intel"
+        source_intel_dir.mkdir(parents=True)
+        (source_intel_dir / "routes.json").write_text(
+            json.dumps({"routes": [{"route": "//api.external.test/orders/123"}]}),
+            encoding="utf-8",
+        )
+        (source_intel_dir / "hypotheses.jsonl").write_text(
+            json.dumps({
+                "candidate": "//api.external.test/orders/123",
+                "type": "idor",
+                "reason": "external route id",
+                "source": "app.js",
+            }) + "\n",
+            encoding="utf-8",
+        )
 
         ranked = rank_surface(
             load_surface_context(repo_root, "target.com", memory_dir=repo_root / "hunt-memory")
@@ -449,6 +464,10 @@ class TestSurfaceRanking:
         assert external_leads
         assert "ethereum.example.net" in external_leads[0]["evidence"]
         assert "do not run direct vulnerability validation" in external_leads[0]["next_action"]
+        assert not any(
+            item.get("source") == "source_intel" and "api.external.test" in str(item)
+            for item in workflow_leads
+        )
 
     def test_surface_output_shows_runtime_and_recon_cache(self, tmp_path):
         repo_root = tmp_path

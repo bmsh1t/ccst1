@@ -64,7 +64,13 @@ try:
         build_surface_input_manifest,
         write_surface_projection,
     )
-    from tools.target_paths import compact_url, canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.target_paths import (
+        compact_url,
+        canonical_target_value,
+        resolve_target_url,
+        target_storage_key,
+        url_belongs_to_target,
+    )
 except ImportError:  # pragma: no cover - top-level tools/ import
     from closure_resolver import ClosureResolver, canonical_endpoint_path  # type: ignore
     from coverage_matrix import load_matrix  # type: ignore
@@ -86,7 +92,13 @@ except ImportError:  # pragma: no cover - top-level tools/ import
     from runtime_state import inspect_recon_artifacts, load_runtime_state
     from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, page_surface_index, surface_shape, surface_request_shape, surface_safe_preview, surface_value_summary
     from surface_projection import build_surface_input_manifest, write_surface_projection
-    from target_paths import compact_url, canonical_target_value, target_storage_key, url_belongs_to_target
+    from target_paths import (  # type: ignore
+        compact_url,
+        canonical_target_value,
+        resolve_target_url,
+        target_storage_key,
+        url_belongs_to_target,
+    )
 try:
     from tools.browser_surface import public_url_shape
     from tools.high_value_signals import classify_high_value_signal, summarize_high_value_signal
@@ -2230,12 +2242,7 @@ def _iter_rankable_surface_rows(
     )
     js_urls = []
     for endpoint in context.get("js_endpoints") or []:
-        if str(endpoint).startswith(("http://", "https://")):
-            js_urls.append(str(endpoint))
-        elif default_host:
-            js_urls.append(default_host.rstrip("/") + str(endpoint))
-        else:
-            js_urls.append(str(endpoint))
+        js_urls.append(resolve_target_url(str(endpoint), default_host))
 
     sources_by_url: dict[str, set[str]] = {}
     ordered: list[str] = []
@@ -2878,7 +2885,11 @@ def rank_surface(context: dict) -> dict:
             total_count=external_context_count,
         )
         + build_js_lead_hints(js_intel)
-        + build_source_lead_hints(context.get("source_intel") or {})
+        + build_source_lead_hints(
+            context.get("source_intel") or {},
+            target=context["target"],
+            default_host=default_host,
+        )
         + list(context.get("manual_review_leads") or [])
     )
     workflow_leads = _dedupe_keep_order([

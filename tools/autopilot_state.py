@@ -597,6 +597,49 @@ def _load_json_inject_projection(repo_root: str, target: str) -> dict:
     return projection
 
 
+def _load_scanner_summary_projection(repo_root: str, target: str) -> dict:
+    """Load bounded scanner lane accounting without treating candidates as tests."""
+    path = Path(repo_root) / "findings" / target_storage_key(target) / "summary.json"
+    projection = {"status": "missing", "path": str(path), "lanes": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return projection
+    except (OSError, json.JSONDecodeError):
+        return {**projection, "status": "partial"}
+    if not isinstance(payload, dict):
+        return {**projection, "status": "partial"}
+    try:
+        if canonical_target_value(str(payload.get("target") or "")) != canonical_target_value(target):
+            return {**projection, "status": "partial"}
+    except ValueError:
+        return {**projection, "status": "partial"}
+    raw_lanes = payload.get("lane_coverage")
+    if not isinstance(raw_lanes, dict):
+        return projection
+    lanes = {}
+    for name, item in raw_lanes.items():
+        if not isinstance(item, dict):
+            continue
+        try:
+            input_total = max(0, int(item.get("input_total", 0) or 0))
+            selected = max(0, min(input_total, int(item.get("selected", 0) or 0)))
+            remaining = max(0, min(input_total, int(item.get("remaining", 0) or 0)))
+        except (TypeError, ValueError):
+            continue
+        lanes[str(name)] = {
+            "lane": str(item.get("lane") or name),
+            "execution_kind": str(item.get("execution_kind") or "unknown"),
+            "status": str(item.get("status") or "unknown"),
+            "input_total": input_total,
+            "selected": selected,
+            "remaining": remaining,
+            "continuation": " ".join(str(item.get("continuation") or "").split()),
+            "closure_blocking": bool(item.get("closure_blocking")),
+        }
+    return {"status": "valid", "path": str(path), "lanes": lanes}
+
+
 _SQL_MATRIX_STATUSES = {"complete_no_hit", "candidate_pending", "partial", "invalid_input"}
 _SQL_MATRIX_LANES = {"query", "form"}
 
@@ -2721,6 +2764,7 @@ def _load_autopilot_control_facts(
     json_inject = _load_json_inject_projection(repo_root, resolved_target)
     sql_matrix = _load_sql_matrix_projections(repo_root, resolved_target)
     js_intel = _load_js_intel_projection(repo_root, resolved_target)
+    scanner_summary = _load_scanner_summary_projection(repo_root, resolved_target)
     case_state = _load_case_state_projection(
         repo_root,
         resolved_target,
@@ -2763,6 +2807,7 @@ def _load_autopilot_control_facts(
         "json_inject": json_inject,
         "sql_matrix": sql_matrix,
         "js_intel": js_intel,
+        "scanner_summary": scanner_summary,
         "case_state": case_state,
     }
 
@@ -2918,6 +2963,7 @@ def _build_domain_autopilot_state(
         "json_inject": facts.get("json_inject") or {},
         "sql_matrix": facts.get("sql_matrix") or {},
         "js_intel": facts.get("js_intel") or {},
+        "scanner_summary": facts.get("scanner_summary") or {},
         "case_state": facts.get("case_state") or {},
         "runtime_state": facts.get("runtime_state") or {},
         "recon_artifacts": facts.get("recon_artifacts") or {},
@@ -3399,7 +3445,7 @@ def _coverage_has_high_value_gaps(matrix: dict) -> bool:
 
 
 def _actor_context_gap(case_state: dict, matrix: dict | None) -> dict:
-    """Project actor/session coverage without blocking unrelated lanes."""
+    """Project the recoverable actor/session prerequisite for role-based lanes."""
     if str(case_state.get("status") or "") != "valid":
         return {}
     coverage = case_state.get("authz_coverage")
@@ -3433,8 +3479,18 @@ def _actor_context_gap(case_state: dict, matrix: dict | None) -> dict:
         "status": status if status in {"missing", "partial"} else "incomplete",
         "reason": reason,
         "lanes": relevant_lanes,
-        "blocking": False,
+        "blocking": True,
         "required_context": "owner/peer actor and session context",
+        "acquisition_action": (
+            "Import two distinct actor sessions through Case State, then rerun the "
+            "IDOR/Authz/GraphQL lane; do not synthesize credentials."
+        ),
+        "command_hints": [
+            "python3 tools/target_case_state.py add-actor --target TARGET --actor owner --role ROLE",
+            "python3 tools/target_case_state.py add-session --target TARGET --session owner-session --actor owner --auth-file AUTH_FILE",
+            "python3 tools/target_case_state.py add-actor --target TARGET --actor peer --role ROLE",
+            "python3 tools/target_case_state.py add-session --target TARGET --session peer-session --actor peer --auth-file AUTH_FILE",
+        ],
     }
 
 
@@ -3539,6 +3595,82 @@ def _surface_review_completion(
     return result
 
 
+def _recon_phase_residuals(
+    state: dict,
+    *,
+    closure_blocking: bool | None = None,
+) -> list[dict]:
+    """Return bounded Recon residuals without hiding advisory samples."""
+    phase_gates = (state.get("recon_artifacts") or {}).get("phase_gates") or {}
+    latest = phase_gates.get("latest") if isinstance(phase_gates, dict) else {}
+    residuals = []
+    for phase, gate in (latest.items() if isinstance(latest, dict) else ()):
+        if not isinstance(gate, dict):
+            continue
+        bounded = gate.get("bounded")
+        if not isinstance(bounded, dict):
+            continue
+        try:
+            remaining = int(bounded.get("remaining", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        blocking = bool(bounded.get("closure_blocking"))
+        if remaining <= 0 or (closure_blocking is not None and blocking != closure_blocking):
+            continue
+        evidence_refs = gate.get("evidence_refs") if isinstance(gate.get("evidence_refs"), list) else []
+        residuals.append({
+            "phase": str(phase),
+            "remaining": remaining,
+            "continuation": " ".join(str(bounded.get("continuation") or "").split()),
+            "closure_blocking": blocking,
+            "evidence_ref": str(
+                gate.get("artifact")
+                or (evidence_refs[0] if evidence_refs else "")
+            ),
+            "review_token": f"recon:{phase}:remaining={remaining}",
+            "gate": gate,
+            "bounded": {**bounded, "remaining": remaining},
+        })
+    return sorted(residuals, key=lambda item: item["phase"])
+
+
+def _blocking_recon_phase_gate(state: dict) -> tuple[str, dict, dict]:
+    """Return the first owner-declared resumable Recon residual."""
+    residuals = _recon_phase_residuals(state, closure_blocking=True)
+    if residuals:
+        item = residuals[0]
+        return item["phase"], item["gate"], item["bounded"]
+    return "", {}, {}
+
+
+def _scanner_lane_residuals(state: dict) -> list[dict]:
+    """Return scanner inputs that were sampled, skipped, or only classified."""
+    summary = state.get("scanner_summary") if isinstance(state.get("scanner_summary"), dict) else {}
+    path = str(summary.get("path") or "")
+    residuals = []
+    for name, item in (summary.get("lanes") or {}).items():
+        if not isinstance(item, dict):
+            continue
+        try:
+            remaining = int(item.get("remaining", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if remaining <= 0:
+            continue
+        lane = str(item.get("lane") or name)
+        residuals.append({
+            "lane": lane,
+            "remaining": remaining,
+            "execution_kind": str(item.get("execution_kind") or "unknown"),
+            "status": str(item.get("status") or "unknown"),
+            "continuation": str(item.get("continuation") or ""),
+            "closure_blocking": bool(item.get("closure_blocking")),
+            "evidence_ref": path,
+            "review_token": f"scanner:{lane}:remaining={remaining}",
+        })
+    return sorted(residuals, key=lambda item: item["lane"])
+
+
 def _explicit_partial_reason(state: dict) -> str:
     """Keep a stale handoff state from hiding durable work owned elsewhere."""
     if state.get("recon_in_progress") or state.get("scan_in_progress"):
@@ -3546,15 +3678,12 @@ def _explicit_partial_reason(state: dict) -> str:
     run_budget = (state.get("recon_artifacts") or {}).get("run_budget") or {}
     if run_budget.get("partial"):
         return "recon_budget_partial"
-    phase_gates = (state.get("recon_artifacts") or {}).get("phase_gates") or {}
-    for phase, gate in (phase_gates.get("latest") or {}).items():
-        bounded = gate.get("bounded") if isinstance(gate, dict) else {}
-        if (
-            isinstance(bounded, dict)
-            and bounded.get("closure_blocking")
-            and int(bounded.get("remaining", 0) or 0) > 0
-        ):
-            return "recon_phase_partial"
+    if _blocking_recon_phase_gate(state)[0]:
+        return "recon_phase_partial"
+    if _recon_phase_residuals(state, closure_blocking=False):
+        return "recon_phase_review_required"
+    if _scanner_lane_residuals(state):
+        return "scanner_lane_review_required"
     continuation = (state.get("recon_artifacts") or {}).get("cidr_continuation") or {}
     if continuation.get("status") == "pending":
         return "cidr_continuation_pending"
@@ -3942,10 +4071,13 @@ _CLOSURE_REASON_PRIORITY = {
     "finding_work_pending": 25,
     "case_state_canonical_conflict": 30,
     "case_state_work_pending": 31,
+    "actor_context_required": 32,
     "surface_projection_pending": 35,
     "surface_work_pending": 36,
     "recon_budget_partial": 40,
     "recon_phase_partial": 40,
+    "recon_phase_review_required": 41,
+    "scanner_lane_review_required": 42,
     "cidr_continuation_invalid": 40,
     "next_action_pending": 50,
     "coverage_missing": 60,
@@ -3979,9 +4111,12 @@ _CLOSURE_REASON_OWNERS = {
     "finding_work_pending": {"finding", "finding-claim", "target-memory"},
     "case_state_canonical_conflict": {"case_state"},
     "case_state_work_pending": {"case_state"},
+    "actor_context_required": {"case_state"},
     "surface_projection_pending": {"surface", "surface-context"},
     "surface_work_pending": {"surface"},
     "recon_phase_partial": {"recon"},
+    "recon_phase_review_required": {"checkpoint"},
+    "scanner_lane_review_required": {"checkpoint"},
     "coverage_missing": {"coverage"},
     "coverage_empty": {"coverage"},
     "coverage_invalid": {"coverage"},
@@ -4080,15 +4215,21 @@ def _closure_reason_frontier(
             stop_condition="record a terminal Queue result or bounded blocker",
             priority=85,
         )
-    if reason in {"case_state_work_pending", "case_state_canonical_conflict"}:
+    if reason in {"case_state_work_pending", "case_state_canonical_conflict", "actor_context_required"}:
         case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
         return _frontier_item(
             owner="case_state",
             item_id="canonical-conflict" if reason == "case_state_canonical_conflict" else reason,
-            action="Complete the Case State actor and session context required for coverage",
+            action=(
+                "Import distinct owner/peer actor sessions with tools/target_case_state.py "
+                "add-actor/add-session, then resume the affected role-based lane"
+            ),
             evidence_ref=str(case_state.get("path") or f"state/{target_key}/case_state.json"),
             expected_information_gain="obtain the missing owner/peer actor and session context",
-            stop_condition="record context ready, blocked, or not-applicable with evidence",
+            stop_condition=(
+                "record two distinct usable sessions, or an evidence-backed blocked/not-applicable "
+                "disposition; never synthesize credentials"
+            ),
             priority=85,
         )
     if reason in {"checkpoint_stale", "checkpoint_invalid"}:
@@ -4100,6 +4241,87 @@ def _closure_reason_frontier(
             expected_information_gain="restore a trusted checkpoint binding for round and queue recovery",
             stop_condition="publish a valid witness or record the checkpoint read/queue mismatch",
             priority=85,
+        )
+    if reason == "recon_phase_partial":
+        phase, gate, bounded = _blocking_recon_phase_gate(state)
+        if not phase:
+            return None
+        continuation = " ".join(str(bounded.get("continuation") or "").split())
+        evidence_refs = (
+            gate.get("evidence_refs")
+            if isinstance(gate.get("evidence_refs"), list)
+            else []
+        )
+        return _frontier_item(
+            owner="recon",
+            item_id=phase,
+            action=(
+                f"Resume bounded Recon phase {phase}: {continuation}"
+                if continuation
+                else f"Resume bounded Recon phase {phase} from its preserved input"
+            ),
+            evidence_ref=str(
+                gate.get("artifact")
+                or (evidence_refs[0] if evidence_refs else "")
+                or f"recon/{target_key}/recon_manifest.jsonl"
+            ),
+            expected_information_gain=(
+                f"cover or disposition the remaining {bounded['remaining']} inputs for {phase}"
+            ),
+            stop_condition=(
+                f"record {phase} with remaining=0 or an explicit owner-backed disposition, "
+                "then recompute Closure"
+            ),
+            priority=85,
+        )
+    if reason == "recon_phase_review_required":
+        residuals = _recon_phase_residuals(state, closure_blocking=False)
+        if not residuals:
+            return None
+        item = residuals[0]
+        return _frontier_item(
+            owner="checkpoint",
+            item_id=item["phase"],
+            action=(
+                "Review and explicitly disposition the bounded Recon residual "
+                f"for {item['phase']}"
+            ),
+            evidence_ref=(
+                item["evidence_ref"]
+                or f"recon/{target_key}/recon_manifest.jsonl"
+            ),
+            expected_information_gain=(
+                f"account for the remaining {item['remaining']} inputs without "
+                "misstating target exhaustion"
+            ),
+            stop_condition=(
+                f"record {item['review_token']} in the current global review or "
+                "create an owner-backed follow-up Queue action"
+            ),
+            priority=84,
+        )
+    if reason == "scanner_lane_review_required":
+        residuals = _scanner_lane_residuals(state)
+        if not residuals:
+            return None
+        item = residuals[0]
+        return _frontier_item(
+            owner="checkpoint",
+            item_id=item["lane"],
+            action=f"Review and disposition the scanner residual for {item['lane']}",
+            evidence_ref=(
+                item["evidence_ref"]
+                or f"findings/{target_key}/summary.json"
+            ),
+            expected_information_gain=(
+                f"account for the remaining {item['remaining']} scanner inputs and "
+                f"its {item['execution_kind']} evidence depth"
+            ),
+            stop_condition=(
+                f"record {item['review_token']} in the current global review or "
+                "create an owner-backed validation Queue action"
+            ),
+            priority=83,
         )
     if reason in {
         "runtime_phase_active",
@@ -4303,6 +4525,7 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "durable_work_pending": "resume_action_queue",
         "case_state_work_pending": "resume_case_state",
         "case_state_canonical_conflict": "resume_case_state",
+        "actor_context_required": "resume_case_state",
         "checkpoint_stale": "refresh_checkpoint",
         "checkpoint_invalid": "refresh_checkpoint",
         "ledger_partial": "repair_evidence_ledger",
@@ -4327,6 +4550,9 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "identity_v2_candidate_pending": "repair_evidence_ledger",
         "identity_v2_incomplete": "repair_evidence_ledger",
         "recon_budget_partial": "run_recon",
+        "recon_phase_partial": "run_recon",
+        "recon_phase_review_required": "global-review",
+        "scanner_lane_review_required": "global-review",
         "cidr_continuation_pending": "run_recon",
         "cidr_continuation_invalid": "run_recon",
         "runtime_phase_active": "wait_scan" if state.get("scan_in_progress") else "wait_recon",
@@ -4368,6 +4594,9 @@ def _finalize_closure_continuation(
         "surface_projection_pending",
         "checkpoint_stale",
         "checkpoint_invalid",
+        "recon_phase_partial",
+        "recon_phase_review_required",
+        "scanner_lane_review_required",
         "cidr_continuation_pending",
         "cidr_continuation_invalid",
     }
@@ -4738,6 +4967,10 @@ def build_closure_projection(
             if int(case_state.get("canonical_conflict_count", 0) or 0) > 0
             else "case_state_work_pending"
         )
+    elif actor_context_gap:
+        verdict = "handoff"
+        action = "resume_case_state"
+        reasons.append("actor_context_required")
     elif surface_projection_pending:
         verdict = "handoff"
         reasons.append("surface_projection_pending")
@@ -4854,6 +5087,7 @@ def build_closure_projection(
             if case_state_pending
             else ""
         ),
+        "actor_context_required" if actor_context_gap else "",
         "surface_projection_pending" if surface_projection_pending else "",
     ):
         if extra_reason and extra_reason not in reasons:
@@ -4975,16 +5209,21 @@ def build_closure_projection(
             action_text = f"Wait for the active {phase} phase to release its target runtime lock"
             expected_gain = "obtain the owner-written phase completion state before selecting more work"
             stop_condition = "refresh after the matching lock releases; never start a duplicate phase"
-        elif reason in {"case_state_work_pending"}:
+        elif reason in {"case_state_work_pending", "actor_context_required"}:
             owner = "case_state"
             case_state = state.get("case_state") if isinstance(state.get("case_state"), dict) else {}
             evidence_ref = str(
                 case_state.get("path")
                 or f"state/{target_key}/case_state.json"
             )
-            action_text = "Complete the Case State actor and session context required for coverage"
+            action_text = (
+                "Import distinct owner/peer actor sessions through Case State before resuming "
+                "IDOR/Authz/GraphQL validation"
+            )
             expected_gain = "obtain the missing owner/peer actor and session context"
-            stop_condition = "record context ready, blocked, or not-applicable with evidence"
+            stop_condition = (
+                "record context ready, blocked, or not-applicable with evidence; never synthesize credentials"
+            )
         elif reason == "finding_work_pending":
             root_claim = state.get("root_finding_claim_next") if isinstance(state.get("root_finding_claim_next"), dict) else {}
             memory_candidate = state.get("memory_candidate_next") if isinstance(state.get("memory_candidate_next"), dict) else {}
@@ -5141,6 +5380,28 @@ def build_closure_projection(
             "shadow": ledger_projection.get("identity_v2_shadow") or {},
         },
     }
+    recon_residuals = _recon_phase_residuals(state)
+    if recon_residuals:
+        result["recon_residuals"] = [
+            {key: item[key] for key in (
+                "phase",
+                "remaining",
+                "continuation",
+                "closure_blocking",
+                "evidence_ref",
+                "review_token",
+            )}
+            for item in recon_residuals
+        ]
+    scanner_residuals = _scanner_lane_residuals(state)
+    if scanner_residuals:
+        result["scanner_residuals"] = scanner_residuals
+    bounded_residuals = [
+        *(result.get("recon_residuals") or []),
+        *(result.get("scanner_residuals") or []),
+    ]
+    if bounded_residuals:
+        result["bounded_residuals"] = bounded_residuals
     coverage_policy_skips = dict((matrix or {}).get("policy_skips") or {})
     if coverage_policy_skips:
         result["coverage_policy_skips"] = coverage_policy_skips
@@ -5172,6 +5433,7 @@ _STAGNANT_REASONS = {
     "surface_work_pending",
     "coverage_high_value_gaps",
     "case_state_canonical_conflict",
+    "actor_context_required",
 }
 
 
@@ -5889,13 +6151,42 @@ def load_closure_projection(
         expected_digest=snapshot_digest,
     )
     round_progress = closure_state.get("round_progress") if isinstance(closure_state.get("round_progress"), dict) else {}
-    review_required = (
+    residual_review_required = bool(
+        {"recon_phase_review_required", "scanner_lane_review_required"}
+        & set(closure.get("reasons") or [])
+    )
+    review_required = residual_review_required or (
         closure.get("verdict") == "finish"
         and round_progress.get("status") == "completed"
         and int(round_progress.get("claimed_count", 0) or 0) > 0
     )
     if global_review.get("status") == "valid":
         closure["global_review"] = global_review["review"]
+        if residual_review_required:
+            required_tokens = {
+                str(item.get("review_token") or "")
+                for item in closure.get("bounded_residuals") or []
+                if str(item.get("review_token") or "")
+                and not bool(item.get("closure_blocking"))
+            }
+            reviewed_tokens = set(global_review["review"].get("residual_unknowns") or [])
+            if (
+                global_review["review"].get("status") == "complete"
+                and required_tokens.issubset(reviewed_tokens)
+            ):
+                closure.update({
+                    "verdict": "blocked",
+                    "can_claim_exhausted": False,
+                    "reasons": ["bounded_recon_residual_deferred"],
+                    "next_action": "stop_bounded",
+                    "actionable_frontier": [],
+                })
+            else:
+                global_review = {
+                    "status": "invalid",
+                    "reason": "global_review_invalid",
+                }
+                closure["global_review"] = {"status": "invalid"}
     elif review_required:
         reason = str(global_review.get("reason") or "global_review_invalid")
         closure.update({
@@ -5904,6 +6195,26 @@ def load_closure_projection(
             "reasons": [reason],
             "next_action": "global-review",
             "global_review": {"status": global_review.get("status") or "invalid"},
+        })
+        reasons, actionable_frontier, action = _finalize_closure_continuation(
+            [reason],
+            closure.get("actionable_frontier") or [],
+            closure_state,
+            matrix,
+            "global-review",
+        )
+        closure.update({
+            "reasons": reasons,
+            "actionable_frontier": actionable_frontier,
+            "next_action": action,
+        })
+    if residual_review_required and global_review.get("status") != "valid":
+        reason = str(global_review.get("reason") or "global_review_required")
+        closure.update({
+            "verdict": "handoff",
+            "can_claim_exhausted": False,
+            "reasons": [reason],
+            "next_action": "global-review",
         })
         reasons, actionable_frontier, action = _finalize_closure_continuation(
             [reason],

@@ -61,6 +61,22 @@ def test_case_state_seed_extracts_query_object_from_browser_params(tmp_path):
     assert "query parameter 'order_id'" in payload["suggested_objects"][0]["reason"]
 
 
+def test_case_state_seed_does_not_seed_external_protocol_relative_objects(tmp_path):
+    urls_dir = tmp_path / "recon" / "target.com" / "urls"
+    urls_dir.mkdir(parents=True)
+    (urls_dir / "api_endpoints.txt").write_text(
+        "//api.external.test/orders/123\n",
+        encoding="utf-8",
+    )
+
+    payload = case_state_seed.build_case_state_seed(tmp_path, "target.com")
+
+    assert payload["artifact_endpoints"] == 1
+    assert payload["status"] == "no_seed_candidates"
+    assert payload["suggested_objects"] == []
+    assert payload["suggested_backlog"] == []
+
+
 def test_raw_unknown_query_id_is_retained_as_low_confidence(tmp_path):
     urls_dir = tmp_path / "recon" / "target.com" / "urls"
     urls_dir.mkdir(parents=True)

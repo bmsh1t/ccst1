@@ -23,12 +23,22 @@ import sys
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import unquote_plus, urljoin, urlparse, urlsplit, urlunsplit
+from urllib.parse import unquote_plus, urlparse, urlsplit, urlunsplit
 
 try:
-    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.target_paths import (
+        canonical_target_value,
+        resolve_target_url,
+        target_storage_key,
+        url_belongs_to_target,
+    )
 except ImportError:  # pragma: no cover - direct tools/ execution
-    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
+    from target_paths import (  # type: ignore
+        canonical_target_value,
+        resolve_target_url,
+        target_storage_key,
+        url_belongs_to_target,
+    )
 
 
 SCHEMA_VERSION = 1
@@ -222,12 +232,7 @@ def _default_host(recon_dir: Path) -> str:
 
 def _iter_js_urls(path: Path, default_host: str) -> Iterator[str]:
     for endpoint in _iter_lines(path):
-        if endpoint.startswith(("http://", "https://")):
-            yield endpoint
-        elif default_host:
-            yield urljoin(default_host.rstrip("/") + "/", endpoint)
-        else:
-            yield endpoint
+        yield resolve_target_url(endpoint, default_host)
 
 
 def _iter_scanner_urls(path: Path) -> Iterator[str]:
