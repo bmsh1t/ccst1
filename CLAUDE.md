@@ -46,6 +46,8 @@ Target state / Evidence -> Coverage Matrix -> Skill / Context Router
 - Coverage Matrix 是“是否遗漏”的判断来源；Knowledge Card 只增强召回和深入思路。
 - Skill 选择执行路径，Rules 负责动作安全和完成检查，工具负责可重复 replay、diff、证据和写回。
 - Action Queue、Evidence Ledger 和 Checkpoint 负责动作生命周期、证据闭环和完成判断；
+  有实质 round 完成后，Checkpoint witness 还承载一次跨来源全局复核，Closure 只接受当前
+  snapshot digest 匹配的 `complete` 或已绑定 Queue 的 `follow_up`。
   不在提示词中建立第二套状态机。
 
 ### Responsibility and Loading Boundary

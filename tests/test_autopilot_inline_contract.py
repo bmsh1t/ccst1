@@ -19,15 +19,10 @@ def test_slash_command_keeps_one_controller_and_ai_selected_bounded_specialists(
     assert "runs inline in the current AI session" in normalized
     assert "sole writer/closure controller" in normalized
     assert "Specialists default to zero" in normalized
-    assert "current AI session may delegate distinct, bounded evidence questions" in normalized
-    assert "platform's delegation tool" in normalized
-    assert "bounded context/request cost" in normalized
-    assert "expected information gain" in normalized
-    assert "stop when no independent question remains" in normalized
-    for forbidden in ("never nest", "run full recon/scans", "create lanes", "expand budgets", "write owner state", "decide closure/finish"):
-        assert forbidden in normalized
-    assert "controller collects results and writes back" in normalized
-    assert "one read-only second opinion per frontier projection" in normalized
+    assert "docs/autopilot-lanes.md#inline-specialist-propagation" in normalized
+    assert "single delegation" in normalized
+    assert "only owner of lane claims" in normalized
+    assert "optional `recon-ranker` stays read-only" in normalized
     assert "--isolated" not in text
 
 
@@ -35,7 +30,7 @@ def test_deep_mode_propagates_to_supported_inline_specialists_without_budget_exp
     command = " ".join(_read("commands/autopilot.md").split())
     lanes = " ".join(_read("docs/autopilot-lanes.md").split())
 
-    for text in (command, lanes):
+    for text in (lanes,):
         assert "arguments.deep" in text
         assert "invocation_batch" in text
         assert "DEEP HUNT MODE" in text
@@ -43,9 +38,7 @@ def test_deep_mode_propagates_to_supported_inline_specialists_without_budget_exp
         assert "max_lanes" in text
         assert "reparse" in text
 
-    assert "When `arguments.deep=true`" in command
-    assert "without increasing `invocation_batch.max_lanes`" in command
-    assert "When `arguments.deep=false`, do not upgrade the specialist to deep" in command
+    assert "inline-specialist-propagation" in command
     assert "the inline controller alone claims lanes" in lanes
 
 
@@ -59,7 +52,7 @@ def test_slash_command_uses_authoritative_parser_and_rejects_legacy_flags():
     assert 'mcp__Playwright__*' in text
     assert 'mcp__chrome-devtools__*' in text
     assert 'mcp__fofamap__*' in text
-    assert "`Agent` in Claude Code or the native equivalent" in normalized
+    assert "- Agent" in text
     assert 'tools/autopilot_bootstrap.py" --json -- "$0" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"' in text
     assert "git rev-parse --show-toplevel" in text
     assert "Authoritative bootstrap contract (do not reinterpret)" in normalized
@@ -145,7 +138,7 @@ def test_browser_first_use_probe_retries_only_transient_session_failures():
 
     assert "browser actions use only visible playwright/chrome mcp" in command
     assert "browser_playwright_fallback.py" in command
-    assert "when neither mcp backend is usable" in command
+    assert "if neither backend is usable" in command
     assert "never run `agent-browser` or `playwright-cli` through bash" in command
     assert "first use" in command
     assert "harmless page-list/session probe" in command
@@ -283,11 +276,13 @@ def test_substantive_lanes_obey_explicit_loop_guard_without_bypassing_owner_cons
 
     assert "after every substantive lane" in command
     assert "autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json" in command
+    assert "projection also returns bounded `control`" in command
+    assert "do not run a second ordinary state read unless a later owner write" in command
     assert "obey `loop_guard.verdict`" in command
     assert "do not continue the reported `endpoint_family` × `vuln_class`" in command
     assert "bounded `rotation_target` when present" in command
     assert "never overrides `state.hard_gate`, an already-claimed lane" in command
-    assert "refresh the frontier before selecting the next lane" in command
+    assert "select from the returned `control.priority_frontier`" in command
 
 
 def test_ai_priority_frontier_competes_across_owners_without_changing_evidence_rules():

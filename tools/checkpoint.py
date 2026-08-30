@@ -51,7 +51,12 @@ try:
         queue_fingerprint as action_queue_fingerprint,
         select_next_action as action_queue_select_next_action,
     )
-    from tools.autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint
+    from tools.autopilot_state import (
+        build_autopilot_state,
+        load_closure_projection,
+        stagnation_fingerprint,
+        validate_global_review,
+    )
     from tools.context_pack import build_context_pack
     from tools.coverage_matrix import _route_template, actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection
     from tools.evidence_rubric import evaluate_candidate_evidence, first_missing_action
@@ -94,7 +99,12 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         queue_fingerprint as action_queue_fingerprint,
         select_next_action as action_queue_select_next_action,
     )
-    from autopilot_state import build_autopilot_state, load_closure_projection, stagnation_fingerprint  # type: ignore
+    from autopilot_state import (  # type: ignore
+        build_autopilot_state,
+        load_closure_projection,
+        stagnation_fingerprint,
+        validate_global_review,
+    )
     from context_pack import build_context_pack  # type: ignore
     from coverage_matrix import _route_template, actionable_coverage_gaps, class_relevance, high_risk_lane_summary, high_value_gaps_from_matrix, load_matrix, load_matrix_projection, matrix_is_fresh, normalize_vuln_class, rebuild_matrix, save_matrix, save_matrix_projection  # type: ignore
     from evidence_rubric import evaluate_candidate_evidence, first_missing_action  # type: ignore
@@ -489,6 +499,8 @@ def write_checkpoint_witness(
         progress = _round_progress(previous)
         if isinstance(previous.get("round_guard"), dict):
             payload["round_guard"] = previous["round_guard"]
+        if isinstance(previous.get("global_review"), dict):
+            payload["global_review"] = previous["global_review"]
         if progress:
             payload["round_progress"] = progress
         _write_json_atomic(path, payload)
@@ -569,6 +581,72 @@ def record_round_closure(repo_root: Path | str, target: str) -> dict:
                 "path": str(path),
                 "round_guard": payload.get("round_guard") or {},
                 "round_progress": dict(progress),
+            }
+
+
+def record_global_review(
+    repo_root: Path | str,
+    target: str,
+    *,
+    status: str,
+    snapshot_digest: str,
+    evidence_refs: list[str],
+    cross_source_links: list[object] | None = None,
+    residual_unknowns: list[str] | None = None,
+    decision: str,
+    next_action: str = "",
+) -> dict:
+    """Persist the target-wide review witness through the Checkpoint owner."""
+    repo = Path(repo_root)
+    resolved_target = canonical_target_value(target)
+    path = _checkpoint_witness_path(repo, resolved_target)
+    with checkpoint_witness_lock(repo, resolved_target):
+        with queue_mutation_lock(repo, resolved_target):
+            queue_snapshot = load_action_queue(repo, resolved_target)
+            state = build_autopilot_state(
+                str(repo),
+                resolved_target,
+                bounded=True,
+                queue_snapshot=queue_snapshot,
+            )
+            closure = load_closure_projection(
+                str(repo),
+                state,
+                max_lanes_reached=False,
+                apply_round_guard=False,
+                queue_snapshot=queue_snapshot,
+            )
+            expected_digest = str(closure.get("snapshot_digest") or "")
+            review = {
+                "status": status,
+                "snapshot_digest": snapshot_digest,
+                "evidence_refs": evidence_refs,
+                "cross_source_links": cross_source_links or [],
+                "residual_unknowns": residual_unknowns or [],
+                "decision": decision,
+                "next_action": next_action,
+            }
+            checked = validate_global_review(
+                repo,
+                resolved_target,
+                review,
+                queue_snapshot,
+                expected_digest=expected_digest,
+            )
+            if checked.get("status") != "valid":
+                raise ValueError(
+                    "global review cannot be recorded: "
+                    + str(checked.get("reason") or "global_review_invalid")
+                )
+            payload = _load_checkpoint_witness(path)
+            if not payload:
+                raise ValueError(f"checkpoint witness missing or invalid: {path}")
+            payload["global_review"] = checked["review"]
+            _write_json_atomic(path, payload)
+            return {
+                "path": str(path),
+                "global_review": checked["review"],
+                "snapshot_digest": expected_digest,
             }
 
 
@@ -1331,6 +1409,7 @@ ACTION_DECISIONS = {
     "secret-verification": "continue",
     "json-inject-review": "continue",
     "sql-matrix-review": "continue",
+    "global-review": "checkpoint",
     "next-action": "continue",
 }
 
@@ -4521,11 +4600,17 @@ def build_parser() -> argparse.ArgumentParser:
     round_operation.add_argument("--round-begin", action="store_true")
     round_operation.add_argument("--record-round-lane", action="store_true")
     round_operation.add_argument("--record-round-lane-result", action="store_true")
+    round_operation.add_argument("--record-global-review", action="store_true")
     parser.add_argument("--lane", default="")
     parser.add_argument("--max-lanes", type=int, default=0)
     parser.add_argument("--lane-status", default="")
+    parser.add_argument("--review-status", default="")
     parser.add_argument("--decision", default="")
     parser.add_argument("--evidence-ref", default="")
+    parser.add_argument("--snapshot-digest", default="")
+    parser.add_argument("--evidence-refs-json", default="[]")
+    parser.add_argument("--cross-source-links-json", default="[]")
+    parser.add_argument("--residual-unknowns-json", default="[]")
     parser.add_argument("--next-action", default="")
     round_operation.add_argument("--record-round-closure", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -4537,6 +4622,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     repo = Path(args.repo_root)
     resolved_target = canonical_target_value(args.target)
+    if args.record_global_review:
+        try:
+            evidence_refs = json.loads(args.evidence_refs_json)
+            cross_source_links = json.loads(args.cross_source_links_json)
+            residual_unknowns = json.loads(args.residual_unknowns_json)
+            result = record_global_review(
+                repo,
+                resolved_target,
+                status=args.review_status or args.lane_status,
+                snapshot_digest=args.snapshot_digest,
+                evidence_refs=evidence_refs,
+                cross_source_links=cross_source_links,
+                residual_unknowns=residual_unknowns,
+                decision=args.decision,
+                next_action=args.next_action,
+            )
+        except (OSError, ValueError, KeyError, json.JSONDecodeError, TypeError) as exc:
+            print(f"checkpoint global review failed: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else result["path"])
+        return 0
     if args.round_begin or args.record_round_lane or args.record_round_lane_result:
         try:
             if args.record_round_lane_result:

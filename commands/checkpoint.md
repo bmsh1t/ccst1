@@ -23,6 +23,20 @@ python3 tools/checkpoint.py --target target.com --apply-target-memory
 python3 tools/checkpoint.py --target target.com --json
 ```
 
+完成一次有实质 lane 的 Autopilot round 后，目标范围的最终综合复核仍由同一
+Checkpoint owner 记录。先读取 Closure 返回的 `snapshot_digest`，再写入当前证据引用：
+
+```bash
+python3 tools/checkpoint.py --target target.com --record-global-review \
+  --review-status complete --snapshot-digest <closure.snapshot_digest> \
+  --evidence-refs-json '["evidence/<target_key>/review/summary.json"]' \
+  --cross-source-links-json '["browser -> JS -> Source"]' \
+  --residual-unknowns-json '[]' --decision "<decision>" --json
+```
+
+`follow_up` 必须把 `--next-action` 指向现有活动 Queue action；缺失、过期或无效
+复核会让 Closure 保持 handoff，不会创建新的状态 owner。
+
 ## 自动读取
 
 ```bash

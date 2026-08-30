@@ -195,6 +195,19 @@ def prepare_round(
     repo = Path(repo_root)
     resolved_target = canonical_target_value(target)
     state, closure = _closure_snapshot(repo, resolved_target)
+    if str((closure.get("reasons") or [""])[0]) in {
+        "global_review_required",
+        "global_review_stale",
+        "global_review_invalid",
+    }:
+        return _result(
+            "prepare",
+            resolved_target,
+            status="review_required",
+            state=state,
+            closure=closure,
+            round_progress=_round_progress(closure),
+        )
     if closure.get("verdict") in {"finish", "blocked"}:
         return _result(
             "prepare",
@@ -239,6 +252,19 @@ def settle_round(
         if unfinished:
             raise ValueError("cannot settle round with unfinished lanes: " + ", ".join(map(str, unfinished)))
         if progress.get("status") == "completed":
+            if str((closure.get("reasons") or [""])[0]) in {
+                "global_review_required",
+                "global_review_stale",
+                "global_review_invalid",
+            }:
+                return _result(
+                    "settle",
+                    resolved_target,
+                    status="review_required",
+                    state=state,
+                    closure=closure,
+                    round_progress=progress,
+                )
             return _result(
                 "settle",
                 resolved_target,
@@ -291,10 +317,20 @@ def settle_round(
             )
         closed = record_round_closure(repo, resolved_target)
         final_state, final_closure = _closure_snapshot(repo, resolved_target)
+        final_reason = str((final_closure.get("reasons") or [""])[0])
+        final_status = (
+            "review_required"
+            if final_reason in {
+                "global_review_required",
+                "global_review_stale",
+                "global_review_invalid",
+            }
+            else "settled"
+        )
         return _result(
             "settle",
             resolved_target,
-            status="settled",
+            status=final_status,
             state=final_state,
             closure=final_closure,
             round_progress=dict(closed.get("round_progress") or {}),

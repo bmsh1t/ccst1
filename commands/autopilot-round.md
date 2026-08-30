@@ -45,7 +45,9 @@ These fields never override STATUS.
 `status=terminal` with Closure `finish` or `blocked` is terminal: clean up the
 exact loop, emit STATUS, and stop without target work. Missing, damaged,
 inconsistent, or unknown Closure is `STATUS: ERROR` after cleanup. For
-`status=started|resumed`, recover any lane whose heartbeat remains `started`.
+`status=review_required`, emit `STATUS: CONTINUE next_action=global-review` and
+do not start a new lane or round; record the review through Checkpoint first.
+For `status=started|resumed`, recover any lane whose heartbeat remains `started`.
 
 The legacy state-only projection is a compatibility adapter for callers that
 cannot use the coordinator; do not run it in addition to `prepare`.
@@ -86,6 +88,11 @@ After every terminal heartbeat, run the read-only loop guard:
 cd -- <repo_root_shell> && python3 tools/autopilot_state.py --target <target_shell> --bounded --loop-check --projection-only --json
 ```
 
+The loop-check projection includes the bounded `control` frontier and hard gate;
+use it as the refreshed state for the next lane. Do not issue a second ordinary
+`autopilot_state.py` read unless the command fails or a later owner write requires
+a fresh snapshot.
+
 When the lane budget is consumed, checkpoint and leave new work for the next
 invocation.
 
@@ -100,7 +107,10 @@ cd -- <repo_root_shell> && python3 tools/autopilot_round.py settle --target <tar
 Settle refuses `started` lanes, performs owner write-back and final Closure, and
 leaves the round active when Surface is stale or unavailable. Repeating settle
 after completion is read-only (`status=already_settled`) and never replays target
-work. Budget exhaustion ends target work for this invocation; it does not itself
+work. If final Closure returns `global_review_required`, `global_review_stale`, or
+`global_review_invalid`, settle returns `status=review_required`; record the review
+through the existing Checkpoint owner, then re-read Closure before claiming finish.
+Budget exhaustion ends target work for this invocation; it does not itself
 select `STATUS: CONTINUE`.
 
 Project STATUS from the final owner fields:
@@ -111,6 +121,7 @@ Project STATUS from the final owner fields:
   `STATUS: EXHAUSTED reason=evidence-bounded`, then
   `RESIDUAL_BLIND_SPOTS: <bounded-labels|none-recorded>`
 - `handoff`: `STATUS: CONTINUE next_action=<bounded-summary>`
+- `review_required`: `STATUS: CONTINUE next_action=global-review`
 - `blocked`: `STATUS: BLOCKED reason=<bounded-summary>`
 - Any other shape: `STATUS: ERROR reason=<bounded-summary>`
 

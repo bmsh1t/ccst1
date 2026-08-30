@@ -122,6 +122,33 @@ def test_prepare_round_is_idempotent_and_preserves_checkpoint_budget(tmp_path):
     assert second["round_progress"]["max_lanes"] == 2
 
 
+def test_prepare_does_not_start_new_round_before_global_review(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "_closure_snapshot",
+        lambda *_args: (
+            {"resolved_target": "target.com"},
+            {
+                "verdict": "handoff",
+                "reasons": ["global_review_required"],
+                "next_action": "global-review",
+                "round_progress": {"status": "completed"},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        autopilot_round_module,
+        "begin_round",
+        lambda *_args, **_kwargs: calls.append(True),
+    )
+
+    result = autopilot_round_module.prepare_round(tmp_path, "target.com", 2)
+
+    assert result["status"] == "review_required"
+    assert calls == []
+
+
 def test_settle_round_refuses_started_lane_without_writing(tmp_path):
     target = "target.com"
     begin_round(tmp_path, target, max_lanes=1)

@@ -138,6 +138,8 @@ def test_round_end_uses_explicit_loop_guard_and_owner_settle():
 
     assert checkpoint < settle
     assert loop_guard in command
+    assert "loop-check projection includes the bounded `control` frontier" in normalized
+    assert "do not issue a second ordinary `autopilot_state.py` read unless the command fails" in normalized.lower()
     assert "performs owner write-back and final Closure" in normalized
     assert "After every terminal heartbeat" in command
     assert "Consume at most `invocation_batch.max_lanes` substantive lanes" in normalized

@@ -52,6 +52,7 @@ from checkpoint import (
     begin_round,
     format_checkpoint,
     record_round_closure,
+    record_global_review,
     record_round_lane,
     record_round_lane_result,
     sync_checkpoint_action_queue,
@@ -221,6 +222,49 @@ def test_checkpoint_without_recon_recommends_refresh_recon(tmp_path):
     assert checkpoint["runtime_witness"]["path"] == "state/target.com/checkpoint_latest.json"
     assert witness["kind"] == "autopilot_checkpoint_witness"
     assert witness["context_pack"]["selected_skill"] == checkpoint["context_pack"]["selected_skill"]
+
+
+def test_record_global_review_persists_checkpoint_witness(tmp_path, monkeypatch):
+    target = "target.com"
+    digest = "c" * 64
+    evidence_ref = "evidence/target.com/review/summary.json"
+    evidence = tmp_path / evidence_ref
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text("review\n", encoding="utf-8")
+    witness = tmp_path / "state" / target / "checkpoint_latest.json"
+    witness.parent.mkdir(parents=True)
+    witness.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "kind": "autopilot_checkpoint_witness",
+            "target": target,
+            "round_guard": {"fingerprint": "x"},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "build_autopilot_state",
+        lambda *_args, **_kwargs: {"target": target, "resolved_target": target},
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "load_closure_projection",
+        lambda *_args, **_kwargs: {"snapshot_digest": digest},
+    )
+
+    result = record_global_review(
+        tmp_path,
+        target,
+        status="complete",
+        snapshot_digest=digest,
+        evidence_refs=[evidence_ref],
+        decision="reconciled all owner views",
+    )
+    payload = json.loads(witness.read_text(encoding="utf-8"))
+    assert result["global_review"]["status"] == "complete"
+    assert payload["global_review"]["snapshot_digest"] == digest
+    assert payload["round_guard"]["fingerprint"] == "x"
 
 
 def test_checkpoint_projects_visible_knowledge_effect_stages(tmp_path):

@@ -3953,6 +3953,9 @@ _CLOSURE_REASON_PRIORITY = {
     "coverage_invalid": 60,
     "coverage_stale": 60,
     "coverage_high_value_gaps": 61,
+    "global_review_required": 62,
+    "global_review_stale": 62,
+    "global_review_invalid": 62,
     "cidr_continuation_pending": 40,
     "observation_inventory_partial": 70,
     "observation_high_value_pending": 70,
@@ -3998,6 +4001,9 @@ _CLOSURE_REASON_OWNERS = {
     "identity_v2_follow_up_pending": {"evidence-ledger"},
     "identity_v2_candidate_pending": {"evidence-ledger"},
     "identity_v2_incomplete": {"evidence-ledger"},
+    "global_review_required": {"checkpoint"},
+    "global_review_stale": {"checkpoint"},
+    "global_review_invalid": {"checkpoint"},
     "cidr_continuation_pending": {"recon"},
     "cidr_continuation_invalid": {"recon"},
 }
@@ -4041,6 +4047,18 @@ def _closure_reason_frontier(
             ),
             stop_condition="recompute Closure with a stable snapshot or record the owner blocker",
             priority=100,
+        )
+    if reason in {"global_review_required", "global_review_stale", "global_review_invalid"}:
+        return _frontier_item(
+            owner="checkpoint",
+            item_id=reason,
+            action="Perform the target-wide cross-source review and record its owner-backed witness",
+            evidence_ref=f"state/{target_key}/checkpoint_latest.json",
+            expected_information_gain=(
+                "reconcile the completed target Surface, Coverage, Ledger, Finding, and residual unknowns"
+            ),
+            stop_condition="record complete/follow_up review with current evidence or a bounded blocker",
+            priority=75,
         )
     if reason == "surface_projection_pending":
         projection = state.get("surface_projection") if isinstance(state.get("surface_projection"), dict) else {}
@@ -4312,6 +4330,9 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "cidr_continuation_pending": "run_recon",
         "cidr_continuation_invalid": "run_recon",
         "runtime_phase_active": "wait_scan" if state.get("scan_in_progress") else "wait_recon",
+        "global_review_required": "global-review",
+        "global_review_stale": "global-review",
+        "global_review_invalid": "global-review",
     }
     if reason in exact:
         return exact[reason]
@@ -5454,6 +5475,120 @@ _SNAPSHOT_VOLATILE_KEYS = frozenset({
     "ctime_ns",
 })
 
+_GLOBAL_REVIEW_STATUSES = {"complete", "follow_up"}
+_GLOBAL_REVIEW_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _bounded_review_strings(value: object, *, field: str, limit: int = 16) -> list[str]:
+    if not isinstance(value, list) or len(value) > limit:
+        raise ValueError(f"global review {field} must be a list of at most {limit} strings")
+    result = []
+    for item in value:
+        text = " ".join(str(item or "").split())
+        if not text or len(text) > 500:
+            raise ValueError(f"global review {field} contains an invalid item")
+        result.append(text)
+    return list(dict.fromkeys(result))
+
+
+def _bounded_review_links(value: object) -> list[object]:
+    if not isinstance(value, list) or len(value) > 16:
+        raise ValueError("global review cross_source_links must contain at most 16 items")
+    result = []
+    for item in value:
+        if isinstance(item, str):
+            normalized = " ".join(item.split())
+            if not normalized or len(normalized) > 500:
+                raise ValueError("global review cross_source_links contains an invalid item")
+            result.append(normalized)
+            continue
+        if not isinstance(item, dict):
+            raise ValueError("global review cross_source_links contains an invalid item")
+        try:
+            encoded = json.dumps(item, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("global review cross_source_links contains an invalid item") from exc
+        if len(encoded) > 1000:
+            raise ValueError("global review cross_source_links contains an oversized item")
+        result.append(item)
+    return result
+
+
+def validate_global_review(
+    repo_root: str | Path,
+    target: str,
+    review: object,
+    queue: dict,
+    *,
+    expected_digest: str,
+) -> dict:
+    """Validate the optional target-wide review witness against current owners."""
+    if review in (None, {}):
+        return {"status": "missing", "reason": "global_review_required"}
+    if not isinstance(review, dict):
+        return {"status": "invalid", "reason": "global_review_invalid"}
+    status = str(review.get("status") or "").strip().lower()
+    digest = str(review.get("snapshot_digest") or "").strip().lower()
+    if status not in _GLOBAL_REVIEW_STATUSES or not _GLOBAL_REVIEW_DIGEST_RE.fullmatch(digest):
+        return {"status": "invalid", "reason": "global_review_invalid"}
+    if digest != str(expected_digest or "").strip().lower():
+        return {"status": "stale", "reason": "global_review_stale"}
+    try:
+        evidence_refs = _bounded_review_strings(
+            review.get("evidence_refs"), field="evidence_refs"
+        )
+        cross_source_links = _bounded_review_links(review.get("cross_source_links", []))
+        residual_unknowns = _bounded_review_strings(
+            review.get("residual_unknowns", []), field="residual_unknowns"
+        )
+    except ValueError:
+        return {"status": "invalid", "reason": "global_review_invalid"}
+    if not evidence_refs:
+        return {"status": "invalid", "reason": "global_review_invalid"}
+    resolved_target = canonical_target_value(target)
+    owned_refs = [
+        _target_owned_nonempty_evidence_ref(repo_root, resolved_target, ref)
+        for ref in evidence_refs
+    ]
+    if any(not ref for ref in owned_refs):
+        return {"status": "invalid", "reason": "global_review_invalid"}
+    decision = " ".join(str(review.get("decision") or "").split())
+    next_action = " ".join(str(review.get("next_action") or "").split())
+    if not decision or len(decision) > 500 or len(next_action) > 500:
+        return {"status": "invalid", "reason": "global_review_invalid"}
+    matched_action = None
+    if status == "follow_up":
+        if not next_action:
+            return {"status": "invalid", "reason": "global_review_invalid"}
+        for item in queue.get("actions") or []:
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            if next_action not in {
+                str(item.get("id") or "").strip(),
+                str(item.get("action") or "").strip(),
+                str(metadata.get("global_review_id") or "").strip(),
+            }:
+                continue
+            if str(item.get("status") or "queued").strip().lower() not in ACTIVE_STATUSES:
+                return {"status": "invalid", "reason": "global_review_invalid"}
+            matched_action = item
+            break
+        if matched_action is None:
+            return {"status": "invalid", "reason": "global_review_invalid"}
+    normalized = {
+        "status": status,
+        "snapshot_digest": digest,
+        "evidence_refs": owned_refs,
+        "cross_source_links": cross_source_links,
+        "residual_unknowns": residual_unknowns,
+        "decision": decision,
+        "next_action": next_action,
+    }
+    if matched_action is not None:
+        normalized["next_action_id"] = str(matched_action.get("id") or "")
+    return {"status": "valid", "reason": "", "review": normalized}
+
 
 def _snapshot_normalize(value: object) -> object:
     """Remove owner timestamps before hashing a read-only snapshot."""
@@ -5587,7 +5722,12 @@ def _closure_snapshot_digest(
         "surface": state.get("surface_projection") or {},
         "checkpoint": {
             "health": checkpoint_health,
-            "witness": witness,
+            # The review is a witness over this digest, so it cannot be part
+            # of the material it attests to. All owner state remains covered.
+            "witness": {
+                key: value for key, value in witness.items()
+                if key != "global_review"
+            },
         },
         "closure_state": _closure_state_snapshot(state),
         "target_memory": {
@@ -5741,6 +5881,44 @@ def load_closure_projection(
     )
     closure["snapshot_digest"] = snapshot_digest
     closure["snapshot_components"] = snapshot_components
+    global_review = validate_global_review(
+        repo_root,
+        target,
+        witness.get("global_review"),
+        queue,
+        expected_digest=snapshot_digest,
+    )
+    round_progress = closure_state.get("round_progress") if isinstance(closure_state.get("round_progress"), dict) else {}
+    review_required = (
+        closure.get("verdict") == "finish"
+        and round_progress.get("status") == "completed"
+        and int(round_progress.get("claimed_count", 0) or 0) > 0
+    )
+    if global_review.get("status") == "valid":
+        closure["global_review"] = global_review["review"]
+    elif review_required:
+        reason = str(global_review.get("reason") or "global_review_invalid")
+        closure.update({
+            "verdict": "handoff",
+            "can_claim_exhausted": False,
+            "reasons": [reason],
+            "next_action": "global-review",
+            "global_review": {"status": global_review.get("status") or "invalid"},
+        })
+        reasons, actionable_frontier, action = _finalize_closure_continuation(
+            [reason],
+            closure.get("actionable_frontier") or [],
+            closure_state,
+            matrix,
+            "global-review",
+        )
+        closure.update({
+            "reasons": reasons,
+            "actionable_frontier": actionable_frontier,
+            "next_action": action,
+        })
+    elif global_review.get("status") != "valid":
+        closure["global_review"] = {"status": global_review.get("status") or "invalid"}
     source_markers_after = _owner_source_markers(repo_root, target)
     stale_sources = [
         name
@@ -5809,6 +5987,44 @@ def _load_loop_guard_projection(repo_root: str, state: dict) -> dict:
     projected_state = dict(state)
     projected_state["_ledger_health"] = _ledger_health_projection(diagnostic)
     return build_loop_guard_projection(projected_state, list(diagnostic.get("entries") or []))
+
+
+def _loop_control_projection(state: dict) -> dict:
+    """Return the bounded post-lane control state with the loop decision."""
+    def text(value: object, limit: int) -> str:
+        return " ".join(str(value or "").split())[:limit]
+
+    hard_gate = state.get("hard_gate") if isinstance(state.get("hard_gate"), dict) else {}
+    frontier = []
+    for item in state.get("priority_frontier") or []:
+        if not isinstance(item, dict):
+            continue
+        frontier.append({
+            "owner": text(item.get("owner"), 80),
+            "id": text(item.get("id"), 300),
+            "action": text(item.get("action"), 500),
+            "evidence_ref": text(item.get("evidence_ref"), 300),
+            "expected_information_gain": text(item.get("expected_information_gain"), 300),
+            "stop_condition": text(item.get("stop_condition"), 300),
+            "lane": text(item.get("lane"), 120),
+            "impact_hint": text(item.get("impact_hint"), 300),
+            "evidence_status": text(item.get("evidence_status"), 80),
+            "closure_blocking": bool(item.get("closure_blocking", True)),
+            "continuity": bool(item.get("continuity", False)),
+            "runnable": bool(item.get("runnable", True)),
+        })
+    return {
+        "next_action": text(state.get("next_action") or "handoff", 120),
+        "fallback_action": text(
+            state.get("fallback_action") or state.get("next_action") or "handoff", 120
+        ),
+        "selection_mode": text(state.get("selection_mode"), 80),
+        "hard_gate": {
+            "action": text(hard_gate.get("action"), 120),
+            "reason": text(hard_gate.get("reason"), 300),
+        } if hard_gate else {},
+        "priority_frontier": frontier,
+    }
 
 
 def _format_closure_line(state: dict) -> str:
@@ -6416,6 +6632,7 @@ def build_decision_projection(state: dict, kind: str) -> dict:
         projection["scope"] = state["scope"]
     if kind == "loop_check":
         projection["loop_guard"] = state.get("loop_guard") or {}
+        projection["control"] = _loop_control_projection(state)
         return projection
     if kind != "closure":
         raise ValueError(f"unsupported decision projection: {kind}")

@@ -39,6 +39,7 @@ from autopilot_state import (
     _load_json_inject_projection,
     _load_js_intel_projection,
     _load_sql_matrix_projection,
+    _closure_snapshot_digest,
     _pick_next_action,
     build_closure_projection,
     build_decision_projection,
@@ -46,6 +47,7 @@ from autopilot_state import (
     build_autopilot_state,
     format_autopilot_state,
     load_closure_projection,
+    validate_global_review,
     stagnation_fingerprint,
     main as autopilot_state_main,
 )
@@ -115,6 +117,188 @@ def test_ranker_advisory_never_becomes_next_tool_hint(tmp_path):
 
     assert next_tool == ""
     assert [item["tool"] for item in hints] == ["recon-ranker"]
+
+
+def test_global_review_requires_current_nonempty_target_evidence(tmp_path):
+    target = "target.com"
+    evidence_ref = "evidence/target.com/review/summary.json"
+    evidence_path = tmp_path / evidence_ref
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text('{"reviewed":true}\n', encoding="utf-8")
+    queue = {"target": target, "actions": []}
+    digest = "a" * 64
+
+    result = validate_global_review(
+        tmp_path,
+        target,
+        {
+            "status": "complete",
+            "snapshot_digest": digest,
+            "evidence_refs": [evidence_ref],
+            "cross_source_links": ["browser -> JS"],
+            "residual_unknowns": ["none"],
+            "decision": "all current owner views reconciled",
+            "next_action": "",
+        },
+        queue,
+        expected_digest=digest,
+    )
+
+    assert result["status"] == "valid"
+    assert result["review"]["evidence_refs"] == [evidence_ref]
+    missing = validate_global_review(
+        tmp_path,
+        target,
+        {
+            "status": "complete",
+            "snapshot_digest": digest,
+            "evidence_refs": ["evidence/target.com/review/missing.json"],
+            "decision": "reviewed",
+        },
+        queue,
+        expected_digest=digest,
+    )
+    assert missing["reason"] == "global_review_invalid"
+
+
+def test_global_review_follow_up_must_bind_active_queue_action(tmp_path):
+    target = "target.com"
+    evidence_ref = "evidence/target.com/review/summary.json"
+    path = tmp_path / evidence_ref
+    path.parent.mkdir(parents=True)
+    path.write_text("review\n", encoding="utf-8")
+    digest = "b" * 64
+    queue = {
+        "target": target,
+        "actions": [{"id": "AQ-FOLLOW", "status": "queued", "action": "Review the linked chain", "metadata": {}}],
+    }
+    valid = validate_global_review(
+        tmp_path,
+        target,
+        {
+            "status": "follow_up",
+            "snapshot_digest": digest,
+            "evidence_refs": [evidence_ref],
+            "decision": "one bounded chain remains",
+            "next_action": "AQ-FOLLOW",
+        },
+        queue,
+        expected_digest=digest,
+    )
+    assert valid["status"] == "valid"
+    assert valid["review"]["next_action_id"] == "AQ-FOLLOW"
+    invalid = validate_global_review(
+        tmp_path,
+        target,
+        {
+            "status": "follow_up",
+            "snapshot_digest": digest,
+            "evidence_refs": [evidence_ref],
+            "decision": "one bounded chain remains",
+            "next_action": "AQ-MISSING",
+        },
+        queue,
+        expected_digest=digest,
+    )
+    assert invalid["reason"] == "global_review_invalid"
+
+
+def test_global_review_field_is_excluded_from_snapshot_digest():
+    args = {
+        "target": "target.com",
+        "state": {"target": "target.com"},
+        "queue": {"target": "target.com", "actions": []},
+        "matrix": None,
+        "ledger_projection": {},
+        "ledger_health": {"status": "missing"},
+        "checkpoint_health": {"status": "valid"},
+    }
+    first, _ = _closure_snapshot_digest(**args, witness={})
+    second, _ = _closure_snapshot_digest(
+        **args,
+        witness={"global_review": {"status": "complete", "snapshot_digest": first}},
+    )
+    assert first == second
+
+
+def test_closure_requires_global_review_only_when_other_owners_can_finish(tmp_path, monkeypatch):
+    def finish_projection(*_args, **_kwargs):
+        return {
+            "verdict": "finish",
+            "can_claim_exhausted": True,
+            "reasons": [],
+            "next_action": "handoff",
+            "actionable_frontier": [],
+        }
+
+    monkeypatch.setattr(autopilot_state_module, "build_closure_projection", finish_projection)
+    state = {"target": "target.com", "resolved_target": "target.com", "next_action": "handoff"}
+    evidence_ref = "findings/target.com/poc/global-review.json"
+    evidence_path = tmp_path / evidence_ref
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text("lane evidence\n", encoding="utf-8")
+    base_witness = tmp_path / "state" / "target.com" / "checkpoint_latest.json"
+    base_witness.parent.mkdir(parents=True)
+    base_witness.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "kind": "autopilot_checkpoint_witness",
+            "target": "target.com",
+            "round_progress": {
+                "schema_version": 1,
+                "round_id": "round-review",
+                "status": "completed",
+                "max_lanes": 1,
+                "claimed_lanes": ["review:lane"],
+                "lanes": [{
+                    "schema_version": 1,
+                    "id": "review:lane",
+                    "status": "completed",
+                    "decision": "lane reviewed",
+                    "evidence_ref": evidence_ref,
+                    "next_action": "none",
+                    "started_at": "2026-08-01T00:00:00Z",
+                    "updated_at": "2026-08-01T00:00:00Z",
+                    "finished_at": "2026-08-01T00:01:00Z",
+                }],
+                "claimed_count": 1,
+                "remaining_lanes": 0,
+                "budget_reached": True,
+                "started_at": "2026-08-01T00:00:00Z",
+                "updated_at": "2026-08-01T00:00:00Z",
+            },
+        }),
+        encoding="utf-8",
+    )
+    required = load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    assert required["reasons"] == ["global_review_required"]
+    assert required["can_claim_exhausted"] is False
+    assert required["next_action"] == "global-review"
+
+    evidence_ref = "evidence/target.com/review/summary.json"
+    path = tmp_path / evidence_ref
+    path.parent.mkdir(parents=True)
+    path.write_text("review\n", encoding="utf-8")
+    witness = base_witness
+    payload = json.loads(witness.read_text(encoding="utf-8"))
+    payload["global_review"] = {
+        "status": "complete",
+        "snapshot_digest": required["snapshot_digest"],
+        "evidence_refs": [evidence_ref],
+        "cross_source_links": [],
+        "residual_unknowns": [],
+        "decision": "reconciled",
+        "next_action": "",
+    }
+    witness.write_text(json.dumps(payload), encoding="utf-8")
+    complete = load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    assert complete["verdict"] == "finish"
+    assert complete["can_claim_exhausted"] is True
+    updated = json.loads(witness.read_text(encoding="utf-8"))
+    updated["round_progress"]["lanes"][0]["decision"] = "lane evidence expanded"
+    witness.write_text(json.dumps(updated), encoding="utf-8")
+    stale = load_closure_projection(str(tmp_path), state, max_lanes_reached=False)
+    assert stale["reasons"] == ["global_review_stale"]
 
 
 def _record_owner_provenance(findings_dir, finding_id: str) -> None:
@@ -1544,8 +1728,9 @@ def test_closure_resumes_started_lane_and_requires_round_closure(tmp_path):
         assert item[0]["action"]
         assert item[0]["expected_information_gain"]
         assert item[0]["stop_condition"]
-    assert closed["verdict"] == "finish"
-    assert closed["can_claim_exhausted"] is True
+    assert closed["verdict"] == "handoff"
+    assert closed["reasons"] == ["global_review_required"]
+    assert closed["can_claim_exhausted"] is False
 
 
 def test_closure_does_not_finish_an_active_round_before_first_lane_claim(tmp_path):
@@ -1975,6 +2160,13 @@ def test_decision_projections_preserve_only_controller_fields():
         "target": "target.com",
         "target_storage_key": "target.com",
         "loop_guard": state["loop_guard"],
+        "control": {
+            "next_action": "handoff",
+            "fallback_action": "handoff",
+            "selection_mode": "",
+            "hard_gate": {},
+            "priority_frontier": [],
+        },
     }
     assert closure["closure"] == {
         key: state["closure"][key]
@@ -1994,6 +2186,54 @@ def test_decision_projections_preserve_only_controller_fields():
     assert closure["observation_inventory"] == {"status": "ready", "reason": ""}
     assert closure["surface_projection"] == {"status": "valid", "reason": ""}
     assert "surface" not in closure
+
+
+def test_loop_projection_carries_bounded_frontier_for_post_lane_refresh():
+    state = {
+        "resolved_target": "target.com",
+        "next_action": "hunt_p1",
+        "fallback_action": "handoff",
+        "selection_mode": "ai_priority",
+        "hard_gate": {},
+        "priority_frontier": [{
+            "owner": "surface",
+            "id": "https://target.com/admin",
+            "action": "review admin surface",
+            "evidence_ref": "surface_projection",
+            "expected_information_gain": "identify the next target-owned route",
+            "stop_condition": "record a bounded disposition",
+            "lane": "recon-and-surface",
+            "impact_hint": "admin login",
+            "evidence_status": "owner-backed",
+            "closure_blocking": False,
+            "continuity": False,
+            "runnable": True,
+            "unrelated": "omitted",
+        }],
+    }
+
+    projection = build_decision_projection(state, "loop_check")
+
+    assert projection["control"] == {
+        "next_action": "hunt_p1",
+        "fallback_action": "handoff",
+        "selection_mode": "ai_priority",
+        "hard_gate": {},
+        "priority_frontier": [{
+            "owner": "surface",
+            "id": "https://target.com/admin",
+            "action": "review admin surface",
+            "evidence_ref": "surface_projection",
+            "expected_information_gain": "identify the next target-owned route",
+            "stop_condition": "record a bounded disposition",
+            "lane": "recon-and-surface",
+            "impact_hint": "admin login",
+            "evidence_status": "owner-backed",
+            "closure_blocking": False,
+            "continuity": False,
+            "runnable": True,
+        }],
+    }
 
 
 def test_surface_continuation_is_omitted_when_no_page_remains():
