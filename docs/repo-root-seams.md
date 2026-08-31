@@ -19,7 +19,7 @@ was previously fixed to `BASE_DIR`.
 | `request_guard` | `narrow-root-injected` | `memory_dir` is required by preflight/record/status owners | existing `--memory-dir` |
 | `resume` | `repo-root-dependent` | `load_resume_summary` / `load_pickup_summary` runtime artifacts | `main --repo-root` |
 | `scanner_pass_writer` | `narrow-root-injected` | `write_scanner_pass(findings_dir, recon_dir, out_path)` | existing explicit paths |
-| `sibling_worker` | `repo-root-dependent` | `run_worker(repo_root=...)` recon input | `main --repo-root` |
+| `sibling_worker` | `repo-root-dependent` | `run_worker(repo_root=...)` recon input and limiter state | `main --repo-root` |
 | `source_hunt` | `repo-root-dependent` | `_exposure_dir` / `run_source_hunt(repo_root=...)` | `main --repo-root` |
 | `sql_parameter_probe` | `repo-root-dependent` | `_write_results(repo_root=...)` and cursor/plan paths | `main --repo-root` |
 | `vision_browser` | `narrow-root-injected` | `find_latest_screenshot` / `list_screenshots(evidence_root=...)` | none |
