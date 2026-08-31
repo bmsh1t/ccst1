@@ -536,6 +536,61 @@ def test_machine_decision_binding_error_has_no_new_validation_write(tmp_path, mo
     assert not (tmp_path / "findings" / "last-validate.json").exists()
 
 
+def test_machine_validation_owner_sync_failure_retains_retry_artifacts_without_advancing_state(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    target, finding_id, findings_dir, _ = _seed_machine_preflight(tmp_path)
+    decision = _machine_decision(
+        target=target,
+        finding_id=finding_id,
+        endpoint="/rest/products/search?q=test",
+        report_path=f"findings/{target}/validated/retry.md",
+        evidence_ref=str(
+            finding_index.find_finding(findings_dir, finding_id)["validation_summary"]
+        ),
+    )
+    decision_path = tmp_path / "retry-decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+    monkeypatch.setattr(validate, "BASE_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(
+        validate,
+        "sync_validation_artifacts",
+        lambda *_args, **_kwargs: {
+            "status": "partial",
+            "reason": "action queue owner rejected write-back",
+            "ledger": {"status": "updated"},
+            "action_queue": {"status": "error"},
+            "finding_index": {"status": "skipped"},
+        },
+    )
+
+    exit_code = validate.main(
+        [
+            "--target",
+            target,
+            "--finding-id",
+            finding_id,
+            "--decision-json",
+            str(decision_path),
+            "--json",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    persisted = finding_index.find_finding(findings_dir, finding_id)
+    assert exit_code == 2
+    assert output["status"] == "retry"
+    assert output["retry"] is True
+    assert output["validation_sync"]["action_queue"]["status"] == "error"
+    assert (findings_dir / "validated" / "retry.md").is_file()
+    assert list((findings_dir / "validated").glob("*.validation-summary.json"))
+    assert persisted is not None
+    assert persisted["validation_status"] == "candidate"
+    assert not (tmp_path / "state" / target / "runtime-state.json").exists()
+
+
 def test_machine_decision_binding_error_does_not_migrate_legacy_finding_list(
     tmp_path,
     monkeypatch,

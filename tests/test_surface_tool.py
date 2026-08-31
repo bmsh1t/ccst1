@@ -34,9 +34,11 @@ class TestSurfaceContext:
 
     def test_surface_ranking_consumes_coverage_matrix_closure(self, tmp_path):
         recon_dir = tmp_path / "recon" / "target.com"
+        ledger_dir = tmp_path / "memory" / "evidence" / "target.com"
         (recon_dir / "live").mkdir(parents=True)
         (recon_dir / "urls").mkdir(parents=True)
         (recon_dir / "js").mkdir(parents=True)
+        ledger_dir.mkdir(parents=True)
         (recon_dir / "live" / "httpx_full.txt").write_text(
             "http://target.com [200] [API] [Node.js] [100]\n",
             encoding="utf-8",
@@ -54,6 +56,14 @@ class TestSurfaceContext:
                 }],
             },
             repo_root=tmp_path,
+        )
+        (ledger_dir / "ledger.jsonl").write_text(
+            json.dumps({
+                "endpoint": "/api/orders/1",
+                "vuln_class": "IDOR",
+                "result": "tested_clean",
+            }) + "\n",
+            encoding="utf-8",
         )
 
         context = load_surface_context(tmp_path, "target.com", write_probe_log=False)

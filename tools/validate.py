@@ -141,6 +141,15 @@ class MachineDecisionPreflightError(ValueError):
         super().__init__("; ".join(self.errors))
 
 
+class ValidationSyncError(RuntimeError):
+    """Raised when owner write-back must be retried before lifecycle advance."""
+
+    def __init__(self, result: dict[str, Any]):
+        self.result = dict(result)
+        reason = str(result.get("reason") or "validation owner sync failed")
+        super().__init__(reason)
+
+
 # A validation skeleton is useful working material, but it is not a
 # submission-ready report until its concrete evidence sections are filled.
 # Keep this intentionally narrow: ordinary Markdown brackets are valid prose.
@@ -1932,6 +1941,40 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
     }
 
 
+def _validation_sync_retry_result(
+    sync: object,
+    *,
+    report_path: str | Path,
+    summary_path: str | Path,
+) -> dict[str, Any] | None:
+    """Return a retry payload when any target owner rejected write-back."""
+    if not isinstance(sync, dict):
+        return {
+            "status": "retry",
+            "retry": True,
+            "reason": "validation owner sync returned an invalid result",
+            "report_path": str(report_path),
+            "summary_path": str(summary_path),
+            "validation_sync": {},
+        }
+    failed = str(sync.get("status") or "").strip().lower() in {"error", "partial"}
+    failed = failed or any(
+        isinstance(item, dict) and str(item.get("status") or "").strip().lower() in {"error", "partial"}
+        for key in ("ledger", "action_queue", "finding_index")
+        for item in [sync.get(key)]
+    )
+    if not failed:
+        return None
+    return {
+        "status": "retry",
+        "retry": True,
+        "reason": str(sync.get("reason") or "validation owner sync failed; retry without advancing lifecycle"),
+        "report_path": str(report_path),
+        "summary_path": str(summary_path),
+        "validation_sync": sync,
+    }
+
+
 def _map_validate_result_to_calibration_outcome(result: str) -> str | None:
     """(P5-W1 R5) Map /validate result string to a calibration outcome label.
 
@@ -2697,9 +2740,15 @@ def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
     summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
     summary_path = write_validation_summary(summary, output_path)
     validation_sync = sync_validation_artifacts(summary, repo_root=BASE_DIR)
-    if validation_sync.get("status") == "updated":
-        summary["validation_sync"] = validation_sync
-        summary_path = write_validation_summary(summary, output_path)
+    summary["validation_sync"] = validation_sync
+    summary_path = write_validation_summary(summary, output_path)
+    retry = _validation_sync_retry_result(
+        validation_sync,
+        report_path=output_path,
+        summary_path=summary_path,
+    )
+    if retry:
+        raise ValidationSyncError(retry)
     mark_finding_validated(
         str(findings_dir),
         str(prefill.get("finding_id") or ""),
@@ -2930,9 +2979,19 @@ def _run_interactive_validation(args: argparse.Namespace, parser: argparse.Argum
     summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
     summary_path = write_validation_summary(summary, output_path)
     validation_sync = sync_validation_artifacts(summary)
-    if validation_sync.get("status") == "updated":
-        summary["validation_sync"] = validation_sync
-        summary_path = write_validation_summary(summary, output_path)
+    summary["validation_sync"] = validation_sync
+    summary_path = write_validation_summary(summary, output_path)
+    retry = _validation_sync_retry_result(
+        validation_sync,
+        report_path=output_path,
+        summary_path=summary_path,
+    )
+    if retry:
+        print(
+            f"validate: {retry['reason']}; report and summary retained for retry",
+            file=sys.stderr,
+        )
+        return 2
     if finding_prefill:
         mark_finding_validated(
             args.findings_dir,
@@ -3010,6 +3069,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     except ValidationInputUnavailable as exc:
         print(f"validate: {exc}", file=sys.stderr)
+        return 2
+    except ValidationSyncError as exc:
+        if args.json:
+            print(json.dumps(exc.result, ensure_ascii=False, sort_keys=True))
+        else:
+            print(f"validate: {exc}", file=sys.stderr)
         return 2
     except (KeyError, OSError, ValueError) as exc:
         print(f"validate: {exc}", file=sys.stderr)

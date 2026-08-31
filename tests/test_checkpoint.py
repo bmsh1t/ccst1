@@ -3403,7 +3403,13 @@ def test_next_proposals_skip_ranked_surface_when_endpoint_already_has_tested_fin
         },
         target="target.com",
         context_pack={"contradictions": []},
-        evidence_summary={},
+        evidence_summary={
+            "closed_cells": [{
+                "endpoint": "/api/admin/users",
+                "vuln_class": "Authz",
+                "result": "tested_finding",
+            }],
+        },
     )
 
     assert not any(
@@ -3660,6 +3666,11 @@ def test_next_proposals_rolls_past_covered_ranked_surfaces():
         context_pack={"contradictions": []},
         evidence_summary={
             "closed_cells": [
+                {
+                    "endpoint": "/api/admin/users",
+                    "vuln_class": "Authz",
+                    "result": "tested_finding",
+                },
                 {
                     "endpoint": "/rest/admin/application-version",
                     "vuln_class": "Authz",

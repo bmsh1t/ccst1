@@ -95,6 +95,24 @@ def test_report_queue_match_does_not_confuse_prefix_finding_ids():
     assert report_generator._report_action_matches(action, {"id": "F-1"}, "") is False
 
 
+def test_runner_endpoint_match_accepts_only_runner_value_redaction():
+    assert report_generator._runner_endpoint_matches(
+        "https://example.com/items?id=42&view=full",
+        "https://example.com/items?id=&view=",
+        "example.com",
+    ) is True
+    assert report_generator._runner_endpoint_matches(
+        "https://example.com/items?id=42",
+        "https://example.com/items?other=",
+        "example.com",
+    ) is False
+    assert report_generator._runner_endpoint_matches(
+        "https://example.com/items?id=42",
+        "https://example.com/items?id=41",
+        "example.com",
+    ) is False
+
+
 def test_report_queue_sync_refuses_ambiguous_exact_identity(monkeypatch):
     actions = [
         {

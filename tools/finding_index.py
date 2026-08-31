@@ -129,6 +129,9 @@ PRESERVED_FINDING_FIELDS = {
     "report_file",
     "report_id",
     "queue_sync",
+    "runner_operation_id",
+    "runner_summary",
+    "runner_summary_path",
     # 根目录的人工/AI finding claim 仍由本 owner 投影到 canonical index；重建
     # scanner index 时不能丢失其可追溯来源和稳定 identity。
     "claim_id",

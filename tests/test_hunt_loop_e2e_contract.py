@@ -6,14 +6,93 @@ next phase in the CLI workflow.
 """
 
 import json
+import hashlib
 from pathlib import Path
 
 import finding_index
 import remember
 import report_generator
 import validate
+import validation_runner
 from memory.target_profile import load_target_profile
 from surface import format_surface_output, load_surface_context, rank_surface
+from target_paths import target_storage_key
+
+
+def _attach_canonical_runner(repo_root: Path, target: str, finding: dict) -> dict:
+    """Create a deterministic local replay witness for the report consumer."""
+    finding_id = str(finding["id"])
+    endpoint = str(finding["url"])
+    method = str(finding.get("method") or "GET").upper()
+    bundle = repo_root / "evidence" / target_storage_key(target) / "validation" / finding_id / "fixture-1"
+    bundle.mkdir(parents=True, exist_ok=True)
+    request_path = bundle / "request.txt"
+    response_path = bundle / "response.txt"
+    request_path.write_text(
+        f"{method} {endpoint} HTTP/1.1\nHost: {target}\n\n",
+        encoding="utf-8",
+    )
+    response_path.write_text(
+        "HTTP/1.1 200 OK\nContent-Type: application/json\n\n{\"rows\":[1]}\n",
+        encoding="utf-8",
+    )
+    response_ref = str(response_path.relative_to(repo_root))
+    ledger = validation_runner._record_ledger_if_needed(
+        repo_root=repo_root,
+        no_ledger=False,
+        target=target,
+        endpoint=endpoint,
+        method=method,
+        vuln_class="SQLi",
+        actor="owner",
+        object_scope="unknown",
+        variant="baseline",
+        result="tested_finding",
+        source="test:e2e-runner",
+        evidence_ref=response_ref,
+        notes="deterministic local replay fixture",
+        browser_observed=False,
+        redline_checked=False,
+        state_changing=False,
+    )
+    summary_path = bundle / "summary.json"
+    summary = validation_runner._finalize_runner_summary(
+        {
+            "schema_version": validation_runner.SCHEMA_VERSION,
+            "lane": "sqli_result_diff",
+            "target": target,
+            "finding_id": finding_id,
+            "url": endpoint,
+            "method": method,
+            "vuln_class": "SQLi",
+            "result": "tested_finding",
+            "candidate_ready": True,
+            "artifacts": {
+                "request": str(request_path.relative_to(repo_root)),
+                "response": response_ref,
+            },
+            "ledger_record": ledger,
+        },
+        summary_path,
+        repo_root,
+    )
+    sync = validation_runner._sync_finding_status(summary, repo_root=repo_root)
+    assert sync["status"] in {"updated", "deduplicated"}
+    findings_dir = repo_root / "findings" / target_storage_key(target)
+    updated = finding_index.update_finding_status(
+        findings_dir,
+        finding_id,
+        runner_summary=str(summary_path.relative_to(repo_root)),
+        runner_operation_id=summary["operation_id"],
+    )
+    assert updated is not None
+    witness = report_generator._canonical_runner_witness(
+        updated,
+        findings_dir=findings_dir,
+        target=target,
+    )
+    assert witness["valid"], witness
+    return summary
 
 
 def test_recon_surface_findings_validate_remember_report_contract(monkeypatch, tmp_path):
@@ -164,6 +243,7 @@ def test_recon_surface_findings_validate_remember_report_contract(monkeypatch, t
         completed_summary,
         completed_summary_path,
     )
+    _attach_canonical_runner(repo_root, target, finding_index.find_finding(findings_dir, finding["id"]))
     total_reports, report_index = report_generator.process_findings_dir(str(findings_dir))
 
     assert total_reports == 1

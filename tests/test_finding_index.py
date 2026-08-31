@@ -1,6 +1,7 @@
 """Tests for structured scanner finding index."""
 
 import json
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -9,19 +10,121 @@ import finding_index
 import pytest
 import report_generator
 import validate
+from target_paths import canonical_target_value, target_storage_key
+
+
+def _bind_report_runner_witness(findings_dir: Path, finding: dict) -> None:
+    """Attach the minimum canonical replay bundle required by report generation."""
+    repo_root = findings_dir.parent.parent
+    payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
+    target = canonical_target_value(
+        str(finding.get("target") or "")
+        or str(payload.get("target") or findings_dir.name)
+    )
+    finding_id = str(finding.get("id") or "fixture-finding")
+    endpoint = str(finding.get("url") or finding.get("endpoint") or f"https://{target}/")
+    method = str(finding.get("method") or "GET").upper()
+    vuln_class = str(
+        finding.get("vuln_class")
+        or finding.get("type")
+        or finding.get("category")
+        or "SQLi"
+    )
+    bundle = (
+        repo_root
+        / "evidence"
+        / target_storage_key(target)
+        / "validation"
+        / finding_id
+        / "fixture-1"
+    )
+    bundle.mkdir(parents=True, exist_ok=True)
+    request_path = bundle / "request.txt"
+    response_path = bundle / "response.txt"
+    request_path.write_text(
+        f"{method} {endpoint} HTTP/1.1\nHost: {target}\n\n",
+        encoding="utf-8",
+    )
+    response_path.write_text(
+        "HTTP/1.1 200 OK\nContent-Type: application/json\n\n{\"fixture\":true}\n",
+        encoding="utf-8",
+    )
+
+    request_ref = str(request_path.relative_to(repo_root))
+    response_ref = str(response_path.relative_to(repo_root))
+    summary_ref = str((bundle / "summary.json").relative_to(repo_root))
+    operation_id = f"runner:test-{finding_id}"
+    event_id = "ledger:" + hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:24]
+    summary = {
+        "schema_version": 1,
+        "lane": "test-fixture",
+        "target": target,
+        "finding_id": finding_id,
+        "url": endpoint,
+        "method": method,
+        "vuln_class": vuln_class,
+        "result": "tested_finding",
+        "candidate_ready": True,
+        "operation_id": operation_id,
+        "summary_path": summary_ref,
+        "artifact_bindings": [
+            {
+                "kind": "baseline_request",
+                "ref": request_ref,
+                "sha256": hashlib.sha256(request_path.read_bytes()).hexdigest(),
+            },
+            {
+                "kind": "baseline_response",
+                "ref": response_ref,
+                "sha256": hashlib.sha256(response_path.read_bytes()).hexdigest(),
+            },
+        ],
+        "ledger_record": {
+            "operation_id": operation_id,
+            "event_id": event_id,
+            "replayed": True,
+            "evidence_ref": response_ref,
+        },
+    }
+    (bundle / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+
+    ledger_path = repo_root / "memory" / "evidence" / target_storage_key(target) / "ledger.jsonl"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = ledger_path.read_text(encoding="utf-8") if ledger_path.is_file() else ""
+    if event_id not in existing:
+        ledger_path.write_text(
+            existing
+            + json.dumps({
+                "target": target,
+                "endpoint": endpoint,
+                "method": method,
+                "vuln_class": vuln_class,
+                "result": "tested_finding",
+                "operation_id": operation_id,
+                "event_id": event_id,
+                "replayed": True,
+                "evidence_ref": response_ref,
+            })
+            + "\n",
+            encoding="utf-8",
+        )
+
+    updated = finding_index.update_finding_status(
+        findings_dir,
+        finding_id,
+        validation_status=finding.get("validation_status", "unvalidated"),
+        report_status=finding.get("report_status", "not_generated"),
+        runner_summary=summary_ref,
+        runner_operation_id=operation_id,
+    )
+    assert updated is not None
 
 
 def _record_owner_provenance(findings_dir: Path, finding_id: str) -> None:
     """Make a fixture's lifecycle assertion originate from the canonical owner."""
     payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
     finding = next(item for item in payload["findings"] if item.get("id") == finding_id)
-    updated = finding_index.update_finding_status(
-        findings_dir,
-        finding_id,
-        validation_status=finding.get("validation_status", "unvalidated"),
-        report_status=finding.get("report_status", "not_generated"),
-    )
-    assert updated is not None
+    _bind_report_runner_witness(findings_dir, finding)
 
 
 def test_load_finding_index_migrates_legacy_list_without_trusting_finality(tmp_path):
@@ -1109,6 +1212,7 @@ def test_report_generator_incremental_same_type_uses_next_id_without_overwrite(m
         },
         target="example.com",
     )
+    _record_owner_provenance(findings_dir, "sqli-first")
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
 
     first_total, first_index = report_generator.process_findings_dir(str(findings_dir))
@@ -1134,6 +1238,7 @@ def test_report_generator_incremental_same_type_uses_next_id_without_overwrite(m
         },
         target="example.com",
     )
+    _record_owner_provenance(findings_dir, "sqli-second")
     second_total, second_index = report_generator.process_findings_dir(str(findings_dir))
     payload = finding_index.load_finding_index(findings_dir)
     by_id = {item["id"]: item for item in payload["findings"]}
@@ -1167,6 +1272,7 @@ def test_report_generator_does_not_overwrite_unowned_report_file(monkeypatch, tm
         },
         target="example.com",
     )
+    _record_owner_provenance(findings_dir, "sqli-new")
     monkeypatch.setattr(report_generator, "REPORTS_DIR", str(tmp_path / "reports"))
 
     total, index = report_generator.process_findings_dir(str(findings_dir))
@@ -1191,6 +1297,7 @@ def test_report_generator_reuses_same_finding_crash_artifact(monkeypatch, tmp_pa
         "raw": "[SQLI-POC-VERIFIED] crash recovery",
     }
     finding_index.upsert_finding(findings_dir, finding, target="example.com")
+    _record_owner_provenance(findings_dir, "sqli-crash-recovery")
     report_dir = tmp_path / "reports" / "example.com"
     report_dir.mkdir(parents=True)
     report_content, _ = report_generator.generate_report(finding, "sqli", "example.com")

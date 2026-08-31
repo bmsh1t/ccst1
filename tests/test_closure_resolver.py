@@ -145,7 +145,7 @@ def test_recent_entries_never_author_closure():
     assert resolver.closed_result("/b", "XSS") == ""
 
 
-def test_matrix_closed_statuses_are_auxiliary_closed_source():
+def test_matrix_terminals_do_not_authorize_closure_without_ledger():
     matrix = {
         "endpoints": [
             {
@@ -161,8 +161,8 @@ def test_matrix_closed_statuses_are_auxiliary_closed_source():
     }
     resolver = ClosureResolver(evidence_summary={}, matrix=matrix)
 
-    assert resolver.is_cell_closed("/m", "SQLi") is True
-    assert resolver.is_cell_closed("/m", "IDOR") is True
+    assert resolver.is_cell_closed("/m", "SQLi") is False
+    assert resolver.is_cell_closed("/m", "IDOR") is False
     assert resolver.is_cell_closed("/m", "XSS") is False
     assert resolver.is_cell_closed("/m", "unknown") is False
 
@@ -185,7 +185,7 @@ def test_legacy_matrix_status_cannot_close_a_v2_identity():
         "dimensions": {"method": "GET", "parameter": "q"},
     }
 
-    assert resolver.is_cell_closed("/api/search", "SQLi") is True
+    assert resolver.is_cell_closed("/api/search", "SQLi") is False
     assert resolver.is_closure_closed(identity) is False
 
 

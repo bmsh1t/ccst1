@@ -2549,14 +2549,32 @@ def test_json_summary_projection_and_partial_closure(tmp_path):
 
 def _write_closure_owners(tmp_path, target: str, *, status: str, final_review: bool) -> None:
     evidence_dir = tmp_path / "evidence" / target_storage_key(target)
-    evidence_dir.mkdir(parents=True)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
     (evidence_dir / "coverage_matrix.json").write_text(
         json.dumps(_closure_matrix(status=status)),
         encoding="utf-8",
     )
+    if status in {"tested_clean", "tested_finding"}:
+        ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        (ledger_dir / "ledger.jsonl").write_text(
+            json.dumps({
+                "target": target,
+                "endpoint": "/api/orders/1",
+                "method": "GET",
+                "vuln_class": "IDOR",
+                "actor": "owner",
+                "object_scope": "unknown",
+                "variant": "baseline",
+                "source": "test:closure-owner",
+                "result": status,
+                "replayed": True,
+            }) + "\n",
+            encoding="utf-8",
+        )
     if final_review:
         queue_dir = tmp_path / "state" / target_storage_key(target)
-        queue_dir.mkdir(parents=True)
+        queue_dir.mkdir(parents=True, exist_ok=True)
         (queue_dir / "action_queue.json").write_text(
             json.dumps({
                 "schema_version": 1,
@@ -2630,7 +2648,7 @@ def test_matching_third_round_guard_does_not_revive_advisory_surface(tmp_path):
     })
     queue_path.write_text(json.dumps(queue), encoding="utf-8")
     ledger_dir = tmp_path / "memory" / "evidence" / target
-    ledger_dir.mkdir(parents=True)
+    ledger_dir.mkdir(parents=True, exist_ok=True)
     (ledger_dir / "ledger.jsonl").write_text(
         "".join(json.dumps({
             "endpoint": f"/api/orders/{value}",
@@ -2716,7 +2734,7 @@ def test_matching_third_round_guard_keeps_blocked_family_terminal(tmp_path):
     })
     queue_path.write_text(json.dumps(queue), encoding="utf-8")
     ledger_dir = tmp_path / "memory" / "evidence" / target
-    ledger_dir.mkdir(parents=True)
+    ledger_dir.mkdir(parents=True, exist_ok=True)
     (ledger_dir / "ledger.jsonl").write_text(
         "".join(json.dumps({
             "endpoint": f"/api/orders/{value}",
@@ -3169,9 +3187,10 @@ def test_surface_candidate_stays_unresolved_after_terminal_ledger_outcome(tmp_pa
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
-    ledger_dir.mkdir(parents=True)
+    ledger_dir.mkdir(parents=True, exist_ok=True)
     (ledger_dir / "ledger.jsonl").write_text(
-        json.dumps({
+        (ledger_dir / "ledger.jsonl").read_text(encoding="utf-8")
+        + json.dumps({
             "endpoint": "/api/orders/1",
             "vuln_class": "IDOR",
             "result": "dead_end",
@@ -3183,8 +3202,9 @@ def test_surface_candidate_stays_unresolved_after_terminal_ledger_outcome(tmp_pa
         str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
     )
 
-    assert closure["verdict"] == "finish"
-    assert closure["can_claim_exhausted"] is True
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert "coverage_ledger_evidence_missing" in closure["reasons"]
     assert closure["surface_review"]["status"] == "unresolved"
     assert closure["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
 
@@ -3193,9 +3213,10 @@ def test_surface_candidate_query_is_not_closed_by_terminal_ledger_identity(tmp_p
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
-    ledger_dir.mkdir(parents=True)
+    ledger_dir.mkdir(parents=True, exist_ok=True)
     (ledger_dir / "ledger.jsonl").write_text(
-        json.dumps({
+        (ledger_dir / "ledger.jsonl").read_text(encoding="utf-8")
+        + json.dumps({
             "endpoint": "/api/orders/1?view=summary",
             "vuln_class": "IDOR",
             "result": "dead_end",
@@ -3285,9 +3306,10 @@ def test_surface_candidate_reopens_after_new_ledger_candidate(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
-    ledger_dir.mkdir(parents=True)
+    ledger_dir.mkdir(parents=True, exist_ok=True)
     (ledger_dir / "ledger.jsonl").write_text(
-        "\n".join([
+        (ledger_dir / "ledger.jsonl").read_text(encoding="utf-8")
+        + "\n".join([
             json.dumps({
                 "endpoint": "/api/orders/1",
                 "vuln_class": "IDOR",
@@ -3306,7 +3328,8 @@ def test_surface_candidate_reopens_after_new_ledger_candidate(tmp_path):
         str(tmp_path), _surface_closure_state(target), max_lanes_reached=False
     )
 
-    assert closure["verdict"] == "finish"
+    assert closure["verdict"] == "handoff"
+    assert "coverage_ledger_evidence_missing" in closure["reasons"]
     assert closure["surface_review"]["unresolved"][0]["reason"] == "review_outcome_missing"
 
 
@@ -3694,7 +3717,7 @@ def test_damaged_ledger_is_visible_and_blocks_closure_and_rotation(tmp_path):
     target = "target.com"
     _write_closure_owners(tmp_path, target, status="tested_clean", final_review=True)
     ledger_dir = tmp_path / "memory" / "evidence" / target_storage_key(target)
-    ledger_dir.mkdir(parents=True)
+    ledger_dir.mkdir(parents=True, exist_ok=True)
     rows = [
         {
             "endpoint": f"/api/orders/{value}",
@@ -3986,11 +4009,7 @@ def test_normal_bounded_state_never_loads_closure_owners(tmp_path, monkeypatch):
 
 def test_explicit_closure_defers_non_substantive_active_queue_work(tmp_path):
     target = "target.com"
-    evidence_dir = tmp_path / "evidence" / target_storage_key(target)
-    evidence_dir.mkdir(parents=True)
-    (evidence_dir / "coverage_matrix.json").write_text(
-        json.dumps(_closure_matrix()), encoding="utf-8"
-    )
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     queue_dir = tmp_path / "state" / target_storage_key(target)
     queue_dir.mkdir(parents=True)
     (queue_dir / "action_queue.json").write_text(
@@ -4021,11 +4040,7 @@ def test_explicit_closure_defers_non_substantive_active_queue_work(tmp_path):
 
 def test_explicit_closure_keeps_substantive_surface_queue_work(tmp_path):
     target = "target.com"
-    evidence_dir = tmp_path / "evidence" / target_storage_key(target)
-    evidence_dir.mkdir(parents=True)
-    (evidence_dir / "coverage_matrix.json").write_text(
-        json.dumps(_closure_matrix()), encoding="utf-8"
-    )
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     queue_dir = tmp_path / "state" / target_storage_key(target)
     queue_dir.mkdir(parents=True)
     (queue_dir / "action_queue.json").write_text(
@@ -4059,11 +4074,7 @@ def test_explicit_closure_keeps_substantive_surface_queue_work(tmp_path):
 def test_explicit_closure_checks_pending_source_and_js_artifacts(tmp_path):
     target = "target.com"
     storage_key = target_storage_key(target)
-    evidence_dir = tmp_path / "evidence" / storage_key
-    evidence_dir.mkdir(parents=True)
-    (evidence_dir / "coverage_matrix.json").write_text(
-        json.dumps(_closure_matrix()), encoding="utf-8"
-    )
+    _write_closure_owners(tmp_path, target, status="tested_clean", final_review=False)
     exposure_dir = tmp_path / "findings" / storage_key / "exposure"
     exposure_dir.mkdir(parents=True)
     (exposure_dir / "repo_source_meta.json").write_text('{"status":"ok"}\n', encoding="utf-8")

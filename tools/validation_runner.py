@@ -305,7 +305,15 @@ def _stable_operation_material(value: Any) -> Any:
     if isinstance(value, dict):
         material = {}
         for key, item in value.items():
-            if key in {"artifacts", "generated_at", "operation_id", "summary_path", "sync"}:
+            if key in {
+                "artifacts",
+                "generated_at",
+                "operation_id",
+                "event_id",
+                "summary_path",
+                "sync",
+                "ledger_record",
+            }:
                 continue
             if key == "artifact_bindings" and isinstance(item, list):
                 material[key] = [
@@ -325,9 +333,17 @@ def _finalize_runner_summary(summary: dict[str, Any], path: Path, repo_root: Pat
     summary["summary_path"] = _rel(path, repo_root)
     summary["artifact_bindings"] = _artifact_bindings(summary, repo_root)
     ledger = summary.get("ledger_record") if isinstance(summary.get("ledger_record"), dict) else {}
-    operation_id = str(ledger.get("operation_id") or "")
-    if not operation_id:
-        operation_id = _runner_operation_id(_stable_operation_material(summary))
+    # The ledger row is an output, not an identity authority.  Runner-created
+    # rows carry their exact input material in memory; summaries reloaded from
+    # disk fall back to the stable public summary projection.  In both cases,
+    # a caller-supplied nested ``ledger_record.operation_id`` is ignored.
+    operation_material = ledger.pop("_runner_operation_material", None)
+    if not isinstance(operation_material, dict):
+        operation_material = _stable_operation_material(summary)
+    operation_id = _runner_operation_id(operation_material)
+    if ledger:
+        ledger["operation_id"] = operation_id
+        ledger["event_id"] = f"ledger:{hashlib.sha256(operation_id.encode('utf-8')).hexdigest()[:24]}"
     summary["operation_id"] = operation_id
     _write_json(path, summary)
     return summary
@@ -2008,7 +2024,7 @@ def _record_ledger_if_needed(
         "notes": notes,
         "identity_v2": identity_v2,
     }
-    operation_id = _runner_operation_id(operation_material or {
+    canonical_operation_material = operation_material or {
         "target": canonical_target_value(target),
         "endpoint": public_url_shape(endpoint),
         "method": str(method or "GET").upper(),
@@ -2021,12 +2037,18 @@ def _record_ledger_if_needed(
         "evidence_ref": evidence_ref,
         "evidence_sha256": _file_sha256(repo_root, evidence_ref),
         "identity_v2": identity_v2,
-    })
+    }
+    operation_id = _runner_operation_id(canonical_operation_material)
     event_id = f"ledger:{hashlib.sha256(operation_id.encode('utf-8')).hexdigest()[:24]}"
     request["operation_id"] = operation_id
     request["event_id"] = event_id
     try:
-        return record_entry(repo_root, **request)
+        recorded = record_entry(repo_root, **request)
+        if isinstance(recorded, dict):
+            # Ephemeral provenance lets summary finalization recompute the
+            # exact ID without persisting another operation-material schema.
+            recorded["_runner_operation_material"] = canonical_operation_material
+        return recorded
     except Exception as exc:
         return {
             "write_status": "error",
@@ -2034,6 +2056,7 @@ def _record_ledger_if_needed(
             "operation_id": operation_id,
             "event_id": event_id,
             "request": request,
+            "_runner_operation_material": canonical_operation_material,
         }
 
 

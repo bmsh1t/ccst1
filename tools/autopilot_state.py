@@ -141,6 +141,7 @@ try:
         actionable_coverage_gaps,
         class_relevance,
         high_value_gaps_from_matrix,
+        _is_auto_applicability_na,
         load_matrix,
         load_matrix_projection,
         matrix_is_fresh,
@@ -157,6 +158,7 @@ except ImportError:  # pragma: no cover - direct tools/ execution
         actionable_coverage_gaps,
         class_relevance,
         high_value_gaps_from_matrix,
+        _is_auto_applicability_na,
         load_matrix,
         load_matrix_projection,
         matrix_is_fresh,
@@ -169,11 +171,13 @@ try:
     from tools.closure_resolver import (
         canonical_endpoint_identity,
         canonical_endpoint_path,
+        canonical_vuln_class,
     )
 except ImportError:  # pragma: no cover - direct tools/ execution
     from closure_resolver import (  # type: ignore
         canonical_endpoint_identity,
         canonical_endpoint_path,
+        canonical_vuln_class,
     )
 
 try:
@@ -3448,6 +3452,64 @@ def _coverage_has_high_value_gaps(matrix: dict) -> bool:
     return bool(_actionable_coverage_gaps(matrix))
 
 
+def _coverage_terminal_evidence(matrix: dict | None, ledger_entries: list[dict] | None) -> dict:
+    """Check that every projected matrix terminal has a matching Ledger row."""
+    if not isinstance(matrix, dict):
+        return {"status": "unavailable", "missing": [], "checked": 0}
+
+    projection = build_current_cell_projection(list(ledger_entries or []))
+    closed: dict[tuple[str, str], set[str]] = {}
+    for cell in [
+        *(projection.get("closed_cells") or []),
+        *(projection.get("closed_cells_v2") or []),
+    ]:
+        if not isinstance(cell, dict):
+            continue
+        endpoint = canonical_endpoint_identity(str(cell.get("endpoint") or ""))
+        family = canonical_vuln_class(str(cell.get("vuln_class") or ""))
+        result = str(cell.get("result") or "").strip()
+        if endpoint and family and result:
+            closed.setdefault((endpoint, family), set()).add(result)
+
+    expected_results = {
+        "tested_clean": {"tested_clean"},
+        "tested_finding": {"tested_finding"},
+        "n_a": {"not_applicable", "dead_end", "blocked_redline"},
+    }
+    missing: list[dict] = []
+    checked = 0
+    for endpoint_row in matrix.get("endpoints") or []:
+        if not isinstance(endpoint_row, dict):
+            continue
+        endpoint = canonical_endpoint_identity(str(endpoint_row.get("endpoint") or ""))
+        cells = endpoint_row.get("cells") if isinstance(endpoint_row.get("cells"), dict) else {}
+        for raw_family, cell in cells.items():
+            if not isinstance(cell, dict):
+                continue
+            status = str(cell.get("status") or "untested").strip()
+            if status == "untested":
+                continue
+            if status == "n_a" and _is_auto_applicability_na(cell):
+                continue
+            family = canonical_vuln_class(str(raw_family))
+            checked += 1
+            if not endpoint or not family or not (
+                closed.get((endpoint, family), set()) & expected_results.get(status, set())
+            ):
+                missing.append({
+                    "endpoint": str(endpoint_row.get("endpoint") or ""),
+                    "vuln_class": str(raw_family),
+                    "matrix_status": status,
+                    "reason": "missing_matching_ledger_terminal",
+                })
+    return {
+        "status": "missing" if missing else "valid",
+        "missing": missing[:20],
+        "checked": checked,
+        "ledger_entry_count": len(ledger_entries or []),
+    }
+
+
 def _actor_context_gap(case_state: dict, matrix: dict | None) -> dict:
     """Project the recoverable actor/session prerequisite for role-based lanes."""
     if str(case_state.get("status") or "") != "valid":
@@ -4084,6 +4146,7 @@ _CLOSURE_REASON_PRIORITY = {
     "scanner_lane_review_required": 42,
     "cidr_continuation_invalid": 40,
     "next_action_pending": 50,
+    "coverage_ledger_evidence_missing": 59,
     "coverage_missing": 60,
     "coverage_empty": 60,
     "coverage_invalid": 60,
@@ -4126,6 +4189,7 @@ _CLOSURE_REASON_OWNERS = {
     "coverage_invalid": {"coverage"},
     "coverage_stale": {"coverage"},
     "coverage_high_value_gaps": {"coverage"},
+    "coverage_ledger_evidence_missing": {"evidence-ledger"},
     "observation_inventory_partial": {"observation"},
     "observation_high_value_pending": {"observation"},
     "browser_evidence_partial": {"browser"},
@@ -4450,6 +4514,10 @@ def _closure_reason_frontier(
             "evidence-ledger", "Repair or reconcile the target-owned Evidence Ledger before closure",
             f"memory/evidence/{target_key}/ledger.jsonl",
         ),
+        "coverage_ledger_evidence_missing": (
+            "evidence-ledger", "Record a matching Evidence Ledger terminal for every projected Coverage cell",
+            f"memory/evidence/{target_key}/ledger.jsonl",
+        ),
         "identity_v2_follow_up_pending": (
             "evidence-ledger", "Resolve the pending identity evidence follow-up",
             f"memory/evidence/{target_key}/ledger.jsonl",
@@ -4553,6 +4621,7 @@ def _closure_action_for_reason(reason: str, state: dict, current: str) -> str:
         "identity_v2_follow_up_pending": "repair_evidence_ledger",
         "identity_v2_candidate_pending": "repair_evidence_ledger",
         "identity_v2_incomplete": "repair_evidence_ledger",
+        "coverage_ledger_evidence_missing": "repair_evidence_ledger",
         "recon_budget_partial": "run_recon",
         "recon_phase_partial": "run_recon",
         "recon_phase_review_required": "global-review",
@@ -4910,6 +4979,15 @@ def build_closure_projection(
     ledger_health = state.get("_ledger_health") if isinstance(state.get("_ledger_health"), dict) else {}
     checkpoint_health = state.get("_checkpoint_health") if isinstance(state.get("_checkpoint_health"), dict) else {}
     ledger_projection = state.get("_ledger_projection") if isinstance(state.get("_ledger_projection"), dict) else {}
+    # ``_ledger_health`` is injected only by the real closure loader.  Direct
+    # pure projections may pass a scratch list for rotation tests; that list
+    # must not silently change the closure contract.
+    runtime_ledger_loaded = "_ledger_health" in state
+    coverage_terminal_evidence = (
+        _coverage_terminal_evidence(matrix, ledger_entries)
+        if runtime_ledger_loaded and isinstance(matrix, dict)
+        else {"status": "unavailable", "missing": [], "checked": 0}
+    )
     run_budget = (state.get("recon_artifacts") or {}).get("run_budget") or {}
     recon_budget_partial = bool(run_budget.get("partial"))
     ledger_status = str(ledger_health.get("status") or "missing").strip().lower()
@@ -5004,6 +5082,14 @@ def build_closure_projection(
     elif _coverage_has_high_value_gaps(matrix):
         verdict = "handoff"
         reasons.append("coverage_high_value_gaps")
+    elif (
+        runtime_ledger_loaded
+        and ledger_status not in {"partial", "unreadable"}
+        and coverage_terminal_evidence.get("status") != "valid"
+    ):
+        verdict = "handoff"
+        action = "repair_evidence_ledger"
+        reasons.append("coverage_ledger_evidence_missing")
     else:
         browser = state.get("browser_evidence") or {}
         source = state.get("repo_source_summary") or {}
@@ -5099,7 +5185,11 @@ def build_closure_projection(
 
     if verdict == "handoff" and not actionable_frontier:
         reason = str(reasons[0] if reasons else "")
-        if reason in {"coverage_missing", "coverage_empty", "coverage_invalid"}:
+        if reason in {
+            "coverage_missing",
+            "coverage_empty",
+            "coverage_invalid",
+        }:
             target = str(state.get("resolved_target") or state.get("target") or "")
             actionable_frontier = [_frontier_item(
                 owner="coverage",
@@ -5190,6 +5280,12 @@ def build_closure_projection(
             action_text = "Repair or reconcile the target-owned Evidence Ledger before closure"
             expected_gain = "restore the evidence owner needed to evaluate canonical closure cells"
             stop_condition = "publish a readable ledger or record the bounded ledger blocker"
+        elif reason == "coverage_ledger_evidence_missing":
+            owner = "evidence-ledger"
+            evidence_ref = f"memory/evidence/{target_key}/ledger.jsonl"
+            action_text = "Record a matching Evidence Ledger terminal for every projected Coverage cell"
+            expected_gain = "bind each Coverage terminal to the endpoint and vulnerability result that produced it"
+            stop_condition = "record matching owner evidence for every terminal cell, then recompute Closure"
         elif reason in {"checkpoint_stale", "checkpoint_invalid"}:
             owner = "checkpoint"
             evidence_ref = checkpoint_ref
@@ -5383,6 +5479,7 @@ def build_closure_projection(
             "diagnostics": ledger_projection.get("identity_v2_diagnostics") or {},
             "shadow": ledger_projection.get("identity_v2_shadow") or {},
         },
+        "coverage_terminal_evidence": coverage_terminal_evidence,
     }
     recon_residuals = _recon_phase_residuals(state)
     if recon_residuals:
@@ -5436,6 +5533,7 @@ _STAGNANT_REASONS = {
     "next_action_pending",
     "surface_work_pending",
     "coverage_high_value_gaps",
+    "coverage_ledger_evidence_missing",
     "case_state_canonical_conflict",
     "actor_context_required",
 }
@@ -5659,6 +5757,18 @@ def stagnation_fingerprint(state: dict, closure: dict) -> str:
         }
     elif reason == "coverage_high_value_gaps":
         payload["coverage"] = str(state.get("_stagnation_coverage") or "")
+    elif reason == "coverage_ledger_evidence_missing":
+        evidence = closure.get("coverage_terminal_evidence")
+        missing = evidence.get("missing") if isinstance(evidence, dict) else []
+        payload["coverage_ledger"] = [
+            {
+                "endpoint": str(item.get("endpoint") or ""),
+                "vuln_class": str(item.get("vuln_class") or ""),
+                "matrix_status": str(item.get("matrix_status") or ""),
+            }
+            for item in missing
+            if isinstance(item, dict)
+        ][:20]
     elif reason == "case_state_canonical_conflict":
         case_state = state.get("case_state") or {}
         payload["case_state"] = {

@@ -870,6 +870,8 @@ def _project_legacy_cells(
 ) -> tuple[list[dict], list[dict]]:
     current_by_evidence_key: dict[tuple[str, str, str, str, str, str], tuple[int, dict]] = {}
     for sequence, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
         if not include_identity_rows and "identity_status" in entry:
             continue
         result = str(entry.get("result") or "")

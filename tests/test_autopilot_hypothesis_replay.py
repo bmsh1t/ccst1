@@ -15,6 +15,7 @@ from tools.action_queue import (
 from tools.autopilot_state import load_closure_projection
 from tools.checkpoint import _attach_activation_context, _capability_chain_review_item
 from tools.coverage_matrix import save_matrix
+from tools.evidence_ledger import record_entry
 from tools.validation_runner import _runner_observed_difference, _sync_action_queue
 
 
@@ -112,6 +113,23 @@ def _observed_depth_action(tmp_path) -> str:
     )
     assert synced["status"] == "updated"
     return action_id
+
+
+def _record_matrix_terminal(tmp_path) -> None:
+    """Publish the Ledger owner row required by a terminal Coverage cell."""
+    record_entry(
+        tmp_path,
+        target=TARGET,
+        endpoint="/api/export",
+        method="GET",
+        vuln_class="IDOR",
+        actor="owner",
+        object_scope="unknown",
+        variant="baseline",
+        source="test:coverage-terminal",
+        result="tested_clean",
+        replayed=True,
+    )
 
 
 @pytest.mark.parametrize(
@@ -825,6 +843,7 @@ def test_evidence_skill_hypothesis_result_continuation_and_kill_replay(tmp_path)
         },
         repo_root=tmp_path,
     )
+    _record_matrix_terminal(tmp_path)
     closed = load_closure_projection(
         str(tmp_path),
         {"target": TARGET, "resolved_target": TARGET, "next_action": "handoff"},
@@ -1109,6 +1128,7 @@ def test_capability_review_blocks_closure_until_dead_end_then_allows_finish(tmp_
         },
         repo_root=tmp_path,
     )
+    _record_matrix_terminal(tmp_path)
 
     active = load_closure_projection(
         str(tmp_path),
@@ -1167,6 +1187,7 @@ def test_unsupported_primitive_speculation_does_not_block_closure(tmp_path):
         },
         repo_root=tmp_path,
     )
+    _record_matrix_terminal(tmp_path)
 
     closed = load_closure_projection(
         str(tmp_path),

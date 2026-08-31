@@ -20,6 +20,16 @@ CLOSED_LEDGER_RESULTS = {
 }
 CLOSED_MATRIX_STATUSES = {"tested_clean", "tested_finding", "n_a"}
 
+# A matrix is a projection owned by Coverage; only structural N/A cells are
+# self-authenticating.  Every observed terminal result must come from the
+# Evidence Ledger so a hand-edited matrix cannot close a lane by itself.
+_STRUCTURAL_NA_MARKERS = (
+    "static asset;",
+    "standard/public metadata;",
+    "route prefix/container;",
+    "minified JS property-chain artifact;",
+)
+
 
 CANONICAL_VULN_CLASSES = (
     "IDOR", "SSRF", "XSS", "Race", "Authz",
@@ -253,6 +263,13 @@ class ClosureResolver:
             )
 
     def _ingest_matrix(self, matrix: dict) -> None:
+        """Ingest only structural N/A projections from Coverage.
+
+        ``tested_clean``/``tested_finding`` and operator-authored ``n_a``
+        statuses require a matching Ledger terminal row.  Treating all matrix
+        statuses as evidence made an arbitrary JSON edit sufficient for
+        closure.
+        """
         for endpoint_row in matrix.get("endpoints") or []:
             if not isinstance(endpoint_row, dict):
                 continue
@@ -263,11 +280,15 @@ class ClosureResolver:
             for vuln_class, cell in cells.items():
                 if not isinstance(cell, dict):
                     continue
-                if str(cell.get("status") or "") in CLOSED_MATRIX_STATUSES:
+                status = str(cell.get("status") or "")
+                reason = str(cell.get("reason") or "")
+                if status == "n_a" and any(
+                    marker in reason for marker in _STRUCTURAL_NA_MARKERS
+                ):
                     self._mark(
                         endpoint,
                         str(vuln_class),
-                        result=str(cell.get("status") or ""),
+                        result=status,
                     )
 
     def is_cell_closed(
