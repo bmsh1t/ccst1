@@ -1488,6 +1488,101 @@ def test_checkpoint_cli_reconciles_root_json_claim_and_links_durable_actions(tmp
     )
 
 
+@pytest.mark.parametrize("failure_point", ["finding", "queue"])
+def test_checkpoint_root_claim_replays_each_durable_boundary(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    failure_point,
+):
+    target = "target.com"
+    findings_dir = tmp_path / "findings" / target
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "manual-sqli.json").write_text(
+        json.dumps(
+            {
+                "kind": "finding_claim",
+                "schema_version": 1,
+                "title": "Manual SQLi claim",
+                "endpoint": "/rest/products/search",
+                "vuln_class": "SQLi",
+                "impact": "claimed database access",
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = [
+        "--repo-root",
+        str(tmp_path),
+        "--target",
+        target,
+        "--no-refresh-coverage",
+        "--json",
+    ]
+    failed = False
+    original_sync = checkpoint_module.sync_checkpoint_action_queue
+    original_write = checkpoint_module.write_checkpoint_witness
+
+    if failure_point == "finding":
+        def fail_after_finding(*_args, **_kwargs):
+            nonlocal failed
+            failed = True
+            raise OSError("interrupted after finding")
+
+        monkeypatch.setattr(checkpoint_module, "sync_checkpoint_action_queue", fail_after_finding)
+    else:
+        def fail_after_queue(repo_root, target_name, checkpoint):
+            nonlocal failed
+            result = original_write(repo_root, target_name, checkpoint)
+            if checkpoint.get("action_queue_sync") and not failed:
+                failed = True
+                raise OSError("interrupted after queue")
+            return result
+
+        monkeypatch.setattr(checkpoint_module, "write_checkpoint_witness", fail_after_queue)
+
+    assert checkpoint_module.main(args) == 2
+    capsys.readouterr()
+    finding = finding_index.load_finding_index(findings_dir)["findings"][0]
+    interrupted_actions = [
+        item
+        for item in load_queue(tmp_path, target)["actions"]
+        if item.get("type") == "candidate-evidence-gap"
+        and (item.get("metadata") or {}).get("finding_id") == finding["id"]
+    ]
+    assert len(interrupted_actions) == (0 if failure_point == "finding" else 1)
+
+    monkeypatch.setattr(checkpoint_module, "sync_checkpoint_action_queue", original_sync)
+    monkeypatch.setattr(checkpoint_module, "write_checkpoint_witness", original_write)
+    assert checkpoint_module.main(args) == 0
+    capsys.readouterr()
+    queue_path = tmp_path / "state" / target / "action_queue.json"
+    recovered_queue = queue_path.read_bytes()
+    assert checkpoint_module.main(args) == 0
+    capsys.readouterr()
+
+    payload = finding_index.load_finding_index(findings_dir)
+    queue = load_queue(tmp_path, target)
+    actions = [
+        item
+        for item in queue["actions"]
+        if item.get("type") == "candidate-evidence-gap"
+        and (item.get("metadata") or {}).get("finding_id") == finding["id"]
+    ]
+    witness = json.loads(
+        (tmp_path / "state" / target / "checkpoint_latest.json").read_text(encoding="utf-8")
+    )
+    events = (findings_dir / "mutation-events.jsonl").read_text(encoding="utf-8").splitlines()
+
+    assert failed is True
+    assert payload["total"] == 1
+    assert len(events) == 1
+    assert len(actions) == 1
+    assert len({item["id"] for item in queue["actions"]}) == len(queue["actions"])
+    assert queue_path.read_bytes() == recovered_queue
+    assert witness["action_queue"]["synchronized"] is True
+
+
 def test_checkpoint_keeps_every_reconciled_root_claim_in_the_durable_queue(tmp_path, capsys):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)

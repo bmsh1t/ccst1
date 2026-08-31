@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import time
 from contextlib import nullcontext
@@ -9,12 +10,15 @@ from contextlib import nullcontext
 import pytest
 
 import tools.autopilot_round as autopilot_round_module
+import tools.surface as surface_module
+from tools.action_queue import load_queue
 from tools.autopilot_round import prepare_round, settle_round
 from tools.checkpoint import (
     begin_round,
     record_round_lane,
     record_round_lane_result,
 )
+from tools.surface_projection import load_surface_projection
 
 
 def _witness(tmp_path, target: str = "target.com"):
@@ -27,6 +31,22 @@ def _write_evidence(tmp_path, target: str = "target.com") -> str:
     path.parent.mkdir(parents=True)
     path.write_text('{"result":"tested_clean"}\n', encoding="utf-8")
     return evidence_ref
+
+
+def _seed_stale_surface(tmp_path, target: str = "target.com") -> None:
+    recon_dir = tmp_path / "recon" / target
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir()
+    (recon_dir / "live" / "httpx_full.txt").write_text(
+        f"https://api.{target} [200] [API] [Python] [100]\n",
+        encoding="utf-8",
+    )
+    urls = recon_dir / "urls" / "with_params.txt"
+    urls.write_text(f"https://api.{target}/orders?id=1\n", encoding="utf-8")
+    surface_module.build_surface_review(tmp_path, target, refresh=True)
+    with urls.open("a", encoding="utf-8") as handle:
+        handle.write(f"https://api.{target}/orders?id=2\n")
+    assert load_surface_projection(tmp_path, target)["status"] == "stale"
 
 
 def _claim_lane_after_signal(repo_root, target, start, attempting, output):
@@ -188,6 +208,93 @@ def test_settle_round_closes_terminal_lane_and_replays_idempotently(tmp_path):
     assert replay["status"] == "already_settled"
     assert replay["round_progress"]["round_id"] == settled["round_progress"]["round_id"]
     assert witness.read_bytes() == after
+
+
+@pytest.mark.parametrize("failure_point", ["checkpoint", "queue", "surface", "closure"])
+def test_settle_round_replays_each_durable_boundary(
+    monkeypatch,
+    tmp_path,
+    failure_point,
+):
+    target = "target.com"
+    _seed_stale_surface(tmp_path, target)
+    started = begin_round(tmp_path, target, max_lanes=1)
+    lane = "sqli:/api/orders"
+    record_round_lane(tmp_path, target, lane=lane, max_lanes=1)
+    record_round_lane_result(
+        tmp_path,
+        target,
+        lane=lane,
+        status="completed",
+        decision="tested clean",
+        evidence_ref=_write_evidence(tmp_path, target),
+        next_action="none",
+    )
+
+    failed = False
+    if failure_point == "checkpoint":
+        attribute = "sync_checkpoint_action_queue"
+        original = getattr(autopilot_round_module, attribute)
+
+        def interrupt(*_args, **_kwargs):
+            nonlocal failed
+            failed = True
+            raise OSError("interrupted after checkpoint")
+    elif failure_point == "queue":
+        attribute = "_refresh_surface_if_pending"
+        original = getattr(autopilot_round_module, attribute)
+
+        def interrupt(*_args, **_kwargs):
+            nonlocal failed
+            failed = True
+            raise OSError("interrupted after queue")
+    elif failure_point == "surface":
+        attribute = "_refresh_surface_if_pending"
+        original = getattr(autopilot_round_module, attribute)
+
+        def interrupt(*args, **kwargs):
+            nonlocal failed
+            result = original(*args, **kwargs)
+            failed = True
+            raise OSError("interrupted after surface")
+    else:
+        attribute = "record_round_closure"
+        original = getattr(autopilot_round_module, attribute)
+
+        def interrupt(*args, **kwargs):
+            nonlocal failed
+            original(*args, **kwargs)
+            failed = True
+            raise OSError("interrupted after closure")
+
+    monkeypatch.setattr(autopilot_round_module, attribute, interrupt)
+    with pytest.raises(OSError, match=f"interrupted after {failure_point}"):
+        settle_round(tmp_path, target, refresh_coverage=False)
+
+    interrupted = json.loads(_witness(tmp_path, target).read_text(encoding="utf-8"))
+    assert interrupted["round_progress"]["status"] == (
+        "completed" if failure_point == "closure" else "active"
+    )
+    if failure_point != "closure":
+        _state, pending_closure = autopilot_round_module._closure_snapshot(tmp_path, target)
+        assert pending_closure["verdict"] != "finish"
+    monkeypatch.setattr(autopilot_round_module, attribute, original)
+
+    recovered = settle_round(tmp_path, target, refresh_coverage=False)
+    queue_path = tmp_path / "state" / target / "action_queue.json"
+    recovered_queue = queue_path.read_bytes()
+    replay = settle_round(tmp_path, target, refresh_coverage=False)
+    final_witness = json.loads(_witness(tmp_path, target).read_text(encoding="utf-8"))
+    action_ids = [item["id"] for item in load_queue(tmp_path, target)["actions"]]
+
+    assert failed is True
+    assert recovered["status"] in {"settled", "already_settled"}
+    assert replay["status"] == "already_settled"
+    assert final_witness["round_progress"]["status"] == "completed"
+    assert final_witness["round_progress"]["round_id"] == started["round_progress"]["round_id"]
+    assert len(action_ids) == len(set(action_ids))
+    assert queue_path.read_bytes() == recovered_queue
+    assert load_surface_projection(tmp_path, target)["status"] == "valid"
 
 
 def test_pending_surface_refreshes_before_settle(monkeypatch, tmp_path):

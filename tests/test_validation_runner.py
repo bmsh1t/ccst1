@@ -2768,11 +2768,16 @@ def test_runner_reconciliation_replay_repairs_each_owner_without_duplicates(
     assert partial["status"] == "partial"
     assert partial[failed_owner]["status"] == "error"
 
+    findings_dir = tmp_path / "findings" / key
+    assert (findings_dir / "findings.json").is_file() is (failed_owner != "finding")
+    assert ledger_path(tmp_path, summary["target"]).is_file() is (failed_owner != "ledger")
+    interrupted_queue = json.loads(queue_path.read_text(encoding="utf-8"))["actions"][0]
+    assert interrupted_queue["status"] == ("queued" if failed_owner == "action_queue" else "candidate")
+
     monkeypatch.setattr(validation_runner, owner_name, original)
     recovered = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
     replay = validation_runner.sync_runner_artifacts(summary, repo_root=tmp_path)
 
-    findings_dir = tmp_path / "findings" / key
     finding = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))["findings"][0]
     events = (findings_dir / "mutation-events.jsonl").read_text(encoding="utf-8").splitlines()
     queue = json.loads(queue_path.read_text(encoding="utf-8"))["actions"][0]
