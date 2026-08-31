@@ -60,7 +60,11 @@ def parse_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def resolve_validate_summary_path(path: str | Path | None = None) -> Path:
+def resolve_validate_summary_path(
+    path: str | Path | None = None,
+    *,
+    repo_root: str | Path | None = None,
+) -> Path:
     """Resolve validate summary path with cwd-local summary preferred over repo fallback."""
     if path:
         return Path(path)
@@ -69,7 +73,8 @@ def resolve_validate_summary_path(path: str | Path | None = None) -> Path:
     if cwd_summary.is_file():
         return cwd_summary
 
-    return Path(BASE_DIR) / "findings" / "last-validate.json"
+    root = Path(repo_root) if repo_root is not None else Path(BASE_DIR)
+    return root / "findings" / "last-validate.json"
 
 
 def _normalize_target_for_compare(value: str) -> str:
@@ -92,19 +97,28 @@ def _targets_compatible(requested: str, loaded: str) -> bool:
     return loaded_norm.endswith(f".{requested_norm}") or requested_norm.endswith(f".{loaded_norm}")
 
 
-def _is_repo_global_last_validate(path: str | Path) -> bool:
+def _is_repo_global_last_validate(
+    path: str | Path,
+    *,
+    repo_root: str | Path | None = None,
+) -> bool:
     """Return whether a path is the repo-global last validate pointer."""
     try:
         candidate = Path(path).resolve()
-        fallback = (Path(BASE_DIR) / "findings" / "last-validate.json").resolve()
+        root = Path(repo_root) if repo_root is not None else Path(BASE_DIR)
+        fallback = (root / "findings" / "last-validate.json").resolve()
     except OSError:
         return False
     return candidate == fallback
 
 
-def load_validate_prefill(path: str | Path | None = None) -> dict:
+def load_validate_prefill(
+    path: str | Path | None = None,
+    *,
+    repo_root: str | Path | None = None,
+) -> dict:
     """Load prefill values from the latest validate summary JSON."""
-    summary_path = resolve_validate_summary_path(path)
+    summary_path = resolve_validate_summary_path(path, repo_root=repo_root)
     if not summary_path.is_file():
         raise FileNotFoundError(f"Validate summary not found: {summary_path}")
 
@@ -298,20 +312,29 @@ def main() -> None:
     parser.add_argument("--tags", default="", help="Comma-separated tags")
     parser.add_argument("--tech-stack", default="", help="Comma-separated tech stack override")
     parser.add_argument("--memory-dir", default="", help="Optional hunt-memory directory")
+    parser.add_argument("--repo-root", default="", help="Repository root for default memory and validation summary")
     parser.add_argument("--from-validate", action="store_true", help="Prefill fields from last /validate run")
     parser.add_argument("--validate-json", default="", help="Optional validate summary JSON path")
     parser.add_argument("--json", action="store_true", help="Output JSON summary")
     args = parser.parse_args()
+    repo_root = Path(args.repo_root) if args.repo_root else Path(BASE_DIR)
 
     prefill = {}
     validate_summary_path = None
     if args.from_validate:
         try:
-            validate_summary_path = resolve_validate_summary_path(args.validate_json or None)
-            prefill = load_validate_prefill(validate_summary_path)
+            validate_summary_path = resolve_validate_summary_path(
+                args.validate_json or None,
+                repo_root=repo_root,
+            )
+            prefill = load_validate_prefill(validate_summary_path, repo_root=repo_root)
         except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
             parser.error(str(exc))
-        if not args.validate_json and not args.target and _is_repo_global_last_validate(validate_summary_path):
+        if (
+            not args.validate_json
+            and not args.target
+            and _is_repo_global_last_validate(validate_summary_path, repo_root=repo_root)
+        ):
             parser.error(
                 "--from-validate resolved repo-global findings/last-validate.json; "
                 "pass --target or --validate-json to avoid cross-target leakage"
@@ -344,7 +367,7 @@ def main() -> None:
             "Provide them directly or use --from-validate with a complete validate summary."
         )
 
-    memory_dir = args.memory_dir or str(default_memory_dir(BASE_DIR))
+    memory_dir = args.memory_dir or str(default_memory_dir(repo_root))
     summary = remember_finding(
         memory_dir=memory_dir,
         target=target,

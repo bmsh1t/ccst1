@@ -85,8 +85,9 @@ const i = setInterval(() => {
 """
 
 
-def load_config() -> dict:
-    section = load_config_section(BASE_DIR, "cf_solver")
+def load_config(repo_root: str | Path | None = None) -> dict:
+    root = Path(repo_root) if repo_root is not None else BASE_DIR
+    section = load_config_section(root, "cf_solver")
     api_key = os.environ.get("TWOCAPTCHA_API_KEY") or section.get("api_key", "")
     return {
         "service": section.get("service", "2captcha"),
@@ -313,7 +314,7 @@ def solve_tier1_with_browser(solver, url: str, headful: bool) -> dict | None:
         pw.stop()
 
 
-def check_cookie(target: str) -> bool | None:
+def check_cookie(target: str, *, repo_root: str | Path | None = None) -> bool | None:
     """Probe target with the stored cf_cookies.txt + cf_ua.txt pair.
 
     Returns True if the cookie still passes CF (HTTP 200), False if CF
@@ -327,8 +328,9 @@ def check_cookie(target: str) -> bool | None:
     """
     import subprocess
 
-    recon_dir = BASE_DIR / "recon" / target_storage_key(target)
-    private_dir = private_artifact_dir(BASE_DIR, "cf", target_storage_key(target))
+    root = Path(repo_root) if repo_root is not None else BASE_DIR
+    recon_dir = root / "recon" / target_storage_key(target)
+    private_dir = private_artifact_dir(root, "cf", target_storage_key(target))
     cookie_path = private_dir / "cf_cookies.txt"
     ua_path = private_dir / "cf_ua.txt"
     if not cookie_path.exists():
@@ -362,25 +364,32 @@ def check_cookie(target: str) -> bool | None:
     return code == 200
 
 
-def write_output(cookies: list[dict], target: str, export_env: bool) -> str:
+def write_output(
+    cookies: list[dict],
+    target: str,
+    export_env: bool,
+    *,
+    repo_root: str | Path | None = None,
+) -> str:
     pairs = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
     # Pair the UA with the cookie — cf_clearance is UA-bound, so downstream
     # tools MUST send the exact UA the solver used or CF re-challenges.
     auth_headers = f"Cookie: {pairs}\nUser-Agent: {CF_UA}"
     target_key = target_storage_key(target)
-    private_dir = private_artifact_dir(BASE_DIR, "cf", target_key)
+    root = Path(repo_root) if repo_root is not None else BASE_DIR
+    private_dir = private_artifact_dir(root, "cf", target_key)
     cookie_path = write_private_text(private_dir / "cf_cookies.txt", pairs + "\n")
     ua_path = write_private_text(private_dir / "cf_ua.txt", CF_UA + "\n")
     env_path = write_private_text(
         private_dir / "auth.env",
         f"export BBHUNT_AUTH_HEADERS={shlex.quote(auth_headers)}\n",
     )
-    out_dir = BASE_DIR / "recon" / target_storage_key(target)
+    out_dir = root / "recon" / target_storage_key(target)
     out_dir.mkdir(parents=True, exist_ok=True)
     marker_path = out_dir / "cf_cookies.txt"
-    marker_path.write_text(f"private_ref={cookie_path.relative_to(BASE_DIR)}\n", encoding="utf-8")
+    marker_path.write_text(f"private_ref={cookie_path.relative_to(root)}\n", encoding="utf-8")
     (out_dir / "cf_ua.txt").write_text(
-        f"private_ref={ua_path.relative_to(BASE_DIR)}\n",
+        f"private_ref={ua_path.relative_to(root)}\n",
         encoding="utf-8",
     )
     print(f"[+] Cloudflare auth material written to {private_dir}")
@@ -390,12 +399,13 @@ def write_output(cookies: list[dict], target: str, export_env: bool) -> str:
     return auth_headers
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Cloudflare bypass solver (2Captcha + Playwright)")
     ap.add_argument("--target", required=True, help="target URL (https://...)")
     ap.add_argument("--tier", type=int, choices=[1, 2], help="force tier 1 (widget) or 2 (managed)")
     ap.add_argument("--export-env", action="store_true", help="print a source command for private auth.env")
     ap.add_argument("--dry-run", action="store_true", help="detect tier + check balance, no solve")
+    ap.add_argument("--repo-root", default="", help="Repository root for config and artifacts")
     ap.add_argument(
         "--check",
         action="store_true",
@@ -406,10 +416,11 @@ def main() -> int:
         action="store_true",
         help="with --check: re-solve automatically if the stored cookie is expired",
     )
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    repo_root = Path(args.repo_root) if args.repo_root else BASE_DIR
 
     if args.check:
-        valid = check_cookie(args.target)
+        valid = check_cookie(args.target, repo_root=repo_root)
         if valid is None:
             print("[*] no stored cf_cookies.txt — run without --check to solve first")
             return 6
@@ -423,7 +434,7 @@ def main() -> int:
         print("[*] --auto-resolve: proceeding to re-solve")
         # fall through to normal detect+solve flow below
 
-    cfg = load_config()
+    cfg = load_config(repo_root)
     if not cfg["api_key"]:
         print(
             "[!] no 2captcha api_key. Set cf_solver.api_key in config.json "
@@ -490,7 +501,7 @@ def main() -> int:
         print("[!] solve failed — no cf_clearance obtained", file=sys.stderr)
         return 1
 
-    write_output(result["cookies"], args.target, args.export_env)
+    write_output(result["cookies"], args.target, args.export_env, repo_root=repo_root)
     return 0
 
 

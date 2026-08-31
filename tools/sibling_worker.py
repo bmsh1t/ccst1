@@ -126,11 +126,13 @@ def _build_target_url(target: str, path: str) -> str:
     return base + path
 
 
-def _select_global_limiter(scratch: Path):
+def _select_global_limiter(scratch: Path, repo_root: str | Path | None = None):
     """Return a GlobalRateLimiter or None (only when state file is reachable)."""
     try:
         from tools.parallel_workers import GlobalRateLimiter      # noqa: WPS433
-        return GlobalRateLimiter(test_rps=DEFAULT_LIMITER_TEST_RPS)
+        root = Path(repo_root) if repo_root is not None else BASE_DIR
+        state_path = root / "hunt-memory" / "audit" / "parallel_lock.json"
+        return GlobalRateLimiter(state_path=state_path, test_rps=DEFAULT_LIMITER_TEST_RPS)
     except Exception:
         return None
 
@@ -155,7 +157,14 @@ def _cancel_timeout_alarm() -> None:
         pass
 
 
-def run_worker(seed_path: Path, scratch: Path, target: str, budget_tools: int) -> dict:
+def run_worker(
+    seed_path: Path,
+    scratch: Path,
+    target: str,
+    budget_tools: int,
+    *,
+    repo_root: str | Path | None = None,
+) -> dict:
     """Main worker loop. Returns summary dict."""
     seed = json.loads(Path(seed_path).read_text(encoding="utf-8"))
     seed_finding = seed.get("seed_finding") or {}
@@ -180,11 +189,12 @@ def run_worker(seed_path: Path, scratch: Path, target: str, budget_tools: int) -
         return summary
 
     template = extract_template(endpoint)
-    all_urls = _load_all_urls(target, BASE_DIR)
+    root = Path(repo_root) if repo_root is not None else BASE_DIR
+    all_urls = _load_all_urls(target, root)
     siblings = find_siblings(template, all_urls, max_count=budget_tools)
 
     findings: list[dict] = []
-    limiter = _select_global_limiter(scratch)
+    limiter = _select_global_limiter(scratch, root)
 
     for sib in siblings:
         if summary["probes_attempted"] >= budget_tools:
@@ -243,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--budget-tools", type=int, default=12)
     parser.add_argument("--timeout-secs", type=int, default=300)
     parser.add_argument("--parent-session", default=None)
+    parser.add_argument("--repo-root", default="")
     args = parser.parse_args(argv)
 
     scratch = Path(args.scratch_dir)
@@ -256,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
             scratch=scratch,
             target=args.target,
             budget_tools=args.budget_tools,
+            repo_root=args.repo_root or None,
         )
     except Exception as exc:  # pragma: no cover
         summary = {

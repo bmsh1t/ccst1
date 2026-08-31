@@ -2666,7 +2666,11 @@ def _load_autopilot_control_facts(
     finding reader 禁止 legacy migration。完整诊断路径复用同一事实集合，
     但保留精确 recon 计数。
     """
-    resume_summary = load_resume_summary(resolved_memory_dir, resolved_target)
+    resume_summary = load_resume_summary(
+        resolved_memory_dir,
+        resolved_target,
+        repo_root=repo_root,
+    )
     finalized_identities = _finalized_finding_identities(repo_root, resolved_target)
     guard_status = load_guard_status(resolved_memory_dir, resolved_target)
     tripped_hosts = [item for item in guard_status.get("hosts", []) if item.get("tripped")]

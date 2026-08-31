@@ -1446,6 +1446,7 @@ def run_repo_source_hunt(domain, repo_url="", repo_path="", allow_large_repo=Fal
         repo_path=repo_path,
         allow_large_repo=allow_large_repo,
         interactive=False,
+        repo_root=BASE_DIR,
     )
     if result.get("status") == "confirmation_required":
         log("warn", "Repository exceeds source-hunt threshold. Re-run with --allow-large-repo after approval.")

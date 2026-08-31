@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-def test_json_probe_shares_one_request_budget_across_endpoints(monkeypatch):
+def test_json_probe_shares_one_request_budget_across_endpoints(monkeypatch, tmp_path):
     from tools import json_inject_probe as probe
 
     endpoints = [
@@ -38,10 +38,12 @@ def test_json_probe_shares_one_request_budget_across_endpoints(monkeypatch):
         stats["request_count"] += max_requests
         return [], []
 
-    def fake_write(_target, _hits, _events, *, execution):
+    def fake_write(_target, _hits, _events, *, execution, repo_root=None):
+        assert repo_root == tmp_path
         captured.update(execution)
         return {"out_dir": "", "summary": "", "files": []}
 
+    monkeypatch.setattr(probe, "BASE_DIR", tmp_path)
     monkeypatch.setattr(probe, "session_from_args", lambda _args: Session())
     monkeypatch.setattr(probe, "_collect_endpoints", lambda _args: (endpoints, {
         "out_of_scope": 0, "unsupported_method": 0, "invalid_url": 0, "items": []
@@ -152,7 +154,8 @@ def test_json_probe_deep_budget_expands_after_waf_observation(monkeypatch, tmp_p
         stats["request_count"] += max_requests
         return [], [{"variant_source": "ai", "reason": "waf"}]
 
-    def fake_write(_target, _hits, _events, *, execution):
+    def fake_write(_target, _hits, _events, *, execution, repo_root=None):
+        assert repo_root == tmp_path
         captured.update(execution)
         return {"out_dir": "", "summary": "", "files": []}
 

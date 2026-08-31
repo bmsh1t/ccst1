@@ -17,8 +17,9 @@ TOOLS_DIR = Path(__file__).resolve().parent
 BASE_DIR = TOOLS_DIR.parent
 
 
-def _exposure_dir(target: str) -> Path:
-    path = BASE_DIR / "findings" / target_storage_key(target) / "exposure"
+def _exposure_dir(target: str, repo_root: str | Path | None = None) -> Path:
+    root = Path(repo_root) if repo_root is not None else BASE_DIR
+    path = root / "findings" / target_storage_key(target) / "exposure"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -63,8 +64,10 @@ def _write_result_bundle(
     meta: RepoSourceMeta,
     secret_findings: list[RepoFinding],
     ci_findings: list[RepoFinding],
+    *,
+    repo_root: str | Path | None = None,
 ) -> Path:
-    exposure_dir = _exposure_dir(target)
+    exposure_dir = _exposure_dir(target, repo_root)
     _write_json(exposure_dir / "repo_source_meta.json", meta.to_dict())
     _write_json(exposure_dir / "repo_secrets.json", [finding.to_dict() for finding in secret_findings])
     _write_json(exposure_dir / "repo_ci_findings.json", [finding.to_dict() for finding in ci_findings])
@@ -82,6 +85,7 @@ def run_source_hunt(
     repo_path: str = "",
     allow_large_repo: bool = False,
     interactive: bool = False,
+    repo_root: str | Path | None = None,
 ) -> dict:
     try:
         source_meta, resolved_repo_path, temp_dir = acquire_repo_source(
@@ -92,7 +96,7 @@ def run_source_hunt(
         )
     except RepoConfirmationRequired as exc:
         exc.meta.status = "confirmation_required"
-        exposure_dir = _write_result_bundle(target, exc.meta, [], [])
+        exposure_dir = _write_result_bundle(target, exc.meta, [], [], repo_root=repo_root)
         return {
             "status": "confirmation_required",
             "exposure_dir": str(exposure_dir),
@@ -102,7 +106,13 @@ def run_source_hunt(
     try:
         secret_findings = scan_repo_secrets(resolved_repo_path)
         ci_findings = scan_repo_ci(resolved_repo_path)
-        exposure_dir = _write_result_bundle(target, source_meta, secret_findings, ci_findings)
+        exposure_dir = _write_result_bundle(
+            target,
+            source_meta,
+            secret_findings,
+            ci_findings,
+            repo_root=repo_root,
+        )
         return {
             "status": "ok",
             "exposure_dir": str(exposure_dir),
@@ -120,6 +130,7 @@ def main() -> int:
     parser.add_argument("--target", required=True, help="Target/program name used under findings/<target>/")
     parser.add_argument("--repo-url", default="", help="GitHub public repo URL or owner/repo reference")
     parser.add_argument("--repo-path", default="", help="Local repository path already available on disk")
+    parser.add_argument("--repo-root", default="", help="Repository root for findings output")
     parser.add_argument(
         "--allow-large-repo",
         action="store_true",
@@ -133,6 +144,7 @@ def main() -> int:
         repo_path=args.repo_path,
         allow_large_repo=args.allow_large_repo,
         interactive=True,
+        repo_root=args.repo_root or None,
     )
     summary_path = Path(result["exposure_dir"]) / "repo_summary.md"
     print(summary_path.read_text(encoding="utf-8"))

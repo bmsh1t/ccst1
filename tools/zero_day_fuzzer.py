@@ -103,6 +103,7 @@ class ZeroDayFuzzer:
         auth_session=None,
         max_requests=60,
         adaptive_budget=None,
+        repo_root=None,
     ):
         self.target = target
         self.deep = deep
@@ -133,7 +134,12 @@ class ZeroDayFuzzer:
         if findings_dir:
             self.findings_dir = findings_dir
         else:
-            self.findings_dir = os.path.join(FINDINGS_DIR, self.domain, "zero_day")
+            findings_root = (
+                os.path.join(os.fspath(repo_root), "findings")
+                if repo_root is not None
+                else FINDINGS_DIR
+            )
+            self.findings_dir = os.path.join(findings_root, self.domain, "zero_day")
         os.makedirs(self.findings_dir, exist_ok=True)
 
     def request(self, url, method="GET", headers=None, data=None, timeout=10):
@@ -642,7 +648,7 @@ class ZeroDayFuzzer:
         print(f"{'='*55}\n")
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Zero-Day Bug Finder")
     parser.add_argument("target", nargs="?", help="Target URL (https://example.com)")
     parser.add_argument("--recon-dir", type=str, help="Recon directory to load URLs from")
@@ -650,7 +656,8 @@ def main():
     parser.add_argument("--max-requests", type=int, default=60, help="Maximum requests per target")
     parser.add_argument("--adaptive-budget", action="store_true", help="Adapt deep request budget to response variance and high-value evidence")
     parser.add_argument("--scope-target", default="", help="Parent target/list/manifest used for Scope checks")
-    args = parser.parse_args()
+    parser.add_argument("--repo-root", default="", help="Repository root for findings artifacts")
+    args = parser.parse_args(argv)
 
     if not args.target and not args.recon_dir:
         parser.print_help()
@@ -695,6 +702,7 @@ def main():
             auth_session=auth_session,
             max_requests=args.max_requests,
             adaptive_budget=args.adaptive_budget,
+            repo_root=args.repo_root or None,
         )
         results.append(fuzzer.run_all_tests())
     return 0 if results and all(item.get("status") == "ok" for item in results) else 2

@@ -126,7 +126,7 @@ def test_form_adapter_preserves_form_encoding_and_method(monkeypatch):
     assert b"sort=%27" in calls[2]["body"]
 
 
-def test_parameter_probe_shares_one_request_budget_across_endpoints(monkeypatch):
+def test_parameter_probe_shares_one_request_budget_across_endpoints(monkeypatch, tmp_path):
     endpoints = [
         {"url": f"https://target.test/search/{index}?q=x", "method": "GET"}
         for index in range(3)
@@ -143,10 +143,12 @@ def test_parameter_probe_shares_one_request_budget_across_endpoints(monkeypatch)
         stats["request_count"] += max_requests
         return [], []
 
-    def fake_write(_target, _lane, _hits, _events, execution):
+    def fake_write(_target, _lane, _hits, _events, execution, *, repo_root=None):
+        assert repo_root == tmp_path
         captured.update(execution)
         return {"summary": "", "files": []}
 
+    monkeypatch.setattr(probe, "BASE_DIR", tmp_path)
     monkeypatch.setattr(probe, "session_from_args", lambda _args: Session())
     monkeypatch.setattr(probe, "_read_inputs", lambda _path, _mode: endpoints)
     monkeypatch.setattr(probe, "probe_parameter_endpoint", fake_probe)
@@ -235,7 +237,11 @@ def test_summary_metadata_binds_input_source_and_fingerprint(tmp_path, monkeypat
 
     captured = {}
     monkeypatch.setattr(probe, "BASE_DIR", tmp_path)
-    monkeypatch.setattr(probe, "_write_results", lambda _target, _lane, _hits, _events, execution: captured.update(execution) or {})
+    monkeypatch.setattr(
+        probe,
+        "_write_results",
+        lambda _target, _lane, _hits, _events, execution, **_kwargs: captured.update(execution) or {},
+    )
     monkeypatch.setattr(probe, "session_from_args", lambda _args: type("S", (), {"bind_target": lambda self, _target: self})())
     monkeypatch.setattr(probe, "_read_inputs", lambda _path, _mode: [])
     monkeypatch.setattr(sys, "argv", ["sql_parameter_probe", "--target", "target.test", "--urls-file", str(source)])

@@ -47,14 +47,21 @@ def _text(value: Any, field: str, *, required: bool = True) -> str:
     return value
 
 
-def _artifact_ref(value: Any, *, target: str, field: str) -> str:
+def _artifact_ref(
+    value: Any,
+    *,
+    target: str,
+    field: str,
+    repo_root: str | Path | None = None,
+) -> str:
     raw = _text(value, field)
     if raw.startswith("artifact://"):
         raw = raw[len("artifact://") :]
+    root = Path(repo_root) if repo_root is not None else BASE_DIR
     candidate = Path(raw).expanduser()
-    path = (candidate if candidate.is_absolute() else BASE_DIR / candidate).resolve()
+    path = (candidate if candidate.is_absolute() else root / candidate).resolve()
     try:
-        relative = path.relative_to(BASE_DIR)
+        relative = path.relative_to(root)
     except ValueError as exc:
         raise ValueError(f"{field} must stay inside the repository") from exc
     if not path.is_file() or not relative.parts or relative.parts[0] not in _ALLOWED_ARTIFACT_ROOTS:
@@ -65,12 +72,23 @@ def _artifact_ref(value: Any, *, target: str, field: str) -> str:
     return str(relative)
 
 
-def _refs(value: Any, *, target: str, field: str) -> list[str]:
+def _refs(
+    value: Any,
+    *,
+    target: str,
+    field: str,
+    repo_root: str | Path | None = None,
+) -> list[str]:
     if not isinstance(value, list) or not value or len(value) > MAX_EVIDENCE_REFS:
         raise ValueError(f"{field} must contain 1-{MAX_EVIDENCE_REFS} artifact refs")
     refs: list[str] = []
     for index, item in enumerate(value):
-        ref = _artifact_ref(item, target=target, field=f"{field}[{index}]")
+        ref = _artifact_ref(
+            item,
+            target=target,
+            field=f"{field}[{index}]",
+            repo_root=repo_root,
+        )
         if ref not in refs:
             refs.append(ref)
     return refs
@@ -103,7 +121,13 @@ def _variant_value(item: dict[str, Any], index: int) -> str:
     return value
 
 
-def validate_plan(payload: dict[str, Any], *, target: str, plan_path: str = "") -> dict[str, Any]:
+def validate_plan(
+    payload: dict[str, Any],
+    *,
+    target: str,
+    plan_path: str = "",
+    repo_root: str | Path | None = None,
+) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("WAF plan must contain an object")
     if payload.get("schema_version", SCHEMA_VERSION) != SCHEMA_VERSION:
@@ -136,7 +160,12 @@ def validate_plan(payload: dict[str, Any], *, target: str, plan_path: str = "") 
     if max_variants < 1 or max_variants > MAX_AI_VARIANTS:
         raise ValueError(f"WAF plan max_variants must be between 1 and {MAX_AI_VARIANTS}")
 
-    top_refs = _refs(payload.get("evidence_refs"), target=resolved_target, field="evidence_refs")
+    top_refs = _refs(
+        payload.get("evidence_refs"),
+        target=resolved_target,
+        field="evidence_refs",
+        repo_root=repo_root,
+    )
     variants = payload.get("variants")
     if not isinstance(variants, list) or not variants or len(variants) > max_variants:
         raise ValueError("WAF plan variants must be a non-empty bounded list")
@@ -169,7 +198,12 @@ def validate_plan(payload: dict[str, Any], *, target: str, plan_path: str = "") 
             if not url_belongs_to_target(endpoint, resolved_target):
                 raise ValueError(f"variants[{index}].endpoint is outside target scope")
         item_refs = raw.get("evidence_refs", top_refs)
-        refs = _refs(item_refs, target=resolved_target, field=f"variants[{index}].evidence_refs")
+        refs = _refs(
+            item_refs,
+            target=resolved_target,
+            field=f"variants[{index}].evidence_refs",
+            repo_root=repo_root,
+        )
         value = _variant_value(raw, index)
         signature = (payload_class, field, str(endpoint), value)
         if signature in seen_variants:
@@ -198,7 +232,12 @@ def validate_plan(payload: dict[str, Any], *, target: str, plan_path: str = "") 
     }
 
 
-def load_plan(path: str | Path, *, target: str) -> dict[str, Any]:
+def load_plan(
+    path: str | Path,
+    *,
+    target: str,
+    repo_root: str | Path | None = None,
+) -> dict[str, Any]:
     plan_file = Path(path).expanduser().resolve()
     try:
         raw = plan_file.read_bytes()
@@ -207,9 +246,15 @@ def load_plan(path: str | Path, *, target: str) -> dict[str, Any]:
         raise ValueError(f"unable to read WAF plan: {exc}") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid WAF plan JSON: {exc}") from exc
-    plan = validate_plan(payload, target=target, plan_path=str(plan_file))
+    root = Path(repo_root) if repo_root is not None else BASE_DIR
+    plan = validate_plan(
+        payload,
+        target=target,
+        plan_path=str(plan_file),
+        repo_root=root,
+    )
     try:
-        plan["plan_ref"] = str(plan_file.relative_to(BASE_DIR))
+        plan["plan_ref"] = str(plan_file.relative_to(root))
     except ValueError:
         plan["plan_ref"] = str(plan_file)
     plan["plan_sha256"] = hashlib.sha256(raw).hexdigest()

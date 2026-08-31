@@ -909,14 +909,20 @@ def probe_endpoint(
 # Output writer
 
 
-def _source_binding(path_value: str, kind: str = "") -> dict:
+def _source_binding(
+    path_value: str,
+    kind: str = "",
+    *,
+    repo_root: str | Path | None = None,
+) -> dict:
     if not path_value:
         return {}
     path = Path(path_value).expanduser().resolve()
     if not path.is_file():
         return {}
+    root = Path(repo_root) if repo_root is not None else BASE_DIR
     try:
-        display = str(path.relative_to(BASE_DIR))
+        display = str(path.relative_to(root))
     except ValueError:
         display = str(path)
     binding = {
@@ -1065,9 +1071,11 @@ def _write_findings(
     waf_events: list[dict],
     *,
     execution: dict | None = None,
+    repo_root: str | Path | None = None,
 ) -> dict:
     target_key = target_storage_key(target)
-    out_dir = BASE_DIR / "findings" / target_key / "poc" / "json_inject"
+    root = Path(repo_root) if repo_root is not None else BASE_DIR
+    out_dir = root / "findings" / target_key / "poc" / "json_inject"
     out_dir.mkdir(parents=True, exist_ok=True)
     summary_path = out_dir / "summary.json"
     written: list[str] = []
@@ -1164,7 +1172,7 @@ def _new_summary_item_count(previous: list, current: list) -> int:
 # CLI
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="POST-JSON injection probe — covers REST-API JSON-body attack surface")
     parser.add_argument("--target", required=True, help="Target host or host:port (used for storage path + default seeds)")
     parser.add_argument("--endpoints-file", default="", help="File with one URL per line OR JSONL of {method,url,body}")
@@ -1181,14 +1189,20 @@ def main() -> int:
                             help="Probe only endpoints supplied by explicit or discovered inputs")
     parser.add_argument("--max-requests", type=int, default=60, help="Hard cap on total requests for the whole probe lane")
     parser.add_argument("--deep", action="store_true", help="Adapt the bounded request budget to current surface and evidence signals")
+    parser.add_argument("--repo-root", default="", help="Repository root for plans and findings artifacts")
     add_cli_args(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    repo_root = Path(args.repo_root) if args.repo_root else BASE_DIR
     if args.max_requests < 1:
         parser.error("--max-requests must be a positive integer")
     args.target = canonical_target_value(args.target)
     session = session_from_args(args).bind_target(args.target)
     try:
-        waf_plan = load_plan(args.waf_plan, target=args.target) if args.waf_plan else None
+        waf_plan = (
+            load_plan(args.waf_plan, target=args.target, repo_root=repo_root)
+            if args.waf_plan
+            else None
+        )
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -1196,9 +1210,9 @@ def main() -> int:
     source_bindings = [
         binding
         for binding in (
-            _source_binding(args.endpoints_file, "endpoints"),
-            _source_binding(args.js_intel, "js-intel"),
-            _source_binding(args.waf_plan, "waf-plan"),
+            _source_binding(args.endpoints_file, "endpoints", repo_root=repo_root),
+            _source_binding(args.js_intel, "js-intel", repo_root=repo_root),
+            _source_binding(args.waf_plan, "waf-plan", repo_root=repo_root),
         )
         if binding
     ]
@@ -1231,6 +1245,7 @@ def main() -> int:
                     "waf_plan_variant_count": len(waf_plan.get("variants") or []) if waf_plan else 0,
                     "waf_ai_variants_executed": 0,
                 },
+                repo_root=repo_root,
             )
         return 1
 
@@ -1243,7 +1258,7 @@ def main() -> int:
         "out_of_scope_redirect": 0,
     }
     probed_endpoint_count = 0
-    summary_path = BASE_DIR / "findings" / target_storage_key(args.target) / "poc" / "json_inject" / "summary.json"
+    summary_path = repo_root / "findings" / target_storage_key(args.target) / "poc" / "json_inject" / "summary.json"
     prior_summary: dict = {}
     if summary_path.is_file():
         try:
@@ -1377,6 +1392,7 @@ def main() -> int:
             "budget": budget,
             "deep": bool(args.deep),
         },
+        repo_root=repo_root,
     )
     if not all_hits:
         if all_waf_events:

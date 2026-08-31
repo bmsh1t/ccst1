@@ -163,9 +163,15 @@ def recent_guard_advisories(entries: list[dict], *, limit: int = 3) -> list[dict
 recent_guard_blocks = recent_guard_advisories
 
 
-def load_resume_summary(memory_dir: str | Path, target: str) -> dict | None:
+def load_resume_summary(
+    memory_dir: str | Path,
+    target: str,
+    *,
+    repo_root: str | Path | None = None,
+) -> dict | None:
     """Load the minimum data needed to resume a target hunt."""
     memory_dir = Path(memory_dir)
+    root = Path(repo_root) if repo_root is not None else Path(BASE_DIR)
     requested_target = target
     canonical_target = canonical_target_value(target)
     profile = load_target_profile(memory_dir, canonical_target)
@@ -229,10 +235,10 @@ def load_resume_summary(memory_dir: str | Path, target: str) -> dict | None:
         "latest_session_summary": latest_session,
         "recent_guard_advisories": guard_advisories,
         "recent_guard_blocks": guard_advisories,
-        "repo_source_summary": load_repo_source_summary(BASE_DIR, profile_target),
-        "runtime_state": load_runtime_state(BASE_DIR, profile_target),
-        "recon_artifacts": inspect_recon_artifacts(BASE_DIR, profile_target),
-        "structured_findings": load_structured_finding_followup(BASE_DIR, profile_target),
+        "repo_source_summary": load_repo_source_summary(root, profile_target),
+        "runtime_state": load_runtime_state(root, profile_target),
+        "recon_artifacts": inspect_recon_artifacts(root, profile_target),
+        "structured_findings": load_structured_finding_followup(root, profile_target),
     }
 
 
@@ -332,15 +338,21 @@ def load_checkpoint_followup(base_dir: str | Path, target: str, memory_dir: str 
     }
 
 
-def load_pickup_summary(memory_dir: str | Path, target: str) -> dict | None:
+def load_pickup_summary(
+    memory_dir: str | Path,
+    target: str,
+    *,
+    repo_root: str | Path | None = None,
+) -> dict | None:
     """Load resume summary plus a read-only checkpoint follow-up."""
-    summary = load_resume_summary(memory_dir, target)
+    root = Path(repo_root) if repo_root is not None else Path(BASE_DIR)
+    summary = load_resume_summary(memory_dir, target, repo_root=root)
     if summary is None:
         return None
 
     resolved_target = summary.get("resolved_target") or target
     summary["checkpoint"] = load_checkpoint_followup(
-        BASE_DIR,
+        root,
         resolved_target,
         memory_dir=memory_dir,
     )
@@ -529,11 +541,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Resume a target hunt from hunt memory")
     parser.add_argument("--target", required=True, help="Target domain")
     parser.add_argument("--memory-dir", default="", help="Optional hunt-memory directory")
+    parser.add_argument("--repo-root", default="", help="Repository root for runtime artifacts")
     parser.add_argument("--json", action="store_true", help="Output JSON summary")
     args = parser.parse_args()
 
-    memory_dir = args.memory_dir or str(default_memory_dir(BASE_DIR))
-    summary = load_pickup_summary(memory_dir, args.target)
+    repo_root = Path(args.repo_root) if args.repo_root else Path(BASE_DIR)
+    memory_dir = args.memory_dir or str(default_memory_dir(repo_root))
+    summary = load_pickup_summary(memory_dir, args.target, repo_root=repo_root)
 
     if args.json:
         print(json.dumps({"summary": summary}, indent=2))

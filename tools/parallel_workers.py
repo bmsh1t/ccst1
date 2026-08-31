@@ -288,6 +288,7 @@ def spawn_sibling_worker(
             budget_tools=budget_tools,
             timeout_secs=timeout_secs,
             parent_session=parent_session,
+            extra_args=["--repo-root", str(repo)],
         )
     return handle
 

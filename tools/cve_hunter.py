@@ -228,14 +228,16 @@ def check_exposed_configs(domain, recon_dir=None):
     return exposed
 
 
-def hunt_cves(domain, recon_dir=None):
+def hunt_cves(domain, recon_dir=None, *, repo_root=None):
     """Full CVE hunting pipeline."""
+    root = os.fspath(repo_root) if repo_root is not None else BASE_DIR
     domain = classify_target(domain)["target"]
     print("=" * 50)
     print(f"  CVE Hunter — {domain}")
     print("=" * 50)
 
-    findings_dir = os.path.join(FINDINGS_DIR, target_storage_key(domain), "cves")
+    findings_root = os.path.join(root, "findings") if repo_root is not None else FINDINGS_DIR
+    findings_dir = os.path.join(findings_root, target_storage_key(domain), "cves")
     os.makedirs(findings_dir, exist_ok=True)
 
     # Step 0: Check for exposed config files
@@ -254,7 +256,7 @@ def hunt_cves(domain, recon_dir=None):
     if techs:
         print(f"\n[*] Building Intel v2 for {len(techs)} technologies...")
         intel = build_target_intel(
-            BASE_DIR,
+            root,
             domain,
             techs=list(techs.keys()),
             memory={"tested_cves": [], "tested_endpoints": [], "patterns": []},
@@ -309,11 +311,13 @@ def hunt_cves(domain, recon_dir=None):
     return all_cves, nuclei_findings
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="CVE Hunter — Find known vulnerabilities")
     parser.add_argument("domain", nargs="?", help="Target domain")
     parser.add_argument("--recon-dir", type=str, help="Path to recon results directory")
-    args = parser.parse_args()
+    parser.add_argument("--repo-root", default="", help="Repository root for recon and findings artifacts")
+    args = parser.parse_args(argv)
+    root = args.repo_root or BASE_DIR
 
     if not args.domain and not args.recon_dir:
         parser.print_help()
@@ -326,11 +330,11 @@ def main():
         domain = os.path.basename(recon_dir)
 
     if not recon_dir and domain:
-        potential = os.path.join(BASE_DIR, "recon", target_storage_key(domain))
+        potential = os.path.join(root, "recon", target_storage_key(domain))
         if os.path.isdir(potential):
             recon_dir = potential
 
-    hunt_cves(domain, recon_dir)
+    hunt_cves(domain, recon_dir, repo_root=root)
 
 
 if __name__ == "__main__":

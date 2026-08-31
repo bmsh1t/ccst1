@@ -38,15 +38,20 @@ USER_AGENT = "claude-bug-bounty/sql_parameter_probe"
 SUMMARY_ITEM_LIMIT = 100
 
 
-def _source_binding(path_value: str) -> dict:
+def _source_binding(
+    path_value: str,
+    *,
+    repo_root: str | Path | None = None,
+) -> dict:
     """Return a redacted, replay-freshness binding for an input artifact."""
     if not path_value:
         return {}
     path = Path(path_value).expanduser().resolve()
     if not path.is_file():
         return {}
+    root = Path(repo_root) if repo_root is not None else BASE_DIR
     try:
-        display = str(path.relative_to(BASE_DIR))
+        display = str(path.relative_to(root))
     except ValueError:
         display = str(path)
     data = path.read_bytes()
@@ -363,8 +368,17 @@ def probe_parameter_endpoint(
     return hits, waf_events
 
 
-def _write_results(target: str, lane: str, hits: list[dict], waf_events: list[dict], execution: dict) -> dict:
-    out_dir = BASE_DIR / "findings" / target_storage_key(target) / "poc" / "sql_matrix" / lane
+def _write_results(
+    target: str,
+    lane: str,
+    hits: list[dict],
+    waf_events: list[dict],
+    execution: dict,
+    *,
+    repo_root: str | Path | None = None,
+) -> dict:
+    root = Path(repo_root) if repo_root is not None else BASE_DIR
+    out_dir = root / "findings" / target_storage_key(target) / "poc" / "sql_matrix" / lane
     out_dir.mkdir(parents=True, exist_ok=True)
     summary_path = out_dir / "summary.json"
     details = dict(execution)
@@ -442,20 +456,22 @@ def _read_inputs(path: str, mode: str) -> list[dict]:
     return items
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Shared SQL matrix for query-string and form parameters")
     parser.add_argument("--target", required=True)
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument("--urls-file", help="newline-delimited query URLs or JSONL")
     inputs.add_argument("--form-file", help="JSONL of POST form requests: {url, method, body}")
     parser.add_argument("--max-requests", type=int, default=60)
+    parser.add_argument("--repo-root", default="", help="Repository root for plans and findings artifacts")
     parser.add_argument(
         "--waf-plan",
         default="",
         help="Optional target-owned AI WAF-pass plan JSON; only used after a new baseline-relative SQLi block",
     )
     add_cli_args(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    repo_root = Path(args.repo_root) if args.repo_root else BASE_DIR
     if args.max_requests < 1:
         parser.error("--max-requests must be a positive integer")
     target = canonical_target_value(args.target)
@@ -463,13 +479,20 @@ def main() -> int:
     source = args.urls_file or args.form_file
     session = session_from_args(args).bind_target(target)
     try:
-        waf_plan = core.load_plan(args.waf_plan, target=target) if args.waf_plan else None
+        waf_plan = (
+            core.load_plan(args.waf_plan, target=target, repo_root=repo_root)
+            if args.waf_plan
+            else None
+        )
     except ValueError as exc:
         parser.error(str(exc))
     endpoints = _read_inputs(source, mode)
     source_bindings = [
         binding
-        for binding in (_source_binding(source), _source_binding(args.waf_plan))
+        for binding in (
+            _source_binding(source, repo_root=repo_root),
+            _source_binding(args.waf_plan, repo_root=repo_root),
+        )
         if binding
     ]
     input_fingerprint = _input_fingerprint(endpoints, source_bindings)
@@ -499,7 +522,7 @@ def main() -> int:
             continue
         stats["endpoint_count"] += 1
         eligible.append(endpoint)
-    summary_path = BASE_DIR / "findings" / target_storage_key(target) / "poc" / "sql_matrix" / mode / "summary.json"
+    summary_path = repo_root / "findings" / target_storage_key(target) / "poc" / "sql_matrix" / mode / "summary.json"
     cursor_state = core._probe_cursor(
         summary_path,
         target=target,
@@ -567,7 +590,14 @@ def main() -> int:
     stats["batch_tested_endpoint_count"] = processed_work_items
     stats["resumed"] = bool(cursor_state["resumed"])
     stats["cursor"] = cursor
-    result = _write_results(target, mode, hits, waf_events, stats)
+    result = _write_results(
+        target,
+        mode,
+        hits,
+        waf_events,
+        stats,
+        repo_root=repo_root,
+    )
     print(json.dumps({"status": "ok", "hit_count": len(hits), **result}, indent=2))
     return 0
 

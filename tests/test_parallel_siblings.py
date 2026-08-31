@@ -479,44 +479,32 @@ class TestEndToEndSubprocess:
         repo, _target = fake_repo
         host_for_url = stub_server.replace("http://", "")  # e.g., 127.0.0.1:54321
 
-        # The worker process uses sibling_generator._load_all_urls(target,
-        # BASE_DIR), where BASE_DIR is the real project root. So the
-        # cached recon URLs must live at REPO_ROOT/recon/<host_for_url>/urls/all.txt.
-        # Sanitize the host:port — colons are fine in dir names on POSIX.
-        real_recon = REPO_ROOT / "recon" / host_for_url / "urls"
-        real_recon.mkdir(parents=True, exist_ok=True)
+        recon = repo / "recon" / host_for_url / "urls"
+        recon.mkdir(parents=True, exist_ok=True)
         urls = [
             "/api/v1/orders/123",
             "/api/v1/invoices/123",
             "/api/v1/exports/123",
             "/api/v1/missing/123",
         ]
-        (real_recon / "all.txt").write_text("\n".join(urls), encoding="utf-8")
-        try:
-            seed = {
-                "id": "f-1",
-                "endpoint": "/api/v1/orders/123",
-                "vuln_class": "IDOR",
-                "severity": "medium",
-            }
-            handle = pw.spawn_sibling_worker(
-                seed_finding=seed,
-                worker_id="e2e",
-                target=host_for_url,
-                repo_root=repo,
-                budget_tools=4,
-                timeout_secs=30,
-                parent_session="sess-e2e",
-            )
-            results = pw.wait_for_workers([handle], timeout_secs=30,
-                                          poll_interval_secs=0.2)
-        finally:
-            try:
-                (real_recon / "all.txt").unlink()
-                real_recon.rmdir()
-                real_recon.parent.rmdir()
-            except OSError:
-                pass
+        (recon / "all.txt").write_text("\n".join(urls), encoding="utf-8")
+        seed = {
+            "id": "f-1",
+            "endpoint": "/api/v1/orders/123",
+            "vuln_class": "IDOR",
+            "severity": "medium",
+        }
+        handle = pw.spawn_sibling_worker(
+            seed_finding=seed,
+            worker_id="e2e",
+            target=host_for_url,
+            repo_root=repo,
+            budget_tools=4,
+            timeout_secs=30,
+            parent_session="sess-e2e",
+        )
+        results = pw.wait_for_workers([handle], timeout_secs=30,
+                                      poll_interval_secs=0.2)
 
         log_text = handle.log_path.read_text() if handle.log_path.exists() else "<no log>"
         assert results[0].completed is True, f"worker did not finish: log={log_text}"
