@@ -41,6 +41,8 @@ BEHAVIOR_NUMERIC_FIELDS = ("coverage_progress",)
 
 if str(Path(__file__).parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).parent))
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 from ab_runner import load_jsonl  # noqa: E402
 
 
@@ -538,6 +540,9 @@ def main(argv: list[str] | None = None) -> int:
                     "conditions": conditions,
                     "repetitions": args.repetitions,
                     "verdicts": verdicts,
+                    "max_turns": args.max_turns,
+                    "max_budget_usd": args.max_budget_usd,
+                    "timeout_seconds": args.timeout,
                     "git_revision": _git_revision(cwd),
                     "provenance": _runtime_provenance(cwd, home, config_dir),
                 },

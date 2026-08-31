@@ -11,18 +11,21 @@ def _read(relative_path: str) -> str:
 
 
 def test_web2_recon_separates_automatic_baseline_from_ai_focused_fuzz():
-    text = _read("skills/web2-recon/SKILL.md")
-    normalized = " ".join(text.split()).lower()
+    skill = _read("skills/web2-recon/SKILL.md")
+    command = _read("commands/recon.md")
+    normalized = " ".join(skill.split()).lower()
 
     assert "baseline ffuf" in normalized
     assert "focused fuzz" in normalized
     assert "ai 显式选择" in normalized
     assert "baseline 零命中而自动转入 focused fuzz" in normalized
     assert "不得机械合并整份通用大字典" in normalized
+    assert "## Focused FFUF Discovery" in command
+    assert "optional ai-selected discovery action" in " ".join(command.split()).lower()
 
 
 def test_web2_recon_preserves_focused_ffuf_execution_capabilities():
-    text = _read("skills/web2-recon/SKILL.md")
+    text = _read("commands/recon.md")
 
     for marker in (
         "ffuf -u 'https://target.com/FUZZ'",
@@ -45,8 +48,24 @@ def test_web2_recon_preserves_focused_ffuf_execution_capabilities():
     assert "-rate" not in text
 
 
+def test_web2_recon_skill_stays_a_decision_layer():
+    skill = _read("skills/web2-recon/SKILL.md")
+
+    for removed in (
+        "## STANDARD RECON PIPELINE",
+        "## 30-MINUTE RECON PROTOCOL",
+        "### Stack → Primary Bug Class Map",
+        "### Pre-Hunt: Always Run First",
+    ):
+        assert removed not in skill
+    assert "Branches are alternatives, not a mandatory order" in skill
+    assert "Elapsed time alone never closes Recon" in skill
+    assert "commands/recon.md" in skill
+
+
 def test_web2_recon_uses_existing_isolated_artifact_and_memory_contracts():
-    text = _read("skills/web2-recon/SKILL.md")
+    text = _read("commands/recon.md")
+    normalized = " ".join(text.split())
 
     for marker in (
         "recon/<target_key>/focused_fuzz/",
@@ -58,10 +77,9 @@ def test_web2_recon_uses_existing_isolated_artifact_and_memory_contracts():
         "--read-ffuf --offset 0 --limit 100",
         "tools/target_memory.py lead",
         "tools/target_memory.py dead-end",
-        "不覆盖 baseline",
-        "不写入 `urls/all.txt`、surface、",
+        "keep the run out of `urls/all.txt`, Surface, Queue, Coverage, and Finding state",
     ):
-        assert marker in text
+        assert marker in normalized
 
 
 def test_autopilot_entries_keep_focused_fuzz_ai_selected_and_non_automatic():
@@ -98,8 +116,9 @@ def test_autopilot_entries_keep_focused_fuzz_ai_selected_and_non_automatic():
 
 def test_target_dialect_is_evidence_linked_bounded_and_feedback_driven():
     skill = _read("skills/web2-recon/SKILL.md")
+    command = _read("commands/recon.md")
     card = _read("knowledge/cards/path-pattern-management-exposure.md")
-    combined = skill + "\n" + card
+    combined = skill + "\n" + command + "\n" + card
     normalized_skill = " ".join(skill.split())
 
     for marker in (

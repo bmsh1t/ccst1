@@ -1,6 +1,6 @@
 ---
 name: triage-validation
-description: Finding validation before writing any report — 7-Question Gate (all 7 questions), 4 pre-submission gates, always-rejected list, conditionally valid with chain table, CVSS 3.1 quick reference, severity decision guide, report title formula, 60-second pre-submit checklist. Use BEFORE writing any report. Route complete evidence to REPORT, missing connectors to CHAIN_REQUIRED, impact-only gaps to DOWNGRADE, and failed reportability gates to DO_NOT_REPORT without erasing exploration context.
+description: Finding validation before writing any report — 7-Question Gate (all 7 questions), 4 pre-submission gates, always-rejected list, conditionally valid with chain table, CVSS 3.1 quick reference, severity decision guide, report title formula, and pre-submit checklist. Use BEFORE writing any report. Route complete evidence to REPORT, missing connectors to CHAIN_REQUIRED, impact-only gaps to DOWNGRADE, and failed reportability gates to DO_NOT_REPORT without erasing exploration context.
 ---
 
 # TRIAGE & VALIDATION
@@ -8,6 +8,12 @@ description: Finding validation before writing any report — 7-Question Gate (a
 Any non-pass stops the current claimed report or severity. Route it explicitly
 to CHAIN_REQUIRED, DOWNGRADE, or DO_NOT_REPORT; keep a Lead/Signal only when a
 concrete next evidence action remains.
+
+The seven questions and four gates are evidence gates, not a timer or a global
+coverage claim. A gate passes only when the target identity, request/response,
+impact, and reproducibility required by that gate are present. Elapsed time alone never makes a Candidate report-ready, validated, rejected, or complete;
+preserve the current evidence and next action when a bounded review is
+interrupted.
 
 ## 四层记忆接入
 
@@ -167,7 +173,7 @@ Use `session_id` / audit artifacts to confirm the same request under each identi
 
 Run in sequence. ALL 4 must PASS.
 
-### Gate 0: Reality Check (30 seconds)
+### Gate 0: Reality Check
 ```
 [ ] Bug is REAL — confirmed with actual HTTP requests, not code reading alone
 [ ] Bug matches the supplied target context
@@ -175,7 +181,7 @@ Run in sequence. ALL 4 must PASS.
 [ ] Evidence ready — screenshot, response body, or video
 ```
 
-### Gate 1: Impact Validation (2 minutes)
+### Gate 1: Impact Validation
 ```
 [ ] Can answer: "What can attacker DO that they couldn't before?"
 [ ] Answer is more than "see non-sensitive data" (unless program pays for info disclosure)
@@ -183,7 +189,7 @@ Run in sequence. ALL 4 must PASS.
 [ ] Not relying on victim doing something unlikely
 ```
 
-### Gate 2: Deduplication Check (5 minutes)
+### Gate 2: Deduplication Check
 ```
 [ ] Searched HackerOne Hacktivity for this program + similar bug title/endpoint
 [ ] Searched GitHub issues for target repo
@@ -192,7 +198,7 @@ Run in sequence. ALL 4 must PASS.
 [ ] Google: "TARGET_NAME ENDPOINT_NAME bug bounty"
 ```
 
-### Gate 3: Report Quality (10 minutes)
+### Gate 3: Report Quality
 ```
 [ ] Title: [Bug Class] in [Endpoint] allows [actor] to [impact]
 [ ] Steps to Reproduce: copy-pasteable HTTP request
@@ -346,12 +352,12 @@ quote 必须是该行可执行、具有 guard 形态的代码；文件缺失、�
 
 The goal is to QUICKLY disqualify bad report candidates so you hunt real bugs:
 
-1. **5-minute rule**: If you can't fill in Q1's template in 5 minutes → move on
+1. **Evidence-completeness rule**: If Q1 cannot be filled with a real target-bound request and observable result, preserve the Candidate and route it to DO_NOT_REPORT or a concrete next evidence action
 2. **Precondition count**: More than 2 preconditions simultaneously required → do not report
 3. **Impact test**: "What does attacker walk away with?" — if nothing tangible → do not report
 4. **Admin bypass**: "Admin can do X" is NEVER a bug → do not report
 5. **Design doc test**: If it's documented behavior → do not report
-6. **Rabbit hole signal**: 30+ min on Q6 with no reproducible PoC → stop the report path
+6. **Repeated bounded failure**: If Q6 repeats the same progress fingerprint without a reproducible PoC, stop the report path, preserve the evidence, and record what new evidence would reopen it
 
 ---
 

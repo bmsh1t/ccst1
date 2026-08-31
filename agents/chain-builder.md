@@ -78,7 +78,9 @@ If Burp MCP is NOT available:
 
 1. Confirm A is real (exact HTTP request + response) before looking for B
 2. Look up A's class in chain table, pick top 2 B candidates
-3. Test each B with 20-minute time box — if not confirmed, keep it only as a chain candidate with the next evidence action and move to next
+3. Test each B with a bounded evidence batch — if the progress fingerprint
+   repeats without confirmation, keep it only as a chain candidate with the next
+   evidence action and move to the next candidate
 4. B must differ from A (different endpoint OR mechanism OR impact)
 5. Before reporting, B must pass Gate 0 independently or the full A→B path must be proven end-to-end
 6. If 3 B candidates fail → cluster is dry → stop

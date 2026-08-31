@@ -178,6 +178,35 @@ def test_coverage_gate_treats_underexplored_unknown_as_gap():
     assert "不能把它写成 `tested`" in text
 
 
+def test_phase_rotation_and_triage_use_observable_progress_not_clock_rules():
+    methodology = _read("skills/bb-methodology/SKILL.md")
+    hunting = _read("rules/hunting.md")
+    triage = _read("skills/triage-validation/SKILL.md")
+    chain = _read("commands/chain.md") + _read("agents/chain-builder.md")
+
+    for text in (methodology, hunting):
+        assert "progress fingerprint" in text
+        assert "evidence delta" in text
+        assert "owner budget" in text
+        assert "prerequisite" in text
+        assert "Elapsed time alone" in text
+
+    for marker in (
+        "evidence gates, not a timer",
+        "Elapsed time alone never makes a Candidate report-ready",
+        "Evidence-completeness rule",
+        "Repeated bounded failure",
+    ):
+        assert marker in triage
+    for forbidden in ("5-minute rule", "30+ min", "2 minutes", "5 minutes", "10 minutes"):
+        assert forbidden not in triage
+
+    assert "Evidence-Bounded Transition Rules" in chain
+    assert "progress fingerprint repeats" in chain
+    assert "20-minute" not in chain
+    assert "30+ min" not in chain
+
+
 def test_coverage_gate_requires_three_axis_feature_workflow_closure():
     text = _read("rules/coverage-gate.md")
 

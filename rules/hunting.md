@@ -158,10 +158,14 @@ transitions, previews, calculations, and test-owned reversible flows.
 
 ### Rotation
 
-After each bounded action ask whether it added evidence or reduced uncertainty.
-If not across the current progress fingerprint, rotate to the next endpoint,
-subdomain, or vulnerability class. Prefer fresh context to brute force, while
-allowing a high-information lane to continue beyond a clock heuristic.
+After each bounded action compare the current progress fingerprint
+(`hypothesis + surface + actor/state + observation kind + evidence reference`)
+with the previous one and record the evidence delta, owner budget, and any
+prerequisite. Continue when the evidence changes or uncertainty falls; rotate
+when the fingerprint repeats, the kill condition is met, the owner budget is
+exhausted, or a prerequisite is unavailable. Prefer fresh context to brute
+force, while allowing a high-information lane to continue beyond a clock
+heuristic. Elapsed time alone cannot rotate, stop, or claim coverage.
 
 Validation, reporting, and specialist procedures remain with their owners
 listed at the top of this rule.

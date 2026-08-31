@@ -47,8 +47,8 @@ built-in XSS lane skip unless the current turn or scanner-full path changes it.
 ### Developer-View Pre-Hunt Recall
 
 Use this short recall when starting a target, entering a new high-value feature,
-or rotating after a stalled lane. It is a reasoning aid, not a mandatory
-15-minute session, report-count, account-count, or testing-order gate.
+or rotating after a stalled lane. It is a reasoning aid, not a mandatory timed
+session, report-count, account-count, or testing-order gate.
 
 1. **Build the mental model**: ask why the feature was implemented this way,
    which business decision it serves, and where a shortcut could have left a
@@ -164,7 +164,11 @@ leave impact open.
 
 After each bounded action compare the current **progress fingerprint** with the
 previous one: hypothesis, surface, actor/state, observation kind, and evidence
-reference.
+reference. Record the transition tuple as
+`progress_fingerprint + evidence_delta + owner_budget + prerequisite +
+kill_condition + reopen_condition`; this is a compact decision record, not a
+second state machine. The evidence delta (`evidence_delta`) records what changed
+(or explicitly that no observable evidence changed).
 
 - Continue when evidence changed, uncertainty fell, or a bounded connector is
   now testable.
@@ -177,8 +181,9 @@ reference.
 - Record a reopen condition when later auth, source, browser, component, or
   workflow evidence could make the lane informative again.
 
-Elapsed time alone is not a reason to continue or rotate. Do not replace owner
-budgets and progress state with a model-side timer.
+Elapsed time alone is not a reason to continue, rotate, stop, or claim coverage.
+Do not replace owner budgets, prerequisite state, and progress evidence with a
+model-side timer.
 
 ### Boundary Pivot Prompts
 

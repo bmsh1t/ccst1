@@ -190,10 +190,15 @@ def test_collector_writes_rows_and_manifest_without_network(tmp_path):
     assert manifest["model"] == "MODEL"
     assert manifest["claude_version"] == "claude-test"
     assert manifest["conditions"] == ["skills_off", "skills_on"]
+    assert manifest["max_turns"] == 20
+    assert manifest["max_budget_usd"] is None
+    assert manifest["timeout_seconds"] == 600
     assert manifest["provenance"]["staged_home"] == str(home)
     assert manifest["provenance"]["runtime_root"] == str(home / ".claude")
     assert manifest["provenance"]["install_script"]["sha256"].startswith("sha256:")
-    assert "runtime_doctor" in manifest["provenance"]
+    runtime_doctor = manifest["provenance"]["runtime_doctor"]
+    assert "clean" in runtime_doctor
+    assert "error" not in runtime_doctor
 
 
 def test_existing_keys_ignore_retryable_rows(tmp_path):

@@ -92,6 +92,126 @@ hosts. On new hosts, run `python3 tools/surface.py --target target.com --refresh
 Do not trigger from host count alone or treat zero resolved names as broad DNS
 coverage.
 
+## Focused FFUF Discovery
+
+The integrated engine's **baseline FFUF** run is an automatic, bounded breadth
+sensor. **Focused fuzz** is an **optional AI-selected discovery action**. It
+requires a same-target naming dialect, route, parameter, schema, browser request,
+or source reference that supports one concrete template and a bounded,
+deduplicated wordlist. An empty baseline does not trigger focused fuzz, and a
+route response alone is not a vulnerability candidate.
+
+Each focused run is isolated and resumable. Before execution, record
+`seed_refs`, `transformation`, `rationale`, `evidence_grade`, authentication
+context, expected learning, and a stop condition. Do not mechanically merge a
+generic wordlist or reuse a run across different templates or identities.
+
+When a target dialect was actually used, keep these run-local evidence files:
+
+```text
+recon/<target_key>/focused_fuzz/<run_id>/
+├── naming_profile.json
+├── candidates.jsonl
+├── wordlist.txt
+└── dirs/
+    ├── ffuf_results.jsonl.gz
+    └── ffuf_summary.json
+```
+
+`naming_profile.json` records only observed dimensions:
+
+```json
+{
+  "schema_version": 1,
+  "surface": "path",
+  "template": "https://HOST/api/FUZZ",
+  "method": "<observed-method>",
+  "auth_context": "<anonymous-or-session-label>",
+  "seed_refs": ["<artifact-ref>"],
+  "syntax": {"separators": ["<observed>"], "case_style": ["<observed>"], "slots": ["<observed-slot>"]},
+  "hypotheses": [{"transformation": "<rule>", "seed_refs": ["<ref>"], "evidence_grade": "<grade>", "rationale": "<why-test>"}],
+  "stop_condition": "<condition>"
+}
+```
+
+`auth_context` contains only an anonymous/session label or reference; never put
+tokens or cookie values in the profile. `candidates.jsonl` is a candidate input
+projection and does not contain finding or validation state. Raw FFUF output and
+the adapter summary remain the complete observation source.
+
+For a path template, use an isolated run and the existing adapter:
+
+```bash
+RUN_DIR='recon/<target_key>/focused_fuzz/<run_id>'
+mkdir -p "$RUN_DIR/dirs"
+set -o pipefail
+if ffuf -u 'https://target.com/api/v2/FUZZ' \
+  -w "$RUN_DIR/wordlist.txt" \
+  -H 'Authorization: Bearer <token>' -b 'session=<cookie>' \
+  -mc all -ac -t 5 -timeout 10 -s -json 2> "$RUN_DIR/ffuf.log" \
+  | gzip -c > "$RUN_DIR/dirs/ffuf_results.jsonl.gz"; then
+  RUN_COUNTS=(--attempted 1 --succeeded 1)
+else
+  RUN_COUNTS=(--attempted 1 --failed 1)
+fi
+python3 tools/recon_adapter.py --recon-dir "$RUN_DIR" \
+  --summarize-ffuf "${RUN_COUNTS[@]}"
+```
+
+The supported template can place `FUZZ` in a path, query, body, or header. Keep
+one changed boundary per run and use an observed prefix rather than a generic
+management dictionary:
+
+```bash
+ffuf -u 'https://target.com/FUZZ' -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
+ffuf -u 'https://target.com/api/v2/items?view=FUZZ' -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
+ffuf -u 'https://target.com/api/v2/items' -X POST -H 'Content-Type: application/json' \
+  -d '{"action":"FUZZ"}' -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
+ffuf -u 'https://target.com/api/v2/items' -H 'X-API-Version: FUZZ' \
+  -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3
+```
+
+For a captured request, remove unrelated values and keep one explicit `FUZZ`
+slot:
+
+```bash
+ffuf -request "$RUN_DIR/request.txt" -request-proto https \
+  -w "$RUN_DIR/wordlist.txt" -mc all -ac -t 3 -timeout 10 -s -json \
+  2> "$RUN_DIR/ffuf.log" | gzip -c > "$RUN_DIR/dirs/ffuf_results.jsonl.gz"
+```
+
+Retain `-ac`; add `-fc 404` or `-fs <control-size>` only when a control supports
+it. Read observations through the existing bounded adapter rather than copying
+the result set:
+
+```bash
+python3 tools/recon_adapter.py --recon-dir "$RUN_DIR" \
+  --read-ffuf --offset 0 --limit 100
+```
+
+Compare status, length, words, lines, content type, response signature,
+control match, and redirect against ordinary 404/405, SPA/soft-404, login,
+gateway, framework-error, and WAF controls. A difference is a Signal only;
+replay with the same method and authentication before creating a Lead.
+
+Write the interpretation through the existing target-memory owner and keep the
+run out of `urls/all.txt`, Surface, Queue, Coverage, and Finding state:
+
+```bash
+python3 tools/target_memory.py lead \
+  "Focused fuzz evidence: $RUN_DIR/dirs/ffuf_summary.json; why: <signal>; next: <verification>; stop: <condition>" \
+  --target target.com
+python3 tools/target_memory.py dead-end \
+  "Focused fuzz scope: <template + evidence>; artifact: $RUN_DIR/dirs/ffuf_results.jsonl.gz; result: <why no useful signal>" \
+  --target target.com
+```
+
+No useful difference records the bounded scope so a resumed session does not
+repeat it. A stable difference may justify one next round, but there is no
+automatic expansion or global round limit. The same contract applies to pattern
+based directory discovery and missing-parameter signals; those remain Leads
+until the selected vulnerability Skill and evidence owner validate them.
+
 ## Target Semantics
 
 - Readable file → primary/root-domain batch, one non-comment line per domain. No top-N pruning and no aggregate host mixing.
@@ -221,13 +341,16 @@ ASN/origin, registrant, supplier, or existing relationship evidence, or explicit
 operator intent. Quick mode requires explicit intent; normal performs one bounded
 pass at depth 1; deep may recurse to depth 3; full may recurse to depth 4. Recurse
 only through majority/control relationships, deduplicate by `entity_ref` (or the
-normalized source/entity identity), and stop after two levels yield no new domains
-or the lane budget is exhausted.
+normalized source/entity identity), where `ownership_pct > 50` or explicit control
+is present, and stop after two consecutive levels add no domains or the lane
+budget is exhausted. Candidate limits never truncate raw observations.
 
 Prefer structured public sources. Chrome DevTools MCP may read a public dynamic
 registry/company page or its Network responses in a browser context that carries no
+target-application credentials; this remains a public-only path without
 target-application credentials. Write only selected normalized facts with locatable
-`source_ref`; do not call `browser_mcp_import.py` or add these pages to Browser Surface.
+`source_ref`; do not send the result through `tools/browser_mcp_import.py` or add
+these pages to Browser Surface.
 
 The derived candidate rows receive one tool-owned `scope_status`: `in_scope`,
 `scope-review`, `external-chain-context`, `excluded`, or `unknown`. Explicit

@@ -117,10 +117,10 @@ If you found A, immediately check these B candidates:
 5. Each confirmed bug = separate report = separate payout
 ```
 
-## Time-Box Rules
+## Evidence-Bounded Transition Rules
 
 ```
-If B NOT confirmed in 20 minutes → keep B only as a chain candidate with the next evidence action, report A only if A is validated, then move on
+If B is not confirmed after a bounded evidence batch or its progress fingerprint repeats → keep B only as a chain candidate with the next evidence action, report A only if A is validated, then move on
 If A + B + C confirmed → STOP. Submit all three. Don't look for D.
 If B requires precondition you can't test → note in A's report, move on
 If 3 consecutive B candidates fail Gate 0 → cluster is dry, stop
@@ -128,7 +128,7 @@ If 3 consecutive B candidates fail Gate 0 → cluster is dry, stop
 
 ## Rabbit Hole Signals (stop immediately)
 
-- You've been on B for 30+ min with no PoC
+- B repeats the same progress fingerprint with no reproducible PoC
 - You're on your 4th "maybe" candidate
 - B needs 3+ simultaneous preconditions
 - You keep saying "this could lead to..." without an HTTP request
