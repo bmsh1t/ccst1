@@ -5,6 +5,12 @@ description: Smart contract security audit — DeFi bug classes including accoun
 
 # WEB3 SMART CONTRACT AUDIT
 
+## Direct Execution Contract
+
+- Entry: Invoke for an explicitly scoped Solidity or Rust contract review; require the chain and network, deployment address, source or bytecode identity, and the permitted read or write test boundary.
+- Evidence: Before a candidate advances, retain the source or bytecode and revision hash, affected function and line, caller and privilege, invariant or state delta, and a Foundry, local-fork, or on-chain read-back reproduction; grep and TVL signals are leads.
+- Stop: Stop on a source, revision, chain, or scope mismatch, a hard kill, or an unreproducible target-impact claim; hand reproducible candidates to triage-validation and do not move live value outside the allowed boundary.
+
 10 bug classes. Pre-dive kill signals. Foundry PoC template. Real paid examples.
 
 ---

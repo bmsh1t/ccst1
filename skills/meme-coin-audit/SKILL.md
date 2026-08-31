@@ -5,6 +5,12 @@ description: Meme coin and token security audit — rug pull detection (honeypot
 
 # MEME COIN & TOKEN SECURITY AUDIT
 
+## Direct Execution Contract
+
+- Entry: Invoke for an explicitly scoped token or program review; require the chain and network, token mint or contract address, source or bytecode identity when available, and the allowed read-only or transaction boundary.
+- Evidence: Before a candidate advances, retain the address and revision, authority or role evidence, verified source or decoded instruction, baseline transfer or read-only simulation, and impact read-back; scanner regexes alone are leads.
+- Stop: Stop when token or network identity, authority data, or reproducible impact is unavailable, or the result is only a branding or centralization note; hand bounded candidates to triage-validation and do not trade or move live funds outside scope.
+
 Fast-kill rug pull detection and deep token security analysis for EVM and Solana meme coins.
 
 ---

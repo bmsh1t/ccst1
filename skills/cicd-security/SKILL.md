@@ -5,6 +5,12 @@ description: CI/CD pipeline security hunting — GitHub Actions workflow injecti
 
 # CI/CD SECURITY — Pipeline Attack Surface
 
+## Direct Execution Contract
+
+- Entry: Invoke only when a public repository or CI/CD workflow is explicitly in scope; require an owner/repository or workflow URL, the allowed repository scope, and a bounded evidence output location.
+- Evidence: Before a candidate advances, retain the exact workflow path and revision, trigger and untrusted input, relevant permission or secret context, and a reproducible execution or static data-flow trace to target impact; scanner output alone is a lead.
+- Stop: Stop when the repository or workflow is out of scope, unavailable, or has no target-controlled impact path; hand reproducible candidates to triage-validation and stop after the declared repository or scan budget.
+
 > CI/CD pipelines are high-value targets — a single workflow injection can give you code execution on the build server, read ALL org secrets, and push backdoored releases to production.
 
 ---
