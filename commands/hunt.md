@@ -113,12 +113,12 @@ Browser-state surfaces should use the shared browser evidence lane:
 ## High-ROI Lanes
 
 - **Auth / IDOR / role diff**: compare A/B users, object IDs, tenant/account IDs, export/download/report results.
-- **403 / auth boundary**: when a target-owned 401/403 has path, proxy, framework, or sibling evidence, let Claude create a bounded plan and run `tools/bypass_403.sh --plan ... --target ...`; otherwise use its fallback. Preserve raw responses and stop on `blocked`, stable no-diff, or unresolved `needs_review`.
+- **403 / auth boundary**: when a target-owned 401/403 has path, proxy, framework, or sibling evidence, let Claude select the exact path/header/method representation and execute it through browser, curl, or a raw sender. Use `validation_runner.py request-diff` only when the same-method one-dimension pair fits; otherwise retain raw evidence or a target-owned `finding_claim` for checkpoint. A status change alone is not proof.
 - **GraphQL**: inspect schema/operation names, compare auth on `query`, `node(id)`, and safe read operations; mutation execution requires explicit operator intent.
 - **SSRF / webhook / async**: use `tools/oast_listen.py` only when a URL-fetch or webhook sink exists.
 - **Upload/import/export**: confirm parser/authorization paths with minimal samples; record state-changing leads separately.
 - **JWT/OIDC/SAML/OAuth**: decode and inspect issuer/JWKS/callback/state/session binding signals before probing.
-- **SQL/NoSQL JSON body**: use surgical single-endpoint checks when body/parameter evidence exists; avoid broad sqlmap by default. If the first SQLi/XSS request creates a new baseline-relative WAF block, let Claude compare the response and stack evidence, write a target-owned `waf_plan` with one-variable reasons/expected signals/stop conditions, and rerun the same adapter with `--waf-plan`; plan mode defaults to four evidence-linked variants and permits at most eight, while no-plan static fallback remains capped at two and every retry consumes the existing budget.
+- **SQL/NoSQL JSON body**: use the target-observed body or parameter shape and let Claude choose a bounded direct request. Optionally use `validation_runner.py request-diff` for an exact same-method pair, or `timing_sql_runner.py` for a time-shaped candidate. Keep baseline/variant evidence and stop on transport, WAF, or ordinary application noise; do not invoke a fixed matrix or encoder catalogue.
 - **API leak / Swagger / Postman**: review `recon/<target>/exposure/` before widening.
 - **IIS short filename**: when IIS is detected, use `shortscan <url> -s -p 1`; if `shortscan` is missing, keep a manual review hint instead of failing.
 
@@ -126,7 +126,6 @@ Browser-state surfaces should use the shared browser evidence lane:
 
 ```bash
 python3 tools/oast_listen.py start --target target.com
-python3 tools/oast_listen.py payloads --target target.com --vuln-class SSRF
 python3 tools/oast_listen.py poll --target target.com
 ```
 

@@ -374,29 +374,14 @@ documents the preferred model class for each role.
 
 > **The "brain in a jar" is now a bionic hacker.**
 
-### v4.4.1 — JSON-Inject Probe Dispatcher Wiring (May 2026)
+### v4.4.1 — AI-first execution policy (May 2026)
 
-- **`run_json_inject_probe` is now AI-callable.** 4-hook ToolDispatcher
-  integration — registered tool spec, `_OPTIONAL_TOOL_FUNCS` mapping,
-  `_FINISH_FLOOR_PROGRESS_TOOLS` membership, and dispatch branch with type
-  coercion. The LLM can fire surgical POST-JSON probes (SQLi auth-bypass,
-  SQLi error, SQLi time, SSTI, cmd-injection, open redirect, path
-  traversal, XSS) directly on endpoints it judges relevant, instead of
-  fanning out across the full surface like a brute scanner.
-- **Auto-discovery.** Wrapper picks up
-  `recon/<target>/browser/xhr_endpoints.txt` and
-  `findings/<target>/js_intel/hypotheses.json` automatically; explicit
-  caller overrides win.
-- **Chain hints lose the severity gate.** Many high-leverage chains start
-  at info-level (S3 listable, GraphQL introspection, JWT alg=none). Regex
-  specificity, not severity, discriminates noise — info + no pattern
-  match still returns empty.
-- **Vision auto adds `spa_app_signal`.** SPA root paths like Juice Shop
-  "/" that bootstrap login modals via JS now trigger, with Angular CLI
-  `ng build` bundle fingerprints (`main-es2015`, `runtime-es`,
-  `polyfills-es*`, …) recognised.
-- **Tests.** 17 new dispatcher contract tests; full suite **1462 / 1462
-  pass in ~11 s**.
+- AI chooses the hypothesis, exact test input, route, and stop condition.
+- Browser/MCP/curl/raw sender are the default exploration paths.
+- `validation_runner.py request-diff` is an optional exact-pair evidence
+  primitive; it does not generate inputs or decide final impact.
+- Unsupported wire shapes remain manual/unresolved instead of being reported
+  as clean.
 
 ### v4.4.0 — Phase 5 Wire-up + Chain Hints (May 2026)
 
@@ -612,8 +597,8 @@ closeable only after mapping to one of the canonical coverage cells above.
 | Tool | Target |
 |:---|:---|
 | `zero_day_fuzzer.py` | Logic bugs, edge cases, access control |
-| `vuln_scanner.sh` | Active candidate scanner: upload canaries, SQLi timing, SSTI, MFA/SAML |
-| `bypass_403.sh` | Bounded 401/403 path, proxy-route, and access-limit replay with optional AI plan |
+| `vuln_scanner.sh` | Breadth scanner and candidate/accounting producer; active validation is AI-selected |
+| `validation_runner.py` | Optional exact-request replay, diff, raw evidence, and canonical write-back |
 
 </details>
 

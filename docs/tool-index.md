@@ -83,20 +83,15 @@ identity, and cloud signals without re-enumerating everything.
 | Tool | When to use | One-line function |
 |---|---|---|
 | `tools/vuln_scanner.sh` | Recon done, want broad active coverage | Multi-lane scanner with structured finding artifacts |
-| `tools/json_inject_probe.py` | Reviewed same-target POST/JSON shape exists | AuthSession, bounded matrix, atomic summary, resumable cursor, WAF plan 4/8 or fallback 2 |
-| `tools/sql_parameter_probe.py` | Reviewed query URL or POST form file | Shared matrix, scoped findings, resumable cursor, and plan/static WAF bounds |
-| `tools/waf_pass_plan.py` | New SQLi/XSS WAF block plus target evidence | Validates AI plan refs, defaults to 4 variants, caps at 8, and keeps adapter scope/auth/budget/fallback |
 | `tools/workflow_sequence.py` | HAR/browser flow has 2+ same-target requests | Bounded replay/perturb/diff with token refresh, private evidence and Action Queue |
 | `tools/timing_sql_runner.py` | Time-shaped SQL candidate remains | Interleaved timing evidence with robust stats, caps, WAF/429 semantics and queue |
 | `tools/validation_runner.py` (`request-diff`) | Exact AI baseline/variant pair | Shared replay/diff across query, form, JSON, text, header/cookie, and path inputs |
 | `tools/graphql_audit.sh` | GraphQL endpoint needs bounded discovery | Target-owned audit summary and candidate Finding; never auto-validates signals |
-| `tools/bypass_403.sh` | 403/401 on interesting endpoint | byp4xx + 20 built-in header/method/encoding bypass tricks |
 | `tools/sibling_generator.py` | Candidate route has an ID-bearing sibling shape | Writes a bounded sibling-endpoint probe queue for evidence-fit replay |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
 | `tools/smuggling_executor.py` | Smuggling/cache candidate execution plan | `--summary` / `--variant 0.CL`; sender + evidence classes |
 | `tools/role_diff.py` | Multiple session files available | **Multi-role endpoint diff — IDOR gold standard** (R2 new) |
 | `tools/zero_day_fuzzer.py` ⚠️ underused | Standard scans plateaued | LLM-guided fuzz on remaining unexplored surface |
-| `tools/sneaky_bits.py` ⚠️ underused | Need invisible/Unicode bypass payloads | U+2062 / U+2064 encoder for filter bypass |
 | `tools/aspnet_viewstate_knownkey.py` ⚠️ manual-only | Captured page contains `__VIEWSTATE` | Offline machineKey check; `--reveal-key` only for controlled validation |
 | `tools/telerik_knownkey.py` ⚠️ manual-only | Captured Telerik `SerializedParameters` | Offline vendored Badsecrets default-key check; no HTTP or state write |
 | `tools/token_scanner.py` | Smart contract / token audit | Token red-flag scanner — meme coin rug vectors |
@@ -175,7 +170,7 @@ identity, and cloud signals without re-enumerating everything.
 | Need to remember user_a/user_b sessions, owned objects, private markers, or IDOR backlog | `target_case_state.py summary/next` |
 | `/orders/123`, `/invoices/42`, `/addresses/7`, `account_id`, `tenantId` appears in cached artifacts | `case_state_seed.py --target <target> --json`, then review suggested commands |
 | Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel` → `tools/intel_engine.py`; add `/scan-cves` only after AI selects a reachable advisory |
-| 401/403 on interesting endpoint | `bypass_403.sh` |
+| 401/403 on interesting endpoint | AI direct browser/curl/raw request; optional `validation_runner.py request-diff` |
 | Multiple session files in `.private/` | `role_diff.py` |
 | Two account creds + numeric IDs | `role_diff.py`, then `validation_runner.py idor-actor-pair` |
 | GraphQL endpoint discovered | `graphql_audit.sh` for target-owned discovery, then `validation_runner.py request-diff` with the observed baseline/variant HTTP request spec |
@@ -184,7 +179,7 @@ identity, and cloud signals without re-enumerating everything.
 | Quota / OTP / payment / cart race signal | manual review; use `workflow_sequence.py` for a captured multi-step flow when applicable |
 | Blind SSRF / RCE / XXE candidate | `oast_listen.py start` |
 | Standard scans plateaued | `zero_day_fuzzer.py` |
-| Unicode / filter bypass needed | `sneaky_bits.py` |
+| Unicode / filter representation needs review | AI selects the exact representation and preserves raw evidence |
 | Public repo URL in target footer | `source_hunt.py` |
 | Brand keyword for buckets | `cloud_recon.sh` |
 | Batch recon manifest exists | read `recon/<list-stem>/batch_manifest.jsonl`, then run `/surface` or `/hunt` on completed domains |
@@ -210,7 +205,6 @@ identity, and cloud signals without re-enumerating everything.
 These tools exist in the repo but are rarely cited in slash-command or sub-agent prompts. Surface them when the trigger fits — they are battle-tested and ready:
 
 - `zero_day_fuzzer.py` — LLM-guided fuzz post-plateau
-- `sneaky_bits.py` — Invisible/Unicode payload encoder
 - `mindmap.py` — Tech → vuln-class priority (consult before lane choice)
 - `wordlist_engine.sh` / `osint_employees.sh` / `breach_checker.py` — manual credential-prep chain; useful when identity surface matters
 

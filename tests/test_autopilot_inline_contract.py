@@ -318,18 +318,18 @@ def test_failed_sources_and_tools_are_suppressed_within_one_invocation():
     assert "diagnostics-only, never startup" in command
 
 
-def test_inline_json_injection_uses_bounded_baseline_relative_waf_adaptation():
+def test_inline_request_review_prefers_ai_direct_and_optional_generic_replay():
     command = " ".join(_read("docs/autopilot-lanes.md").split()).lower()
 
     assert "live/wafw00f_hits.txt" in command
     assert "sampled host-level context" in command
-    assert "python3 -m tools.json_inject_probe" in command
-    assert "--no-default-seeds" in command
-    assert "--max-requests <budget>" in command
-    assert "poc/json_inject/summary.json" in command
-    assert "defaults to four evidence-linked semantic variants and permits at most eight" in command
+    assert "ai chooses the target-observed post/json/query/form shape and exact test input" in command
+    assert "validation_runner.py request-diff" in command
+    assert "timing_sql_runner.py" in command
+    assert "never run a fixed matrix merely because parameters or a waf exist" in command
+    assert "target-owned `finding_claim`" in command
     assert "`429`, transport failure, block pages" in command
-    assert "never spray because parameters or a waf exist" in command
+    assert "checkpoint owns the lifecycle handoff" in command
 
 
 def test_optional_autopilot_agent_is_not_the_slash_command_backend():

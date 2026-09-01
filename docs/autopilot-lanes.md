@@ -121,14 +121,13 @@ controller alone claims lanes, writes owner state, and decides closure.
 
 ## SQL JSON And WAF
 
-- `live/wafw00f_hits.txt` is sampled host-level context. For reviewed same-target POST/JSON run `python3 -m tools.json_inject_probe --target <target_shell> --endpoints-file <reviewed-jsonl> --no-default-seeds --max-requests <budget>`; query/form use `tools.sql_parameter_probe` with the same target and input file.
-- Both share the bounded SQL matrix and baseline-relative WAF handling: defaults to four evidence-linked semantic variants and permits at most eight; no plan keeps static fallback at two. Read `poc/json_inject/summary.json`/lane summary. `429`, transport failure, block pages, and WAF observations are not findings; never spray because parameters or a WAF exist.
-- Partial summaries carry an input-fingerprint cursor; rerun the lane for the untested endpoint tail. Changed fingerprints restart the snapshot. Use result-diff/sqlmap only for an evidence-backed request.
+- `live/wafw00f_hits.txt` is sampled host-level context. AI chooses the target-observed POST/JSON/query/form shape and exact test input, then uses browser/MCP/curl/raw sender directly.
+- Use `validation_runner.py request-diff` only for an exact same-method, one-dimension HTTP pair that benefits from stable replay, response diff, and canonical evidence. Use `timing_sql_runner.py` only for a time-shaped candidate. `429`, transport failure, block pages, and WAF observations are not findings; never run a fixed matrix merely because parameters or a WAF exist.
+- Direct or browser evidence that does not fit a Runner remains raw evidence or a target-owned `finding_claim`; checkpoint owns the lifecycle handoff.
 
 ## Access Limit
 
-- A path/proxy/framework/sibling/normalization signal may trigger a plan for any 401/403/404/405/415 access boundary; WAF is context, not a prerequisite. Run only `tools/bypass_403.sh --plan <plan> --target <target_shell> --queue` for AI-selected probes; it owns Scope/Auth/budget/method/evidence.
-- Use `summary.json` and classify `blocked|edge_passed|candidate|needs_review|partial`. Budget-truncated probe IDs and `partial` must be resumed in a later plan round. No plan keeps the 64-request fallback (adjust with `--max-requests`); a status change alone is not proof.
+- A path/proxy/framework/sibling/normalization signal may trigger an AI-selected exact request for any 401/403/404/405/415 access boundary; WAF is context, not a prerequisite. Execute through browser/curl/raw sender, and use `validation_runner.py request-diff` only when its one-dimension contract fits. Preserve raw evidence and let checkpoint/validate own classification; a status change alone is not proof.
 
 ## Workflow Timing And Case State
 

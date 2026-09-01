@@ -126,7 +126,8 @@ AI/tool responsibilities remain in `rules/tool-ai-boundary.md`.
   可按 Surface page/source/shape 分页、用 `rg` 查询 raw artifact，或根据组件、CVE、
   路径、参数和行为证据构造专项列表并运行 targeted templates。
 - 集成 scanner 的 Nuclei supplement 默认关闭；显式启用时只接收有界 origin，主要
-  用于已选组件/版本的 CVE 验证。SQLi/SSRF 默认走现有 probes、request-diff 和 OAST。
+  用于已选组件/版本的 CVE 验证。SQLi/SSRF 由 AI 根据目标证据直接选择 browser/curl/raw
+  请求；需要稳定 HTTP 请求对时可选 `request-diff`，需要回调时使用 OAST Listener。
 - `summary.json` 只证明本轮选定的 live/priority scanner
   input 正常走到 consolidation；不表示历史 URL 全量扫描、tested-clean、目标安全或攻击面耗尽。
   killed/stopped/timeout/non-zero 都是 incomplete，不得解释为零发现或 scanner complete。
