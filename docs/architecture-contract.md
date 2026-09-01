@@ -89,6 +89,14 @@ Large modules are not split by line count. Extract one real boundary at a time o
 
 The optimization program is independently revertible: baseline cleanup, architecture/governance, memory authority, projection reconciliation, runtime-root/CI reproducibility, one-hotspot extraction, then ten-change adoption measurement. Each wave must leave the repository releasable.
 
+### Projection reconciliation result
+
+The initial Wave 3 audit found no production reverse writes: Surface, Context
+Pack, Resume, and Report write only their own rebuildable artifacts; Checkpoint
+and Autopilot coordinate durable owners through their public APIs. This is a
+verified no-production-change result, not permission to add a generic
+projection framework.
+
 ## Prohibited by This Contract
 
 No database/service migration, physical directory rewrite, generic adapter framework, protocol-specific automatic chain, fixed model test sequence, payload catalogue in core Skills, or second lifecycle owner is introduced by architecture work alone.

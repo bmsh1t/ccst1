@@ -29,6 +29,8 @@ jobs:
           cache-dependency-path: requirements-ci.lock
       - name: Install locked dependencies
         run: python -m pip install --require-hashes -r requirements-ci.lock
+      - name: Verify dependency lock freshness
+        run: python tools/check_requirements_lock.py
       - name: Run core contracts
         run: >-
           python -m pytest -q
@@ -39,6 +41,10 @@ jobs:
           tests/test_evidence_ledger.py
           tests/test_checkpoint.py
           tests/test_autopilot_round.py
+      - name: Run repository Shell contracts
+        run: |
+          bash tests/test_cicd_scanner.sh
+          bash tests/test_recon_denoising_integration.sh
 
   full-suite:
     if: >-

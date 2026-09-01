@@ -11,6 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 LOCK_PATH = ROOT / "requirements-ci.lock"
+LOCK_CHECK_PATH = ROOT / "tools" / "check_requirements_lock.py"
 CORE_TESTS = {
     "tests/test_core_foundation_tools.py",
     "tests/test_runtime_state.py",
@@ -66,6 +67,10 @@ def test_ci_commands_cover_each_core_owner_and_the_full_repository() -> None:
     assert CORE_TESTS <= set(core_command.split())
     assert full_command == "python -m pytest -q tests"
     assert audit_command == "python tools/knowledge_audit.py --strict"
+    shell_step = _step(workflow["jobs"]["core-contracts"], "Run repository Shell contracts")
+    assert "bash tests/test_cicd_scanner.sh" in shell_step["run"]
+    assert "bash tests/test_recon_denoising_integration.sh" in shell_step["run"]
+    assert LOCK_CHECK_PATH.is_file()
 
 
 def test_ci_actions_and_dependency_lock_are_immutable_inputs() -> None:

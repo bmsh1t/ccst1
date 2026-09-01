@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -54,6 +55,7 @@ def test_orchestrator_dry_run_dispatches_without_network(tmp_path: Path):
         text=True,
         capture_output=True,
         check=False,
+        env={**os.environ, "SPRAY_REPO_ROOT": str(tmp_path)},
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -90,6 +92,7 @@ def test_orchestrator_dry_run_displays_deduped_cardinality_limits(tmp_path: Path
         text=True,
         capture_output=True,
         check=False,
+        env={**os.environ, "SPRAY_REPO_ROOT": str(tmp_path)},
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -129,6 +132,7 @@ def test_orchestrator_rejects_user_cardinality_before_creating_run(tmp_path: Pat
         text=True,
         capture_output=True,
         check=False,
+        env={**os.environ, "SPRAY_REPO_ROOT": str(tmp_path)},
     )
 
     assert completed.returncode == 2
@@ -163,6 +167,7 @@ def test_orchestrator_rejects_attempt_cardinality_before_creating_run(tmp_path: 
         text=True,
         capture_output=True,
         check=False,
+        env={**os.environ, "SPRAY_REPO_ROOT": str(tmp_path)},
     )
 
     assert completed.returncode == 2
@@ -192,6 +197,7 @@ def test_orchestrator_unattended_live_rejects_missing_preflight(tmp_path: Path):
         text=True,
         capture_output=True,
         check=False,
+        env={**os.environ, "SPRAY_REPO_ROOT": str(tmp_path)},
     )
 
     assert completed.returncode == 2
@@ -220,6 +226,7 @@ def test_orchestrator_rejects_mode_specific_flag_conflicts(tmp_path: Path):
         text=True,
         capture_output=True,
         check=False,
+        env={**os.environ, "SPRAY_REPO_ROOT": str(tmp_path)},
     )
 
     assert completed.returncode == 1
@@ -242,6 +249,7 @@ def test_orchestrator_rejects_mode_specific_flag_conflicts(tmp_path: Path):
         text=True,
         capture_output=True,
         check=False,
+        env={**os.environ, "SPRAY_REPO_ROOT": str(tmp_path)},
     )
     assert completed.returncode == 1
     assert "--insecure is only valid" in completed.stderr

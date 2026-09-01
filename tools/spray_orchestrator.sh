@@ -173,8 +173,11 @@ if [ "$I_UNDERSTAND" != true ] && [ "$DRY_RUN" != true ]; then
     INTERACTIVE_CONFIRMED=true
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-export SPRAY_REPO_ROOT="$(pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Keep target state anchored to this checkout when invoked from another cwd;
+# callers may still provide an explicit root for isolated test/workspace runs.
+export SPRAY_REPO_ROOT="${SPRAY_REPO_ROOT:-$DEFAULT_REPO_ROOT}"
 export SPRAY_DELAY="$DELAY"
 export SPRAY_JITTER="$JITTER"
 export SPRAY_MAX_USERS="$MAX_USERS"
