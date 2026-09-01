@@ -6,35 +6,43 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shlex
 import statistics
 import sys
+import tempfile
 import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
 
 try:
-    from tools import sql_parameter_probe as core
     from tools.action_queue import add_manual_action, claim_next_action, resolve_action
     from tools.auth_session import add_cli_args, session_from_args, AuthSession
-    from tools.json_inject_probe import _write_json_atomic
-    from tools.json_inject_probe import _waf_observation
+    from tools.browser_surface import public_url_shape
     from tools.private_artifacts import private_artifact_dir, write_private_json
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
+    from tools.validation_runner import request_once
 except ImportError:  # pragma: no cover
-    import sql_parameter_probe as core  # type: ignore
     from action_queue import add_manual_action, claim_next_action, resolve_action  # type: ignore
     from auth_session import add_cli_args, session_from_args, AuthSession  # type: ignore
-    from json_inject_probe import _write_json_atomic  # type: ignore
-    from json_inject_probe import _waf_observation  # type: ignore
+    from browser_surface import public_url_shape  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
+    from validation_runner import request_once  # type: ignore
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_REPEAT = 5
 DEFAULT_CAP = 20
 DEFAULT_DELTA_MS = 1000.0
+USER_AGENT = "ccst/timing-sql-runner"
+_WAF_MARKERS = (
+    "access denied",
+    "request blocked",
+    "web application firewall",
+    "captcha required",
+    "challenge required",
+)
 
 
 def _rel(path: Path, repo_root: Path) -> str:
@@ -53,14 +61,115 @@ def _mutated_request(url: str, method: str, body: str, param: str, value: str) -
         if not any(name == param for name, _ in pairs):
             raise ValueError(f"query parameter not found: {param}")
         index = next(i for i, (name, _) in enumerate(pairs) if name == param)
-        mutated_url, _ = core._mutate_parameter(url, pairs, index, value, "query")
+        mutated = list(pairs)
+        mutated[index] = (mutated[index][0], value)
+        encoded = urllib.parse.urlencode(mutated, doseq=True)
+        parts = urllib.parse.urlsplit(url)
+        mutated_url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, encoded, parts.fragment))
         return mutated_url, None, ""
     pairs = urllib.parse.parse_qsl(body, keep_blank_values=True)
     if not any(name == param for name, _ in pairs):
         raise ValueError(f"form parameter not found: {param}")
-    index = next(i for i, (name, _) in enumerate(pairs) if name == param)
-    mutated_url, mutated_body = core._mutate_parameter(url, pairs, index, value, "form")
-    return mutated_url, mutated_body, "application/x-www-form-urlencoded"
+    mutated = list(pairs)
+    index = next(i for i, (name, _) in enumerate(mutated) if name == param)
+    mutated[index] = (mutated[index][0], value)
+    return url, urllib.parse.urlencode(mutated, doseq=True).encode("utf-8"), "application/x-www-form-urlencoded"
+
+
+def _http_request(
+    url: str,
+    *,
+    method: str,
+    body: bytes | None = None,
+    content_type: str = "",
+    timeout: float,
+    target: str,
+    session: AuthSession | None,
+) -> dict[str, Any]:
+    """Adapt the shared HTTP replay boundary to the timing sampler shape."""
+    started = time.time()
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json,text/html;q=0.9,*/*;q=0.1"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    body_text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else (body or "")
+    try:
+        response = request_once(
+            target=target,
+            url=url,
+            method=method,
+            headers=headers,
+            body=body_text,
+            timeout=timeout,
+            max_body_bytes=64 * 1024,
+            session=session,
+        )
+    except Exception as exc:
+        return {
+            "status": 0,
+            "body_text": "",
+            "body_size": 0,
+            "headers": "",
+            "latency": time.time() - started,
+            "error": f"{type(exc).__name__}:{exc}",
+        }
+    response_headers = response.get("headers") or {}
+    if isinstance(response_headers, dict):
+        response_headers = "\n".join(f"{key}: {value}" for key, value in response_headers.items())
+    response_body = str(response.get("body") or "")
+    return {
+        "status": int(response.get("status") or 0),
+        "body_text": response_body,
+        "body_size": int(response.get("body_retained_bytes") or len(response_body.encode("utf-8"))),
+        "headers": str(response_headers),
+        "latency": time.time() - started,
+        "error": None,
+    }
+
+
+def _waf_observation(baseline: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]:
+    """Classify only a new block signal relative to the baseline response."""
+    baseline_status = int(baseline.get("status") or 0)
+    response_status = int(response.get("status") or 0)
+    if baseline.get("error") or baseline_status <= 0:
+        return {"blocked": False, "signals": [], "status": response_status, "outcome": "baseline_unavailable"}
+    if response.get("error") or response_status <= 0:
+        return {"blocked": False, "signals": [], "status": response_status, "outcome": "transport_error"}
+    baseline_body = str(baseline.get("body_text") or "").lower()
+    response_body = str(response.get("body_text") or "").lower()
+    signals = []
+    if response_status in {403, 406} and baseline_status not in {403, 406}:
+        signals.append("block_status_delta")
+    if any(marker in response_body and marker not in baseline_body for marker in _WAF_MARKERS):
+        signals.append("block_body")
+    outcome = "waf_blocked" if signals else ("rate_limited" if response_status == 429 else "application_response")
+    return {"blocked": bool(signals), "signals": signals, "status": response_status, "outcome": outcome}
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Persist a summary without exposing a partially written JSON file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
 
 
 def _median(values: list[float]) -> float:
@@ -92,7 +201,7 @@ def _queue_action(
     source_id = hashlib.sha256(
         f"{url}|{param}|{method}|{generation}".encode("utf-8")
     ).hexdigest()[:20]
-    safe_url = core.public_url_shape(url)
+    safe_url = public_url_shape(url)
     try:
         safe_body = _public_body_shape(body)
         recovery_hint = (
@@ -200,7 +309,7 @@ def run_timing_sql(
         "schema_version": 1,
         "kind": "sql_timing_summary",
         "target": target,
-        "url": core.public_url_shape(url),
+        "url": public_url_shape(url),
         "method": method,
         "param": param,
         "variant_value_sha256": hashlib.sha256(variant_value.encode()).hexdigest(),
@@ -244,7 +353,7 @@ def run_timing_sql(
         iteration = len(summary["samples"]) + 1
         sample: dict[str, Any] = {"iteration": iteration}
         try:
-            base = core._http_request(
+            base = _http_request(
                 baseline_url,
                 method=method,
                 body=baseline_body,
@@ -254,7 +363,7 @@ def run_timing_sql(
                 session=active_session,
             )
             summary["request_count"] += 1
-            variant = core._http_request(
+            variant = _http_request(
                 probe_url,
                 method=method,
                 body=probe_body,

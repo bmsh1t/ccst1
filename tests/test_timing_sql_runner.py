@@ -20,7 +20,7 @@ def test_interleaved_timing_requires_stable_repeated_delta(monkeypatch, tmp_path
     def fake_request(url, **_kwargs):
         return _resp(0.05 if "q=1" in url else 1.5)
 
-    monkeypatch.setattr(timing.core, "_http_request", fake_request)
+    monkeypatch.setattr(timing, "_http_request", fake_request)
     summary = timing.run_timing_sql(
         repo_root=tmp_path,
         target="target.test",
@@ -44,7 +44,7 @@ def test_isolated_slow_sample_does_not_promote(monkeypatch, tmp_path):
             return _resp(0.05)
         return _resp(next(variants))
 
-    monkeypatch.setattr(timing.core, "_http_request", fake_request)
+    monkeypatch.setattr(timing, "_http_request", fake_request)
     summary = timing.run_timing_sql(
         repo_root=tmp_path,
         target="target.test",
@@ -62,7 +62,7 @@ def test_waf_or_rate_limit_is_partial_not_finding(monkeypatch, tmp_path):
     def fake_request(url, **_kwargs):
         return _resp(0.05, status=429 if "q=1" not in url else 200, body="rate limited")
 
-    monkeypatch.setattr(timing.core, "_http_request", fake_request)
+    monkeypatch.setattr(timing, "_http_request", fake_request)
     summary = timing.run_timing_sql(
         repo_root=tmp_path,
         target="target.test",
@@ -80,7 +80,7 @@ def test_baseline_rate_limit_is_partial_not_finding(monkeypatch, tmp_path):
     def fake_request(url, **_kwargs):
         return _resp(0.05, status=429 if "q=1" in url else 200, body="rate limited")
 
-    monkeypatch.setattr(timing.core, "_http_request", fake_request)
+    monkeypatch.setattr(timing, "_http_request", fake_request)
     summary = timing.run_timing_sql(
         repo_root=tmp_path,
         target="target.test",
@@ -95,7 +95,7 @@ def test_baseline_rate_limit_is_partial_not_finding(monkeypatch, tmp_path):
 
 
 def test_exact_request_cap_can_finish_when_all_samples_completed(monkeypatch, tmp_path):
-    monkeypatch.setattr(timing.core, "_http_request", lambda url, **_: _resp(0.05))
+    monkeypatch.setattr(timing, "_http_request", lambda url, **_: _resp(0.05))
     summary = timing.run_timing_sql(
         repo_root=tmp_path,
         target="target.test",
@@ -111,7 +111,7 @@ def test_exact_request_cap_can_finish_when_all_samples_completed(monkeypatch, tm
 
 
 def test_timing_rejects_off_target_before_request(monkeypatch, tmp_path):
-    monkeypatch.setattr(timing.core, "_http_request", lambda **_: pytest.fail("network must not run"))
+    monkeypatch.setattr(timing, "_http_request", lambda **_: pytest.fail("network must not run"))
     with pytest.raises(ValueError, match="outside target scope"):
         timing.run_timing_sql(
             repo_root=tmp_path,
@@ -124,7 +124,7 @@ def test_timing_rejects_off_target_before_request(monkeypatch, tmp_path):
 
 def test_timing_request_error_keeps_action_non_terminal(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        timing.core,
+        timing,
         "_http_request",
         lambda **_: (_ for _ in ()).throw(RuntimeError("fixture failure")),
     )
@@ -143,7 +143,7 @@ def test_timing_request_error_keeps_action_non_terminal(monkeypatch, tmp_path):
 
 
 def test_timing_recovery_hint_redacts_values(monkeypatch, tmp_path):
-    monkeypatch.setattr(timing.core, "_http_request", lambda url, **_: _resp(0.05))
+    monkeypatch.setattr(timing, "_http_request", lambda url, **_: _resp(0.05))
     summary = timing.run_timing_sql(
         repo_root=tmp_path,
         target="target.test",
@@ -169,7 +169,7 @@ def test_timing_generation_identity_and_terminal_replay(monkeypatch, tmp_path):
         calls.append(url)
         return _resp(0.05)
 
-    monkeypatch.setattr(timing.core, "_http_request", fake_request)
+    monkeypatch.setattr(timing, "_http_request", fake_request)
     first = timing.run_timing_sql(
         repo_root=tmp_path,
         target="target.test",

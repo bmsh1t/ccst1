@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shlex
 import sys
+import tempfile
 import urllib.parse
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
@@ -18,7 +20,6 @@ try:
     from tools.action_queue import add_manual_action, claim_next_action, resolve_action
     from tools.auth_session import add_cli_args, session_from_args, AuthSession
     from tools.browser_surface import public_url_shape
-    from tools.json_inject_probe import _write_json_atomic
     from tools.private_artifacts import private_artifact_dir, write_private_json
     from tools.response_diff import diff_responses, snapshot_response
     from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
@@ -27,7 +28,6 @@ except ImportError:  # pragma: no cover
     from action_queue import add_manual_action, claim_next_action, resolve_action  # type: ignore
     from auth_session import add_cli_args, session_from_args, AuthSession  # type: ignore
     from browser_surface import public_url_shape  # type: ignore
-    from json_inject_probe import _write_json_atomic  # type: ignore
     from private_artifacts import private_artifact_dir, write_private_json  # type: ignore
     from response_diff import diff_responses, snapshot_response  # type: ignore
     from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target  # type: ignore
@@ -38,6 +38,33 @@ MAX_STEPS = 8
 DEFAULT_REQUEST_CAP = 16
 TOKEN_SOURCES = ("regex", "response_header", "cookie", "json_path")
 MAX_TOKEN_LENGTH = 8192
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Persist a summary without exposing a partially written JSON file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
 
 
 def _rel(path: Path, repo_root: Path) -> str:
