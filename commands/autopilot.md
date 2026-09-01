@@ -128,11 +128,12 @@ dimension/question in the existing Queue. Partial cursors
 or unused dimensions are resumable work, not tested-clean.
 
 Deep lanes keep the normal per-invocation caps unless `--deep` is active. In deep
-mode, parameter discovery, JSON injection, and zero-day fuzzing may project a
-larger bounded budget from URL/parameter breadth, response variance, and
+mode, parameter discovery, candidate extraction, and zero-day fuzzing may project
+a larger bounded budget from URL/parameter breadth, response variance, and
 high-value evidence; every projection has a hard maximum and records
 `partial_on_exhaustion=true`. A larger projection never bypasses Scope/Auth or
-the WAF plan cap, and exhaustion with an incomplete cursor remains resumable.
+the selected runner/request cap, and exhaustion with an incomplete cursor remains
+resumable.
 
 Named action mechanics, replay commands, recon continuation, list selection, and owner
 write-back rules live in the selected lane section. Claim durable queue work before replay;

@@ -82,7 +82,7 @@ identity, and cloud signals without re-enumerating everything.
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/vuln_scanner.sh` | Recon done, want bounded breadth context | Candidate-first scanner: bounded Nuclei plus passive candidate extraction; writes residual accounting, never report-ready proof |
+| `tools/vuln_scanner.sh` | Recon done, want bounded breadth context | Bounded Nuclei/passive candidates with residual accounting; never report-ready proof |
 | `tools/workflow_sequence.py` | HAR/browser flow has 2+ same-target requests | Bounded replay/perturb/diff with token refresh, private evidence and Action Queue |
 | `tools/timing_sql_runner.py` | Time-shaped SQL candidate remains | Interleaved timing evidence with robust stats, caps, WAF/429 semantics and queue |
 | `tools/validation_runner.py` (`request-diff`) | Exact AI baseline/variant pair | Shared replay/diff across query, form, JSON, text, header/cookie, and path inputs |

@@ -76,8 +76,8 @@ controller alone claims lanes, writes owner state, and decides closure.
 - `request-diff` is the shared request-pair primitive. AI supplies the exact
   baseline/variant and `active_dimension`; SQLi/NoSQLi/etc. are classifiers, not
   separate fixed-input lanes. Unsupported wire formats remain `manual_required`.
-- Explicitly state-changing Scanner probes, including upload canaries and HTTP
-  method tampering, require `ALLOW_UNSAFE_HTTP_TESTS=1`. Without that opt-in the
+- Explicitly state-changing Scanner probes, currently the retained HTTP method
+  tampering check, require `ALLOW_UNSAFE_HTTP_TESTS=1`. Without that opt-in the
   request is skipped and recorded in `manual_review/unsafe_skipped.txt`; the
   resulting review item is not a clean result. HTTP method names alone do not
   classify every probe as state-changing.
