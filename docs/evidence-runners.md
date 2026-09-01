@@ -64,22 +64,6 @@ python3 tools/validation_runner.py request-diff \
   --target TARGET --request-spec REQUEST_SPEC.json --repeat 2
 ```
 
-### SQLi / NoSQLi result diff
-
-旧命令仍保留，作为 `request-diff` 的 SQLi 兼容 wrapper。不要把 quote-only
-shrinkage 当发现；需要稳定 DB/parser/boolean/union/result-expansion 等强信号。
-
-```bash
-python3 tools/validation_runner.py sqli-result-diff \
-  --target <target> \
-  --url '<exact-url-with-param>' \
-  --param <name> \
-  --baseline-value '<baseline>' \
-  --variant-value '<controlled-perturbation>' \
-  --repeat 2 \
-  --browser-observed
-```
-
 ### IDOR / Authz actor pair
 
 用于 owner/peer 两个上下文可复现时的对象访问验证。case state 可以降低手工拼 header 的漂移，但不是前置门槛。
@@ -136,36 +120,6 @@ python3 tools/validation_runner.py marker-replay \
 The neutral control must finish with a successful, non-truncated response. An
 error or truncated control keeps the replay as a `candidate` signal so it
 cannot become either `tested_finding` or `tested_clean`.
-
-### WebSocket / gRPC / LLM tool-call replay
-
-Use one schema-v1 spec after the exact protocol input is known:
-
-```json
-{
-  "schema_version": 1,
-  "protocol": "websocket",
-  "endpoint": "wss://TARGET/socket",
-  "frames": ["{\"op\":\"subscribe\",\"channel\":\"SAMPLE\"}"],
-  "expect": {"marker": "SERIAL", "finding_grade": false},
-  "vuln_class": "Authz"
-}
-```
-
-For gRPC, replace `frames` with `method`, JSON `request`, and optional
-`plaintext`; the request is sent through stdin and trailers are retained. For
-LLM HTTP endpoints, use `protocol=llm_tool_call`, `body`, and
-`expect.tool_name` / `expect.argument_marker` so the runner verifies a real
-function call rather than model prose.
-
-```bash
-python3 tools/validation_runner.py protocol-replay \
-  --target TARGET --protocol-spec SAMPLE.json
-```
-
-The runner reuses Scope, red-line, private raw artifacts, stable operation ID,
-artifact bindings, Evidence Ledger, Finding Index, and Action Queue owners.
-Tool absence, transport failure, and a weak observation remain candidates.
 
 ### Workflow sequence
 

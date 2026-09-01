@@ -10,6 +10,7 @@ import finding_index
 import pytest
 import report_generator
 import validate
+import validation_runner
 from target_paths import canonical_target_value, target_storage_key
 
 
@@ -53,7 +54,17 @@ def _bind_report_runner_witness(findings_dir: Path, finding: dict) -> None:
     request_ref = str(request_path.relative_to(repo_root))
     response_ref = str(response_path.relative_to(repo_root))
     summary_ref = str((bundle / "summary.json").relative_to(repo_root))
-    operation_id = f"runner:test-{finding_id}"
+    operation_material = {
+        "target": target,
+        "lane": "test-fixture",
+        "finding_id": finding_id,
+        "vuln_class": vuln_class,
+        "artifact_bindings": validation_runner._artifact_digest_material([
+            {"kind": "baseline_request", "sha256": hashlib.sha256(request_path.read_bytes()).hexdigest()},
+            {"kind": "baseline_response", "sha256": hashlib.sha256(response_path.read_bytes()).hexdigest()},
+        ]),
+    }
+    operation_id = validation_runner._runner_operation_id(operation_material)
     event_id = "ledger:" + hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:24]
     summary = {
         "schema_version": 1,
@@ -66,6 +77,7 @@ def _bind_report_runner_witness(findings_dir: Path, finding: dict) -> None:
         "result": "tested_finding",
         "candidate_ready": True,
         "operation_id": operation_id,
+        "operation_material": operation_material,
         "summary_path": summary_ref,
         "artifact_bindings": [
             {
@@ -127,6 +139,61 @@ def _record_owner_provenance(findings_dir: Path, finding_id: str) -> None:
     _bind_report_runner_witness(findings_dir, finding)
 
 
+@pytest.mark.parametrize("scheme", ["ws", "wss"])
+def test_report_runner_endpoint_scope_rejects_off_target_protocol(scheme):
+    assert not report_generator._runner_endpoint_matches(
+        f"{scheme}://target.example/socket",
+        f"{scheme}://other.example/socket",
+        "target.example",
+    )
+    assert not report_generator._runner_endpoint_matches(
+        f"{scheme}://other.example/socket",
+        f"{scheme}://other.example/socket",
+        "target.example",
+    )
+
+
+def test_report_runner_witness_recomputes_operation_id_from_current_artifacts(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    created = finding_index.upsert_finding(
+        findings_dir,
+        {
+            "id": "runner-material-drift",
+            "type": "sqli",
+            "url": "https://example.com/search?q=1",
+            "validation_status": "validated",
+            "report_status": "not_generated",
+        },
+        target="example.com",
+    )
+    _bind_report_runner_witness(findings_dir, created["finding"])
+    finding = finding_index.find_finding(findings_dir, "runner-material-drift")
+    assert finding is not None
+    summary_path = tmp_path / finding["runner_summary"]
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    response_binding = next(
+        item for item in summary["artifact_bindings"] if item["kind"] == "baseline_response"
+    )
+    response_path = tmp_path / response_binding["ref"]
+    response_path.write_text("tampered response\n", encoding="utf-8")
+    response_binding["sha256"] = hashlib.sha256(response_path.read_bytes()).hexdigest()
+    material_binding = next(
+        item
+        for item in summary["operation_material"]["artifact_bindings"]
+        if item["kind"] == "baseline_response"
+    )
+    material_binding["sha256"] = response_binding["sha256"]
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    witness = report_generator._canonical_runner_witness(
+        finding,
+        findings_dir=findings_dir,
+        target="example.com",
+    )
+    assert witness["valid"] is False
+    assert "operation ID" in witness["reason"]
+
+
 def test_load_finding_index_migrates_legacy_list_without_trusting_finality(tmp_path):
     findings_dir = tmp_path / "findings" / "example.com"
     findings_dir.mkdir(parents=True)
@@ -172,6 +239,78 @@ def test_load_finding_index_migrates_legacy_list_without_trusting_finality(tmp_p
     generated = next(item for item in persisted["findings"] if item["id"] != "legacy-validated")
     assert generated["id"].startswith("idor_")
     assert generated["url"] == "/api/orders/2"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("schema_version", 2, "schema_version"),
+        ("target", "other.example", "target mismatch"),
+    ],
+)
+def test_load_finding_index_rejects_invalid_bound_payload(tmp_path, field, value, message):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    payload = {
+        "schema_version": 1,
+        "target": "example.com",
+        "findings": [],
+    }
+    payload[field] = value
+    (findings_dir / "findings.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        finding_index.load_finding_index(findings_dir, target="example.com")
+
+
+def test_load_finding_index_rejects_malformed_row_at_owner_boundary(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    (findings_dir / "findings.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "target": "example.com",
+            "findings": [{"type": "sqli"}],
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"findings\[0\]"):
+        finding_index.load_finding_index(findings_dir, target="example.com")
+
+
+def test_legacy_object_projection_is_in_memory_and_quarantines_finality(tmp_path):
+    findings_dir = tmp_path / "findings" / "example.com"
+    findings_dir.mkdir(parents=True)
+    path = findings_dir / "findings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "type": "sqli",
+                        "url": "https://example.com/search?q=1",
+                        "validation_status": "validated",
+                        "report_status": "generated",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = path.read_bytes()
+
+    projected = finding_index.load_finding_index(
+        findings_dir,
+        target="example.com",
+        migrate_legacy=False,
+        allow_legacy=True,
+    )
+
+    assert projected["target"] == "example.com"
+    assert projected["findings"][0]["id"]
+    assert projected["findings"][0]["validation_status"] == "needs_owner_revalidation"
+    assert path.read_bytes() == original
 
 
 def test_upsert_finding_uses_semantic_identity_and_preserves_advanced_lifecycle(tmp_path):

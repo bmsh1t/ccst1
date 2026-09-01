@@ -66,12 +66,32 @@ def _bind_runner_witness(
     ) or {}
     vuln_class = str(finding.get("vuln_class") or finding.get("type") or "SQLi")
     runner_url = f"https://{target}{endpoint}" if endpoint.startswith("/") else endpoint
-    operation_id = "runner:" + hashlib.sha256(
-        f"{target}|{finding_id}|{endpoint}|{method}|{run_number}".encode("utf-8")
-    ).hexdigest()[:24]
+    artifact_bindings = [
+        {
+            "kind": "baseline_request",
+            "ref": str(request_path.relative_to(repo_root)),
+            "sha256": hashlib.sha256(request_path.read_bytes()).hexdigest(),
+        },
+        {
+            "kind": "baseline_response",
+            "ref": str(response_path.relative_to(repo_root)),
+            "sha256": hashlib.sha256(response_path.read_bytes()).hexdigest(),
+        },
+    ]
+    operation_material = {
+        "target": target,
+        "lane": "request_diff",
+        "finding_id": finding_id,
+        "url": runner_url,
+        "method": method,
+        "vuln_class": vuln_class,
+        "artifact_bindings": validation_runner._artifact_digest_material(artifact_bindings),
+        "fixture_run": run_number,
+    }
+    operation_id = validation_runner._runner_operation_id(operation_material)
     summary = {
         "schema_version": validation_runner.SCHEMA_VERSION,
-        "lane": "sqli_result_diff",
+        "lane": "request_diff",
         "target": target,
         "finding_id": finding_id,
         "url": runner_url,
@@ -81,18 +101,8 @@ def _bind_runner_witness(
         "candidate_ready": True,
         "operation_id": operation_id,
         "summary_path": str(summary_path.relative_to(repo_root)),
-        "artifact_bindings": [
-            {
-                "kind": "baseline_request",
-                "ref": str(request_path.relative_to(repo_root)),
-                "sha256": hashlib.sha256(request_path.read_bytes()).hexdigest(),
-            },
-            {
-                "kind": "baseline_response",
-                "ref": str(response_path.relative_to(repo_root)),
-                "sha256": hashlib.sha256(response_path.read_bytes()).hexdigest(),
-            },
-        ],
+        "artifact_bindings": artifact_bindings,
+        "operation_material": operation_material,
     }
     summary_path.write_text(json.dumps(summary), encoding="utf-8")
     sync = validation_runner._sync_finding_status(summary, repo_root=repo_root)
@@ -416,6 +426,77 @@ def test_non_tty_machine_decision_binds_canonical_finding_and_uses_owner(tmp_pat
     assert summary["machine_decision"]["schema_version"] == 2
     assert summary["machine_decision"]["evidence_refs"] == [decision["evidence"]["runner_summary"]]
     assert summary["machine_decision"]["runner_summary"] == decision["evidence"]["runner_summary"]
+
+
+def test_machine_validation_explicit_findings_dir_owns_all_artifacts(tmp_path, monkeypatch, capsys):
+    from action_queue import add_manual_action, load_queue
+    from evidence_ledger import load_entries
+    from finding_index import find_finding, upsert_finding
+
+    target = "target.com"
+    repo_root = tmp_path / "isolated-repo"
+    findings_dir = repo_root / "findings" / target
+    evidence_ref = repo_root / "evidence" / target / "validation" / "raw-pair.json"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text('{"baseline":"denied","variant":"allowed"}\n', encoding="utf-8")
+    upsert_finding(
+        findings_dir,
+        {
+            "id": "sqli-isolated",
+            "type": "sqli",
+            "url": "https://target.com/item?id=1",
+            "validation_status": "candidate",
+        },
+        target=target,
+    )
+    add_manual_action(
+        repo_root,
+        target=target,
+        action_type="validation",
+        evidence="Candidate SQLi response difference on /item?id=1.",
+        next_question="Does the candidate pass validation gates?",
+        action="Run the owner-bound validation replay.",
+        command_hint="python3 tools/validate.py --finding-id sqli-isolated",
+        evidence_type="candidate-validation",
+    )
+    decision = _machine_decision(
+        target=target,
+        finding_id="sqli-isolated",
+        endpoint="/item?id=1",
+        report_path="findings/target.com/validated/isolated.md",
+        evidence_ref=str(evidence_ref),
+    )
+    decision_path = tmp_path / "isolated-decision.json"
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+
+    checkout_root = tmp_path / "checkout-root"
+    monkeypatch.setattr(validate, "BASE_DIR", checkout_root, raising=False)
+    monkeypatch.setattr(validate.sys.stdin, "isatty", lambda: False)
+
+    assert validate.main(
+        [
+            "--findings-dir",
+            str(findings_dir),
+            "--finding-id",
+            "sqli-isolated",
+            "--decision-json",
+            str(decision_path),
+            "--json",
+        ]
+    ) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    report_path = Path(output["report_path"])
+    summary_path = Path(output["summary_path"])
+    assert report_path.is_file() and report_path.is_relative_to(repo_root)
+    assert summary_path.is_file() and summary_path.is_relative_to(repo_root)
+    assert (repo_root / "findings" / "last-validate.json").is_file()
+    assert (repo_root / "state" / target / "session.json").is_file()
+    assert (repo_root / "hunt-memory" / "pattern_calibration.jsonl").is_file()
+    assert load_entries(repo_root, target)
+    assert load_queue(repo_root, target)["actions"]
+    assert find_finding(findings_dir, "sqli-isolated")["validation_status"] == "validated"
+    assert not checkout_root.exists()
 
 
 def test_machine_validation_preserves_root_claim_class_in_ledger_and_reconcile(tmp_path, monkeypatch, capsys):

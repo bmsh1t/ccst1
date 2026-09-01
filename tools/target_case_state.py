@@ -71,7 +71,6 @@ HIGH_IMPACT_OBJECT_TYPES = {
 RUNNER_CONTRACTS = {
     "authz-public-exposure": ("endpoint",),
     "authz-role-replay": ("endpoint", "owner_actor", "peer_actor"),
-    "sqli-result-diff": ("endpoint", "param", "variant_value"),
     "request-diff": ("request_spec_ref", "active_dimension", "classifier"),
     "marker-replay": ("endpoint", "expect_marker"),
     "idor-actor-pair": ("endpoint", "owner_actor", "peer_actor"),
@@ -841,13 +840,6 @@ def _build_generic_command(target: str, item: dict[str, Any], details: dict[str,
             "--owner-actor", item.get("owner_actor") or "",
             "--peer-actor", item.get("peer_actor") or "",
         ])
-    elif runner == "sqli-result-diff":
-        parts.extend([
-            "--param", item.get("param") or "",
-            "--variant-value", item.get("variant_value") or "",
-        ])
-        if str(item.get("baseline_value") or ""):
-            parts.extend(["--baseline-value", item.get("baseline_value")])
     elif runner == "request-diff":
         parts.extend(["--request-spec", item.get("request_spec_ref") or ""])
     elif runner == "marker-replay":
@@ -938,7 +930,12 @@ def _matching_final_findings(
     findings_path = findings_dir / "findings.json"
     if not findings_path.is_file():
         return []
-    payload = load_finding_index(findings_dir, migrate_legacy=False)
+    payload = load_finding_index(
+        findings_dir,
+        migrate_legacy=False,
+        target=target,
+        allow_legacy=True,
+    )
     rows = payload.get("findings", []) if isinstance(payload, dict) else []
     hypothesis = _linked_hypothesis(state, item)
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
@@ -957,7 +954,6 @@ def _matching_final_findings(
             "idor-actor-pair": "IDOR",
             "authz-role-replay": "Authz",
             "authz-public-exposure": "Authz",
-            "sqli-result-diff": "SQLi",
         }.get(str(item.get("runner") or "").strip().lower(), "")
     vuln_key = _case_vuln_identity(vuln_class)
     matches: list[dict[str, Any]] = []

@@ -1,6 +1,5 @@
 """Regression tests for lightweight hunt.py helper wrappers."""
 
-import base64
 import json
 import os
 import sys
@@ -14,11 +13,6 @@ import pytest
 from memory.hunt_journal import HuntJournal
 from memory.target_profile import target_profile_path
 from tools.auth_session import AuthSession
-
-
-def _b64url_json(data):
-    raw = json.dumps(data, separators=(",", ":")).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
 def test_check_tools_includes_runnable_external_eburst(monkeypatch):
@@ -375,26 +369,6 @@ def test_fetch_url_guard_advisory_is_written_to_journal(monkeypatch, tmp_hunt_di
     assert "api.example.com" in entries[0]["notes"]
 
 
-def test_run_api_fuzz_uses_guarded_fetch(monkeypatch, tmp_path):
-    domain = "example.com"
-    monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
-    monkeypatch.setattr(hunt, "_collect_api_endpoints", lambda *_args, **_kwargs: ["https://api.example.com/api/users/42"])
-
-    calls = []
-
-    def fake_fetch(url, **kwargs):
-        calls.append((url, kwargs))
-        return 200, "x" * 600, {}
-
-    monkeypatch.setattr(hunt, "_fetch_url", fake_fetch)
-
-    assert hunt.run_api_fuzz(domain) is True
-    assert calls
-    assert calls[0][1]["target"] == domain
-    assert calls[0][1]["use_guard"] is True
-    assert calls[0][1]["vuln_class"] == "idor"
-
-
 def test_run_post_param_discovery_uses_guarded_fetch(monkeypatch, tmp_path):
     domain = "example.com"
     monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
@@ -414,104 +388,6 @@ def test_run_post_param_discovery_uses_guarded_fetch(monkeypatch, tmp_path):
     assert calls[0][1]["target"] == domain
     assert calls[0][1]["use_guard"] is True
     assert calls[0][1]["is_recon"] is True
-
-
-def test_run_jwt_audit_summarizes_tokens_and_jwks(monkeypatch, tmp_path):
-    domain = "example.com"
-    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
-    monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
-
-    recon_dir = Path(hunt._resolve_recon_dir(domain))
-    (recon_dir / "urls").mkdir(parents=True, exist_ok=True)
-    token = ".".join(
-        [
-            _b64url_json({"alg": "HS256", "typ": "JWT"}),
-            _b64url_json({"sub": "123", "role": "admin"}),
-            "signature",
-        ]
-    )
-    (recon_dir / "notes.txt").write_text(f"Bearer {token}\n", encoding="utf-8")
-    (recon_dir / "urls" / "all.txt").write_text(
-        "https://api.example.com/.well-known/jwks.json\n",
-        encoding="utf-8",
-    )
-
-    assert hunt.run_jwt_audit(domain) is True
-
-    output = (Path(hunt._resolve_findings_dir(domain)) / "manual_review" / "jwt_audit.txt").read_text(
-        encoding="utf-8"
-    )
-    assert "alg=HS256 typ=JWT" in output
-    assert "claims=role,sub" in output
-    assert "jwks https://api.example.com/.well-known/jwks.json" in output
-
-
-def test_run_jwt_audit_appends_jwt_tool_summary_when_available(monkeypatch, tmp_path):
-    domain = "example.com"
-    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
-    monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
-
-    recon_dir = Path(hunt._resolve_recon_dir(domain))
-    recon_dir.mkdir(parents=True, exist_ok=True)
-    token = ".".join(
-        [
-            _b64url_json({"alg": "HS256", "typ": "JWT"}),
-            _b64url_json({"sub": "123", "role": "admin"}),
-            "signature",
-        ]
-    )
-    (recon_dir / "notes.txt").write_text(f"Bearer {token}\n", encoding="utf-8")
-
-    monkeypatch.setattr(hunt, "_resolve_jwt_tool_command", lambda: "jwt_tool")
-    monkeypatch.setattr(hunt, "_resolve_jwt_tool_wordlist", lambda _cmd="": "/root/Tools/jwt_tool/jwt.secrets.list")
-
-    def fake_run_argv(cmd, cwd=None, timeout=600, env=None):
-        if cmd[0] == "jwt_tool" and "-C" in cmd and cmd[cmd.index("-d") + 1] == "/root/Tools/jwt_tool/jwt.secrets.list":
-            return True, (
-                "\x1b[32mHeader:\x1b[0m {'alg': 'HS256', 'typ': 'JWT'}\n"
-                "Payload: {'sub': '123', 'role': 'admin'}\n"
-                "jwt.secrets.list loaded\n"
-                "Signature is valid\n"
-            )
-        raise AssertionError(f"unexpected command: {cmd!r}")
-
-    monkeypatch.setattr(hunt, "run_argv", fake_run_argv)
-
-    assert hunt.run_jwt_audit(domain) is True
-
-    output = (Path(hunt._resolve_findings_dir(domain)) / "manual_review" / "jwt_audit.txt").read_text(
-        encoding="utf-8"
-    )
-    assert "alg=HS256 typ=JWT" in output
-    assert "jwt_tool mode=crack cmd=jwt_tool" in output
-    assert "wordlist=/root/Tools/jwt_tool/jwt.secrets.list" in output
-    assert "Header: {'alg': 'HS256', 'typ': 'JWT'}" in output
-    assert "Payload: {'sub': '123', 'role': 'admin'}" in output
-
-
-def test_resolve_jwt_tool_command_supports_root_tools_path(monkeypatch):
-    target_path = os.path.expanduser("~/Tools/jwt_tool/jwt_tool.py")
-
-    monkeypatch.setattr(hunt, "_command_exists", lambda _tool: False)
-    monkeypatch.setattr(
-        hunt.os.path,
-        "isfile",
-        lambda path: path == target_path,
-    )
-
-    assert hunt._resolve_jwt_tool_command() == f"python3 {target_path}"
-
-
-def test_resolve_jwt_tool_wordlist_supports_root_tools_path(monkeypatch):
-    target_path = os.path.expanduser("~/Tools/jwt_tool/jwt.secrets.list")
-
-    monkeypatch.setattr(
-        hunt.os.path,
-        "isfile",
-        lambda path: path == target_path,
-    )
-
-    assert hunt._resolve_jwt_tool_wordlist("python3 /root/Tools/jwt_tool/jwt_tool.py") == target_path
 
 
 def test_nuclei_scan_passes_output_and_input_paths_as_argv(tmp_path, monkeypatch):
@@ -553,30 +429,6 @@ def test_nuclei_scan_passes_output_and_input_paths_as_argv(tmp_path, monkeypatch
     assert len(input_paths) == 2
     assert len({path.name for path in input_paths}) == 2
     assert all(not path.exists() for path in input_paths)
-
-
-def test_sqlmap_helpers_keep_url_and_request_path_as_single_argv(tmp_path, monkeypatch):
-    domain = "example.test"
-    monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings output"))
-    monkeypatch.setattr(hunt, "_collect_param_urls", lambda *_args, **_kwargs: [
-        "https://example.test/item?id=1&next=%3Btouch"
-    ])
-    monkeypatch.setattr(hunt, "_command_exists", lambda _tool: True)
-    calls = []
-    monkeypatch.setattr(
-        hunt,
-        "run_argv",
-        lambda argv, **_kwargs: calls.append(argv) or (True, "sqlmap output"),
-    )
-
-    assert hunt.run_sqlmap_targeted(domain) is True
-    request_file = tmp_path / "request with spaces.txt"
-    request_file.write_text("GET / HTTP/1.1\n", encoding="utf-8")
-    assert hunt.run_sqlmap_request_file(str(request_file), domain=domain) is True
-
-    assert calls[0][calls[0].index("-u") + 1] == "https://example.test/item?id=1&next=%3Btouch"
-    assert calls[1][calls[1].index("-r") + 1] == str(request_file)
-    assert all(isinstance(argv, list) for argv in calls)
 
 
 def test_zero_day_fuzzer_passes_ipv6_recon_dir_and_deep_as_argv(tmp_path, monkeypatch):
@@ -661,34 +513,6 @@ def test_run_source_intel_wrapper_writes_and_reads_summary(monkeypatch, tmp_path
 
     assert "Source Intelligence Summary" in summary
     assert "/api/orders/:id/approve" in summary
-
-
-def test_run_cve_hunt_uses_direct_argv(monkeypatch, tmp_path):
-    domain = "example.com"
-    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
-    (tmp_path / "recon" / domain).mkdir(parents=True, exist_ok=True)
-
-    called = {}
-
-    def fake_run_argv(argv, *, cwd=None, timeout=600, env=None):
-        called.update({"argv": argv, "cwd": cwd, "timeout": timeout, "env": env})
-        return True, "ok"
-
-    monkeypatch.setattr(hunt, "run_argv", fake_run_argv)
-
-    assert hunt.run_cve_hunt(domain) is True
-    assert called == {
-        "argv": [
-            sys.executable,
-            os.path.join(hunt.BASE_DIR, "tools", "cve_hunter.py"),
-            domain,
-            "--recon-dir",
-            hunt._resolve_recon_dir(domain),
-        ],
-        "cwd": hunt.BASE_DIR,
-        "timeout": 600,
-        "env": None,
-    }
 
 
 def test_generate_reports_uses_direct_argv(monkeypatch, tmp_path):

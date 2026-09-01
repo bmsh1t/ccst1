@@ -64,7 +64,7 @@ def _run_saml_scanner(tmp_path: Path, endpoint: str, protected_url: str = ""):
             str(recon_dir),
             "--quick",
             "--skip",
-            "upload,sqli,xss,ssti,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,auth_flow,cms,mfa",
+            "upload,sqli,xss,ssti,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,auth_flow,mfa",
         ],
         cwd=repo_root,
         env=env,

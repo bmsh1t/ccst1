@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from tools import action_queue, high_value_signals, noise_filter, parallel_workers, runtime_config, target_memory, target_paths, target_selector
+from tools import action_queue, high_value_signals, noise_filter, parallel_workers, runtime_config, target_memory, target_paths
 
 
 def test_resolve_target_url_preserves_protocol_relative_authority():
@@ -271,42 +271,6 @@ def test_target_memory_set_append_and_handoff_use_canonical_paths(tmp_path, monk
     handoff_path = tmp_path / saved["session_handoffs"][-1]["path"]
     assert handoff_path.is_file()
     assert "Try two-account read-only diff" in handoff_path.read_text(encoding="utf-8")
-
-
-def test_target_selector_scores_and_extracts_scope_without_network(capsys):
-    programs = [
-        {
-            "name": "Wide Scope",
-            "handle": "wide",
-            "url": "https://hackerone.com/wide",
-            "managed": True,
-            "bounty_max": 12000,
-            "response_efficiency": 95,
-            "has_wildcard": True,
-            "assets": [
-                {"asset_identifier": "*.wide.example", "asset_type": "WILDCARD"},
-                {"asset_identifier": "https://api.wide.example/v1", "asset_type": "URL"},
-            ],
-            "started_accepting_at": "",
-        },
-        {
-            "name": "Narrow Scope",
-            "handle": "narrow",
-            "url": "https://hackerone.com/narrow",
-            "managed": False,
-            "bounty_max": 0,
-            "response_efficiency": 0,
-            "has_wildcard": False,
-            "assets": [],
-            "started_accepting_at": "",
-        },
-    ]
-
-    selected = target_selector.select_targets(programs, top_n=1)
-    assert selected[0]["name"] == "Wide Scope"
-    assert selected[0]["score"] > programs[1]["score"]
-    assert selected[0]["scope_domains"] == ["wide.example", "api.wide.example"]
-    assert "Wide Scope" in capsys.readouterr().out
 
 
 def test_high_value_signal_combines_action_path_query_and_evidence():

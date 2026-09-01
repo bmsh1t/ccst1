@@ -1324,6 +1324,121 @@ def test_scanner_lane_residual_requires_review_and_preserves_depth():
     )
 
 
+def test_partial_recon_phase_with_zero_remaining_cannot_finish():
+    closure = build_closure_projection(
+        {
+            "target": "target.com",
+            "next_action": "handoff",
+            "recon_artifacts": {
+                "phase_gates": {
+                    "latest": {
+                        "js_analysis": {
+                            "status": "partial",
+                            "bounded": {
+                                "input_total": 10,
+                                "selected": 10,
+                                "remaining": 0,
+                                "closure_blocking": False,
+                                "continuation": "repair the interrupted JS analysis",
+                            },
+                        }
+                    }
+                }
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"][0] == "recon_phase_review_required"
+
+
+def test_blocked_recon_phase_with_zero_remaining_cannot_finish():
+    closure = build_closure_projection(
+        {
+            "target": "target.com",
+            "next_action": "handoff",
+            "recon_artifacts": {
+                "phase_gates": {
+                    "latest": {
+                        "cloud": {
+                            "status": "blocked",
+                            "bounded": {
+                                "input_total": 1,
+                                "selected": 1,
+                                "remaining": 0,
+                                "closure_blocking": True,
+                            },
+                        }
+                    }
+                }
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"][0] == "recon_phase_partial"
+
+
+def test_partial_scanner_lane_with_zero_remaining_cannot_finish():
+    closure = build_closure_projection(
+        {
+            "target": "target.com",
+            "next_action": "handoff",
+            "scanner_summary": {
+                "status": "valid",
+                "path": "findings/target.com/summary.json",
+                "lanes": {
+                    "sqli": {
+                        "lane": "sqli",
+                        "execution_kind": "active_probe",
+                        "status": "partial",
+                        "input_total": 10,
+                        "selected": 10,
+                        "remaining": 0,
+                        "closure_blocking": False,
+                    }
+                },
+            },
+        },
+        _closure_matrix(),
+    )
+
+    assert closure["verdict"] == "handoff"
+    assert closure["can_claim_exhausted"] is False
+    assert closure["reasons"][0] == "scanner_lane_review_required"
+
+
+def test_scanner_projection_rejects_inconsistent_accounting(tmp_path):
+    summary_path = tmp_path / "findings" / "target.com" / "summary.json"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text(
+        json.dumps({
+            "target": "target.com",
+            "lane_coverage": {
+                "sqli": {
+                    "lane": "sqli",
+                    "status": "sampled",
+                    "input_total": 10,
+                    "selected": 7,
+                    "remaining": 1,
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    projection = autopilot_state_module._load_scanner_summary_projection(
+        str(tmp_path), "target.com"
+    )
+
+    assert projection["status"] == "partial"
+    assert projection["lanes"]["sqli"]["accounting_valid"] is False
+
+
 def test_residual_global_review_requires_every_token_and_never_restores_exhausted(tmp_path):
     target = "target.com"
     witness_path = tmp_path / "state" / target / "checkpoint_latest.json"

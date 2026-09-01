@@ -6,7 +6,6 @@ Validation Runner v1 intentionally stays small:
 - authz-public-exposure: one anonymous/read-only request, sensitive exposure check.
 - authz-role-replay: anonymous/owner/peer replay on the same surface from case_state.
 - request-diff: AI-supplied exact baseline/variant replay across one input dimension.
-- sqli-result-diff: baseline vs single-variable perturbation, structural diff.
 - marker-replay: exact request replay plus inert marker evidence check.
 - idor-actor-pair: owner vs peer exact replay plus response diff and evidence gate.
 
@@ -21,8 +20,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -143,12 +140,8 @@ NON_RUNNER_FOLLOWUP_ACTION_TYPES = {"report", "sibling-chain-review"}
 LANE_TO_VULN_CLASS = {
     "authz_public_exposure": "Authz",
     "authz_role_replay": "Authz",
-    "sqli_result_diff": "SQLi",
     "marker_replay": "RCE",
     "idor_actor_pair": "IDOR",
-    "websocket_replay": "Authz",
-    "grpc_replay": "Authz",
-    "llm_tool_call_replay": "BusinessLogic",
 }
 
 
@@ -296,6 +289,27 @@ def _artifact_bindings(summary: dict[str, Any], repo_root: Path) -> list[dict[st
     return [bindings[key] for key in sorted(bindings)]
 
 
+def _artifact_digest_material(bindings: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Return path-independent artifact identity for operation hashing."""
+    material = []
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        kind = str(binding.get("kind") or "").strip().lower()
+        digest = str(binding.get("sha256") or "").strip().lower()
+        # Only wire request/response artifacts define an operation. Derived
+        # diff/identity files often contain per-run paths and would break
+        # replay idempotency without adding evidence strength.
+        if kind and digest and (
+            kind == "request"
+            or kind.endswith("_request")
+            or kind == "response"
+            or kind.endswith("_response")
+        ):
+            material.append({"kind": kind, "sha256": digest})
+    return sorted(material, key=lambda item: (item["kind"], item["sha256"]))
+
+
 def _runner_operation_id(material: dict[str, Any]) -> str:
     encoded = json.dumps(material, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return f"runner:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:24]}"
@@ -313,6 +327,8 @@ def _stable_operation_material(value: Any) -> Any:
                 "summary_path",
                 "sync",
                 "ledger_record",
+                "operation_material",
+                "evidence_ref",
             }:
                 continue
             if key == "artifact_bindings" and isinstance(item, list):
@@ -331,7 +347,8 @@ def _stable_operation_material(value: Any) -> Any:
 
 def _finalize_runner_summary(summary: dict[str, Any], path: Path, repo_root: Path) -> dict[str, Any]:
     summary["summary_path"] = _rel(path, repo_root)
-    summary["artifact_bindings"] = _artifact_bindings(summary, repo_root)
+    artifact_bindings = _artifact_bindings(summary, repo_root)
+    summary["artifact_bindings"] = artifact_bindings
     ledger = summary.get("ledger_record") if isinstance(summary.get("ledger_record"), dict) else {}
     # The ledger row is an output, not an identity authority.  Runner-created
     # rows carry their exact input material in memory; summaries reloaded from
@@ -340,6 +357,11 @@ def _finalize_runner_summary(summary: dict[str, Any], path: Path, repo_root: Pat
     operation_material = ledger.pop("_runner_operation_material", None)
     if not isinstance(operation_material, dict):
         operation_material = _stable_operation_material(summary)
+    else:
+        operation_material = dict(operation_material)
+    operation_material.pop("evidence_ref", None)
+    operation_material["artifact_bindings"] = _artifact_digest_material(artifact_bindings)
+    summary["operation_material"] = operation_material
     operation_id = _runner_operation_id(operation_material)
     if ledger:
         ledger["operation_id"] = operation_id
@@ -383,8 +405,9 @@ def _find_existing_finding_id_by_url(
     url: str,
     finding_type: str,
     vuln_class: str,
+    target: str | None = None,
 ) -> str:
-    payload = load_finding_index(findings_dir)
+    payload = load_finding_index(findings_dir, target=target)
     needle = _normalized_url_for_match(url)
     if not needle:
         return ""
@@ -404,8 +427,13 @@ def _find_existing_finding_id_by_url(
     return ""
 
 
-def _find_existing_finding(findings_dir: Path, finding_id: str) -> dict[str, Any]:
-    payload = load_finding_index(findings_dir)
+def _find_existing_finding(
+    findings_dir: Path,
+    finding_id: str,
+    *,
+    target: str | None = None,
+) -> dict[str, Any]:
+    payload = load_finding_index(findings_dir, target=target)
     for item in payload.get("findings", []):
         if isinstance(item, dict) and str(item.get("id") or "") == finding_id:
             return item
@@ -437,7 +465,7 @@ def _runner_sync_gate_updates(
     `/validate` should refresh raw evidence/rubric, not erase report readiness
     or replace the final validation-summary pointer with a runner summary.
     """
-    existing = _find_existing_finding(findings_dir, finding_id)
+    existing = _find_existing_finding(findings_dir, finding_id, target=target)
     if str(existing.get("validation_status") or "") == "validated" and status == "candidate":
         provenance = verify_finalized_finding_owner_provenance(
             findings_dir,
@@ -475,7 +503,7 @@ def _runner_finding_type(vuln_class: str, lane: str) -> str:
         return "idor"
     if value == "authz" or lane_value == "authz_public_exposure":
         return "auth_bypass"
-    if value == "sqli" or lane_value == "sqli_result_diff":
+    if value == "sqli":
         return "sqli"
     if value == "rce":
         return "ssti" if lane_value == "marker_replay" else "cve"
@@ -724,7 +752,7 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
     summary_ref = str(summary_path) if summary_path else str(summary.get("summary_path") or "")
     generated_at = str(summary.get("generated_at") or now_utc())
     operation_id = str(summary.get("operation_id") or "").strip()
-    existing = _find_existing_finding(findings_dir, finding_id)
+    existing = _find_existing_finding(findings_dir, finding_id, target=target)
     if (
         operation_id
         and str(existing.get("runner_operation_id") or "") == operation_id
@@ -812,9 +840,10 @@ def _sync_finding_status(summary: dict[str, Any], *, repo_root: Path) -> dict[st
             url=str(summary.get("url") or summary.get("endpoint") or ""),
             finding_type=finding_type,
             vuln_class=vuln_class,
+            target=target,
         )
         if existing_id:
-            matched_existing = _find_existing_finding(findings_dir, existing_id)
+            matched_existing = _find_existing_finding(findings_dir, existing_id, target=target)
             if (
                 operation_id
                 and str(matched_existing.get("runner_operation_id") or "") == operation_id
@@ -1090,7 +1119,7 @@ def _sync_action_queue(summary: dict[str, Any], *, repo_root: Path) -> dict[str,
     finding_id = str(summary.get("finding_id") or "").strip()
     if finding_id:
         findings_dir = _findings_dir(repo_root, target)
-        finding = _find_existing_finding(findings_dir, finding_id)
+        finding = _find_existing_finding(findings_dir, finding_id, target=target)
         validation_status = str(finding.get("validation_status") or "").strip().lower()
         if validation_status in {"validated", "rejected"} and verify_finalized_finding_owner_provenance(
             findings_dir,
@@ -2003,6 +2032,8 @@ def _record_ledger_if_needed(
     state_changing: bool | None = None,
     identity_v2: dict[str, Any] | None = None,
     operation_material: dict[str, Any] | None = None,
+    artifact_bindings: list[dict[str, Any]] | None = None,
+    finding_id: str = "",
 ) -> dict[str, Any] | None:
     if no_ledger:
         return None
@@ -2024,20 +2055,23 @@ def _record_ledger_if_needed(
         "notes": notes,
         "identity_v2": identity_v2,
     }
-    canonical_operation_material = operation_material or {
+    canonical_operation_material = dict(operation_material or {
         "target": canonical_target_value(target),
         "endpoint": public_url_shape(endpoint),
         "method": str(method or "GET").upper(),
+        "finding_id": str(finding_id or "").strip(),
         "vuln_class": vuln_class,
         "actor": actor,
         "object_scope": object_scope,
         "variant": variant,
         "result": result,
         "source": source.replace("_", "-"),
-        "evidence_ref": evidence_ref,
-        "evidence_sha256": _file_sha256(repo_root, evidence_ref),
         "identity_v2": identity_v2,
-    }
+    })
+    if finding_id and "finding_id" not in canonical_operation_material:
+        canonical_operation_material["finding_id"] = str(finding_id).strip()
+    if artifact_bindings is not None:
+        canonical_operation_material["artifact_bindings"] = _artifact_digest_material(artifact_bindings)
     operation_id = _runner_operation_id(canonical_operation_material)
     event_id = f"ledger:{hashlib.sha256(operation_id.encode('utf-8')).hexdigest()[:24]}"
     request["operation_id"] = operation_id
@@ -2149,6 +2183,17 @@ def run_authz_public_exposure(
         redline_checked=redline_checked,
         state_changing=state_changing,
         identity_v2=identity_v2,
+        artifact_bindings=_artifact_bindings(
+            {
+                "artifacts": {
+                    "baseline_request": raw_artifacts["request"],
+                    "baseline_response": raw_artifacts["response"],
+                    "baseline_identity": raw_artifacts["identity"],
+                }
+            },
+            repo_root,
+        ),
+        finding_id=finding_id,
     )
 
     summary = {
@@ -2729,6 +2774,11 @@ def run_authz_role_replay(
         redline_checked=redline_checked,
         state_changing=state_changing,
         identity_v2=identity_v2,
+        artifact_bindings=_artifact_bindings(
+            {"runs": runs, "artifacts": {"diff": evidence_ref}},
+            repo_root,
+        ),
+        finding_id=finding_id,
     )
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -3007,6 +3057,11 @@ def run_request_diff(
                 "active_dimension": spec["active_dimension"],
                 "repeat": repeat_count,
             },
+            artifact_bindings=_artifact_bindings(
+                {"runs": runs, "artifacts": {"diff": _rel(diff_path, repo_root)}},
+                repo_root,
+            ),
+            finding_id=finding_id,
         )
     elif no_ledger:
         ledger = None
@@ -3051,115 +3106,6 @@ def run_request_diff(
     }
     summary_path = bundle / "summary.json"
     return _finalize_runner_summary(summary, summary_path, repo_root)
-
-
-def _replace_query_param(url: str, param: str, value: str) -> str:
-    parsed = urllib.parse.urlparse(url)
-    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-    replaced = False
-    out: list[tuple[str, str]] = []
-    for key, old in pairs:
-        if key == param:
-            out.append((key, value))
-            replaced = True
-        else:
-            out.append((key, old))
-    if not replaced:
-        out.append((param, value))
-    query = urllib.parse.urlencode(out, doseq=True)
-    return urllib.parse.urlunparse(parsed._replace(query=query))
-
-
-def run_sqli_result_diff(
-    *,
-    repo_root: Path,
-    target: str,
-    url: str = "",
-    param: str = "",
-    baseline_value: str = "",
-    variant_value: str = "",
-    method: str = "GET",
-    headers: dict[str, str] | None = None,
-    timeout: int = 10,
-    finding_id: str = "",
-    repeat: int = 1,
-    no_ledger: bool = False,
-    browser_observed: bool = False,
-    identity_v2: dict[str, Any] | None = None,
-    session: AuthSession | None = None,
-    request_spec: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Compatibility wrapper; SQLi is a classifier on the shared request diff."""
-    if request_spec is None:
-        if method.upper() != "GET":
-            raise ValueError("sqli-result-diff compatibility wrapper supports GET; use request-diff for exact POST/body pairs")
-        request_spec = {
-            "schema_version": 1,
-            "baseline_request": {"method": "GET", "url": _replace_query_param(url, param, baseline_value), "headers": headers or {}},
-            "variant_request": {"method": "GET", "url": _replace_query_param(url, param, variant_value), "headers": headers or {}},
-            "active_dimension": f"query:{param}",
-            "evidence_shape": "request_diff",
-            "classifier": "sqli",
-            "vuln_class": "SQLi",
-            "expected_signal": "stable DB/parser/boolean/union/result expansion",
-            "repeat": repeat,
-        }
-    summary = run_request_diff(
-        repo_root=repo_root,
-        target=target,
-        request_spec=request_spec,
-        timeout=timeout,
-        finding_id=finding_id,
-        repeat=repeat,
-        no_ledger=no_ledger,
-        browser_observed=browser_observed,
-        redline_checked=True,
-        identity_v2=identity_v2,
-        headers=headers,
-        session=session,
-        lane="sqli_result_diff",
-        source="validation-runner:sqli-result-diff",
-    )
-    normalized = validate_request_pair(request_spec)
-    baseline_value = str(baseline_value or _request_pair_active_value(normalized, normalized["baseline_request"]))
-    active_value = _request_pair_active_value(normalized, normalized["variant_request"])
-    variant_value = str(variant_value or active_value)
-    probe_shape = looks_like_sqli_probe(active_value)
-    material = [_request_pair_materiality(run) for run in summary.get("runs", [])]
-    summary.update({
-        "redline_checked": True,
-        "param": param,
-        "baseline_value_length": len(str(baseline_value).encode("utf-8", errors="replace")),
-        "baseline_value_sha256": hashlib.sha256(str(baseline_value).encode("utf-8", errors="replace")).hexdigest(),
-        "variant_value_length": len(variant_value.encode("utf-8", errors="replace")),
-        "variant_value_sha256": hashlib.sha256(variant_value.encode("utf-8", errors="replace")).hexdigest(),
-        "probe_shape": probe_shape,
-    })
-    if summary.get("result") != "tested_finding":
-        missing = ["strong_sqli_signal"]
-        labels = ["DB error / boolean expansion / union-field / NoSQL operator confirmation"]
-        if not probe_shape:
-            missing.insert(0, "injection_shaped_probe")
-            labels.insert(0, "injection-shaped probe")
-        if not all(material):
-            missing.insert(0, "stable_material_diff")
-            labels.insert(0, "stable material response diff")
-        rubric = summary.setdefault("evidence_rubric", {})
-        rubric.update({
-            "status": "tested-clean",
-            "ready": False,
-            "score": 0,
-            "missing": missing,
-            "missing_labels": labels,
-            "next_actions": [
-                "Do not promote quote-only result shrinkage; require DB error, boolean true/false pair, result expansion, added fields, or a dedicated timing lane.",
-            ],
-            "summary": "sqli:tested-clean score=0 missing=" + ",".join(missing),
-        })
-    summary_path = _summary_path(summary, repo_root)
-    if summary_path is not None:
-        _write_json(summary_path, summary)
-    return summary
 
 
 def run_marker_replay(
@@ -3248,6 +3194,8 @@ def run_marker_replay(
             response,
             repo_root,
         )
+        # The target-response body is the only marker oracle; transport diagnostics
+        # such as stderr are never evidence of target behavior.
         marker_found = marker in response["body"]
         run = {
             "iteration": idx,
@@ -3363,6 +3311,8 @@ def run_marker_replay(
         redline_checked=redline_checked,
         state_changing=state_changing,
         identity_v2=identity_v2,
+        artifact_bindings=_artifact_bindings({"runs": runs}, repo_root),
+        finding_id=finding_id,
     )
     xss_marker = str(vuln_class or "").strip().lower() in {
         "xss",
@@ -3608,6 +3558,11 @@ def run_idor_actor_pair(
         redline_checked=redline_checked,
         state_changing=state_changing,
         identity_v2=identity_v2,
+        artifact_bindings=_artifact_bindings(
+            {"runs": runs, "artifacts": {"diff": _rel(diff_path, repo_root)}},
+            repo_root,
+        ),
+        finding_id=finding_id,
     )
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -3638,301 +3593,6 @@ def run_idor_actor_pair(
     }
     summary_path = bundle / "summary.json"
     return _finalize_runner_summary(summary, summary_path, repo_root)
-
-
-def _protocol_public_url(protocol: str, endpoint: str, method: str = "") -> str:
-    if protocol == "websocket":
-        return re.sub(r"^ws", "http", endpoint, count=1)
-    if protocol == "grpc":
-        suffix = "/" + method.lstrip("/") if method else ""
-        return f"http://{endpoint}{suffix}"
-    return endpoint
-
-
-def _bounded_protocol_text(value: Any, *, field: str, limit: int = 65536) -> str:
-    text = str(value or "")
-    if not text:
-        raise ValueError(f"protocol spec {field} is required")
-    if len(text.encode("utf-8", errors="replace")) > limit:
-        raise ValueError(f"protocol spec {field} exceeds {limit} bytes")
-    return text
-
-
-def _external_protocol_run(
-    argv: list[str],
-    *,
-    stdin: str,
-    timeout: int,
-    execute: Any,
-) -> dict[str, Any]:
-    child_env = {
-        key: value
-        for key, value in os.environ.items()
-        if not any(token in key.upper() for token in ("TOKEN", "SECRET", "PASSWORD", "COOKIE", "AUTH"))
-    }
-    try:
-        completed = execute(
-            argv,
-            input=stdin,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-            env=child_env,
-        )
-        return {
-            "status": "ok" if completed.returncode == 0 else "failed",
-            "returncode": int(completed.returncode),
-            "stdout": str(completed.stdout or "")[:MAX_RESPONSE_BYTES],
-            "stderr": str(completed.stderr or "")[:MAX_RESPONSE_BYTES],
-        }
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "status": "timeout",
-            "returncode": None,
-            "stdout": str(exc.stdout or "")[:MAX_RESPONSE_BYTES],
-            "stderr": str(exc.stderr or "")[:MAX_RESPONSE_BYTES],
-        }
-
-
-def _tool_calls(value: Any) -> list[dict[str, str]]:
-    calls: list[dict[str, str]] = []
-    if isinstance(value, dict):
-        nested_function = isinstance(value.get("function"), dict)
-        function = value["function"] if nested_function else value
-        name = str(function.get("name") or "").strip()
-        arguments = function.get("arguments")
-        if name and arguments is not None:
-            calls.append({
-                "name": name,
-                "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, sort_keys=True),
-            })
-        for key, item in value.items():
-            if nested_function and key == "function":
-                continue
-            calls.extend(_tool_calls(item))
-    elif isinstance(value, list):
-        for item in value:
-            calls.extend(_tool_calls(item))
-    return calls
-
-
-def run_protocol_replay(
-    *,
-    repo_root: Path,
-    target: str,
-    spec: dict[str, Any],
-    finding_id: str = "",
-    timeout: int = 15,
-    no_ledger: bool = False,
-    browser_observed: bool = False,
-    state_changing: bool | None = None,
-    redline_checked: bool = False,
-    identity_v2: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
-    session: AuthSession | None = None,
-    execute: Any = subprocess.run,
-    which: Any = shutil.which,
-) -> dict[str, Any]:
-    """Execute one exact WS, gRPC, or LLM tool-call replay through runner owners."""
-    if not isinstance(spec, dict) or spec.get("schema_version") != 1:
-        raise ValueError("protocol spec must be a schema_version=1 object")
-    protocol = str(spec.get("protocol") or "").strip().lower().replace("-", "_")
-    if protocol not in {"websocket", "grpc", "llm_tool_call"}:
-        raise ValueError("protocol must be websocket, grpc, or llm_tool_call")
-    timeout = int(timeout or 15)
-    if timeout < 1 or timeout > 60:
-        raise ValueError("protocol timeout must be between 1 and 60 seconds")
-    state_changing = _validate_request_facts(state_changing, redline_checked)
-
-    endpoint = _bounded_protocol_text(spec.get("endpoint"), field="endpoint", limit=2048)
-    grpc_method = str(spec.get("method") or "").strip() if protocol == "grpc" else ""
-    public_url = _protocol_public_url(protocol, endpoint, grpc_method)
-    if not url_belongs_to_target(public_url, target):
-        raise ValueError("protocol endpoint is outside target scope")
-    finding_id = finding_id or _default_finding_id(f"{protocol}-replay", public_url)
-    bundle = _bundle_dir(repo_root, target, finding_id)
-    private_bundle = _private_bundle_dir(repo_root, target, bundle)
-    effective_headers = _request_headers(session, public_url, headers)
-    header_args = [
-        value
-        for name, header_value in effective_headers.items()
-        for value in ("-H", f"{name}: {header_value}")
-    ]
-    header_overlay_digest = hashlib.sha256(
-        json.dumps(effective_headers, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest() if effective_headers else ""
-    auth_session_id = session.session_id() if session is not None else ""
-    input_path = private_bundle / "protocol-input.json"
-    write_private_json(input_path, {"spec": spec, "headers": effective_headers})
-    artifacts: dict[str, str] = {"protocol_request": _rel(input_path, repo_root)}
-    execution: dict[str, Any]
-    observation_text = ""
-    observed_calls: list[dict[str, str]] = []
-    lane = f"{protocol}_replay"
-
-    if protocol == "websocket":
-        parsed = urllib.parse.urlparse(endpoint)
-        if parsed.scheme not in {"ws", "wss"} or not parsed.netloc:
-            raise ValueError("websocket endpoint must use ws:// or wss://")
-        raw_frames = spec.get("frames")
-        if not isinstance(raw_frames, list) or not 1 <= len(raw_frames) <= 16:
-            raise ValueError("websocket spec requires 1..16 frames")
-        frames = [_bounded_protocol_text(item, field="frame") for item in raw_frames]
-        tool = which("websocat")
-        execution = (
-            _external_protocol_run(
-                [tool, "-n1", "-t", *header_args, endpoint],
-                stdin="\n".join(frames) + "\n",
-                timeout=timeout,
-                execute=execute,
-            )
-            if tool
-            else {"status": "unavailable", "returncode": None, "stdout": "", "stderr": "websocat unavailable"}
-        )
-    elif protocol == "grpc":
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+(?::\d{1,5})?", endpoint):
-            raise ValueError("grpc endpoint must be a target-owned host[:port]")
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*/[A-Za-z_][A-Za-z0-9_]*", grpc_method):
-            raise ValueError("grpc method must be package.Service/Method")
-        request = spec.get("request", {})
-        if not isinstance(request, dict):
-            raise ValueError("grpc request must be a JSON object")
-        request_text = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
-        argv = ["-v", "-format", "json", "-d", "@"]
-        if bool(spec.get("plaintext")):
-            argv.append("-plaintext")
-        tool = which("grpcurl")
-        execution = (
-            _external_protocol_run(
-                [tool, *argv, *header_args, endpoint, grpc_method],
-                stdin=request_text,
-                timeout=timeout,
-                execute=execute,
-            )
-            if tool
-            else {"status": "unavailable", "returncode": None, "stdout": "", "stderr": "grpcurl unavailable"}
-        )
-    else:
-        method = str(spec.get("http_method") or "POST").strip().upper()
-        body = spec.get("body", {})
-        if not isinstance(body, (dict, list, str)):
-            raise ValueError("llm_tool_call body must be JSON or text")
-        response = request_once(
-            target=target,
-            url=endpoint,
-            method=method,
-            headers=headers,
-            body=_request_body_text(body, headers or {}),
-            timeout=timeout,
-            session=session,
-        )
-        raw = _write_raw_http(private_bundle, "tool-call.", response, repo_root)
-        artifacts.update({"request": raw["request"], "response": raw["response"], "identity": raw["identity"]})
-        execution = {
-            "status": "ok" if 200 <= int(response.get("status", 0) or 0) < 400 else "failed",
-            "returncode": None,
-            "stdout": str(response.get("body") or ""),
-            "stderr": "",
-            "http_status": int(response.get("status", 0) or 0),
-        }
-        try:
-            observed_calls = _tool_calls(json.loads(execution["stdout"]))
-        except json.JSONDecodeError:
-            observed_calls = []
-
-    if protocol in {"websocket", "grpc"}:
-        stdout_path = private_bundle / "protocol.stdout.txt"
-        stderr_path = private_bundle / "protocol.stderr.txt"
-        write_private_text(stdout_path, execution["stdout"])
-        write_private_text(stderr_path, execution["stderr"])
-        artifacts.update({"response": _rel(stdout_path, repo_root), "trailers": _rel(stderr_path, repo_root)})
-    observation_text = f"{execution.get('stdout', '')}\n{execution.get('stderr', '')}"
-
-    expect = spec.get("expect") if isinstance(spec.get("expect"), dict) else {}
-    marker = str(expect.get("marker") or "")
-    tool_name = str(expect.get("tool_name") or "")
-    argument_marker = str(expect.get("argument_marker") or "")
-    if protocol == "llm_tool_call":
-        observed = any(
-            (not tool_name or call["name"] == tool_name)
-            and (not argument_marker or argument_marker in call["arguments"])
-            for call in observed_calls
-        ) and bool(tool_name or argument_marker)
-    else:
-        observed = bool(marker and marker in observation_text)
-    finding_grade = bool(expect.get("finding_grade"))
-    completed = execution.get("status") == "ok"
-    candidate_ready = bool(completed and observed and finding_grade)
-    result = "tested_finding" if candidate_ready else "candidate" if observed or not completed else "tested_clean"
-    vuln_class = str(spec.get("vuln_class") or ("BusinessLogic" if protocol == "llm_tool_call" else "Authz"))
-    rubric = {
-        "status": "candidate-ready" if candidate_ready else "signal" if result == "candidate" else "tested-clean",
-        "ready": candidate_ready,
-        "score": 100 if candidate_ready else 0,
-        "missing": [] if candidate_ready else ["protocol_impact_confirmation"] if observed else ["expected_protocol_observation"],
-        "missing_labels": [] if candidate_ready else ["protocol-level impact confirmation"] if observed else ["expected protocol observation"],
-        "next_actions": ["Review the saved frames/trailers/tool-call arguments and record the exact authorization or business impact."],
-        "summary": f"{protocol}:{result} execution={execution.get('status')} observed={observed}",
-    }
-    operation_material = {
-        "target": canonical_target_value(target),
-        "protocol": protocol,
-        "spec_sha256": hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest(),
-        "header_overlay_sha256": header_overlay_digest,
-        "auth_session_id": auth_session_id,
-        "result": result,
-        "observation_sha256": hashlib.sha256(observation_text.encode()).hexdigest(),
-    }
-    ledger = _record_ledger_if_needed(
-        repo_root=repo_root,
-        no_ledger=no_ledger,
-        target=target,
-        endpoint=public_url,
-        method="WS" if protocol == "websocket" else "GRPC" if protocol == "grpc" else str(spec.get("http_method") or "POST"),
-        vuln_class=vuln_class,
-        actor=str(spec.get("actor") or "unknown"),
-        object_scope=str(spec.get("object_scope") or "unknown"),
-        variant=protocol,
-        result="tested_finding" if candidate_ready else "signal" if result == "candidate" else "tested_clean",
-        source=f"validation-runner:{lane.replace('_', '-')}",
-        evidence_ref=artifacts["response"],
-        notes=f"Protocol replay {protocol}: execution={execution.get('status')} observed={observed}.",
-        browser_observed=browser_observed,
-        redline_checked=redline_checked,
-        state_changing=state_changing,
-        identity_v2=identity_v2,
-        operation_material=operation_material,
-    )
-    summary = {
-        "schema_version": SCHEMA_VERSION,
-        "lane": lane,
-        "protocol": protocol,
-        "target": canonical_target_value(target),
-        "finding_id": finding_id,
-        "url": public_url,
-        "endpoint": endpoint,
-        "method": "WS" if protocol == "websocket" else "GRPC" if protocol == "grpc" else str(spec.get("http_method") or "POST").upper(),
-        "vuln_class": vuln_class,
-        "generated_at": now_utc(),
-        "result": result,
-        "candidate_ready": candidate_ready,
-        "execution": {key: value for key, value in execution.items() if key not in {"stdout", "stderr"}},
-        "observation": {"matched": observed, "tool_calls": observed_calls[:16]},
-        "state_changing": state_changing,
-        "redline_checked": redline_checked,
-        "header_overlay_sha256": header_overlay_digest,
-        "auth_session_id": auth_session_id,
-        "artifacts": artifacts,
-        "evidence_rubric": rubric,
-        "ledger_record": ledger,
-        "ai_next": {
-            "hypothesis": f"the exact {protocol} exchange may cross an authorization, stream, or tool boundary",
-            "next_action": "Use /validate only when the saved protocol transcript proves the target-specific impact; otherwise keep it as a signal.",
-            "stop_condition": "The expected frame, trailer, stream item, or tool call is absent or lacks impact.",
-        },
-    }
-    return _finalize_runner_summary(summary, bundle / "summary.json", repo_root)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3989,20 +3649,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_request_facts(authz_role)
     authz_role.add_argument("--no-ledger", action="store_true")
 
-    sqli = sub.add_parser("sqli-result-diff", help="Validate read-only SQLi-style result differential")
-    add_common(sqli)
-    add_cli_args(sqli)
-    sqli.add_argument("--url", required=True)
-    sqli.add_argument("--param", required=True)
-    sqli.add_argument("--baseline-value", default="")
-    sqli.add_argument("--variant-value", required=True)
-    sqli.add_argument("--method", default="GET")
-    sqli.add_argument("--header", action="append", default=[])
-    sqli.add_argument("--timeout", type=int, default=10)
-    sqli.add_argument("--repeat", type=int, default=1)
-    sqli.add_argument("--browser-observed", action="store_true")
-    sqli.add_argument("--no-ledger", action="store_true")
-
     request_diff = sub.add_parser(
         "request-diff",
         help="Replay an AI-supplied exact baseline/variant request pair",
@@ -4041,19 +3687,6 @@ def build_parser() -> argparse.ArgumentParser:
     marker.add_argument("--browser-observed", action="store_true")
     add_request_facts(marker)
     marker.add_argument("--no-ledger", action="store_true")
-
-    protocol = sub.add_parser(
-        "protocol-replay",
-        help="Replay an exact WebSocket, gRPC, or LLM tool-call protocol spec",
-    )
-    add_common(protocol)
-    add_cli_args(protocol)
-    protocol.add_argument("--protocol-spec", required=True, help="schema-v1 protocol replay JSON")
-    protocol.add_argument("--header", action="append", default=[])
-    protocol.add_argument("--timeout", type=int, default=15)
-    protocol.add_argument("--browser-observed", action="store_true")
-    add_request_facts(protocol)
-    protocol.add_argument("--no-ledger", action="store_true")
 
     idor_pair = sub.add_parser("idor-actor-pair", help="Replay owner vs peer actor pair and diff responses")
     add_common(idor_pair)
@@ -4098,28 +3731,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--identity-v2-json must contain a valid ClosureCellKey v2: {exc}")
     repo_root = Path(args.repo_root)
     auth_session = session_from_args(args).bind_target(args.target)
-    if args.lane == "protocol-replay":
-        try:
-            protocol_spec = json.loads(Path(args.protocol_spec).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            parser.error(f"--protocol-spec must point to a JSON object: {exc}")
-        if not isinstance(protocol_spec, dict):
-            parser.error("--protocol-spec must contain a JSON object")
-        summary = run_protocol_replay(
-            repo_root=repo_root,
-            target=args.target,
-            spec=protocol_spec,
-            finding_id=args.finding_id,
-            timeout=args.timeout,
-            no_ledger=args.no_ledger,
-            browser_observed=args.browser_observed,
-            state_changing=args.state_changing,
-            redline_checked=args.redline_checked,
-            identity_v2=identity_v2,
-            headers=parse_headers(args.header),
-            session=auth_session,
-        )
-    elif args.lane == "request-diff":
+    if args.lane == "request-diff":
         try:
             request_spec = json.loads(Path(args.request_spec).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -4196,24 +3808,6 @@ def main(argv: list[str] | None = None) -> int:
             case_state_ref=case_state_ref,
             identity_v2=identity_v2,
             owner_session=None if args.from_case_state else auth_session,
-        )
-    elif args.lane == "sqli-result-diff":
-        summary = run_sqli_result_diff(
-            repo_root=repo_root,
-            target=args.target,
-            url=args.url,
-            param=args.param,
-            baseline_value=args.baseline_value,
-            variant_value=args.variant_value,
-            method=args.method,
-            headers=parse_headers(args.header),
-            timeout=args.timeout,
-            finding_id=args.finding_id,
-            repeat=args.repeat,
-            no_ledger=args.no_ledger,
-            browser_observed=args.browser_observed,
-            identity_v2=identity_v2,
-            session=auth_session,
         )
     elif args.lane == "marker-replay":
         summary = run_marker_replay(

@@ -1058,6 +1058,7 @@ def list_root_finding_claims(
         root,
         target=resolved_target,
         migrate_legacy=False,
+        allow_legacy=True,
     )
     reconciled_revisions: set[tuple[str, str]] = set()
     for item in canonical.get("findings", []):
@@ -1186,6 +1187,87 @@ def _load_json_value(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _validate_finding_payload(
+    payload: dict[str, Any],
+    *,
+    path: Path,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Fail closed on a non-canonical or cross-target findings index."""
+    schema_version = payload.get("schema_version")
+    if schema_version is not None and (
+        isinstance(schema_version, bool) or schema_version != SCHEMA_VERSION
+    ):
+        raise ValueError(
+            f"invalid finding index schema_version at {path}: expected {SCHEMA_VERSION}"
+        )
+    raw_target = payload.get("target")
+    if not isinstance(raw_target, str) or not raw_target.strip():
+        raise ValueError(f"invalid finding index target at {path}")
+    expected_target = _canonical_target_or_raw(target)
+    actual_target = _canonical_target_or_raw(raw_target)
+    if expected_target and actual_target != expected_target:
+        raise ValueError(
+            f"finding index target mismatch at {path}: expected {expected_target}, got {actual_target}"
+        )
+    findings = payload.get("findings")
+    if not isinstance(findings, list):
+        raise ValueError(f"invalid finding index findings at {path}: expected a list")
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, dict) or not str(finding.get("id") or "").strip():
+            raise ValueError(f"invalid finding index row at {path}: findings[{index}]")
+    return payload
+
+
+def _legacy_object_to_index(
+    findings_dir: Path,
+    payload: dict[str, Any],
+    *,
+    target: str | None = None,
+) -> dict[str, Any]:
+    """Project the historical object envelope without trusting finality.
+
+    Early writers emitted ``{"findings": [...]}`` objects before the target
+    envelope and row IDs became mandatory.  Projection readers may still need
+    to inspect those artifacts, but the conversion must follow the same
+    quarantine rules as legacy list migration and must never hide a target or
+    schema mismatch.
+    """
+    schema_version = payload.get("schema_version")
+    if schema_version is not None and (
+        isinstance(schema_version, bool) or schema_version != SCHEMA_VERSION
+    ):
+        raise ValueError(
+            f"invalid finding index schema_version at {findings_dir / 'findings.json'}: "
+            f"expected {SCHEMA_VERSION}"
+        )
+
+    raw_target = payload.get("target")
+    if raw_target is not None:
+        if not isinstance(raw_target, str) or not raw_target.strip():
+            raise ValueError(f"invalid finding index target at {findings_dir / 'findings.json'}")
+        expected_target = _canonical_target_or_raw(target)
+        actual_target = _canonical_target_or_raw(raw_target)
+        if expected_target and actual_target != expected_target:
+            raise ValueError(
+                f"finding index target mismatch at {findings_dir / 'findings.json'}: "
+                f"expected {expected_target}, got {actual_target}"
+            )
+        target = raw_target
+
+    rows = payload.get("findings")
+    if not isinstance(rows, list):
+        raise ValueError(
+            f"invalid finding index findings at {findings_dir / 'findings.json'}: expected a list"
+        )
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(
+                f"invalid finding index row at {findings_dir / 'findings.json'}: findings[{index}]"
+            )
+    return _legacy_list_to_index(findings_dir, rows, target=target)
 
 
 def _empty_finding_index(findings_dir: Path, *, target: str | None = None) -> dict[str, Any]:
@@ -1449,10 +1531,16 @@ def _load_finding_payload(
     *,
     target: str | None = None,
     migrate_legacy: bool = False,
+    allow_legacy: bool = False,
 ) -> dict[str, Any]:
     raw = _load_json_value(path)
     if isinstance(raw, dict):
-        return raw
+        try:
+            return _validate_finding_payload(raw, path=path, target=target)
+        except ValueError:
+            if not allow_legacy:
+                raise
+            return _legacy_object_to_index(findings_dir, raw, target=target)
     if not isinstance(raw, list):
         return {}
     payload = _legacy_list_to_index(findings_dir, raw, target=target)
@@ -1612,13 +1700,27 @@ def load_finding_index(
     findings_dir: str | Path,
     *,
     migrate_legacy: bool = True,
+    target: str | None = None,
+    allow_legacy: bool = False,
 ) -> dict[str, Any]:
     root = Path(findings_dir)
     path = root / "findings.json"
     if not migrate_legacy:
-        return _load_finding_payload(path, root, migrate_legacy=False)
+        return _load_finding_payload(
+            path,
+            root,
+            target=target,
+            migrate_legacy=False,
+            allow_legacy=allow_legacy,
+        )
     with finding_mutation_lock(root):
-        return _load_finding_payload(path, root, migrate_legacy=True)
+        return _load_finding_payload(
+            path,
+            root,
+            target=target,
+            migrate_legacy=True,
+            allow_legacy=allow_legacy,
+        )
 
 
 def _upsert_findings_unlocked(
@@ -1630,7 +1732,12 @@ def _upsert_findings_unlocked(
     """Create or merge target findings through the canonical mutation boundary."""
     root = Path(findings_dir)
     path = root / "findings.json"
-    payload = load_finding_index(root, migrate_legacy=False) or _empty_finding_index(root, target=target)
+    payload = load_finding_index(
+        root,
+        migrate_legacy=False,
+        target=target,
+        allow_legacy=True,
+    ) or _empty_finding_index(root, target=target)
     if target:
         payload["target"] = target
     payload.setdefault("schema_version", SCHEMA_VERSION)
@@ -1748,7 +1855,11 @@ def find_finding(
 def _update_finding_status_unlocked(findings_dir: str | Path, finding_id: str, **updates: Any) -> dict[str, Any] | None:
     """Update one finding in findings.json and return the updated finding."""
     path = Path(findings_dir) / "findings.json"
-    payload = load_finding_index(findings_dir, migrate_legacy=False)
+    payload = load_finding_index(
+        findings_dir,
+        migrate_legacy=False,
+        allow_legacy=True,
+    )
     if not payload:
         return None
 

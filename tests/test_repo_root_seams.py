@@ -16,7 +16,6 @@ CLASSIFICATIONS = {
     "browser_evidence": "narrow-root-injected",
     "browser_playwright_fallback": "narrow-root-injected",
     "cf_solver": "repo-root-dependent",
-    "cve_hunter": "repo-root-dependent",
     "hypothesis_worker": "import-only",
     "json_inject_probe": "repo-root-dependent",
     "remember": "repo-root-dependent",
@@ -33,7 +32,6 @@ CLASSIFICATIONS = {
 
 ROOT_SYMBOLS = {
     "cf_solver": ("load_config", "check_cookie", "write_output"),
-    "cve_hunter": ("hunt_cves",),
     "json_inject_probe": ("_source_binding", "_write_findings"),
     "remember": (
         "resolve_validate_summary_path",
@@ -69,7 +67,6 @@ NARROW_SYMBOLS = {
 
 CLI_MODULES = (
     "cf_solver",
-    "cve_hunter",
     "json_inject_probe",
     "remember",
     "resume",
@@ -148,23 +145,6 @@ def test_cf_solver_explicit_root_contains_config_and_private_outputs(tmp_path, m
 
     assert (root / ".private/cf/target.test/cf_cookies.txt").is_file()
     assert (root / "recon/target.test/cf_cookies.txt").is_file()
-    assert not legacy.exists()
-
-
-def test_cve_hunter_explicit_root_contains_findings(tmp_path, monkeypatch):
-    import cve_hunter
-
-    legacy = tmp_path / "legacy"
-    root = tmp_path / "isolated"
-    monkeypatch.setattr(cve_hunter, "BASE_DIR", str(legacy))
-    monkeypatch.setattr(cve_hunter, "FINDINGS_DIR", str(legacy / "findings"))
-    monkeypatch.setattr(cve_hunter, "check_exposed_configs", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(cve_hunter, "detect_technologies", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(cve_hunter, "run_nuclei_cve_scan", lambda *_args, **_kwargs: [])
-
-    cve_hunter.hunt_cves("target.test", repo_root=root)
-
-    assert (root / "findings/target.test/cves").is_dir()
     assert not legacy.exists()
 
 

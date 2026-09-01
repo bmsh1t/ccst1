@@ -1777,7 +1777,11 @@ def load_surface_context(
         if probe_log_path is not None:
             probe_log_path.unlink(missing_ok=True)
         raise
-    finding_index = load_finding_index(findings_dir)
+    finding_index = load_finding_index(
+        findings_dir,
+        target=target,
+        allow_legacy=True,
+    )
     scanner_findings = [
         _project_untrusted_finality_as_candidate(
             item,

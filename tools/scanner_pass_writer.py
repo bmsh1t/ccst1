@@ -43,7 +43,7 @@ from tools.coverage_matrix import VULN_CLASSES, normalize_vuln_class  # noqa: E4
 
 # Mapping from vuln_scanner.sh category directory name to canonical vuln_class
 # from VULN_CLASSES. Categories not present in this map are intentionally NOT
-# recorded — they are mixed/informational lanes (cves, exposure, metasploit)
+# recorded — they are mixed/informational lanes (cves, exposure)
 # that do not fit a single canonical vuln_class cell. Per C3 / per coverage
 # matrix philosophy: better to leave the cell `untested` than to mis-mark.
 CATEGORY_TO_VULN_CLASS: dict[str, str] = {

@@ -79,7 +79,6 @@ the same case-state owner.
 | SQLi PoC verifier | curl timing probes | **Yes** |
 | Upload PoC | curl multipart | **Yes** |
 | SSTI probes | curl | **Yes** |
-| CMS detection | curl | **Yes** |
 | **MFA workflow-skip test** | curl | **No, intentionally** |
 | **SAML signature-stripping** | curl | **Anonymous POST + isolated Cookie read-back** |
 

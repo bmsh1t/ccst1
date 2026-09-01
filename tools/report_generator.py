@@ -30,6 +30,7 @@ try:
     from target_paths import target_storage_key
     from target_paths import canonical_target_value, url_belongs_to_target
     from closure_resolver import canonical_vuln_class
+    from validation_runner import _artifact_digest_material, _runner_operation_id
 except ImportError:  # pragma: no cover - package import path
     from tools.action_queue import ACTIVE_STATUSES, load_queue, resolve_action
     from tools.finding_index import (
@@ -40,6 +41,7 @@ except ImportError:  # pragma: no cover - package import path
     from tools.target_paths import target_storage_key
     from tools.target_paths import canonical_target_value, url_belongs_to_target
     from tools.closure_resolver import canonical_vuln_class
+    from tools.validation_runner import _artifact_digest_material, _runner_operation_id
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
@@ -850,7 +852,10 @@ def _runner_endpoint_matches(expected, candidate, target):
         return False
     for value in (expected, candidate):
         raw = str(value or "").strip()
-        if raw.startswith(("http://", "https://", "//")) and not url_belongs_to_target(raw, target):
+        scheme = urlparse(raw).scheme.lower()
+        if (scheme in {"http", "https", "ws", "wss"} or raw.startswith("//")) and not url_belongs_to_target(
+            raw, target
+        ):
             return False
     if _endpoint_identity(expected) == _endpoint_identity(candidate):
         return True
@@ -1015,6 +1020,20 @@ def _canonical_runner_witness(finding, *, findings_dir, target):
             continue
         if not any(kind == "response" or kind.endswith("_response") for kind in kinds):
             errors.append("runner response artifact is missing")
+            continue
+        operation_material = runner.get("operation_material")
+        if not isinstance(operation_material, dict):
+            errors.append("runner operation material is missing")
+            continue
+        expected_material = _artifact_digest_material(bindings)
+        if operation_material.get("artifact_bindings") != expected_material:
+            errors.append("runner operation material artifact binding mismatch")
+            continue
+        if canonical_target_value(str(operation_material.get("target") or "")) != expected_target:
+            errors.append("runner operation material target mismatch")
+            continue
+        if _runner_operation_id(operation_material) != operation_id:
+            errors.append("runner operation ID does not match canonical material")
             continue
         ledger = _runner_ledger_row(repo_root, expected_target, runner, refs)
         if ledger is None:

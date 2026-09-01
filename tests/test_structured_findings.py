@@ -312,15 +312,16 @@ def test_validate_summary_passed_finding_is_report_ready(tmp_path):
 
 
 def test_load_validation_runner_candidate_pool_keeps_runner_evidence_advisory(tmp_path):
-    summary_dir = tmp_path / "evidence" / "target.com" / "validation" / "sqli-result-diff-search"
+    summary_dir = tmp_path / "evidence" / "target.com" / "validation" / "request-diff-search"
     summary_dir.mkdir(parents=True)
     (summary_dir / "summary.json").write_text(
         json.dumps(
             {
-                "lane": "sqli_result_diff",
-                "finding_id": "sqli-result-diff-search",
+                "lane": "request_diff",
+                "finding_id": "request-diff-search",
                 "url": "https://target.com/rest/products/search?q=apple",
                 "method": "GET",
+                "vuln_class": "SQLi",
                 "result": "tested_finding",
                 "candidate_ready": True,
                 "evidence_rubric": {
@@ -354,7 +355,7 @@ def test_load_validation_runner_candidate_pool_keeps_runner_evidence_advisory(tm
     lines = structured_findings.format_validation_runner_candidate_lines(pool)
 
     assert len(pool) == 1
-    assert pool[0]["id"] == "sqli-result-diff-search"
+    assert pool[0]["id"] == "request-diff-search"
     assert pool[0]["rubric_status"] == "candidate-ready"
     assert "requires /validate" in pool[0]["report_gate"]
     assert "tested_clean" not in "\n".join(lines)
@@ -364,7 +365,7 @@ def test_load_validation_runner_candidate_pool_filters_finalized_findings(tmp_pa
     validation_root = tmp_path / "evidence" / "target.com" / "validation"
     for name, lane, url in [
         ("authz-public-exposure-api_Feedbacks", "authz_public_exposure", "https://target.com/api/Feedbacks"),
-        ("sqli-result-diff-search", "sqli_result_diff", "https://target.com/rest/products/search?q=apple"),
+        ("request-diff-search", "request_diff", "https://target.com/rest/products/search?q=apple"),
         ("idor-fresh", "idor_actor_pair", "https://target.com/rest/orders/9"),
     ]:
         summary_dir = validation_root / name
@@ -401,12 +402,12 @@ def test_load_validation_runner_candidate_pool_filters_finalized_findings(tmp_pa
                         "report_status": "not_generated",
                     },
                     {
-                        "id": "sqli-result-diff-search",
+                        "id": "request-diff-search",
                         "type": "sqli",
                         "url": "https://target.com/rest/products/search?q=apple",
                         "validation_status": "validated",
                         "report_status": "generated",
-                        "source_file": "evidence/target.com/validation/sqli-result-diff-search/summary.json",
+                        "source_file": "evidence/target.com/validation/request-diff-search/summary.json",
                     },
                 ]
             }
@@ -421,7 +422,7 @@ def test_load_validation_runner_candidate_pool_filters_finalized_findings(tmp_pa
     )
     finding_index.update_finding_status(
         findings_dir,
-        "sqli-result-diff-search",
+        "request-diff-search",
         validation_status="validated",
         report_status="generated",
     )

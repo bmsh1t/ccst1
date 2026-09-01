@@ -568,35 +568,6 @@ def test_marker_runner_builds_complete_command_when_contract_is_satisfied(tmp_pa
     assert "--method POST" in next_item["command"]
 
 
-def test_sqli_runner_requires_parameter_and_variant_and_builds_command(tmp_path):
-    target_case_state.add_backlog(
-        tmp_path,
-        TARGET,
-        runner="sqli-result-diff",
-        endpoint=f"{TARGET}/search",
-        priority="critical",
-    )
-    blocked = target_case_state.next_action(tmp_path, TARGET)
-    assert blocked["ready"] is False
-    assert {"param", "variant_value"}.issubset(set(blocked["missing_evidence"]))
-
-    target_case_state.add_backlog(
-        tmp_path,
-        TARGET,
-        runner="sqli-result-diff",
-        endpoint=f"{TARGET}/search",
-        param="q",
-        baseline_value="safe",
-        variant_value="'",
-        priority="high",
-    )
-    ready = target_case_state.next_action(tmp_path, TARGET)
-    assert ready["ready"] is True
-    assert "--param q" in ready["command"]
-    command = shlex.split(ready["command"])
-    assert command[command.index("--variant-value") + 1] == "'"
-
-
 def test_request_diff_runner_uses_spec_reference_without_copying_request_values(tmp_path):
     target_case_state.add_backlog(
         tmp_path,

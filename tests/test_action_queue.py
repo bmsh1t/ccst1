@@ -77,7 +77,7 @@ def _checkpoint() -> dict:
                 "type": "known-software-intel",
                 "status": "ready",
                 "action": "Check known advisories for WordPress plugin X 1.2.3.",
-                "command_hint": "/intel + cve_hunter",
+                "command_hint": "/intel",
                 "redline_required": False,
             },
         ]
@@ -806,7 +806,7 @@ def test_ingest_checkpoint_retires_stale_checkpoint_queued_actions(tmp_path):
                 "type": "known-software-intel",
                 "status": "ready",
                 "action": "Check known advisories for WordPress plugin X 1.2.3.",
-                "command_hint": "/intel + cve_hunter",
+                "command_hint": "/intel",
                 "redline_required": False,
             },
         ]

@@ -611,16 +611,9 @@ closeable only after mapping to one of the canonical coverage cells above.
 
 | Tool | Target |
 |:---|:---|
-| `h1_idor_scanner.py` | Object-level and field-level IDOR |
-| `h1_mutation_idor.py` | GraphQL mutation IDOR |
-| `h1_oauth_tester.py` | OAuth misconfigs (PKCE, state, redirect_uri) |
-| `h1_race.py` | Race conditions (TOCTOU, limit overrun) |
 | `zero_day_fuzzer.py` | Logic bugs, edge cases, access control |
-| `cve_hunter.py` | Tech fingerprinting + known CVE matching |
 | `vuln_scanner.sh` | Active candidate scanner: upload canaries, SQLi timing, SSTI, MFA/SAML |
 | `bypass_403.sh` | Bounded 401/403 path, proxy-route, and access-limit replay with optional AI plan |
-| `hai_probe.py` | AI chatbot IDOR, prompt injection |
-| `hai_payload_builder.py` | Prompt injection payload generator |
 
 </details>
 

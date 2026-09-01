@@ -78,9 +78,8 @@ grpcurl -H 'authorization: Bearer TOKEN' HOST:PORT package.Service/Method
 3. 对单个目标特定 method 比较匿名/低权限/自有第二身份，记录 status、message 字段和状态 read-back。
 4. 若存在 edge/backend 双入口，保持相同 method/message，只比较 authority/metadata 传播差异。
 5. 只有 status `0` 或稳定差异产生非预期数据/动作/对象边界时进入 Candidate。
-6. 对确切 method 使用 `validation_runner.py protocol-replay`；schema-v1 spec
-   提供 `endpoint`、`method`、JSON `request` 和 `expect.marker`。请求经 stdin
-   进入 `grpcurl`，summary 保留输出、trailers、operation ID 和 owner 写回。
+6. 对确切 method 交给 AI 按需选择可用客户端或通用证据工具，保存原始请求、响应、trailers、
+   operation ID 和 owner 写回。
 
 ## 常见误判 / 死路
 

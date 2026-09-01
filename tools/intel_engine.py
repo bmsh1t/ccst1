@@ -743,7 +743,12 @@ def load_local_advisory_signals(repo_root: str | Path, target: str) -> dict:
         raw_payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw_payload, (dict, list)):
             raise ValueError("canonical findings artifact must be an object or legacy list")
-        payload = load_finding_index(findings_dir, migrate_legacy=False)
+        payload = load_finding_index(
+            findings_dir,
+            migrate_legacy=False,
+            target=target,
+            allow_legacy=True,
+        )
     except Exception as exc:  # 可选本地来源失败只降级该 source envelope。
         return {
             "source": "local_nuclei",

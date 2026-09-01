@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
 Bug Bounty Hunt Orchestrator
-Main script that chains target selection, recon, scanning, and reporting.
+Main script that chains recon, scanning, and reporting for an explicit target.
 
 Usage:
-    python3 hunt.py                         # Full pipeline: select targets + hunt
     python3 hunt.py --target <target>       # Hunt a specific domain/IP/CIDR or primary-domain batch
     python3 hunt.py --quick --target <target>  # Quick scan mode
     python3 hunt.py --recon-only --target <target>  # Only run recon
@@ -16,7 +15,6 @@ Usage:
 """
 
 import argparse
-import base64
 import json
 import os
 import re
@@ -33,12 +31,11 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urljoin, urlparse
+from urllib.parse import parse_qsl, urlparse
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener, urlopen
 
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(TOOLS_DIR)
-TARGETS_DIR = os.path.join(BASE_DIR, "targets")
 RECON_DIR = os.path.join(BASE_DIR, "recon")
 FINDINGS_DIR = os.path.join(BASE_DIR, "findings")
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
@@ -55,7 +52,6 @@ from memory.target_profile import default_memory_dir, load_target_profile, make_
 from tools.auth_session import AuthSession, add_cli_args, session_from_args
 from tools.credential_store import CredentialStore
 from tools.eburst_lane import resolve_eburst
-from tools.public_exposure_signals import classify_public_response
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
 from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock
 from tools.target_paths import (
@@ -601,127 +597,6 @@ def _log_guard_advisory(
 _log_guard_block = _log_guard_advisory
 
 
-def _decoded_jwt_segment(segment):
-    """Base64url-decode a JWT segment into JSON if possible."""
-    padding = "=" * (-len(segment) % 4)
-    try:
-        decoded = base64.urlsafe_b64decode(segment + padding).decode("utf-8")
-        return json.loads(decoded)
-    except Exception:
-        return None
-
-
-def _strip_ansi(text):
-    """Remove ANSI escape sequences from CLI output."""
-    return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(text or ""))
-
-
-def _resolve_jwt_tool_command():
-    """Return a runnable jwt_tool command, if available."""
-    for tool in ("jwt_tool", "jwt_tool.py", "jwt-tool"):
-        if _command_exists(tool):
-            return tool
-
-    for candidate in (
-        os.path.expanduser("~/jwt_tool/jwt_tool.py"),
-        os.path.expanduser("~/Tools/jwt_tool/jwt_tool.py"),
-        os.path.expanduser("~/tools/jwt_tool/jwt_tool.py"),
-    ):
-        if os.path.isfile(candidate):
-            return f"python3 {shlex.quote(candidate)}"
-
-    return ""
-
-
-def _resolve_jwt_tool_wordlist(jwt_tool_cmd=""):
-    """Return the preferred jwt_tool cracking wordlist, if available."""
-    candidates = []
-
-    stripped = str(jwt_tool_cmd or "").strip()
-    if stripped.startswith("python3 "):
-        script_path = stripped[len("python3 "):].strip()
-        if script_path:
-            script_path = shlex.split(script_path)[0]
-            candidates.append(os.path.join(os.path.dirname(script_path), "jwt.secrets.list"))
-    elif stripped.endswith(".py"):
-        candidates.append(os.path.join(os.path.dirname(stripped), "jwt.secrets.list"))
-
-    candidates.extend(
-        [
-            os.path.expanduser("~/Tools/jwt_tool/jwt.secrets.list"),
-            os.path.expanduser("~/tools/jwt_tool/jwt.secrets.list"),
-            os.path.expanduser("~/jwt_tool/jwt.secrets.list"),
-        ]
-    )
-
-    for candidate in candidates:
-        if candidate and os.path.isfile(candidate):
-            return candidate
-
-    return ""
-
-
-def _summarize_jwt_tool_output(output, *, limit=12):
-    """Reduce jwt_tool output to the most useful audit lines."""
-    lines = [
-        line.strip()
-        for line in _strip_ansi(output).splitlines()
-        if line and line.strip()
-    ]
-    if not lines:
-        return []
-
-    interesting = []
-    for line in lines:
-        lowered = line.lower()
-        if any(
-            keyword in lowered
-            for keyword in (
-                "alg",
-                "kid",
-                "typ",
-                "header",
-                "payload",
-                "claim",
-                "signature",
-                "valid",
-                "verify",
-                "weak",
-                "secret",
-                "vulnerab",
-                "jwks",
-            )
-        ):
-            interesting.append(line)
-
-    selected = interesting or lines[:limit]
-    return selected[:limit]
-
-
-def _run_jwt_tool_probe(token, jwt_tool_cmd):
-    """Run jwt_tool against one token and return summary lines."""
-    header = _decoded_jwt_segment(token.split(".")[0]) or {}
-    alg = str(header.get("alg", "") or "").upper()
-    wordlist = _resolve_jwt_tool_wordlist(jwt_tool_cmd)
-
-    mode = "inspect"
-    cmd = [*shlex.split(jwt_tool_cmd), token]
-    if alg.startswith("HS") and wordlist:
-        mode = "crack"
-        cmd.extend(["-C", "-d", wordlist])
-
-    success, output = run_argv(cmd, cwd=BASE_DIR, timeout=60)
-    summary_lines = _summarize_jwt_tool_output(output)
-    if not summary_lines:
-        return success, []
-
-    return success, [
-        f"jwt_tool mode={mode} cmd={jwt_tool_cmd} token={token[:48]}",
-        *([f"  wordlist={wordlist}"] if mode == "crack" and wordlist else []),
-        *[f"  {line}" for line in summary_lines],
-    ]
-
-
 def _collect_live_urls(domain, limit=None):
     """Collect live URLs from both new and legacy recon layouts."""
     recon_dir = _resolve_recon_dir(domain)
@@ -745,40 +620,6 @@ def _collect_all_urls(domain, limit=None):
     """Collect all known URLs from recon output."""
     urls = _read_text_lines(_first_existing_path(_recon_file_candidates(domain, "urls/all.txt", "urls.txt")), limit=limit)
     return _dedupe_keep_order(urls)[:limit] if limit else _dedupe_keep_order(urls)
-
-
-def _collect_param_urls(domain, limit=None):
-    """Collect parameterized URLs from recon output or derive from all URLs."""
-    paths = _recon_file_candidates(
-        domain,
-        "urls/with_params.txt",
-        "idor-candidates.txt",
-        "ssrf-candidates.txt",
-        "redirect-candidates.txt",
-        "sqli-candidates.txt",
-        "xss-candidates.txt",
-    )
-    urls = []
-    for path in paths:
-        urls.extend(_read_text_lines(path, limit=limit))
-
-    if not urls:
-        urls.extend(url for url in _collect_all_urls(domain, limit=limit) if "?" in url)
-
-    urls = _dedupe_keep_order(urls)
-    return urls[:limit] if limit else urls
-
-
-def _collect_api_endpoints(domain, limit=None):
-    """Collect API endpoints from recon output or derive them from URLs."""
-    endpoints = _read_text_lines(_first_existing_path(_recon_file_candidates(domain, "urls/api_endpoints.txt", "api-endpoints.txt")), limit=limit)
-    if not endpoints:
-        endpoints = [
-            url for url in _collect_all_urls(domain, limit=limit)
-            if re.search(r"(/api/|/v[0-9]+/|/graphql|/rest/)", url, re.I)
-        ]
-    endpoints = _dedupe_keep_order(endpoints)
-    return endpoints[:limit] if limit else endpoints
 
 
 def _collect_js_urls(domain, limit=None):
@@ -944,7 +785,7 @@ def _update_target_profile(domain, *, elapsed_minutes=0, recon_completed=False):
     save_target_profile(HUNT_MEMORY_DIR, profile)
 
 
-def _session_vuln_classes(domain, *, recon_completed=False, scan_completed=False, cve_hunt=False, zero_day=False):
+def _session_vuln_classes(domain, *, recon_completed=False, scan_completed=False, zero_day=False):
     """Derive a minimal list of vuln classes/scan modes attempted in the session."""
     classes = []
     for item in _load_report_findings(domain):
@@ -958,8 +799,6 @@ def _session_vuln_classes(domain, *, recon_completed=False, scan_completed=False
         elif recon_completed:
             classes.append("recon")
 
-    if cve_hunt:
-        classes.append("cve")
     if zero_day:
         classes.append("zero_day")
 
@@ -972,7 +811,6 @@ def _auto_log_session_summary(
     action="hunt",
     recon_completed=False,
     scan_completed=False,
-    cve_hunt=False,
     zero_day=False,
     session_id=None,
 ):
@@ -985,7 +823,6 @@ def _auto_log_session_summary(
             domain,
             recon_completed=recon_completed,
             scan_completed=scan_completed,
-            cve_hunt=cve_hunt,
             zero_day=zero_day,
         )
         journal = HuntJournal(Path(HUNT_MEMORY_DIR) / "journal.jsonl")
@@ -1010,7 +847,6 @@ def _persist_runtime_state(
     recon_completed=False,
     scan_completed=False,
     reports_generated=0,
-    cve_hunt=False,
     zero_day=False,
     ctf_mode=False,
     enrichment_tools=None,
@@ -1034,7 +870,6 @@ def _persist_runtime_state(
             surface_ready=bool(artifacts.get("surface_inputs_ready")),
             scan_completed=bool(scan_completed),
             reports_generated=int(reports_generated or 0),
-            cve_hunt=bool(cve_hunt),
             zero_day=bool(zero_day),
             ctf_mode=bool(ctf_mode),
             enrichment_tools=list(enrichment_tools or []),
@@ -1087,7 +922,6 @@ def _batch_recon_result(canonical_target, recon_ok, started, *, ctf_mode=False):
         recon_completed=bool(recon_ok),
         scan_completed=False,
         reports_generated=0,
-        cve_hunt=False,
         zero_day=False,
         ctf_mode=ctf_mode,
     )
@@ -1096,7 +930,6 @@ def _batch_recon_result(canonical_target, recon_ok, started, *, ctf_mode=False):
         canonical_target,
         recon_completed=bool(recon_ok),
         scan_completed=False,
-        cve_hunt=False,
         zero_day=False,
     )
 
@@ -1152,27 +985,6 @@ def setup_wordlists():
             log("err", f"Failed to download {name}")
 
     log("ok", f"Wordlists ready in {WORDLIST_DIR}")
-
-
-def select_targets(top_n=10):
-    """Run target selector."""
-    log("info", "Running target selector...")
-    script = os.path.join(TOOLS_DIR, "target_selector.py")
-    success, output = run_argv([sys.executable, script, "--top", str(top_n)], timeout=60)
-    print(output)
-
-    if not success:
-        log("err", "Target selection failed")
-        return []
-
-    # Load selected targets
-    targets_file = os.path.join(TARGETS_DIR, "selected_targets.json")
-    if os.path.exists(targets_file):
-        with open(targets_file) as f:
-            data = json.load(f)
-        return data.get("targets", [])
-
-    return []
 
 
 def run_recon(domain, quick=False, deep=False):
@@ -1576,201 +1388,6 @@ def run_post_param_discovery(domain, cookies="", deep=False):
     return bool(summary.get("counts", {}).get("post_forms") or summary.get("counts", {}).get("discoveries"))
 
 
-def run_api_fuzz(domain):
-    """Run lightweight, non-destructive API access checks and candidate extraction."""
-    findings_dir = _resolve_findings_dir(domain, create=True)
-    idor_dir = os.path.join(findings_dir, "idor")
-    auth_dir = os.path.join(findings_dir, "auth_bypass")
-    review_dir = os.path.join(findings_dir, "manual_review")
-    os.makedirs(idor_dir, exist_ok=True)
-    os.makedirs(auth_dir, exist_ok=True)
-    os.makedirs(review_dir, exist_ok=True)
-
-    api_urls = _collect_api_endpoints(domain, limit=40)
-    if not api_urls:
-        return False
-
-    idor_candidates = []
-    unauth_access = []
-    open_200_review = []
-    for url in api_urls:
-        if re.search(r"[?&](id|user_id|uid|account|profile|order|invoice|ticket|message_id|comment_id|file_id)=", url, re.I):
-            idor_candidates.append(url)
-        if re.search(r"/[0-9]{1,8}(/|$|\?)", url):
-            idor_candidates.append(url)
-
-    for url in api_urls[:20]:
-        status, body, _ = _fetch_url(
-            url,
-            timeout=8,
-            target=domain,
-            use_guard=True,
-            vuln_class="idor",
-        )
-        if status == 200 and len(body) > 500:
-            classification = classify_public_response(url, body, status=status)
-            if classification["candidate_ready"]:
-                unauth_access.append(f"[UNAUTH-CANDIDATE] {status} {len(body)} {url}")
-            else:
-                # Discovery-first：匿名 200 + substantial body 是有价值线索，
-                # 即使暂时不像 admin/config/secret 暴露，也不应在发现阶段丢弃。
-                # 后续 /surface、validation_runner、/validate 再做降噪和影响判断。
-                open_200_review.append(f"[OPEN-200-REVIEW] {status} {len(body)} {url}")
-
-    idor_candidates = _write_text_lines(os.path.join(idor_dir, "idor_candidates.txt"), idor_candidates)
-    unauth_access = _write_text_lines(os.path.join(auth_dir, "unauth_api_access.txt"), unauth_access)
-    open_200_review = _write_text_lines(os.path.join(review_dir, "open_200_api.txt"), open_200_review)
-    return bool(idor_candidates or unauth_access or open_200_review)
-
-
-def run_cors_check(domain):
-    """Check live targets for simple reflected CORS issues and nuclei hits."""
-    findings_dir = _resolve_findings_dir(domain, create=True)
-    misconfig_dir = os.path.join(findings_dir, "misconfig")
-    os.makedirs(misconfig_dir, exist_ok=True)
-
-    live_urls = _collect_live_urls(domain, limit=20)
-    output_path = os.path.join(misconfig_dir, "cors.txt")
-    findings = []
-
-    for url in live_urls:
-        status, _, headers = _fetch_url(
-            url,
-            headers={"Origin": "https://evil.com"},
-            timeout=8,
-            target=domain,
-            use_guard=True,
-            vuln_class="cors",
-        )
-        allow_origin = headers.get("Access-Control-Allow-Origin") or headers.get("access-control-allow-origin")
-        allow_creds = headers.get("Access-Control-Allow-Credentials") or headers.get("access-control-allow-credentials")
-        if allow_origin in {"https://evil.com", "*"}:
-            findings.append(f"{status or 'NA'} {url} ACAO={allow_origin} ACAC={allow_creds or '-'}")
-
-    if live_urls:
-        _run_nuclei_scan(live_urls, tags="cors", output_path=output_path)
-        findings.extend(_read_text_lines(output_path, limit=200))
-
-    findings = _write_text_lines(output_path, findings)
-    return bool(findings)
-
-
-def run_cms_exploit(domain):
-    """Run CMS-focused checks when recon suggests WordPress/Drupal/Joomla/Magento."""
-    findings_dir = _resolve_findings_dir(domain, create=True)
-    cms_dir = os.path.join(findings_dir, "cves")
-    os.makedirs(cms_dir, exist_ok=True)
-
-    live_urls = _collect_live_urls(domain, limit=20)
-    if not live_urls:
-        return False
-
-    findings = []
-    tech_stack = set(_extract_recon_tech_stack(domain))
-    indicators = {
-        "wordpress": ["/wp-json/wp/v2/users", "/xmlrpc.php"],
-        "drupal": ["/user/login", "/CHANGELOG.txt"],
-        "joomla": ["/administrator/manifests/files/joomla.xml"],
-        "magento": ["/rest/V1/store/storeConfigs"],
-    }
-
-    for base_url in live_urls[:10]:
-        for cms_name, paths in indicators.items():
-            if tech_stack and cms_name not in tech_stack and cms_name not in base_url.lower():
-                continue
-            for path in paths:
-                status, _, _ = _fetch_url(
-                    urljoin(base_url.rstrip("/") + "/", path.lstrip("/")),
-                    timeout=8,
-                    target=domain,
-                    use_guard=True,
-                    vuln_class="cve",
-                )
-                if status and status not in {404, 401}:
-                    findings.append(f"{cms_name} {status} {urljoin(base_url.rstrip('/') + '/', path.lstrip('/'))}")
-
-    if live_urls:
-        _run_nuclei_scan(live_urls, tags="wordpress,drupal,joomla,magento", output_path=os.path.join(cms_dir, "cms_templates.txt"), severity="medium,high,critical")
-        findings.extend(_read_text_lines(os.path.join(cms_dir, "cms_templates.txt"), limit=200))
-
-    findings = _write_text_lines(os.path.join(cms_dir, "cms_findings.txt"), findings)
-    return bool(findings)
-
-
-def run_rce_scan(domain):
-    """Run high-signal nuclei tags for RCE-adjacent issues."""
-    findings_dir = _resolve_findings_dir(domain, create=True)
-    review_dir = os.path.join(findings_dir, "manual_review")
-    os.makedirs(review_dir, exist_ok=True)
-
-    live_urls = _collect_live_urls(domain, limit=30)
-    output_path = os.path.join(review_dir, "rce_scan.txt")
-    if not live_urls:
-        return False
-
-    findings = []
-    if _run_nuclei_scan(live_urls, tags="rce,ssti,jndi", output_path=output_path, severity="medium,high,critical"):
-        findings.extend(_read_text_lines(output_path, limit=200))
-
-    findings = _write_text_lines(output_path, findings)
-    return bool(findings)
-
-
-def run_sqlmap_targeted(domain):
-    """Run sqlmap against a small sample of parameterized URLs."""
-    findings_dir = _resolve_findings_dir(domain, create=True)
-    review_dir = os.path.join(findings_dir, "manual_review")
-    os.makedirs(review_dir, exist_ok=True)
-
-    param_urls = _collect_param_urls(domain, limit=5)
-    output_path = os.path.join(review_dir, "sqlmap_targeted.txt")
-    if not param_urls:
-        return False
-
-    if not _command_exists("sqlmap"):
-        _write_text_lines(output_path, param_urls)
-        return True
-
-    summaries = []
-    for url in param_urls:
-        cmd = [
-            "sqlmap", "-u", url, "--batch", "--smart", "--level=2", "--risk=1",
-            "--disable-coloring", "--threads=1",
-        ]
-        success, output = run_argv(cmd, cwd=BASE_DIR, timeout=240)
-        snippet = output[:1200].replace("\r", "")
-        if success or snippet:
-            summaries.append(f"URL: {url}\n{snippet}\n")
-
-    summaries = _write_text_lines(output_path, summaries)
-    return bool(summaries)
-
-
-def run_sqlmap_request_file(request_file, domain=None, level=5, risk=3):
-    """Run sqlmap against a saved raw HTTP request file."""
-    if not os.path.isfile(request_file):
-        return False
-
-    findings_dir = _resolve_findings_dir(domain or "ad-hoc", create=True)
-    review_dir = os.path.join(findings_dir, "manual_review")
-    os.makedirs(review_dir, exist_ok=True)
-    output_path = os.path.join(review_dir, "sqlmap_request_file.txt")
-
-    if not _command_exists("sqlmap"):
-        _write_text_lines(output_path, [request_file])
-        return True
-
-    cmd = [
-        "sqlmap", "-r", request_file, "--batch", f"--level={int(level)}", f"--risk={int(risk)}",
-        "--disable-coloring", "--threads=1",
-    ]
-    success, output = run_argv(cmd, cwd=BASE_DIR, timeout=300)
-    if success or output:
-        _append_text(output_path, output[:4000] + ("\n" if output else ""))
-        return True
-    return False
-
-
 def run_json_inject_probe(
     domain,
     endpoints_file: str = "",
@@ -1846,59 +1463,6 @@ def run_json_inject_probe(
     return success or bool(output)
 
 
-def run_jwt_audit(domain):
-    """Search recon artifacts for JWTs, summarize claims, and optionally run jwt_tool."""
-    recon_dir = _resolve_recon_dir(domain)
-    findings_dir = _resolve_findings_dir(domain, create=True)
-    jwt_dir = os.path.join(findings_dir, "manual_review")
-    os.makedirs(jwt_dir, exist_ok=True)
-
-    jwt_re = re.compile(r"\b([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b")
-    tokens = []
-    for root, _, files in os.walk(recon_dir):
-        for filename in files:
-            if not filename.endswith((".txt", ".json", ".md", ".log")):
-                continue
-            path = os.path.join(root, filename)
-            try:
-                content = open(path, encoding="utf-8", errors="replace").read()
-            except OSError:
-                continue
-            tokens.extend(jwt_re.findall(content))
-
-    tokens = _dedupe_keep_order(tokens)[:25]
-    summaries = []
-    for token in tokens:
-        parts = token.split(".")
-        header = _decoded_jwt_segment(parts[0]) or {}
-        payload = _decoded_jwt_segment(parts[1]) or {}
-        summaries.append(
-            f"alg={header.get('alg', '?')} typ={header.get('typ', '?')} "
-            f"claims={','.join(sorted(payload.keys())[:8]) or '-'} token={token[:80]}"
-        )
-
-    all_urls = _collect_all_urls(domain, limit=500)
-    jwks_hits = [url for url in all_urls if re.search(r"jwks\.json|openid-configuration", url, re.I)]
-    if jwks_hits:
-        summaries.extend([f"jwks {url}" for url in jwks_hits])
-
-    jwt_tool_cmd = _resolve_jwt_tool_command()
-    jwt_tool_lines = []
-    if jwt_tool_cmd and tokens:
-        for token in tokens[:5]:
-            _, tool_summary = _run_jwt_tool_probe(token, jwt_tool_cmd)
-            if tool_summary:
-                jwt_tool_lines.extend(tool_summary)
-
-    output_path = os.path.join(jwt_dir, "jwt_audit.txt")
-    summaries = _write_text_lines(output_path, summaries)
-    if jwt_tool_lines:
-        if summaries:
-            _append_text(output_path, "\n")
-        _append_text(output_path, "\n".join(jwt_tool_lines) + "\n")
-    return bool(summaries or jwt_tool_lines)
-
-
 def generate_reports(domain):
     """Generate reports for findings."""
     findings_dir = _resolve_findings_dir(domain)
@@ -1937,15 +1501,6 @@ def show_status():
     print(f"  Tools: {len(installed)}/{len(installed)+len(missing)} installed")
     if missing:
         print(f"  Missing: {', '.join(missing)}")
-
-    # Check targets
-    targets_file = os.path.join(TARGETS_DIR, "selected_targets.json")
-    if os.path.exists(targets_file):
-        with open(targets_file) as f:
-            data = json.load(f)
-        print(f"  Selected targets: {data.get('total_targets', 0)}")
-    else:
-        print("  Selected targets: None (run target selector first)")
 
     # Check recon results
     if os.path.isdir(RECON_DIR):
@@ -2015,21 +1570,6 @@ def print_dashboard(results):
         print("  3. Add PoC screenshots where applicable")
         print("  4. Submit via HackerOne program pages")
         print(f"\n{'='*60}\n")
-
-
-def run_cve_hunt(domain):
-    """Run CVE hunter on a target."""
-    log("info", f"Running CVE hunter on {domain}...")
-    recon_dir = _resolve_recon_dir(domain)
-    cmd = [sys.executable, os.path.join(BASE_DIR, "tools", "cve_hunter.py"), domain]
-    if os.path.isdir(recon_dir):
-        cmd.extend(["--recon-dir", recon_dir])
-    success, _ = run_argv(
-        cmd,
-        cwd=BASE_DIR,
-        timeout=600,
-    )
-    return success
 
 
 def run_zero_day_fuzzer(domain, deep=False):
@@ -2156,7 +1696,6 @@ def _hunt_target_impl(
     deep=False,
     recon_only=False,
     scan_only=False,
-    cve_hunt=False,
     zero_day=False,
     scanner_full=False,
     scanner_skip="",
@@ -2248,7 +1787,6 @@ def _hunt_target_impl(
             canonical_target,
             recon_completed=result["recon"],
             scan_completed=False,
-            cve_hunt=False,
             zero_day=False,
         )
         _persist_runtime_state(
@@ -2300,7 +1838,6 @@ def _hunt_target_impl(
             recon_completed=recon_available,
             scan_completed=False,
             reports_generated=0,
-            cve_hunt=cve_hunt,
             zero_day=zero_day,
             ctf_mode=ctf_mode,
             enrichment_tools=result.get("enrichment", []),
@@ -2314,7 +1851,7 @@ def _hunt_target_impl(
     if not result["scan"]:
         result["success"] = False
 
-    # phase 退出后立即覆盖 running marker；后续 CVE/zero-day/profile
+    # phase 退出后立即覆盖 running marker；后续 zero-day/profile
     # 失败也不会把 `run_scan_started` 留给下一轮 autopilot。
     _persist_runtime_state(
         canonical_target,
@@ -2324,15 +1861,10 @@ def _hunt_target_impl(
         recon_completed=recon_available,
         scan_completed=result["scan"],
         reports_generated=0,
-        cve_hunt=cve_hunt,
         zero_day=zero_day,
         ctf_mode=ctf_mode,
         enrichment_tools=result.get("enrichment", []),
     )
-
-    # CVE hunting (only when explicitly requested)
-    if cve_hunt:
-        run_cve_hunt(canonical_target)
 
     # Zero-day fuzzing (disabled by default — high false positive rate)
     if zero_day:
@@ -2350,7 +1882,6 @@ def _hunt_target_impl(
         canonical_target,
         recon_completed=recon_available,
         scan_completed=result["scan"],
-        cve_hunt=cve_hunt,
         zero_day=zero_day,
     )
 
@@ -2362,7 +1893,6 @@ def _hunt_target_impl(
         recon_completed=recon_available,
         scan_completed=result["scan"],
         reports_generated=result["reports"],
-        cve_hunt=cve_hunt,
         zero_day=zero_day,
         ctf_mode=ctf_mode,
         enrichment_tools=result.get("enrichment", []),
@@ -2377,7 +1907,6 @@ def hunt_target(
     deep=False,
     recon_only=False,
     scan_only=False,
-    cve_hunt=False,
     zero_day=False,
     scanner_full=False,
     scanner_skip="",
@@ -2395,7 +1924,6 @@ def hunt_target(
         deep=deep,
         recon_only=recon_only,
         scan_only=scan_only,
-        cve_hunt=cve_hunt,
         zero_day=zero_day,
         scanner_full=scanner_full,
         scanner_skip=scanner_skip,
@@ -2409,7 +1937,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 hunt.py                            Full pipeline (select + hunt)
+  python3 hunt.py --target example.com       Run the full pipeline for a target
   python3 hunt.py --target example.com       Hunt specific domain/IP/CIDR target
   python3 hunt.py --quick --target 1.2.3.4   Quick scan for a specific target
   python3 hunt.py --status                   Show progress
@@ -2434,8 +1962,6 @@ Examples:
     parser.add_argument("--status", action="store_true", help="Show pipeline status")
     parser.add_argument("--setup-wordlists", action="store_true", help="Download wordlists")
     parser.add_argument("--zero-day", action="store_true", help="Run zero-day fuzzer")
-    parser.add_argument("--select-targets", action="store_true", help="Only run target selection")
-    parser.add_argument("--top", type=int, default=10, help="Number of targets to select")
     parser.add_argument(
         "--deep",
         action="store_true",
@@ -2482,11 +2008,6 @@ Examples:
         install_script = shlex.quote(os.path.join(BASE_DIR, "install_tools.sh"))
         log("warn", f"Run: bash {install_script}")
 
-    # Target selection only
-    if args.select_targets:
-        select_targets(top_n=args.top)
-        return
-
     # Report only
     if args.report_only:
         if args.target:
@@ -2524,47 +2045,7 @@ Examples:
         print_dashboard([result])
         return
 
-    # Full pipeline: select targets then hunt each
-    log("info", "Starting full pipeline...")
-
-    # Setup wordlists
-    if not os.path.exists(os.path.join(WORDLIST_DIR, "common.txt")):
-        setup_wordlists()
-
-    # Select targets
-    targets = select_targets(top_n=args.top)
-    if not targets:
-        log("err", "No targets selected. Exiting.")
-        sys.exit(1)
-
-    # Hunt each target
-    results = []
-    for i, target in enumerate(targets):
-        domains = target.get("scope_domains", [])
-        if not domains:
-            log("warn", f"No domains for {target.get('name', 'unknown')} — skipping")
-            continue
-
-        # Hunt the primary domain
-        primary_domain = domains[0]
-        log("info", f"[{i+1}/{len(targets)}] Hunting: {target.get('name', primary_domain)}")
-        log("info", f"  Domain: {primary_domain}")
-        log("info", f"  Program: {target.get('url', 'N/A')}")
-
-        try:
-            result = hunt_target(
-                primary_domain,
-                quick=args.quick,
-                deep=args.deep,
-                scanner_full=args.scanner_full,
-                scanner_skip=args.scanner_skip,
-            )
-        except RuntimePhaseBusy as exc:
-            log("warn", str(exc))
-            sys.exit(2)
-        results.append(result)
-
-    print_dashboard(results)
+    parser.error("--target is required for hunting; use --status, --report-only, or --setup-wordlists for target-independent actions")
 
 
 if __name__ == "__main__":

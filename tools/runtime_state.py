@@ -755,7 +755,11 @@ def inspect_recon_artifacts(repo_root: str | Path, target: str) -> dict:
     )
     counts.update(exposure_counts)
     counts.update(infra_counts)
-    findings_payload = load_finding_index(findings_dir)
+    findings_payload = load_finding_index(
+        findings_dir,
+        target=target,
+        allow_legacy=True,
+    )
     counts["structured_findings"] = len(
         [
             item
@@ -1236,7 +1240,11 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
         "reports_generated": 0,
     }
     try:
-        findings_payload = load_finding_index(findings_dir)
+        findings_payload = load_finding_index(
+            findings_dir,
+            target=target,
+            allow_legacy=True,
+        )
     except Exception:  # noqa: BLE001 — derivation must never crash callers
         findings_payload = {}
     items = [

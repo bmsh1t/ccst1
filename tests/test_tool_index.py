@@ -39,9 +39,19 @@ def test_tool_index_quick_pick_table_present():
 
 def test_tool_index_flags_underused_tools():
     text = TOOL_INDEX.read_text(encoding="utf-8")
-    # The four underused-tool surfaces we explicitly want Claude aware of.
-    for forgotten in ("h1_race", "h1_oauth_tester", "h1_mutation_idor", "zero_day_fuzzer"):
-        assert forgotten in text, f"underused tool not surfaced: {forgotten}"
+    assert "zero_day_fuzzer" in text
+    for removed in (
+        "h1_idor_scanner",
+        "h1_mutation_idor",
+        "h1_oauth_tester",
+        "h1_race",
+        "h1_run",
+        "hai_probe",
+        "hai_payload_builder",
+        "hai_browser_recon",
+        "cve_hunter",
+    ):
+        assert removed not in text, f"removed tool still indexed: {removed}"
 
 
 def test_autopilot_md_references_tool_index():

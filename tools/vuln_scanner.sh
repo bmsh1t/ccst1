@@ -287,7 +287,7 @@ scanner_probe_guard() {
     return 0
 }
 
-mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,metasploit,manual_review,.tmp}
+mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,manual_review,.tmp}
 UPLOAD_CLEANUP_FILE="$FINDINGS_DIR/manual_review/upload_cleanup.txt"
 : > "$FINDINGS_DIR/mfa/findings.txt"
 MFA_REVIEW_FILE="$FINDINGS_DIR/manual_review/mfa_review.txt"
@@ -429,7 +429,6 @@ categories = [
     "auth_bypass",
     "mfa",
     "saml",
-    "metasploit",
 ]
 
 
@@ -662,7 +661,6 @@ summary = {
             "ssti_confirmed": count_matching_lines(findings_root / "ssti" / "ssti_candidates.txt", "SSTI-CONFIRMED"),
             "mfa_findings": count_lines(findings_root / "mfa" / "findings.txt"),
             "saml_findings": count_lines(findings_root / "saml" / "findings.txt"),
-            "metasploit_rc_files": len(list((findings_root / "metasploit").glob("*.rc"))),
         },
     },
     "manual_review": manual_review_files,
@@ -1680,58 +1678,11 @@ if [ ! -s "$FINDINGS_DIR/manual_review/external_chain_context.txt" ]; then
 fi
 
 # ============================================================
-# Check 9: CMS Detection & Metasploit RC Generation
-# ============================================================
-echo ""
-if ! skip_has cms; then
-    log_info "Check 9: CMS Detection & MSF RC Generation"
-    CMS_LIMIT=$(scan_limit 20 50 100)
-
-    while IFS= read -r url; do
-        [ -z "$url" ] && continue
-        RESPONSE=$(curl -sk "${BB_AUTH_ARGS[@]}" --max-time 10 "$url" 2>/dev/null || true)
-        CMS=""
-
-        if printf '%s\n' "$RESPONSE" | grep -qi "wp-content\|wordpress"; then
-            CMS="wordpress"
-        elif printf '%s\n' "$RESPONSE" | grep -qi "drupal"; then
-            CMS="drupal"
-        fi
-
-        [ -n "$CMS" ] || continue
-
-        log_vuln "$CMS detected: $url"
-        SAFE_NAME=$(printf '%s\n' "$url" | tr '[:upper:]' '[:lower:]' | sed 's|[^a-z0-9]|_|g')
-        MSF_RC="$FINDINGS_DIR/metasploit/${CMS}_${SAFE_NAME}.rc"
-        HOST_PART=$(printf '%s\n' "$url" | cut -d'/' -f3 | cut -d':' -f1)
-        RHOST_VAL="$HOST_PART"
-
-        if command -v dig >/dev/null 2>&1; then
-            DIG_IP=$(dig +short "$HOST_PART" 2>/dev/null | head -1 || true)
-            [ -n "$DIG_IP" ] && RHOST_VAL="$DIG_IP"
-        fi
-
-        {
-            echo "use exploit/unix/webapp/${CMS}_admin_shell_upload"
-            echo "set RHOSTS $RHOST_VAL"
-            echo "set SSL $([[ "$url" == https* ]] && echo "true" || echo "false")"
-            echo "set TARGETURI /"
-            echo "set USERNAME admin"
-            echo "set PASSWORD admin"
-        } > "$MSF_RC"
-
-        log_ok "Metasploit RC generated: $MSF_RC"
-    done < <(head -"$CMS_LIMIT" "$ORDERED_SCAN")
-else
-    log_warn "Skipping CMS checks (--skip)"
-fi
-
-# ============================================================
-# Check 10: MFA / 2FA Bypass
+# Check 9: MFA / 2FA Bypass
 # ============================================================
 echo ""
 if ! skip_has mfa; then
-    log_info "Check 10: MFA / 2FA Bypass"
+    log_info "Check 9: MFA / 2FA Bypass"
     MFA_LIMIT=$(scan_limit 10 20 40)
     MFA_ENDPOINTS=$(grep -iE "/(mfa|otp|2fa|verify|authenticate|token|totp|sms.code|auth.code)" "$ORDERED_SCAN" 2>/dev/null | head -"$MFA_LIMIT" || true)
 
@@ -1788,11 +1739,11 @@ if [ ! -s "$MFA_REVIEW_FILE" ]; then
 fi
 
 # ============================================================
-# Check 11: SAML / SSO Attacks
+# Check 10: SAML / SSO Attacks
 # ============================================================
 echo ""
 if ! skip_has saml; then
-    log_info "Check 11: SAML / SSO Attack Surface"
+    log_info "Check 10: SAML / SSO Attack Surface"
     SAML_HOST_LIMIT=$(scan_limit 10 20 50)
     rm -f \
         "$FINDINGS_DIR/saml/findings.txt" \
@@ -1940,7 +1891,7 @@ fi
     echo "============================================="
     echo ""
 
-    for category in upload sqli xss ssti takeover misconfig exposure ssrf cves redirects idor auth_bypass mfa saml metasploit; do
+    for category in upload sqli xss ssti takeover misconfig exposure ssrf cves redirects idor auth_bypass mfa saml; do
         CAT_TOTAL=0
         echo "--- $category ---"
         for file in "$FINDINGS_DIR/$category/"*.txt; do

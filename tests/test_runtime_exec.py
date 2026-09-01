@@ -9,7 +9,6 @@ import sys
 
 import pytest
 
-import cve_hunter
 import runtime_exec
 import zero_day_fuzzer
 
@@ -409,29 +408,6 @@ def test_trim_replayed_prefix_only_strips_confirmed_duplicate_prefix():
     assert runtime_exec._trim_replayed_prefix("hello\n", "hello\nworld\n") == "world\n"
     assert runtime_exec._trim_replayed_prefix("abc", "bcd") == "bcd"
     assert runtime_exec._trim_replayed_prefix("same", "same") == ""
-
-
-def test_cve_hunter_run_cmd_returns_stdout_only_from_shared_helper(monkeypatch):
-    captured = {}
-
-    def fake_run_shell_command_split(cmd, *, cwd=None, timeout=600, max_output_bytes=None):
-        captured["cmd"] = cmd
-        captured["cwd"] = cwd
-        captured["timeout"] = timeout
-        captured["max_output_bytes"] = max_output_bytes
-        return True, "stdout only\n", "stderr noise\n"
-
-    monkeypatch.setattr(
-        cve_hunter,
-        "run_shell_command_split",
-        fake_run_shell_command_split,
-        raising=False,
-    )
-
-    success, output = cve_hunter.run_cmd("echo ok", timeout=12)
-
-    assert (success, output) == (True, "stdout only")
-    assert captured == {"cmd": "echo ok", "cwd": None, "timeout": 12, "max_output_bytes": None}
 
 
 def test_zero_day_fuzzer_run_cmd_delegates_to_split_shared_helper(monkeypatch):

@@ -44,6 +44,11 @@ except ImportError:  # pragma: no cover - package import path
     )
 
 try:
+    from validation_runner import _artifact_digest_material, _runner_operation_id
+except ImportError:  # pragma: no cover - package import path
+    from tools.validation_runner import _artifact_digest_material, _runner_operation_id
+
+try:
     from target_paths import canonical_target_value, resolve_target_url, target_storage_key
 except ImportError:  # pragma: no cover - package import path
     from tools.target_paths import canonical_target_value, resolve_target_url, target_storage_key
@@ -77,9 +82,32 @@ except ImportError:  # pragma: no cover - package import path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-def load_config() -> dict:
+def _repo_root_from_findings_dir(findings_dir: str | Path) -> Path:
+    """Resolve a per-target ``<repo>/findings/<target>`` directory to its repo."""
+    path = Path(findings_dir).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    path = path.resolve()
+    if path.parent.name != "findings":
+        raise ValueError("--findings-dir must be a per-target <repo>/findings/<target> directory")
+    return path.parent.parent
+
+
+def _validation_repo_root(findings_dir: str | Path = "", *, strict: bool = False) -> Path:
+    """Return the repository owning validation artifacts."""
+    if not str(findings_dir or "").strip():
+        return BASE_DIR
+    try:
+        return _repo_root_from_findings_dir(findings_dir)
+    except ValueError:
+        if strict:
+            raise
+        return BASE_DIR
+
+
+def load_config(repo_root: str | Path | None = None) -> dict:
     """Load optional repo-local config.json for validation flags."""
-    return load_runtime_config(BASE_DIR)
+    return load_runtime_config(Path(repo_root) if repo_root is not None else BASE_DIR)
 
 
 def load_json_file(path: str) -> dict:
@@ -1549,8 +1577,13 @@ def write_submission_notes(summary: dict, report_path: str | Path) -> Path:
     return notes_path
 
 
-def write_validation_summary(summary: dict, report_path: str | Path) -> Path:
-    """Persist per-report summary and repo-global last-validate pointer."""
+def write_validation_summary(
+    summary: dict,
+    report_path: str | Path,
+    *,
+    repo_root: str | Path | None = None,
+) -> Path:
+    """Persist per-report summary and the owning repo's last-validate pointer."""
     report_path = Path(report_path)
     report_summary_path, submission_notes_path = validation_artifact_paths(summary, report_path)
     report_summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1559,7 +1592,8 @@ def write_validation_summary(summary: dict, report_path: str | Path) -> Path:
     submission_notes_path.write_text(build_submission_notes(summary), encoding="utf-8")
     report_summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    last_validate_path = BASE_DIR / "findings" / "last-validate.json"
+    owner_root = Path(repo_root) if repo_root is not None else BASE_DIR
+    last_validate_path = owner_root / "findings" / "last-validate.json"
     last_validate_path.parent.mkdir(parents=True, exist_ok=True)
     last_validate_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return report_summary_path
@@ -2040,15 +2074,22 @@ def record_validation_calibration(
         return None
 
 
-def update_runtime_state_after_validate(summary: dict, findings_dir: str = "") -> None:
+def update_runtime_state_after_validate(
+    summary: dict,
+    findings_dir: str = "",
+    *,
+    repo_root: str | Path | None = None,
+) -> None:
     """Best-effort runtime state refresh after validation finishes."""
     target = str(summary.get("target", "") or "").strip()
     if not target:
         return
+    owner_root = Path(repo_root) if repo_root is not None else _validation_repo_root(findings_dir)
     # (P5-W1 R5) Record calibration outcome alongside runtime state refresh.
     record_validation_calibration(
         summary,
         session_id=str(summary.get("session_id", "") or ""),
+        path=owner_root / "hunt-memory" / "pattern_calibration.jsonl",
     )
     try:
         try:
@@ -2060,10 +2101,10 @@ def update_runtime_state_after_validate(summary: dict, findings_dir: str = "") -
         except ImportError:  # pragma: no cover - package import path
             from tools.resume import load_structured_finding_followup
 
-        artifacts = inspect_recon_artifacts(BASE_DIR, target)
-        structured = load_structured_finding_followup(BASE_DIR, target)
+        artifacts = inspect_recon_artifacts(owner_root, target)
+        structured = load_structured_finding_followup(owner_root, target)
         update_runtime_state(
-            BASE_DIR,
+            owner_root,
             target,
             mode="validate",
             current_stage="validate",
@@ -2086,8 +2127,10 @@ def load_finding_prefill(
     *,
     migrate_legacy: bool = True,
     include_canonical: bool = False,
+    repo_root: str | Path | None = None,
 ) -> dict:
     """Load defaults from findings.json, optionally without legacy write-back."""
+    owner_root = Path(repo_root) if repo_root is not None else _validation_repo_root(findings_dir)
     payload = load_finding_index(findings_dir, migrate_legacy=migrate_legacy)
     finding = next(
         (
@@ -2104,7 +2147,7 @@ def load_finding_prefill(
         source_file = str(finding.get("source_file") or "")
         source_path = Path(source_file)
         if source_file and not source_path.is_absolute():
-            source_path = BASE_DIR / source_file
+            source_path = owner_root / source_file
         if source_path.is_file() and source_path.suffix == ".json":
             try:
                 source_payload = json.loads(source_path.read_text(encoding="utf-8"))
@@ -2137,11 +2180,16 @@ def resolve_browser_evidence_for_validate(
     target: str,
     *,
     browser_evidence_dir: str = "",
+    repo_root: str | Path | None = None,
 ) -> dict:
     """关联已由 Chrome DevTools/Playwright MCP 导入的浏览器证据。"""
-    evidence_root = BASE_DIR / "evidence"
+    owner_root = Path(repo_root) if repo_root is not None else BASE_DIR
+    evidence_root = owner_root / "evidence"
     if browser_evidence_dir:
-        return compact_browser_evidence(browser_evidence_dir)
+        browser_path = Path(browser_evidence_dir).expanduser()
+        if not browser_path.is_absolute():
+            browser_path = owner_root / browser_path
+        return compact_browser_evidence(browser_path)
 
     return load_last_browser_evidence(target, evidence_root=evidence_root)
 
@@ -2221,10 +2269,17 @@ def _resolve_machine_findings_dir(args: argparse.Namespace, decision_target: str
         root = Path(args.findings_dir).expanduser()
         if not root.is_absolute():
             root = (Path.cwd() / root).resolve()
-        return root
+        return root.resolve()
     if not args.target:
         raise ValueError("--decision-json requires --findings-dir or --target")
     return BASE_DIR / "findings" / target_storage_key(decision_target)
+
+
+def _machine_repo_root(findings_dir: Path, *, explicit_findings_dir: str = "") -> Path:
+    """Return the repository bound to a machine validation invocation."""
+    if explicit_findings_dir:
+        return _repo_root_from_findings_dir(findings_dir)
+    return BASE_DIR
 
 
 def _resolve_machine_evidence_refs(values: Any, *, repo_root: Path) -> list[str]:
@@ -2355,6 +2410,15 @@ def _validate_machine_runner_witness(
             "canonical finding owner provenance is invalid: "
             f"{provenance.get('reason') or 'unknown'}"
         )
+    operation_material = runner.get("operation_material")
+    if not isinstance(operation_material, dict):
+        raise ValueError("runner summary operation_material must be an object")
+    if operation_material.get("artifact_bindings") != _artifact_digest_material(bindings):
+        raise ValueError("runner operation material artifact binding mismatch")
+    if canonical_target_value(str(operation_material.get("target") or "")) != decision_target:
+        raise ValueError("runner operation material target does not match decision.target")
+    if _runner_operation_id(operation_material) != operation_id:
+        raise ValueError("runner operation_id does not match canonical operation material")
     return summary_path
 
 
@@ -2518,6 +2582,7 @@ def _build_machine_validation_input(
     if finding_id != args.finding_id:
         raise ValueError("decision.finding_id must exactly match --finding-id")
     findings_dir = _resolve_machine_findings_dir(args, decision_target)
+    repo_root = _machine_repo_root(findings_dir, explicit_findings_dir=args.findings_dir)
     # Machine binding must remain a pure preflight. In particular, a legacy
     # list payload is normalized in memory but not migrated until every
     # decision field has passed and the explicit owner transition begins.
@@ -2526,6 +2591,7 @@ def _build_machine_validation_input(
         finding_id,
         migrate_legacy=False,
         include_canonical=True,
+        repo_root=repo_root,
     )
     if not prefill:
         raise ValueError(f"finding id not found in findings.json: {finding_id}")
@@ -2550,7 +2616,7 @@ def _build_machine_validation_input(
     if not isinstance(evidence, dict):
         raise ValueError("decision.evidence must be an object")
     evidence_summary = _required_text(evidence.get("summary"), "evidence.summary")
-    evidence_refs = _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=BASE_DIR)
+    evidence_refs = _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=repo_root)
     runner_summary_path = _validate_machine_runner_witness(
         evidence,
         evidence_refs=evidence_refs,
@@ -2560,19 +2626,19 @@ def _build_machine_validation_input(
         decision_method=decision_method,
         findings_dir=findings_dir,
         prefill=prefill,
-        repo_root=BASE_DIR,
+        repo_root=repo_root,
     )
     report_path, report_content = _resolve_machine_report(
         decision.get("report"),
         findings_dir=findings_dir,
-        repo_root=BASE_DIR,
+        repo_root=repo_root,
     )
     _assert_machine_report_path_available(
         findings_dir,
         finding_id=finding_id,
         report_path=report_path,
         report_content=report_content,
-        repo_root=BASE_DIR,
+        repo_root=repo_root,
     )
 
     info = {
@@ -2627,6 +2693,11 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
     findings_dir = capture(
         lambda: _resolve_machine_findings_dir(args, decision_target or "")
     )
+    repo_root = (
+        capture(lambda: _machine_repo_root(findings_dir, explicit_findings_dir=args.findings_dir))
+        if findings_dir is not None
+        else None
+    )
     prefill = None
     if findings_dir is not None and finding_id:
         prefill = capture(
@@ -2635,6 +2706,7 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
                 finding_id,
                 migrate_legacy=False,
                 include_canonical=True,
+                repo_root=repo_root,
             )
         )
         if prefill == {}:
@@ -2673,7 +2745,7 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
     else:
         capture(lambda: _required_text(evidence.get("summary"), "evidence.summary"))
         evidence_refs = capture(
-            lambda: _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=BASE_DIR)
+            lambda: _resolve_machine_evidence_refs(evidence.get("refs"), repo_root=repo_root or BASE_DIR)
         )
         if (
             evidence_refs is not None
@@ -2694,7 +2766,7 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
                     decision_method=decision_method,
                     findings_dir=findings_dir,
                     prefill=prefill,
-                    repo_root=BASE_DIR,
+                    repo_root=repo_root or BASE_DIR,
                 )
             )
 
@@ -2702,7 +2774,7 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
         lambda: _resolve_machine_report(
             decision.get("report"),
             findings_dir=findings_dir or BASE_DIR,
-            repo_root=BASE_DIR,
+            repo_root=repo_root or BASE_DIR,
         )
     )
     if report_result is not None and findings_dir is not None and finding_id:
@@ -2713,7 +2785,7 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
                 finding_id=finding_id,
                 report_path=report_path,
                 report_content=report_content,
-                repo_root=BASE_DIR,
+                repo_root=repo_root or BASE_DIR,
             )
         )
 
@@ -2733,15 +2805,16 @@ def run_machine_preflight(args: argparse.Namespace) -> dict[str, Any]:
 def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
     """Apply an explicit non-TTY validation decision through existing owners only."""
     info, prefill, findings_dir, report_path, report_content = _build_machine_validation_input(args)
+    repo_root = _machine_repo_root(findings_dir, explicit_findings_dir=args.findings_dir)
     output_path = ensure_report_output_path(report_path)
     _write_machine_report(output_path, report_content)
 
     all_pass = all(bool(info.get(f"{key}_pass")) for key in MACHINE_DECISION_GATE_KEYS)
     summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
-    summary_path = write_validation_summary(summary, output_path)
-    validation_sync = sync_validation_artifacts(summary, repo_root=BASE_DIR)
+    summary_path = write_validation_summary(summary, output_path, repo_root=repo_root)
+    validation_sync = sync_validation_artifacts(summary, repo_root=repo_root)
     summary["validation_sync"] = validation_sync
-    summary_path = write_validation_summary(summary, output_path)
+    summary_path = write_validation_summary(summary, output_path, repo_root=repo_root)
     retry = _validation_sync_retry_result(
         validation_sync,
         report_path=output_path,
@@ -2755,7 +2828,7 @@ def run_machine_validation(args: argparse.Namespace) -> dict[str, Any]:
         summary,
         summary_path,
     )
-    update_runtime_state_after_validate(summary, str(findings_dir))
+    update_runtime_state_after_validate(summary, str(findings_dir), repo_root=repo_root)
     return {
         "status": "updated",
         "finding_id": str(prefill.get("finding_id") or ""),
@@ -2818,11 +2891,16 @@ def build_parser() -> argparse.ArgumentParser:
 def _run_interactive_validation(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     """Run the existing TTY flow after main has ruled out non-interactive use."""
 
+    repo_root = _validation_repo_root(args.findings_dir, strict=bool(args.findings_dir))
     finding_prefill = {}
     if args.finding_id:
         if not args.findings_dir:
             parser.error("--finding-id requires --findings-dir")
-        finding_prefill = load_finding_prefill(args.findings_dir, args.finding_id)
+        finding_prefill = load_finding_prefill(
+            args.findings_dir,
+            args.finding_id,
+            repo_root=repo_root,
+        )
         if not finding_prefill:
             parser.error(f"finding id not found in findings.json: {args.finding_id}")
 
@@ -2831,7 +2909,7 @@ def _run_interactive_validation(args: argparse.Namespace, parser: argparse.Argum
     print(f"{BOLD}{CYAN}{'═' * 60}{RESET}")
     print(f"\nThis records the 7-Question Gate, walks through the 4 validation gates,")
     print(f"calculates your CVSS score, and generates a report skeleton.\n")
-    config = load_config()
+    config = load_config(repo_root)
     ctf_mode = bool(config.get("ctf_mode", False))
     if ctf_mode:
         print(f"{YELLOW}CTF mode enabled:{RESET} external program checks stay fully relaxed in Gate 2.\n")
@@ -2945,6 +3023,7 @@ def _run_interactive_validation(args: argparse.Namespace, parser: argparse.Argum
     browser_evidence = resolve_browser_evidence_for_validate(
         browser_target,
         browser_evidence_dir=args.browser_evidence_dir,
+        repo_root=repo_root,
     )
     if browser_evidence:
         info["browser_evidence"] = browser_evidence
@@ -2967,7 +3046,7 @@ def _run_interactive_validation(args: argparse.Namespace, parser: argparse.Argum
         safe_name = vuln_type.lower().replace(" ", "-").replace("/", "-")
         safe_target = target_program.replace(" ", "-")
         base_dir = os.path.join(
-            str(BASE_DIR),
+            str(repo_root),
             "findings", f"{safe_target}-{safe_name}"
         )
         os.makedirs(base_dir, exist_ok=True)
@@ -2977,10 +3056,10 @@ def _run_interactive_validation(args: argparse.Namespace, parser: argparse.Argum
     output_path.write_text(skeleton, encoding="utf-8")
 
     summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
-    summary_path = write_validation_summary(summary, output_path)
-    validation_sync = sync_validation_artifacts(summary)
+    summary_path = write_validation_summary(summary, output_path, repo_root=repo_root)
+    validation_sync = sync_validation_artifacts(summary, repo_root=repo_root)
     summary["validation_sync"] = validation_sync
-    summary_path = write_validation_summary(summary, output_path)
+    summary_path = write_validation_summary(summary, output_path, repo_root=repo_root)
     retry = _validation_sync_retry_result(
         validation_sync,
         report_path=output_path,
@@ -2999,7 +3078,7 @@ def _run_interactive_validation(args: argparse.Namespace, parser: argparse.Argum
             summary,
             summary_path,
         )
-    update_runtime_state_after_validate(summary, args.findings_dir)
+    update_runtime_state_after_validate(summary, args.findings_dir, repo_root=repo_root)
 
     print(f"  {BOLD}{GREEN}Report skeleton generated:{RESET} {output_path}")
     if summary.get("validation_evidence_passed") and not summary.get("all_gates_passed"):

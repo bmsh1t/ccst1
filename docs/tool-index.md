@@ -16,7 +16,6 @@
 | `tools/recon_candidates.py` | Cached routing evidence | Builds bounded candidates and host ranking; `--asset-cursor` resumes relation pages; never expands Scope |
 | `tools/recon_host_verify.py` | Host pivot candidates were derived | One bounded read-only Host/SNI/default-vhost response comparison; appends observations without changing Scope or Queue |
 | `tools/cloud_recon.sh` | Target brand likely owns buckets | S3/Azure/GCP discovery + CloudFlare origin reveal |
-| `tools/cve_hunter.py` | Explicit CVE-template probe | Focused CVE template pass for `/scan-cves`; use only after a reachable component/advisory is selected |
 | `tools/cve_scan.sh` | Pre-engagement nuclei sweep | Fast nuclei pass scoped to known CVE templates |
 | `tools/intel_engine.py` | Versioned component/service review | `/intel` owner — OSV/GHSA/NVD, KEV/EPSS, local signals, atomic `intel.json` |
 | `tools/intel_artifact.py` | AI selects an omitted advisory group or filter | Read-only, bounded, cursor-paged query over the complete `intel.json`; never writes findings or Queue |
@@ -28,7 +27,6 @@
 | `tools/scope_checker.py` | Verifying target classification | Deterministic host/URL classifier against active target set |
 | `tools/scope_context.py` | Global Scope owner | Parses text lists/manifest v1, applies exclusions, classifies external context, and emits stable Scope hash |
 | `tools/target_paths.py` | Computing per-target storage keys | Normalize target string for `recon/`/`findings/` directories |
-| `tools/target_selector.py` | Pulling H1 public program info | Query HackerOne directory API for public programs |
 
 Primary-domain list input (`targets.txt`) is handled by `tools/recon_engine.sh` as a batch dispatcher: each line writes its own `recon/<domain>/`; `recon/<list-stem>/` is only the manifest/summary index.
 
@@ -91,25 +89,16 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/workflow_sequence.py` | HAR/browser flow has 2+ same-target requests | Bounded replay/perturb/diff with token refresh, private evidence and Action Queue |
 | `tools/timing_sql_runner.py` | Time-shaped SQL candidate remains | Interleaved timing evidence with robust stats, caps, WAF/429 semantics and queue |
 | `tools/validation_runner.py` (`request-diff`) | Exact AI baseline/variant pair | Shared replay/diff across query, form, JSON, text, header/cookie, and path inputs |
-| `tools/validation_runner.py` (`protocol-replay`) | Exact WS/gRPC/LLM request shape observed | Canonical frames/trailers/tool-call replay with Ledger/Finding/Queue write-back |
 | `tools/graphql_audit.sh` | GraphQL endpoint needs bounded discovery | Target-owned audit summary and candidate Finding; never auto-validates signals |
 | `tools/bypass_403.sh` | 403/401 on interesting endpoint | byp4xx + 20 built-in header/method/encoding bypass tricks |
 | `tools/sibling_generator.py` | Candidate route has an ID-bearing sibling shape | Writes a bounded sibling-endpoint probe queue for evidence-fit replay |
 | `tools/sender_semantics.py` | Byte-exact/proxy/cache/smuggling work needs sender choice | `--list` / `--require ...`; sender capability matrix + raw HTTP/1 sender for low-level request semantics |
 | `tools/smuggling_executor.py` | Smuggling/cache candidate execution plan | `--summary` / `--variant 0.CL`; sender + evidence classes |
 | `tools/role_diff.py` | Multiple session files available | **Multi-role endpoint diff — IDOR gold standard** (R2 new) |
-| `tools/h1_idor_scanner.py` ⚠️ underused | Two user accounts captured | Cross-user IDOR scanner — direct ID swap |
-| `tools/h1_mutation_idor.py` ⚠️ manual-only | Explicit operator opt-in | GraphQL mutation battery; never auto-route from Claude prompts |
-| `tools/h1_oauth_tester.py` ⚠️ H1-specific | HackerOne / H1-compatible OAuth flow | H1 auth/OAuth tester and pattern reference; not a generic target tool |
-| `tools/h1_race.py` ⚠️ manual-only | Explicit operator opt-in | Race-condition burst tester; never auto-route from Claude prompts |
-| `tools/zendesk_idor_test.py` ⚠️ underused | Target on Zendesk platform | Zendesk-specific IDOR/BAC probes |
 | `tools/zero_day_fuzzer.py` ⚠️ underused | Standard scans plateaued | LLM-guided fuzz on remaining unexplored surface |
-| `tools/hai_payload_builder.py` ⚠️ underused | Need payload library / LLM-shaped injection | VAPT payload library + LLM prompt-injection generator |
-| `tools/hai_probe.py` ⚠️ underused | Target appears to expose AI Copilot | Probe + fingerprint HackerOne-style AI Copilot endpoints |
 | `tools/sneaky_bits.py` ⚠️ underused | Need invisible/Unicode bypass payloads | U+2062 / U+2064 encoder for filter bypass |
 | `tools/aspnet_viewstate_knownkey.py` ⚠️ manual-only | Captured page contains `__VIEWSTATE` | Offline machineKey check; `--reveal-key` only for controlled validation |
 | `tools/telerik_knownkey.py` ⚠️ manual-only | Captured Telerik `SerializedParameters` | Offline vendored Badsecrets default-key check; no HTTP or state write |
-| `tools/h1_run.sh` ⚠️ underused | Multi-tool ladder run | HackerOne 20-day-hunt master ladder |
 | `tools/token_scanner.py` | Smart contract / token audit | Token red-flag scanner — meme coin rug vectors |
 
 ## 4. Browser / JS / Source intelligence
@@ -120,7 +109,6 @@ identity, and cloud signals without re-enumerating everything.
 | `tools/browser_mcp_import.py` | Chrome DevTools/Playwright MCP artifacts ready | Normalize MCP network/snapshot/console/screenshot evidence into browser surface |
 | `tools/browser_playwright_fallback.py` | Neither browser MCP backend is usable | Capture one target-owned page with Python Playwright and reuse the MCP importer; never installs browsers |
 | `tools/browser_surface.py` | Browser evidence dumped | Extract XHR/API/GraphQL surface from browser evidence |
-| `tools/hai_browser_recon.js` | Need browser-side recon snippet | Playwright recon helper script (JS) |
 | `tools/deep_js_packer.py` | Concrete webpack/chunk/source-map signal | Evidence-gated Packer bundle/page recovery into existing JS artifacts |
 | `tools/js_reader.py` | JS bundles cached | Prepare js-reader agent materials from cached JS |
 | `tools/surface.py` | Cached recon ready for review | Fully stream/rank the exact target-owned surface, publish bounded AI-first review projection; scores/top-K are advisory hints |
@@ -189,11 +177,11 @@ identity, and cloud signals without re-enumerating everything.
 | Concrete CMS/plugin/theme/library version observed, or network product/CPE identified | `/intel` → `tools/intel_engine.py`; add `/scan-cves` only after AI selects a reachable advisory |
 | 401/403 on interesting endpoint | `bypass_403.sh` |
 | Multiple session files in `.private/` | `role_diff.py` |
-| Two account creds + numeric IDs | `role_diff.py`, then `h1_idor_scanner.py` |
-| GraphQL endpoint discovered | `graphql_audit.sh` for target-owned discovery, then `validation_runner.py request-diff` with the observed baseline/variant HTTP request spec; `h1_mutation_idor.py` remains explicit opt-in |
-| OAuth `/authorize` `/callback` discovered | manual OAuth/OIDC flow review; `h1_oauth_tester.py` only for HackerOne/H1-compatible flows |
+| Two account creds + numeric IDs | `role_diff.py`, then `validation_runner.py idor-actor-pair` |
+| GraphQL endpoint discovered | `graphql_audit.sh` for target-owned discovery, then `validation_runner.py request-diff` with the observed baseline/variant HTTP request spec |
+| OAuth `/authorize` `/callback` discovered | manual OAuth/OIDC flow review with an evidence-backed `request-diff` where an exact pair is known |
 | Payment / coupon / wallet / cart / checkout endpoint | high-value business-logic lane |
-| Quota / OTP / payment / cart race signal | manual review; `h1_race.py` only for controlled race probes |
+| Quota / OTP / payment / cart race signal | manual review; use `workflow_sequence.py` for a captured multi-step flow when applicable |
 | Blind SSRF / RCE / XXE candidate | `oast_listen.py start` |
 | Standard scans plateaued | `zero_day_fuzzer.py` |
 | Unicode / filter bypass needed | `sneaky_bits.py` |
@@ -221,16 +209,8 @@ identity, and cloud signals without re-enumerating everything.
 
 These tools exist in the repo but are rarely cited in slash-command or sub-agent prompts. Surface them when the trigger fits — they are battle-tested and ready:
 
-- `h1_idor_scanner.py` — Direct IDOR swap when 2 users captured
-- `h1_mutation_idor.py` — Manual-only GraphQL mutation auth battery
-- `h1_oauth_tester.py` — HackerOne-specific OAuth/OIDC pattern tester
-- `h1_race.py` — Manual-only concurrent race-condition burst tester
-- `zendesk_idor_test.py` — Zendesk platform specifics
 - `zero_day_fuzzer.py` — LLM-guided fuzz post-plateau
-- `hai_payload_builder.py` — Payload library + LLM injection generator
-- `hai_probe.py` — AI Copilot endpoint fingerprint
 - `sneaky_bits.py` — Invisible/Unicode payload encoder
-- `h1_run.sh` — Multi-tool master ladder
 - `mindmap.py` — Tech → vuln-class priority (consult before lane choice)
 - `wordlist_engine.sh` / `osint_employees.sh` / `breach_checker.py` — manual credential-prep chain; useful when identity surface matters
 

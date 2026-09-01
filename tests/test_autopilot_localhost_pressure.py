@@ -333,7 +333,7 @@ def test_localhost_autopilot_discovers_replays_and_reports_real_fixture(
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     skip = ",".join((
         "upload", "sqli", "xss", "ssti", "takeover", "exposure", "ssrf",
-        "cves", "redirects", "idor", "auth_flow", "cms", "mfa", "saml",
+        "cves", "redirects", "idor", "auth_flow", "mfa", "saml",
     ))
     env = os.environ.copy()
     env.update({"FINDINGS_OUT_DIR": str(findings_dir), "PATH": "/usr/bin:/bin"})

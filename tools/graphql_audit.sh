@@ -509,7 +509,7 @@ if signals:
             "category": "graphql",
             "vuln_class": "GraphQL",
             "title": f"GraphQL audit signal on {endpoint}",
-            "summary": "GraphQL audit signals require protocol replay: " + ", ".join(signals),
+            "summary": "GraphQL audit signals require an exact request/response replay: " + ", ".join(signals),
             "url": endpoint,
             "severity": "low",
             "confidence": "needs_review",
@@ -535,7 +535,7 @@ if signals:
                     "target-owned business impact",
                 ],
                 "next_actions": [
-                    "Replay one exact GraphQL operation through validation_runner.py protocol-replay."
+                    "Replay one exact GraphQL operation through validation_runner.py request-diff."
                 ],
                 "summary": "graphql:needs-evidence satisfied=0/3",
             },

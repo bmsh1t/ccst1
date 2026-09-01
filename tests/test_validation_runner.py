@@ -6,7 +6,6 @@ import hashlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -1557,138 +1556,6 @@ def test_authz_public_exposure_does_not_promote_path_only_admin_marker(monkeypat
     assert summary["evidence_rubric"]["status"] == "tested-clean"
 
 
-def test_sqli_result_diff_creates_diff_bundle_and_ledger(monkeypatch, tmp_path):
-    def fake_request_once(**kwargs):
-        parsed = urlparse(kwargs["url"])
-        q = parse_qs(parsed.query, keep_blank_values=True).get("q", [""])[0]
-        if q == "'))--":
-            return _fake_response(kwargs["url"], body='{"data":[{"id":1},{"id":2},{"id":3}]}')
-        return _fake_response(kwargs["url"], body='{"data":[{"id":1}]}')
-
-    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
-    identity_v2 = build_closure_cell(
-        "/rest/products/search?q=",
-        "SQLi",
-        {"method": "GET", "parameter": "q"},
-    ).key.to_dict()
-
-    summary = validation_runner.run_sqli_result_diff(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url="https://target.test/rest/products/search?q=",
-        param="q",
-        baseline_value="",
-        variant_value="'))--",
-        finding_id="SQLI-1",
-        repeat=2,
-        browser_observed=True,
-        identity_v2=identity_v2,
-    )
-
-    key = _target_key("https://target.test")
-    bundle = (tmp_path / summary["summary_path"]).parent
-    ledger = tmp_path / "memory" / "evidence" / key / "ledger.jsonl"
-    assert summary["result"] == "tested_finding"
-    assert summary["candidate_ready"] is True
-    assert summary["repeat"] == 2
-    assert all(run["diff"]["changed"]["json_count"] for run in summary["runs"])
-    assert (tmp_path / summary["runs"][0]["artifacts"]["baseline_request"]).is_file()
-    assert (tmp_path / summary["runs"][0]["artifacts"]["variant_response"]).is_file()
-    assert (bundle / "diff.json").is_file()
-    entry = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
-    assert entry["endpoint"] == "/rest/products/search?q="
-    assert entry["vuln_class"] == "SQLi"
-    assert entry["result"] == "tested_finding"
-    assert entry["identity_v2"] == identity_v2
-
-
-def test_sqli_result_diff_without_material_delta_is_clean(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        validation_runner,
-        "request_once",
-        lambda **kwargs: _fake_response(kwargs["url"], body='{"data":[{"id":1}]}'),
-    )
-
-    summary = validation_runner.run_sqli_result_diff(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url="https://target.test/rest/products/search?q=",
-        param="q",
-        baseline_value="",
-        variant_value="'",
-        finding_id="SQLI-CLEAN",
-    )
-
-    assert summary["result"] == "tested_clean"
-    assert summary["candidate_ready"] is False
-
-
-def test_sqli_result_diff_ordinary_search_delta_is_not_finding(monkeypatch, tmp_path):
-    def fake_request_once(**kwargs):
-        parsed = urlparse(kwargs["url"])
-        q = parse_qs(parsed.query, keep_blank_values=True).get("q", [""])[0]
-        if q == "apple":
-            return _fake_response(kwargs["url"], body='{"data":[{"id":1},{"id":2}]}')
-        return _fake_response(kwargs["url"], body='{"data":[{"id":1}]}')
-
-    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
-
-    summary = validation_runner.run_sqli_result_diff(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url="https://target.test/rest/products/search?q=",
-        param="q",
-        baseline_value="",
-        variant_value="apple",
-        finding_id="SQLI-ORDINARY-FILTER",
-    )
-
-    assert summary["probe_shape"] is False
-    assert summary["runs"][0]["diff"]["changed"]["json_count"] is True
-    assert summary["result"] == "tested_clean"
-    assert summary["candidate_ready"] is False
-
-
-def test_sqli_result_diff_quote_only_result_shrink_is_not_finding(monkeypatch, tmp_path):
-    def fake_request_once(**kwargs):
-        parsed = urlparse(kwargs["url"])
-        q = parse_qs(parsed.query, keep_blank_values=True).get("name", [""])[0]
-        if q == "Score Board":
-            return _fake_response(
-                kwargs["url"],
-                body=json.dumps({
-                    "data": [{
-                        "id": 75,
-                        "name": "Score Board",
-                        "description": "Find the hidden score board page.",
-                    }]
-                }),
-            )
-        return _fake_response(kwargs["url"], body='{"data":[]}')
-
-    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
-
-    summary = validation_runner.run_sqli_result_diff(
-        repo_root=tmp_path,
-        target="https://target.test",
-        url="https://target.test/api/Challenges?name=Score%20Board",
-        param="name",
-        baseline_value="Score Board",
-        variant_value="Score Board'",
-        finding_id="SQLI-QUOTE-SHRINK",
-        repeat=2,
-    )
-
-    assert summary["probe_shape"] is True
-    assert summary["runs"][0]["diff"]["changed"]["json_count"] is True
-    assert summary["runs"][0]["sqli_evidence"]["strong"] is False
-    assert "ordinary search/filter/parser behavior" in summary["sqli_evidence"]["ambiguous"][0]
-    assert summary["result"] == "tested_clean"
-    assert summary["candidate_ready"] is False
-    assert summary["evidence_rubric"]["ready"] is False
-    assert "strong_sqli_signal" in summary["evidence_rubric"]["missing"]
-
-
 def test_request_diff_replays_post_json_with_sql_classifier(monkeypatch, tmp_path):
     def fake_request_once(**kwargs):
         body = kwargs["body"]
@@ -1869,137 +1736,28 @@ def test_marker_replay_without_marker_is_clean(monkeypatch, tmp_path):
     assert summary["runs"][0]["marker_found"] is False
 
 
-def test_websocket_protocol_replay_binds_frames_and_resumes_operation(tmp_path):
-    calls = []
+def test_marker_replay_ignores_stderr_marker(monkeypatch, tmp_path):
+    marker = "CCST_STDERR_MARKER_42"
 
-    def execute(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return SimpleNamespace(returncode=0, stdout='{"private":"FRAME_MARKER"}\n', stderr="")
+    def fake_request_once(**kwargs):
+        response = _fake_response(kwargs["url"], body="ordinary output")
+        response["stderr"] = f"diagnostic: {marker}"
+        return response
 
-    spec = {
-        "schema_version": 1,
-        "protocol": "websocket",
-        "endpoint": "wss://target.test/socket",
-        "frames": ['{"op":"subscribe","channel":"SAMPLE"}'],
-        "expect": {"marker": "FRAME_MARKER", "finding_grade": True},
-        "vuln_class": "Authz",
-        "actor": "peer",
-        "object_scope": "other_object_same_org",
-    }
-    first = validation_runner.run_protocol_replay(
+    monkeypatch.setattr(validation_runner, "request_once", fake_request_once)
+    summary = validation_runner.run_marker_replay(
         repo_root=tmp_path,
-        target="target.test",
-        spec=spec,
-        finding_id="WS-FRAME-1",
-        state_changing=False,
-        headers={"Origin": "https://target.test"},
-        execute=execute,
-        which=lambda name: f"/usr/bin/{name}",
-    )
-    second = validation_runner.run_protocol_replay(
-        repo_root=tmp_path,
-        target="target.test",
-        spec=spec,
-        finding_id="WS-FRAME-1",
-        state_changing=False,
-        headers={"Origin": "https://target.test"},
-        execute=execute,
-        which=lambda name: f"/usr/bin/{name}",
+        target="https://target.test",
+        url="https://target.test/render",
+        expect_marker=marker,
+        finding_id="MARKER-STDERR-ONLY",
+        no_ledger=True,
     )
 
-    assert first["result"] == "tested_finding"
-    assert first["operation_id"] == second["operation_id"]
-    assert calls[0][0] == [
-        "/usr/bin/websocat", "-n1", "-t", "-H",
-        "Origin: https://target.test", "wss://target.test/socket",
-    ]
-    assert calls[0][1]["input"].endswith("\n")
-    assert "shell" not in calls[0][1]
-    assert (tmp_path / first["artifacts"]["protocol_request"]).is_file()
-    assert (tmp_path / first["artifacts"]["response"]).is_file()
-
-
-def test_grpc_protocol_replay_keeps_request_off_argv_and_saves_trailers(tmp_path):
-    observed = {}
-
-    def execute(argv, **kwargs):
-        observed.update({"argv": argv, **kwargs})
-        return SimpleNamespace(
-            returncode=0,
-            stdout='{"record":"SERIAL"}\n{"done":true}\n',
-            stderr="Response trailers received:\ngrpc-status: 0\n",
-        )
-
-    summary = validation_runner.run_protocol_replay(
-        repo_root=tmp_path,
-        target="target.test:50051",
-        spec={
-            "schema_version": 1,
-            "protocol": "grpc",
-            "endpoint": "target.test:50051",
-            "method": "sample.Inventory/List",
-            "request": {"cursor": "OFFSET"},
-            "plaintext": True,
-            "expect": {"marker": "SERIAL", "finding_grade": True},
-            "vuln_class": "Authz",
-        },
-        finding_id="GRPC-STREAM-1",
-        state_changing=False,
-        headers={"x-tenant": "SAMPLE"},
-        execute=execute,
-        which=lambda name: f"/usr/bin/{name}",
-    )
-
-    assert summary["result"] == "tested_finding"
-    assert observed["argv"][-2:] == ["target.test:50051", "sample.Inventory/List"]
-    assert observed["argv"][-4:-2] == ["-H", "x-tenant: SAMPLE"]
-    assert "OFFSET" not in " ".join(observed["argv"])
-    assert json.loads(observed["input"])["cursor"] == "OFFSET"
-    assert "grpc-status: 0" in (tmp_path / summary["artifacts"]["trailers"]).read_text()
-
-
-def test_llm_tool_call_protocol_replay_parses_exact_tool_and_arguments(monkeypatch, tmp_path):
-    body = json.dumps({
-        "choices": [{
-            "message": {
-                "tool_calls": [{
-                    "type": "function",
-                    "function": {"name": "lookup_record", "arguments": '{"id":"SERIAL"}'},
-                }],
-            },
-        }],
-    })
-    monkeypatch.setattr(
-        validation_runner,
-        "request_once",
-        lambda **kwargs: _fake_response(kwargs["url"], body=body),
-    )
-
-    summary = validation_runner.run_protocol_replay(
-        repo_root=tmp_path,
-        target="target.test",
-        spec={
-            "schema_version": 1,
-            "protocol": "llm_tool_call",
-            "endpoint": "https://target.test/v1/chat",
-            "body": {"prompt": "SAMPLE"},
-            "expect": {
-                "tool_name": "lookup_record",
-                "argument_marker": "SERIAL",
-                "finding_grade": True,
-            },
-            "vuln_class": "BusinessLogic",
-        },
-        finding_id="LLM-TOOL-1",
-        state_changing=False,
-    )
-
-    assert summary["result"] == "tested_finding"
-    assert summary["observation"]["tool_calls"] == [
-        {"name": "lookup_record", "arguments": '{"id":"SERIAL"}'},
-    ]
-    assert (tmp_path / summary["artifacts"]["request"]).is_file()
-    assert (tmp_path / summary["artifacts"]["response"]).is_file()
+    assert summary["result"] == "tested_clean"
+    assert summary["candidate_ready"] is False
+    assert summary["runs"][0]["marker_found"] is False
+    assert summary["runs"][0]["marker_occurrences"] == 0
 
 
 def test_marker_replay_control_proves_baseline_absence(monkeypatch, tmp_path):

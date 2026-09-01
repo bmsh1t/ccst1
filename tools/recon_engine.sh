@@ -3091,8 +3091,6 @@ else
     log_warn "nmap not installed — skipping"
 fi
 
-cat "$RECON_DIR/ports/open_ports.txt" "$RECON_DIR/ports/open_ports_naabu.txt" "$RECON_DIR/ports/open_ports_explicit.txt" 2>/dev/null \
-    | awk 'NF' | sort -u > "$RECON_DIR/ports/open_ports_all.txt" || true
 cat "$PORT_HISTORY_FILE" "$RECON_DIR/ports/open_host_ports_nmap.txt" "$RECON_DIR/ports/open_host_ports_naabu.txt" "$RECON_DIR/ports/open_host_ports_explicit.txt" 2>/dev/null \
     | awk 'NF' | sort -u > "$RECON_DIR/ports/open_host_ports.txt" || true
 PORTS_OPEN=$(wc -l < "$RECON_DIR/ports/open_host_ports.txt" 2>/dev/null | tr -d ' ' || echo 0)

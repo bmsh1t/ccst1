@@ -61,7 +61,12 @@ def load_structured_finding_followup(
     default and perform the canonical legacy migration when appropriate.
     """
     findings_dir = Path(base_dir) / "findings" / target_storage_key(target)
-    payload = load_finding_index(findings_dir, migrate_legacy=migrate_legacy)
+    payload = load_finding_index(
+        findings_dir,
+        migrate_legacy=migrate_legacy,
+        target=target,
+        allow_legacy=True,
+    )
     findings = [
         item for item in payload.get("findings", [])
         if isinstance(item, dict)

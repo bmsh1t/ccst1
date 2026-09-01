@@ -23,7 +23,6 @@ SCANNER_SKIP_MODULES = [
     "idor",
     "auth_bypass",
     "auth_flow",
-    "cms",
     "mfa",
     "saml",
 ]
@@ -388,7 +387,6 @@ def test_vuln_scanner_has_upstream_v5_scan_surface():
     assert "SSTI-CONFIRMED" in text
     assert "MFA-NO-RATE-LIMIT" in text
     assert "SAML-SIG-STRIP" in text
-    assert "Metasploit RC generated" in text
 
 
 def test_vuln_scanner_adds_iis_shortscan_lane_without_hard_dependency():
@@ -886,7 +884,6 @@ def test_vuln_scanner_writes_iis_manual_review_when_shortscan_missing(tmp_path):
             "idor",
             "auth_bypass",
             "auth_flow",
-            "cms",
             "mfa",
             "saml",
         ]

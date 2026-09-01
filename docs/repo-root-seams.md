@@ -12,7 +12,6 @@ was previously fixed to `BASE_DIR`.
 | `browser_evidence` | `narrow-root-injected` | `load_last_browser_evidence(evidence_root=...)` | none |
 | `browser_playwright_fallback` | `narrow-root-injected` | `capture_with_playwright(evidence_root=..., recon_root=...)` | existing `--evidence-root` / `--recon-root` |
 | `cf_solver` | `repo-root-dependent` | `load_config`, `check_cookie`, `write_output` | `main --repo-root` |
-| `cve_hunter` | `repo-root-dependent` | `hunt_cves(repo_root=...)` | `main --repo-root` |
 | `hypothesis_worker` | `import-only` | `BASE_DIR` only extends `sys.path` | none |
 | `json_inject_probe` | `repo-root-dependent` | `_write_findings(repo_root=...)` and input bindings | `main --repo-root` |
 | `remember` | `repo-root-dependent` | validation-summary and default memory resolution | `main --repo-root` |

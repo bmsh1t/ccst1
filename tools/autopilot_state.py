@@ -622,15 +622,34 @@ def _load_scanner_summary_projection(repo_root: str, target: str) -> dict:
     if not isinstance(raw_lanes, dict):
         return projection
     lanes = {}
+    projection_status = "valid"
     for name, item in raw_lanes.items():
         if not isinstance(item, dict):
+            projection_status = "partial"
             continue
+        accounting_valid = True
         try:
-            input_total = max(0, int(item.get("input_total", 0) or 0))
-            selected = max(0, min(input_total, int(item.get("selected", 0) or 0)))
-            remaining = max(0, min(input_total, int(item.get("remaining", 0) or 0)))
+            values = [item.get(key) for key in ("input_total", "selected", "remaining")]
+            if any(isinstance(value, bool) for value in values):
+                raise ValueError
+            input_total, selected, remaining = (int(value) for value in values)
+            accounting_valid = (
+                input_total >= 0
+                and selected >= 0
+                and remaining >= 0
+                and selected <= input_total
+                and remaining <= input_total
+                and input_total == selected + remaining
+            )
         except (TypeError, ValueError):
-            continue
+            input_total = selected = 0
+            try:
+                remaining = max(0, int(item.get("remaining", 0) or 0))
+            except (TypeError, ValueError):
+                remaining = 0
+            accounting_valid = False
+        if not accounting_valid:
+            projection_status = "partial"
         lanes[str(name)] = {
             "lane": str(item.get("lane") or name),
             "execution_kind": str(item.get("execution_kind") or "unknown"),
@@ -640,8 +659,9 @@ def _load_scanner_summary_projection(repo_root: str, target: str) -> dict:
             "remaining": remaining,
             "continuation": " ".join(str(item.get("continuation") or "").split()),
             "closure_blocking": bool(item.get("closure_blocking")),
+            "accounting_valid": accounting_valid,
         }
-    return {"status": "valid", "path": str(path), "lanes": lanes}
+    return {"status": projection_status, "path": str(path), "lanes": lanes}
 
 
 _SQL_MATRIX_STATUSES = {"complete_no_hit", "candidate_pending", "partial", "invalid_input"}
@@ -3674,14 +3694,37 @@ def _recon_phase_residuals(
         if not isinstance(gate, dict):
             continue
         bounded = gate.get("bounded")
+        status = str(gate.get("status") or "").strip().lower()
         if not isinstance(bounded, dict):
-            continue
+            if status == "complete":
+                continue
+            bounded = {}
+        accounting_valid = True
         try:
-            remaining = int(bounded.get("remaining", 0) or 0)
+            values = [bounded.get(key) for key in ("input_total", "selected", "remaining")]
+            if any(isinstance(value, bool) for value in values):
+                raise ValueError
+            input_total, selected, remaining = (int(value) for value in values)
+            accounting_valid = (
+                input_total >= 0
+                and selected >= 0
+                and remaining >= 0
+                and selected <= input_total
+                and remaining <= input_total
+                and input_total == selected + remaining
+            )
         except (TypeError, ValueError):
-            continue
-        blocking = bool(bounded.get("closure_blocking"))
-        if remaining <= 0 or (closure_blocking is not None and blocking != closure_blocking):
+            input_total = selected = 0
+            try:
+                remaining = max(0, int(bounded.get("remaining", 0) or 0))
+            except (TypeError, ValueError):
+                remaining = 0
+            accounting_valid = False
+        blocking = bool(bounded.get("closure_blocking", True)) if not accounting_valid else bool(
+            bounded.get("closure_blocking")
+        )
+        residual = status != "complete" or not accounting_valid or remaining > 0
+        if not residual or (closure_blocking is not None and blocking != closure_blocking):
             continue
         evidence_refs = gate.get("evidence_refs") if isinstance(gate.get("evidence_refs"), list) else []
         residuals.append({
@@ -3695,7 +3738,13 @@ def _recon_phase_residuals(
             ),
             "review_token": f"recon:{phase}:remaining={remaining}",
             "gate": gate,
-            "bounded": {**bounded, "remaining": remaining},
+            "bounded": {
+                **bounded,
+                "input_total": input_total,
+                "selected": selected,
+                "remaining": remaining,
+            },
+            "accounting_valid": accounting_valid,
         })
     return sorted(residuals, key=lambda item: item["phase"])
 
@@ -3713,26 +3762,62 @@ def _scanner_lane_residuals(state: dict) -> list[dict]:
     """Return scanner inputs that were sampled, skipped, or only classified."""
     summary = state.get("scanner_summary") if isinstance(state.get("scanner_summary"), dict) else {}
     path = str(summary.get("path") or "")
+    summary_status = str(summary.get("status") or "").strip().lower()
     residuals = []
     for name, item in (summary.get("lanes") or {}).items():
         if not isinstance(item, dict):
             continue
+        status = str(item.get("status") or "unknown").strip().lower()
+        accounting_valid = item.get("accounting_valid", True)
         try:
-            remaining = int(item.get("remaining", 0) or 0)
+            values = [item.get(key) for key in ("input_total", "selected", "remaining")]
+            if any(isinstance(value, bool) for value in values):
+                raise ValueError
+            input_total, selected, remaining = (int(value) for value in values)
+            accounting_valid = bool(accounting_valid) and (
+                input_total >= 0
+                and selected >= 0
+                and remaining >= 0
+                and selected <= input_total
+                and remaining <= input_total
+                and input_total == selected + remaining
+            )
         except (TypeError, ValueError):
-            continue
-        if remaining <= 0:
-            continue
-        lane = str(item.get("lane") or name)
+            input_total = selected = 0
+            try:
+                remaining = max(0, int(item.get("remaining", 0) or 0))
+            except (TypeError, ValueError):
+                remaining = 0
+            accounting_valid = False
+        terminal = status in {"complete", "completed", "ok", "success"}
+        if status == "sampled" and remaining == 0 and accounting_valid:
+            terminal = True
+        if status in {"candidate_only", "skipped"} and input_total == 0 and accounting_valid:
+            terminal = True
+        if accounting_valid is not True or remaining > 0 or not terminal:
+            lane = str(item.get("lane") or name)
+            residuals.append({
+                "lane": lane,
+                "remaining": remaining,
+                "execution_kind": str(item.get("execution_kind") or "unknown"),
+                "status": str(item.get("status") or "unknown"),
+                "continuation": str(item.get("continuation") or ""),
+                "closure_blocking": bool(item.get("closure_blocking")),
+                "evidence_ref": path,
+                "review_token": f"scanner:{lane}:remaining={remaining}",
+                "accounting_valid": accounting_valid,
+            })
+    if summary and summary_status not in {"", "missing", "valid", "complete", "ok"} and not residuals:
         residuals.append({
-            "lane": lane,
-            "remaining": remaining,
-            "execution_kind": str(item.get("execution_kind") or "unknown"),
-            "status": str(item.get("status") or "unknown"),
-            "continuation": str(item.get("continuation") or ""),
-            "closure_blocking": bool(item.get("closure_blocking")),
+            "lane": "scanner_summary",
+            "remaining": 0,
+            "execution_kind": "unknown",
+            "status": summary_status or "unknown",
+            "continuation": "repair the scanner summary accounting",
+            "closure_blocking": True,
             "evidence_ref": path,
-            "review_token": f"scanner:{lane}:remaining={remaining}",
+            "review_token": f"scanner:summary:status={summary_status or 'unknown'}",
+            "accounting_valid": False,
         })
     return sorted(residuals, key=lambda item: item["lane"])
 

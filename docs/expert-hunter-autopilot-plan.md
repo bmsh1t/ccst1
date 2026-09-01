@@ -673,7 +673,6 @@ browser_evidence.py
 js_reader.py
 source_intel.py
 intel_engine.py
-cve_hunter.py
 param_discovery.sh
 secrets_hunter.sh
 cloud_recon.sh

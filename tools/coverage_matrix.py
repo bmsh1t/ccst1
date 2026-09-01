@@ -1677,7 +1677,11 @@ def _rebuild_matrix_unlocked(
     findings_path = repo / "findings" / target_key / "findings.json"
     if findings_path.is_file():
         try:
-            findings_payload = load_finding_index(findings_path.parent)
+            findings_payload = load_finding_index(
+                findings_path.parent,
+                target=target,
+                allow_legacy=True,
+            )
             for finding in findings_payload.get("findings", []):
                 raw_endpoint = str(finding.get("endpoint") or finding.get("url") or "")
                 ep_path = _canonicalize_endpoint(raw_endpoint)

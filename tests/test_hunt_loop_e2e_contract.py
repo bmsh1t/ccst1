@@ -54,12 +54,23 @@ def _attach_canonical_runner(repo_root: Path, target: str, finding: dict) -> dic
         browser_observed=False,
         redline_checked=False,
         state_changing=False,
+        artifact_bindings=[
+            {
+                "kind": "request",
+                "sha256": hashlib.sha256(request_path.read_bytes()).hexdigest(),
+            },
+            {
+                "kind": "response",
+                "sha256": hashlib.sha256(response_path.read_bytes()).hexdigest(),
+            },
+        ],
+        finding_id=finding_id,
     )
     summary_path = bundle / "summary.json"
     summary = validation_runner._finalize_runner_summary(
         {
             "schema_version": validation_runner.SCHEMA_VERSION,
-            "lane": "sqli_result_diff",
+            "lane": "request_diff",
             "target": target,
             "finding_id": finding_id,
             "url": endpoint,
