@@ -4,7 +4,7 @@ description: Start active hunting on a target using cached recon, AI-first surfa
 
 # /hunt
 
-Active vulnerability hunting through Claude CLI. Run the production scanner when broad coverage is useful; otherwise use the surface review pack as evidence for Claude to choose exact probes.
+Active vulnerability hunting through Claude CLI. Use the scanner as a bounded breadth and candidate sensor when useful; use surface evidence for Claude to choose exact probes and validation.
 
 ## Run This (the only required step)
 
@@ -23,7 +23,7 @@ hunting semantics and is loaded on demand rather than by every context pack.
 python3 tools/hunt.py --target target.com --scan-only      # recon exists → scan cached surface
 python3 tools/hunt.py --target target.com                  # recon if needed, then scan
 python3 tools/hunt.py --target target.com --quick          # lower-cost path
-python3 tools/hunt.py --target target.com --scan-only --scanner-full  # expanded scanner coverage; XSS is handled by recon/validation
+python3 tools/hunt.py --target target.com --scan-only --scanner-full  # expanded bounded scanner/candidate coverage; no fixed payload lanes
 ```
 
 Auth-aware examples:
@@ -136,11 +136,12 @@ A callback is a Signal. Promote to Candidate only after you can tie it to a spec
 ```bash
 python3 tools/hunt.py --target target.com --scan-only --scanner-full
 python3 tools/hunt.py --target target.com --scan-only --scanner-skip module1,module2
-ALLOW_UNSAFE_HTTP_TESTS=1 python3 tools/hunt.py --target target.com --scan-only --scanner-full  # opt-in for explicitly state-changing scanner actions
+ALLOW_UNSAFE_HTTP_TESTS=1 python3 tools/hunt.py --target target.com --scan-only --scanner-full  # opt-in only for the scanner's guarded state-changing method checks
 ```
 
-- XSS is not an active vuln-scanner lane; recon/validation provide its evidence.
-- `--scanner-full` expands supported scanner lanes but does not enable a Nuclei XSS scan.
+- SQLi, XSS, SSTI, upload, MFA, and SAML scanner lanes are candidate-only; AI selects the observed request and validation medium.
+- `--scanner-full` increases bounded scanner inputs where supported; it does not add fixed payload or virtual-endpoint sweeps.
+- Scanner `remaining` and `candidate_only` entries are residual work, never a clean or validated result.
 - `--scanner-skip` is per invocation only; do not inherit it across targets or sessions.
 
 ## When To Stop Or Rotate

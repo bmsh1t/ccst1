@@ -82,7 +82,7 @@ identity, and cloud signals without re-enumerating everything.
 
 | Tool | When to use | One-line function |
 |---|---|---|
-| `tools/vuln_scanner.sh` | Recon done, want broad active coverage | Multi-lane scanner with structured finding artifacts |
+| `tools/vuln_scanner.sh` | Recon done, want bounded breadth context | Candidate-first scanner: bounded Nuclei plus passive candidate extraction; writes residual accounting, never report-ready proof |
 | `tools/workflow_sequence.py` | HAR/browser flow has 2+ same-target requests | Bounded replay/perturb/diff with token refresh, private evidence and Action Queue |
 | `tools/timing_sql_runner.py` | Time-shaped SQL candidate remains | Interleaved timing evidence with robust stats, caps, WAF/429 semantics and queue |
 | `tools/validation_runner.py` (`request-diff`) | Exact AI baseline/variant pair | Shared replay/diff across query, form, JSON, text, header/cookie, and path inputs |
@@ -190,7 +190,7 @@ identity, and cloud signals without re-enumerating everything.
 | Exchange/OWA/EWS/Autodiscover signal in `technology_inventory` or URL evidence | `eburst_lane.py --target <target>` (interface check only; use `/spray` for controlled credentials) |
 | Concrete webpack/chunk/source-map signal | `deep_js_packer.py`, then `js_reader.py` |
 | JS bundles cached without recovery evidence | `js_reader.py` (then `js-reader` agent) |
-| Recon done, want broad active | `vuln_scanner.sh` |
+| Recon done, want bounded breadth context | `vuln_scanner.sh` (candidate/residual summary; AI chooses validation) |
 | Tech stack or identified network service needs CVE applicability | `/intel` → `intel_engine.py`; use `/scan-cves` for a selected reachable advisory |
 | Dashboard / SPA target | Chrome DevTools/Playwright MCP → `browser_mcp_import.py` → `browser_surface.py` |
 | Switching back to old target | `resume.py` |

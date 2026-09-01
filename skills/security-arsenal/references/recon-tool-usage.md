@@ -26,8 +26,8 @@ cat /tmp/subs.txt | dnsx -silent | httpx -silent -status-code -title -tech-detec
 cat /tmp/live.txt | awk '{print $1}' | katana -d 3 -silent | anew /tmp/urls.txt
 echo TARGET | waybackurls | anew /tmp/urls.txt
 gau TARGET | anew /tmp/urls.txt
-# Optional compatibility pass: use target-owned origins, never the raw URL corpus.
-BBHUNT_ENABLE_NUCLEI_CVES=1 bash tools/vuln_scanner.sh recon/TARGET --quick --skip sqli,ssrf
+# Optional bounded candidate/metadata pass: use target-owned origins, never the raw URL corpus.
+BBHUNT_ENABLE_NUCLEI_CVES=1 bash tools/vuln_scanner.sh recon/TARGET --quick
 ```
 
 Stop condition: no live surfaces under the supplied target set, repeated 401/403/404 with no route delta, or any next step requiring real-user enumeration without current-turn opt-in.
@@ -111,7 +111,9 @@ curl -s "https://hackerone.com/graphql" \
 
 ## SAML Tooling Notes
 
-SAML tools are replay helpers, not proof by themselves.
+SAML handling starts from a captured target-owned flow. The scanner only records
+SAML/SSO candidates; Claude selects the replay medium and exact assertion change.
+Replay output is evidence, not proof by itself.
 
 ```bash
 # Decode captured SAMLResponse for local inspection.
@@ -121,7 +123,7 @@ print(base64.b64decode(urllib.parse.unquote(sys.stdin.read().strip())))
 PY
 ```
 
-For XML Signature Wrapping or assertion mutation, preserve decoded XML, modified XML, encoded replay request, and final session/account response. Prefer dedicated Burp extensions or local scripts only after the SSO flow is captured and replayable.
+For XML Signature Wrapping or assertion mutation, preserve decoded XML, modified XML, encoded replay request, and final session/account response. Use browser, curl, raw sender, or the retained workflow runner only after the SSO flow is captured and replayable; do not rely on a status-only response.
 
 ## Quick Lead Checklist
 

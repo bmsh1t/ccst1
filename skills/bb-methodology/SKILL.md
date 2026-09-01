@@ -41,8 +41,9 @@ Before target work, state:
 5. **Budget and risk**: bounded actions plus the current request budget.
 
 A selected family is a current-session focus, not a persistent exclusion. On a
-new target, temporary skips reset; the new target default keeps only the
-built-in XSS lane skip unless the current turn or scanner-full path changes it.
+new target, temporary skips reset. The scanner may expose XSS and other
+surface-specific candidates, but it does not perform fixed payload sweeps; Claude
+chooses whether and how to validate each observed request.
 
 ### Developer-View Pre-Hunt Recall
 

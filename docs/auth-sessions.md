@@ -78,17 +78,17 @@ the same case-state owner.
 | Directory fuzzing | ffuf | **Yes** |
 | nuclei templates | nuclei | **Yes** |
 | AI-selected HTTP replay / request-diff | browser, curl, or validation runner | **Yes** |
-| Upload PoC | curl multipart | **Yes** |
-| SSTI probes | curl | **Yes** |
-| **MFA workflow-skip test** | curl | **No, intentionally** |
-| **SAML signature-stripping** | curl | **Anonymous POST + isolated Cookie read-back** |
+| Upload/file-processing candidates | browser, curl, or raw sender | **AI-selected; session propagated when used** |
+| SSTI/render-context candidates | browser, curl, or validation runner | **AI-selected; session propagated when used** |
+| MFA/SSO workflow review | browser, curl, or workflow runner | **Flow-dependent; no fixed request** |
+| SAML assertion replay | captured browser/curl flow or workflow runner | **Flow-dependent; no fixed request** |
 
-The MFA-skip test stays anonymous. SAML stripping also starts anonymously, but a
-finding additionally requires `BBHUNT_SAML_PROTECTED_URL` to name a same-target
-protected resource, an anonymous denied/redirect baseline, a newly issued Cookie,
-and an authenticated read-back difference. The temporary Cookie jar is removed;
-status-only results remain manual-review candidates. Everything else is gated on
-the shared session.
+The scanner only extracts target-owned candidates for these surfaces; it does not
+send fixed upload, SSTI, MFA, or SAML requests. Claude chooses an observed request
+shape and the appropriate browser, curl, raw sender, or workflow evidence path.
+Use the shared session when the hypothesis is authenticated; use an anonymous
+request only when the captured flow requires it. Status-only changes remain
+review candidates until the request, response, and impact are tied together.
 
 ## CLI flags
 
