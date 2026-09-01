@@ -30,6 +30,7 @@ SHARED_TOOLS_DIR = os.environ.get(
 
 from learn import severity_order
 from memory.target_profile import load_target_profile
+from tools.runtime_state import derive_owner_projection
 try:
     from tools.intel_artifact import (
         INTEL_SCHEMA_VERSION,
@@ -93,7 +94,12 @@ DIM    = "\033[2m"
 RESET  = "\033[0m"
 
 
-def load_memory_context(memory_dir: str, target: str) -> dict:
+def load_memory_context(
+    memory_dir: str,
+    target: str,
+    *,
+    repo_root: str | Path | None = None,
+) -> dict:
     """Load hunt memory context for a target.
 
     Returns:
@@ -109,15 +115,22 @@ def load_memory_context(memory_dir: str, target: str) -> dict:
         "tested_cves": [],
     }
 
+    resolved_target = canonical_target_value(target)
+    owner_projection = derive_owner_projection(repo_root or REPO_ROOT, resolved_target)
+    if owner_projection.get("tested_authoritative"):
+        context["tested_endpoints"] = owner_projection.get("tested_endpoints", [])
+    if owner_projection.get("findings_authoritative"):
+        context["findings"] = owner_projection.get("findings", [])
+
     if not memory_dir or not os.path.isdir(memory_dir):
         return context
 
-    resolved_target = canonical_target_value(target)
-
     profile = load_target_profile(memory_dir, resolved_target)
     if profile is not None:
-        context["tested_endpoints"] = profile.get("tested_endpoints", [])
-        context["findings"] = profile.get("findings", [])
+        if not owner_projection.get("tested_authoritative"):
+            context["tested_endpoints"] = profile.get("tested_endpoints", [])
+        if not owner_projection.get("findings_authoritative"):
+            context["findings"] = profile.get("findings", [])
         context["tech_stack"] = profile.get("tech_stack", [])
         context["last_hunted"] = profile.get("last_hunted")
         context["hunt_sessions"] = profile.get("hunt_sessions", 0)

@@ -19,6 +19,7 @@ from runtime_state import (
     RuntimePhaseBusy,
     SCHEMA_VERSION,
     derive_state_view,
+    derive_owner_projection,
     inspect_recon_artifacts,
     inspect_recon_artifacts_fast,
     load_runtime_state,
@@ -453,6 +454,48 @@ def test_derive_state_view_returns_all_layers(tmp_path):
     assert view["findings"]["structured_total"] == 0
     assert view["evidence"]["browser_evidence_present"] is False
     assert view["derived"]["status"] == "unavailable"
+
+
+def test_owner_projection_prefers_canonical_findings_and_coverage(tmp_path):
+    """Current endpoint/finding facts ignore a stale compatibility profile."""
+    from finding_index import upsert_findings
+
+    upsert_findings(
+        tmp_path / "findings" / "target.com",
+        [
+            {
+                "id": "F-1",
+                "target": "target.com",
+                "url": "https://target.com/api/orders?id=7",
+                "type": "sqli",
+                "title": "SQLi candidate",
+            }
+        ],
+        target="target.com",
+    )
+    coverage_path = tmp_path / "evidence" / "target.com" / "coverage_matrix.json"
+    coverage_path.parent.mkdir(parents=True)
+    coverage_path.write_text(
+        json.dumps(
+            {
+                "target": "target.com",
+                "endpoints": [
+                    {"endpoint": "/api/orders", "cells": {"SQLi": {"status": "tested_clean"}}},
+                    {"endpoint": "/api/export", "cells": {"SQLi": {"status": "untested"}}},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    projection = derive_owner_projection(tmp_path, "target.com")
+
+    assert projection["findings_authoritative"] is True
+    assert projection["tested_authoritative"] is True
+    assert projection["untested_authoritative"] is True
+    assert "/api/orders" in projection["tested_endpoints"]
+    assert "/api/export" in projection["untested_endpoints"]
+    assert projection["findings"][0]["vuln_class"] == "sqli"
 
 
 def test_derived_status_preserves_scan_failure_over_ready_artifacts(tmp_path, monkeypatch):

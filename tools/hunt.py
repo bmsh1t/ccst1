@@ -53,7 +53,11 @@ from tools.auth_session import AuthSession, add_cli_args, session_from_args
 from tools.credential_store import CredentialStore
 from tools.eburst_lane import resolve_eburst
 from tools.runtime_config import is_ctf_mode_enabled, load_runtime_config
-from tools.runtime_state import RuntimePhaseBusy, runtime_phase_lock
+from tools.runtime_state import (
+    RuntimePhaseBusy,
+    derive_owner_projection,
+    runtime_phase_lock,
+)
 from tools.target_paths import (
     classify_target as classify_target_input,
     target_https_url,
@@ -765,22 +769,31 @@ def _update_target_profile(domain, *, elapsed_minutes=0, recon_completed=False):
     if tech_stack:
         profile["tech_stack"] = tech_stack
 
-    if recon_completed:
+    owner_projection = derive_owner_projection(BASE_DIR, domain)
+    if recon_completed and not owner_projection.get("available"):
         discovered = _extract_recon_candidates(domain)
         tested = _dedupe_keep_order(profile.get("tested_endpoints", []))
         remaining = [ep for ep in discovered if ep not in set(tested)]
         profile["untested_endpoints"] = remaining
 
-    findings = _load_report_findings(domain)
-    if findings:
-        profile["findings"] = findings
-        tested_endpoints = _dedupe_keep_order(
-            profile.get("tested_endpoints", [])
-            + [_normalize_endpoint(item.get("url", "")) for item in findings]
-        )
-        profile["tested_endpoints"] = tested_endpoints
-        remaining = [ep for ep in profile.get("untested_endpoints", []) if ep not in set(tested_endpoints)]
-        profile["untested_endpoints"] = remaining
+    if owner_projection.get("available"):
+        if owner_projection.get("tested_authoritative"):
+            profile["tested_endpoints"] = list(owner_projection.get("tested_endpoints", []))
+        if owner_projection.get("untested_authoritative"):
+            profile["untested_endpoints"] = list(owner_projection.get("untested_endpoints", []))
+        if owner_projection.get("findings_authoritative"):
+            profile["findings"] = list(owner_projection.get("findings", []))
+    else:
+        findings = _load_report_findings(domain)
+        if findings:
+            profile["findings"] = findings
+            tested_endpoints = _dedupe_keep_order(
+                profile.get("tested_endpoints", [])
+                + [_normalize_endpoint(item.get("url", "")) for item in findings]
+            )
+            profile["tested_endpoints"] = tested_endpoints
+            remaining = [ep for ep in profile.get("untested_endpoints", []) if ep not in set(tested_endpoints)]
+            profile["untested_endpoints"] = remaining
 
     save_target_profile(HUNT_MEMORY_DIR, profile)
 

@@ -48,7 +48,11 @@ try:
         sync_inventory_summary,
     )
     from tools.recon_adapter import ReconAdapter
-    from tools.runtime_state import inspect_recon_artifacts, load_runtime_state
+    from tools.runtime_state import (
+        derive_owner_projection,
+        inspect_recon_artifacts,
+        load_runtime_state,
+    )
     from tools.surface_index import (
         SurfaceIndexError,
         build_surface_index,
@@ -89,7 +93,7 @@ except ImportError:  # pragma: no cover - top-level tools/ import
         sync_inventory_summary,
     )
     from recon_adapter import ReconAdapter
-    from runtime_state import inspect_recon_artifacts, load_runtime_state
+    from runtime_state import derive_owner_projection, inspect_recon_artifacts, load_runtime_state
     from surface_index import SurfaceIndexError, build_surface_index, iter_surface_index, load_surface_index_status, page_surface_index, surface_shape, surface_request_shape, surface_safe_preview, surface_value_summary
     from surface_projection import build_surface_input_manifest, write_surface_projection
     from target_paths import (  # type: ignore
@@ -1705,6 +1709,7 @@ def load_surface_context(
     findings_dir = repo_root / "findings" / storage_key
     runtime_state = load_runtime_state(repo_root, target)
     recon_artifacts = inspect_recon_artifacts(repo_root, target)
+    owner_projection = derive_owner_projection(repo_root, target)
     target_goal_memory = _load_target_goal_memory(repo_root, target)
     if not recon_dir.is_dir():
         return {
@@ -1712,6 +1717,7 @@ def load_surface_context(
             "available": False,
             "runtime_state": runtime_state,
             "recon_artifacts": recon_artifacts,
+            "owner_projection": owner_projection,
             "target_goal_memory": target_goal_memory,
         }
 
@@ -1879,6 +1885,7 @@ def load_surface_context(
         "observation_inventory": observation_inventory,
         "target_goal_memory": target_goal_memory,
         "profile": profile,
+        "owner_projection": owner_projection,
         "runtime_state": runtime_state,
         "recon_artifacts": recon_artifacts,
         "pattern_matches": _dedupe_keep_order(
@@ -2282,10 +2289,23 @@ def rank_surface(context: dict) -> dict:
         }
 
     profile = context.get("profile") or {}
+    owner_projection = context.get("owner_projection") or {}
     target_goal_memory = context.get("target_goal_memory") or {}
     target_memory_summary = _target_memory_summary(target_goal_memory)
-    tested_endpoints = set(profile.get("tested_endpoints", []))
-    untested_endpoints = set(profile.get("untested_endpoints", []))
+    tested_endpoints = set(
+        owner_projection.get("tested_endpoints", [])
+        if owner_projection.get("tested_authoritative")
+        else profile.get("tested_endpoints", [])
+    )
+    untested_endpoints = set(
+        owner_projection.get("untested_endpoints", [])
+        if owner_projection.get("untested_authoritative")
+        else profile.get("untested_endpoints", [])
+    )
+    # Surface candidates are path-shaped; retain exact query variants for
+    # compatibility while also matching their canonical path.
+    tested_endpoints |= {item.split("?", 1)[0] for item in tested_endpoints if "?" in item}
+    untested_endpoints |= {item.split("?", 1)[0] for item in untested_endpoints if "?" in item}
     profile_tech = {tech.lower() for tech in profile.get("tech_stack", [])}
 
     pattern_matches = [

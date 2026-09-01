@@ -23,6 +23,7 @@ from memory.hunt_journal import HuntJournal
 from memory.pattern_db import PatternDB
 from memory.schemas import make_journal_entry, make_pattern_entry
 from memory.target_profile import default_memory_dir, load_target_profile, make_target_profile, save_target_profile
+from tools.runtime_state import derive_owner_projection
 try:
     from tools.target_paths import canonical_target_value
 except ImportError:  # pragma: no cover - direct tools/ execution
@@ -207,6 +208,7 @@ def remember_finding(
     notes: str | None = None,
     tags: list[str] | None = None,
     tech_stack: list[str] | None = None,
+    repo_root: str | Path | None = None,
 ) -> dict:
     """Persist a finding to hunt memory and return a summary."""
     memory_dir = Path(memory_dir)
@@ -220,6 +222,10 @@ def remember_finding(
     pattern_db = PatternDB(memory_dir / "patterns.jsonl")
     profile = load_or_create_target_profile(memory_dir, canonical_target)
     profile["target"] = canonical_target
+    owner_projection = derive_owner_projection(
+        repo_root or memory_dir.parent,
+        canonical_target,
+    )
 
     entry = make_journal_entry(
         target=canonical_target,
@@ -239,15 +245,26 @@ def remember_finding(
         merged_tech = dedupe_keep_order(profile.get("tech_stack", []) + requested_tech_stack)
         profile["tech_stack"] = merged_tech
 
-    tested_endpoints = dedupe_keep_order(profile.get("tested_endpoints", []) + [normalized_endpoint])
-    profile["tested_endpoints"] = tested_endpoints
-    profile["untested_endpoints"] = [
-        item for item in profile.get("untested_endpoints", [])
-        if item != normalized_endpoint
-    ]
-
     finding_saved = False
-    if result != "rejected":
+    if owner_projection.get("available"):
+        # Canonical owners are current truth; keep the legacy profile as a
+        # compatibility projection for older readers only.
+        if owner_projection.get("tested_authoritative"):
+            profile["tested_endpoints"] = list(owner_projection.get("tested_endpoints", []))
+        if owner_projection.get("untested_authoritative"):
+            profile["untested_endpoints"] = list(owner_projection.get("untested_endpoints", []))
+        if owner_projection.get("findings_authoritative"):
+            profile["findings"] = list(owner_projection.get("findings", []))
+        finding_saved = result != "rejected"
+    else:
+        tested_endpoints = dedupe_keep_order(profile.get("tested_endpoints", []) + [normalized_endpoint])
+        profile["tested_endpoints"] = tested_endpoints
+        profile["untested_endpoints"] = [
+            item for item in profile.get("untested_endpoints", [])
+            if item != normalized_endpoint
+        ]
+
+    if not owner_projection.get("available") and result != "rejected":
         merge_finding(profile, {
             "ts": entry["ts"],
             "endpoint": normalized_endpoint,
@@ -380,6 +397,7 @@ def main() -> None:
         notes=notes or None,
         tags=parse_csv(args.tags),
         tech_stack=parse_csv(args.tech_stack),
+        repo_root=repo_root,
     )
     if validate_summary_path is not None:
         summary["validate_summary"] = str(validate_summary_path)

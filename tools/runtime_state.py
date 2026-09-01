@@ -33,6 +33,7 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import fcntl
 
@@ -47,13 +48,13 @@ try:
     )
     from tools.recon_adapter import ReconAdapter
     from tools.recon_gate import gate_from_record
-    from tools.target_paths import canonical_target_value, target_storage_key
+    from tools.target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 except ImportError:  # pragma: no cover - direct tools/ execution
     from browser_mcp_import import BROWSER_FRESHNESS_SECONDS, inspect_mcp_browser_readiness
     from finding_index import load_finding_index, verify_finalized_finding_owner_provenance
     from recon_adapter import ReconAdapter
     from recon_gate import gate_from_record  # type: ignore
-    from target_paths import canonical_target_value, target_storage_key
+    from target_paths import canonical_target_value, target_storage_key, url_belongs_to_target
 
 SCHEMA_VERSION = 2
 RUNNING_MARKER_STALE_SECONDS = 7200
@@ -1293,4 +1294,116 @@ def derive_state_view(repo_root: str | Path, target: str) -> dict:
         "findings": findings,
         "evidence": evidence,
         "derived": _derive_current_status(repo_root_p, target, persisted, recon, findings),
+    }
+
+
+def _owner_projection_endpoint(value: object) -> str:
+    """Normalize an owner endpoint to the path shape used by legacy memory."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlsplit(raw)
+    if parsed.scheme and parsed.netloc:
+        path = parsed.path or "/"
+        return f"{path}?{parsed.query}" if parsed.query else path
+    return raw if raw.startswith("/") else f"/{raw.lstrip('/')}"
+
+
+def derive_owner_projection(repo_root: str | Path, target: str) -> dict:
+    """Project current endpoint/finding facts from their canonical owners.
+
+    This read-only view is intentionally separate from ``derive_state_view``:
+    runtime state remains a durable owner while Resume, Surface, Intel, and
+    compatibility memory consumers share one reducer for current facts.
+    """
+    repo = Path(repo_root)
+    resolved_target = canonical_target_value(target)
+    storage_key = target_storage_key(resolved_target)
+    findings_dir = repo / "findings" / storage_key
+    findings_path = findings_dir / "findings.json"
+    ledger_path = repo / "memory" / "evidence" / storage_key / "ledger.jsonl"
+    matrix_path = repo / "evidence" / storage_key / "coverage_matrix.json"
+
+    findings: list[dict] = []
+    findings_authoritative = findings_path.is_file()
+    try:
+        payload = load_finding_index(
+            findings_dir,
+            migrate_legacy=False,
+            target=resolved_target,
+            allow_legacy=True,
+        )
+    except (OSError, ValueError):
+        payload = {}
+    for item in payload.get("findings", []) if isinstance(payload, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or item.get("endpoint") or "").strip()
+        if url and not url_belongs_to_target(url, resolved_target):
+            continue
+        projected = dict(item)
+        projected["vuln_class"] = str(
+            item.get("vuln_class") or item.get("type") or item.get("category") or "finding"
+        )
+        projected["endpoint"] = _owner_projection_endpoint(url)
+        findings.append(projected)
+    if findings:
+        findings_authoritative = True
+
+    tested_endpoints: set[str] = set()
+    endpoint_status: dict[str, set[str]] = {}
+    ledger_authoritative = ledger_path.is_file()
+    # Actor/lane history is advisory for Surface ranking.  A ledger
+    # ``tested_clean`` row must not hide the endpoint from another family.
+
+    matrix_authoritative = matrix_path.is_file()
+    if matrix_authoritative:
+        try:
+            from tools.coverage_matrix import load_matrix
+        except ImportError:  # pragma: no cover - direct tools/ execution
+            from coverage_matrix import load_matrix  # type: ignore
+        try:
+            matrix = load_matrix(resolved_target, repo_root=repo)
+        except (OSError, ValueError):
+            matrix = {}
+        for item in matrix.get("endpoints", []) if isinstance(matrix, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            endpoint = _owner_projection_endpoint(item.get("endpoint"))
+            if not endpoint:
+                continue
+            statuses = {
+                str(cell.get("status") or "untested")
+                for cell in (item.get("cells") or {}).values()
+                if isinstance(cell, dict)
+            }
+            endpoint_status[endpoint] = statuses
+            if any(status != "untested" for status in statuses):
+                tested_endpoints.add(endpoint)
+
+    for item in findings:
+        endpoint = _owner_projection_endpoint(item.get("endpoint") or item.get("url"))
+        if endpoint:
+            tested_endpoints.add(endpoint)
+
+    canonical_available = findings_authoritative or ledger_authoritative or matrix_authoritative
+    untested_endpoints = sorted(
+        endpoint
+        for endpoint, statuses in endpoint_status.items()
+        if statuses and all(status == "untested" for status in statuses)
+    )
+    return {
+        "target": resolved_target,
+        "available": canonical_available,
+        "findings_authoritative": findings_authoritative,
+        "tested_authoritative": bool(tested_endpoints) or matrix_authoritative,
+        "untested_authoritative": matrix_authoritative,
+        "findings": findings,
+        "tested_endpoints": sorted(tested_endpoints),
+        "untested_endpoints": untested_endpoints,
+        "sources": {
+            "findings": str(findings_path) if findings_authoritative else "",
+            "ledger": str(ledger_path) if ledger_authoritative else "",
+            "coverage": str(matrix_path) if matrix_authoritative else "",
+        },
     }

@@ -18,6 +18,7 @@ try:
     # Support `import tools.resume`.
     from .repo_source_artifacts import load_repo_source_summary
     from .runtime_state import inspect_recon_artifacts, load_runtime_state
+    from .runtime_state import derive_owner_projection
     from .structured_findings import (
         format_structured_findings_lines,
         summarize_structured_findings,
@@ -26,6 +27,7 @@ except ImportError:
     # Keep legacy top-level `import resume` working.
     from repo_source_artifacts import load_repo_source_summary
     from runtime_state import inspect_recon_artifacts, load_runtime_state
+    from runtime_state import derive_owner_projection
     from structured_findings import (
         format_structured_findings_lines,
         summarize_structured_findings,
@@ -184,6 +186,7 @@ def load_resume_summary(
         return None
 
     profile_target = str(profile.get("target") or canonical_target or requested_target)
+    owner_projection = derive_owner_projection(root, profile_target)
     journal = HuntJournal(memory_dir / "journal.jsonl")
     entries = journal.query(target=profile_target)
     confirmed_entries = [entry for entry in entries if entry.get("result") == "confirmed"]
@@ -207,7 +210,21 @@ def load_resume_summary(
             "payout": pattern.get("payout", 0),
         })
 
-    findings = profile.get("findings", [])
+    findings = (
+        owner_projection.get("findings", [])
+        if owner_projection.get("findings_authoritative")
+        else profile.get("findings", [])
+    )
+    tested_endpoints = (
+        owner_projection.get("tested_endpoints", [])
+        if owner_projection.get("tested_authoritative")
+        else profile.get("tested_endpoints", [])
+    )
+    untested_endpoints = (
+        owner_projection.get("untested_endpoints", [])
+        if owner_projection.get("untested_authoritative")
+        else profile.get("untested_endpoints", [])
+    )
     finding_titles = []
     for finding in findings[:3]:
         vuln = finding.get("vuln_class") or finding.get("type") or "finding"
@@ -228,10 +245,11 @@ def load_resume_summary(
         "last_hunted": profile.get("last_hunted", ""),
         "total_time_minutes": round(float(profile.get("total_time_minutes", 0) or 0), 2),
         "tech_stack": profile.get("tech_stack", []),
-        "tested_endpoints": profile.get("tested_endpoints", []),
-        "untested_endpoints": profile.get("untested_endpoints", []),
+        "tested_endpoints": tested_endpoints,
+        "untested_endpoints": untested_endpoints,
         "findings": findings,
         "finding_titles": finding_titles,
+        "owner_projection": owner_projection,
         "journal_entries": len(entries),
         "confirmed_findings": len(confirmed_entries),
         "confirmed_payout": confirmed_payout,
