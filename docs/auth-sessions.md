@@ -102,8 +102,7 @@ All `tools/hunt.py` runs accept:
 --auth-from-env               # 显式合并环境；没有其它认证参数时会自动读取环境
 ```
 
-`scripts/full_hunt.sh` keeps its existing `--cookie` / `--token` flags. They
-now flow through to httpx, katana, ffuf, and nuclei.
+认证参数由 `tools/hunt.py` 统一接收，并传递到下游 Recon、扫描和回放工具。
 
 ## Env vars
 
