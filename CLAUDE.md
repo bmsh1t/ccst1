@@ -119,6 +119,7 @@ localhost、RFC1918 和其他私网目标始终 **bypass** Resin。
   `rules/context-loading.md`：最小上下文装配。
 - `commands/hunt.md`、`commands/autopilot.md`、`docs/autopilot-lanes.md`：执行和 lane 契约。
 - `knowledge/index.md`、`knowledge/capabilities.yaml`、`rules/playbook-router.md`：知识治理和路由。
+- `docs/architecture-contract.md`：五平面、状态 owner、projection、memory 和变更准入的唯一架构契约。
 - `docs/tool-index.md`：工具 CLI；`docs/resin-proxy.md`：代理配置；
   `templates/phased-surface-validation-plan.md`：分阶段验证模板。
 - `README.md` 负责安装、完整命令/能力说明和用户上手，不作为运行状态来源。

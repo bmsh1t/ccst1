@@ -72,9 +72,8 @@ You are NOT spawned automatically by `/intel`, `/recon`, or
 
 ## Output
 
-A single document at `evidence/<target>/disclosed_patterns.md` per
-the schema in `.trellis/tasks/05-14-05-14-phase3-ai-leverage-capabilities/design.md`
-Contract 1:
+A single document at `evidence/<target>/disclosed_patterns.md`. Its schema is
+enforced by `tools/disclosure_search.py` and `tests/test_disclosure_search.py`:
 
 - `## Same-target reports` table (or "no reports surfaced" line)
 - `## Similar-target reports` table (or "no reports surfaced" line)

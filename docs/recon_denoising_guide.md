@@ -297,7 +297,7 @@ cat recon/<target>/urls/filter.log | grep PATH_EXPLOSION
 - `/tmp/recon_denoising_summary.md` — 实施总结
 
 ## 贡献
-发现误杀案例请提交到 `docs/false_negatives.md`,包含:
+发现误杀案例请在对应变更中补充 focused regression，并在本指南的相关章节记录，包含:
 - URL 示例
 - 为何是真实攻击面
 - 当前过滤器行为

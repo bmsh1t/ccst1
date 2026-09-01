@@ -103,6 +103,10 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 | `knowledge/cards/wordpress-surface-intelligence.md` | WordPress 插件/主题 inventory、版本适用性与 REST/AJAX/XML-RPC 权限边界 | `web2-recon`, `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/js-runtime-signature-reconstruction.md` | 从请求 initiator 和运行时样本重建动态 JS 签名链，并以 first divergence 驱动最小环境补丁 | `web2-recon` |
 | `knowledge/cards/custom-protocol-state-recovery.md` | 从 PCAP/log/source 恢复自定义协议 framing、消息字典和可验证状态转换 | `web2-recon` |
+| `knowledge/cards/cicd-trust-boundaries.md` | CI/CD workflow、OIDC、runner 和公开制品的信任边界 | `cicd-security`, `web2-vuln-classes` |
+| `knowledge/cards/cloud-control-plane-pivots.md` | 云 metadata、IAM/RBAC、service account 与部署制品链路 | `web2-recon`, `web2-vuln-classes` |
+| `knowledge/cards/dns-email-trust-boundaries.md` | DNS、邮件认证和 dangling record 的归属与验证边界 | `web2-recon`, `web2-vuln-classes` |
+| `knowledge/cards/payment-callback-idempotency.md` | 支付 callback、签名、幂等和 replay window 边界 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/web-llm-tool-chains.md` | Web LLM、prompt injection、RAG 和工具调用边界 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/controlled-rce-impact.md` | RCE / 命令执行 / shell primitive 的受控影响证明 | `web2-vuln-classes`, `triage-validation` |
 | `knowledge/cards/node-prototype-pollution.md` | Node/Express 对象污染、template/VM sink 和 RCE 链建模 | `web2-vuln-classes`, `bb-methodology`, `triage-validation` |
