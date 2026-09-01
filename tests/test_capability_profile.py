@@ -24,14 +24,10 @@ HELPERS = (
     "tools/dns_expand.py",
     "tools/surface.py",
     "tools/surface_projection.py",
-    "tools/sql_parameter_probe.py",
-    "tools/json_inject_probe.py",
     "tools/workflow_sequence.py",
     "tools/timing_sql_runner.py",
     "tools/validation_runner.py",
     "tools/target_case_state.py",
-    "tools/waf_pass_plan.py",
-    "tools/waf_response_analyzer.py",
     "tools/cloud_recon.sh",
     "tools/oast_listen.py",
     "commands/web3-audit.md",
@@ -277,9 +273,8 @@ def test_profile_is_read_only(tmp_path):
     assert after == before
 
 
-def test_missing_sql_helper_only_degrades_sql_lane(tmp_path):
-    helpers = tuple(path for path in HELPERS if path != "tools/sql_parameter_probe.py")
-    repo = _repo_with_helpers(tmp_path, helpers=helpers)
+def test_sql_and_waf_lanes_use_ai_transport_and_recon_context(tmp_path):
+    repo = _repo_with_helpers(tmp_path)
 
     profile = build_capability_profile(
         repo,
@@ -287,13 +282,12 @@ def test_missing_sql_helper_only_degrades_sql_lane(tmp_path):
     )
     lanes = {lane["id"]: lane for lane in profile["lanes"]}
 
-    assert lanes["sql"]["ready"] is False
-    assert lanes["sql"]["missing"] == ["tools/sql_parameter_probe.py+json_inject_probe.py"]
-    assert all(
-        lane["ready"]
-        for lane_id, lane in lanes.items()
-        if lane_id not in {"browser", "cloud", "oast", "sql"}
-    )
+    assert lanes["sql"]["ready"] is True
+    assert lanes["sql"]["classification"] == "ai_selected"
+    assert lanes["sql"]["tool_refs"] == ["ai-http-transport"]
+    assert lanes["waf"]["ready"] is True
+    assert lanes["waf"]["classification"] == "context_only"
+    assert lanes["waf"]["tool_refs"] == ["recon-waf-context"]
     assert lanes["browser"]["classification"] == "artifact_bridge"
 
 

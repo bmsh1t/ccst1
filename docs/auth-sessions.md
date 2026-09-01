@@ -4,8 +4,9 @@ Most paying bugs (IDOR, BOLA, privilege escalation, auth bypass, mass-assignment
 SSRF behind a login) only exist *behind* a session. The default recon and vuln
 pipeline runs anonymous, so those classes are invisible until you log in. This
 doc explains how to plumb a session into the entire pipeline once and have
-every downstream tool — `httpx`, `katana`, `ffuf`, `nuclei`, the
-SQLi / SSTI / upload PoC probes — send your auth headers automatically.
+every downstream tool — `httpx`, `katana`, `ffuf`, `nuclei`, browser/curl
+replays, and the remaining deterministic evidence runners — can send your auth
+headers automatically.
 
 ## Quick start
 
@@ -76,7 +77,7 @@ the same case-state owner.
 | Config-file exposure | curl | **Yes** |
 | Directory fuzzing | ffuf | **Yes** |
 | nuclei templates | nuclei | **Yes** |
-| SQLi PoC verifier | curl timing probes | **Yes** |
+| AI-selected HTTP replay / request-diff | browser, curl, or validation runner | **Yes** |
 | Upload PoC | curl multipart | **Yes** |
 | SSTI probes | curl | **Yes** |
 | **MFA workflow-skip test** | curl | **No, intentionally** |

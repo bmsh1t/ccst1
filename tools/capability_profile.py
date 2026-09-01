@@ -155,18 +155,12 @@ def build_capability_profile(
     browser_mcp_import_ready = _helpers_exist(resolved_repo, "tools/browser_mcp_import.py")
     dns_expansion_ready = _helpers_exist(resolved_repo, "tools/dns_expand.py")
     surface_ready = _helpers_exist(resolved_repo, "tools/surface.py", "tools/surface_projection.py")
-    sql_ready = _helpers_exist(resolved_repo, "tools/sql_parameter_probe.py", "tools/json_inject_probe.py")
     workflow_ready = _helpers_exist(resolved_repo, "tools/workflow_sequence.py")
     timing_ready = _helpers_exist(resolved_repo, "tools/timing_sql_runner.py")
     idor_authz_ready = _helpers_exist(
         resolved_repo,
         "tools/validation_runner.py",
         "tools/target_case_state.py",
-    )
-    waf_ready = _helpers_exist(
-        resolved_repo,
-        "tools/waf_pass_plan.py",
-        "tools/waf_response_analyzer.py",
     )
     cloud_ready = _helpers_exist(resolved_repo, "tools/cloud_recon.sh")
     oast_ready = _helpers_exist(resolved_repo, "tools/oast_listen.py")
@@ -296,8 +290,11 @@ def build_capability_profile(
         ),
         _lane_record(
             "sql",
-            {"tools/sql_parameter_probe.py+json_inject_probe.py": sql_ready},
+            {"ai-http-transport": curl_available or browser_mcp_import_ready},
             evidence_required=("reviewed-parameterized-request",),
+            classification="ai_selected",
+            runtime_status=("ready" if curl_available or browser_mcp_import_ready else "degraded"),
+            ready_override=curl_available or browser_mcp_import_ready,
         ),
         _lane_record(
             "workflow",
@@ -316,8 +313,11 @@ def build_capability_profile(
         ),
         _lane_record(
             "waf",
-            {"tools/waf_pass_plan.py+waf_response_analyzer.py": waf_ready},
+            {"recon-waf-context": recon_engine_ready},
             evidence_required=("waf-or-parser-delta",),
+            classification="context_only",
+            runtime_status=("ready" if recon_engine_ready else "unavailable"),
+            ready_override=recon_engine_ready,
         ),
         _lane_record(
             "cloud",

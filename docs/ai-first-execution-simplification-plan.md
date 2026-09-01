@@ -1,6 +1,6 @@
 # AI-first 执行面收敛完整方案
 
-状态：Wave 0-5 已执行；Wave 6-9 待执行
+状态：Wave 0-6 已执行；Wave 7-9 待执行
 
 本方案以现代模型自主推理为默认前提：AI 负责假设、路线、具体测试输入、预算和停止条件；确定性代码只保留 AI 无法可靠替代的能力，包括 Scope/Auth、红线、预算、稳定重放、持续回调、原始证据、canonical 写回、恢复和生命周期所有权。
 
@@ -147,9 +147,9 @@ Queue / Ledger / Finding / Checkpoint projections
 
 ### Wave 3：先解耦必须保留的通用执行器
 
-`workflow_sequence.py` 当前从 `json_inject_probe.py` 导入 atomic JSON 写入。改为该文件内部最小的 stdlib atomic summary write，不建立新框架。
+`workflow_sequence.py` 已改为文件内部最小的 stdlib atomic summary write，不再依赖固定 JSON probe。
 
-`timing_sql_runner.py` 当前从 SQL/JSON probe 栈导入请求变异、transport、公开 URL、WAF observation 和 atomic write。替换为：
+`timing_sql_runner.py` 已从 SQL/JSON probe 栈解耦，使用本地请求变异、transport、公开 URL、WAF observation 和 atomic write：
 
 - 使用 `urllib.parse` 的局部 query/form 单参数变异；
 - 现有 target/Scope/Auth HTTP 执行边界；
@@ -223,7 +223,7 @@ AI 观察到 access boundary
 
 回滚：独立 403 删除提交。
 
-### Wave 6：删除 JSON/SQL/WAF 固定矩阵
+### Wave 6：删除 JSON/SQL/WAF 固定矩阵（已完成）
 
 Wave 3 完成后删除：
 
@@ -234,13 +234,12 @@ Wave 3 完成后删除：
 - `tools/waf_pass_plan.py`
 - 对应固定矩阵测试
 
-仅在确认 retained production code 和 403 栈均无引用后，删除 `tools/waf_response_analyzer.py`。
+已确认 retained production code 和 403 栈均无引用，`tools/waf_response_analyzer.py` 已一并删除。
 
 移除新运行路由：
 
-- `tools/hunt.py`
-- `tools/capability_profile.py`
-- `agents/autopilot.md`
+- `tools/hunt.py` 中的固定 JSON wrapper
+- `tools/capability_profile.py` 中的固定 probe readiness（保留 AI-selected/context-only lane）
 - command docs、Rules、tool index、hooks 和活动 Trellis specs
 
 历史恢复兼容：

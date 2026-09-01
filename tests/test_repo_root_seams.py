@@ -17,22 +17,18 @@ CLASSIFICATIONS = {
     "browser_playwright_fallback": "narrow-root-injected",
     "cf_solver": "repo-root-dependent",
     "hypothesis_worker": "import-only",
-    "json_inject_probe": "repo-root-dependent",
     "remember": "repo-root-dependent",
     "request_guard": "narrow-root-injected",
     "resume": "repo-root-dependent",
     "scanner_pass_writer": "narrow-root-injected",
     "sibling_worker": "repo-root-dependent",
     "source_hunt": "repo-root-dependent",
-    "sql_parameter_probe": "repo-root-dependent",
     "vision_browser": "narrow-root-injected",
-    "waf_pass_plan": "repo-root-dependent",
     "zero_day_fuzzer": "repo-root-dependent",
 }
 
 ROOT_SYMBOLS = {
     "cf_solver": ("load_config", "check_cookie", "write_output"),
-    "json_inject_probe": ("_source_binding", "_write_findings"),
     "remember": (
         "resolve_validate_summary_path",
         "_is_repo_global_last_validate",
@@ -41,8 +37,6 @@ ROOT_SYMBOLS = {
     "resume": ("load_resume_summary", "load_pickup_summary"),
     "sibling_worker": ("run_worker",),
     "source_hunt": ("_exposure_dir", "_write_result_bundle", "run_source_hunt"),
-    "sql_parameter_probe": ("_source_binding", "_write_results"),
-    "waf_pass_plan": ("_artifact_ref", "_refs", "validate_plan", "load_plan"),
     "zero_day_fuzzer": ("ZeroDayFuzzer",),
 }
 
@@ -67,12 +61,10 @@ NARROW_SYMBOLS = {
 
 CLI_MODULES = (
     "cf_solver",
-    "json_inject_probe",
     "remember",
     "resume",
     "sibling_worker",
     "source_hunt",
-    "sql_parameter_probe",
     "zero_day_fuzzer",
 )
 
@@ -145,24 +137,6 @@ def test_cf_solver_explicit_root_contains_config_and_private_outputs(tmp_path, m
 
     assert (root / ".private/cf/target.test/cf_cookies.txt").is_file()
     assert (root / "recon/target.test/cf_cookies.txt").is_file()
-    assert not legacy.exists()
-
-
-def test_json_probe_explicit_root_contains_summary(tmp_path, monkeypatch):
-    import json_inject_probe
-
-    legacy = tmp_path / "legacy"
-    root = tmp_path / "isolated"
-    monkeypatch.setattr(json_inject_probe, "BASE_DIR", legacy)
-    result = json_inject_probe._write_findings(
-        "target.test",
-        [],
-        [],
-        execution={"endpoint_count": 0},
-        repo_root=root,
-    )
-
-    assert Path(result["summary"]).is_relative_to(root)
     assert not legacy.exists()
 
 
@@ -295,65 +269,6 @@ def test_source_hunt_explicit_root_contains_exposure_bundle(tmp_path, monkeypatc
 
     assert Path(result["exposure_dir"]).is_relative_to(root)
     assert (root / "findings/target.test/exposure/repo_summary.md").is_file()
-    assert not legacy.exists()
-
-
-def test_sql_matrix_explicit_root_contains_summary(tmp_path, monkeypatch):
-    import sql_parameter_probe
-
-    legacy = tmp_path / "legacy"
-    root = tmp_path / "isolated"
-    monkeypatch.setattr(sql_parameter_probe, "BASE_DIR", legacy)
-    result = sql_parameter_probe._write_results(
-        "target.test",
-        "query",
-        [],
-        [],
-        {"endpoint_count": 0, "skipped": {}},
-        repo_root=root,
-    )
-
-    assert Path(result["summary"]).is_relative_to(root)
-    assert not legacy.exists()
-
-
-def test_waf_plan_explicit_root_resolves_target_artifacts(tmp_path, monkeypatch):
-    from tools import waf_pass_plan
-
-    legacy = tmp_path / "legacy"
-    root = tmp_path / "isolated"
-    artifact = root / "recon/target.test/live/waf-context.json"
-    artifact.parent.mkdir(parents=True)
-    artifact.write_text("{}\n", encoding="utf-8")
-    plan_path = root / "recon/target.test/live/plan.json"
-    plan_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "target": "target.test",
-                "evidence_refs": [str(artifact)],
-                "variants": [
-                    {
-                        "id": "v1",
-                        "payload_class": "sqli_error",
-                        "endpoint": "https://target.test/login",
-                        "field": "email",
-                        "value": "'",
-                        "reason": "fixture",
-                        "expected_signal": "error",
-                        "stop_condition": "block",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(waf_pass_plan, "BASE_DIR", legacy)
-
-    plan = waf_pass_plan.load_plan(plan_path, target="target.test", repo_root=root)
-
-    assert plan["plan_ref"] == "recon/target.test/live/plan.json"
-    assert plan["evidence_refs"] == ["recon/target.test/live/waf-context.json"]
     assert not legacy.exists()
 
 

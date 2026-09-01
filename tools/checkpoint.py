@@ -3596,8 +3596,7 @@ def _json_inject_queue_item(state: dict, target: str = "") -> dict:
         "partial": "Resume the JSON injection lane after resolving its recorded transport or evidence blocker.",
         "invalid_input": "Review the rejected JSON endpoint input and supply an in-scope POST endpoint.",
     }[status]
-    plan_ref = str(projection.get("waf_plan_ref") or "").strip()
-    resolved_target = str(target or state.get("resolved_target") or state.get("target") or "").strip()
+    summary_path = str(projection.get("path") or "findings/json_inject/summary.json").strip()
     raw_source_paths = projection.get("source_paths")
     source_paths = [
         str(path).strip()
@@ -3610,23 +3609,9 @@ def _json_inject_queue_item(state: dict, target: str = "") -> dict:
         if isinstance(ref, dict) and str(ref.get("path") or "").strip()
     ][:3]
     command_hint = (
-        "python3 -m tools.json_inject_probe --target "
-        f"{_quote(resolved_target)}"
+        f"Review {_quote(summary_path)}; replay one exact JSON baseline/variant "
+        "through browser, curl, raw sender, or request-diff"
     )
-    emitted_sources = False
-    emitted_waf_plan = False
-    for ref in source_refs:
-        kind = str(ref.get("kind") or "").strip().lower()
-        path = str(ref.get("path") or "").strip()
-        flag = {"endpoints": "--endpoints-file", "js-intel": "--js-intel", "waf-plan": "--waf-plan"}.get(kind)
-        if flag and path:
-            command_hint += f" {flag} {_quote(path)}"
-            emitted_sources = True
-            emitted_waf_plan = emitted_waf_plan or kind == "waf-plan"
-    if source_paths and not emitted_sources:
-        command_hint += f" --endpoints-file {_quote(source_paths[0])}"
-    if plan_ref and not emitted_waf_plan:
-        command_hint += f" --waf-plan {_quote(plan_ref)}"
     return {
         "id": "JSON-INJECT",
         "priority": 88 if status == "candidate_pending" else 62,
@@ -3644,7 +3629,7 @@ def _json_inject_queue_item(state: dict, target: str = "") -> dict:
             "summary_status": status,
             "source_paths": source_paths,
             "source_refs": source_refs,
-            "waf_plan_ref": plan_ref,
+            "waf_plan_ref": str(projection.get("waf_plan_ref") or "").strip(),
             "waf_plan_sha256": str(projection.get("waf_plan_sha256") or ""),
             "waf_ai_variants_executed": int(projection.get("waf_ai_variants_executed", 0) or 0),
         },
@@ -3673,15 +3658,12 @@ def _sql_matrix_queue_items(state: dict, target: str) -> list[dict]:
             action = f"Resume the {lane} SQL matrix after resolving its recorded evidence or transport blocker."
             priority = 64
         source_paths = [str(path) for path in (projection.get("source_paths") or []) if str(path).strip()][:2]
-        input_hint = source_paths[0] if source_paths else "FILE"
-        option = "--urls-file" if lane == "query" else "--form-file"
+        summary_path = str(projection.get("path") or f"findings/sql_matrix/{lane}/summary.json").strip()
         plan_ref = str(projection.get("waf_plan_ref") or "").strip()
         command_hint = (
-            "python3 tools/sql_parameter_probe.py --target {target} {option} {input}"
-            .format(target=_quote(target), option=option, input=_quote(input_hint))
+            f"Review {_quote(summary_path)}; replay one exact {lane} SQL "
+            "baseline/variant through browser, curl, raw sender, or request-diff"
         )
-        if plan_ref:
-            command_hint += f" --waf-plan {_quote(plan_ref)}"
         candidates = [
             {
                 key: candidate[key]

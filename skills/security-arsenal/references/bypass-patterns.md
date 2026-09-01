@@ -93,15 +93,11 @@ Use only after stable SQLi-like baseline-vs-perturbation evidence exists. These 
 
 Evidence gate: one stable baseline, one benign syntax perturbation, one normalizer-differential response, and a clear stop condition for noisy timing or WAF-only deltas.
 
-For an observed SQLi/XSS block, AI may write a target-owned `waf_plan` for the
-existing probe adapter instead of selecting from a blind dictionary. The plan
-must reference existing target artifacts, change one parser/WAF boundary per
-variant, state the reason/expected signal/stop condition, and default to four
-variants with a hard maximum of eight (`max_variants` may narrow the default).
-Every retry consumes the existing request budget; without a plan the static
-fallback remains capped at two. The adapter owns scope, authentication, and
-response evidence; a variant that reaches the application is not a finding
-without a stable backend, content, or permission differential.
+For an observed SQLi/XSS block, AI chooses one target-evidenced parser/WAF
+boundary and sends the exact baseline/variant through the existing HTTP or
+browser boundary. Keep the request budget, Scope/Auth checks, and raw response
+evidence in that boundary; a variant that reaches the application is not a
+finding without a stable backend, content, or permission differential.
 
 ## Path Traversal / File Selector Normalization Shapes
 

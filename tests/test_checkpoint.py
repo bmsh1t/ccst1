@@ -4218,7 +4218,8 @@ def test_sql_matrix_candidates_become_generation_aware_durable_actions(tmp_path)
     assert items[0]["source"] == "sql-matrix"
     assert items[0]["source_id"] == "sql-matrix-query"
     assert items[0]["metadata"]["generation"] == "a" * 64
-    assert "--urls-file" in items[0]["command_hint"]
+    assert "request-diff" in items[0]["command_hint"]
+    assert "sql_parameter_probe" not in items[0]["command_hint"]
 
     save_queue(tmp_path, "target.com", {"actions": []})
     checkpoint = {"target": "target.com", "next_action_queue": items}
@@ -4243,10 +4244,9 @@ def test_json_inject_queue_item_replays_target_owned_source_without_placeholder(
         }
     )
 
-    assert item["command_hint"] == (
-        'python3 -m tools.json_inject_probe --target "target.com" '
-        '--endpoints-file "recon/target.com/urls/json_endpoints.txt"'
-    )
+    assert "json_inject_probe" not in item["command_hint"]
+    assert "request-diff" in item["command_hint"]
+    assert "findings/json_inject/summary.json" in item["command_hint"]
     assert "FILE" not in item["command_hint"]
     assert item["metadata"]["source_paths"] == [
         "recon/target.com/urls/json_endpoints.txt"
@@ -4268,10 +4268,8 @@ def test_json_inject_queue_item_preserves_typed_source_flags():
         }
     )
 
-    assert item["command_hint"] == (
-        'python3 -m tools.json_inject_probe --target "target.com" '
-        '--js-intel "findings/target.com/js_intel/hypotheses.json"'
-    )
+    assert "json_inject_probe" not in item["command_hint"]
+    assert "request-diff" in item["command_hint"]
 
 
 def test_json_inject_queue_item_uses_default_seed_recovery_without_source_placeholder():
@@ -4282,9 +4280,8 @@ def test_json_inject_queue_item_uses_default_seed_recovery_without_source_placeh
         }
     )
 
-    assert item["command_hint"] == (
-        'python3 -m tools.json_inject_probe --target "target.com"'
-    )
+    assert "json_inject_probe" not in item["command_hint"]
+    assert "request-diff" in item["command_hint"]
     assert "FILE" not in item["command_hint"]
 
 
