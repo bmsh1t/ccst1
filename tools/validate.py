@@ -49,9 +49,19 @@ except ImportError:  # pragma: no cover - package import path
     from tools.validation_runner import _artifact_digest_material, _runner_operation_id
 
 try:
-    from target_paths import canonical_target_value, resolve_target_url, target_storage_key
+    from target_paths import (
+        canonical_target_value,
+        resolve_target_url,
+        target_storage_key,
+        url_belongs_to_target,
+    )
 except ImportError:  # pragma: no cover - package import path
-    from tools.target_paths import canonical_target_value, resolve_target_url, target_storage_key
+    from tools.target_paths import (
+        canonical_target_value,
+        resolve_target_url,
+        target_storage_key,
+        url_belongs_to_target,
+    )
 
 try:
     from graphql_utils import escape_graphql_string
@@ -1400,6 +1410,49 @@ def validation_evidence_passed(summary: dict) -> bool:
     return four and seven
 
 
+def _canonical_runner_witness_for_finding(
+    findings_dir: str | Path,
+    finding_id: str,
+    *,
+    target: str,
+) -> dict[str, Any]:
+    """Load and verify the runner witness owned by one canonical Finding.
+
+    Report generation already owns the complete witness definition (summary
+    lineage, artifact digests, operation material, and Ledger replay). Reuse
+    that consumer gate here so validation write-back cannot establish a weaker
+    finality path than reporting does.
+    """
+    owner_root = _repo_root_from_findings_dir(findings_dir)
+    prefill = load_finding_prefill(
+        str(findings_dir),
+        str(finding_id),
+        migrate_legacy=False,
+        include_canonical=True,
+        repo_root=owner_root,
+    )
+    canonical = prefill.get("_canonical_finding") if isinstance(prefill, dict) else None
+    if not isinstance(canonical, dict):
+        return {"valid": False, "reason": "canonical finding not found"}
+    # A Finding is scoped by its owner index, while its endpoint may live on a
+    # target-owned subdomain.  Use the owner target for witness and Ledger
+    # checks so endpoint host discovery cannot split one lifecycle across keys.
+    owner_target = canonical_target_value(str(prefill.get("target") or ""))
+    if not owner_target:
+        owner_target = canonical_target_value(Path(findings_dir).name)
+    if not owner_target:
+        owner_target = canonical_target_value(target)
+    try:
+        from report_generator import _canonical_runner_witness
+    except ImportError:  # pragma: no cover - package import path
+        from tools.report_generator import _canonical_runner_witness
+    return _canonical_runner_witness(
+        canonical,
+        findings_dir=findings_dir,
+        target=owner_target,
+    )
+
+
 def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | Path) -> dict:
     """Build a compact JSON summary that /remember can import later."""
     vuln_class = (info.get("vuln_type") or "").strip().lower()
@@ -1416,8 +1469,17 @@ def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | P
     evidence_passed = bool(all_pass and seven_question_gate.get("passed"))
     report_draft = inspect_report_draft(report_path)
     report_ready = bool(evidence_passed and report_draft.get("status") == "complete")
+    # Linked validation belongs to the canonical Finding owner.  Ad-hoc
+    # validation keeps endpoint-host compatibility because no owner index is
+    # available to supply a stronger target identity.
+    linked_target = str(info.get("target") or "").strip()
+    summary_target = (
+        linked_target
+        if str(info.get("finding_id") or "").strip() and linked_target
+        else derive_validate_target(info.get("target", ""), info.get("endpoint", ""))
+    )
     summary = {
-        "target": derive_validate_target(info.get("target", ""), info.get("endpoint", "")),
+        "target": summary_target,
         "program": (info.get("target") or "").strip(),
         "endpoint": (info.get("endpoint") or "").strip(),
         "method": normalize_http_method(info.get("method")),
@@ -1616,13 +1678,36 @@ def mark_finding_validated(findings_dir: str, finding_id: str, summary: dict, su
     if not findings_dir or not finding_id:
         return
     status = "validated" if validation_evidence_passed(summary) else "partial"
+    runner_witness: dict[str, Any] | None = None
+    if status == "validated":
+        target = canonical_target_value(str(summary.get("target") or ""))
+        if not target:
+            target = canonical_target_value(Path(findings_dir).name)
+        runner_witness = _canonical_runner_witness_for_finding(
+            findings_dir,
+            finding_id,
+            target=target,
+        )
+        if not runner_witness.get("valid"):
+            raise ValueError(
+                "canonical runner witness required before validation finality: "
+                f"{runner_witness.get('reason') or 'missing witness'}"
+            )
+    updates: dict[str, Any] = {
+        "validation_status": status,
+        "validation_summary": str(summary_path),
+        "validation_report_path": str(summary.get("report_path") or ""),
+        "validated_at": summary.get("validated_at", ""),
+    }
+    if runner_witness and runner_witness.get("summary_path"):
+        updates["runner_summary_path"] = str(runner_witness["summary_path"])
+        runner_summary = runner_witness.get("summary")
+        if isinstance(runner_summary, dict) and runner_summary.get("operation_id"):
+            updates["runner_operation_id"] = str(runner_summary["operation_id"])
     updated = update_finding_status(
         findings_dir,
         finding_id,
-        validation_status=status,
-        validation_summary=str(summary_path),
-        validation_report_path=str(summary.get("report_path") or ""),
-        validated_at=summary.get("validated_at", ""),
+        **updates,
     )
     if updated is None:
         raise ValueError(f"canonical finding not found: {findings_dir}/{finding_id}")
@@ -1805,10 +1890,15 @@ def _validation_action_matches(action: dict, summary: dict) -> bool:
     return False
 
 
-def _validation_ledger_vuln_class(summary: dict, repo: Path) -> str:
+def _validation_ledger_vuln_class(
+    summary: dict,
+    repo: Path,
+    *,
+    target_override: str | None = None,
+) -> str:
     """优先从关联的 canonical finding 解析 ledger taxonomy。"""
     requested = str(summary.get("vuln_class") or "validation").strip()
-    target = str(summary.get("target") or "").strip()
+    target = str(target_override or summary.get("target") or "").strip()
     finding_id = str(summary.get("finding_id") or "").strip()
     candidates: list[str] = []
 
@@ -1851,6 +1941,83 @@ def _validation_ledger_vuln_class(summary: dict, repo: Path) -> str:
     return requested
 
 
+def _resolve_linked_finding_owner(
+    repo: Path,
+    *,
+    target: str,
+    finding_id: str,
+    endpoint: str,
+) -> tuple[Path, str, dict] | None:
+    """Resolve a linked Finding by owner index, including old subdomain summaries.
+
+    Older validation summaries sometimes used the endpoint host as ``target``
+    (for example ``api.TARGET``) while the Finding index was owned by the
+    canonical parent target.  Search the target directory first, then the
+    other canonical indexes, and only accept a row whose endpoint remains
+    target-owned.  This preserves compatibility without creating a second
+    finding owner.
+    """
+    findings_root = repo / "findings"
+    if not findings_root.is_dir():
+        return None
+    candidate_dirs: list[Path] = []
+    try:
+        preferred = findings_root / target_storage_key(target)
+    except (OSError, ValueError):
+        preferred = None
+    if preferred is not None:
+        candidate_dirs.append(preferred)
+    candidate_dirs.extend(
+        path.parent
+        for path in sorted(findings_root.glob("*/findings.json"))
+        if path.parent not in candidate_dirs
+    )
+
+    requested_owner = canonical_target_value(target).strip(".").lower()
+
+    for findings_dir in candidate_dirs:
+        try:
+            payload = load_finding_index(
+                findings_dir,
+                migrate_legacy=False,
+                allow_legacy=True,
+            )
+        except (OSError, ValueError):
+            continue
+        owner_target = canonical_target_value(
+            str(payload.get("target") or findings_dir.name)
+        )
+        if not owner_target:
+            continue
+        owner_value = owner_target.strip(".").lower()
+        target_related = bool(
+            requested_owner
+            and owner_value
+            and (
+                requested_owner == owner_value
+                or requested_owner.endswith(f".{owner_value}")
+                or owner_value.endswith(f".{requested_owner}")
+            )
+        )
+        for finding in payload.get("findings", []):
+            if not isinstance(finding, dict) or str(finding.get("id") or "") != finding_id:
+                continue
+            finding_endpoint = str(
+                finding.get("url") or finding.get("endpoint") or ""
+            ).strip()
+            if finding_endpoint and endpoint and not _machine_endpoints_match(
+                endpoint,
+                finding_endpoint,
+            ) and not url_belongs_to_target(endpoint, owner_target):
+                continue
+            if not target_related and not urlparse(endpoint).netloc:
+                continue
+            if not url_belongs_to_target(endpoint, owner_target):
+                continue
+            return findings_dir, owner_target, finding
+    return None
+
+
 def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = None) -> dict:
     """Best-effort write-back from /validate into evidence ledger and action queue.
 
@@ -1868,10 +2035,30 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
         summary=summary,
     )
     finding_id = str(summary.get("finding_id") or "").strip()
+    owner_target = canonical_target_value(target)
+    findings_dir: Path | None = None
     if finding_id:
-        findings_dir = repo / "findings" / target_storage_key(target)
+        linked = _resolve_linked_finding_owner(
+            repo,
+            target=owner_target,
+            finding_id=finding_id,
+            endpoint=endpoint,
+        )
+        if linked is None:
+            findings_dir = repo / "findings" / target_storage_key(target)
+        else:
+            findings_dir, owner_target, _finding = linked
+            # Persist the canonical owner back into old summaries so later
+            # runtime, queue, and memory consumers cannot split the lifecycle
+            # onto the endpoint subdomain.
+            summary["target"] = owner_target
         try:
-            payload = load_finding_index(findings_dir, migrate_legacy=False)
+            payload = load_finding_index(
+                findings_dir,
+                migrate_legacy=False,
+                target=owner_target,
+                allow_legacy=True,
+            )
         except Exception as exc:
             return {
                 "status": "error",
@@ -1891,6 +2078,33 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
                 "ledger": {"status": "skipped"},
                 "action_queue": {"status": "skipped"},
             }
+    if validation_evidence_passed(summary):
+        if not finding_id:
+            reason = "canonical finding id and runner witness are required for validation finality"
+            return {
+                "status": "error",
+                "reason": reason,
+                "finding_index": {"status": "error", "reason": reason},
+                "ledger": {"status": "skipped"},
+                "action_queue": {"status": "skipped"},
+            }
+        witness = _canonical_runner_witness_for_finding(
+            findings_dir,
+            finding_id,
+            target=owner_target,
+        )
+        if not witness.get("valid"):
+            reason = (
+                "canonical runner witness required before validation finality: "
+                f"{witness.get('reason') or 'missing witness'}"
+            )
+            return {
+                "status": "error",
+                "reason": reason,
+                "finding_index": {"status": "error", "finding_id": finding_id, "reason": reason},
+                "ledger": {"status": "skipped"},
+                "action_queue": {"status": "skipped"},
+            }
     ledger_update: dict = {}
     queue_update: dict = {}
     finding_update: dict = {}
@@ -1903,10 +2117,14 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
 
         ledger_entry = record_entry(
             repo,
-            target=target,
+            target=owner_target,
             endpoint=endpoint,
             method=_validation_method_from_summary(summary, repo),
-            vuln_class=_validation_ledger_vuln_class(summary, repo),
+            vuln_class=_validation_ledger_vuln_class(
+                summary,
+                repo,
+                target_override=owner_target,
+            ),
             workflow="validate",
             actor="owner",
             object_scope="unknown",
@@ -1930,7 +2148,7 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
         except ImportError:  # pragma: no cover - package import path
             from tools.action_queue import ACTIVE_STATUSES, load_queue, resolve_action
 
-        queue = load_queue(repo, target)
+        queue = load_queue(repo, owner_target)
         matched = None
         for action in queue.get("actions", []):
             if not isinstance(action, dict):
@@ -1944,7 +2162,7 @@ def sync_validation_artifacts(summary: dict, *, repo_root: str | Path | None = N
         if matched:
             resolved = resolve_action(
                 repo,
-                target=target,
+                target=owner_target,
                 action_id=str(matched.get("id") or ""),
                 status="validated" if validation_evidence_passed(summary) else "candidate",
                 result=f"validation-summary={summary_path}",

@@ -633,7 +633,7 @@
       "card_path": "knowledge/cards/grpc-api-boundaries.md",
       "layer": "reference",
       "load": "signal-only",
-      "maturity": "tested",
+      "maturity": "draft",
       "trigger_tags": [
         "grpc",
         "grpc-web",
@@ -1558,7 +1558,7 @@
       "card_path": "knowledge/cards/web-llm-tool-chains.md",
       "layer": "reference",
       "load": "signal-only",
-      "maturity": "tested",
+      "maturity": "draft",
       "trigger_tags": [
         "web-llm",
         "prompt-injection",
@@ -1595,7 +1595,7 @@
       "card_path": "knowledge/cards/websocket-realtime-api.md",
       "layer": "reference",
       "load": "signal-only",
-      "maturity": "tested",
+      "maturity": "draft",
       "trigger_tags": [
         "websocket",
         "cswsh",

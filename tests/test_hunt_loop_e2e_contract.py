@@ -159,6 +159,10 @@ def test_recon_surface_findings_validate_remember_report_contract(monkeypatch, t
     assert finding["confidence"] == "confirmed"
     assert finding["validation_status"] == "unvalidated"
 
+    # Validation finality requires a replay-backed runner witness before the
+    # interactive summary can promote the canonical Finding.
+    _attach_canonical_runner(repo_root, target, finding)
+
     # Validate phase: finding id can prefill validation context and write summary artifacts.
     prefill = validate.load_finding_prefill(str(findings_dir), finding["id"])
     assert prefill["target"] == target
@@ -218,10 +222,13 @@ def test_recon_surface_findings_validate_remember_report_contract(monkeypatch, t
     )
 
     assert remembered["finding_saved"] is True
-    profile = load_target_profile(memory_dir, "api.target.com")
+    profile = load_target_profile(memory_dir, target)
     assert profile is not None
-    assert "/api/v2/orders?id=42" in profile["tested_endpoints"]
-    assert profile["findings"][0]["vuln_class"] == "sqli"
+    # Canonical Finding/Coverage owners remain authoritative; the legacy
+    # target profile is metadata-only once those owners exist.
+    assert "tested_endpoints" not in profile
+    assert "findings" not in profile
+    assert finding_index.find_finding(repo_root / "findings" / target, finding["id"])["validation_status"] == "validated"
 
     # A generated validation skeleton with unresolved placeholders is a working
     # draft, not a report-ready finding.  The report generator must not turn it
@@ -254,7 +261,6 @@ def test_recon_surface_findings_validate_remember_report_contract(monkeypatch, t
         completed_summary,
         completed_summary_path,
     )
-    _attach_canonical_runner(repo_root, target, finding_index.find_finding(findings_dir, finding["id"]))
     total_reports, report_index = report_generator.process_findings_dir(str(findings_dir))
 
     assert total_reports == 1

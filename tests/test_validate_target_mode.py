@@ -44,6 +44,7 @@ def _bind_runner_witness(
     endpoint: str,
     evidence_ref: str,
     method: str = "GET",
+    sync: bool = True,
 ) -> str:
     source = Path(evidence_ref).resolve()
     evidence_root = next(parent for parent in source.parents if parent.name == "evidence")
@@ -88,7 +89,27 @@ def _bind_runner_witness(
         "artifact_bindings": validation_runner._artifact_digest_material(artifact_bindings),
         "fixture_run": run_number,
     }
-    operation_id = validation_runner._runner_operation_id(operation_material)
+    ledger = validation_runner._record_ledger_if_needed(
+        repo_root=repo_root,
+        no_ledger=False,
+        target=target,
+        endpoint=endpoint,
+        method=method,
+        vuln_class=vuln_class,
+        actor="owner",
+        object_scope="unknown",
+        variant="baseline",
+        result="tested_finding",
+        source="test:runner-witness",
+        evidence_ref=str(response_path.relative_to(repo_root)),
+        notes="deterministic local replay fixture",
+        browser_observed=False,
+        redline_checked=False,
+        state_changing=False,
+        operation_material=operation_material,
+        artifact_bindings=artifact_bindings,
+        finding_id=finding_id,
+    )
     summary = {
         "schema_version": validation_runner.SCHEMA_VERSION,
         "lane": "request_diff",
@@ -99,14 +120,27 @@ def _bind_runner_witness(
         "vuln_class": vuln_class,
         "result": "tested_finding",
         "candidate_ready": True,
-        "operation_id": operation_id,
         "summary_path": str(summary_path.relative_to(repo_root)),
+        "artifacts": {
+            "baseline_request": str(request_path.relative_to(repo_root)),
+            "baseline_response": str(response_path.relative_to(repo_root)),
+        },
         "artifact_bindings": artifact_bindings,
         "operation_material": operation_material,
+        "ledger_record": ledger,
     }
-    summary_path.write_text(json.dumps(summary), encoding="utf-8")
-    sync = validation_runner._sync_finding_status(summary, repo_root=repo_root)
-    assert sync["status"] in {"updated", "created"}
+    summary = validation_runner._finalize_runner_summary(summary, summary_path, repo_root)
+    if sync:
+        sync_result = validation_runner._sync_finding_status(summary, repo_root=repo_root)
+        assert sync_result["status"] in {"updated", "created"}
+    else:
+        updated = finding_index.update_finding_status(
+            repo_root / "findings" / target,
+            finding_id,
+            runner_summary=str(summary_path.relative_to(repo_root)),
+            runner_operation_id=summary["operation_id"],
+        )
+        assert updated is not None
     return str(summary_path)
 
 
@@ -1189,7 +1223,7 @@ def test_generated_skeleton_separates_validation_evidence_from_report_readiness(
     assert summary["all_gates_passed"] is False
 
 
-def test_validation_evidence_passed_keeps_durable_finding_and_queue_validated(tmp_path):
+def test_validation_evidence_passed_requires_canonical_finding_and_runner(tmp_path):
     from action_queue import add_manual_action, load_queue
     from evidence_ledger import load_entries
 
@@ -1227,14 +1261,11 @@ def test_validation_evidence_passed_keeps_durable_finding_and_queue_validated(tm
     sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
     entries = load_entries(tmp_path, "target.com")
     queue = load_queue(tmp_path, "target.com")
-    finding_payload = json.loads(
-        (tmp_path / "findings" / "target.com" / "findings.json").read_text(encoding="utf-8")
-    )
-
-    assert sync["ledger"]["result"] == "tested_finding"
-    assert entries[-1]["result"] == "tested_finding"
-    assert queue["actions"][0]["status"] == "validated"
-    assert finding_payload["findings"][0]["validation_status"] == "validated"
+    assert sync["status"] == "error"
+    assert "canonical finding id and runner witness" in sync["reason"]
+    assert entries == []
+    assert queue["actions"][0]["status"] in {"queued", "candidate"}
+    assert not (tmp_path / "findings" / "target.com" / "findings.json").exists()
 
 
 def test_ensure_report_output_path_creates_explicit_output_parent(tmp_path):
@@ -1420,6 +1451,16 @@ def test_sync_validation_artifacts_records_ledger_and_resolves_queue(tmp_path):
         },
         target="target.com",
     )
+    evidence_ref = tmp_path / "evidence" / "target.com" / "validation" / "sqli.json"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text('{"baseline": "one", "variant": "many"}\n', encoding="utf-8")
+    _bind_runner_witness(
+        target="target.com",
+        finding_id="sqli_deadbeef",
+        endpoint="https://target.com/item?id=1",
+        evidence_ref=str(evidence_ref),
+        sync=False,
+    )
     report_path = tmp_path / "findings" / "target.com-sqli" / "hackerone-report.md"
     report_path.parent.mkdir(parents=True)
     summary_path = report_path.parent / "validation-summary.json"
@@ -1500,17 +1541,11 @@ def test_sync_validation_artifacts_uses_summary_method(tmp_path):
     sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
 
     entries = load_entries(tmp_path, "target.com")
-    assert entries[-1]["method"] == "POST"
-    assert entries[-1]["endpoint"] == "/profile/image/url"
-    assert entries[-1]["raw_endpoint"] == "https://target.com/profile/image/url"
-    assert sync["finding_index"]["status"] == "updated"
-
-    followup = load_structured_finding_followup(tmp_path, "target.com")
-    assert followup["validated_pending_report"] == 1
-    assert followup["next_report"]["type"] == "ssrf"
-    assert followup["next_report"]["url"] == "https://target.com/profile/image/url"
-    assert followup["next_report"]["rubric"]["ready"] is True
-    assert followup["next_report"]["missing_evidence"] == []
+    assert sync["status"] == "error"
+    assert "canonical finding id and runner witness" in sync["reason"]
+    assert entries == []
+    assert sync["finding_index"]["status"] == "error"
+    assert load_structured_finding_followup(tmp_path, "target.com")["validated_pending_report"] == 0
 
 
 def test_sync_validation_artifacts_infers_missing_method_from_prior_ledger_candidate(tmp_path):
@@ -1547,13 +1582,11 @@ def test_sync_validation_artifacts_infers_missing_method_from_prior_ledger_candi
     sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
 
     entries = load_entries(tmp_path, "target.com")
-    assert sync["ledger"]["status"] == "updated"
-    assert entries[-1]["source"] == "validate"
-    assert entries[-1]["method"] == "POST"
-
-    payload = json.loads((tmp_path / "findings" / "target.com" / "findings.json").read_text(encoding="utf-8"))
-    created = payload["findings"][0]
-    assert created["method"] == "POST"
+    assert sync["status"] == "error"
+    assert "canonical finding id and runner witness" in sync["reason"]
+    assert len(entries) == 1
+    assert entries[0]["result"] == "candidate"
+    assert not (tmp_path / "findings" / "target.com" / "findings.json").exists()
 
 
 def test_sync_validation_artifacts_linked_finding_does_not_create_duplicate(tmp_path):
@@ -1591,7 +1624,9 @@ def test_sync_validation_artifacts_linked_finding_does_not_create_duplicate(tmp_
     sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
 
     payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
-    assert sync["finding_index"]["status"] == "skipped"
+    assert sync["status"] == "error"
+    assert sync["finding_index"]["status"] == "error"
+    assert "canonical runner witness required" in sync["reason"]
     assert len(payload["findings"]) == 1
 
 
@@ -1613,6 +1648,16 @@ def test_sync_validation_artifacts_linked_finding_uses_canonical_ledger_class(tm
         },
         target=target,
     )
+    evidence_ref = tmp_path / "evidence" / target / "validation" / "jwt.json"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text('{"baseline": "denied", "variant": "exposed"}\n', encoding="utf-8")
+    _bind_runner_witness(
+        target=target,
+        finding_id="jwt_authentication_bypass",
+        endpoint="https://target.com/admin",
+        evidence_ref=str(evidence_ref),
+        sync=False,
+    )
     summary = {
         "target": target,
         "endpoint": "https://target.com/admin",
@@ -1630,6 +1675,98 @@ def test_sync_validation_artifacts_linked_finding_uses_canonical_ledger_class(tm
     assert entries[-1]["vuln_class"] == "JWT"
 
 
+def test_sync_validation_artifacts_resolves_legacy_endpoint_subdomain_to_owner(tmp_path):
+    from action_queue import add_manual_action
+    from evidence_ledger import load_entries
+    from finding_index import upsert_finding
+
+    owner_target = "target.com"
+    endpoint_target = "api.target.com"
+    finding_id = "legacy-subdomain-finding"
+    findings_dir = tmp_path / "findings" / owner_target
+    upsert_finding(
+        findings_dir,
+        {
+            "id": finding_id,
+            "type": "sqli",
+            "url": "https://api.target.com/item?id=1",
+            "validation_status": "candidate",
+            "report_status": "not_generated",
+        },
+        target=owner_target,
+    )
+    evidence_ref = tmp_path / "evidence" / owner_target / "validation" / "legacy.json"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text('{"baseline":"one","variant":"many"}\n', encoding="utf-8")
+    _bind_runner_witness(
+        target=owner_target,
+        finding_id=finding_id,
+        endpoint="https://api.target.com/item?id=1",
+        evidence_ref=str(evidence_ref),
+        sync=False,
+    )
+    add_manual_action(
+        tmp_path,
+        target=owner_target,
+        action_type="validation",
+        evidence=f"Validate finding {finding_id} before report.",
+        next_question="Does the candidate pass validation gates?",
+        action="run validation",
+        command_hint="validate /item?id=1",
+        evidence_type="candidate-validation",
+    )
+    report_path = tmp_path / "findings" / owner_target / "validated" / "report.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path = report_path.parent / "validation-summary.json"
+    summary_path.write_text("{}\n", encoding="utf-8")
+    summary = {
+        "target": endpoint_target,
+        "endpoint": "https://api.target.com/item?id=1",
+        "vuln_class": "sqli",
+        "method": "GET",
+        "result": "confirmed",
+        "all_gates_passed": True,
+        "seven_question_gate_passed": True,
+        "four_validation_gates_passed": True,
+        "seven_question_gate_decision": "pass",
+        "finding_id": finding_id,
+        "report_path": str(report_path),
+        "validation_summary_path": str(summary_path),
+    }
+
+    sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+
+    assert sync["status"] == "updated"
+    assert summary["target"] == owner_target
+    entries = load_entries(tmp_path, owner_target)
+    assert entries[-1]["target"] == owner_target
+    assert entries[-1]["result"] == "tested_finding"
+
+
+def test_sync_validation_artifacts_does_not_cross_owner_for_relative_endpoint(tmp_path):
+    from finding_index import upsert_finding
+
+    upsert_finding(
+        tmp_path / "findings" / "other.test",
+        {"id": "shared-id", "type": "sqli", "url": "https://other.test/item"},
+        target="other.test",
+    )
+    summary = {
+        "target": "target.test",
+        "endpoint": "/item",
+        "vuln_class": "sqli",
+        "finding_id": "shared-id",
+        "result": "partial",
+        "all_gates_passed": False,
+        "report_path": str(tmp_path / "findings" / "target.test" / "report.md"),
+    }
+
+    sync = validate.sync_validation_artifacts(summary, repo_root=tmp_path)
+
+    assert sync["status"] == "error"
+    assert "canonical finding not found" in sync["reason"]
+
+
 def test_sync_validation_artifacts_authentication_bypass_defaults_to_authz(tmp_path):
     from evidence_ledger import load_entries
     from finding_index import upsert_finding
@@ -1645,6 +1782,16 @@ def test_sync_validation_artifacts_authentication_bypass_defaults_to_authz(tmp_p
             "report_status": "not_generated",
         },
         target=target,
+    )
+    evidence_ref = tmp_path / "evidence" / target / "validation" / "authz.json"
+    evidence_ref.parent.mkdir(parents=True)
+    evidence_ref.write_text('{"baseline": "denied", "variant": "exposed"}\n', encoding="utf-8")
+    _bind_runner_witness(
+        target=target,
+        finding_id="authentication_bypass_without_subtype",
+        endpoint="https://target.com/admin",
+        evidence_ref=str(evidence_ref),
+        sync=False,
     )
     summary = {
         "target": target,
@@ -1695,7 +1842,7 @@ def test_sync_validation_artifacts_partial_keeps_queue_candidate(tmp_path):
     assert entries[-1]["result"] == "candidate"
     assert action["status"] == "candidate"
 
-def test_mark_finding_validated_updates_finding_index(tmp_path):
+def test_mark_finding_validated_requires_canonical_runner_witness(tmp_path):
     findings_dir = tmp_path / "findings" / "target.com"
     findings_dir.mkdir(parents=True)
     (findings_dir / "findings.json").write_text(
@@ -1722,13 +1869,14 @@ def test_mark_finding_validated_updates_finding_index(tmp_path):
     }
     summary_path = findings_dir / "validated" / "validation-summary.json"
 
-    validate.mark_finding_validated(str(findings_dir), "sqli_deadbeef", summary, summary_path)
+    with pytest.raises(ValueError, match="canonical runner witness required"):
+        validate.mark_finding_validated(str(findings_dir), "sqli_deadbeef", summary, summary_path)
 
     payload = json.loads((findings_dir / "findings.json").read_text(encoding="utf-8"))
     finding = payload["findings"][0]
-    assert finding["validation_status"] == "validated"
-    assert finding["validation_summary"] == str(summary_path)
-    assert finding["validated_at"] == "2026-05-07T00:00:00Z"
+    assert finding["validation_status"] == "unvalidated"
+    assert "validation_summary" not in finding
+    assert "validated_at" not in finding
 
 
 def test_mark_finding_validated_rejects_missing_canonical_finding(tmp_path):

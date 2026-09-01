@@ -218,14 +218,26 @@ def remember_finding(
     tags = tags or []
     requested_tech_stack = dedupe_keep_order([t.lower() for t in (tech_stack or [])])
 
-    journal = HuntJournal(memory_dir / "journal.jsonl")
-    pattern_db = PatternDB(memory_dir / "patterns.jsonl")
-    profile = load_or_create_target_profile(memory_dir, canonical_target)
-    profile["target"] = canonical_target
     owner_projection = derive_owner_projection(
         repo_root or memory_dir.parent,
         canonical_target,
     )
+    journal = HuntJournal(memory_dir / "journal.jsonl")
+    pattern_db = PatternDB(memory_dir / "patterns.jsonl")
+    profile = load_target_profile(memory_dir, canonical_target)
+    if profile is None:
+        profile_kwargs = {
+            "hunt_sessions": 0,
+            "total_time_minutes": 0,
+        }
+        if not owner_projection.get("available"):
+            profile_kwargs.update(
+                tested_endpoints=[],
+                untested_endpoints=[],
+                findings=[],
+            )
+        profile = make_target_profile(canonical_target, **profile_kwargs)
+    profile["target"] = canonical_target
 
     entry = make_journal_entry(
         target=canonical_target,
@@ -247,14 +259,8 @@ def remember_finding(
 
     finding_saved = False
     if owner_projection.get("available"):
-        # Canonical owners are current truth; keep the legacy profile as a
-        # compatibility projection for older readers only.
-        if owner_projection.get("tested_authoritative"):
-            profile["tested_endpoints"] = list(owner_projection.get("tested_endpoints", []))
-        if owner_projection.get("untested_authoritative"):
-            profile["untested_endpoints"] = list(owner_projection.get("untested_endpoints", []))
-        if owner_projection.get("findings_authoritative"):
-            profile["findings"] = list(owner_projection.get("findings", []))
+        # Canonical owners are current truth.  Existing legacy fields remain
+        # readable for compatibility but are never refreshed here.
         finding_saved = result != "rejected"
     else:
         tested_endpoints = dedupe_keep_order(profile.get("tested_endpoints", []) + [normalized_endpoint])

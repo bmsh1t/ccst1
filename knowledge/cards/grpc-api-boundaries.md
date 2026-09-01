@@ -13,7 +13,7 @@ trigger_tags:
   - protobuf
   - rpc-gateway
 risk: medium
-maturity: tested
+maturity: draft
 load_priority: low
 deep_refs: []
 source_refs: []

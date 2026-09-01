@@ -11,7 +11,7 @@ from pathlib import Path
 import hunt
 import pytest
 from memory.hunt_journal import HuntJournal
-from memory.target_profile import target_profile_path
+from memory.target_profile import load_target_profile, make_target_profile, save_target_profile, target_profile_path
 from tools.auth_session import AuthSession
 
 
@@ -813,6 +813,35 @@ def test_target_profile_update_does_not_rebuild_corrupt_history(monkeypatch, tmp
         hunt._update_target_profile("target.com")
 
     assert path.read_bytes() == original
+
+
+def test_target_profile_update_does_not_refresh_canonical_fact_projection(monkeypatch, tmp_path):
+    from finding_index import upsert_finding
+
+    target = "target.com"
+    memory_dir = tmp_path / "hunt-memory"
+    stale = make_target_profile(
+        target,
+        tested_endpoints=["/legacy"],
+        untested_endpoints=["/still-legacy"],
+        findings=[{"endpoint": "/legacy", "vuln_class": "sqli"}],
+    )
+    save_target_profile(memory_dir, stale)
+    upsert_finding(
+        tmp_path / "findings" / target,
+        {"id": "F-1", "type": "sqli", "url": "https://target.com/api/orders"},
+        target=target,
+    )
+    monkeypatch.setattr(hunt, "BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(hunt, "HUNT_MEMORY_DIR", str(memory_dir))
+    monkeypatch.setattr(hunt, "_extract_recon_tech_stack", lambda *_args, **_kwargs: [])
+
+    hunt._update_target_profile(target)
+
+    profile = load_target_profile(memory_dir, target)
+    assert profile["tested_endpoints"] == stale["tested_endpoints"]
+    assert profile["untested_endpoints"] == stale["untested_endpoints"]
+    assert profile["findings"] == stale["findings"]
 
 
 def test_classic_hunt_target_scan_only_skips_enrichment_and_runs_scan(monkeypatch, tmp_path):

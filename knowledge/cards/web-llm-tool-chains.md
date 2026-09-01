@@ -19,7 +19,7 @@ trigger_tags:
   - cross-session-memory
   - multi-agent-impersonation
 risk: medium
-maturity: tested
+maturity: draft
 load_priority: medium
 deep_refs: []
 source_refs:

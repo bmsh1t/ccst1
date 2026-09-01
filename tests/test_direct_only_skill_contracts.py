@@ -34,6 +34,12 @@ def test_direct_only_skills_have_domain_contracts_and_stay_manual(tmp_path):
         for label in ("Entry", "Evidence", "Stop"):
             match = re.search(rf"^- {label}:\s*(.+)$", text, re.MULTILINE)
             assert match and match.group(1).strip(), (skill_id, label)
+        assert "## Decision Tree" in text
+        assert "## ROI Priorities" in text
+        assert "## Evidence Gate and Handoff" in text
+        assert "## Phase Checkpoints" in text
+        assert "```" not in text
+        assert not re.search(r"(?m)^\s*(?:curl|grep|adb|frida|forge|python3|bash)\b", text)
 
     assert {
         skill_id

@@ -748,18 +748,22 @@ def _load_report_findings(domain):
 
 def _update_target_profile(domain, *, elapsed_minutes=0, recon_completed=False):
     """Persist minimal hunt state so resume/intel can read it later."""
+    owner_projection = derive_owner_projection(BASE_DIR, domain)
     profile = load_target_profile(HUNT_MEMORY_DIR, domain)
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if profile is None:
-        profile = make_target_profile(
-            domain,
-            scope_snapshot={"in_scope": [domain], "fetched_at": now_utc},
-            tested_endpoints=[],
-            untested_endpoints=[],
-            findings=[],
-            hunt_sessions=0,
-            total_time_minutes=0,
-        )
+        profile_kwargs = {
+            "scope_snapshot": {"in_scope": [domain], "fetched_at": now_utc},
+            "hunt_sessions": 0,
+            "total_time_minutes": 0,
+        }
+        if not owner_projection.get("available"):
+            profile_kwargs.update(
+                tested_endpoints=[],
+                untested_endpoints=[],
+                findings=[],
+            )
+        profile = make_target_profile(domain, **profile_kwargs)
 
     profile["last_hunted"] = now_utc
     profile["hunt_sessions"] = int(profile.get("hunt_sessions", 0)) + 1
@@ -769,21 +773,13 @@ def _update_target_profile(domain, *, elapsed_minutes=0, recon_completed=False):
     if tech_stack:
         profile["tech_stack"] = tech_stack
 
-    owner_projection = derive_owner_projection(BASE_DIR, domain)
     if recon_completed and not owner_projection.get("available"):
         discovered = _extract_recon_candidates(domain)
         tested = _dedupe_keep_order(profile.get("tested_endpoints", []))
         remaining = [ep for ep in discovered if ep not in set(tested)]
         profile["untested_endpoints"] = remaining
 
-    if owner_projection.get("available"):
-        if owner_projection.get("tested_authoritative"):
-            profile["tested_endpoints"] = list(owner_projection.get("tested_endpoints", []))
-        if owner_projection.get("untested_authoritative"):
-            profile["untested_endpoints"] = list(owner_projection.get("untested_endpoints", []))
-        if owner_projection.get("findings_authoritative"):
-            profile["findings"] = list(owner_projection.get("findings", []))
-    else:
+    if not owner_projection.get("available"):
         findings = _load_report_findings(domain)
         if findings:
             profile["findings"] = findings
@@ -830,8 +826,16 @@ def _auto_log_session_summary(
     """Auto-log a non-fatal session summary to hunt memory."""
     try:
         profile = load_target_profile(HUNT_MEMORY_DIR, domain) or {}
-        findings = _load_report_findings(domain)
-        endpoints_tested = profile.get("tested_endpoints", []) if isinstance(profile, dict) else []
+        owner_projection = derive_owner_projection(BASE_DIR, domain)
+        findings = (
+            owner_projection.get("findings", [])
+            if owner_projection.get("findings_authoritative")
+            else _load_report_findings(domain)
+        )
+        if owner_projection.get("tested_authoritative"):
+            endpoints_tested = owner_projection.get("tested_endpoints", [])
+        else:
+            endpoints_tested = profile.get("tested_endpoints", []) if isinstance(profile, dict) else []
         vuln_classes = _session_vuln_classes(
             domain,
             recon_completed=recon_completed,

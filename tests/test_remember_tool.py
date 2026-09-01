@@ -161,6 +161,56 @@ class TestRememberFinding:
         assert len(patterns) == 1
         assert patterns[0]["target"] == canonical_target
 
+    def test_canonical_owner_stops_legacy_fact_refresh_and_omits_new_fact_fields(self, tmp_path):
+        from finding_index import upsert_finding
+
+        target = "target.com"
+        memory_dir = tmp_path / "hunt-memory"
+        stale = make_target_profile(
+            target,
+            tested_endpoints=["/legacy"],
+            untested_endpoints=["/still-legacy"],
+            findings=[{"endpoint": "/legacy", "vuln_class": "sqli"}],
+        )
+        save_target_profile(memory_dir, stale)
+        upsert_finding(
+            tmp_path / "findings" / target,
+            {
+                "id": "F-1",
+                "type": "sqli",
+                "url": "https://target.com/api/orders",
+            },
+            target=target,
+        )
+
+        remember_finding(
+            memory_dir=memory_dir,
+            target=target,
+            vuln_class="sqli",
+            endpoint="/api/orders",
+            result="confirmed",
+            repo_root=tmp_path,
+        )
+
+        profile = load_target_profile(memory_dir, target)
+        assert profile["tested_endpoints"] == stale["tested_endpoints"]
+        assert profile["untested_endpoints"] == stale["untested_endpoints"]
+        assert profile["findings"] == stale["findings"]
+
+        fresh_memory = tmp_path / "fresh-memory"
+        remember_finding(
+            memory_dir=fresh_memory,
+            target=target,
+            vuln_class="sqli",
+            endpoint="/api/orders",
+            result="confirmed",
+            repo_root=tmp_path,
+        )
+        fresh_profile = load_target_profile(fresh_memory, target)
+        assert "tested_endpoints" not in fresh_profile
+        assert "untested_endpoints" not in fresh_profile
+        assert "findings" not in fresh_profile
+
 
 class TestRememberFromValidate:
 

