@@ -41,6 +41,11 @@ jobs:
           tests/test_evidence_ledger.py
           tests/test_checkpoint.py
           tests/test_autopilot_round.py
+          tests/test_ci_contract.py
+          tests/test_minimal_module_boundaries.py
+          tests/test_resume_tool.py
+          tests/test_spray_orchestrator.py
+          tests/test_validate_target_mode.py
       - name: Run repository Shell contracts
         run: |
           bash tests/test_cicd_scanner.sh
