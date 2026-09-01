@@ -1,6 +1,6 @@
 # AI-first 执行面收敛完整方案
 
-状态：Wave 0-8 已执行；Wave 9 待执行
+状态：Wave 0-9 已执行并验收（2026-09-01）
 
 本方案以现代模型自主推理为默认前提：AI 负责假设、路线、具体测试输入、预算和停止条件；确定性代码只保留 AI 无法可靠替代的能力，包括 Scope/Auth、红线、预算、稳定重放、持续回调、原始证据、canonical 写回、恢复和生命周期所有权。
 
@@ -337,6 +337,10 @@ SAML/MFA/XSS/upload 信号仍可从 Recon、browser、source、JS 或 scanner ar
 - Knowledge audit、runtime drift、Shell syntax、dead-reference search 和 diff inspection；
 - 各 Wave 按顺序独立 commit/push。
 
+实际验收结果：localhost Autopilot/runner/report fixture、两轮恢复 fixture、
+文档/路由聚焦回归均通过；Knowledge strict audit 无错误；runtime drift 为 0；
+Shell syntax 和 dead-reference 检查通过；最终全量测试 `3546 passed`。
+
 ## 5. 完成标准
 
 只有同时满足以下条件才能宣布完成：
@@ -399,4 +403,7 @@ SAML/MFA/XSS/upload 信号仍可从 Recon、browser、source、JS 或 scanner ar
 
 ### 最终结论
 
-方案通过最终复核，可以严格按 Wave 0 -> Wave 9 分阶段执行。禁止合并 Wave 3、Wave 6 和 Wave 7，也禁止在本地 Before/After 与 restart/recovery 验收完成前宣称全部优化完成。
+方案已按 Wave 0 -> Wave 9 分阶段执行并通过最终质量门。Wave 3、Wave 6、Wave 7
+仍保持独立提交；本地 Before/After、restart/recovery、canonical evidence 和
+残余账目验收均已完成。本次清理没有新增未完成的实现项；后续只按十次真实能力变更
+观测指标复盘 Skill/Knowledge/Rules-only 比例，不人为制造提交。
