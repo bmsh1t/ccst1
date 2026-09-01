@@ -2284,6 +2284,8 @@ def _is_substantive_queue_action(item: dict) -> bool:
         and evidence_type == "access-limit"
         and "summary.json" in str(item.get("evidence") or "")
     ):
+        # Legacy summaries remain reviewable after the dedicated executor was
+        # removed; this branch must never create a new 403 execution route.
         return True
     if (
         status in {"queued", "ready"}

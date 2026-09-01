@@ -4,15 +4,14 @@ These are conditional probe shapes, not a default firing dictionary. Load this f
 
 ## 401/403 Path and Proxy Access-Limit Lane
 
-Use `tools/bypass_403.sh` as the only network executor. Claude may form a
-schema-versioned plan from target evidence (path semantics, proxy/framework
-fingerprints, sibling routes, redirects, and prior responses), but each probe
-changes one boundary and carries a reason, expected signal, and stop condition.
-The executor enforces target Scope, AuthSession, request budget, raw evidence,
-and unsafe-method review. A 200 or changed status is only `edge_passed`; require
-protected content, component structure, or a permission differential for a
-`candidate`. Keep `blocked`, `needs_review`, and `partial` unresolved in the
-Action Queue/Checkpoint rather than widening the dictionary blindly.
+Treat 401/403 access boundaries as AI-selected, single-variable replays. Use
+browser, curl, a raw sender, or `request-diff` when the exact request pair is
+stable; preserve target Scope/Auth, request budget, raw evidence, and
+side-effect review through the selected execution boundary. A 200 or changed
+status is only an edge/router signal; require protected content, component
+structure, or a permission differential for a `candidate`. Keep `blocked`,
+`needs_review`, and `partial` unresolved in the Action Queue/Checkpoint rather
+than widening a fixed dictionary.
 
 ## SSRF IP / URL Parser Bypass Shapes
 

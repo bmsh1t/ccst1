@@ -110,7 +110,7 @@ deep_refs: []
 ## 401/403 访问边界衔接
 
 - 管理、内部、监控或调试兄弟路径返回 401/403 时，保留 `seed_refs`、响应栈、重定向和随机 miss 对照，交给 AI 选择一个有理由的 path/header/encoding/method 变体。
-- 变体只能通过 `tools/bypass_403.sh` 执行；计划模式由工具校验 Scope、AuthSession、预算和危险方法，结果写入其 `summary.json` 与现有 Action Queue。
+- 变体由 AI 按证据选择，经 browser、curl、raw sender 或适配的 `request-diff` 执行；保持 Scope、AuthSession、预算、危险方法审查和 raw evidence，再写入现有 owner。
 - 200 或状态变化只代表 edge/router 差异；必须有目标特定内容、组件结构或权限差分才升级为 Candidate，歧义保持 `needs_review`。
 
 ## 适用场景

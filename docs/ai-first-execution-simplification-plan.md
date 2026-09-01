@@ -1,6 +1,6 @@
 # AI-first 执行面收敛完整方案
 
-状态：已规划，尚未执行
+状态：Wave 0-5 已执行；Wave 6-9 待执行
 
 本方案以现代模型自主推理为默认前提：AI 负责假设、路线、具体测试输入、预算和停止条件；确定性代码只保留 AI 无法可靠替代的能力，包括 Scope/Auth、红线、预算、稳定重放、持续回调、原始证据、canonical 写回、恢复和生命周期所有权。
 
@@ -56,7 +56,7 @@ Queue / Ledger / Finding / Checkpoint projections
 | `sneaky_bits.py`、`poc_generator.py` | 删除 | AI 按当前验证点生成精确的本地测试输入或证明材料。 |
 | JSON/SQL 固定矩阵 | 解除依赖后删除 | AI 直接请求；适合时用 `request-diff`；只有 timing-shaped 证据进入 Timing Runner。 |
 | WAF 编码目录和 WAF plan 栈 | 随 JSON/SQL/403 调用方删除 | AI 选择与目标证据绑定的表达形式，由通用 HTTP 执行记录。 |
-| `bypass_403.sh`、`bypass_403_plan.py` | 删除 | AI 使用 browser/curl/raw request；兼容请求对可选用 `request-diff`。 |
+| `bypass_403.sh`、`bypass_403_plan.py` | 删除（已完成） | AI 使用 browser/curl/raw request；兼容请求对可选用 `request-diff`。 |
 | OAST 固定测试输入目录和 `payloads` 命令 | 删除 | AI 将当前 callback URL 放入自己选择的目标相关测试输入。 |
 | `vuln_scanner.sh` 固定主动 lane | 退出默认 breadth | 保留扫描器账目和候选提取，由 AI 根据证据直接测试。 |
 
@@ -195,7 +195,7 @@ Queue / Ledger / Finding / Checkpoint projections
 
 回滚：独立 OAST 提交。
 
-### Wave 5：删除 403 专项执行栈
+### Wave 5：删除 403 专项执行栈（已完成）
 
 删除：
 

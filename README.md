@@ -330,7 +330,6 @@ tools are skipped, not fatal.
 | `/takeover --recon <dir>` | Subdomain takeover candidates from a recon run |
 | `/cloud-recon --keyword <name>` | Public S3 / Azure / GCP buckets + CloudFlare-bypassed origin IP hints |
 | `/param-discover --target TARGET --url URL` | Target-scoped hidden HTTP parameters via Arjun / x8 |
-| `/bypass-403 <url>` | Header, method, and encoding tricks against a 403/401 |
 | `/scan-cves <host>` | Focused nuclei CVE sweep + optional log4j-scan |
 | `/arsenal [tool]` | Lists installed external tools or prints install hints |
 
@@ -419,7 +418,7 @@ documents the preferred model class for each role.
   behind a login) only exist after login; the default pipeline used to miss
   them. See [`docs/auth-sessions.md`](docs/auth-sessions.md).
 - **7 new commands.** `/secrets-hunt`, `/takeover`,
-  `/cloud-recon`, `/param-discover`, `/bypass-403`, `/scan-cves`, and
+  `/cloud-recon`, `/param-discover`, `/scan-cves`, and
   `/arsenal`.
 - **External tool registry.** `tools/external_arsenal.sh` is the single source
   of truth for optional external-tool install hints and `_have <tool>` checks.

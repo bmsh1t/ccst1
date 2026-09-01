@@ -2,9 +2,9 @@
 """WAF Response Analyzer.
 
 Detect whether an HTTP response is a WAF block page, a soft challenge, or a
-genuine application response. Designed to be invoked by ``bypass_403.sh`` when
-naive status-code heuristics break down (e.g. WAF returning ``200 OK`` with a
-block page body).
+genuine application response. JSON/form evidence adapters use it when naive
+status-code heuristics break down (e.g. WAF returning ``200 OK`` with a block
+page body).
 
 Pure standard library: ``urllib``, ``ssl``, ``json``, ``re``, ``argparse``,
 ``dataclasses``, ``hashlib``, ``statistics``, ``datetime``.

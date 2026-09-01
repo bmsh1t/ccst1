@@ -2725,7 +2725,7 @@ emit_claude_hint \
     waf_context_ref      "recon/${RECON_TARGET_KEY}/live/waf_context.json" \
     wafw00f_present      "$(command -v wafw00f >/dev/null 2>&1 && echo true || echo false)"
 emit_claude_hint_actions \
-    "on a target-owned high-value 401/403, let AI build an evidence-linked plan for tools/bypass_403.sh --plan --target; without a plan keep its complete fallback" \
+    "on a target-owned high-value 401/403, let AI choose one evidence-linked path/header/method replay through browser, curl, raw sender, or request-diff" \
     "WAF fingerprinting is context only; no sampled WAF hit does not suppress path, proxy, or authorization-boundary testing"
 
 # ============================================================

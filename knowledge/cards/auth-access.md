@@ -108,7 +108,7 @@ source_refs:
 - 对同一请求做单变量身份差异比较。
 - 记录权限变化前后的 token、cookie、响应字段和状态码差异。
 - 对 401/403 只做低频、单变量 replay，避免无意义绕过喷洒。
-- 对目标有明确路径、代理、框架或兄弟路径证据时，让 AI 生成结构化 one-variable plan，交给 `tools/bypass_403.sh --plan ... --target ...` 执行；认证头只来自 `AuthSession`，不能写进 plan 变体。
+- 对目标有明确路径、代理、框架或兄弟路径证据时，让 AI 选择一个结构化 one-variable replay，经 browser、curl、raw sender 或适配的 `request-diff` 执行；认证头只来自 `AuthSession`，不能把凭据写入测试输入。
 - 对管理/角色接口做 method/path/header 矩阵：GET/POST/PUT/PATCH、query vs body、Referer、有无 X-Original-URL/X-Rewrite-URL、method override；一次只改一个边界。
 - URL-based access 最小验证：先记录直接访问敏感路径的拒绝基线，再把内部路径放入 `X-Original-URL` / `X-Rewrite-URL`，必要时把操作参数保留在外层 URL（如 `/?username=...` + `X-Original-URL: /admin/delete`），只比较一个路由边界。
 - Referer-based access 最小验证：用同一个低权限 session 对比无 `Referer` 与可信 `Referer` 的 raw replay；不要因为浏览器 `fetch` 不能设置 `Referer` 就判定不可利用。

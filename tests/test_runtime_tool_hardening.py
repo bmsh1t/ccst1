@@ -25,25 +25,9 @@ def test_cli_help_does_not_require_credentials_or_network() -> None:
     """核心工具的 help 应可离线查看，不能因缺 env/依赖触发真实请求。"""
     commands = [
         ("python3", "tools/scope_checker.py", "--help"),
-        ("bash", "tools/bypass_403.sh", "--help"),
         ("python3", "tools/validate.py", "--help"),
     ]
     for command in commands:
         result = _run(*command)
         assert result.returncode == 0, result.stderr
         assert "usage" in (result.stdout + result.stderr).lower()
-
-
-def test_bypass_403_does_not_gate_methods_by_name() -> None:
-    """403 bypass keeps method hints advisory and gates only explicit actions."""
-    script = (REPO / "tools" / "bypass_403.sh").read_text(encoding="utf-8")
-
-    assert "ALLOW_UNSAFE_HTTP_TESTS" in script
-    assert "bypass_manual_review.txt" in script
-    assert "requires ALLOW_UNSAFE_HTTP_TESTS=1" in script
-    assert 'if _have byp4xx && [ "${ALLOW_UNSAFE_HTTP_TESTS:-0}" = "1" ]; then' in script
-    assert 'if [ "$state_changing" = "True" ]' in script
-    assert 'case "$method" in' not in script
-
-    for method in ("PUT", "PATCH", "TRACE"):
-        assert method in script

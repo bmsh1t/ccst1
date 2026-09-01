@@ -108,7 +108,7 @@
         "D": "Send authenticated admin actions through the bypass header to prove privilege impact before confirming access."
       },
       "answer": "B",
-      "rationale": "Parser/Boundary table routes X-Original-URL 403 delta to the /bypass-403 proxy-routing lane; change one boundary, read-only replay, confirm reachability. Not brute force, not premature state-changing admin actions."
+      "rationale": "Parser/Boundary guidance routes an X-Original-URL 403 delta to one evidence-linked proxy-routing replay through a general request boundary; change one boundary, use read-only replay, and confirm reachability. Not brute force, not premature state-changing admin actions."
     },
     {
       "id": "W09",

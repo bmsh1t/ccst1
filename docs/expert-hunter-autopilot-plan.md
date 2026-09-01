@@ -682,7 +682,6 @@ cloud_recon.sh
 
 ```text
 cf_solver.py
-bypass_403.sh
 spray_orchestrator.sh
 wordlist_engine.sh
 osint_employees.sh
