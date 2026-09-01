@@ -33,74 +33,6 @@ def _skip_modules_except(*enabled_modules: str) -> str:
     return ",".join(module for module in SCANNER_SKIP_MODULES if module not in enabled)
 
 
-def _run_upload_gate_fixture(tmp_path: Path, *, approved: bool):
-    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
-    run_dir = tmp_path / ("approved" if approved else "default")
-    recon_dir = run_dir / "recon" / "upload.test"
-    findings_dir = run_dir / "findings"
-    shim_dir = run_dir / "bin"
-    curl_log = run_dir / "curl.log"
-    (recon_dir / "live").mkdir(parents=True)
-    shim_dir.mkdir(parents=True)
-    (recon_dir / "live" / "urls.txt").write_text("https://upload.test\n", encoding="utf-8")
-
-    curl_shim = shim_dir / "curl"
-    curl_shim.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\\n' \"$*\" >> \"$CURL_LOG\"\n"
-        "is_form=0\n"
-        "is_head=0\n"
-        "url=''\n"
-        "for arg in \"$@\"; do\n"
-        "  [ \"$arg\" = '-F' ] && is_form=1\n"
-        "  [ \"$arg\" = '-I' ] && is_head=1\n"
-        "  case \"$arg\" in http://*|https://*) url=\"$arg\" ;; esac\n"
-        "done\n"
-        "[ \"$is_form\" = 1 ] && exit 0\n"
-        "if [ \"$is_head\" = 1 ]; then printf 'Server: PHP\\n'; exit 0; fi\n"
-        "case \"$url\" in\n"
-        "  */non_existent_*) printf '404' ;;\n"
-        "  */upload.php) printf '200' ;;\n"
-        "  */proof_*.php) printf 'RCE-VAL-49' ;;\n"
-        "  *) printf '404' ;;\n"
-        "esac\n",
-        encoding="utf-8",
-    )
-    curl_shim.chmod(0o755)
-
-    env = os.environ.copy()
-    env.update({
-        "CURL_LOG": str(curl_log),
-        "FINDINGS_OUT_DIR": str(findings_dir),
-        "PATH": f"{shim_dir}:/usr/bin:/bin",
-        "BBHUNT_RUNTIME_PHASE_LOCKED": "scan",
-        "BBHUNT_RUNTIME_LOCK_TARGET": "upload.test",
-    })
-    if approved:
-        env["ALLOW_UNSAFE_HTTP_TESTS"] = "1"
-    else:
-        env.pop("ALLOW_UNSAFE_HTTP_TESTS", None)
-
-    result = subprocess.run(
-        [
-            "bash",
-            str(script),
-            str(recon_dir),
-            "--quick",
-            "--skip",
-            _skip_modules_except("upload"),
-        ],
-        cwd=script.resolve().parent.parent,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=30,
-    )
-    calls = curl_log.read_text(encoding="utf-8") if curl_log.exists() else ""
-    return result, findings_dir, calls
-
-
 def test_vuln_scanner_bash_syntax_is_valid():
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
 
@@ -188,33 +120,51 @@ def test_vuln_scanner_gates_only_explicit_state_changes():
     assert "Skipping $label" in text
     assert "manual_review/unsafe_skipped.txt" in text
     assert ': > "$FINDINGS_DIR/manual_review/unsafe_skipped.txt"' in text
-    assert 'scanner_probe_guard "upload canary probe" "1" "$upload_url" "POST"' in text
+    assert 'scanner_probe_guard "upload canary probe"' not in text
     assert 'scanner_probe_guard "HTTP method tampering" "1" "$url" "$METHOD"' in text
     assert 'scanner_probe_guard "MFA rate-limit probe"' not in text
     assert 'scanner_probe_guard "MFA response-manipulation canary"' not in text
     assert 'scanner_probe_guard "SAML signature-stripping probe"' not in text
 
 
-def test_upload_canary_requires_explicit_opt_in_without_losing_approved_path(tmp_path):
-    default, default_findings, default_curl = _run_upload_gate_fixture(tmp_path, approved=False)
+def test_upload_lane_is_candidate_only_and_never_posts(tmp_path):
+    script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
+    recon_dir = tmp_path / "recon" / "upload.test"
+    findings_dir = tmp_path / "findings"
+    (recon_dir / "live").mkdir(parents=True)
+    (recon_dir / "urls").mkdir()
+    (recon_dir / "live" / "urls.txt").write_text("https://upload.test\n", encoding="utf-8")
+    (recon_dir / "urls" / "with_params.txt").write_text(
+        "https://upload.test/upload?filename=report.txt\n", encoding="utf-8"
+    )
 
-    assert default.returncode == 0, default.stderr + default.stdout
-    assert "-F " not in default_curl
-    assert "[UPLOAD-CANDIDATE] https://upload.test/upload.php" in (
-        default_findings / "upload" / "active_upload_probe.txt"
-    ).read_text(encoding="utf-8")
-    skipped = (default_findings / "manual_review" / "unsafe_skipped.txt").read_text(encoding="utf-8")
-    assert "label=upload canary probe" in skipped
-    assert not (default_findings / "manual_review" / "upload_cleanup.txt").exists()
+    env = os.environ.copy()
+    env.update({
+        "FINDINGS_OUT_DIR": str(findings_dir),
+        "PATH": "/usr/bin:/bin",
+        "BBHUNT_RUNTIME_PHASE_LOCKED": "scan",
+        "BBHUNT_RUNTIME_LOCK_TARGET": "upload.test",
+    })
+    result = subprocess.run(
+        ["bash", str(script), str(recon_dir), "--quick", "--skip", _skip_modules_except("upload")],
+        cwd=script.resolve().parent.parent,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
 
-    approved, approved_findings, approved_curl = _run_upload_gate_fixture(tmp_path, approved=True)
-
-    assert approved.returncode == 0, approved.stderr + approved.stdout
-    assert "-F file=@" in approved_curl
-    cleanup = (approved_findings / "manual_review" / "upload_cleanup.txt").read_text(encoding="utf-8")
-    assert "status=cleanup_unverified" in cleanup
-    assert "kind=executed" in cleanup
-    assert "reason=no verified remote delete contract" in cleanup
+    assert result.returncode == 0, result.stderr + result.stdout
+    candidates = (findings_dir / "upload" / "upload_candidates.txt").read_text()
+    assert candidates.splitlines() == ["https://upload.test/upload?filename=report.txt"]
+    summary = json.loads((findings_dir / "summary.json").read_text())
+    lane = summary["lane_coverage"]["upload_candidates"]
+    assert lane["execution_kind"] == "candidate_only"
+    assert lane["selected"] == 0
+    assert lane["remaining"] == 1
+    assert "-F" not in result.stdout
+    assert "upload.php" not in result.stdout
 
 
 def _run_method_tampering_gate_fixture(tmp_path: Path, *, approved: bool):
@@ -313,7 +263,7 @@ def test_vuln_scanner_supports_auth_session_env():
     assert 'BBHUNT_ENABLE_NUCLEI_SSRF' not in text
     assert 'nuclei_sqli_targets' not in text
     assert 'nuclei_ssrf_targets' not in text
-    assert 'curl -sk "${BB_AUTH_ARGS[@]}" -o /dev/null --max-time 20 "$url"' in text
+    assert 'curl -s "${BB_AUTH_ARGS[@]}"' in text
     assert 'nuclei -fhr "$@"' in text
 
 
@@ -380,13 +330,14 @@ def test_vuln_scanner_has_upstream_v5_scan_surface():
     assert 'FINDINGS_DIR="${FINDINGS_OUT_DIR:-$DEFAULT_FINDINGS_DIR}"' in text
     assert 'ORDERED_SCAN="$FINDINGS_DIR/ordered_scan_targets.txt"' in text
 
-    assert "verify_upload_poc()" in text
-    assert "verify_sqli_poc()" in text
-    assert "SQLI-POC-VERIFIED" in text
-    assert "replace_all_param_values" in text
-    assert "SSTI-CONFIRMED" in text
-    assert "MFA-NO-RATE-LIMIT" in text
-    assert "SAML-SIG-STRIP" in text
+    assert "collect_candidate_urls()" in text
+    assert "AI-selected validation" in text
+    assert "SQLI-POC-VERIFIED" not in text
+    assert "replace_all_param_values" not in text
+    assert "SSTI-CONFIRMED" not in text
+    assert "MFA/2FA review candidates" in text
+    assert "SAML-SIG-STRIP" not in text
+    assert "PROBE_PATHS" not in text
 
 
 def test_vuln_scanner_adds_iis_shortscan_lane_without_hard_dependency():
@@ -777,7 +728,7 @@ def test_vuln_scanner_requires_finding_index_before_completion(tmp_path):
     assert not (findings_dir / "summary.json").exists()
 
 
-def test_vuln_scanner_runs_bounded_xss_by_default(tmp_path):
+def test_vuln_scanner_records_xss_candidates_without_active_probe(tmp_path):
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     recon_dir = tmp_path / "recon" / "example.com"
     live_dir = recon_dir / "live"
@@ -806,17 +757,19 @@ def test_vuln_scanner_runs_bounded_xss_by_default(tmp_path):
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Default skip: xss" not in result.stdout
-    assert "Check 1: Reflected XSS marker sampling" in result.stdout
-    assert "Reflected XSS marker: no parameterized URLs" in result.stdout
+    assert "Check 1: XSS candidates (AI/browser-selected validation)" in result.stdout
+    assert "XSS candidates: none found" in result.stdout
 
     summary = json.loads((findings_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["mode"] == "standard"
     assert "xss" not in summary["skipped_checks"]
     assert "ssti" in summary["skipped_checks"]
-    assert summary["lane_coverage"]["xss_reflection"]["status"] == "sampled"
+    assert summary["lane_coverage"]["xss_reflection"]["status"] == "candidate_only"
+    assert summary["lane_coverage"]["xss_reflection"]["execution_kind"] == "candidate_only"
+    assert summary["lane_coverage"]["xss_reflection"]["selected"] == 0
 
 
-def test_vuln_scanner_full_mode_includes_xss_by_default(tmp_path):
+def test_vuln_scanner_full_mode_keeps_xss_candidate_only(tmp_path):
     script = Path(__file__).resolve().parent.parent / "tools" / "vuln_scanner.sh"
     recon_dir = tmp_path / "recon" / "example.com"
     live_dir = recon_dir / "live"
@@ -847,12 +800,14 @@ def test_vuln_scanner_full_mode_includes_xss_by_default(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Default skip: xss" not in result.stdout
     assert "Skipping XSS checks" not in result.stdout
-    assert "Check 1: Reflected XSS marker sampling" in result.stdout
+    assert "Check 1: XSS candidates (AI/browser-selected validation)" in result.stdout
 
     summary = json.loads((findings_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["mode"] == "full"
     assert "xss" not in summary["skipped_checks"]
     assert "ssti" in summary["skipped_checks"]
+    assert summary["lane_coverage"]["xss_reflection"]["execution_kind"] == "candidate_only"
+    assert summary["lane_coverage"]["xss_reflection"]["selected"] == 0
 
 
 def test_vuln_scanner_writes_iis_manual_review_when_shortscan_missing(tmp_path):

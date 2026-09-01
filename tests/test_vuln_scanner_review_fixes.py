@@ -6,15 +6,16 @@ from pathlib import Path
 SCANNER_PATH = Path(__file__).resolve().parents[1] / "tools" / "vuln_scanner.sh"
 
 
-def test_saml_signature_stripping_is_available_without_method_gate():
+def test_fixed_active_lanes_are_removed_but_generic_guard_remains():
     scanner = SCANNER_PATH.read_text()
 
     assert "scanner_probe_guard()" in scanner
     assert "ALLOW_UNSAFE_HTTP_TESTS" in scanner
-    assert 'scanner_probe_guard "upload canary probe" "1" "$upload_url" "POST"' in scanner
-    assert 'scanner_probe_guard "MFA rate-limit probe"' not in scanner
-    assert 'scanner_probe_guard "MFA response-manipulation canary"' not in scanner
-    assert 'scanner_probe_guard "SAML signature-stripping probe"' not in scanner
+    assert 'scanner_probe_guard "HTTP method tampering" "1" "$url" "$METHOD"' in scanner
+    assert "scanner_probe_guard \"upload canary probe\"" not in scanner
+    assert "SAML signature-stripping" not in scanner
+    assert "MFA rate-limit probe" not in scanner
+    assert "SAML_PATH" not in scanner
 
 
 def test_scanner_uses_current_repo_paths():
@@ -30,9 +31,8 @@ def test_scanner_uses_current_repo_paths():
 def test_mfa_observations_are_manual_review_only():
     scanner = SCANNER_PATH.read_text()
 
-    assert ': > "$FINDINGS_DIR/mfa/findings.txt"' in scanner
     assert 'MFA_REVIEW_FILE="$FINDINGS_DIR/manual_review/mfa_review.txt"' in scanner
-    assert '>> "$MFA_REVIEW_FILE"' in scanner
+    assert 'collect_candidate_urls' in scanner
     assert '>> "$FINDINGS_DIR/mfa/findings.txt"' not in scanner
 
 
