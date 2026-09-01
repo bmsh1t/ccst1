@@ -97,6 +97,13 @@ and Autopilot coordinate durable owners through their public APIs. This is a
 verified no-production-change result, not permission to add a generic
 projection framework.
 
+### Hotspot selection result
+
+The first post-contract hotspot review found no pure policy with duplicated
+consumers and no stable CLI/persistence seam that can be extracted without a
+new compatibility boundary. Large modules remain unchanged until normal work
+proves one of those conditions.
+
 ## Prohibited by This Contract
 
 No database/service migration, physical directory rewrite, generic adapter framework, protocol-specific automatic chain, fixed model test sequence, payload catalogue in core Skills, or second lifecycle owner is introduced by architecture work alone.
