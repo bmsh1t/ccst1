@@ -114,6 +114,90 @@ class TestResumeSummary:
     def test_missing_profile_returns_none(self, tmp_hunt_dir):
         assert load_resume_summary(tmp_hunt_dir, "missing.com") is None
 
+    def test_canonical_owner_state_resumes_without_legacy_profile(self, tmp_hunt_dir, tmp_path):
+        findings_dir = tmp_path / "findings" / "target.com"
+        created = finding_index.upsert_finding(
+            findings_dir,
+            {
+                "id": "canonical-only",
+                "type": "sqli",
+                "url": "https://target.com/items?id=1",
+                "validation_status": "unvalidated",
+                "report_status": "not_generated",
+            },
+            target="target.com",
+        )
+
+        summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
+
+        assert created["finding"]["id"] == "canonical-only"
+        assert summary is not None
+        assert summary["legacy_profile"] == {"status": "missing", "error": ""}
+        assert summary["owner_projection"]["findings_authoritative"] is True
+        assert summary["findings"][0]["id"] == "canonical-only"
+        assert summary["sessions"] == 0
+
+    def test_corrupt_legacy_profile_does_not_hide_canonical_state(self, tmp_hunt_dir, tmp_path):
+        findings_dir = tmp_path / "findings" / "target.com"
+        findings_dir.mkdir(parents=True)
+        finding_index.upsert_finding(
+            findings_dir,
+            {
+                "id": "canonical-with-broken-profile",
+                "type": "idor",
+                "url": "https://target.com/orders/1",
+            },
+            target="target.com",
+        )
+        (tmp_hunt_dir / "targets" / "target-com.json").write_text(
+            "{broken\n",
+            encoding="utf-8",
+        )
+
+        summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
+
+        assert summary is not None
+        assert summary["legacy_profile"]["status"] == "invalid"
+        assert "invalid target profile" in summary["legacy_profile"]["error"]
+        assert summary["findings"][0]["id"] == "canonical-with-broken-profile"
+
+    def test_canonical_queue_state_is_a_resume_source_without_profile(self, tmp_hunt_dir, tmp_path):
+        queue_path = tmp_path / "state" / "target.com" / "action_queue.json"
+        queue_path.parent.mkdir(parents=True)
+        queue_path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "target": "target.com",
+                "actions": [],
+            }),
+            encoding="utf-8",
+        )
+
+        summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
+
+        assert summary is not None
+        assert summary["canonical_sources"] == ["queue"]
+        assert summary["legacy_profile"]["status"] == "missing"
+
+    def test_resume_does_not_rewrite_legacy_finding_projection(self, tmp_hunt_dir, tmp_path):
+        findings_dir = tmp_path / "findings" / "target.com"
+        findings_dir.mkdir(parents=True)
+        findings_path = findings_dir / "findings.json"
+        findings_path.write_text(
+            json.dumps([{
+                "id": "legacy-finding",
+                "type": "idor",
+                "url": "https://target.com/orders/1",
+            }]),
+            encoding="utf-8",
+        )
+        before = findings_path.read_bytes()
+
+        summary = load_resume_summary(tmp_hunt_dir, "target.com", repo_root=tmp_path)
+
+        assert summary is not None
+        assert findings_path.read_bytes() == before
+
     def test_loads_host_list_profile_from_relative_target(self, tmp_hunt_dir, tmp_path, monkeypatch):
         list_file = tmp_path / "scope.txt"
         list_file.write_text("api.target.com\n", encoding="utf-8")

@@ -49,6 +49,11 @@ except ImportError:  # pragma: no cover - package import path
     from tools.validation_runner import _artifact_digest_material, _runner_operation_id
 
 try:
+    from runner_witness import canonical_runner_witness
+except ImportError:  # pragma: no cover - package import path
+    from tools.runner_witness import canonical_runner_witness
+
+try:
     from target_paths import (
         canonical_target_value,
         resolve_target_url,
@@ -1418,10 +1423,8 @@ def _canonical_runner_witness_for_finding(
 ) -> dict[str, Any]:
     """Load and verify the runner witness owned by one canonical Finding.
 
-    Report generation already owns the complete witness definition (summary
-    lineage, artifact digests, operation material, and Ledger replay). Reuse
-    that consumer gate here so validation write-back cannot establish a weaker
-    finality path than reporting does.
+    Validation and reporting share one witness definition so neither consumer
+    can establish a weaker finality path than the other.
     """
     owner_root = _repo_root_from_findings_dir(findings_dir)
     prefill = load_finding_prefill(
@@ -1442,11 +1445,7 @@ def _canonical_runner_witness_for_finding(
         owner_target = canonical_target_value(Path(findings_dir).name)
     if not owner_target:
         owner_target = canonical_target_value(target)
-    try:
-        from report_generator import _canonical_runner_witness
-    except ImportError:  # pragma: no cover - package import path
-        from tools.report_generator import _canonical_runner_witness
-    return _canonical_runner_witness(
+    return canonical_runner_witness(
         canonical,
         findings_dir=findings_dir,
         target=owner_target,

@@ -17,7 +17,11 @@ if BASE_DIR not in sys.path:
 try:
     # Support `import tools.resume`.
     from .repo_source_artifacts import load_repo_source_summary
-    from .runtime_state import inspect_recon_artifacts, load_runtime_state
+    from .runtime_state import (
+        inspect_recon_artifacts,
+        inspect_recon_artifacts_fast,
+        load_runtime_state,
+    )
     from .runtime_state import derive_owner_projection
     from .structured_findings import (
         format_structured_findings_lines,
@@ -26,7 +30,11 @@ try:
 except ImportError:
     # Keep legacy top-level `import resume` working.
     from repo_source_artifacts import load_repo_source_summary
-    from runtime_state import inspect_recon_artifacts, load_runtime_state
+    from runtime_state import (
+        inspect_recon_artifacts,
+        inspect_recon_artifacts_fast,
+        load_runtime_state,
+    )
     from runtime_state import derive_owner_projection
     from structured_findings import (
         format_structured_findings_lines,
@@ -175,20 +183,40 @@ def load_resume_summary(
     target: str,
     *,
     repo_root: str | Path | None = None,
+    fast_recon: bool = False,
 ) -> dict | None:
     """Load the minimum data needed to resume a target hunt."""
     memory_dir = Path(memory_dir)
     root = Path(repo_root) if repo_root is not None else Path(BASE_DIR)
     requested_target = target
     canonical_target = canonical_target_value(target)
-    profile = load_target_profile(memory_dir, canonical_target)
-    if profile is None:
-        return None
+    profile_error = ""
+    try:
+        profile = load_target_profile(memory_dir, canonical_target)
+    except ValueError as exc:
+        # Legacy target profiles are optional compatibility metadata. A
+        # damaged profile must not hide canonical owner facts that can still
+        # be resumed safely.
+        profile = None
+        profile_error = str(exc)
+
+    profile = profile if isinstance(profile, dict) else {}
 
     profile_target = str(profile.get("target") or canonical_target or requested_target)
     owner_projection = derive_owner_projection(root, profile_target)
+    owner_key = target_storage_key(profile_target)
+    canonical_owner_paths = {
+        "queue": root / "state" / owner_key / "action_queue.json",
+        "runtime": root / "state" / owner_key / "session.json",
+        "case": root / "state" / owner_key / "case_state.json",
+    }
+    canonical_sources = [
+        name for name, path in canonical_owner_paths.items() if path.is_file()
+    ]
     journal = HuntJournal(memory_dir / "journal.jsonl")
     entries = journal.query(target=profile_target)
+    if not profile and not owner_projection.get("available") and not canonical_sources and not entries:
+        return None
     confirmed_entries = [entry for entry in entries if entry.get("result") == "confirmed"]
     confirmed_payout = round(sum(float(entry.get("payout", 0) or 0) for entry in confirmed_entries), 2)
     latest_session = latest_session_summary(entries)
@@ -260,8 +288,17 @@ def load_resume_summary(
         "recent_guard_blocks": guard_advisories,
         "repo_source_summary": load_repo_source_summary(root, profile_target),
         "runtime_state": load_runtime_state(root, profile_target),
-        "recon_artifacts": inspect_recon_artifacts(root, profile_target),
-        "structured_findings": load_structured_finding_followup(root, profile_target),
+        "recon_artifacts": (
+            inspect_recon_artifacts_fast(root, profile_target)
+            if fast_recon
+            else inspect_recon_artifacts(root, profile_target)
+        ),
+        "structured_findings": load_structured_finding_followup(root, profile_target, migrate_legacy=False),
+        "canonical_sources": canonical_sources,
+        "legacy_profile": {
+            "status": "invalid" if profile_error else ("loaded" if profile else "missing"),
+            "error": profile_error,
+        },
     }
 
 

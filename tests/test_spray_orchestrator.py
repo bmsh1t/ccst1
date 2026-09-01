@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -61,6 +62,45 @@ def test_orchestrator_dry_run_dispatches_without_network(tmp_path: Path):
     assert completed.returncode == 0, completed.stderr
     assert "network attempts=0" in completed.stdout
     assert len(list(tmp_path.glob("recon/*/spray/preflight-*.json"))) == 1
+
+
+def test_orchestrator_defaults_repo_root_to_script_checkout(tmp_path: Path):
+    users, passes, spec = _inputs(tmp_path)
+    checkout = tmp_path / "checkout"
+    isolated_tools = checkout / "tools"
+    isolated_tools.mkdir(parents=True)
+    source_tools = Path(__file__).resolve().parents[1] / "tools"
+    for name in ("spray_orchestrator.sh", "_spray_http_form.py", "spray_contract.py", "target_paths.py"):
+        shutil.copy2(source_tools / name, isolated_tools / name)
+
+    env = os.environ.copy()
+    env.pop("SPRAY_REPO_ROOT", None)
+    env.pop("SPRAY_PREFLIGHT_OUTPUT", None)
+    completed = subprocess.run(
+        [
+            str(isolated_tools / "spray_orchestrator.sh"),
+            "http://127.0.0.1:9/login",
+            "--mode",
+            "http-form",
+            "--users",
+            str(users),
+            "--passes",
+            str(passes),
+            "--request-spec",
+            str(spec),
+            "--dry-run",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "network attempts=0" in completed.stdout
+    assert len(list(checkout.glob("recon/*/spray/preflight-*.json"))) == 1
+    assert not (tmp_path / "recon").exists()
 
 
 def test_orchestrator_dry_run_displays_deduped_cardinality_limits(tmp_path: Path):

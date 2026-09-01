@@ -223,7 +223,6 @@ def _manifest_roots(
             [
                 (memory_root / "targets" / f"{storage_key}.json", frozenset()),
                 (memory_root / "patterns.jsonl", frozenset()),
-                (memory_root / "pattern_calibration.jsonl", frozenset()),
             ]
         )
     return roots
@@ -243,8 +242,18 @@ def build_surface_input_manifest(
         f"state/{storage_key}/action_queue.json": _semantic_action_queue,
         f"memory/evidence/{storage_key}/ledger.jsonl": _semantic_evidence_ledger,
     }
-    if memory_dir and Path(memory_dir).resolve().exists():
+    calibration_path: Path | None = None
+    if memory_dir:
         calibration_path = Path(memory_dir).resolve() / "pattern_calibration.jsonl"
+        # Directory creation is a runtime side effect, not a ranking input.
+        # Bind only effective exclusions; empty/below-threshold calibration
+        # rows do not change ranking and must not invalidate a projection.
+        if (
+            not calibration_path.is_file()
+            or not _semantic_pattern_calibration(calibration_path).get("excluded_pattern_ids")
+        ):
+            calibration_path = None
+    if calibration_path is not None:
         semantic_paths[_path_label(repo, calibration_path)] = (
             lambda _repo, _target, path=calibration_path: _semantic_pattern_calibration(path)
         )

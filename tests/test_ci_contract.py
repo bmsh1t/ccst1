@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
 import yaml
+from tools import check_requirements_lock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -106,3 +108,26 @@ def test_ci_actions_and_dependency_lock_are_immutable_inputs() -> None:
         "pyarrow",
     ):
         assert re.search(rf"(?m)^{direct}==[^\s\\]+", normalized)
+
+
+def test_requirements_lock_rejects_source_content_drift(tmp_path, monkeypatch, capsys) -> None:
+    requirements_dev = tmp_path / "requirements-dev.txt"
+    requirements = tmp_path / "requirements.txt"
+    lock = tmp_path / "requirements-ci.lock"
+    requirements_dev.write_text("-r requirements.txt\n", encoding="utf-8")
+    requirements.write_text("SAMPLE>=1\n", encoding="utf-8")
+    source_hashes = " ".join(
+        f"{path.name}={hashlib.sha256(path.read_bytes()).hexdigest()}"
+        for path in (requirements_dev, requirements)
+    )
+    lock.write_text(
+        f"# source-sha256: {source_hashes}\nSAMPLE==1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(check_requirements_lock, "ROOT", tmp_path)
+
+    assert check_requirements_lock.main() == 0
+    requirements.write_text("SAMPLE>=999\n", encoding="utf-8")
+
+    assert check_requirements_lock.main() == 1
+    assert "source hash mismatch" in capsys.readouterr().err

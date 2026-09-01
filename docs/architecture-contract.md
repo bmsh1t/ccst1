@@ -48,6 +48,7 @@ Surface, Coverage, Checkpoint witness, Resume, Context Pack, Autopilot views, an
 |---|---|---|
 | AI -> kernel | versioned activation metadata | `tools/action_queue.py` |
 | execution -> evidence | canonical runner summary plus raw operation material | `tools/validation_runner.py` |
+| runner evidence -> validation/report finality | shared witness verification | `tools/runner_witness.py` |
 | evidence -> finding | provenance and finality checks | `tools/finding_index.py` |
 | target -> storage | canonical target and storage-key helpers | `tools/target_paths.py` |
 | knowledge -> context | registry-backed selection and budgets | `tools/knowledge_registry.py` / `tools/context_pack.py` |
@@ -93,7 +94,10 @@ The optimization program is independently revertible: baseline cleanup, architec
 
 The initial Wave 3 audit found no production reverse writes: Surface, Context
 Pack, Resume, and Report write only their own rebuildable artifacts; Checkpoint
-and Autopilot coordinate durable owners through their public APIs. This is a
+and Autopilot coordinate durable owners through their public APIs. Coverage is
+also projection-only by default: `mark_cell` writes its matrix, while the
+explicit `write_finding=True` path calls the Finding owner's `upsert_finding`
+API rather than writing a second Finding store or finality state. This is a
 verified no-production-change result, not permission to add a generic
 projection framework.
 

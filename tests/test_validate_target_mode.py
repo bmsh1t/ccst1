@@ -9,7 +9,15 @@ import pytest
 import finding_index
 import validate
 import validation_runner
+from runner_witness import canonical_runner_witness
 from runtime_state import load_runtime_state
+
+
+def test_validation_and_reporting_share_runner_witness_boundary():
+    import report_generator
+
+    assert validate.canonical_runner_witness is canonical_runner_witness
+    assert report_generator._canonical_runner_witness is canonical_runner_witness
 
 
 def test_finding_url_from_summary_preserves_protocol_relative_external_endpoint():

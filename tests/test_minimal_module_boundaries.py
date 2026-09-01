@@ -28,6 +28,7 @@ def test_authoritative_architecture_contract_keeps_ai_thick_kernel_thin():
         "## Memory Contract",
         "activation_contract_projection()",
         "canonical validation-runner summary",
+        "tools/runner_witness.py",
         "hunt-memory/targets/<target>.json` is a compatibility/read projection",
         "No database/service migration",
     ):

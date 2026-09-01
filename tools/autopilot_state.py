@@ -2694,6 +2694,7 @@ def _load_autopilot_control_facts(
         resolved_memory_dir,
         resolved_target,
         repo_root=repo_root,
+        fast_recon=fast_recon,
     )
     finalized_identities = _finalized_finding_identities(repo_root, resolved_target)
     guard_status = load_guard_status(resolved_memory_dir, resolved_target)
@@ -2767,7 +2768,24 @@ def _load_autopilot_control_facts(
     )
     target_goal_memory = load_target_goal_memory(repo_root, resolved_target)
     has_recon = bool(recon_artifacts.get("ready"))
-    has_memory = resume_summary is not None
+    # A runtime session marker alone is not hunt memory: fresh recon creates
+    # that marker before the first handoff. Count only historical profile,
+    # journal, canonical projections, or non-runtime owner state.
+    resume_profile = (resume_summary or {}).get("legacy_profile") or {}
+    owner_projection = (resume_summary or {}).get("owner_projection") or {}
+    canonical_sources = set((resume_summary or {}).get("canonical_sources") or [])
+    has_memory = bool(
+        resume_summary
+        and (
+            resume_profile.get("status") in {"loaded", "invalid"}
+            or int(resume_summary.get("journal_entries", 0) or 0) > 0
+            or bool(owner_projection.get("available"))
+            or bool(resume_summary.get("findings"))
+            or bool(resume_summary.get("tested_endpoints"))
+            or bool(resume_summary.get("untested_endpoints"))
+            or bool(canonical_sources - {"runtime"})
+        )
+    )
     fresh_recon_ready = _fresh_recon_needs_surface_context(
         runtime_state,
         has_recon=has_recon,
