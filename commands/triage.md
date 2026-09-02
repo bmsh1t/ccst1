@@ -26,12 +26,16 @@ Describe the finding in one sentence. Example:
 
 ## The 7 Questions (Fast Version)
 
+Use `skills/triage-validation/SKILL.md` as the contract owner. This shortcut
+keeps the same verdicts but accepts any target-bound reproducible evidence
+artifact; it is not a second HTTP-only gate.
+
 Answer YES or NO to each. First NO = stop the report path immediately.
 
 ```
-Q1: Can I demonstrate this with a real HTTP request RIGHT NOW?
-    YES: I have the request/response already
-    NO: I need to look at more code first → DO NOT REPORT YET
+Q1: Can I reproduce this RIGHT NOW with a target-bound artifact?
+    YES: I have request/response, browser, frame, state, OOB, or equivalent replay evidence
+    NO: I need one concrete evidence action first → keep the candidate open
 
 Q2: Is the impact concrete and clearly demonstrated?
     YES: Actual user/data/action impact is shown
@@ -41,17 +45,17 @@ Q3: Is the vulnerable asset tied to the supplied target context?
     YES: Domain / URL / workflow matches the current target set
     NO: The finding drifted away from the supplied target → KILL
 
-Q4: Does this work without admin/privileged access?
-    YES: Regular user account is enough
-    NO: Requires admin → KILL (99% of programs)
+Q4: Are the attacker preconditions reachable and in scope?
+    YES: Record the exact account, role, device, victim action, or prior state
+    NO: The required boundary is unreachable or out of scope → KILL Q4
 
 Q5: Is this NOT already known/disclosed/documented behavior?
     YES: Not in changelogs, not in disclosed reports
     NO: It's documented as intended → KILL
 
-Q6: Can I prove impact beyond "technically possible"?
-    YES: I have actual data in the response / action completed
-    NO: I only have a 200 status or error message → DOWNGRADE
+Q6: Can I prove impact beyond "technically possible" with the lowest-risk evidence?
+    YES: The smallest necessary data, state, execution, or callback differential is shown
+    NO: I only have a status, error, or weak signal → DOWNGRADE or record the next proof action
 
 Q7: Is this NOT on the never-submit list?
     YES: It's a real bug class
@@ -62,9 +66,9 @@ Q7: Is this NOT on the never-submit list?
 
 Do not report immediately if ANY of these are true:
 ```
-[ ] "Admin can do X" = not a bug
+[ ] An admin-only action is not an authorization break unless a lower boundary is crossed
 [ ] "Could theoretically lead to..." = no PoC = not a bug
-[ ] Bug requires 3+ preconditions simultaneously
+[ ] Preconditions are recorded with reachability and scope; there is no numeric cutoff
 [ ] Finding is a missing header, missing flag, missing DMARC
 [ ] SSRF with DNS callback only, no data returned
 [ ] Open redirect with no OAuth chain or ATO path
@@ -75,7 +79,8 @@ Do not report immediately if ANY of these are true:
 
 ## Conditional Chain Required
 
-If it's on the never-submit list BUT you can chain it:
+If it's on the never-submit list BUT you can chain it, use these as common
+examples rather than a complete chain allowlist:
 ```
 Open redirect → OAuth code theft → ATO        = report the chain
 SSRF DNS → internal service access = data     = report the chain
@@ -91,9 +96,9 @@ specific next evidence action, or drop it from the report path.
 **GO:** "All 7 pass. Run /validate for full check, then /report."
 
 **KILL [reason]:**
-- "Q1 fails — no HTTP request yet"
-- "Q4 fails — requires admin access"
+- "Q1 fails — no target-bound reproducible artifact yet"
+- "Q4 fails — the required precondition is unreachable or out of scope"
 - "Q7 fails — open redirect alone is not submittable. Chain it with OAuth theft first."
 
 **DOWNGRADE:**
-- "Q6 — you have 200 status but not actual other-user data. Reproduce with two accounts and show victim's PII in the response before reporting."
+- "Q6 — the current artifact does not prove the claimed impact. Collect the lowest-risk missing differential before reporting."

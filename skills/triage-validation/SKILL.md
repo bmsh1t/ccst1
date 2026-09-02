@@ -59,18 +59,18 @@ Ask IN ORDER. A non-pass stops the current claim, then routes by meaning:
 
 ---
 
-### Q1: Can an attacker use this RIGHT NOW, step by step?
+### Q1: Can an attacker reproduce this RIGHT NOW, step by step?
 
 Complete this template:
 ```
 1. Setup:   I need [own account / another user's ID / no account]
-2. Request: [exact HTTP method, URL, headers, body — copy-paste ready]
-3. Result:  I can [read / modify / delete] [exact data shown in response]
+2. Artifact: [request/response, browser trace, frame, state transition, OOB artifact, or equivalent replayable record]
+3. Result:  I can [read / modify / delete / trigger] [exact observed result]
 4. Impact:  The real-world consequence is [account takeover / PII read / money stolen]
 5. Effort:  Preconditions are [auth/no-auth/role/object ID], with [single request / multi-step flow]
 ```
 
-**If you CANNOT write step 2 as a real HTTP request → DO NOT REPORT.**
+**If the artifact is not target-bound and reproducible → keep the Candidate open and record the missing evidence action; do not treat the wire format alone as a rejection.**
 
 ---
 
@@ -100,12 +100,15 @@ Confirm:
 
 ---
 
-### Q4: Does it require privileged access that an attacker can't realistically get?
+### Q4: Are the attacker preconditions reachable and in scope?
 
-- "Admin can do X" = centralization risk = **DO NOT REPORT** (on 99% of programs)
-- "Non-admin can do X that only admin should do" = valid
-- "Requires physical access / MFA device" = usually invalid
-- "Requires compromised victim account to work" = questionable, low severity at best
+- Record the exact account, role, device, victim action, or prior state required.
+- An admin-only action is not an authorization break by itself; a lower-privileged
+  or unauthenticated actor crossing that boundary can be valid when reproduced.
+- Physical access, an MFA device, or a test-owned/compromised account is not an
+  automatic rejection; evaluate reachability, scope, user interaction, and impact.
+- Multiple steps are acceptable when each transition is reproducible and the
+  claimed impact depends on the complete flow.
 
 ---
 
@@ -123,10 +126,15 @@ Search:
 
 ### Q6: Can you prove impact beyond "technically possible"?
 
-- XSS → show actual cookie theft or session hijack, not just `alert(1)` or `alert(document.domain)`
-- SSRF → hit an internal endpoint that returns data, not just DNS ping
-- SQLi → show actual data exfil from a real table, not just error message
-- IDOR → show actual other-user's data in response, not just a 200 status code
+- Use the lowest-risk artifact that answers the impact question:
+  - XSS → show execution in the affected security context; cookie/session proof
+    is only needed when it changes the demonstrated impact and is contained.
+  - SSRF → show server-side fetch impact beyond DNS-only, such as a safe
+    internal response, non-sensitive fingerprint, or controlled callback data.
+  - SQLi → show safe read-only query control first (boolean/result/error/timing
+    differential); extract table data only when necessary and allowed.
+  - IDOR → show the smallest private field or state delta needed to prove the
+    identity boundary, not an unnecessarily broad data copy.
 
 **If you can only show "technically possible" → DOWNGRADE severity, not kill.**
 
@@ -146,8 +154,9 @@ Check the NEVER SUBMIT list below, then route with this precedence:
    → **DO NOT REPORT.**
 
 "Standalone / alone" in the NEVER SUBMIT list means the primitive **by itself**
-is not reportable — it does not forbid the chained finding. Chain eligibility is
-defined by the CONDITIONALLY VALID table below.
+is not reportable — it does not forbid the chained finding. The CONDITIONALLY
+VALID table lists common chain shapes, not an exhaustive allowlist; an
+evidence-backed connector outside the table remains eligible for review.
 
 ---
 
@@ -202,8 +211,8 @@ Run in sequence. ALL 4 must PASS.
 ```
 [ ] Title: [Bug Class] in [Endpoint] allows [actor] to [impact]
 [ ] Steps to Reproduce: copy-pasteable HTTP request
-[ ] Evidence: screenshot/video of actual impact (not just 200 status)
-[ ] Severity: matches CVSS 3.1 score AND program's severity definitions
+[ ] Evidence: target-bound artifact showing the actual impact (not just a status code)
+[ ] Severity: matches the recorded `cvss.version`/`cvss.score`/`cvss.vector` and program definitions
 [ ] NEVER used "could potentially" or "may allow"
 ```
 
@@ -272,7 +281,12 @@ Build the chain first, prove it works end to end, THEN report.
 
 ---
 
-## CVSS 3.1 QUICK REFERENCE
+## CVSS CALIBRATION EXAMPLES (NOT THE SCORING OWNER)
+
+`tools/validate.py` writes the structured `cvss` result consumed by reports. The
+examples below are calibration references for common claims only; they do not
+override a recorded version, score, or vector and may be retained for legacy
+CVSS 3.1 program mappings.
 
 ### Common Score Examples
 
@@ -353,7 +367,8 @@ quote 必须是该行可执行、具有 guard 形态的代码；文件缺失、�
 The goal is to QUICKLY disqualify bad report candidates so you hunt real bugs:
 
 1. **Evidence-completeness rule**: If Q1 cannot be filled with a real target-bound request and observable result, preserve the Candidate and route it to DO_NOT_REPORT or a concrete next evidence action
-2. **Precondition count**: More than 2 preconditions simultaneously required → do not report
+2. **Precondition clarity**: Record every required precondition and its
+   reachability; there is no universal numeric cutoff.
 3. **Impact test**: "What does attacker walk away with?" — if nothing tangible → do not report
 4. **Admin bypass**: "Admin can do X" is NEVER a bug → do not report
 5. **Design doc test**: If it's documented behavior → do not report

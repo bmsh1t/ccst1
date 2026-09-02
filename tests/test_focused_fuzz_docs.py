@@ -139,4 +139,5 @@ def test_target_dialect_is_evidence_linked_bounded_and_feedback_driven():
 
     assert "模型自报数字置信度" in combined
     assert "路由差异只形成 Signal" in skill
-    assert "不拥有 finding、Surface、queue、coverage 或 target-memory 状态" in normalized_skill
+    assert "does not own Findings, Coverage, Queue lifecycle, or Target Memory schema" in normalized_skill
+    assert "must never write or mutate the rebuildable Surface projection directly" in normalized_skill

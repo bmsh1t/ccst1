@@ -61,19 +61,20 @@ Escalated proof requirements:
 A "technically possible" finding without PoC is an Informational at best; an
 unnecessarily invasive PoC is also a bad report.
 
-## 4. CVSS MUST MATCH ACTUAL IMPACT
+## 4. STRUCTURED CVSS IS THE SCORING OWNER
 
 Don't claim Critical for a Medium bug. Triagers trust you less for every overclaim.
 Don't claim Medium for a Critical — you're leaving money on the table.
 
-Use the CVSS 3.1 formula. Common scoring:
-- IDOR read PII (auth required): 6.5 Medium
-- Auth bypass → admin: 9.8 Critical
-- SSRF → cloud metadata: 9.1 Critical
+`tools/validate.py` is the only scoring producer. Reports must render the
+selected finding's recorded `cvss.version`, `cvss.score`, and `cvss.vector` from
+its validation summary. Legacy CVSS 3.1 records remain readable, but prose,
+templates, and model estimates must not recalculate or overwrite a stored
+result. Any examples elsewhere are calibration references only.
 
 ## 5. NEVER SUBMIT FROM THE ALWAYS-REJECTED LIST
 
-These are always N/A. Never submit them standalone:
+These are normally not standalone findings without a demonstrated connector:
 
 ```
 Missing headers (CSP, HSTS, X-Frame-Options)
@@ -87,7 +88,8 @@ Rate limit on non-critical forms
 Banner/version disclosure without working exploit
 ```
 
-Build the chain first. Prove it works. Then report.
+Build and prove the connector first. The canonical triage contract decides
+whether the result is a chain-required candidate or a reportable finding.
 
 ## 6. VERIFY DATA ISN'T ALREADY PUBLIC
 
@@ -102,7 +104,9 @@ Never test IDOR with only one account (testing yourself).
 - Account A = attacker (your account doing the request)
 - Account B = victim (whose data you're reading)
 
-Report must show: "I sent request with Account A's token but Account B's ID, and received Account B's private data."
+For an identity-boundary claim, report must show the smallest reproducible
+actor/object differential, for example: Account A's session reached Account B's
+private object. Use an equivalent artifact when the boundary is not HTTP.
 
 ## 8. REPORT FORMAT BY PLATFORM
 
@@ -118,7 +122,8 @@ Triagers skim. Long reports get skimmed harder.
 Structure:
 - Sentence 1: What attacker can do (impact)
 - Sentence 2-3: How (endpoint, parameter, method)
-- Steps to reproduce: numbered, with exact HTTP request
+- Steps to reproduce: numbered, with the exact replayable artifact (request,
+  browser trace, frame, state transition, or equivalent)
 - Impact: one paragraph, quantified
 - Fix: 1-2 sentences
 

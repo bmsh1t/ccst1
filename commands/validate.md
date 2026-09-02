@@ -16,12 +16,12 @@ Run full validation on the current finding before writing a report.
 
 - You are still broad-hunting and only have weak hypotheses
 - You need recon, ranking, or enrichment rather than report gating
-- The only evidence is code reading or intuition without a replayable request
+- The only evidence is code reading or intuition without a target-bound replayable artifact
 
 ## Inputs
 
 - Candidate endpoint, vuln class, impact claim, and reproduction details
-- Exact request/response or browser/OOB evidence when available
+- Exact request/response, browser/frame, state, or OOB evidence when available
 - `findings/<target>/findings.json` and `--finding-id` linkage when present
 - Current target/runtime context from repo-local config and disk artifacts
 
@@ -180,7 +180,7 @@ Describe the finding when prompted. Include:
 - The bug class
 - What the PoC shows
 - The target program
-- The exact request/response evidence if available
+- The exact replayable artifact and observed result if available
 
 If you already ran `/validate` and it passed, `/report` must use the selected
 finding's recorded summary path (or the path returned by that exact invocation),
@@ -217,18 +217,19 @@ Answer each. A non-pass stops the current claim; apply the authoritative routing
 rules from `skills/triage-validation/SKILL.md` instead of collapsing every
 outcome into a generic failure.
 
-### Q1: Can I demonstrate this step-by-step RIGHT NOW?
+### Q1: Can I reproduce this step-by-step RIGHT NOW?
 
 Write this out:
 ```
 1. Setup:   I need [own account / another user's ID / no account]
-2. Request: [exact HTTP method, URL, headers, body]
-3. Result:  Response shows [exact data / action completed]
+2. Artifact: [request/response, browser trace, frame, state transition, OOB artifact, or equivalent replayable record]
+3. Result:  Artifact shows [exact data / action / state change]
 4. Impact:  Real consequence is [account takeover / PII exposed / money stolen]
 5. Effort:  Preconditions are [auth/no-auth/role/object ID], with [single request / multi-step flow]
 ```
 
-If step 2 is "I need to look at the code more" → do not report it yet.
+If the artifact is not target-bound and reproducible, keep the Candidate open and
+record the missing evidence action instead of reporting it.
 
 ### Q2: Is the impact clearly demonstrated?
 
@@ -240,10 +241,12 @@ accepted-impact lists are optional context, not a validation gate.
 Use the provided target, IP, CIDR, primary-domain batch list, or exact URL as the working
 target context.
 
-### Q4: Does it need admin or privileged access that an attacker can't get?
+### Q4: Are the attacker preconditions reachable and in scope?
 
-"Admin can do X" → DO NOT REPORT.
-"Regular user can do X that only admin should" → valid.
+Record every required account, role, device, victim action, or prior state. An
+admin-only action is not an authorization break by itself; evaluate whether a
+lower-privileged or unauthenticated actor crosses the boundary and whether the
+required conditions are reproducible.
 
 ### Q5: Is this known or documented behavior?
 
@@ -251,9 +254,11 @@ Search disclosed reports + changelog + API docs.
 
 ### Q6: Can you prove impact beyond "technically possible"?
 
-- XSS → actual cookie value in exfil request, not just alert()
-- SSRF → response body from internal service, not just DNS callback
-- IDOR → actual other-user's private data in response, not just 200 status
+Use the lowest-risk artifact that answers the claim: execution in the affected
+security context for XSS, a safe internal or controlled callback differential for
+SSRF, a bounded read-only query differential for SQLi, and the smallest private
+field or state delta needed for an IDOR/authz boundary. Escalate only when the
+minimal proof cannot establish the claimed impact.
 
 ### Q7: Is this on the never-submit list?
 
@@ -277,27 +282,28 @@ If it's on the never-submit list, can you chain it?
 | CORS wildcard | + credentialed data exfil? |
 | Prompt injection | + IDOR → other user's data? |
 
-If no chain → do not report it. If chain confirmed → report the proven chain.
+If no chain → do not report it. If a connector is confirmed, report the proven
+chain. The table is a set of common shapes, not an exhaustive allowlist.
 
 ## 4 Gates — All Must Pass
 
-**Gate 0 (30 sec):**
+**Gate 0:**
 ```
-[ ] Confirmed with real HTTP requests (not just code reading)
+[ ] Confirmed with a target-bound replayable artifact (not just code reading)
 [ ] Tied to the supplied target context
 [ ] Reproducible from scratch
 [ ] Evidence captured
 ```
 
-**Gate 1 — Impact (2 min):**
+**Gate 1 — Impact:**
 ```
 [ ] Can answer "What does attacker walk away with?"
 [ ] More than "sees non-sensitive data"
 [ ] Real victim exists
-[ ] No unlikely preconditions
+[ ] Preconditions are reachable and recorded
 ```
 
-**Gate 2 — Dedup (5 min):**
+**Gate 2 — Dedup:**
 ```
 [ ] Searched HackerOne Hacktivity for endpoint + bug class
 [ ] Searched GitHub issues
@@ -305,12 +311,12 @@ If no chain → do not report it. If chain confirmed → report the proven chain
 [ ] Not in changelog as known issue
 ```
 
-**Gate 3 — Report quality (10 min):**
+**Gate 3 — Report quality:**
 ```
 [ ] Title formula: [Class] in [Endpoint] allows [actor] to [impact]
-[ ] Steps have exact HTTP request
+[ ] Steps have an exact replayable artifact (HTTP when applicable)
 [ ] Evidence shows actual impact
-[ ] CVSS calculated
+[ ] Recorded structured CVSS version, score, and vector are present
 ```
 
 ## Output
@@ -321,4 +327,4 @@ If no chain → do not report it. If chain confirmed → report the proven chain
 
 **DO_NOT_REPORT:** "Q[N] fails because [reason]. Do not report this candidate. Move on or demote only with a concrete next evidence action."
 
-**DOWNGRADE:** "Q6 only shows technical possibility. Downgrade from High to Medium. Requires showing actual data exfil in PoC."
+**DOWNGRADE:** "Q6 only shows a boundary signal. Use the lowest-risk missing differential, then re-triage the claimed impact."

@@ -7,6 +7,9 @@ description: Draft a validated bounty submission, local write-up, or formal pene
 Generate an editable, submission-ready report draft from validated evidence.
 
 This is the primary reporting workflow.
+`skills/report-writing/SKILL.md` is the report-only contract owner for structure,
+tone, platform rendering, and evidence presentation; this command owns only
+entry, source selection, and generator invocation.
 The generator rejects statusless structured rows and raw legacy scanner files by
 default. `--allow-legacy-drafts` is an explicit compatibility path; those drafts
 do not update canonical finding or action-queue lifecycle state.
@@ -27,7 +30,8 @@ Never write a report before validating. N/A submissions hurt your validity ratio
 
 Use the exact summary path stored in the selected canonical row, or the path
 returned by that finding's `/validate` invocation, as starting context and
-include its gate status in the evidence section. `findings/last-validate.json`
+include its gate status and structured `cvss` object in the evidence section.
+`findings/last-validate.json`
 is only a latest pointer and must not bind a report to a finding. If no matching
 summary exists, ask the user for the missing endpoint, evidence, impact, and
 reproduction details before drafting.
@@ -57,7 +61,7 @@ requirements is non-applicable unless the user requests that format. A local
 write-up should show:
 
 - exact setup and target state
-- exact request or exploit path
+- exact replayable request, browser/frame trace, workflow path, or equivalent artifact
 - exact response, artifact, or state change
 - why the behavior satisfies the task objective or demonstrates impact
 
@@ -108,17 +112,17 @@ Provide when prompted:
 - Delivery format (formal penetration test / local write-up / HackerOne / Bugcrowd / Intigriti / Immunefi)
 - Bug class
 - Affected endpoint
-- Your two test accounts and their IDs
-- The exact HTTP request that demonstrates the bug
-- The exact response that shows the impact
+- Relevant actors/roles/objects and their IDs when the claim crosses an identity boundary
+- The exact replayable artifact that demonstrates the bug
+- The exact observed result that shows the impact
 - Tech stack (for severity context)
 
 ## What This Generates
 
 1. Title following the formula: `[Bug Class] in [Endpoint] allows [actor] to [impact]`
 2. Summary paragraph (impact-first, no "could potentially")
-3. Vulnerability details with CVSS 4.0 score and vector string
-4. Steps to Reproduce with copy-paste HTTP requests
+3. Vulnerability details with the recorded CVSS version, score, and vector
+4. Steps to Reproduce with the exact replayable artifact
 5. Impact statement with quantification
 6. Supporting materials section
 7. Evidence references from `findings/`, screenshots, response snippets, or validation summary when available
@@ -127,7 +131,7 @@ Provide when prompted:
 
 ### HackerOne Format
 - Markdown sections: Summary, Vulnerability Details, Steps to Reproduce, Impact
-- Include CVSS 4.0 score + vector string
+- Include the recorded CVSS version, score, and vector
 - Include two test account setup instructions
 - Keep under 600 words
 
@@ -156,9 +160,12 @@ Provide when prompted:
 5. **Short:** triagers skim. < 600 words.
 6. **Human:** write to a person, not a system
 
-## CVSS 4.0 Calculation Guide
+## CVSS Calibration Notes (Not A Scoring Owner)
 
-Common patterns:
+Use the structured result produced by `/validate`. The following are calibration
+shapes only; never replace a finding's recorded `cvss` object with a template
+estimate or a score inferred from report prose.
+
 ```
 IDOR read PII (any user, auth needed):
 → CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N = 7.1 High
@@ -189,10 +196,10 @@ Use when payout is being downgraded:
 ```
 [ ] Title follows formula
 [ ] First sentence states exact impact
-[ ] HTTP request is copy-pasteable
-[ ] Response showing impact included
-[ ] Two accounts used (not self-testing)
-[ ] CVSS 4.0 calculated and included
+[ ] Replayable artifact is copy-pasteable or otherwise reproducible
+[ ] Observed result showing impact included
+[ ] Actor comparison is included when the claim crosses an identity boundary
+[ ] Recorded `cvss.version`, `cvss.score`, and `cvss.vector` are rendered unchanged
 [ ] No typos in endpoint/param names
 [ ] Under 600 words
 [ ] Severity matches impact (no overclaiming)

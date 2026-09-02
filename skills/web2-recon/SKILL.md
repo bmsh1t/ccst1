@@ -20,11 +20,12 @@ Read the current target record and bounded Context Pack before choosing a lane:
 - supplied scope, authentication/client context, browser/source evidence, and
   prior leads, dead ends, blocked prerequisites, and reopen conditions.
 
-Recon may create target-owned surface facts, Leads, Signals, and next actions.
-It does not own Findings, Coverage, Queue lifecycle, or Target Memory schema;
-不拥有 finding、Surface、queue、coverage 或 target-memory 状态; write those
-through their existing owners. A response status or technology name
-is a signal, never a vulnerability conclusion.
+Recon may create target-owned surface facts, Leads, Signals, and next-action
+proposals. It does not own Findings, Coverage, Queue lifecycle, or Target Memory
+schema. Surface facts are submitted through the existing Surface owner; Recon
+must never write or mutate the rebuildable Surface projection directly. A
+response status or technology name is a signal, never a vulnerability
+conclusion.
 
 ## Evidence-Driven Decision Tree
 

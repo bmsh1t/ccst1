@@ -152,16 +152,22 @@ secret/config evidence and a validation plan.
 
 ### SQLi Lane Flow
 
-示例输入面按证据选择，不是固定顺序; not a fixed checklist.
+示例输入面按证据选择，不是固定顺序; not a fixed checklist. Select only the
+branch that answers the current question:
 
-1. Start with explicit query semantics: search/filter/category/sort/pagination/report/export.
-2. Add hidden surfaces only from evidence: headers, cookies, path segments,
-   request metadata, log-backed fields, second-order stores.
-3. Run baseline confirmation before type classification: normal value vs one benign
-   perturbation, then boolean/error/sort/length delta.
-4. Prefer boolean or structural confirmation before time/OOB. Stop on WAF-only,
-   unstable timing, or no reproducible raw diff.
-5. Read `payload-families.md` only for SQLi type classification or DBMS fingerprint detail.
+- explicit query semantics such as search/filter/category/sort/pagination,
+  report, or export;
+- hidden surfaces shown by the target, such as headers, cookies, path segments,
+  request metadata, log-backed fields, or a second-order store;
+- baseline confirmation with one benign perturbation before type
+  classification, followed by the least invasive boolean/error/sort/length
+  differential that can decide the hypothesis;
+- time/OOB evidence only when a structural result cannot answer the question and
+  the callback is controlled. Stop on a WAF-only signal, unstable timing, or no
+  reproducible raw diff.
+
+Load `payload-families.md` only when the selected evidence requires SQLi type or
+DBMS classification; it is not a prerequisite for choosing the lane.
 
 ### Hidden Auth Switch Lane
 

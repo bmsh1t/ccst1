@@ -772,7 +772,9 @@ These are always active. Non-negotiable.
 PRs welcome. Best contributions:
 
 - New vulnerability scanners or detection modules
-- Payload additions to `skills/security-arsenal/SKILL.md`
+- Decision improvements belong in the matching Skill/Rule; detailed technique
+  references belong in `skills/security-arsenal/references/` or governed
+  Knowledge cards, not in the core routing Skills
 - New agent definitions for specific platforms
 - Real-world methodology improvements (with evidence from paid reports)
 - Platform support (YesWeHack, Synack, HackenProof)

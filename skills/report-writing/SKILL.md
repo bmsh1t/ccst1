@@ -6,6 +6,9 @@ description: Validated vulnerability reporting for formal penetration tests and 
 # REPORT WRITING
 
 Impact-first. Human tone. No theoretical language. Triagers are people.
+This is a `report-only` Skill: `/report` selects the canonical finding and
+`tools/validate.py` supplies the structured evidence and CVSS result. Render
+those inputs; do not create a second finding lifecycle or recalculate scores.
 
 ---
 
@@ -119,7 +122,7 @@ account are required."
 ## Vulnerability Details
 
 **Vulnerability Type:** IDOR / Broken Object Level Authorization
-**CVSS 3.1 Score:** 6.5 (Medium) — AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N
+**CVSS:** `[cvss.version] [cvss.score] — [cvss.vector]` (from validation summary)
 **Affected Endpoint:** GET /api/users/{user_id}/orders
 
 ## Steps to Reproduce
@@ -183,7 +186,7 @@ with a simple loop.
 
 ## Steps to Reproduce
 
-[Same structured steps — exact HTTP requests, exact responses]
+[Same structured steps — exact replayable artifacts and observed results]
 
 ## Proof of Concept
 
@@ -224,7 +227,7 @@ Include: endpoint, method, parameter, data exposed, required privileges.]
 
 1. [Login as attacker / visit URL / send request]
 
-2. Send the following HTTP request:
+2. Provide the following replayable artifact:
 
 \```http
 METHOD /endpoint HTTP/1.1
@@ -245,7 +248,7 @@ Content-Type: application/json
 
 [Specific, quantified impact. What data, how many users, what can attacker do.]
 
-CVSS 3.1 Score: X.X ([Severity]) — AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N
+CVSS: [cvss.version] [cvss.score] ([Severity]) — [cvss.vector]
 
 ## Attachments
 
@@ -255,7 +258,8 @@ CVSS 3.1 Score: X.X ([Severity]) — AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N
 **Intigriti-specific notes:**
 - Title format: `[Bug Class]: [One-line impact]` (no formula required, but keep it specific)
 - Severity is set by you: Critical/High/Medium/Low/Exceptional
-- CVSS 3.1 is standard (CVSS 4.0 also accepted on newer programs)
+- Render the version selected by the program from the validation summary; do not
+  infer a score from prose
 - PoC video is valued much more than screenshot alone — record with Loom
 - Safe harbor: Intigriti enforces it, be comfortable going slightly aggressive with testing
 
@@ -301,14 +305,20 @@ Requires $Z gas. Attack is repeatable."]
 
 ---
 
-## CVSS 3.1 QUICK SCORING
+## CVSS CALIBRATION (NOT SCORING OWNER)
 
-### Formula
+`tools/validate.py` is the only scoring producer. Copy the selected finding's
+`cvss.version`, `cvss.score`, and `cvss.vector` from its validation summary;
+everything in this section is a display/calibration reference and cannot
+override that record.
+
+### Legacy metric reference (display only)
 ```
-CVSS = f(AV, AC, PR, UI, S, C, I, A)
+CVSS metrics may be shown when a program requests them, but this Skill does not
+calculate or infer a score from prose.
 ```
 
-### Metric Quick Picks
+### Metric labels (for rendering only)
 
 | Metric | Value | Weight | When |
 |---|---|---|---|
@@ -328,7 +338,7 @@ CVSS = f(AV, AC, PR, UI, S, C, I, A)
 | **Integrity (I)** | High | +0.56 | Can modify any data |
 | **Availability (A)** | High | +0.56 | Crashes service |
 
-### Typical Scores by Bug Class
+### Calibration examples (never override a recorded result)
 
 | Bug | Typical CVSS | Severity |
 |---|---|---|
@@ -344,7 +354,11 @@ CVSS = f(AV, AC, PR, UI, S, C, I, A)
 
 ---
 
-## SEVERITY DECISION GUIDE
+## SEVERITY RENDERING NOTES
+
+Severity is rendered from the validated structured result and the program's
+classification. The examples below explain impact language only; they do not
+set a score or create a second gate.
 
 ### Critical (P1)
 - Full account takeover of any user without interaction
@@ -373,9 +387,9 @@ CVSS = f(AV, AC, PR, UI, S, C, I, A)
 
 ---
 
-## SEVERITY SELF-ASSESSMENT
+## IMPACT NARRATIVE INPUTS
 
-Each YES raises severity:
+These facts support the impact narrative; they do not calculate severity:
 ```
 1. Exposes PII / health / financial data of other users?        → +1 severity
 2. Allows account takeover or privilege escalation?             → +2 severity
@@ -386,7 +400,7 @@ Each YES raises severity:
 
 ---
 
-## DOWNGRADE COUNTERS
+## PROGRAM CONTEXT NOTES
 
 | Program Says | Counter With |
 |---|---|
@@ -404,10 +418,10 @@ Each YES raises severity:
 ```
 [ ] Title follows formula: [Class] in [endpoint] allows [actor] to [impact]
 [ ] First sentence states exact impact in plain English
-[ ] Steps to Reproduce has exact HTTP request (copy-paste ready)
-[ ] Response showing the bug is included (screenshot or JSON body)
-[ ] Two test accounts used — not just one account testing itself
-[ ] CVSS score calculated and included
+[ ] Steps to Reproduce has an exact replayable artifact (HTTP when applicable)
+[ ] Observed result showing the bug is included (response, trace, state, or callback)
+[ ] Actor comparison is included when the claim crosses an identity boundary
+[ ] Recorded `cvss.version`, `cvss.score`, and `cvss.vector` are rendered unchanged
 [ ] No typos in endpoint paths or parameter names
 [ ] Report is < 600 words — triagers skim long reports
 [ ] Severity claimed matches impact described — don't overclaim
@@ -417,7 +431,7 @@ Each YES raises severity:
 
 ---
 
-## CVSS 4.0 QUICK REFERENCE (newer programs)
+## CVSS 4.0 CALIBRATION REFERENCE (newer programs)
 
 CVSS 4.0 replaced CVSS 3.1 in November 2023. Some newer programs require it.
 
@@ -452,7 +466,9 @@ Key fields:
   UI = None | Passive (victim visits URL) | Active (victim takes explicit action)
 ```
 
-**Practical rule**: If program uses CVSS 4.0 and you don't know the vector, use the calculator and include the full string starting with `CVSS:4.0/AV:...`. Programs cannot dispute a valid vector string.
+**Practical rule**: If the program uses CVSS 4.0, render the validated
+`cvss.version`, `cvss.score`, and `cvss.vector`; do not substitute a calculator
+estimate or a score inferred from report prose.
 
 ---
 

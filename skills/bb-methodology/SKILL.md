@@ -104,19 +104,17 @@ Soft prompts for route selection:
 
 ## Hypothesis Selection
 
-Choose the first route that has a concrete next evidence action:
-
-1. Resume a running or interrupted owner-selected Action Queue item.
-2. Validate a Candidate or high-value Signal with missing proof dimensions.
-3. Close a high-impact coverage or actor/workflow gap.
-4. Follow a fresh boundary anomaly from browser, JS/source, parser behavior,
-   release/component intelligence, or a sibling endpoint.
-5. When existing evidence is sparse, generate new evidence on the highest-value
-   underexplored surface.
+Build candidate next actions from the current state rather than following a
+universal phase order. Candidate sources include an owner-selected Queue item,
+a Candidate or high-value Signal missing proof, a material actor/workflow gap,
+a fresh boundary anomaly, or a high-value underexplored surface. A resumed
+action may preempt new work when its owner says it is runnable; otherwise it is
+just another candidate.
 
 Rank alternatives by expected information gain, plausible impact, evidence
-quality, target ownership, reversibility, and cost. Do not prioritize a favorite
-bug class or let a scanner-negative result select completion.
+quality, target ownership, reversibility, and cost, then choose one concrete
+next evidence action. Do not prioritize a favorite bug class, a static phase
+sequence, or a scanner-negative result as a completion signal.
 
 ## Reasoning Lenses
 

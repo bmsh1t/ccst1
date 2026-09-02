@@ -29,7 +29,7 @@ notes."
 
 - You are still broad-hunting and only have weak hypotheses
 - You need recon, ranking, or enrichment rather than report gating
-- The input is only a theory from code/JS without a replayable request yet
+- The input is only a theory from code/JS without a replayable artifact yet
 
 ## Inputs
 
@@ -101,9 +101,9 @@ For every finding, output exactly one of:
 
 Apply in order. First NO = KILL the report path immediately.
 
-**Q1: Can attacker do this RIGHT NOW with a real HTTP request?**
-- YES: "Researcher has exact request/response"
-- NO: "Researcher only read code, no confirmed PoC" → KILL Q1
+**Q1: Can an attacker reproduce this RIGHT NOW with a target-bound artifact?**
+- YES: "Researcher has a replayable request/response, browser trace, frame, state transition, OOB result, or equivalent artifact"
+- NO: "Researcher only has a hypothesis or unbound signal" → KILL Q1
 
 **Q2: Is this impact clearly demonstrated?**
 - YES: "Impact is shown by reproduced behavior and evidence"
@@ -113,18 +113,18 @@ Apply in order. First NO = KILL the report path immediately.
 - YES: "Domain / URL / workflow matches the supplied target context"
 - NO: "Candidate drifted away from the current target being validated" → KILL Q3
 
-**Q4: Does it work without privileged access an attacker can't get?**
-- YES: "Requires only regular user account"
-- NO: "Requires admin role" → KILL Q4
+**Q4: Are the attacker preconditions reachable and in scope?**
+- YES: "The required account, role, device, victim action, or prior state is recorded and reproducible"
+- NO: "The required boundary is unreachable or out of scope" → KILL Q4
 
 **Q5: Is this not already known or documented behavior?**
 - YES: "Not in changelogs or disclosed reports"
 - NO: "Documented behavior" → KILL Q5
 
-**Q6: Can impact be proved beyond 'technically possible'?**
-- YES: "Researcher has actual other-user data in response"
-- PARTIAL: "Has 200 OK but not actual victim data" → DOWNGRADE (not kill)
-- NO: "DNS callback only, no data" → severity reduction
+**Q6: Can impact be proved beyond 'technically possible' with the lowest-risk evidence?**
+- YES: "The smallest necessary data, state, execution, or callback differential is observed"
+- PARTIAL: "The artifact shows a boundary signal but not the claimed impact" → DOWNGRADE (not kill)
+- NO: "Only a status, error, or weak signal is present" → record the missing proof and reduce severity
 
 **Q7: Is this not on the never-submit list?**
 - YES: "Bug class is valid for standalone submission"
@@ -157,27 +157,30 @@ Missing cookie flags alone
 ## Conditionally Valid (chain required)
 
 ```
-Open redirect → + OAuth code theft → CHAIN REQUIRED
-SSRF DNS-only → + internal data → CHAIN REQUIRED
-CORS wildcard → + credentialed data exfil → CHAIN REQUIRED
-Prompt injection → + IDOR on other user's data → CHAIN REQUIRED
-S3 listing → + secrets in bundles → CHAIN REQUIRED
+Open redirect → OAuth callback or token boundary → CHAIN REQUIRED
+SSRF callback → internal service or metadata boundary → CHAIN REQUIRED
+CORS behavior → credentialed data boundary → CHAIN REQUIRED
+Prompt injection → unauthorized data/tool boundary → CHAIN REQUIRED
+S3 exposure → source/secret/auth boundary → CHAIN REQUIRED
 ```
+
+These are common chain shapes, not an exhaustive allowlist. An evidence-backed
+connector outside this list remains eligible for review.
 
 ## 4 Gates (check after 7 questions pass)
 
-**Gate 0 (30 sec):** Confirmed with real requests? Target-context match? Reproducible? Evidence?
-**Gate 1 (2 min):** What does attacker walk away with? More than non-sensitive data? Real victim?
-**Gate 2 (5 min):** Searched HacktActivity? GitHub issues? Recent disclosed reports?
-**Gate 3 (10 min):** Title has formula? HTTP request in steps? CVSS calculated? Fix included?
+**Gate 0:** Confirmed with a target-bound replayable artifact? Target-context match? Reproducible? Evidence?
+**Gate 1:** What does attacker walk away with? More than non-sensitive data? Real victim?
+**Gate 2:** Searched HacktActivity? GitHub issues? Recent disclosed reports?
+**Gate 3:** Title has formula? Reproduction artifact is attached? Recorded structured CVSS is present? Fix included?
 
 ## No-Report Signals
 
 Do not report immediately if:
-- "Could theoretically..." → no PoC → KILL Q1
-- "Admin can do X" → KILL Q4
+- "Could theoretically..." → no replayable artifact → KILL Q1
+- "Admin can do X" → evaluate the actual authorization boundary and impact
 - "Might be chained with..." → keep as chain candidate; build it first before reporting
-- More than 2 preconditions simultaneously required → KILL Q1
+- Preconditions are not recorded or cannot be reproduced → KILL Q4
 - "API returns extra fields" → if not sensitive = not a bug → KILL Q2
 
 ## Burp MCP Integration (optional — only if Burp MCP is connected)
@@ -191,8 +194,8 @@ If the `burp` MCP server is available:
 5. Cross-reference the endpoint's response headers/cookies with known vulnerable patterns
 
 If Burp MCP is NOT available:
-- Ask the researcher to paste the HTTP request/response manually
-- Skip Collaborator checks — suggest webhook.site or Interactsh instead
+- Ask the researcher to provide the exact replayable artifact and observed result
+- Skip unavailable OOB checks and record the missing evidence action
 
 ## Output Format
 
@@ -204,6 +207,6 @@ REASON: [One clear sentence explaining why]
 ACTION: [What researcher should do next]
 - PASS: "Proceed to /report"
 - KILL: "Do not report this candidate. Move on, or demote it to Lead/Signal with the next evidence action."
-- DOWNGRADE: "Reproduce with two accounts and show victim PII in response, then re-triage"
+- DOWNGRADE: "Collect the lowest-risk missing differential for the claimed impact, then re-triage"
 - CHAIN REQUIRED: "Build [specific chain]. Confirm it works end-to-end. Then report both together."
 ```

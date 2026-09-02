@@ -1,139 +1,61 @@
 ---
-description: Meme coin and token security scan — checks for rug pull vectors (hidden mint, honeypot, fee manipulation, LP lock bypass, authority retention, bonding curve exploits, fake renounce, sandwich amplification). Runs automated token_scanner.py + manual 8-class audit. Usage: /token-scan <contract_path_or_dir> [--chain solana]
+description: Select an evidence-backed token review path for EVM or Solana targets. Uses token_scanner.py as an optional signal source and does not impose a fixed class order or risk verdict. Usage: /token-scan <contract_path_or_dir> [--chain solana]
 ---
 
 # /token-scan
 
-Fast rug pull detection for meme coins and token contracts. Covers EVM (Solidity) and Solana (Rust/Anchor).
+Review a token or program by selecting the most informative trust, authority,
+accounting, liquidity, or transfer question from the supplied code and chain
+context. `skills/meme-coin-audit/SKILL.md` owns the direct-only decision
+contract; this command owns entry and optional scanner handoff.
 
 ## Usage
 
-```
-/token-scan contracts/Token.sol                          # Single EVM contract
-/token-scan src/ --recursive                             # Scan entire directory
-/token-scan programs/token/ --chain solana --recursive   # Solana program
-/token-scan contracts/Token.sol --output findings/report.md  # Save report
+```text
+/token-scan CONTRACT_OR_DIRECTORY [--chain solana]
 ```
 
-## Step 0: Quick Kill Signals
+Run `tools/token_scanner.py` only when its bounded static signal can answer a
+current question. Scanner output is a lead with file/line provenance, not a
+finding or a clean verdict.
 
-Before scanning code, check:
+## Decision Tree
 
-```
-[ ] Contract is verified (source code available)?
-[ ] Deployer has no rug history?
-[ ] Token has been trading > 1 hour?
-[ ] Liquidity > $5K?
-[ ] Not a proxy with retained admin?
-```
+Choose the branch with the highest expected information gain and lowest
+reversible cost. Branches are alternatives, not a required sequence:
 
-If ANY answer is NO → flag and proceed with extreme caution.
+| Signal | Question to answer |
+|---|---|
+| Mint, supply, or balance authority | Can an unintended actor create or alter supply outside the intended invariant? |
+| Transfer, blacklist, freeze, or hook behavior | Can a controller selectively prevent or redirect transfers? |
+| Fee, tax, router, or receiver controls | Can mutable economics produce an unbounded or actor-specific outcome? |
+| LP, pool, migration, or emergency withdrawal path | Can liquidity or reserves be moved by an unintended authority? |
+| Bonding curve or graduation state | Can mutable parameters or transitions change value without the intended checks? |
+| EVM proxy or Solana upgrade/authority state | Can implementation or mint/freeze/upgrade control change after deployment? |
+| Renounce, delegate, or secondary admin signal | Does the public ownership state match the effective control path? |
+| Rebase, swap, or transfer-order behavior | Can a bounded transaction change price, balances, or user outcomes unexpectedly? |
 
-## Step 1: Run Automated Scanner
+The list is non-exhaustive. Select another branch when target evidence supports
+it, or stop when the invariant is preserved and no new evidence question remains.
 
-```bash
-# EVM
-python3 tools/token_scanner.py <contract_path>
+## Evidence and Handoff
 
-# Solana
-python3 tools/token_scanner.py <program_dir> --chain solana --recursive
-
-# JSON output for piping
-python3 tools/token_scanner.py <path> --json
-```
-
-The scanner checks all 8 bug classes via regex and returns a risk score + verdict.
-
-## Step 2: Hidden Mint Check
-
-```bash
-grep -rn "function mint\|_mint(\|_balances\[.*\] +=" src/ --include="*.sol" | grep -v "test\|lib"
-grep -rn "delegatecall" src/ --include="*.sol"
-# Solana:
-grep -rn "MintTo\|mint_to\|mint_authority" src/ --include="*.rs"
-```
-
-Look for: mint without MAX_SUPPLY cap, direct balance manipulation, delegatecall to unknown targets.
-
-## Step 3: Honeypot Check
-
-```bash
-grep -rn "blacklist\|isBlacklisted\|_bots\|maxTxAmount\|approve.*override" src/ --include="*.sol"
-# Solana:
-grep -rn "freeze_authority\|transfer_hook\|permanent_delegate" src/ --include="*.rs"
-```
-
-Look for: blacklist mappings, max tx setters without minimum bound, approve overrides that don't call super.
-
-## Step 4: Fee Manipulation Check
-
-```bash
-grep -rn "setFee\|setSellFee\|_taxFee\|_sellFee" src/ --include="*.sol"
-grep -rn "function set.*Fee" -A5 src/ --include="*.sol" | grep -v "require\|MAX"
-```
-
-Look for: fee setters without upper bound, fee exclusion for owner.
-
-## Step 5: LP Drain Check
-
-```bash
-grep -rn "migrateLP\|emergencyWithdraw\|\.sync()\|setPair\|setRouter" src/ --include="*.sol"
-grep -rn "addLiquidityETH" -A5 src/ --include="*.sol" | grep "owner\|msg.sender"
-```
-
-Look for: LP migration functions, emergency withdraw, auto-LP to owner wallet.
-
-## Step 6: Bonding Curve Check
-
-```bash
-grep -rn "virtualReserve\|setCurve\|graduate\|bonding_curve" src/ --include="*.sol" --include="*.rs"
-```
-
-Look for: mutable curve parameters, manipulable graduation threshold.
-
-## Step 7: Authority Check (Solana)
-
-```bash
-grep -rn "mint_authority\|freeze_authority\|update_authority\|close_authority" src/ --include="*.rs"
-grep -rn "set_authority.*None" src/ --include="*.rs"
-grep -rn "upgrade_authority" src/ --include="*.rs"
-```
-
-Look for: retained authorities that should be None, upgradeable programs.
-
-## Step 8: Fake Renounce Check
-
-```bash
-grep -rn "renounceOwnership.*override" src/ --include="*.sol"
-grep -rn "_shadowAdmin\|_backupOwner" src/ --include="*.sol"
-```
-
-Look for: overridden renounce without actual transfer, secondary admin roles.
-
-## Step 9: Sandwich Amplification Check
-
-```bash
-grep -rn "swapExactTokensForETH" -A5 src/ --include="*.sol" | grep "0,"
-grep -rn "swapThreshold\|_rebase\|reflect()" src/ --include="*.sol"
-```
-
-Look for: auto-swap with amountOutMin=0, rebase on every transfer.
+- Preserve chain, contract/program identity, source/version, authority context,
+  and raw scanner or analysis artifacts.
+- Use a test account/resource and the least-impact read-back needed to decide the
+  hypothesis. Do not infer a rug vector from a name, age, liquidity amount, or
+  regex match alone.
+- Record one boundary, baseline, changed condition, observed delta, impact, and
+  stop/reopen condition. Route a confirmed candidate through the existing
+  validation/report lifecycle.
 
 ## Output
 
-The scanner produces:
-- **Risk score** (0-100) based on finding severity
-- **Verdict** (CLEAN / LOW RISK / MEDIUM RISK / HIGH RISK / CRITICAL RISK)
-- **Individual findings** with file:line, code snippet, and recommendation
-- **Exit code** 1 if CRITICAL/HIGH findings (for CI integration)
-
-## What to Do Next
-
-- If CRITICAL findings → **DO NOT INTERACT**. Report if on Immunefi/Code4rena.
-- If HIGH findings → Manual deep review. May be intentional design. Check deployer history.
-- If MEDIUM findings → Flag for awareness. Likely not rug but worth monitoring.
-- If CLEAN → Token passes automated checks. Still verify on-chain state manually.
-
-## 5-Minute Rule
-
-If you've been scanning for 5 minutes and found no red flags across all 8 classes + automated scan → the token is likely clean. Move on. Don't hunt for phantom bugs.
+```text
+TARGET: [contract/program identity]
+CHAIN: [EVM / Solana]
+HYPOTHESIS: [one boundary and expected learning]
+EVIDENCE: [artifact refs and observed delta]
+STATUS: [CONFIRMED / NEXT_ACTION / STOP]
+ACTION: [one bounded next action or /validate]
+```
