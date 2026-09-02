@@ -54,6 +54,8 @@ deep_refs: []
 - 对 node/global ID 做双账号只读 role diff。
 - 对 mutation 只做 dry-run、测试资源或请求构造层面的低风险验证。
 - 对 subscription 比较不同角色/租户是否收到不应接收的事件。
+- Introspection is informational until a field-level auth matrix shows a
+  protected data or mutation boundary.
 - 对已观察的 operation，最多构造 `1/2/4` 个 alias variant，比较基线与变体的延迟、
   状态码、超时和错误增长；只记录可复现的放大候选，不把一次慢响应直接当作结论。
 - 禁止无界深层递归、alias 洪泛或大查询；有界差异检查没有稳定趋势时回到对象/字段权限验证。

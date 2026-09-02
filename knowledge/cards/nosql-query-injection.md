@@ -37,6 +37,7 @@ deep_refs: []
 ## 思路分支
 
 - Auth bypass：登录查询把用户输入拼入对象条件。
+- Use type classification to distinguish parser behavior from query widening.
 - Filter widening：搜索/列表过滤被 operator 扩大集合。
 - Type confusion：字符串、数组、对象、布尔、null 的校验与查询语义不一致。
 - Expression sink：`$where`、脚本表达式、模板化查询或动态 DSL。

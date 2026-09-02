@@ -50,7 +50,8 @@ Q4: Are the attacker preconditions reachable and in scope?
     NO: The required boundary is unreachable or out of scope → KILL Q4
 
 Q5: Is this NOT already known/disclosed/documented behavior?
-    YES: Not in changelogs, not in disclosed reports
+    YES: Not documented in target materials; external disclosed-report checks are
+         performed when the delivery mode is an external bounty submission
     NO: It's documented as intended → KILL
 
 Q6: Can I prove impact beyond "technically possible" with the lowest-risk evidence?
@@ -60,6 +61,14 @@ Q6: Can I prove impact beyond "technically possible" with the lowest-risk eviden
 Q7: Is this NOT on the never-submit list?
     YES: It's a real bug class
     NO: Missing headers, self-XSS, open redirect alone, etc. → KILL or CHAIN
+```
+
+For authenticated candidates, record the Q7b identity boundary before GO:
+
+```text
+Session ID, actor role, anonymous result, cross-identity result, and
+logged-out/stale-session result. For unauthenticated candidates, record why
+the identity-boundary check is not applicable.
 ```
 
 ## Fast No-Report Checklist

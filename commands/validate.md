@@ -213,111 +213,16 @@ backlog, state the AI override and continue with the stronger proof path.
 
 ## The 7-Question Gate
 
-Answer each. A non-pass stops the current claim; apply the authoritative routing
-rules from `skills/triage-validation/SKILL.md` instead of collapsing every
-outcome into a generic failure.
+The command is a thin entry point. Apply the authoritative Q1-Q7, Q7b, chain,
+and four-gate rules in `skills/triage-validation/SKILL.md`; do not maintain a
+second checklist here. A non-pass keeps the Candidate open or routes it to
+`CHAIN_REQUIRED`, `DOWNGRADE`, or `DO_NOT_REPORT` according to that Skill.
 
-### Q1: Can I reproduce this step-by-step RIGHT NOW?
-
-Write this out:
-```
-1. Setup:   I need [own account / another user's ID / no account]
-2. Artifact: [request/response, browser trace, frame, state transition, OOB artifact, or equivalent replayable record]
-3. Result:  Artifact shows [exact data / action / state change]
-4. Impact:  Real consequence is [account takeover / PII exposed / money stolen]
-5. Effort:  Preconditions are [auth/no-auth/role/object ID], with [single request / multi-step flow]
-```
-
-If the artifact is not target-bound and reproducible, keep the Candidate open and
-record the missing evidence action instead of reporting it.
-
-### Q2: Is the impact clearly demonstrated?
-
-Use observed exploitability, reproduced behavior, and practical impact. Public
-accepted-impact lists are optional context, not a validation gate.
-
-### Q3: Is the vulnerable asset tied to the supplied target context?
-
-Use the provided target, IP, CIDR, primary-domain batch list, or exact URL as the working
-target context.
-
-### Q4: Are the attacker preconditions reachable and in scope?
-
-Record every required account, role, device, victim action, or prior state. An
-admin-only action is not an authorization break by itself; evaluate whether a
-lower-privileged or unauthenticated actor crosses the boundary and whether the
-required conditions are reproducible.
-
-### Q5: Is this known or documented behavior?
-
-Search disclosed reports + changelog + API docs.
-
-### Q6: Can you prove impact beyond "technically possible"?
-
-Use the lowest-risk artifact that answers the claim: execution in the affected
-security context for XSS, a safe internal or controlled callback differential for
-SSRF, a bounded read-only query differential for SQLi, and the smallest private
-field or state delta needed for an IDOR/authz boundary. Escalate only when the
-minimal proof cannot establish the claimed impact.
-
-### Q7: Is this on the never-submit list?
-
-```
-Missing headers, GraphQL introspection alone, clickjacking without PoC,
-self-XSS, open redirect alone, SSRF DNS-only, logout CSRF, banner disclosure,
-rate limit on non-critical forms, missing cookie flags alone...
-```
-
-If yes → do not report it unless you have a proven chain.
-
-## Check: Conditionally Valid?
-
-If it's on the never-submit list, can you chain it?
-
-| You Have | Chain Available? |
-|---|---|
-| Open redirect | + OAuth code theft → ATO? |
-| SSRF DNS-only | + internal service data? |
-| Clickjacking | + sensitive action + PoC? |
-| CORS wildcard | + credentialed data exfil? |
-| Prompt injection | + IDOR → other user's data? |
-
-If no chain → do not report it. If a connector is confirmed, report the proven
-chain. The table is a set of common shapes, not an exhaustive allowlist.
-
-## 4 Gates — All Must Pass
-
-**Gate 0:**
-```
-[ ] Confirmed with a target-bound replayable artifact (not just code reading)
-[ ] Tied to the supplied target context
-[ ] Reproducible from scratch
-[ ] Evidence captured
-```
-
-**Gate 1 — Impact:**
-```
-[ ] Can answer "What does attacker walk away with?"
-[ ] More than "sees non-sensitive data"
-[ ] Real victim exists
-[ ] Preconditions are reachable and recorded
-```
-
-**Gate 2 — Dedup:**
-```
-[ ] Searched HackerOne Hacktivity for endpoint + bug class
-[ ] Searched GitHub issues
-[ ] Read 5 most recent disclosed reports
-[ ] Not in changelog as known issue
-```
-
-**Gate 3 — Report quality:**
-```
-[ ] Title formula: [Class] in [Endpoint] allows [actor] to [impact]
-[ ] Steps have an exact replayable artifact (HTTP when applicable)
-[ ] Evidence shows actual impact
-[ ] Recorded structured CVSS version, score, and vector are present
-```
+The gate covers, in order: target-bound replayability, demonstrated impact,
+target context, reachable preconditions, known behavior, impact beyond a bare
+possibility, and never-submit/chain status. Authenticated candidates also record
+the Q7b identity boundary. Gate 2 remains delivery-mode conditional as described
+above; local/lab external checks are `not applicable`, not a blocker.
 
 ## Output
 

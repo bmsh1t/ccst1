@@ -1,383 +1,151 @@
 ---
 name: web2-vuln-classes
-description: Web/API vulnerability-class routing guide for autonomous assessment. Use when the focus or target memory names a concrete class such as IDOR, access control, JWT/OAuth/SAML, GraphQL, SQLi/NoSQL, SSRF, upload, SSTI, deserialization, XXE, path traversal, request smuggling, cache poisoning/deception, race, browser boundary, WebSocket, LLM tool flow, or controlled RCE. Provides lane triggers, first safe action, evidence gate, stop condition, and chain path.
+description: Web/API vulnerability-class routing guide for autonomous assessment. Use when the focus or target memory names a concrete class such as IDOR, access control, JWT/OAuth/SAML, GraphQL, SQLi/NoSQL, SSRF, upload, SSTI, deserialization, XXE, path traversal, request smuggling, cache poisoning/deception, race, browser boundary, WebSocket, LLM tool flow, or controlled RCE. Provides evidence-driven route selection, project-card recall, evidence gates, stop conditions, and write-back boundaries.
 ---
 
-# WEB2 VULN CLASSES — Compact Routing Layer
+# WEB2 VULN CLASSES — Routing Layer
 
 This Skill is the decision layer after Claude selects a concrete Web/API bug-class
-lane. Keep it small. General technique knowledge and exact test-input syntax come
-from the model; this file keeps only project-specific routing and evidence rules.
+lane. General technique knowledge and exact test-input syntax come from the model;
+this file keeps project-specific routing, evidence gates, and lifecycle boundaries.
 
 ## Runtime Contract
 
-1. Read target memory first: current surface, hypothesis, active leads, dead ends.
-2. Pick one lane from evidence, not from a generic checklist.
-3. Build a baseline request/response before perturbing input.
-4. Change one boundary at a time: identity, object, parser, content type, method,
-   origin, cache key, state transition, or transport framing.
-5. Save raw request/response evidence for every Candidate.
-6. Queue executable actions through project scripts or explicit commands; browser
-   observation alone can create a Lead, not a Validated Finding.
-7. Use `triage-validation` before reporting. Bare primitives stay Lead/Candidate
-   until impact, identity boundary, chain, and stop condition are proven.
+1. Read target memory first: current surface, hypothesis, active leads, and dead ends.
+2. Pick one evidence-backed lane; do not run a generic class checklist.
+3. Establish a baseline before changing one boundary at a time.
+4. Use the model's least invasive test input for the observed parser, identity,
+   state, cache, browser, or transport boundary; use one changed axis at a time.
+5. Save target-bound raw evidence for every Candidate and queue executable actions.
+6. Use `triage-validation` before reporting; a framework name, status code, or
+   parser error alone remains a Lead/Signal.
+7. Write the result to the existing owner and leave a concrete next action or stop reason.
 
 ## Four-Layer Memory Hooks
 
-Load these cards through `context_pack.py`; do not read all of them manually.
+Load `knowledge/index.md` and only the cards matching the observed boundary.
+Typical routes are:
 
-| Lane | Knowledge card |
+| Boundary | Card route |
 |---|---|
-| API testing / docs / parser/auth matrix | `knowledge/cards/api-testing-workflow.md` |
-| Cross-component validation/storage/consumption views | `knowledge/cards/view-differential.md` |
-| OData query / navigation / batch boundary | `knowledge/cards/odata-query-boundaries.md` |
-| IDOR / BOLA / object authorization | `knowledge/cards/api-idor.md` |
-| Business logic / state machine | `knowledge/cards/business-logic-state-machines.md` |
-| Auth / roles / org boundary | `knowledge/cards/auth-access.md` |
-| JWT / OAuth / SAML / SSO | `knowledge/cards/auth-sso-token-edge-cases.md` |
-| Password reset / MFA / OTP / credential flow | `knowledge/cards/auth-credential-recovery-flows.md` |
-| Missing parameter discovery | `knowledge/cards/missing-parameter-discovery.md` |
-| Management exposure / path pattern | `knowledge/cards/path-pattern-management-exposure.md` |
-| GraphQL | `knowledge/cards/graphql.md` |
-| SQLi hidden surfaces | `knowledge/cards/sqli-hidden-surfaces.md` |
-| NoSQL query injection | `knowledge/cards/nosql-query-injection.md` |
-| LDAP filter / DN / XPath query boundary | `knowledge/cards/ldap-xpath-query-boundaries.md` |
-| SSRF URL fetch / internal impact | `knowledge/cards/ssrf-url-fetch.md`, `knowledge/cards/ssrf-internal-impact.md` |
-| Upload parser / upload execution | `knowledge/cards/upload-parser.md`, `knowledge/cards/upload-to-execution.md` |
-| Controlled RCE / SSTI / command injection | `knowledge/cards/controlled-rce-impact.md`, `knowledge/cards/server-side-template-injection.md` |
-| XXE / XML parser | `knowledge/cards/xxe-xml-parser.md` |
-| Path traversal / file read | `knowledge/cards/path-traversal-file-read.md` |
-| Deserialization / signed objects | `knowledge/cards/insecure-deserialization.md` |
-| XSS / browser boundaries | `knowledge/cards/xss-client-injection.md`, `knowledge/cards/browser-client-boundaries.md` |
-| Proxy/cache/smuggling | `knowledge/cards/proxy-cache-boundaries.md` |
-| WebSocket / realtime API | `knowledge/cards/websocket-realtime-api.md` |
-| Info disclosure / source/config | `knowledge/cards/information-disclosure-source-config.md` |
-| Web LLM / tool chains | `knowledge/cards/web-llm-tool-chains.md` |
-| Node / prototype pollution | `knowledge/cards/node-prototype-pollution.md` |
-| Race conditions | `knowledge/cards/race-conditions.md` |
+| Object/role/tenant authorization | `api-idor.md`, `auth-access.md` |
+| API schema/parser/query | `api-testing-workflow.md`, `sqli-hidden-surfaces.md`, `nosql-query-injection.md` |
+| Token, SSO, recovery, MFA | `auth-sso-token-edge-cases.md`, `auth-credential-recovery-flows.md` |
+| URL fetch, upload, XML, file read | `ssrf-url-fetch.md`, `upload-parser.md`, `xxe-xml-parser.md`, `path-traversal-file-read.md` |
+| Template, command, serialized object | `server-side-template-injection.md`, `insecure-deserialization.md`, `controlled-rce-impact.md` |
+| Browser, proxy, cache, realtime | `browser-client-boundaries.md`, `proxy-cache-boundaries.md`, `websocket-realtime-api.md` |
+| GraphQL, gRPC, LLM/RAG, cloud | `graphql.md`, `grpc-api-boundaries.md`, `web-llm-tool-chains.md`, `cloud-control-plane-pivots.md` |
+| Business state and concurrency | `business-logic-state-machines.md`, `race-conditions.md` |
+
+Cards provide patterns, counterexamples, and evidence prompts. They do not own
+the target state or force an execution sequence.
 
 ## Boundary-First Pattern Router
 
 Use the distilled project decision shape, not a fixed technique route:
 `boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -> impact`.
-Keep this as an AI reasoning aid; do not import flag hunting,
-admin-bot assumptions, DoS/ReDoS, persistent shell, or broad payload spraying into real
-targets.
+Keep this as an AI reasoning aid; do not import flag hunting, admin-bot assumptions,
+DoS/ReDoS, persistent shell, or broad payload spraying into real targets.
 
 ### Boundary-First Pass
 
 ```text
-1. Boundary: browser-only, backend-only, mixed app, auth flow, proxy/parser, worker/job?
-2. Baseline: what does one normal request/response look like for this feature?
-3. Hidden surface: what do JS/source/routes/headers/methods/content-types reveal?
-4. Bug family: injection, authz, parser mismatch, upload, token/SSO, state machine, cache/client?
-5. Primitive: can I prove one leak, one bypass, one callback, one marker, or one role diff?
-6. Connector: what adjacent gadget turns that primitive into account, data, authz, or controlled RCE impact?
+Boundary -> baseline -> hidden surface -> bug family -> primitive -> connector -> impact
 ```
+
+At each pivot record `Evidence`, `Primitive`, `Connector`, `Impact hypothesis`,
+`Next action`, and `Stop condition`. Use explicit `Primitive:` and `Connector:`
+entries. The model may skip, combine, or invent a
+branch when the observed evidence justifies it.
 
 ### Pattern Map
 
 | Signal | Route |
 |---|---|
-| Object ID, tenant/org/user/account/invoice/order IDs | IDOR / object auth matrix |
-| Token, callback, redirect, JWK/JKU/KID, SAMLResponse | JWT/OAuth/SAML/SSO lane |
-| Query, sort, filter, report, export, header/cookie/path segment input | SQLi/NoSQL hidden surface |
-| URL fetch, webhook, import, preview, callback | SSRF URL fetch; add internal impact only after server-side fetch proof |
-| Upload, import, convert, preview, SVG/Office/XML | Upload parser; upgrade to upload execution only with storage+access+execution proof |
+| Object ID, tenant/org/user/account/invoice/order IDs | IDOR / object authorization |
+| Token, callback, redirect, JWK/JKU/KID, SAMLResponse | JWT/OAuth/SAML/SSO |
+| Query, sort, filter, report, export, header/cookie/path input | SQLi/NoSQL hidden surface |
+| URL fetch, webhook, import, preview, callback | SSRF URL fetch; internal impact only after server-side proof |
+| Upload, import, convert, preview, SVG/Office/XML | Upload parser; safe verification and read-back before storage, access, and execution proof |
 | Template syntax, command output, shell primitive | SSTI/command/controlled RCE |
 | CL/TE, host header, proxy trust, cache key, unkeyed header | Proxy/cache/smuggling |
 | Origin, postMessage, DOM, CORS, clickjacking | Browser boundary |
 | WS handshake/frame/subscription | WebSocket / realtime API |
 | Source/config/secret/file read signal | Info disclosure / path traversal / management exposure |
 
-## API Hunting Playbook
-
-1. Classify API: public read, authenticated self-service, admin, internal, partner,
-   mobile, websocket, GraphQL, SOAP/XML, background job.
-2. Map endpoint × method × identity × object × parser before fuzzing.
-3. Split trust boundaries: client, gateway, backend, worker, datastore, cache.
-4. Test object-level auth with same path and different verb before broad enum.
-5. Test parser/content-type/method override only with raw replay and one changed axis.
-6. Escalate only after evidence crosses a boundary: own object -> other owned
-   account -> other role/tenant -> data write/read/RCE impact.
+## Focused Route Notes
 
 ### Object-Level Auth Matrix
 
-| Dimension | Minimal check | Stop condition |
-|---|---|---|
-| User / tenant / org | Same request with two owned identities | Same 403/404 and no data delta |
-| Method | `GET` vs `PATCH/DELETE/POST` on same object | No server-side authorization or state delta |
-| Path / rewrite header | method diff -> path/header rewrite -> raw replay | No server-side path delta |
-| Field / GraphQL selection | Same object with sibling fields/mutations | Introspection only, no protected data/action |
-| Workflow state | Before/after step request replay | No server-side transition or response delta |
+Compare the same target-bound action across two owned identities, object IDs,
+methods, fields, and workflow states. A stable 403/404 or no server-side delta is
+a stop condition; introspection or a UI difference is not an authorization proof.
 
 ### Access-Control Boundary Matrix
 
-| Pattern | First safe action | Evidence gate |
-|---|---|---|
-| URL-based access | Replay exact URL as lower role | Raw 200/field delta for protected data/action |
-| Method-based access | Compare same path across verbs | Method changes authz decision, not only routing |
-| Header rewrite | Test `X-Original-URL` / `X-Rewrite-URL` with raw replay | Backend honors rewritten path after frontend block |
-| Referer-based access | Replay with and without `Referer` | Server authorizes from header, not browser UI |
-| Admin role switch | Compare own admin/non-admin or two owned accounts | Privilege boundary changes server-side effect |
-
-Use Playwright request/raw replay for restricted headers; browser fetch cannot set
-some headers and must not become a false negative.
+Use raw replay for URL, method, path/header rewrite, and Referer boundaries. The
+method diff -> path/header rewrite -> raw replay branch is optional evidence-driven
+routing; `X-Original-URL`, `X-Rewrite-URL`, and `Referer` are observed candidates,
+not a fixed dictionary. Playwright request/raw replay may be needed when browser
+fetch cannot set a restricted header.
 
 ### Missing Parameter Signal Lane
 
-`parameter is null`, `missing parameter`, schema errors, validator errors, Swagger,
-OpenAPI, JS models, mobile traces, and old versions are parameter sources. Build a
-target-specific wordlist from target material, then test one low-impact parameter
-at a time. Do not bulk-enumerate real users, PII, passwords, addresses, or tokens.
+Use target material, schemas, source, and parser errors to build a target-specific wordlist.
+Test one low-impact parameter at a time; Do not bulk-enumerate real users,
+PII, passwords, addresses, or tokens. Preserve the raw differential and route to
+`knowledge/cards/missing-parameter-discovery.md`.
 
 ### Management Exposure Lane
 
-Pattern-based management exposure uses target naming: `admin`, `manage`,
-`metrics`, `health`, `config`, `stats`, logs, source maps, backups, manifests,
-and sibling paths. First action is read-only fingerprint plus auth boundary check.
-Do not import keys into cloud panels or take resource control; record minimal
-secret/config evidence and a validation plan.
+Use target naming and observed routes for read-only fingerprinting and an auth
+boundary check. Do not import keys into cloud panels or take resource control;
+record minimal config evidence and a validation plan.
 
 ### SQLi Lane Flow
 
 示例输入面按证据选择，不是固定顺序; not a fixed checklist. Select only the
-branch that answers the current question:
-
-- explicit query semantics such as search/filter/category/sort/pagination,
-  report, or export;
-- hidden surfaces shown by the target, such as headers, cookies, path segments,
-  request metadata, log-backed fields, or a second-order store;
-- baseline confirmation with one benign perturbation before type
-  classification, followed by the least invasive boolean/error/sort/length
-  differential that can decide the hypothesis;
-- time/OOB evidence only when a structural result cannot answer the question and
-  the callback is controlled. Stop on a WAF-only signal, unstable timing, or no
-  reproducible raw diff.
-
-The model chooses the least invasive SQLi/NoSQL technique from the observed
-query shape; this lane does not require a local syntax catalogue.
+branch that answers the current question: hidden surfaces (including headers, path segments,
+and second-order inputs), baseline confirmation,
+type classification, boolean/length differential, or controlled time/OOB evidence.
+Change one boundary at a time. Stop on WAF-only or unstable timing; require a second signal for SSRF impact and compare WAF and backend behavior against a
+baseline before escalating. The model chooses syntax from the observed query shape.
 
 ### Hidden Auth Switch Lane
 
-Hidden auth switches include disabled providers, SOAP/LDAP/SAML fallbacks, legacy
-login routes, `isAdmin=true`-style selectors, and source/channel/provider fields.
-First action: owned/test account baseline across visible flow and hidden selector.
-Do not silently fall into password brute force. If credential testing is selected,
-route to `skills/credential-attack/` or a controlled `/spray` run with lockout,
-rate limits and stop conditions.
+Start with an owned/test account baseline across the visible flow and any observed
+provider, channel, or role selector. Do not silently fall into password brute force.
+If credential testing is selected, route to `skills/credential-attack/` or a
+controlled `/spray` run with lockout, rate limits, and stop conditions.
 
 ## Chain Shapes
 
+Treat these as connector examples, not an allowlist:
+
 | Primitive | Connector | Validated impact |
 |---|---|---|
-| Open redirect | OAuth callback / token leakage | Account takeover or code theft proof |
-| SSRF callback | Internal admin / metadata credential | Data/control-plane impact with raw evidence |
-| Upload parser | Stored file access / converter | Parser bug or upload-to-execution chain |
-| GraphQL introspection | Node/global ID / mutation auth | Object or field-level auth bypass |
-| XSS | Session action, CSRF gap, token read, admin path | Account/data action impact |
-| Request smuggling | Cache poisoning, request capture, auth bypass | Victim request or response boundary proof |
-| Info disclosure | Source/config/route/secret | Follow-on auth, storage, or code path impact |
-| Race primitive | Quota/payment/OTP/state transition | Double spend/bypass in controlled target/test resource |
+| Open redirect | OAuth callback / token leakage | Account or code boundary proof |
+| SSRF callback | Internal service / metadata credential | Raw data or control-plane impact |
+| Upload parser | Stored file / converter | Parser or controlled execution proof |
+| GraphQL introspection | Node/global ID / mutation auth | Object or field authorization proof |
+| XSS | Session action / admin browser | Sensitive action or data proof |
+| Request smuggling | Cache, capture, or auth boundary | Victim-facing request/response proof |
+| Info disclosure | Source/config/route/secret | Follow-on boundary proof |
+| Race primitive | Quota/payment/OTP/state transition | Controlled state-delta proof |
 
-## Lane Cards
+## Evidence and Write-Back
 
-Each lane keeps only trigger, first safe action, evidence gate, stop condition,
-chain path, and project-card routing.
-
-### 1. IDOR / BOLA
-- Trigger: object IDs, tenant/org/user/account/order/invoice IDs, GraphQL node IDs.
-- First safe action: compare same request with two owned identities; change one ID.
-- Evidence gate: other owned account data/action is returned or accepted server-side.
-- Stop condition: stable 403/404/no field delta; no second identity.
-- Chain path: IDOR -> privilege, export, GraphQL, account takeover, or mass assignment.
-- Read if needed: `knowledge/cards/api-idor.md`.
-
-### 2. Broken Access Control
-- Trigger: role, admin, method, Referer, `X-Original-URL`, path rewrite, hidden route.
-- First safe action: raw replay across role/method/path/header boundary.
-- Evidence gate: protected server-side action/data differs by boundary bypass.
-- Stop condition: UI-only difference or same backend authz result.
-- Chain path: access bypass -> admin function -> data/action impact.
-- Read if needed: `knowledge/cards/auth-access.md`.
-
-### 3. XSS / Browser Injection
-- Trigger: reflected/stored/DOM XSS, postMessage, CSP, client redirects.
-- First safe action: source -> sanitizer/transform -> sink path with harmless proof.
-- Evidence gate: browser-context execution or sensitive action/data connector.
-- Stop condition: reflection only, CSP blocks execution, no controllable sink.
-- Chain path: XSS -> CSRF/action, token exposure, admin browser, ATO.
-- Read if needed: `knowledge/cards/xss-client-injection.md` and `knowledge/cards/browser-client-boundaries.md`.
-
-### 4. SSRF
-- Trigger: URL fetch, webhook, import, preview, oEmbed, callback, server-side request.
-- First safe action: prove server-side fetch with allowlisted baseline or controlled callback.
-- Evidence gate: server-side fetch plus second signal; DNS-only is insufficient.
-- Stop condition: browser-only redirect or no resolver/connect/read-back delta.
-- Chain path: SSRF -> internal admin/metadata credential/control-plane.
-- Read if needed: `knowledge/cards/ssrf-url-fetch.md` and `knowledge/cards/ssrf-internal-impact.md`.
-
-### 5. Business Logic
-- Trigger: price, coupon, checkout, quantity, workflow skip, client-side controls.
-- First safe action: model state machine and replay current user/test resource only.
-- Evidence gate: server accepts invalid state/value/order that changes outcome.
-- Stop condition: client-only display bug or real charge/refund/cancel needed without opt-in.
-- Chain path: logic flaw -> money/state/authz/data impact.
-- Read if needed: `knowledge/cards/business-logic-state-machines.md`.
-
-### 6. Race Conditions
-- Trigger: concurrent, parallel, TOCTOU, payment, OTP, coupon, quota, cart, checkout.
-- First safe action: identify one idempotent or test-scope state transition and run low-count parallel replay.
-- Evidence gate: reproducible duplicate transition or limit bypass; rate limit and lockout observed.
-- Stop condition: noisy timing or no stable transition delta.
-- Chain path: race -> double spend, OTP/MFA bypass, quota/limit overrun.
-- Read if needed: `knowledge/cards/race-conditions.md`.
-
-### 7. SQLi / NoSQL
-- Trigger: SQLi, NoSQL, operator injection, query/filter/sort/pagination/header/cookie input.
-- First safe action: baseline confirmation with one low-impact perturbation.
-- Evidence gate: type classification plus reproducible boolean/error/length/sort delta.
-- Stop condition: WAF-only signal, unstable timing, no raw diff.
-- Chain path: injection -> read/write/auth bypass; NoSQL -> auth/filter bypass.
-- Read if needed: `knowledge/cards/sqli-hidden-surfaces.md` and `knowledge/cards/nosql-query-injection.md`.
-
-### 8. JWT / OAuth / OIDC / SAML / SSO
-- Trigger: JWT, JWK/JKU/KID, alg confusion, redirect_uri, state, PKCE, RelayState, SAMLResponse.
-- First safe action: map issuer/key source, callback, state binding, account linking, and token/session boundary.
-- Evidence gate: server accepts changed identity/account/session or leaks code/token to controlled endpoint.
-- Stop condition: decode-only, metadata-only, or redirect alone without chain.
-- Chain path: redirect/PKCE/state/key-source flaw -> account linking or ATO.
-- Read if needed: `knowledge/cards/auth-sso-token-edge-cases.md`.
-
-### 9. File Upload
-- Trigger: upload, import, avatar, attachment, SVG/Office/XML, converter, storage path.
-- First safe action: save raw upload request and verify storage/read-back/parser behavior.
-- Evidence gate: safe verification of parser/component boundary or storage access execution proof.
-- Stop condition: filename-only rejection or no read-back/processing delta.
-- Chain path: upload parser -> XXE/XSS/deserialization; upload execution -> controlled RCE.
-- Read if needed: `knowledge/cards/upload-parser.md`, `knowledge/cards/xxe-xml-parser.md`, and `knowledge/cards/controlled-rce-impact.md`.
-
-### 10. GraphQL
-- Trigger: GraphQL, introspection, node/global ID, mutation, subscription, field-level auth matrix.
-- First safe action: schema/map; test sibling field or mutation with two owned identities.
-- Evidence gate: field-level auth matrix shows protected data/action; introspection alone is informational.
-- Stop condition: schema only, no object/field/mutation boundary.
-- Chain path: node global ID -> object auth bypass; subscription -> realtime leak.
-- Read if needed: `knowledge/cards/graphql.md`.
-
-### 11. LLM / AI Features
-- Trigger: chatbot, prompt injection, indirect prompt, RAG, agent tool, markdown exfil, tool call.
-- First safe action: map tool permissions, data boundary, and user/session separation.
-- Evidence gate: prompt path causes unauthorized tool/data/action in controlled target/test resource.
-- Stop condition: model says forbidden or outputs text only without data/action boundary.
-- Chain path: indirect prompt -> data exfil/tool misuse/account action.
-- Read if needed: `knowledge/cards/web-llm-tool-chains.md`.
-
-### 12. API Misconfiguration
-- Trigger: mass assignment, over-posting, CORS, prototype pollution, JWT none/alg, method override.
-- First safe action: derive candidate fields from schema/JS/XHR; replay one safe extra field.
-- Evidence gate: server persists or authorizes unexpected field/action.
-- Stop condition: ignored field, client-only reflection, no server state diff.
-- Chain path: mass assignment -> role/plan/status; prototype pollution -> auth/RCE sink.
-- Read if needed: `knowledge/cards/api-testing-workflow.md` and relevant class card.
-
-### 13. Account Takeover / Recovery
-- Trigger: reset token, email change, username enumeration, MFA, remember device, account linking.
-- First safe action: map token -> account -> session binding using owned accounts.
-- Evidence gate: account/session/email/MFA boundary changes server-side.
-- Stop condition: enumeration only, no auth boundary, or lockout/rate limit threshold reached.
-- Chain path: reset/SSO/email/MFA flaw -> ATO.
-- Read if needed: `knowledge/cards/auth-credential-recovery-flows.md`.
-
-### 14. SSTI / Command Injection / Controlled RCE
-- Trigger: template injection, command injection, output channel, blind timing, shell primitive.
-- First safe action: engine/context classification with harmless output or timing baseline.
-- Evidence gate: controlled RCE proof shows output/timing channel and bounded execution identity.
-- Stop condition: 500/timeout only, no observable execution identity or output.
-- Chain path: primitive -> controlled RCE -> bounded impact statement.
-- Read if needed: `knowledge/cards/server-side-template-injection.md` and `knowledge/cards/controlled-rce-impact.md`.
-
-### 15. Subdomain Takeover / Cloud / Infra
-- Trigger: dangling CNAME, storage bucket, Firebase/open rules, exposed admin/metrics/config.
-- First safe action: read-only fingerprint and provider-specific proof without takeover.
-- Evidence gate: provider confirms claimable resource or readable storage/config boundary.
-- Stop condition: ambiguous fingerprint or no claimable resource/provider proof.
-- Chain path: takeover/config -> app data/source/secret/auth boundary.
-- Read if needed: `knowledge/cards/cloud-control-plane-pivots.md` and `knowledge/cards/information-disclosure-source-config.md`.
-
-### 16. HTTP Request Smuggling / Cache
-- Trigger: Content-Length, Transfer-Encoding, H2 downgrade, host header, proxy trust, cache poisoning/deception.
-- First safe action: scripted baseline for frontend/backend framing or cache key workflow.
-- Evidence gate: raw desync/request-capture/cache-key/private response evidence.
-- Stop condition: timing-only, prod-wide poison, or victim impact without controlled target/test resource.
-- Chain path: smuggling -> request capture/cache poison/auth bypass; deception -> private response leak.
-- Read if needed: `knowledge/cards/proxy-cache-boundaries.md`.
-
-### 17. MFA / 2FA
-- Trigger: OTP, TOTP, backup code, remember device, MFA skip, lockout, rate limit.
-- First safe action: own account baseline, lockout/rate observation, one low-volume replay.
-- Evidence gate: MFA state or token binding bypass with owned/test account.
-- Stop condition: lockout threshold, real SMS/email flood, no state delta.
-- Chain path: MFA bypass -> session/ATO.
-- Read if needed: `knowledge/cards/auth-credential-recovery-flows.md`.
-
-### 18. Path Traversal / LFI / File Read
-- Trigger: download/view/include/template/theme/locale/archive/file path parameter.
-- First safe action: normal file baseline and one traversal/encoding variant.
-- Evidence gate: controlled file read or route/config/source disclosure.
-- Stop condition: error-only, no read-back, sensitive bulk read required.
-- Chain path: file read -> source/config/secret -> auth/RCE/SSRF connector.
-- Read if needed: `knowledge/cards/path-traversal-file-read.md`.
-
-### 19. XXE / XML Parser
-- Trigger: XML/SOAP/SAML/SVG/Office/RSS/Atom/import/conversion parser.
-- First safe action: harmless entity or controlled callback with raw upload/request evidence.
-- Evidence gate: external entity, XInclude, file-read, or SSRF behavior observed.
-- Stop condition: XML error only or sensitive file/OOB without authorization.
-- Chain path: XXE -> file read/SSRF/upload parser chain.
-- Read if needed: `knowledge/cards/xxe-xml-parser.md`.
-
-### 20. Deserialization / Signed Objects
-- Trigger: serialized cookie, ViewState, remember-me, signed object, gadget, pickle, PHP serialize.
-- First safe action: decode/encoding map and single-byte tamper to test integrity signature boundary.
-- Evidence gate: state tamper accepted or gadget chain reachable in controlled target/test resource.
-- Stop condition: signature/encryption rejects tamper, format only, no reachable sink.
-- Chain path: state tamper -> privilege; gadget -> controlled RCE.
-- Read if needed: `knowledge/cards/insecure-deserialization.md` and `knowledge/cards/controlled-rce-impact.md`.
-
-### 21. Host Header / Proxy Trust / CRLF
-- Trigger: Host, XFH, Forwarded, X-Original-URL, CRLF, response splitting.
-- First safe action: raw replay one header at a time; compare reset links, redirects, cache keys, routing.
-- Evidence gate: server-side trust or response header/body injection changes action/data boundary.
-- Stop condition: reflection only, browser-only display, no downstream consumer.
-- Chain path: host/proxy trust -> password reset, cache poison, SSRF connector.
-- Read if needed: `knowledge/cards/proxy-cache-boundaries.md`.
-
-### 22. WebSocket / Realtime API
-- Trigger: websocket, socket.io, STOMP, SignalR, GraphQL subscription, CSWSH, message schema.
-- First safe action: capture handshake and first frames; classify cookie/query/subprotocol/first-message auth.
-- Evidence gate: foreign/null Origin with credentials, or message schema object auth bypass.
-- Stop condition: no authenticated handshake, no controllable channel/object, Origin consistently rejected.
-- Chain path: CSWSH/WS BOLA -> private event/data/action leak.
-- Read if needed: `knowledge/cards/websocket-realtime-api.md`.
-
-### 23. gRPC / gRPC-Web / JSON Transcoding
-- Trigger: `application/grpc*`, grpc-status/trailers, protobuf、reflection、gRPC-Web、grpc-gateway。
-- First safe action: 保存 h2 headers/body/trailers；用不存在方法与合法方法+无效参数区分 transport 和 method reachability。
-- Evidence gate: status `0` 或稳定角色/对象差异产生非预期数据/状态影响；reflection/status `12` 单独只是 Signal。
-- Stop condition: 只有 service/schema、status `12/3` 或 edge 错误映射，没有身份/对象/状态差异。
-- Chain path: edge/backend metadata gap 或 gateway re-exposure -> RPC authz/object impact。
-- Read if needed: `knowledge/cards/grpc-api-boundaries.md`。
-
-### 24. Cognito / Kubernetes Cloud Identity Boundaries
-- Trigger: Cognito IdentityPoolId/unauth role/STS、Kubernetes API/kubelet/RBAC/service-account/nodes-proxy。
-- First safe action: 按 `公开标识 -> 身份 -> role/RBAC -> 单个 resource action -> read-back` 保存逐跳证据。
-- Evidence gate: Cognito 需匿名临时凭证+caller+非预期 IAM action；K8s 需当前 identity 的具体 verb/resource/subresource allow 与实际影响。
-- Stop condition: 只有 GetId/API 200、10255/read-only metadata、token 格式或 role 名称，没有实际权限证据。
-- Chain path: client/workload identity -> IAM/RBAC -> storage/API/deploy/kubelet control-plane impact。
-- Read if needed: `knowledge/cards/cloud-cognito-identity-pool.md`, `knowledge/cards/k8s-control-plane-boundaries.md`, `knowledge/cards/cloud-control-plane-pivots.md`。
+Before escalation, require a raw baseline, a controllable input, a reproducible
+differential, and the smallest demonstrated impact. A `server-side fetch`,
+`field-level auth matrix`, `introspection alone is informational`,
+`storage/access/execution`, `baseline/type classification`, or `state machine/bounded
+parallel replay` phrase is a prompt for evidence, not a finding by itself. Use the
+current user/test resource for race checks. Record the selected route, action, evidence references, coverage,
+dead ends, remaining unknowns, next action, and owner write-back using the shared
+`SKILL RESULT` contract.
 
 ## Global Stop Conditions
 
-Stop or downgrade to Lead when there is no raw baseline, no controllable input,
-no owned/test identity, or no repeatable response delta.
+Stop or downgrade to Lead when there is no raw baseline, no controllable input, no
+owned/test identity where required, no repeatable response/state delta, or only a
+framework/status/parser signal without a target-bound connector.

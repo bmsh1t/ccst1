@@ -45,13 +45,11 @@ frontmatter 属于 `warning`，允许渐进迁移。需要把迁移债务也纳�
 | 目标状态 | `tools/target_case_state.py` |
 | 跨步骤流程 | Skill / command 文案 |
 
-加载预算默认按 registry 分层执行：
+加载预算默认按 registry 执行：
 
 ```text
-最多 1 张 core card
-+ 最多 1 张 reference card
-+ 最多 1 个 case-router；若卡片存在可选 `source_refs`，可再按需查询案例
-+ 最多 1 个项目验证 playbook（仅验证阶段 gated）
+最多 2 张知识卡总数，其中最多 1 个 case-router；
+验证 playbook 仅在验证阶段按需读取，不计入知识卡预算
 ```
 
 降级不是删除：`case-router`、`out-of-target-intel`、`public-metadata` 等低优先级线索

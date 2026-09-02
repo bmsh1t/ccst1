@@ -19,6 +19,8 @@ deep_refs: []
 ## Quick Recall
 
 - WebSocket 要同时看握手鉴权和消息级权限；连接成功不代表频道、对象、动作都授权正确。
+- Stop conditions include no authenticated channel, no object-level delta, or a
+  stable Origin rejection; a successful handshake alone is not impact.
 - 高信号点：Origin、Cookie/token、Sec-WebSocket-Protocol、订阅频道、对象 ID、消息 type/action。
 - 前端输入框 sanitization 不代表消息级安全；需要直接观察/重放 WebSocket frame。
 - CSWSH 需要证明跨站页面能带凭据建立连接并读取/触发敏感消息。

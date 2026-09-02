@@ -27,6 +27,8 @@ deep_refs:
 ## Quick Recall
 
 - SSTI 先证明服务端模板求值 primitive，再判断是否能升级到文件读取、对象访问或受控命令执行。
+- Start with engine/context classification so a template signal is not mistaken
+  for an execution result.
 - 入口常在邮件模板、预览、报表、CMS 富文本、错误页、通知、PDF/HTML 转换、主题/页面配置。
 - 算术 marker、字符串拼接、模板错误、上下文变量和引擎指纹是早期信号，不等于 RCE。
 - 命中模板求值后，再读取 `controlled-rce-impact` 做最小影响证明；不默认 reverse shell、webshell 或持久化。

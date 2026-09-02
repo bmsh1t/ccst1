@@ -49,6 +49,8 @@ source_refs:
 - 触发：用户可控 URL、webhook/import/preview 等功能，并有后端主动请求线索。
 - 最小验证：先用单一可控 callback 建立服务端访问 baseline，再一次只改变一个解析变量。
 - 证据门：记录来源、时间、请求特征、状态/回显和实际影响；访问自有 URL 不等于高危 SSRF。
+- A DNS-only signal is insufficient; keep the server-side fetch and internal-impact
+  connector separate until both are replayable.
 - Next.js `/_next/image` 返回 200 只说明优化器产生了响应；必须用唯一 OAST callback、可解释的
   upstream 内容差异或单个内部资源证据证明真实 server-side fetch。
 - 停止：无法证明服务端请求、只有 DNS-only 信号，或需要访问未授权内部系统。

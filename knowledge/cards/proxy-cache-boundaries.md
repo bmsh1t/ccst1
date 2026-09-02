@@ -63,6 +63,8 @@ source_refs:
 ## Quick Recall
 
 - 这类问题先建模链路：客户端 -> CDN/cache -> 前端代理 -> 后端应用；不要直接上大 payload。
+- Use a cache-key workflow: establish the keyed baseline, then prove an
+  unkeyed input changes the same victim-facing response.
 - Host header 和 XFH 重点看绝对链接、重置密码、OAuth callback、tenant routing、cache key 和后端路由。
 - Host 也可能直接参与本地/管理面授权判断；`Host: localhost` 一类变体只作为单变量验证，不做通用喷洒。
 - Cache poisoning/deception 要证明“未入 key 的输入影响可缓存响应”或“私有响应被静态扩展路径缓存”。

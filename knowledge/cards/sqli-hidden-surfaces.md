@@ -49,6 +49,8 @@ source_refs:
 - SQLi 读到认证相关表时，不只停在 email/hash/schema；主动检查是否存在 MFA/TOTP secret、reset token、API key、session seed、OAuth link secret、step-up token 等认证连接器字段。
 - 若认证连接器字段可读，再评估能否低影响串成 `数据提取 -> step-up/MFA/reset/token 流程 -> victim session/role proof`；报告时不打印 secret、一次性验证码或完整 token。
 - 验证顺序：baseline -> 单变量扰动 -> 稳定差异 -> 最小证据 -> 必要时再工具化确认。
+- Require baseline confirmation and type classification before escalating an
+  injection hypothesis.
 - 只把可复现的状态码、长度、错误类型、排序、布尔响应、字段集合或 DBMS 指纹差异作为信号。
 - 单次 500、WAF/路由差异、缓存 miss 或不可复现异常不能升级为 Candidate。
 - 大 payload、绕过矩阵和工具参数按需读取 `knowledge/payloads/sqli-low-risk-probes.md`。

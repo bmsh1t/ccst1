@@ -77,7 +77,7 @@ def test_triage_live_ab_artifacts_and_answers_are_locked():
 
 
 def test_triage_validation_keeps_live_ab_decision_anchors():
-    triage = _text("skills/triage-validation/SKILL.md")
+    triage = _text("skills/triage-validation/SKILL.md", "rules/reporting.md")
 
     _assert_groups(
         triage,

@@ -28,6 +28,10 @@ deep_refs:
 - 默认先证明处理链和路径控制，不默认上传持久 webshell。
 - webshell / script execution 属于高风险受控影响证明，需要当前轮明确授权、测试资源和清理计划。
 - 最小证据优先：上传路径、访问路径、解析器行为、权限边界、一次性 marker 或无害执行差异。
+- Storage, access, and execution are separate evidence links; safe verification
+  must prove the link under a test resource.
+- Keep parser and component behavior separate from filename acceptance; the
+  processing component must be identified before an execution claim.
 - 未保存原始 upload/read-back 请求与响应时，只能作为 lead，不能升级为稳定能力或结论。
 - 深挖时优先使用本卡和 `upload-parser` 中已蒸馏的 polyglot、
   MIME/扩展/metadata/解析链思路；历史外部来源只在审计文档中追溯，不把 webshell 上传变成默认动作。

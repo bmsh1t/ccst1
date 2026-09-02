@@ -72,6 +72,26 @@ its validation summary. Legacy CVSS 3.1 records remain readable, but prose,
 templates, and model estimates must not recalculate or overwrite a stored
 result. Any examples elsewhere are calibration references only.
 
+### CVSS 3.1 Calibration Reference
+
+These examples calibrate common claims only. They never override the structured
+score recorded by `tools/validate.py`.
+
+| Finding | Score | Severity | Vector |
+|---|---:|---|---|
+| IDOR read PII, any user, auth required | 6.5 | Medium | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N |
+| IDOR write/delete, any user | 8.1 | High | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N |
+| Auth bypass → admin panel | 9.8 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H |
+| Stored XSS → cookie theft, stored | 8.5 | High | AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:N |
+| SQLi → full DB dump | 9.1 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N |
+| SSRF → cloud metadata | 10.0 | Critical | AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N |
+| Race → double spend | 6.8 | Medium | AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:N |
+| GraphQL auth bypass | 8.1 | High | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N |
+| JWT none algorithm | 9.8 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H |
+
+Use the observed preconditions and demonstrated impact to select metrics; do not
+infer severity from a bug-class name or a scanner label.
+
 ## 5. NEVER SUBMIT FROM THE ALWAYS-REJECTED LIST
 
 These are normally not standalone findings without a demonstrated connector:

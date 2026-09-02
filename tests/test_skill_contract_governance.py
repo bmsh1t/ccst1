@@ -58,6 +58,18 @@ def test_validation_uses_replayable_artifacts_without_fixed_http_or_count_gates(
     assert "HTTP when applicable; browser, frame, state, or OOB equivalent otherwise" in text
 
 
+def test_triage_gate_is_protocol_neutral_and_delivery_mode_aware():
+    skill = (REPO_ROOT / "skills/triage-validation/SKILL.md").read_text(encoding="utf-8")
+    triage = (REPO_ROOT / "commands/triage.md").read_text(encoding="utf-8")
+
+    assert "target-bound replayable artifact" in skill
+    assert "actual HTTP requests, not code reading alone" not in skill
+    assert "Every applicable gate must pass" in skill
+    assert "local/lab" in skill
+    assert "external disclosed-report checks are" in triage
+    assert "record the Q7b identity boundary" in triage
+
+
 def test_report_contract_consumes_one_structured_cvss_owner():
     command, skill, writer, rules = (
         _read("commands/report.md"),

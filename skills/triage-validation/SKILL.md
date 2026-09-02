@@ -115,10 +115,12 @@ Confirm:
 ### Q5: Is this already known or accepted behavior?
 
 Search:
-1. Program's HackerOne/Bugcrowd disclosed reports: Ctrl+F endpoint name + bug class
-2. GitHub issues on target repo: `is:issue label:security ENDPOINT_NAME`
-3. Changelog/CHANGELOG.md — does it mention this behavior?
-4. API docs / design docs — is it documented as intended?
+1. For an external bounty submission, check the program's disclosed reports and
+   target-repository security issues for the endpoint and bug class.
+2. For every delivery mode, check the target's changelog, API docs, and design
+   docs for documented behavior.
+3. For local/lab work, record external-program checks as not applicable rather
+   than treating their absence as a validation failure.
 
 **If acknowledged/design decision → DO NOT REPORT.**
 
@@ -180,14 +182,19 @@ Use `session_id` / audit artifacts to confirm the same request under each identi
 
 ## 4 PRE-SUBMISSION GATES
 
-Run in sequence. ALL 4 must PASS.
+Run in sequence. Every applicable gate must pass. Gate 2 is delivery-mode
+conditional: external bounty metadata is required only for external submission;
+local/lab validation must still record the target-local documentation checks.
 
 ### Gate 0: Reality Check
 ```
-[ ] Bug is REAL — confirmed with actual HTTP requests, not code reading alone
+[ ] Bug is REAL — confirmed with a target-bound replayable artifact (HTTP,
+    browser/frame, state transition, transport frame, or OOB equivalent when applicable),
+    not code reading alone
 [ ] Bug matches the supplied target context
 [ ] Reproducible from scratch — can reproduce starting from fresh session
-[ ] Evidence ready — screenshot, response body, or video
+[ ] Evidence ready — raw request/response, frame/state/OOB artifact, screenshot,
+    or video as applicable
 ```
 
 ### Gate 1: Impact Validation
@@ -200,11 +207,11 @@ Run in sequence. ALL 4 must PASS.
 
 ### Gate 2: Deduplication Check
 ```
-[ ] Searched HackerOne Hacktivity for this program + similar bug title/endpoint
-[ ] Searched GitHub issues for target repo
-[ ] Read most recent 5 disclosed reports for this program
-[ ] Not a "known issue" in their changelog or public docs
-[ ] Google: "TARGET_NAME ENDPOINT_NAME bug bounty"
+[ ] External submission: searched the program's disclosed reports and target-repo
+    security issues for this endpoint and bug class
+[ ] All modes: checked changelog, API/design docs, and recorded whether behavior
+    is documented or intentionally accepted
+[ ] Local/lab: external bounty checks recorded as not applicable, not as a blocker
 ```
 
 ### Gate 3: Report Quality
@@ -281,44 +288,11 @@ Build the chain first, prove it works end to end, THEN report.
 
 ---
 
-## CVSS CALIBRATION EXAMPLES (NOT THE SCORING OWNER)
+## Scoring Reference
 
-`tools/validate.py` writes the structured `cvss` result consumed by reports. The
-examples below are calibration references for common claims only; they do not
-override a recorded version, score, or vector and may be retained for legacy
-CVSS 3.1 program mappings.
-
-### Common Score Examples
-
-| Finding | Score | Severity | Vector |
-|---|---|---|---|
-| IDOR read PII, any user, auth required | 6.5 | Medium | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N |
-| IDOR write/delete, any user | 8.1 | High | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N |
-| Auth bypass → admin panel | 9.8 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H |
-| Stored XSS → cookie theft, stored | 8.5 | High | AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:N |
-| SQLi → full DB dump | 9.1 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N |
-| SSRF → cloud metadata | 10.0 | Critical | AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N |
-| Race → double spend | 6.8 | Medium | AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:N |
-| GraphQL auth bypass | 8.1 | High | AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N |
-| JWT none algorithm | 9.8 | Critical | AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H |
-
-### Metric Quick Guide
-
-| What you have | Metric | Value |
-|---|---|---|
-| Exploitable over internet | AV | Network (N) |
-| No special timing or race | AC | Low (L) |
-| Free account needed | PR | Low (L) |
-| No login needed | PR | None (N) |
-| Admin needed | PR | High (H) |
-| No victim action | UI | None (N) |
-| Victim must click | UI | Required (R) |
-| Reads all data | C | High (H) |
-| Reads some data | C | Low (L) |
-| Modifies all data | I | High (H) |
-| Crashes service | A | High (H) |
-| Affects only app | S | Unchanged (U) |
-| Affects browser/OS/cloud | S | Changed (C) |
+`tools/validate.py` writes the structured `cvss` result consumed by reports.
+Calibration rows and metric guidance live in `rules/reporting.md`; this Skill
+only decides whether the demonstrated impact is ready for scoring.
 
 ---
 
@@ -376,14 +350,5 @@ The goal is to QUICKLY disqualify bad report candidates so you hunt real bugs:
 
 ---
 
-## ANTI-PATTERNS THAT LOSE MONEY
-
-```
-Writing a report before confirming the bug exists (most common)
-Submitting theoretical impact without proof
-"The API returns more fields than necessary" (sensitivity matters — is it actually sensitive?)
-Chaining A+B into one report when they're separate bugs (two separate payouts)
-Reporting B saying "similar to A in my other report" — fresh Gate 0 for every bug
-Overclaiming severity — triagers trust you less next time
-Under-describing impact — triager doesn't understand why it matters
-```
+Report-writing anti-patterns and title guidance are owned by `rules/reporting.md`;
+this Skill stops at the validation verdict and write-back decision.

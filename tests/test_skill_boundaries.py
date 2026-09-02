@@ -119,7 +119,11 @@ def _cvss31_severity(score: float) -> str:
 
 
 def test_triage_validation_cvss31_rows_match_vectors_and_severity():
-    text = (REPO_ROOT / "skills" / "triage-validation" / "SKILL.md").read_text(encoding="utf-8")
+    skill = (REPO_ROOT / "skills" / "triage-validation" / "SKILL.md").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "rules" / "reporting.md").read_text(encoding="utf-8")
+    assert "## Scoring Reference" in skill
+    assert "### Common Score Examples" not in skill
+    assert "### Metric Quick Guide" not in skill
     rows = re.findall(
         r"^\| (?P<finding>[^|]+?) \| (?P<score>\d+\.\d) \| "
         r"(?P<severity>Critical|High|Medium|Low) \| "

@@ -27,6 +27,8 @@ deep_refs:
 - `__VIEWSTATE` 本身独立触发 machineKey 分支：先对目标归属的响应副本运行 `tools/aspnet_viewstate_knownkey.py`，用项目内 7436 条 machineKey 资源记录离线检查；不依赖 Telerik endpoint。
 - 反序列化错误、类名、类型栈、OAST callback、签名校验差异都是 sink 线索，不等于 RCE。
 - 有签名/加密时先测试 tamper 是否被拒绝，再考虑弱密钥、key reuse、算法或框架配置。
+- Treat integrity and signature checks as a distinct boundary before any gadget
+  or impact claim.
 - URLDNS/OAST 类 probe 可证明 Java 反序列化触发，但命令 gadget 需要单独证据和受控验证。
 - 反序列化也可能导致 role/tenant/state tamper，不只 RCE；按业务影响选最小证明。
 
